@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  FrankenSonos daemon (`fsonos serve`) as a launchd job. Template: fill the
+  __USER__ / __HOME__ placeholders (see docs/DEPLOY.md) and install the result
+  OUTSIDE the repo. Never commit a filled-in copy.
+
+  Installed as a LaunchDaemon (/Library/LaunchDaemons, runs at boot as
+  __USER__). launchd daemons are exempt from macOS Local Network privacy;
+  launchd agents are not. To run it as a LaunchAgent instead, delete the
+  UserName key and see docs/DEPLOY.md.
+
+  launchd does not expand ~ or $HOME, so every path here is absolute.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.github.dicklesworthstone.fsonos</string>
+
+	<key>UserName</key>
+	<string>__USER__</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>__HOME__/.local/bin/fsonos</string>
+		<string>serve</string>
+	</array>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<!-- Loopback only; Tailscale Serve fronts these on the tailnet. -->
+		<key>FSONOS_HTTP_ADDR</key>
+		<string>127.0.0.1:8099</string>
+		<key>FSONOS_MCP_HTTP_ADDR</key>
+		<string>127.0.0.1:8098</string>
+		<key>FSONOS_DATA_DIR</key>
+		<string>__HOME__/Library/Application Support/fsonos</string>
+		<key>RUST_LOG</key>
+		<string>info</string>
+	</dict>
+
+	<key>WorkingDirectory</key>
+	<string>__HOME__</string>
+
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Restart on any exit, at most once per ThrottleInterval seconds. -->
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<!-- Time between SIGTERM and SIGKILL: room to UNSUBSCRIBE GENA events. -->
+	<key>ExitTimeOut</key>
+	<integer>20</integer>
+	<!-- Without a ProcessType, launchd throttles the job's CPU and I/O. -->
+	<key>ProcessType</key>
+	<string>Standard</string>
+
+	<!-- The log directory must already exist and be writable by __USER__. -->
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/fsonos/fsonos.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/fsonos/fsonos.log</string>
+</dict>
+</plist>
