@@ -1,0 +1,59 @@
+# Rust build artifacts
+/target/
+**/target/
+target-*/
+
+# IMPORTANT: Cargo.lock IS committed for this project (it is an application /
+# daemon with pinned git dependencies — reproducible builds matter).
+# Do NOT add Cargo.lock here.
+
+# ── Personal / site-specific data (NEVER commit) ───────────────────────────
+# The whole point of keeping this repo publishable: no details of any one
+# person's home network, speakers, or accounts land in git. Keep real
+# inventories, captures, tokens, and credentials strictly local.
+/local/
+*.local.toml
+*.local.json
+devices.json
+inventory.json
+household*.json
+topology-*.json
+*.pcap
+*.pcapng
+captures/
+secrets/
+*.token
+*.secret
+.env
+.env.*
+!.env.example
+spotify-*.json
+*-credentials.json
+auth-cache/
+
+# OS / editor
+.DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Logs / profiling
+*.log
+*.profraw
+*.profdata
+lcov.info
+
+# Beads local working files (the JSONL export IS tracked; the db is not)
+.beads/*.db
+.beads/*.db-wal
+.beads/*.db-shm
+.beads/*.lock
+
+# Machine-specific beads exports (contain absolute source_repo_path).
+# The local swarm coordinates via the live .beads/beads.db directly.
+.beads/issues.jsonl
+.beads/metadata.json
+.beads/last-touched

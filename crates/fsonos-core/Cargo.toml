@@ -1,0 +1,26 @@
+[package]
+name = "fsonos-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "FrankenSonos core: device inventory, zone topology, grouping, control orchestration, and the local state store."
+
+[dependencies]
+fsonos-types = { workspace = true }
+fsonos-proto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+# FRANKEN (wired by FND-DEPS): fsqlite for the durable local store (device
+# cache, music-library cache, play history, DJ state), asupersync for the
+# reconciliation loop.
+# fsqlite = { workspace = true }
+# asupersync = { workspace = true }
+
+[lints]
+workspace = true

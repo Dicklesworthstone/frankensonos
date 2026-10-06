@@ -1,0 +1,24 @@
+[package]
+name = "fsonos-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "FrankenSonos MCP server (fastmcp_rust): lets AI agents control the house's audio as tools."
+
+[dependencies]
+fsonos-types = { workspace = true }
+fsonos-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# FRANKEN (wired by FND-DEPS): fastmcp for the MCP server, asupersync runtime.
+# fastmcp = { workspace = true }
+# fastmcp-server = { workspace = true }
+# asupersync = { workspace = true }
+
+[lints]
+workspace = true

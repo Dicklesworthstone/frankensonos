@@ -1,0 +1,82 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fsonos-types",
+    "crates/fsonos-proto",
+    "crates/fsonos-core",
+    "crates/fsonos-spotify",
+    "crates/fsonos-api",
+    "crates/fsonos-mcp",
+    "crates/fsonos-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "LicenseRef-MIT-OpenAI-Anthropic-Rider"
+license-file = "LICENSE"
+repository = "https://github.com/Dicklesworthstone/frankensonos"
+homepage = "https://github.com/Dicklesworthstone/frankensonos"
+authors = ["Jeffrey Emanuel"]
+
+[workspace.dependencies]
+# ── Internal crates ────────────────────────────────────────────────────────
+fsonos-types   = { path = "crates/fsonos-types" }
+fsonos-proto   = { path = "crates/fsonos-proto" }
+fsonos-core    = { path = "crates/fsonos-core" }
+fsonos-spotify = { path = "crates/fsonos-spotify" }
+fsonos-api     = { path = "crates/fsonos-api" }
+fsonos-mcp     = { path = "crates/fsonos-mcp" }
+
+# ── Rock-solid registry deps (the green baseline) ──────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FRANKEN STACK — wired by bead FND-DEPS (see AGENTS.md "Dependency Recipe").
+# These are intentionally NOT active yet so the skeleton stays `cargo check`-
+# green from commit #1. The FND-DEPS bead un-comments the needed subset,
+# unifies asupersync on the 0.5 line, and proves `cargo check` still passes.
+# Proven sources (do not guess — these revs are known-good):
+#
+#   asupersync       = { version = "0.5", features = ["tls-webpki-roots"] }   # crates.io registry; fastmcp/fastapi pin the 0.5 line
+#   fsqlite          = { git = "https://github.com/Dicklesworthstone/frankensqlite", rev = "2633b38a26bde68db23172b12aa402ed698cc309" }
+#   fsqlite-types    = { git = "https://github.com/Dicklesworthstone/frankensqlite", rev = "2633b38a26bde68db23172b12aa402ed698cc309" }
+#   fastmcp          = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a", package = "fastmcp-rust" }
+#   fastmcp-core     = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+#   fastmcp-server   = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+#   fastmcp-transport= { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+#   fastmcp-protocol = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+#   fastapi          = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d", package = "fastapi-rust" }
+#   fastapi-core     = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d" }
+#   fastapi-router   = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d" }
+#
+# Integration hazards documented in AGENTS.md: (1) asupersync MUST unify on one
+# 0.5.x across fastmcp+fastapi+our code; (2) fsqlite rides its own (older)
+# asupersync line internally — use its non-Cx `Connection` API and drive it
+# from the same runtime; prove a round-trip before relying on it.
+# ─────────────────────────────────────────────────────────────────────────────
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Allowed during early development:
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+strip = "symbols"
+panic = "unwind"   # long-running daemon: a panicked worker must not abort the process

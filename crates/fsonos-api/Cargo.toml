@@ -1,0 +1,23 @@
+[package]
+name = "fsonos-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "FrankenSonos HTTP control API (fastapi_rust), fronted for off-LAN access over Tailscale."
+
+[dependencies]
+fsonos-types = { workspace = true }
+fsonos-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# FRANKEN (wired by FND-DEPS): fastapi for the HTTP API, asupersync runtime.
+# fastapi = { workspace = true }
+# asupersync = { workspace = true }
+
+[lints]
+workspace = true

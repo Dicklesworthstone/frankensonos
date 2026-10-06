@@ -1,0 +1,10 @@
+# Use the sparse registry protocol (faster dependency resolution).
+[registries.crates-io]
+protocol = "sparse"
+
+[net]
+git-fetch-with-cli = true
+
+# NOTE on parallelism: do NOT pin `jobs` here. A repo .cargo/config.toml
+# outranks ~/.cargo/config.toml; let the build host decide via CARGO_BUILD_JOBS
+# or its own global config. (Pinning it once wedged a 128-thread host.)

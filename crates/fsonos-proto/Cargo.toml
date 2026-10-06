@@ -1,0 +1,21 @@
+[package]
+name = "fsonos-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Sonos interoperability protocol layer: SSDP discovery, UPnP/SOAP control, GENA eventing, DIDL-Lite."
+
+[dependencies]
+fsonos-types = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+# FRANKEN (wired by FND-DEPS): asupersync for UDP multicast (SSDP), the HTTP/1.1
+# client (SOAP control) and HTTP server (GENA callback sink), plus TLS.
+# asupersync = { workspace = true }
+
+[lints]
+workspace = true
