@@ -340,8 +340,10 @@ fn start_http(
                         .with_context(|| format!("bind the HTTP API on {addr}"))?;
                     let local = listener.local_addr().context("HTTP API address")?;
                     let _ = ready_tx.send(Ok(local));
+                    // One task per connection: an idle keep-alive client or
+                    // an open GET /events stream must not hold up the rest.
                     serving
-                        .serve_on_app(&cx, listener, app)
+                        .serve_on_app_concurrent(&cx, listener, app)
                         .await
                         .map_err(|e| anyhow::anyhow!("HTTP API: {e}"))
                 })
