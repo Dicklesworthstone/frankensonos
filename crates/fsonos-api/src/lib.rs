@@ -22,7 +22,7 @@ pub mod request;
 pub mod source;
 pub mod zones;
 
-pub use failure::Failure;
+pub use failure::{ErrorCode, Failure, NoteCode};
 pub use plan::Command;
 pub use request::{GroupRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest};
 pub use zones::ZoneDto;
@@ -53,8 +53,16 @@ pub fn app() -> App {
     App::builder().get("/health", health).build()
 }
 
-/// A uniform API error payload (FastAPI-style `{ "detail": ... }`).
-#[derive(Debug, Serialize, Deserialize)]
+/// The API's error body (FastAPI-style `detail`, plus the stable code). See
+/// [`Failure`] and `docs/ERRORS.md`. Errors the HTTP framework itself raises
+/// (an unknown route, say) carry only `detail`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApiError {
     pub detail: String,
+    pub code: ErrorCode,
+    pub hint: String,
+    pub suggestions: Vec<String>,
+    pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upnp_code: Option<u16>,
 }

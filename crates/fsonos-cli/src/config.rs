@@ -9,6 +9,8 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
+use fsonos_api::Failure;
+
 /// Settings for the long-lived daemon.
 #[derive(Debug, Clone, clap::Args)]
 pub struct ServeArgs {
@@ -105,13 +107,13 @@ fn v6_scope(ip: Ipv6Addr) -> BindScope {
 }
 
 /// Vet a control-surface (API/MCP) bind address. `Ok(None)`: fine.
-/// `Ok(Some(warning))`: allowed, but log the warning. `Err(reason)`: refuse
-/// to start.
+/// `Ok(Some(warning))`: allowed, but log the warning. `Err(failure)`: refuse
+/// to start (`INVALID_ARGUMENT`, exit 2).
 pub fn check_control_bind(
     listener: &str,
     addr: SocketAddr,
     allow_unsafe: bool,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, Failure> {
     let unauthenticated =
         "it has no authentication, so anyone who can reach it controls the speakers";
     match bind_scope(addr.ip()) {
@@ -130,9 +132,9 @@ pub fn check_control_bind(
             if allow_unsafe {
                 Ok(Some(message))
             } else {
-                Err(format!(
-                    "{message}. Bind 127.0.0.1 or the tailnet address instead, \
-                     or pass --allow-unsafe-bind"
+                Err(Failure::invalid(message).with_hint(
+                    "Bind 127.0.0.1 (behind Tailscale Serve) or the tailnet address, \
+                     or pass --allow-unsafe-bind.",
                 ))
             }
         }
@@ -227,9 +229,11 @@ mod tests {
         let lan = check_control_bind("api", at("192.168.1.9:8099"), false).unwrap();
         assert!(lan.unwrap().contains("LAN address"));
         let wild = check_control_bind("mcp", at("0.0.0.0:8098"), false).unwrap_err();
-        assert!(wild.contains("every interface") && wild.contains("--allow-unsafe-bind"));
+        assert!(wild.detail.contains("every interface"), "{wild}");
+        assert!(wild.hint.contains("--allow-unsafe-bind"));
+        assert_eq!(wild.exit_code(), 2);
         let public = check_control_bind("mcp", at("[2001:db8::1]:8098"), false).unwrap_err();
-        assert!(public.contains("public address"));
+        assert!(public.detail.contains("public address"));
         let forced = check_control_bind("mcp", at("0.0.0.0:8098"), true).unwrap();
         assert!(forced.unwrap().contains("no authentication"));
     }

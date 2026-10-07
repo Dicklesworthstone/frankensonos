@@ -145,7 +145,7 @@ mod tests {
         match normalize_source_uri(raw) {
             Ok(uri) => panic!("{raw:?} accepted as {uri:?}"),
             Err(f) => {
-                assert_eq!(f.status, 422, "{raw:?}");
+                assert_eq!(f.status(), 422, "{raw:?}");
                 f.detail
             }
         }

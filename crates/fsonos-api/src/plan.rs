@@ -10,7 +10,7 @@
 use fsonos_core::{ControlTarget, HouseholdState, resolve_room};
 use fsonos_types::PlayerId;
 
-use crate::failure::Failure;
+use crate::failure::{ErrorCode, Failure};
 use crate::request::{GroupRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest};
 
 /// Pause, resume or skip on a group.
@@ -80,7 +80,8 @@ pub fn resolve<'a>(
     room: &str,
 ) -> Result<ControlTarget<'a>, Failure> {
     if households.iter().all(|h| h.rooms.is_empty()) {
-        return Err(Failure::unavailable(
+        return Err(Failure::new(
+            ErrorCode::NotReady,
             "no rooms discovered yet; discovery may still be running, retry in a few seconds",
         ));
     }
@@ -133,10 +134,13 @@ pub fn plan_group(households: &[HouseholdState], req: &GroupRequest) -> Result<C
     let mover = resolve(households, zone)?;
     let dest = resolve(households, to)?;
     if !std::ptr::eq(mover.household, dest.household) {
-        return Err(Failure::invalid(format!(
-            "{} and {} are in different households; only rooms in the same household can be grouped",
-            mover.room.name, dest.room.name
-        )));
+        return Err(Failure::new(
+            ErrorCode::CrossHouseholdGroup,
+            format!(
+                "{} and {} are in different households; only rooms in the same household can be grouped",
+                mover.room.name, dest.room.name
+            ),
+        ));
     }
     if mover.room.coordinator == dest.room.coordinator {
         return Ok(Command::Nothing {
@@ -304,7 +308,10 @@ mod tests {
             to: "Den".into(),
         };
         let err = plan_group(&houses, &across).unwrap_err();
-        assert_eq!(err.status, 422);
+        assert_eq!(
+            (err.code, err.status()),
+            (ErrorCode::CrossHouseholdGroup, 422)
+        );
         assert!(err.detail.contains("different households"), "{err}");
     }
 
@@ -326,7 +333,8 @@ mod tests {
     #[test]
     fn nothing_discovered_is_a_retryable_503() {
         let err = plan_transport(&[], &zone("Den"), TransportAction::Resume).unwrap_err();
-        assert_eq!(err.status, 503);
+        assert_eq!((err.code, err.status()), (ErrorCode::NotReady, 503));
+        assert!(err.retryable());
         let err = resolve(&[HouseholdState::default()], "Den").unwrap_err();
         assert!(err.detail.contains("retry"), "{err}");
     }
@@ -335,8 +343,9 @@ mod tests {
     fn resolution_failures_keep_core_details() {
         let houses = households();
         let err = plan_dj(&houses, &zone("Kitchen"), DjAction::Skip).unwrap_err();
-        assert_eq!(err.status, 409);
+        assert_eq!((err.code, err.status()), (ErrorCode::AmbiguousRoom, 409));
+        assert_eq!(err.suggestions, ["Kitchen@S1", "Kitchen@S2"]);
         let err = plan_dj(&houses, &zone("  "), DjAction::Skip).unwrap_err();
-        assert_eq!(err.status, 422);
+        assert_eq!(err.status(), 422);
     }
 }

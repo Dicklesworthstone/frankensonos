@@ -10,6 +10,7 @@ description = "FrankenSonos MCP server (fastmcp_rust): lets AI agents control th
 [dependencies]
 fsonos-types = { workspace = true }
 fsonos-core = { workspace = true }
+fsonos-api = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

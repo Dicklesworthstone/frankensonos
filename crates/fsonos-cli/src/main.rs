@@ -15,6 +15,8 @@ mod config;
 use anyhow::Context as _;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand};
+use fsonos_api::Failure;
+use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(
@@ -58,7 +60,9 @@ enum DjAction {
     Stop { zone: String },
 }
 
-fn main() -> anyhow::Result<()> {
+/// Exit codes follow `docs/ERRORS.md`: a [`Failure`] exits with its code's
+/// number (2 usage, 3 not found, 4 unreachable, 5 policy), anything else 1.
+fn main() -> ExitCode {
     // Logs go to stderr: stdout carries the MCP stdio protocol.
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -67,7 +71,21 @@ fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let cli = Cli::parse();
+    match run(Cli::parse()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            if let Some(failure) = err.downcast_ref::<Failure>() {
+                eprintln!("{}", failure.cli_text());
+                ExitCode::from(failure.exit_code())
+            } else {
+                eprintln!("error: {err:#}");
+                ExitCode::FAILURE
+            }
+        }
+    }
+}
+
+fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Discover => pending("discover (lane: proto FND-DEPS)"),
         Command::Zones => pending("zones (lane: core)"),
@@ -94,12 +112,13 @@ fn serve(args: &config::ServeArgs) -> anyhow::Result<()> {
         match config::check_control_bind(listener, addr, args.allow_unsafe_bind) {
             Ok(None) => {}
             Ok(Some(warning)) => tracing::warn!("{warning}"),
-            Err(refusal) => anyhow::bail!(refusal),
+            Err(refusal) => return Err(refusal.into()),
         }
     }
-    let data_dir = args
-        .data_dir()
-        .context("no data directory: set FSONOS_DATA_DIR or HOME")?;
+    let data_dir = args.data_dir().ok_or_else(|| {
+        Failure::invalid("no data directory is configured and HOME is unset")
+            .with_hint("Set FSONOS_DATA_DIR (or HOME) and start again.")
+    })?;
     pending(&format!(
         "serve (api {}, mcp {}, data {}) (lanes: api + mcp + core)",
         args.http,

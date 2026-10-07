@@ -10,6 +10,8 @@
 //! surfaces answer alike.
 
 use fastmcp::prelude::*;
+use fastmcp::{ContentBlock, FinalCallToolResult};
+use fsonos_api::Failure;
 
 /// Room-name matching is the core's: one normalizer for every surface.
 pub use fsonos_core::rooms::normalize_room;
@@ -33,9 +35,48 @@ pub fn server() -> fastmcp::auto::Server {
         .build()
 }
 
+/// The tool-error result for `failure`: the `CODE: detail. Hint: ...` text an
+/// agent reads, with the HTTP API's JSON error body as structured content (see
+/// `docs/ERRORS.md`).
+#[must_use]
+pub fn failure_result(failure: &Failure) -> FinalCallToolResult {
+    FinalCallToolResult {
+        content: vec![ContentBlock::text(failure.tool_text())],
+        is_error: true,
+        structured_content: Some(
+            serde_json::to_value(failure.body()).expect("ApiError serializes"),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fsonos_api::ErrorCode;
+    use serde_json::json;
+
+    #[test]
+    fn failures_render_as_tool_errors() {
+        let failure = Failure::new(ErrorCode::UnknownRoom, "unknown room \"Kichen\"")
+            .with_suggestions(["Kitchen@S1"]);
+        let wire = serde_json::to_value(failure_result(&failure)).unwrap();
+        assert_eq!(wire["isError"], true);
+        assert_eq!(
+            wire["content"][0]["text"],
+            "UNKNOWN_ROOM: unknown room \"Kichen\". Hint: Use a suggested room, or list rooms \
+             with list_zones (GET /zones). Did you mean: Kitchen@S1?"
+        );
+        assert_eq!(
+            wire["structuredContent"],
+            json!({
+                "detail": "unknown room \"Kichen\"",
+                "code": "UNKNOWN_ROOM",
+                "hint": "Use a suggested room, or list rooms with list_zones (GET /zones).",
+                "suggestions": ["Kitchen@S1"],
+                "retryable": false
+            })
+        );
+    }
 
     #[test]
     fn normalizes_curly_apostrophe() {

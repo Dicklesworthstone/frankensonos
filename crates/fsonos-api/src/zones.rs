@@ -288,10 +288,10 @@ mod tests {
     fn zone_of_reports_unknown_and_ambiguous_rooms() {
         let houses = households();
         let unknown = zone_of(&houses, "Garage", playing_den).unwrap_err();
-        assert_eq!(unknown.status, 404);
+        assert_eq!(unknown.status(), 404);
         assert!(unknown.detail.contains("Patio@S2"), "{unknown}");
         let ambiguous = zone_of(&houses, "Kitchen", playing_den).unwrap_err();
-        assert_eq!(ambiguous.status, 409);
+        assert_eq!(ambiguous.status(), 409);
         assert!(
             ambiguous.detail.contains("Kitchen@S1") && ambiguous.detail.contains("Kitchen@S2"),
             "{ambiguous}"

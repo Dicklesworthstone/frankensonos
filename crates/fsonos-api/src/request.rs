@@ -196,7 +196,7 @@ mod tests {
         };
         assert_eq!(z.zone().unwrap(), "Ada\u{2019}s Studio");
         let empty = ZoneRequest { zone: " \t".into() }.zone().unwrap_err();
-        assert_eq!(empty.status, 422);
+        assert_eq!(empty.status(), 422);
         assert!(empty.detail.contains("`zone` is empty"));
         let long = ZoneRequest {
             zone: "x".repeat(MAX_ZONE_LEN + 1),
@@ -237,7 +237,7 @@ mod tests {
             source_uri: "Goldberg Variations".into(),
             title: None,
         };
-        assert_eq!(bad.normalized().unwrap_err().status, 422);
+        assert_eq!(bad.normalized().unwrap_err().status(), 422);
     }
 
     #[test]
