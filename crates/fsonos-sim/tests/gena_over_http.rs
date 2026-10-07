@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 const AVT: &str = "/MediaRenderer/AVTransport/Event";
 const RCS: &str = "/MediaRenderer/RenderingControl/Event";
 const ZGT: &str = "/ZoneGroupTopology/Event";
+const GRC: &str = "/MediaRenderer/GroupRenderingControl/Event";
 
 struct Subscriber {
     lan: Lan,
@@ -433,5 +434,42 @@ fn reelection_and_power_off_change_the_topology() {
         n.property("ZoneGroupState")
             .unwrap()
             .contains("BootSeq=\"2\"")
+    );
+}
+
+#[test]
+fn group_rendering_control_events_carry_plain_properties() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let kitchen = sim.transport("Kitchen").unwrap();
+    let mut sub = Subscriber::new();
+    let grc = sub.subscribe(&sim, "Kitchen", GRC, 300);
+    let initial = sub.next(&grc);
+    assert_eq!(initial.seq, 0);
+    assert_eq!(initial.property("GroupVolume"), Some("20"));
+    assert_eq!(initial.property("GroupMute"), Some("0"));
+    assert_eq!(initial.property("GroupVolumeChangeable"), Some("1"));
+    assert!(initial.property("LastChange").is_none());
+
+    call(
+        &kitchen,
+        &soap::GROUP_RENDERING_CONTROL,
+        "SetGroupVolume",
+        &[("InstanceID", "0"), ("DesiredVolume", "50")],
+    )
+    .unwrap();
+    let changed = sub.next(&grc);
+    assert_eq!(
+        (changed.seq, changed.property("GroupVolume")),
+        (1, Some("50"))
+    );
+    // A room's own volume change moves the group volume too.
+    set_volume(&kitchen, "30");
+    assert_eq!(sub.next(&grc).property("GroupVolume"), Some("30"));
+    // A Bridge has no GroupRenderingControl events.
+    let bridge = format!("{}{GRC}", sim.player("Bridge").unwrap().base_url);
+    refused_with(
+        sub.lan
+            .subscribe_at(&bridge, &sub.sink.callback_url("g"), 60),
+        404,
     );
 }

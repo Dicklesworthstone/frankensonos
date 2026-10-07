@@ -30,6 +30,7 @@ pub(crate) const DEFAULT_TIMEOUT_SECS: u32 = 1_800;
 pub(crate) enum EventService {
     AvTransport,
     RenderingControl,
+    GroupRenderingControl,
     ZoneGroupTopology,
 }
 
@@ -41,6 +42,9 @@ impl EventService {
             "/MediaRenderer/RenderingControl/Event" if model.is_renderer() => {
                 Some(Self::RenderingControl)
             }
+            "/MediaRenderer/GroupRenderingControl/Event" if model.is_renderer() => {
+                Some(Self::GroupRenderingControl)
+            }
             "/ZoneGroupTopology/Event" => Some(Self::ZoneGroupTopology),
             _ => None,
         }
@@ -50,6 +54,7 @@ impl EventService {
         match self {
             Self::AvTransport => "AVTransport",
             Self::RenderingControl => "RenderingControl",
+            Self::GroupRenderingControl => "GroupRenderingControl",
             Self::ZoneGroupTopology => "ZoneGroupTopology",
         }
     }
@@ -212,6 +217,7 @@ impl State {
             let vars = match service {
                 EventService::AvTransport => self.avt_vars(player),
                 EventService::RenderingControl => self.rcs_vars(player),
+                EventService::GroupRenderingControl => self.grc_props(player),
                 EventService::ZoneGroupTopology => self.zgt_props(player),
             };
             let send: Vec<&(String, String)> = match &self.subscriptions[i].sent {
@@ -349,6 +355,32 @@ impl State {
         ]
     }
 
+    /// GroupRenderingControl properties of `p`'s group (plain properties, not
+    /// LastChange): the members' rounded average volume, whether all are
+    /// muted, and that the group volume can be changed.
+    fn grc_props(&self, p: usize) -> Vec<(String, String)> {
+        let members = self.members(self.players[p].coordinator);
+        let n = u32::try_from(members.len()).unwrap_or(1).max(1);
+        let total: u32 = members
+            .iter()
+            .map(|&m| u32::from(self.players[m].volume))
+            .sum();
+        let muted = members.iter().all(|&m| self.players[m].mute);
+        [
+            ("GroupVolume", ((total + n / 2) / n).to_string()),
+            ("GroupMute", u8::from(muted).to_string()),
+            ("GroupVolumeChangeable", "1".to_string()),
+        ]
+        .into_iter()
+        .map(|(name, value)| {
+            (
+                name.to_string(),
+                format!("<e:property><{name}>{value}</{name}></e:property>"),
+            )
+        })
+        .collect()
+    }
+
     /// ZoneGroupTopology properties as seen from `p`.
     fn zgt_props(&self, p: usize) -> Vec<(String, String)> {
         let h = self.players[p].household;
@@ -392,7 +424,9 @@ fn event_body(service: EventService, vars: &[&(String, String)]) -> String {
     }
     let open = "<e:propertyset xmlns:e=\"urn:schemas-upnp-org:event-1-0\">";
     match service {
-        EventService::ZoneGroupTopology => format!("{open}{inner}</e:propertyset>"),
+        EventService::ZoneGroupTopology | EventService::GroupRenderingControl => {
+            format!("{open}{inner}</e:propertyset>")
+        }
         EventService::AvTransport | EventService::RenderingControl => {
             let schema = if service == EventService::AvTransport {
                 "urn:schemas-upnp-org:metadata-1-0/AVT/\" xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/"
