@@ -150,6 +150,31 @@ impl Backend {
         })
     }
 
+    /// The `doctor` tool.
+    pub fn doctor(&self) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let report = self.surface.doctor(&self.client)?;
+            let counts = report.counts();
+            let mut lines = vec![format!(
+                "{} pass, {} warn, {} fail, {} skipped",
+                counts.pass, counts.warn, counts.fail, counts.skip
+            )];
+            for entry in &report.entries {
+                let status = serde_json::to_value(entry.result.status)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_uppercase))
+                    .unwrap_or_default();
+                let mut line = format!("{status} {}: {}", entry.id, entry.result.summary);
+                if let Some(remedy) = &entry.result.remedy {
+                    line.push_str(" -- ");
+                    line.push_str(remedy);
+                }
+                lines.push(line);
+            }
+            Ok((lines.join("\n"), report.to_json()))
+        })
+    }
+
     /// The `list_zones` tool.
     pub fn list_zones(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
@@ -262,6 +287,14 @@ fn play_favorite(
     favorite: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend(|b| b.play_favorite(zone, favorite))
+}
+
+#[tool(
+    description = "Diagnose the setup: can the daemon reach the speakers, is Spotify linked in each household, are the listeners bound safely. Each check says pass, warn or fail, what was seen, and what to do about it. Read-only; nothing changes.",
+    annotations(read_only, idempotent)
+)]
+fn doctor(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(Backend::doctor)
 }
 
 #[tool(

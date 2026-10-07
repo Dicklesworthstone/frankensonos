@@ -9,6 +9,7 @@
 //!   status     what a room is doing (track, transport, volume)
 //!   favorites  the household's Sonos favorites, numbered
 //!   log / undo the action log, and undoing the newest action
+//!   doctor     diagnose the setup (exit 0 / 6 warnings / 7 failures)
 //!   play       play a source URI, or `--favorite <name>`, in a room's group
 //!   pause / resume / next / previous   transport for a room's group
 //!   volume     set (0-100) or change (+N / -N) a room's or group's volume
@@ -22,6 +23,7 @@
 mod config;
 mod daemon;
 mod direct;
+mod doctor;
 #[cfg(feature = "sim")]
 mod sim;
 
@@ -62,6 +64,9 @@ enum Command {
     Status { zone: String },
     /// List the Sonos favorites of a room's household, numbered.
     Favorites { zone: String },
+    /// Diagnose the setup: speakers, Spotify linkage, listener addresses,
+    /// the daemon. Exits 0 (all pass), 6 (warnings) or 7 (a failure).
+    Doctor(doctor::DoctorArgs),
     /// The action log, newest first: who did what, the policy's verdict, and
     /// whether it can be undone.
     Log {
@@ -169,17 +174,27 @@ fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
-    match run(Cli::parse()) {
+    let cli = Cli::parse();
+    if let Command::Doctor(args) = &cli.command {
+        return match doctor::run(&cli.global, args) {
+            Ok(code) => code,
+            Err(err) => report_error(&err),
+        };
+    }
+    match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            if let Some(failure) = err.downcast_ref::<Failure>() {
-                eprintln!("{}", failure.cli_text());
-                ExitCode::from(failure.exit_code())
-            } else {
-                eprintln!("error: {err:#}");
-                ExitCode::FAILURE
-            }
-        }
+        Err(err) => report_error(&err),
+    }
+}
+
+/// Print `err` the `docs/ERRORS.md` way and pick its exit code.
+fn report_error(err: &anyhow::Error) -> ExitCode {
+    if let Some(failure) = err.downcast_ref::<Failure>() {
+        eprintln!("{}", failure.cli_text());
+        ExitCode::from(failure.exit_code())
+    } else {
+        eprintln!("error: {err:#}");
+        ExitCode::FAILURE
     }
 }
 
@@ -340,6 +355,7 @@ fn plan_for(
         }
         Command::Discover
         | Command::Zones
+        | Command::Doctor(_)
         | Command::Status { .. }
         | Command::Favorites { .. }
         | Command::Log { .. }

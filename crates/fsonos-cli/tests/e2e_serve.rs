@@ -205,6 +205,17 @@ fn check_mcp_http(s: &mut Scenario, mcp: &str) {
             .is_some_and(|f| f.len() == 5),
         raw,
     );
+    let (result, raw) = mcp_call(mcp, "doctor", &json!({}));
+    s.check(
+        "mcp-doctor",
+        "mcp-http",
+        "doctor over MCP HTTP returns the report",
+        result["structuredContent"]["schema"] == 1
+            && result["structuredContent"]["checks"]
+                .as_array()
+                .is_some_and(|c| !c.is_empty()),
+        raw,
+    );
     let (result, raw) = mcp_call(mcp, "get_zone_state", &json!({ "zone": "Living Room" }));
     s.check(
         "mcp-zone-state",
@@ -223,6 +234,18 @@ fn check_http_reads(s: &mut Scenario, api: &str) {
             .and_then(|(_, _, b)| serde_json::from_str::<Value>(b).ok())
             .unwrap_or(Value::Null)
     };
+    let doctor = http(api, "GET", "/doctor", &[], "");
+    let report = parse(&doctor);
+    s.check(
+        "doctor",
+        "http",
+        "GET /doctor returns the report with the daemon's own checks",
+        report["schema"] == 1
+            && report["checks"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|x| x["id"] == "daemon.bind")),
+        format!("{doctor:?}"),
+    );
     let favorites = http(api, "GET", "/favorites?zone=Living+Room", &[], "");
     let titles = parse(&favorites);
     s.check(

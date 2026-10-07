@@ -40,6 +40,7 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::PlayFavorite)
         .tool(tools::RecentActions)
         .tool(tools::UndoLast)
+        .tool(tools::Doctor)
         .tool(tools::Play)
         .tool(tools::Pause)
         .tool(tools::Resume)

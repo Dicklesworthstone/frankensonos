@@ -386,3 +386,90 @@ fn the_log_records_actions_and_undo_restores_them() {
     );
     s.finish();
 }
+
+#[test]
+fn doctor_reports_the_setup_with_its_exit_codes() {
+    let mut s = Scenario::start("doctor");
+    s.sim(SimHousehold::standard());
+    let status = |report: &Value, id: &str| {
+        report["checks"]
+            .as_array()
+            .and_then(|c| c.iter().find(|x| x["id"] == id))
+            .map(|x| x["status"].as_str().unwrap_or("").to_string())
+    };
+
+    // Under the harness the HTTP address is 127.0.0.1:0: nothing to probe.
+    let run = s.cli("doctor", &["doctor", "--json"]);
+    let report = json(&run);
+    s.check(
+        "doctor",
+        "cli",
+        "an all-pass setup exits 0 with schema 1",
+        run.code == Some(0) && report["schema"] == 1 && report["exit_code"] == 0,
+        format!("exit {:?}: {}", run.code, run.stdout),
+    );
+    s.check(
+        "doctor",
+        "cli",
+        "the listener addresses pass; the daemon probe skips port 0",
+        status(&report, "daemon.bind").as_deref() == Some("pass")
+            && status(&report, "daemon.health").as_deref() == Some("skip"),
+        &run.stdout,
+    );
+    let spotify: Vec<&Value> = report["checks"]
+        .as_array()
+        .map(|c| {
+            c.iter()
+                .filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("spotify")))
+                .collect()
+        })
+        .unwrap_or_default();
+    s.check(
+        "doctor",
+        "cli",
+        "Spotify linkage checks run for both households and pass",
+        !spotify.is_empty() && spotify.iter().all(|x| x["status"] == "pass"),
+        &run.stdout,
+    );
+
+    let run = s.cli("doctor-only", &["doctor", "--json", "--only", "spotify"]);
+    s.check(
+        "doctor-only",
+        "cli",
+        "--only spotify keeps only those checks; all pass: exit 0",
+        run.code == Some(0)
+            && json(&run)["checks"].as_array().is_some_and(|c| {
+                c.iter()
+                    .all(|x| x["id"].as_str().is_some_and(|i| i.starts_with("spotify")))
+            }),
+        format!("exit {:?}: {}", run.code, run.stdout),
+    );
+
+    // A port nothing listens on: no daemon answers there.
+    let free = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.to_string())
+        .unwrap_or_default();
+    let run = s.cli("doctor-no-daemon", &["doctor", "--json", "--http", &free]);
+    s.check(
+        "doctor-no-daemon",
+        "cli",
+        "no daemon answering is a warning: exit 6",
+        run.code == Some(6) && status(&json(&run), "daemon.health").as_deref() == Some("warn"),
+        format!("exit {:?}: {}", run.code, run.stdout),
+    );
+
+    let run = s.cli(
+        "doctor-unsafe",
+        &["doctor", "--json", "--http", "0.0.0.0:0"],
+    );
+    let report = json(&run);
+    s.check(
+        "doctor-unsafe",
+        "cli",
+        "an unsafe bind address fails: exit 7",
+        run.code == Some(7) && status(&report, "daemon.bind").as_deref() == Some("fail"),
+        format!("exit {:?}: {}", run.code, run.stdout),
+    );
+    s.finish();
+}

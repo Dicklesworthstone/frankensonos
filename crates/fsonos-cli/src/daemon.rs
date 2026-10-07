@@ -104,11 +104,13 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
         }
     }
     let data_dir = data_dir(global)?;
-    let surface = Arc::new(with_action_log(
-        surface(global, policy(&data_dir)?)?,
-        &data_dir,
-        "serve",
-    ));
+    let checks = args.clone();
+    let surface = Arc::new(
+        with_action_log(surface(global, policy(&data_dir)?)?, &data_dir, "serve")
+            .with_doctor_checks(Box::new(move |runner| {
+                crate::doctor::register(runner, &checks);
+            })),
+    );
 
     let stop = Arc::new(AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {

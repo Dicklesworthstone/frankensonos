@@ -8,6 +8,7 @@
 //! | `GET /zones/{room}/state` | | [`crate::ZoneStateDto`] |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
+//! | `GET /doctor` | | the doctor report (`schema`, `exit_code`, `counts`, `checks`) |
 //! | `GET /actions?client=&since=&limit=` | | `[ActionDto]`, newest first |
 //! | `POST /undo` | [`crate::UndoRequest`] | [`crate::UndoDto`] |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
@@ -74,6 +75,10 @@ pub fn app(surface: &Arc<Surface>, client: &Client, web: &WebPolicy) -> App {
             read(Box::new(move |req| {
                 answer(query_zone(req).and_then(|zone| s.favorites(&c, &zone)))
             }))
+        })
+        .get("/doctor", {
+            let (s, c, _) = ctl("doctor");
+            read(Box::new(move |_| answer(s.doctor(&c).map(|r| r.to_json()))))
         })
         .get("/actions", {
             let (s, c, _) = ctl("recent_actions");

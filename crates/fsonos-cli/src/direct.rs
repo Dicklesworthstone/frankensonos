@@ -49,6 +49,14 @@ impl Direct {
     /// Survey the LAN (SSDP for `global.wait`, plus the seeds) and load the
     /// house policy from the data directory (defaults when there is none).
     pub fn survey(global: &GlobalArgs) -> Result<Self, Failure> {
+        Self::open(global, None)
+    }
+
+    /// [`Self::survey`], with `doctor_checks` added to the doctor's report.
+    pub fn open(
+        global: &GlobalArgs,
+        doctor_checks: Option<fsonos_api::surface::DoctorChecks>,
+    ) -> Result<Self, Failure> {
         let seeds = global.seed_addrs()?;
         let wait = global.wait();
         let lan = global.lan()?;
@@ -69,6 +77,9 @@ impl Direct {
         let mut surface = Surface::new(Box::new(lan), again, policy, Box::new(SystemClock));
         if let Some(dir) = global.data_dir() {
             surface = crate::daemon::with_action_log(surface, &dir, "cli");
+        }
+        if let Some(checks) = doctor_checks {
+            surface = surface.with_doctor_checks(checks);
         }
         Ok(Self { surface, survey })
     }
@@ -123,6 +134,11 @@ impl Direct {
     pub fn favorites(&self, zone: &str) -> Result<Vec<FavoriteDto>, Failure> {
         self.households()?;
         self.surface.favorites(&Client::Cli, zone)
+    }
+
+    /// The doctor's report, even when nothing answered.
+    pub fn doctor(&self, client: &Client) -> Result<fsonos_core::doctor::Report, Failure> {
+        self.surface.doctor(client)
     }
 
     /// Undo the newest logged action (only the CLI's own with `own_only`).

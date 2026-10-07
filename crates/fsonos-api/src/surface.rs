@@ -13,6 +13,7 @@
 
 use fsonos_core::actions::{self, UndoReport};
 use fsonos_core::clock::Clock;
+use fsonos_core::doctor::{self, Report, Runner};
 use fsonos_core::favorites;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store};
@@ -20,7 +21,7 @@ use fsonos_core::{HouseholdState, control};
 use fsonos_proto::Transport;
 use fsonos_types::{PlayerId, TransportState};
 use std::fmt::Write as _;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::execute::{OutcomeDto, execute_guarded};
@@ -39,13 +40,18 @@ pub const REFRESH: Duration = Duration::from_secs(30);
 
 /// See the module docs.
 pub struct Surface {
-    transport: Box<dyn Transport + Send + Sync>,
+    transport: Arc<dyn Transport + Send + Sync>,
     survey: Survey,
     cache: Mutex<Option<(Instant, Vec<HouseholdState>)>>,
     policy: Policy,
     clock: Box<dyn Clock>,
     log: Option<ActionLog>,
+    doctor_checks: Option<DoctorChecks>,
 }
+
+/// Doctor checks a surface adds to the core's (the daemon's bind and health
+/// checks, say); registered on each run.
+pub type DoctorChecks = Box<dyn Fn(&mut Runner) + Send + Sync>;
 
 /// Where a surface logs its actions, and its name in the log.
 struct ActionLog {
@@ -62,13 +68,37 @@ impl Surface {
         clock: Box<dyn Clock>,
     ) -> Self {
         Self {
-            transport,
+            transport: Arc::from(transport),
             survey,
             cache: Mutex::new(None),
             policy,
             clock,
             log: None,
+            doctor_checks: None,
         }
+    }
+
+    /// Add `checks` to every doctor run.
+    #[must_use]
+    pub fn with_doctor_checks(mut self, checks: DoctorChecks) -> Self {
+        self.doctor_checks = Some(checks);
+        self
+    }
+
+    /// Run the doctor (`doctor`, read-only): the surface's own checks, then
+    /// the core's Spotify linkage checks for each household. It runs even
+    /// when nothing answers, which is what it is for.
+    pub fn doctor(&self, client: &Client) -> Result<Report, Failure> {
+        self.guard(client).authorize("doctor", true)?;
+        let households = self.households().unwrap_or_default();
+        let mut runner = Runner::new();
+        if let Some(checks) = &self.doctor_checks {
+            checks(&mut runner);
+        }
+        doctor::spotify::register(&mut runner, &self.transport, &households);
+        runner
+            .run()
+            .map_err(|e| Failure::new(ErrorCode::Internal, format!("doctor: {e}")))
     }
 
     /// Log every mutating call in `store` under `surface` (`http`, `mcp`,
