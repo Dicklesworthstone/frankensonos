@@ -39,9 +39,53 @@ pub struct CachedPlayer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryEntry {
     pub track: Track,
+    /// False for explicit tracks too: the DJ never plays those.
     pub is_classical: bool,
     /// When the owner saved it, in unix seconds.
     pub added: i64,
+    /// `spotify:album:<id>`, for album grouping and whole works.
+    pub album_uri: Option<String>,
+    /// Album artists, `"; "`-joined like `track.artist`.
+    pub album_artists: Option<String>,
+    pub origin: LibraryOrigin,
+    pub disc_number: Option<u32>,
+    pub track_number: Option<u32>,
+}
+
+/// How a track got into the owner's library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LibraryOrigin {
+    /// A track of a saved album (and the default for rows cached before
+    /// origin was recorded).
+    #[default]
+    SavedAlbum,
+    /// A liked ("saved") track.
+    LikedTrack,
+    /// Both of the above.
+    Both,
+}
+
+impl LibraryOrigin {
+    /// The stored form: `saved_album`, `liked_track` or `both`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SavedAlbum => "saved_album",
+            Self::LikedTrack => "liked_track",
+            Self::Both => "both",
+        }
+    }
+
+    /// The inverse of [`Self::as_str`].
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "saved_album" => Some(Self::SavedAlbum),
+            "liked_track" => Some(Self::LikedTrack),
+            "both" => Some(Self::Both),
+            _ => None,
+        }
+    }
 }
 
 /// A cached OAuth refresh token for a service.

@@ -7,7 +7,7 @@
 //! callers never hold a transaction across network I/O because none escapes a
 //! method call.
 
-use super::{AuthEntry, CachedPlayer, LibraryEntry, PlayRecord, Store, StoreError};
+use super::{AuthEntry, CachedPlayer, LibraryEntry, LibraryOrigin, PlayRecord, Store, StoreError};
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
 use fsqlite::{AsyncConnection, FrankenError, Row, SqliteValue};
@@ -23,10 +23,11 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "initial schema (plan §7)",
-    sql: "
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "initial schema (plan §7)",
+        sql: "
         CREATE TABLE players (
             id TEXT PRIMARY KEY, household TEXT NOT NULL, room TEXT NOT NULL,
             ip TEXT NOT NULL, model TEXT NOT NULL, generation TEXT NOT NULL,
@@ -50,7 +51,19 @@ const MIGRATIONS: &[Migration] = &[Migration {
             service TEXT PRIMARY KEY, refresh_token TEXT NOT NULL,
             expires INTEGER NOT NULL);
     ",
-}];
+    },
+    Migration {
+        version: 2,
+        name: "library album/work fields for the DJ (plan §12.1)",
+        sql: "
+        ALTER TABLE spotify_library ADD COLUMN album_uri TEXT;
+        ALTER TABLE spotify_library ADD COLUMN album_artists TEXT;
+        ALTER TABLE spotify_library ADD COLUMN origin TEXT NOT NULL DEFAULT 'saved_album';
+        ALTER TABLE spotify_library ADD COLUMN disc_number INTEGER;
+        ALTER TABLE spotify_library ADD COLUMN track_number INTEGER;
+    ",
+    },
+];
 
 /// The durable store: one fsqlite database file in the daemon's data dir.
 #[derive(Debug)]
@@ -75,10 +88,14 @@ impl SqliteStore {
     }
 
     fn open_at(path: String) -> Result<Self, StoreError> {
+        Self::open_migrated(path, MIGRATIONS)
+    }
+
+    fn open_migrated(path: String, migrations: &[Migration]) -> Result<Self, StoreError> {
         let store = Self {
             conn: AsyncConnection::open_sync(path).map_err(backend)?,
         };
-        store.migrate()?;
+        store.migrate(migrations)?;
         Ok(store)
     }
 
@@ -99,7 +116,7 @@ impl SqliteStore {
         self.conn.close_sync().map_err(backend)
     }
 
-    fn migrate(&self) -> Result<(), StoreError> {
+    fn migrate(&self, migrations: &[Migration]) -> Result<(), StoreError> {
         self.conn
             .execute_sync(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (\
@@ -110,7 +127,7 @@ impl SqliteStore {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-        for m in MIGRATIONS.iter().filter(|m| !applied.contains(&m.version)) {
+        for m in migrations.iter().filter(|m| !applied.contains(&m.version)) {
             self.in_transaction(|c| {
                 c.execute_batch_sync(m.sql)?;
                 c.execute_with_params_sync(
@@ -382,6 +399,11 @@ impl Store for SqliteStore {
                     opt_value(e.track.duration_secs.map(i64::from)),
                     i64::from(e.is_classical).into(),
                     e.added.into(),
+                    opt_value(e.album_uri.as_deref()),
+                    opt_value(e.album_artists.as_deref()),
+                    e.origin.as_str().into(),
+                    opt_value(e.disc_number.map(i64::from)),
+                    opt_value(e.track_number.map(i64::from)),
                 ]
             })
             .collect();
@@ -391,8 +413,9 @@ impl Store for SqliteStore {
         self.in_transaction(|c| {
             c.execute_many_with_params_in_transaction_sync(
                 "INSERT OR REPLACE INTO spotify_library \
-                 (source_uri, title, artist, album, duration_secs, is_classical, added) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (source_uri, title, artist, album, duration_secs, is_classical, added, \
+                  album_uri, album_artists, origin, disc_number, track_number) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 &rows,
             )
             .map(drop)
@@ -401,13 +424,22 @@ impl Store for SqliteStore {
 
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError> {
         self.query(
-            "SELECT source_uri, title, artist, album, duration_secs, is_classical, added \
+            "SELECT source_uri, title, artist, album, duration_secs, is_classical, added, \
+             album_uri, album_artists, origin, disc_number, track_number \
              FROM spotify_library ORDER BY added, source_uri",
             &[],
         )?
         .iter()
         .map(|r| {
+            let origin = text(r, 9)?;
+            let small = |i: usize, what: &str| opt_int(r, i)?.map(|v| u32_of(v, what)).transpose();
             Ok(LibraryEntry {
+                album_uri: opt_text(r, 7)?,
+                album_artists: opt_text(r, 8)?,
+                origin: LibraryOrigin::parse(&origin)
+                    .ok_or_else(|| backend(format!("unknown library origin {origin:?}")))?,
+                disc_number: small(10, "disc_number")?,
+                track_number: small(11, "track_number")?,
                 track: Track {
                     source_uri: text(r, 0)?,
                     title: text(r, 1)?,
@@ -497,5 +529,51 @@ impl Store for SqliteStore {
                 })
             })
             .transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v1_database_upgrades_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fsonos.db").to_string_lossy().into_owned();
+
+        // A database created before migration 2, with a library row in it.
+        let v1 = SqliteStore::open_migrated(path.clone(), &MIGRATIONS[..1]).unwrap();
+        assert_eq!(v1.schema_versions().unwrap(), [1]);
+        v1.execute(
+            "INSERT INTO spotify_library \
+             (source_uri, title, artist, album, duration_secs, is_classical, added) \
+             VALUES (?1, ?2, NULL, NULL, NULL, 1, 7)",
+            &["spotify:track:old".into(), "Old".into()],
+        )
+        .unwrap();
+        v1.close().unwrap();
+
+        let store = SqliteStore::open(Path::new(&path)).unwrap();
+        assert_eq!(store.schema_versions().unwrap(), [1, 2]);
+        let lib = store.library().unwrap();
+        assert_eq!(lib.len(), 1);
+        assert_eq!(lib[0].track.source_uri, "spotify:track:old");
+        assert_eq!(lib[0].origin, LibraryOrigin::SavedAlbum);
+        assert_eq!(
+            (
+                lib[0].album_uri.as_deref(),
+                lib[0].disc_number,
+                lib[0].track_number
+            ),
+            (None, None, None)
+        );
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn migration_versions_are_unique_and_ascending() {
+        let versions: Vec<i64> = MIGRATIONS.iter().map(|m| m.version).collect();
+        assert!(versions.windows(2).all(|w| w[0] < w[1]), "{versions:?}");
+        assert_eq!(versions[0], 1);
     }
 }

@@ -2,7 +2,7 @@
 //! fsqlite in memory, and fsqlite on disk (including survival across close
 //! and reopen). Keeps the two implementations from drifting apart.
 
-use fsonos_core::store::{LibraryEntry, MemStore, SqliteStore, Store};
+use fsonos_core::store::{LibraryEntry, LibraryOrigin, MemStore, SqliteStore, Store};
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
 
@@ -32,6 +32,11 @@ fn entry(uri: &str, added: i64, artist: Option<&str>, classical: bool) -> Librar
         },
         is_classical: classical,
         added,
+        album_uri: None,
+        album_artists: None,
+        origin: LibraryOrigin::default(),
+        disc_number: None,
+        track_number: None,
     }
 }
 
@@ -195,6 +200,22 @@ fn library_cache(s: &mut dyn Store) {
     assert!(a.is_classical);
     assert_eq!(a.added, 30);
     assert_eq!(lib[1].track.artist.as_deref(), Some("Bach; Glenn Gould"));
+    assert_eq!(lib[1].origin, LibraryOrigin::SavedAlbum);
+
+    // Album/work fields round-trip, and an update can change the origin.
+    let mut movement = entry("spotify:track:m2", 40, Some("Mahler"), true);
+    movement.album_uri = Some("spotify:album:sym5".into());
+    movement.album_artists = Some("Mahler; Wiener Philharmoniker".into());
+    movement.origin = LibraryOrigin::LikedTrack;
+    movement.disc_number = Some(1);
+    movement.track_number = Some(2);
+    s.upsert_library(std::slice::from_ref(&movement)).unwrap();
+    movement.origin = LibraryOrigin::Both;
+    s.upsert_library(std::slice::from_ref(&movement)).unwrap();
+    let mut expected = movement.clone();
+    expected.track.uri = None;
+    assert_eq!(s.library().unwrap().last(), Some(&expected));
+    assert_eq!(s.library().unwrap().len(), 4);
 }
 
 fn render_params_and_auth(s: &mut dyn Store) {
@@ -238,7 +259,7 @@ fn mem_store_conforms() {
 fn sqlite_in_memory_conforms() {
     let mut s = SqliteStore::open_in_memory().unwrap();
     suite(&mut s);
-    assert_eq!(s.schema_versions().unwrap(), [1]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2]);
     s.close().unwrap();
 }
 
@@ -253,11 +274,11 @@ fn sqlite_file_survives_close_and_reopen() {
 
     // Reopening re-runs no migrations and sees every committed write.
     let s = SqliteStore::open(&path).unwrap();
-    assert_eq!(s.schema_versions().unwrap(), [1]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2]);
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
     assert_eq!(s.cached_groups("HH_S2").unwrap().len(), 1);
-    assert_eq!(s.library().unwrap().len(), 3);
+    assert_eq!(s.library().unwrap().len(), 4);
     assert_eq!(
         s.render_params("HH_S1").unwrap(),
         Some((params(8300), 2_000))
