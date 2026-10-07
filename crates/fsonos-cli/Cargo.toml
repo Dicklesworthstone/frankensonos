@@ -39,6 +39,9 @@ fsonos-sim = { workspace = true, optional = true }
 default = ["sim"]
 # `fsonos sim`: virtual players on loopback. `--no-default-features` drops it.
 sim = ["dep:fsonos-sim"]
+# tests/e2e_tailnet.rs: `fsonos serve` over this host's real tailnet. Off by
+# default and in CI; run it on the daemon host with Tailscale up.
+tailscale-live = []
 
 [dev-dependencies]
 # The e2e harness (tests/e2e) drives the binary against virtual players.
