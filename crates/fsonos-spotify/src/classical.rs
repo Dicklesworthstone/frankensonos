@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use fsonos_types::Track;
 use serde::{Deserialize, Serialize};
 
-use crate::library::{LibraryItem, Origin};
+use crate::library::{LibraryItem, Origin, merge_duplicates};
 
 /// Style period, used to spread the DJ's picks across eras.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -953,17 +953,7 @@ impl CandidatePool {
     /// tracks never qualify. Duplicates (liked *and* on a saved album) merge.
     #[must_use]
     pub fn build(items: &[LibraryItem]) -> Self {
-        let mut merged: Vec<LibraryItem> = Vec::new();
-        let mut seen: HashMap<&str, usize> = HashMap::new();
-        for item in items {
-            if let Some(&i) = seen.get(item.source_uri.as_str()) {
-                merged[i].absorb(item);
-            } else {
-                seen.insert(&item.source_uri, merged.len());
-                merged.push(item.clone());
-            }
-        }
-
+        let merged = merge_duplicates(items);
         let scores: Vec<i32> = merged.iter().map(classical_score).collect();
         let album_keys: Vec<Option<String>> = merged.iter().map(LibraryItem::album_key).collect();
         let mut albums: HashMap<&str, (usize, usize)> = HashMap::new(); // (classical, total)
@@ -991,6 +981,17 @@ impl CandidatePool {
             })
             .map(|((item, _), _)| analyze(item))
             .collect();
+        adopt_album_composers(&mut tracks);
+        Self::from_tracks(tracks)
+    }
+
+    /// A pool from items already judged classical — the library cache's
+    /// `is_classical` rows — analysed without re-judging them (the cache
+    /// keeps no genres or label, so re-scoring could drop a track that
+    /// qualified on those).
+    #[must_use]
+    pub fn from_classical(items: &[LibraryItem]) -> Self {
+        let mut tracks: Vec<ClassicalTrack> = merge_duplicates(items).iter().map(analyze).collect();
         adopt_album_composers(&mut tracks);
         Self::from_tracks(tracks)
     }
@@ -1064,6 +1065,7 @@ mod tests {
             album_artists: Vec::new(),
             disc_number: None,
             track_number: None,
+            added_at: None,
             genres: Vec::new(),
             label: None,
             duration_secs: Some(300),

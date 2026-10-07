@@ -1324,6 +1324,7 @@ version = "0.1.0"
 dependencies = [
  "asupersync",
  "chrono",
+ "fsonos-core",
  "fsonos-types",
  "serde",
  "serde_json",

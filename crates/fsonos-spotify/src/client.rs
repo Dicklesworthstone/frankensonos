@@ -650,10 +650,21 @@ pub struct SimplifiedAlbum {
 
 impl SavedAlbum {
     /// This album's embedded tracks as library items (see
-    /// [`Album::library_items`]).
+    /// [`Album::library_items`]), stamped with when the album was saved.
     #[must_use]
     pub fn library_items(&self) -> Vec<LibraryItem> {
-        self.album.library_items()
+        let added_at = self.added_unix();
+        let mut items = self.album.library_items();
+        for item in &mut items {
+            item.added_at = added_at;
+        }
+        items
+    }
+
+    /// `added_at` as Unix seconds.
+    #[must_use]
+    pub fn added_unix(&self) -> Option<i64> {
+        unix_seconds(self.added_at.as_deref())
     }
 }
 
@@ -686,6 +697,7 @@ impl Album {
             album_artists: names(&self.artists),
             disc_number: position(track.disc_number),
             track_number: position(track.track_number),
+            added_at: None,
             genres: self.genres.clone(),
             label: self.label.clone(),
             duration_secs: secs(track.duration_ms),
@@ -712,6 +724,7 @@ impl SavedTrack {
             album_artists: names(&track.album.artists),
             disc_number: position(track.disc_number),
             track_number: position(track.track_number),
+            added_at: unix_seconds(self.added_at.as_deref()),
             genres: Vec::new(),
             label: None,
             duration_secs: secs(track.duration_ms),
@@ -724,6 +737,13 @@ impl SavedTrack {
 /// Sonos renders only real Spotify tracks the owner's market can play.
 fn renderable(uri: &str, is_local: bool, is_playable: Option<bool>) -> bool {
     uri.starts_with("spotify:track:") && !is_local && is_playable != Some(false)
+}
+
+/// An RFC 3339 timestamp (Spotify's `added_at`) as Unix seconds.
+fn unix_seconds(rfc3339: Option<&str>) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(rfc3339?)
+        .ok()
+        .map(|t| t.timestamp())
 }
 
 /// Spotify reports 0 for an unknown disc/track position.
@@ -1342,6 +1362,8 @@ mod tests {
         assert_eq!(aria.duration_secs, Some(183));
         assert_eq!((aria.disc_number, aria.track_number), (Some(1), Some(1)));
         assert_eq!(items[2].track_number, Some(3));
+        // 2025-01-15T20:31:02Z, the album's added_at.
+        assert!(items.iter().all(|i| i.added_at == Some(1_736_973_062)));
         assert_eq!(aria.origin, Origin::SavedAlbum);
 
         // 2026 dev-mode shape: no label/popularity; a long album whose

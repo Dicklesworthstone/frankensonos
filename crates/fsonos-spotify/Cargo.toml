@@ -9,6 +9,8 @@ description = "Spotify Web API client and the FrankenSonos classical-music DJ en
 
 [dependencies]
 fsonos-types = { workspace = true }
+# The library cache is written through fsonos-core's `Store` (Lane B).
+fsonos-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

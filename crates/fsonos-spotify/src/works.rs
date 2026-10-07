@@ -435,6 +435,7 @@ mod tests {
                     album_artists: vec![composer.into()],
                     disc_number: disc,
                     track_number: track,
+                    added_at: None,
                     genres: Vec::new(),
                     label: None,
                     duration_secs: Some(300),

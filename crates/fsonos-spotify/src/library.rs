@@ -6,7 +6,7 @@
 //! independent of the Web API JSON lets the daemon rebuild the pool from the
 //! store at startup without a network call.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use fsonos_types::Track;
 use serde::{Deserialize, Serialize};
@@ -57,6 +57,9 @@ pub struct LibraryItem {
     pub disc_number: Option<u32>,
     #[serde(default)]
     pub track_number: Option<u32>,
+    /// When the owner saved it (the album, for album tracks), Unix seconds.
+    #[serde(default)]
+    pub added_at: Option<i64>,
     /// Album/artist genres when the read returned any (often empty).
     pub genres: Vec<String>,
     /// Record label when available (Spotify dropped it for new apps in 2026).
@@ -71,26 +74,20 @@ impl LibraryItem {
     /// one string joined by [`ARTIST_SEPARATOR`] (see [`Self::to_track`]).
     #[must_use]
     pub fn from_track(track: &Track, origin: Origin) -> Self {
-        let artists = track
-            .artist
-            .as_deref()
-            .map(|a| {
-                a.split(ARTIST_SEPARATOR)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
         Self {
             source_uri: track.source_uri.clone(),
             title: track.title.clone(),
-            artists,
+            artists: track
+                .artist
+                .as_deref()
+                .map(split_artists)
+                .unwrap_or_default(),
             album: track.album.clone(),
             album_uri: None,
             album_artists: Vec::new(),
             disc_number: None,
             track_number: None,
+            added_at: None,
             genres: Vec::new(),
             label: None,
             duration_secs: track.duration_secs,
@@ -156,8 +153,41 @@ impl LibraryItem {
             self.disc_number = other.disc_number;
             self.track_number = other.track_number;
         }
+        self.added_at = match (self.added_at, other.added_at) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         self.explicit |= other.explicit;
     }
+}
+
+/// Split an [`ARTIST_SEPARATOR`]-joined artist string back into names.
+#[must_use]
+pub fn split_artists(joined: &str) -> Vec<String> {
+    joined
+        .split(ARTIST_SEPARATOR)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One item per `source_uri`, in first-sighting order, with later sightings
+/// (a liked track that is also on a saved album) folded in by
+/// [`LibraryItem::absorb`].
+#[must_use]
+pub fn merge_duplicates(items: &[LibraryItem]) -> Vec<LibraryItem> {
+    let mut merged: Vec<LibraryItem> = Vec::new();
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for item in items {
+        if let Some(&i) = seen.get(item.source_uri.as_str()) {
+            merged[i].absorb(item);
+        } else {
+            seen.insert(&item.source_uri, merged.len());
+            merged.push(item.clone());
+        }
+    }
+    merged
 }
 
 /// Joins multiple artists into [`Track::artist`] for the library cache.
@@ -182,14 +212,15 @@ pub struct LibraryRead {
 enum Fetch {
     SavedAlbums(String),
     SavedTracks(String),
-    /// Later pages of one album's tracks, with the album as context.
-    AlbumTracks(String, Box<Album>),
+    /// Later pages of one album's tracks, with the album (and when it was
+    /// saved) as context.
+    AlbumTracks(String, Box<Album>, Option<i64>),
 }
 
 impl Fetch {
     fn url(&self) -> &str {
         match self {
-            Self::SavedAlbums(url) | Self::SavedTracks(url) | Self::AlbumTracks(url, _) => url,
+            Self::SavedAlbums(url) | Self::SavedTracks(url) | Self::AlbumTracks(url, ..) => url,
         }
     }
 }
@@ -233,14 +264,15 @@ impl LibraryRead {
             Fetch::SavedAlbums(_) => {
                 let page = Paging::<SavedAlbum>::parse(body)?;
                 for saved in page.items {
-                    self.items.extend(saved.album.library_items());
+                    self.items.extend(saved.library_items());
+                    let added_at = saved.added_unix();
                     let rest = saved.album.tracks.as_ref().and_then(|t| t.next.clone());
                     if let Some(url) = rest {
-                        let album = Album {
+                        let album = Box::new(Album {
                             tracks: None,
                             ..saved.album
-                        };
-                        self.follow(Some(url), |url| Fetch::AlbumTracks(url, Box::new(album)))?;
+                        });
+                        self.follow(Some(url), |url| Fetch::AlbumTracks(url, album, added_at))?;
                     }
                 }
                 self.follow(page.next, Fetch::SavedAlbums)
@@ -251,11 +283,14 @@ impl LibraryRead {
                     .extend(page.items.iter().filter_map(SavedTrack::library_item));
                 self.follow(page.next, Fetch::SavedTracks)
             }
-            Fetch::AlbumTracks(_, album) => {
+            Fetch::AlbumTracks(_, album, added_at) => {
                 let page = Paging::<SimplifiedTrack>::parse(body)?;
-                self.items
-                    .extend(page.items.iter().filter_map(|t| album.library_item(t)));
-                self.follow(page.next, |url| Fetch::AlbumTracks(url, album))
+                self.items.extend(page.items.iter().filter_map(|t| {
+                    let mut item = album.library_item(t)?;
+                    item.added_at = added_at;
+                    Some(item)
+                }));
+                self.follow(page.next, |url| Fetch::AlbumTracks(url, album, added_at))
             }
         }
     }
@@ -313,6 +348,7 @@ mod tests {
             album_artists: Vec::new(),
             disc_number: None,
             track_number: None,
+            added_at: None,
             genres: Vec::new(),
             label: None,
             duration_secs: Some(150),
