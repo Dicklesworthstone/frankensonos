@@ -9,6 +9,7 @@
 //! * [`inventory`] classifies players (S1/S2) from their device descriptions.
 //! * [`rooms`] resolves what a person or agent types to a [`ControlTarget`].
 //! * [`playback`] keeps live playback state from GENA events.
+//! * [`events`] keeps GENA subscriptions alive and routes their NOTIFYs.
 //! * [`favorites`] lists, finds, and plays Sonos favorites.
 //! * [`search`] ranks the cached library and favorites against a query.
 //! * [`control`] carries out a player-addressed command over a
@@ -25,6 +26,7 @@ pub mod clock;
 pub mod control;
 pub mod doctor;
 pub mod fade;
+pub mod events;
 pub mod favorites;
 pub mod grouping;
 pub mod inventory;
