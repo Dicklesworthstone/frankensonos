@@ -268,22 +268,101 @@ Update mechanism (verified 2026-10-07):
   ExtraOptions)` — the install path. **Never called by this project**:
   flashing is human-led per `docs/SCOPE.md`.
 
-## 10. SMAPI (the speaker↔Spotify bridge) — research notes
+## 10. SMAPI (the speaker↔Spotify bridge) — verified against the live endpoint
 
 Sonos renders music services through SMAPI, a SOAP API Sonos operates per
 provider (Spotify: `https://spotify-v5.ws.sonos.com/smapi`, from the service
-descriptor). The speaker calls it directly; controllers may too (SoCo does).
+descriptor). The speaker calls it directly; controllers may too — the
+endpoint answers ordinary HTTPS from anywhere (verified from the owner's
+Mac, 2026-10-07).
 
-- Auth: SOAP header `<credentials xmlns="http://www.sonos.com/Services/1.1">`
-  with `deviceId` (the player's `RINCON_…` UUID), `deviceProvider` = `Sonos`,
-  and for linked accounts a `loginToken` block carrying `householdId` plus the
-  token/key pair minted during AppLink (`getDeviceLinkCode(householdId)` →
-  `getAppLink(householdId)`).
-- Calls: `getMetadata(id, index, count)` (browse tree), `search(category,
-  term)`, `getMediaURI(item_id)` (fresh stream URL per play), all returning
-  SMAPI-typed metadata whose `<desc>`/item-id conventions match §4.
-- Status: not yet driven directly by FrankenSonos — render params are learned
-  from favorites instead (works, simpler auth). Direct SMAPI drive is tracked
-  in bead `frankensonos-re-smapi-rbz`; an independent audio path via
-  `x-rincon-mp3radio:` (verified working) is bead `frankensonos-re-spotify-audio-w21`.
+### Envelope and auth
 
+```xml
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+ <s:Header>
+  <credentials xmlns="http://www.sonos.com/Services/1.1">
+   <deviceId>RINCON_&lt;PLAYER_MAC&gt;01400</deviceId>
+   <deviceProvider>Sonos</deviceProvider>
+   <context/>
+   <!-- once linked: -->
+   <loginToken>
+    <token>AUTH_TOKEN</token>
+    <key>PRIVATE_KEY</key>
+    <householdId>Sonos_&lt;HOUSEHOLD&gt;</householdId>
+   </loginToken>
+  </credentials>
+ </s:Header>
+ <s:Body><getMetadata xmlns="http://www.sonos.com/Services/1.1">…</getMetadata></s:Body>
+</s:Envelope>
+```
+
+`SOAPACTION: "http://www.sonos.com/Services/1.1#<method>"`. Verified behavior:
+
+- **Anonymous** (no `loginToken`): `getDeviceLinkCode(householdId)` succeeds —
+  returns `regUrl` (`https://spotify-v5.ws.sonos.com/deviceLink/home?linkCode=…`)
+  and a `linkCode`. Everything else fails with
+  `Client.AuthTokenExpired` ("authTokenExpired").
+- **Linked**: `loginToken` carries the `token`/`key` pair minted by the
+  AppLink ceremony: `getDeviceLinkCode` → user authorizes at the regUrl
+  (their own Spotify login) → `getAppLink(householdId)` returns
+  `authToken` + `privateKey`. The pair is then reusable until revoked.
+- The speaker never exposes its own existing pair on current firmware:
+  `GET /status/accounts` returns an empty `ZPSupportInfo` on both S1 57.23
+  and S2 97.1 (verified). Our own pair must be minted by our own AppLink.
+
+### Calls (from SoCo's reference client, `soco/music_services/`)
+
+| Call | Args | Returns |
+|---|---|---|
+| `getMetadata` | `id` (`root` or a SMAPI id), `index`, `count`, `recursive` | browse tree: tracks/albums/playlists with SMAPI ids + `desc` metadata |
+| `search` | `id` (category: artists/albums/tracks/playlists…), `term`, `index`, `count` | same shape as getMetadata |
+| `getMediaURI` | `id` (track) | fresh, short-lived stream URL (what the speaker fetches to render) |
+| `getExtendedMetadata` | `id` | action/related-metadata for an item |
+| `getDeviceLinkCode` / `getAppLink` | `householdId` | the AppLink ceremony above |
+
+### Feasibility verdict
+
+Direct SMAPI drive from fsonos is **feasible**: every step is plain SOAP over
+HTTPS, the pre-auth step is verified working anonymously, and minting our own
+token pair needs one interactive Spotify login by the owner (a second,
+coexisting account link on the household — the existing one is untouched).
+It is **not load-bearing**: the DJ already works via favorites-learned render
+params + the speaker's own SMAPI session, and library reads use the official
+Spotify Web API. Implement SMAPI-direct only as a hedge (Web API scope
+erosion, or SMAPI-native search/browse without the Sonos app).
+
+## 11. Spotify audio without SMAPI — the radio-bridge evaluation
+
+Question (owner directive 2026-10-07): can the DJ stop depending on Spotify's
+Sonos-facing integration entirely?
+
+Substrate (verified live): `x-rincon-mp3radio://<host>/<path>` via
+`SetAVTransportURI` plays arbitrary HTTP audio on both generations — a public
+MP3 stream played on the S1 office group on first attempt.
+
+Design: a librespot-class client (owner's own Premium account, e.g.
+librespot/spotifyd) pulls the Spotify audio stream; fsonos serves it as a
+local HTTP stream; any speaker(s) play it as a "radio station". Metadata and
+queue logic stay with the DJ engine; the speakers become dumb renderers.
+
+| | SMAPI path (primary) | Radio-bridge path (hedge) |
+|---|---|---|
+| Works today | ✅ verified end-to-end | substrate verified; source missing |
+| Extra moving parts | none | librespot daemon + stream relay |
+| Gapless / seek | speaker-managed | we'd manage it |
+| Group sync | native (coordinator pulls once) | native (same URL on coordinator) |
+| If Sonos kills S1 SMAPI | breaks | survives |
+| Spotify dependency | Sonos SMAPI integration | owner's own Premium session (third-party client — same category as spotifyd/ncspot; ToS-gray but personal-use) |
+
+**Decision: GO as an optional module, never the primary path.**
+Prerequisites for a full proof-of-concept, both currently missing:
+
+1. A streaming-capable credential for the owner's account — the Lane C OAuth
+   cache (`user-library-read`) does not include the `streaming` scope; a
+   second PKCE grant with `streaming` (or librespot's own login) is needed.
+2. A librespot/spotifyd binary (not installed on the daemon host; Rust —
+   buildable with the project toolchain when wanted).
+
+Until then the substrate test stands as the PoC boundary: HTTP radio renders
+natively on S1 and S2, so the bridge is ready when a source is plugged in.
