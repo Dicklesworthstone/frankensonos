@@ -82,6 +82,13 @@ the authoritative in-scope / out-of-scope list every contributor must follow.
 5. **Off-LAN via Tailscale.** An agent on any tailnet device reaches the daemon
    over Tailscale; the daemon is the only thing fronted — the speakers never
    leave the LAN.
+6. **Diagnose and set up.** `fsonos doctor` says what is broken and how to fix
+   it; `fsonos setup` takes a fresh install to first playback (§12.2).
+7. **Agents read before they act.** Zone state, favorites, library search, and
+   recent plays are tools too, and every error carries a code and a fix
+   (§12.3).
+8. **Guardrails.** Volume caps, quiet hours, an action log, and undo apply to
+   every agent action on every surface (§12.5).
 
 ---
 
@@ -309,6 +316,18 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
 - `auth(service TEXT PK, refresh_token TEXT, expires INT)` — local only; the DB
   file lives under the git-ignored data dir.
 
+Added by §12 (each table is created by the migration of the bead that needs it):
+
+- `spotify_library` gains `album_uri TEXT, disc_number INT, track_number INT, work_key TEXT` (whole-work DJ, §12.1).
+- `dj_sessions(zone TEXT PK, mood TEXT, constraints TEXT, expires INT)` (steering survives restarts).
+- `feedback(id INTEGER PK, at INT, work_key TEXT, composer_key TEXT, performer TEXT, signal INT)` (§12.9).
+- `actions(id INTEGER PK, at INT, client TEXT, surface TEXT, intent TEXT, result TEXT, before_state TEXT)` (§12.5).
+- `scenes(name TEXT PK, spec TEXT, updated INT)` (§12.7).
+- `schedules(id INTEGER PK, spec TEXT, action TEXT, enabled INT, last_fired INT)` (§12.10).
+
+Policy (`policy.toml`), aliases (`aliases.toml`), and DJ moods (`moods.toml`)
+are hand-edited TOML in the data dir, not tables.
+
 Keep raw tokens and site data out of git; the store file is in the OS data dir.
 
 ---
@@ -325,6 +344,12 @@ Keep raw tokens and site data out of git; the store file is in the OS data dir.
 - **Integration (opt-in, local):** a `--features live-tests` lane that runs
   against the real LAN, gated behind an env flag so CI never needs the network.
 - **DJ behavior:** seeded-RNG determinism; variety metrics over a long run.
+- **Virtual household (§12.4):** `fsonos-sim` serves S1 and S2 players over
+  real localhost sockets, built from the scrubbed fixtures. The e2e suite in
+  `tests/e2e/` runs every §1 workflow through the CLI, HTTP API, and MCP
+  against it, logging each command, response, and sim-side SOAP exchange with
+  timestamps. This is how the swarm verifies M2–M5 without the speaker LAN; the
+  live-LAN lane stays the owner's final check.
 - **No mocks for the franken stack** where a real localhost socket/db will do:
   bind a real asupersync HTTP server for GENA tests; open a real fsqlite
   `:memory:`/tempfile for store tests.
@@ -375,3 +400,242 @@ Per the planning-workflow method: paste this plan into a strong reasoning model
 revisions here, and repeat ~4–5 rounds to steady-state before/during
 implementation. Keep the plan the living source of truth; when code and plan
 disagree, reconcile at the boundary and update this file.
+
+---
+
+## 12. User-value expansion (idea-wizard round, 2026-10-06)
+
+§5 delivers the original contract. This round asked what would make
+FrankenSonos clearly better to live with every day, for the owner and for the
+agents acting for them, without leaving `docs/SCOPE.md`. About thirty candidates
+were weighed; the fifteen below survived, ranked by expected user value. Each is
+tracked as beads labeled `idea-wizard`; bead slugs are in brackets. The beads
+carry the full design, risks, and acceptance criteria.
+
+### 12.1 Classical-aware DJ: whole works, in order, with reasons and steering
+
+[`c-dj-works`, `c-dj-work-select`, `c-dj-work-expand`, `c-dj-steer`, `d-dj-explain`]
+
+Classical tracks on Spotify are movements. A DJ that picks tracks independently
+plays a scherzo, then an aria, then the finale of a different symphony. That is
+the most common way algorithmic classical radio goes wrong, and the current
+`pick_next` (which de-weights repeats of a `work_key` but still picks single
+tracks) does not prevent it.
+
+- The DJ's unit becomes the work: every movement of one recording (same album,
+  same `work_key`), in disc and track order. `LibraryItem` and `Track` gain
+  `disc_number`, `track_number`, and `album_uri`.
+- A liked single movement is completed into its whole work by reading the
+  album's track list (`GET /v1/albums/{id}/tracks`, read-only) and caching it.
+- Works longer than `max_work_minutes` (default 75: full operas, Passions,
+  masses) are left out unless the mood allows them. A parsed work is never
+  split; titles that don't parse fall back to single-track units.
+- Each pick carries a `PickReason` (composer not heard in N days, period
+  balance, time-of-day energy, mood match, feedback weight). `fsonos dj status`
+  shows what is playing, why, and what comes next.
+- Steering is structured constraints, not free text: include/exclude
+  composers, periods, and form or instrumentation keywords (piano, organ,
+  choral, opera), maximum length, and energy bias, with an optional expiry
+  (`--for 2h`). Named moods (`focus`, `dinner`, `sunday-morning`, `bright`,
+  `calm`) are presets in `moods.toml`. Agents turn language into these
+  arguments through MCP `dj_steer`; the daemon never parses natural language.
+
+### 12.2 `fsonos doctor` and `fsonos setup`
+
+[`b-doctor-engine`, `b-doctor-lan-checks`, `b-doctor-render-checks`,
+`d-doctor-surface`, `d-setup-wizard`]
+
+The prerequisites that make Sonos control fail are invisible: macOS Local
+Network permission (multicast fails silently under launchd), multicast filtered
+by mesh Wi-Fi, a firewall that stops players reaching the GENA callback,
+Spotify not linked in one household's app, no Spotify favorite in a household
+(so render params can't be learned), an expired token, a bind address the guard
+refuses. Today each of these shows up as "nothing happens".
+
+- A check registry in `fsonos-core`: each check has an id and prerequisites and
+  returns pass, warn, fail, or skip with detail, evidence, and a concrete
+  remedy. Checks whose prerequisite failed are skipped, not failed.
+- The checks: data dir and store; SSDP responders per household; seeds; each
+  player's `:1400` description fetch and latency; S1/S2 classification; a GENA
+  round-trip (subscribe to one player's RenderingControl, expect the initial
+  NOTIFY within 5 s, unsubscribe); Spotify linkage and learned render params per
+  household; token refresh; bind-guard verdicts; daemon health; Tailscale Serve
+  mappings when `tailscale` is installed.
+- Doctor is read-only and never changes playback. Output is a table with
+  remedies or `--json`, with exit codes 0/1/2 for pass/warn/fail. It is also MCP
+  `doctor` and `GET /doctor`.
+- `fsonos setup` runs the same checks in order on first run and stops at each
+  failure with the fix ("In the S1 app, add any Spotify track to My Sonos, then
+  press Enter"), runs the PKCE login, and offers to write `seeds.toml` when
+  multicast fails but players answer directly.
+
+### 12.3 State and read tools for agents, and errors that say what to do
+
+[`a-soap-reads`, `b-now-playing`, `b-favorites-search`, `d-agent-read-tools`,
+`d-error-codes`]
+
+The §5 MCP tool list is nearly all writes. "Turn it down a bit in the kitchen",
+"what's playing?", and "play that Brahms from yesterday" all need a read first.
+
+- proto: `GetPositionInfo`, `GetTransportInfo`, `GetMediaInfo`, `GetVolume`,
+  `GetMute`, `GetGroupVolume`, with the current track's DIDL parsed into title,
+  composer, album, art URL, and duration.
+- core: per-zone playback state in `HouseholdState`, updated from GENA deltas,
+  with position interpolated from a timestamp.
+- Tools and routes: `get_zone_state`, `list_favorites`, `play_favorite`,
+  `search_library`, `recent_plays`, and `set_volume` with a relative `delta`.
+  MCP resources `sonos://zones`, `sonos://zones/{room}`, and `sonos://dj` with
+  subscriptions (fastmcp's `ServerBuilder` has `resource`, `resource_template`,
+  and `resource_subscriptions`).
+- Errors gain a stable `code` (`UNKNOWN_ROOM`, `AMBIGUOUS_ROOM`,
+  `PLAYER_UNREACHABLE`, `SPOTIFY_NOT_LINKED`, `RENDER_PARAMS_MISSING`,
+  `POLICY_DENIED`, …), a `hint`, and `suggestions` such as the closest room
+  names. The same codes appear in HTTP, MCP, and CLI exit codes.
+
+### 12.4 A virtual household for hardware-free testing and demos
+
+[`a-sim-core`, `a-sim-gena`, `a-sim-discovery`, `d-e2e-sim`]
+
+The swarm builds on `rch` workers that are not on the speaker LAN, so every
+M2–M5 criterion that says "against a real player" can only be checked by the
+owner by hand. `crates/fsonos-sim` serves virtual S1 and S2 players over real
+localhost sockets, which is what AGENTS.md asks for in place of mocks.
+
+- Each virtual player has its own localhost port, a device description from the
+  scrubbed fixtures, and state machines for AVTransport (URI, queue, transport
+  state, position clock), RenderingControl, ZoneGroupTopology (including
+  `x-rincon:` joins), and ContentDirectory favorites with synthetic Spotify
+  items.
+- GENA: SUBSCRIBE, renew, and UNSUBSCRIBE, and a NOTIFY with `LastChange` on
+  every state change.
+- Discovery goes through a generated seeds file, plus a unicast SSDP responder
+  where loopback allows it. Nothing relies on multicast over loopback.
+- Fault injection: latency, dropped NOTIFYs, UPnP faults, reboots (lost
+  subscriptions), port changes (standing in for DHCP IP changes), coordinator
+  re-election.
+- `fsonos sim --scenario two-households` lets a new user or an agent developer
+  try every command before pointing it at a real house.
+- The sim implements only the community-documented control surface, from our
+  own scrubbed fixtures. It is a test double for our own client.
+
+### 12.5 Safe agent control: limits, fades, quiet hours, an action log, undo
+
+[`b-snapshot`, `b-policy`, `b-volume-ramps`, `b-action-log-undo`,
+`d-safety-surfaces`]
+
+With several agents able to drive the house from anywhere, the likely failure is
+an agent doing something careless at 2 a.m. at volume 80. People will only hand
+the house to agents they can bound and reverse. The guardrails live in
+`fsonos-core` orchestration so every surface gets them.
+
+- `policy.toml`: per-room `max_volume`, a `max_step` per call, quiet hours with
+  a lower cap, fade durations, and per-client tool allowlists. Over-limit volume
+  is clamped and the response says so; a disallowed tool returns
+  `POLICY_DENIED`.
+- Client identity: stdio and loopback callers are `local`. The
+  `Tailscale-User-Login` header is trusted only when the listener is on loopback
+  behind Tailscale Serve; on a direct bind it can be forged, so the identity is
+  `unknown`.
+- Fades use RenderingControl `RampToVolume` where the player supports it and
+  stepped `SetVolume` otherwise.
+- A zone snapshot (group membership, volumes, mute, transport URI and metadata,
+  track and position, play state) is taken before every mutating intent, and
+  each action is logged with client, surface, intent, result, and before-state.
+  `fsonos log`, `fsonos undo`, MCP `recent_actions` and `undo_last`. Undo says
+  what it could not restore (for example, queue contents on S1).
+
+### 12.6 Favorites and library search as play sources
+
+[`b-favorites-search`] A Sonos favorite carries a working URI and DIDL for its
+own household, so playing one needs no render-param learning. That makes it the
+earliest real playback on both S1 and S2, and the fallback §6 calls for when a
+Spotify track won't enqueue. Library search is token-scored fuzzy matching over
+the cached library and favorites (title, composer, performer, album). The
+surfaces are in 12.3.
+
+### 12.7 Scenes
+
+[`b-scenes`, `d-scenes-surface`] Named, declarative house states: group layout,
+per-room volume, and a source (a favorite, a Spotify URI, or the DJ with a
+mood). `scene apply` diffs current state against the scene and issues only the
+operations needed. One call replaces five to ten, and it matches how people
+describe what they want ("dinner", "work").
+
+### 12.8 An instant CLI through the daemon
+
+[`d-cli-daemon-client`] The CLI uses a running daemon's warm state when one
+answers (`zones` in under 100 ms) and otherwise falls back to direct LAN mode
+with the cached inventory. Every command takes `--json`; shell completions
+complete room names; `--daemon` and `--direct` force a mode.
+
+### 12.9 A DJ that learns
+
+[`c-dj-feedback`, `d-dj-feedback-surface`] `dj like` and `dj dislike`, early
+skips (under 30 s) as a negative signal, and full listens as a weak positive,
+keyed by work, composer, and performer and decaying over weeks. Time-of-day
+programs set the default mood when none is given.
+
+### 12.10 Schedules and a sleep timer
+
+[`b-scheduler`, `d-schedule-surface`] Daemon-side and persisted:
+`fsonos sleep Bedroom 45m` fades out and pauses;
+`schedule add "weekdays 07:30" dj start Kitchen --mood bright` or a scene.
+Device alarms can't start the DJ or a scene and differ between S1 and S2, so the
+daemon owns scheduling. A run missed by more than 10 minutes is skipped.
+
+### 12.11 Move playback and whole-house mode
+
+[`b-move-party`, `d-house-verbs`] `fsonos move Kitchen Bedroom` joins the
+target to the source's group, waits for the topology event, then removes the
+source, so the track and position carry over and the DJ session follows.
+`party` groups every room in a household. S1 and S2 players cannot be grouped
+together, and the command says so instead of failing quietly.
+
+### 12.12 Announcements
+
+[`b-announce`, `d-announce-surface`] Snapshot, set a policy-capped announcement
+volume, play a clip, wait for STOPPED via GENA, restore. Speech comes from macOS
+`say` (WAV/AIFF); chimes are generated, not copied. Clips are served from the
+GENA sink listener, which the speakers can already reach on the LAN; control
+endpoints never move onto that listener.
+
+### 12.13 Live events and a web remote
+
+[`d-events-sse`, `d-web-remote`] `GET /events` streams zone-state deltas, DJ
+picks, and action-log entries as server-sent events, with a long-poll fallback
+if fastapi_rust can't stream a body. A single static page served by the daemon
+(rooms, now playing, volume, play/pause/skip, DJ mood, scenes) is a phone remote
+over the tailnet, with no app store and no account.
+
+### 12.14 Self-healing identity
+
+[`b-self-healing`] Everything is keyed by player UUID, never by IP. An
+unreachable player is re-resolved through SSDP or seeds and the call retried
+once; a command that runs into a coordinator change refreshes topology and
+retries once against the new coordinator; a reboot (lost subscription SID)
+triggers resubscription. Each path is tested with sim faults.
+
+### 12.15 Room aliases and smart targets
+
+[`b-room-aliases`, `d-house-verbs`] `aliases.toml` (`kitchen` → "Kitchen",
+`downstairs` → Kitchen + Living Room), "did you mean" on near misses, reserved
+`all`/`everywhere` per household, and a per-client default room.
+
+### Milestone placement
+
+- **M2:** 12.3 reads and now-playing state, 12.4 sim and e2e harness, 12.6
+  favorites (first real playback), 12.15, and the doctor engine with LAN checks.
+- **M3:** doctor render checks and `fsonos setup`.
+- **M4:** 12.1 and 12.9.
+- **M5:** 12.3 surfaces, 12.5, 12.7, 12.8, 12.13.
+- **M6:** 12.10, 12.11, 12.12, 12.14.
+
+### Considered and dropped
+
+- An MQTT / Home Assistant bridge: Home Assistant already integrates Sonos.
+- Driving the players' own AlarmClock service: it can't start the DJ or a
+  scene, and S1 and S2 differ.
+- Recording live SOAP traffic to generate fixtures: too close to network
+  capture, which is out of scope for the swarm. Fixtures stay hand-scrubbed.
+- Natural-language parsing in the daemon: agents do this better. The daemon
+  takes structured arguments.

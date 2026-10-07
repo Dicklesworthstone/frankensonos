@@ -15,6 +15,10 @@ use crate::source::normalize_source_uri;
 /// Longest room/zone name accepted, in characters.
 pub const MAX_ZONE_LEN: usize = 128;
 
+/// Longest now-playing title accepted, in characters. A title is cosmetic
+/// metadata, so an over-long one is truncated rather than rejected.
+pub const MAX_TITLE_LEN: usize = 256;
+
 /// Body naming one zone: `POST /pause|resume|next|previous|ungroup` and
 /// `POST /dj/{start|skip|stop}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,7 +59,7 @@ impl PlayRequest {
                 .as_deref()
                 .map(str::trim)
                 .filter(|t| !t.is_empty())
-                .map(str::to_string),
+                .map(|t| t.chars().take(MAX_TITLE_LEN).collect()),
         })
     }
 }
@@ -220,13 +224,13 @@ mod tests {
     fn play_is_normalized() {
         let p = PlayRequest {
             zone: " Den ".into(),
-            source_uri: "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC?si=z".into(),
+            source_uri: "https://open.spotify.com/track/0123456789ABCDEFabcdef?si=z".into(),
             title: Some("  ".into()),
         }
         .normalized()
         .unwrap();
         assert_eq!(p.zone, "Den");
-        assert_eq!(p.source_uri, "spotify:track:4uLU6hMCjMI75M1A2tKUQC");
+        assert_eq!(p.source_uri, "spotify:track:0123456789ABCDEFabcdef");
         assert_eq!(p.title, None);
         let bad = PlayRequest {
             zone: "Den".into(),

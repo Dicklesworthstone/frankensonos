@@ -5,6 +5,7 @@
 //! MCP tools send the `detail` as the tool error text. Details are written for
 //! an agent to act on: say what was wrong and what would work instead.
 
+use fsonos_core::CoreError;
 use std::fmt;
 
 /// A request that could not be carried out.
@@ -86,9 +87,56 @@ impl From<Failure> for crate::ApiError {
     }
 }
 
+/// Core errors carry their own retry-able text (known rooms, qualified
+/// candidates); the mapping only picks the status.
+impl From<CoreError> for Failure {
+    fn from(err: CoreError) -> Self {
+        let detail = err.to_string();
+        match err {
+            CoreError::UnknownRoom { .. }
+            | CoreError::UnknownPlayer(_)
+            | CoreError::UnknownHousehold(_) => Self::not_found(detail),
+            CoreError::AmbiguousRoom { .. } => Self::conflict(detail),
+            CoreError::Proto(_) => Self::bad_gateway(detail),
+            // Store errors can carry a DB path or engine internals; keep them
+            // out of the client response. The caller logs the full error.
+            CoreError::Store(_) => Self::internal("internal error"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn core_errors_map_to_statuses() {
+        let unknown = Failure::from(CoreError::UnknownRoom {
+            name: "Garage".into(),
+            known: vec!["Den@S2".into()],
+        });
+        assert_eq!(unknown.status, 404);
+        assert!(unknown.detail.contains("Den@S2"), "{unknown}");
+        let ambiguous = Failure::from(CoreError::AmbiguousRoom {
+            name: "Den".into(),
+            candidates: vec!["Den@S1".into(), "Den@S2".into()],
+        });
+        assert_eq!(ambiguous.status, 409);
+        assert!(ambiguous.detail.contains("Den@S1, Den@S2"), "{ambiguous}");
+        let soap = Failure::from(CoreError::Proto(fsonos_proto::ProtoError::SoapFault {
+            code: 701,
+            reason: "Transition not available".into(),
+        }));
+        assert_eq!(soap.status, 502);
+        assert_eq!(
+            Failure::from(CoreError::Store("disk full".into())).status,
+            500
+        );
+        assert_eq!(
+            Failure::from(CoreError::UnknownPlayer("RINCON_X".into())).status,
+            404
+        );
+    }
 
     #[test]
     fn statuses_follow_their_constructor() {

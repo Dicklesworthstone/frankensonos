@@ -135,7 +135,7 @@ fn canonical_spotify(kind: &str, id: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    const ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
+    const ID: &str = "0123456789ABCDEFabcdef";
 
     fn ok(raw: &str) -> String {
         normalize_source_uri(raw).unwrap_or_else(|f| panic!("{raw:?} rejected: {f}"))
@@ -213,9 +213,9 @@ mod tests {
 
     #[test]
     fn malformed_spotify_ids_are_caught_here() {
-        assert!(rejected("spotify:track:4uLU6hMCjMI75M1A2tKUQ").contains("malformed"));
+        assert!(rejected("spotify:track:0123456789ABCDEFabcde").contains("malformed"));
         assert!(rejected(&format!("spotify:track:{ID}x")).contains("malformed"));
-        assert!(rejected("https://open.spotify.com/track/4uLU6hMC").contains("malformed"));
+        assert!(rejected("https://open.spotify.com/track/01234567").contains("malformed"));
     }
 
     #[test]

@@ -109,7 +109,9 @@ impl DidlRes {
         if parts.next().is_some() || m >= 60 || s >= 60 {
             return None;
         }
-        Some(h * 3600 + m * 60 + s)
+        // `h` is unbounded network input; avoid a debug panic / release wrap.
+        // (m*60+s is bounded by the <60 checks above, so only h*3600 can overflow.)
+        Some(h.checked_mul(3600)?.checked_add(m * 60 + s)?)
     }
 }
 

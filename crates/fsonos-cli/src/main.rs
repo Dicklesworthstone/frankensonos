@@ -10,6 +10,8 @@
 //!
 //! Commands not yet wired report which lane delivers them.
 
+mod config;
+
 use anyhow::Context as _;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand};
@@ -39,11 +41,7 @@ enum Command {
         source_uri: String,
     },
     /// Run the long-lived daemon (HTTP API + MCP server + event sink).
-    Serve {
-        /// HTTP API bind address.
-        #[arg(long, default_value = "127.0.0.1:8099")]
-        http: String,
-    },
+    Serve(config::ServeArgs),
     /// Serve the MCP tools over stdio (for a local agent).
     Mcp,
     /// Classical DJ controls.
@@ -76,7 +74,7 @@ fn main() -> anyhow::Result<()> {
         Command::Play { zone, source_uri } => pending(&format!(
             "play {source_uri} on {zone} (lanes: proto + core + spotify)"
         )),
-        Command::Serve { http } => pending(&format!("serve on {http} (lanes: api + mcp + core)")),
+        Command::Serve(args) => serve(&args),
         Command::Mcp => run_mcp_stdio(),
         Command::Dj { action } => {
             let what = match action {
@@ -87,6 +85,27 @@ fn main() -> anyhow::Result<()> {
             pending(&format!("{what} (lane: spotify dj)"))
         }
     }
+}
+
+/// Vet the configuration, then run the daemon. The listeners have no
+/// authentication, so an unsafe bind address stops startup here.
+fn serve(args: &config::ServeArgs) -> anyhow::Result<()> {
+    for (listener, addr) in [("HTTP API", args.http), ("MCP server", args.mcp_http)] {
+        match config::check_control_bind(listener, addr, args.allow_unsafe_bind) {
+            Ok(None) => {}
+            Ok(Some(warning)) => tracing::warn!("{warning}"),
+            Err(refusal) => anyhow::bail!(refusal),
+        }
+    }
+    let data_dir = args
+        .data_dir()
+        .context("no data directory: set FSONOS_DATA_DIR or HOME")?;
+    pending(&format!(
+        "serve (api {}, mcp {}, data {}) (lanes: api + mcp + core)",
+        args.http,
+        args.mcp_http,
+        data_dir.display()
+    ))
 }
 
 /// The single-threaded asupersync runtime every surface runs under.

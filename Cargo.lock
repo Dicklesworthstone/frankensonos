@@ -1294,6 +1294,7 @@ version = "0.1.0"
 dependencies = [
  "asupersync",
  "fastmcp-rust",
+ "fastmcp-server",
  "fsonos-core",
  "fsonos-types",
  "serde",
@@ -1352,6 +1353,7 @@ dependencies = [
  "fsqlite-types",
  "fsqlite-vfs",
  "fsqlite-wal",
+ "futures-lite",
  "tracing",
 ]
 
