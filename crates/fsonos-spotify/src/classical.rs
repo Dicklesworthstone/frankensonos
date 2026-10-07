@@ -830,6 +830,9 @@ pub struct ClassicalTrack {
     pub movement: Option<String>,
     pub energy: u8,
     pub origin: Origin,
+    /// A movement the library doesn't hold, filled in from its album's track
+    /// list to complete a work (see `crate::expand`); never counts as liked.
+    pub expanded: bool,
 }
 
 /// Analyse one library item. Does not decide whether it is classical — see
@@ -865,6 +868,7 @@ pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
         movement: parts.movement.map(str::to_owned),
         energy: estimate_energy(parts.movement, parts.work),
         origin: item.origin,
+        expanded: false,
     }
 }
 

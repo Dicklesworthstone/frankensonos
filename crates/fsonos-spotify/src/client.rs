@@ -735,7 +735,7 @@ impl SavedTrack {
 }
 
 /// Sonos renders only real Spotify tracks the owner's market can play.
-fn renderable(uri: &str, is_local: bool, is_playable: Option<bool>) -> bool {
+pub(crate) fn renderable(uri: &str, is_local: bool, is_playable: Option<bool>) -> bool {
     uri.starts_with("spotify:track:") && !is_local && is_playable != Some(false)
 }
 
@@ -755,7 +755,7 @@ fn names(artists: &[SimplifiedArtist]) -> Vec<String> {
     artists.iter().map(|a| a.name.clone()).collect()
 }
 
-fn secs(duration_ms: u64) -> Option<u32> {
+pub(crate) fn secs(duration_ms: u64) -> Option<u32> {
     if duration_ms == 0 {
         return None;
     }

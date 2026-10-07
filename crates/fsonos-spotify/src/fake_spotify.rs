@@ -2,7 +2,8 @@
 //! `Http1Listener` on loopback, for tests of the I/O half of the client: no
 //! mocks of the HTTP client, no network beyond 127.0.0.1. It verifies PKCE
 //! server-side, rotates tokens on refresh, can rate-limit once, and serves
-//! the library fixtures with paging links rewritten to itself.
+//! the library and album-track fixtures with paging links rewritten to
+//! itself.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -39,6 +40,8 @@ pub(crate) struct Fake {
     pub(crate) rate_limit_tracks_once: bool,
     /// Serve this liked-tracks page instead of the fixture.
     pub(crate) liked_tracks: Option<String>,
+    /// Answer the first album-tracks request with a 429.
+    pub(crate) rate_limit_albums_once: bool,
     pub(crate) log: Vec<String>,
 }
 
@@ -130,6 +133,17 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
             200,
             rewrite(include_bytes!("../tests/fixtures/saved_tracks_page.json")),
         )
+    } else if uri.starts_with("/v1/albums/FakeAlbum0000000000009/tracks") {
+        if fake.rate_limit_albums_once {
+            fake.rate_limit_albums_once = false;
+            return json(429, "").with_header("Retry-After", "1");
+        }
+        let page: &[u8] = if uri.contains("offset=3") {
+            include_bytes!("../tests/fixtures/album_tracks_page2.json")
+        } else {
+            include_bytes!("../tests/fixtures/album_tracks_page1.json")
+        };
+        json(200, rewrite(page))
     } else if uri.starts_with("/v1/albums/FakeAlbum0000000000002/tracks") {
         json(
             200,

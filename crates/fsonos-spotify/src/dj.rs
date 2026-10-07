@@ -142,6 +142,10 @@ pub struct DjConfig {
     /// Steering filters relax (keywords, then periods, then length) while
     /// fewer works than this pass them.
     pub min_steered_works: usize,
+    /// Complete partly-held works from their albums' track lists
+    /// (`crate::expand`); a work that can't be completed still plays what
+    /// the library has, at `incomplete_pm`.
+    pub expand_partial_works: bool,
 }
 
 impl Default for DjConfig {
@@ -158,6 +162,7 @@ impl Default for DjConfig {
             max_work_minutes: 75,
             allow_long_works: false,
             min_steered_works: 5,
+            expand_partial_works: true,
         }
     }
 }

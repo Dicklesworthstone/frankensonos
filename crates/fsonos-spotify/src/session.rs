@@ -100,6 +100,12 @@ impl Session {
         self
     }
 
+    /// The hosts this session talks to.
+    #[must_use]
+    pub fn endpoints(&self) -> &Endpoints {
+        &self.endpoints
+    }
+
     /// Whether a token is cached (the owner has authorized this app).
     #[must_use]
     pub fn is_authorized(&self) -> bool {

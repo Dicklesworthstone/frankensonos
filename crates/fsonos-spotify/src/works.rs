@@ -124,7 +124,8 @@ fn split_recordings(mut group: Vec<&ClassicalTrack>) -> Vec<Vec<&ClassicalTrack>
     works
 }
 
-fn build(movements: &[&ClassicalTrack]) -> Work {
+/// A work from movements already in playing order.
+pub(crate) fn build(movements: &[&ClassicalTrack]) -> Work {
     let first = movements[0];
     Work {
         work_key: first.work_key.clone(),
