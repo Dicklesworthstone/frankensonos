@@ -189,3 +189,54 @@ fn playback_reads_transport_and_position() {
     assert_eq!(p.transport.state, fsonos_types::TransportState::Playing);
     assert_eq!((p.position.track, p.position.position_secs), (2, Some(30)));
 }
+
+const FAV_S1: &str = include_str!("../../fsonos-proto/tests/fixtures/browse_favorites_s1.xml");
+const EMPTY: &str = include_str!("../../fsonos-proto/tests/fixtures/browse_queue_empty.xml");
+
+/// Answers every Browse with one fixed response body.
+struct Favorites(&'static str);
+
+impl Transport for Favorites {
+    fn soap_post(
+        &self,
+        _: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        assert_eq!(path, "/MediaServer/ContentDirectory/Control");
+        assert!(action.ends_with("#Browse\""), "{action}");
+        assert!(body.contains("<ObjectID>FV:2</ObjectID>"), "{body}");
+        Ok(self.0.to_string())
+    }
+}
+
+#[test]
+fn spotify_tracks_render_with_params_from_the_households_favorites() {
+    let h = house();
+    let (uri, didl) = control::spotify_track_source(
+        &Favorites(FAV_S1),
+        &h,
+        &pid(2),
+        "spotify:track:0FixtureSpotify0000099",
+        "Partita",
+    )
+    .unwrap()
+    .expect("the S1 household has Spotify favorites");
+    assert!(
+        uri.starts_with("x-sonos-spotify:spotify%3atrack%3a0FixtureSpotify0000099?sid="),
+        "{uri}"
+    );
+    assert!(didl.contains("SA_RINCON"), "{didl}");
+    assert!(didl.contains("<dc:title>Partita</dc:title>"));
+}
+
+#[test]
+fn a_household_without_spotify_favorites_has_nothing_to_render_with() {
+    let h = house();
+    assert_eq!(
+        control::spotify_track_source(&Favorites(EMPTY), &h, &pid(2), "spotify:track:x", "x")
+            .unwrap(),
+        None
+    );
+}

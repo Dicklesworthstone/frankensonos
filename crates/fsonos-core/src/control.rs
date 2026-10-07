@@ -8,7 +8,9 @@
 
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::Transport;
+use fsonos_proto::content;
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
+use fsonos_proto::didl::{learn_spotify_params, spotify_track_didl, spotify_track_uri};
 use fsonos_types::{Player, PlayerId};
 use std::net::IpAddr;
 
@@ -80,6 +82,28 @@ pub fn play_uri<T: Transport + ?Sized>(
     let host = addr(households, coordinator)?;
     soap::set_av_transport_uri(t, host, uri, metadata)?;
     Ok(soap::play(t, host)?)
+}
+
+/// The renderer-ready URI and DIDL-Lite metadata that play `spotify_uri` (a
+/// `spotify:track:<id>`) in the household `coordinator` belongs to, learned
+/// from that household's own favorites. Pass them to [`play_uri`].
+/// `Ok(None)` when the household has no Spotify track favorite to learn
+/// from: link Spotify in that household's Sonos app and add any Spotify track
+/// to My Sonos.
+pub fn spotify_track_source<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    spotify_uri: &str,
+    title: &str,
+) -> Result<Option<(String, String)>, CoreError> {
+    let favorites = content::browse_all(t, addr(households, coordinator)?, "FV:2")?;
+    Ok(learn_spotify_params(&favorites).map(|p| {
+        (
+            spotify_track_uri(spotify_uri, &p),
+            spotify_track_didl(spotify_uri, title, &p),
+        )
+    }))
 }
 
 /// Set one room's volume (on the room's own player); returns the new level.

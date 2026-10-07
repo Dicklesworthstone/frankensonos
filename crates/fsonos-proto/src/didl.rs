@@ -47,6 +47,106 @@ pub fn spotify_track_uri(spotify_uri: &str, p: &SpotifyRenderParams) -> String {
     )
 }
 
+/// Learn a household's Spotify render parameters from its own favorites
+/// (ContentDirectory `FV:2`). Every Spotify track favorite carries `sid`,
+/// `flags` and `sn` in its URI and the service-account descriptor and item-id
+/// prefix in its metadata. One household's favorites vary (flags 8224/8232,
+/// prefixes 10032020/00032020/10032028, all accepted by the player), so each
+/// value is the most common one among them; ties go to the earlier favorite.
+/// `None` when the household has no Spotify track favorite to learn from.
+#[must_use]
+pub fn learn_spotify_params(favorites: &[DidlObject]) -> Option<SpotifyRenderParams> {
+    let mut seen: Vec<SpotifyRenderParams> = Vec::new();
+    for fav in favorites {
+        let Some(res) = &fav.res else { continue };
+        let Some(query) = res
+            .uri
+            .strip_prefix("x-sonos-spotify:")
+            .and_then(|rest| rest.split_once('?'))
+            .map(|(_, q)| q)
+        else {
+            continue;
+        };
+        let param = |name: &str| {
+            query
+                .split('&')
+                .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+                .and_then(|v| v.parse::<u32>().ok())
+        };
+        let (Some(sid), Some(flags), Some(sn)) = (param("sid"), param("flags"), param("sn")) else {
+            continue;
+        };
+        let Ok(Some(item)) = fav.res_md_object() else {
+            continue;
+        };
+        let Some(desc) = item.desc.filter(|d| d.id == "cdudn" && !d.value.is_empty()) else {
+            continue;
+        };
+        let Some(prefix_len) = item.id.to_ascii_lowercase().find("spotify%3a") else {
+            continue;
+        };
+        seen.push(SpotifyRenderParams {
+            sid,
+            flags,
+            sn,
+            cdudn: desc.value,
+            item_id_prefix: item.id[..prefix_len].to_string(),
+        });
+    }
+    let first = seen.first()?;
+    Some(SpotifyRenderParams {
+        sid: most_common(&seen, |p| &p.sid).unwrap_or(first.sid),
+        flags: most_common(&seen, |p| &p.flags).unwrap_or(first.flags),
+        sn: most_common(&seen, |p| &p.sn).unwrap_or(first.sn),
+        cdudn: most_common(&seen, |p| &p.cdudn).unwrap_or_else(|| first.cdudn.clone()),
+        item_id_prefix: most_common(&seen, |p| &p.item_id_prefix)
+            .unwrap_or_else(|| first.item_id_prefix.clone()),
+    })
+}
+
+/// The most frequent value of `field` across `items`; ties go to the value
+/// seen first.
+fn most_common<T, V: PartialEq + Clone>(items: &[T], field: impl Fn(&T) -> &V) -> Option<V> {
+    let mut counts: Vec<(&V, usize)> = Vec::new();
+    for item in items {
+        let v = field(item);
+        match counts.iter_mut().find(|(seen, _)| *seen == v) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((v, 1)),
+        }
+    }
+    let best = counts.iter().map(|(_, n)| *n).max()?;
+    counts
+        .into_iter()
+        .find(|(_, n)| *n == best)
+        .map(|(v, _)| v.clone())
+}
+
+/// The DIDL-Lite metadata a `spotify:track:<id>` needs on this household, for
+/// `SetAVTransportURI` (with [`spotify_track_uri`]) or `AddURIToQueue`. The
+/// `desc` must name the household's own Spotify service account: a wrong one
+/// fails with UPnP 800. `title` is display-only; the player swaps in the real
+/// metadata once playback starts.
+#[must_use]
+pub fn spotify_track_didl(spotify_uri: &str, title: &str, p: &SpotifyRenderParams) -> String {
+    let encoded = spotify_uri.replace(':', "%3a");
+    format!(
+        "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+         xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" \
+         xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/\" \
+         xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">\
+         <item id=\"{prefix}{encoded}\" parentID=\"-1\" restricted=\"true\">\
+         <dc:title>{title}</dc:title>\
+         <upnp:class>object.item.audioItem.musicTrack</upnp:class>\
+         <desc id=\"cdudn\" nameSpace=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">{cdudn}</desc>\
+         </item></DIDL-Lite>",
+        prefix = xml_escape(&p.item_id_prefix),
+        encoded = xml_escape(&encoded),
+        title = xml_escape(title),
+        cdudn = xml_escape(&p.cdudn),
+    )
+}
+
 /// Recover the service-facing `spotify:…` URI from a renderer URI such as
 /// `x-sonos-spotify:spotify%3atrack%3a<id>?sid=…` or
 /// `x-rincon-cpcontainer:1004206cspotify%3aalbum%3a<id>?sid=…` (the inverse
@@ -322,5 +422,122 @@ mod tests {
         assert!(objs[1].to_track().is_none());
         assert_eq!(parse_didl("").unwrap().len(), 0);
         assert!(matches!(parse_didl("<x/>"), Err(ProtoError::Malformed(_))));
+    }
+
+    fn favorites(body: &str) -> Vec<DidlObject> {
+        crate::content::parse_browse_response(body).unwrap().objects
+    }
+
+    const FAV_S1: &str = include_str!("../tests/fixtures/browse_favorites_s1.xml");
+    const FAV_S2: &str = include_str!("../tests/fixtures/browse_favorites_s2.xml");
+
+    #[test]
+    fn learns_render_params_from_each_households_favorites() {
+        for body in [FAV_S1, FAV_S2] {
+            let p = learn_spotify_params(&favorites(body)).expect("a Spotify track favorite");
+            assert!(
+                p.cdudn.starts_with("SA_RINCON") && p.cdudn.ends_with("-0-Token"),
+                "{p:?}"
+            );
+            assert!(
+                p.item_id_prefix.len() == 8
+                    && p.item_id_prefix.chars().all(|c| c.is_ascii_hexdigit())
+            );
+            assert!(p.sid > 0 && p.flags > 0, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn varying_favorites_yield_their_most_common_values() {
+        let favs = favorites(FAV_S2);
+        let p = learn_spotify_params(&favs).unwrap();
+        // Count what the household's own track favorites use, independently.
+        let mut flags: Vec<(u32, usize)> = Vec::new();
+        for f in &favs {
+            let Some(uri) = f.res.as_ref().map(|r| r.uri.as_str()) else {
+                continue;
+            };
+            let Some(v) = uri
+                .strip_prefix("x-sonos-spotify:")
+                .and_then(|r| r.split("flags=").nth(1))
+                .and_then(|r| r.split('&').next())
+                .and_then(|v| v.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            match flags.iter_mut().find(|(f, _)| *f == v) {
+                Some((_, n)) => *n += 1,
+                None => flags.push((v, 1)),
+            }
+        }
+        let top = flags.iter().map(|(_, n)| *n).max().unwrap();
+        assert!(
+            flags.iter().any(|(f, n)| *f == p.flags && *n == top),
+            "{flags:?} vs {}",
+            p.flags
+        );
+    }
+
+    #[test]
+    fn a_learned_favorite_round_trips_to_its_renderer_uri() {
+        let favs = favorites(FAV_S1);
+        let p = learn_spotify_params(&favs).unwrap();
+        let matching = favs
+            .iter()
+            .filter_map(|f| f.res.as_ref().map(|r| r.uri.clone()))
+            .filter(|uri| {
+                uri.starts_with("x-sonos-spotify:") && uri.contains(&format!("flags={}", p.flags))
+            })
+            .collect::<Vec<_>>();
+        let any_match = !matching.is_empty();
+        assert!(any_match, "no favorite carried the learned flags");
+        for uri in matching {
+            let spotify = spotify_uri_from_renderer_uri(&uri).unwrap();
+            assert!(
+                spotify_track_uri(&spotify, &p).eq_ignore_ascii_case(&uri),
+                "{spotify} -> {} != {uri}",
+                spotify_track_uri(&spotify, &p)
+            );
+        }
+    }
+
+    #[test]
+    fn track_didl_carries_the_households_descriptor_and_prefix() {
+        let p = SpotifyRenderParams {
+            sid: 12,
+            flags: 8224,
+            sn: 1,
+            cdudn: "SA_RINCON3079_X_#Svc3079-0-Token".into(),
+            item_id_prefix: "10032020".into(),
+        };
+        let didl = spotify_track_didl(
+            "spotify:track:0FixtureSpotify0000001",
+            "Aria & Variations",
+            &p,
+        );
+        let item = parse_didl(&didl).unwrap().pop().unwrap();
+        assert_eq!(item.id, "10032020spotify%3atrack%3a0FixtureSpotify0000001");
+        assert_eq!(item.parent_id, "-1");
+        assert_eq!(item.title, "Aria & Variations");
+        assert_eq!(item.class, "object.item.audioItem.musicTrack");
+        let desc = item.desc.unwrap();
+        assert_eq!(
+            (desc.id.as_str(), desc.value.as_str()),
+            ("cdudn", "SA_RINCON3079_X_#Svc3079-0-Token")
+        );
+    }
+
+    #[test]
+    fn no_spotify_favorite_means_nothing_to_learn() {
+        assert_eq!(learn_spotify_params(&[]), None);
+        let radio_only: Vec<DidlObject> = favorites(FAV_S1)
+            .into_iter()
+            .filter(|f| {
+                f.res
+                    .as_ref()
+                    .is_some_and(|r| !r.uri.starts_with("x-sonos-spotify:"))
+            })
+            .collect();
+        assert_eq!(learn_spotify_params(&radio_only), None);
     }
 }
