@@ -33,6 +33,12 @@ pub struct GlobalArgs {
     /// Print JSON instead of text.
     #[arg(long, global = true)]
     pub json: bool,
+
+    /// Data directory for the store database, the Spotify token cache, and
+    /// `policy.toml` [default: the OS per-user data directory, under
+    /// `fsonos`].
+    #[arg(long, env = "FSONOS_DATA_DIR", global = true)]
+    pub data_dir: Option<PathBuf>,
 }
 
 impl GlobalArgs {
@@ -84,11 +90,6 @@ pub struct ServeArgs {
     /// MCP streamable-HTTP bind address (endpoint path `/mcp`).
     #[arg(long, env = "FSONOS_MCP_HTTP_ADDR", default_value = "127.0.0.1:8098")]
     pub mcp_http: SocketAddr,
-
-    /// Data directory for the store database and the Spotify token cache
-    /// [default: the OS per-user data directory, under `fsonos`].
-    #[arg(long, env = "FSONOS_DATA_DIR")]
-    pub data_dir: Option<PathBuf>,
 
     /// Spotify app client id (PKCE: identifies the app, not a secret).
     #[arg(long, env = "FSONOS_SPOTIFY_CLIENT_ID")]
@@ -216,7 +217,7 @@ pub fn default_data_dir(
     }
 }
 
-impl ServeArgs {
+impl GlobalArgs {
     /// The configured data directory, or the per-user default for this OS.
     #[must_use]
     pub fn data_dir(&self) -> Option<PathBuf> {

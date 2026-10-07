@@ -1302,6 +1302,7 @@ dependencies = [
  "fastmcp-server",
  "fsonos-api",
  "fsonos-core",
+ "fsonos-proto",
  "fsonos-types",
  "serde",
  "serde_json",

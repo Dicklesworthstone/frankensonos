@@ -4,13 +4,15 @@
 //! — anything speaking MCP) as a small set of well-described tools:
 //! `list_zones`, `play`, `pause`, `resume`, `next`, `set_volume`, `group`,
 //! `ungroup`, `dj_start`, `dj_skip`. Served over stdio and streamable HTTP via
-//! `fastmcp_rust`. [`server`] builds the server (today: an `echo` connectivity
-//! tool). The control tools take the HTTP API's request bodies
-//! (`fsonos_api::request`) and share its validation and planning, so both
-//! surfaces answer alike.
+//! `fastmcp_rust`. [`server`] builds the server; [`tools`] holds the tools and
+//! the [`tools::Backend`] of speakers they act on, installed once per process
+//! with [`tools::install`]. The tools take the HTTP API's request bodies
+//! (`fsonos_api::request`) and share its validation, planning, execution and
+//! house policy, so both surfaces answer alike.
+
+pub mod tools;
 
 use fastmcp::prelude::*;
-use fastmcp::{ContentBlock, FinalCallToolResult};
 use fsonos_api::Failure;
 
 /// Room-name matching is the core's: one normalizer for every surface.
@@ -32,49 +34,45 @@ async fn echo(ctx: &McpContext, text: String) -> McpResult<String> {
 pub fn server() -> fastmcp::auto::Server {
     fastmcp::auto::server_builder("fsonos", env!("CARGO_PKG_VERSION"))
         .tool(Echo)
+        .tool(tools::ListZones)
+        .tool(tools::Play)
+        .tool(tools::Pause)
+        .tool(tools::Resume)
+        .tool(tools::Next)
+        .tool(tools::Previous)
+        .tool(tools::SetVolume)
+        .tool(tools::MuteTool)
+        .tool(tools::Group)
+        .tool(tools::Ungroup)
+        .tool(tools::DjStart)
+        .tool(tools::DjSkip)
+        .tool(tools::DjStop)
         .build()
 }
 
-/// The tool-error result for `failure`: the `CODE: detail. Hint: ...` text an
-/// agent reads, with the HTTP API's JSON error body as structured content (see
-/// `docs/ERRORS.md`).
+/// The tool error for `failure`: the `CODE: detail. Hint: ...` text an agent
+/// reads (see `docs/ERRORS.md`). Both protocol eras deliver it as a tool
+/// result with `isError` set; the code travels in the text.
 #[must_use]
-pub fn failure_result(failure: &Failure) -> FinalCallToolResult {
-    FinalCallToolResult {
-        content: vec![ContentBlock::text(failure.tool_text())],
-        is_error: true,
-        structured_content: Some(
-            serde_json::to_value(failure.body()).expect("ApiError serializes"),
-        ),
-    }
+pub fn tool_error(failure: &Failure) -> McpError {
+    McpError::tool_error(failure.tool_text())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use fsonos_api::ErrorCode;
-    use serde_json::json;
 
     #[test]
     fn failures_render_as_tool_errors() {
         let failure = Failure::new(ErrorCode::UnknownRoom, "unknown room \"Kichen\"")
             .with_suggestions(["Kitchen@S1"]);
-        let wire = serde_json::to_value(failure_result(&failure)).unwrap();
-        assert_eq!(wire["isError"], true);
+        let err = tool_error(&failure);
+        assert_eq!(err.code, fastmcp::McpErrorCode::ToolExecutionError);
         assert_eq!(
-            wire["content"][0]["text"],
+            err.message,
             "UNKNOWN_ROOM: unknown room \"Kichen\". Hint: Use a suggested room, or list rooms \
              with list_zones (GET /zones). Did you mean: Kitchen@S1?"
-        );
-        assert_eq!(
-            wire["structuredContent"],
-            json!({
-                "detail": "unknown room \"Kichen\"",
-                "code": "UNKNOWN_ROOM",
-                "hint": "Use a suggested room, or list rooms with list_zones (GET /zones).",
-                "suggestions": ["Kitchen@S1"],
-                "retryable": false
-            })
         );
     }
 

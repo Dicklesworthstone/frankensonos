@@ -146,8 +146,8 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let global = &cli.global;
     match cli.command {
-        Command::Serve(args) => serve(&args),
-        Command::Mcp => run_mcp_stdio(),
+        Command::Serve(args) => serve(global, &args),
+        Command::Mcp => run_mcp_stdio(global),
         Command::Discover => {
             let found = Direct::survey(global)?.discover();
             for (addr, why) in &found.unreachable {
@@ -281,7 +281,7 @@ fn volume_request(zone: &str, level: &str, group: bool) -> Result<VolumeRequest,
 
 /// Vet the configuration, then run the daemon. The listeners have no
 /// authentication, so an unsafe bind address stops startup here.
-fn serve(args: &config::ServeArgs) -> anyhow::Result<()> {
+fn serve(global: &config::GlobalArgs, args: &config::ServeArgs) -> anyhow::Result<()> {
     for (listener, addr) in [("HTTP API", args.http), ("MCP server", args.mcp_http)] {
         match config::check_control_bind(listener, addr, args.allow_unsafe_bind) {
             Ok(None) => {}
@@ -289,10 +289,7 @@ fn serve(args: &config::ServeArgs) -> anyhow::Result<()> {
             Err(refusal) => return Err(refusal.into()),
         }
     }
-    let data_dir = args.data_dir().ok_or_else(|| {
-        Failure::invalid("no data directory is configured and HOME is unset")
-            .with_hint("Set FSONOS_DATA_DIR (or HOME) and start again.")
-    })?;
+    let data_dir = data_dir(global)?;
     pending(&format!(
         "serve (api {}, mcp {}, data {}) (lanes: api + mcp + core)",
         args.http,
@@ -310,7 +307,37 @@ fn runtime() -> anyhow::Result<Runtime> {
         .context("build asupersync runtime")
 }
 
-fn run_mcp_stdio() -> anyhow::Result<()> {
+/// The data directory, or `INVALID_ARGUMENT` when none can be determined.
+fn data_dir(global: &config::GlobalArgs) -> Result<std::path::PathBuf, Failure> {
+    global.data_dir().ok_or_else(|| {
+        Failure::invalid("no data directory is configured and HOME is unset")
+            .with_hint("Set FSONOS_DATA_DIR (or HOME) and start again.")
+    })
+}
+
+/// Serve the MCP tools over stdio, acting on this LAN's speakers as the
+/// `mcp-stdio` client of the house policy.
+fn run_mcp_stdio(global: &config::GlobalArgs) -> anyhow::Result<()> {
+    let policy = fsonos_core::policy::Policy::load(&data_dir(global)?).map_err(|e| {
+        Failure::invalid(e.to_string()).with_hint("Fix policy.toml in the data directory.")
+    })?;
+    let seeds = global.seed_addrs()?;
+    let wait = global.wait();
+    let survey: fsonos_mcp::tools::Survey = Box::new(move |transport| {
+        Ok(fsonos_core::inventory::survey(transport, &seeds, wait)?.households)
+    });
+    let lan = fsonos_proto::net::Lan::start()
+        .map_err(|e| Failure::from(fsonos_core::CoreError::from(e)))?;
+    let backend = fsonos_mcp::tools::Backend::new(
+        Box::new(lan),
+        survey,
+        policy,
+        fsonos_core::policy::Client::McpStdio,
+        Box::new(fsonos_core::clock::SystemClock),
+    );
+    if !fsonos_mcp::tools::install(backend) {
+        anyhow::bail!("the MCP backend is already installed");
+    }
     runtime()?.block_on(async {
         let cx = asupersync::Cx::current().context("runtime installs an ambient Cx")?;
         fsonos_mcp::server().run_stdio_with_cx(&cx).await

@@ -20,9 +20,9 @@ are added at the end.
   `UPNP_FAULT` adds `"upnp_code"` (the speaker's UPnP error number). Errors
   the HTTP framework raises itself, such as an unknown route, carry only
   `detail`.
-- **MCP**: a tool error whose text reads
-  `CODE: detail. Hint: ... Did you mean: a, b?`, with the JSON body above as
-  structured content.
+- **MCP**: a tool error (`isError: true`) whose text reads
+  `CODE: detail. Hint: ... Did you mean: a, b?`. Successful tool results carry
+  their JSON (including any `notes`) as structured content.
 - **CLI**: `error[CODE]: detail`, then the hint and suggestions on stderr, and
   the exit code below. Command-line usage errors also exit 2.
 

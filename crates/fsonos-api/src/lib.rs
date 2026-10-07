@@ -14,18 +14,21 @@
 //! * [`source`] — canonicalizing the `source_uri` a caller pastes;
 //! * [`plan`] — resolving a request to coordinator-addressed [`Command`]s;
 //! * [`execute`] — carrying a [`Command`] out on the speakers;
+//! * [`guard`] — the house policy: who may call what, how loud;
 //! * [`zones`] — the zone (group) listings;
 //! * [`failure`] — the one [`Failure`] shape (status + agent-readable detail).
 
 pub mod execute;
 pub mod failure;
+pub mod guard;
 pub mod plan;
 pub mod request;
 pub mod source;
 pub mod zones;
 
-pub use execute::{OutcomeDto, execute};
+pub use execute::{OutcomeDto, execute, execute_guarded};
 pub use failure::{ErrorCode, Failure, NoteCode};
+pub use guard::{Guard, Note};
 pub use plan::Command;
 pub use request::{
     GroupRequest, MuteRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest,

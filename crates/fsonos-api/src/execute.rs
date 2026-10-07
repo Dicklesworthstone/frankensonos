@@ -11,6 +11,7 @@ use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 
 use crate::failure::{ErrorCode, Failure};
+use crate::guard::{Guard, Note};
 use crate::plan::{Command, DjAction, TransportAction, VolumeScope};
 use crate::request::VolumeChange;
 
@@ -24,6 +25,10 @@ pub struct OutcomeDto {
     /// The resulting volume, for volume commands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
+    /// How the request was carried out, e.g. a volume clamped by the house
+    /// policy (`VOLUME_CLAMPED`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
 }
 
 impl OutcomeDto {
@@ -32,8 +37,24 @@ impl OutcomeDto {
             done,
             changed: true,
             volume: None,
+            notes: Vec::new(),
         }
     }
+}
+
+/// [`execute`] under the house policy: bound `command` by `guard` (a capped
+/// caller's volume may be lowered), carry it out, and attach the notes. The
+/// caller authorizes the tool with [`Guard::authorize`] before planning.
+pub fn execute_guarded<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    guard: &Guard<'_>,
+    command: Command,
+) -> Result<OutcomeDto, Failure> {
+    let (command, notes) = guard.bound(transport, households, command)?;
+    let mut outcome = execute(transport, households, &command)?;
+    outcome.notes = notes;
+    Ok(outcome)
 }
 
 /// Carry out `command` against `households` over `transport`.
@@ -124,9 +145,8 @@ pub fn execute<T: Transport + ?Sized>(
             .with_hint("Play a Sonos favorite or a radio/HTTP stream URI for now."));
         }
         Command::Nothing { reason } => OutcomeDto {
-            done: reason.clone(),
             changed: false,
-            volume: None,
+            ..OutcomeDto::sent(reason.clone())
         },
     };
     Ok(outcome)
@@ -378,6 +398,33 @@ mod tests {
                 "Play"
             ]
         );
+    }
+
+    #[test]
+    fn guarded_volume_is_clamped_for_agents_and_says_so() {
+        use crate::failure::NoteCode;
+        use fsonos_core::clock::SystemClock;
+        use fsonos_core::policy::{Client, Policy};
+
+        let policy = Policy::default();
+        let guard = Guard {
+            policy: &policy,
+            client: &Client::McpStdio,
+            clock: &SystemClock,
+        };
+        let t = Canned::ok("<CurrentVolume>60</CurrentVolume>");
+        let loud = Command::Volume {
+            target: id("RINCON_KIT1"),
+            scope: VolumeScope::Room,
+            change: VolumeChange::Set(95),
+        };
+        let out = execute_guarded(&t, &households(), &guard, loud).unwrap();
+        assert_eq!(t.actions(), ["GetVolume", "SetVolume"]);
+        assert_eq!(out.volume, Some(70));
+        assert_eq!(out.notes.len(), 1);
+        assert_eq!(out.notes[0].code, NoteCode::VolumeClamped);
+        let wire = serde_json::to_value(&out).unwrap();
+        assert_eq!(wire["notes"][0]["code"], "VOLUME_CLAMPED");
     }
 
     #[test]
