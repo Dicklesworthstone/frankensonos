@@ -58,8 +58,8 @@ variables. The environment form is what launchd uses.
 
 | Setting | Env var | Default | Notes |
 |---|---|---|---|
-| HTTP API address | `FSONOS_HTTP_ADDR` | `127.0.0.1:8099` | Keep on loopback behind Tailscale Serve. |
-| MCP (streamable HTTP) address | `FSONOS_MCP_HTTP_ADDR` | `127.0.0.1:8098` | Endpoint path `/mcp`. |
+| HTTP API address | `FSONOS_HTTP_ADDR` | unset: `127.0.0.1:8099` plus this host's tailnet addresses when Tailscale is up | Set it to bind exactly one address, e.g. loopback behind Tailscale Serve. |
+| MCP (streamable HTTP) address | `FSONOS_MCP_HTTP_ADDR` | unset: `127.0.0.1:8098` | Endpoint path `/mcp`. Loopback unless set: reach it from the tailnet through Serve. |
 | Events port | `FSONOS_EVENTS_PORT` | `8097` | Where the speakers deliver state-change events (GENA), on the Mac's LAN address. The only LAN-facing socket: allow it inbound (§4). `0` picks any free port. |
 | Data directory | `FSONOS_DATA_DIR` | `~/Library/Application Support/fsonos` | Store DB and Spotify token cache. |
 | Direct-seed list | `FSONOS_SEEDS` | unset | Optional file of player addresses for flaky-SSDP networks; every IP address in it is tried (e.g. TOML `players = ["192.0.2.10"]`, or one per line). Every command also takes `--seed <ip>`. Keep the file under `local/` or outside the repo. |
@@ -205,14 +205,23 @@ tailscale serve status
   `Tailscale-User-Name` headers. The daemon ignores them today. They are the
   hook for per-user authorization later.
 
-### Alternative: bind the tailnet address directly
+### Alternative: listen on the tailnet directly
 
-Set `FSONOS_HTTP_ADDR` and `FSONOS_MCP_HTTP_ADDR` to the Mac's tailnet address
-(`tailscale ip -4`) instead of loopback. Traffic is plain HTTP inside
-WireGuard. The address must exist when the daemon binds. At boot the daemon
-can start before Tailscale, fail to bind, and get restarted by launchd every
-10 s until Tailscale is up. Serve avoids that, and it keeps the daemon
-reachable on loopback for local agents.
+Leave `FSONOS_HTTP_ADDR` unset and `fsonos serve` listens on loopback **and**
+on every tailnet address of the Mac whenever Tailscale is up at startup; the
+startup log prints the URLs (MagicDNS first) for tailnet devices. Traffic is
+plain HTTP inside WireGuard. Two things to know:
+
+- Callers on a direct tailnet listener are identified as `unknown`, which the
+  default house policy keeps read-only until tailnet identity reaches the
+  HTTP layer. Serve traffic arrives on loopback and has full control.
+- The tailnet addresses are read once, at startup. If the daemon starts
+  before Tailscale is up, it listens on loopback only and logs why; restart it
+  (`launchctl kickstart -k`) once Tailscale is up. Serve avoids this.
+
+The MCP server stays on loopback unless `FSONOS_MCP_HTTP_ADDR` is set: one MCP
+backend serves every MCP listener with a single caller identity, so a direct
+tailnet MCP listener would share loopback's rights. Use Serve for MCP.
 
 ### Restrict who can reach it (tailnet policy)
 
