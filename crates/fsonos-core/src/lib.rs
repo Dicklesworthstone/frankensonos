@@ -8,11 +8,14 @@
 //! * [`topology`] folds ZoneGroupTopology snapshots into groups and [`Room`]s.
 //! * [`inventory`] classifies players (S1/S2) from their device descriptions.
 //! * [`rooms`] resolves what a person or agent types to a [`ControlTarget`].
+//! * [`control`] carries out a player-addressed command over a
+//!   [`fsonos_proto::Transport`].
 //!
 //! The durable [`store`] (device cache, music-library cache, play history, DJ
 //! state) is backed by fsqlite once bead FND-DEPS wires it; the trait here lets
 //! the rest of the daemon be written and tested against an in-memory store.
 
+pub mod control;
 pub mod inventory;
 pub mod rooms;
 pub mod store;
