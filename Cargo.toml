@@ -85,6 +85,10 @@ pedantic = { level = "warn", priority = -1 }
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 module_name_repetitions = "allow"
+# The nightly `assert_is_empty` lint rewrites `assert!(!v.is_empty())` into a
+# less-readable `assert_ne!(v, [] as [T; 0])`; keep the readable assert form in
+# tests (same stance as the sibling am_baseline project).
+assert_is_empty = "allow"
 # Protocol/product names (UPnP, RINCON, WiFi, FrankenSonos, ...) are prose here.
 doc_markdown = "allow"
 
