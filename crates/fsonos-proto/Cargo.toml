@@ -12,10 +12,11 @@ description = "Sonos interoperability protocol layer: SSDP discovery, UPnP/SOAP 
 fsonos-types = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+roxmltree = { workspace = true }
 
-# FRANKEN (wired by FND-DEPS): asupersync for UDP multicast (SSDP), the HTTP/1.1
+# FRANKEN (FND-DEPS): asupersync for UDP multicast (SSDP), the HTTP/1.1
 # client (SOAP control) and HTTP server (GENA callback sink), plus TLS.
-# asupersync = { workspace = true }
+asupersync = { workspace = true }
 
 [lints]
 workspace = true

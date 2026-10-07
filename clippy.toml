@@ -1,0 +1,10 @@
+# Protocol and product vocabulary that is prose, not code, in doc comments.
+# `..` keeps clippy's default list (e.g. `GitHub`, `IPv4`).
+doc-valid-idents = [
+    "..",
+    "FrankenSonos", "SoCo", "OpenAI", "UPnP", "WiFi", "SonosNet",
+    "AVTransport", "RenderingControl", "GroupRenderingControl",
+    "ZoneGroupTopology", "ZoneGroupState", "ContentDirectory", "MusicServices",
+    "SystemProperties", "DeviceProperties", "MediaRenderer", "MediaServer",
+    "LastChange", "ZonePlayer", "ZonePlayers", "DIDL", "GENA", "SOAPACTION", "PKCE",
+]

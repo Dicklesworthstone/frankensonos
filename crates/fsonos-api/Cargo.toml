@@ -15,9 +15,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
-# FRANKEN (wired by FND-DEPS): fastapi for the HTTP API, asupersync runtime.
-# fastapi = { workspace = true }
-# asupersync = { workspace = true }
+# FRANKEN (FND-DEPS): fastapi for the HTTP API, asupersync runtime.
+fastapi = { workspace = true }
+asupersync = { workspace = true }
 
 [lints]
 workspace = true

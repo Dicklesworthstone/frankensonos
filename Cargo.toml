@@ -38,30 +38,35 @@ clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
+# Read-only XML DOM (pure Rust, forbid(unsafe), zero deps) for SOAP bodies,
+# ZoneGroupState, DIDL-Lite and device descriptions.
+roxmltree = "0.21"
+tempfile = "3"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FRANKEN STACK — wired by bead FND-DEPS (see AGENTS.md "Dependency Recipe").
-# These are intentionally NOT active yet so the skeleton stays `cargo check`-
-# green from commit #1. The FND-DEPS bead un-comments the needed subset,
-# unifies asupersync on the 0.5 line, and proves `cargo check` still passes.
-# Proven sources (do not guess — these revs are known-good):
-#
-#   asupersync       = { version = "0.5", features = ["tls-webpki-roots"] }   # crates.io registry; fastmcp/fastapi pin the 0.5 line
-#   fsqlite          = { git = "https://github.com/Dicklesworthstone/frankensqlite", rev = "2633b38a26bde68db23172b12aa402ed698cc309" }
-#   fsqlite-types    = { git = "https://github.com/Dicklesworthstone/frankensqlite", rev = "2633b38a26bde68db23172b12aa402ed698cc309" }
-#   fastmcp          = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a", package = "fastmcp-rust" }
-#   fastmcp-core     = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
-#   fastmcp-server   = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
-#   fastmcp-transport= { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
-#   fastmcp-protocol = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
-#   fastapi          = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d", package = "fastapi-rust" }
-#   fastapi-core     = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d" }
-#   fastapi-router   = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d" }
-#
-# Integration hazards documented in AGENTS.md: (1) asupersync MUST unify on one
-# 0.5.x across fastmcp+fastapi+our code; (2) fsqlite rides its own (older)
-# asupersync line internally — use its non-Cx `Connection` API and drive it
-# from the same runtime; prove a round-trip before relying on it.
+# ── FRANKEN STACK (bead FND-DEPS; see AGENTS.md "Dependency Recipe") ───────
+# Every franken crate below resolves to the ONE registry asupersync 0.5.0
+# (fastmcp pins `=0.5.0`; fastapi and fsqlite 0.4.9 require `0.5.0`), so `Cx`
+# is a single type across our code, the MCP server, the HTTP API and the store.
+# `cargo tree -i asupersync` must show exactly one version. Never path/git-dep
+# asupersync: the local checkout is 0.6 and would fork the type universe.
+asupersync = { version = "0.5", features = ["tls-webpki-roots"] }
+# Registry fsqlite 0.4.9 is the line am_baseline's mailbox database runs on,
+# and it shares asupersync 0.5.0. (The frankensqlite git rev 2633b38 that
+# am_baseline also patches in is fsqlite 0.3.18 on asupersync 0.4.10 — only
+# its embedded beads engine uses it; it would put a second runtime in our graph.)
+# Engine futures overflow a default thread stack: drive the raw `!Send`
+# `Connection` on a large-stack thread, or use `async-api`'s `AsyncConnection`
+# (a `Send` handle over fsqlite's own 32 MiB worker) — see
+# crates/fsonos-core/tests/fsqlite_roundtrip.rs.
+fsqlite = { version = "=0.4.9", features = ["async-api"] }
+fastmcp = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a", package = "fastmcp-rust" }
+# Required next to the facade: at this rev the `#[tool]` expansion names
+# `::fastmcp_server::promote_legacy_tool_content` by absolute path.
+fastmcp-server = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+# Register routes with `App::builder().get(..)`, not the `#[get]` macros: their
+# expansion emits `#[allow(unsafe_code)]` (a Linux `link_section` route
+# registry), which cannot coexist with the workspace `forbid(unsafe_code)`.
+fastapi = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d", package = "fastapi-rust", default-features = false }
 # ─────────────────────────────────────────────────────────────────────────────
 
 [workspace.lints.rust]
@@ -73,6 +78,8 @@ pedantic = { level = "warn", priority = -1 }
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 module_name_repetitions = "allow"
+# Protocol/product names (UPnP, RINCON, WiFi, FrankenSonos, ...) are prose here.
+doc_markdown = "allow"
 
 [profile.release]
 lto = "thin"

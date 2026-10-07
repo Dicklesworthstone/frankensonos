@@ -16,11 +16,14 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 
-# FRANKEN (wired by FND-DEPS): fsqlite for the durable local store (device
+# FRANKEN (FND-DEPS): fsqlite for the durable local store (device
 # cache, music-library cache, play history, DJ state), asupersync for the
 # reconciliation loop.
-# fsqlite = { workspace = true }
-# asupersync = { workspace = true }
+fsqlite = { workspace = true }
+asupersync = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

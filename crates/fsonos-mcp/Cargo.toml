@@ -15,10 +15,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
-# FRANKEN (wired by FND-DEPS): fastmcp for the MCP server, asupersync runtime.
-# fastmcp = { workspace = true }
-# fastmcp-server = { workspace = true }
-# asupersync = { workspace = true }
+# FRANKEN (FND-DEPS): fastmcp for the MCP server, asupersync runtime.
+fastmcp = { workspace = true }
+fastmcp-server = { workspace = true } # `#[tool]` expansion needs it by name
+asupersync = { workspace = true }
 
 [lints]
 workspace = true
