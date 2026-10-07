@@ -10,6 +10,7 @@
 //! * [`rooms`] resolves what a person or agent types to a [`ControlTarget`].
 //! * [`playback`] keeps live playback state from GENA events.
 //! * [`favorites`] lists, finds, and plays Sonos favorites.
+//! * [`search`] ranks the cached library and favorites against a query.
 //! * [`control`] carries out a player-addressed command over a
 //!   [`fsonos_proto::Transport`].
 //! * [`doctor`] runs diagnostic checks and reports named failures with fixes.
@@ -29,6 +30,7 @@ pub mod inventory;
 pub mod playback;
 pub mod policy;
 pub mod rooms;
+pub mod search;
 pub mod store;
 pub mod topology;
 
