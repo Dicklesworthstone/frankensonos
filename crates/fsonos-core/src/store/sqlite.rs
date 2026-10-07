@@ -843,16 +843,6 @@ impl Store for SqliteStore {
             Ok(gone)
         })
     }
-}
-
-const ACTION_COLUMNS: &str =
-    "id, at, client, surface, intent, decision, result, before_state, undo_of";
-
-fn action_row(r: &Row) -> Result<LoggedAction, StoreError> {
-    Ok(LoggedAction {
-        id: int(r, 0)?,
-        action: Action {
-            at: int(r, 1)?,
 
     fn save_scene(&mut self, scene: &StoredScene) -> Result<(), StoreError> {
         self.execute(
@@ -896,6 +886,16 @@ fn scene_row(r: &Row) -> Result<StoredScene, StoreError> {
         spec: text(r, 1)?,
         updated: int(r, 2)?,
     })
+}
+
+const ACTION_COLUMNS: &str =
+    "id, at, client, surface, intent, decision, result, before_state, undo_of";
+
+fn action_row(r: &Row) -> Result<LoggedAction, StoreError> {
+    Ok(LoggedAction {
+        id: int(r, 0)?,
+        action: Action {
+            at: int(r, 1)?,
             client: text(r, 2)?,
             surface: text(r, 3)?,
             intent: text(r, 4)?,
