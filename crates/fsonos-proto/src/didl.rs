@@ -51,9 +51,12 @@ pub fn spotify_track_uri(spotify_uri: &str, p: &SpotifyRenderParams) -> String {
 /// (ContentDirectory `FV:2`). Every Spotify track favorite carries `sid`,
 /// `flags` and `sn` in its URI and the service-account descriptor and item-id
 /// prefix in its metadata. One household's favorites vary (flags 8224/8232,
-/// prefixes 10032020/00032020/10032028, all accepted by the player), so each
-/// value is the most common one among them; ties go to the earlier favorite.
-/// `None` when the household has no Spotify track favorite to learn from.
+/// prefixes 10032020/00032020/10032028, all accepted by the player), so the
+/// result is the set most of them use. It is always a set some favorite
+/// really uses: fields chosen one by one could combine into a set none does.
+/// Ties go to the set whose values are individually most common, then to the
+/// earlier favorite. `None` when the household has no Spotify track favorite
+/// to learn from.
 #[must_use]
 pub fn learn_spotify_params(favorites: &[DidlObject]) -> Option<SpotifyRenderParams> {
     let mut seen: Vec<SpotifyRenderParams> = Vec::new();
@@ -93,33 +96,26 @@ pub fn learn_spotify_params(favorites: &[DidlObject]) -> Option<SpotifyRenderPar
             item_id_prefix: item.id[..prefix_len].to_string(),
         });
     }
-    let first = seen.first()?;
-    Some(SpotifyRenderParams {
-        sid: most_common(&seen, |p| &p.sid).unwrap_or(first.sid),
-        flags: most_common(&seen, |p| &p.flags).unwrap_or(first.flags),
-        sn: most_common(&seen, |p| &p.sn).unwrap_or(first.sn),
-        cdudn: most_common(&seen, |p| &p.cdudn).unwrap_or_else(|| first.cdudn.clone()),
-        item_id_prefix: most_common(&seen, |p| &p.item_id_prefix)
-            .unwrap_or_else(|| first.item_id_prefix.clone()),
-    })
-}
-
-/// The most frequent value of `field` across `items`; ties go to the value
-/// seen first.
-fn most_common<T, V: PartialEq + Clone>(items: &[T], field: impl Fn(&T) -> &V) -> Option<V> {
-    let mut counts: Vec<(&V, usize)> = Vec::new();
-    for item in items {
-        let v = field(item);
-        match counts.iter_mut().find(|(seen, _)| *seen == v) {
-            Some((_, n)) => *n += 1,
-            None => counts.push((v, 1)),
+    let count =
+        |same: &dyn Fn(&SpotifyRenderParams) -> bool| seen.iter().filter(|q| same(q)).count();
+    let score = |p: &SpotifyRenderParams| {
+        (
+            count(&|q| q == p),
+            count(&|q| q.sid == p.sid)
+                + count(&|q| q.flags == p.flags)
+                + count(&|q| q.sn == p.sn)
+                + count(&|q| q.cdudn == p.cdudn)
+                + count(&|q| q.item_id_prefix == p.item_id_prefix),
+        )
+    };
+    let mut best: Option<(&SpotifyRenderParams, (usize, usize))> = None;
+    for p in &seen {
+        let s = score(p);
+        if best.is_none_or(|(_, top)| s > top) {
+            best = Some((p, s));
         }
     }
-    let best = counts.iter().map(|(_, n)| *n).max()?;
-    counts
-        .into_iter()
-        .find(|(_, n)| *n == best)
-        .map(|(v, _)| v.clone())
+    best.map(|(p, _)| p.clone())
 }
 
 /// The DIDL-Lite metadata a `spotify:track:<id>` needs on this household, for
@@ -485,6 +481,33 @@ mod tests {
             "{flags:?} vs {}",
             p.flags
         );
+    }
+
+    #[test]
+    fn the_learned_set_is_one_a_favorite_really_uses() {
+        for body in [FAV_S1, FAV_S2] {
+            let favs = favorites(body);
+            let p = learn_spotify_params(&favs).unwrap();
+            let used = favs.iter().any(|f| {
+                let Some(uri) = f.res.as_ref().map(|r| r.uri.as_str()) else {
+                    return false;
+                };
+                let Some(spotify) = spotify_uri_from_renderer_uri(uri) else {
+                    return false;
+                };
+                let Ok(Some(item)) = f.res_md_object() else {
+                    return false;
+                };
+                uri.starts_with("x-sonos-spotify:")
+                    && spotify_track_uri(&spotify, &p).eq_ignore_ascii_case(uri)
+                    && item
+                        .id
+                        .to_ascii_lowercase()
+                        .starts_with(&p.item_id_prefix.to_ascii_lowercase())
+                    && item.desc.is_some_and(|d| d.value == p.cdudn)
+            });
+            assert!(used, "{p:?} is no favorite's set");
+        }
     }
 
     #[test]

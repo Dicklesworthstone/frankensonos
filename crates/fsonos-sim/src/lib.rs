@@ -539,6 +539,27 @@ impl SimHandle {
             .map(|h| h.params.clone())
     }
 
+    /// Keep only the favorites of the household of generation `sw_gen` whose
+    /// URI satisfies `keep`: e.g. drop its Spotify items to model a household
+    /// where Spotify was never added to My Sonos.
+    pub fn retain_favorites(
+        &self,
+        sw_gen: u8,
+        keep: impl Fn(&str) -> bool,
+    ) -> Result<(), SimError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| SimError::Invalid("state lock poisoned".into()))?;
+        let household = state
+            .households
+            .iter_mut()
+            .find(|h| h.sw_gen == sw_gen)
+            .ok_or_else(|| SimError::Invalid(format!("no S{sw_gen} household")))?;
+        household.favorites.retain(|f| keep(&f.uri));
+        Ok(())
+    }
+
     /// Every SOAP request answered so far, oldest first.
     #[must_use]
     pub fn soap_log(&self) -> Vec<SoapLogEntry> {

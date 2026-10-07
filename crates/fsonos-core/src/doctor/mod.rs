@@ -14,9 +14,12 @@
 //! * [`Report`] — the results, their counts and the process exit code, with a
 //!   human table ([`Report::render_table`]) and versioned JSON
 //!   ([`Report::to_json`]).
+//! * [`spotify`] — per-household Spotify checks: a Spotify favorite, the
+//!   linked account, and render parameters that rebuild a favorite exactly.
 
 mod render;
 mod runner;
+pub mod spotify;
 
 pub use render::JSON_SCHEMA;
 pub use runner::{RegistryError, Runner};
