@@ -467,8 +467,10 @@ refuses. Today each of these shows up as "nothing happens".
   player's `:1400` description fetch and latency; S1/S2 classification; a GENA
   round-trip (subscribe to one player's RenderingControl, expect the initial
   NOTIFY within 5 s, unsubscribe); Spotify linkage and learned render params per
-  household; token refresh; bind-guard verdicts; daemon health; Tailscale Serve
-  mappings when `tailscale` is installed.
+  household; token refresh; bind-guard verdicts; daemon health. Tailnet checks
+  (installed, running, logged in, tailnet IP, MagicDNS, daemon reachable over
+  the tailnet) come from `ts-doctor` in the Tailscale epic, registered in the
+  same engine as `tailscale.*`.
 - Doctor is read-only and never changes playback. Output is a table with
   remedies or `--json`, with exit codes 0/1/2 for pass/warn/fail. It is also MCP
   `doctor` and `GET /doctor`.
@@ -523,6 +525,10 @@ localhost sockets, which is what AGENTS.md asks for in place of mocks.
   re-election.
 - `fsonos sim --scenario two-households` lets a new user or an agent developer
   try every command before pointing it at a real house.
+- The same e2e scenarios run against the owner's real players with
+  `FSONOS_E2E_LIVE=1`: volume capped at 15, every touched zone snapshotted and
+  restored, logs under the git-ignored `target/`. The owner's final live check
+  is one command, never part of CI.
 - The sim implements only the community-documented control surface, from our
   own scrubbed fixtures. It is a test double for our own client.
 
@@ -540,10 +546,13 @@ the house to agents they can bound and reverse. The guardrails live in
   a lower cap, fade durations, and per-client tool allowlists. Over-limit volume
   is clamped and the response says so; a disallowed tool returns
   `POLICY_DENIED`.
-- Client identity: stdio and loopback callers are `local`. The
-  `Tailscale-User-Login` header is trusted only when the listener is on loopback
-  behind Tailscale Serve; on a direct bind it can be forged, so the identity is
-  `unknown`.
+- Client identity: stdio callers are `local`. The daemon binds the tailnet
+  directly by default (`ts-autobind`), so a tailnet peer is identified by
+  Tailscale WhoIs on its address (`ts-identity`), which can't be forged. Behind
+  Tailscale Serve, a loopback request's `Tailscale-User-Login` header names the
+  user; a loopback request without it is `local`. Anything unresolved is
+  `unknown`, and an unresolved identity never fails a request. Policy client
+  keys are these tailnet logins.
 - Fades use RenderingControl `RampToVolume` where the player supports it and
   stepped `SetVolume` otherwise.
 - A zone snapshot (group membership, volumes, mute, transport URI and metadata,

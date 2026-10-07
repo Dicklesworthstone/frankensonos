@@ -168,8 +168,9 @@ The plan tracks milestones M0 through M6. The build is driven by a beads task
 graph (`br ready`) and a multi-agent swarm, one lane per agent.
 
 - M0, foundation (done): green workspace, plan, docs, task graph.
-- M1, `FND-DEPS` (in progress): wire the async/DB/MCP/API stack and prove the
-  round-trips.
+- M1, `FND-DEPS` (done): the async/DB/MCP/API stack is wired, with proof tests
+  for an fsqlite round-trip, an HTTP loopback, MCP over stdio, and the API
+  health route.
 - M2, see and control: discovery, topology, and direct play/pause/volume on real
   hardware.
 - M3, Spotify render: learn per-household render params and enqueue a track on
@@ -178,6 +179,11 @@ graph (`br ready`) and a multi-agent swarm, one lane per agent.
   set going.
 - M5, surfaces and daemon: HTTP API, MCP, `serve`, launchd, and Tailscale.
 - M6, reliability: resubscription, reconnection, health checks, golden fixtures.
+
+Next, already in the task graph (plan §12): `fsonos doctor` and `fsonos setup`,
+a DJ that plays whole works in order and explains its picks, read tools for
+agents, volume caps with an action log and undo, scenes, schedules and a sleep
+timer, announcements, and a web remote for any device on your tailnet.
 
 ## Scope & privacy
 
