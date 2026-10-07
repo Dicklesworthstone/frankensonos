@@ -11,6 +11,8 @@ description = "Spotify Web API client and the FrankenSonos classical-music DJ en
 fsonos-types = { workspace = true }
 # The library cache is written through fsonos-core's `Store` (Lane B).
 fsonos-core = { workspace = true }
+# The proto Transport the queue feed drives the speakers through.
+fsonos-proto = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
@@ -21,6 +23,10 @@ toml = { workspace = true }
 # FRANKEN (FND-DEPS): asupersync HTTPS client + TLS for the Spotify
 # Web API (OAuth PKCE, library reads).
 asupersync = { workspace = true }
+
+[dev-dependencies]
+# Virtual Sonos players over real localhost sockets for the queue-feed tests.
+fsonos-sim = { workspace = true }
 
 [lints]
 workspace = true

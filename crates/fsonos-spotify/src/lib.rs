@@ -1,6 +1,6 @@
 //! Spotify Web API client + the classical-music DJ engine.
 //!
-//! Eight concerns:
+//! Nine concerns:
 //!
 //! * [`client`] — a Spotify Web API client (OAuth Authorization Code + PKCE)
 //!   used **only to read the user's own library**: saved albums and liked
@@ -25,6 +25,9 @@
 //! * [`steer`] — steering: structured constraints, named moods, and the
 //!   session that carries them; applied as hard filters before weighting.
 //!
+//! * [`feed`] — the queue feed: puts the DJ's whole works on a coordinator's
+//!   queue and keeps it fed from GENA playback state; skip and stop.
+//!
 //! * [`dj`] — the DJ: given the pool plus recent play history, pick the next
 //!   track for pleasant variety (spread across composers/periods/works, fit
 //!   the time of day, avoid recent repeats). Pure logic, fully testable
@@ -36,6 +39,7 @@ pub mod client;
 pub mod dj;
 #[cfg(test)]
 mod fake_spotify;
+pub mod feed;
 pub mod library;
 pub mod session;
 pub mod steer;
