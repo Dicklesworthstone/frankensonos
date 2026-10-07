@@ -10,6 +10,7 @@
 //! * [`rooms`] resolves what a person or agent types to a [`ControlTarget`].
 //! * [`playback`] keeps live playback state from GENA events.
 //! * [`events`] keeps GENA subscriptions alive and routes their NOTIFYs.
+//! * [`reconcile`] refreshes the inventory on a schedule and tracks player health.
 //! * [`favorites`] lists, finds, and plays Sonos favorites.
 //! * [`search`] ranks the cached library and favorites against a query.
 //! * [`control`] carries out a player-addressed command over a
@@ -32,6 +33,7 @@ pub mod grouping;
 pub mod inventory;
 pub mod playback;
 pub mod policy;
+pub mod reconcile;
 pub mod rooms;
 pub mod search;
 pub mod snapshot;
