@@ -36,6 +36,7 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 
 use crate::dj::{DjConfig, PickContext, PickReason, PlayRecord, Rng, WorkPool, pick_next};
+use crate::feedback::FeedbackModel;
 use crate::steer::Steer;
 
 /// Where the feed plays: the transport, the households' state, and the group
@@ -51,6 +52,8 @@ pub struct Speakers<'a, T: ?Sized> {
 pub struct Planning<'a> {
     pub pool: &'a WorkPool,
     pub steer: Option<&'a Steer>,
+    /// The owner's feedback, decayed to now.
+    pub feedback: Option<&'a FeedbackModel>,
     /// Unix seconds, stamped by the caller.
     pub now: i64,
     /// Local hour 0–23, for the time-of-day energy target.
@@ -413,6 +416,7 @@ impl QueueFeed {
                 local_hour: plan.local_hour,
                 energy_target: None,
                 steer: plan.steer,
+                feedback: plan.feedback,
             };
             let pick = pick_next(plan.pool, &ctx, &self.config, &mut self.rng)
                 .ok_or(FeedError::EmptyPool)?;
@@ -730,6 +734,7 @@ mod tests {
         Planning {
             pool,
             steer: None,
+            feedback: None,
             now,
             local_hour: Some(20),
         }

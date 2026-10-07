@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 
 use crate::classical::CandidatePool;
 use crate::dj::{DjConfig, PickContext, PlannedWork, PlayRecord, Rng, WorkPool, pick_next};
+use crate::feedback::FeedbackModel;
 use crate::library::{LibraryItem, Origin};
 use crate::steer::Steer;
 use crate::works::Work;
@@ -147,6 +148,19 @@ pub(crate) fn simulate_steered<'p>(
     hour: Option<u8>,
     steer: Option<&Steer>,
 ) -> Vec<PlannedWork<'p>> {
+    simulate_with(pool, config, seed, count, hour, steer, None)
+}
+
+/// [`simulate`], steered and with the owner's feedback.
+pub(crate) fn simulate_with<'p>(
+    pool: &'p WorkPool,
+    config: &DjConfig,
+    seed: u64,
+    count: usize,
+    hour: Option<u8>,
+    steer: Option<&Steer>,
+    feedback: Option<&FeedbackModel>,
+) -> Vec<PlannedWork<'p>> {
     let mut rng = Rng::new(seed);
     let mut history = Vec::new();
     let mut picks = Vec::new();
@@ -159,6 +173,7 @@ pub(crate) fn simulate_steered<'p>(
             local_hour: Some(hour.unwrap_or(clock_hour)),
             energy_target: None,
             steer,
+            feedback,
         };
         let planned = pick_next(pool, &ctx, config, &mut rng).unwrap();
         for m in planned.movements {

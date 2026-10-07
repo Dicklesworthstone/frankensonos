@@ -25,6 +25,10 @@
 //!   Passions) are left out unless allowed; works missing movements still play
 //!   — what the library has, in order — at reduced weight; works the owner
 //!   liked are favored.
+//! * **Taste.** With a [`FeedbackModel`] ([`crate::feedback`]), the owner's
+//!   decayed likes, dislikes, skips and full listens scale each work's weight
+//!   (×0.25 – ×2), and twice-disliked works sit out while any other work
+//!   qualifies.
 //!
 //! Every pick carries a [`PickReason`]. Weights are integer per-mille factors
 //! and every iteration runs in pool or history order, so a seeded [`Rng`]
@@ -36,6 +40,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::classical::{CandidatePool, ClassicalTrack, Period};
+use crate::feedback::FeedbackModel;
 use crate::steer::{Relaxation, Steer, admit, haystack};
 use crate::works::{Completeness, Work, group_works};
 
@@ -181,6 +186,9 @@ pub struct PickContext<'h> {
     /// A mood or constraints steering the pick ([`crate::steer`]); ignored
     /// once its constraints have lapsed.
     pub steer: Option<&'h Steer>,
+    /// The owner's feedback, decayed to when it was loaded
+    /// ([`crate::feedback`]); reload it now and then (daily is plenty).
+    pub feedback: Option<&'h FeedbackModel>,
 }
 
 /// The energy the DJ aims for at a given local hour: calm through the night,
@@ -229,6 +237,8 @@ pub enum Factor {
     Rotation,
     /// Longer than the long-work limit, allowed this time.
     LongWork,
+    /// The owner's feedback on the work, its composer or performer.
+    Feedback,
 }
 
 /// Why a work was chosen.
@@ -354,12 +364,20 @@ pub fn pick_next<'p>(
     let weights: Vec<u64> = eligible
         .works
         .iter()
-        .map(|&w| weigh(pool, w, &recency, target, config, None))
+        .map(|&w| weigh(pool, w, &recency, target, config, ctx.feedback, None))
         .collect();
     let chosen = eligible.works[draw(&weights, rng)];
 
     let mut factors = Vec::new();
-    weigh(pool, chosen, &recency, target, config, Some(&mut factors));
+    weigh(
+        pool,
+        chosen,
+        &recency,
+        target,
+        config,
+        ctx.feedback,
+        Some(&mut factors),
+    );
     let work = &pool.works[chosen];
     if eligible.rotation {
         factors.push((Factor::Rotation, 1000));
@@ -517,6 +535,17 @@ fn eligible(
     if allowed.is_empty() {
         allowed = admitted;
     }
+    // Twice-disliked works sit out — unless that would leave nothing.
+    if let Some(model) = ctx.feedback {
+        let kept: Vec<usize> = allowed
+            .iter()
+            .copied()
+            .filter(|&w| !model.excludes(&pool.works[w]))
+            .collect();
+        if !kept.is_empty() {
+            allowed = kept;
+        }
+    }
     let cooling = |w: &usize| {
         recency
             .work_ago
@@ -552,6 +581,7 @@ fn weigh(
     recency: &Recency<'_>,
     target: Option<u8>,
     config: &DjConfig,
+    feedback: Option<&FeedbackModel>,
     mut factors: Option<&mut Vec<(Factor, i32)>>,
 ) -> u64 {
     let work = &pool.works[w];
@@ -610,6 +640,9 @@ fn weigh(
     }
     if work.completeness != Completeness::Complete {
         apply(Factor::Incomplete, config.incomplete_pm);
+    }
+    if let Some(model) = feedback {
+        apply(Factor::Feedback, model.multiplier_pm(work));
     }
     weight
 }
@@ -741,6 +774,14 @@ fn summarize(
         Some(s) if s.constraints.energy_bias < 0 => parts.push("steered calmer".to_owned()),
         Some(s) if s.constraints.energy_bias > 0 => parts.push("steered brighter".to_owned()),
         _ => {}
+    }
+    if let Some(&(_, pm)) = factors.iter().find(|(f, _)| *f == Factor::Feedback) {
+        let note = if pm > 1000 {
+            "favored by your feedback"
+        } else {
+            "played less after your feedback"
+        };
+        parts.push(note.to_owned());
     }
     for (factor, note) in [
         (Factor::Liked, "from your liked tracks"),
@@ -1257,6 +1298,7 @@ mod tests {
             local_hour: Some(19),
             energy_target: None,
             steer: None,
+            feedback: None,
         };
         let planned = pick_next(&pool, &ctx, &DjConfig::default(), &mut Rng::new(1)).unwrap();
         assert_eq!(planned.work.title, "Symphony No. 3 in F Major, Op. 90");
@@ -1287,6 +1329,7 @@ mod tests {
             local_hour: None,
             energy_target: Some(80),
             steer: None,
+            feedback: None,
         };
         let planned = pick_next(&pool, &ctx, &DjConfig::default(), &mut Rng::new(1)).unwrap();
         assert_eq!(
@@ -1322,6 +1365,7 @@ mod tests {
             local_hour: Some(20),
             energy_target: None,
             steer: None,
+            feedback: None,
         };
         let started = Instant::now();
         let planned = plan(&pool, &ctx, &config, 5, &mut Rng::new(2));

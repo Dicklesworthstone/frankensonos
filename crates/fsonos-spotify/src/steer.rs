@@ -13,7 +13,9 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
+use std::str::FromStr;
 
+use chrono::{NaiveTime, Timelike, Weekday};
 use serde::{Deserialize, Serialize};
 
 use crate::SpotifyError;
@@ -389,19 +391,118 @@ pub fn keyword_matches(haystack: &str, keyword: &str) -> bool {
             .any(|word| has_phrase(haystack, word))
 }
 
-/// Named presets of [`DjConstraints`]: built-ins, overridden by the owner's
-/// `moods.toml` in the data dir.
+/// Named presets of [`DjConstraints`] and the time-of-day [`Program`]s that
+/// pick one: built-ins, overridden by the owner's `moods.toml` in the data
+/// dir.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Moods {
     moods: BTreeMap<String, DjConstraints>,
+    programs: Vec<Program>,
 }
 
-/// `moods.toml`: `[moods.<name>]` tables of [`DjConstraints`] fields. Other
-/// top-level tables (time-of-day programs) belong to later readers.
+/// A time-of-day program: the mood to play when a session names none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Program {
+    /// Monday = 0 … Sunday = 6.
+    days: [bool; 7],
+    /// Minutes after midnight; a window ending before it starts wraps past
+    /// midnight, and equal ends cover the whole day.
+    from: u16,
+    to: u16,
+    pub mood: String,
+}
+
+impl Program {
+    fn new(days: [bool; 7], from: u16, to: u16, mood: &str) -> Self {
+        Self {
+            days,
+            from,
+            to,
+            mood: mood.to_owned(),
+        }
+    }
+
+    /// Whether it plays at `minute` (after midnight) on `day`. A window past
+    /// midnight belongs to the day it starts: Friday 21:00–06:00 covers
+    /// Saturday 03:00.
+    fn covers(&self, day: Weekday, minute: u16) -> bool {
+        let on = |d: Weekday| self.days[d.num_days_from_monday() as usize];
+        match self.from.cmp(&self.to) {
+            std::cmp::Ordering::Equal => on(day),
+            std::cmp::Ordering::Less => on(day) && (self.from..self.to).contains(&minute),
+            std::cmp::Ordering::Greater => {
+                (on(day) && minute >= self.from) || (on(day.pred()) && minute < self.to)
+            }
+        }
+    }
+}
+
+const EVERY_DAY: [bool; 7] = [true; 7];
+const WEEKDAYS: [bool; 7] = [true, true, true, true, true, false, false];
+const WEEKENDS: [bool; 7] = [false, false, false, false, false, true, true];
+
+/// `moods.toml`: `[moods.<name>]` tables of [`DjConstraints`] fields and
+/// `[[programs]]` entries.
 #[derive(Deserialize)]
 struct MoodsFile {
     #[serde(default)]
     moods: BTreeMap<String, DjConstraints>,
+    #[serde(default)]
+    programs: Option<Vec<ProgramDef>>,
+}
+
+/// A `[[programs]]` entry: `days` ("daily", "weekdays", "weekends", or a
+/// list like `["sat", "sun"]`), `from` and `to` ("HH:MM"), and `mood`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProgramDef {
+    #[serde(default = "DaysDef::daily")]
+    days: DaysDef,
+    from: String,
+    to: String,
+    mood: String,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DaysDef {
+    Named(String),
+    List(Vec<String>),
+}
+
+impl DaysDef {
+    fn daily() -> Self {
+        Self::Named("daily".to_owned())
+    }
+
+    fn mask(&self) -> Result<[bool; 7], String> {
+        let names: Vec<&str> = match self {
+            Self::Named(name) => match name.to_lowercase().as_str() {
+                "daily" | "every day" | "everyday" => return Ok(EVERY_DAY),
+                "weekdays" => return Ok(WEEKDAYS),
+                "weekends" => return Ok(WEEKENDS),
+                _ => vec![name.as_str()],
+            },
+            Self::List(names) => names.iter().map(String::as_str).collect(),
+        };
+        let mut mask = [false; 7];
+        for name in names {
+            let day = Weekday::from_str(name).map_err(|_| format!("unknown day {name:?}"))?;
+            mask[day.num_days_from_monday() as usize] = true;
+        }
+        Ok(mask)
+    }
+}
+
+/// "HH:MM" as minutes after midnight; "24:00" is the end of the day.
+fn minutes(text: &str) -> Result<u16, String> {
+    let bad = || format!("time {text:?} is not HH:MM");
+    let (h, m) = text.split_once(':').ok_or_else(bad)?;
+    let (h, m): (u16, u16) = (h.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?);
+    if m >= 60 || h > 24 || (h == 24 && m > 0) {
+        return Err(bad());
+    }
+    Ok(h * 60 + m)
 }
 
 impl Default for Moods {
@@ -464,6 +565,12 @@ impl Moods {
                 .into_iter()
                 .map(|(name, constraints)| (name.to_owned(), constraints))
                 .collect(),
+            programs: vec![
+                Program::new(WEEKENDS, 6 * 60, 11 * 60, "sunday-morning"),
+                Program::new(WEEKDAYS, 6 * 60, 11 * 60, "bright"),
+                Program::new(EVERY_DAY, 18 * 60, 21 * 60, "dinner"),
+                Program::new(EVERY_DAY, 21 * 60, 6 * 60, "calm"),
+            ],
         }
     }
 
@@ -497,6 +604,37 @@ impl Moods {
             })?;
             moods.moods.insert(name, constraints);
         }
+        if let Some(defs) = file.programs {
+            let headers: Vec<usize> = text
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| l.trim() == "[[programs]]")
+                .map(|(i, _)| i + 1)
+                .collect();
+            let mut programs = Vec::with_capacity(defs.len());
+            for (k, def) in defs.into_iter().enumerate() {
+                let program = (|| -> Result<Program, String> {
+                    let mood = def.mood.to_lowercase();
+                    if moods.get(&mood).is_none() {
+                        return Err(format!("no mood {mood:?}"));
+                    }
+                    Ok(Program::new(
+                        def.days.mask()?,
+                        minutes(&def.from)?,
+                        minutes(&def.to)?,
+                        &mood,
+                    ))
+                })()
+                .map_err(|why| {
+                    SpotifyError::Config(match headers.get(k) {
+                        Some(line) => format!("{source} line {line}: [[programs]] {why}"),
+                        None => format!("{source}: program {}: {why}", k + 1),
+                    })
+                })?;
+                programs.push(program);
+            }
+            moods.programs = programs;
+        }
         Ok(moods)
     }
 
@@ -519,6 +657,22 @@ impl Moods {
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.moods.keys().map(String::as_str)
     }
+
+    /// The mood the programs pick at a local day and time (the first
+    /// program that covers it), if any.
+    #[must_use]
+    pub fn program_at(&self, day: Weekday, time: NaiveTime) -> Option<&str> {
+        let minute = u16::try_from(time.hour() * 60 + time.minute()).unwrap_or(0);
+        self.programs
+            .iter()
+            .find(|p| p.covers(day, minute))
+            .map(|p| p.mood.as_str())
+    }
+
+    #[must_use]
+    pub fn programs(&self) -> &[Program] {
+        &self.programs
+    }
 }
 
 /// A zone's DJ session as the store keeps it: an optional mood, explicit
@@ -539,12 +693,28 @@ impl DjSession {
     /// with its own laid on top, or `None` once it has expired. Naming a mood
     /// that doesn't exist is an error.
     pub fn steer(&self, moods: &Moods, now: Option<i64>) -> Result<Option<Steer>, SpotifyError> {
+        self.steer_at(moods, now, None)
+    }
+
+    /// [`Self::steer`], with the local day and time: a session that names no
+    /// mood takes the one its time-of-day program picks.
+    pub fn steer_at(
+        &self,
+        moods: &Moods,
+        now: Option<i64>,
+        local: Option<(Weekday, NaiveTime)>,
+    ) -> Result<Option<Steer>, SpotifyError> {
         if let (Some(expires), Some(now)) = (self.expires_at, now)
             && now >= expires
         {
             return Ok(None);
         }
-        let base = match &self.mood {
+        let mood = self.mood.clone().or_else(|| {
+            local
+                .and_then(|(day, time)| moods.program_at(day, time))
+                .map(str::to_owned)
+        });
+        let base = match &mood {
             Some(name) => moods
                 .get(name)
                 .ok_or_else(|| {
@@ -561,7 +731,7 @@ impl DjSession {
                 Some(constraints.expires_at.map_or(expires, |e| e.min(expires)));
         }
         Ok(Some(Steer {
-            mood: self.mood.as_ref().map(|m| m.to_lowercase()),
+            mood: mood.map(|m| m.to_lowercase()),
             constraints,
         }))
     }
@@ -962,6 +1132,174 @@ periods = ["baroque", "late_romantic"]
         let err = Moods::load(&path).unwrap_err().to_string();
         assert!(err.contains("moods.toml line 2"), "{err}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn at(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    #[test]
+    fn builtin_programs_follow_the_week_and_the_clock() {
+        let moods = Moods::builtin();
+        let cases = [
+            (Weekday::Mon, at(7, 0), Some("bright")),
+            (Weekday::Fri, at(10, 59), Some("bright")),
+            (Weekday::Sat, at(7, 0), Some("sunday-morning")),
+            (Weekday::Sun, at(6, 0), Some("sunday-morning")),
+            (Weekday::Sun, at(11, 0), None),
+            (Weekday::Wed, at(12, 0), None),
+            (Weekday::Tue, at(19, 0), Some("dinner")),
+            (Weekday::Sat, at(18, 0), Some("dinner")),
+            (Weekday::Thu, at(23, 0), Some("calm")),
+            // Past midnight the evening program carries on, on any day…
+            (Weekday::Sat, at(3, 0), Some("calm")),
+            (Weekday::Mon, at(5, 59), Some("calm")),
+            // …until the morning one takes over.
+            (Weekday::Mon, at(6, 0), Some("bright")),
+        ];
+        for (day, time, want) in cases {
+            assert_eq!(moods.program_at(day, time), want, "{day} {time}");
+        }
+    }
+
+    #[test]
+    fn programs_from_moods_toml_replace_the_builtins() {
+        let text = r#"
+[moods.late-night]
+energy_bias = -2
+
+[[programs]]
+days = ["fri", "sat"]
+from = "22:30"
+to = "02:00"
+mood = "Late-Night"
+
+[[programs]]
+days = "weekends"
+from = "08:00"
+to = "12:00"
+mood = "sunday-morning"
+
+[[programs]]
+from = "00:00"
+to = "00:00"
+mood = "focus"
+"#;
+        let moods = Moods::parse(text, "moods.toml").unwrap();
+        assert_eq!(moods.programs().len(), 3);
+        let cases = [
+            (Weekday::Fri, at(23, 0), "late-night"),
+            (Weekday::Sat, at(1, 30), "late-night"),
+            (Weekday::Sun, at(1, 30), "late-night"),
+            // Thursday isn't listed, so Friday 01:30 is past Thursday's window.
+            (Weekday::Fri, at(1, 30), "focus"),
+            (Weekday::Sun, at(2, 0), "focus"),
+            (Weekday::Sat, at(9, 0), "sunday-morning"),
+            // The built-in weekday mornings are gone; the all-day one is first
+            // to cover them.
+            (Weekday::Mon, at(7, 0), "focus"),
+            (Weekday::Wed, at(19, 0), "focus"),
+        ];
+        for (day, time, want) in cases {
+            assert_eq!(moods.program_at(day, time), Some(want), "{day} {time}");
+        }
+
+        let none = Moods::parse("programs = []\n", "moods.toml").unwrap();
+        assert_eq!(none.program_at(Weekday::Mon, at(7, 0)), None, "no programs");
+        let kept = Moods::parse("[moods.x]\nenergy_bias = 1\n", "moods.toml").unwrap();
+        assert_eq!(
+            kept.programs(),
+            Moods::builtin().programs(),
+            "no [[programs]]: built-ins"
+        );
+
+        let err = |text: &str| Moods::parse(text, "moods.toml").unwrap_err().to_string();
+        let program = |body: &str| {
+            format!(
+                "[[programs]]\nfrom = \"06:00\"\nto = \"09:00\"\nmood = \"calm\"\n\n[[programs]]\n{body}"
+            )
+        };
+        let mood = err(&program(
+            "from = \"06:00\"\nto = \"09:00\"\nmood = \"disco\"\n",
+        ));
+        assert!(
+            mood.contains("moods.toml line 6: [[programs]] no mood \"disco\""),
+            "{mood}"
+        );
+        let day = err(&program(
+            "days = [\"mon\", \"funday\"]\nfrom = \"06:00\"\nto = \"09:00\"\nmood = \"calm\"\n",
+        ));
+        assert!(
+            day.contains("moods.toml line 6") && day.contains("unknown day \"funday\""),
+            "{day}"
+        );
+        for bad in ["25:00", "7:60", "seven", "24:01"] {
+            let time = err(&program(&format!(
+                "from = \"{bad}\"\nto = \"09:00\"\nmood = \"calm\"\n"
+            )));
+            assert!(
+                time.contains("moods.toml line 6")
+                    && time.contains(&format!("time \"{bad}\" is not HH:MM")),
+                "{time}"
+            );
+        }
+        let typo = err("[[programs]]\nfrom = \"06:00\"\nto = \"09:00\"\nmod = \"calm\"\n");
+        assert!(typo.contains("moods.toml line"), "{typo}");
+    }
+
+    #[test]
+    fn a_session_without_a_mood_follows_the_program() {
+        let moods = Moods::builtin();
+        let session = DjSession {
+            zone: "Zone A".into(),
+            mood: None,
+            constraints: DjConstraints {
+                include_composers: words(&["Bach"]),
+                ..DjConstraints::default()
+            },
+            expires_at: None,
+        };
+        let morning = Some((Weekday::Sat, at(8, 0)));
+        let steer = session.steer_at(&moods, None, morning).unwrap().unwrap();
+        assert_eq!(steer.mood.as_deref(), Some("sunday-morning"));
+        assert_eq!(
+            steer.constraints.periods,
+            [Period::Renaissance, Period::Baroque]
+        );
+        assert_eq!(
+            steer.constraints.include_composers,
+            ["Bach"],
+            "its own constraints stay"
+        );
+
+        let noon = Some((Weekday::Sat, at(12, 0)));
+        let steer = session.steer_at(&moods, None, noon).unwrap().unwrap();
+        assert_eq!(steer.mood, None, "no program at noon");
+        assert_eq!(
+            session.steer(&moods, None).unwrap().unwrap().mood,
+            None,
+            "no clock, no program"
+        );
+
+        let explicit = DjSession {
+            mood: Some("Focus".into()),
+            ..session.clone()
+        };
+        let steer = explicit.steer_at(&moods, None, morning).unwrap().unwrap();
+        assert_eq!(
+            steer.mood.as_deref(),
+            Some("focus"),
+            "an explicit mood wins"
+        );
+
+        let expired = DjSession {
+            expires_at: Some(MIDNIGHT),
+            ..session
+        };
+        assert_eq!(
+            expired.steer_at(&moods, Some(MIDNIGHT), morning).unwrap(),
+            None
+        );
     }
 
     #[test]
