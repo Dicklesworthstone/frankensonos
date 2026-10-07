@@ -227,3 +227,42 @@ fn a_new_track_restarts_the_position_and_is_reported() {
     let st = p.of(&player()).unwrap();
     assert_eq!(st.position_at(t0 + Duration::from_secs(95)), Some(5));
 }
+
+#[test]
+fn the_same_uri_at_a_new_queue_position_is_a_new_track() {
+    let mut p = Playback::default();
+    let t0 = Instant::now();
+    let at = |n: u32| {
+        let lc = format!(
+            "<Event xmlns=\"urn:schemas-upnp-org:metadata-1-0/AVT/\"><InstanceID val=\"0\">\
+             <TransportState val=\"PLAYING\"/><CurrentTrack val=\"{n}\"/>\
+             <CurrentTrackURI val=\"x-file:same\"/></InstanceID></Event>"
+        );
+        plain(&[("LastChange", lc.as_str())])
+    };
+    p.apply(&player(), EventSource::AvTransport, &at(1), t0)
+        .unwrap();
+    let again = p
+        .apply(&player(), EventSource::AvTransport, &at(1), t0)
+        .unwrap();
+    assert_eq!(again.track, None, "same position, same track");
+    let next = p
+        .apply(
+            &player(),
+            EventSource::AvTransport,
+            &at(2),
+            t0 + Duration::from_secs(30),
+        )
+        .unwrap();
+    assert_eq!(
+        next.track,
+        Some((Some("x-file:same".into()), Some("x-file:same".into())))
+    );
+    assert_eq!(p.of(&player()).unwrap().queue_position, Some(2));
+    assert_eq!(
+        p.of(&player())
+            .unwrap()
+            .position_at(t0 + Duration::from_secs(31)),
+        Some(1)
+    );
+}

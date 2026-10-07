@@ -201,20 +201,27 @@ fn apply_av_transport(
         changes.transport = Some((state.transport, t));
         state.transport = Some(t);
     }
-    if lc.get("CurrentTrackURI").is_some() {
-        let uri = lc.current_track_uri().map(str::to_string);
-        if uri != state.track_uri {
-            changes.track = Some((state.track_uri.clone(), uri.clone()));
-            state.track_uri = uri;
-            // A new track starts from the top; its duration comes with it.
-            state.position = Some((0, now));
-            state.duration_secs = None;
-        }
+    // The track moved on when its URI changed or, for the same URI queued
+    // twice in a row, when its queue position changed.
+    let uri = lc
+        .get("CurrentTrackURI")
+        .map(|_| lc.current_track_uri().map(str::to_string));
+    let position: Option<u32> = lc.get("CurrentTrack").and_then(|v| v.trim().parse().ok());
+    let uri_moved = uri.as_ref().is_some_and(|u| *u != state.track_uri);
+    let position_moved =
+        state.queue_position.is_some() && position.is_some_and(|n| state.queue_position != Some(n));
+    if uri_moved || position_moved {
+        let to = uri.clone().unwrap_or_else(|| state.track_uri.clone());
+        changes.track = Some((state.track_uri.clone(), to.clone()));
+        state.track_uri = to;
+        // A new track starts from the top; its duration comes with it.
+        state.position = Some((0, now));
+        state.duration_secs = None;
     }
     if let Some(d) = lc.current_track_duration_secs() {
         state.duration_secs = Some(d);
     }
-    if let Some(n) = lc.get("CurrentTrack").and_then(|v| v.trim().parse().ok()) {
+    if let Some(n) = position {
         state.queue_position = Some(n);
     }
     if let Some(n) = lc.get("NumberOfTracks").and_then(|v| v.trim().parse().ok()) {
