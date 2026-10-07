@@ -5,11 +5,11 @@ This guide runs the `fsonos` daemon on an always-on Mac on the speaker LAN
 and Tailscale lets your agents reach it from anywhere on your tailnet. The
 speakers stay on the LAN and are never fronted.
 
-> **Status.** The launchd template, the Tailscale configuration and the
-> security model are final. `fsonos serve` itself is still being assembled
-> (beads `d-http-api`, `d-mcp`, `d-cli-serve`), so the API/MCP checks in
-> [§6](#6-verify-and-troubleshoot) only pass once those land. Items marked
-> *(planned)* do not exist yet.
+> **Status.** `fsonos serve` runs the HTTP API and the MCP server (streamable
+> HTTP at `/mcp`) over the house policy, verified end to end against the
+> built-in simulator. Not yet: the GENA event listener (state is read from
+> the speakers on each call) and the DJ. Items marked *(planned)* do not
+> exist yet.
 
 ## 1. Shape of the deployment
 
@@ -60,7 +60,7 @@ variables. The environment form is what launchd uses.
 | Spotify redirect URI | `FSONOS_SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8099/auth/spotify/callback` | Must match the URI registered for your Spotify app. |
 | Log filter | `RUST_LOG` | `info` | `tracing` EnvFilter syntax. Logs go to stderr. |
 
-**Bind guard** *(planned, `d-cli-serve`)*: `serve` refuses a wildcard
+**Bind guard**: `serve` refuses a wildcard
 (`0.0.0.0`, `::`) or public bind address for the API or MCP server unless you
 pass `--allow-unsafe-bind`. It logs a warning for a private-LAN address.
 Loopback and tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) addresses are
@@ -242,7 +242,10 @@ claude mcp add --transport http fsonos http://127.0.0.1:8098/mcp
 claude mcp add fsonos -- ~/.local/bin/fsonos mcp
 ```
 
-Other MCP clients take the same URL, typically as
+The MCP endpoint speaks the current MCP protocol era (`2026-07-28`); a client
+that only speaks an older streamable-HTTP revision may be refused there, in
+which case use `fsonos mcp` over stdio on the Mac. Other MCP clients take the
+same URL, typically as
 `{"mcpServers": {"fsonos": {"type": "http", "url": "https://<mac>.<tailnet>.ts.net:8443/mcp"}}}`.
 Plain HTTP clients use the API directly, e.g.
 `curl https://<mac>.<tailnet>.ts.net/zones`.
@@ -267,7 +270,9 @@ Then open the authorize URL locally. The refresh token is cached under
 
 ```bash
 sudo launchctl print system/$LABEL | grep -E 'state|last exit'   # want: state = running
+grep 'fsonos serve: ready' ~/Library/Logs/fsonos/fsonos.log       # the bound addresses
 curl -fsS http://127.0.0.1:8099/health                           # on the Mac
+curl -fsS http://127.0.0.1:8099/zones                            # rooms and what they play
 tailscale serve status
 curl -fsS https://<mac>.<tailnet>.ts.net/health                  # from another tailnet device
 ```
@@ -275,6 +280,7 @@ curl -fsS https://<mac>.<tailnet>.ts.net/health                  # from another 
 | Symptom | Likely cause |
 |---|---|
 | Discovery finds no players under a LaunchAgent; connects fail with "No route to host" | Local Network access denied or never approved. Approve it in System Settings, or switch to the LaunchDaemon. |
+| Every call answers `NOT_READY` ("no rooms discovered yet") | The daemon found no players: SSDP is filtered on this network (set `FSONOS_SEEDS`), or Local Network access is missing (above). It keeps retrying; no restart needed. |
 | Players found, but state never updates after changes made in the Sonos app | Event callbacks are blocked inbound. Check the Application Firewall (§4). |
 | The log shows bind failures ("Can't assign requested address") right after boot | Direct tailnet bind started before Tailscale. It self-heals via `KeepAlive`; prefer Serve. |
 | `launchctl bootstrap` fails with an I/O or permission error | Plist not `root:wheel` `0644`, or the job is already loaded. Run `bootout` first. |
