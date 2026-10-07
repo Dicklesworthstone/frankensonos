@@ -5,8 +5,8 @@
 //! there is no client secret, and the refresh token is cached only in the
 //! local, git-ignored auth cache. This file is the pure half of the client —
 //! endpoint URLs, token request bodies, the PKCE pair, callback parsing, token
-//! bookkeeping and the response shapes — so the HTTPS half (asupersync, wired
-//! in FND-DEPS) is a thin send/receive loop around it. The Web API never
+//! bookkeeping and the response shapes — so the HTTPS half
+//! ([`crate::session`]) is a thin send/receive loop around it. The Web API never
 //! starts playback; Sonos renders Spotify itself via SMAPI.
 
 use std::fmt;
@@ -757,7 +757,7 @@ fn form_encode(pairs: &[(&str, &str)]) -> String {
         .join("&")
 }
 
-fn parse_query(query: &str) -> Result<Vec<(String, String)>, SpotifyError> {
+pub(crate) fn parse_query(query: &str) -> Result<Vec<(String, String)>, SpotifyError> {
     query
         .split('&')
         .filter(|pair| !pair.is_empty())
@@ -797,7 +797,7 @@ fn percent_decode(s: &str) -> Result<String, SpotifyError> {
 }
 
 /// Unpadded base64url (RFC 4648 §5), as PKCE requires.
-fn base64url(bytes: &[u8]) -> String {
+pub(crate) fn base64url(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -884,7 +884,7 @@ const K: [u32; 64] = [
 /// public-bound verifier — so a dependency isn't worth it; the NIST vectors
 /// and RFC 7636's worked example pin it in the tests.
 #[allow(clippy::many_single_char_names)]
-fn sha256(data: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
     let mut h: [u32; 8] = [
         0x6a09_e667,
         0xbb67_ae85,

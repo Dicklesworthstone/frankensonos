@@ -16,7 +16,7 @@ thiserror = { workspace = true }
 
 # FRANKEN (FND-DEPS): asupersync HTTPS client + TLS for the Spotify
 # Web API (OAuth PKCE, library reads).
-# asupersync = { workspace = true }
+asupersync = { workspace = true }
 
 [lints]
 workspace = true

@@ -1317,6 +1317,7 @@ dependencies = [
 name = "fsonos-spotify"
 version = "0.1.0"
 dependencies = [
+ "asupersync",
  "chrono",
  "fsonos-types",
  "serde",

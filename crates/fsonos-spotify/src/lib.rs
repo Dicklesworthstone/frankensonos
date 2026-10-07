@@ -1,12 +1,14 @@
 //! Spotify Web API client + the classical-music DJ engine.
 //!
-//! Four concerns:
+//! Five concerns:
 //!
 //! * [`client`] — a Spotify Web API client (OAuth Authorization Code + PKCE)
 //!   used **only to read the user's own library**: saved albums and liked
 //!   tracks. It does NOT start playback — Sonos renders Spotify itself via
-//!   SMAPI (`fsonos_proto::didl`); the Web API cannot command a Sonos. The
-//!   HTTPS transport is wired in FND-DEPS.
+//!   SMAPI (`fsonos_proto::didl`); the Web API cannot command a Sonos.
+//!
+//! * [`session`] — the I/O half: the owner's authorization, the local token
+//!   cache, and authorized reads over the asupersync HTTPS client.
 //!
 //! * [`library`] — [`library::LibraryItem`], the neutral track metadata both
 //!   the Web API reads and the local library cache produce.
@@ -23,6 +25,7 @@ pub mod classical;
 pub mod client;
 pub mod dj;
 pub mod library;
+pub mod session;
 
 use thiserror::Error;
 
@@ -36,8 +39,8 @@ pub enum SpotifyError {
     Config(String),
     #[error("decode error: {0}")]
     Decode(String),
+    #[error("http error: {0}")]
+    Http(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("transport not yet wired (FND-DEPS)")]
-    NotWired,
 }
