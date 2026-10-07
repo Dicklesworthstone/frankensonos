@@ -42,8 +42,8 @@ long-documented local protocols: SSDP discovery, UPnP/SOAP control on port
 work the same way. FrankenSonos adds two things they don't have: a
 classical-music DJ that picks from your own Spotify library, and an MCP server
 (next to the CLI and HTTP API) so Claude, Grok, Meta Muse, OpenAI agents, or any
-other MCP client can run your house, including from off the LAN over
-[Tailscale](https://tailscale.com).
+other MCP client can run your house — from the same room, or from anywhere in
+the world as long as you are on your [Tailscale](https://tailscale.com) tailnet.
 
 ### Why use it
 
@@ -53,7 +53,7 @@ other MCP client can run your house, including from off the LAN over
 | **Control** | Play / pause / next / volume / group / ungroup, always addressed to the group's coordinator |
 | **Spotify DJ** | Reads your saved albums and liked tracks (your account, read-only) and plays a varied classical stream with anti-repeat, without a phone in hand |
 | **Agent control** | An HTTP API and an MCP server (`list_zones`, `play`, `dj_start`, …) expose the house as tools |
-| **Off-LAN** | The daemon is fronted on your tailnet; the speakers never leave the LAN |
+| **From anywhere** | Any device on your Tailscale tailnet commands your speakers from anywhere in the world — nothing is exposed to the public internet, and the speakers never leave the LAN |
 | **Memory-safe** | Pure Rust 2024, `#![forbid(unsafe_code)]` everywhere, built on an owned async stack (no Tokio/reqwest) |
 | **No site data** | The public repo contains nothing about your setup; it is learned at runtime and stored locally |
 
@@ -104,9 +104,12 @@ dj_start · dj_skip · dj_stop
 | Memory-safe, single binary | ✅ Rust | — | ❌ Python/JS | ❌ |
 | Off-LAN via your own tailnet | ✅ | ☁️ via Sonos cloud | DIY | DIY |
 
-FrankenSonos is young, and the mature projects above are battle-tested and worth
-using today. What FrankenSonos adds is the MCP server and the DJ, in one
-memory-safe binary that covers both Sonos generations.
+Nothing else does all of this. The others stop at local control; FrankenSonos is
+the only one that is agent-native (MCP **and** HTTP API), ships a real
+Spotify-library DJ, drives both Sonos generations at once, and lets any device on
+your Tailscale tailnet command your speakers from anywhere in the world — all in
+one memory-safe binary, with no cloud, no phone app, and nothing installed on the
+speakers. It is built to be the best way to run Sonos, full stop.
 
 ## Architecture
 
