@@ -24,6 +24,7 @@
 pub mod clock;
 pub mod control;
 pub mod doctor;
+pub mod fade;
 pub mod favorites;
 pub mod grouping;
 pub mod inventory;

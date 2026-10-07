@@ -170,7 +170,7 @@ pub fn capture<T: Transport + ?Sized>(
 }
 
 /// The primary of each room in the group `coordinator` leads, its own first.
-fn member_rooms(household: &HouseholdState, coordinator: &PlayerId) -> Vec<PlayerId> {
+pub(crate) fn member_rooms(household: &HouseholdState, coordinator: &PlayerId) -> Vec<PlayerId> {
     let mut rooms: Vec<&crate::Room> = household
         .rooms
         .iter()
