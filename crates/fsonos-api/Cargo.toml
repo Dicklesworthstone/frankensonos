@@ -13,11 +13,16 @@ fsonos-core = { workspace = true }
 fsonos-proto = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tracing = { workspace = true }
 thiserror = { workspace = true }
 
 # FRANKEN (FND-DEPS): fastapi for the HTTP API, asupersync runtime.
 fastapi = { workspace = true }
 asupersync = { workspace = true }
+
+[dev-dependencies]
+# Action-log and undo tests drive virtual players.
+fsonos-sim = { workspace = true }
 
 [lints]
 workspace = true

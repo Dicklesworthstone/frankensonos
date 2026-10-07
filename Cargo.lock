@@ -1250,10 +1250,12 @@ dependencies = [
  "fastapi-rust",
  "fsonos-core",
  "fsonos-proto",
+ "fsonos-sim",
  "fsonos-types",
  "serde",
  "serde_json",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

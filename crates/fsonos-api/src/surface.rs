@@ -4,12 +4,21 @@
 //! survey, cached for a short while), the house policy, and the clock. Each
 //! call names its [`Client`], so one surface serves callers with different
 //! identities (local agents, tailnet principals, unknown peers).
+//!
+//! With an action log ([`Surface::with_action_log`]), [`Surface::control`] is
+//! the single choke point every mutating call goes through: authorize, plan,
+//! snapshot the zones it touches, carry it out under the policy, and log who
+//! asked, the policy's decision (allow / clamp / deny) and what happened.
+//! [`Surface::undo`] puts the newest undoable action back.
 
+use fsonos_core::actions::{self, UndoReport};
 use fsonos_core::clock::Clock;
 use fsonos_core::policy::{Client, Policy};
+use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store};
 use fsonos_core::{HouseholdState, control};
 use fsonos_proto::Transport;
-use fsonos_types::TransportState;
+use fsonos_types::{PlayerId, TransportState};
+use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -32,6 +41,13 @@ pub struct Surface {
     cache: Mutex<Option<(Instant, Vec<HouseholdState>)>>,
     policy: Policy,
     clock: Box<dyn Clock>,
+    log: Option<ActionLog>,
+}
+
+/// Where a surface logs its actions, and its name in the log.
+struct ActionLog {
+    store: Mutex<Box<dyn Store + Send>>,
+    surface: String,
 }
 
 impl Surface {
@@ -48,6 +64,56 @@ impl Surface {
             cache: Mutex::new(None),
             policy,
             clock,
+            log: None,
+        }
+    }
+
+    /// Log every mutating call in `store` under `surface` (`http`, `mcp`,
+    /// `cli`, ...), which also enables [`Self::undo`].
+    #[must_use]
+    pub fn with_action_log(mut self, store: Box<dyn Store + Send>, surface: &str) -> Self {
+        self.log = Some(ActionLog {
+            store: Mutex::new(store),
+            surface: surface.to_string(),
+        });
+        self
+    }
+
+    fn now(&self) -> i64 {
+        self.clock.now().timestamp()
+    }
+
+    /// Append to the action log, if there is one. A log that cannot be
+    /// written never fails the call it records.
+    fn record(
+        &self,
+        client: &Client,
+        intent: String,
+        decision: String,
+        result: String,
+        before_state: Option<String>,
+    ) {
+        let Some(log) = &self.log else {
+            return;
+        };
+        let action = Action {
+            at: self.now(),
+            client: client.key().to_string(),
+            surface: log.surface.clone(),
+            intent,
+            decision,
+            result,
+            before_state,
+            undo_of: None,
+        };
+        let written = match log.store.lock() {
+            Ok(mut store) => actions::record(&mut **store, &action)
+                .map(drop)
+                .map_err(|e| e.to_string()),
+            Err(_) => Err("action log poisoned".to_string()),
+        };
+        if let Err(e) = written {
+            tracing::warn!("action not logged ({}): {e}", action.intent);
         }
     }
 
@@ -77,6 +143,14 @@ impl Surface {
         Ok(households)
     }
 
+    /// Forget the cached survey, so the next call sees the speakers as they
+    /// are now (after a regroup, or before an undo plans its restore).
+    fn invalidate(&self) {
+        if let Ok(mut cache) = self.cache.lock() {
+            *cache = None;
+        }
+    }
+
     /// A control call: authorize `tool` for `client`, plan against the
     /// households, and carry it out under the policy.
     pub fn control(
@@ -86,10 +160,126 @@ impl Surface {
         plan: impl FnOnce(&[HouseholdState]) -> Result<Command, Failure>,
     ) -> Result<OutcomeDto, Failure> {
         let guard = self.guard(client);
-        guard.authorize(tool, false)?;
+        if let Err(denied) = guard.authorize(tool, false) {
+            self.record(
+                client,
+                tool.to_string(),
+                format!("deny: {}", denied.detail),
+                denied.detail.clone(),
+                None,
+            );
+            return Err(denied);
+        }
         let households = self.households()?;
         let command = plan(&households)?;
-        execute_guarded(&*self.transport, &households, &guard, command)
+        let regroups = matches!(command, Command::Join { .. } | Command::Leave { .. });
+        // Already satisfied requests change nothing and are not logged.
+        if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
+            let result = execute_guarded(&*self.transport, &households, &guard, command);
+            if regroups {
+                self.invalidate();
+            }
+            return result;
+        }
+        let intent = format!("{tool}: {command:?}");
+        let (snaps, missed) = actions::capture_zones(
+            &*self.transport,
+            &households,
+            &affected(&households, &command),
+            self.now(),
+        );
+        let result = execute_guarded(&*self.transport, &households, &guard, command);
+        if regroups {
+            self.invalidate();
+        }
+        let (decision, mut text, before) = match &result {
+            Ok(outcome) if outcome.notes.is_empty() => (
+                "allow".to_string(),
+                outcome.done.clone(),
+                actions::before_state(&snaps),
+            ),
+            Ok(outcome) => (
+                format!(
+                    "clamp: {}",
+                    outcome
+                        .notes
+                        .iter()
+                        .map(|n| n.detail.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+                outcome.done.clone(),
+                actions::before_state(&snaps),
+            ),
+            Err(f) if f.code == ErrorCode::PolicyDenied => {
+                (format!("deny: {}", f.detail), f.detail.clone(), None)
+            }
+            // It may have half happened: keep the before-state for undo.
+            Err(f) => (
+                "allow".to_string(),
+                format!("failed: {}", f.detail),
+                actions::before_state(&snaps),
+            ),
+        };
+        if !missed.is_empty() {
+            let _ = write!(
+                text,
+                " (before-state missing for {} zone(s): undo cannot fully restore)",
+                missed.len()
+            );
+        }
+        self.record(client, intent, decision, text, before);
+        result
+    }
+
+    /// Undo the newest undoable action — only `client`'s own when
+    /// `own_only` — and log the undo. `Ok(None)` when there is nothing to
+    /// undo.
+    pub fn undo(&self, client: &Client, own_only: bool) -> Result<Option<UndoReport>, Failure> {
+        let Some(log) = &self.log else {
+            return Err(Failure::new(
+                ErrorCode::NotImplemented,
+                "undo needs the action log, which this surface does not keep",
+            ));
+        };
+        self.guard(client).authorize("undo", false)?;
+        // Plan the restore against the speakers as they are now.
+        self.invalidate();
+        let households = self.households()?;
+        let mut store = log
+            .store
+            .lock()
+            .map_err(|_| Failure::new(ErrorCode::Internal, "action log poisoned"))?;
+        let report = actions::undo_last(
+            &*self.transport,
+            &households,
+            &mut **store,
+            own_only.then_some(client),
+            client,
+            &log.surface,
+            self.now(),
+        );
+        self.invalidate();
+        Ok(report?)
+    }
+
+    /// The action log, newest first (empty without one).
+    pub fn recent_actions(
+        &self,
+        client: &Client,
+        filter: &ActionFilter,
+    ) -> Result<Vec<LoggedAction>, Failure> {
+        self.guard(client).authorize("recent_actions", true)?;
+        let Some(log) = &self.log else {
+            return Ok(Vec::new());
+        };
+        let store = log
+            .store
+            .lock()
+            .map_err(|_| Failure::new(ErrorCode::Internal, "action log poisoned"))?;
+        store
+            .recent_actions(filter)
+            .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))
     }
 
     /// Every zone with its live transport state (`unknown` when a
@@ -122,6 +312,29 @@ impl Surface {
     ) -> TransportState {
         control::playback(&*self.transport, households, coordinator)
             .map_or(TransportState::Unknown, |p| p.transport.state)
+    }
+}
+
+/// The coordinators of the groups `command` changes (a join changes both
+/// the member's old group and the one it joins).
+fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
+    let group_of = |p: &PlayerId| {
+        households
+            .iter()
+            .find_map(|h| h.coordinator_of(p).cloned())
+            .unwrap_or_else(|| p.clone())
+    };
+    match command {
+        Command::Play { coordinator, .. }
+        | Command::Transport { coordinator, .. }
+        | Command::Dj { coordinator, .. } => vec![coordinator.clone()],
+        Command::Volume { target, .. } | Command::Mute { target, .. } => vec![group_of(target)],
+        Command::Join {
+            member,
+            coordinator,
+        } => vec![group_of(member), coordinator.clone()],
+        Command::Leave { member } => vec![group_of(member)],
+        Command::Nothing { .. } => Vec::new(),
     }
 }
 
