@@ -102,15 +102,44 @@ DIDL-Lite metadata (`CurrentURIMetaData`):
 ```
 
 - The **`desc` is load-bearing**: `SA_RINCON3079_X_#Svc3079-0-Token` where 3079
-  is Spotify's SMAPI service type. A wrong desc (e.g. SoCo's 2311-era default)
-  yields UPnP **800** at/after SetAVTransportURI.
-- Item id prefix: `10032020` (S1 favorites) / `10032028` (S2 favorites).
-- `parentID`: S1 accepts `-1`; S2's own favorites use the item's own id
-  (self-referential). Both accepted on the matching generation.
-- `dc:title` is display-only; playback does not depend on it.
+  is Spotify's SMAPI service type (2311 = world variant, 3079 = US; learn the
+  household's from its favorites). A wrong desc against the household's
+  registered type yields UPnP **800** at/after SetAVTransportURI (800's
+  documented meaning: "command not supported or not a coordinator" — it also
+  fires for wrong `sid`; sonos2mqtt issue #59 is the canonical repro).
+- Item id prefix: `10032020` (S1 favorites) / `10032028` (S2 favorites) both
+  work; third-party implementations also succeed with `00032020` (SoCo
+  sharelink, gilbert). `sid` is the service `Id` from `ListAvailableServices`
+  (household-specific; 12 on the owner's, 9 in some published captures) —
+  always learn it, never hardcode. `flags` is an undocumented bitmask
+  (8224 track / 8300 container observed); SoCo omits it entirely with success.
+- `parentID`: S1 accepts `-1` (verified live); S2's own favorites use the
+  item's own id (self-referential). Community implementations all use `-1`.
+- `dc:title` is display-only; the speaker replaces the DIDL with full SMAPI
+  metadata (real title/artist/album/art) once playback starts — visible in
+  the next AVTransport LastChange event.
 - A single `SetAVTransportURI` track plays to completion, then the transport
-  goes `STOPPED` (no implicit continuation) — the DJ must enqueue or re-set
-  the next track itself.
+  goes `STOPPED` (no implicit continuation) — use the queue flow below.
+
+### Queue flow (the DJ's continuous-playback pattern, verified live on S1)
+
+```
+AddURIToQueue(InstanceID=0,
+              EnqueuedURI="spotify%3atrack%3a<ID>",     # bare: NO x-sonos-spotify: scheme
+              EnqueuedURIMetaData=<DIDL item id="00032020spotify%3atrack%3a<ID>" parentID="-1"
+                                    class musicTrack, desc SA_RINCON3079_X_#Svc3079-0-Token>,
+              DesiredFirstTrackNumberEnqueued=0,        # append
+              EnqueueAsNext=0)                          # -> returns FirstTrackNumberEnqueued
+SetAVTransportURI(InstanceID=0, CurrentURI="x-rincon-queue:<COORD_UUID>#0", CurrentURIMetaData="")
+Seek(InstanceID=0, Unit=TRACK_NR, Target=<returned position>)
+Play(InstanceID=0, Speed=1)      # -> PLAYING; Next advances within the queue
+```
+
+Verified 2026-10-07 on S1 57.23: two tracks appended at positions 11–12 of an
+existing queue, `Seek`→`Play`→`Next` all PLAYING, then the two tracks removed
+with `RemoveTrackFromQueue` (`ObjectID=Q:0/<n>`, descending order) restoring
+the queue exactly. Album/playlist containers enqueue with
+`x-rincon-cpcontainer:1004206c<enc>` (albums) / `1006206c<enc>` (playlists).
 
 Album/container favorites use `x-rincon-cpcontainer:1004206c<enc-uri>` with
 `flags=8300` and a container DIDL (`object.container.album.musicAlbum` via the
