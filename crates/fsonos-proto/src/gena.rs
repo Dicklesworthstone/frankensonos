@@ -147,10 +147,12 @@ pub fn parse_last_change(doc_text: &str) -> Result<LastChange, ProtoError> {
             event.tag_name().name()
         )));
     }
+    // AVTransport/RenderingControl nest under <InstanceID val="0">; Queue
+    // events use <QueueID val="0"> instead (verified live, S1 57.23).
     let instance = event
         .children()
-        .find(|n| n.is_element() && n.tag_name().name() == "InstanceID")
-        .ok_or_else(|| ProtoError::Malformed("LastChange has no InstanceID".into()))?;
+        .find(|n| n.is_element() && matches!(n.tag_name().name(), "InstanceID" | "QueueID"))
+        .ok_or_else(|| ProtoError::Malformed("LastChange has no InstanceID/QueueID".into()))?;
     Ok(LastChange {
         values: instance
             .children()

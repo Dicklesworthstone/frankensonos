@@ -296,14 +296,14 @@ Mac, 2026-10-07).
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
  <s:Header>
   <credentials xmlns="http://www.sonos.com/Services/1.1">
-   <deviceId>RINCON_&lt;PLAYER_MAC&gt;01400</deviceId>
+   <deviceId>RINCON_<PLAYER_MAC>01400</deviceId>
    <deviceProvider>Sonos</deviceProvider>
    <context/>
    <!-- once linked: -->
    <loginToken>
     <token>AUTH_TOKEN</token>
     <key>PRIVATE_KEY</key>
-    <householdId>Sonos_&lt;HOUSEHOLD&gt;</householdId>
+    <householdId>Sonos_<HOUSEHOLD></householdId>
    </loginToken>
   </credentials>
  </s:Header>
@@ -339,8 +339,10 @@ Mac, 2026-10-07).
 
 Direct SMAPI drive from fsonos is **feasible**: every step is plain SOAP over
 HTTPS, the pre-auth step is verified working anonymously, and minting our own
-token pair needs one interactive Spotify login by the owner (a second,
-coexisting account link on the household — the existing one is untouched).
+token pair needs one interactive Spotify login by the owner. (Not yet
+exercised end-to-end: whether the ceremony adds a second coexisting account
+link or re-uses the household's existing one is untested — either way it is
+reversible from the Sonos app.)
 It is **not load-bearing**: the DJ already works via favorites-learned render
 params + the speaker's own SMAPI session, and library reads use the official
 Spotify Web API. Implement SMAPI-direct only as a hedge (Web API scope

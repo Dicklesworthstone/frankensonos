@@ -510,6 +510,8 @@ fn device_descriptions_identify_model_room_and_generation() {
 const GENA_AVT_S1: &str = include_str!("fixtures/gena_notify_avt_initial_s1.xml");
 const GENA_ZGT_S2: &str = include_str!("fixtures/gena_notify_zgt_s2.xml");
 const GENA_AVT_S2: &str = include_str!("fixtures/gena_notify_avt_initial_s2.xml");
+const GENA_QUEUE_S1: &str = include_str!("fixtures/gena_notify_queue_s1.xml");
+const GENA_CD_S1: &str = include_str!("fixtures/gena_notify_cd_initial_s1.xml");
 const MSERVICES_S1: &str = include_str!("fixtures/musicservices_list_s1.xml");
 
 /// One XML decode pass: named entities first, `&amp;` last.
@@ -599,6 +601,26 @@ fn musicservices_list_describes_spotify_smapi() {
     );
     assert!(list.contains("https://spotify-v5.ws.sonos.com/smapi"));
     assert!(list.contains("Auth=\"AppLink\""));
+}
+
+#[test]
+fn gena_queue_event_uses_queueid_container() {
+    // Queue mutations arrive as LastChange with `<QueueID val="0">` (not
+    // InstanceID) wrapping an incrementing UpdateID — captured live from an
+    // AddURIToQueue on S1.
+    let event = last_change(GENA_QUEUE_S1);
+    assert_eq!(event.get("UpdateID"), Some("8"));
+}
+
+#[test]
+fn gena_cd_initial_is_plain_properties_not_last_change() {
+    // ContentDirectory events are NOT LastChange-wrapped: plain properties
+    // carrying update counters (captured live, S1).
+    let props = fsonos_proto::gena::parse_propertyset(GENA_CD_S1).unwrap();
+    assert!(props.iter().all(|(k, _)| k != "LastChange"));
+    assert_eq!(property(GENA_CD_S1, "SystemUpdateID"), "17");
+    assert!(property(GENA_CD_S1, "ContainerUpdateIDs").starts_with("R:,"));
+    assert!(property(GENA_CD_S1, "FavoritesUpdateID").starts_with("RINCON_000E58A0"));
 }
 
 #[test]
