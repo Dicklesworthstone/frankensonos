@@ -2,6 +2,8 @@
 
 # FrankenSonos
 
+<img src="frankensonos_illustration.webp" alt="FrankenSonos illustration" width="900">
+
 **Your Sonos, your way.** A memory-safe Rust controller for the Sonos speakers
 you already own. It talks to them directly on your own network, so you can
 script them and let your own AI agents run them instead of the official app.
