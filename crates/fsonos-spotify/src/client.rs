@@ -11,7 +11,9 @@
 
 use std::fmt;
 use std::fmt::Write as _;
-use std::io::Read as _;
+use std::fs;
+use std::io::{self, Read as _, Write as _};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -364,6 +366,93 @@ pub fn api_error(status: u16, body: &[u8]) -> SpotifyError {
         |e| e.error.message,
     );
     SpotifyError::Api { status, body }
+}
+
+/// Seconds to wait after a 429, from its `Retry-After` header (Spotify sends
+/// whole seconds): 1 when absent or unparseable, capped at an hour.
+#[must_use]
+pub fn retry_after_secs(header: Option<&str>) -> u64 {
+    header
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(1)
+        .clamp(1, 3600)
+}
+
+// ── Token cache ────────────────────────────────────────────────────────────
+
+/// The on-disk token cache: one JSON file in the daemon's data directory
+/// (`--data-dir` / `FSONOS_DATA_DIR`, never the repo). It holds the refresh
+/// token, so the directory is created owner-only (0700) and the file is
+/// written owner-only (0600) via an atomic rename.
+#[derive(Debug, Clone)]
+pub struct TokenCache {
+    path: PathBuf,
+}
+
+impl TokenCache {
+    #[must_use]
+    pub fn in_data_dir(data_dir: &Path) -> Self {
+        Self {
+            path: data_dir.join("auth").join("spotify-token.json"),
+        }
+    }
+
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The cached token, or `None` before the owner has authorized.
+    pub fn load(&self) -> Result<Option<CachedToken>, SpotifyError> {
+        let bytes = match fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| SpotifyError::Decode(format!("token cache {}: {e}", self.path.display())))
+    }
+
+    /// Persist `token`, atomically replacing any previous one.
+    pub fn store(&self, token: &CachedToken) -> Result<(), SpotifyError> {
+        if let Some(dir) = self.path.parent() {
+            create_private_dir(dir)?;
+        }
+        let json = serde_json::to_vec_pretty(token)
+            .map_err(|e| SpotifyError::Decode(format!("token cache: {e}")))?;
+        let tmp = self.path.with_extension("json.tmp");
+        write_private(&tmp, &json)?;
+        fs::rename(&tmp, &self.path)?;
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)
+}
+
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 // ── Library endpoints ──────────────────────────────────────────────────────
@@ -1073,6 +1162,63 @@ mod tests {
         );
         assert!(CachedToken::from_exchange(mac, 0).is_err());
         assert!(TokenResponse::parse(b"not json").is_err());
+    }
+
+    /// A fresh directory under the OS temp dir, unique to this test run.
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("fsonos-spotify-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn token_cache_round_trips_privately() {
+        let data_dir = scratch_dir("token-cache");
+        let cache = TokenCache::in_data_dir(&data_dir);
+        assert!(cache.load().unwrap().is_none(), "nothing cached yet");
+
+        let first = CachedToken {
+            access_token: "access-1".into(),
+            refresh_token: "refresh-1".into(),
+            expires_at: 4_600,
+            scope: SCOPE.into(),
+        };
+        cache.store(&first).unwrap();
+        assert_eq!(cache.load().unwrap(), Some(first.clone()));
+        let second = CachedToken {
+            access_token: "access-2".into(),
+            ..first
+        };
+        cache.store(&second).unwrap();
+        assert_eq!(cache.load().unwrap(), Some(second));
+        assert!(
+            !cache.path().with_extension("json.tmp").exists(),
+            "temp file renamed away"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(cache.path()), 0o600);
+            assert_eq!(mode(cache.path().parent().unwrap()), 0o700);
+        }
+
+        fs::write(cache.path(), b"{ not json").unwrap();
+        let err = cache.load().unwrap_err().to_string();
+        assert!(err.contains("token cache"), "{err}");
+        fs::remove_dir_all(&data_dir).unwrap();
+    }
+
+    #[test]
+    fn retry_after_header() {
+        assert_eq!(retry_after_secs(Some("7")), 7);
+        assert_eq!(retry_after_secs(Some(" 30 ")), 30);
+        assert_eq!(retry_after_secs(Some("0")), 1);
+        assert_eq!(retry_after_secs(Some("Wed, 21 Oct 2026 07:28:00 GMT")), 1);
+        assert_eq!(retry_after_secs(None), 1);
+        assert_eq!(retry_after_secs(Some("86400")), 3600);
     }
 
     #[test]

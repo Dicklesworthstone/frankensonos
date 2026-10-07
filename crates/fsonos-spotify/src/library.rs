@@ -1,14 +1,22 @@
 //! Library items: the neutral metadata the DJ's candidate pool is built from.
 //!
-//! The Spotify library reads ([`crate::client`]) and the local library cache
-//! both produce [`LibraryItem`]s, and [`crate::classical::CandidatePool`]
-//! consumes them. Keeping this shape independent of the Web API JSON lets the
-//! daemon rebuild the pool from the store at startup without a network call.
+//! The Spotify library reads ([`LibraryRead`] over [`crate::client`]) and the
+//! local library cache both produce [`LibraryItem`]s, and
+//! [`crate::classical::CandidatePool`] consumes them. Keeping this shape
+//! independent of the Web API JSON lets the daemon rebuild the pool from the
+//! store at startup without a network call.
+
+use std::collections::{HashSet, VecDeque};
 
 use fsonos_types::Track;
 use serde::{Deserialize, Serialize};
 
+use crate::SpotifyError;
 use crate::classical::normalize;
+use crate::client::{
+    Album, Paging, SavedAlbum, SavedTrack, SimplifiedTrack, is_api_url, saved_albums_url,
+    saved_tracks_url,
+};
 
 /// How a track entered the owner's library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -147,6 +155,139 @@ impl LibraryItem {
 /// Joins multiple artists into [`Track::artist`] for the library cache.
 pub const ARTIST_SEPARATOR: &str = "; ";
 
+/// A full read of the owner's library as a sans-I/O state machine: GET
+/// [`Self::next_url`] with the bearer token, feed each 2xx body to
+/// [`Self::ingest`], repeat until `next_url` is `None`, then take
+/// [`Self::into_items`]. It pages saved albums and liked tracks, fetches the
+/// rest of any album longer than its embedded 50 tracks, and only follows
+/// links that point at the Web API (and never the same one twice).
+#[derive(Debug)]
+pub struct LibraryRead {
+    pending: VecDeque<Fetch>,
+    requested: HashSet<String>,
+    items: Vec<LibraryItem>,
+    pages: usize,
+}
+
+#[derive(Debug)]
+enum Fetch {
+    SavedAlbums(String),
+    SavedTracks(String),
+    /// Later pages of one album's tracks, with the album as context.
+    AlbumTracks(String, Box<Album>),
+}
+
+impl Fetch {
+    fn url(&self) -> &str {
+        match self {
+            Self::SavedAlbums(url) | Self::SavedTracks(url) | Self::AlbumTracks(url, _) => url,
+        }
+    }
+}
+
+impl Default for LibraryRead {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LibraryRead {
+    #[must_use]
+    pub fn new() -> Self {
+        let mut read = Self {
+            pending: VecDeque::new(),
+            requested: HashSet::new(),
+            items: Vec::new(),
+            pages: 0,
+        };
+        read.queue(Fetch::SavedAlbums(saved_albums_url(0)));
+        read.queue(Fetch::SavedTracks(saved_tracks_url(0)));
+        read
+    }
+
+    /// The next URL to GET, or `None` when the read is complete.
+    #[must_use]
+    pub fn next_url(&self) -> Option<&str> {
+        self.pending.front().map(Fetch::url)
+    }
+
+    /// Feed the body of a successful response to [`Self::next_url`].
+    pub fn ingest(&mut self, body: &[u8]) -> Result<(), SpotifyError> {
+        let fetch = self
+            .pending
+            .pop_front()
+            .ok_or_else(|| SpotifyError::Decode("library read already complete".into()))?;
+        self.pages += 1;
+        match fetch {
+            Fetch::SavedAlbums(_) => {
+                let page = Paging::<SavedAlbum>::parse(body)?;
+                for saved in page.items {
+                    self.items.extend(saved.album.library_items());
+                    let rest = saved.album.tracks.as_ref().and_then(|t| t.next.clone());
+                    if let Some(url) = rest {
+                        let album = Album {
+                            tracks: None,
+                            ..saved.album
+                        };
+                        self.follow(Some(url), |url| Fetch::AlbumTracks(url, Box::new(album)))?;
+                    }
+                }
+                self.follow(page.next, Fetch::SavedAlbums)
+            }
+            Fetch::SavedTracks(_) => {
+                let page = Paging::<SavedTrack>::parse(body)?;
+                self.items
+                    .extend(page.items.iter().filter_map(SavedTrack::library_item));
+                self.follow(page.next, Fetch::SavedTracks)
+            }
+            Fetch::AlbumTracks(_, album) => {
+                let page = Paging::<SimplifiedTrack>::parse(body)?;
+                self.items
+                    .extend(page.items.iter().filter_map(|t| album.library_item(t)));
+                self.follow(page.next, |url| Fetch::AlbumTracks(url, album))
+            }
+        }
+    }
+
+    /// Pages ingested so far.
+    #[must_use]
+    pub fn pages_read(&self) -> usize {
+        self.pages
+    }
+
+    /// Everything read, in read order (duplicates are merged later by
+    /// [`crate::classical::CandidatePool::build`]).
+    #[must_use]
+    pub fn into_items(self) -> Vec<LibraryItem> {
+        self.items
+    }
+
+    fn follow(
+        &mut self,
+        next: Option<String>,
+        fetch: impl FnOnce(String) -> Fetch,
+    ) -> Result<(), SpotifyError> {
+        let Some(url) = next else {
+            return Ok(());
+        };
+        if !is_api_url(&url) {
+            return Err(SpotifyError::Decode(format!(
+                "refusing to follow a paging link off the Web API: {url}"
+            )));
+        }
+        if self.requested.contains(&url) {
+            return Err(SpotifyError::Decode(format!("paging loop at {url}")));
+        }
+        self.queue(fetch(url));
+        Ok(())
+    }
+
+    fn queue(&mut self, fetch: Fetch) {
+        self.requested.insert(fetch.url().to_owned());
+        self.pending.push_back(fetch);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +344,98 @@ mod tests {
         assert_eq!(liked.origin, Origin::Both);
         assert_eq!(liked.album_uri.as_deref(), Some("spotify:album:x"));
         assert_eq!(liked.album_key().as_deref(), Some("spotify:album:x"));
+    }
+
+    const ALBUMS_PAGE_2: &str =
+        "https://api.spotify.com/v1/me/albums?offset=50&limit=50&market=from_token";
+    const CHOPIN_REST: &str =
+        "https://api.spotify.com/v1/albums/FakeAlbum0000000000002/tracks?offset=50&limit=50";
+
+    fn chopin_rest_page(next: Option<&str>) -> String {
+        serde_json::json!({
+            "items": [{
+                "artists": [{ "name": "Frédéric Chopin" }],
+                "duration_ms": 330_000,
+                "id": "FakeTrack0000000000008",
+                "is_playable": true,
+                "name": "Nocturnes, Op. 48: No. 1 in C Minor",
+                "uri": "spotify:track:FakeTrack0000000000008"
+            }],
+            "next": next, "offset": 50, "limit": 50, "total": 60
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn library_read_pages_everything() {
+        let albums_last = r#"{"items": [], "next": null, "offset": 50, "limit": 50, "total": 51}"#;
+        let chopin_rest = chopin_rest_page(None);
+        let body = |url: &str| -> &[u8] {
+            match url {
+                u if u == saved_albums_url(0) => {
+                    include_bytes!("../tests/fixtures/saved_albums_page.json")
+                }
+                u if u == saved_tracks_url(0) => {
+                    include_bytes!("../tests/fixtures/saved_tracks_page.json")
+                }
+                ALBUMS_PAGE_2 => albums_last.as_bytes(),
+                CHOPIN_REST => chopin_rest.as_bytes(),
+                other => panic!("unexpected GET {other}"),
+            }
+        };
+
+        let mut read = LibraryRead::new();
+        let mut fetched = Vec::new();
+        while let Some(url) = read.next_url().map(str::to_owned) {
+            read.ingest(body(&url)).unwrap();
+            fetched.push(url);
+        }
+        assert_eq!(fetched.len(), 4);
+        assert_eq!(read.pages_read(), 4);
+        assert!(read.ingest(b"{}").is_err(), "nothing outstanding");
+
+        let items = read.into_items();
+        let titles: Vec<&str> = items.iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "Goldberg Variations, BWV 988: Aria",
+                "Goldberg Variations, BWV 988: Variatio 1 a 1 Clav.",
+                "Goldberg Variations, BWV 988: Variatio 2 a 1 Clav.",
+                "Nocturnes, Op. 9: No. 2 in E-Flat Major",
+                "Suite bergamasque, L. 75: III. Clair de lune",
+                "Nocturnes, Op. 48: No. 1 in C Minor",
+            ]
+        );
+        // Later album pages keep the album's context.
+        let late = items.last().unwrap();
+        assert_eq!(late.album.as_deref(), Some("Chopin: Complete Nocturnes"));
+        assert_eq!(
+            late.album_uri.as_deref(),
+            Some("spotify:album:FakeAlbum0000000000002")
+        );
+        assert_eq!(late.origin, Origin::SavedAlbum);
+
+        // And the whole read feeds the DJ's pool.
+        let pool = crate::classical::CandidatePool::build(&items);
+        assert_eq!(pool.len(), 6);
+    }
+
+    #[test]
+    fn library_read_refuses_foreign_and_looping_links() {
+        let mut read = LibraryRead::new();
+        let foreign = r#"{"items": [], "next": "https://evil.example/v1/me/albums?offset=50"}"#;
+        let err = read.ingest(foreign.as_bytes()).unwrap_err().to_string();
+        assert!(err.contains("off the Web API"), "{err}");
+
+        let mut read = LibraryRead::new();
+        read.ingest(include_bytes!("../tests/fixtures/saved_albums_page.json"))
+            .unwrap();
+        read.ingest(include_bytes!("../tests/fixtures/saved_tracks_page.json"))
+            .unwrap();
+        assert_eq!(read.next_url(), Some(CHOPIN_REST));
+        read.ingest(chopin_rest_page(Some(CHOPIN_REST)).as_bytes())
+            .unwrap_err();
     }
 
     #[test]
