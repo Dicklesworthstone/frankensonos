@@ -153,6 +153,12 @@ Album/container favorites use `x-rincon-cpcontainer:1004206c<enc-uri>` with
 `flags=8300` and a container DIDL (`object.container.album.musicAlbum` via the
 `resMD` of the favorite).
 
+Arbitrary HTTP streams also render directly: `x-rincon-mp3radio://host/path`
+via `SetAVTransportURI` (class `object.item.audioItem.audioBroadcast`) played a
+public MP3 radio stream on the S1 group on first try (verified 2026-10-07).
+This is the fallback/bypass path for sources with no SMAPI integration: serve
+the audio locally, point any speaker at it.
+
 ## 5. Favorites (ground truth for render params)
 
 `ContentDirectory#Browse` with `ObjectID=FV:2`, `BrowseFlag=BrowseDirectChildren`,
@@ -261,3 +267,23 @@ Update mechanism (verified 2026-10-07):
 - `ZoneGroupTopology` also exposes `BeginSoftwareUpdate(UpdateURL, Flags,
   ExtraOptions)` — the install path. **Never called by this project**:
   flashing is human-led per `docs/SCOPE.md`.
+
+## 10. SMAPI (the speaker↔Spotify bridge) — research notes
+
+Sonos renders music services through SMAPI, a SOAP API Sonos operates per
+provider (Spotify: `https://spotify-v5.ws.sonos.com/smapi`, from the service
+descriptor). The speaker calls it directly; controllers may too (SoCo does).
+
+- Auth: SOAP header `<credentials xmlns="http://www.sonos.com/Services/1.1">`
+  with `deviceId` (the player's `RINCON_…` UUID), `deviceProvider` = `Sonos`,
+  and for linked accounts a `loginToken` block carrying `householdId` plus the
+  token/key pair minted during AppLink (`getDeviceLinkCode(householdId)` →
+  `getAppLink(householdId)`).
+- Calls: `getMetadata(id, index, count)` (browse tree), `search(category,
+  term)`, `getMediaURI(item_id)` (fresh stream URL per play), all returning
+  SMAPI-typed metadata whose `<desc>`/item-id conventions match §4.
+- Status: not yet driven directly by FrankenSonos — render params are learned
+  from favorites instead (works, simpler auth). Direct SMAPI drive is tracked
+  in bead `frankensonos-re-smapi-rbz`; an independent audio path via
+  `x-rincon-mp3radio:` (verified working) is bead `frankensonos-re-spotify-audio-w21`.
+
