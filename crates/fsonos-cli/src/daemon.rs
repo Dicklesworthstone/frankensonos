@@ -231,8 +231,13 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
     eprintln!("fsonos serve: stopping");
     for (server, addr) in &http {
         server.shutdown();
-        // Wake the accept loop so it sees the shutdown.
-        drop(std::net::TcpStream::connect(addr));
+        // Wake the accept loop so it sees the shutdown. Briefly: a host may
+        // not reach its own tailnet IPv6 address (Tailscale on macOS), and
+        // the loop also polls for the shutdown.
+        drop(std::net::TcpStream::connect_timeout(
+            addr,
+            Duration::from_millis(250),
+        ));
     }
     // The surfaces hold the model weakly: this ends every subscription.
     drop(live);
