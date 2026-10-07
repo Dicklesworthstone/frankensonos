@@ -10,7 +10,9 @@
 //! the right answer depends on the host.
 #![cfg(feature = "tailscale-live")]
 
-use fsonos_tailscale::{Probe, Source, TailnetStatus, is_tailnet_v4, is_tailnet_v6};
+use fsonos_tailscale::{
+    BindReason, Probe, Source, TailnetStatus, bind_plan, is_tailnet_v4, is_tailnet_v6,
+};
 use std::time::Instant;
 
 #[test]
@@ -40,5 +42,24 @@ fn detects_this_hosts_tailnet() {
         if t.running {
             assert!(t.logged_in, "running implies logged in: {t:?}");
         }
+    }
+}
+
+/// The default bind plan for this host binds and accepts on every address it
+/// picks (loopback, plus the tailnet when it is up).
+#[test]
+fn the_default_bind_plan_is_bindable_here() {
+    let status = Probe::default().detect();
+    let plan = bind_plan(&status, 0, None);
+    eprintln!("tailscale-live: bind plan {plan:#?}");
+    if status.running().is_some() {
+        assert_eq!(plan.reason, BindReason::Tailnet);
+    }
+    for addr in &plan.addrs {
+        let listener =
+            std::net::TcpListener::bind(addr).unwrap_or_else(|e| panic!("bind {addr}: {e}"));
+        let bound = listener.local_addr().unwrap();
+        std::net::TcpStream::connect(bound).unwrap_or_else(|e| panic!("connect {bound}: {e}"));
+        eprintln!("tailscale-live: bound and reached {bound}");
     }
 }

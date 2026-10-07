@@ -15,11 +15,13 @@
 //! reachable at from the tailnet; [`WhoIs`] says who is on the other end of a
 //! tailnet connection.
 
+pub mod bind;
 pub mod connect;
 mod exec;
 mod status;
 pub mod whois;
 
+pub use bind::{BindPlan, BindReason, bind_plan};
 pub use connect::{Listener, Reach, describe, reach};
 pub use status::parse_status;
 pub use whois::{Identity, WhoIs, parse_whois};
