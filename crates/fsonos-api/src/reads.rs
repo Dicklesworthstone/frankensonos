@@ -1,6 +1,7 @@
 //! What the read tools and routes answer: a zone's live state and a
 //! household's favorites.
 
+use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::favorites::{Favorite, FavoriteKind};
 use fsonos_proto::control::PositionInfo;
 use serde::{Deserialize, Serialize};
@@ -8,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::zones::ZoneDto;
 
 /// `GET /zones/{room}/state` and the `get_zone_state` tool.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ZoneStateDto {
     /// The group the room plays in.
     pub zone: ZoneDto,
@@ -23,7 +24,7 @@ pub struct ZoneStateDto {
 }
 
 /// The current track (or stream) of a group.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TrackDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -63,7 +64,7 @@ impl TrackDto {
 }
 
 /// One Sonos favorite: `GET /favorites` and the `list_favorites` tool.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FavoriteDto {
     /// `FV:2/<n>`; also accepted by `play_favorite`.
     pub id: String,

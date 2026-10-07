@@ -7,6 +7,7 @@
 //! response carries a [`Note`] saying so (`VOLUME_CLAMPED`); a denial is a
 //! `POLICY_DENIED` failure.
 
+use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::clock::Clock;
 use fsonos_core::policy::{
     Client, Decision, Policy, RoomLevel, ToolCall, VolumeChange as PolicyChange, VolumeIntent,
@@ -21,7 +22,7 @@ use crate::plan::{Command, VolumeScope};
 use crate::request::VolumeChange;
 
 /// A note on a successful response: how the request was carried out.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Note {
     pub code: NoteCode,
     pub detail: String,

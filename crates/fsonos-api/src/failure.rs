@@ -14,6 +14,7 @@
 //!
 //! `docs/ERRORS.md` documents every code; a test keeps the two in step.
 
+use fastapi::fastapi_openapi::{JsonSchema, Schema};
 use fastapi::{Response, ResponseBody, StatusCode};
 use fsonos_core::CoreError;
 use fsonos_core::favorites::FavoriteError;
@@ -268,6 +269,27 @@ impl NoteCode {
         match self {
             Self::VolumeClamped => "VOLUME_CLAMPED",
         }
+    }
+}
+
+// By hand: the derive would name the variants, not their wire names.
+impl JsonSchema for ErrorCode {
+    fn schema() -> Schema {
+        Schema::string_enum(Self::ALL.iter().map(|c| c.as_str().to_string()).collect())
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("ErrorCode")
+    }
+}
+
+impl JsonSchema for NoteCode {
+    fn schema() -> Schema {
+        Schema::string_enum(Self::ALL.iter().map(|c| c.as_str().to_string()).collect())
+    }
+
+    fn schema_name() -> Option<&'static str> {
+        Some("NoteCode")
     }
 }
 

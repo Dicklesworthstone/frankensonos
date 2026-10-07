@@ -83,6 +83,25 @@ fn house() -> Vec<HouseholdState> {
 }
 
 /// The API on an ephemeral loopback port, answering as `client`.
+/// The API over the canned transport and [`house`].
+fn app(
+    out_args: &'static str,
+    sent: &Arc<Mutex<Vec<String>>>,
+    client: &Client,
+    web: &WebPolicy,
+) -> fastapi::App {
+    let surface = Surface::new(
+        Box::new(Canned {
+            out_args,
+            sent: Arc::clone(sent),
+        }),
+        Box::new(|_| Ok(house())),
+        Policy::default(),
+        Box::new(SystemClock),
+    );
+    fsonos_api::app(&Arc::new(surface), client, web)
+}
+
 struct Api {
     addr: SocketAddr,
     server: Arc<TcpServer>,
@@ -93,17 +112,8 @@ struct Api {
 impl Api {
     fn start(out_args: &'static str, client: &Client) -> Self {
         let sent = Arc::new(Mutex::new(Vec::new()));
-        let surface = Surface::new(
-            Box::new(Canned {
-                out_args,
-                sent: Arc::clone(&sent),
-            }),
-            Box::new(|_| Ok(house())),
-            Policy::default(),
-            Box::new(SystemClock),
-        );
         let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
-        let app = Arc::new(fsonos_api::app(&Arc::new(surface), client, &web));
+        let app = Arc::new(app(out_args, &sent, client, &web));
         let config = ServerConfig::new("127.0.0.1:0").with_allowed_hosts(web.hosts().to_vec());
         let server = Arc::new(TcpServer::new(config));
         let (addr_tx, addr_rx) = mpsc::channel();
@@ -363,4 +373,78 @@ fn only_the_daemons_own_origins_may_call() {
     );
     assert_eq!(status, 200, "the daemon's own origin may call: {body}");
     assert_eq!(api.actions(), ["Pause"]);
+}
+
+#[test]
+fn the_openapi_document_describes_every_route() {
+    let api = Api::start("", &Client::LoopbackHttp);
+    let (status, doc) = api.get("/openapi.json");
+    assert_eq!(status, 200, "{doc}");
+    assert_eq!(doc["info"]["title"], "FrankenSonos");
+
+    // Every route the app serves is documented, and named.
+    let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
+    let served = app("", &Arc::default(), &Client::LoopbackHttp, &web);
+    let mut documented = 0;
+    for (method, path) in served.routes().filter(|(_, p)| *p != "/openapi.json") {
+        let op = &doc["paths"][path][method.as_str().to_lowercase()];
+        assert!(op["operationId"].is_string(), "{method:?} {path}: {op}");
+        assert!(op["responses"]["200"].is_object(), "{path}: no 200 answer");
+        assert!(
+            op["responses"]["404"].is_object(),
+            "{path}: no error answers"
+        );
+        documented += 1;
+    }
+    assert!(documented >= 20, "only {documented} routes documented");
+
+    // Operation ids are the MCP tools' names.
+    assert_eq!(doc["paths"]["/volume"]["post"]["operationId"], "set_volume");
+    assert_eq!(doc["paths"]["/undo"]["post"]["operationId"], "undo_last");
+    assert_eq!(
+        doc["paths"]["/zones/{room}/state"]["get"]["operationId"],
+        "get_zone_state"
+    );
+
+    // Bodies have their schemas, with the required fields.
+    let body = &doc["paths"]["/volume"]["post"]["requestBody"];
+    assert_eq!(body["required"], true);
+    let schema = &body["content"]["application/json"]["schema"];
+    let volume = schema["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    for field in ["zone", "volume", "delta", "group"] {
+        assert!(volume["properties"][field].is_object(), "{field}: {volume}");
+    }
+    assert_eq!(volume["required"], json!(["zone"]), "{volume}");
+
+    // Error answers carry the wire codes.
+    let not_found = doc["paths"]["/zones/{room}"]["get"]["responses"]["404"]["description"]
+        .as_str()
+        .unwrap();
+    assert!(not_found.contains("UNKNOWN_ROOM"), "{not_found}");
+    assert!(
+        doc["paths"]["/pause"]["post"]["responses"]["415"].is_object(),
+        "writes document 415"
+    );
+    assert!(
+        doc["paths"]["/zones"]["get"]["responses"]["415"].is_null(),
+        "reads are never refused for their media type"
+    );
+    let text = doc.to_string();
+    assert!(
+        text.contains("\"INVALID_ARGUMENT\""),
+        "error codes by wire name"
+    );
+    assert!(!text.contains("\"InvalidArgument\""), "not by variant name");
+
+    // The document is served behind the same browser rules as the rest.
+    let (status, _) = api.raw(
+        "GET",
+        "/openapi.json",
+        &[("Host", &api.host()), ("Origin", "https://evil.example")],
+        "",
+    );
+    assert_eq!(status, 403);
 }

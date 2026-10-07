@@ -1,12 +1,13 @@
 //! The action log as every surface shows it (`GET /actions`, the
 //! `recent_actions` tool, `fsonos log`), and what an undo reports.
 
+use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::UndoReport;
 use fsonos_core::store::{ActionFilter, LoggedAction};
 use serde::{Deserialize, Serialize};
 
 /// One logged action.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ActionDto {
     pub id: i64,
     /// Unix seconds.
@@ -46,7 +47,7 @@ impl From<&LoggedAction> for ActionDto {
 }
 
 /// Which actions to list: `GET /actions?client=&since=&limit=`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ActionsQuery {
     /// Only this client's actions.
@@ -74,7 +75,7 @@ impl ActionsQuery {
 
 /// `POST /undo` body. `own_only` (default `true`) undoes the caller's own
 /// newest action; `false` undoes the newest action of anyone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UndoRequest {
     #[serde(default = "yes")]
@@ -86,7 +87,7 @@ fn yes() -> bool {
 }
 
 /// What an undo did.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UndoDto {
     /// One line for people (`nothing to undo` when the log has nothing).
     pub summary: String,

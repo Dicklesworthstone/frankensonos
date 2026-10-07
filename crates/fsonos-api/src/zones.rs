@@ -6,6 +6,7 @@
 //! (a stereo pair or home-theater set is one room); transport state comes from
 //! the daemon's live event view, passed in as a lookup.
 
+use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::rooms::{household_labels, normalize_room};
 use fsonos_core::{ControlTarget, HouseholdState, Room};
 use fsonos_types::{PlayerId, TransportState};
@@ -15,7 +16,7 @@ use crate::failure::Failure;
 use crate::plan::resolve;
 
 /// One playing group.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ZoneDto {
     /// The room whose player coordinates the group.
     pub coordinator_room: String,

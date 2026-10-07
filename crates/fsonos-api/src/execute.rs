@@ -5,6 +5,7 @@
 //! addresses; this is the one place a surface turns a command into SOAP
 //! actions, so the CLI, the HTTP API and the MCP tools report alike.
 
+use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::{HouseholdState, control};
 use fsonos_proto::Transport;
 use fsonos_types::PlayerId;
@@ -16,7 +17,7 @@ use crate::plan::{Command, DjAction, TransportAction, VolumeScope};
 use crate::request::VolumeChange;
 
 /// The result of a command, for every surface.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OutcomeDto {
     /// What was done, or why nothing needed doing, in a sentence.
     pub done: String,

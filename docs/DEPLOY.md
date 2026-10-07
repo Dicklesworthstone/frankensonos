@@ -281,6 +281,7 @@ sudo launchctl print system/$LABEL | grep -E 'state|last exit'   # want: state =
 grep 'fsonos serve: ready' ~/Library/Logs/fsonos/fsonos.log       # the bound addresses
 curl -fsS http://127.0.0.1:8099/health                           # on the Mac
 curl -fsS http://127.0.0.1:8099/zones                            # rooms and what they play
+curl -fsS http://127.0.0.1:8099/openapi.json                     # every route, body and error code
 tailscale serve status
 curl -fsS https://<mac>.<tailnet>.ts.net/health                  # from another tailnet device
 ```

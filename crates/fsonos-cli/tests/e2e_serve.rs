@@ -246,6 +246,19 @@ fn check_http_reads(s: &mut Scenario, api: &str) {
                 .is_some_and(|c| c.iter().any(|x| x["id"] == "daemon.bind")),
         format!("{doctor:?}"),
     );
+    let openapi = http(api, "GET", "/openapi.json", &[], "");
+    let doc = parse(&openapi);
+    s.check(
+        "openapi",
+        "http",
+        "GET /openapi.json documents the routes under the MCP tools' names",
+        doc["paths"]["/zones"]["get"]["operationId"] == "list_zones"
+            && doc["paths"]["/play/favorite"]["post"]["operationId"] == "play_favorite",
+        format!(
+            "{} paths",
+            doc["paths"].as_object().map_or(0, serde_json::Map::len)
+        ),
+    );
     let favorites = http(api, "GET", "/favorites?zone=Living+Room", &[], "");
     let titles = parse(&favorites);
     s.check(

@@ -7,6 +7,7 @@
 //! that sends `"room"` instead of `"zone"` should hear about it, not have its
 //! request silently mean something else.
 
+use fastapi::{JsonSchema, fastapi_openapi};
 use serde::{Deserialize, Serialize};
 
 use crate::failure::Failure;
@@ -21,7 +22,7 @@ pub const MAX_TITLE_LEN: usize = 256;
 
 /// Body naming one zone: `POST /pause|resume|next|previous|ungroup` and
 /// `POST /dj/{start|skip|stop}`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ZoneRequest {
     /// Room name, matched case-insensitively with curly apostrophes folded.
@@ -36,7 +37,7 @@ impl ZoneRequest {
 }
 
 /// `POST /play` body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlayRequest {
     pub zone: String,
@@ -67,7 +68,7 @@ impl PlayRequest {
 /// `POST /volume` body: exactly one of `volume` (absolute) or `delta`
 /// (relative). With `group`, the change applies to the zone's whole group
 /// rather than the one room.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct VolumeRequest {
     pub zone: String,
@@ -121,7 +122,7 @@ impl VolumeRequest {
 }
 
 /// `POST /mute` body. `mute` defaults to `true`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MuteRequest {
     pub zone: String,
@@ -141,7 +142,7 @@ impl MuteRequest {
 }
 
 /// `POST /play/favorite` body: play one of the household's Sonos favorites.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlayFavoriteRequest {
     pub zone: String,
@@ -167,7 +168,7 @@ impl PlayFavoriteRequest {
 }
 
 /// `POST /group` body: move `zone` into the group that `to` belongs to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GroupRequest {
     /// The room that moves.

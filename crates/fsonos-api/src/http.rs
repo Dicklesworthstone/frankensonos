@@ -3,6 +3,7 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `GET /health` | | [`crate::HealthDto`] |
+//! | `GET /openapi.json` | | the OpenAPI document of every other route |
 //! | `GET /zones` | | `[ZoneDto]` |
 //! | `GET /zones/{room}` | | [`crate::ZoneDto`] (`room` is percent-decoded) |
 //! | `GET /zones/{room}/state` | | [`crate::ZoneStateDto`] |
@@ -22,130 +23,417 @@
 //! must be the daemon's own; POSTs must be JSON); the listener itself admits
 //! only its own Host names. Failures answer with the code's status and an
 //! [`crate::ApiError`] body
-//! (`docs/ERRORS.md`). Every call runs as the listener's [`Client`] under the
+//! (`docs/ERRORS.md`). Each operation id in the OpenAPI document is the
+//! name of the MCP tool that does the same. Every call runs as the listener's [`Client`] under the
 //! house policy. Speaker I/O is synchronous inside the handler.
 
-use fastapi::{App, PathParams, Request, RequestContext, Response};
+use fastapi::core::{BoxFuture, RouteEntry};
+use fastapi::fastapi_openapi;
+use fastapi::{
+    App, AppBuilder, JsonSchema, Method, OpenApiConfig, PathParams, Request, Response,
+    ResponseBody, Route,
+};
 use fsonos_core::HouseholdState;
 use fsonos_core::policy::Client;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::future::{Ready, ready};
+use std::collections::BTreeMap;
+use std::future::ready;
 use std::sync::Arc;
 
-use crate::HealthDto;
-use crate::failure::Failure;
+use crate::failure::{ErrorCode, Failure};
 use crate::log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 use crate::plan::{
     self, Command, DjAction, TransportAction, plan_group, plan_mute, plan_play, plan_ungroup,
     plan_volume,
 };
+use crate::reads::{FavoriteDto, ZoneStateDto};
 use crate::request::{PlayFavoriteRequest, ZoneRequest};
 use crate::surface::Surface;
 use crate::web::WebPolicy;
+use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
 
 /// The API application over `surface`, answering every caller as `client`,
 /// with the listener's browser-safety rules (`web`, see [`crate::web`]).
 #[must_use]
 pub fn app(surface: &Arc<Surface>, client: &Client, web: &WebPolicy) -> App {
     let web = Arc::new(web.clone());
-    let read = |handle: Handler| admitted(&web, false, handle);
-    let write = |handle: Handler| admitted(&web, true, handle);
-    let ctl = |tool: &'static str| (Arc::clone(surface), client.clone(), tool);
-    let mut app = App::builder()
-        .get("/health", read(Box::new(|_| health())))
-        .get("/zones", {
-            let (s, c, _) = ctl("list_zones");
-            read(Box::new(move |_| answer(s.zones(&c))))
-        })
-        .get("/zones/{room}", {
-            let (s, c, _) = ctl("get_zone");
-            read(Box::new(move |req| {
-                answer(path_room(req).and_then(|room| s.zone(&c, &room)))
-            }))
-        })
-        .get("/zones/{room}/state", {
-            let (s, c, _) = ctl("get_zone_state");
-            read(Box::new(move |req| {
-                answer(path_room(req).and_then(|room| s.zone_state(&c, &room)))
-            }))
-        })
-        .get("/favorites", {
-            let (s, c, _) = ctl("list_favorites");
-            read(Box::new(move |req| {
-                answer(query_zone(req).and_then(|zone| s.favorites(&c, &zone)))
-            }))
-        })
-        .get("/doctor", {
-            let (s, c, _) = ctl("doctor");
-            read(Box::new(move |_| answer(s.doctor(&c).map(|r| r.to_json()))))
-        })
-        .get("/actions", {
-            let (s, c, _) = ctl("recent_actions");
-            read(Box::new(move |req| {
-                let listed = actions_query(req).and_then(|q| s.recent_actions(&c, &q.filter()));
+    let entries = routes(&Ctx {
+        surface,
+        client,
+        web: &web,
+    });
+    let spec = openapi_document(&entries);
+    let openapi = Op::get(
+        "/openapi.json",
+        "openapi",
+        DAEMON,
+        "This API's OpenAPI document",
+    )
+    .entry(&web, Box::new(move |_| json_text(&spec)));
+    entries
+        .into_iter()
+        .chain([openapi])
+        .fold(App::builder(), AppBuilder::route_entry)
+        .build()
+}
+
+/// The OpenAPI document describing `entries`.
+fn openapi_document(entries: &[RouteEntry]) -> String {
+    let config = OpenApiConfig::new()
+        .title("FrankenSonos")
+        .version(env!("CARGO_PKG_VERSION"))
+        .description(
+            "Control the Sonos players of your own households from anywhere on your \
+             tailnet. Failures carry a stable `code` (docs/ERRORS.md); every operation id \
+             matches the MCP tool that does the same.",
+        );
+    let documented = entries
+        .iter()
+        .cloned()
+        .fold(App::builder().openapi(config), AppBuilder::route_entry)
+        .build();
+    documented.openapi_spec().unwrap_or("{}").to_string()
+}
+
+const DAEMON: &str = "daemon";
+const ZONES: &str = "zones";
+const FAVORITES: &str = "favorites";
+const CONTROL: &str = "control";
+const DJ: &str = "dj";
+const LOG: &str = "log";
+
+/// Every route but `/openapi.json`.
+fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
+    let mut routes = reads(cx);
+    routes.extend(house(cx));
+    routes.extend(controls(cx));
+    routes
+}
+
+/// The daemon and the zones.
+fn reads(cx: &Ctx<'_>) -> Vec<RouteEntry> {
+    vec![
+        cx.route(
+            &Op::get(
+                "/health",
+                "health",
+                DAEMON,
+                "Whether the daemon is up, and its version",
+            ),
+            |_, _, _| health(),
+        )
+        .response_schema::<HealthDto>(200, "The daemon answers"),
+        cx.route(
+            &Op::get(
+                "/doctor",
+                "doctor",
+                DAEMON,
+                "Check this setup; each problem names its fix",
+            ),
+            |s, c, _| answer(s.doctor(c).map(|r| r.to_json())),
+        )
+        .response_schema::<serde_json::Value>(
+            200,
+            "The doctor report: `schema`, `exit_code`, `counts`, `checks`",
+        ),
+        cx.route(
+            &Op::get(
+                "/zones",
+                "list_zones",
+                ZONES,
+                "Every zone (playing group), both households",
+            ),
+            |s, c, _| answer(s.zones(c)),
+        )
+        .response_schema::<Vec<ZoneDto>>(200, "The zones"),
+        cx.route(
+            &Op::get(
+                "/zones/{room}",
+                "get_zone",
+                ZONES,
+                "The zone a room plays in",
+            ),
+            |s, c, req| answer(path_room(req).and_then(|room| s.zone(c, &room))),
+        )
+        .response_schema::<ZoneDto>(200, "The room's zone"),
+        cx.route(
+            &Op::get(
+                "/zones/{room}/state",
+                "get_zone_state",
+                ZONES,
+                "What a room's zone plays, and how loud the room is",
+            ),
+            |s, c, req| answer(path_room(req).and_then(|room| s.zone_state(c, &room))),
+        )
+        .response_schema::<ZoneStateDto>(200, "The zone's live state"),
+    ]
+}
+
+/// Favorites, the action log and undo.
+fn house(cx: &Ctx<'_>) -> Vec<RouteEntry> {
+    vec![
+        cx.route(
+            &Op::get(
+                "/favorites",
+                "list_favorites",
+                FAVORITES,
+                "The Sonos favorites of a room's household",
+            ),
+            |s, c, req| answer(favorites_query(req).and_then(|q| s.favorites(c, &q.zone))),
+        )
+        .query_schema::<FavoritesQuery>(true)
+        .response_schema::<Vec<FavoriteDto>>(200, "The favorites, in the household's order"),
+        cx.route(
+            &Op::post(
+                "/play/favorite",
+                "play_favorite",
+                FAVORITES,
+                "Play one of the household's Sonos favorites",
+            ),
+            |s, c, req| {
+                answer(body::<PlayFavoriteRequest>(req).and_then(|b| s.play_favorite(c, &b)))
+            },
+        )
+        .request_schema::<PlayFavoriteRequest>(true)
+        .response_schema::<OutcomeDto>(200, "What was done"),
+        cx.route(
+            &Op::get(
+                "/actions",
+                "recent_actions",
+                LOG,
+                "The action log, newest first",
+            ),
+            |s, c, req| {
+                let listed = actions_query(req).and_then(|q| s.recent_actions(c, &q.filter()));
                 answer(listed.map(|a| a.iter().map(ActionDto::from).collect::<Vec<_>>()))
-            }))
-        })
-        .post("/play/favorite", {
-            let (s, c, _) = ctl("play_favorite");
-            write(Box::new(move |req| {
-                answer(body::<PlayFavoriteRequest>(req).and_then(|b| s.play_favorite(&c, &b)))
-            }))
-        })
-        .post("/undo", {
-            let (s, c, _) = ctl("undo");
-            write(Box::new(move |req| {
+            },
+        )
+        .query_schema::<ActionsQuery>(false)
+        .response_schema::<Vec<ActionDto>>(200, "The logged actions"),
+        cx.route(
+            &Op::post("/undo", "undo_last", LOG, "Undo the newest undoable action"),
+            |s, c, req| {
                 let undone = body_or_default::<UndoRequest>(req, UndoRequest { own_only: true })
-                    .and_then(|r| s.undo(&c, r.own_only));
+                    .and_then(|r| s.undo(c, r.own_only));
                 answer(undone.map(UndoDto::from))
-            }))
+            },
+        )
+        .request_schema::<UndoRequest>(false)
+        .response_schema::<UndoDto>(200, "What was undone, if anything"),
+    ]
+}
+
+/// The speaker controls and the DJ.
+fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
+    let mut routes = vec![
+        cx.control(
+            Op::post(
+                "/play",
+                "play",
+                CONTROL,
+                "Play a Spotify item, link or stream on a zone",
+            ),
+            plan_play,
+        ),
+        cx.control(
+            Op::post(
+                "/volume",
+                "set_volume",
+                CONTROL,
+                "Set or change a room's volume, or its group's",
+            ),
+            plan_volume,
+        ),
+        cx.control(
+            Op::post("/mute", "mute", CONTROL, "Mute or unmute a room"),
+            plan_mute,
+        ),
+        cx.control(
+            Op::post(
+                "/group",
+                "group",
+                CONTROL,
+                "Move a room into another room's group",
+            ),
+            plan_group,
+        ),
+        cx.control(
+            Op::post(
+                "/ungroup",
+                "ungroup",
+                CONTROL,
+                "Take a room out of its group",
+            ),
+            plan_ungroup,
+        ),
+    ];
+    for (path, id, summary, action) in [
+        (
+            "/pause",
+            "pause",
+            "Pause a room's zone",
+            TransportAction::Pause,
+        ),
+        (
+            "/resume",
+            "resume",
+            "Resume a room's zone",
+            TransportAction::Resume,
+        ),
+        (
+            "/next",
+            "next",
+            "Skip to the next track",
+            TransportAction::Next,
+        ),
+        (
+            "/previous",
+            "previous",
+            "Go back a track",
+            TransportAction::Previous,
+        ),
+    ] {
+        routes.push(cx.control(
+            Op::post(path, id, CONTROL, summary),
+            move |h, r: &ZoneRequest| plan::plan_transport(h, r, action),
+        ));
+    }
+    for (path, id, summary, action) in [
+        (
+            "/dj/start",
+            "dj_start",
+            "Start the DJ on a room's zone",
+            DjAction::Start,
+        ),
+        (
+            "/dj/skip",
+            "dj_skip",
+            "Skip the DJ's current pick",
+            DjAction::Skip,
+        ),
+        ("/dj/stop", "dj_stop", "Stop the DJ", DjAction::Stop),
+    ] {
+        routes.push(cx.control(
+            Op::post(path, id, DJ, summary),
+            move |h, r: &ZoneRequest| plan::plan_dj(h, r, action),
+        ));
+    }
+    routes
+}
+
+/// What every route works with.
+struct Ctx<'a> {
+    surface: &'a Arc<Surface>,
+    client: &'a Client,
+    web: &'a Arc<WebPolicy>,
+}
+
+impl Ctx<'_> {
+    /// The route `op`, doing `work` on the surface as the listener's caller.
+    fn route<F>(&self, op: &Op, work: F) -> RouteEntry
+    where
+        F: Fn(&Surface, &Client, &mut Request) -> Response + Send + Sync + 'static,
+    {
+        let (surface, client) = (Arc::clone(self.surface), self.client.clone());
+        op.entry(self.web, Box::new(move |req| work(&surface, &client, req)))
+    }
+
+    /// A control route: parse the JSON body as `B`, plan it, carry it out.
+    /// The action is logged under the operation id (the MCP tool's name).
+    fn control<B, P>(&self, op: Op, plan: P) -> RouteEntry
+    where
+        B: DeserializeOwned + fastapi_openapi::JsonSchema + 'static,
+        P: Fn(&[HouseholdState], &B) -> Result<Command, Failure> + Send + Sync + 'static,
+    {
+        let tool = op.id;
+        self.route(&op, move |surface, client, req| {
+            answer(body::<B>(req).and_then(|b| surface.control(client, tool, |h| plan(h, &b))))
         })
-        .post("/play", write(control(ctl("play"), plan_play)))
-        .post("/volume", write(control(ctl("set_volume"), plan_volume)))
-        .post("/mute", write(control(ctl("mute"), plan_mute)))
-        .post("/group", write(control(ctl("group"), plan_group)))
-        .post("/ungroup", write(control(ctl("ungroup"), plan_ungroup)));
-    for (path, tool, action) in [
-        ("/pause", "pause", TransportAction::Pause),
-        ("/resume", "resume", TransportAction::Resume),
-        ("/next", "next", TransportAction::Next),
-        ("/previous", "previous", TransportAction::Previous),
-    ] {
-        let handle = control(ctl(tool), move |h, r: &ZoneRequest| {
-            plan::plan_transport(h, r, action)
-        });
-        app = app.post(path, write(handle));
+        .request_schema::<B>(true)
+        .response_schema::<OutcomeDto>(200, "What was done")
     }
-    for (path, tool, action) in [
-        ("/dj/start", "dj_start", DjAction::Start),
-        ("/dj/skip", "dj_skip", DjAction::Skip),
-        ("/dj/stop", "dj_stop", DjAction::Stop),
-    ] {
-        let handle = control(ctl(tool), move |h, r: &ZoneRequest| {
-            plan::plan_dj(h, r, action)
-        });
-        app = app.post(path, write(handle));
+}
+
+/// One route as the OpenAPI document names it.
+#[derive(Clone, Copy)]
+struct Op {
+    method: Method,
+    path: &'static str,
+    /// The operation id: the name of the MCP tool doing the same, if any.
+    id: &'static str,
+    tag: &'static str,
+    summary: &'static str,
+}
+
+impl Op {
+    const fn get(
+        path: &'static str,
+        id: &'static str,
+        tag: &'static str,
+        summary: &'static str,
+    ) -> Self {
+        Self {
+            method: Method::Get,
+            path,
+            id,
+            tag,
+            summary,
+        }
     }
-    app.build()
+
+    const fn post(
+        path: &'static str,
+        id: &'static str,
+        tag: &'static str,
+        summary: &'static str,
+    ) -> Self {
+        Self {
+            method: Method::Post,
+            ..Self::get(path, id, tag, summary)
+        }
+    }
+
+    /// The route: `handle` behind `web`'s checks (a `POST` must also be
+    /// JSON), documented with the error answers it can give.
+    fn entry(&self, web: &Arc<WebPolicy>, handle: Handler) -> RouteEntry {
+        let write = self.method == Method::Post;
+        let web = Arc::clone(web);
+        let route = Route::new(self.method, self.path)
+            .operation_id(self.id)
+            .summary(self.summary)
+            .tag(self.tag);
+        let entry = RouteEntry::from_route(route, move |_, req| {
+            let response = match web.admit(req, write) {
+                Ok(()) => handle(req),
+                Err(refused) => refused.http_response(),
+            };
+            Box::pin(ready(response)) as BoxFuture<'_, Response>
+        });
+        error_answers(entry, write)
+    }
 }
 
 /// A route's work, after the browser-safety checks passed.
 type Handler = Box<dyn Fn(&mut Request) -> Response + Send + Sync>;
 
-/// `handle` behind `web`'s checks; `write` routes must also be JSON.
-fn admitted(
-    web: &Arc<WebPolicy>,
-    write: bool,
-    handle: Handler,
-) -> impl Fn(&RequestContext, &mut Request) -> Ready<Response> + Send + Sync + 'static {
-    let web = Arc::clone(web);
-    move |_: &RequestContext, req: &mut Request| {
-        ready(match web.admit(req, write) {
-            Ok(()) => handle(req),
-            Err(refused) => refused.http_response(),
-        })
+/// Document each status the API can fail with and the codes it carries
+/// (only writes are refused for their media type).
+fn error_answers(mut entry: RouteEntry, write: bool) -> RouteEntry {
+    let mut by_status: BTreeMap<u16, Vec<&str>> = BTreeMap::new();
+    for code in ErrorCode::ALL {
+        if write || code != ErrorCode::UnsupportedMediaType {
+            by_status
+                .entry(code.status())
+                .or_default()
+                .push(code.as_str());
+        }
     }
+    for (status, codes) in by_status {
+        let codes = codes.join(", ");
+        entry = entry.response_schema::<ApiError>(status, format!("{codes} (docs/ERRORS.md)"));
+    }
+    entry
 }
 
 fn health() -> Response {
@@ -156,15 +444,10 @@ fn health() -> Response {
     Response::json(&body).expect("HealthDto serializes")
 }
 
-/// A control route: parse the JSON body as `B`, plan it, carry it out.
-fn control<B, P>((surface, client, tool): (Arc<Surface>, Client, &'static str), plan: P) -> Handler
-where
-    B: DeserializeOwned + 'static,
-    P: Fn(&[HouseholdState], &B) -> Result<Command, Failure> + Send + Sync + 'static,
-{
-    Box::new(move |req: &mut Request| {
-        answer(body::<B>(req).and_then(|body| surface.control(&client, tool, |h| plan(h, &body))))
-    })
+fn json_text(text: &str) -> Response {
+    Response::ok()
+        .header("content-type", b"application/json".to_vec())
+        .body(ResponseBody::Bytes(text.as_bytes().to_vec()))
 }
 
 fn body<B: DeserializeOwned>(req: &mut Request) -> Result<B, Failure> {
@@ -203,12 +486,19 @@ fn query_param(req: &Request, name: &str) -> Result<Option<String>, Failure> {
         })
 }
 
-/// The `zone` query parameter, which `GET /favorites` requires.
-fn query_zone(req: &Request) -> Result<String, Failure> {
-    query_param(req, "zone")?.ok_or_else(|| {
+/// `GET /favorites?zone=<room>`.
+#[derive(JsonSchema)]
+struct FavoritesQuery {
+    /// Any room of the household.
+    zone: String,
+}
+
+fn favorites_query(req: &Request) -> Result<FavoritesQuery, Failure> {
+    let zone = query_param(req, "zone")?.ok_or_else(|| {
         Failure::invalid("name the room: GET /favorites?zone=<room>")
             .with_hint("Add ?zone=<room>; any room of the household will do.")
-    })
+    })?;
+    Ok(FavoritesQuery { zone })
 }
 
 /// `GET /actions`' optional `client`, `since` and `limit`.

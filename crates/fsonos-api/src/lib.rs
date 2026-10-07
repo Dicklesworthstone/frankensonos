@@ -49,10 +49,11 @@ pub use surface::Surface;
 pub use web::WebPolicy;
 pub use zones::ZoneDto;
 
+use fastapi::{JsonSchema, fastapi_openapi};
 use serde::{Deserialize, Serialize};
 
 /// `GET /health` response.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct HealthDto {
     pub status: String,
     pub version: String,
@@ -61,7 +62,7 @@ pub struct HealthDto {
 /// The API's error body (FastAPI-style `detail`, plus the stable code). See
 /// [`Failure`] and `docs/ERRORS.md`. Errors the HTTP framework itself raises
 /// (an unknown route, say) carry only `detail`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ApiError {
     pub detail: String,
     pub code: ErrorCode,
