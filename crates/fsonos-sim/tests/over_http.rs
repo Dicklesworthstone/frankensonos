@@ -406,3 +406,75 @@ fn lan_routes_by_advertised_address_and_pairs_fold_into_one_room() {
         Err(ProtoError::Network { .. })
     ));
 }
+
+/// How many players render in the group `coordinator` leads.
+fn group_size(t: &SimTransport, coordinator: &str) -> usize {
+    get_zone_group_state(t, t.ip())
+        .unwrap()
+        .groups
+        .iter()
+        .filter(|g| g.coordinator.0 == coordinator)
+        .map(|g| g.members.len())
+        .sum()
+}
+
+#[test]
+fn a_slow_join_lands_later_and_delegation_hands_the_group_over() {
+    let sim = sim();
+    let kitchen = sim.transport("Kitchen").unwrap();
+    let office = sim.transport("Office").unwrap();
+    let kitchen_uuid = sim.player("Kitchen").unwrap().uuid.clone();
+    let office_uuid = sim.player("Office").unwrap().uuid.clone();
+    let radio = "x-rincon-mp3radio://radio.example/stream";
+    avt(
+        &kitchen,
+        "SetAVTransportURI",
+        &[("CurrentURI", radio), ("CurrentURIMetaData", "")],
+    )
+    .unwrap();
+    avt(&kitchen, "Play", &[("Speed", "1")]).unwrap();
+    let delegate = || {
+        avt(
+            &kitchen,
+            "DelegateGroupCoordinationTo",
+            &[("NewCoordinator", &office_uuid), ("RejoinGroup", "0")],
+        )
+    };
+
+    // The join is answered at once and lands in the topology later.
+    sim.join_lag("Office", Duration::from_millis(300)).unwrap();
+    let asked = Instant::now();
+    avt(
+        &office,
+        "SetAVTransportURI",
+        &[
+            ("CurrentURI", &format!("x-rincon:{kitchen_uuid}")),
+            ("CurrentURIMetaData", ""),
+        ],
+    )
+    .unwrap();
+    assert!(asked.elapsed() < Duration::from_millis(300));
+    assert_eq!(group_size(&kitchen, &kitchen_uuid), 1, "not in yet");
+    assert_eq!(fault_code(delegate()), 800, "Office is no member yet");
+    std::thread::sleep(Duration::from_millis(350));
+    assert_eq!(group_size(&kitchen, &kitchen_uuid), 2, "landed");
+
+    // Kitchen hands the group and its playback to Office, then leaves.
+    assert_eq!(
+        fault_code(avt(
+            &kitchen,
+            "DelegateGroupCoordinationTo",
+            &[("NewCoordinator", &kitchen_uuid), ("RejoinGroup", "0")],
+        )),
+        800,
+        "not to itself"
+    );
+    delegate().unwrap();
+    assert_eq!(group_size(&kitchen, &office_uuid), 1, "Kitchen left");
+    assert_eq!(group_size(&kitchen, &kitchen_uuid), 1);
+    assert_eq!(transport_state(&office), "PLAYING");
+    assert_ne!(transport_state(&kitchen), "PLAYING");
+    let media = avt(&office, "GetMediaInfo", &[]).unwrap();
+    assert_eq!(media.require("CurrentURI").unwrap(), radio);
+    assert_eq!(fault_code(delegate()), 800, "Kitchen leads nothing now");
+}

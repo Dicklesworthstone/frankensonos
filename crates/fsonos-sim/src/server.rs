@@ -121,6 +121,7 @@ fn respond(shared: &Arc<Mutex<State>>, index: usize, req: &Request) -> Response 
     let Ok(mut state) = shared.lock() else {
         return text(500, "Internal Server Error", String::new());
     };
+    state.settle_joins(Instant::now());
     let path = req.uri.split('?').next().unwrap_or_default();
     let model = state.players[index].model;
     match &req.method {

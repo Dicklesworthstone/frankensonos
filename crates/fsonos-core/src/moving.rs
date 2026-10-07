@@ -1,7 +1,8 @@
 //! Moving playback between rooms, and whole-house ("party") mode.
 //!
 //! `move` takes the music from one room to another as one intent: the target
-//! joins the source's group, then the source leaves. When the source leads
+//! joins the source's group (the move waits, up to [`JOIN_DEADLINE`], for the
+//! topology to show it), then the source leaves. When the source leads
 //! the group, coordination is first handed to the target with AVTransport
 //! `DelegateGroupCoordinationTo` (playback moves with it). A player that does
 //! not offer that action (UPnP 401) gets the fallback: the source's playback
@@ -25,9 +26,11 @@ use fsonos_proto::didl::{
     DidlObject, parse_didl, spotify_queue_uri, spotify_track_didl, spotify_uri_from_renderer_uri,
 };
 use fsonos_proto::soap::{AV_TRANSPORT, args_xml, call};
+use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
+use std::time::{Duration, Instant};
 
 /// Why a move cannot go ahead as asked.
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +45,9 @@ pub enum MoveError {
     /// parameters from, so Spotify items cannot be replayed there.
     #[error("{0}'s household has no Spotify favorite to learn render parameters from")]
     NoRenderParams(String),
+    /// The target never showed up in the source's group.
+    #[error("{room} did not join the group within {waited:?}; the music stayed where it was")]
+    JoinTimedOut { room: String, waited: Duration },
     #[error(transparent)]
     Core(#[from] CoreError),
 }
@@ -112,12 +118,31 @@ pub fn plan_move(
     Ok(steps)
 }
 
+/// How long a move waits for the target's join to show in the topology.
+pub const JOIN_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How often the topology is checked while waiting for a join.
+const JOIN_POLL: Duration = Duration::from_millis(100);
+
 /// Move the music from room `from` to room `to` in the same household.
 pub fn move_playback<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     from: &ControlTarget<'_>,
     to: &ControlTarget<'_>,
+) -> Result<MoveReport, MoveError> {
+    move_playback_within(t, households, from, to, JOIN_DEADLINE)
+}
+
+/// [`move_playback`], waiting at most `join_deadline` for the target's join
+/// to land (players answer the join before the topology shows it). Nothing
+/// is handed over or removed until it has.
+pub fn move_playback_within<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    from: &ControlTarget<'_>,
+    to: &ControlTarget<'_>,
+    join_deadline: Duration,
 ) -> Result<MoveReport, MoveError> {
     let steps = plan_move(from, to)?;
     let coordinator = from.coordinator.id.clone();
@@ -130,6 +155,13 @@ pub fn move_playback<T: Transport + ?Sized>(
         match step {
             MoveStep::Join => {
                 control::join(t, households, &to.player.id, &coordinator)?;
+                let host = ip(households, &coordinator)?;
+                if !joined_within(t, host, &coordinator, &to.player.id, join_deadline)? {
+                    return Err(MoveError::JoinTimedOut {
+                        room: to.room.name.clone(),
+                        waited: join_deadline,
+                    });
+                }
                 report.method = MoveMethod::Regrouped;
             }
             MoveStep::Leave => {
@@ -156,6 +188,29 @@ pub fn move_playback<T: Transport + ?Sized>(
         }
     }
     Ok(report)
+}
+
+/// Whether `member` renders in `coordinator`'s group, checking the topology
+/// until it does or `deadline` has passed.
+fn joined_within<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+    member: &PlayerId,
+    deadline: Duration,
+) -> Result<bool, ProtoError> {
+    let started = Instant::now();
+    loop {
+        let joined = get_zone_group_state(t, host)?
+            .groups
+            .iter()
+            .any(|g| g.coordinator == *coordinator && g.members.iter().any(|m| m.uuid == *member));
+        let left = deadline.saturating_sub(started.elapsed());
+        if joined || left.is_zero() {
+            return Ok(joined);
+        }
+        std::thread::sleep(JOIN_POLL.min(left));
+    }
 }
 
 /// The fallback for a player without DelegateGroupCoordinationTo: the target

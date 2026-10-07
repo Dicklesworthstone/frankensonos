@@ -204,6 +204,10 @@ pub(crate) struct Faults {
     pub upnp: Vec<(String, u16)>,
     /// Unreachable (rebooting) until this instant.
     pub unreachable_until: Option<std::time::Instant>,
+    /// How long a join (`x-rincon:`) takes to show in the topology.
+    pub join_lag: std::time::Duration,
+    /// A join waiting out `join_lag`: (the player joined, when it lands).
+    pub pending_join: Option<(usize, std::time::Instant)>,
 }
 
 impl Player {
@@ -415,6 +419,25 @@ impl State {
         Ok(Vec::new())
     }
 
+    /// Carry out the lagging joins whose time has come.
+    pub(crate) fn settle_joins(&mut self, now: std::time::Instant) {
+        let due: Vec<(usize, usize)> = (0..self.players.len())
+            .filter_map(|p| match self.players[p].faults.pending_join {
+                Some((target, at)) if at <= now => Some((p, target)),
+                _ => None,
+            })
+            .collect();
+        if due.is_empty() {
+            return;
+        }
+        for (p, target) in due {
+            self.players[p].faults.pending_join = None;
+            // A join that has become impossible meanwhile just never lands.
+            let _ = self.join(p, target);
+        }
+        self.flush_events();
+    }
+
     /// Join `p` to the group that `target` belongs to.
     fn join(&mut self, p: usize, target: usize) -> Result<(), Fault> {
         let coord = self.players[target].coordinator;
@@ -500,7 +523,14 @@ impl State {
                 let metadata = args.get("CurrentURIMetaData")?.to_string();
                 if let Some(target) = uri.strip_prefix("x-rincon:") {
                     let t = self.find(target).ok_or(SONOS_FAILURE)?;
-                    self.join(p, t)?;
+                    let lag = self.players[p].faults.join_lag;
+                    if lag.is_zero() {
+                        self.join(p, t)?;
+                    } else {
+                        // Answered now, carried out later by settle_joins.
+                        self.players[p].faults.pending_join =
+                            Some((t, std::time::Instant::now() + lag));
+                    }
                     return Ok(Vec::new());
                 }
                 // Any other source makes a member leave its group first.

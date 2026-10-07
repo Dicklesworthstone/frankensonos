@@ -6,7 +6,7 @@ use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::{PlayerId, TransportState};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn sim() -> SimHandle {
     SimHousehold::builder()
@@ -104,6 +104,53 @@ fn moving_a_coordinator_delegates_and_playback_follows() {
         "the source left"
     );
     assert_ne!(playing(&lan, &h, "Kitchen").0, TransportState::Playing);
+}
+
+#[test]
+fn a_slow_join_is_waited_for_and_one_that_never_lands_moves_nothing() {
+    let sim = sim();
+    let lan = sim.lan();
+    play_queue(&sim, &lan, "Kitchen");
+    sim.join_lag("Office", Duration::from_millis(400)).unwrap();
+    let h = houses(&sim, &lan);
+    let started = Instant::now();
+    let report = moving::move_playback(
+        &lan,
+        &h,
+        &resolve_room(&h, "Kitchen").unwrap(),
+        &resolve_room(&h, "Office").unwrap(),
+    )
+    .unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(400));
+    assert_eq!(report.method, MoveMethod::Delegated);
+    let h = houses(&sim, &lan);
+    assert_eq!(playing(&lan, &h, "Office").0, TransportState::Playing);
+
+    // The Den's join would land long after the deadline: Office keeps the
+    // music and its group.
+    sim.join_lag("Den", Duration::from_secs(60)).unwrap();
+    let err = moving::move_playback_within(
+        &lan,
+        &h,
+        &resolve_room(&h, "Office").unwrap(),
+        &resolve_room(&h, "Den").unwrap(),
+        Duration::from_millis(300),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&err, MoveError::JoinTimedOut { room, .. } if room == "Den"),
+        "{err}"
+    );
+    let h = houses(&sim, &lan);
+    assert_eq!(playing(&lan, &h, "Office").0, TransportState::Playing);
+    assert_eq!(
+        resolve_room(&h, "Office").unwrap().coordinator.id,
+        id(&h, "Office")
+    );
+    assert_eq!(
+        resolve_room(&h, "Den").unwrap().coordinator.id,
+        id(&h, "Den")
+    );
 }
 
 #[test]

@@ -633,6 +633,16 @@ impl SimHandle {
         })
     }
 
+    /// Make `who` slow to join: a join (`SetAVTransportURI` to `x-rincon:`)
+    /// is answered at once but shows in the topology only `lag` later, as on
+    /// a busy real network.
+    pub fn join_lag(&self, who: &str, lag: Duration) -> Result<(), SimError> {
+        self.with_player(who, |s, p| {
+            s.players[p].faults.join_lag = lag;
+            Ok(())
+        })
+    }
+
     /// Remove every injected fault from `who`.
     pub fn clear_faults(&self, who: &str) -> Result<(), SimError> {
         self.with_player(who, |s, p| {
