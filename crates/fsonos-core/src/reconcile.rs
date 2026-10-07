@@ -44,7 +44,7 @@ pub struct PlayerHealth {
 }
 
 /// Health of every player the daemon has dealt with.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct HealthBoard {
     players: HashMap<PlayerId, PlayerHealth>,
 }
@@ -145,6 +145,12 @@ impl Refresh {
         self.next_at = now + self.interval;
     }
 
+    /// Make the next survey due at `now` (a command found a player gone,
+    /// say). The backoff state is kept.
+    pub fn due_now(&mut self, now: Instant) {
+        self.next_at = self.next_at.min(now);
+    }
+
     /// Record a failed survey; returns the delay until the retry: the
     /// backoff step plus up to 10% jitter.
     pub fn failed(&mut self, now: Instant) -> Duration {
@@ -191,6 +197,9 @@ pub struct NotifyReport {
     /// Players a topology event showed had rebooted (`BootSeq` rose); their
     /// subscriptions were replaced.
     pub rebooted: Vec<PlayerId>,
+    /// Players a topology event dropped from their household (powered off,
+    /// say): marked offline; the next survey settles their subscriptions.
+    pub gone: Vec<PlayerId>,
     pub events: events::Report,
 }
 
@@ -321,10 +330,32 @@ impl Reconciler {
             return Ok(None);
         };
         self.health.ok(&player, now);
+        // A topology event rebuilds its household's players: note who was
+        // there, so a player it drops is marked rather than just forgotten
+        // (the next survey would not miss what the model no longer has).
+        let before: Vec<PlayerId> = if service == Service::ZoneGroupTopology {
+            self.households
+                .iter()
+                .flat_map(|h| h.players.iter().map(|p| p.id.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut report = NotifyReport {
             changes: events::apply(&mut self.households, playback, &player, service, n, now)?,
             ..NotifyReport::default()
         };
+        for id in before {
+            if self.households.iter().all(|h| h.player(&id).is_none()) {
+                tracing::warn!(
+                    player = id.0.as_str(),
+                    "player left its household's topology"
+                );
+                self.health
+                    .missing(&id, "no longer in its household's topology");
+                report.gone.push(id);
+            }
+        }
         if service == Service::ZoneGroupTopology
             && let Some(doc) = n.property("ZoneGroupState")
         {

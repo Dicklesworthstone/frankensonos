@@ -1,0 +1,180 @@
+//! The live model against `fsonos-sim` over real sockets: it surveys,
+//! subscribes and folds events on its own thread; changes made elsewhere
+//! arrive through events; a player that drops off is marked offline and
+//! comes back; a reboot is followed; stopping ends every subscription.
+
+use fsonos_core::control;
+use fsonos_core::events::{Service, wanted};
+use fsonos_core::live::{Live, LiveConfig};
+use fsonos_core::reconcile::Health;
+use fsonos_proto::net::Lan;
+use fsonos_sim::{GenaEvent, SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_types::PlayerId;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+fn sim() -> SimHandle {
+    SimHousehold::builder()
+        .s1([
+            SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
+            SimPlayerSpec::new("Office", SimModel::Play5Gen1),
+        ])
+        .s2([SimPlayerSpec::new("Living Room", SimModel::One)])
+        .spawn()
+        .unwrap()
+}
+
+fn routed(sim: &SimHandle) -> Arc<Lan> {
+    Arc::new(
+        Lan::start()
+            .unwrap()
+            .with_routes(sim.players().iter().map(|p| (p.ip, p.addr)).collect())
+            .with_ssdp_target(sim.ssdp_addr()),
+    )
+}
+
+fn eventually(within: Duration, ok: impl Fn() -> bool) -> bool {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if ok() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    ok()
+}
+
+fn id_of(live: &Live, room: &str) -> PlayerId {
+    live.households()
+        .iter()
+        .flat_map(|h| &h.players)
+        .find(|p| p.room_name == room)
+        .unwrap()
+        .id
+        .clone()
+}
+
+fn unsubscribes(sim: &SimHandle) -> usize {
+    sim.gena_log()
+        .iter()
+        .filter(|e| matches!(e.event, GenaEvent::Unsubscribed { .. }))
+        .count()
+}
+
+#[test]
+fn the_live_model_follows_the_speakers() {
+    let sim = sim();
+    let lan = routed(&sim);
+    let live = Live::start(Arc::clone(&lan), LiveConfig::new(Vec::new()));
+    assert!(
+        live.wait_ready(Duration::from_secs(10)),
+        "{:?}",
+        live.snapshot().last_error
+    );
+    let snap = live.snapshot();
+    assert_eq!(snap.households.len(), 2);
+    assert_eq!(
+        snap.households
+            .iter()
+            .map(|h| h.players.len())
+            .sum::<usize>(),
+        3
+    );
+    assert!(
+        snap.callback.is_some() && snap.last_error.is_none(),
+        "{snap:?}"
+    );
+    let ids: Vec<PlayerId> = ["Kitchen", "Office", "Living Room"]
+        .iter()
+        .map(|room| id_of(&live, room))
+        .collect();
+
+    // Every player's initial NOTIFYs arrive.
+    assert!(eventually(Duration::from_secs(5), || ids.iter().all(
+        |id| live
+            .player(id)
+            .is_some_and(|p| p.volume.is_some() && p.transport.is_some())
+    )));
+
+    // A change made by someone else shows up through events.
+    let kitchen = &ids[0];
+    control::set_volume(&*lan, &live.households(), kitchen, 33).unwrap();
+    assert!(eventually(Duration::from_secs(3), || live
+        .player(kitchen)
+        .and_then(|p| p.volume)
+        == Some(33)));
+
+    // A player that drops off is found missing by the survey asked for now.
+    let office = &ids[1];
+    sim.set_offline("Office", true).unwrap();
+    live.refresh_soon();
+    assert!(eventually(Duration::from_secs(10), || live
+        .snapshot()
+        .health
+        .of(office)
+        .is_some_and(|h| h.health == Health::Offline)));
+    assert!(live.households().iter().all(|h| h.player(office).is_none()));
+    assert!(
+        live.player(office).is_none(),
+        "its stale playback state is gone"
+    );
+
+    // It comes back, healthy and reporting events again.
+    sim.set_offline("Office", false).unwrap();
+    live.refresh_soon();
+    assert!(eventually(Duration::from_secs(10), || {
+        let snap = live.snapshot();
+        snap.health
+            .of(office)
+            .is_some_and(|h| h.health == Health::Healthy)
+            && live.player(office).is_some_and(|p| p.volume.is_some())
+    }));
+
+    // Stopping ends every active subscription.
+    let active = live.snapshot().subscriptions;
+    assert!(active > 0);
+    let before = unsubscribes(&sim);
+    live.stop();
+    assert_eq!(unsubscribes(&sim) - before, active);
+}
+
+#[test]
+fn a_reboot_is_followed_and_events_keep_flowing() {
+    let sim = sim();
+    let lan = routed(&sim);
+    let live = Live::start(Arc::clone(&lan), LiveConfig::new(Vec::new()));
+    assert!(live.wait_ready(Duration::from_secs(10)));
+    let households = live.households();
+    // Reboot the S1 player that does not carry the household's topology
+    // subscription, so the topology event reports the reboot.
+    let topology_hosts: Vec<PlayerId> = wanted(&households)
+        .into_iter()
+        .filter(|w| w.service == Service::ZoneGroupTopology)
+        .map(|w| w.player)
+        .collect();
+    let victim = ["Kitchen", "Office"]
+        .into_iter()
+        .map(|room| (room, id_of(&live, room)))
+        .find(|(_, id)| !topology_hosts.contains(id))
+        .unwrap();
+    assert!(eventually(Duration::from_secs(5), || live
+        .player(&victim.1)
+        .is_some_and(|p| p.volume.is_some())));
+
+    sim.reboot(victim.0, Duration::ZERO).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    // Its old subscriptions are gone; only fresh ones carry this change.
+    control::set_volume(&*lan, &live.households(), &victim.1, 44).unwrap();
+    assert!(
+        eventually(Duration::from_secs(5), || live
+            .player(&victim.1)
+            .and_then(|p| p.volume)
+            == Some(44)),
+        "{:?}",
+        live.player(&victim.1)
+    );
+    assert_eq!(
+        live.snapshot().health.of(&victim.1).map(|h| h.health),
+        Some(Health::Healthy)
+    );
+}

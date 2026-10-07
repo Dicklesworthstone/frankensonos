@@ -103,7 +103,7 @@ impl Changes {
 }
 
 /// Playback state for every player that has reported any.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Playback {
     players: HashMap<PlayerId, PlayerPlayback>,
 }

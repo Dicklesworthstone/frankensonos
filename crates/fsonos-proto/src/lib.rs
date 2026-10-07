@@ -76,3 +76,25 @@ pub trait Transport {
         Err(ProtoError::NotWired("ssdp_search"))
     }
 }
+
+/// A shared transport is a transport: one [`net::Lan`] can serve the
+/// daemon's surfaces and its live model.
+impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
+    fn soap_post(
+        &self,
+        host: std::net::IpAddr,
+        control_path: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        (**self).soap_post(host, control_path, soap_action, body)
+    }
+
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        (**self).http_get(url)
+    }
+
+    fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<ssdp::Advert>, ProtoError> {
+        (**self).ssdp_search(mx_secs, wait)
+    }
+}

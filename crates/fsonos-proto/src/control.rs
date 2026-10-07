@@ -553,6 +553,17 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_transport_forwards_every_call() {
+        let t = std::sync::Arc::new(Canned::new("<CurrentVolume>17</CurrentVolume>"));
+        assert_eq!(get_volume(&t, host()).unwrap(), 17);
+        assert_eq!(t.last().0, "/MediaRenderer/RenderingControl/Control");
+        assert!(matches!(
+            Transport::http_get(&t, "http://192.0.2.10:1400/x"),
+            Err(ProtoError::NotWired("http_get"))
+        ));
+    }
+
+    #[test]
     fn transport_actions_target_av_transport() {
         let t = Canned::new("");
         play(&t, host()).unwrap();
