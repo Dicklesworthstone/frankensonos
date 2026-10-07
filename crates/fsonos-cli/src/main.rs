@@ -5,11 +5,13 @@
 //!   zones      show current zone-group topology
 //!   play       render a source URI on a zone
 //!   serve      run the long-lived daemon (HTTP API + MCP server + GENA sink)
+//!   mcp        serve the MCP tools over stdio (for a local agent)
 //!   dj         start/stop/skip the classical DJ
 //!
-//! Today it parses arguments and reports that behavior arrives with FND-DEPS +
-//! the feature lanes, so the binary builds and runs from commit #1.
+//! Commands not yet wired report which lane delivers them.
 
+use anyhow::Context as _;
+use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -42,6 +44,8 @@ enum Command {
         #[arg(long, default_value = "127.0.0.1:8099")]
         http: String,
     },
+    /// Serve the MCP tools over stdio (for a local agent).
+    Mcp,
     /// Classical DJ controls.
     Dj {
         #[command(subcommand)]
@@ -57,10 +61,12 @@ enum DjAction {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Logs go to stderr: stdout carries the MCP stdio protocol.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
+        .with_writer(std::io::stderr)
         .init();
 
     let cli = Cli::parse();
@@ -71,6 +77,7 @@ fn main() -> anyhow::Result<()> {
             "play {source_uri} on {zone} (lanes: proto + core + spotify)"
         )),
         Command::Serve { http } => pending(&format!("serve on {http} (lanes: api + mcp + core)")),
+        Command::Mcp => run_mcp_stdio(),
         Command::Dj { action } => {
             let what = match action {
                 DjAction::Start { zone } => format!("dj start {zone}"),
@@ -82,6 +89,23 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
+/// The single-threaded asupersync runtime every surface runs under.
+fn runtime() -> anyhow::Result<Runtime> {
+    RuntimeBuilder::current_thread()
+        .with_reactor(create_reactor().context("create I/O reactor")?)
+        .blocking_threads(0, 16)
+        .build()
+        .context("build asupersync runtime")
+}
+
+fn run_mcp_stdio() -> anyhow::Result<()> {
+    runtime()?.block_on(async {
+        let cx = asupersync::Cx::current().context("runtime installs an ambient Cx")?;
+        fsonos_mcp::server().run_stdio_with_cx(&cx).await
+    })
+}
+
+#[allow(clippy::unnecessary_wraps)] // stands in for commands that will be fallible
 fn pending(what: &str) -> anyhow::Result<()> {
     tracing::info!("FrankenSonos: `{what}` is not wired yet — see the plan and beads.");
     println!("not-yet-implemented: {what}");
