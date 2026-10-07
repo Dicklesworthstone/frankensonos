@@ -376,6 +376,15 @@ impl State {
                     self.players[coord].room
                 ))
             })?;
+        self.hand_over(coord, heir);
+        let to = self.players[heir].uuid.clone();
+        self.log_gena(coord, "", crate::GenaEvent::CoordinatorReelected { to });
+        Ok(())
+    }
+
+    /// Make `heir` coordinator of the group `coord` leads; playback
+    /// (transport and queue) moves with it and `coord` stays a member.
+    pub(crate) fn hand_over(&mut self, coord: usize, heir: usize) {
         let mut transport = std::mem::replace(&mut self.players[coord].transport, Transport::new());
         if transport.source == Source::Queue {
             transport.uri = format!("x-rincon-queue:{}#0", self.players[heir].uuid);
@@ -387,9 +396,23 @@ impl State {
         }
         self.players[heir].group_id = group_id;
         self.sync_pairs();
-        let to = self.players[heir].uuid.clone();
-        self.log_gena(coord, "", crate::GenaEvent::CoordinatorReelected { to });
-        Ok(())
+    }
+
+    /// `DelegateGroupCoordinationTo`: hand the group `p` leads to its member
+    /// `NewCoordinator` (playback moves with it); with `RejoinGroup` 0, `p`
+    /// then leaves for a group of its own.
+    fn delegate(&mut self, p: usize, args: &Args<'_>) -> Result<Out, Fault> {
+        self.require_coordinator(p)?;
+        let to = self.find(args.get("NewCoordinator")?).ok_or(INVALID_ARGS)?;
+        let rejoin = bool_arg(args, "RejoinGroup")?;
+        if to == p || self.players[to].coordinator != p || self.players[to].pair_primary.is_some() {
+            return Err(SONOS_FAILURE);
+        }
+        self.hand_over(p, to);
+        if !rejoin {
+            self.make_standalone(p);
+        }
+        Ok(Vec::new())
     }
 
     /// Join `p` to the group that `target` belongs to.
@@ -453,6 +476,7 @@ impl State {
             "Next" | "Previous" | "Seek" | "BecomeCoordinatorOfStandaloneGroup" => {
                 self.av_navigation(p, action, args, now)
             }
+            "DelegateGroupCoordinationTo" => self.delegate(p, args),
             "GetTransportInfo" | "GetPositionInfo" | "GetMediaInfo" => {
                 self.av_reads(p, action, now)
             }

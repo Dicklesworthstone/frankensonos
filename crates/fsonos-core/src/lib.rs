@@ -35,6 +35,7 @@ pub mod favorites;
 pub mod grouping;
 pub mod heal;
 pub mod inventory;
+pub mod moving;
 pub mod playback;
 pub mod policy;
 pub mod reconcile;
