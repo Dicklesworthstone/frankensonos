@@ -28,14 +28,17 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 # FRANKEN (FND-DEPS): the one asupersync runtime every surface runs under.
 asupersync = { workspace = true }
+# The daemon hosts the HTTP API on fastapi's TCP server.
+fastapi = { workspace = true }
+# `fsonos serve` and `fsonos sim` stop cleanly on SIGINT / SIGTERM.
+signal-hook = { workspace = true }
 # `fsonos sim` (feature `sim`, on by default).
 fsonos-sim = { workspace = true, optional = true }
-signal-hook = { workspace = true, optional = true }
 
 [features]
 default = ["sim"]
 # `fsonos sim`: virtual players on loopback. `--no-default-features` drops it.
-sim = ["dep:fsonos-sim", "dep:signal-hook"]
+sim = ["dep:fsonos-sim"]
 
 [dev-dependencies]
 # The e2e harness (tests/e2e) drives the binary against virtual players.

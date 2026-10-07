@@ -92,17 +92,17 @@ fn harness_self_test() {
         );
     }
 
-    s.pending(
-        "cli-control",
-        "CLI control against the sim needs the routed LAN transport (d-e2e-core-scenarios)",
+    let routes = std::fs::read_to_string(s.dir().join("routes.toml")).unwrap_or_default();
+    s.check(
+        "routes",
+        "sim",
+        "the routes file maps every player and the SSDP responder",
+        routes.contains("ssdp = ") && players.iter().all(|p| routes.contains(&p.addr.to_string())),
+        &routes,
     );
     let summary = s.finish();
     assert_eq!(summary.failed, 0);
-    assert!(summary.passed >= 10, "{summary:?}");
-    assert!(
-        summary.pending >= 1,
-        "pending steps are counted, not passed"
-    );
+    assert!(summary.passed >= 11, "{summary:?}");
 }
 
 #[test]

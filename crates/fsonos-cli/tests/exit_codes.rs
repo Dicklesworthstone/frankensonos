@@ -1,5 +1,7 @@
 //! The real `fsonos` binary reports failures as `docs/ERRORS.md` specifies:
 //! `error[CODE]: detail` plus a hint on stderr, and the code's exit status.
+//! (`fsonos serve` on safe addresses is exercised end to end in
+//! `tests/e2e_serve.rs`.)
 
 use std::process::{Command, Output};
 
@@ -57,20 +59,4 @@ fn public_mcp_bind_is_refused_too() {
 fn usage_errors_exit_2() {
     let out = fsonos(&["play"]);
     assert_eq!(out.status.code(), Some(2));
-}
-
-#[test]
-fn loopback_defaults_pass_the_guard() {
-    let out = fsonos(&["serve"]);
-    assert_eq!(
-        out.status.code(),
-        Some(0),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("api 127.0.0.1:8099, mcp 127.0.0.1:8098"),
-        "stdout: {stdout}"
-    );
 }

@@ -17,7 +17,7 @@ use fsonos_core::clock::Clock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_proto::Transport;
 use serde::Serialize;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::tool_error;
 
@@ -27,7 +27,7 @@ pub use fsonos_api::surface::Survey;
 /// What the tools act on: the shared [`Surface`] (LAN, households, house
 /// policy) and the identity this server's callers have under the policy.
 pub struct Backend {
-    surface: Surface,
+    surface: Arc<Surface>,
     client: Client,
 }
 
@@ -40,10 +40,17 @@ impl Backend {
         client: Client,
         clock: Box<dyn Clock>,
     ) -> Self {
-        Self {
-            surface: Surface::new(transport, survey, policy, clock),
+        Self::shared(
+            Arc::new(Surface::new(transport, survey, policy, clock)),
             client,
-        }
+        )
+    }
+
+    /// Act on a surface the process shares with other servers (the daemon's
+    /// HTTP API, say), as `client`.
+    #[must_use]
+    pub fn shared(surface: Arc<Surface>, client: Client) -> Self {
+        Self { surface, client }
     }
 
     /// Run a control tool: authorize `tool`, plan, execute under the policy.
@@ -299,8 +306,8 @@ mod tests {
     use fsonos_proto::ProtoError;
     use fsonos_types::{Generation, Player, PlayerId, ZoneGroup};
     use std::net::IpAddr;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
 
     /// Answers every SOAP action with success and `out_args`, and records the
     /// action names.

@@ -22,7 +22,9 @@
 //!
 //! * Isolation from the real house: a temp `FSONOS_DATA_DIR`, the HTTP and
 //!   MCP listeners pinned to ephemeral loopback ports, `FSONOS_SEEDS`
-//!   pointing at the sim's seeds file, and no Spotify settings. Tripwire
+//!   pointing at the sim's seeds file, `FSONOS_ROUTES` sending each player's
+//!   advertised address to its loopback socket and SSDP to the sim's unicast
+//!   responder (no multicast), and no Spotify settings. Tripwire
 //!   listeners sit on the default ports (8099, 8098); a connection to either
 //!   fails the scenario.
 //! * Logs in `target/e2e-logs/<scenario>/<epoch-ms>/` (or under
@@ -37,7 +39,7 @@
 
 #![allow(dead_code)] // each test binary uses a different subset
 
-use fsonos_sim::{SimBuilder, SimHandle};
+use fsonos_sim::{SimBuilder, SimHandle, SimLan};
 use serde_json::{Value, json};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
@@ -53,7 +55,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const INLINE: usize = 2000;
 
 /// The settings the harness controls; any ambient value is removed first.
-const SETTINGS: [&str; 7] = [
+const SETTINGS: [&str; 8] = [
+    "FSONOS_ROUTES",
     "FSONOS_HTTP_ADDR",
     "FSONOS_MCP_HTTP_ADDR",
     "FSONOS_DATA_DIR",
@@ -183,6 +186,7 @@ impl Scenario {
         let started = Instant::now();
         let sim = builder.spawn().expect("spawn fsonos-sim");
         fs::write(self.dir.join("seeds.toml"), sim.seeds_toml()).expect("write seeds.toml");
+        fs::write(self.dir.join("routes.toml"), routes_toml(&sim)).expect("write routes.toml");
         let detail = format!("{} players", sim.players().len());
         self.record(
             "sim",
@@ -197,6 +201,22 @@ impl Scenario {
             &detail,
         );
         self.sim.insert(sim)
+    }
+
+    /// A transport that reads the sim's state directly (by advertised IP).
+    #[must_use]
+    pub fn lan(&self) -> SimLan {
+        self.sim.as_ref().expect("Scenario::sim first").lan()
+    }
+
+    /// The advertised address of the virtual player in `room`.
+    #[must_use]
+    pub fn ip(&self, room: &str) -> std::net::IpAddr {
+        self.sim
+            .as_ref()
+            .and_then(|s| s.player(room))
+            .unwrap_or_else(|| panic!("no virtual player in {room}"))
+            .ip
     }
 
     /// The running sim, if [`Self::sim`] spawned one.
@@ -216,7 +236,8 @@ impl Scenario {
             .env("FSONOS_MCP_HTTP_ADDR", "127.0.0.1:0")
             .env("RUST_LOG", "warn");
         if self.sim.is_some() {
-            cmd.env("FSONOS_SEEDS", self.dir.join("seeds.toml"));
+            cmd.env("FSONOS_SEEDS", self.dir.join("seeds.toml"))
+                .env("FSONOS_ROUTES", self.dir.join("routes.toml"));
         }
         cmd
     }
@@ -338,7 +359,12 @@ impl Scenario {
         });
         writeln!(self.log, "{line}").expect("append to steps.jsonl");
         if status != Status::Pass || (!assertion.is_empty() && assertion != "ran") {
-            self.tally.push((format!("{step}: {assertion}"), status));
+            let mut what = format!("{step}: {assertion}");
+            if status == Status::Fail && !detail.is_empty() {
+                what.push_str(" -- ");
+                what.push_str(&truncated(detail));
+            }
+            self.tally.push((what, status));
         }
     }
 
@@ -423,6 +449,182 @@ impl Scenario {
         }
         summary
     }
+}
+
+/// The `--routes` file for `sim`: SSDP to its unicast responder, and each
+/// player's advertised address to its loopback socket.
+fn routes_toml(sim: &SimHandle) -> String {
+    let routes: Vec<String> = sim
+        .players()
+        .iter()
+        .map(|p| format!("\"{}\" = \"{}\"", p.ip, p.addr))
+        .collect();
+    format!(
+        "ssdp = \"{}\"\n\n[routes]\n{}\n",
+        sim.ssdp_addr(),
+        routes.join("\n")
+    )
+}
+
+impl Scenario {
+    /// Start a long-running `fsonos <args>` (a daemon) with the isolation
+    /// environment, logged as step `step`.
+    pub fn spawn(&mut self, step: &str, args: &[&str]) -> Daemon {
+        let mut child = self
+            .command()
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn fsonos");
+        let stderr = child.stderr.take().expect("daemon stderr");
+        let (tx, lines) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let command = format!("fsonos {}", args.join(" "));
+        self.record(
+            step,
+            "daemon",
+            &command,
+            None,
+            "",
+            "",
+            0,
+            "spawned",
+            Status::Pass,
+            "",
+        );
+        Daemon {
+            child,
+            lines,
+            seen: Vec::new(),
+        }
+    }
+}
+
+/// A long-running `fsonos` process started by [`Scenario::spawn`].
+pub struct Daemon {
+    child: Child,
+    lines: Receiver<String>,
+    /// Every stderr line read so far.
+    pub seen: Vec<String>,
+}
+
+impl Daemon {
+    /// The first stderr line containing `needle`, waiting up to `timeout`.
+    pub fn wait_line(&mut self, needle: &str, timeout: Duration) -> Option<String> {
+        if let Some(line) = self.seen.iter().find(|l| l.contains(needle)) {
+            return Some(line.clone());
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let line = self.lines.recv_timeout(left).ok()?;
+            self.seen.push(line.clone());
+            if line.contains(needle) {
+                return Some(line);
+            }
+        }
+    }
+
+    /// Send SIGINT and wait up to `timeout` for the exit code.
+    pub fn interrupt(&mut self, timeout: Duration) -> Option<i32> {
+        let _ = Command::new("kill")
+            .args(["-INT", &self.child.id().to_string()])
+            .status();
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                while let Ok(line) = self.lines.recv_timeout(Duration::from_millis(50)) {
+                    self.seen.push(line);
+                }
+                return status.code();
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// `(status, lowercased headers, body)` from [`http`].
+pub type HttpAnswer = (u16, Vec<(String, String)>, String);
+
+/// A plain HTTP/1.1 exchange over a fresh connection (`Connection: close`).
+pub fn http(
+    addr: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> std::io::Result<HttpAnswer> {
+    use std::io::Read as _;
+    let mut stream = std::net::TcpStream::connect(addr)?;
+    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    for (name, value) in headers {
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+    request.push_str("\r\n");
+    request.push_str(body);
+    stream.write_all(request.as_bytes())?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw)?;
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let (head, rest) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let mut lines = head.lines();
+    let status = lines
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0);
+    let headers: Vec<(String, String)> = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+    let chunked = headers
+        .iter()
+        .any(|(k, v)| k == "transfer-encoding" && v.eq_ignore_ascii_case("chunked"));
+    let body = if chunked {
+        dechunk(rest)
+    } else {
+        rest.to_string()
+    };
+    Ok((status, headers, body))
+}
+
+fn dechunk(mut rest: &str) -> String {
+    let mut out = String::new();
+    while let Some((size, tail)) = rest.split_once("\r\n") {
+        let Ok(n) = usize::from_str_radix(size.trim(), 16) else {
+            break;
+        };
+        if n == 0 || tail.len() < n {
+            break;
+        }
+        out.push_str(&tail[..n]);
+        rest = tail[n..].trim_start_matches("\r\n");
+    }
+    out
 }
 
 /// The outcome of [`Scenario::finish`].

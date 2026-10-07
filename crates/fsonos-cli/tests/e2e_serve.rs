@@ -1,0 +1,189 @@
+//! `fsonos serve` end to end against the virtual households: the daemon
+//! binds ephemeral loopback ports and says where, the HTTP API controls the
+//! sim (confirmed from the sim's state), the MCP server answers over
+//! streamable HTTP, and SIGINT stops it cleanly.
+
+mod e2e;
+
+use e2e::{Scenario, http};
+use fsonos_proto::control::get_transport_info;
+use fsonos_sim::SimHousehold;
+use fsonos_types::TransportState;
+use serde_json::{Value, json};
+use std::time::Duration;
+
+/// `key=value` out of the ready line.
+fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    line.split_whitespace()
+        .find_map(|word| word.strip_prefix(key)?.strip_prefix('='))
+}
+
+/// The JSON-RPC message in an MCP HTTP answer (plain JSON or one SSE event).
+fn rpc(body: &str) -> Value {
+    serde_json::from_str(body).unwrap_or_else(|_| {
+        body.lines()
+            .find_map(|l| l.strip_prefix("data:"))
+            .and_then(|d| serde_json::from_str(d.trim()).ok())
+            .unwrap_or(Value::Null)
+    })
+}
+
+#[test]
+fn serve_hosts_the_api_and_mcp_over_the_sim() {
+    let mut s = Scenario::start("serve");
+    s.sim(SimHousehold::standard());
+    let mut daemon = s.spawn(
+        "serve",
+        &[
+            "serve",
+            "--http",
+            "127.0.0.1:0",
+            "--mcp-http",
+            "127.0.0.1:0",
+        ],
+    );
+    let ready = daemon.wait_line("fsonos serve: ready", Duration::from_secs(20));
+    s.check(
+        "ready",
+        "daemon",
+        "serve reports the addresses it bound",
+        ready.is_some(),
+        daemon.seen.join("\n"),
+    );
+    let ready = ready.unwrap_or_default();
+    let api = field(&ready, "http")
+        .and_then(|u| u.strip_prefix("http://"))
+        .unwrap_or("");
+    let mcp = field(&ready, "mcp")
+        .and_then(|u| u.strip_prefix("http://"))
+        .and_then(|u| u.strip_suffix("/mcp"))
+        .unwrap_or("");
+    s.check(
+        "ready",
+        "daemon",
+        "both listeners are on loopback ephemeral ports",
+        api.starts_with("127.0.0.1:") && mcp.starts_with("127.0.0.1:") && !api.ends_with(":8099"),
+        &ready,
+    );
+
+    check_http_api(&mut s, api);
+    check_mcp_http(&mut s, mcp);
+
+    let code = daemon.interrupt(Duration::from_secs(10));
+    s.check(
+        "stop",
+        "daemon",
+        "SIGINT stops serve cleanly (exit 0)",
+        code == Some(0)
+            && daemon
+                .seen
+                .iter()
+                .any(|l| l.contains("fsonos serve: stopping")),
+        format!("exit {code:?}; {}", daemon.seen.join(" | ")),
+    );
+    s.finish();
+}
+
+/// The HTTP API: health, zones, and play/pause confirmed from the sim.
+fn check_http_api(s: &mut Scenario, api: &str) {
+    let kitchen = s.ip("Kitchen");
+    let health = http(api, "GET", "/health", &[], "");
+    s.check(
+        "health",
+        "http",
+        "GET /health is ok",
+        health
+            .as_ref()
+            .is_ok_and(|(code, _, body)| *code == 200 && body.contains("\"ok\"")),
+        format!("{health:?}"),
+    );
+    let zones = http(api, "GET", "/zones", &[], "");
+    let zone_count = zones
+        .as_ref()
+        .ok()
+        .and_then(|(_, _, b)| serde_json::from_str::<Value>(b).ok())
+        .and_then(|v| v.as_array().map(Vec::len));
+    s.check(
+        "zones",
+        "http",
+        "GET /zones lists the four sim rooms",
+        zone_count == Some(4),
+        format!("{zones:?}"),
+    );
+
+    let json_body = [("Content-Type", "application/json")];
+    let play =
+        json!({ "zone": "Kitchen", "source_uri": "x-rincon-mp3radio://stream.example.org/a.mp3" });
+    let played = http(api, "POST", "/play", &json_body, &play.to_string());
+    s.check(
+        "play",
+        "http",
+        "POST /play is 200",
+        played.as_ref().is_ok_and(|(code, _, _)| *code == 200),
+        format!("{played:?}"),
+    );
+    let paused = http(
+        api,
+        "POST",
+        "/pause",
+        &json_body,
+        &json!({ "zone": "kitchen" }).to_string(),
+    );
+    s.check(
+        "pause",
+        "http",
+        "POST /pause is 200",
+        paused.as_ref().is_ok_and(|(code, _, _)| *code == 200),
+        format!("{paused:?}"),
+    );
+    let state = get_transport_info(&s.lan(), kitchen).map(|t| t.state).ok();
+    s.check(
+        "pause",
+        "sim",
+        "Kitchen is paused in the sim",
+        state == Some(TransportState::Paused),
+        format!("{state:?}"),
+    );
+}
+
+/// The MCP server answers a modern-era (2026-07-28, sessionless) `tools/call`
+/// over streamable HTTP, through the daemon's shared surface to the sim.
+fn check_mcp_http(s: &mut Scenario, mcp: &str) {
+    let call = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": "list_zones",
+            "arguments": {},
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
+        }
+    });
+    let answer = http(
+        mcp,
+        "POST",
+        "/mcp",
+        &[
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json"),
+            ("MCP-Protocol-Version", "2026-07-28"),
+            ("Mcp-Method", "tools/call"),
+            ("Mcp-Name", "list_zones"),
+        ],
+        &call.to_string(),
+    );
+    let result = answer
+        .as_ref()
+        .map_or(Value::Null, |(_, _, body)| rpc(body)["result"].clone());
+    let zones = result["structuredContent"]["zones"]
+        .as_array()
+        .map_or(0, Vec::len);
+    s.check(
+        "mcp-list-zones",
+        "mcp-http",
+        "list_zones over MCP HTTP sees the four sim rooms",
+        result["isError"] != true && zones == 4,
+        format!("{answer:?}"),
+    );
+}
