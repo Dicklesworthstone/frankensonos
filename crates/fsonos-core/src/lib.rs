@@ -11,14 +11,18 @@
 //! * [`control`] carries out a player-addressed command over a
 //!   [`fsonos_proto::Transport`].
 //! * [`doctor`] runs diagnostic checks and reports named failures with fixes.
+//! * [`policy`] bounds what each client may do and how loud (caps, quiet
+//!   hours, tool allowlists); [`clock`] makes its time testable.
 //!
 //! The durable [`store`] (device cache, music-library cache, play history, DJ
 //! state) is backed by fsqlite once bead FND-DEPS wires it; the trait here lets
 //! the rest of the daemon be written and tested against an in-memory store.
 
+pub mod clock;
 pub mod control;
 pub mod doctor;
 pub mod inventory;
+pub mod policy;
 pub mod rooms;
 pub mod store;
 pub mod topology;
