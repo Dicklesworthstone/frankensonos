@@ -31,6 +31,7 @@ pub mod playback;
 pub mod policy;
 pub mod rooms;
 pub mod search;
+pub mod snapshot;
 pub mod store;
 pub mod topology;
 
