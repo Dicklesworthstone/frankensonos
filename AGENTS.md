@@ -83,23 +83,39 @@ behavior; reconcile at the boundary and update the docs.
 
 ## Dependency Recipe (the franken stack) — highest integration risk
 
-None of the owner's patched libraries are on crates.io for these versions. The
-**known-good** wiring (proven by the `am_baseline` project's committed lockfile)
-is recorded, commented, in the workspace `Cargo.toml`. Bead `FND-DEPS` activates
-the needed subset per crate and proves `cargo check --workspace` still passes.
+Wired by bead `FND-DEPS`; the workspace `Cargo.toml` holds the exact lines, and
+each is proven by a real test (below). The whole graph shares **one**
+asupersync, `0.5.0` — check with `cargo tree --workspace -d` (no duplicate
+asupersync/fsqlite) after any dependency change.
 
-- `asupersync = "0.5"` (crates.io registry, feature `tls-webpki-roots`). It
-  **must unify** on one `0.5.x` across our crates + fastmcp + fastapi. Do not
-  path/git-dep asupersync (our local checkout is `0.6` and would fork `Cx`).
-- `fsqlite` / `fsqlite-types`: git `frankensqlite@2633b38…`. Use the **non-`Cx`
-  `Connection` API**; it rides its own internal asupersync line. **Prove a real
-  open→create→insert→query round-trip** before any lane depends on it. No
-  `bundled` feature exists (from-scratch engine).
-- `fastmcp` (`package = "fastmcp-rust"`) + `fastmcp-core/-server/-transport/
-  -protocol`: git `fastmcp_rust@03b5274…` (v0.10).
-- `fastapi` (`package = "fastapi-rust"`) + `fastapi-core/-router`: git
-  `fastapi_rust@cb9d729…` (v0.4.4).
+- `asupersync = "0.5"` (crates.io, feature `tls-webpki-roots`). Never path/git-
+  dep it (the local checkout is `0.6` and would fork `Cx`).
+- `fsqlite = "=0.4.9"` (crates.io, feature `async-api`) — the line
+  `am_baseline`'s mailbox DB runs on, on asupersync `0.5.0`. **Not** the git rev
+  `frankensqlite@2633b38`: that is fsqlite `0.3.18` on asupersync `0.4.10` (only
+  am_baseline's embedded beads engine uses it). Engine futures are huge and
+  **overflow a default thread stack**: either `Box::pin` the raw `!Send`
+  `Connection` futures on a large-stack (32 MiB) thread, or use
+  `AsyncConnection` — a `Send` handle over fsqlite's own 32 MiB worker whose
+  `*_sync` methods fit the sync `Store` trait. No `bundled` feature exists.
+- `fastmcp` (`package = "fastmcp-rust"`) **plus `fastmcp-server`**: git
+  `fastmcp_rust@03b5274…` (v0.10). The `#[tool]` expansion names
+  `::fastmcp_server::…` by absolute path, so the crate must be a direct dep.
+  Use `fastmcp::auto::server_builder` (dual-era 2024-11-05 / 2026-07-28).
+- `fastapi` (`package = "fastapi-rust"`, `default-features = false`): git
+  `fastapi_rust@cb9d729…` (v0.4.4). Register routes with
+  `App::builder().get(path, handler)`; the `#[get]` macros emit
+  `#[allow(unsafe_code)]` (a Linux `link_section` registry) and cannot compile
+  under our `forbid(unsafe_code)`.
+- asupersync's h1 server is **secure by default** (`HostPolicy::RejectUnknown`
+  answers 421 to everything): configure `Http1Config::host_policy` with the
+  Host values a listener serves (e.g. the GENA sink's callback address).
 - No Tokio, no reqwest, no `bundled` SQLite. All networking is asupersync.
+  (tokio appears in `Cargo.lock` only under asupersync's wasm32 target.)
+
+Proofs: `crates/fsonos-core/tests/fsqlite_roundtrip.rs`,
+`crates/fsonos-proto/tests/asupersync_http.rs`,
+`crates/fsonos-api/tests/health.rs`, `crates/fsonos-cli/tests/mcp_stdio.rs`.
 
 Real API shapes to use (verified against the library sources) are in the plan,
 §4. When an API is uncertain, read the pinned dependency source — a plan sketch

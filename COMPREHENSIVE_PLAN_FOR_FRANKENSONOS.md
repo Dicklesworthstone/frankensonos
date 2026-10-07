@@ -144,38 +144,46 @@ crates/
 
 ## 4. The franken stack & the dependency recipe (highest integration risk)
 
-FrankenSonos is built on the owner's Rust libraries. None are on crates.io for
-their patched versions; the **known-good** wiring (proven by the `am_baseline`
-Agent-Mail project, which combines the same stack with a committed lockfile) is:
+FrankenSonos is built on the owner's Rust libraries. Bead `FND-DEPS` wired
+them and proved each with a real test; the exact lines live in the workspace
+`Cargo.toml`:
 
-| Library | Role in FrankenSonos | Source (proven) |
+| Library | Role in FrankenSonos | Source (wired + proven) |
 |---|---|---|
-| **asupersync** `0.5` | async runtime: TCP/UDP(+multicast), HTTP/1.1 client+server, TLS, timers, structured concurrency, cancellation (`Cx`) | crates.io registry `"0.5"`, feature `tls-webpki-roots` |
-| **fsqlite** (frankensqlite) | durable local store (device/library caches, play history, DJ + render params) | git `frankensqlite@2633b38…` |
-| **fastmcp** (fastmcp_rust) `0.10` | MCP server (stdio + streamable HTTP) | git `fastmcp_rust@03b5274…` |
-| **fastapi** (fastapi_rust) `0.4` | HTTP control API | git `fastapi_rust@cb9d729…` (HEAD) |
+| **asupersync** `0.5` | async runtime: TCP/UDP(+multicast), HTTP/1.1 client+server, TLS, timers, structured concurrency, cancellation (`Cx`) | crates.io `"0.5"` → `0.5.0`, feature `tls-webpki-roots` |
+| **fsqlite** (frankensqlite) `0.4.9` | durable local store (device/library caches, play history, DJ + render params) | crates.io `=0.4.9`, feature `async-api` |
+| **fastmcp** (fastmcp_rust) `0.10` | MCP server (stdio + streamable HTTP) | git `fastmcp_rust@03b5274…` (`fastmcp-rust` + `fastmcp-server`) |
+| **fastapi** (fastapi_rust) `0.4` | HTTP control API | git `fastapi_rust@cb9d729…`, `default-features = false` |
 | **rano** | *human-operated* LAN diagnostic only; NOT a build dep | n/a |
 
-**Integration hazards (resolve empirically in bead `FND-DEPS`, do not guess):**
+**Integration hazards (each found and resolved empirically in `FND-DEPS`):**
 
-1. **asupersync must unify on one `0.5.x`** across our crates + fastmcp +
-   fastapi. fastmcp pins `=0.5.0`; fastapi uses `0.5.0`. Depend on
-   `asupersync = "0.5"` so the graph resolves to the single registry version.
-   Our local checkout is `0.6.0` — do **not** path/git-dep asupersync, or you
-   fork the type universe and `Cx` won't match across crates.
-2. **fsqlite rides its own (older) asupersync line internally.** That is fine
-   *only* if we use fsqlite's **non-`Cx` `Connection` API** (`Connection::open`,
-   `execute_with_params`, `query`, `prepare` — all `async`, driven by our
-   runtime's `block_on`). Prove a real open→create→insert→query round-trip in
-   `FND-DEPS` before any lane relies on it. If the two runtimes fight over the
-   reactor, fall back to running the store on a dedicated thread with its own
-   mini-runtime and a channel. `fsqlite` has **no `bundled` feature** (it is a
-   from-scratch engine, not a C-SQLite wrapper).
-3. **No `bundled`, no Tokio, no reqwest.** All networking is asupersync.
-
-The exact dependency lines (with revs) are kept, commented, in the workspace
-`Cargo.toml`. `FND-DEPS` un-comments the needed subset per crate and proves
-`cargo check --workspace` still passes.
+1. **One asupersync.** fastmcp pins `=0.5.0`; fastapi and fsqlite 0.4.9 require
+   `0.5.0`; `asupersync = "0.5"` resolves the whole graph to that single
+   version, so `Cx` is one type everywhere. Never path/git-dep asupersync (the
+   local checkout is `0.6.0` and would fork the type universe).
+2. **fsqlite comes from crates.io `0.4.9`, not git `2633b38`.** That rev is
+   fsqlite `0.3.18` on asupersync `0.4.10` — am_baseline patches it in only for
+   its embedded beads engine; its mailbox DB runs registry `0.4.9`, which shares
+   asupersync `0.5.0`. No `bundled` feature exists (from-scratch engine).
+3. **fsqlite engine futures overflow a default thread stack** (stack overflow
+   in the first round-trip run). Either `Box::pin` the raw `!Send`
+   `Connection` futures and drive them on a 32 MiB thread, or use
+   `AsyncConnection` (`async-api`): a `Send` handle over fsqlite's own 32 MiB
+   worker thread whose `*_sync` methods fit the synchronous `Store` trait.
+4. **fastmcp `#[tool]` needs `fastmcp-server` as a direct dependency**: its
+   expansion names `::fastmcp_server::promote_legacy_tool_content` by absolute
+   path at this rev.
+5. **fastapi `#[get]`/`#[post]` macros cannot be used**: they emit
+   `#[allow(unsafe_code)]` for a Linux `link_section` route registry, which is
+   incompatible with the workspace `forbid(unsafe_code)`. Register handlers with
+   `App::builder().get(path, handler)`.
+6. **asupersync's h1 server rejects every request by default**
+   (`HostPolicy::RejectUnknown` → 421 Misdirected Request). Each listener — the
+   GENA sink above all — must set `Http1Config::host_policy` to the Host values
+   it serves (the address the players are given in the SUBSCRIBE callback).
+7. **No `bundled`, no Tokio, no reqwest.** All networking is asupersync (tokio
+   is in `Cargo.lock` only via asupersync's wasm32 target).
 
 **Real API shapes** (verified against the local library sources — use these,
 don't reinvent):
@@ -183,10 +191,10 @@ don't reinvent):
 - Runtime: `asupersync::runtime::RuntimeBuilder::current_thread().with_reactor(asupersync::runtime::reactor::create_reactor()?).blocking_threads(0,16).build()?` then `rt.block_on(async { … })`. Inside, get the context with `asupersync::Cx::current()`.
 - UDP multicast (SSDP): `asupersync::net::UdpSocket::bind(addr).await`, then `sock.join_multicast_v4(Ipv4Addr::new(239,255,255,250), Ipv4Addr::UNSPECIFIED)?`, `send_to`, `recv_from`.
 - HTTP client (SOAP/Spotify): `asupersync::http::Client::default_for_runtime(cx)`, `.post(url).header(..).body(..).send(cx).await` → `resp.status: u16`, `resp.body: Vec<u8>`.
-- HTTP server (GENA callback sink): `asupersync::http::h1::Http1Listener::bind(addr, handler).await?` then `.run(&handle).await`.
-- fsqlite: `fsqlite::Connection::open(path).await?`, `.execute_with_params(sql, &[SqliteValue::…]).await?`, `.query(sql).await?` → `Vec<Row>`, `row.get(i) -> Option<&SqliteValue>`; placeholders `?1,?2`. `Connection` is `!Send`.
-- fastmcp: `#[fastmcp_rust::tool(description="…")] async fn play(ctx:&McpContext, args…) -> McpResult<String>`; build with `ServerBuilder::new(name,ver).tool(Play).build()`; run `.run_http(&cx, "0.0.0.0:8098").await?` or `.run_stdio_with_cx(&cx).await`.
-- fastapi: `#[get("/zones")] async fn zones(cx:&RequestContext) -> Result<Json<Vec<ZoneDto>>, HttpError>`; `App::builder().route_entry(zones_route()).build()`; `serve(app, "0.0.0.0:8099").await`.
+- HTTP server (GENA callback sink): `Http1Listener::bind_with_config(addr, handler, Http1ListenerConfig::default().http_config(Http1Config::default().host_policy(HostPolicy::allow_list(hosts)))).await?` (`HostPolicy` is `asupersync::http::h1::server::HostPolicy`), then `.run(&rt.handle()).await`; stop with `listener.shutdown_signal()`. Proof: `crates/fsonos-proto/tests/asupersync_http.rs`.
+- fsqlite: `fsqlite::Connection::open(path).await?`, `.execute_with_params(sql, &[SqliteValue::…]).await?`, `.query(sql).await?` → `Vec<Row>`, `row.get(i) -> Option<&SqliteValue>`, `.close().await`; placeholders `?1,?2`. `Connection` is `!Send` — box its futures, run on a 32 MiB thread. Or `fsqlite::AsyncConnection::open_sync(path)?` with `execute_sync` / `execute_with_params_sync` / `query_sync` / `close_sync`. Proof: `crates/fsonos-core/tests/fsqlite_roundtrip.rs`.
+- fastmcp: `#[tool(description="…")] async fn play(ctx:&McpContext, args…) -> McpResult<String>` (with `use fastmcp::prelude::*`); build with `fastmcp::auto::server_builder(name, ver).tool(Play).build()`; run `.run_stdio_with_cx(&cx).await` (never returns). Proof: `crates/fsonos-cli/tests/mcp_stdio.rs` (`fsonos mcp`, initialize → tools/list → tools/call `echo`).
+- fastapi: `fn health(_: &RequestContext, _: &mut Request) -> Ready<Response>` returning `Response::json(&dto)`; `App::builder().get("/health", health).build()`; serve with `TcpServer::new(ServerConfig::new(addr)).serve_on_app(&cx, listener, Arc::new(app))` (or `fastapi::serve(app, addr)`). Proof: `crates/fsonos-api/tests/health.rs`.
 
 ---
 
