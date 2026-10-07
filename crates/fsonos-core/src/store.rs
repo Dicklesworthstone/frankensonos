@@ -318,6 +318,10 @@ pub trait Store {
         window: Range<i64>,
     ) -> Result<Vec<Feedback>, StoreError>;
 
+    /// All feedback given within `window` (unix seconds, end exclusive),
+    /// whatever it is about, oldest first; ties keep recording order.
+    fn feedback_between(&self, window: Range<i64>) -> Result<Vec<Feedback>, StoreError>;
+
     /// Replace `album_uri`'s cached track list; an empty list forgets it. A
     /// repeated (disc, track) keeps the last one given.
     fn save_album_tracks(
@@ -547,6 +551,17 @@ impl Store for MemStore {
             .cloned()
             .collect();
         // Stable: equal times keep recording order.
+        found.sort_by_key(|f| f.at);
+        Ok(found)
+    }
+
+    fn feedback_between(&self, window: Range<i64>) -> Result<Vec<Feedback>, StoreError> {
+        let mut found: Vec<Feedback> = self
+            .feedback
+            .iter()
+            .filter(|f| window.contains(&f.at))
+            .cloned()
+            .collect();
         found.sort_by_key(|f| f.at);
         Ok(found)
     }

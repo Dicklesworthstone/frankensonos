@@ -660,16 +660,19 @@ impl Store for SqliteStore {
         };
         self.query(sql, &[key.into(), window.start.into(), window.end.into()])?
             .iter()
-            .map(|r| {
-                Ok(Feedback {
-                    at: int(r, 0)?,
-                    work_key: opt_text(r, 1)?,
-                    composer_key: opt_text(r, 2)?,
-                    performer: opt_text(r, 3)?,
-                    signal: int(r, 4)?,
-                })
-            })
+            .map(feedback_row)
             .collect()
+    }
+
+    fn feedback_between(&self, window: Range<i64>) -> Result<Vec<Feedback>, StoreError> {
+        self.query(
+            "SELECT at, work_key, composer_key, performer, signal FROM feedback \
+             WHERE at >= ?1 AND at < ?2 ORDER BY at, id",
+            &[window.start.into(), window.end.into()],
+        )?
+        .iter()
+        .map(feedback_row)
+        .collect()
     }
 
     fn save_album_tracks(
@@ -904,6 +907,16 @@ fn action_row(r: &Row) -> Result<LoggedAction, StoreError> {
             before_state: opt_text(r, 7)?,
             undo_of: opt_int(r, 8)?,
         },
+    })
+}
+
+fn feedback_row(r: &Row) -> Result<Feedback, StoreError> {
+    Ok(Feedback {
+        at: int(r, 0)?,
+        work_key: opt_text(r, 1)?,
+        composer_key: opt_text(r, 2)?,
+        performer: opt_text(r, 3)?,
+        signal: int(r, 4)?,
     })
 }
 

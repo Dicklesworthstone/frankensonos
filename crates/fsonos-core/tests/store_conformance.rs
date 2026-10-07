@@ -346,11 +346,30 @@ fn feedback(s: &mut dyn Store) {
         0
     );
     assert_eq!(
-        s.feedback(FeedbackKey::Work("unknown"), all_time)
+        s.feedback(FeedbackKey::Work("unknown"), all_time.clone())
             .unwrap()
             .len(),
         0
     );
+
+    // Everything in a window, whatever it is about; same ordering and bounds.
+    let skip = fb(
+        100,
+        Some("mahler|symphony no 5"),
+        "mahler",
+        Some("Abbado"),
+        -1,
+    );
+    let like = fb(200, Some("bach|goldberg"), "bach", Some("Gould"), 2);
+    let late = fb(300, Some("mahler|symphony no 5"), "mahler", None, 1);
+    let tie = fb(300, None, "mahler", Some("Abbado"), -2);
+    assert_eq!(
+        s.feedback_between(all_time).unwrap(),
+        [skip, like.clone(), late.clone(), tie.clone()]
+    );
+    assert_eq!(s.feedback_between(150..300).unwrap(), [like]);
+    assert_eq!(s.feedback_between(300..301).unwrap(), [late, tie]);
+    assert_eq!(s.feedback_between(301..400).unwrap(), [] as [Feedback; 0]);
 }
 
 fn track(disc: u32, number: u32, title: &str) -> AlbumTrack {
