@@ -10,7 +10,7 @@
 use super::{
     Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback,
     FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction, PlayRecord, Store, StoreError,
-    StoredScene,
+    StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -107,6 +107,16 @@ const MIGRATIONS: &[Migration] = &[
         sql: "
         CREATE TABLE scenes (
             name TEXT PRIMARY KEY, spec TEXT NOT NULL, updated INTEGER NOT NULL);
+    ",
+    },
+    Migration {
+        version: 6,
+        name: "schedules, run as their creator (plan §7)",
+        sql: "
+        CREATE TABLE schedules (
+            id INTEGER PRIMARY KEY, spec TEXT NOT NULL, action TEXT NOT NULL,
+            creator TEXT NOT NULL, enabled INTEGER NOT NULL, created INTEGER NOT NULL,
+            last_fired INTEGER);
     ",
     },
 ];
@@ -881,6 +891,75 @@ impl Store for SqliteStore {
         })?;
         Ok(gone > 0)
     }
+
+    fn add_schedule(&mut self, schedule: &StoredSchedule) -> Result<i64, StoreError> {
+        self.in_transaction(|c| {
+            c.execute_with_params_sync(
+                "INSERT INTO schedules (spec, action, creator, enabled, created, last_fired) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                &[
+                    schedule.spec.as_str().into(),
+                    schedule.action.as_str().into(),
+                    schedule.creator.as_str().into(),
+                    i64::from(schedule.enabled).into(),
+                    schedule.created.into(),
+                    opt_value(schedule.last_fired),
+                ],
+            )?;
+            c.last_insert_rowid_sync()
+        })
+    }
+
+    fn schedules(&self) -> Result<Vec<StoredSchedule>, StoreError> {
+        self.query(
+            "SELECT id, spec, action, creator, enabled, created, last_fired FROM schedules \
+             ORDER BY id",
+            &[],
+        )?
+        .iter()
+        .map(schedule_row)
+        .collect()
+    }
+
+    fn set_schedule_enabled(&mut self, id: i64, enabled: bool) -> Result<bool, StoreError> {
+        let changed = self.in_transaction(|c| {
+            c.execute_with_params_sync(
+                "UPDATE schedules SET enabled = ?2 WHERE id = ?1",
+                &[id.into(), i64::from(enabled).into()],
+            )
+        })?;
+        Ok(changed > 0)
+    }
+
+    fn mark_schedule_fired(&mut self, id: i64, at: i64) -> Result<bool, StoreError> {
+        let claimed = self.in_transaction(|c| {
+            c.execute_with_params_sync(
+                "UPDATE schedules SET last_fired = ?2 \
+                 WHERE id = ?1 AND (last_fired IS NULL OR last_fired < ?2)",
+                &[id.into(), at.into()],
+            )
+        })?;
+        Ok(claimed > 0)
+    }
+
+    fn delete_schedule(&mut self, id: i64) -> Result<bool, StoreError> {
+        let gone = self.in_transaction(|c| {
+            c.execute_with_params_sync("DELETE FROM schedules WHERE id = ?1", &[id.into()])
+        })?;
+        Ok(gone > 0)
+    }
+}
+
+fn schedule_row(r: &Row) -> Result<StoredSchedule, StoreError> {
+    Ok(StoredSchedule {
+        id: int(r, 0)?,
+        spec: text(r, 1)?,
+        action: text(r, 2)?,
+        creator: text(r, 3)?,
+        enabled: int(r, 4)? != 0,
+        created: int(r, 5)?,
+        last_fired: opt_int(r, 6)?,
+    })
 }
 
 fn scene_row(r: &Row) -> Result<StoredScene, StoreError> {
@@ -951,7 +1030,7 @@ mod tests {
         v1.close().unwrap();
 
         let store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].track.source_uri, "spotify:track:old");
@@ -989,7 +1068,7 @@ mod tests {
         v2.close().unwrap();
 
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].origin, LibraryOrigin::LikedTrack);

@@ -4,7 +4,7 @@
 
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, CachedAlbum, DjSession, Feedback, FeedbackKey, LibraryEntry,
-    LibraryOrigin, MemStore, SqliteStore, Store, StoredScene,
+    LibraryOrigin, MemStore, SqliteStore, Store, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -549,6 +549,49 @@ fn scenes(s: &mut dyn Store) {
     assert_eq!(s.scenes().unwrap(), [scene("Evening", "{\"v\":2}", 200)]);
 }
 
+fn plan(spec: &str, creator: &str, created: i64) -> StoredSchedule {
+    StoredSchedule {
+        id: 0,
+        spec: spec.into(),
+        action: "{\"kind\":\"volume\",\"room\":\"Den\",\"level\":20}".into(),
+        creator: creator.into(),
+        enabled: true,
+        created,
+        last_fired: None,
+    }
+}
+
+fn schedules(s: &mut dyn Store) {
+    assert_eq!(s.schedules().unwrap(), []);
+    let a = s.add_schedule(&plan("daily 07:30", "cli", 100)).unwrap();
+    let b = s
+        .add_schedule(&plan("weekends 09:00", "tag:assistant", 200))
+        .unwrap();
+    assert!(b > a);
+    let all = s.schedules().unwrap();
+    assert_eq!(all.iter().map(|x| x.id).collect::<Vec<_>>(), [a, b]);
+    assert_eq!(
+        all[1],
+        StoredSchedule {
+            id: b,
+            ..plan("weekends 09:00", "tag:assistant", 200)
+        }
+    );
+    // A run is claimed once; an older or repeated one is refused.
+    assert!(s.mark_schedule_fired(a, 1_000).unwrap());
+    assert!(!s.mark_schedule_fired(a, 1_000).unwrap());
+    assert!(!s.mark_schedule_fired(a, 900).unwrap());
+    assert!(s.mark_schedule_fired(a, 1_100).unwrap());
+    assert!(!s.mark_schedule_fired(9_999, 1).unwrap());
+    assert!(s.set_schedule_enabled(b, false).unwrap());
+    assert!(!s.set_schedule_enabled(9_999, false).unwrap());
+    let all = s.schedules().unwrap();
+    assert_eq!((all[0].last_fired, all[1].enabled), (Some(1_100), false));
+    assert!(s.delete_schedule(a).unwrap());
+    assert!(!s.delete_schedule(a).unwrap());
+    assert_eq!(s.schedules().unwrap().len(), 1);
+}
+
 fn suite(s: &mut dyn Store) {
     play_history(s);
     inventory_cache(s);
@@ -559,6 +602,7 @@ fn suite(s: &mut dyn Store) {
     album_tracks(s);
     action_log(s);
     scenes(s);
+    schedules(s);
 }
 
 #[test]
@@ -570,7 +614,7 @@ fn mem_store_conforms() {
 fn sqlite_in_memory_conforms() {
     let mut s = SqliteStore::open_in_memory().unwrap();
     suite(&mut s);
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6]);
     s.close().unwrap();
 }
 
@@ -585,7 +629,7 @@ fn sqlite_file_survives_close_and_reopen() {
 
     // Reopening re-runs no migrations and sees every committed write.
     let s = SqliteStore::open(&path).unwrap();
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6]);
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
     assert_eq!(s.cached_groups("HH_S2").unwrap().len(), 1);

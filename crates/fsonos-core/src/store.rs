@@ -125,6 +125,22 @@ pub struct StoredScene {
     pub updated: i64,
 }
 
+/// A stored schedule: its spec and action as `crate::schedule` writes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredSchedule {
+    /// Assigned by the store; ignored by [`Store::add_schedule`].
+    pub id: i64,
+    pub spec: String,
+    pub action: String,
+    /// The policy client that created it: runs act as this client.
+    pub creator: String,
+    pub enabled: bool,
+    /// Unix seconds.
+    pub created: i64,
+    /// The run last recorded (fired or skipped), in unix seconds.
+    pub last_fired: Option<i64>,
+}
+
 /// One piece of listening feedback about something the DJ played.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Feedback {
@@ -363,6 +379,24 @@ pub trait Store {
 
     /// Forget the scene called exactly `name`; whether there was one.
     fn delete_scene(&mut self, name: &str) -> Result<bool, StoreError>;
+
+    /// Add a schedule; returns its new id.
+    fn add_schedule(&mut self, schedule: &StoredSchedule) -> Result<i64, StoreError>;
+
+    /// Every schedule, by id.
+    fn schedules(&self) -> Result<Vec<StoredSchedule>, StoreError>;
+
+    /// Turn schedule `id` on or off; whether it exists.
+    fn set_schedule_enabled(&mut self, id: i64, enabled: bool) -> Result<bool, StoreError>;
+
+    /// Record schedule `id`'s run at `at` (unix seconds), only if `at` is
+    /// later than the run recorded last. True means this caller claimed the
+    /// run; false (already recorded, or no such schedule) means do not run
+    /// it, which keeps a run from firing twice.
+    fn mark_schedule_fired(&mut self, id: i64, at: i64) -> Result<bool, StoreError>;
+
+    /// Forget schedule `id`; whether there was one.
+    fn delete_schedule(&mut self, id: i64) -> Result<bool, StoreError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -389,6 +423,7 @@ pub struct MemStore {
     album_tracks: BTreeMap<String, (TracksByPosition, i64)>,
     actions: Vec<LoggedAction>,
     scenes: BTreeMap<String, StoredScene>,
+    schedules: BTreeMap<i64, StoredSchedule>,
 }
 
 impl Store for MemStore {
@@ -670,5 +705,43 @@ impl Store for MemStore {
 
     fn delete_scene(&mut self, name: &str) -> Result<bool, StoreError> {
         Ok(self.scenes.remove(name).is_some())
+    }
+
+    fn add_schedule(&mut self, schedule: &StoredSchedule) -> Result<i64, StoreError> {
+        let id = self.schedules.keys().next_back().map_or(1, |last| last + 1);
+        self.schedules.insert(
+            id,
+            StoredSchedule {
+                id,
+                ..schedule.clone()
+            },
+        );
+        Ok(id)
+    }
+
+    fn schedules(&self) -> Result<Vec<StoredSchedule>, StoreError> {
+        Ok(self.schedules.values().cloned().collect())
+    }
+
+    fn set_schedule_enabled(&mut self, id: i64, enabled: bool) -> Result<bool, StoreError> {
+        Ok(self
+            .schedules
+            .get_mut(&id)
+            .map(|s| s.enabled = enabled)
+            .is_some())
+    }
+
+    fn mark_schedule_fired(&mut self, id: i64, at: i64) -> Result<bool, StoreError> {
+        match self.schedules.get_mut(&id) {
+            Some(s) if s.last_fired.is_none_or(|last| last < at) => {
+                s.last_fired = Some(at);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn delete_schedule(&mut self, id: i64) -> Result<bool, StoreError> {
+        Ok(self.schedules.remove(&id).is_some())
     }
 }
