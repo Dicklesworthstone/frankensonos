@@ -161,7 +161,12 @@ the queue exactly. Album/playlist containers enqueue with
 
 Album/container favorites use `x-rincon-cpcontainer:1004206c<enc-uri>` with
 `flags=8300` and a container DIDL (`object.container.album.musicAlbum` via the
-`resMD` of the favorite). Playlists use prefix `1006206c`, same flags.
+`resMD` of the favorite). Playlists use class `object.container.playlistContainer`
+and — **the prefix varies** (`1006206c`, `10062a6c` both observed in one
+favorites list) — learn it from a playlist favorite rather than hardcoding.
+Playlist URIs in favorites use the **legacy** form
+`spotify:user:<USER>:playlist:<ID>`; the modern `spotify:playlist:<ID>` form
+should be accepted too (both are accepted by the bridge).
 
 Container playback (verified live on both generations, 2026-10-07):
 `AddURIToQueue` with the cpcontainer URI + container DIDL makes the **speaker
@@ -171,6 +176,9 @@ response carries `FirstTrackNumberEnqueued` (position of track 1) and
 transport at `x-rincon-queue:<COORD_UUID>#0`, `Seek` `TRACK_NR` to the
 returned position, `Play`. Whole-album removal is per-position
 `RemoveTrackFromQueue` in descending order (both queues restored exactly).
+For whole-container removal, `RemoveTrackRangeFromQueue(UpdateID=0,
+StartingIndex=N, NumberOfTracks=M)` deletes a range in ONE call — verified on
+both generations (a 491-track playlist removed atomically; queues restored).
 
 Arbitrary HTTP streams also render directly: `x-rincon-mp3radio://host/path`
 via `SetAVTransportURI` (class `object.item.audioItem.audioBroadcast`) played a
