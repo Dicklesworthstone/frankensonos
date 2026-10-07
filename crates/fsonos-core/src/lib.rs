@@ -90,7 +90,7 @@ fn list(items: &[String]) -> String {
 
 /// The authoritative snapshot of everything the daemon knows about one
 /// household at a point in time.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct HouseholdState {
     pub id: Option<HouseholdId>,
     /// Every playable player with a known address (zone bridges excluded).

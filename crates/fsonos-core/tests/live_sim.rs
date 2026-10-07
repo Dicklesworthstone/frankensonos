@@ -5,7 +5,7 @@
 
 use fsonos_core::control;
 use fsonos_core::events::{Service, wanted};
-use fsonos_core::live::{Live, LiveConfig};
+use fsonos_core::live::{Live, LiveConfig, LiveEvent};
 use fsonos_core::reconcile::Health;
 use fsonos_proto::net::Lan;
 use fsonos_sim::{GenaEvent, SimHandle, SimHousehold, SimModel, SimPlayerSpec};
@@ -176,5 +176,57 @@ fn a_reboot_is_followed_and_events_keep_flowing() {
     assert_eq!(
         live.snapshot().health.of(&victim.1).map(|h| h.health),
         Some(Health::Healthy)
+    );
+}
+
+#[test]
+fn changes_are_pushed_to_subscribers() {
+    let sim = sim();
+    let lan = routed(&sim);
+    let live = Live::start(Arc::clone(&lan), LiveConfig::new(Vec::new()));
+    assert!(live.wait_ready(Duration::from_secs(10)));
+    let kitchen = id_of(&live, "Kitchen");
+    let office = id_of(&live, "Office");
+    assert!(eventually(Duration::from_secs(5), || live
+        .player(&kitchen)
+        .is_some_and(|p| p.volume.is_some())));
+    let events = live.subscribe();
+    let quitter = live.subscribe();
+    drop(quitter);
+
+    // A change made by someone else is pushed within a second.
+    control::set_volume(&*lan, &live.households(), &kitchen, 27).unwrap();
+    let started = Instant::now();
+    let pushed = loop {
+        let left = Duration::from_secs(1).saturating_sub(started.elapsed());
+        match events.recv_timeout(left) {
+            Ok(LiveEvent::Playback { player, changes })
+                if player == kitchen && changes.volume == Some(27) =>
+            {
+                break true;
+            }
+            Ok(_) => {}
+            Err(_) => break false,
+        }
+    };
+    assert!(pushed, "the volume change was not pushed within 1 s");
+
+    // A player dropping off: its health and the topology change are pushed.
+    sim.set_offline("Office", true).unwrap();
+    live.refresh_soon();
+    let (mut offline, mut topology) = (false, false);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !(offline && topology) && Instant::now() < deadline {
+        match events.recv_timeout(Duration::from_millis(200)) {
+            Ok(LiveEvent::Health { player, health }) if player == office => {
+                offline |= health == Health::Offline;
+            }
+            Ok(LiveEvent::Topology) => topology = true,
+            _ => {}
+        }
+    }
+    assert!(
+        offline && topology,
+        "offline {offline}, topology {topology}"
     );
 }

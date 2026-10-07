@@ -55,6 +55,11 @@ impl HealthBoard {
         self.players.get(player)
     }
 
+    /// Every player's record, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = (&PlayerId, &PlayerHealth)> {
+        self.players.iter()
+    }
+
     /// A call to `player` (or an event from it) succeeded.
     pub fn ok(&mut self, player: &PlayerId, now: Instant) {
         self.players.insert(

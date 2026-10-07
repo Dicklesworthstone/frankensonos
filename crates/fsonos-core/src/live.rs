@@ -10,19 +10,23 @@
 //! Callers read snapshots ([`Live::households`], [`Live::player`],
 //! [`Live::snapshot`]) without waiting on the network. [`Live::refresh_soon`]
 //! asks for a survey now, after a command found a player gone, say.
-//! [`Live::stop`] (or dropping the handle) ends every subscription.
+//! [`Live::subscribe`] pushes each change ([`LiveEvent`]) as it happens, for
+//! an event stream. [`Live::stop`] (or dropping the handle) ends every
+//! subscription.
 
 use crate::HouseholdState;
 use crate::events::Service;
 use crate::inventory::DISCOVERY_WAIT;
-use crate::playback::{Playback, PlayerPlayback};
-use crate::reconcile::{HealthBoard, Reconciler};
+use crate::playback::{Changes, Playback, PlayerPlayback};
+use crate::reconcile::{Health, HealthBoard, Reconciler};
 use fsonos_proto::Transport;
 use fsonos_proto::net::{EventSink, Lan};
 use fsonos_proto::topology::host_of_location;
 use fsonos_types::PlayerId;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -69,9 +73,29 @@ pub struct Snapshot {
     pub callback: Option<String>,
 }
 
+/// A change the live model saw, pushed to every [`Live::subscribe`]r.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveEvent {
+    /// A player's playback changed: transport, track, volume, mute or group
+    /// volume.
+    Playback { player: PlayerId, changes: Changes },
+    /// The households changed: grouping, rooms, or players joining, leaving
+    /// or moving. Read [`Live::households`] for the new shape.
+    Topology,
+    /// A player's health changed (it went offline or came back, say).
+    Health { player: PlayerId, health: Health },
+}
+
+/// How far a subscriber may fall behind; newer events are dropped for it
+/// until it catches up (it can resync from [`Live::snapshot`]).
+pub const SUBSCRIBER_BACKLOG: usize = 1024;
+
+type Subscribers = Arc<Mutex<Vec<SyncSender<LiveEvent>>>>;
+
 /// A running live model; see the module docs.
 pub struct Live {
     snapshot: Arc<Mutex<Snapshot>>,
+    subscribers: Subscribers,
     wake: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -85,12 +109,14 @@ impl Live {
     #[must_use]
     pub fn start(lan: Arc<Lan>, config: LiveConfig) -> Self {
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
+        let subscribers: Subscribers = Arc::new(Mutex::new(Vec::new()));
         let wake = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let engine = Engine {
             lan,
             config,
             snapshot: Arc::clone(&snapshot),
+            subscribers: Arc::clone(&subscribers),
             wake: Arc::clone(&wake),
             stop: Arc::clone(&stop),
         };
@@ -100,6 +126,7 @@ impl Live {
             .expect("spawn the live-model thread");
         Self {
             snapshot,
+            subscribers,
             wake,
             stop,
             thread: Some(thread),
@@ -156,6 +183,19 @@ impl Live {
         self.wake.store(true, Ordering::Release);
     }
 
+    /// Every change from now on, as it happens. Dropping the receiver
+    /// unsubscribes; one that falls [`SUBSCRIBER_BACKLOG`] behind misses
+    /// events until it catches up.
+    #[must_use]
+    pub fn subscribe(&self) -> Receiver<LiveEvent> {
+        let (tx, rx) = sync_channel(SUBSCRIBER_BACKLOG);
+        self.subscribers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(tx);
+        rx
+    }
+
     /// End every subscription and stop the loop.
     pub fn stop(mut self) {
         self.halt();
@@ -179,6 +219,7 @@ struct Engine {
     lan: Arc<Lan>,
     config: LiveConfig,
     snapshot: Arc<Mutex<Snapshot>>,
+    subscribers: Subscribers,
     wake: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
 }
@@ -186,108 +227,128 @@ struct Engine {
 /// The longest the loop waits for a NOTIFY before looking at its schedule.
 const TICK: Duration = Duration::from_millis(200);
 
+/// What the loop owns.
+struct Model {
+    rec: Reconciler,
+    playback: Playback,
+    sink: Option<EventSink>,
+    surveyed_at: Option<Instant>,
+    last_error: Option<String>,
+}
+
 impl Engine {
     fn run(self) {
-        let lan = &*self.lan;
-        let mut rec = Reconciler::new(
-            self.config.interval,
-            self.config.max_backoff,
-            Instant::now(),
-        );
-        let mut playback = Playback::default();
-        let mut sink: Option<EventSink> = None;
-        let mut surveyed_at = None;
-        let mut last_error = None;
+        let mut m = Model {
+            rec: Reconciler::new(
+                self.config.interval,
+                self.config.max_backoff,
+                Instant::now(),
+            ),
+            playback: Playback::default(),
+            sink: None,
+            surveyed_at: None,
+            last_error: None,
+        };
         while !self.stop.load(Ordering::Acquire) {
             let now = Instant::now();
             if self.wake.swap(false, Ordering::AcqRel) {
-                rec.schedule.due_now(now);
+                m.rec.schedule.due_now(now);
             }
-            if rec.schedule.due(now) {
-                if sink.is_none() {
-                    match self.open_sink(&rec.households) {
-                        Ok(s) => {
-                            tracing::info!(callback = %s.callback_url(""), "listening for player events");
-                            sink = Some(s);
-                        }
-                        Err(e) => {
-                            let retry = rec.schedule.failed(now);
-                            tracing::warn!(error = %e, retry_in_s = retry.as_secs(), "cannot listen for events yet");
-                            last_error = Some(e);
-                        }
-                    }
-                }
-                if let Some(s) = &sink {
-                    let callback = |service: Service| s.callback_url(service.tag());
-                    match rec.refresh(lan, &self.config.seeds, callback, now) {
-                        Ok(report) => {
-                            for gone in &report.missing {
-                                playback.remove(gone);
-                            }
-                            surveyed_at = Some(now);
-                            last_error = None;
-                        }
-                        Err(e) => last_error = Some(e.to_string()),
-                    }
-                }
-                self.publish(
-                    &rec,
-                    &playback,
-                    sink.as_ref(),
-                    surveyed_at,
-                    last_error.as_ref(),
-                );
+            if m.rec.schedule.due(now) {
+                self.survey(&mut m, now);
+                self.publish(&m, Vec::new());
             }
-            let Some(s) = &sink else {
+            if m.sink.is_none() {
                 std::thread::sleep(TICK);
                 continue;
-            };
-            let callback = |service: Service| s.callback_url(service.tag());
-            if rec.subscriptions.next_due().is_some_and(|due| due <= now) {
-                let report = rec.subscriptions.renew_due(lan, callback, now);
-                rec.health.record(&report);
-                self.publish(
-                    &rec,
-                    &playback,
-                    sink.as_ref(),
-                    surveyed_at,
-                    last_error.as_ref(),
-                );
             }
-            let wait = rec
-                .schedule
-                .next_at()
-                .saturating_duration_since(Instant::now())
-                .min(TICK);
-            if let Some(n) = s.recv_timeout(wait) {
-                match rec.on_notify(lan, &mut playback, &n, callback, Instant::now()) {
-                    Ok(Some(report)) => {
-                        for gone in &report.gone {
-                            playback.remove(gone);
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        tracing::debug!(error = %e, sid = n.sid.as_str(), "NOTIFY not applied");
-                    }
-                }
-                self.publish(
-                    &rec,
-                    &playback,
-                    sink.as_ref(),
-                    surveyed_at,
-                    last_error.as_ref(),
-                );
+            if m.rec.subscriptions.next_due().is_some_and(|due| due <= now) {
+                self.renew(&mut m, now);
+                self.publish(&m, Vec::new());
+            }
+            if let Some(pushed) = self.next_event(&mut m) {
+                self.publish(&m, pushed);
             }
         }
-        rec.subscriptions.unsubscribe_all(lan);
-        self.publish(
-            &rec,
-            &playback,
-            sink.as_ref(),
-            surveyed_at,
-            last_error.as_ref(),
-        );
+        m.rec.subscriptions.unsubscribe_all(&*self.lan);
+        self.publish(&m, Vec::new());
+    }
+
+    /// Survey, opening the event listener first if there is none yet.
+    fn survey(&self, m: &mut Model, now: Instant) {
+        if m.sink.is_none() {
+            match self.open_sink(&m.rec.households) {
+                Ok(s) => {
+                    tracing::info!(callback = %s.callback_url(""), "listening for player events");
+                    m.sink = Some(s);
+                }
+                Err(e) => {
+                    let retry = m.rec.schedule.failed(now);
+                    tracing::warn!(error = %e, retry_in_s = retry.as_secs(), "cannot listen for events yet");
+                    m.last_error = Some(e);
+                    return;
+                }
+            }
+        }
+        let Some(s) = &m.sink else { return };
+        let callback = |service: Service| s.callback_url(service.tag());
+        match m.rec.refresh(&*self.lan, &self.config.seeds, callback, now) {
+            Ok(report) => {
+                for gone in &report.missing {
+                    m.playback.remove(gone);
+                }
+                m.surveyed_at = Some(now);
+                m.last_error = None;
+            }
+            Err(e) => m.last_error = Some(e.to_string()),
+        }
+    }
+
+    /// Renew the subscriptions that are due.
+    fn renew(&self, m: &mut Model, now: Instant) {
+        let Some(s) = &m.sink else { return };
+        let callback = |service: Service| s.callback_url(service.tag());
+        let report = m.rec.subscriptions.renew_due(&*self.lan, callback, now);
+        m.rec.health.record(&report);
+    }
+
+    /// Wait (briefly) for one NOTIFY and fold it in. `None` when none came;
+    /// otherwise the playback change it made, if any.
+    fn next_event(&self, m: &mut Model) -> Option<Vec<LiveEvent>> {
+        let s = m.sink.as_ref()?;
+        let wait = m
+            .rec
+            .schedule
+            .next_at()
+            .saturating_duration_since(Instant::now())
+            .min(TICK);
+        let n = s.recv_timeout(wait)?;
+        let callback = |service: Service| s.callback_url(service.tag());
+        let from = m.rec.subscriptions.route(&n).map(|(p, _)| p.clone());
+        let mut pushed = Vec::new();
+        match m
+            .rec
+            .on_notify(&*self.lan, &mut m.playback, &n, callback, Instant::now())
+        {
+            Ok(Some(report)) => {
+                for gone in &report.gone {
+                    m.playback.remove(gone);
+                }
+                if let Some(player) = from
+                    && !report.changes.is_empty()
+                {
+                    pushed.push(LiveEvent::Playback {
+                        player,
+                        changes: report.changes,
+                    });
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::debug!(error = %e, sid = n.sid.as_str(), "NOTIFY not applied");
+            }
+        }
+        Some(pushed)
     }
 
     /// Listen for events on the address this host uses to reach the
@@ -318,23 +379,60 @@ impl Engine {
             .map_err(|e| format!("cannot listen for events on {local}: {e}"))
     }
 
-    fn publish(
-        &self,
-        rec: &Reconciler,
-        playback: &Playback,
-        sink: Option<&EventSink>,
-        surveyed_at: Option<Instant>,
-        last_error: Option<&String>,
-    ) {
+    fn publish(&self, m: &Model, mut events: Vec<LiveEvent>) {
         let next = Snapshot {
-            households: rec.households.clone(),
-            playback: playback.clone(),
-            health: rec.health.clone(),
-            subscriptions: rec.subscriptions.len(),
-            surveyed_at,
-            last_error: last_error.cloned(),
-            callback: sink.map(|s| s.callback_url("").trim_end_matches('/').to_string()),
+            households: m.rec.households.clone(),
+            playback: m.playback.clone(),
+            health: m.rec.health.clone(),
+            subscriptions: m.rec.subscriptions.len(),
+            surveyed_at: m.surveyed_at,
+            last_error: m.last_error.clone(),
+            callback: m
+                .sink
+                .as_ref()
+                .map(|s| s.callback_url("").trim_end_matches('/').to_string()),
         };
-        *self.snapshot.lock().unwrap_or_else(PoisonError::into_inner) = next;
+        let mut current = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut changed = Vec::new();
+        if current.households != next.households {
+            changed.push(LiveEvent::Topology);
+        }
+        let before: HashMap<&PlayerId, Health> = current
+            .health
+            .iter()
+            .map(|(id, h)| (id, h.health))
+            .collect();
+        for (id, h) in next.health.iter() {
+            let news = match before.get(id) {
+                Some(&was) => was != h.health,
+                None => h.health != Health::Healthy,
+            };
+            if news {
+                changed.push(LiveEvent::Health {
+                    player: id.clone(),
+                    health: h.health,
+                });
+            }
+        }
+        changed.append(&mut events);
+        *current = next;
+        drop(current);
+        self.emit(&changed);
+    }
+
+    /// Push `events` to every subscriber, forgetting those that hung up.
+    fn emit(&self, events: &[LiveEvent]) {
+        if events.is_empty() {
+            return;
+        }
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        subscribers.retain(|tx| {
+            events
+                .iter()
+                .all(|e| !matches!(tx.try_send(e.clone()), Err(TrySendError::Disconnected(_))))
+        });
     }
 }
