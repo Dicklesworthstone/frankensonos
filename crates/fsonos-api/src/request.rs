@@ -140,6 +140,32 @@ impl MuteRequest {
     }
 }
 
+/// `POST /play/favorite` body: play one of the household's Sonos favorites.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlayFavoriteRequest {
+    pub zone: String,
+    /// A title (case, accents and punctuation ignored; a unique prefix or all
+    /// its words will do), a 1-based position, or an `FV:2/<n>` id.
+    pub favorite: String,
+}
+
+impl PlayFavoriteRequest {
+    /// The trimmed zone name, or why it is unusable.
+    pub fn zone(&self) -> Result<&str, Failure> {
+        zone_name("zone", &self.zone)
+    }
+
+    /// The trimmed favorite query, or why it is unusable.
+    pub fn favorite(&self) -> Result<&str, Failure> {
+        let favorite = self.favorite.trim();
+        if favorite.is_empty() {
+            return Err(Failure::invalid("`favorite` is empty; name a favorite"));
+        }
+        Ok(favorite)
+    }
+}
+
 /// `POST /group` body: move `zone` into the group that `to` belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

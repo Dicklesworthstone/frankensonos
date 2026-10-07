@@ -16,6 +16,7 @@
 
 use fastapi::{Response, ResponseBody, StatusCode};
 use fsonos_core::CoreError;
+use fsonos_core::favorites::FavoriteError;
 use fsonos_core::rooms::suggest_rooms;
 use fsonos_proto::ProtoError;
 use serde::{Deserialize, Serialize};
@@ -62,11 +63,17 @@ pub enum ErrorCode {
     Internal,
     /// The request is understood but this build cannot carry it out yet.
     NotImplemented,
+    /// No favorite in that household matches the name given.
+    UnknownFavorite,
+    /// The name matches more than one favorite.
+    AmbiguousFavorite,
+    /// The favorite is a shortcut with nothing to play.
+    UnplayableFavorite,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 20] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -84,6 +91,9 @@ impl ErrorCode {
         Self::NoDjSession,
         Self::Internal,
         Self::NotImplemented,
+        Self::UnknownFavorite,
+        Self::AmbiguousFavorite,
+        Self::UnplayableFavorite,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
@@ -107,6 +117,9 @@ impl ErrorCode {
             Self::NoDjSession => "NO_DJ_SESSION",
             Self::Internal => "INTERNAL",
             Self::NotImplemented => "NOT_IMPLEMENTED",
+            Self::UnknownFavorite => "UNKNOWN_FAVORITE",
+            Self::AmbiguousFavorite => "AMBIGUOUS_FAVORITE",
+            Self::UnplayableFavorite => "UNPLAYABLE_FAVORITE",
         }
     }
 
@@ -114,15 +127,18 @@ impl ErrorCode {
     #[must_use]
     pub fn status(self) -> u16 {
         match self {
-            Self::InvalidArgument | Self::CrossHouseholdGroup => 422,
-            Self::UnknownRoom | Self::UnknownHousehold | Self::UnknownMood | Self::NoDjSession => {
-                404
-            }
+            Self::InvalidArgument | Self::CrossHouseholdGroup | Self::UnplayableFavorite => 422,
+            Self::UnknownRoom
+            | Self::UnknownHousehold
+            | Self::UnknownMood
+            | Self::NoDjSession
+            | Self::UnknownFavorite => 404,
             Self::AmbiguousRoom
             | Self::NotCoordinator
             | Self::SpotifyNotLinked
             | Self::RenderParamsMissing
-            | Self::SpotifyAuthRequired => 409,
+            | Self::SpotifyAuthRequired
+            | Self::AmbiguousFavorite => 409,
             Self::PolicyDenied => 403,
             Self::NotReady | Self::PlayerUnreachable => 503,
             Self::UpnpFault => 502,
@@ -136,8 +152,16 @@ impl ErrorCode {
     #[must_use]
     pub fn exit_code(self) -> u8 {
         match self {
-            Self::InvalidArgument | Self::AmbiguousRoom | Self::CrossHouseholdGroup => 2,
-            Self::UnknownRoom | Self::UnknownHousehold | Self::UnknownMood | Self::NoDjSession => 3,
+            Self::InvalidArgument
+            | Self::AmbiguousRoom
+            | Self::CrossHouseholdGroup
+            | Self::AmbiguousFavorite
+            | Self::UnplayableFavorite => 2,
+            Self::UnknownRoom
+            | Self::UnknownHousehold
+            | Self::UnknownMood
+            | Self::NoDjSession
+            | Self::UnknownFavorite => 3,
             Self::NotReady | Self::PlayerUnreachable | Self::NotCoordinator => 4,
             Self::PolicyDenied => 5,
             Self::UpnpFault
@@ -195,6 +219,11 @@ impl ErrorCode {
             Self::NoDjSession => "Start the DJ in that zone first (dj_start).",
             Self::Internal => "Retry once; if it persists, check the daemon log.",
             Self::NotImplemented => "Use what the detail suggests until this lands.",
+            Self::UnknownFavorite => {
+                "Use a suggested favorite, or list them with list_favorites (GET /favorites)."
+            }
+            Self::AmbiguousFavorite => "Repeat the request with one of the suggested titles.",
+            Self::UnplayableFavorite => "Pick a favorite that is a track, a station or a playlist.",
         }
     }
 }
@@ -388,6 +417,22 @@ impl From<CoreError> for Failure {
             // Store errors can carry a DB path or engine internals; keep them
             // out of the client response. The caller logs the full error.
             CoreError::Store(_) => Self::new(ErrorCode::Internal, "internal error"),
+        }
+    }
+}
+
+impl From<FavoriteError> for Failure {
+    fn from(err: FavoriteError) -> Self {
+        let detail = err.to_string();
+        match err {
+            FavoriteError::Unknown { suggestions, .. } => {
+                Self::new(ErrorCode::UnknownFavorite, detail).with_suggestions(suggestions)
+            }
+            FavoriteError::Ambiguous { candidates, .. } => {
+                Self::new(ErrorCode::AmbiguousFavorite, detail).with_suggestions(candidates)
+            }
+            FavoriteError::Unplayable { .. } => Self::new(ErrorCode::UnplayableFavorite, detail),
+            FavoriteError::Core(core) => Self::from(core),
         }
     }
 }

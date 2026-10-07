@@ -16,7 +16,7 @@
 //! * [`execute`] — carrying a [`Command`] out on the speakers;
 //! * [`guard`] — the house policy: who may call what, how loud;
 //! * [`surface`] — the speakers a surface acts on, with its policy;
-//! * [`zones`] — the zone (group) listings;
+//! * [`zones`] — the zone (group) listings; [`reads`] — zone state, favorites;
 //! * [`failure`] — the one [`Failure`] shape (status + agent-readable detail).
 
 pub mod execute;
@@ -24,6 +24,7 @@ pub mod failure;
 pub mod guard;
 pub mod http;
 pub mod plan;
+pub mod reads;
 pub mod request;
 pub mod source;
 pub mod surface;
@@ -34,8 +35,10 @@ pub use failure::{ErrorCode, Failure, NoteCode};
 pub use guard::{Guard, Note};
 pub use http::app;
 pub use plan::Command;
+pub use reads::{FavoriteDto, TrackDto, ZoneStateDto};
 pub use request::{
-    GroupRequest, MuteRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest,
+    GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, VolumeChange, VolumeRequest,
+    ZoneRequest,
 };
 pub use surface::Surface;
 pub use zones::ZoneDto;

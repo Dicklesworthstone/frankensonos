@@ -7,12 +7,14 @@
 //! joining targets the coordinator of the destination group. A request that is
 //! already satisfied plans to [`Command::Nothing`] so retries are harmless.
 
+use fsonos_core::favorites::{self, Favorite};
 use fsonos_core::{ControlTarget, HouseholdState, resolve_room};
 use fsonos_types::PlayerId;
 
 use crate::failure::{ErrorCode, Failure};
 use crate::request::{
-    GroupRequest, MuteRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest,
+    GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, VolumeChange, VolumeRequest,
+    ZoneRequest,
 };
 
 /// Pause, resume or skip on a group.
@@ -49,6 +51,12 @@ pub enum Command {
         coordinator: PlayerId,
         source_uri: String,
         title: Option<String>,
+    },
+    /// Play a Sonos favorite (a track, a station, or a container that
+    /// replaces the queue) in the group `coordinator` leads.
+    PlayFavorite {
+        coordinator: PlayerId,
+        favorite: Favorite,
     },
     Transport {
         coordinator: PlayerId,
@@ -100,6 +108,22 @@ pub fn plan_play(households: &[HouseholdState], req: &PlayRequest) -> Result<Com
         coordinator: target.coordinator.id.clone(),
         source_uri: req.source_uri,
         title: req.title,
+    })
+}
+
+/// `POST /play/favorite` / the `play_favorite` tool, given the favorites of
+/// the zone's household (`fsonos_core::favorites::list`).
+pub fn plan_play_favorite(
+    households: &[HouseholdState],
+    req: &PlayFavoriteRequest,
+    household_favorites: &[Favorite],
+) -> Result<Command, Failure> {
+    let query = req.favorite()?;
+    let target = resolve(households, req.zone()?)?;
+    let favorite = favorites::find(household_favorites, query)?;
+    Ok(Command::PlayFavorite {
+        coordinator: target.coordinator.id.clone(),
+        favorite: favorite.clone(),
     })
 }
 

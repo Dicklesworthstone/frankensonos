@@ -67,6 +67,7 @@ fn serve_hosts_the_api_and_mcp_over_the_sim() {
     );
 
     check_http_api(&mut s, api);
+    check_http_reads(&mut s, api);
     check_mcp_http(&mut s, mcp);
 
     let code = daemon.interrupt(Duration::from_secs(10));
@@ -146,14 +147,14 @@ fn check_http_api(s: &mut Scenario, api: &str) {
     );
 }
 
-/// The MCP server answers a modern-era (2026-07-28, sessionless) `tools/call`
-/// over streamable HTTP, through the daemon's shared surface to the sim.
-fn check_mcp_http(s: &mut Scenario, mcp: &str) {
+/// One modern-era (2026-07-28, sessionless) `tools/call` over streamable
+/// HTTP: the `result`, or `Null`, plus the raw answer for the log.
+fn mcp_call(mcp: &str, tool: &str, arguments: &Value) -> (Value, String) {
     let call = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {
-            "name": "list_zones",
-            "arguments": {},
+            "name": tool,
+            "arguments": arguments,
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                 "io.modelcontextprotocol/clientCapabilities": {}
@@ -169,13 +170,20 @@ fn check_mcp_http(s: &mut Scenario, mcp: &str) {
             ("Accept", "application/json"),
             ("MCP-Protocol-Version", "2026-07-28"),
             ("Mcp-Method", "tools/call"),
-            ("Mcp-Name", "list_zones"),
+            ("Mcp-Name", tool),
         ],
         &call.to_string(),
     );
     let result = answer
         .as_ref()
         .map_or(Value::Null, |(_, _, body)| rpc(body)["result"].clone());
+    (result, format!("{answer:?}"))
+}
+
+/// The MCP server's tools over streamable HTTP, through the daemon's shared
+/// surface to the sim.
+fn check_mcp_http(s: &mut Scenario, mcp: &str) {
+    let (result, raw) = mcp_call(mcp, "list_zones", &json!({}));
     let zones = result["structuredContent"]["zones"]
         .as_array()
         .map_or(0, Vec::len);
@@ -184,6 +192,67 @@ fn check_mcp_http(s: &mut Scenario, mcp: &str) {
         "mcp-http",
         "list_zones over MCP HTTP sees the four sim rooms",
         result["isError"] != true && zones == 4,
-        format!("{answer:?}"),
+        raw,
+    );
+    let (result, raw) = mcp_call(mcp, "list_favorites", &json!({ "zone": "Bedroom" }));
+    s.check(
+        "mcp-list-favorites",
+        "mcp-http",
+        "list_favorites over MCP HTTP lists the household's favorites",
+        result["structuredContent"]["favorites"]
+            .as_array()
+            .is_some_and(|f| f.len() == 5),
+        raw,
+    );
+    let (result, raw) = mcp_call(mcp, "get_zone_state", &json!({ "zone": "Living Room" }));
+    s.check(
+        "mcp-zone-state",
+        "mcp-http",
+        "get_zone_state over MCP HTTP matches GET /zones/{room}/state",
+        result["structuredContent"]["transport_state"] == "playing",
+        raw,
+    );
+}
+
+/// The read routes and play-a-favorite over HTTP.
+fn check_http_reads(s: &mut Scenario, api: &str) {
+    let parse = |r: &std::io::Result<e2e::HttpAnswer>| {
+        r.as_ref()
+            .ok()
+            .and_then(|(_, _, b)| serde_json::from_str::<Value>(b).ok())
+            .unwrap_or(Value::Null)
+    };
+    let favorites = http(api, "GET", "/favorites?zone=Living+Room", &[], "");
+    let titles = parse(&favorites);
+    s.check(
+        "favorites",
+        "http",
+        "GET /favorites lists the household's favorites",
+        titles
+            .as_array()
+            .is_some_and(|f| f.iter().any(|x| x["title"] == "Sim Radio")),
+        format!("{favorites:?}"),
+    );
+    let json_body = [("Content-Type", "application/json")];
+    let body = json!({ "zone": "Living Room", "favorite": "sim radio" }).to_string();
+    let played = http(api, "POST", "/play/favorite", &json_body, &body);
+    s.check(
+        "play-favorite",
+        "http",
+        "POST /play/favorite is 200",
+        played.as_ref().is_ok_and(|(code, _, _)| *code == 200),
+        format!("{played:?}"),
+    );
+    let state = http(api, "GET", "/zones/living%20room/state", &[], "");
+    let state_json = parse(&state);
+    s.check(
+        "state",
+        "http",
+        "GET /zones/{room}/state shows the station playing",
+        state_json["transport_state"] == "playing"
+            && state_json["track"]["uri"]
+                .as_str()
+                .is_some_and(|u| u.starts_with("x-rincon-mp3radio:")),
+        format!("{state:?}"),
     );
 }

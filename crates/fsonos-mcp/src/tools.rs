@@ -10,7 +10,8 @@ use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, ContentBlock, FinalCallToolResult, ResultMeta};
 use fsonos_api::plan::{self, DjAction, TransportAction};
 use fsonos_api::{
-    ErrorCode, Failure, GroupRequest, MuteRequest, PlayRequest, Surface, VolumeRequest, ZoneRequest,
+    ErrorCode, Failure, GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, Surface,
+    VolumeRequest, ZoneRequest,
 };
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::Clock;
@@ -69,6 +70,56 @@ impl Backend {
         })
     }
 
+    /// The `get_zone_state` tool.
+    pub fn zone_state(&self, zone: &str) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let state = self.surface.zone_state(&self.client, zone)?;
+            let on = state.track.as_ref().map_or_else(
+                || "nothing".to_string(),
+                |t| {
+                    let title = t.title.clone().unwrap_or_else(|| t.uri.clone());
+                    t.creator
+                        .as_ref()
+                        .map_or_else(|| title.clone(), |c| format!("{title} by {c}"))
+                },
+            );
+            let volume = state
+                .volume
+                .map_or_else(String::new, |v| format!(", volume {v}"));
+            let text = format!(
+                "{} [{}]: {} ({on}){volume}",
+                state.zone.members.join(" + "),
+                state.zone.household,
+                state.transport_state
+            );
+            Ok((text, state))
+        })
+    }
+
+    /// The `list_favorites` tool.
+    pub fn list_favorites(&self, zone: &str) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let favorites = self.surface.favorites(&self.client, zone)?;
+            let text = favorites
+                .iter()
+                .enumerate()
+                .map(|(i, f)| format!("{}. {} ({})", i + 1, f.title, f.kind))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok((text, FavoritesDto { favorites }))
+        })
+    }
+
+    /// The `play_favorite` tool.
+    pub fn play_favorite(&self, zone: String, favorite: String) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let outcome = self
+                .surface
+                .play_favorite(&self.client, &PlayFavoriteRequest { zone, favorite })?;
+            Ok((outcome.done.clone(), outcome))
+        })
+    }
+
     /// The `list_zones` tool.
     pub fn list_zones(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
@@ -88,6 +139,12 @@ impl Backend {
             Ok((text, ZonesDto { zones }))
         })
     }
+}
+
+/// `list_favorites` structured content.
+#[derive(Serialize)]
+struct FavoritesDto {
+    favorites: Vec<fsonos_api::FavoriteDto>,
 }
 
 /// `list_zones` structured content (MCP wants an object).
@@ -136,6 +193,39 @@ fn with_backend(
 )]
 fn list_zones(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend(Backend::list_zones)
+}
+
+#[tool(
+    description = "What a room is doing right now: its group, whether that group is playing, paused or stopped, the current track or station (title, artist, position), and the room's volume. Call this before changing anything relative ('a bit louder', 'what's playing?'). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
+    annotations(read_only, idempotent)
+)]
+fn get_zone_state(
+    _ctx: &McpContext,
+    zone: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(move |b| b.zone_state(&zone))
+}
+
+#[tool(
+    description = "List the Sonos favorites of the household a room belongs to (tracks, stations, albums and playlists the owner saved in the Sonos app), numbered. Play one with play_favorite. `zone` is any room of that household.",
+    annotations(read_only, idempotent)
+)]
+fn list_favorites(
+    _ctx: &McpContext,
+    zone: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(move |b| b.list_favorites(&zone))
+}
+
+#[tool(
+    description = "Play one of the household's Sonos favorites in the group a room plays in. `favorite` is its title (case, accents and punctuation ignored; a unique prefix or all its words in any order will do), its number from list_favorites, or its FV:2/<n> id. Albums and playlists replace the queue. `zone` is a room name."
+)]
+fn play_favorite(
+    _ctx: &McpContext,
+    zone: String,
+    favorite: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(|b| b.play_favorite(zone, favorite))
 }
 
 #[tool(

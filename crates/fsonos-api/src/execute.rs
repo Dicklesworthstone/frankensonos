@@ -90,6 +90,17 @@ pub fn execute<T: Transport + ?Sized>(
                 room(coordinator)
             ))
         }
+        Command::PlayFavorite {
+            coordinator,
+            favorite,
+        } => {
+            fsonos_core::favorites::play(transport, households, coordinator, favorite)?;
+            OutcomeDto::sent(format!(
+                "playing the favorite {:?} in {}'s group",
+                favorite.title,
+                room(coordinator)
+            ))
+        }
         Command::Transport {
             coordinator,
             action,

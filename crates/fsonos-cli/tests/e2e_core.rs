@@ -6,7 +6,7 @@
 mod e2e;
 
 use e2e::{Run, Scenario};
-use fsonos_proto::control::{get_transport_info, get_volume};
+use fsonos_proto::control::{get_position_info, get_transport_info, get_volume};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::SimHousehold;
 use fsonos_types::TransportState;
@@ -169,10 +169,6 @@ fn control_reaches_the_coordinator_and_the_sim_agrees() {
             && run.stderr.contains("701"),
         &run.stderr,
     );
-    s.pending(
-        "next-in-queue",
-        "next within a queue needs play-a-favorite on the CLI (d-agent-read-tools)",
-    );
 
     let run = s.cli("unknown-room", &["pause", "Kitchn"]);
     s.check(
@@ -247,6 +243,82 @@ fn grouping_joins_and_leaves_within_a_household() {
         "cli",
         "S1 and S2 rooms cannot be grouped (CROSS_HOUSEHOLD_GROUP, exit 2)",
         run.code == Some(2) && run.stderr.contains("error[CROSS_HOUSEHOLD_GROUP]"),
+        &run.stderr,
+    );
+    s.finish();
+}
+
+#[test]
+fn favorites_play_and_the_queue_moves() {
+    let mut s = Scenario::start("favorites");
+    s.sim(SimHousehold::standard());
+    let kitchen = s.ip("Kitchen");
+
+    let run = s.cli("favorites", &["favorites", "Kitchen", "--json"]);
+    let favorites = json(&run).as_array().cloned().unwrap_or_default();
+    let titles: Vec<&str> = favorites
+        .iter()
+        .filter_map(|f| f["title"].as_str())
+        .collect();
+    s.check(
+        "favorites",
+        "cli",
+        "the household's favorites are listed with their kinds",
+        run.ok()
+            && titles.contains(&"Sim Symphonies")
+            && titles.contains(&"Sim Radio")
+            && favorites.iter().any(|f| f["kind"] == "container"),
+        &run.stdout,
+    );
+
+    let run = s.cli(
+        "play-favorite",
+        &["play", "Kitchen", "--favorite", "symphonies"],
+    );
+    s.check("play-favorite", "cli", "exits 0", run.ok(), &run.stderr);
+    let state = get_transport_info(&s.lan(), kitchen).map(|t| t.state).ok();
+    let track = |s: &Scenario| get_position_info(&s.lan(), kitchen).map(|p| p.track).ok();
+    s.check(
+        "play-favorite",
+        "sim",
+        "the album replaced the queue and plays from track 1",
+        state == Some(TransportState::Playing) && track(&s) == Some(1),
+        format!("{state:?}, track {:?}", track(&s)),
+    );
+
+    let run = s.cli("next-in-queue", &["next", "Kitchen"]);
+    s.check("next-in-queue", "cli", "exits 0", run.ok(), &run.stderr);
+    s.check(
+        "next-in-queue",
+        "sim",
+        "the queue moved to track 2",
+        track(&s) == Some(2),
+        format!("track {:?}", track(&s)),
+    );
+
+    let run = s.cli("status", &["status", "Kitchen", "--json"]);
+    let status = json(&run);
+    s.check(
+        "status",
+        "cli",
+        "status shows playing from queue position 2",
+        run.ok()
+            && status["transport_state"] == "playing"
+            && status["track"]["queue_position"] == 2,
+        &run.stdout,
+    );
+
+    let run = s.cli(
+        "unknown-favorite",
+        &["play", "Kitchen", "--favorite", "Symphonees"],
+    );
+    s.check(
+        "unknown-favorite",
+        "cli",
+        "an unknown favorite exits 3 as UNKNOWN_FAVORITE with a hint",
+        run.code == Some(3)
+            && run.stderr.contains("error[UNKNOWN_FAVORITE]")
+            && run.stderr.contains("list_favorites"),
         &run.stderr,
     );
     s.finish();

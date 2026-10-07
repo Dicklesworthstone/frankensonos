@@ -13,6 +13,7 @@
 
 use fsonos_core::actions::{self, UndoReport};
 use fsonos_core::clock::Clock;
+use fsonos_core::favorites;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store};
 use fsonos_core::{HouseholdState, control};
@@ -25,7 +26,9 @@ use std::time::{Duration, Instant};
 use crate::execute::{OutcomeDto, execute_guarded};
 use crate::failure::{ErrorCode, Failure};
 use crate::guard::Guard;
-use crate::plan::{Command, resolve};
+use crate::plan::{Command, plan_play_favorite, resolve};
+use crate::reads::{FavoriteDto, TrackDto, ZoneStateDto};
+use crate::request::PlayFavoriteRequest;
 use crate::zones::{ZoneDto, zone_for_target, zone_views};
 
 /// Finds the households (a LAN survey, say).
@@ -152,12 +155,24 @@ impl Surface {
     }
 
     /// A control call: authorize `tool` for `client`, plan against the
-    /// households, and carry it out under the policy.
+    /// households, and carry it out under the policy (logged when the
+    /// surface keeps an action log).
     pub fn control(
         &self,
         client: &Client,
         tool: &str,
         plan: impl FnOnce(&[HouseholdState]) -> Result<Command, Failure>,
+    ) -> Result<OutcomeDto, Failure> {
+        self.control_io(client, tool, |_, households| plan(households))
+    }
+
+    /// [`Self::control`] for plans that read from the speakers first (a
+    /// household's favorites, say); the plan gets the transport too.
+    pub fn control_io(
+        &self,
+        client: &Client,
+        tool: &str,
+        plan: impl FnOnce(&dyn Transport, &[HouseholdState]) -> Result<Command, Failure>,
     ) -> Result<OutcomeDto, Failure> {
         let guard = self.guard(client);
         if let Err(denied) = guard.authorize(tool, false) {
@@ -171,7 +186,7 @@ impl Surface {
             return Err(denied);
         }
         let households = self.households()?;
-        let command = plan(&households)?;
+        let command = plan(&*self.transport, &households)?;
         let regroups = matches!(command, Command::Join { .. } | Command::Leave { .. });
         // Already satisfied requests change nothing and are not logged.
         if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
@@ -305,6 +320,46 @@ impl Surface {
         }))
     }
 
+    /// Play a Sonos favorite of the zone's household (`play_favorite`).
+    pub fn play_favorite(
+        &self,
+        client: &Client,
+        req: &PlayFavoriteRequest,
+    ) -> Result<OutcomeDto, Failure> {
+        self.control_io(client, "play_favorite", |transport, households| {
+            let target = resolve(households, req.zone()?)?;
+            let household_favorites =
+                favorites::list(transport, households, &target.coordinator.id)?;
+            plan_play_favorite(households, req, &household_favorites)
+        })
+    }
+
+    /// The favorites of the household `zone` belongs to (`list_favorites`).
+    pub fn favorites(&self, client: &Client, zone: &str) -> Result<Vec<FavoriteDto>, Failure> {
+        self.guard(client).authorize("list_favorites", true)?;
+        let households = self.households()?;
+        let target = resolve(&households, zone)?;
+        let listed = favorites::list(&*self.transport, &households, &target.coordinator.id)?;
+        Ok(listed.iter().map(FavoriteDto::from).collect())
+    }
+
+    /// What `zone` is doing right now (`get_zone_state`): its group, the
+    /// group's transport and track, and the room's own volume.
+    pub fn zone_state(&self, client: &Client, zone: &str) -> Result<ZoneStateDto, Failure> {
+        self.guard(client).authorize("get_zone_state", true)?;
+        let households = self.households()?;
+        let target = resolve(&households, zone)?;
+        let playback = control::playback(&*self.transport, &households, &target.coordinator.id)?;
+        let volume = control::volume(&*self.transport, &households, &target.player.id).ok();
+        let state = playback.transport.state;
+        Ok(ZoneStateDto {
+            zone: zone_for_target(&households, &target, |_| state),
+            transport_state: crate::zones::transport_state_name(state).to_string(),
+            volume,
+            track: TrackDto::from_position(&playback.position),
+        })
+    }
+
     fn transport_state(
         &self,
         households: &[HouseholdState],
@@ -326,6 +381,7 @@ fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
     };
     match command {
         Command::Play { coordinator, .. }
+        | Command::PlayFavorite { coordinator, .. }
         | Command::Transport { coordinator, .. }
         | Command::Dj { coordinator, .. } => vec![coordinator.clone()],
         Command::Volume { target, .. } | Command::Mute { target, .. } => vec![group_of(target)],

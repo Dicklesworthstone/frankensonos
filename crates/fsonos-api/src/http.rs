@@ -5,6 +5,9 @@
 //! | `GET /health` | | [`crate::HealthDto`] |
 //! | `GET /zones` | | `[ZoneDto]` |
 //! | `GET /zones/{room}` | | [`crate::ZoneDto`] (`room` is percent-decoded) |
+//! | `GET /zones/{room}/state` | | [`crate::ZoneStateDto`] |
+//! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
+//! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /volume` | [`crate::VolumeRequest`] | [`crate::OutcomeDto`] |
@@ -30,7 +33,7 @@ use crate::plan::{
     self, Command, DjAction, TransportAction, plan_group, plan_mute, plan_play, plan_ungroup,
     plan_volume,
 };
-use crate::request::ZoneRequest;
+use crate::request::{PlayFavoriteRequest, ZoneRequest};
 use crate::surface::Surface;
 
 /// The API application over `surface`, answering every caller as `client`.
@@ -47,6 +50,30 @@ pub fn app(surface: &Arc<Surface>, client: &Client) -> App {
             let (s, c, _) = ctl("get_zone");
             move |_: &RequestContext, req: &mut Request| {
                 ready(answer(path_room(req).and_then(|room| s.zone(&c, &room))))
+            }
+        })
+        .get("/zones/{room}/state", {
+            let (s, c, _) = ctl("get_zone_state");
+            move |_: &RequestContext, req: &mut Request| {
+                ready(answer(
+                    path_room(req).and_then(|room| s.zone_state(&c, &room)),
+                ))
+            }
+        })
+        .get("/favorites", {
+            let (s, c, _) = ctl("list_favorites");
+            move |_: &RequestContext, req: &mut Request| {
+                ready(answer(
+                    query_zone(req).and_then(|zone| s.favorites(&c, &zone)),
+                ))
+            }
+        })
+        .post("/play/favorite", {
+            let (s, c, _) = ctl("play_favorite");
+            move |_: &RequestContext, req: &mut Request| {
+                let outcome =
+                    body::<PlayFavoriteRequest>(req).and_then(|body| s.play_favorite(&c, &body));
+                ready(answer(outcome))
             }
         })
         .post("/play", control(ctl("play"), plan_play))
@@ -121,6 +148,22 @@ fn path_room(req: &Request) -> Result<String, Failure> {
         .unwrap_or_default();
     percent_decode(raw)
         .ok_or_else(|| Failure::invalid(format!("room {raw:?} is not valid percent-encoded UTF-8")))
+}
+
+/// The `zone` query parameter (`?zone=<room>`), percent-decoded (`+` is a
+/// space).
+fn query_zone(req: &Request) -> Result<String, Failure> {
+    let raw = req
+        .query()
+        .unwrap_or_default()
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("zone="))
+        .ok_or_else(|| {
+            Failure::invalid("name the room: GET /favorites?zone=<room>")
+                .with_hint("Add ?zone=<room>; any room of the household will do.")
+        })?;
+    percent_decode(&raw.replace('+', " "))
+        .ok_or_else(|| Failure::invalid(format!("zone {raw:?} is not valid percent-encoded UTF-8")))
 }
 
 /// Decode `%XX` escapes (and nothing else) into UTF-8 text.

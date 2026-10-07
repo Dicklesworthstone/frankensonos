@@ -6,7 +6,9 @@
 //!
 //!   discover   list the players on the LAN
 //!   zones      show the zone groups and what each is doing
-//!   play       play a renderer URI in a room's group
+//!   status     what a room is doing (track, transport, volume)
+//!   favorites  the household's Sonos favorites, numbered
+//!   play       play a source URI, or `--favorite <name>`, in a room's group
 //!   pause / resume / next / previous   transport for a room's group
 //!   volume     set (0-100) or change (+N / -N) a room's or group's volume
 //!   mute       mute or unmute a room
@@ -27,7 +29,8 @@ use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand, ValueEnum};
 use fsonos_api::plan::{self, DjAction as PlanDj, TransportAction};
 use fsonos_api::{
-    Failure, GroupRequest, MuteRequest, OutcomeDto, PlayRequest, VolumeRequest, ZoneRequest,
+    Failure, GroupRequest, MuteRequest, OutcomeDto, PlayFavoriteRequest, PlayRequest,
+    VolumeRequest, ZoneRequest,
 };
 use fsonos_core::HouseholdState;
 use serde::Serialize;
@@ -54,14 +57,22 @@ enum Command {
     Discover,
     /// Show the zone groups and what each is doing.
     Zones,
-    /// Play a renderer URI (a radio or HTTP stream, a favorite) in a room's
+    /// What a room is doing: its group, the track or station, its volume.
+    Status { zone: String },
+    /// List the Sonos favorites of a room's household, numbered.
+    Favorites { zone: String },
+    /// Play a source URI, or one of the household's favorites, in a room's
     /// group.
     Play {
         /// Room name (`Room@S1` / `Room@S2` picks a household).
         zone: String,
-        /// Source URI or open.spotify.com link.
-        source_uri: String,
-        /// Title to show for it.
+        /// Source URI or open.spotify.com track link.
+        source_uri: Option<String>,
+        /// Play this favorite instead: a title (a unique prefix or all its
+        /// words will do), its number from `fsonos favorites`, or an id.
+        #[arg(long, conflicts_with = "source_uri")]
+        favorite: Option<String>,
+        /// Title to show for a source URI.
         #[arg(long)]
         title: Option<String>,
     },
@@ -172,9 +183,30 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let zones = Direct::survey(global)?.zones()?;
             emit(global.json, &zones, |z| direct::zones_text(z))
         }
+        Command::Status { zone } => {
+            let state = Direct::survey(global)?.status(&zone)?;
+            emit(global.json, &state, direct::status_text)
+        }
+        Command::Favorites { zone } => {
+            let favorites = Direct::survey(global)?.favorites(&zone)?;
+            emit(global.json, &favorites, |f| direct::favorites_text(f))
+        }
+        Command::Play {
+            zone,
+            favorite: Some(favorite),
+            ..
+        } => {
+            let req = PlayFavoriteRequest { zone, favorite };
+            let outcome = Direct::survey(global)?.play_favorite(&req)?;
+            emit(global.json, &outcome, |o: &OutcomeDto| {
+                format!("{}\n", o.done)
+            })
+        }
         control => {
             let direct = Direct::survey(global)?;
-            let outcome = direct.run(|households| plan_for(&control, households))?;
+            let outcome = direct.run(tool_name(&control), |households| {
+                plan_for(&control, households)
+            })?;
             emit(global.json, &outcome, |o: &OutcomeDto| {
                 format!(
                     "{}
@@ -212,14 +244,21 @@ fn plan_for(
             zone,
             source_uri,
             title,
-        } => plan::plan_play(
-            households,
-            &PlayRequest {
-                zone: zone.clone(),
-                source_uri: source_uri.clone(),
-                title: title.clone(),
-            },
-        ),
+            ..
+        } => {
+            let source_uri = source_uri.clone().ok_or_else(|| {
+                Failure::invalid("nothing to play")
+                    .with_hint("Give a source URI, or --favorite <name> (see fsonos favorites).")
+            })?;
+            plan::plan_play(
+                households,
+                &PlayRequest {
+                    zone: zone.clone(),
+                    source_uri,
+                    title: title.clone(),
+                },
+            )
+        }
         Command::Pause { zone: z } => {
             plan::plan_transport(households, &zone(z), TransportAction::Pause)
         }
@@ -258,11 +297,38 @@ fn plan_for(
             };
             plan::plan_dj(households, &zone(z), action)
         }
-        Command::Discover | Command::Zones | Command::Serve(_) | Command::Mcp => {
+        Command::Discover
+        | Command::Zones
+        | Command::Status { .. }
+        | Command::Favorites { .. }
+        | Command::Serve(_)
+        | Command::Mcp => {
             unreachable!("not a control command")
         }
         #[cfg(feature = "sim")]
         Command::Sim(_) => unreachable!("not a control command"),
+    }
+}
+
+/// The house-policy tool name a control subcommand runs as (the MCP tool of
+/// the same action), so policy rules and the action log read alike.
+fn tool_name(command: &Command) -> &'static str {
+    match command {
+        Command::Play { .. } => "play",
+        Command::Pause { .. } => "pause",
+        Command::Resume { .. } => "resume",
+        Command::Next { .. } => "next",
+        Command::Previous { .. } => "previous",
+        Command::Volume { .. } => "set_volume",
+        Command::Mute { .. } => "mute",
+        Command::Group { .. } => "group",
+        Command::Ungroup { .. } => "ungroup",
+        Command::Dj { action } => match action {
+            DjAction::Start { .. } => "dj_start",
+            DjAction::Skip { .. } => "dj_skip",
+            DjAction::Stop { .. } => "dj_stop",
+        },
+        _ => "cli",
     }
 }
 

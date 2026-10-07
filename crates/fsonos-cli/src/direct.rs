@@ -1,22 +1,26 @@
-//! Direct mode: the CLI finds the speakers itself (SSDP plus any seeds),
-//! plans each command with the shared `fsonos-api` layer, and sends it
-//! through the core's control orchestration.
+//! Direct mode: the CLI finds the speakers itself (SSDP plus any seeds) and
+//! acts through the same [`Surface`] the daemon's HTTP API and MCP server
+//! use, as the house policy's `cli` client.
 
-use fsonos_api::zones::zone_views;
-use fsonos_api::{Command, ErrorCode, Failure, OutcomeDto, ZoneDto, execute};
+use fsonos_api::{
+    Command, ErrorCode, Failure, FavoriteDto, OutcomeDto, PlayFavoriteRequest, Surface, ZoneDto,
+    ZoneStateDto,
+};
+use fsonos_core::HouseholdState;
+use fsonos_core::clock::SystemClock;
 use fsonos_core::inventory::{self, Survey};
+use fsonos_core::policy::{Client, Policy};
 use fsonos_core::rooms::household_labels;
-use fsonos_core::{HouseholdState, control};
-use fsonos_proto::net::Lan;
-use fsonos_types::{Generation, TransportState};
+use fsonos_types::Generation;
 use serde::Serialize;
 use std::fmt::Write as _;
+use std::sync::Mutex;
 
 use crate::config::GlobalArgs;
 
 /// A surveyed LAN, ready to take commands.
 pub struct Direct {
-    lan: Lan,
+    surface: Surface,
     survey: Survey,
 }
 
@@ -41,12 +45,28 @@ pub struct DiscoverDto {
 }
 
 impl Direct {
-    /// Survey the LAN: SSDP for `global.wait`, plus the seeds.
+    /// Survey the LAN (SSDP for `global.wait`, plus the seeds) and load the
+    /// house policy from the data directory (defaults when there is none).
     pub fn survey(global: &GlobalArgs) -> Result<Self, Failure> {
         let seeds = global.seed_addrs()?;
+        let wait = global.wait();
         let lan = global.lan()?;
-        let survey = inventory::survey(&lan, &seeds, global.wait())?;
-        Ok(Self { lan, survey })
+        let survey = inventory::survey(&lan, &seeds, wait)?;
+        let policy = match global.data_dir() {
+            Some(dir) => crate::daemon::policy(&dir)?,
+            None => Policy::default(),
+        };
+        // The surface starts from this survey and only surveys again if it
+        // has to (after a regroup, say).
+        let first = Mutex::new(Some(survey.households.clone()));
+        let again: fsonos_api::surface::Survey = Box::new(move |transport| {
+            if let Some(households) = first.lock().ok().and_then(|mut f| f.take()) {
+                return Ok(households);
+            }
+            Ok(inventory::survey(transport, &seeds, wait)?.households)
+        });
+        let surface = Surface::new(Box::new(lan), again, policy, Box::new(SystemClock));
+        Ok(Self { surface, survey })
     }
 
     /// The surveyed households, or `NOT_READY` with what the survey saw when
@@ -73,24 +93,38 @@ impl Direct {
         ))
     }
 
-    /// Plan a command against the surveyed households and carry it out.
+    /// Plan a command as `tool` and carry it out under the house policy.
     pub fn run(
         &self,
+        tool: &str,
         plan: impl FnOnce(&[HouseholdState]) -> Result<Command, Failure>,
     ) -> Result<OutcomeDto, Failure> {
-        let households = self.households()?;
-        let command = plan(households)?;
-        execute(&self.lan, households, &command)
+        self.households()?;
+        self.surface.control(&Client::Cli, tool, plan)
     }
 
-    /// Every zone with its live transport state (read from each coordinator;
-    /// `unknown` when one does not answer).
+    /// Every zone with its live transport state.
     pub fn zones(&self) -> Result<Vec<ZoneDto>, Failure> {
-        let households = self.households()?;
-        Ok(zone_views(households, |coordinator| {
-            control::playback(&self.lan, households, coordinator)
-                .map_or(TransportState::Unknown, |p| p.transport.state)
-        }))
+        self.households()?;
+        self.surface.zones(&Client::Cli)
+    }
+
+    /// What `zone` is doing right now.
+    pub fn status(&self, zone: &str) -> Result<ZoneStateDto, Failure> {
+        self.households()?;
+        self.surface.zone_state(&Client::Cli, zone)
+    }
+
+    /// The favorites of `zone`'s household.
+    pub fn favorites(&self, zone: &str) -> Result<Vec<FavoriteDto>, Failure> {
+        self.households()?;
+        self.surface.favorites(&Client::Cli, zone)
+    }
+
+    /// Play a favorite of `req.zone`'s household.
+    pub fn play_favorite(&self, req: &PlayFavoriteRequest) -> Result<OutcomeDto, Failure> {
+        self.households()?;
+        self.surface.play_favorite(&Client::Cli, req)
     }
 
     /// Every player found, by household then room.
@@ -159,6 +193,47 @@ pub fn zones_text(zones: &[ZoneDto]) -> String {
         out.push('\n');
         out
     })
+}
+
+/// `fsonos status` as text.
+#[must_use]
+pub fn status_text(state: &ZoneStateDto) -> String {
+    let mut out = format!(
+        "{} [{}]: {}",
+        state.zone.members.join(" + "),
+        state.zone.household,
+        state.transport_state
+    );
+    if let Some(track) = &state.track {
+        let title = track.title.as_deref().unwrap_or(&track.uri);
+        let _ = write!(out, "\n  {title}");
+        if let Some(by) = &track.creator {
+            let _ = write!(out, " by {by}");
+        }
+        if let Some(n) = track.queue_position {
+            let _ = write!(out, " (queue #{n})");
+        }
+    }
+    if let Some(volume) = state.volume {
+        let _ = write!(out, "\n  volume {volume}");
+    }
+    out.push('\n');
+    out
+}
+
+/// `fsonos favorites` as text: numbered, as `play --favorite <n>` accepts.
+#[must_use]
+pub fn favorites_text(favorites: &[FavoriteDto]) -> String {
+    if favorites.is_empty() {
+        return "no favorites in this household\n".to_string();
+    }
+    favorites
+        .iter()
+        .enumerate()
+        .fold(String::new(), |mut out, (i, f)| {
+            let _ = writeln!(out, "{:>3}. {}  ({})", i + 1, f.title, f.kind);
+            out
+        })
 }
 
 #[cfg(test)]

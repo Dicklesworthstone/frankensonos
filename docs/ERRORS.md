@@ -48,6 +48,9 @@ succeed.
 | `NO_DJ_SESSION` | 404 | 3 | no | No DJ session runs in that zone. | Start the DJ in that zone first (dj_start). |
 | `INTERNAL` | 500 | 1 | no | A fault inside the daemon. Details stay in the daemon log. | Retry once; if it persists, check the daemon log. |
 | `NOT_IMPLEMENTED` | 501 | 1 | no | The request is understood but this build cannot carry it out yet. | Use what the detail suggests until this lands. |
+| `UNKNOWN_FAVORITE` | 404 | 3 | no | No favorite in that household matches the name given. | Use a suggested favorite, or list them with list_favorites (GET /favorites). |
+| `AMBIGUOUS_FAVORITE` | 409 | 2 | no | The name matches more than one favorite. | Repeat the request with one of the suggested titles. |
+| `UNPLAYABLE_FAVORITE` | 422 | 2 | no | The favorite is a shortcut with nothing to play. | Pick a favorite that is a track, a station or a playlist. |
 
 ## Notes
 
