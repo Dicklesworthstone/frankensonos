@@ -300,7 +300,7 @@ impl Check for LanCheck {
                         .filter(|(h, c)| h.player(c).is_some())
                         .map(|(h, c)| (c.clone(), coordinator_answers(&*p.lan, h, c)))
                         .collect();
-                    topology_result(&survey.households, &reachable)
+                    topology_result(&survey.households, &reachable, &p.addresses())
                 }
                 Err(e) => CheckResult::fail(
                     format!("the topology could not be read: {e}"),
@@ -596,10 +596,12 @@ pub(crate) fn gena_result(outcome: GenaOutcome) -> CheckResult {
     }
 }
 
-/// `lan.topology`: every player in exactly one group, every coordinator up.
+/// `lan.topology`: every player in exactly one group, every coordinator up,
+/// and every room's player at an address discovery (SSDP or a seed) found.
 pub(crate) fn topology_result(
     households: &[HouseholdState],
     coordinators: &[(PlayerId, Result<(), String>)],
+    discovered: &[IpAddr],
 ) -> CheckResult {
     let mut problems = Vec::new();
     for h in households {
@@ -629,11 +631,35 @@ pub(crate) fn topology_result(
     if groups == 0 && problems.is_empty() {
         return CheckResult::skip("no household topology was read");
     }
-    if problems.is_empty() {
-        CheckResult::pass(format!(
-            "{groups} group(s) in {} household(s), every coordinator answers",
-            households.len()
-        ))
+    // Rooms the survey only knows from another player's topology: on a
+    // network SSDP does not cross (routed subnets), they are found only
+    // while that player is up.
+    let undiscovered: Vec<&str> = households
+        .iter()
+        .flat_map(|h| {
+            h.rooms.iter().filter_map(move |r| {
+                let primary = h.player(&r.primary)?;
+                (!discovered.contains(&primary.ip)).then_some(r.name.as_str())
+            })
+        })
+        .collect();
+    let summary = format!(
+        "{groups} group(s) in {} household(s), every coordinator answers",
+        households.len()
+    );
+    if problems.is_empty() && undiscovered.is_empty() {
+        CheckResult::pass(summary)
+    } else if problems.is_empty() {
+        CheckResult::warn(
+            format!(
+                "{summary}; not discovered from here: {}",
+                undiscovered.join(", ")
+            ),
+            "SSDP does not reach these players from this host, so a survey finds them only \
+             through another player's topology. Add their addresses to seeds.toml (or \
+             FSONOS_SEEDS).",
+        )
+        .with_evidence(json!({ "undiscovered": undiscovered }))
     } else {
         CheckResult::fail(
             format!("{} topology problem(s)", problems.len()),
@@ -789,7 +815,7 @@ mod tests {
             }],
             rooms: Vec::new(),
         };
-        let r = topology_result(std::slice::from_ref(&good), &[(pid("A"), Ok(()))]);
+        let r = topology_result(std::slice::from_ref(&good), &[(pid("A"), Ok(()))], &[]);
         assert_eq!(r.status, Status::Pass);
 
         let mut bad = good;
@@ -798,7 +824,11 @@ mod tests {
             coordinator: pid("B"),
             members: vec![pid("B")],
         });
-        let r = topology_result(&[bad], &[(pid("A"), Ok(())), (pid("B"), Err("503".into()))]);
+        let r = topology_result(
+            &[bad],
+            &[(pid("A"), Ok(())), (pid("B"), Err("503".into()))],
+            &[],
+        );
         assert_eq!(r.status, Status::Fail);
         let detail = r.detail.unwrap();
         assert!(detail.contains("B is in 2 groups"), "{detail}");
@@ -811,11 +841,50 @@ mod tests {
 
     #[test]
     fn an_empty_topology_is_skipped_not_passed() {
-        assert_eq!(topology_result(&[], &[]).status, Status::Skip);
+        assert_eq!(topology_result(&[], &[], &[]).status, Status::Skip);
         assert_eq!(
-            topology_result(&[HouseholdState::default()], &[]).status,
+            topology_result(&[HouseholdState::default()], &[], &[]).status,
             Status::Skip
         );
+    }
+
+    #[test]
+    fn a_room_discovery_never_found_warns_with_the_seeds_remedy() {
+        let at = |id: &str, addr: &str| Player {
+            ip: ip(addr),
+            ..player(id)
+        };
+        let room = |id: &str| crate::Room {
+            name: format!("Room {id}"),
+            primary: pid(id),
+            players: vec![pid(id)],
+            missing: Vec::new(),
+            coordinator: pid("A"),
+        };
+        let house = HouseholdState {
+            id: None,
+            players: vec![at("A", "192.0.2.10"), at("B", "192.0.2.11")],
+            groups: vec![ZoneGroup {
+                coordinator: pid("A"),
+                members: vec![pid("A"), pid("B")],
+            }],
+            rooms: vec![room("A"), room("B")],
+        };
+        let up = [(pid("A"), Ok(()))];
+        let r = topology_result(
+            std::slice::from_ref(&house),
+            &up,
+            &[ip("192.0.2.10"), ip("192.0.2.11")],
+        );
+        assert_eq!(r.status, Status::Pass, "{r:?}");
+        let r = topology_result(std::slice::from_ref(&house), &up, &[ip("192.0.2.10")]);
+        assert_eq!(r.status, Status::Warn, "{r:?}");
+        assert!(
+            r.summary.ends_with("not discovered from here: Room B"),
+            "{}",
+            r.summary
+        );
+        assert!(r.remedy.as_deref().unwrap().contains("seeds.toml"));
     }
 
     #[test]
