@@ -448,3 +448,18 @@ fn the_openapi_document_describes_every_route() {
     );
     assert_eq!(status, 403);
 }
+
+#[test]
+fn the_event_stream_needs_the_live_model() {
+    // This surface surveys on demand; only `fsonos serve`'s has events.
+    let api = Api::start("", &Client::LoopbackHttp);
+    let (status, err) = api.get("/events");
+    assert_eq!(status, 501, "{err}");
+    assert_eq!(err["code"], "NOT_IMPLEMENTED");
+    assert!(err["hint"].as_str().unwrap().contains("fsonos serve"));
+    let (status, err) = api.get("/events?since=soon");
+    assert_eq!(
+        (status, err["code"].as_str()),
+        (501, Some("NOT_IMPLEMENTED"))
+    );
+}

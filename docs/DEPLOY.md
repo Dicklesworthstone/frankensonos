@@ -296,6 +296,7 @@ grep 'fsonos serve: live' ~/Library/Logs/fsonos/fsonos.log        # households f
 curl -fsS http://127.0.0.1:8099/health                           # on the Mac
 curl -fsS http://127.0.0.1:8099/zones                            # rooms and what they play
 curl -fsS http://127.0.0.1:8099/openapi.json                     # every route, body and error code
+curl -NsS http://127.0.0.1:8099/events                           # live changes (server-sent events)
 tailscale serve status
 curl -fsS https://<mac>.<tailnet>.ts.net/health                  # from another tailnet device
 ```

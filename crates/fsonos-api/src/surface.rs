@@ -30,6 +30,7 @@ use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+use crate::events::EventBus;
 use crate::execute::{OutcomeDto, execute_guarded};
 use crate::failure::{ErrorCode, Failure};
 use crate::guard::Guard;
@@ -60,6 +61,8 @@ pub struct Surface {
     /// The daemon's live model; not kept alive by the surface (see
     /// [`Surface::with_live`]).
     live: Option<Weak<Live>>,
+    /// The event stream, fed by the live model and the action log.
+    events: Option<Arc<EventBus>>,
     /// Until when reads survey directly (set by a regroup).
     settle_until: Mutex<Option<Instant>>,
 }
@@ -91,6 +94,7 @@ impl Surface {
             log: None,
             doctor_checks: None,
             live: None,
+            events: None,
             settle_until: Mutex::new(None),
         }
     }
@@ -100,10 +104,29 @@ impl Surface {
     /// does not keep the model alive: its owner stops it (every subscription
     /// ends) by dropping the last `Arc`, after which the surface surveys and
     /// polls again.
+    ///
+    /// It also starts the event stream ([`Self::events`]): the model's
+    /// changes and every logged action, published to an [`EventBus`].
     #[must_use]
     pub fn with_live(mut self, live: &Arc<Live>) -> Self {
         self.live = Some(Arc::downgrade(live));
+        let bus = Arc::new(EventBus::new());
+        crate::events::feed(&bus, live);
+        self.events = Some(bus);
         self
+    }
+
+    /// The event stream (`events`, read-only): only a surface over the
+    /// daemon's live model has one.
+    pub fn events(&self, client: &Client) -> Result<Arc<EventBus>, Failure> {
+        self.guard(client).authorize("events", true)?;
+        self.events.clone().ok_or_else(|| {
+            Failure::new(
+                ErrorCode::NotImplemented,
+                "the event stream needs the daemon's live model",
+            )
+            .with_hint("Connect to `fsonos serve`, which keeps one.")
+        })
     }
 
     fn live(&self) -> Option<Arc<Live>> {
@@ -177,13 +200,19 @@ impl Surface {
             undo_of: None,
         };
         let written = match log.store.lock() {
-            Ok(mut store) => actions::record(&mut **store, &action)
-                .map(drop)
-                .map_err(|e| e.to_string()),
+            Ok(mut store) => actions::record(&mut **store, &action).map_err(|e| e.to_string()),
             Err(_) => Err("action log poisoned".to_string()),
         };
-        if let Err(e) = written {
-            tracing::warn!("action not logged ({}): {e}", action.intent);
+        match written {
+            Ok(id) => {
+                if let Some(bus) = &self.events {
+                    let logged = LoggedAction { id, action };
+                    if let Ok(data) = serde_json::to_value(crate::log::ActionDto::from(&logged)) {
+                        bus.publish("action.logged", data);
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("action not logged ({}): {e}", action.intent),
         }
     }
 

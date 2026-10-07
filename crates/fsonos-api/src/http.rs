@@ -4,6 +4,7 @@
 //! |---|---|---|
 //! | `GET /health` | | [`crate::HealthDto`] |
 //! | `GET /openapi.json` | | the OpenAPI document of every other route |
+//! | `GET /events?since=<id>` | | server-sent events as the house changes ([`crate::events`]); resumes after `Last-Event-ID` or `since` |
 //! | `GET /zones` | | `[ZoneDto]` |
 //! | `GET /zones/{room}` | | [`crate::ZoneDto`] (`room` is percent-decoded) |
 //! | `GET /zones/{room}/state` | | [`crate::ZoneStateDto`] |
@@ -114,6 +115,22 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 /// The daemon and the zones.
 fn reads(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     vec![
+        cx.route(
+            &Op::get(
+                "/events",
+                "events",
+                DAEMON,
+                "The house's changes as server-sent events (text/event-stream)",
+            ),
+            |s, c, req| match s
+                .events(c)
+                .and_then(|bus| Ok((events_query(req, &bus)?, bus)))
+            {
+                Ok((q, bus)) => crate::events::response(bus, q.since.unwrap_or_default()),
+                Err(failure) => failure.http_response(),
+            },
+        )
+        .query_schema::<EventsQuery>(false),
         cx.route(
             &Op::get(
                 "/health",
@@ -499,6 +516,30 @@ fn favorites_query(req: &Request) -> Result<FavoritesQuery, Failure> {
             .with_hint("Add ?zone=<room>; any room of the household will do.")
     })?;
     Ok(FavoritesQuery { zone })
+}
+
+/// `GET /events?since=<id>`: resume after event `since` (or the
+/// `Last-Event-ID` header); by default only events from now on.
+#[derive(JsonSchema)]
+struct EventsQuery {
+    /// The last event id the client has seen.
+    since: Option<u64>,
+}
+
+fn events_query(req: &Request, bus: &crate::events::EventBus) -> Result<EventsQuery, Failure> {
+    let header = req
+        .headers()
+        .get("last-event-id")
+        .map(|v| String::from_utf8_lossy(v).trim().to_string());
+    let since = match header.or(query_param(req, "since")?) {
+        None => bus.last_id(),
+        Some(raw) => raw.parse().map_err(|_| {
+            Failure::invalid(format!(
+                "since / Last-Event-ID must be an event id, got {raw:?}"
+            ))
+        })?,
+    };
+    Ok(EventsQuery { since: Some(since) })
 }
 
 /// `GET /actions`' optional `client`, `since` and `limit`.
