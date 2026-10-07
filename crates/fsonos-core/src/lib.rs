@@ -10,12 +10,14 @@
 //! * [`rooms`] resolves what a person or agent types to a [`ControlTarget`].
 //! * [`control`] carries out a player-addressed command over a
 //!   [`fsonos_proto::Transport`].
+//! * [`doctor`] runs diagnostic checks and reports named failures with fixes.
 //!
 //! The durable [`store`] (device cache, music-library cache, play history, DJ
 //! state) is backed by fsqlite once bead FND-DEPS wires it; the trait here lets
 //! the rest of the daemon be written and tested against an in-memory store.
 
 pub mod control;
+pub mod doctor;
 pub mod inventory;
 pub mod rooms;
 pub mod store;
