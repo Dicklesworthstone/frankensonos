@@ -13,18 +13,23 @@
 //! * [`request`] — the JSON request bodies and their validation;
 //! * [`source`] — canonicalizing the `source_uri` a caller pastes;
 //! * [`plan`] — resolving a request to coordinator-addressed [`Command`]s;
+//! * [`execute`] — carrying a [`Command`] out on the speakers;
 //! * [`zones`] — the zone (group) listings;
 //! * [`failure`] — the one [`Failure`] shape (status + agent-readable detail).
 
+pub mod execute;
 pub mod failure;
 pub mod plan;
 pub mod request;
 pub mod source;
 pub mod zones;
 
+pub use execute::{OutcomeDto, execute};
 pub use failure::{ErrorCode, Failure, NoteCode};
 pub use plan::Command;
-pub use request::{GroupRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest};
+pub use request::{
+    GroupRequest, MuteRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest,
+};
 pub use zones::ZoneDto;
 
 use fastapi::{App, Request, RequestContext, Response};

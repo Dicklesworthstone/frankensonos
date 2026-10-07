@@ -11,7 +11,9 @@ use fsonos_core::{ControlTarget, HouseholdState, resolve_room};
 use fsonos_types::PlayerId;
 
 use crate::failure::{ErrorCode, Failure};
-use crate::request::{GroupRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest};
+use crate::request::{
+    GroupRequest, MuteRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest,
+};
 
 /// Pause, resume or skip on a group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +59,8 @@ pub enum Command {
         scope: VolumeScope,
         change: VolumeChange,
     },
+    /// Mute or unmute one room (RenderingControl on its primary player).
+    Mute { target: PlayerId, mute: bool },
     /// Move `member` into the group `coordinator` leads.
     Join {
         member: PlayerId,
@@ -125,6 +129,15 @@ pub fn plan_volume(households: &[HouseholdState], req: &VolumeRequest) -> Result
         target: target.id.clone(),
         scope,
         change,
+    })
+}
+
+/// `POST /mute` / the `mute` tool.
+pub fn plan_mute(households: &[HouseholdState], req: &MuteRequest) -> Result<Command, Failure> {
+    let target = resolve(households, req.zone()?)?;
+    Ok(Command::Mute {
+        target: target.player.id.clone(),
+        mute: req.mute,
     })
 }
 
@@ -255,6 +268,21 @@ mod tests {
                 target: id("RINCON_DEN"),
                 scope: VolumeScope::Group,
                 change: VolumeChange::Adjust(-10)
+            }
+        );
+    }
+
+    #[test]
+    fn mute_addresses_the_room() {
+        let req = MuteRequest {
+            zone: "kitchen@s1".into(),
+            mute: false,
+        };
+        assert_eq!(
+            plan_mute(&households(), &req).unwrap(),
+            Command::Mute {
+                target: id("RINCON_KIT1"),
+                mute: false
             }
         );
     }

@@ -120,6 +120,26 @@ impl VolumeRequest {
     }
 }
 
+/// `POST /mute` body. `mute` defaults to `true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MuteRequest {
+    pub zone: String,
+    #[serde(default = "yes")]
+    pub mute: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl MuteRequest {
+    /// The trimmed zone name, or why it is unusable.
+    pub fn zone(&self) -> Result<&str, Failure> {
+        zone_name("zone", &self.zone)
+    }
+}
+
 /// `POST /group` body: move `zone` into the group that `to` belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -177,6 +197,15 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn mute_defaults_to_on() {
+        let m: MuteRequest = serde_json::from_value(json!({ "zone": "Den" })).unwrap();
+        assert!(m.mute);
+        let m: MuteRequest =
+            serde_json::from_value(json!({ "zone": "Den", "mute": false })).unwrap();
+        assert!(!m.mute);
     }
 
     #[test]

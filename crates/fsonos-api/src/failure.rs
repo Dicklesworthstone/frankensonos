@@ -60,11 +60,13 @@ pub enum ErrorCode {
     NoDjSession,
     /// A fault inside the daemon.
     Internal,
+    /// The request is understood but this build cannot carry it out yet.
+    NotImplemented,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -81,6 +83,7 @@ impl ErrorCode {
         Self::UnknownMood,
         Self::NoDjSession,
         Self::Internal,
+        Self::NotImplemented,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
@@ -103,6 +106,7 @@ impl ErrorCode {
             Self::UnknownMood => "UNKNOWN_MOOD",
             Self::NoDjSession => "NO_DJ_SESSION",
             Self::Internal => "INTERNAL",
+            Self::NotImplemented => "NOT_IMPLEMENTED",
         }
     }
 
@@ -123,6 +127,7 @@ impl ErrorCode {
             Self::NotReady | Self::PlayerUnreachable => 503,
             Self::UpnpFault => 502,
             Self::Internal => 500,
+            Self::NotImplemented => 501,
         }
     }
 
@@ -139,7 +144,8 @@ impl ErrorCode {
             | Self::SpotifyNotLinked
             | Self::RenderParamsMissing
             | Self::SpotifyAuthRequired
-            | Self::Internal => 1,
+            | Self::Internal
+            | Self::NotImplemented => 1,
         }
     }
 
@@ -188,6 +194,7 @@ impl ErrorCode {
             Self::UnknownMood => "Use one of the suggested moods.",
             Self::NoDjSession => "Start the DJ in that zone first (dj_start).",
             Self::Internal => "Retry once; if it persists, check the daemon log.",
+            Self::NotImplemented => "Use what the detail suggests until this lands.",
         }
     }
 }

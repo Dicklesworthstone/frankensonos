@@ -47,6 +47,7 @@ succeed.
 | `UNKNOWN_MOOD` | 404 | 3 | no | No DJ mood has that name. | Use one of the suggested moods. |
 | `NO_DJ_SESSION` | 404 | 3 | no | No DJ session runs in that zone. | Start the DJ in that zone first (dj_start). |
 | `INTERNAL` | 500 | 1 | no | A fault inside the daemon. Details stay in the daemon log. | Retry once; if it persists, check the daemon log. |
+| `NOT_IMPLEMENTED` | 501 | 1 | no | The request is understood but this build cannot carry it out yet. | Use what the detail suggests until this lands. |
 
 ## Notes
 
