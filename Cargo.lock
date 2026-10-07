@@ -1319,6 +1319,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fsonos-sim"
+version = "0.1.0"
+dependencies = [
+ "asupersync",
+ "fsonos-core",
+ "fsonos-proto",
+ "roxmltree",
+ "thiserror",
+]
+
+[[package]]
 name = "fsonos-spotify"
 version = "0.1.0"
 dependencies = [

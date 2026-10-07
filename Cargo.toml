@@ -9,6 +9,7 @@ members = [
     "crates/fsonos-mcp",
     "crates/fsonos-cli",
     "crates/fsonos-tailscale",
+    "crates/fsonos-sim",
 ]
 
 [workspace.package]
@@ -29,6 +30,7 @@ fsonos-spotify = { path = "crates/fsonos-spotify" }
 fsonos-api     = { path = "crates/fsonos-api" }
 fsonos-mcp     = { path = "crates/fsonos-mcp" }
 fsonos-tailscale = { path = "crates/fsonos-tailscale" }
+fsonos-sim     = { path = "crates/fsonos-sim" }
 
 # ── Rock-solid registry deps (the green baseline) ──────────────────────────
 serde = { version = "1", features = ["derive"] }

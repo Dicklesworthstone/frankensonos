@@ -1,0 +1,21 @@
+[package]
+name = "fsonos-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Virtual Sonos players over real localhost sockets: a test double for FrankenSonos's own client."
+
+[dependencies]
+fsonos-proto = { workspace = true }
+asupersync = { workspace = true }
+roxmltree = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+fsonos-core = { workspace = true }
+
+[lints]
+workspace = true
