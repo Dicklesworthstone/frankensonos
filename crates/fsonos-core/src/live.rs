@@ -15,13 +15,15 @@
 //! subscription.
 
 use crate::HouseholdState;
-use crate::events::Service;
+use crate::events::{Service, Subscriber, Want};
 use crate::inventory::DISCOVERY_WAIT;
 use crate::playback::{Changes, Playback, PlayerPlayback};
 use crate::reconcile::{Health, HealthBoard, Reconciler};
-use fsonos_proto::Transport;
+use fsonos_proto::gena::Subscription;
 use fsonos_proto::net::{EventSink, Lan};
+use fsonos_proto::ssdp::Advert;
 use fsonos_proto::topology::host_of_location;
+use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -102,17 +104,34 @@ pub struct Live {
 }
 
 impl Live {
-    /// Start the loop: the first survey begins at once.
+    /// Start the loop over `lan`: the first survey begins at once.
     ///
     /// # Panics
     /// If the OS refuses to start a thread.
     #[must_use]
     pub fn start(lan: Arc<Lan>, config: LiveConfig) -> Self {
+        let transport: Arc<dyn Transport + Send + Sync> = Arc::clone(&lan) as _;
+        Self::start_with(transport, lan, config)
+    }
+
+    /// Start the loop with `transport` for surveys and reads (one confined to
+    /// a routes file, say) and `lan` only for GENA: subscriptions to the
+    /// players those surveys found, and the event listener.
+    ///
+    /// # Panics
+    /// If the OS refuses to start a thread.
+    #[must_use]
+    pub fn start_with(
+        transport: Arc<dyn Transport + Send + Sync>,
+        lan: Arc<Lan>,
+        config: LiveConfig,
+    ) -> Self {
         let snapshot = Arc::new(Mutex::new(Snapshot::default()));
         let subscribers: Subscribers = Arc::new(Mutex::new(Vec::new()));
         let wake = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
         let engine = Engine {
+            transport,
             lan,
             config,
             snapshot: Arc::clone(&snapshot),
@@ -216,6 +235,9 @@ impl Drop for Live {
 }
 
 struct Engine {
+    /// Surveys, reads and M-SEARCH.
+    transport: Arc<dyn Transport + Send + Sync>,
+    /// GENA only.
     lan: Arc<Lan>,
     config: LiveConfig,
     snapshot: Arc<Mutex<Snapshot>>,
@@ -236,7 +258,55 @@ struct Model {
     last_error: Option<String>,
 }
 
+/// Surveys and reads through one transport, GENA through the LAN.
+struct Via<'a> {
+    transport: &'a (dyn Transport + Send + Sync),
+    lan: &'a Lan,
+}
+
+impl Transport for Via<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        control_path: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        self.transport
+            .soap_post(host, control_path, soap_action, body)
+    }
+
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        self.transport.http_get(url)
+    }
+
+    fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<Advert>, ProtoError> {
+        self.transport.ssdp_search(mx_secs, wait)
+    }
+}
+
+impl Subscriber for Via<'_> {
+    fn subscribe(&self, want: &Want, callback_url: &str) -> Result<Subscription, ProtoError> {
+        Subscriber::subscribe(self.lan, want, callback_url)
+    }
+
+    fn renew(&self, want: &Want, sid: &str) -> Result<Subscription, ProtoError> {
+        Subscriber::renew(self.lan, want, sid)
+    }
+
+    fn unsubscribe(&self, want: &Want, sid: &str) -> Result<(), ProtoError> {
+        Subscriber::unsubscribe(self.lan, want, sid)
+    }
+}
+
 impl Engine {
+    fn via(&self) -> Via<'_> {
+        Via {
+            transport: &*self.transport,
+            lan: &self.lan,
+        }
+    }
+
     fn run(self) {
         let mut m = Model {
             rec: Reconciler::new(
@@ -270,7 +340,7 @@ impl Engine {
                 self.publish(&m, pushed);
             }
         }
-        m.rec.subscriptions.unsubscribe_all(&*self.lan);
+        m.rec.subscriptions.unsubscribe_all(&self.via());
         self.publish(&m, Vec::new());
     }
 
@@ -292,7 +362,10 @@ impl Engine {
         }
         let Some(s) = &m.sink else { return };
         let callback = |service: Service| s.callback_url(service.tag());
-        match m.rec.refresh(&*self.lan, &self.config.seeds, callback, now) {
+        match m
+            .rec
+            .refresh(&self.via(), &self.config.seeds, callback, now)
+        {
             Ok(report) => {
                 for gone in &report.missing {
                     m.playback.remove(gone);
@@ -308,7 +381,7 @@ impl Engine {
     fn renew(&self, m: &mut Model, now: Instant) {
         let Some(s) = &m.sink else { return };
         let callback = |service: Service| s.callback_url(service.tag());
-        let report = m.rec.subscriptions.renew_due(&*self.lan, callback, now);
+        let report = m.rec.subscriptions.renew_due(&self.via(), callback, now);
         m.rec.health.record(&report);
     }
 
@@ -328,7 +401,7 @@ impl Engine {
         let mut pushed = Vec::new();
         match m
             .rec
-            .on_notify(&*self.lan, &mut m.playback, &n, callback, Instant::now())
+            .on_notify(&self.via(), &mut m.playback, &n, callback, Instant::now())
         {
             Ok(Some(report)) => {
                 for gone in &report.gone {
@@ -364,7 +437,7 @@ impl Engine {
         let toward = match known {
             Some(ip) => ip,
             None => self
-                .lan
+                .transport
                 .ssdp_search(1, DISCOVERY_WAIT)
                 .map_err(|e| format!("no player to listen toward: {e}"))?
                 .iter()

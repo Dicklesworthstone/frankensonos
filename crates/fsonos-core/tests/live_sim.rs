@@ -8,9 +8,13 @@ use fsonos_core::events::{Service, wanted};
 use fsonos_core::live::{Live, LiveConfig, LiveEvent};
 use fsonos_core::reconcile::Health;
 use fsonos_proto::net::Lan;
+use fsonos_proto::ssdp::Advert;
+use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{GenaEvent, SimHandle, SimHousehold, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
+use std::net::IpAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 fn sim() -> SimHandle {
@@ -229,4 +233,64 @@ fn changes_are_pushed_to_subscribers() {
         offline && topology,
         "offline {offline}, topology {topology}"
     );
+}
+
+/// Counts the requests sent through it and refuses multicast SSDP, as a
+/// transport confined to a routes file without a responder does.
+struct Counting {
+    inner: Arc<Lan>,
+    calls: AtomicUsize,
+}
+
+impl Transport for Counting {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        control_path: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.soap_post(host, control_path, soap_action, body)
+    }
+
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        self.inner.http_get(url)
+    }
+
+    fn ssdp_search(&self, _mx_secs: u8, _wait: Duration) -> Result<Vec<Advert>, ProtoError> {
+        Err(ProtoError::Network {
+            target: "ssdp".into(),
+            detail: "refused".into(),
+        })
+    }
+}
+
+#[test]
+fn surveys_go_through_the_given_transport_and_events_through_the_lan() {
+    let sim = sim();
+    let lan = routed(&sim);
+    let counting = Arc::new(Counting {
+        inner: Arc::clone(&lan),
+        calls: AtomicUsize::new(0),
+    });
+    let seeds: Vec<IpAddr> = sim.players().iter().map(|p| p.ip).collect();
+    let transport: Arc<dyn Transport + Send + Sync> = Arc::clone(&counting) as _;
+    let live = Live::start_with(transport, Arc::clone(&lan), LiveConfig::new(seeds));
+    assert!(
+        live.wait_ready(Duration::from_secs(10)),
+        "{:?}",
+        live.snapshot().last_error
+    );
+    // The LAN could have searched the simulator's responder; the survey went
+    // through the given transport (SSDP refused, the seeds found everyone).
+    assert!(counting.calls.load(Ordering::Relaxed) > 0);
+    let ids: Vec<PlayerId> = ["Kitchen", "Office", "Living Room"]
+        .iter()
+        .map(|room| id_of(&live, room))
+        .collect();
+    assert!(eventually(Duration::from_secs(5), || ids
+        .iter()
+        .all(|id| live.player(id).is_some_and(|p| p.volume.is_some()))));
 }
