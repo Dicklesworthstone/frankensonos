@@ -52,6 +52,11 @@ pub struct LibraryItem {
     pub album: Option<String>,
     pub album_uri: Option<String>,
     pub album_artists: Vec<String>,
+    /// Position on the album, when known (orders a work's movements).
+    #[serde(default)]
+    pub disc_number: Option<u32>,
+    #[serde(default)]
+    pub track_number: Option<u32>,
     /// Album/artist genres when the read returned any (often empty).
     pub genres: Vec<String>,
     /// Record label when available (Spotify dropped it for new apps in 2026).
@@ -84,6 +89,8 @@ impl LibraryItem {
             album: track.album.clone(),
             album_uri: None,
             album_artists: Vec::new(),
+            disc_number: None,
+            track_number: None,
             genres: Vec::new(),
             label: None,
             duration_secs: track.duration_secs,
@@ -144,6 +151,10 @@ impl LibraryItem {
         }
         if self.duration_secs.is_none() {
             self.duration_secs = other.duration_secs;
+        }
+        if self.track_number.is_none() {
+            self.disc_number = other.disc_number;
+            self.track_number = other.track_number;
         }
         self.explicit |= other.explicit;
     }
@@ -300,6 +311,8 @@ mod tests {
             album: None,
             album_uri: None,
             album_artists: Vec::new(),
+            disc_number: None,
+            track_number: None,
             genres: Vec::new(),
             label: None,
             duration_secs: Some(150),
@@ -340,8 +353,11 @@ mod tests {
         let mut on_album = item("spotify:track:a", Origin::SavedAlbum);
         on_album.album = Some("Bach: Cello Suites".into());
         on_album.album_uri = Some("spotify:album:x".into());
+        on_album.disc_number = Some(2);
+        on_album.track_number = Some(4);
         liked.absorb(&on_album);
         assert_eq!(liked.origin, Origin::Both);
+        assert_eq!((liked.disc_number, liked.track_number), (Some(2), Some(4)));
         assert_eq!(liked.album_uri.as_deref(), Some("spotify:album:x"));
         assert_eq!(liked.album_key().as_deref(), Some("spotify:album:x"));
     }
@@ -436,6 +452,22 @@ mod tests {
         assert_eq!(read.next_url(), Some(CHOPIN_REST));
         read.ingest(chopin_rest_page(Some(CHOPIN_REST)).as_bytes())
             .unwrap_err();
+    }
+
+    #[test]
+    fn positions_survive_the_cache_round_trip() {
+        let mut it = item("spotify:track:a", Origin::Both);
+        it.album_uri = Some("spotify:album:x".into());
+        it.disc_number = Some(2);
+        it.track_number = Some(11);
+        let json = serde_json::to_string(&it).unwrap();
+        assert_eq!(serde_json::from_str::<LibraryItem>(&json).unwrap(), it);
+        // Rows cached before positions existed still load, as unknown.
+        let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
+        old.as_object_mut().unwrap().remove("disc_number");
+        old.as_object_mut().unwrap().remove("track_number");
+        let loaded: LibraryItem = serde_json::from_value(old).unwrap();
+        assert_eq!((loaded.disc_number, loaded.track_number), (None, None));
     }
 
     #[test]

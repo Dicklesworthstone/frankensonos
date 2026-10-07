@@ -841,6 +841,12 @@ pub struct ClassicalTrack {
     pub work_key: String,
     /// Grouping key for album variety (empty when unknown).
     pub album_key: String,
+    pub album_uri: Option<String>,
+    /// Position on the album, when known.
+    pub disc_number: Option<u32>,
+    pub track_number: Option<u32>,
+    /// The movement part of the title (`"II. Adagio"`), if any.
+    pub movement: Option<String>,
     pub energy: u8,
     pub origin: Origin,
 }
@@ -872,6 +878,10 @@ pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
         known_composer: known,
         period: composer.map_or_else(|| period_from_genres(&item.genres), |c| c.period),
         album_key: item.album_key().unwrap_or_default(),
+        album_uri: item.album_uri.clone(),
+        disc_number: item.disc_number,
+        track_number: item.track_number,
+        movement: parts.movement.map(str::to_owned),
         energy: estimate_energy(parts.movement, parts.work),
         origin: item.origin,
     }
@@ -1052,6 +1062,8 @@ mod tests {
             album: album.map(str::to_owned),
             album_uri: None,
             album_artists: Vec::new(),
+            disc_number: None,
+            track_number: None,
             genres: Vec::new(),
             label: None,
             duration_secs: Some(300),

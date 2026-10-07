@@ -684,6 +684,8 @@ impl Album {
             album: Some(self.name.clone()),
             album_uri: Some(self.uri.clone()),
             album_artists: names(&self.artists),
+            disc_number: position(track.disc_number),
+            track_number: position(track.track_number),
             genres: self.genres.clone(),
             label: self.label.clone(),
             duration_secs: secs(track.duration_ms),
@@ -708,6 +710,8 @@ impl SavedTrack {
             album: Some(track.album.name.clone()),
             album_uri: track.album.uri.clone(),
             album_artists: names(&track.album.artists),
+            disc_number: position(track.disc_number),
+            track_number: position(track.track_number),
             genres: Vec::new(),
             label: None,
             duration_secs: secs(track.duration_ms),
@@ -720,6 +724,11 @@ impl SavedTrack {
 /// Sonos renders only real Spotify tracks the owner's market can play.
 fn renderable(uri: &str, is_local: bool, is_playable: Option<bool>) -> bool {
     uri.starts_with("spotify:track:") && !is_local && is_playable != Some(false)
+}
+
+/// Spotify reports 0 for an unknown disc/track position.
+fn position(n: u32) -> Option<u32> {
+    (n > 0).then_some(n)
 }
 
 fn names(artists: &[SimplifiedArtist]) -> Vec<String> {
@@ -1331,6 +1340,8 @@ mod tests {
             Some("spotify:album:FakeAlbum0000000000001")
         );
         assert_eq!(aria.duration_secs, Some(183));
+        assert_eq!((aria.disc_number, aria.track_number), (Some(1), Some(1)));
+        assert_eq!(items[2].track_number, Some(3));
         assert_eq!(aria.origin, Origin::SavedAlbum);
 
         // 2026 dev-mode shape: no label/popularity; a long album whose

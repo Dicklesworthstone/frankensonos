@@ -1,0 +1,439 @@
+{
+  "href": "https://api.spotify.com/v1/me/albums?offset=0&limit=50&market=from_token",
+  "limit": 50,
+  "next": null,
+  "offset": 0,
+  "previous": null,
+  "total": 2,
+  "items": [
+    {
+      "added_at": "2026-02-01T10:00:00Z",
+      "album": {
+        "album_type": "album",
+        "total_tracks": 9,
+        "id": "FakeWorkAlbum000000001",
+        "name": "Bach: Sonatas & Partitas for Solo Violin",
+        "release_date": "2020-01-01",
+        "release_date_precision": "day",
+        "type": "album",
+        "uri": "spotify:album:FakeWorkAlbum000000001",
+        "artists": [
+          {
+            "id": "FakeArtist0000000000011",
+            "name": "Johann Sebastian Bach",
+            "type": "artist",
+            "uri": "spotify:artist:FakeArtist0000000000011"
+          }
+        ],
+        "images": [],
+        "tracks": {
+          "href": "https://api.spotify.com/v1/albums/FakeWorkAlbum000000001/tracks?offset=0&limit=50",
+          "limit": 50,
+          "next": null,
+          "offset": 0,
+          "previous": null,
+          "total": 9,
+          "items": [
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000011",
+                  "name": "Johann Sebastian Bach",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000011"
+                },
+                {
+                  "id": "FakeArtist0000000000012",
+                  "name": "Test Violinist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000012"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 840000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000009",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Partita No. 2 in D Minor, BWV 1004: V. Ciaccona",
+              "track_number": 9,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000009"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000011",
+                  "name": "Johann Sebastian Bach",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000011"
+                },
+                {
+                  "id": "FakeArtist0000000000012",
+                  "name": "Test Violinist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000012"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000005",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Partita No. 2 in D Minor, BWV 1004: I. Allemanda",
+              "track_number": 5,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000005"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000011",
+                  "name": "Johann Sebastian Bach",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000011"
+                },
+                {
+                  "id": "FakeArtist0000000000012",
+                  "name": "Test Violinist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000012"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000007",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Partita No. 2 in D Minor, BWV 1004: III. Sarabanda",
+              "track_number": 7,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000007"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000011",
+                  "name": "Johann Sebastian Bach",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000011"
+                },
+                {
+                  "id": "FakeArtist0000000000012",
+                  "name": "Test Violinist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000012"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000006",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Partita No. 2 in D Minor, BWV 1004: II. Corrente",
+              "track_number": 6,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000006"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000011",
+                  "name": "Johann Sebastian Bach",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000011"
+                },
+                {
+                  "id": "FakeArtist0000000000012",
+                  "name": "Test Violinist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000012"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000008",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Partita No. 2 in D Minor, BWV 1004: IV. Giga",
+              "track_number": 8,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000008"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000011",
+                  "name": "Johann Sebastian Bach",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000011"
+                },
+                {
+                  "id": "FakeArtist0000000000012",
+                  "name": "Test Violinist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000012"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000001",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Sonata No. 1 in G Minor, BWV 1001: I. Adagio",
+              "track_number": 1,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000001"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000011",
+                  "name": "Johann Sebastian Bach",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000011"
+                },
+                {
+                  "id": "FakeArtist0000000000012",
+                  "name": "Test Violinist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000012"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000002",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Sonata No. 1 in G Minor, BWV 1001: II. Fuga. Allegro",
+              "track_number": 2,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000002"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000011",
+                  "name": "Johann Sebastian Bach",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000011"
+                },
+                {
+                  "id": "FakeArtist0000000000012",
+                  "name": "Test Violinist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000012"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000003",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Sonata No. 1 in G Minor, BWV 1001: III. Siciliana",
+              "track_number": 3,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000003"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000011",
+                  "name": "Johann Sebastian Bach",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000011"
+                },
+                {
+                  "id": "FakeArtist0000000000012",
+                  "name": "Test Violinist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000012"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000004",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Sonata No. 1 in G Minor, BWV 1001: IV. Presto",
+              "track_number": 4,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000004"
+            }
+          ]
+        },
+        "genres": [],
+        "label": "Fake Classics"
+      }
+    },
+    {
+      "added_at": "2026-03-01T10:00:00Z",
+      "album": {
+        "album_type": "album",
+        "total_tracks": 4,
+        "id": "FakeWorkAlbum000000002",
+        "name": "Elgar: Cello Concerto",
+        "release_date": "2020-01-01",
+        "release_date_precision": "day",
+        "type": "album",
+        "uri": "spotify:album:FakeWorkAlbum000000002",
+        "artists": [
+          {
+            "id": "FakeArtist0000000000013",
+            "name": "Edward Elgar",
+            "type": "artist",
+            "uri": "spotify:artist:FakeArtist0000000000013"
+          }
+        ],
+        "images": [],
+        "tracks": {
+          "href": "https://api.spotify.com/v1/albums/FakeWorkAlbum000000002/tracks?offset=0&limit=50",
+          "limit": 50,
+          "next": null,
+          "offset": 0,
+          "previous": null,
+          "total": 4,
+          "items": [
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000013",
+                  "name": "Edward Elgar",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000013"
+                },
+                {
+                  "id": "FakeArtist0000000000014",
+                  "name": "Test Cellist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000014"
+                },
+                {
+                  "id": "FakeArtist0000000000015",
+                  "name": "Test Symphony Orchestra",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000015"
+                }
+              ],
+              "disc_number": 2,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000023",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Cello Concerto in E Minor, Op. 85: III. Adagio",
+              "track_number": 1,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000023"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000013",
+                  "name": "Edward Elgar",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000013"
+                },
+                {
+                  "id": "FakeArtist0000000000014",
+                  "name": "Test Cellist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000014"
+                },
+                {
+                  "id": "FakeArtist0000000000015",
+                  "name": "Test Symphony Orchestra",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000015"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000022",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Cello Concerto in E Minor, Op. 85: II. Lento - Allegro molto",
+              "track_number": 2,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000022"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000013",
+                  "name": "Edward Elgar",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000013"
+                },
+                {
+                  "id": "FakeArtist0000000000014",
+                  "name": "Test Cellist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000014"
+                },
+                {
+                  "id": "FakeArtist0000000000015",
+                  "name": "Test Symphony Orchestra",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000015"
+                }
+              ],
+              "disc_number": 1,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000021",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Cello Concerto in E Minor, Op. 85: I. Adagio - Moderato",
+              "track_number": 1,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000021"
+            },
+            {
+              "artists": [
+                {
+                  "id": "FakeArtist0000000000013",
+                  "name": "Edward Elgar",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000013"
+                },
+                {
+                  "id": "FakeArtist0000000000014",
+                  "name": "Test Cellist",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000014"
+                },
+                {
+                  "id": "FakeArtist0000000000015",
+                  "name": "Test Symphony Orchestra",
+                  "type": "artist",
+                  "uri": "spotify:artist:FakeArtist0000000000015"
+                }
+              ],
+              "disc_number": 2,
+              "duration_ms": 240000,
+              "explicit": false,
+              "id": "FakeWorkTrack000000024",
+              "is_local": false,
+              "is_playable": true,
+              "name": "Cello Concerto in E Minor, Op. 85: IV. Allegro - Moderato - Allegro, ma non troppo",
+              "track_number": 2,
+              "type": "track",
+              "uri": "spotify:track:FakeWorkTrack000000024"
+            }
+          ]
+        },
+        "genres": []
+      }
+    }
+  ]
+}
