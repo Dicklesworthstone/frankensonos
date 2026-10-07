@@ -18,6 +18,32 @@ fn runtime() -> Runtime {
         .expect("runtime")
 }
 
+/// The app over a surface with no speakers: `/health` needs none.
+fn app() -> fastapi::App {
+    struct NoLan;
+    impl fsonos_proto::Transport for NoLan {
+        fn soap_post(
+            &self,
+            _: std::net::IpAddr,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<String, fsonos_proto::ProtoError> {
+            Err(fsonos_proto::ProtoError::NotWired("no LAN in this test"))
+        }
+    }
+    let surface = fsonos_api::Surface::new(
+        Box::new(NoLan),
+        Box::new(|_| Ok(Vec::new())),
+        fsonos_core::policy::Policy::default(),
+        Box::new(fsonos_core::clock::SystemClock),
+    );
+    fsonos_api::app(
+        &Arc::new(surface),
+        &fsonos_core::policy::Client::LoopbackHttp,
+    )
+}
+
 #[test]
 fn health_over_loopback() {
     let server = Arc::new(TcpServer::new(ServerConfig::new("127.0.0.1:0")));
@@ -33,9 +59,7 @@ fn health_over_loopback() {
                 addr_tx
                     .send(listener.local_addr().expect("local addr"))
                     .expect("report addr");
-                let _ = server
-                    .serve_on_app(&cx, listener, Arc::new(fsonos_api::app()))
-                    .await;
+                let _ = server.serve_on_app(&cx, listener, Arc::new(app())).await;
             });
         })
     };

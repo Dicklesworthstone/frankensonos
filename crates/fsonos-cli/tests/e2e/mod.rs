@@ -44,6 +44,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -103,7 +104,23 @@ pub struct Scenario {
     seq: usize,
     tally: Vec<(String, Status)>,
     sim: Option<SimHandle>,
-    tripwires: Vec<(u16, TcpListener)>,
+}
+
+/// The tripwire listeners on the default ports, bound once per test process
+/// and shared by its scenarios (the tests in one binary run in parallel). A
+/// port another process already holds has no tripwire.
+fn tripwires() -> &'static [(u16, TcpListener)] {
+    static TRIPWIRES: OnceLock<Vec<(u16, TcpListener)>> = OnceLock::new();
+    TRIPWIRES.get_or_init(|| {
+        [8099, 8098]
+            .into_iter()
+            .filter_map(|port| {
+                let listener = TcpListener::bind(("127.0.0.1", port)).ok()?;
+                listener.set_nonblocking(true).ok()?;
+                Some((port, listener))
+            })
+            .collect()
+    })
 }
 
 fn epoch_ms() -> u128 {
@@ -134,14 +151,6 @@ impl Scenario {
         let dir = root.join(name).join(epoch_ms().to_string());
         fs::create_dir_all(dir.join("data")).expect("create the scenario log dir");
         let log = File::create(dir.join("steps.jsonl")).expect("create steps.jsonl");
-        let tripwires = [8099, 8098]
-            .into_iter()
-            .filter_map(|port| {
-                let listener = TcpListener::bind(("127.0.0.1", port)).ok()?;
-                listener.set_nonblocking(true).ok()?;
-                Some((port, listener))
-            })
-            .collect();
         let mut s = Self {
             name: name.to_string(),
             dir,
@@ -149,10 +158,9 @@ impl Scenario {
             seq: 0,
             tally: Vec::new(),
             sim: None,
-            tripwires,
         };
         for port in [8099, 8098] {
-            if !s.tripwires.iter().any(|(p, _)| *p == port) {
+            if !tripwires().iter().any(|(p, _)| *p == port) {
                 s.pending(
                     &format!("tripwire-{port}"),
                     &format!(
@@ -337,14 +345,13 @@ impl Scenario {
     /// Check the tripwires, save the sim's logs and the summary, print it,
     /// and panic if any check failed.
     pub fn finish(mut self) -> Summary {
-        let tripped: Vec<u16> = self
-            .tripwires
+        let tripped: Vec<u16> = tripwires()
             .iter()
             .filter(|(_, l)| l.accept().is_ok())
             .map(|(port, _)| *port)
             .collect();
         for port in [8099, 8098] {
-            if self.tripwires.iter().any(|(p, _)| *p == port) {
+            if tripwires().iter().any(|(p, _)| *p == port) {
                 let pass = !tripped.contains(&port);
                 self.check(
                     &format!("tripwire-{port}"),

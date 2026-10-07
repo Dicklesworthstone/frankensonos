@@ -7,7 +7,7 @@
 //! the daemon's live event view, passed in as a lookup.
 
 use fsonos_core::rooms::{household_labels, normalize_room};
-use fsonos_core::{HouseholdState, Room};
+use fsonos_core::{ControlTarget, HouseholdState, Room};
 use fsonos_types::{PlayerId, TransportState};
 use serde::{Deserialize, Serialize};
 
@@ -78,17 +78,27 @@ pub fn zone_of(
     transport: impl Fn(&PlayerId) -> TransportState,
 ) -> Result<ZoneDto, Failure> {
     let target = resolve(households, room)?;
+    Ok(zone_for_target(households, &target, transport))
+}
+
+/// The zone a resolved `target` plays in. `target` must come from
+/// `households`.
+pub fn zone_for_target(
+    households: &[HouseholdState],
+    target: &ControlTarget<'_>,
+    transport: impl Fn(&PlayerId) -> TransportState,
+) -> ZoneDto {
     let labels = household_labels(households);
     let index = households
         .iter()
         .position(|h| std::ptr::eq(h, target.household))
-        .expect("resolve_room returns a target inside `households`");
-    Ok(zone_for(
+        .expect("the target was resolved inside `households`");
+    zone_for(
         target.household,
         &labels[index],
         &target.room.coordinator,
         &transport,
-    ))
+    )
 }
 
 fn zone_for(

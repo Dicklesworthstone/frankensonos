@@ -9,36 +9,26 @@
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, ContentBlock, FinalCallToolResult, ResultMeta};
 use fsonos_api::plan::{self, DjAction, TransportAction};
-use fsonos_api::zones::zone_views;
 use fsonos_api::{
-    ErrorCode, Failure, GroupRequest, Guard, MuteRequest, PlayRequest, VolumeRequest, ZoneRequest,
-    execute_guarded,
+    ErrorCode, Failure, GroupRequest, MuteRequest, PlayRequest, Surface, VolumeRequest, ZoneRequest,
 };
+use fsonos_core::HouseholdState;
 use fsonos_core::clock::Clock;
 use fsonos_core::policy::{Client, Policy};
-use fsonos_core::{HouseholdState, control};
 use fsonos_proto::Transport;
-use fsonos_types::TransportState;
 use serde::Serialize;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
 
 use crate::tool_error;
 
-/// Finds the households (a LAN survey, say). Called again once the last
-/// answer is older than the backend's refresh interval.
-pub type Survey = Box<dyn Fn(&dyn Transport) -> Result<Vec<HouseholdState>, Failure> + Send + Sync>;
+/// Finds the households (a LAN survey, say); see [`fsonos_api::surface`].
+pub use fsonos_api::surface::Survey;
 
-/// What the tools act on: the LAN, how to find the households, and the house
-/// policy for this server's callers.
+/// What the tools act on: the shared [`Surface`] (LAN, households, house
+/// policy) and the identity this server's callers have under the policy.
 pub struct Backend {
-    transport: Box<dyn Transport + Send + Sync>,
-    survey: Survey,
-    refresh: Duration,
-    cache: Mutex<Option<(Instant, Vec<HouseholdState>)>>,
-    policy: Policy,
+    surface: Surface,
     client: Client,
-    clock: Box<dyn Clock>,
 }
 
 impl Backend {
@@ -51,39 +41,9 @@ impl Backend {
         clock: Box<dyn Clock>,
     ) -> Self {
         Self {
-            transport,
-            survey,
-            refresh: Duration::from_secs(30),
-            cache: Mutex::new(None),
-            policy,
+            surface: Surface::new(transport, survey, policy, clock),
             client,
-            clock,
         }
-    }
-
-    fn guard(&self) -> Guard<'_> {
-        Guard {
-            policy: &self.policy,
-            client: &self.client,
-            clock: &*self.clock,
-        }
-    }
-
-    /// The households, from the last survey while it is fresh.
-    fn households(&self) -> Result<Vec<HouseholdState>, Failure> {
-        let mut cache = self
-            .cache
-            .lock()
-            .map_err(|_| Failure::new(ErrorCode::Internal, "household cache poisoned"))?;
-        if let Some((at, households)) = cache.as_ref()
-            && at.elapsed() < self.refresh
-            && households.iter().any(|h| !h.rooms.is_empty())
-        {
-            return Ok(households.clone());
-        }
-        let households = (self.survey)(&*self.transport)?;
-        *cache = Some((Instant::now(), households.clone()));
-        Ok(households)
     }
 
     /// Run a control tool: authorize `tool`, plan, execute under the policy.
@@ -92,12 +52,8 @@ impl Backend {
         tool: &str,
         plan: impl FnOnce(&[HouseholdState]) -> Result<fsonos_api::Command, Failure>,
     ) -> McpResult<FinalCallToolResult> {
-        let guard = self.guard();
         respond(|| {
-            guard.authorize(tool, false)?;
-            let households = self.households()?;
-            let command = plan(&households)?;
-            let outcome = execute_guarded(&*self.transport, &households, &guard, command)?;
+            let outcome = self.surface.control(&self.client, tool, plan)?;
             let text = std::iter::once(outcome.done.clone())
                 .chain(outcome.notes.iter().map(|n| format!("Note: {}.", n.detail)))
                 .collect::<Vec<_>>()
@@ -109,15 +65,7 @@ impl Backend {
     /// The `list_zones` tool.
     pub fn list_zones(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            self.guard().authorize("list_zones", true)?;
-            let households = self.households()?;
-            if households.iter().all(|h| h.rooms.is_empty()) {
-                return Err(Failure::new(ErrorCode::NotReady, "no Sonos rooms answered"));
-            }
-            let zones = zone_views(&households, |coordinator| {
-                control::playback(&*self.transport, &households, coordinator)
-                    .map_or(TransportState::Unknown, |p| p.transport.state)
-            });
+            let zones = self.surface.zones(&self.client)?;
             let text = zones
                 .iter()
                 .map(|z| {
@@ -351,8 +299,8 @@ mod tests {
     use fsonos_proto::ProtoError;
     use fsonos_types::{Generation, Player, PlayerId, ZoneGroup};
     use std::net::IpAddr;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
 
     /// Answers every SOAP action with success and `out_args`, and records the
     /// action names.

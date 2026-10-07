@@ -5,7 +5,7 @@
 //! and drive the DJ. It binds on the loopback and the Tailscale interface so
 //! that off-LAN agents reach it over the tailnet (the speakers never leave the
 //! LAN; the daemon is the only thing Tailscale fronts). [`app`] assembles the
-//! routes.
+//! routes ([`http`] lists them).
 //!
 //! The transport-agnostic layer is shared with the MCP server, so an agent
 //! gets the same answer from either surface:
@@ -15,50 +15,38 @@
 //! * [`plan`] — resolving a request to coordinator-addressed [`Command`]s;
 //! * [`execute`] — carrying a [`Command`] out on the speakers;
 //! * [`guard`] — the house policy: who may call what, how loud;
+//! * [`surface`] — the speakers a surface acts on, with its policy;
 //! * [`zones`] — the zone (group) listings;
 //! * [`failure`] — the one [`Failure`] shape (status + agent-readable detail).
 
 pub mod execute;
 pub mod failure;
 pub mod guard;
+pub mod http;
 pub mod plan;
 pub mod request;
 pub mod source;
+pub mod surface;
 pub mod zones;
 
 pub use execute::{OutcomeDto, execute, execute_guarded};
 pub use failure::{ErrorCode, Failure, NoteCode};
 pub use guard::{Guard, Note};
+pub use http::app;
 pub use plan::Command;
 pub use request::{
     GroupRequest, MuteRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest,
 };
+pub use surface::Surface;
 pub use zones::ZoneDto;
 
-use fastapi::{App, Request, RequestContext, Response};
 use serde::{Deserialize, Serialize};
-use std::future::{Ready, ready};
 
 /// `GET /health` response.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HealthDto {
     pub status: String,
     pub version: String,
-}
-
-fn health(_cx: &RequestContext, _req: &mut Request) -> Ready<Response> {
-    let body = HealthDto {
-        status: "ok".into(),
-        version: env!("CARGO_PKG_VERSION").into(),
-    };
-    ready(Response::json(&body).expect("HealthDto serializes"))
-}
-
-/// Build the HTTP API application. Routes are registered with the builder,
-/// not the `#[get]` macros (see the workspace `Cargo.toml` note on unsafe).
-#[must_use]
-pub fn app() -> App {
-    App::builder().get("/health", health).build()
 }
 
 /// The API's error body (FastAPI-style `detail`, plus the stable code). See
