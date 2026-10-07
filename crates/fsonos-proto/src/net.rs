@@ -39,6 +39,8 @@ pub struct Lan {
     jobs: Option<mpsc::Sender<Job>>,
     worker: Option<JoinHandle<()>>,
     timeout: Duration,
+    routes: Vec<(IpAddr, SocketAddr)>,
+    ssdp_target: SocketAddr,
 }
 
 enum Job {
@@ -51,12 +53,13 @@ enum Job {
         reply: mpsc::Sender<Result<Reply, ProtoError>>,
     },
     Search {
+        target: SocketAddr,
         mx_secs: u8,
         wait: Duration,
         reply: mpsc::Sender<Result<Vec<Advert>, ProtoError>>,
     },
     Route {
-        toward: IpAddr,
+        toward: SocketAddr,
         reply: mpsc::Sender<Result<IpAddr, ProtoError>>,
     },
 }
@@ -100,10 +103,57 @@ impl Lan {
                 jobs: Some(jobs),
                 worker: Some(worker),
                 timeout,
+                routes: Vec::new(),
+                ssdp_target: SocketAddr::from(([239, 255, 255, 250], 1900)),
             }),
             Ok(Err(e)) => Err(network("asupersync runtime", e)),
             Err(e) => Err(network("LAN worker", e)),
         }
+    }
+
+    /// Send traffic for these player addresses to other socket addresses
+    /// instead of `ip:1400`: SOAP, description GETs, GENA, and the callback
+    /// route. Test plumbing for a separate process (the real `fsonos` binary
+    /// under test) to reach a simulated household whose players listen on
+    /// loopback ports; real players always answer on `ip:1400`.
+    #[must_use]
+    pub fn with_routes(mut self, routes: Vec<(IpAddr, SocketAddr)>) -> Self {
+        self.routes = routes;
+        self
+    }
+
+    /// Send the SSDP `M-SEARCH` to `target` (e.g. a simulator's unicast
+    /// responder) instead of the multicast group.
+    #[must_use]
+    pub fn with_ssdp_target(mut self, target: SocketAddr) -> Self {
+        self.ssdp_target = target;
+        self
+    }
+
+    /// Where requests for the player at `host` go.
+    fn endpoint(&self, host: IpAddr) -> SocketAddr {
+        self.routes
+            .iter()
+            .find(|(ip, _)| *ip == host)
+            .map_or(SocketAddr::new(host, PLAYER_PORT), |(_, to)| *to)
+    }
+
+    /// `url` with a routed player's `ip:1400` authority replaced.
+    fn route_url(&self, url: &str) -> String {
+        let Some(rest) = url.strip_prefix("http://") else {
+            return url.to_string();
+        };
+        let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+        match authority.parse::<SocketAddr>() {
+            Ok(addr) if addr.port() == PLAYER_PORT => {
+                format!("http://{}{path}", self.endpoint(addr.ip()))
+            }
+            _ => url.to_string(),
+        }
+    }
+
+    fn event_url(&self, host: IpAddr, event_path: &str) -> String {
+        format!("http://{}{event_path}", self.endpoint(host))
     }
 
     fn submit<T>(
@@ -140,10 +190,8 @@ impl Lan {
     /// The local address this host uses to reach `player`: the address to
     /// give players as a GENA callback. Sends nothing.
     pub fn local_address_toward(&self, player: IpAddr) -> Result<IpAddr, ProtoError> {
-        self.submit(|reply| Job::Route {
-            toward: player,
-            reply,
-        })
+        let toward = self.endpoint(player);
+        self.submit(|reply| Job::Route { toward, reply })
     }
 
     /// SUBSCRIBE to the events `event_path` on the player at `host` publishes,
@@ -156,7 +204,11 @@ impl Lan {
         callback_url: &str,
         timeout_secs: u32,
     ) -> Result<Subscription, ProtoError> {
-        self.subscribe_at(&event_url(host, event_path), callback_url, timeout_secs)
+        self.subscribe_at(
+            &self.event_url(host, event_path),
+            callback_url,
+            timeout_secs,
+        )
     }
 
     /// Renew subscription `sid` before it times out. A player that rebooted
@@ -168,12 +220,12 @@ impl Lan {
         sid: &str,
         timeout_secs: u32,
     ) -> Result<Subscription, ProtoError> {
-        self.renew_at(&event_url(host, event_path), sid, timeout_secs)
+        self.renew_at(&self.event_url(host, event_path), sid, timeout_secs)
     }
 
     /// End subscription `sid`.
     pub fn unsubscribe(&self, host: IpAddr, event_path: &str, sid: &str) -> Result<(), ProtoError> {
-        self.unsubscribe_at(&event_url(host, event_path), sid)
+        self.unsubscribe_at(&self.event_url(host, event_path), sid)
     }
 
     /// [`Lan::subscribe`] against a full event URL.
@@ -208,7 +260,7 @@ impl Lan {
     pub fn unsubscribe_at(&self, event_url: &str, sid: &str) -> Result<(), ProtoError> {
         let reply = self.http(
             Method::Extension("UNSUBSCRIBE".into()),
-            event_url.to_string(),
+            self.route_url(event_url),
             vec![("SID".into(), sid.into())],
             Vec::new(),
         )?;
@@ -226,7 +278,7 @@ impl Lan {
     ) -> Result<Subscription, ProtoError> {
         let reply = self.http(
             Method::Extension(method.into()),
-            event_url.to_string(),
+            self.route_url(event_url),
             headers,
             Vec::new(),
         )?;
@@ -235,10 +287,6 @@ impl Lan {
             status => Err(network(event_url, format!("{method}: HTTP {status}"))),
         }
     }
-}
-
-fn event_url(host: IpAddr, event_path: &str) -> String {
-    format!("http://{}{event_path}", SocketAddr::new(host, PLAYER_PORT))
 }
 
 impl Drop for Lan {
@@ -259,10 +307,7 @@ impl Transport for Lan {
         soap_action: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
-        let url = format!(
-            "http://{}{control_path}",
-            SocketAddr::new(host, PLAYER_PORT)
-        );
+        let url = format!("http://{}{control_path}", self.endpoint(host));
         let reply = self.http(
             Method::Post,
             url.clone(),
@@ -281,7 +326,7 @@ impl Transport for Lan {
     }
 
     fn http_get(&self, url: &str) -> Result<String, ProtoError> {
-        let reply = self.http(Method::Get, url.to_string(), Vec::new(), Vec::new())?;
+        let reply = self.http(Method::Get, self.route_url(url), Vec::new(), Vec::new())?;
         if reply.status == 200 {
             Ok(reply.body)
         } else {
@@ -290,7 +335,9 @@ impl Transport for Lan {
     }
 
     fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<Advert>, ProtoError> {
+        let target = self.ssdp_target;
         self.submit(|reply| Job::Search {
+            target,
             mx_secs,
             wait,
             reply,
@@ -311,11 +358,12 @@ async fn run(job: Job) {
             let _ = reply.send(http(method, url, headers, body, timeout).await);
         }
         Job::Search {
+            target,
             mx_secs,
             wait,
             reply,
         } => {
-            let _ = reply.send(search(mx_secs, wait).await);
+            let _ = reply.send(search(target, mx_secs, wait).await);
         }
         Job::Route { toward, reply } => {
             let _ = reply.send(route(toward).await);
@@ -333,7 +381,7 @@ fn new_runtime() -> Result<Runtime, String> {
 
 /// A connected UDP socket's local address is the one the routing table picks
 /// for `toward`; connecting a UDP socket sends nothing.
-async fn route(toward: IpAddr) -> Result<IpAddr, ProtoError> {
+async fn route(toward: SocketAddr) -> Result<IpAddr, ProtoError> {
     let unspecified: SocketAddr = if toward.is_ipv4() {
         "0.0.0.0:0".parse().expect("literal")
     } else {
@@ -343,7 +391,7 @@ async fn route(toward: IpAddr) -> Result<IpAddr, ProtoError> {
         .await
         .map_err(|e| network("route", e))?;
     socket
-        .connect(SocketAddr::new(toward, PLAYER_PORT))
+        .connect(toward)
         .await
         .map_err(|e| network("route", e))?;
     Ok(socket.local_addr().map_err(|e| network("route", e))?.ip())
@@ -379,14 +427,18 @@ async fn http(
 
 /// Send the `M-SEARCH` (twice: UDP may drop one) and collect distinct Sonos
 /// replies until `wait` has passed.
-async fn search(mx_secs: u8, wait: Duration) -> Result<Vec<Advert>, ProtoError> {
+async fn search(
+    target: SocketAddr,
+    mx_secs: u8,
+    wait: Duration,
+) -> Result<Vec<Advert>, ProtoError> {
     let mut socket = UdpSocket::bind("0.0.0.0:0")
         .await
         .map_err(|e| network("SSDP", e))?;
     let message = ssdp::m_search(mx_secs);
     for _ in 0..2 {
         socket
-            .send_to(message.as_bytes(), ssdp::SSDP_ADDR)
+            .send_to(message.as_bytes(), target)
             .await
             .map_err(|e| network("SSDP", e))?;
     }
@@ -830,5 +882,80 @@ mod tests {
             .local_address_toward("127.0.0.1".parse().unwrap())
             .expect("route");
         assert!(local.is_loopback(), "{local}");
+    }
+
+    #[test]
+    fn routes_send_a_players_traffic_to_its_socket() {
+        let (addr, stop) = serve(200);
+        let player: IpAddr = "192.0.2.77".parse().unwrap();
+        let lan = Lan::start().expect("lan").with_routes(vec![(player, addr)]);
+
+        let body = lan
+            .soap_post(
+                player,
+                "/MediaRenderer/AVTransport/Control",
+                "\"urn:x#Play\"",
+                "<env/>",
+            )
+            .expect("routed SOAP");
+        assert_eq!(body, "\"urn:x#Play\" <env/>");
+        let desc = lan
+            .http_get(&ssdp::description_url(player))
+            .expect("routed GET");
+        assert_eq!(desc, "desc /xml/device_description.xml");
+        assert!(
+            lan.local_address_toward(player)
+                .expect("route")
+                .is_loopback()
+        );
+
+        // Unrouted players and other ports are left alone.
+        assert_eq!(
+            lan.route_url("http://192.0.2.88:1400/x"),
+            "http://192.0.2.88:1400/x"
+        );
+        assert_eq!(
+            lan.route_url("http://192.0.2.77:8080/x"),
+            "http://192.0.2.77:8080/x"
+        );
+        assert_eq!(
+            lan.route_url("http://192.0.2.77:1400/x"),
+            format!("http://{addr}/x")
+        );
+        drop(lan);
+        stop();
+    }
+
+    #[test]
+    fn ssdp_target_sends_the_search_to_a_unicast_responder() {
+        let responder = std::net::UdpSocket::bind("127.0.0.1:0").expect("responder");
+        let target = responder.local_addr().expect("addr");
+        responder
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+        let answering = thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            // Answer both copies of the M-SEARCH; the client dedupes them.
+            for _ in 0..2 {
+                let Ok((n, from)) = responder.recv_from(&mut buf) else {
+                    return;
+                };
+                assert!(String::from_utf8_lossy(&buf[..n]).starts_with("M-SEARCH * HTTP/1.1"));
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nLOCATION: http://192.0.2.77:1400/xml/device_description.xml\r\n\
+                     ST: {}\r\n\r\n",
+                    ssdp::SONOS_ST
+                );
+                responder.send_to(reply.as_bytes(), from).expect("reply");
+            }
+        });
+        let lan = Lan::start().expect("lan").with_ssdp_target(target);
+        let found = lan.ssdp_search(1, Duration::from_secs(1)).expect("search");
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].location,
+            "http://192.0.2.77:1400/xml/device_description.xml"
+        );
+        answering.join().expect("responder thread");
     }
 }
