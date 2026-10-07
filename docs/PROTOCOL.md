@@ -9,9 +9,10 @@ household ID.
 ## 1. Discovery and addressing
 
 - SSDP M-SEARCH to `239.255.255.250:1900`, ST `urn:schemas-upnp-org:device:ZonePlayer:1`.
-  Multicast reaches only one household per scan on some networks (whichever
-  answers first); scan twice, or fall back to direct seeds: GET
-  `http://<IP>:1400/xml/device_description.xml` on candidate IPs.
+  Every response carries `X-RINCON-HOUSEHOLD: Sonos_<ID>` — filter client-side
+  to pick a household. On this LAN a single scan returned only one household
+  per attempt (observed 2026-10-06); scan repeatedly, or fall back to direct
+  seeds: GET `http://<IP>:1400/xml/device_description.xml` on candidate IPs.
 - All control is HTTP on TCP **1400**. Device description:
   `GET /xml/device_description.xml`. Status pages: `GET /status`,
   `/status/zp`, `/status/VERSION` (build string), `/status/ifconfig`,
@@ -41,13 +42,22 @@ household ID.
 | QPlay | ✅ | ✅ | ❌ |
 | AudioIn | ✅ (line-in hardware) | ❌ | ❌ |
 
-Control URL pattern: `/<Category>/<Service>/Control`, event URL
-`/<Category>/<Service>/Event`. Categories: `MediaRenderer` (AVTransport,
-RenderingControl, Queue?, ConnectionManager), `MediaServer` (ContentDirectory),
-top-level for ZoneGroupTopology, DeviceProperties, SystemProperties,
-GroupManagement, MusicServices, AlarmClock, GroupRenderingControl, AudioIn,
-VirtualLineIn, QPlay. (Read the exact URLs from each description; do not
-guess.)
+Exact URL map (from a live S1 Play:5 description; S2 identical where the
+service exists): top-level `/AlarmClock`, `/MusicServices`, `/AudioIn`,
+`/DeviceProperties`, `/SystemProperties`, `/ZoneGroupTopology`,
+`/GroupManagement`, `/QPlay`, each with `/Control` + `/Event`;
+`/MediaServer/ContentDirectory` and `/MediaServer/ConnectionManager`;
+`/MediaRenderer/RenderingControl`, `/MediaRenderer/AVTransport`,
+`/MediaRenderer/GroupRenderingControl`, `/MediaRenderer/VirtualLineIn`,
+`/MediaRenderer/ConnectionManager` (ConnectionManager appears twice — once per
+embedded device). **Namespaces differ**: Queue is
+`urn:schemas-sonos-com:service:Queue:1` at `/MediaRenderer/Queue/Control`,
+QPlay is `urn:schemas-tencent-com:service:QPlay:1` at `/QPlay/Control` —
+everything else is `urn:schemas-upnp-org:service:<Name>:1`. Always read the
+URLs from the description; do not guess.
+
+(The model labels in the table header — `S1`, `S12`, `S13` — are Sonos
+modelNumber strings, unrelated to the S1/S2 *generation* split.)
 
 ## 3. SOAP
 
@@ -83,8 +93,8 @@ the `sid` URI parameter.
 URI template (track):
 
 ```
-S1: x-sonos-spotify:spotify%3atrack%3a<TRACK_ID>?sid=12&flags=8224&sn=<SN>
-S2: x-sonos-spotify:spotify%3Atrack%3A<TRACK_ID>?sid=12&flags=8232&sn=<SN>
+S1: x-sonos-spotify:spotify%3atrack%3a<TRACK_ID>?sid=<SID>&flags=8224&sn=<SN>
+S2: x-sonos-spotify:spotify%3Atrack%3A<TRACK_ID>?sid=<SID>&flags=8232&sn=<SN>
 ```
 
 - `%3a` vs `%3A` case differs between generations' own favorites (both are
@@ -198,7 +208,8 @@ apostrophes) — normalize quotes when matching by name.
 - Speaker then POSTs `NOTIFY /cb` per change; body is
   `<e:propertyset><e:property><LastChange>ESCAPED-XML</LastChange>…`.
 - Initial NOTIFY (SEQ 0) carries full state; later NOTIFYs carry changed
-  variables only. Renew before the timeout; `UNSUBSCRIBE` with the `SID`.
+  variables only. Renew before the timeout (community reports Sonos grants
+  86400 s regardless of the request); `UNSUBSCRIBE` with the `SID`.
 - AVTransport LastChange root: `<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">`
   with `<InstanceID val="0">` children: `TransportState`, `CurrentTrackURI`,
   `CurrentTrackDuration`, `CurrentTrackMetaData` (DIDL, triple-escaped at the
@@ -231,17 +242,20 @@ Update mechanism (verified 2026-10-07):
   line); the S2 household's pointed at the current GA train.
 - Manifests are plain-HTTP XML at
   `http://update.sonos.com/firmware/Prod/<train>-<token>-<GA|RC|LR>-<n>/update.upm`:
-  `update_manifest` with `system_version`, `base_url` containing a `^<ver>`
-  filename template, `swgen`, and per-model `<image model=…>URL</image>`
-  upgrade-chain entries (players step through intermediate builds; e.g.
-  34.16 → 55.1 → 57.5/57.19 → 73.0 → 86.10 → current). The manifest for the
-  owner's S2 GA train listed 61 images incl. controller `.exe`/`.dmg`,
-  app-store redirects, and headphone DFU payloads.
+  `update_manifest` with `system_version`, a `base_url` ending in a
+  `^<version>` filename template, `swgen`, and per-model `<image>` entries.
+  The image list is mostly *exceptions*: controller apps (model 3 = Windows
+  `.exe`, 4 = macOS `.dmg`, 10 = iOS store link, 11 = Android market link) and
+  milestone steps with `fromver_min/max` + `milestone_index` (a player below
+  the milestone fetches it first — e.g. `<34.7` → `34.16-37101` — then
+  continues to current). Speaker images are NOT listed per model: players
+  expand `base_url`'s template to `<ver>-1-<model>.upd` themselves. Numeric
+  model ids correspond to the description's modelNumber digits (S5 → 5,
+  S12 → 12, S13 → 13); `model_list` entries use `model.submodel` notation.
 - Images: `http://update-firmware.sonos.com/firmware/Prod/<ver>-v<mkt>-<token>-<GA|RC|LR>-<n>/<ver>-1-<model>.upd`,
-  no auth, CloudFront-fronted, old builds not garbage-collected. Numeric
-  model ids (Play:1 = 12, One = 13, Play:5 Gen1 = 5). Both the owner's
-  S1 (`57.23-74170-1-5.upd`, 2.2 MB) and S2 (`86.10-80260-1-12.upd`,
-  7.5 MB) images were downloaded and parsed.
+  no auth, CloudFront-fronted, old builds not garbage-collected. Both the
+  owner's S1 (`57.23-74170-1-5.upd`, 2.2 MB, Play:5 Gen1) and S2
+  (`86.10-80260-1-12.upd`, 7.5 MB, Play:1) images were downloaded and parsed.
 - `.upd` container (fully decoded): a sequence of records
   `[magic=0x35167F49 LE][type u32][total_len u32][reserved u32][payload]`.
   Record type 1 = header (major/minor/build u32s, e.g. 57/23/74170);

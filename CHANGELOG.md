@@ -71,6 +71,23 @@ play/pause/volume against a real LAN from the `fsonos` CLI (plan milestone M2).
 - **Golden fixtures.** Scrubbed, synthetic S1/S2 device-description,
   ZoneGroupTopology, favorites/queue, and SOAP-fault response bodies, with golden
   tests that replay them through a recording in-memory `Transport`.
+- **Live wire-protocol verification (RE lane).** `docs/PROTOCOL.md`: an
+  11-section reference verified against the owner's real S1 and S2 players —
+  the service/URL matrix (incl. the `schemas-sonos-com` Queue and
+  `schemas-tencent-com` QPlay namespaces), the Spotify render template that
+  resolves the UPnP 800 (the `SA_RINCON<svc>` DIDL `desc` is load-bearing;
+  `parentID` is not), the queue-based continuous-playback flow, GENA
+  subscription mechanics, the `AvailableSoftwareUpdate` firmware-URL oracle,
+  and the `.upd` firmware container format (record-typed; S2 payload is a
+  plain tar with `bin/anacapad`, S1 payloads encrypted and deliberately not
+  pursued). SMAPI envelope/auth documented against the live endpoint, and the
+  `x-rincon-mp3radio:` bypass path verified. All captures stay local and
+  git-ignored; the repo carries only scrubbed prose and synthetic fixtures.
+- **GENA NOTIFY parsing (`fsonos-proto::gena`).** `parse_propertyset` +
+  `parse_last_change` with channel-aware accessors (`Master` volume/mute),
+  transport-state and track-metadata conveniences, and tolerance for values
+  arriving as element text (community-documented quirk) — proven against the
+  live-captured NOTIFY corpus from both households (golden tests).
 
 ### Security / privacy
 
