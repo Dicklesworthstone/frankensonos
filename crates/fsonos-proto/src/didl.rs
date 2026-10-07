@@ -24,7 +24,7 @@ pub fn xml_escape(s: &str) -> String {
 
 /// Parameters needed to render a Spotify track on a specific household. These
 /// are discovered from the household's own favorites, never guessed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpotifyRenderParams {
     pub sid: u32,
     pub flags: u32,

@@ -314,11 +314,13 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
 
 ## 7. Data model & store schema (initial)
 
-`fsqlite` tables (SQL, created by migrations in Lane B):
+`fsqlite` tables (SQL, created by the append-only migration list in
+`fsonos-core/src/store/sqlite.rs`; applied versions are recorded in
+`schema_migrations(version INTEGER PK, name TEXT, applied_at INT)`):
 
 - `players(id TEXT PK, household TEXT, room TEXT, ip TEXT, model TEXT, generation TEXT, last_seen INT)`
-- `groups(coordinator TEXT, member TEXT, household TEXT, updated INT)` (edge list)
-- `spotify_library(source_uri TEXT PK, title TEXT, artist TEXT, album TEXT, is_classical INT, added INT)`
+- `zone_groups(id INTEGER PK, household TEXT, coordinator TEXT, member TEXT, updated INT)` (edge list; `id` keeps group order; not `groups`, an SQL keyword)
+- `spotify_library(source_uri TEXT PK, title TEXT, artist TEXT, album TEXT, duration_secs INT, is_classical INT, added INT)`
 - `play_history(id INTEGER PK, zone TEXT, source_uri TEXT, played_at INT)`
 - `render_params(household TEXT PK, sid INT, flags INT, sn INT, cdudn TEXT, item_id_prefix TEXT, learned_at INT)`
 - `auth(service TEXT PK, refresh_token TEXT, expires INT)` — local only; the DB
