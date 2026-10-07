@@ -575,9 +575,14 @@ pub fn http(
     let mut stream = std::net::TcpStream::connect(addr)?;
     stream.set_read_timeout(Some(Duration::from_secs(20)))?;
     let mut request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        "{method} {path} HTTP/1.1\r\nConnection: close\r\nContent-Length: {}\r\n",
         body.len()
     );
+    if !headers.iter().any(|(n, _)| n.eq_ignore_ascii_case("host")) {
+        request.push_str("Host: ");
+        request.push_str(addr);
+        request.push_str("\r\n");
+    }
     for (name, value) in headers {
         request.push_str(name);
         request.push_str(": ");

@@ -5,7 +5,7 @@ use asupersync::Cx;
 use asupersync::http::Client as HttpClient;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use fastapi::{ServerConfig, TcpServer};
-use fsonos_api::Surface;
+use fsonos_api::{Surface, WebPolicy};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::{HouseholdState, Room};
@@ -102,8 +102,10 @@ impl Api {
             Policy::default(),
             Box::new(SystemClock),
         );
-        let app = Arc::new(fsonos_api::app(&Arc::new(surface), client));
-        let server = Arc::new(TcpServer::new(ServerConfig::new("127.0.0.1:0")));
+        let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
+        let app = Arc::new(fsonos_api::app(&Arc::new(surface), client, &web));
+        let config = ServerConfig::new("127.0.0.1:0").with_allowed_hosts(web.hosts().to_vec());
+        let server = Arc::new(TcpServer::new(config));
         let (addr_tx, addr_rx) = mpsc::channel();
         let thread = {
             let server = Arc::clone(&server);
@@ -161,6 +163,44 @@ impl Api {
             )
         });
         (status, value)
+    }
+
+    /// A raw request with exactly these headers; returns the status code
+    /// and the body.
+    fn raw(&self, method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> (u16, String) {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(self.addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = format!("{method} {path} HTTP/1.1\r\n");
+        for (name, value) in headers {
+            request.push_str(name);
+            request.push_str(": ");
+            request.push_str(value);
+            request.push_str("\r\n");
+        }
+        request.push_str("Connection: close\r\nContent-Length: ");
+        request.push_str(&body.len().to_string());
+        request.push_str("\r\n\r\n");
+        request.push_str(body);
+        stream.write_all(request.as_bytes()).expect("send");
+        let mut answer = String::new();
+        let _ = stream.read_to_string(&mut answer);
+        let status = answer
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        let body = answer
+            .split_once("\r\n\r\n")
+            .map_or("", |(_, b)| b)
+            .to_string();
+        (status, body)
+    }
+
+    fn host(&self) -> String {
+        self.addr.to_string()
     }
 
     fn actions(&self) -> Vec<String> {
@@ -262,4 +302,65 @@ fn unknown_callers_may_read_but_not_control() {
     assert_eq!(err["retryable"], false);
     // Reading the zone's state is all an unknown caller caused.
     assert_eq!(api.actions(), ["GetTransportInfo"]);
+}
+
+#[test]
+fn a_foreign_host_is_refused_dns_rebinding() {
+    let api = Api::start("", &Client::LoopbackHttp);
+    let (status, _) = api.raw("GET", "/zones", &[("Host", "evil.example")], "");
+    assert_eq!(status, 400, "a Host the listener does not own is refused");
+    let (status, _) = api.raw(
+        "GET",
+        "/health",
+        &[("Host", &format!("localhost:{}", api.addr.port()))],
+        "",
+    );
+    assert_eq!(status, 200);
+    assert_eq!(api.actions(), Vec::<String>::new());
+}
+
+#[test]
+fn writes_must_be_json_so_no_preflight_posts_fail() {
+    let api = Api::start("", &Client::LoopbackHttp);
+    let host = api.host();
+    let (status, body) = api.raw(
+        "POST",
+        "/pause",
+        &[("Host", &host), ("Content-Type", "text/plain")],
+        r#"{"zone":"Kitchen"}"#,
+    );
+    assert_eq!(status, 415, "{body}");
+    assert!(body.contains("UNSUPPORTED_MEDIA_TYPE"), "{body}");
+    let (status, _) = api.raw("POST", "/undo", &[("Host", &host)], "");
+    assert_eq!(status, 415, "even an empty write needs the JSON type");
+    assert_eq!(api.actions(), Vec::<String>::new());
+}
+
+#[test]
+fn only_the_daemons_own_origins_may_call() {
+    let api = Api::start("", &Client::LoopbackHttp);
+    let host = api.host();
+    let (status, body) = api.raw(
+        "GET",
+        "/zones",
+        &[("Host", &host), ("Origin", "https://evil.example")],
+        "",
+    );
+    assert_eq!(status, 403, "{body}");
+    assert!(
+        body.contains("UNTRUSTED_ORIGIN") && !body.contains("Access-Control"),
+        "{body}"
+    );
+    let (status, body) = api.raw(
+        "POST",
+        "/pause",
+        &[
+            ("Host", &host),
+            ("Origin", "https://localhost"),
+            ("Content-Type", "application/json"),
+        ],
+        r#"{"zone":"Kitchen"}"#,
+    );
+    assert_eq!(status, 200, "the daemon's own origin may call: {body}");
+    assert_eq!(api.actions(), ["Pause"]);
 }

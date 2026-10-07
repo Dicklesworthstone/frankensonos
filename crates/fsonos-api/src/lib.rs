@@ -16,6 +16,7 @@
 //! * [`execute`] — carrying a [`Command`] out on the speakers;
 //! * [`guard`] — the house policy: who may call what, how loud;
 //! * [`surface`] — the speakers a surface acts on, with its policy;
+//! * [`web`] — browser safety: Host, Origin, JSON-only writes;
 //! * [`zones`] — the zone (group) listings; [`reads`] — zone state, favorites;
 //! * [`log`] — the action log and undo, as the surfaces show them;
 //! * [`failure`] — the one [`Failure`] shape (status + agent-readable detail).
@@ -30,6 +31,7 @@ pub mod reads;
 pub mod request;
 pub mod source;
 pub mod surface;
+pub mod web;
 pub mod zones;
 
 pub use execute::{OutcomeDto, execute, execute_guarded};
@@ -44,6 +46,7 @@ pub use request::{
     ZoneRequest,
 };
 pub use surface::Surface;
+pub use web::WebPolicy;
 pub use zones::ZoneDto;
 
 use serde::{Deserialize, Serialize};

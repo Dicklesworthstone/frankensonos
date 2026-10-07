@@ -17,7 +17,10 @@
 //! | `POST /group` | [`crate::GroupRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /dj/start`, `/dj/skip`, `/dj/stop` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //!
-//! Failures answer with the code's status and an [`crate::ApiError`] body
+//! Every route first passes the listener's [`WebPolicy`] (a present Origin
+//! must be the daemon's own; POSTs must be JSON); the listener itself admits
+//! only its own Host names. Failures answer with the code's status and an
+//! [`crate::ApiError`] body
 //! (`docs/ERRORS.md`). Every call runs as the listener's [`Client`] under the
 //! house policy. Speaker I/O is synchronous inside the handler.
 
@@ -38,119 +41,125 @@ use crate::plan::{
 };
 use crate::request::{PlayFavoriteRequest, ZoneRequest};
 use crate::surface::Surface;
+use crate::web::WebPolicy;
 
-/// The API application over `surface`, answering every caller as `client`.
+/// The API application over `surface`, answering every caller as `client`,
+/// with the listener's browser-safety rules (`web`, see [`crate::web`]).
 #[must_use]
-pub fn app(surface: &Arc<Surface>, client: &Client) -> App {
+pub fn app(surface: &Arc<Surface>, client: &Client, web: &WebPolicy) -> App {
+    let web = Arc::new(web.clone());
+    let read = |handle: Handler| admitted(&web, false, handle);
+    let write = |handle: Handler| admitted(&web, true, handle);
     let ctl = |tool: &'static str| (Arc::clone(surface), client.clone(), tool);
     let mut app = App::builder()
-        .get("/health", health)
+        .get("/health", read(Box::new(|_| health())))
         .get("/zones", {
             let (s, c, _) = ctl("list_zones");
-            move |_: &RequestContext, _: &mut Request| ready(answer(s.zones(&c)))
+            read(Box::new(move |_| answer(s.zones(&c))))
         })
         .get("/zones/{room}", {
             let (s, c, _) = ctl("get_zone");
-            move |_: &RequestContext, req: &mut Request| {
-                ready(answer(path_room(req).and_then(|room| s.zone(&c, &room))))
-            }
+            read(Box::new(move |req| {
+                answer(path_room(req).and_then(|room| s.zone(&c, &room)))
+            }))
         })
         .get("/zones/{room}/state", {
             let (s, c, _) = ctl("get_zone_state");
-            move |_: &RequestContext, req: &mut Request| {
-                ready(answer(
-                    path_room(req).and_then(|room| s.zone_state(&c, &room)),
-                ))
-            }
+            read(Box::new(move |req| {
+                answer(path_room(req).and_then(|room| s.zone_state(&c, &room)))
+            }))
         })
         .get("/favorites", {
             let (s, c, _) = ctl("list_favorites");
-            move |_: &RequestContext, req: &mut Request| {
-                ready(answer(
-                    query_zone(req).and_then(|zone| s.favorites(&c, &zone)),
-                ))
-            }
-        })
-        .post("/play/favorite", {
-            let (s, c, _) = ctl("play_favorite");
-            move |_: &RequestContext, req: &mut Request| {
-                let outcome =
-                    body::<PlayFavoriteRequest>(req).and_then(|body| s.play_favorite(&c, &body));
-                ready(answer(outcome))
-            }
+            read(Box::new(move |req| {
+                answer(query_zone(req).and_then(|zone| s.favorites(&c, &zone)))
+            }))
         })
         .get("/actions", {
             let (s, c, _) = ctl("recent_actions");
-            move |_: &RequestContext, req: &mut Request| {
+            read(Box::new(move |req| {
                 let listed = actions_query(req).and_then(|q| s.recent_actions(&c, &q.filter()));
-                ready(answer(
-                    listed.map(|a| a.iter().map(ActionDto::from).collect::<Vec<_>>()),
-                ))
-            }
+                answer(listed.map(|a| a.iter().map(ActionDto::from).collect::<Vec<_>>()))
+            }))
+        })
+        .post("/play/favorite", {
+            let (s, c, _) = ctl("play_favorite");
+            write(Box::new(move |req| {
+                answer(body::<PlayFavoriteRequest>(req).and_then(|b| s.play_favorite(&c, &b)))
+            }))
         })
         .post("/undo", {
             let (s, c, _) = ctl("undo");
-            move |_: &RequestContext, req: &mut Request| {
+            write(Box::new(move |req| {
                 let undone = body_or_default::<UndoRequest>(req, UndoRequest { own_only: true })
                     .and_then(|r| s.undo(&c, r.own_only));
-                ready(answer(undone.map(UndoDto::from)))
-            }
+                answer(undone.map(UndoDto::from))
+            }))
         })
-        .post("/play", control(ctl("play"), plan_play))
-        .post("/volume", control(ctl("set_volume"), plan_volume))
-        .post("/mute", control(ctl("mute"), plan_mute))
-        .post("/group", control(ctl("group"), plan_group))
-        .post("/ungroup", control(ctl("ungroup"), plan_ungroup));
+        .post("/play", write(control(ctl("play"), plan_play)))
+        .post("/volume", write(control(ctl("set_volume"), plan_volume)))
+        .post("/mute", write(control(ctl("mute"), plan_mute)))
+        .post("/group", write(control(ctl("group"), plan_group)))
+        .post("/ungroup", write(control(ctl("ungroup"), plan_ungroup)));
     for (path, tool, action) in [
         ("/pause", "pause", TransportAction::Pause),
         ("/resume", "resume", TransportAction::Resume),
         ("/next", "next", TransportAction::Next),
         ("/previous", "previous", TransportAction::Previous),
     ] {
-        app = app.post(
-            path,
-            control(ctl(tool), move |h, r: &ZoneRequest| {
-                plan::plan_transport(h, r, action)
-            }),
-        );
+        let handle = control(ctl(tool), move |h, r: &ZoneRequest| {
+            plan::plan_transport(h, r, action)
+        });
+        app = app.post(path, write(handle));
     }
     for (path, tool, action) in [
         ("/dj/start", "dj_start", DjAction::Start),
         ("/dj/skip", "dj_skip", DjAction::Skip),
         ("/dj/stop", "dj_stop", DjAction::Stop),
     ] {
-        app = app.post(
-            path,
-            control(ctl(tool), move |h, r: &ZoneRequest| {
-                plan::plan_dj(h, r, action)
-            }),
-        );
+        let handle = control(ctl(tool), move |h, r: &ZoneRequest| {
+            plan::plan_dj(h, r, action)
+        });
+        app = app.post(path, write(handle));
     }
     app.build()
 }
 
-fn health(_: &RequestContext, _: &mut Request) -> Ready<Response> {
+/// A route's work, after the browser-safety checks passed.
+type Handler = Box<dyn Fn(&mut Request) -> Response + Send + Sync>;
+
+/// `handle` behind `web`'s checks; `write` routes must also be JSON.
+fn admitted(
+    web: &Arc<WebPolicy>,
+    write: bool,
+    handle: Handler,
+) -> impl Fn(&RequestContext, &mut Request) -> Ready<Response> + Send + Sync + 'static {
+    let web = Arc::clone(web);
+    move |_: &RequestContext, req: &mut Request| {
+        ready(match web.admit(req, write) {
+            Ok(()) => handle(req),
+            Err(refused) => refused.http_response(),
+        })
+    }
+}
+
+fn health() -> Response {
     let body = HealthDto {
         status: "ok".into(),
         version: env!("CARGO_PKG_VERSION").into(),
     };
-    ready(Response::json(&body).expect("HealthDto serializes"))
+    Response::json(&body).expect("HealthDto serializes")
 }
 
-/// A POST route: parse the JSON body as `B`, plan it, carry it out.
-fn control<B, P>(
-    (surface, client, tool): (Arc<Surface>, Client, &'static str),
-    plan: P,
-) -> impl Fn(&RequestContext, &mut Request) -> Ready<Response> + Send + Sync + 'static
+/// A control route: parse the JSON body as `B`, plan it, carry it out.
+fn control<B, P>((surface, client, tool): (Arc<Surface>, Client, &'static str), plan: P) -> Handler
 where
-    B: DeserializeOwned,
+    B: DeserializeOwned + 'static,
     P: Fn(&[HouseholdState], &B) -> Result<Command, Failure> + Send + Sync + 'static,
 {
-    move |_: &RequestContext, req: &mut Request| {
-        let outcome =
-            body::<B>(req).and_then(|body| surface.control(&client, tool, |h| plan(h, &body)));
-        ready(answer(outcome))
-    }
+    Box::new(move |req: &mut Request| {
+        answer(body::<B>(req).and_then(|body| surface.control(&client, tool, |h| plan(h, &body))))
+    })
 }
 
 fn body<B: DeserializeOwned>(req: &mut Request) -> Result<B, Failure> {

@@ -69,11 +69,15 @@ pub enum ErrorCode {
     AmbiguousFavorite,
     /// The favorite is a shortcut with nothing to play.
     UnplayableFavorite,
+    /// The request came from a web page that is not one of the daemon's own.
+    UntrustedOrigin,
+    /// A control request whose body is not `application/json`.
+    UnsupportedMediaType,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 22] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -94,6 +98,8 @@ impl ErrorCode {
         Self::UnknownFavorite,
         Self::AmbiguousFavorite,
         Self::UnplayableFavorite,
+        Self::UntrustedOrigin,
+        Self::UnsupportedMediaType,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
@@ -120,6 +126,8 @@ impl ErrorCode {
             Self::UnknownFavorite => "UNKNOWN_FAVORITE",
             Self::AmbiguousFavorite => "AMBIGUOUS_FAVORITE",
             Self::UnplayableFavorite => "UNPLAYABLE_FAVORITE",
+            Self::UntrustedOrigin => "UNTRUSTED_ORIGIN",
+            Self::UnsupportedMediaType => "UNSUPPORTED_MEDIA_TYPE",
         }
     }
 
@@ -139,7 +147,8 @@ impl ErrorCode {
             | Self::RenderParamsMissing
             | Self::SpotifyAuthRequired
             | Self::AmbiguousFavorite => 409,
-            Self::PolicyDenied => 403,
+            Self::PolicyDenied | Self::UntrustedOrigin => 403,
+            Self::UnsupportedMediaType => 415,
             Self::NotReady | Self::PlayerUnreachable => 503,
             Self::UpnpFault => 502,
             Self::Internal => 500,
@@ -156,14 +165,15 @@ impl ErrorCode {
             | Self::AmbiguousRoom
             | Self::CrossHouseholdGroup
             | Self::AmbiguousFavorite
-            | Self::UnplayableFavorite => 2,
+            | Self::UnplayableFavorite
+            | Self::UnsupportedMediaType => 2,
             Self::UnknownRoom
             | Self::UnknownHousehold
             | Self::UnknownMood
             | Self::NoDjSession
             | Self::UnknownFavorite => 3,
             Self::NotReady | Self::PlayerUnreachable | Self::NotCoordinator => 4,
-            Self::PolicyDenied => 5,
+            Self::PolicyDenied | Self::UntrustedOrigin => 5,
             Self::UpnpFault
             | Self::SpotifyNotLinked
             | Self::RenderParamsMissing
@@ -224,6 +234,12 @@ impl ErrorCode {
             }
             Self::AmbiguousFavorite => "Repeat the request with one of the suggested titles.",
             Self::UnplayableFavorite => "Pick a favorite that is a track, a station or a playlist.",
+            Self::UntrustedOrigin => {
+                "Call the API from the CLI, an agent, or the daemon's own pages."
+            }
+            Self::UnsupportedMediaType => {
+                "Send the request body as JSON with Content-Type: application/json."
+            }
         }
     }
 }

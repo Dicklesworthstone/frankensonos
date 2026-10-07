@@ -26,7 +26,7 @@ speakers stay on the LAN and are never fronted.
  Sonos players on the LAN ──────────────────────┘
 ```
 
-Five rules hold the design together:
+Six rules hold the design together:
 
 1. **Reachability is control.** The HTTP API and the MCP server have no
    authentication of their own: anyone who can reach them can play, pause and
@@ -41,7 +41,15 @@ Five rules hold the design together:
    must be able to reach the daemon to deliver state-change events. It accepts
    event deliveries only, not control requests. (Its port is set by the GENA
    lane, `a-gena`.)
-5. **No site data in git.** Filled-in plists, tailnet policies, seed lists,
+5. **Browsers can't drive it.** A web page open on the Mac or a tailnet
+   device could otherwise reach the unauthenticated API. So each listener
+   admits only its own Host names (loopback, its address, the tailnet's
+   MagicDNS name and addresses), defeating DNS rebinding. A request with a
+   foreign `Origin` gets 403, and every control request must be
+   `Content-Type: application/json` (415 otherwise), which closes the
+   no-preflight cross-origin POST. No CORS grant is ever sent. CLI tools and
+   agents send no `Origin` and are unaffected.
+6. **No site data in git.** Filled-in plists, tailnet policies, seed lists,
    logs and the data directory all live outside the repository.
 
 ## 2. Configuration

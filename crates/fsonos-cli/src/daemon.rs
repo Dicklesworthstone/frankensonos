@@ -16,7 +16,7 @@
 
 use anyhow::Context as _;
 use fastapi::{ServerConfig, TcpServer};
-use fsonos_api::{Failure, Surface};
+use fsonos_api::{Failure, Surface, WebPolicy};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::SqliteStore;
@@ -116,7 +116,8 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
             .context("install the SIGINT/SIGTERM handler")?;
     }
 
-    let (http_server, http_addr) = start_http(&surface, args.http)?;
+    let names = tailnet_names();
+    let (http_server, http_addr) = start_http(&surface, args.http, &names)?;
     let mcp_addr = start_mcp(&surface, args.mcp_http)?;
     eprintln!(
         "fsonos serve: ready http=http://{http_addr} mcp=http://{mcp_addr}/mcp data={}",
@@ -133,14 +134,35 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The names this host has on its tailnet (MagicDNS name and addresses),
+/// which tailnet clients and Tailscale Serve send as the Host. Empty off a
+/// tailnet.
+fn tailnet_names() -> Vec<String> {
+    let status = fsonos_tailscale::detect();
+    let Some(tailnet) = status.running() else {
+        return Vec::new();
+    };
+    tailnet
+        .magic_dns_name
+        .iter()
+        .cloned()
+        .chain(tailnet.ipv4.iter().map(ToString::to_string))
+        .chain(tailnet.ipv6.iter().map(ToString::to_string))
+        .collect()
+}
+
 /// Bind the HTTP API on its own thread; returns the server and the bound
-/// address once it listens.
+/// address once it listens. Only the listener's own Host names are admitted
+/// (DNS-rebinding defense), and every route applies the browser rules.
 fn start_http(
     surface: &Arc<Surface>,
     addr: SocketAddr,
+    names: &[String],
 ) -> anyhow::Result<(Arc<TcpServer>, SocketAddr)> {
-    let app = Arc::new(fsonos_api::app(surface, &listener_client(addr)));
-    let server = Arc::new(TcpServer::new(ServerConfig::new(addr.to_string())));
+    let web = WebPolicy::for_listener(addr, names);
+    let app = Arc::new(fsonos_api::app(surface, &listener_client(addr), &web));
+    let config = ServerConfig::new(addr.to_string()).with_allowed_hosts(web.hosts().to_vec());
+    let server = Arc::new(TcpServer::new(config));
     let (bound_tx, bound_rx) = mpsc::channel();
     let serving = Arc::clone(&server);
     thread::Builder::new()

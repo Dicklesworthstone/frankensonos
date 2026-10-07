@@ -68,6 +68,7 @@ fn serve_hosts_the_api_and_mcp_over_the_sim() {
 
     check_http_api(&mut s, api);
     check_http_reads(&mut s, api);
+    check_browser_safety(&mut s, api, mcp);
     check_mcp_http(&mut s, mcp);
 
     let code = daemon.interrupt(Duration::from_secs(10));
@@ -254,5 +255,80 @@ fn check_http_reads(s: &mut Scenario, api: &str) {
                 .as_str()
                 .is_some_and(|u| u.starts_with("x-rincon-mp3radio:")),
         format!("{state:?}"),
+    );
+}
+
+/// The daemon's listeners refuse what a hostile web page would send.
+fn check_browser_safety(s: &mut Scenario, api: &str, mcp: &str) {
+    let rebound = http(api, "GET", "/zones", &[("Host", "evil.example")], "");
+    s.check(
+        "foreign-host",
+        "http",
+        "a foreign Host (DNS rebinding) is refused",
+        rebound.as_ref().is_ok_and(|(code, _, _)| *code == 400),
+        format!("{rebound:?}"),
+    );
+    let plain = http(
+        api,
+        "POST",
+        "/pause",
+        &[("Content-Type", "text/plain")],
+        r#"{"zone":"Kitchen"}"#,
+    );
+    s.check(
+        "text-plain-write",
+        "http",
+        "a no-preflight text/plain POST is 415",
+        plain.as_ref().is_ok_and(|(code, _, _)| *code == 415),
+        format!("{plain:?}"),
+    );
+    let foreign = http(
+        api,
+        "GET",
+        "/zones",
+        &[("Origin", "https://evil.example")],
+        "",
+    );
+    s.check(
+        "foreign-origin",
+        "http",
+        "a foreign Origin is 403 and gets no CORS grant",
+        foreign.as_ref().is_ok_and(|(code, headers, _)| {
+            *code == 403
+                && !headers
+                    .iter()
+                    .any(|(k, _)| k == "access-control-allow-origin")
+        }),
+        format!("{foreign:?}"),
+    );
+    let mcp_foreign = http(
+        mcp,
+        "POST",
+        "/mcp",
+        &[
+            ("Origin", "https://evil.example"),
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json"),
+            ("MCP-Protocol-Version", "2026-07-28"),
+            ("Mcp-Method", "tools/call"),
+            ("Mcp-Name", "list_zones"),
+        ],
+        &json!({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": {"name": "list_zones", "arguments": {}, "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }}
+        })
+        .to_string(),
+    );
+    s.check(
+        "mcp-foreign-origin",
+        "mcp-http",
+        "the MCP endpoint refuses a foreign Origin (fastmcp answers 400, no result)",
+        mcp_foreign
+            .as_ref()
+            .is_ok_and(|(code, _, body)| (400..500).contains(code) && !body.contains("\"result\"")),
+        format!("{mcp_foreign:?}"),
     );
 }
