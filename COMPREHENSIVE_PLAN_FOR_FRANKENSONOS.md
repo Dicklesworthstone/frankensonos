@@ -68,10 +68,10 @@ the authoritative in-scope / out-of-scope list every contributor must follow.
 1. **Discover & inspect.** `fsonos discover` lists every player across both
    households with room, IP, model, generation, and group membership — every
    time, deterministically. `fsonos zones` prints the live topology.
-2. **Direct control.** `fsonos play "Jeff's Office" spotify:track:...`,
+2. **Direct control.** `fsonos play "Living Room" spotify:track:...`,
    `fsonos pause "Kitchen"`, volume/group/ungroup — all fast and correct,
    addressing the **coordinator** of the target group automatically.
-3. **The DJ.** `fsonos dj start "Jeff's Office"` begins a varied classical set
+3. **The DJ.** `fsonos dj start "Living Room"` begins a varied classical set
    from the owner's Spotify library; `dj skip` advances; the daemon keeps the
    queue fed and avoids recent repeats. An agent can do the same via MCP:
    `dj_start`, `dj_skip`, `play`, `set_volume`, `list_zones`.
@@ -87,10 +87,10 @@ the authoritative in-scope / out-of-scope list every contributor must follow.
 
 ## 2. Environment (ground truth for this deployment)
 
-- **Build/runtime host:** `mac-mini-max`, macOS 26.2, arm64. It is on the
-  speaker LAN directly (`en1` = `192.168.4.165/22`, covering
-  `192.168.4.0`–`192.168.7.255`), and on the tailnet (`100.68.51.94`). This is
-  the machine the daemon runs on.
+- **Build/runtime host:** a Mac mini (macOS, arm64) that sits directly on the
+  speaker LAN and is also on the tailnet, so the daemon reaches every player
+  locally and is reachable by off-LAN agents over Tailscale. This is the
+  machine the daemon runs on.
 - **Builds** offload to the `rch` fleet (remote cargo). `cargo` is the gate;
   `rch` is just where it runs. The pinned nightly builds cleanly there.
 - Household/device specifics (IPs, MACs, serials) are **site data** and live in
