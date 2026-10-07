@@ -237,3 +237,47 @@ fn a_survey_catches_a_reboot_the_events_missed() {
     assert_eq!((renewed.renewed, renewed.resubscribed), (all, 0));
     r.subscriptions.unsubscribe_all(&lan);
 }
+
+#[test]
+fn a_player_in_the_topology_that_does_not_answer_is_not_healthy() {
+    let sim = SimHousehold::builder()
+        .s1([
+            SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
+            SimPlayerSpec::new("Office", SimModel::Play5Gen1),
+        ])
+        .spawn()
+        .unwrap();
+    let lan = Lan::with_timeout(Duration::from_millis(800))
+        .unwrap()
+        .with_routes(sim.players().iter().map(|p| (p.ip, p.addr)).collect())
+        .with_ssdp_target(sim.ssdp_addr());
+    let local = lan
+        .local_address_toward(sim.player("Kitchen").unwrap().ip)
+        .unwrap();
+    let sink = EventSink::start(SocketAddr::new(local, 0)).unwrap();
+    let callback = |s: Service| sink.callback_url(s.tag());
+
+    let t0 = Instant::now();
+    let interval = Duration::from_mins(5);
+    let mut r = Reconciler::new(interval, Duration::from_mins(30), t0);
+    r.refresh(&lan, &[], callback, t0).unwrap();
+    let office = r.households[0]
+        .players
+        .iter()
+        .find(|p| p.room_name == "Office")
+        .unwrap()
+        .id
+        .clone();
+    assert_eq!(r.health.of(&office).unwrap().health, Health::Healthy);
+
+    // The Office stops answering in time but stays in the Kitchen's
+    // topology (and keeps its subscriptions, so nothing else fails).
+    sim.set_latency("Office", Duration::from_secs(2)).unwrap();
+    let second = r.refresh(&lan, &[], callback, t0 + interval).unwrap();
+    assert!(second.missing.is_empty(), "still in the topology");
+    let office_health = r.health.of(&office).unwrap();
+    assert_eq!(office_health.health, Health::Degraded, "{office_health:?}");
+    assert!(office_health.last_error.is_some());
+    sim.set_latency("Office", Duration::ZERO).unwrap();
+    r.subscriptions.unsubscribe_all(&lan);
+}

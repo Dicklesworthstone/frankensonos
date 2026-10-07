@@ -285,9 +285,19 @@ impl Reconciler {
             ..RefreshReport::default()
         };
         for p in self.households.iter().flat_map(|h| &h.players) {
-            self.health.ok(&p.id, now);
             report.players += 1;
+            // Listed in its household's topology, but its own address did
+            // not answer the survey: not healthy, whatever its peers say.
+            match survey
+                .unreachable
+                .iter()
+                .find(|(addr, _)| addr.parse::<IpAddr>().ok() == Some(p.ip))
+            {
+                Some((_, error)) => self.health.failed(&p.id, error.clone()),
+                None => self.health.ok(&p.id, now),
+            }
         }
+        let mut forgotten = 0;
         for (id, ip) in before {
             if self.households.iter().all(|h| h.player(&id).is_none()) {
                 // Absent from the model either way; keep why, if the survey
@@ -306,12 +316,15 @@ impl Reconciler {
                     "player missing"
                 );
                 self.health.missing(&id, reason);
+                // Its subscriptions die with it; UNSUBSCRIBE would only time out.
+                forgotten += self.subscriptions.forget(&id);
                 report.missing.push(id);
             }
         }
         report.events =
             self.subscriptions
                 .sync(lan, &events::wanted(&self.households), callback_url, now);
+        report.events.dropped += forgotten;
         self.health.record(&report.events);
         self.schedule.succeeded(now);
         Ok(report)
@@ -358,6 +371,7 @@ impl Reconciler {
                 );
                 self.health
                     .missing(&id, "no longer in its household's topology");
+                report.events.dropped += self.subscriptions.forget(&id);
                 report.gone.push(id);
             }
         }
@@ -380,6 +394,16 @@ impl Reconciler {
                 report.events.failed.extend(r.failed);
                 report.rebooted.push(p);
             }
+            // Grouping changed: a new coordinator needs its AVTransport and
+            // group-volume subscriptions, a former one no longer does, and
+            // a player that joined needs its own.
+            let r =
+                self.subscriptions
+                    .sync(lan, &events::wanted(&self.households), &callback_url, now);
+            self.health.record(&r);
+            report.events.subscribed += r.subscribed;
+            report.events.dropped += r.dropped;
+            report.events.failed.extend(r.failed);
         }
         Ok(Some(report))
     }

@@ -340,12 +340,59 @@ impl Engine {
                 self.publish(&m, pushed);
             }
         }
-        m.rec.subscriptions.unsubscribe_all(&self.via());
+        self.release(&mut m);
         self.publish(&m, Vec::new());
+    }
+
+    /// End every subscription: UNSUBSCRIBE the players that may still
+    /// answer, and just forget those already offline (asking them would
+    /// only time out).
+    fn release(&self, m: &mut Model) {
+        let offline: Vec<PlayerId> = m
+            .rec
+            .health
+            .iter()
+            .filter(|(_, h)| h.health == Health::Offline)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &offline {
+            m.rec.subscriptions.forget(id);
+        }
+        m.rec.subscriptions.unsubscribe_all(&self.via());
+    }
+
+    /// Drop the event listener and every subscription that points at it, so
+    /// the next survey listens afresh and subscribes again.
+    fn relisten(&self, m: &mut Model, why: &str) {
+        tracing::warn!(reason = why, "re-opening the event listener");
+        self.release(m);
+        m.sink = None;
+        m.last_error = Some(why.to_string());
+        m.rec.schedule.due_now(Instant::now());
     }
 
     /// Survey, opening the event listener first if there is none yet.
     fn survey(&self, m: &mut Model, now: Instant) {
+        // This host's address toward the players can change (a new DHCP
+        // lease, a VPN). Renewals would keep succeeding while every NOTIFY
+        // went to the old address, so listen again where they can reach us.
+        if let Some(s) = &m.sink
+            && let Some(toward) = m
+                .rec
+                .households
+                .iter()
+                .flat_map(|h| &h.players)
+                .map(|p| p.ip)
+                .next()
+            && let Ok(local) = self.lan.local_address_toward(toward)
+            && local != s.local_addr().ip()
+        {
+            let why = format!(
+                "this host now reaches the players from {local}, not {}",
+                s.local_addr().ip()
+            );
+            self.relisten(m, &why);
+        }
         if m.sink.is_none() {
             match self.open_sink(&m.rec.households) {
                 Ok(s) => {
@@ -362,10 +409,21 @@ impl Engine {
         }
         let Some(s) = &m.sink else { return };
         let callback = |service: Service| s.callback_url(service.tag());
-        match m
+        // Survey the players already known as well as the seeds, so they
+        // are found again even when SSDP stops answering.
+        let mut seeds = self.config.seeds.clone();
+        for ip in m
             .rec
-            .refresh(&self.via(), &self.config.seeds, callback, now)
+            .households
+            .iter()
+            .flat_map(|h| &h.players)
+            .map(|p| p.ip)
         {
+            if !seeds.contains(&ip) {
+                seeds.push(ip);
+            }
+        }
+        match m.rec.refresh(&self.via(), &seeds, callback, now) {
             Ok(report) => {
                 for gone in &report.missing {
                     m.playback.remove(gone);
@@ -395,7 +453,13 @@ impl Engine {
             .next_at()
             .saturating_duration_since(Instant::now())
             .min(TICK);
-        let n = s.recv_timeout(wait)?;
+        let n = match s.recv_or_closed(wait) {
+            Ok(n) => n?,
+            Err(e) => {
+                self.relisten(m, &format!("the event listener stopped: {e}"));
+                return Some(Vec::new());
+            }
+        };
         let callback = |service: Service| s.callback_url(service.tag());
         let from = m.rec.subscriptions.route(&n).map(|(p, _)| p.clone());
         let mut pushed = Vec::new();

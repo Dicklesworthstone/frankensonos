@@ -562,6 +562,19 @@ impl EventSink {
     pub fn recv_timeout(&self, wait: Duration) -> Option<Notify> {
         self.events.recv_timeout(wait).ok()
     }
+
+    /// The next NOTIFY within `wait` (`Ok(None)`: none came), or an error
+    /// once the listener has stopped and will deliver nothing more.
+    pub fn recv_or_closed(&self, wait: Duration) -> Result<Option<Notify>, ProtoError> {
+        match self.events.recv_timeout(wait) {
+            Ok(n) => Ok(Some(n)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(ProtoError::Network {
+                target: format!("event listener {}", self.addr),
+                detail: "stopped".into(),
+            }),
+        }
+    }
 }
 
 impl Drop for EventSink {

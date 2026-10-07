@@ -3,10 +3,10 @@
 //! arrive through events; a player that drops off is marked offline and
 //! comes back; a reboot is followed; stopping ends every subscription.
 
-use fsonos_core::control;
 use fsonos_core::events::{Service, wanted};
 use fsonos_core::live::{Live, LiveConfig, LiveEvent};
 use fsonos_core::reconcile::Health;
+use fsonos_core::{control, grouping, resolve_room};
 use fsonos_proto::net::Lan;
 use fsonos_proto::ssdp::Advert;
 use fsonos_proto::{ProtoError, Transport};
@@ -14,7 +14,7 @@ use fsonos_sim::{GenaEvent, SimHandle, SimHousehold, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 fn sim() -> SimHandle {
@@ -293,4 +293,115 @@ fn surveys_go_through_the_given_transport_and_events_through_the_lan() {
     assert!(eventually(Duration::from_secs(5), || ids
         .iter()
         .all(|id| live.player(id).is_some_and(|p| p.volume.is_some()))));
+}
+
+#[test]
+fn grouping_changes_resubscribe_without_waiting_for_a_survey() {
+    let sim = sim();
+    let lan = routed(&sim);
+    let live = Live::start(Arc::clone(&lan), LiveConfig::new(Vec::new()));
+    assert!(live.wait_ready(Duration::from_secs(10)));
+    assert!(eventually(Duration::from_secs(5), || live
+        .snapshot()
+        .subscriptions
+        > 0));
+    let all = live.snapshot().subscriptions;
+    let surveyed = live.snapshot().surveyed_at;
+
+    // The Office joins the Kitchen: as a member it needs no AVTransport or
+    // group-volume subscription of its own.
+    let houses = live.households();
+    let kitchen = resolve_room(&houses, "Kitchen").unwrap();
+    let office = resolve_room(&houses, "Office").unwrap();
+    assert!(grouping::group(&*lan, &houses, &kitchen, &[office]).is_complete());
+    assert!(
+        eventually(Duration::from_secs(5), || live.snapshot().subscriptions
+            == all - 2),
+        "{} of {all}",
+        live.snapshot().subscriptions
+    );
+
+    // On its own again, it is a coordinator and gets them back.
+    let houses = live.households();
+    let office = resolve_room(&houses, "Office").unwrap();
+    assert!(grouping::ungroup(&*lan, &houses, &[office]).is_complete());
+    assert!(
+        eventually(Duration::from_secs(5), || live.snapshot().subscriptions
+            == all),
+        "{} of {all}",
+        live.snapshot().subscriptions
+    );
+    assert_eq!(
+        live.snapshot().surveyed_at,
+        surveyed,
+        "no survey was needed"
+    );
+}
+
+/// Forwards to the LAN, but refuses SSDP once `dead` is set, as a network
+/// that stops passing multicast does.
+struct Flaky {
+    inner: Arc<Lan>,
+    dead: AtomicBool,
+}
+
+impl Transport for Flaky {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        control_path: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        self.inner.soap_post(host, control_path, soap_action, body)
+    }
+
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        self.inner.http_get(url)
+    }
+
+    fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<Advert>, ProtoError> {
+        if self.dead.load(Ordering::Acquire) {
+            return Err(ProtoError::Network {
+                target: "ssdp".into(),
+                detail: "no multicast".into(),
+            });
+        }
+        self.inner.ssdp_search(mx_secs, wait)
+    }
+}
+
+#[test]
+fn known_players_are_surveyed_again_when_ssdp_stops_answering() {
+    let sim = sim();
+    let lan = routed(&sim);
+    let flaky = Arc::new(Flaky {
+        inner: Arc::clone(&lan),
+        dead: AtomicBool::new(false),
+    });
+    let transport: Arc<dyn Transport + Send + Sync> = Arc::clone(&flaky) as _;
+    // No seeds: the first survey finds everyone over SSDP.
+    let live = Live::start_with(transport, Arc::clone(&lan), LiveConfig::new(Vec::new()));
+    assert!(live.wait_ready(Duration::from_secs(10)));
+    let first = live.snapshot().surveyed_at.unwrap();
+
+    flaky.dead.store(true, Ordering::Release);
+    live.refresh_soon();
+    assert!(
+        eventually(Duration::from_secs(10), || live
+            .snapshot()
+            .surveyed_at
+            .is_some_and(|t| t > first)),
+        "{:?}",
+        live.snapshot().last_error
+    );
+    let snap = live.snapshot();
+    assert_eq!(snap.last_error, None);
+    assert_eq!(
+        snap.households
+            .iter()
+            .map(|h| h.players.len())
+            .sum::<usize>(),
+        3
+    );
 }
