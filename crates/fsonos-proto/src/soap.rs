@@ -36,6 +36,14 @@ pub const RENDERING_CONTROL: Service = Service {
     event_path: "/MediaRenderer/RenderingControl/Event",
 };
 
+/// GroupRenderingControl — group volume and mute, on the group coordinator.
+pub const GROUP_RENDERING_CONTROL: Service = Service {
+    name: "GroupRenderingControl",
+    service_type: "urn:schemas-upnp-org:service:GroupRenderingControl:1",
+    control_path: "/MediaRenderer/GroupRenderingControl/Control",
+    event_path: "/MediaRenderer/GroupRenderingControl/Event",
+};
+
 /// ZoneGroupTopology — the household's group structure and member list.
 pub const ZONE_GROUP_TOPOLOGY: Service = Service {
     name: "ZoneGroupTopology",

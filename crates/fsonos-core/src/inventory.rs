@@ -2,12 +2,118 @@
 //!
 //! SSDP (and the direct-seed fallback) yields device-description URLs; this
 //! module classifies each description as S1 or S2 and folds it into the
-//! model. The network fetch is wired in FND-DEPS; classification is pure.
+//! model. [`survey`] runs the whole pass over a [`Transport`];
+//! classification is pure.
 
-use crate::HouseholdState;
-use fsonos_proto::description::DeviceDescription;
-use fsonos_types::{Generation, Player};
+use crate::{CoreError, HouseholdState};
+use fsonos_proto::description::{DeviceDescription, parse_device_description};
+use fsonos_proto::topology::{get_zone_group_state, host_of_location};
+use fsonos_proto::{Transport, ssdp};
+use fsonos_types::{Generation, HouseholdId, Player, PlayerId};
+use std::collections::HashSet;
 use std::net::IpAddr;
+use std::time::Duration;
+
+/// How long [`survey`] collects SSDP replies by default.
+pub const DISCOVERY_WAIT: Duration = Duration::from_secs(2);
+
+/// What a [`survey`] of the LAN found.
+#[derive(Debug, Default)]
+pub struct Survey {
+    /// One entry per household, S1 before S2.
+    pub households: Vec<HouseholdState>,
+    /// Players that were found but could not be read, with the reason.
+    pub unreachable: Vec<(String, String)>,
+    /// Set when SSDP itself failed and only the seeds were tried.
+    pub ssdp_error: Option<String>,
+}
+
+/// Find every household on the LAN. SSDP (plus any direct `seeds`, for
+/// networks that drop multicast) finds the players; each player's device
+/// description classifies it; one ZoneGroupTopology read per household
+/// supplies its groups and rooms. A player that does not answer is listed in
+/// [`Survey::unreachable`] rather than failing the survey.
+pub fn survey<T: Transport + ?Sized>(
+    t: &T,
+    seeds: &[IpAddr],
+    wait: Duration,
+) -> Result<Survey, CoreError> {
+    let mut out = Survey::default();
+    let mut found: Vec<(IpAddr, Option<String>)> = Vec::new();
+    match t.ssdp_search(1, wait) {
+        Ok(adverts) => {
+            for advert in adverts {
+                if let Some(ip) = host_of_location(&advert.location)
+                    && !found.iter().any(|(seen, _)| *seen == ip)
+                {
+                    found.push((ip, advert.household));
+                }
+            }
+        }
+        Err(e) if !seeds.is_empty() => out.ssdp_error = Some(e.to_string()),
+        Err(e) => return Err(e.into()),
+    }
+    for &ip in seeds {
+        if !found.iter().any(|(seen, _)| *seen == ip) {
+            found.push((ip, None));
+        }
+    }
+
+    let mut described: Vec<(IpAddr, DeviceDescription, Option<String>)> = Vec::new();
+    for (ip, household) in found {
+        let url = ssdp::description_url(ip);
+        match t
+            .http_get(&url)
+            .and_then(|body| parse_device_description(&body))
+        {
+            Ok(desc) => described.push((ip, desc, household)),
+            Err(e) => out.unreachable.push((ip.to_string(), e.to_string())),
+        }
+    }
+
+    // Any player answers ZoneGroupTopology for its whole household, so ask
+    // one player per household; bridges answer too.
+    let mut covered: HashSet<PlayerId> = HashSet::new();
+    for (ip, desc, _) in &described {
+        if covered.contains(&desc.udn) {
+            continue;
+        }
+        let zgs = match get_zone_group_state(t, *ip) {
+            Ok(zgs) => zgs,
+            Err(e) => {
+                out.unreachable.push((ip.to_string(), e.to_string()));
+                continue;
+            }
+        };
+        let members: HashSet<PlayerId> = zgs
+            .groups
+            .iter()
+            .flat_map(|g| &g.members)
+            .flat_map(|m| std::iter::once(&m.uuid).chain(m.satellites.iter().map(|s| &s.uuid)))
+            .cloned()
+            .collect();
+        let mut state = HouseholdState::default();
+        state.apply_topology(&zgs);
+        for (member_ip, member, household) in &described {
+            if members.contains(&member.udn) {
+                state.apply_description(member, *member_ip);
+                if state.id.is_none() {
+                    state.id = household.clone().map(HouseholdId);
+                }
+            }
+        }
+        covered.extend(members);
+        covered.insert(desc.udn.clone());
+        state.players.sort_by(|a, b| a.room_name.cmp(&b.room_name));
+        out.households.push(state);
+    }
+    out.households.sort_by_key(|h| match h.generation() {
+        Some(Generation::S1) => 0,
+        Some(Generation::S2) => 1,
+        None => 2,
+    });
+    Ok(out)
+}
 
 /// The generation a player's `swGen` (device description) or `SWGen`
 /// (topology) value names.
