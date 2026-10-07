@@ -327,9 +327,10 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
 Added by §12 (each table is created by the migration of the bead that needs it):
 
 - `spotify_library` gains `album_uri TEXT, disc_number INT, track_number INT, work_key TEXT` (whole-work DJ, §12.1).
-- `dj_sessions(zone TEXT PK, mood TEXT, constraints TEXT, expires INT)` (steering survives restarts).
+- `dj_sessions(coordinator TEXT PK, mood TEXT, constraints TEXT, expires INT)` (steering survives restarts; keyed by coordinator UUID because zone names change with grouping).
+- `album_tracks(album_uri TEXT, disc_number INT, track_number INT, source_uri TEXT, title TEXT, duration_secs INT, fetched_at INT)` (completes liked movements into whole works; not part of the library).
 - `feedback(id INTEGER PK, at INT, work_key TEXT, composer_key TEXT, performer TEXT, signal INT)` (§12.9).
-- `actions(id INTEGER PK, at INT, client TEXT, surface TEXT, intent TEXT, result TEXT, before_state TEXT)` (§12.5).
+- `actions(id INTEGER PK, at INT, client TEXT, surface TEXT, intent TEXT, decision TEXT, result TEXT, before_state TEXT)` (§12.5; denied requests are logged too).
 - `scenes(name TEXT PK, spec TEXT, updated INT)` (§12.7).
 - `schedules(id INTEGER PK, spec TEXT, action TEXT, enabled INT, last_fired INT)` (§12.10).
 
@@ -354,7 +355,7 @@ Keep raw tokens and site data out of git; the store file is in the OS data dir.
 - **DJ behavior:** seeded-RNG determinism; variety metrics over a long run.
 - **Virtual household (§12.4):** `fsonos-sim` serves S1 and S2 players over
   real localhost sockets, built from the scrubbed fixtures. The e2e suite in
-  `tests/e2e/` runs every §1 workflow through the CLI, HTTP API, and MCP
+  `tests/e2e/` runs the §1 workflows (all but the real-tailnet path) through the CLI, HTTP API, and MCP
   against it, logging each command, response, and sim-side SOAP exchange with
   timestamps. This is how the swarm verifies M2–M5 without the speaker LAN; the
   live-LAN lane stays the owner's final check.
@@ -431,12 +432,13 @@ the most common way algorithmic classical radio goes wrong, and the current
 tracks) does not prevent it.
 
 - The DJ's unit becomes the work: every movement of one recording (same album,
-  same `work_key`), in disc and track order. `LibraryItem` and `Track` gain
-  `disc_number`, `track_number`, and `album_uri`.
+  same `work_key`), in disc and track order. `Track` gains
+  `disc_number`, `track_number`, and `album_uri`; `LibraryItem` gains the two
+  numbers, which the Web API client already parses.
 - A liked single movement is completed into its whole work by reading the
   album's track list (`GET /v1/albums/{id}/tracks`, read-only) and caching it.
-- Works longer than `max_work_minutes` (default 75: full operas, Passions,
-  masses) are left out unless the mood allows them. A parsed work is never
+- Works longer than `max_work_minutes` (default 75: most complete operas
+  and Passions) are left out unless the mood allows them. A parsed work is never
   split; titles that don't parse fall back to single-track units.
 - Each pick carries a `PickReason` (composer not heard in N days, period
   balance, time-of-day energy, mood match, feedback weight). `fsonos dj status`
@@ -472,7 +474,7 @@ refuses. Today each of these shows up as "nothing happens".
   the tailnet) come from `ts-doctor` in the Tailscale epic, registered in the
   same engine as `tailscale.*`.
 - Doctor is read-only and never changes playback. Output is a table with
-  remedies or `--json`, with exit codes 0/1/2 for pass/warn/fail. It is also MCP
+  remedies or `--json`, with exit codes 0/6/7 for pass/warnings/fail (1-5 are the CLI's error codes). It is also MCP
   `doctor` and `GET /doctor`.
 - `fsonos setup` runs the same checks in order on first run and stops at each
   failure with the fix ("In the S1 app, add any Spotify track to My Sonos, then
@@ -504,7 +506,8 @@ The §5 MCP tool list is nearly all writes. "Turn it down a bit in the kitchen",
 
 ### 12.4 A virtual household for hardware-free testing and demos
 
-[`a-sim-core`, `a-sim-gena`, `a-sim-discovery`, `d-e2e-sim`]
+[`a-sim-core`, `a-sim-gena`, `a-sim-discovery`, `d-e2e-sim`,
+`d-e2e-core-scenarios`, `d-sim-subcommand`]
 
 The swarm builds on `rch` workers that are not on the speaker LAN, so every
 M2–M5 criterion that says "against a real player" can only be checked by the
@@ -546,20 +549,25 @@ the house to agents they can bound and reverse. The guardrails live in
   a lower cap, fade durations, and per-client tool allowlists. Over-limit volume
   is clamped and the response says so; a disallowed tool returns
   `POLICY_DENIED`.
-- Client identity: stdio callers are `local`. The daemon binds the tailnet
-  directly by default (`ts-autobind`), so a tailnet peer is identified by
-  Tailscale WhoIs on its address (`ts-identity`), which can't be forged. Behind
-  Tailscale Serve, a loopback request's `Tailscale-User-Login` header names the
-  user; a loopback request without it is `local`. Anything unresolved is
-  `unknown`, and an unresolved identity never fails a request. Policy client
-  keys are these tailnet logins.
-- Fades use RenderingControl `RampToVolume` where the player supports it and
-  stepped `SetVolume` otherwise.
+- Client identity is a surface plus a principal: `cli` (a person at the
+  terminal), `mcp-stdio` (a local agent), `loopback-http` (a local process), or
+  a tailnet principal. The daemon binds the tailnet directly by default
+  (`ts-autobind`), so a tailnet peer is identified by Tailscale WhoIs on its
+  address (`ts-identity`), which can't be forged; this needs the peer address
+  to reach the handlers, which the pinned fastapi and fastmcp don't pass yet.
+  Behind Tailscale Serve, the `Tailscale-User-Login` header names the user, but
+  Serve omits it for tagged devices, so Serve gets its own upstream port and a
+  header-less request there is `unknown`. An unresolved identity never fails a
+  request. Caps apply to every identity except `cli`; `unknown` gets read-only
+  tools. Policy keys are logins, tags, or node names.
+- Fades with a duration use stepped `SetVolume`. RenderingControl
+  `RampToVolume` takes no duration and only its SLEEP_TIMER type fades from the
+  current volume, so it serves only "fade at device speed".
 - A zone snapshot (group membership, volumes, mute, transport URI and metadata,
   track and position, play state) is taken before every mutating intent, and
   each action is logged with client, surface, intent, result, and before-state.
   `fsonos log`, `fsonos undo`, MCP `recent_actions` and `undo_last`. Undo says
-  what it could not restore (for example, queue contents on S1).
+  what it could not restore (for example, a queue that was replaced since).
 
 ### 12.6 Favorites and library search as play sources
 
@@ -612,15 +620,17 @@ together, and the command says so instead of failing quietly.
 
 [`b-announce`, `d-announce-surface`] Snapshot, set a policy-capped announcement
 volume, play a clip, wait for STOPPED via GENA, restore. Speech comes from macOS
-`say` (WAV/AIFF); chimes are generated, not copied. Clips are served from the
+`say` (WAV); chimes are generated, not copied. Clips are served from the
 GENA sink listener, which the speakers can already reach on the LAN; control
 endpoints never move onto that listener.
 
 ### 12.13 Live events and a web remote
 
-[`d-events-sse`, `d-web-remote`] `GET /events` streams zone-state deltas, DJ
-picks, and action-log entries as server-sent events, with a long-poll fallback
-if fastapi_rust can't stream a body. A single static page served by the daemon
+[`d-events-sse`, `d-web-remote`, `d-http-hardening`] `GET /events` streams zone-state deltas, DJ
+picks, and action-log entries as server-sent events (fastapi_rust has SSE
+support). The API is unauthenticated, so before any browser page uses it
+(`d-http-hardening`) every listener checks Host and Origin and accepts writes
+only as JSON. A single static page served by the daemon
 (rooms, now playing, volume, play/pause/skip, DJ mood, scenes) is a phone remote
 over the tailnet, with no app store and no account.
 
@@ -628,14 +638,15 @@ over the tailnet, with no app store and no account.
 
 [`b-self-healing`] Everything is keyed by player UUID, never by IP. An
 unreachable player is re-resolved through SSDP or seeds and the call retried
-once; a command that runs into a coordinator change refreshes topology and
-retries once against the new coordinator; a reboot (lost subscription SID)
+once; a command that fails with UPnP 800 refreshes topology and retries once,
+but only if the coordinator actually moved (800 also means a wrong Spotify
+DIDL); a reboot (lost subscription SID)
 triggers resubscription. Each path is tested with sim faults.
 
 ### 12.15 Room aliases and smart targets
 
 [`b-room-aliases`, `d-house-verbs`] `aliases.toml` (`kitchen` → "Kitchen",
-`downstairs` → Kitchen + Living Room), "did you mean" on near misses, reserved
+`downstairs` → Kitchen + Living Room), "did you mean" suggestions on near misses (suggestions only; a typo never acts on a room), reserved
 `all`/`everywhere` per household, and a per-client default room.
 
 ### Milestone placement
@@ -652,7 +663,8 @@ triggers resubscription. Each path is tested with sim faults.
 - An MQTT / Home Assistant bridge: Home Assistant already integrates Sonos.
 - Driving the players' own AlarmClock service: it can't start the DJ or a
   scene, and S1 and S2 differ.
-- Recording live SOAP traffic to generate fixtures: too close to network
-  capture, which is out of scope for the swarm. Fixtures stay hand-scrubbed.
+- An always-on record-and-scrub mode in the daemon for generating fixtures:
+  fixtures come from deliberate requests reviewed by hand (§8), and a recorder
+  running in the background is too likely to commit site data.
 - Natural-language parsing in the daemon: agents do this better. The daemon
   takes structured arguments.
