@@ -107,6 +107,18 @@ pub enum Aspect {
     Transport,
 }
 
+impl Aspect {
+    /// Every aspect, in restore order.
+    pub const ALL: [Self; 6] = [
+        Self::Group,
+        Self::Source,
+        Self::Position,
+        Self::Volume,
+        Self::Mute,
+        Self::Transport,
+    ];
+}
+
 /// What a restore put back, and what it could not, with why.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RestoreReport {
@@ -373,13 +385,27 @@ pub fn restore<T: Transport + ?Sized>(
     households: &[HouseholdState],
     snap: &ZoneSnapshot,
 ) -> Result<RestoreReport, CoreError> {
+    restore_only(t, households, snap, &Aspect::ALL)
+}
+
+/// [`restore`] just the `aspects` of `snap`, leaving the rest as it is now:
+/// say, a zone whose music played on needs only its grouping and levels
+/// back.
+pub fn restore_only<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    snap: &ZoneSnapshot,
+    aspects: &[Aspect],
+) -> Result<RestoreReport, CoreError> {
     let Some(household) = households
         .iter()
         .find(|h| h.player(&snap.coordinator).is_some())
     else {
+        let mut skipped = plan_restore(snap, &HouseholdState::default(), None).skipped;
+        skipped.retain(|(a, _)| aspects.contains(a));
         return Ok(RestoreReport {
             restored: Vec::new(),
-            skipped: plan_restore(snap, &HouseholdState::default(), None).skipped,
+            skipped,
         });
     };
     let host = ip(household, &snap.coordinator)?;
@@ -388,9 +414,10 @@ pub fn restore<T: Transport + ?Sized>(
         _ => None,
     };
     let RestorePlan { ops, mut skipped } = plan_restore(snap, household, update_id);
+    skipped.retain(|(a, _)| aspects.contains(a));
     let mut restored: Vec<Aspect> = Vec::new();
     let mut failed: Vec<Aspect> = skipped.iter().map(|(a, _)| *a).collect();
-    for (aspect, op) in ops {
+    for (aspect, op) in ops.into_iter().filter(|(a, _)| aspects.contains(a)) {
         match run(t, household, host, &snap.coordinator, &op) {
             Ok(()) => {
                 if !restored.contains(&aspect) && !failed.contains(&aspect) {

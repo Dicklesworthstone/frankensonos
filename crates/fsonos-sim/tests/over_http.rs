@@ -478,3 +478,52 @@ fn a_slow_join_lands_later_and_delegation_hands_the_group_over() {
     assert_eq!(media.require("CurrentURI").unwrap(), radio);
     assert_eq!(fault_code(delegate()), 800, "Kitchen leads nothing now");
 }
+
+#[test]
+fn a_clip_with_a_duration_stops_at_its_end() {
+    let sim = sim();
+    let kitchen = sim.transport("Kitchen").unwrap();
+    let clip = "http://192.0.2.200:3400/media/0123456789abcdef0123456789abcdef.wav";
+    let didl = "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+                xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" \
+                xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">\
+                <item id=\"clip\" parentID=\"-1\" restricted=\"true\"><dc:title>Chime</dc:title>\
+                <upnp:class>object.item.audioItem</upnp:class>\
+                <res protocolInfo=\"http-get:*:audio/wav:*\" duration=\"0:00:03.000\">clip</res>\
+                </item></DIDL-Lite>";
+    avt(
+        &kitchen,
+        "SetAVTransportURI",
+        &[("CurrentURI", clip), ("CurrentURIMetaData", didl)],
+    )
+    .unwrap();
+    avt(&kitchen, "Play", &[("Speed", "1")]).unwrap();
+    let position = |field: &str| {
+        avt(&kitchen, "GetPositionInfo", &[])
+            .unwrap()
+            .require(field)
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(position("TrackDuration"), "0:00:03");
+    sim.clock().advance(Duration::from_secs(2));
+    assert_eq!(transport_state(&kitchen), "PLAYING");
+    assert_eq!(position("RelTime"), "0:00:02");
+    sim.clock().advance(Duration::from_secs(2));
+    assert_eq!(transport_state(&kitchen), "STOPPED", "the clip ended");
+    assert_eq!(position("RelTime"), "0:00:00");
+
+    // A stream without a duration plays on.
+    avt(
+        &kitchen,
+        "SetAVTransportURI",
+        &[
+            ("CurrentURI", "x-rincon-mp3radio://radio.example/stream"),
+            ("CurrentURIMetaData", ""),
+        ],
+    )
+    .unwrap();
+    avt(&kitchen, "Play", &[("Speed", "1")]).unwrap();
+    sim.clock().advance(Duration::from_secs(3600));
+    assert_eq!(transport_state(&kitchen), "PLAYING");
+}

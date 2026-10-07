@@ -109,6 +109,9 @@ pub(crate) struct Transport {
     pub source: Source,
     pub uri: String,
     pub uri_metadata: String,
+    /// Length of a URI source, from its DIDL `res duration` (0: unknown,
+    /// plays forever).
+    pub uri_duration_ms: u64,
     pub queue: Vec<QueueItem>,
     /// 1-based queue position; 0 when the queue is not the source or empty.
     pub track: usize,
@@ -126,6 +129,7 @@ impl Transport {
             source: Source::Nothing,
             uri: String::new(),
             uri_metadata: String::new(),
+            uri_duration_ms: 0,
             queue: Vec::new(),
             track: 0,
             position_ms: 0,
@@ -141,7 +145,11 @@ impl Transport {
     }
 
     pub(crate) fn duration_ms(&self) -> u64 {
-        self.current().map_or(0, |q| q.duration_ms)
+        match self.source {
+            Source::Queue => self.current().map_or(0, |q| q.duration_ms),
+            Source::Uri => self.uri_duration_ms,
+            Source::Nothing => 0,
+        }
     }
 
     fn position(&self, now: u64) -> u64 {
@@ -419,6 +427,42 @@ impl State {
         Ok(Vec::new())
     }
 
+    /// `SetAVTransportURI x-rincon:<target>`: join `target`'s group, now or,
+    /// with a join lag, later (see [`Self::settle_joins`]).
+    fn join_uri(&mut self, p: usize, target: &str) -> Result<Out, Fault> {
+        let t = self.find(target).ok_or(SONOS_FAILURE)?;
+        let lag = self.players[p].faults.join_lag;
+        if lag.is_zero() {
+            self.join(p, t)?;
+        } else {
+            self.players[p].faults.pending_join = Some((t, std::time::Instant::now() + lag));
+        }
+        Ok(Vec::new())
+    }
+
+    /// A URI source that has played to its end stops, as a clip does on a
+    /// real player (STOPPED, back at the start).
+    pub(crate) fn settle_tracks(&mut self) {
+        let now = self.clock.now_ms();
+        let mut changed = false;
+        for player in &mut self.players {
+            let t = &mut player.transport;
+            let length = t.duration_ms();
+            if t.source == Source::Uri
+                && t.state == TransportState::Playing
+                && length > 0
+                && t.position(now) >= length
+            {
+                t.set_state(TransportState::Stopped, now);
+                t.position_ms = 0;
+                changed = true;
+            }
+        }
+        if changed {
+            self.flush_events();
+        }
+    }
+
     /// Carry out the lagging joins whose time has come.
     pub(crate) fn settle_joins(&mut self, now: std::time::Instant) {
         let due: Vec<(usize, usize)> = (0..self.players.len())
@@ -522,16 +566,7 @@ impl State {
                 let uri = args.get("CurrentURI")?.to_string();
                 let metadata = args.get("CurrentURIMetaData")?.to_string();
                 if let Some(target) = uri.strip_prefix("x-rincon:") {
-                    let t = self.find(target).ok_or(SONOS_FAILURE)?;
-                    let lag = self.players[p].faults.join_lag;
-                    if lag.is_zero() {
-                        self.join(p, t)?;
-                    } else {
-                        // Answered now, carried out later by settle_joins.
-                        self.players[p].faults.pending_join =
-                            Some((t, std::time::Instant::now() + lag));
-                    }
-                    return Ok(Vec::new());
+                    return self.join_uri(p, target);
                 }
                 // Any other source makes a member leave its group first.
                 if self.players[p].coordinator != p {
@@ -544,9 +579,15 @@ impl State {
                     self.check_renderable(p, &uri, &metadata)?;
                     Source::Uri
                 };
+                let length = if source == Source::Uri {
+                    didl_duration_ms(&metadata)
+                } else {
+                    0
+                };
                 let t = &mut self.players[p].transport;
                 t.set_state(TransportState::Stopped, now);
                 t.source = source;
+                t.uri_duration_ms = length;
                 t.uri = uri;
                 t.uri_metadata = metadata;
                 t.track = usize::from(source == Source::Queue && !t.queue.is_empty());
@@ -1084,6 +1125,16 @@ fn parse_hms(s: &str) -> Option<u64> {
         parts.next()?.ok()?,
     );
     (parts.next().is_none() && m < 60 && sec < 60).then_some((h * 3600 + m * 60 + sec) * 1000)
+}
+
+/// The `res duration` of the first DIDL object in `metadata`, in ms.
+fn didl_duration_ms(metadata: &str) -> u64 {
+    parse_didl(metadata)
+        .ok()
+        .and_then(|objects| objects.into_iter().next())
+        .and_then(|o| o.res)
+        .and_then(|r| r.duration_secs())
+        .map_or(0, |secs| u64::from(secs) * 1000)
 }
 
 #[cfg(test)]

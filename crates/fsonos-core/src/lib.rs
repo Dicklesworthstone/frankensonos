@@ -17,6 +17,7 @@
 //! * [`control`] carries out a player-addressed command over a
 //!   [`fsonos_proto::Transport`].
 //! * [`actions`] logs every mutating request and undoes the last one.
+//! * [`announce`] plays announcements and chimes, then puts the music back.
 //! * [`doctor`] runs diagnostic checks and reports named failures with fixes.
 //! * [`policy`] bounds what each client may do and how loud (caps, quiet
 //!   hours, tool allowlists); [`clock`] makes its time testable.
@@ -26,6 +27,7 @@
 //! the rest of the daemon be written and tested against an in-memory store.
 
 pub mod actions;
+pub mod announce;
 pub mod clock;
 pub mod control;
 pub mod doctor;

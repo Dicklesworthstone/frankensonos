@@ -304,6 +304,19 @@ impl Policy {
             .unwrap_or(*client != Client::Cli)
     }
 
+    /// The highest level `client` may set `room` to at `now`: its room cap
+    /// (or the quiet-hours cap when lower), or 100 when `client` is uncapped.
+    /// For levels that are set outright, such as an announcement's; there is
+    /// no step limit here.
+    #[must_use]
+    pub fn max_volume(&self, room: &str, client: &Client, now: DateTime<FixedOffset>) -> u8 {
+        if self.is_capped(client) {
+            self.cap(room, now).0
+        } else {
+            100
+        }
+    }
+
     /// Is `now` inside quiet hours?
     #[must_use]
     pub fn quiet_hours_active(&self, now: DateTime<FixedOffset>) -> bool {
@@ -787,6 +800,17 @@ max_volume = 25
             ),
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn max_volume_is_the_room_or_quiet_hours_cap_for_capped_clients() {
+        let p = Policy::from_toml(&format!("[rooms.Bedroom]\nmax_volume = 40\n{QUIET}")).unwrap();
+        assert_eq!(p.max_volume("Bedroom", &agent(), at(NOON)), 40);
+        assert_eq!(p.max_volume("bedroom", &agent(), at(NOON)), 40);
+        assert_eq!(p.max_volume("Kitchen", &agent(), at(NOON)), 70);
+        assert_eq!(p.max_volume("Kitchen", &agent(), at("23:30")), 25);
+        assert_eq!(p.max_volume("Bedroom", &agent(), at("06:59")), 25);
+        assert_eq!(p.max_volume("Kitchen", &Client::Cli, at("23:30")), 100);
     }
 
     #[test]
