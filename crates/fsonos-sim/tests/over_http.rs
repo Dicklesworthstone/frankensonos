@@ -9,7 +9,7 @@ use fsonos_proto::didl::spotify_uri_from_renderer_uri;
 use fsonos_proto::soap::{self, AV_TRANSPORT, RENDERING_CONTROL, args_xml};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
-use fsonos_sim::{SimHandle, SimHousehold, SimTransport};
+use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec, SimTransport};
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
@@ -351,4 +351,58 @@ fn served_documents_are_synthetic() {
         }
     }
     assert!(docs.len() >= 13);
+}
+
+#[test]
+fn lan_routes_by_advertised_address_and_pairs_fold_into_one_room() {
+    let sim = SimHousehold::builder()
+        .s1([
+            SimPlayerSpec::pair("Den", SimModel::Play5Gen1),
+            SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
+        ])
+        .spawn()
+        .unwrap();
+    assert_eq!(sim.players().len(), 3);
+    assert_eq!(sim.players().iter().filter(|p| p.hidden).count(), 1);
+    let lan = sim.lan();
+    let den = sim.player("Den").unwrap();
+    assert!(!den.hidden);
+    assert_eq!(den.ip.to_string(), "192.0.2.10");
+
+    // IP-addressed client code runs unchanged: the topology names each
+    // player by its advertised address, and the LAN transport reaches it.
+    let mut state = HouseholdState::default();
+    state.apply_topology(&get_zone_group_state(&lan, den.ip).unwrap());
+    let rooms: Vec<(&str, usize)> = state
+        .rooms
+        .iter()
+        .map(|r| (r.name.as_str(), r.players.len()))
+        .collect();
+    assert_eq!(rooms, [("Den", 2), ("Kitchen", 1)]);
+    for p in &state.players {
+        let body = lan
+            .http_get(&format!("http://{}:1400/xml/device_description.xml", p.ip))
+            .unwrap();
+        assert_eq!(parse_device_description(&body).unwrap().udn, p.id);
+    }
+    let kitchen_ip = sim.player("Kitchen").unwrap().ip;
+    let r = soap::call(
+        &lan,
+        kitchen_ip,
+        &RENDERING_CONTROL,
+        "GetVolume",
+        &args_xml(&[("InstanceID", "0"), ("Channel", "Master")]),
+    )
+    .unwrap();
+    assert_eq!(r.get("CurrentVolume"), Some("20"));
+    assert!(matches!(
+        soap::call(
+            &lan,
+            "192.0.2.200".parse().unwrap(),
+            &RENDERING_CONTROL,
+            "GetVolume",
+            ""
+        ),
+        Err(ProtoError::Network { .. })
+    ));
 }

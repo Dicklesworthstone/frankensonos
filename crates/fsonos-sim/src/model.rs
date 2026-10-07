@@ -174,7 +174,13 @@ pub(crate) struct Player {
     pub room: String,
     pub model: SimModel,
     pub household: usize,
+    /// The address the player advertises (TEST-NET-1, `192.0.2.N`): in its
+    /// Location, its description, and the topology, on port 1400 like a real
+    /// player. [`crate::SimLan`] maps it to the real loopback socket.
+    pub ip: std::net::Ipv4Addr,
     pub port: u16,
+    /// For the hidden (RF) half of a stereo pair: its visible primary.
+    pub pair_primary: Option<usize>,
     /// Index of this player's group coordinator (itself when it leads).
     pub coordinator: usize,
     pub group_id: String,
@@ -196,7 +202,7 @@ impl Player {
     }
 
     pub(crate) fn location(&self) -> String {
-        format!("http://127.0.0.1:{}/xml/device_description.xml", self.port)
+        format!("http://{}:1400/xml/device_description.xml", self.ip)
     }
 }
 
@@ -226,12 +232,15 @@ impl State {
         let index = self.players.len();
         let uuid = format!("RINCON_000E58A0{:04X}01400", index + 1);
         let group_id = format!("{uuid}:{}", u8::from(model.is_renderer()));
+        let host = u8::try_from(10 + index).expect("at most 245 virtual players");
         self.players.push(Player {
             uuid,
             room: room.to_string(),
             model,
             household,
+            ip: std::net::Ipv4Addr::new(192, 0, 2, host),
             port: 0,
+            pair_primary: None,
             coordinator: index,
             group_id,
             boot_seq: 1,
@@ -240,6 +249,39 @@ impl State {
             transport: Transport::new(),
         });
         index
+    }
+
+    /// Add a stereo pair: a visible primary (LF) and its hidden secondary
+    /// (RF), one room, one group. Returns the primary.
+    pub(crate) fn add_pair(&mut self, room: &str, model: SimModel, household: usize) -> usize {
+        let primary = self.add_player(room, model, household);
+        let secondary = self.add_player(room, model, household);
+        self.players[secondary].pair_primary = Some(primary);
+        self.sync_pairs();
+        primary
+    }
+
+    /// The hidden half of `p`'s stereo pair, if `p` is a pair's primary.
+    pub(crate) fn secondary_of(&self, p: usize) -> Option<usize> {
+        self.players.iter().position(|o| o.pair_primary == Some(p))
+    }
+
+    /// Keep every pair's hidden half in its primary's group.
+    fn sync_pairs(&mut self) {
+        for i in 0..self.players.len() {
+            if let Some(primary) = self.players[i].pair_primary {
+                self.players[i].coordinator = self.players[primary].coordinator;
+                self.players[i].group_id = self.players[primary].group_id.clone();
+            }
+        }
+    }
+
+    fn require_not_secondary(&self, p: usize) -> Result<(), Fault> {
+        if self.players[p].pair_primary.is_some() {
+            Err(SONOS_FAILURE)
+        } else {
+            Ok(())
+        }
     }
 
     /// Coordinators of household `h`, in player order.
@@ -263,11 +305,21 @@ impl State {
         format!("{}:{}", self.players[coord].uuid, self.next_group)
     }
 
-    /// Take `p` out of its group into a group of its own. If it led others,
-    /// the first of them becomes their coordinator (keeping the group id).
+    /// Take `p` (and its pair's hidden half) out of its group into a group
+    /// of its own. If it led others, the first visible one becomes their
+    /// coordinator (keeping the group id).
     fn make_standalone(&mut self, p: usize) {
-        let led: Vec<usize> = self.members(p).into_iter().skip(1).collect();
-        if let Some(&heir) = led.first() {
+        let own = self.secondary_of(p);
+        let led: Vec<usize> = self
+            .members(p)
+            .into_iter()
+            .skip(1)
+            .filter(|&m| Some(m) != own)
+            .collect();
+        if let Some(&heir) = led
+            .iter()
+            .find(|&&m| self.players[m].pair_primary.is_none())
+        {
             let group_id = self.players[p].group_id.clone();
             for &m in &led {
                 self.players[m].coordinator = heir;
@@ -276,6 +328,7 @@ impl State {
         }
         self.players[p].coordinator = p;
         self.players[p].group_id = self.new_group_id(p);
+        self.sync_pairs();
     }
 
     /// Join `p` to the group that `target` belongs to.
@@ -293,6 +346,7 @@ impl State {
         self.players[p].coordinator = coord;
         let group_id = self.players[coord].group_id.clone();
         self.players[p].group_id = group_id;
+        self.sync_pairs();
         Ok(())
     }
 
@@ -355,6 +409,8 @@ impl State {
     ) -> Result<Out, Fault> {
         match action {
             "SetAVTransportURI" => {
+                // The hidden half of a pair follows its primary.
+                self.require_not_secondary(p)?;
                 let uri = args.get("CurrentURI")?.to_string();
                 let metadata = args.get("CurrentURIMetaData")?.to_string();
                 if let Some(target) = uri.strip_prefix("x-rincon:") {
@@ -539,6 +595,7 @@ impl State {
                 Ok(Vec::new())
             }
             "BecomeCoordinatorOfStandaloneGroup" => {
+                self.require_not_secondary(p)?;
                 let delegated = (self.players[p].coordinator == p)
                     .then(|| self.members(p).get(1).copied())
                     .flatten();
@@ -1234,6 +1291,61 @@ mod tests {
         assert_ne!(s.players[0].group_id, s.players[1].group_id);
         let zgs = docs::zone_group_state(&s, 0);
         assert_eq!(zgs.matches("<ZoneGroup ").count(), 3);
+    }
+
+    #[test]
+    fn stereo_pairs_move_as_one() {
+        let mut s = State::new(vec![crate::household(1)], SimClock::default());
+        let den = s.add_pair("Den", SimModel::Play5Gen1, 0);
+        let kitchen = s.add_player("Kitchen", SimModel::Play5Gen1, 0);
+        let rf = s.secondary_of(den).unwrap();
+        assert_eq!(s.members(den), [den, rf]);
+        assert_ne!(s.players[den].ip, s.players[rf].ip);
+        let zgs = docs::zone_group_state(&s, 0);
+        assert_eq!(zgs.matches("ChannelMapSet=").count(), 2);
+        assert_eq!(zgs.matches("Invisible=\"1\"").count(), 1);
+        assert!(zgs.contains("Location=\"http://192.0.2.10:1400/xml/device_description.xml\""));
+
+        let join = |s: &mut State, p, target: usize| {
+            let uri = format!("x-rincon:{}", s.players[target].uuid);
+            call(
+                s,
+                p,
+                &AV_TRANSPORT,
+                "SetAVTransportURI",
+                &[
+                    ("InstanceID", "0"),
+                    ("CurrentURI", &uri),
+                    ("CurrentURIMetaData", ""),
+                ],
+            )
+        };
+        // The hidden half refuses group verbs; the primary carries both.
+        assert_eq!(join(&mut s, rf, kitchen), Err(SONOS_FAILURE));
+        assert_eq!(
+            call(
+                &mut s,
+                rf,
+                &AV_TRANSPORT,
+                "BecomeCoordinatorOfStandaloneGroup",
+                &[("InstanceID", "0")]
+            ),
+            Err(SONOS_FAILURE)
+        );
+        join(&mut s, den, kitchen).unwrap();
+        assert_eq!(s.members(kitchen), [kitchen, den, rf]);
+        assert_eq!(s.players[rf].group_id, s.players[kitchen].group_id);
+        // Kitchen leaving hands the group to the pair's primary, never its hidden half.
+        call(
+            &mut s,
+            kitchen,
+            &AV_TRANSPORT,
+            "BecomeCoordinatorOfStandaloneGroup",
+            &[("InstanceID", "0")],
+        )
+        .unwrap();
+        assert_eq!(s.members(den), [den, rf]);
+        assert_eq!(s.members(kitchen), [kitchen]);
     }
 
     #[test]

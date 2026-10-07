@@ -88,11 +88,14 @@ impl SimModel {
     }
 }
 
-/// One player to simulate.
+/// One room to simulate: a single player, or a stereo pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimPlayerSpec {
     pub room: String,
     pub model: SimModel,
+    /// Two players bonded as one room: a visible primary (LF) and a hidden
+    /// secondary (RF) that follows it through every group change.
+    pub stereo_pair: bool,
 }
 
 impl SimPlayerSpec {
@@ -101,6 +104,16 @@ impl SimPlayerSpec {
         Self {
             room: room.to_string(),
             model,
+            stereo_pair: false,
+        }
+    }
+
+    /// A stereo pair of `model` in `room`.
+    #[must_use]
+    pub fn pair(room: &str, model: SimModel) -> Self {
+        Self {
+            stereo_pair: true,
+            ..Self::new(room, model)
         }
     }
 }
@@ -151,6 +164,12 @@ pub struct SimPlayerInfo {
     /// 1 = S1, 2 = S2.
     pub generation: u8,
     pub household: String,
+    /// The address the player advertises (`192.0.2.N`, port 1400); reach it
+    /// through [`SimHandle::lan`].
+    pub ip: IpAddr,
+    /// Whether it is the hidden half of a stereo pair.
+    pub hidden: bool,
+    /// The real loopback socket it listens on.
     pub addr: SocketAddr,
     /// `http://127.0.0.1:<port>`.
     pub base_url: String,
@@ -218,7 +237,11 @@ impl SimBuilder {
         );
         for (h, (_, players)) in self.households.iter().enumerate() {
             for spec in players {
-                state.add_player(&spec.room, spec.model, h);
+                if spec.stereo_pair {
+                    state.add_pair(&spec.room, spec.model, h);
+                } else {
+                    state.add_player(&spec.room, spec.model, h);
+                }
             }
         }
         let state = Arc::new(Mutex::new(state));
@@ -245,6 +268,8 @@ impl SimBuilder {
                 model: p.model,
                 generation: s.households[p.household].sw_gen,
                 household: s.households[p.household].id.clone(),
+                ip: IpAddr::V4(p.ip),
+                hidden: p.pair_primary.is_some(),
                 addr,
                 base_url: format!("http://{addr}"),
             });
@@ -358,6 +383,19 @@ impl SimHandle {
         self.players
             .iter()
             .find(|p| p.room.eq_ignore_ascii_case(room))
+    }
+
+    /// A [`Transport`] for every player, routed by the address each one
+    /// advertises, the way the real LAN transport routes by IP.
+    #[must_use]
+    pub fn lan(&self) -> SimLan {
+        SimLan {
+            routes: self
+                .players
+                .iter()
+                .map(|p| (p.ip, p.base_url.clone()))
+                .collect(),
+        }
     }
 
     /// A [`Transport`] that reaches the player in `room`.
@@ -491,5 +529,48 @@ impl Transport for SimTransport {
             .and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..]))
             .unwrap_or(url);
         self.request(path, None, None)
+    }
+}
+
+/// A [`Transport`] for all virtual players: requests go to whichever player
+/// advertises the `host` (or URL host) asked for. Lets IP-addressed client
+/// code (topology folding, control orchestration) run unchanged against the
+/// simulator. Call it from synchronous code.
+#[derive(Debug, Clone)]
+pub struct SimLan {
+    routes: Vec<(IpAddr, String)>,
+}
+
+impl SimLan {
+    fn route(&self, host: IpAddr) -> Result<SimTransport, ProtoError> {
+        self.routes
+            .iter()
+            .find(|(ip, _)| *ip == host)
+            .map(|(_, base_url)| SimTransport {
+                base_url: base_url.clone(),
+            })
+            .ok_or_else(|| ProtoError::Network {
+                target: host.to_string(),
+                detail: "no virtual player advertises this address".into(),
+            })
+    }
+}
+
+impl Transport for SimLan {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        control_path: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        self.route(host)?
+            .soap_post(host, control_path, soap_action, body)
+    }
+
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        let host = fsonos_proto::topology::host_of_location(url)
+            .ok_or_else(|| ProtoError::Malformed(format!("no host in {url}")))?;
+        self.route(host)?.http_get(url)
     }
 }

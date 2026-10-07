@@ -111,7 +111,7 @@ pub(crate) fn device_description(p: &Player, sw_gen: u8) -> String {
     );
     let _ = write!(
         out,
-        "<friendlyName>127.0.0.1 - {name}</friendlyName><manufacturer>Sonos, Inc.</manufacturer>\
+        "<friendlyName>{ip} - {name}</friendlyName><manufacturer>Sonos, Inc.</manufacturer>\
          <manufacturerURL>http://www.sonos.com</manufacturerURL><modelNumber>{number}</modelNumber>\
          <modelDescription>{name}</modelDescription><modelName>{name}</modelName>\
          <modelURL>http://www.sonos.com/products/zoneplayers/{number}</modelURL>\
@@ -119,6 +119,7 @@ pub(crate) fn device_description(p: &Player, sw_gen: u8) -> String {
          <hardwareVersion>1.0.0.0-1.0</hardwareVersion><serialNum>{serial}:1</serialNum>\
          <MACAddress>{mac}</MACAddress><UDN>uuid:{uuid}</UDN><displayVersion>{display}</displayVersion>\
          <roomName>{room}</roomName><displayName>{short}</displayName>",
+        ip = p.ip,
         name = m.model_name(),
         number = m.model_number(),
         version = software_version(sw_gen),
@@ -177,19 +178,33 @@ pub(crate) fn zone_group_state(state: &State, h: usize) -> String {
         );
         for &m in &state.members(coord) {
             let p = &state.players[m];
+            // A stereo pair: both halves carry the channel map; the RF half
+            // is hidden (the S1 fixture's shape).
+            let pair = p
+                .pair_primary
+                .map(|primary| (primary, m))
+                .or_else(|| state.secondary_of(m).map(|secondary| (m, secondary)));
+            let mut extra = String::new();
+            if !p.model.is_renderer() {
+                extra.push_str(" Invisible=\"1\" IsZoneBridge=\"1\"");
+            } else if p.pair_primary.is_some() {
+                extra.push_str(" Invisible=\"1\"");
+            }
+            if let Some((lf, rf)) = pair {
+                let _ = write!(
+                    extra,
+                    " ChannelMapSet=\"{}:LF,LF;{}:RF,RF\"",
+                    state.players[lf].uuid, state.players[rf].uuid
+                );
+            }
             let _ = write!(
                 out,
                 "<ZoneGroupMember UUID=\"{uuid}\" Location=\"{location}\" ZoneName=\"{room}\" \
-                 Icon=\"\" Configuration=\"1\"{bridge} SoftwareVersion=\"{version}\" SWGen=\"{sw_gen}\" \
+                 Icon=\"\" Configuration=\"1\"{extra} SoftwareVersion=\"{version}\" SWGen=\"{sw_gen}\" \
                  BootSeq=\"{boot}\" IdleState=\"1\" MoreInfo=\"\"/>",
                 uuid = p.uuid,
                 location = p.location(),
                 room = xml_escape(&p.room),
-                bridge = if p.model.is_renderer() {
-                    ""
-                } else {
-                    " Invisible=\"1\" IsZoneBridge=\"1\""
-                },
                 version = software_version(sw_gen),
                 boot = p.boot_seq,
             );
