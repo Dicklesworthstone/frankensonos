@@ -1267,6 +1267,7 @@ dependencies = [
  "fsonos-core",
  "fsonos-mcp",
  "fsonos-proto",
+ "fsonos-sim",
  "fsonos-spotify",
  "fsonos-tailscale",
  "fsonos-types",

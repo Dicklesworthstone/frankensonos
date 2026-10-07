@@ -28,5 +28,9 @@ serde_json = { workspace = true }
 # FRANKEN (FND-DEPS): the one asupersync runtime every surface runs under.
 asupersync = { workspace = true }
 
+[dev-dependencies]
+# The e2e harness (tests/e2e) drives the binary against virtual players.
+fsonos-sim = { workspace = true }
+
 [lints]
 workspace = true
