@@ -12,14 +12,17 @@
 //! scanning this host's interfaces for tailnet addresses. Parsing
 //! ([`parse_status`]) and the interface fallback ([`from_addresses`]) are pure.
 //! [`reach`] and [`describe`] turn the status into the URLs a listener is
-//! reachable at from the tailnet.
+//! reachable at from the tailnet; [`WhoIs`] says who is on the other end of a
+//! tailnet connection.
 
 pub mod connect;
 mod exec;
 mod status;
+pub mod whois;
 
 pub use connect::{Listener, Reach, describe, reach};
 pub use status::parse_status;
+pub use whois::{Identity, WhoIs, parse_whois};
 
 use serde::Serialize;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -163,18 +166,22 @@ impl Probe {
     }
 
     fn query_cli(&self) -> Result<Tailnet, Unavailable> {
+        let stdout = self.run_cli(&["status", "--json"])?;
+        parse_status(&stdout).map_err(|e| Unavailable::Unparseable {
+            detail: e.to_string(),
+        })
+    }
+
+    /// Run the first CLI candidate that exists with `args`; its stdout.
+    pub(crate) fn run_cli(&self, args: &[&str]) -> Result<Vec<u8>, Unavailable> {
         for program in &self.cli_candidates {
-            match exec::run(program, &["status", "--json"], self.timeout) {
+            match exec::run(program, args, self.timeout) {
                 Err(exec::ExecError::NotFound) => {}
                 Err(exec::ExecError::TimedOut) => return Err(Unavailable::TimedOut),
                 Err(exec::ExecError::Failed { detail }) => {
                     return Err(Unavailable::CliFailed { detail });
                 }
-                Ok(stdout) => {
-                    return parse_status(&stdout).map_err(|e| Unavailable::Unparseable {
-                        detail: e.to_string(),
-                    });
-                }
+                Ok(stdout) => return Ok(stdout),
             }
         }
         Err(Unavailable::NotInstalled)
