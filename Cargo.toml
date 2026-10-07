@@ -42,6 +42,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # Read-only XML DOM (pure Rust, forbid(unsafe), zero deps) for SOAP bodies,
 # ZoneGroupState, DIDL-Lite and device descriptions.
 roxmltree = "0.21"
+# Hand-edited data-dir config (aliases.toml, policy.toml, moods.toml).
+toml = "1"
 tempfile = "3"
 # getifaddrs: the interface-scan fallback for Tailscale detection.
 if-addrs = "0.15"

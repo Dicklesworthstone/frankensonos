@@ -1270,6 +1270,7 @@ dependencies = [
  "fsonos-spotify",
  "fsonos-tailscale",
  "fsonos-types",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -1288,6 +1289,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
