@@ -13,6 +13,15 @@ household ID.
   to pick a household. On this LAN a single scan returned only one household
   per attempt (observed 2026-10-06); scan repeatedly, or fall back to direct
   seeds: GET `http://<IP>:1400/xml/device_description.xml` on candidate IPs.
+- mDNS (`_sonos._tcp.local`) is a second, independent discovery channel the
+  players run themselves (anacapa reconciles SSDP vs mDNS sightings).
+  Verified live 2026-10-07: S2 players advertise
+  `RINCON_<UUID>01400@<Room>` with TXT `uuid=`, `hhid=Sonos_<HOUSEHOLD>`,
+  `mhhid=` (same with session suffix), `bootseq=` (reboot detection),
+  `location=` (description URL), `sslport=1443`, `wss=/websocket/api`;
+  S1 players advertise `Sonos-<MAC>` with a minimal TXT
+  (`info=`, `vers=1`, `protovers=`) — no household field, get it from the
+  description instead. Bridges do not advertise.
 - All control is HTTP on TCP **1400**. Device description:
   `GET /xml/device_description.xml`. Status pages: `GET /status`,
   `/status/zp`, `/status/VERSION` (build string), `/status/ifconfig`,
@@ -411,3 +420,47 @@ Prerequisites for a full proof-of-concept, both currently missing:
 
 Until then the substrate test stands as the PoC boundary: HTTP radio renders
 natively on S1 and S2, so the bridge is ready when a source is plugged in.
+
+## 12. Native Tailscale on the speakers — feasibility study (2026-10-07)
+
+Question (owner): could the speakers themselves join the tailnet, instead of
+the daemon fronting them?
+
+Device classes from the firmware work (§9): Play:5 Gen1 (S1-era MIPS,
+frozen firmware, encrypted payloads), Play:1 (MIPS32 big-endian, glibc,
+~128 MB class RAM), One Gen1 (Amlogic A113x ARM, much more capable). Stock
+firmware on all of them has **no owner code-execution channel**: no SSH, no
+telnet, no debug console on :1400. The only vendor path for new code is a
+firmware image through `BeginSoftwareUpdate`.
+
+What native Tailscale would therefore require:
+
+1. **A custom, signed firmware image.** Images are signature-checked
+   (device-family keys in OTP/eFUSE). Building a valid image means Sonos's
+   keys (not available) or exploiting a signature weakness (NCC Group
+   documented one header malleability issue on one model — that is defeating
+   the protection, fragile across releases, and out of this project's scope).
+2. **Binary + resource fit.** Tailscale does ship `linux/mips` and
+   `linux/arm64` builds, so the Play:1/One CPU families are covered in
+   principle. The binding constraints are elsewhere: tailscaled's ~30-60 MB
+   RSS against a ~128 MB device already running anacapa; `/dev/net/tun`
+   availability on a 2.6.32-era kernel (userspace-networking mode avoids TUN
+   but then inbound :1400 needs an on-box userspace TCP proxy — more moving
+   parts on the weakest hardware in the system).
+3. **Persistence across updates.** Sonos updates replace the whole image;
+   any injected payload must be re-injected every update, forever. That
+   recurring maintenance is exactly the reliability tax the owner is trying
+   to escape.
+
+**Verdict: native on-speaker Tailscale is technically imaginable only via
+custom signed firmware — brick risk on hardware the owner relies on,
+per-update re-fighting, and it would make the system *less* robust, not
+more.** The daemon-fronted model (one supervised host fronts all speakers on
+the tailnet; speakers stay stock) dominates on every axis: zero device risk,
+works for the frozen S1 line forever, one point of maintenance. The
+reliability budget belongs in the controller (see `docs/ROBUSTNESS.md`).
+One firmware-flavored idea *is* worth keeping: the
+`AvailableSoftwareUpdate` oracle (§7/§9) lets the daemon notice when Sonos
+changes firmware under us, so an upstream change never silently breaks a
+learned assumption.
+
