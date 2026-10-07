@@ -457,37 +457,68 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 // ── Library endpoints ──────────────────────────────────────────────────────
 
-/// A page of the owner's saved albums, each embedding its first 50 tracks.
-/// `market=from_token` makes Spotify relink tracks and report `is_playable`.
-#[must_use]
-pub fn saved_albums_url(offset: u32) -> String {
-    format!("{API_BASE}/me/albums?limit={PAGE_LIMIT}&offset={offset}&market=from_token")
+/// Where requests go: Spotify's hosts by default (tests point them at a
+/// loopback server). The bearer token is only ever sent under `api`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoints {
+    /// The OAuth token endpoint.
+    pub token: String,
+    /// The Web API base, without a trailing slash.
+    pub api: String,
 }
 
-/// A page of the owner's liked tracks.
-#[must_use]
-pub fn saved_tracks_url(offset: u32) -> String {
-    format!("{API_BASE}/me/tracks?limit={PAGE_LIMIT}&offset={offset}&market=from_token")
+impl Default for Endpoints {
+    fn default() -> Self {
+        Self {
+            token: TOKEN_URL.into(),
+            api: API_BASE.into(),
+        }
+    }
 }
 
-/// A page of one album's tracks, for albums longer than their embedded page.
-#[must_use]
-pub fn album_tracks_url(album_id: &str, offset: u32) -> String {
-    format!(
-        "{API_BASE}/albums/{}/tracks?limit={PAGE_LIMIT}&offset={offset}&market=from_token",
-        percent_encode(album_id)
-    )
+impl Endpoints {
+    /// A page of the owner's saved albums, each embedding its first 50
+    /// tracks. `market=from_token` makes Spotify relink tracks and report
+    /// `is_playable`.
+    #[must_use]
+    pub fn saved_albums(&self, offset: u32) -> String {
+        format!(
+            "{}/me/albums?limit={PAGE_LIMIT}&offset={offset}&market=from_token",
+            self.api
+        )
+    }
+
+    /// A page of the owner's liked tracks.
+    #[must_use]
+    pub fn saved_tracks(&self, offset: u32) -> String {
+        format!(
+            "{}/me/tracks?limit={PAGE_LIMIT}&offset={offset}&market=from_token",
+            self.api
+        )
+    }
+
+    /// A page of one album's tracks, for albums longer than their embedded
+    /// page.
+    #[must_use]
+    pub fn album_tracks(&self, album_id: &str, offset: u32) -> String {
+        format!(
+            "{}/albums/{}/tracks?limit={PAGE_LIMIT}&offset={offset}&market=from_token",
+            self.api,
+            percent_encode(album_id)
+        )
+    }
+
+    /// Whether `url` (e.g. a page's `next`) is under the Web API base — the
+    /// bearer token is only ever sent there.
+    #[must_use]
+    pub fn is_api_url(&self, url: &str) -> bool {
+        url.strip_prefix(self.api.as_str())
+            .is_some_and(|rest| rest.starts_with('/'))
+    }
 }
 
-/// Whether `url` (e.g. a page's `next`) is a Web API URL — the bearer token
-/// is only ever sent there.
-#[must_use]
-pub fn is_api_url(url: &str) -> bool {
-    url.strip_prefix(API_BASE)
-        .is_some_and(|rest| rest.starts_with('/'))
-}
-
-/// A Web API paging object. Follow `next` (after [`is_api_url`]) until `None`.
+/// A Web API paging object. Follow `next` (after [`Endpoints::is_api_url`])
+/// until `None`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Paging<T> {
     pub items: Vec<T>,
@@ -628,7 +659,7 @@ impl SavedAlbum {
 
 impl Album {
     /// The embedded first page of tracks as library items. When
-    /// `tracks.next` is set, page [`album_tracks_url`] and convert the rest
+    /// `tracks.next` is set, page [`Endpoints::album_tracks`] and convert the rest
     /// with [`Self::library_item`].
     #[must_use]
     pub fn library_items(&self) -> Vec<LibraryItem> {
@@ -1244,23 +1275,33 @@ mod tests {
 
     #[test]
     fn endpoint_urls() {
+        let spotify = Endpoints::default();
         assert_eq!(
-            saved_albums_url(100),
+            spotify.saved_albums(100),
             "https://api.spotify.com/v1/me/albums?limit=50&offset=100&market=from_token"
         );
         assert_eq!(
-            saved_tracks_url(0),
+            spotify.saved_tracks(0),
             "https://api.spotify.com/v1/me/tracks?limit=50&offset=0&market=from_token"
         );
         assert_eq!(
-            album_tracks_url("FakeAlbum0000000000002", 50),
+            spotify.album_tracks("FakeAlbum0000000000002", 50),
             "https://api.spotify.com/v1/albums/FakeAlbum0000000000002/tracks?limit=50&offset=50&market=from_token"
         );
-        assert!(is_api_url(
-            "https://api.spotify.com/v1/me/albums?offset=50&limit=50"
-        ));
-        assert!(!is_api_url("https://api.spotify.com/v1.evil.example/me"));
-        assert!(!is_api_url("https://evil.example/v1/me/albums"));
+        assert!(spotify.is_api_url("https://api.spotify.com/v1/me/albums?offset=50&limit=50"));
+        assert!(!spotify.is_api_url("https://api.spotify.com/v1.evil.example/me"));
+        assert!(!spotify.is_api_url("https://evil.example/v1/me/albums"));
+
+        let local = Endpoints {
+            token: "http://127.0.0.1:9/api/token".into(),
+            api: "http://127.0.0.1:9/v1".into(),
+        };
+        assert_eq!(
+            local.saved_tracks(50),
+            "http://127.0.0.1:9/v1/me/tracks?limit=50&offset=50&market=from_token"
+        );
+        assert!(local.is_api_url("http://127.0.0.1:9/v1/me/tracks"));
+        assert!(!local.is_api_url("https://api.spotify.com/v1/me/tracks"));
     }
 
     #[test]
@@ -1269,7 +1310,11 @@ mod tests {
             Paging::<SavedAlbum>::parse(include_bytes!("../tests/fixtures/saved_albums_page.json"))
                 .unwrap();
         assert_eq!((page.offset, page.limit, page.total), (0, 50, 51));
-        assert_eq!(page.next.as_deref().map(is_api_url), Some(true));
+        let spotify = Endpoints::default();
+        assert_eq!(
+            page.next.as_deref().map(|u| spotify.is_api_url(u)),
+            Some(true)
+        );
         assert_eq!(page.items.len(), 2);
 
         // Classic shape: label, popularity, external ids present (and ignored).
@@ -1293,7 +1338,10 @@ mod tests {
         let long = &page.items[1].album;
         assert!(long.label.is_none());
         let tracks = long.tracks.as_ref().unwrap();
-        assert_eq!(tracks.next.as_deref().map(is_api_url), Some(true));
+        assert_eq!(
+            tracks.next.as_deref().map(|u| spotify.is_api_url(u)),
+            Some(true)
+        );
         assert_eq!(long.library_items().len(), 1);
     }
 

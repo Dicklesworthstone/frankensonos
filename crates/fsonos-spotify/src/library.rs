@@ -13,10 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::SpotifyError;
 use crate::classical::normalize;
-use crate::client::{
-    Album, Paging, SavedAlbum, SavedTrack, SimplifiedTrack, is_api_url, saved_albums_url,
-    saved_tracks_url,
-};
+use crate::client::{Album, Endpoints, Paging, SavedAlbum, SavedTrack, SimplifiedTrack};
 
 /// How a track entered the owner's library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -163,6 +160,7 @@ pub const ARTIST_SEPARATOR: &str = "; ";
 /// links that point at the Web API (and never the same one twice).
 #[derive(Debug)]
 pub struct LibraryRead {
+    endpoints: Endpoints,
     pending: VecDeque<Fetch>,
     requested: HashSet<String>,
     items: Vec<LibraryItem>,
@@ -186,22 +184,24 @@ impl Fetch {
 }
 
 impl Default for LibraryRead {
+    /// A read against Spotify's own Web API.
     fn default() -> Self {
-        Self::new()
+        Self::new(&Endpoints::default())
     }
 }
 
 impl LibraryRead {
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(endpoints: &Endpoints) -> Self {
         let mut read = Self {
+            endpoints: endpoints.clone(),
             pending: VecDeque::new(),
             requested: HashSet::new(),
             items: Vec::new(),
             pages: 0,
         };
-        read.queue(Fetch::SavedAlbums(saved_albums_url(0)));
-        read.queue(Fetch::SavedTracks(saved_tracks_url(0)));
+        read.queue(Fetch::SavedAlbums(endpoints.saved_albums(0)));
+        read.queue(Fetch::SavedTracks(endpoints.saved_tracks(0)));
         read
     }
 
@@ -270,7 +270,7 @@ impl LibraryRead {
         let Some(url) = next else {
             return Ok(());
         };
-        if !is_api_url(&url) {
+        if !self.endpoints.is_api_url(&url) {
             return Err(SpotifyError::Decode(format!(
                 "refusing to follow a paging link off the Web API: {url}"
             )));
@@ -372,10 +372,10 @@ mod tests {
         let chopin_rest = chopin_rest_page(None);
         let body = |url: &str| -> &[u8] {
             match url {
-                u if u == saved_albums_url(0) => {
+                u if u == Endpoints::default().saved_albums(0) => {
                     include_bytes!("../tests/fixtures/saved_albums_page.json")
                 }
-                u if u == saved_tracks_url(0) => {
+                u if u == Endpoints::default().saved_tracks(0) => {
                     include_bytes!("../tests/fixtures/saved_tracks_page.json")
                 }
                 ALBUMS_PAGE_2 => albums_last.as_bytes(),
@@ -384,7 +384,7 @@ mod tests {
             }
         };
 
-        let mut read = LibraryRead::new();
+        let mut read = LibraryRead::default();
         let mut fetched = Vec::new();
         while let Some(url) = read.next_url().map(str::to_owned) {
             read.ingest(body(&url)).unwrap();
@@ -423,12 +423,12 @@ mod tests {
 
     #[test]
     fn library_read_refuses_foreign_and_looping_links() {
-        let mut read = LibraryRead::new();
+        let mut read = LibraryRead::default();
         let foreign = r#"{"items": [], "next": "https://evil.example/v1/me/albums?offset=50"}"#;
         let err = read.ingest(foreign.as_bytes()).unwrap_err().to_string();
         assert!(err.contains("off the Web API"), "{err}");
 
-        let mut read = LibraryRead::new();
+        let mut read = LibraryRead::default();
         read.ingest(include_bytes!("../tests/fixtures/saved_albums_page.json"))
             .unwrap();
         read.ingest(include_bytes!("../tests/fixtures/saved_tracks_page.json"))
