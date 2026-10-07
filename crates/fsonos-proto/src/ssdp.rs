@@ -24,7 +24,7 @@ pub fn m_search(mx_secs: u8) -> String {
 }
 
 /// A discovered device's advertised location (the `LOCATION:` header: the URL
-/// of its device description XML, e.g. `http://192.168.4.202:1400/xml/device_description.xml`).
+/// of its device description XML, e.g. `http://192.0.2.10:1400/xml/device_description.xml`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Advert {
     pub location: String,
@@ -39,8 +39,11 @@ pub fn parse_response(bytes: &[u8]) -> Option<Advert> {
     let mut location = None;
     let mut st = None;
     let mut usn = None;
+    // The status line (`HTTP/1.1 200 OK`) carries no colon; skip such lines.
     for line in text.lines() {
-        let (k, v) = line.split_once(':')?;
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
         match k.trim().to_ascii_uppercase().as_str() {
             "LOCATION" => location = Some(v.trim().to_string()),
             "ST" => st = Some(v.trim().to_string()),
@@ -68,11 +71,11 @@ mod tests {
 
     #[test]
     fn parses_location() {
-        let resp = b"HTTP/1.1 200 OK\r\nLOCATION: http://192.168.4.202:1400/xml/device_description.xml\r\nST: urn:schemas-upnp-org:device:ZonePlayer:1\r\n\r\n";
+        let resp = b"HTTP/1.1 200 OK\r\nLOCATION: http://192.0.2.10:1400/xml/device_description.xml\r\nST: urn:schemas-upnp-org:device:ZonePlayer:1\r\n\r\n";
         let a = parse_response(resp).unwrap();
         assert_eq!(
             a.location,
-            "http://192.168.4.202:1400/xml/device_description.xml"
+            "http://192.0.2.10:1400/xml/device_description.xml"
         );
     }
 }

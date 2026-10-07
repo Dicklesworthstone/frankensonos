@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn builds_subscribe_headers() {
-        let h = subscribe_headers("http://192.168.4.165:3400/cb", 300);
+        let h = subscribe_headers("http://192.0.2.1:3400/cb", 300);
         assert!(h.iter().any(|(k, v)| k == "CALLBACK" && v.contains("3400")));
     }
 
