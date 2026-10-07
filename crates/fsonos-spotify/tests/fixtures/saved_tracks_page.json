@@ -1,0 +1,80 @@
+{
+  "href": "https://api.spotify.com/v1/me/tracks?offset=0&limit=50&market=from_token",
+  "limit": 50,
+  "next": null,
+  "offset": 0,
+  "previous": null,
+  "total": 4,
+  "items": [
+    {
+      "added_at": "2025-11-20T22:10:00Z",
+      "track": {
+        "album": {
+          "album_type": "album",
+          "artists": [
+            { "id": "FakeArtist000000000004", "name": "Claude Debussy", "type": "artist", "uri": "spotify:artist:FakeArtist000000000004" },
+            { "id": "FakeArtist000000000005", "name": "Test Pianist Two", "type": "artist", "uri": "spotify:artist:FakeArtist000000000005" }
+          ],
+          "id": "FakeAlbum0000000000003",
+          "name": "Debussy: Préludes & Suite bergamasque",
+          "release_date": "2010-02-01",
+          "release_date_precision": "day",
+          "total_tracks": 28,
+          "type": "album",
+          "uri": "spotify:album:FakeAlbum0000000000003"
+        },
+        "artists": [
+          { "id": "FakeArtist000000000004", "name": "Claude Debussy", "type": "artist", "uri": "spotify:artist:FakeArtist000000000004" },
+          { "id": "FakeArtist000000000005", "name": "Test Pianist Two", "type": "artist", "uri": "spotify:artist:FakeArtist000000000005" }
+        ],
+        "disc_number": 1,
+        "duration_ms": 301000,
+        "explicit": false,
+        "id": "FakeTrack0000000000006",
+        "is_local": false,
+        "is_playable": true,
+        "name": "Suite bergamasque, L. 75: III. Clair de lune",
+        "track_number": 3,
+        "type": "track",
+        "uri": "spotify:track:FakeTrack0000000000006"
+      }
+    },
+    {
+      "added_at": "2025-11-21T08:00:00Z",
+      "track": {
+        "album": { "album_type": null, "artists": [], "id": null, "name": "Home Recordings", "type": "album", "uri": null },
+        "artists": [{ "id": null, "name": "Owner", "type": "artist", "uri": null }],
+        "disc_number": 0,
+        "duration_ms": 180000,
+        "explicit": false,
+        "id": null,
+        "is_local": true,
+        "name": "Practice Take",
+        "track_number": 0,
+        "type": "track",
+        "uri": "spotify:local:Owner:Home+Recordings:Practice+Take:180"
+      }
+    },
+    {
+      "added_at": "2025-12-01T12:00:00Z",
+      "track": {
+        "album": { "album_type": "album", "artists": [], "id": "FakeAlbum0000000000004", "name": "Region Locked", "type": "album", "uri": "spotify:album:FakeAlbum0000000000004" },
+        "artists": [{ "id": "FakeArtist000000000006", "name": "Johannes Brahms", "type": "artist", "uri": "spotify:artist:FakeArtist000000000006" }],
+        "disc_number": 1,
+        "duration_ms": 240000,
+        "explicit": false,
+        "id": "FakeTrack0000000000007",
+        "is_local": false,
+        "is_playable": false,
+        "name": "Intermezzo in A Major, Op. 118 No. 2",
+        "track_number": 1,
+        "type": "track",
+        "uri": "spotify:track:FakeTrack0000000000007"
+      }
+    },
+    {
+      "added_at": "2026-01-05T07:30:00Z",
+      "track": null
+    }
+  ]
+}
