@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(10);
 const DETAIL_MAX: usize = 300;
+const BUSY_RETRIES: u32 = 50;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExecError {
@@ -28,26 +29,37 @@ pub enum ExecError {
 /// Run `program args…`, returning stdout when it exits successfully within
 /// `timeout`.
 pub fn run(program: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>, ExecError> {
-    let mut child = match Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            return Err(ExecError::NotFound);
-        }
-        Err(e) => {
-            return Err(ExecError::Failed {
-                detail: e.to_string(),
-            });
+    let spawn = || {
+        Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+    };
+    let mut busy = 0;
+    let mut child = loop {
+        match spawn() {
+            Ok(child) => break child,
+            // A just-written executable is briefly "text file busy" while
+            // another thread forks with its write handle open; retry.
+            Err(e) if e.kind() == io::ErrorKind::ExecutableFileBusy && busy < BUSY_RETRIES => {
+                busy += 1;
+                thread::sleep(POLL);
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                return Err(ExecError::NotFound);
+            }
+            Err(e) => {
+                return Err(ExecError::Failed {
+                    detail: e.to_string(),
+                });
+            }
         }
     };
     let stdout = drain(child.stdout.take());
