@@ -4,6 +4,8 @@
 //! pure data: no I/O, no async, no franken-stack dependencies. Keep them that
 //! way so they compile everywhere (including future wasm/embedded targets).
 
+pub mod text;
+
 use serde::{Deserialize, Serialize};
 
 /// Which Sonos software generation a household speaks.
