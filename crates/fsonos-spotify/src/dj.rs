@@ -36,6 +36,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::classical::{CandidatePool, ClassicalTrack, Period};
+use crate::steer::{Relaxation, Steer, admit, haystack};
 use crate::works::{Completeness, Work, group_works};
 
 /// A seedable, dependency-free pseudo-random generator (xorshift64*, seeded
@@ -138,6 +139,9 @@ pub struct DjConfig {
     /// Works longer than this are left out unless `allow_long_works`.
     pub max_work_minutes: u32,
     pub allow_long_works: bool,
+    /// Steering filters relax (keywords, then periods, then length) while
+    /// fewer works than this pass them.
+    pub min_steered_works: usize,
 }
 
 impl Default for DjConfig {
@@ -153,6 +157,7 @@ impl Default for DjConfig {
             incomplete_pm: 600,
             max_work_minutes: 75,
             allow_long_works: false,
+            min_steered_works: 5,
         }
     }
 }
@@ -168,6 +173,9 @@ pub struct PickContext<'h> {
     pub local_hour: Option<u8>,
     /// Explicit energy target 0–100; overrides the time of day.
     pub energy_target: Option<u8>,
+    /// A mood or constraints steering the pick ([`crate::steer`]); ignored
+    /// once its constraints have lapsed.
+    pub steer: Option<&'h Steer>,
 }
 
 /// The energy the DJ aims for at a given local hour: calm through the night,
@@ -224,6 +232,9 @@ pub struct PickReason {
     /// Every non-neutral factor in evaluation order, per-mille (1000 =
     /// neutral). `Rotation` and `LongWork` are flags, recorded at 1000.
     pub factors: Vec<(Factor, i32)>,
+    /// Steering filters dropped because too few works passed them, in the
+    /// order they relaxed.
+    pub relaxed: Vec<Relaxation>,
     /// One readable line, e.g. "Brahms not heard in 4 days; balancing toward
     /// late-Romantic; gentle evening target".
     pub summary: String,
@@ -252,6 +263,8 @@ pub struct WorkPool {
     /// Track URI → (work, movement).
     by_track: HashMap<String, (usize, usize)>,
     composer_works: HashMap<String, usize>,
+    /// Per work, the normalized text steering keywords match against.
+    haystacks: Vec<String>,
 }
 
 impl WorkPool {
@@ -272,10 +285,12 @@ impl WorkPool {
                 by_track.insert(movement.track.source_uri.clone(), (w, m));
             }
         }
+        let haystacks = works.iter().map(haystack).collect();
         Self {
             works,
             by_track,
             composer_works,
+            haystacks,
         }
     }
 
@@ -314,10 +329,23 @@ pub fn pick_next<'p>(
         return None;
     }
     let recency = Recency::scan(pool, ctx.history, config);
-    let target = ctx
+    let steer = ctx.steer.filter(|s| s.constraints.is_active(ctx.now));
+    let (admitted, relaxed) = match steer {
+        Some(s) => admit(
+            &pool.works,
+            &pool.haystacks,
+            &s.constraints,
+            config.min_steered_works,
+        ),
+        None => ((0..pool.len()).collect(), Vec::new()),
+    };
+    let allow_long =
+        config.allow_long_works || steer.is_some_and(|s| s.constraints.allow_long_works);
+    let base_target = ctx
         .energy_target
         .or_else(|| ctx.local_hour.map(energy_target_for_hour));
-    let eligible = eligible(pool, &recency, ctx, config);
+    let target = steer.map_or(base_target, |s| s.constraints.biased_target(base_target));
+    let eligible = eligible(pool, admitted, allow_long, &recency, ctx, config);
     let weights: Vec<u64> = eligible
         .works
         .iter()
@@ -334,11 +362,15 @@ pub fn pick_next<'p>(
     if is_long(work, config) {
         factors.push((Factor::LongWork, 1000));
     }
-    let summary = summarize(work, &recency, ctx, target, &factors);
+    let summary = summarize(work, &recency, ctx, target, steer, &factors, &relaxed);
     Some(PlannedWork {
         work,
         movements: &work.movements,
-        reason: PickReason { factors, summary },
+        reason: PickReason {
+            factors,
+            relaxed,
+            summary,
+        },
     })
 }
 
@@ -459,21 +491,26 @@ fn is_long(work: &Work, config: &DjConfig) -> bool {
     u64::from(work.total_secs) > u64::from(config.max_work_minutes) * 60
 }
 
-/// Works eligible for this pick: those within the length limit (all of them
-/// if none are, so a library of operas still plays), out of cooldown — or,
-/// when that leaves fewer than a tenth of them, the least-recently-played
-/// quarter, so a small pool rotates rather than repeats.
+/// Works eligible for this pick, among those the steering `admitted`: the
+/// ones within the length limit (all of them if none are, so a library of
+/// operas still plays), out of cooldown — or, when that leaves fewer than a
+/// tenth of them, the least-recently-played quarter, so a small pool rotates
+/// rather than repeats.
 fn eligible(
     pool: &WorkPool,
+    admitted: Vec<usize>,
+    allow_long: bool,
     recency: &Recency<'_>,
     ctx: &PickContext<'_>,
     config: &DjConfig,
 ) -> Eligible {
-    let mut allowed: Vec<usize> = (0..pool.len())
-        .filter(|&w| config.allow_long_works || !is_long(&pool.works[w], config))
+    let mut allowed: Vec<usize> = admitted
+        .iter()
+        .copied()
+        .filter(|&w| allow_long || !is_long(&pool.works[w], config))
         .collect();
     if allowed.is_empty() {
-        allowed = (0..pool.len()).collect();
+        allowed = admitted;
     }
     let cooling = |w: &usize| {
         recency
@@ -660,7 +697,9 @@ fn summarize(
     recency: &Recency<'_>,
     ctx: &PickContext<'_>,
     target: Option<u8>,
+    steer: Option<&Steer>,
     factors: &[(Factor, i32)],
+    relaxed: &[Relaxation],
 ) -> String {
     let has = |factor: Factor| factors.iter().any(|&(f, _)| f == factor);
     let who = surname(&work.composer);
@@ -690,6 +729,14 @@ fn summarize(
             _ => format!("{mood} energy requested"),
         });
     }
+    match steer {
+        Some(Steer {
+            mood: Some(mood), ..
+        }) => parts.push(format!("{mood} mood")),
+        Some(s) if s.constraints.energy_bias < 0 => parts.push("steered calmer".to_owned()),
+        Some(s) if s.constraints.energy_bias > 0 => parts.push("steered brighter".to_owned()),
+        _ => {}
+    }
     for (factor, note) in [
         (Factor::Liked, "from your liked tracks"),
         (
@@ -705,6 +752,18 @@ fn summarize(
         if has(factor) {
             parts.push(note.to_owned());
         }
+    }
+    if let Some((last, rest)) = relaxed.split_last() {
+        let names = if rest.is_empty() {
+            last.label().to_owned()
+        } else {
+            let rest: Vec<&str> = rest.iter().map(|r| r.label()).collect();
+            format!("{} and {}", rest.join(", "), last.label())
+        };
+        let noun = if rest.is_empty() { "filter" } else { "filters" };
+        parts.push(format!(
+            "relaxed the {names} {noun} (too few matching works)"
+        ));
     }
     parts.join("; ")
 }
@@ -744,215 +803,13 @@ fn surname(name: &str) -> &str {
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet, HashSet};
+    use std::collections::{BTreeMap, HashSet};
     use std::time::Instant;
 
     use super::*;
     use crate::library::{LibraryItem, Origin};
+    use crate::test_shelf::*;
     use crate::works::movement_number;
-
-    /// A realistic, lopsided shelf: (composer, form, works, movements/work).
-    const SHELF: &[(&str, &str, usize, usize)] = &[
-        ("Johann Sebastian Bach", "Cantata", 20, 4),
-        ("Antonio Vivaldi", "Concerto", 8, 3),
-        ("George Frideric Handel", "Concerto Grosso", 5, 3),
-        ("Wolfgang Amadeus Mozart", "Piano Sonata", 12, 3),
-        ("Joseph Haydn", "String Quartet", 4, 4),
-        ("Ludwig van Beethoven", "Symphony", 9, 4),
-        ("Franz Schubert", "Impromptu", 8, 1),
-        ("Frédéric Chopin", "Nocturne", 15, 1),
-        ("Johannes Brahms", "Symphony", 4, 4),
-        ("Pyotr Ilyich Tchaikovsky", "Symphony", 3, 4),
-        ("Gabriel Fauré", "Barcarolle", 3, 1),
-        ("Claude Debussy", "Prélude", 6, 1),
-        ("Maurice Ravel", "Piano Concerto", 2, 3),
-        ("Erik Satie", "Gymnopédie", 3, 1),
-        ("Dmitri Shostakovich", "String Quartet", 2, 4),
-        ("Arvo Pärt", "Fratres", 3, 1),
-        ("Hildegard von Bingen", "Antiphon", 2, 1),
-        ("Thomas Tallis", "Motet", 2, 1),
-    ];
-    /// First movements rotate so works differ in energy (82, 47, 40, 20).
-    const FIRSTS: &[&str] = &[
-        "I. Allegro con brio",
-        "I. Adagio - Allegro",
-        "I. Andante",
-        "I. Largo",
-    ];
-    const REST: &[&str] = &["II. Adagio", "III. Menuetto", "IV. Presto"];
-    const MIDNIGHT: i64 = 1_790_035_200; // a UTC midnight
-
-    fn item(
-        uri: String,
-        title: String,
-        composer: &str,
-        album: (String, String),
-        secs: u32,
-        origin: Origin,
-    ) -> LibraryItem {
-        LibraryItem {
-            source_uri: uri,
-            title,
-            artists: vec![composer.into(), "Test Ensemble".into()],
-            album: Some(album.0),
-            album_uri: Some(album.1),
-            album_artists: vec!["Test Ensemble".into()],
-            disc_number: None,
-            track_number: None,
-            added_at: None,
-            genres: Vec::new(),
-            label: None,
-            duration_secs: Some(secs),
-            explicit: false,
-            origin,
-        }
-    }
-
-    /// The shelf, with `scale` times as many works per composer.
-    fn shelf_items(scale: usize) -> Vec<LibraryItem> {
-        let mut items = Vec::new();
-        for (ci, &(composer, form, works, movements)) in SHELF.iter().enumerate() {
-            let surname = composer.rsplit(' ').next().unwrap();
-            for w in 1..=works * scale {
-                let album = (
-                    format!("{surname}: {form}s, Vol. {}", w / 5),
-                    format!("spotify:album:{ci}-{}", w / 5),
-                );
-                let origin = if (ci + w) % 7 == 0 {
-                    Origin::LikedTrack
-                } else {
-                    Origin::SavedAlbum
-                };
-                if movements == 1 {
-                    let uri = format!("spotify:track:{ci}-{w}-0");
-                    items.push(item(
-                        uri,
-                        format!("{form} No. {w}"),
-                        composer,
-                        album,
-                        240,
-                        origin,
-                    ));
-                    continue;
-                }
-                let titles = std::iter::once(FIRSTS[w % FIRSTS.len()])
-                    .chain(REST.iter().copied().take(movements - 1));
-                for (m, movement) in titles.enumerate() {
-                    let uri = format!("spotify:track:{ci}-{w}-{m}");
-                    let title = format!("{form} No. {w} in C Major, Op. {w}: {movement}");
-                    items.push(item(uri, title, composer, album.clone(), 420, origin));
-                }
-            }
-        }
-        items
-    }
-
-    /// A two-hour opera: 24 scenes.
-    fn opera() -> Vec<LibraryItem> {
-        (1..=24)
-            .map(|n| {
-                let album = (
-                    "Verdi: La traviata".to_owned(),
-                    "spotify:album:traviata".to_owned(),
-                );
-                let title = format!("La traviata, Act {}: Scene {n}", 1 + n / 9);
-                let uri = format!("spotify:track:traviata-{n}");
-                item(uri, title, "Giuseppe Verdi", album, 300, Origin::SavedAlbum)
-            })
-            .collect()
-    }
-
-    fn works_of(items: &[LibraryItem]) -> WorkPool {
-        WorkPool::new(&CandidatePool::build(items))
-    }
-
-    /// Continuous listening from midnight: each pick's movements play back to
-    /// back. With `hour` fixed the energy target stays put.
-    fn simulate<'p>(
-        pool: &'p WorkPool,
-        config: &DjConfig,
-        seed: u64,
-        count: usize,
-        hour: Option<u8>,
-    ) -> Vec<PlannedWork<'p>> {
-        let mut rng = Rng::new(seed);
-        let mut history = Vec::new();
-        let mut picks = Vec::new();
-        let mut now = MIDNIGHT;
-        for _ in 0..count {
-            let clock_hour = u8::try_from((now - MIDNIGHT) / 3600 % 24).unwrap();
-            let ctx = PickContext {
-                history: &history,
-                now: Some(now),
-                local_hour: Some(hour.unwrap_or(clock_hour)),
-                energy_target: None,
-            };
-            let planned = pick_next(pool, &ctx, config, &mut rng).unwrap();
-            for m in planned.movements {
-                history.push(PlayRecord::at(m.track.source_uri.clone(), now));
-                now += i64::from(m.track.duration_secs.unwrap());
-            }
-            picks.push(planned);
-        }
-        picks
-    }
-
-    /// Uniform among works not in the last `avoid` picks: the baseline.
-    fn uniform(pool: &WorkPool, seed: u64, count: usize, avoid: usize) -> Vec<&Work> {
-        let mut rng = Rng::new(seed);
-        let mut picks: Vec<&Work> = Vec::new();
-        for _ in 0..count {
-            let fresh: Vec<&Work> = pool
-                .works()
-                .iter()
-                .filter(|w| !picks.iter().rev().take(avoid).any(|r| std::ptr::eq(*r, *w)))
-                .collect();
-            picks.push(fresh[rng.below(fresh.len())]);
-        }
-        picks
-    }
-
-    fn works<'p>(picks: &[PlannedWork<'p>]) -> Vec<&'p Work> {
-        picks.iter().map(|p| p.work).collect()
-    }
-
-    fn repeat_rate<K: PartialEq>(picks: &[&Work], key: impl Fn(&Work) -> K) -> f64 {
-        let repeats = picks.windows(2).filter(|w| key(w[0]) == key(w[1])).count();
-        repeats as f64 / (picks.len() - 1) as f64
-    }
-
-    fn longest_run<K: PartialEq>(picks: &[&Work], key: impl Fn(&Work) -> K) -> usize {
-        let (mut best, mut run) = (1, 1);
-        for w in picks.windows(2) {
-            run = if key(w[0]) == key(w[1]) { run + 1 } else { 1 };
-            best = best.max(run);
-        }
-        best
-    }
-
-    fn distinct_per_window<K: Ord>(picks: &[&Work], size: usize, key: impl Fn(&Work) -> K) -> f64 {
-        let windows = picks.windows(size);
-        let n = windows.len() as f64;
-        windows
-            .map(|w| w.iter().map(|t| key(t)).collect::<BTreeSet<_>>().len() as f64)
-            .sum::<f64>()
-            / n
-    }
-
-    fn min_work_gap(picks: &[&Work]) -> usize {
-        let mut last: HashMap<*const Work, usize> = HashMap::new();
-        let mut gap = usize::MAX;
-        for (i, w) in picks.iter().enumerate() {
-            if let Some(prev) = last.insert(std::ptr::from_ref(*w), i) {
-                gap = gap.min(i - prev);
-            }
-        }
-        gap
-    }
-
-    fn mean_energy(picks: &[&Work]) -> f64 {
-        picks.iter().map(|w| f64::from(w.energy())).sum::<f64>() / picks.len() as f64
-    }
 
     #[test]
     fn rng_is_reproducible_bounded_and_seed_sensitive() {
@@ -1029,7 +886,7 @@ mod tests {
             let (dj_rep, base_rep) = (repeat_rate(&dj, composer), repeat_rate(&base, composer));
             let dj_comp = distinct_per_window(&dj, 8, composer);
             let base_comp = distinct_per_window(&base, 8, composer);
-            eprintln!(
+            let metrics = format!(
                 "seed {seed}: composer repeat {dj_rep:.3} (uniform {base_rep:.3}), \
                  distinct composers/8 {dj_comp:.2} (uniform {base_comp:.2}), \
                  Bach share {:.3} (uniform {:.3}), longest period run {}, min work gap {}",
@@ -1038,21 +895,18 @@ mod tests {
                 longest_run(&dj, |w| w.period),
                 min_work_gap(&dj),
             );
-            assert!(
-                min_work_gap(&dj) >= config.work_cooldown_plays,
-                "work cooldown"
-            );
-            assert!(dj_rep <= 0.03, "composer repeat rate {dj_rep}");
-            assert!(dj_rep * 3.0 < base_rep, "dj {dj_rep} vs uniform {base_rep}");
+            eprintln!("{metrics}");
+            // On failure: the metrics and the whole planned sequence.
+            let log = || format!("{metrics}\n{}", transcript(seed, &pool, &picks));
+            assert!(min_work_gap(&dj) >= config.work_cooldown_plays, "{}", log());
+            assert!(dj_rep <= 0.03, "{}", log());
+            assert!(dj_rep * 3.0 < base_rep, "{}", log());
             // Uniform over works is already spread (single pieces are works).
-            assert!(
-                dj_comp >= 6.8 && dj_comp > base_comp + 0.5,
-                "{dj_comp} vs {base_comp}"
-            );
-            assert!(bach(&dj) < 0.75 * 20.0 / 111.0, "Bach share {}", bach(&dj));
-            assert!(longest_run(&dj, |w| w.period) <= 3);
+            assert!(dj_comp >= 6.8 && dj_comp > base_comp + 0.5, "{}", log());
+            assert!(bach(&dj) < 0.75 * 20.0 / 111.0, "{}", log());
+            assert!(longest_run(&dj, |w| w.period) <= 3, "{}", log());
             let heard: HashSet<&str> = dj.iter().map(|w| w.composer.as_str()).collect();
-            assert_eq!(heard.len(), SHELF.len(), "unheard composers");
+            assert_eq!(heard.len(), SHELF.len(), "{}", log());
         }
     }
 
@@ -1397,6 +1251,7 @@ mod tests {
             now: Some(now),
             local_hour: Some(19),
             energy_target: None,
+            steer: None,
         };
         let planned = pick_next(&pool, &ctx, &DjConfig::default(), &mut Rng::new(1)).unwrap();
         assert_eq!(planned.work.title, "Symphony No. 3 in F Major, Op. 90");
@@ -1426,6 +1281,7 @@ mod tests {
             now: None,
             local_hour: None,
             energy_target: Some(80),
+            steer: None,
         };
         let planned = pick_next(&pool, &ctx, &DjConfig::default(), &mut Rng::new(1)).unwrap();
         assert_eq!(
@@ -1460,6 +1316,7 @@ mod tests {
             now: Some(MIDNIGHT),
             local_hour: Some(20),
             energy_target: None,
+            steer: None,
         };
         let started = Instant::now();
         let planned = plan(&pool, &ctx, &config, 5, &mut Rng::new(2));

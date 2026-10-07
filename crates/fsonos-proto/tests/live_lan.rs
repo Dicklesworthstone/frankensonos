@@ -16,8 +16,10 @@
 //! (SetVolume to the volume the player already has). Output names real rooms
 //! and addresses: it stays on the terminal, never in git.
 
+use fsonos_proto::content::browse_all;
 use fsonos_proto::control;
 use fsonos_proto::description::parse_device_description;
+use fsonos_proto::didl::{learn_spotify_params, spotify_track_uri, spotify_uri_from_renderer_uri};
 use fsonos_proto::net::{EventSink, Lan};
 use fsonos_proto::soap::RENDERING_CONTROL;
 use fsonos_proto::topology::{get_zone_group_state, host_of_location};
@@ -82,6 +84,7 @@ fn live_lan_read_path() {
     // One topology read per household: keep asking players not yet covered.
     let mut covered: Vec<IpAddr> = Vec::new();
     let mut coordinators: Vec<IpAddr> = Vec::new();
+    let mut household_hosts: Vec<IpAddr> = Vec::new();
     for &host in &hosts {
         if covered.contains(&host) {
             continue;
@@ -89,16 +92,21 @@ fn live_lan_read_path() {
         let zgs = get_zone_group_state(&lan, host)
             .unwrap_or_else(|e| panic!("ZoneGroupTopology from {host}: {e}"));
         println!("household via {host}: {} groups", zgs.groups.len());
+        // Favorites are browsed on a renderer: a Bridge has no
+        // ContentDirectory (it answers Browse with HTTP 405).
+        let mut renderer_host = None;
         for group in &zgs.groups {
             for m in &group.members {
                 if let Some(ip) = m.ip() {
                     covered.push(ip);
                     if m.uuid == group.coordinator && !m.is_zone_bridge {
                         coordinators.push(ip);
+                        renderer_host.get_or_insert(ip);
                     }
                 }
             }
         }
+        household_hosts.extend(renderer_host);
     }
 
     for &host in &renderers {
@@ -117,6 +125,9 @@ fn live_lan_read_path() {
     }
 
     gena_round_trip(&lan, renderers[0]);
+    for &host in &household_hosts {
+        spotify_params_round_trip(&lan, host);
+    }
 
     if std::env::var("FSONOS_LIVE_WRITE").as_deref() == Ok("1") {
         write_checks(&lan, &renderers, &coordinators);
@@ -211,4 +222,40 @@ fn gena_round_trip(lan: &Lan, host: IpAddr) {
     lan.unsubscribe(host, RENDERING_CONTROL.event_path, &sub.sid)
         .expect("UNSUBSCRIBE");
     println!("GENA: unsubscribed");
+}
+
+/// Learn the household's Spotify render parameters from its own favorites
+/// (read-only Browse of FV:2) and check they rebuild every Spotify track
+/// favorite that uses them. Prints no parameter values: they are site data.
+fn spotify_params_round_trip(lan: &Lan, host: IpAddr) {
+    let favorites = browse_all(lan, host, "FV:2").expect("Browse FV:2");
+    let tracks: Vec<&str> = favorites
+        .iter()
+        .filter_map(|f| f.res.as_ref().map(|r| r.uri.as_str()))
+        .filter(|u| u.starts_with("x-sonos-spotify:"))
+        .collect();
+    let Some(params) = learn_spotify_params(&favorites) else {
+        println!(
+            "Spotify params via {host}: none learned ({} favorites, {} Spotify tracks)",
+            favorites.len(),
+            tracks.len()
+        );
+        return;
+    };
+    let flags = format!("flags={}", params.flags);
+    let matching: Vec<&&str> = tracks.iter().filter(|u| u.contains(&flags)).collect();
+    for uri in &matching {
+        let spotify = spotify_uri_from_renderer_uri(uri).expect("a Spotify URI");
+        assert!(
+            spotify_track_uri(&spotify, &params).eq_ignore_ascii_case(uri),
+            "learned params do not rebuild a favorite of the household via {host}"
+        );
+    }
+    assert!(params.cdudn.starts_with("SA_RINCON"), "descriptor shape");
+    println!(
+        "Spotify params via {host}: learned from {} favorites; rebuilt {}/{} track favorites with the dominant flags exactly",
+        favorites.len(),
+        matching.len(),
+        tracks.len()
+    );
 }

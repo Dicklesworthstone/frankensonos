@@ -16,8 +16,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::library::{LibraryItem, Origin, merge_duplicates};
 
-/// Style period, used to spread the DJ's picks across eras.
+/// Style period, used to spread the DJ's picks across eras. Spelled
+/// `snake_case` in TOML/JSON (`"late_romantic"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Period {
     Medieval,
     Renaissance,
@@ -259,6 +261,19 @@ pub fn composer_by_name(artist: &str) -> Option<&'static Composer> {
         .map(|&i| &COMPOSERS[i])
 }
 
+/// Whether a composer query — "Bach", "J.S. Bach", "Saint-Saëns" — names
+/// `composer` (a display name like [`ClassicalTrack::composer`]). Known
+/// names resolve through the alias table (a bare "Bach" is J.S.); anything
+/// else matches as a whole phrase of the name ("Gould" in "Glenn Gould").
+#[must_use]
+pub fn composer_matches(query: &str, composer: &str) -> bool {
+    if let Some(known) = composer_by_name(query).or_else(|| composer_from_head(query)) {
+        return normalize(known.name) == normalize(composer);
+    }
+    let query = normalize(query);
+    !query.is_empty() && has_phrase(&normalize(composer), &query)
+}
+
 /// The composer named by a `Composer: …` prefix (title or album name). With
 /// `allow_dash`, a `Composer - …` prefix also counts (common on album names).
 #[must_use]
@@ -339,7 +354,7 @@ fn fold(c: char) -> Option<&'static str> {
 }
 
 /// Whole-word (or whole-phrase) containment on [`normalize`]d text.
-fn has_phrase(norm: &str, phrase: &str) -> bool {
+pub(crate) fn has_phrase(norm: &str, phrase: &str) -> bool {
     norm.match_indices(phrase).any(|(start, _)| {
         let end = start + phrase.len();
         (start == 0 || norm.as_bytes()[start - 1] == b' ')
