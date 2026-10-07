@@ -54,7 +54,7 @@ variables. The environment form is what launchd uses.
 | HTTP API address | `FSONOS_HTTP_ADDR` | `127.0.0.1:8099` | Keep on loopback behind Tailscale Serve. |
 | MCP (streamable HTTP) address | `FSONOS_MCP_HTTP_ADDR` | `127.0.0.1:8098` | Endpoint path `/mcp`. |
 | Data directory | `FSONOS_DATA_DIR` | `~/Library/Application Support/fsonos` | Store DB and Spotify token cache. |
-| Direct-seed list | `FSONOS_SEEDS` | unset | Optional TOML of player IPs for flaky-SSDP networks. Keep it under `local/` or outside the repo. |
+| Direct-seed list | `FSONOS_SEEDS` | unset | Optional file of player addresses for flaky-SSDP networks; every IP address in it is tried (e.g. TOML `players = ["192.0.2.10"]`, or one per line). Every command also takes `--seed <ip>`. Keep the file under `local/` or outside the repo. |
 | Spotify client id | `FSONOS_SPOTIFY_CLIENT_ID` | unset | Needed only for the DJ (see §5). |
 | Spotify redirect URI | `FSONOS_SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8099/auth/spotify/callback` | Must match the URI registered for your Spotify app. |
 | Log filter | `RUST_LOG` | `info` | `tracing` EnvFilter syntax. Logs go to stderr. |

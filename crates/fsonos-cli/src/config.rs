@@ -1,5 +1,6 @@
-//! `fsonos serve` configuration: listener addresses, local paths, and the bind
-//! guard.
+//! `fsonos` configuration: the global options every command takes (seeds,
+//! SSDP wait, JSON output), the `serve` settings (listener addresses, local
+//! paths), and the bind guard.
 //!
 //! Every setting can come from a flag or an `FSONOS_*` environment variable
 //! (launchd passes the environment form; see `docs/DEPLOY.md`). The HTTP API
@@ -8,8 +9,70 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use fsonos_api::Failure;
+
+/// Options every command accepts (and `serve` uses for discovery).
+#[derive(Debug, Clone, clap::Args)]
+pub struct GlobalArgs {
+    /// Seed file of player addresses for networks where SSDP multicast is
+    /// unreliable; every IP address in it is tried (e.g. TOML
+    /// `players = ["192.0.2.10"]`, or one per line). Discovery still runs.
+    #[arg(long, env = "FSONOS_SEEDS", global = true)]
+    pub seeds: Option<PathBuf>,
+
+    /// A player address to try directly, in addition to SSDP (repeatable).
+    #[arg(long = "seed", value_name = "IP", global = true)]
+    pub seed: Vec<IpAddr>,
+
+    /// Seconds to wait for SSDP replies.
+    #[arg(long, value_name = "SECS", default_value_t = 2, global = true)]
+    pub wait: u64,
+
+    /// Print JSON instead of text.
+    #[arg(long, global = true)]
+    pub json: bool,
+}
+
+impl GlobalArgs {
+    /// The SSDP listening window.
+    #[must_use]
+    pub fn wait(&self) -> Duration {
+        Duration::from_secs(self.wait)
+    }
+
+    /// Every seed address: `--seed` flags, then the seed file's, without
+    /// duplicates.
+    pub fn seed_addrs(&self) -> Result<Vec<IpAddr>, Failure> {
+        let mut addrs = self.seed.clone();
+        if let Some(path) = &self.seeds {
+            let text = std::fs::read_to_string(path).map_err(|e| {
+                Failure::invalid(format!("cannot read seed file {}: {e}", path.display()))
+                    .with_hint("Fix FSONOS_SEEDS / --seeds, or drop it to rely on SSDP.")
+            })?;
+            addrs.extend(ip_addresses(&text));
+        }
+        let mut unique = Vec::new();
+        for addr in addrs {
+            if !unique.contains(&addr) {
+                unique.push(addr);
+            }
+        }
+        Ok(unique)
+    }
+}
+
+/// Every IP address written in `text`, in order: tolerant of TOML arrays,
+/// one-per-line lists, quotes, commas and `#` comments.
+#[must_use]
+pub fn ip_addresses(text: &str) -> Vec<IpAddr> {
+    text.lines()
+        .map(|line| line.split('#').next().unwrap_or_default())
+        .flat_map(|line| line.split(|c: char| !(c.is_ascii_hexdigit() || c == '.' || c == ':')))
+        .filter_map(|token| token.trim_matches(':').parse().ok())
+        .collect()
+}
 
 /// Settings for the long-lived daemon.
 #[derive(Debug, Clone, clap::Args)]
@@ -26,11 +89,6 @@ pub struct ServeArgs {
     /// [default: the OS per-user data directory, under `fsonos`].
     #[arg(long, env = "FSONOS_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
-
-    /// Direct-seed list (TOML of player IPs) for networks where SSDP
-    /// multicast is unreliable. Discovery still runs.
-    #[arg(long, env = "FSONOS_SEEDS")]
-    pub seeds: Option<PathBuf>,
 
     /// Spotify app client id (PKCE: identifies the app, not a secret).
     #[arg(long, env = "FSONOS_SPOTIFY_CLIENT_ID")]
@@ -266,6 +324,53 @@ mod tests {
         assert!(Harness::try_parse_from(["fsonos", "--http", "not-an-addr"]).is_err());
     }
 
+    #[test]
+    fn seed_files_yield_every_address() {
+        let toml =
+            "# seeds\nplayers = [\"192.0.2.10\", \"192.0.2.11\"] # two\nv6 = [\"fd00::1\"]\n";
+        assert_eq!(
+            ip_addresses(toml),
+            ["192.0.2.10", "192.0.2.11", "fd00::1"].map(|a| a.parse::<IpAddr>().unwrap())
+        );
+        let lines = "192.0.2.20\n\n  192.0.2.21  # den\nnot-an-ip\n";
+        assert_eq!(ip_addresses(lines).len(), 2);
+        assert_eq!(ip_addresses("players = []"), Vec::<IpAddr>::new());
+    }
+
+    #[test]
+    fn seeds_merge_flags_and_file_without_duplicates() {
+        let dir = std::env::temp_dir().join(format!("fsonos-seeds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("seeds.toml");
+        std::fs::write(&file, "players = [\"192.0.2.10\", \"192.0.2.12\"]").unwrap();
+        let g = GlobalHarness::try_parse_from([
+            "fsonos",
+            "--seed",
+            "192.0.2.10",
+            "--seeds",
+            file.to_str().unwrap(),
+        ])
+        .unwrap()
+        .global;
+        assert_eq!(
+            g.seed_addrs().unwrap(),
+            ["192.0.2.10", "192.0.2.12"].map(|a| a.parse::<IpAddr>().unwrap())
+        );
+        let missing = GlobalHarness::try_parse_from(["fsonos", "--seeds", "/nonexistent/seeds"])
+            .unwrap()
+            .global
+            .seed_addrs()
+            .unwrap_err();
+        assert_eq!(missing.exit_code(), 2);
+        assert!(missing.detail.contains("cannot read seed file"));
+    }
+
+    #[derive(Parser)]
+    struct GlobalHarness {
+        #[command(flatten)]
+        global: GlobalArgs,
+    }
+
     /// Every `FSONOS_*` token in `text`.
     fn fsonos_vars(text: &str) -> Vec<String> {
         let mut vars = Vec::new();
@@ -286,7 +391,7 @@ mod tests {
     /// them.
     #[test]
     fn deploy_docs_match_the_declared_settings() {
-        let cmd = ServeArgs::augment_args(clap::Command::new("serve"));
+        let cmd = GlobalArgs::augment_args(ServeArgs::augment_args(clap::Command::new("serve")));
         let declared: Vec<String> = cmd
             .get_arguments()
             .filter_map(clap::Arg::get_env)

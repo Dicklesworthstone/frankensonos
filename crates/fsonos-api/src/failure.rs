@@ -16,7 +16,7 @@
 
 use fastapi::{Response, ResponseBody, StatusCode};
 use fsonos_core::CoreError;
-use fsonos_core::rooms::normalize_room;
+use fsonos_core::rooms::suggest_rooms;
 use fsonos_proto::ProtoError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -375,7 +375,7 @@ impl From<CoreError> for Failure {
         let detail = err.to_string();
         match err {
             CoreError::UnknownRoom { name, known } => Self::new(ErrorCode::UnknownRoom, detail)
-                .with_suggestions(nearest_rooms(&name, &known)),
+                .with_suggestions(suggest_rooms(&name, &known)),
             CoreError::AmbiguousRoom { candidates, .. } => {
                 Self::new(ErrorCode::AmbiguousRoom, detail).with_suggestions(candidates)
             }
@@ -405,46 +405,6 @@ fn proto_failure(err: &ProtoError, detail: String) -> Failure {
         ProtoError::Network { .. } => Failure::new(ErrorCode::PlayerUnreachable, detail),
         ProtoError::NotWired(_) => Failure::new(ErrorCode::Internal, detail),
     }
-}
-
-/// Up to three of `known` (each `Name@Label`) whose names are close to
-/// `query`: a containment either way, or a small edit distance.
-fn nearest_rooms(query: &str, known: &[String]) -> Vec<String> {
-    let wanted = normalize_room(query.rsplit_once('@').map_or(query, |(name, _)| name));
-    if wanted.is_empty() {
-        return Vec::new();
-    }
-    let budget = (wanted.chars().count() / 3).max(2);
-    let mut scored: Vec<(usize, &String)> = known
-        .iter()
-        .filter_map(|candidate| {
-            let name = normalize_room(candidate.rsplit_once('@').map_or(candidate, |(n, _)| n));
-            let score = if name.contains(&wanted) || wanted.contains(&name) {
-                0
-            } else {
-                edit_distance(&wanted, &name)
-            };
-            (score <= budget).then_some((score, candidate))
-        })
-        .collect();
-    scored.sort();
-    scored.into_iter().take(3).map(|(_, c)| c.clone()).collect()
-}
-
-/// Levenshtein distance over chars.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut diagonal = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let substitute = diagonal + usize::from(ca != *cb);
-            diagonal = row[j + 1];
-            row[j + 1] = substitute.min(row[j] + 1).min(diagonal + 1);
-        }
-    }
-    row[b.len()]
 }
 
 #[cfg(test)]
@@ -618,20 +578,6 @@ mod tests {
             (store.code, store.detail.as_str()),
             (ErrorCode::Internal, "internal error")
         );
-    }
-
-    #[test]
-    fn nearest_rooms_ranks_close_names_only() {
-        let known: Vec<String> = ["Kitchen@S1", "Den@S1", "Ada\u{2019}s Studio@S1", "Patio@S2"]
-            .map(String::from)
-            .into();
-        assert_eq!(nearest_rooms("Kitchn", &known), ["Kitchen@S1"]);
-        assert_eq!(nearest_rooms("studio", &known), ["Ada\u{2019}s Studio@S1"]);
-        assert_eq!(nearest_rooms("patio@S1", &known), ["Patio@S2"]);
-        assert_eq!(nearest_rooms("Garage", &known), Vec::<String>::new());
-        assert_eq!(nearest_rooms("  ", &known), Vec::<String>::new());
-        assert_eq!(edit_distance("kitten", "sitting"), 3);
-        assert_eq!(edit_distance("", "den"), 3);
     }
 
     /// `docs/ERRORS.md` lists every code with the status, exit code and
