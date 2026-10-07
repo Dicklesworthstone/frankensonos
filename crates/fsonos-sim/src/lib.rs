@@ -26,14 +26,16 @@ mod docs;
 mod gena;
 mod model;
 mod server;
+mod ssdp;
 
 use asupersync::Cx;
 use asupersync::http::Client;
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use fsonos_proto::didl::SpotifyRenderParams;
+use fsonos_proto::ssdp::{Advert, m_search, parse_response};
 use fsonos_proto::{ProtoError, Transport};
 use model::{Favorite, Household, State};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
@@ -335,11 +337,14 @@ impl SimBuilder {
         let count = state.lock().map_or(0, |s| s.players.len());
         let notifier = gena::start_notifier(Arc::clone(&state), notify_rx)
             .map_err(|e| SimError::Start(e.to_string()))?;
+        let responder = ssdp::Responder::start(Arc::clone(&state))
+            .map_err(|e| SimError::Start(e.to_string()))?;
         let mut handle = SimHandle {
             state: Arc::clone(&state),
             players: Vec::with_capacity(count),
             listeners: Vec::with_capacity(count),
             notifier: Some(notifier),
+            responder,
             clock,
         };
         for index in 0..count {
@@ -458,6 +463,7 @@ pub struct SimHandle {
     players: Vec<SimPlayerInfo>,
     listeners: Vec<server::Listener>,
     notifier: Option<JoinHandle<()>>,
+    responder: ssdp::Responder,
     clock: SimClock,
 }
 
@@ -479,11 +485,38 @@ impl SimHandle {
     /// A [`Transport`] for every player, routed by the address each one
     /// advertises, the way the real LAN transport routes by IP.
     /// It follows address changes ([`Self::change_address`]).
+    /// Its [`Transport::ssdp_search`] asks the simulator's unicast SSDP
+    /// responder ([`Self::ssdp_addr`]).
     #[must_use]
     pub fn lan(&self) -> SimLan {
         SimLan {
             state: Arc::clone(&self.state),
+            ssdp: self.responder.addr,
         }
+    }
+
+    /// The unicast SSDP responder: send it an `M-SEARCH` for ZonePlayers and
+    /// every powered-on player answers with its advertised LOCATION.
+    #[must_use]
+    pub fn ssdp_addr(&self) -> SocketAddr {
+        self.responder.addr
+    }
+
+    /// A seeds file (`fsonos --seeds` / `FSONOS_SEEDS`) listing every
+    /// player's advertised address, as the owner would list real players.
+    /// Reach those addresses through [`Self::lan`]. Reflects address changes.
+    #[must_use]
+    pub fn seeds_toml(&self) -> String {
+        let addrs: Vec<String> = self
+            .state
+            .lock()
+            .map(|s| s.players.iter().map(|p| format!("\"{}\"", p.ip)).collect())
+            .unwrap_or_default();
+        format!(
+            "# fsonos-sim players: advertised addresses (port 1400), reached through SimLan.\n\
+             players = [{}]\n",
+            addrs.join(", ")
+        )
     }
 
     /// A [`Transport`] that reaches the player in `room`.
@@ -530,6 +563,7 @@ impl SimHandle {
         for l in self.listeners.drain(..) {
             let _ = l.thread.join();
         }
+        self.responder.stop();
         // The last sender goes with the state's; the notifier drains and ends.
         if let Ok(mut s) = self.state.lock() {
             s.notifier = None;
@@ -769,6 +803,7 @@ impl Transport for SimTransport {
 #[derive(Debug, Clone)]
 pub struct SimLan {
     state: Arc<Mutex<State>>,
+    ssdp: SocketAddr,
 }
 
 impl SimLan {
@@ -805,5 +840,33 @@ impl Transport for SimLan {
         let host = fsonos_proto::topology::host_of_location(url)
             .ok_or_else(|| ProtoError::Malformed(format!("no host in {url}")))?;
         self.route(host)?.http_get(url)
+    }
+
+    /// Send an `M-SEARCH` to the simulator's unicast responder and collect
+    /// the replies that arrive within `wait`, one per player.
+    fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<Advert>, ProtoError> {
+        let network = |e: std::io::Error| ProtoError::Network {
+            target: self.ssdp.to_string(),
+            detail: e.to_string(),
+        };
+        let socket = UdpSocket::bind("127.0.0.1:0").map_err(network)?;
+        socket
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .map_err(network)?;
+        socket
+            .send_to(m_search(mx_secs).as_bytes(), self.ssdp)
+            .map_err(network)?;
+        let deadline = Instant::now() + wait;
+        let mut adverts: Vec<Advert> = Vec::new();
+        let mut buf = [0u8; 2048];
+        while Instant::now() < deadline {
+            if let Ok((n, _)) = socket.recv_from(&mut buf)
+                && let Some(advert) = parse_response(&buf[..n])
+                && !adverts.iter().any(|a| a.location == advert.location)
+            {
+                adverts.push(advert);
+            }
+        }
+        Ok(adverts)
     }
 }
