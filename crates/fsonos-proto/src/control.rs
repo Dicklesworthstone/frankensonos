@@ -554,9 +554,26 @@ mod tests {
 
     #[test]
     fn a_shared_transport_forwards_every_call() {
-        let t = std::sync::Arc::new(Canned::new("<CurrentVolume>17</CurrentVolume>"));
+        struct Volume17;
+        impl Transport for Volume17 {
+            fn soap_post(
+                &self,
+                _host: IpAddr,
+                control_path: &str,
+                _soap_action: &str,
+                _body: &str,
+            ) -> Result<String, ProtoError> {
+                assert_eq!(control_path, "/MediaRenderer/RenderingControl/Control");
+                Ok(
+                    "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+                    <u:GetVolumeResponse xmlns:u=\"urn:x\"><CurrentVolume>17</CurrentVolume>\
+                    </u:GetVolumeResponse></s:Body></s:Envelope>"
+                        .into(),
+                )
+            }
+        }
+        let t = std::sync::Arc::new(Volume17);
         assert_eq!(get_volume(&t, host()).unwrap(), 17);
-        assert_eq!(t.last().0, "/MediaRenderer/RenderingControl/Control");
         assert!(matches!(
             Transport::http_get(&t, "http://192.0.2.10:1400/x"),
             Err(ProtoError::NotWired("http_get"))
