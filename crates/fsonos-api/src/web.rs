@@ -46,7 +46,9 @@ impl WebPolicy {
     pub fn for_listener(addr: SocketAddr, names: &[String]) -> Self {
         let mut hosts: Vec<String> = Vec::new();
         let mut add = |h: String| {
-            let h = h.trim().trim_end_matches('.').to_ascii_lowercase();
+            // An IPv6 literal goes in brackets, the form a Host header (and
+            // so fastapi's Host pattern) gives it.
+            let h = host_literal(h.trim().trim_end_matches('.')).to_ascii_lowercase();
             if !h.is_empty() && !hosts.contains(&h) {
                 hosts.push(h);
             }
@@ -76,8 +78,8 @@ impl WebPolicy {
         Self { hosts, origins }
     }
 
-    /// The Host names the listener answers for (lowercase, no port), for
-    /// `ServerConfig::with_allowed_hosts`.
+    /// The Host names the listener answers for (lowercase, no port, IPv6 in
+    /// brackets), for `ServerConfig::with_allowed_hosts`.
     #[must_use]
     pub fn hosts(&self) -> &[String] {
         &self.hosts
@@ -152,13 +154,42 @@ mod tests {
             [
                 "localhost",
                 "127.0.0.1",
-                "::1",
+                "[::1]",
                 "host.tailnet-name.ts.net",
                 "100.70.1.2"
             ]
         );
         let tailnet = WebPolicy::for_listener("100.70.1.2:8099".parse().unwrap(), &[]);
         assert_eq!(tailnet.hosts(), ["100.70.1.2"]);
+    }
+
+    /// Every host is a pattern fastapi's Host check can match; an IPv6
+    /// listener answers a client's `Host: [addr]:port`.
+    #[test]
+    fn ipv6_hosts_match_the_host_header_clients_send() {
+        let v6 = "fd7a:115c:a1e0::6501:6667";
+        let web = WebPolicy::for_listener(
+            format!("[{v6}]:8099").parse().unwrap(),
+            &["host.tailnet-name.ts.net".into(), v6.into(), "::1".into()],
+        );
+        assert_eq!(
+            web.hosts(),
+            [
+                format!("[{v6}]").as_str(),
+                "host.tailnet-name.ts.net",
+                "[::1]"
+            ]
+        );
+        for host in loopback().hosts().iter().chain(web.hosts()) {
+            assert!(
+                fastapi::RequestAuthority::parse(host).is_some(),
+                "{host} is not a Host pattern fastapi parses"
+            );
+        }
+        let sent = fastapi::RequestAuthority::parse(&format!("[{v6}]:8099")).unwrap();
+        let allowed = fastapi::RequestAuthority::parse(&web.hosts()[0]).unwrap();
+        assert_eq!(sent.host(), allowed.host());
+        assert!(web.allows_origin(&format!("http://[{v6}]:8099")));
     }
 
     #[test]
