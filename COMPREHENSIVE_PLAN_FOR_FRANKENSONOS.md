@@ -328,10 +328,10 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
 
 Added by §12 (each table is created by the migration of the bead that needs it):
 
-- `spotify_library` gains `album_uri TEXT, disc_number INT, track_number INT, work_key TEXT` (whole-work DJ, §12.1).
-- `dj_sessions(coordinator TEXT PK, mood TEXT, constraints TEXT, expires INT)` (steering survives restarts; keyed by coordinator UUID because zone names change with grouping).
-- `album_tracks(album_uri TEXT, disc_number INT, track_number INT, source_uri TEXT, title TEXT, duration_secs INT, fetched_at INT)` (completes liked movements into whole works; not part of the library).
-- `feedback(id INTEGER PK, at INT, work_key TEXT, composer_key TEXT, performer TEXT, signal INT)` (§12.9).
+- `spotify_library` gains `album_uri TEXT, album_artists TEXT, origin TEXT, disc_number INT, track_number INT` (migration 2) and `work_key TEXT` (migration 3) (whole-work DJ, §12.1).
+- `dj_sessions(coordinator TEXT PK, mood TEXT, constraints TEXT, expires INT)` (migration 3; steering survives restarts; keyed by coordinator UUID because zone names change with grouping; `mood`/`constraints` nullable, expired rows kept until deleted).
+- `album_tracks(album_uri TEXT, disc_number INT, track_number INT, source_uri TEXT, title TEXT, duration_secs INT, fetched_at INT, PK(album_uri, disc_number, track_number))` (migration 3; completes liked movements into whole works; not part of the library; replaced per album).
+- `feedback(id INTEGER PK, at INT, work_key TEXT, composer_key TEXT, performer TEXT, signal INT)` (migration 3; indexed by each key with `at`, queried by key over a time window; §12.9).
 - `actions(id INTEGER PK, at INT, client TEXT, surface TEXT, intent TEXT, decision TEXT, result TEXT, before_state TEXT)` (§12.5; denied requests are logged too).
 - `scenes(name TEXT PK, spec TEXT, updated INT)` (§12.7).
 - `schedules(id INTEGER PK, spec TEXT, action TEXT, enabled INT, last_fired INT)` (§12.10).

@@ -5,8 +5,10 @@
 //! (players and group edges, for reconnecting when SSDP is quiet), the
 //! owner's Spotify library cache, play history (for the DJ's variety and
 //! anti-repeat logic), the per-household Spotify render parameters learned
-//! from favorites, and the local OAuth refresh token. All times are unix
-//! seconds stamped by the caller, which keeps behavior deterministic in tests.
+//! from favorites, the local OAuth refresh token, and the DJ's own state:
+//! session steering, listening feedback, and album track lists for completing
+//! whole works. All times are unix seconds stamped by the caller, which keeps
+//! behavior deterministic in tests.
 
 mod sqlite;
 
@@ -15,6 +17,7 @@ pub use sqlite::SqliteStore;
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, Track, ZoneGroup};
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 /// One entry of the play history.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +53,9 @@ pub struct LibraryEntry {
     pub origin: LibraryOrigin,
     pub disc_number: Option<u32>,
     pub track_number: Option<u32>,
+    /// The work this track belongs to (normalized composer and work), so the
+    /// DJ can select whole works.
+    pub work_key: Option<String>,
 }
 
 /// How a track got into the owner's library.
@@ -94,6 +100,71 @@ pub struct AuthEntry {
     pub refresh_token: String,
     /// Access-token expiry, in unix seconds.
     pub expires: i64,
+}
+
+/// A DJ session's steering, kept so it survives a daemon restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DjSession {
+    /// The group coordinator's player id: stable across regrouping, unlike
+    /// zone names.
+    pub coordinator: String,
+    pub mood: Option<String>,
+    /// Steering constraints, serialized by the DJ.
+    pub constraints: Option<String>,
+    /// When the steering lapses, in unix seconds. Expired sessions are kept
+    /// until deleted; callers compare against their clock.
+    pub expires: i64,
+}
+
+/// One piece of listening feedback about something the DJ played.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feedback {
+    /// When it was given, in unix seconds.
+    pub at: i64,
+    pub work_key: Option<String>,
+    pub composer_key: Option<String>,
+    pub performer: Option<String>,
+    /// Positive for liked, negative for disliked; the magnitude is strength.
+    pub signal: i64,
+}
+
+/// What feedback is looked up by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackKey<'a> {
+    Work(&'a str),
+    Composer(&'a str),
+    Performer(&'a str),
+}
+
+impl FeedbackKey<'_> {
+    fn matches(self, f: &Feedback) -> bool {
+        let (field, key) = match self {
+            Self::Work(k) => (&f.work_key, k),
+            Self::Composer(k) => (&f.composer_key, k),
+            Self::Performer(k) => (&f.performer, k),
+        };
+        field.as_deref() == Some(key)
+    }
+}
+
+/// One track of an album's cached track list. Expanded movements are not
+/// library items: this cache is separate from the library.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlbumTrack {
+    pub disc_number: u32,
+    pub track_number: u32,
+    pub source_uri: String,
+    pub title: String,
+    pub duration_secs: Option<u32>,
+}
+
+/// An album's cached track list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedAlbum {
+    /// Ordered by disc, then track.
+    pub tracks: Vec<AlbumTrack>,
+    /// When the list was fetched, in unix seconds.
+    pub fetched_at: i64,
 }
 
 /// Persisted state the daemon reads/writes across restarts.
@@ -173,6 +244,41 @@ pub trait Store {
 
     /// `service`'s cached refresh token, if any.
     fn auth(&self, service: &str) -> Result<Option<AuthEntry>, StoreError>;
+
+    /// Insert or replace the session for `session.coordinator`.
+    fn save_dj_session(&mut self, session: &DjSession) -> Result<(), StoreError>;
+
+    /// `coordinator`'s session, if any (expired ones included).
+    fn dj_session(&self, coordinator: &str) -> Result<Option<DjSession>, StoreError>;
+
+    /// Every stored session, ordered by coordinator.
+    fn dj_sessions(&self) -> Result<Vec<DjSession>, StoreError>;
+
+    /// Forget `coordinator`'s session; nothing happens if there is none.
+    fn delete_dj_session(&mut self, coordinator: &str) -> Result<(), StoreError>;
+
+    /// Append one piece of feedback.
+    fn record_feedback(&mut self, feedback: &Feedback) -> Result<(), StoreError>;
+
+    /// Feedback about `key` given within `window` (unix seconds, end
+    /// exclusive), oldest first; ties keep recording order.
+    fn feedback(
+        &self,
+        key: FeedbackKey<'_>,
+        window: Range<i64>,
+    ) -> Result<Vec<Feedback>, StoreError>;
+
+    /// Replace `album_uri`'s cached track list; an empty list forgets it. A
+    /// repeated (disc, track) keeps the last one given.
+    fn save_album_tracks(
+        &mut self,
+        album_uri: &str,
+        tracks: &[AlbumTrack],
+        fetched_at: i64,
+    ) -> Result<(), StoreError>;
+
+    /// `album_uri`'s cached track list, if it has one.
+    fn album_tracks(&self, album_uri: &str) -> Result<Option<CachedAlbum>, StoreError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -180,6 +286,9 @@ pub enum StoreError {
     #[error("store backend error: {0}")]
     Backend(String),
 }
+
+/// An album's tracks keyed by (disc, track), so iteration is in album order.
+type TracksByPosition = BTreeMap<(u32, u32), AlbumTrack>;
 
 /// An in-memory [`Store`] with the same semantics as [`SqliteStore`]
 /// (`tests/store_conformance.rs` runs one suite against both).
@@ -191,6 +300,9 @@ pub struct MemStore {
     library: BTreeMap<String, LibraryEntry>,
     render_params: BTreeMap<String, (SpotifyRenderParams, i64)>,
     auth: BTreeMap<String, AuthEntry>,
+    dj_sessions: BTreeMap<String, DjSession>,
+    feedback: Vec<Feedback>,
+    album_tracks: BTreeMap<String, (TracksByPosition, i64)>,
 }
 
 impl Store for MemStore {
@@ -315,5 +427,74 @@ impl Store for MemStore {
 
     fn auth(&self, service: &str) -> Result<Option<AuthEntry>, StoreError> {
         Ok(self.auth.get(service).cloned())
+    }
+
+    fn save_dj_session(&mut self, session: &DjSession) -> Result<(), StoreError> {
+        self.dj_sessions
+            .insert(session.coordinator.clone(), session.clone());
+        Ok(())
+    }
+
+    fn dj_session(&self, coordinator: &str) -> Result<Option<DjSession>, StoreError> {
+        Ok(self.dj_sessions.get(coordinator).cloned())
+    }
+
+    fn dj_sessions(&self) -> Result<Vec<DjSession>, StoreError> {
+        Ok(self.dj_sessions.values().cloned().collect())
+    }
+
+    fn delete_dj_session(&mut self, coordinator: &str) -> Result<(), StoreError> {
+        self.dj_sessions.remove(coordinator);
+        Ok(())
+    }
+
+    fn record_feedback(&mut self, feedback: &Feedback) -> Result<(), StoreError> {
+        self.feedback.push(feedback.clone());
+        Ok(())
+    }
+
+    fn feedback(
+        &self,
+        key: FeedbackKey<'_>,
+        window: Range<i64>,
+    ) -> Result<Vec<Feedback>, StoreError> {
+        let mut found: Vec<Feedback> = self
+            .feedback
+            .iter()
+            .filter(|f| window.contains(&f.at) && key.matches(f))
+            .cloned()
+            .collect();
+        // Stable: equal times keep recording order.
+        found.sort_by_key(|f| f.at);
+        Ok(found)
+    }
+
+    fn save_album_tracks(
+        &mut self,
+        album_uri: &str,
+        tracks: &[AlbumTrack],
+        fetched_at: i64,
+    ) -> Result<(), StoreError> {
+        if tracks.is_empty() {
+            self.album_tracks.remove(album_uri);
+        } else {
+            let by_position = tracks
+                .iter()
+                .map(|t| ((t.disc_number, t.track_number), t.clone()))
+                .collect();
+            self.album_tracks
+                .insert(album_uri.to_string(), (by_position, fetched_at));
+        }
+        Ok(())
+    }
+
+    fn album_tracks(&self, album_uri: &str) -> Result<Option<CachedAlbum>, StoreError> {
+        Ok(self
+            .album_tracks
+            .get(album_uri)
+            .map(|(tracks, fetched_at)| CachedAlbum {
+                tracks: tracks.values().cloned().collect(),
+                fetched_at: *fetched_at,
+            }))
     }
 }

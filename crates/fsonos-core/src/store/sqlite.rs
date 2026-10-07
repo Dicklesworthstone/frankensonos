@@ -7,11 +7,15 @@
 //! callers never hold a transaction across network I/O because none escapes a
 //! method call.
 
-use super::{AuthEntry, CachedPlayer, LibraryEntry, LibraryOrigin, PlayRecord, Store, StoreError};
+use super::{
+    AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback, FeedbackKey,
+    LibraryEntry, LibraryOrigin, PlayRecord, Store, StoreError,
+};
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
 use fsqlite::{AsyncConnection, FrankenError, Row, SqliteValue};
 use std::fmt::Display;
+use std::ops::Range;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -61,6 +65,27 @@ const MIGRATIONS: &[Migration] = &[
         ALTER TABLE spotify_library ADD COLUMN origin TEXT NOT NULL DEFAULT 'saved_album';
         ALTER TABLE spotify_library ADD COLUMN disc_number INTEGER;
         ALTER TABLE spotify_library ADD COLUMN track_number INTEGER;
+    ",
+    },
+    Migration {
+        version: 3,
+        name: "DJ sessions, feedback, album track cache, library work_key (plan §7)",
+        sql: "
+        ALTER TABLE spotify_library ADD COLUMN work_key TEXT;
+        CREATE TABLE dj_sessions (
+            coordinator TEXT PRIMARY KEY, mood TEXT, constraints TEXT,
+            expires INTEGER NOT NULL);
+        CREATE TABLE feedback (
+            id INTEGER PRIMARY KEY, at INTEGER NOT NULL, work_key TEXT,
+            composer_key TEXT, performer TEXT, signal INTEGER NOT NULL);
+        CREATE INDEX feedback_by_work ON feedback (work_key, at);
+        CREATE INDEX feedback_by_composer ON feedback (composer_key, at);
+        CREATE INDEX feedback_by_performer ON feedback (performer, at);
+        CREATE TABLE album_tracks (
+            album_uri TEXT NOT NULL, disc_number INTEGER NOT NULL,
+            track_number INTEGER NOT NULL, source_uri TEXT NOT NULL,
+            title TEXT NOT NULL, duration_secs INTEGER, fetched_at INTEGER NOT NULL,
+            PRIMARY KEY (album_uri, disc_number, track_number));
     ",
     },
 ];
@@ -404,6 +429,7 @@ impl Store for SqliteStore {
                     e.origin.as_str().into(),
                     opt_value(e.disc_number.map(i64::from)),
                     opt_value(e.track_number.map(i64::from)),
+                    opt_value(e.work_key.as_deref()),
                 ]
             })
             .collect();
@@ -414,8 +440,8 @@ impl Store for SqliteStore {
             c.execute_many_with_params_in_transaction_sync(
                 "INSERT OR REPLACE INTO spotify_library \
                  (source_uri, title, artist, album, duration_secs, is_classical, added, \
-                  album_uri, album_artists, origin, disc_number, track_number) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                  album_uri, album_artists, origin, disc_number, track_number, work_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 &rows,
             )
             .map(drop)
@@ -425,7 +451,7 @@ impl Store for SqliteStore {
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError> {
         self.query(
             "SELECT source_uri, title, artist, album, duration_secs, is_classical, added, \
-             album_uri, album_artists, origin, disc_number, track_number \
+             album_uri, album_artists, origin, disc_number, track_number, work_key \
              FROM spotify_library ORDER BY added, source_uri",
             &[],
         )?
@@ -440,6 +466,7 @@ impl Store for SqliteStore {
                     .ok_or_else(|| backend(format!("unknown library origin {origin:?}")))?,
                 disc_number: small(10, "disc_number")?,
                 track_number: small(11, "track_number")?,
+                work_key: opt_text(r, 12)?,
                 track: Track {
                     source_uri: text(r, 0)?,
                     title: text(r, 1)?,
@@ -530,6 +557,173 @@ impl Store for SqliteStore {
             })
             .transpose()
     }
+
+    fn save_dj_session(&mut self, session: &DjSession) -> Result<(), StoreError> {
+        self.execute(
+            "INSERT OR REPLACE INTO dj_sessions (coordinator, mood, constraints, expires) \
+             VALUES (?1, ?2, ?3, ?4)",
+            &[
+                session.coordinator.as_str().into(),
+                opt_value(session.mood.as_deref()),
+                opt_value(session.constraints.as_deref()),
+                session.expires.into(),
+            ],
+        )
+    }
+
+    fn dj_session(&self, coordinator: &str) -> Result<Option<DjSession>, StoreError> {
+        self.query(
+            "SELECT coordinator, mood, constraints, expires FROM dj_sessions \
+             WHERE coordinator = ?1",
+            &[coordinator.into()],
+        )?
+        .first()
+        .map(dj_session_row)
+        .transpose()
+    }
+
+    fn dj_sessions(&self) -> Result<Vec<DjSession>, StoreError> {
+        self.query(
+            "SELECT coordinator, mood, constraints, expires FROM dj_sessions \
+             ORDER BY coordinator",
+            &[],
+        )?
+        .iter()
+        .map(dj_session_row)
+        .collect()
+    }
+
+    fn delete_dj_session(&mut self, coordinator: &str) -> Result<(), StoreError> {
+        self.execute(
+            "DELETE FROM dj_sessions WHERE coordinator = ?1",
+            &[coordinator.into()],
+        )
+    }
+
+    fn record_feedback(&mut self, feedback: &Feedback) -> Result<(), StoreError> {
+        self.execute(
+            "INSERT INTO feedback (at, work_key, composer_key, performer, signal) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            &[
+                feedback.at.into(),
+                opt_value(feedback.work_key.as_deref()),
+                opt_value(feedback.composer_key.as_deref()),
+                opt_value(feedback.performer.as_deref()),
+                feedback.signal.into(),
+            ],
+        )
+    }
+
+    fn feedback(
+        &self,
+        key: FeedbackKey<'_>,
+        window: Range<i64>,
+    ) -> Result<Vec<Feedback>, StoreError> {
+        // The column names are fixed here, never caller text.
+        let (sql, key) = match key {
+            FeedbackKey::Work(k) => (
+                "SELECT at, work_key, composer_key, performer, signal FROM feedback \
+                 WHERE work_key = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
+                k,
+            ),
+            FeedbackKey::Composer(k) => (
+                "SELECT at, work_key, composer_key, performer, signal FROM feedback \
+                 WHERE composer_key = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
+                k,
+            ),
+            FeedbackKey::Performer(k) => (
+                "SELECT at, work_key, composer_key, performer, signal FROM feedback \
+                 WHERE performer = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
+                k,
+            ),
+        };
+        self.query(sql, &[key.into(), window.start.into(), window.end.into()])?
+            .iter()
+            .map(|r| {
+                Ok(Feedback {
+                    at: int(r, 0)?,
+                    work_key: opt_text(r, 1)?,
+                    composer_key: opt_text(r, 2)?,
+                    performer: opt_text(r, 3)?,
+                    signal: int(r, 4)?,
+                })
+            })
+            .collect()
+    }
+
+    fn save_album_tracks(
+        &mut self,
+        album_uri: &str,
+        tracks: &[AlbumTrack],
+        fetched_at: i64,
+    ) -> Result<(), StoreError> {
+        let rows: Vec<Vec<SqliteValue>> = tracks
+            .iter()
+            .map(|t| {
+                vec![
+                    album_uri.into(),
+                    i64::from(t.disc_number).into(),
+                    i64::from(t.track_number).into(),
+                    t.source_uri.as_str().into(),
+                    t.title.as_str().into(),
+                    opt_value(t.duration_secs.map(i64::from)),
+                    fetched_at.into(),
+                ]
+            })
+            .collect();
+        self.in_transaction(|c| {
+            c.execute_with_params_sync(
+                "DELETE FROM album_tracks WHERE album_uri = ?1",
+                &[album_uri.into()],
+            )?;
+            if rows.is_empty() {
+                return Ok(());
+            }
+            c.execute_many_with_params_in_transaction_sync(
+                "INSERT OR REPLACE INTO album_tracks \
+                 (album_uri, disc_number, track_number, source_uri, title, duration_secs, \
+                  fetched_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                &rows,
+            )
+            .map(drop)
+        })
+    }
+
+    fn album_tracks(&self, album_uri: &str) -> Result<Option<CachedAlbum>, StoreError> {
+        let rows = self.query(
+            "SELECT disc_number, track_number, source_uri, title, duration_secs, fetched_at \
+             FROM album_tracks WHERE album_uri = ?1 ORDER BY disc_number, track_number",
+            &[album_uri.into()],
+        )?;
+        let Some(first) = rows.first() else {
+            return Ok(None);
+        };
+        let fetched_at = int(first, 5)?;
+        let tracks = rows
+            .iter()
+            .map(|r| {
+                Ok(AlbumTrack {
+                    disc_number: u32_of(int(r, 0)?, "disc_number")?,
+                    track_number: u32_of(int(r, 1)?, "track_number")?,
+                    source_uri: text(r, 2)?,
+                    title: text(r, 3)?,
+                    duration_secs: opt_int(r, 4)?
+                        .map(|d| u32_of(d, "duration_secs"))
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<_, StoreError>>()?;
+        Ok(Some(CachedAlbum { tracks, fetched_at }))
+    }
+}
+
+fn dj_session_row(r: &Row) -> Result<DjSession, StoreError> {
+    Ok(DjSession {
+        coordinator: text(r, 0)?,
+        mood: opt_text(r, 1)?,
+        constraints: opt_text(r, 2)?,
+        expires: int(r, 3)?,
+    })
 }
 
 #[cfg(test)]
@@ -554,7 +748,7 @@ mod tests {
         v1.close().unwrap();
 
         let store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].track.source_uri, "spotify:track:old");
@@ -567,6 +761,49 @@ mod tests {
             ),
             (None, None, None)
         );
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn v2_database_upgrades_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fsonos.db").to_string_lossy().into_owned();
+
+        // A database created before migration 3, with a v2 library row.
+        let v2 = SqliteStore::open_migrated(path.clone(), &MIGRATIONS[..2]).unwrap();
+        assert_eq!(v2.schema_versions().unwrap(), [1, 2]);
+        v2.execute(
+            "INSERT INTO spotify_library \
+             (source_uri, title, is_classical, added, album_uri, origin, disc_number, \
+              track_number) VALUES (?1, ?2, 1, 7, ?3, 'liked_track', 1, 2)",
+            &[
+                "spotify:track:m2".into(),
+                "II. Allegro".into(),
+                "spotify:album:a".into(),
+            ],
+        )
+        .unwrap();
+        v2.close().unwrap();
+
+        let mut store = SqliteStore::open(Path::new(&path)).unwrap();
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3]);
+        let lib = store.library().unwrap();
+        assert_eq!(lib.len(), 1);
+        assert_eq!(lib[0].origin, LibraryOrigin::LikedTrack);
+        assert_eq!(
+            (lib[0].track_number, lib[0].work_key.as_deref()),
+            (Some(2), None)
+        );
+        // The new tables are usable at once.
+        store
+            .save_dj_session(&DjSession {
+                coordinator: "RINCON_A".into(),
+                mood: None,
+                constraints: None,
+                expires: 9,
+            })
+            .unwrap();
+        assert_eq!(store.dj_sessions().unwrap().len(), 1);
         store.close().unwrap();
     }
 

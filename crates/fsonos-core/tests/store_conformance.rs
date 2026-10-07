@@ -2,7 +2,10 @@
 //! fsqlite in memory, and fsqlite on disk (including survival across close
 //! and reopen). Keeps the two implementations from drifting apart.
 
-use fsonos_core::store::{LibraryEntry, LibraryOrigin, MemStore, SqliteStore, Store};
+use fsonos_core::store::{
+    AlbumTrack, CachedAlbum, DjSession, Feedback, FeedbackKey, LibraryEntry, LibraryOrigin,
+    MemStore, SqliteStore, Store,
+};
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
 
@@ -37,6 +40,7 @@ fn entry(uri: &str, added: i64, artist: Option<&str>, classical: bool) -> Librar
         origin: LibraryOrigin::default(),
         disc_number: None,
         track_number: None,
+        work_key: None,
     }
 }
 
@@ -209,6 +213,7 @@ fn library_cache(s: &mut dyn Store) {
     movement.origin = LibraryOrigin::LikedTrack;
     movement.disc_number = Some(1);
     movement.track_number = Some(2);
+    movement.work_key = Some("mahler|symphony no 5".into());
     s.upsert_library(std::slice::from_ref(&movement)).unwrap();
     movement.origin = LibraryOrigin::Both;
     s.upsert_library(std::slice::from_ref(&movement)).unwrap();
@@ -243,11 +248,176 @@ fn render_params_and_auth(s: &mut dyn Store) {
     assert_eq!(s.auth("other").unwrap(), None);
 }
 
+fn session(coordinator: &str, mood: Option<&str>, expires: i64) -> DjSession {
+    DjSession {
+        coordinator: coordinator.into(),
+        mood: mood.map(str::to_string),
+        constraints: mood.map(|_| r#"{"avoid":["opera"]}"#.to_string()),
+        expires,
+    }
+}
+
+fn dj_sessions(s: &mut dyn Store) {
+    assert_eq!(s.dj_session("RINCON_B").unwrap(), None);
+    s.save_dj_session(&session("RINCON_B", Some("calm"), 500))
+        .unwrap();
+    s.save_dj_session(&session("RINCON_A", None, 400)).unwrap();
+    // Saving again replaces the coordinator's steering.
+    s.save_dj_session(&session("RINCON_B", Some("bright"), 900))
+        .unwrap();
+    assert_eq!(
+        s.dj_session("RINCON_B").unwrap(),
+        Some(session("RINCON_B", Some("bright"), 900))
+    );
+    assert_eq!(
+        s.dj_sessions().unwrap(),
+        [
+            session("RINCON_A", None, 400),
+            session("RINCON_B", Some("bright"), 900)
+        ]
+    );
+    s.delete_dj_session("RINCON_A").unwrap();
+    s.delete_dj_session("RINCON_NONE").unwrap();
+    assert_eq!(s.dj_sessions().unwrap().len(), 1);
+}
+
+fn fb(
+    at: i64,
+    work: Option<&str>,
+    composer: &str,
+    performer: Option<&str>,
+    signal: i64,
+) -> Feedback {
+    Feedback {
+        at,
+        work_key: work.map(str::to_string),
+        composer_key: Some(composer.into()),
+        performer: performer.map(str::to_string),
+        signal,
+    }
+}
+
+fn feedback(s: &mut dyn Store) {
+    let skip = fb(
+        100,
+        Some("mahler|symphony no 5"),
+        "mahler",
+        Some("Abbado"),
+        -1,
+    );
+    let like = fb(200, Some("bach|goldberg"), "bach", Some("Gould"), 2);
+    let late = fb(300, Some("mahler|symphony no 5"), "mahler", None, 1);
+    let tie = fb(300, None, "mahler", Some("Abbado"), -2);
+    for f in [&late, &skip, &like, &tie] {
+        s.record_feedback(f).unwrap();
+    }
+    let all_time = 0..i64::MAX;
+    assert_eq!(
+        s.feedback(FeedbackKey::Work("mahler|symphony no 5"), all_time.clone())
+            .unwrap(),
+        [skip.clone(), late.clone()]
+    );
+    // Oldest first; equal times keep recording order.
+    assert_eq!(
+        s.feedback(FeedbackKey::Composer("mahler"), all_time.clone())
+            .unwrap(),
+        [skip.clone(), late.clone(), tie.clone()]
+    );
+    assert_eq!(
+        s.feedback(FeedbackKey::Performer("Abbado"), all_time.clone())
+            .unwrap(),
+        [skip.clone(), tie.clone()]
+    );
+    // The window's end is exclusive.
+    assert_eq!(
+        s.feedback(FeedbackKey::Composer("mahler"), 100..300)
+            .unwrap(),
+        [skip]
+    );
+    assert_eq!(
+        s.feedback(FeedbackKey::Composer("mahler"), 300..301)
+            .unwrap(),
+        [late, tie]
+    );
+    assert_eq!(
+        s.feedback(FeedbackKey::Composer("bach"), 201..i64::MAX)
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(
+        s.feedback(FeedbackKey::Work("unknown"), all_time)
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+fn track(disc: u32, number: u32, title: &str) -> AlbumTrack {
+    AlbumTrack {
+        disc_number: disc,
+        track_number: number,
+        source_uri: format!("spotify:track:{disc}-{number}"),
+        title: title.into(),
+        duration_secs: (number != 3).then_some(600 + number),
+    }
+}
+
+fn album_tracks(s: &mut dyn Store) {
+    let album = "spotify:album:sym5";
+    assert_eq!(s.album_tracks(album).unwrap(), None);
+    s.save_album_tracks(
+        album,
+        &[
+            track(2, 1, "IV. Adagietto"),
+            track(1, 2, "II. Stürmisch bewegt"),
+            track(1, 1, "I. Trauermarsch"),
+            track(1, 2, "II. Stürmisch bewegt, mit größter Vehemenz"),
+            track(1, 3, "III. Scherzo"),
+        ],
+        1_000,
+    )
+    .unwrap();
+    s.save_album_tracks("spotify:album:other", &[track(1, 1, "Aria")], 1_001)
+        .unwrap();
+    assert_eq!(
+        s.album_tracks(album).unwrap(),
+        Some(CachedAlbum {
+            tracks: vec![
+                track(1, 1, "I. Trauermarsch"),
+                track(1, 2, "II. Stürmisch bewegt, mit größter Vehemenz"),
+                track(1, 3, "III. Scherzo"),
+                track(2, 1, "IV. Adagietto"),
+            ],
+            fetched_at: 1_000,
+        })
+    );
+    // A refetch replaces the whole list.
+    s.save_album_tracks(album, &[track(1, 1, "I.")], 2_000)
+        .unwrap();
+    let refetched = s.album_tracks(album).unwrap().unwrap();
+    assert_eq!((refetched.tracks.len(), refetched.fetched_at), (1, 2_000));
+    // An empty list forgets the album; others are untouched.
+    s.save_album_tracks(album, &[], 3_000).unwrap();
+    assert_eq!(s.album_tracks(album).unwrap(), None);
+    assert_eq!(
+        s.album_tracks("spotify:album:other")
+            .unwrap()
+            .unwrap()
+            .tracks
+            .len(),
+        1
+    );
+}
+
 fn suite(s: &mut dyn Store) {
     play_history(s);
     inventory_cache(s);
     library_cache(s);
     render_params_and_auth(s);
+    dj_sessions(s);
+    feedback(s);
+    album_tracks(s);
 }
 
 #[test]
@@ -259,7 +429,7 @@ fn mem_store_conforms() {
 fn sqlite_in_memory_conforms() {
     let mut s = SqliteStore::open_in_memory().unwrap();
     suite(&mut s);
-    assert_eq!(s.schema_versions().unwrap(), [1, 2]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3]);
     s.close().unwrap();
 }
 
@@ -274,7 +444,7 @@ fn sqlite_file_survives_close_and_reopen() {
 
     // Reopening re-runs no migrations and sees every committed write.
     let s = SqliteStore::open(&path).unwrap();
-    assert_eq!(s.schema_versions().unwrap(), [1, 2]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3]);
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
     assert_eq!(s.cached_groups("HH_S2").unwrap().len(), 1);
@@ -286,6 +456,27 @@ fn sqlite_file_survives_close_and_reopen() {
     assert_eq!(
         s.auth("spotify").unwrap().unwrap().refresh_token,
         "refresh-2"
+    );
+    assert_eq!(
+        s.dj_session("RINCON_B").unwrap(),
+        Some(session("RINCON_B", Some("bright"), 900))
+    );
+    assert_eq!(
+        s.feedback(FeedbackKey::Composer("mahler"), 0..i64::MAX)
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        s.album_tracks("spotify:album:other")
+            .unwrap()
+            .unwrap()
+            .fetched_at,
+        1_001
+    );
+    assert_eq!(
+        s.library().unwrap().last().unwrap().work_key.as_deref(),
+        Some("mahler|symphony no 5")
     );
 
     // Dropping without close is also safe: the WAL carries committed writes.
