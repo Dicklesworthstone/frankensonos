@@ -66,6 +66,36 @@ deliberately and by hand if ever:
   prerogative and is not swarm work, not committed to this repo, and never
   includes captured secrets or personal data.)
 
+## Owner-authorized reverse-engineering lane (exception, 2026-10-06)
+
+Per Rule 0 (direct instructions), the owner has **explicitly and directly
+instructed** a reverse-engineering lane, superseding the swarm-default
+prohibitions above **only as enumerated here**:
+
+- **Passive observation of the owner's own LAN**: capturing and analyzing
+  traffic between the owner's own Sonos devices, apps, and controllers
+  (SSDP, SOAP, GENA, SMAPI) with ordinary tools (`tcpdump`, `tshark`) to
+  document the wire protocols. All captures are stored locally in a
+  git-ignored directory and are never committed.
+- **Static analysis of Sonos firmware and software binaries** for
+  interoperability understanding (update mechanism, service architecture,
+  protocol handlers), using disassemblers and debuggers. Findings are
+  committed only as scrubbed prose documentation — never decompiled code,
+  copyrighted firmware images, keys, or certificates.
+- **Protocol parameters observed on the owner's own system** (e.g. SMAPI
+  `sid`/`flags`/`sn` values, household and device identifiers): may be used
+  at runtime to control the owner's own devices, learned at runtime from the
+  owner's own devices — but never committed to this public repository.
+
+These remain prohibited even under this exception:
+
+- **Flashing, patching, or modifying device firmware** — brick risk on
+  hardware the owner relies on. Firmware *study* is authorized; *writing* to
+  devices stays human-led, one explicit approval per operation.
+- **Defeating DRM or access controls on third-party services**, or accessing
+  any account or device the owner does not control.
+- **Committing** captures, secrets, serials, IPs, MACs, household IDs, or
+  firmware images to git. The privacy rule below binds this lane unchanged.
 ## Privacy / publishability rule
 
 This repository is **public**. No details of any one person's home network,

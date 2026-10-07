@@ -19,13 +19,27 @@ discovery, UPnP/SOAP control, GENA events, DIDL/URI construction, Spotify **Web
 API library reads** (owner's own account), the daemon, API, MCP server, CLI, DJ,
 and the Tailscale deployment.
 
-Agents do **not** (these are out of the swarm's backlog): reflash or modify
-device firmware; reverse-engineer or patch Sonos binaries; defeat or probe
-authentication/encryption/DRM/access controls; extract or re-use any secrets
-beyond the owner's own OAuth tokens in the local cache; target anything the
-owner does not control; or do network capture as an engineering task. If a task
-reads as "attack something" or "handle someone's secrets", it is out of scope —
-stop and ask. None of the project's goals require crossing these lines.
+A reverse-engineering lane **is authorized** by the owner (see the exception in
+[`docs/SCOPE.md`](docs/SCOPE.md)): agents may document the protocols, do static
+analysis of Sonos firmware/binaries for interoperability understanding, passively
+capture the owner's **own** LAN traffic, probe the owner's **own** devices, and
+use parameters observed on the owner's own system at runtime.
+
+The hard rules that still bind every lane, including RE:
+- **Never commit real site data or secrets to this public repo** — no real IPs,
+  MAC addresses, serial numbers, household IDs, tokens, keys, certificates,
+  firmware images, or packet captures. Public docs/fixtures use placeholders and
+  public protocol constants only; real captures and observed parameters live in
+  a local, git-ignored area and/or are learned at runtime.
+- **No doxing** the owner or anyone else.
+- **Firmware *study* is in scope; *writing*/flashing/patching a device is not** —
+  brick risk on hardware the owner relies on, so it stays human-led with one
+  explicit owner approval per operation.
+- Do not target anything the owner does not control, and do not defeat DRM or
+  access controls on third-party services.
+
+If a task reads as "handle someone's secrets," "dox the owner," or "write to a
+device," stop and ask.
 
 ## No Deletion Or Destructive Git
 
