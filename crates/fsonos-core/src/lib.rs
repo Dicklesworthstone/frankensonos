@@ -11,6 +11,7 @@
 //! * [`playback`] keeps live playback state from GENA events.
 //! * [`events`] keeps GENA subscriptions alive and routes their NOTIFYs.
 //! * [`reconcile`] refreshes the inventory on a schedule and tracks player health.
+//! * [`heal`] retries a command once after a player moved or its coordinator changed.
 //! * [`favorites`] lists, finds, and plays Sonos favorites.
 //! * [`search`] ranks the cached library and favorites against a query.
 //! * [`control`] carries out a player-addressed command over a
@@ -32,6 +33,7 @@ pub mod events;
 pub mod fade;
 pub mod favorites;
 pub mod grouping;
+pub mod heal;
 pub mod inventory;
 pub mod playback;
 pub mod policy;
