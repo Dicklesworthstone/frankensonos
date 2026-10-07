@@ -61,6 +61,14 @@ guess.)
     required for Spotify). Also reported by the community for stale service
     linkage.
 
+
+S2 additionally exposes a cloud-style REST API on **TCP 1443** (TLS,
+self-signed): probing `/api/v1/players/local/info` on the owner's One returns
+`403 ERROR_API_KEY_VALIDATION_FAILED` — key-gated, unlike the open :1400
+UPnP surface. FrankenSonos therefore standardizes on :1400 for both
+generations (the WS API some S2 projects use was not listening on the
+owner's players).
+
 ## 4. Spotify rendering (verified live on both households, 2026-10-07)
 
 Sonos renders Spotify through its SMAPI integration, not the Spotify Web API.
@@ -205,7 +213,51 @@ apostrophes) — normalize quotes when matching by name.
 
 ## 9. Firmware (study lane)
 
-- Builds observed: S1 `57.23-74170` (frozen line), S2 `86.10-80260` and
-  `97.1-80312`. `/status/VERSION` returns `<VER>-<BUILD>`.
-- Update acquisition and image analysis are tracked in bead
-  `frankensonos-re-firmware-kds`; findings land here as prose only.
+Builds observed: S1 `57.23-74170` (frozen line), S2 `86.10-80260` and
+`97.1-80312`. `/status/VERSION` returns `<VER>-<BUILD>`. Analysis tracked in
+bead `frankensonos-re-firmware-kds`; images stay local (gitignored).
+
+Update mechanism (verified 2026-10-07):
+
+- Players learn update URLs out of band; the `ZoneGroupTopology` initial
+  NOTIFY carries `AvailableSoftwareUpdate` → `<UpdateItem … UpdateURL=…
+  ManifestURL=… Swgen="2"/>`. The S1 household's element is empty (frozen
+  line); the S2 household's pointed at the current GA train.
+- Manifests are plain-HTTP XML at
+  `http://update.sonos.com/firmware/Prod/<train>-<token>-<GA|RC|LR>-<n>/update.upm`:
+  `update_manifest` with `system_version`, `base_url` containing a `^<ver>`
+  filename template, `swgen`, and per-model `<image model=…>URL</image>`
+  upgrade-chain entries (players step through intermediate builds; e.g.
+  34.16 → 55.1 → 57.5/57.19 → 73.0 → 86.10 → current). The manifest for the
+  owner's S2 GA train listed 61 images incl. controller `.exe`/`.dmg`,
+  app-store redirects, and headphone DFU payloads.
+- Images: `http://update-firmware.sonos.com/firmware/Prod/<ver>-v<mkt>-<token>-<GA|RC|LR>-<n>/<ver>-1-<model>.upd`,
+  no auth, CloudFront-fronted, old builds not garbage-collected. Numeric
+  model ids (Play:1 = 12, One = 13, Play:5 Gen1 = 5). Both the owner's
+  S1 (`57.23-74170-1-5.upd`, 2.2 MB) and S2 (`86.10-80260-1-12.upd`,
+  7.5 MB) images were downloaded and parsed.
+- `.upd` container (fully decoded): a sequence of records
+  `[magic=0x35167F49 LE][type u32][total_len u32][reserved u32][payload]`.
+  Record type 1 = header (major/minor/build u32s, e.g. 57/23/74170);
+  type 21 = plaintext patch-train list (`2021_11_PATCHES:` …);
+  type 22 = certificate bundle (plaintext CA roots); types 3/4/6 = payloads;
+  type 23 = a **plain tar overlay** of the rootfs; type 17 = trailer.
+- S2 86.10 payload (type 23) extracts to `bin/anacapad`: the 3 MB zone
+  daemon, ELF 32-bit MSB MIPS32 (the Play:1 is big-endian MIPS), stripped.
+  Strings reveal the service architecture (`oc/zone/common/*.cxx`):
+  `device_description`, `upnpeventing_sender/source` (GENA), `mdns_*`
+  (mDNS discovery runs alongside SSDP and reconciles with it),
+  `websocketserver` (the S2 local WS API), `museclient_authhelper`
+  ("Muse" = the Sonos cloud; hence `MuseHouseholdId` in ZGT events).
+  The `SA_RINCON%u_X_#Svc%u-0-Token` format strings live in the daemon —
+  the cdudn descriptor is validated/generated server-side, confirming why a
+  wrong desc fails playback with 800. Config flags found:
+  `useLegacySpotifySmapiPlayback`, `enableSpotifySMAPIVolumeNormalization`.
+- S1 57.23 payloads (types 4/6) measure 8.00 bits/byte entropy with no known
+  compression magic — encrypted with device-family keys, per published
+  research (NCC Group BH-US 2024; blasty/sonos `sonostool`). Decryption is
+  **not pursued**: unneeded for interoperability, and key extraction crosses
+  into defeating protection measures.
+- `ZoneGroupTopology` also exposes `BeginSoftwareUpdate(UpdateURL, Flags,
+  ExtraOptions)` — the install path. **Never called by this project**:
+  flashing is human-led per `docs/SCOPE.md`.
