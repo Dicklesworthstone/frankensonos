@@ -639,7 +639,7 @@ fn gena_rcs_initial_s1_carries_full_render_state() {
 fn gena_zgt_s2_carries_update_oracle_and_vanished_devices() {
     let zgs_escaped = elem_text(GENA_ZGT_S2, "ZoneGroupState").expect("ZoneGroupState property");
     let state = topology::parse_zone_group_state(&xml_unescape(zgs_escaped)).unwrap();
-    assert!(!state.groups.is_empty());
+    assert_eq!(state.groups.len(), 4);
     assert_eq!(state.vanished.len(), 3, "three offline players remembered");
     // The AvailableSoftwareUpdate property is the firmware-URL oracle.
     let update = elem_text(GENA_ZGT_S2, "AvailableSoftwareUpdate").unwrap();
