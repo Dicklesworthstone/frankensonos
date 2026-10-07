@@ -10,6 +10,7 @@
 use super::{
     Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback,
     FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction, PlayRecord, Store, StoreError,
+    StoredScene,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -98,6 +99,14 @@ const MIGRATIONS: &[Migration] = &[
             result TEXT NOT NULL, before_state TEXT, undo_of INTEGER);
         CREATE INDEX actions_by_client ON actions (client, id);
         CREATE INDEX actions_by_time ON actions (at);
+    ",
+    },
+    Migration {
+        version: 5,
+        name: "scenes: named house states (plan §7)",
+        sql: "
+        CREATE TABLE scenes (
+            name TEXT PRIMARY KEY, spec TEXT NOT NULL, updated INTEGER NOT NULL);
     ",
     },
 ];
@@ -844,6 +853,49 @@ fn action_row(r: &Row) -> Result<LoggedAction, StoreError> {
         id: int(r, 0)?,
         action: Action {
             at: int(r, 1)?,
+
+    fn save_scene(&mut self, scene: &StoredScene) -> Result<(), StoreError> {
+        self.execute(
+            "INSERT OR REPLACE INTO scenes (name, spec, updated) VALUES (?1, ?2, ?3)",
+            &[
+                scene.name.as_str().into(),
+                scene.spec.as_str().into(),
+                scene.updated.into(),
+            ],
+        )
+    }
+
+    fn scene(&self, name: &str) -> Result<Option<StoredScene>, StoreError> {
+        self.query(
+            "SELECT name, spec, updated FROM scenes WHERE name = ?1",
+            &[name.into()],
+        )?
+        .first()
+        .map(scene_row)
+        .transpose()
+    }
+
+    fn scenes(&self) -> Result<Vec<StoredScene>, StoreError> {
+        self.query("SELECT name, spec, updated FROM scenes ORDER BY name", &[])?
+            .iter()
+            .map(scene_row)
+            .collect()
+    }
+
+    fn delete_scene(&mut self, name: &str) -> Result<bool, StoreError> {
+        let gone = self.in_transaction(|c| {
+            c.execute_with_params_sync("DELETE FROM scenes WHERE name = ?1", &[name.into()])
+        })?;
+        Ok(gone > 0)
+    }
+}
+
+fn scene_row(r: &Row) -> Result<StoredScene, StoreError> {
+    Ok(StoredScene {
+        name: text(r, 0)?,
+        spec: text(r, 1)?,
+        updated: int(r, 2)?,
+    })
             client: text(r, 2)?,
             surface: text(r, 3)?,
             intent: text(r, 4)?,
@@ -886,7 +938,7 @@ mod tests {
         v1.close().unwrap();
 
         let store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].track.source_uri, "spotify:track:old");
@@ -924,7 +976,7 @@ mod tests {
         v2.close().unwrap();
 
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].origin, LibraryOrigin::LikedTrack);

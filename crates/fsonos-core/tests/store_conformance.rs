@@ -4,7 +4,7 @@
 
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, CachedAlbum, DjSession, Feedback, FeedbackKey, LibraryEntry,
-    LibraryOrigin, MemStore, SqliteStore, Store,
+    LibraryOrigin, MemStore, SqliteStore, Store, StoredScene,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -503,6 +503,33 @@ fn action_log(s: &mut dyn Store) {
     assert!(next > u1);
 }
 
+fn scene(name: &str, spec: &str, updated: i64) -> StoredScene {
+    StoredScene {
+        name: name.into(),
+        spec: spec.into(),
+        updated,
+    }
+}
+
+fn scenes(s: &mut dyn Store) {
+    assert_eq!(s.scenes().unwrap(), []);
+    assert_eq!(s.scene("Evening").unwrap(), None);
+    s.save_scene(&scene("Evening", "{\"v\":1}", 100)).unwrap();
+    s.save_scene(&scene("Dinner", "{}", 50)).unwrap();
+    // Saving again replaces; names are exact.
+    s.save_scene(&scene("Evening", "{\"v\":2}", 200)).unwrap();
+    assert_eq!(s.scene("evening").unwrap(), None);
+    assert_eq!(
+        s.scene("Evening").unwrap(),
+        Some(scene("Evening", "{\"v\":2}", 200))
+    );
+    let names: Vec<String> = s.scenes().unwrap().into_iter().map(|x| x.name).collect();
+    assert_eq!(names, ["Dinner", "Evening"]);
+    assert!(s.delete_scene("Dinner").unwrap());
+    assert!(!s.delete_scene("Dinner").unwrap());
+    assert_eq!(s.scenes().unwrap(), [scene("Evening", "{\"v\":2}", 200)]);
+}
+
 fn suite(s: &mut dyn Store) {
     play_history(s);
     inventory_cache(s);
@@ -512,6 +539,7 @@ fn suite(s: &mut dyn Store) {
     feedback(s);
     album_tracks(s);
     action_log(s);
+    scenes(s);
 }
 
 #[test]
@@ -523,7 +551,7 @@ fn mem_store_conforms() {
 fn sqlite_in_memory_conforms() {
     let mut s = SqliteStore::open_in_memory().unwrap();
     suite(&mut s);
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5]);
     s.close().unwrap();
 }
 
@@ -538,7 +566,7 @@ fn sqlite_file_survives_close_and_reopen() {
 
     // Reopening re-runs no migrations and sees every committed write.
     let s = SqliteStore::open(&path).unwrap();
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5]);
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
     assert_eq!(s.cached_groups("HH_S2").unwrap().len(), 1);

@@ -18,6 +18,7 @@
 //!   [`fsonos_proto::Transport`].
 //! * [`actions`] logs every mutating request and undoes the last one.
 //! * [`announce`] plays announcements and chimes, then puts the music back.
+//! * [`scenes`] saves named house states and applies them with the fewest changes.
 //! * [`doctor`] runs diagnostic checks and reports named failures with fixes.
 //! * [`policy`] bounds what each client may do and how loud (caps, quiet
 //!   hours, tool allowlists); [`clock`] makes its time testable.
@@ -42,6 +43,7 @@ pub mod playback;
 pub mod policy;
 pub mod reconcile;
 pub mod rooms;
+pub mod scenes;
 pub mod search;
 pub mod snapshot;
 pub mod store;

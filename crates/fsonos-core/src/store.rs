@@ -116,6 +116,15 @@ pub struct DjSession {
     pub expires: i64,
 }
 
+/// A saved scene: its spec is the scene as JSON (see `crate::scenes`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredScene {
+    pub name: String,
+    pub spec: String,
+    /// When it was last saved, in unix seconds.
+    pub updated: i64,
+}
+
 /// One piece of listening feedback about something the DJ played.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Feedback {
@@ -338,6 +347,18 @@ pub trait Store {
     /// Drop actions older than `older_than` (unix seconds) and all but the
     /// newest `keep`; returns how many went.
     fn prune_actions(&mut self, keep: usize, older_than: i64) -> Result<usize, StoreError>;
+
+    /// Insert or replace the scene called `scene.name`.
+    fn save_scene(&mut self, scene: &StoredScene) -> Result<(), StoreError>;
+
+    /// The scene called exactly `name`, if any.
+    fn scene(&self, name: &str) -> Result<Option<StoredScene>, StoreError>;
+
+    /// Every scene, ordered by name.
+    fn scenes(&self) -> Result<Vec<StoredScene>, StoreError>;
+
+    /// Forget the scene called exactly `name`; whether there was one.
+    fn delete_scene(&mut self, name: &str) -> Result<bool, StoreError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -363,6 +384,7 @@ pub struct MemStore {
     feedback: Vec<Feedback>,
     album_tracks: BTreeMap<String, (TracksByPosition, i64)>,
     actions: Vec<LoggedAction>,
+    scenes: BTreeMap<String, StoredScene>,
 }
 
 impl Store for MemStore {
@@ -616,5 +638,22 @@ impl Store for MemStore {
             index > excess && a.action.at >= older_than
         });
         Ok(before - self.actions.len())
+    }
+
+    fn save_scene(&mut self, scene: &StoredScene) -> Result<(), StoreError> {
+        self.scenes.insert(scene.name.clone(), scene.clone());
+        Ok(())
+    }
+
+    fn scene(&self, name: &str) -> Result<Option<StoredScene>, StoreError> {
+        Ok(self.scenes.get(name).cloned())
+    }
+
+    fn scenes(&self) -> Result<Vec<StoredScene>, StoreError> {
+        Ok(self.scenes.values().cloned().collect())
+    }
+
+    fn delete_scene(&mut self, name: &str) -> Result<bool, StoreError> {
+        Ok(self.scenes.remove(name).is_some())
     }
 }
