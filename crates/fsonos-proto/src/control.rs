@@ -308,6 +308,54 @@ fn volume_arg(r: &SoapResponse, name: &str) -> Result<u8, ProtoError> {
     u8::try_from(v.min(100)).map_err(|_| ProtoError::Malformed(format!("{name} out of range: {v}")))
 }
 
+/// How a [`ramp_to_volume`] gets to its target. The player picks the speed;
+/// RampToVolume takes no duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RampType {
+    /// Linear from the current volume (the sleep-timer fade).
+    SleepTimer,
+    /// Drops to 0, pauses, then ramps up (the alarm fade-in).
+    Alarm,
+    /// Drops to 0, then ramps up quickly.
+    Autoplay,
+}
+
+impl RampType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SleepTimer => "SLEEP_TIMER_RAMP_TYPE",
+            Self::Alarm => "ALARM_RAMP_TYPE",
+            Self::Autoplay => "AUTOPLAY_RAMP_TYPE",
+        }
+    }
+}
+
+/// Let the player fade itself to `level`; returns the ramp time in seconds
+/// it reports. Cancel a ramp by sending [`set_volume`].
+pub fn ramp_to_volume<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    ramp: RampType,
+    level: u8,
+) -> Result<u32, ProtoError> {
+    let level = level.min(100).to_string();
+    call(
+        t,
+        host,
+        &RENDERING_CONTROL,
+        "RampToVolume",
+        &[
+            INSTANCE,
+            MASTER,
+            ("RampType", ramp.as_str()),
+            ("DesiredVolume", &level),
+            ("ResetVolumeAfter", "0"),
+            ("ProgramURI", ""),
+        ],
+    )?
+    .require_u32("RampTime")
+}
+
 // ---------------------------------------------------------------- reads
 
 /// `GetTransportInfo`.
@@ -560,6 +608,20 @@ mod tests {
         assert!(sent[0].1.ends_with("#SnapshotGroupVolume\""));
         assert_eq!(sent[1].0, "/MediaRenderer/GroupRenderingControl/Control");
         assert!(sent[1].1.ends_with("#SetRelativeGroupVolume\""));
+    }
+
+    #[test]
+    fn ramp_to_volume_names_the_ramp_type() {
+        let t = Canned::new("<RampTime>12</RampTime>");
+        assert_eq!(
+            ramp_to_volume(&t, host(), RampType::SleepTimer, 20).unwrap(),
+            12
+        );
+        let body = t.last().2;
+        assert!(body.contains(
+            "<RampType>SLEEP_TIMER_RAMP_TYPE</RampType><DesiredVolume>20</DesiredVolume>"
+        ));
+        assert!(body.contains("<ResetVolumeAfter>0</ResetVolumeAfter><ProgramURI></ProgramURI>"));
     }
 
     #[test]
