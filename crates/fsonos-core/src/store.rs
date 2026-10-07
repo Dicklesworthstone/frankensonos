@@ -167,6 +167,47 @@ pub struct CachedAlbum {
     pub fetched_at: i64,
 }
 
+/// A mutating request, as the action log records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Action {
+    /// Unix seconds.
+    pub at: i64,
+    /// Who asked: the house-policy client key (`cli`, `mcp-stdio`, a tailnet
+    /// principal, `unknown`, ...).
+    pub client: String,
+    /// The surface that carried it (`cli`, `http`, `mcp`).
+    pub surface: String,
+    /// What was asked, as the surface describes it.
+    pub intent: String,
+    /// The policy's verdict: `allow`, `clamp: <reason>` or `deny: <reason>`.
+    pub decision: String,
+    /// What happened: the outcome, or the failure.
+    pub result: String,
+    /// The affected zones before the action (serialized snapshots), or
+    /// `None` when it cannot be undone (denied, or nothing captured).
+    pub before_state: Option<String>,
+    /// For an undo: the id of the action it reversed.
+    pub undo_of: Option<i64>,
+}
+
+/// An [`Action`] with the id the store gave it (ids ascend with time).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoggedAction {
+    pub id: i64,
+    pub action: Action,
+}
+
+/// Which logged actions to list, newest first.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActionFilter {
+    /// Only this client's.
+    pub client: Option<String>,
+    /// Only those at or after this time (unix seconds).
+    pub since: Option<i64>,
+    /// At most this many; 0 means no limit.
+    pub limit: usize,
+}
+
 /// Persisted state the daemon reads/writes across restarts.
 pub trait Store {
     /// Append a play of `source_uri` in `zone` at `played_at`.
@@ -279,6 +320,24 @@ pub trait Store {
 
     /// `album_uri`'s cached track list, if it has one.
     fn album_tracks(&self, album_uri: &str) -> Result<Option<CachedAlbum>, StoreError>;
+
+    /// Log `action`; returns its id.
+    fn record_action(&mut self, action: &Action) -> Result<i64, StoreError>;
+
+    /// Logged actions matching `filter`, newest first.
+    fn recent_actions(&self, filter: &ActionFilter) -> Result<Vec<LoggedAction>, StoreError>;
+
+    /// The newest action that can still be undone (optionally only
+    /// `client`'s): it has a before-state, is not itself an undo, and has not
+    /// been undone.
+    fn last_undoable_action(
+        &self,
+        client: Option<&str>,
+    ) -> Result<Option<LoggedAction>, StoreError>;
+
+    /// Drop actions older than `older_than` (unix seconds) and all but the
+    /// newest `keep`; returns how many went.
+    fn prune_actions(&mut self, keep: usize, older_than: i64) -> Result<usize, StoreError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -303,6 +362,7 @@ pub struct MemStore {
     dj_sessions: BTreeMap<String, DjSession>,
     feedback: Vec<Feedback>,
     album_tracks: BTreeMap<String, (TracksByPosition, i64)>,
+    actions: Vec<LoggedAction>,
 }
 
 impl Store for MemStore {
@@ -496,5 +556,65 @@ impl Store for MemStore {
                 tracks: tracks.values().cloned().collect(),
                 fetched_at: *fetched_at,
             }))
+    }
+
+    fn record_action(&mut self, action: &Action) -> Result<i64, StoreError> {
+        // Like an INTEGER PRIMARY KEY: one past the largest id present.
+        let id = self.actions.last().map_or(1, |a| a.id + 1);
+        self.actions.push(LoggedAction {
+            id,
+            action: action.clone(),
+        });
+        Ok(id)
+    }
+
+    fn recent_actions(&self, filter: &ActionFilter) -> Result<Vec<LoggedAction>, StoreError> {
+        let limit = if filter.limit == 0 {
+            usize::MAX
+        } else {
+            filter.limit
+        };
+        Ok(self
+            .actions
+            .iter()
+            .rev()
+            .filter(|a| filter.client.as_ref().is_none_or(|c| a.action.client == *c))
+            .filter(|a| filter.since.is_none_or(|t| a.action.at >= t))
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
+    fn last_undoable_action(
+        &self,
+        client: Option<&str>,
+    ) -> Result<Option<LoggedAction>, StoreError> {
+        let undone: Vec<i64> = self
+            .actions
+            .iter()
+            .filter_map(|a| a.action.undo_of)
+            .collect();
+        Ok(self
+            .actions
+            .iter()
+            .rev()
+            .find(|a| {
+                a.action.before_state.is_some()
+                    && a.action.undo_of.is_none()
+                    && !undone.contains(&a.id)
+                    && client.is_none_or(|c| a.action.client == c)
+            })
+            .cloned())
+    }
+
+    fn prune_actions(&mut self, keep: usize, older_than: i64) -> Result<usize, StoreError> {
+        let before = self.actions.len();
+        let excess = before.saturating_sub(keep);
+        let mut index = 0;
+        self.actions.retain(|a| {
+            index += 1;
+            index > excess && a.action.at >= older_than
+        });
+        Ok(before - self.actions.len())
     }
 }

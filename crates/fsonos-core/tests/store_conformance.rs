@@ -3,8 +3,8 @@
 //! and reopen). Keeps the two implementations from drifting apart.
 
 use fsonos_core::store::{
-    AlbumTrack, CachedAlbum, DjSession, Feedback, FeedbackKey, LibraryEntry, LibraryOrigin,
-    MemStore, SqliteStore, Store,
+    Action, ActionFilter, AlbumTrack, CachedAlbum, DjSession, Feedback, FeedbackKey, LibraryEntry,
+    LibraryOrigin, MemStore, SqliteStore, Store,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -410,6 +410,99 @@ fn album_tracks(s: &mut dyn Store) {
     );
 }
 
+fn act(at: i64, client: &str, before: Option<&str>, undo_of: Option<i64>) -> Action {
+    Action {
+        at,
+        client: client.into(),
+        surface: "mcp".into(),
+        intent: format!("set_volume Kitchen at {at}"),
+        decision: if before.is_some() {
+            "allow"
+        } else {
+            "deny: capped"
+        }
+        .into(),
+        result: "done".into(),
+        before_state: before.map(str::to_string),
+        undo_of,
+    }
+}
+
+fn ids(actions: &[fsonos_core::store::LoggedAction]) -> Vec<i64> {
+    actions.iter().map(|a| a.id).collect()
+}
+
+fn recent(s: &dyn Store, client: Option<&str>, since: Option<i64>, limit: usize) -> Vec<i64> {
+    ids(&s
+        .recent_actions(&ActionFilter {
+            client: client.map(str::to_string),
+            since,
+            limit,
+        })
+        .unwrap())
+}
+
+fn undoable(s: &dyn Store, client: Option<&str>) -> Option<i64> {
+    s.last_undoable_action(client).unwrap().map(|a| a.id)
+}
+
+fn action_log(s: &mut dyn Store) {
+    assert_eq!(undoable(s, None), None);
+    let a1 = s
+        .record_action(&act(100, "tag:agent", Some("[s1]"), None))
+        .unwrap();
+    let a2 = s
+        .record_action(&act(110, "cli", Some("[s2]"), None))
+        .unwrap();
+    // A denial is logged but has nothing to undo.
+    let denied = s.record_action(&act(120, "tag:agent", None, None)).unwrap();
+    assert!(a1 < a2 && a2 < denied);
+
+    assert_eq!(recent(s, None, None, 0), [denied, a2, a1]);
+    assert_eq!(recent(s, Some("tag:agent"), None, 0), [denied, a1]);
+    assert_eq!(recent(s, None, Some(110), 0), [denied, a2]);
+    assert_eq!(recent(s, None, None, 1), [denied]);
+    assert_eq!(recent(s, Some("nobody"), None, 0), Vec::<i64>::new());
+
+    assert_eq!(undoable(s, None), Some(a2));
+    assert_eq!(undoable(s, Some("tag:agent")), Some(a1));
+    assert_eq!(undoable(s, Some("nobody")), None);
+
+    // Undoing a2 makes a1 the next undoable; undos are never undoable.
+    let u2 = s
+        .record_action(&act(130, "cli", Some("[s3]"), Some(a2)))
+        .unwrap();
+    assert_eq!(undoable(s, None), Some(a1));
+    let u1 = s
+        .record_action(&act(140, "tag:agent", Some("[s4]"), Some(a1)))
+        .unwrap();
+    assert_eq!(undoable(s, None), None);
+
+    let newest = s
+        .recent_actions(&ActionFilter {
+            limit: 1,
+            ..ActionFilter::default()
+        })
+        .unwrap();
+    assert_eq!(newest[0].id, u1);
+    assert_eq!(
+        newest[0].action,
+        act(140, "tag:agent", Some("[s4]"), Some(a1))
+    );
+
+    // Retention: older than 115 goes (a1, a2), then all but the newest 2.
+    assert_eq!(s.prune_actions(3, 115).unwrap(), 2);
+    assert_eq!(recent(s, None, None, 0), [u1, u2, denied]);
+    assert_eq!(s.prune_actions(2, 0).unwrap(), 1);
+    assert_eq!(recent(s, None, None, 0), [u1, u2]);
+    assert_eq!(s.prune_actions(2, 0).unwrap(), 0);
+    // Ids keep ascending past pruned rows.
+    let next = s
+        .record_action(&act(150, "cli", Some("[s5]"), None))
+        .unwrap();
+    assert!(next > u1);
+}
+
 fn suite(s: &mut dyn Store) {
     play_history(s);
     inventory_cache(s);
@@ -418,6 +511,7 @@ fn suite(s: &mut dyn Store) {
     dj_sessions(s);
     feedback(s);
     album_tracks(s);
+    action_log(s);
 }
 
 #[test]
@@ -429,7 +523,7 @@ fn mem_store_conforms() {
 fn sqlite_in_memory_conforms() {
     let mut s = SqliteStore::open_in_memory().unwrap();
     suite(&mut s);
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4]);
     s.close().unwrap();
 }
 
@@ -444,7 +538,7 @@ fn sqlite_file_survives_close_and_reopen() {
 
     // Reopening re-runs no migrations and sees every committed write.
     let s = SqliteStore::open(&path).unwrap();
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4]);
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
     assert_eq!(s.cached_groups("HH_S2").unwrap().len(), 1);
@@ -478,6 +572,8 @@ fn sqlite_file_survives_close_and_reopen() {
         s.library().unwrap().last().unwrap().work_key.as_deref(),
         Some("mahler|symphony no 5")
     );
+    assert_eq!(recent(&s, None, None, 0).len(), 3);
+    assert!(s.last_undoable_action(None).unwrap().is_some());
 
     // Dropping without close is also safe: the WAL carries committed writes.
     let mut s = s;

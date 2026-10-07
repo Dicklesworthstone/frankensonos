@@ -8,8 +8,8 @@
 //! method call.
 
 use super::{
-    AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback, FeedbackKey,
-    LibraryEntry, LibraryOrigin, PlayRecord, Store, StoreError,
+    Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback,
+    FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction, PlayRecord, Store, StoreError,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -86,6 +86,18 @@ const MIGRATIONS: &[Migration] = &[
             track_number INTEGER NOT NULL, source_uri TEXT NOT NULL,
             title TEXT NOT NULL, duration_secs INTEGER, fetched_at INTEGER NOT NULL,
             PRIMARY KEY (album_uri, disc_number, track_number));
+    ",
+    },
+    Migration {
+        version: 4,
+        name: "action log for policy enforcement and undo (plan §7)",
+        sql: "
+        CREATE TABLE actions (
+            id INTEGER PRIMARY KEY, at INTEGER NOT NULL, client TEXT NOT NULL,
+            surface TEXT NOT NULL, intent TEXT NOT NULL, decision TEXT NOT NULL,
+            result TEXT NOT NULL, before_state TEXT, undo_of INTEGER);
+        CREATE INDEX actions_by_client ON actions (client, id);
+        CREATE INDEX actions_by_time ON actions (at);
     ",
     },
 ];
@@ -715,6 +727,132 @@ impl Store for SqliteStore {
             .collect::<Result<_, StoreError>>()?;
         Ok(Some(CachedAlbum { tracks, fetched_at }))
     }
+
+    fn record_action(&mut self, action: &Action) -> Result<i64, StoreError> {
+        self.in_transaction(|c| {
+            c.execute_with_params_sync(
+                "INSERT INTO actions \
+                 (at, client, surface, intent, decision, result, before_state, undo_of) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                &[
+                    action.at.into(),
+                    action.client.as_str().into(),
+                    action.surface.as_str().into(),
+                    action.intent.as_str().into(),
+                    action.decision.as_str().into(),
+                    action.result.as_str().into(),
+                    opt_value(action.before_state.as_deref()),
+                    opt_value(action.undo_of),
+                ],
+            )?;
+            c.last_insert_rowid_sync()
+        })
+    }
+
+    fn recent_actions(&self, filter: &ActionFilter) -> Result<Vec<LoggedAction>, StoreError> {
+        let limit = if filter.limit == 0 {
+            i64::MAX
+        } else {
+            i64::try_from(filter.limit).unwrap_or(i64::MAX)
+        };
+        let rows = match &filter.client {
+            Some(client) => self.query(
+                &format!(
+                    "SELECT {ACTION_COLUMNS} FROM actions WHERE client = ?1 AND at >= ?2 \
+                     ORDER BY id DESC LIMIT ?3"
+                ),
+                &[
+                    client.as_str().into(),
+                    filter.since.unwrap_or(i64::MIN).into(),
+                    limit.into(),
+                ],
+            )?,
+            None => self.query(
+                &format!(
+                    "SELECT {ACTION_COLUMNS} FROM actions WHERE at >= ?1 \
+                     ORDER BY id DESC LIMIT ?2"
+                ),
+                &[filter.since.unwrap_or(i64::MIN).into(), limit.into()],
+            )?,
+        };
+        rows.iter().map(action_row).collect()
+    }
+
+    fn last_undoable_action(
+        &self,
+        client: Option<&str>,
+    ) -> Result<Option<LoggedAction>, StoreError> {
+        let undone: Vec<i64> = self
+            .query("SELECT undo_of FROM actions WHERE undo_of IS NOT NULL", &[])?
+            .iter()
+            .map(|r| int(r, 0))
+            .collect::<Result<_, _>>()?;
+        let candidates = match client {
+            Some(c) => self.query(
+                &format!(
+                    "SELECT {ACTION_COLUMNS} FROM actions WHERE before_state IS NOT NULL \
+                     AND undo_of IS NULL AND client = ?1 ORDER BY id DESC"
+                ),
+                &[c.into()],
+            )?,
+            None => self.query(
+                &format!(
+                    "SELECT {ACTION_COLUMNS} FROM actions WHERE before_state IS NOT NULL \
+                     AND undo_of IS NULL ORDER BY id DESC"
+                ),
+                &[],
+            )?,
+        };
+        for r in &candidates {
+            let action = action_row(r)?;
+            if !undone.contains(&action.id) {
+                return Ok(Some(action));
+            }
+        }
+        Ok(None)
+    }
+
+    fn prune_actions(&mut self, keep: usize, older_than: i64) -> Result<usize, StoreError> {
+        // The newest id that falls outside the `keep` newest, if any.
+        let cutoff = self
+            .query(
+                "SELECT id FROM actions ORDER BY id DESC LIMIT 1 OFFSET ?1",
+                &[limit_value(keep)],
+            )?
+            .first()
+            .map(|r| int(r, 0))
+            .transpose()?;
+        self.in_transaction(|c| {
+            let mut gone = c.execute_with_params_sync(
+                "DELETE FROM actions WHERE at < ?1",
+                &[older_than.into()],
+            )?;
+            if let Some(id) = cutoff {
+                gone +=
+                    c.execute_with_params_sync("DELETE FROM actions WHERE id <= ?1", &[id.into()])?;
+            }
+            Ok(gone)
+        })
+    }
+}
+
+const ACTION_COLUMNS: &str =
+    "id, at, client, surface, intent, decision, result, before_state, undo_of";
+
+fn action_row(r: &Row) -> Result<LoggedAction, StoreError> {
+    Ok(LoggedAction {
+        id: int(r, 0)?,
+        action: Action {
+            at: int(r, 1)?,
+            client: text(r, 2)?,
+            surface: text(r, 3)?,
+            intent: text(r, 4)?,
+            decision: text(r, 5)?,
+            result: text(r, 6)?,
+            before_state: opt_text(r, 7)?,
+            undo_of: opt_int(r, 8)?,
+        },
+    })
 }
 
 fn dj_session_row(r: &Row) -> Result<DjSession, StoreError> {
@@ -748,7 +886,7 @@ mod tests {
         v1.close().unwrap();
 
         let store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].track.source_uri, "spotify:track:old");
@@ -786,7 +924,7 @@ mod tests {
         v2.close().unwrap();
 
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].origin, LibraryOrigin::LikedTrack);

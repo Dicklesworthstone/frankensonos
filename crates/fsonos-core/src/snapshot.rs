@@ -21,7 +21,7 @@ use fsonos_types::{HouseholdId, PlayerId, TransportState};
 use std::net::IpAddr;
 
 /// One member room's own levels (addressed through the room's primary).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemberLevel {
     pub player: PlayerId,
     pub volume: u8,
@@ -29,7 +29,7 @@ pub struct MemberLevel {
 }
 
 /// What the coordinator was playing from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SnapshotSource {
     /// Nothing loaded.
     Nothing,
@@ -50,7 +50,7 @@ pub enum SnapshotSource {
 }
 
 /// What a zone was doing at `captured_at`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ZoneSnapshot {
     pub household: Option<HouseholdId>,
     pub coordinator: PlayerId,
@@ -97,7 +97,7 @@ pub enum RestoreOp {
 }
 
 /// The parts of a snapshot a restore puts back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Aspect {
     Group,
     Source,
@@ -108,7 +108,7 @@ pub enum Aspect {
 }
 
 /// What a restore put back, and what it could not, with why.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RestoreReport {
     pub restored: Vec<Aspect>,
     pub skipped: Vec<(Aspect, String)>,
