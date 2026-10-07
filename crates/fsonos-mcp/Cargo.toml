@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-license-file.workspace = true
 repository.workspace = true
 description = "FrankenSonos MCP server (fastmcp_rust): lets AI agents control the house's audio as tools."
 
