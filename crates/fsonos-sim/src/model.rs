@@ -120,6 +120,10 @@ pub(crate) struct Transport {
     /// Clock time playback (re)started, while PLAYING.
     pub playing_since: Option<u64>,
     pub queue_update_id: u32,
+    /// Clock time the sleep timer pauses the group at.
+    pub sleep_at: Option<u64>,
+    /// Bumped each time the sleep timer is set or cleared.
+    pub sleep_generation: u32,
 }
 
 impl Transport {
@@ -135,6 +139,8 @@ impl Transport {
             position_ms: 0,
             playing_since: None,
             queue_update_id: 0,
+            sleep_at: None,
+            sleep_generation: 0,
         }
     }
 
@@ -440,6 +446,58 @@ impl State {
         Ok(Vec::new())
     }
 
+    /// The group's sleep timer: set, cleared (an empty duration), or read.
+    fn sleep_timer(
+        &mut self,
+        p: usize,
+        action: &str,
+        args: &Args<'_>,
+        now: u64,
+    ) -> Result<Out, Fault> {
+        self.require_coordinator(p)?;
+        let t = &mut self.players[p].transport;
+        if action == "ConfigureSleepTimer" {
+            let duration = args.get("NewSleepTimerDuration")?;
+            t.sleep_at = if duration.is_empty() {
+                None
+            } else {
+                Some(now + parse_hms(duration).ok_or(INVALID_ARGS)?)
+            };
+            t.sleep_generation += 1;
+            return Ok(Vec::new());
+        }
+        let remaining = t
+            .sleep_at
+            .map_or_else(String::new, |at| docs::hms(at.saturating_sub(now)));
+        Ok(vec![
+            ("RemainingSleepTimerDuration", remaining),
+            (
+                "CurrentSleepTimerGeneration",
+                t.sleep_generation.to_string(),
+            ),
+        ])
+    }
+
+    /// A sleep timer that has run out pauses its group.
+    pub(crate) fn settle_sleep(&mut self) {
+        let now = self.clock.now_ms();
+        let mut changed = false;
+        for player in &mut self.players {
+            let t = &mut player.transport;
+            if t.sleep_at.is_some_and(|at| at <= now) {
+                t.sleep_at = None;
+                t.sleep_generation += 1;
+                if t.state == TransportState::Playing {
+                    t.set_state(TransportState::PausedPlayback, now);
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            self.flush_events();
+        }
+    }
+
     /// A URI source that has played to its end stops, as a clip does on a
     /// real player (STOPPED, back at the start).
     pub(crate) fn settle_tracks(&mut self) {
@@ -544,6 +602,9 @@ impl State {
                 self.av_navigation(p, action, args, now)
             }
             "DelegateGroupCoordinationTo" => self.delegate(p, args),
+            "ConfigureSleepTimer" | "GetRemainingSleepTimerDuration" => {
+                self.sleep_timer(p, action, args, now)
+            }
             "GetTransportInfo" | "GetPositionInfo" | "GetMediaInfo" => {
                 self.av_reads(p, action, now)
             }

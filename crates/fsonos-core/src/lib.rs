@@ -20,6 +20,7 @@
 //! * [`announce`] plays announcements and chimes, then puts the music back.
 //! * [`scenes`] saves named house states and applies them with the fewest changes.
 //! * [`schedule`] parses schedules and decides when each runs, across DST changes.
+//! * [`sleep`] runs sleep timers: fade out, pause, volumes back; the player's own timer as backstop.
 //! * [`doctor`] runs diagnostic checks and reports named failures with fixes.
 //! * [`policy`] bounds what each client may do and how loud (caps, quiet
 //!   hours, tool allowlists); [`clock`] makes its time testable.
@@ -47,6 +48,7 @@ pub mod rooms;
 pub mod scenes;
 pub mod schedule;
 pub mod search;
+pub mod sleep;
 pub mod snapshot;
 pub mod store;
 pub mod topology;

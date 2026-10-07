@@ -123,6 +123,7 @@ fn respond(shared: &Arc<Mutex<State>>, index: usize, req: &Request) -> Response 
     };
     state.settle_joins(Instant::now());
     state.settle_tracks();
+    state.settle_sleep();
     let path = req.uri.split('?').next().unwrap_or_default();
     let model = state.players[index].model;
     match &req.method {

@@ -527,3 +527,69 @@ fn a_clip_with_a_duration_stops_at_its_end() {
     sim.clock().advance(Duration::from_secs(3600));
     assert_eq!(transport_state(&kitchen), "PLAYING");
 }
+
+#[test]
+fn the_sleep_timer_pauses_the_group_when_it_runs_out() {
+    let sim = sim();
+    let kitchen = sim.transport("Kitchen").unwrap();
+    let office = sim.transport("Office").unwrap();
+    let radio = "x-rincon-mp3radio://radio.example/stream";
+    avt(
+        &kitchen,
+        "SetAVTransportURI",
+        &[("CurrentURI", radio), ("CurrentURIMetaData", "")],
+    )
+    .unwrap();
+    avt(&kitchen, "Play", &[("Speed", "1")]).unwrap();
+    let remaining = || {
+        let r = avt(&kitchen, "GetRemainingSleepTimerDuration", &[]).unwrap();
+        (
+            r.require("RemainingSleepTimerDuration")
+                .unwrap()
+                .to_string(),
+            r.require("CurrentSleepTimerGeneration")
+                .unwrap()
+                .to_string(),
+        )
+    };
+    assert_eq!(remaining(), (String::new(), "0".into()));
+    let set = |d: &str| {
+        avt(
+            &kitchen,
+            "ConfigureSleepTimer",
+            &[("NewSleepTimerDuration", d)],
+        )
+    };
+    set("00:00:10").unwrap();
+    assert_eq!(remaining(), ("0:00:10".into(), "1".into()));
+    set("").unwrap();
+    assert_eq!(remaining(), (String::new(), "2".into()), "cleared");
+    assert_eq!(fault_code(set("ten seconds")), 402);
+    // The timer is the group's: a member is refused.
+    let kitchen_uuid = sim.player("Kitchen").unwrap().uuid.clone();
+    avt(
+        &office,
+        "SetAVTransportURI",
+        &[
+            ("CurrentURI", &format!("x-rincon:{kitchen_uuid}")),
+            ("CurrentURIMetaData", ""),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        fault_code(avt(
+            &office,
+            "ConfigureSleepTimer",
+            &[("NewSleepTimerDuration", "00:00:10")]
+        )),
+        800
+    );
+
+    set("00:00:10").unwrap();
+    sim.clock().advance(Duration::from_secs(4));
+    assert_eq!(remaining().0, "0:00:06");
+    assert_eq!(transport_state(&kitchen), "PLAYING");
+    sim.clock().advance(Duration::from_secs(6));
+    assert_eq!(transport_state(&kitchen), "PAUSED_PLAYBACK");
+    assert_eq!(remaining(), (String::new(), "4".into()));
+}

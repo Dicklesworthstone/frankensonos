@@ -443,6 +443,44 @@ pub fn get_media_info<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<Medi
     })
 }
 
+/// `ConfigureSleepTimer`: the group pauses once `after` seconds have
+/// passed (at most a day); `None` cancels the timer. The player keeps it
+/// on its own, whatever happens to us.
+pub fn configure_sleep_timer<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    after: Option<u32>,
+) -> Result<(), ProtoError> {
+    let duration = after.map_or_else(String::new, |secs| {
+        let secs = secs.min(86_399);
+        format!("{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+    });
+    call(
+        t,
+        host,
+        &AV_TRANSPORT,
+        "ConfigureSleepTimer",
+        &[INSTANCE, ("NewSleepTimerDuration", &duration)],
+    )
+    .map(drop)
+}
+
+/// `GetRemainingSleepTimerDuration`: seconds left, `None` when no sleep
+/// timer runs.
+pub fn get_remaining_sleep_timer<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+) -> Result<Option<u32>, ProtoError> {
+    let r = call(
+        t,
+        host,
+        &AV_TRANSPORT,
+        "GetRemainingSleepTimerDuration",
+        &[INSTANCE],
+    )?;
+    Ok(r.get("RemainingSleepTimerDuration").and_then(parse_hms))
+}
+
 /// Parse an `H:MM:SS` (or `HH:MM:SS`, optionally with a fraction) duration.
 /// `NOT_IMPLEMENTED` and empty values are `None`.
 #[must_use]
@@ -534,6 +572,37 @@ mod tests {
             f(&t, host()).unwrap();
             assert!(t.last().1.ends_with(&format!("#{name}\"")), "{name}");
         }
+    }
+
+    #[test]
+    fn sleep_timer_set_cancel_and_read() {
+        let t = Canned::new("");
+        configure_sleep_timer(&t, host(), Some(45 * 60 + 5)).unwrap();
+        let (_, action, body) = t.last();
+        assert!(action.ends_with("#ConfigureSleepTimer\""), "{action}");
+        assert!(
+            body.contains("<NewSleepTimerDuration>00:45:05</NewSleepTimerDuration>"),
+            "{body}"
+        );
+        configure_sleep_timer(&t, host(), Some(3 * 86_400)).unwrap();
+        assert!(t.last().2.contains(">23:59:59<"), "capped at a day");
+        configure_sleep_timer(&t, host(), None).unwrap();
+        assert!(
+            t.last()
+                .2
+                .contains("<NewSleepTimerDuration></NewSleepTimerDuration>")
+        );
+
+        let t = Canned::new(
+            "<RemainingSleepTimerDuration>0:14:58</RemainingSleepTimerDuration>\
+             <CurrentSleepTimerGeneration>3</CurrentSleepTimerGeneration>",
+        );
+        assert_eq!(get_remaining_sleep_timer(&t, host()).unwrap(), Some(898));
+        let t = Canned::new(
+            "<RemainingSleepTimerDuration></RemainingSleepTimerDuration>\
+             <CurrentSleepTimerGeneration>4</CurrentSleepTimerGeneration>",
+        );
+        assert_eq!(get_remaining_sleep_timer(&t, host()).unwrap(), None);
     }
 
     #[test]
