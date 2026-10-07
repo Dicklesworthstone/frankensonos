@@ -67,9 +67,27 @@ fn surveys_run_on_the_interval_and_back_off_after_failures() {
 
     // Failures retry sooner at first (a quarter interval), then double, up
     // to the cap.
-    let delays: Vec<u64> = (0..6).map(|_| r.failed(t0).as_secs()).collect();
+    let delays: Vec<u64> = (0..6).map(|_| r.failed_with(t0, 0).as_secs()).collect();
     assert_eq!(delays, [75, 150, 300, 600, 1200, 1800]);
     r.succeeded(t0);
     assert_eq!(r.next_at(), t0 + interval, "a success resets the backoff");
-    assert_eq!(r.failed(t0), Duration::from_secs(75));
+    assert_eq!(r.failed_with(t0, 0), Duration::from_secs(75));
+}
+
+#[test]
+fn failure_delays_carry_up_to_ten_percent_jitter() {
+    let t0 = Instant::now();
+    let mut r = Refresh::new(Duration::from_mins(5), Duration::from_mins(30), t0);
+    let mut steps = Vec::new();
+    for n in 0..6u32 {
+        let step = Duration::from_secs(75 * (1 << n)).min(Duration::from_mins(30));
+        let d = r.failed(t0);
+        assert!(d >= step && d <= step + step / 10, "{d:?} vs {step:?}");
+        steps.push(d);
+    }
+    assert_eq!(r.next_at(), t0 + steps[5]);
+    assert_eq!(
+        Refresh::new(Duration::from_mins(5), Duration::from_mins(30), t0).failed_with(t0, 100),
+        Duration::from_secs(82) + Duration::from_millis(500)
+    );
 }

@@ -19,8 +19,9 @@ use fsonos_proto::net::Lan;
 use fsonos_proto::soap::{
     AV_TRANSPORT, GROUP_RENDERING_CONTROL, RENDERING_CONTROL, ZONE_GROUP_TOPOLOGY,
 };
-use fsonos_proto::topology::parse_zone_group_state;
+use fsonos_proto::topology::{ZoneGroupState, parse_zone_group_state};
 use fsonos_types::PlayerId;
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -153,6 +154,8 @@ pub struct Report {
 #[derive(Debug, Default)]
 pub struct Subscriptions {
     active: Vec<Active>,
+    /// The last `BootSeq` each player reported in a topology.
+    boot_seqs: HashMap<PlayerId, u32>,
 }
 
 impl Subscriptions {
@@ -254,6 +257,55 @@ impl Subscriptions {
             .iter()
             .find(|a| a.sid == n.sid)
             .map(|a| (&a.want.player, a.want.service))
+    }
+
+    /// Players whose `BootSeq` rose since the last topology seen: they
+    /// rebooted, so their subscriptions are gone even if no renewal has
+    /// failed yet. The first sighting of a player only records it.
+    pub fn reboots(&mut self, zgs: &ZoneGroupState) -> Vec<PlayerId> {
+        let mut rebooted = Vec::new();
+        let members = zgs
+            .groups
+            .iter()
+            .flat_map(|g| &g.members)
+            .flat_map(|m| std::iter::once(m).chain(&m.satellites));
+        for m in members {
+            let Some(seq) = m.boot_seq else { continue };
+            if let Some(prev) = self.boot_seqs.insert(m.uuid.clone(), seq)
+                && seq > prev
+            {
+                rebooted.push(m.uuid.clone());
+            }
+        }
+        rebooted
+    }
+
+    /// Replace every subscription to `player` with a fresh one (after a
+    /// reboot). The old SIDs are dropped without UNSUBSCRIBE: the player has
+    /// already forgotten them.
+    pub fn resubscribe<S: Subscriber + ?Sized>(
+        &mut self,
+        s: &S,
+        player: &PlayerId,
+        callback_url: impl Fn(Service) -> String,
+        now: Instant,
+    ) -> Report {
+        let mut report = Report::default();
+        for a in self.active.iter_mut().filter(|a| a.want.player == *player) {
+            match s.subscribe(&a.want, &callback_url(a.want.service)) {
+                Ok(sub) => {
+                    *a = active(a.want.clone(), sub, now);
+                    report.resubscribed += 1;
+                }
+                Err(e) => {
+                    a.renew_at = now;
+                    report
+                        .failed
+                        .push((a.want.player.clone(), a.want.service, e.to_string()));
+                }
+            }
+        }
+        report
     }
 
     /// Unsubscribe everything (daemon shutdown). Best effort.

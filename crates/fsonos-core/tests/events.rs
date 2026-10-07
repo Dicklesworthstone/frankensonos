@@ -188,3 +188,54 @@ fn notifies_route_to_their_player_and_service_and_shutdown_unsubscribes() {
         .count();
     assert_eq!(unsubscribed, w.len());
 }
+
+fn zgs(boot_a: u32, boot_b: u32) -> fsonos_proto::topology::ZoneGroupState {
+    topology::parse_zone_group_state(&format!(
+        "<ZoneGroupState><ZoneGroups><ZoneGroup Coordinator=\"RINCON_000E58A0000101400\" ID=\"g:1\">\
+         <ZoneGroupMember UUID=\"RINCON_000E58A0000101400\" Location=\"http://192.0.2.10:1400/xml/device_description.xml\" \
+         ZoneName=\"Den\" BootSeq=\"{boot_a}\"/>\
+         <ZoneGroupMember UUID=\"RINCON_000E58A0000201400\" Location=\"http://192.0.2.11:1400/xml/device_description.xml\" \
+         ZoneName=\"Study\" BootSeq=\"{boot_b}\"/></ZoneGroup></ZoneGroups></ZoneGroupState>"
+    ))
+    .unwrap()
+}
+
+#[test]
+fn a_rising_boot_seq_marks_a_reboot_and_its_subscriptions_are_replaced() {
+    let mut st = HouseholdState::default();
+    st.apply_topology(&zgs(5, 9));
+    let houses = [st];
+    let w = wanted(&houses);
+    let fake = Fake::default();
+    let mut subs = Subscriptions::default();
+    let now = Instant::now();
+    subs.sync(&fake, &w, url, now);
+
+    assert!(
+        subs.reboots(&zgs(5, 9)).is_empty(),
+        "first sighting only records"
+    );
+    assert!(subs.reboots(&zgs(5, 9)).is_empty(), "unchanged");
+    let rebooted = subs.reboots(&zgs(5, 10));
+    let study = fsonos_types::PlayerId("RINCON_000E58A0000201400".into());
+    assert_eq!(rebooted, std::slice::from_ref(&study));
+
+    let mine = w.iter().filter(|x| x.player == study).count();
+    let before = fake.next.get();
+    let report = subs.resubscribe(&fake, &study, url, now);
+    assert_eq!(report.resubscribed, mine);
+    assert_eq!(
+        fake.next.get() - before,
+        u32::try_from(mine).unwrap(),
+        "fresh SUBSCRIBEs"
+    );
+    assert!(
+        !fake
+            .log
+            .borrow()
+            .iter()
+            .any(|l| l.starts_with("UNSUBSCRIBE")),
+        "the rebooted player already forgot its SIDs"
+    );
+    assert_eq!(subs.len(), w.len());
+}

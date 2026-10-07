@@ -6,11 +6,15 @@
 //! while they keep failing. [`HealthBoard`] tracks each player from the
 //! outcome of every survey, subscription and call. [`Reconciler::refresh`] is one step:
 //! survey, replace the household model, record health, and bring the GENA
-//! subscriptions in line with the new model.
+//! subscriptions in line with the new model. [`Reconciler::on_notify`] folds
+//! each NOTIFY into the live state and resubscribes a player that rebooted.
 
 use crate::events::{self, Service, Subscriber, Subscriptions};
 use crate::inventory::{self, DISCOVERY_WAIT};
+use crate::playback::{Changes, Playback};
 use crate::{CoreError, HouseholdState};
+use fsonos_proto::gena::Notify;
+use fsonos_proto::topology::parse_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
@@ -105,6 +109,8 @@ pub struct Refresh {
     max_backoff: Duration,
     next_at: Instant,
     failures: u32,
+    /// xorshift state for backoff jitter.
+    jitter: u64,
 }
 
 impl Refresh {
@@ -118,6 +124,9 @@ impl Refresh {
             max_backoff,
             next_at: now,
             failures: 0,
+            // Any odd seed works; vary it per process so several daemons
+            // that failed together do not retry in lockstep.
+            jitter: u64::from(std::process::id()) << 1 | 1,
         }
     }
 
@@ -136,12 +145,25 @@ impl Refresh {
         self.next_at = now + self.interval;
     }
 
-    /// Record a failed survey; returns the delay until the retry.
+    /// Record a failed survey; returns the delay until the retry: the
+    /// backoff step plus up to 10% jitter.
     pub fn failed(&mut self, now: Instant) -> Duration {
+        self.jitter ^= self.jitter << 13;
+        self.jitter ^= self.jitter >> 7;
+        self.jitter ^= self.jitter << 17;
+        let permille = u32::try_from(self.jitter % 101).unwrap_or(0);
+        self.failed_with(now, permille)
+    }
+
+    /// [`Refresh::failed`] with an explicit jitter in per-mille of the
+    /// backoff step (0 gives the exact schedule: a quarter interval,
+    /// doubling, capped at the maximum).
+    pub fn failed_with(&mut self, now: Instant, jitter_permille: u32) -> Duration {
         let base = self.interval / 4;
-        let delay = base
+        let step = base
             .checked_mul(1 << self.failures.min(16))
             .map_or(self.max_backoff, |d| d.min(self.max_backoff));
+        let delay = step + step * jitter_permille / 1000;
         self.failures += 1;
         self.next_at = now + delay;
         delay
@@ -155,6 +177,17 @@ pub struct RefreshReport {
     pub households: usize,
     /// Players the previous model had that this survey did not find.
     pub missing: Vec<PlayerId>,
+    pub events: events::Report,
+}
+
+/// What one [`Reconciler::on_notify`] did.
+#[derive(Debug, Default)]
+pub struct NotifyReport {
+    /// What the event changed in the playback state.
+    pub changes: Changes,
+    /// Players a topology event showed had rebooted (`BootSeq` rose); their
+    /// subscriptions were replaced.
+    pub rebooted: Vec<PlayerId>,
     pub events: events::Report,
 }
 
@@ -242,5 +275,42 @@ impl Reconciler {
         self.health.record(&report.events);
         self.schedule.succeeded(now);
         Ok(report)
+    }
+
+    /// Fold one NOTIFY from the event sink into the live state. A topology
+    /// event that shows a player rebooted (its `BootSeq` rose) also replaces
+    /// that player's subscriptions at once, instead of when their renewals
+    /// fail; the fresh subscriptions' initial NOTIFYs bring its state back.
+    /// Returns `None` for a NOTIFY no subscription owns.
+    pub fn on_notify<S: Subscriber + ?Sized>(
+        &mut self,
+        lan: &S,
+        playback: &mut Playback,
+        n: &Notify,
+        callback_url: impl Fn(Service) -> String,
+        now: Instant,
+    ) -> Result<Option<NotifyReport>, CoreError> {
+        let Some((player, service)) = self.subscriptions.route(n).map(|(p, s)| (p.clone(), s))
+        else {
+            return Ok(None);
+        };
+        self.health.ok(&player, now);
+        let mut report = NotifyReport {
+            changes: events::apply(&mut self.households, playback, &player, service, n, now)?,
+            ..NotifyReport::default()
+        };
+        if service == Service::ZoneGroupTopology
+            && let Some(doc) = n.property("ZoneGroupState")
+        {
+            let zgs = parse_zone_group_state(doc)?;
+            for p in self.subscriptions.reboots(&zgs) {
+                let r = self.subscriptions.resubscribe(lan, &p, &callback_url, now);
+                self.health.record(&r);
+                report.events.resubscribed += r.resubscribed;
+                report.events.failed.extend(r.failed);
+                report.rebooted.push(p);
+            }
+        }
+        Ok(Some(report))
     }
 }

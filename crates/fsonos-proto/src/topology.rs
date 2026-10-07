@@ -49,6 +49,8 @@ pub struct ZoneMember {
     /// Software generation the player reports (`SWGen`): 1 = S1, 2 = S2.
     pub sw_gen: Option<u8>,
     pub software_version: Option<String>,
+    /// `BootSeq`: increments every time the player boots.
+    pub boot_seq: Option<u32>,
     /// `ChannelMapSet`: stereo pair (and attached sub) bonding.
     pub channel_map: Vec<ChannelAssignment>,
     /// `HTSatChanMapSet`: home-theater bonding (soundbar, surrounds, sub).
@@ -181,6 +183,9 @@ fn parse_member(node: roxmltree::Node<'_, '_>) -> Result<ZoneMember, ProtoError>
         is_zone_bridge: flag("IsZoneBridge"),
         sw_gen: node.attribute("SWGen").and_then(|g| g.parse().ok()),
         software_version: node.attribute("SoftwareVersion").map(str::to_string),
+        boot_seq: node
+            .attribute("BootSeq")
+            .and_then(|b| b.trim().parse().ok()),
         channel_map: node
             .attribute("ChannelMapSet")
             .map(parse_channel_map)
@@ -239,6 +244,15 @@ mod tests {
     }
 
     #[test]
+    fn boot_seq_is_read_from_each_member() {
+        let doc = r#"<ZoneGroupState><ZoneGroups><ZoneGroup Coordinator="RINCON_A01400" ID="RINCON_A01400:1">
+            <ZoneGroupMember UUID="RINCON_A01400" Location="http://192.0.2.5:1400/xml/device_description.xml"
+              ZoneName="Den" BootSeq="17"/></ZoneGroup></ZoneGroups></ZoneGroupState>"#;
+        let zgs = parse_zone_group_state(doc).unwrap();
+        assert_eq!(zgs.groups[0].members[0].boot_seq, Some(17));
+    }
+
+    #[test]
     fn legacy_bare_zone_groups_root_with_satellites() {
         let doc = r#"<ZoneGroups><ZoneGroup Coordinator="RINCON_SB01400" ID="RINCON_SB01400:7">
             <ZoneGroupMember UUID="RINCON_SB01400" Location="http://192.0.2.5:1400/xml/device_description.xml"
@@ -250,6 +264,7 @@ mod tests {
         assert_eq!(zgs.vanished.len(), 0);
         let member = &zgs.groups[0].members[0];
         assert_eq!(member.sw_gen, None);
+        assert_eq!(member.boot_seq, None, "absent attribute");
         assert_eq!(member.satellites.len(), 1);
         assert!(member.satellites[0].invisible);
         let bonded: Vec<_> = member.bonded_players().map(|p| p.0.as_str()).collect();
