@@ -240,3 +240,125 @@ fn a_household_without_spotify_favorites_has_nothing_to_render_with() {
         None
     );
 }
+
+/// Answers Browse with the S1 favorites and AddURIToQueue with consecutive
+/// queue positions from 5; records every action with its body.
+#[derive(Default)]
+struct QueueLan {
+    sent: RefCell<Vec<(IpAddr, String, String)>>,
+}
+
+impl Transport for QueueLan {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        _: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let action = action
+            .trim_matches('"')
+            .rsplit('#')
+            .next()
+            .unwrap()
+            .to_string();
+        self.sent
+            .borrow_mut()
+            .push((host, action.clone(), body.into()));
+        if action == "Browse" {
+            return Ok(FAV_S1.to_string());
+        }
+        let enqueued = self
+            .sent
+            .borrow()
+            .iter()
+            .filter(|(_, a, _)| a == "AddURIToQueue")
+            .count();
+        let out = if action == "AddURIToQueue" {
+            format!(
+                "<FirstTrackNumberEnqueued>{}</FirstTrackNumberEnqueued>",
+                4 + enqueued
+            )
+        } else {
+            String::new()
+        };
+        Ok(format!(
+            "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+             <u:{action}Response xmlns:u=\"urn:x\">{out}</u:{action}Response></s:Body></s:Envelope>"
+        ))
+    }
+}
+
+#[test]
+fn spotify_tracks_queue_in_order_and_play_continues_through_the_queue() {
+    let h = house();
+    let t = QueueLan::default();
+    let first = control::queue_spotify_tracks(
+        &t,
+        &h,
+        &pid(2),
+        &[
+            ("spotify:track:0FixtureSpotify0000101", "I. Allegro"),
+            ("spotify:track:0FixtureSpotify0000102", "II. Andante"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(first, Some(5));
+    control::play_queue_from(&t, &h, &pid(2), 5).unwrap();
+
+    let sent = t.sent.borrow();
+    let actions: Vec<&str> = sent.iter().map(|(_, a, _)| a.as_str()).collect();
+    assert_eq!(
+        actions,
+        [
+            "Browse",
+            "AddURIToQueue",
+            "AddURIToQueue",
+            "SetAVTransportURI",
+            "Seek",
+            "Play"
+        ]
+    );
+    assert!(
+        sent.iter().all(|(host, ..)| *host == ip("192.0.2.13")),
+        "all on the coordinator"
+    );
+    // Bare Spotify URIs, in order, each with the household's descriptor.
+    assert!(
+        sent[1]
+            .2
+            .contains("<EnqueuedURI>spotify%3atrack%3a0FixtureSpotify0000101</EnqueuedURI>")
+    );
+    assert!(
+        sent[2]
+            .2
+            .contains("<EnqueuedURI>spotify%3atrack%3a0FixtureSpotify0000102</EnqueuedURI>")
+    );
+    assert!(sent[1].2.contains("SA_RINCON"), "{}", sent[1].2);
+    assert!(
+        sent[3]
+            .2
+            .contains("x-rincon-queue:RINCON_000E58A0000201400#0")
+    );
+    assert!(
+        sent[4]
+            .2
+            .contains("<Unit>TRACK_NR</Unit><Target>5</Target>")
+    );
+}
+
+#[test]
+fn nothing_is_queued_without_spotify_favorites_or_tracks() {
+    let h = house();
+    assert_eq!(
+        control::queue_spotify_tracks(&Favorites(EMPTY), &h, &pid(2), &[("spotify:track:x", "x")])
+            .unwrap(),
+        None
+    );
+    let t = QueueLan::default();
+    assert_eq!(
+        control::queue_spotify_tracks(&t, &h, &pid(2), &[]).unwrap(),
+        None
+    );
+    assert!(!t.sent.borrow().iter().any(|(_, a, _)| a == "AddURIToQueue"));
+}

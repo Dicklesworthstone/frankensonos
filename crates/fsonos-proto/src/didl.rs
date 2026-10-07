@@ -147,6 +147,15 @@ pub fn spotify_track_didl(spotify_uri: &str, title: &str, p: &SpotifyRenderParam
     )
 }
 
+/// The `AddURIToQueue` URI for a `spotify:track:<id>`: the bare,
+/// percent-encoded Spotify URI, with no `x-sonos-spotify:` scheme or query
+/// (the form verified live on S1; see docs/PROTOCOL.md, "Queue flow"). Pair
+/// it with [`spotify_track_didl`].
+#[must_use]
+pub fn spotify_queue_uri(spotify_uri: &str) -> String {
+    spotify_uri.replace(':', "%3a")
+}
+
 /// Recover the service-facing `spotify:…` URI from a renderer URI such as
 /// `x-sonos-spotify:spotify%3atrack%3a<id>?sid=…` or
 /// `x-rincon-cpcontainer:1004206cspotify%3aalbum%3a<id>?sid=…` (the inverse
@@ -524,6 +533,14 @@ mod tests {
         assert_eq!(
             (desc.id.as_str(), desc.value.as_str()),
             ("cdudn", "SA_RINCON3079_X_#Svc3079-0-Token")
+        );
+    }
+
+    #[test]
+    fn queue_uri_is_the_bare_encoded_spotify_uri() {
+        assert_eq!(
+            spotify_queue_uri("spotify:track:0FixtureSpotify0000001"),
+            "spotify%3atrack%3a0FixtureSpotify0000001"
         );
     }
 

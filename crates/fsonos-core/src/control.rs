@@ -10,7 +10,10 @@ use crate::{CoreError, HouseholdState};
 use fsonos_proto::Transport;
 use fsonos_proto::content;
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
-use fsonos_proto::didl::{learn_spotify_params, spotify_track_didl, spotify_track_uri};
+use fsonos_proto::didl::{
+    SpotifyRenderParams, learn_spotify_params, spotify_queue_uri, spotify_track_didl,
+    spotify_track_uri,
+};
 use fsonos_types::{Player, PlayerId};
 use std::net::IpAddr;
 
@@ -84,12 +87,23 @@ pub fn play_uri<T: Transport + ?Sized>(
     Ok(soap::play(t, host)?)
 }
 
+/// The household's Spotify render parameters, learned from its own
+/// favorites (browsed through `coordinator`). `None` when the household has
+/// no Spotify track favorite to learn from: link Spotify in that household's
+/// Sonos app and add any Spotify track to My Sonos.
+pub fn spotify_params<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+) -> Result<Option<SpotifyRenderParams>, CoreError> {
+    let favorites = content::browse_all(t, addr(households, coordinator)?, "FV:2")?;
+    Ok(learn_spotify_params(&favorites))
+}
+
 /// The renderer-ready URI and DIDL-Lite metadata that play `spotify_uri` (a
-/// `spotify:track:<id>`) in the household `coordinator` belongs to, learned
-/// from that household's own favorites. Pass them to [`play_uri`].
-/// `Ok(None)` when the household has no Spotify track favorite to learn
-/// from: link Spotify in that household's Sonos app and add any Spotify track
-/// to My Sonos.
+/// `spotify:track:<id>`) in the household `coordinator` belongs to. Pass them
+/// to [`play_uri`]. A single track plays to its end and stops; for continuous
+/// play use [`queue_spotify_tracks`]. `Ok(None)` as for [`spotify_params`].
 pub fn spotify_track_source<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -97,13 +111,55 @@ pub fn spotify_track_source<T: Transport + ?Sized>(
     spotify_uri: &str,
     title: &str,
 ) -> Result<Option<(String, String)>, CoreError> {
-    let favorites = content::browse_all(t, addr(households, coordinator)?, "FV:2")?;
-    Ok(learn_spotify_params(&favorites).map(|p| {
+    Ok(spotify_params(t, households, coordinator)?.map(|p| {
         (
             spotify_track_uri(spotify_uri, &p),
             spotify_track_didl(spotify_uri, title, &p),
         )
     }))
+}
+
+/// Append Spotify tracks (`(spotify:track URI, title)`) to the queue of the
+/// group `coordinator` leads, in order. Returns the queue position of the
+/// first one added, for [`play_queue_from`]. `Ok(None)` when nothing was
+/// enqueued: `tracks` is empty, or the household has no Spotify track
+/// favorite to learn from (see [`spotify_params`]).
+pub fn queue_spotify_tracks<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    tracks: &[(&str, &str)],
+) -> Result<Option<u32>, CoreError> {
+    let Some(params) = spotify_params(t, households, coordinator)? else {
+        return Ok(None);
+    };
+    let host = addr(households, coordinator)?;
+    let mut first = None;
+    for (uri, title) in tracks {
+        let at = soap::add_uri_to_queue(
+            t,
+            host,
+            &spotify_queue_uri(uri),
+            &spotify_track_didl(uri, title, &params),
+            false,
+        )?;
+        first.get_or_insert(at);
+    }
+    Ok(first)
+}
+
+/// Make the group `coordinator` leads play its own queue from `position`
+/// (1-based), so playback continues through the queue.
+pub fn play_queue_from<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    position: u32,
+) -> Result<(), CoreError> {
+    let host = addr(households, coordinator)?;
+    soap::play_from_queue(t, host, coordinator)?;
+    soap::seek_track(t, host, position)?;
+    Ok(soap::play(t, host)?)
 }
 
 /// Set one room's volume (on the room's own player); returns the new level.
