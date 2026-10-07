@@ -38,6 +38,8 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::GetZoneState)
         .tool(tools::ListFavorites)
         .tool(tools::PlayFavorite)
+        .tool(tools::RecentActions)
+        .tool(tools::UndoLast)
         .tool(tools::Play)
         .tool(tools::Pause)
         .tool(tools::Resume)

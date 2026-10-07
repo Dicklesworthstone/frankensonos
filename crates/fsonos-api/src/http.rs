@@ -8,6 +8,8 @@
 //! | `GET /zones/{room}/state` | | [`crate::ZoneStateDto`] |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
+//! | `GET /actions?client=&since=&limit=` | | `[ActionDto]`, newest first |
+//! | `POST /undo` | [`crate::UndoRequest`] | [`crate::UndoDto`] |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /volume` | [`crate::VolumeRequest`] | [`crate::OutcomeDto`] |
@@ -29,6 +31,7 @@ use std::sync::Arc;
 
 use crate::HealthDto;
 use crate::failure::Failure;
+use crate::log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 use crate::plan::{
     self, Command, DjAction, TransportAction, plan_group, plan_mute, plan_play, plan_ungroup,
     plan_volume,
@@ -74,6 +77,23 @@ pub fn app(surface: &Arc<Surface>, client: &Client) -> App {
                 let outcome =
                     body::<PlayFavoriteRequest>(req).and_then(|body| s.play_favorite(&c, &body));
                 ready(answer(outcome))
+            }
+        })
+        .get("/actions", {
+            let (s, c, _) = ctl("recent_actions");
+            move |_: &RequestContext, req: &mut Request| {
+                let listed = actions_query(req).and_then(|q| s.recent_actions(&c, &q.filter()));
+                ready(answer(
+                    listed.map(|a| a.iter().map(ActionDto::from).collect::<Vec<_>>()),
+                ))
+            }
+        })
+        .post("/undo", {
+            let (s, c, _) = ctl("undo");
+            move |_: &RequestContext, req: &mut Request| {
+                let undone = body_or_default::<UndoRequest>(req, UndoRequest { own_only: true })
+                    .and_then(|r| s.undo(&c, r.own_only));
+                ready(answer(undone.map(UndoDto::from)))
             }
         })
         .post("/play", control(ctl("play"), plan_play))
@@ -150,20 +170,59 @@ fn path_room(req: &Request) -> Result<String, Failure> {
         .ok_or_else(|| Failure::invalid(format!("room {raw:?} is not valid percent-encoded UTF-8")))
 }
 
-/// The `zone` query parameter (`?zone=<room>`), percent-decoded (`+` is a
-/// space).
-fn query_zone(req: &Request) -> Result<String, Failure> {
-    let raw = req
+/// A query parameter, percent-decoded (`+` is a space); `Ok(None)` when it
+/// is absent.
+fn query_param(req: &Request, name: &str) -> Result<Option<String>, Failure> {
+    let prefix = format!("{name}=");
+    let Some(raw) = req
         .query()
         .unwrap_or_default()
         .split('&')
-        .find_map(|pair| pair.strip_prefix("zone="))
-        .ok_or_else(|| {
-            Failure::invalid("name the room: GET /favorites?zone=<room>")
-                .with_hint("Add ?zone=<room>; any room of the household will do.")
-        })?;
+        .find_map(|pair| pair.strip_prefix(prefix.as_str()))
+    else {
+        return Ok(None);
+    };
     percent_decode(&raw.replace('+', " "))
-        .ok_or_else(|| Failure::invalid(format!("zone {raw:?} is not valid percent-encoded UTF-8")))
+        .map(Some)
+        .ok_or_else(|| {
+            Failure::invalid(format!("{name} {raw:?} is not valid percent-encoded UTF-8"))
+        })
+}
+
+/// The `zone` query parameter, which `GET /favorites` requires.
+fn query_zone(req: &Request) -> Result<String, Failure> {
+    query_param(req, "zone")?.ok_or_else(|| {
+        Failure::invalid("name the room: GET /favorites?zone=<room>")
+            .with_hint("Add ?zone=<room>; any room of the household will do.")
+    })
+}
+
+/// `GET /actions`' optional `client`, `since` and `limit`.
+fn actions_query(req: &Request) -> Result<ActionsQuery, Failure> {
+    let number = |name: &str| -> Result<Option<i64>, Failure> {
+        query_param(req, name)?
+            .map(|v| {
+                v.parse::<i64>().map_err(|_| {
+                    Failure::invalid(format!("{name} must be a whole number, got {v:?}"))
+                })
+            })
+            .transpose()
+    };
+    Ok(ActionsQuery {
+        client: query_param(req, "client")?,
+        since: number("since")?,
+        limit: number("limit")?.map(|n| usize::try_from(n.max(0)).unwrap_or(0)),
+    })
+}
+
+/// A JSON body, or `default` when the body is empty.
+fn body_or_default<B: DeserializeOwned>(req: &mut Request, default: B) -> Result<B, Failure> {
+    let bytes = req.take_body().into_bytes();
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(default);
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|e| Failure::invalid(format!("the request body is not valid for this route: {e}")))
 }
 
 /// Decode `%XX` escapes (and nothing else) into UTF-8 text.

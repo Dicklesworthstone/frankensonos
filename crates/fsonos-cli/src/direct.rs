@@ -3,14 +3,15 @@
 //! use, as the house policy's `cli` client.
 
 use fsonos_api::{
-    Command, ErrorCode, Failure, FavoriteDto, OutcomeDto, PlayFavoriteRequest, Surface, ZoneDto,
-    ZoneStateDto,
+    ActionDto, ActionsQuery, Command, ErrorCode, Failure, FavoriteDto, OutcomeDto,
+    PlayFavoriteRequest, Surface, UndoDto, ZoneDto, ZoneStateDto,
 };
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::SystemClock;
 use fsonos_core::inventory::{self, Survey};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::rooms::household_labels;
+use fsonos_core::store::{SqliteStore, Store as _};
 use fsonos_types::Generation;
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -65,7 +66,10 @@ impl Direct {
             }
             Ok(inventory::survey(transport, &seeds, wait)?.households)
         });
-        let surface = Surface::new(Box::new(lan), again, policy, Box::new(SystemClock));
+        let mut surface = Surface::new(Box::new(lan), again, policy, Box::new(SystemClock));
+        if let Some(dir) = global.data_dir() {
+            surface = crate::daemon::with_action_log(surface, &dir, "cli");
+        }
         Ok(Self { surface, survey })
     }
 
@@ -119,6 +123,12 @@ impl Direct {
     pub fn favorites(&self, zone: &str) -> Result<Vec<FavoriteDto>, Failure> {
         self.households()?;
         self.surface.favorites(&Client::Cli, zone)
+    }
+
+    /// Undo the newest logged action (only the CLI's own with `own_only`).
+    pub fn undo(&self, own_only: bool) -> Result<UndoDto, Failure> {
+        self.households()?;
+        Ok(UndoDto::from(self.surface.undo(&Client::Cli, own_only)?))
     }
 
     /// Play a favorite of `req.zone`'s household.
@@ -191,6 +201,42 @@ pub fn zones_text(zones: &[ZoneDto]) -> String {
             let _ = write!(out, "  (degraded: {})", z.degraded.join(", "));
         }
         out.push('\n');
+        out
+    })
+}
+
+/// The action log in the data directory, newest first (no LAN needed).
+pub fn actions(global: &GlobalArgs, query: &ActionsQuery) -> Result<Vec<ActionDto>, Failure> {
+    let dir = crate::daemon::data_dir(global)?;
+    let path = dir.join(crate::daemon::DB_FILE);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let store = SqliteStore::open(&path).map_err(|e| {
+        Failure::new(
+            ErrorCode::Internal,
+            format!("cannot open {}: {e}", path.display()),
+        )
+    })?;
+    let listed = store
+        .recent_actions(&query.filter())
+        .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))?;
+    Ok(listed.iter().map(ActionDto::from).collect())
+}
+
+/// `fsonos log` as text: one action per line, newest first.
+#[must_use]
+pub fn actions_text(actions: &[ActionDto]) -> String {
+    if actions.is_empty() {
+        return "no actions logged\n".to_string();
+    }
+    actions.iter().fold(String::new(), |mut out, a| {
+        let undo = if a.undoable { "" } else { "  (not undoable)" };
+        let _ = writeln!(
+            out,
+            "#{:<5} {:<12} {:<10} {} -> {} [{}]{undo}",
+            a.id, a.client, a.surface, a.intent, a.result, a.decision
+        );
         out
     })
 }

@@ -10,8 +10,8 @@ use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, ContentBlock, FinalCallToolResult, ResultMeta};
 use fsonos_api::plan::{self, DjAction, TransportAction};
 use fsonos_api::{
-    ErrorCode, Failure, GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, Surface,
-    VolumeRequest, ZoneRequest,
+    ActionDto, ActionsQuery, ErrorCode, Failure, GroupRequest, MuteRequest, PlayFavoriteRequest,
+    PlayRequest, Surface, UndoDto, VolumeRequest, ZoneRequest,
 };
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::Clock;
@@ -120,6 +120,36 @@ impl Backend {
         })
     }
 
+    /// The `recent_actions` tool.
+    pub fn recent_actions(&self, query: &ActionsQuery) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let actions: Vec<ActionDto> = self
+                .surface
+                .recent_actions(&self.client, &query.filter())?
+                .iter()
+                .map(ActionDto::from)
+                .collect();
+            let text = if actions.is_empty() {
+                "no actions logged".to_string()
+            } else {
+                actions
+                    .iter()
+                    .map(|a| format!("#{} [{}] {} -> {}", a.id, a.client, a.intent, a.result))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            Ok((text, ActionsDto { actions }))
+        })
+    }
+
+    /// The `undo_last` tool: undo this caller's own newest action.
+    pub fn undo_last(&self) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let undone = UndoDto::from(self.surface.undo(&self.client, true)?);
+            Ok((undone.summary.clone(), undone))
+        })
+    }
+
     /// The `list_zones` tool.
     pub fn list_zones(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
@@ -139,6 +169,12 @@ impl Backend {
             Ok((text, ZonesDto { zones }))
         })
     }
+}
+
+/// `recent_actions` structured content.
+#[derive(Serialize)]
+struct ActionsDto {
+    actions: Vec<ActionDto>,
 }
 
 /// `list_favorites` structured content.
@@ -226,6 +262,31 @@ fn play_favorite(
     favorite: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend(|b| b.play_favorite(zone, favorite))
+}
+
+#[tool(
+    description = "The house's recent actions, newest first: who asked (client), what (intent), the policy decision (allow / clamp / deny) and what happened, and whether each can be undone. Optional `limit` (default 20), `since` (unix seconds) and `client` filter.",
+    annotations(read_only, idempotent)
+)]
+fn recent_actions(
+    _ctx: &McpContext,
+    limit: Option<u32>,
+    since: Option<i64>,
+    client: Option<String>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let query = ActionsQuery {
+        client,
+        since,
+        limit: limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+    };
+    with_backend(move |b| b.recent_actions(&query))
+}
+
+#[tool(
+    description = "Undo your own most recent action: restore the volumes, grouping and what was playing in the zones it changed. The reply says what could not be restored."
+)]
+fn undo_last(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(Backend::undo_last)
 }
 
 #[tool(

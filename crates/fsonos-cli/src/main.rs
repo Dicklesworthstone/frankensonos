@@ -8,6 +8,7 @@
 //!   zones      show the zone groups and what each is doing
 //!   status     what a room is doing (track, transport, volume)
 //!   favorites  the household's Sonos favorites, numbered
+//!   log / undo the action log, and undoing the newest action
 //!   play       play a source URI, or `--favorite <name>`, in a room's group
 //!   pause / resume / next / previous   transport for a room's group
 //!   volume     set (0-100) or change (+N / -N) a room's or group's volume
@@ -61,6 +62,26 @@ enum Command {
     Status { zone: String },
     /// List the Sonos favorites of a room's household, numbered.
     Favorites { zone: String },
+    /// The action log, newest first: who did what, the policy's verdict, and
+    /// whether it can be undone.
+    Log {
+        /// Only this client's actions (`cli`, `mcp-stdio`, a tailnet login).
+        #[arg(long)]
+        client: Option<String>,
+        /// Only the last `30m`, `2h`, `1d`, `90s`...
+        #[arg(long, value_name = "AGE")]
+        since: Option<String>,
+        /// At most this many.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Undo the newest action: restore the volumes, grouping and what was
+    /// playing in the zones it changed.
+    Undo {
+        /// Only the CLI's own newest action, not an agent's.
+        #[arg(long)]
+        mine: bool,
+    },
     /// Play a source URI, or one of the household's favorites, in a room's
     /// group.
     Play {
@@ -191,6 +212,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let favorites = Direct::survey(global)?.favorites(&zone)?;
             emit(global.json, &favorites, |f| direct::favorites_text(f))
         }
+        Command::Log {
+            client,
+            since,
+            limit,
+        } => {
+            let since = since.as_deref().map(seconds_ago).transpose()?;
+            let query = fsonos_api::ActionsQuery {
+                client,
+                since,
+                limit: Some(limit),
+            };
+            let actions = direct::actions(global, &query)?;
+            emit(global.json, &actions, |a| direct::actions_text(a))
+        }
+        Command::Undo { mine } => {
+            let undone = Direct::survey(global)?.undo(mine)?;
+            emit(global.json, &undone, |u: &fsonos_api::UndoDto| {
+                format!("{}\n", u.summary)
+            })
+        }
         Command::Play {
             zone,
             favorite: Some(favorite),
@@ -301,6 +342,8 @@ fn plan_for(
         | Command::Zones
         | Command::Status { .. }
         | Command::Favorites { .. }
+        | Command::Log { .. }
+        | Command::Undo { .. }
         | Command::Serve(_)
         | Command::Mcp => {
             unreachable!("not a control command")
@@ -330,6 +373,28 @@ fn tool_name(command: &Command) -> &'static str {
         },
         _ => "cli",
     }
+}
+
+/// `30m`, `2h`, `1d`, `90s` (or bare seconds) before now, as unix seconds.
+fn seconds_ago(age: &str) -> Result<i64, Failure> {
+    let age = age.trim();
+    let (digits, unit) = age.split_at(age.find(|c: char| !c.is_ascii_digit()).unwrap_or(age.len()));
+    let scale = match unit {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => 0,
+    };
+    let amount: i64 = digits.parse().unwrap_or(0);
+    if scale == 0 || digits.is_empty() {
+        return Err(Failure::invalid(format!("--since {age:?} is not an age"))
+            .with_hint("Use a number with s, m, h or d, e.g. --since 2h."));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    Ok(now - amount.saturating_mul(scale))
 }
 
 /// `30` sets the volume; `+5` / `-5` change it. Ranges are checked when the
@@ -369,8 +434,9 @@ fn runtime() -> anyhow::Result<Runtime> {
 /// Serve the MCP tools over stdio, acting on this LAN's speakers as the
 /// `mcp-stdio` client of the house policy.
 fn run_mcp_stdio(global: &config::GlobalArgs) -> anyhow::Result<()> {
-    let policy = daemon::policy(&daemon::data_dir(global)?)?;
-    let surface = std::sync::Arc::new(daemon::surface(global, policy)?);
+    let data_dir = daemon::data_dir(global)?;
+    let surface = daemon::surface(global, daemon::policy(&data_dir)?)?;
+    let surface = std::sync::Arc::new(daemon::with_action_log(surface, &data_dir, "mcp"));
     let backend =
         fsonos_mcp::tools::Backend::shared(surface, fsonos_core::policy::Client::McpStdio);
     if !fsonos_mcp::tools::install(backend) {

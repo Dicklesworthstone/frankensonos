@@ -19,6 +19,7 @@ use fastapi::{ServerConfig, TcpServer};
 use fsonos_api::{Failure, Surface};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
+use fsonos_core::store::SqliteStore;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -59,6 +60,29 @@ pub fn surface(global: &GlobalArgs, policy: Policy) -> Result<Surface, Failure> 
     ))
 }
 
+/// The store's file in the data directory (the name core's store uses).
+pub const DB_FILE: &str = "fsonos.db";
+
+/// `surface` with the action log kept in the data directory's store
+/// (`fsonos.db`), recorded as `label`. A store that cannot open is a warning,
+/// not a refusal: control still works, only undo and the log do not.
+#[must_use]
+pub fn with_action_log(surface: Surface, data_dir: &Path, label: &str) -> Surface {
+    let opened = std::fs::create_dir_all(data_dir)
+        .map_err(|e| e.to_string())
+        .and_then(|()| SqliteStore::open(&data_dir.join(DB_FILE)).map_err(|e| e.to_string()));
+    match opened {
+        Ok(store) => surface.with_action_log(Box::new(store), label),
+        Err(e) => {
+            tracing::warn!(
+                "no action log (undo unavailable): cannot open the store in {}: {e}",
+                data_dir.display()
+            );
+            surface
+        }
+    }
+}
+
 /// Who the callers of a listener bound to `addr` are, for the house policy.
 #[must_use]
 pub fn listener_client(addr: SocketAddr) -> Client {
@@ -80,7 +104,11 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
         }
     }
     let data_dir = data_dir(global)?;
-    let surface = Arc::new(surface(global, policy(&data_dir)?)?);
+    let surface = Arc::new(with_action_log(
+        surface(global, policy(&data_dir)?)?,
+        &data_dir,
+        "serve",
+    ));
 
     let stop = Arc::new(AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {

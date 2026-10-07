@@ -17,12 +17,14 @@
 //! * [`guard`] — the house policy: who may call what, how loud;
 //! * [`surface`] — the speakers a surface acts on, with its policy;
 //! * [`zones`] — the zone (group) listings; [`reads`] — zone state, favorites;
+//! * [`log`] — the action log and undo, as the surfaces show them;
 //! * [`failure`] — the one [`Failure`] shape (status + agent-readable detail).
 
 pub mod execute;
 pub mod failure;
 pub mod guard;
 pub mod http;
+pub mod log;
 pub mod plan;
 pub mod reads;
 pub mod request;
@@ -34,6 +36,7 @@ pub use execute::{OutcomeDto, execute, execute_guarded};
 pub use failure::{ErrorCode, Failure, NoteCode};
 pub use guard::{Guard, Note};
 pub use http::app;
+pub use log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 pub use plan::Command;
 pub use reads::{FavoriteDto, TrackDto, ZoneStateDto};
 pub use request::{

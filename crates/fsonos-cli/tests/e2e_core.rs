@@ -323,3 +323,66 @@ fn favorites_play_and_the_queue_moves() {
     );
     s.finish();
 }
+
+#[test]
+fn the_log_records_actions_and_undo_restores_them() {
+    let mut s = Scenario::start("undo");
+    s.sim(SimHousehold::standard());
+    let kitchen = s.ip("Kitchen");
+    let volume = |s: &Scenario| get_volume(&s.lan(), kitchen).ok();
+    let before = volume(&s);
+
+    let run = s.cli("volume", &["volume", "Kitchen", "45"]);
+    s.check("volume", "cli", "exits 0", run.ok(), &run.stderr);
+    s.check(
+        "volume",
+        "sim",
+        "Kitchen is at 45",
+        volume(&s) == Some(45),
+        format!("{:?}", volume(&s)),
+    );
+
+    let run = s.cli("log", &["log", "--json"]);
+    let actions = json(&run).as_array().cloned().unwrap_or_default();
+    s.check(
+        "log",
+        "cli",
+        "the log lists the CLI's volume change as undoable",
+        run.ok()
+            && actions.first().is_some_and(|a| {
+                a["client"] == "cli"
+                    && a["intent"]
+                        .as_str()
+                        .is_some_and(|i| i.starts_with("set_volume"))
+                    && a["undoable"] == true
+            }),
+        &run.stdout,
+    );
+
+    let run = s.cli("undo", &["undo", "--json"]);
+    s.check(
+        "undo",
+        "cli",
+        "undo reports the action it reversed",
+        run.ok() && json(&run)["undone"].is_i64(),
+        format!("{}{}", run.stdout, run.stderr),
+    );
+    s.check(
+        "undo",
+        "sim",
+        "Kitchen's volume is back where it was",
+        volume(&s) == before,
+        format!("before {before:?}, now {:?}", volume(&s)),
+    );
+
+    let run = s.cli("log-after-undo", &["log", "--json", "--limit", "1"]);
+    let newest = json(&run)[0].clone();
+    s.check(
+        "log-after-undo",
+        "cli",
+        "the undo is logged and points at what it reversed",
+        newest["undo_of"].is_i64(),
+        &run.stdout,
+    );
+    s.finish();
+}
