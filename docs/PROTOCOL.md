@@ -1,0 +1,182 @@
+# FrankenSonos protocol notes — the Sonos local wire protocol, verified live
+
+Everything here was verified against real S1 (firmware 57.23) and S2 (86.10,
+97.1) players on the owner's LAN on 2026-10-06/07, or is marked as community
+knowledge. No site-specific identifiers appear in this file: `<IP>` stands for
+a player address, `RINCON_<MAC>01400` for a player UUID, `Sonos_<ID>` for a
+household ID.
+
+## 1. Discovery and addressing
+
+- SSDP M-SEARCH to `239.255.255.250:1900`, ST `urn:schemas-upnp-org:device:ZonePlayer:1`.
+  Multicast reaches only one household per scan on some networks (whichever
+  answers first); scan twice, or fall back to direct seeds: GET
+  `http://<IP>:1400/xml/device_description.xml` on candidate IPs.
+- All control is HTTP on TCP **1400**. Device description:
+  `GET /xml/device_description.xml`. Status pages: `GET /status`,
+  `/status/zp`, `/status/VERSION` (build string), `/status/ifconfig`,
+  `/status/proc/ath_rincon/status` (SonosNet radio diagnostics).
+- Player UUID: `RINCON_<MAC>01400` (MAC without colons). This is the
+  `udn`/`UUID` used in topology and GENA subscription IDs.
+- Group commands MUST go to the group's **coordinator**; members reject or
+  mis-handle coordinator verbs. Coordinator comes from ZoneGroupTopology.
+
+## 2. Service matrix (from live device descriptions)
+
+| Service | S1 Play:5 (S5) | S2 Play:1/One (S1/S12/S13) | S1 Bridge (ZB100) |
+|---|---|---|---|
+| AVTransport | ✅ | ✅ | ❌ |
+| RenderingControl | ✅ | ✅ | ❌ |
+| GroupRenderingControl | ✅ | ✅ | ❌ |
+| ContentDirectory | ✅ | ✅ | ❌ |
+| MusicServices | ✅ | ✅ | ❌ |
+| Queue | ✅ | ✅ | ❌ |
+| GroupManagement | ✅ | ✅ | ✅ |
+| ZoneGroupTopology | ✅ | ✅ | ✅ |
+| DeviceProperties | ✅ | ✅ | ✅ |
+| SystemProperties | ✅ | ✅ | ✅ |
+| AlarmClock | ✅ | ✅ | ❌ |
+| ConnectionManager | ✅ | ✅ | ❌ |
+| VirtualLineIn | ✅ | ✅ | ❌ |
+| QPlay | ✅ | ✅ | ❌ |
+| AudioIn | ✅ (line-in hardware) | ❌ | ❌ |
+
+Control URL pattern: `/<Category>/<Service>/Control`, event URL
+`/<Category>/<Service>/Event`. Categories: `MediaRenderer` (AVTransport,
+RenderingControl, Queue?, ConnectionManager), `MediaServer` (ContentDirectory),
+top-level for ZoneGroupTopology, DeviceProperties, SystemProperties,
+GroupManagement, MusicServices, AlarmClock, GroupRenderingControl, AudioIn,
+VirtualLineIn, QPlay. (Read the exact URLs from each description; do not
+guess.)
+
+## 3. SOAP
+
+- Envelope: standard UPnP. Header `SOAPACTION: "urn:schemas-upnp-org:service:<Service>:1#<Action>"`,
+  body `<u:<Action> xmlns:u="urn:schemas-upnp-org:service:<Service>:1">`.
+- Errors: `HTTP 500` with `<UPnPError><errorCode>`. Observed:
+  - **714** `Illegal MIME-Type` — wrong URI scheme for the service (e.g. a raw
+    or percent-encoded `spotify:` URI instead of `x-sonos-spotify:`).
+  - **800** — generic AVTransport failure; observed when the DIDL `desc`
+    content-description element does not match the service (`SA_RINCON3079…`
+    required for Spotify). Also reported by the community for stale service
+    linkage.
+
+## 4. Spotify rendering (verified live on both households, 2026-10-07)
+
+Sonos renders Spotify through its SMAPI integration, not the Spotify Web API.
+The speaker itself fetches the stream after `SetAVTransportURI` + `Play` on the
+group coordinator.
+
+SMAPI descriptor (MusicServices → `ListAvailableServices`, control URL
+`/MusicServices/Control`): Spotify is **service Id 12** in both households,
+`Uri=https://spotify-v5.ws.sonos.com/smapi`, `Policy Auth="AppLink"`. The Id is
+the `sid` URI parameter.
+
+URI template (track):
+
+```
+S1: x-sonos-spotify:spotify%3atrack%3a<TRACK_ID>?sid=12&flags=8224&sn=<SN>
+S2: x-sonos-spotify:spotify%3Atrack%3A<TRACK_ID>?sid=12&flags=8232&sn=<SN>
+```
+
+- `%3a` vs `%3A` case differs between generations' own favorites (both are
+  accepted by both; match the household's own convention).
+- `flags`: 8224 (0x2020) observed on S1 favorites, 8232 (0x2028) on S2.
+  **Learn it from the household's own favorites at runtime**; do not hardcode.
+- `sn`: the SMAPI account serial for Spotify in that household (observed `1`
+  on both of the owner's). Learn from favorites or the Accounts data.
+
+DIDL-Lite metadata (`CurrentURIMetaData`):
+
+```xml
+<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"
+ xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"
+ xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/"
+ xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">
+ <item id="10032020spotify%3atrack%3a<TRACK_ID>" parentID="-1" restricted="true">
+  <dc:title>TITLE</dc:title>
+  <upnp:class>object.item.audioItem.musicTrack</upnp:class>
+  <desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON3079_X_#Svc3079-0-Token</desc>
+ </item>
+</DIDL-Lite>
+```
+
+- The **`desc` is load-bearing**: `SA_RINCON3079_X_#Svc3079-0-Token` where 3079
+  is Spotify's SMAPI service type. A wrong desc (e.g. SoCo's 2311-era default)
+  yields UPnP **800** at/after SetAVTransportURI.
+- Item id prefix: `10032020` (S1 favorites) / `10032028` (S2 favorites).
+- `parentID`: S1 accepts `-1`; S2's own favorites use the item's own id
+  (self-referential). Both accepted on the matching generation.
+- `dc:title` is display-only; playback does not depend on it.
+- A single `SetAVTransportURI` track plays to completion, then the transport
+  goes `STOPPED` (no implicit continuation) — the DJ must enqueue or re-set
+  the next track itself.
+
+Album/container favorites use `x-rincon-cpcontainer:1004206c<enc-uri>` with
+`flags=8300` and a container DIDL (`object.container.album.musicAlbum` via the
+`resMD` of the favorite).
+
+## 5. Favorites (ground truth for render params)
+
+`ContentDirectory#Browse` with `ObjectID=FV:2`, `BrowseFlag=BrowseDirectChildren`,
+control URL `/MediaServer/ContentDirectory/Control`. Each favorite item:
+
+```xml
+<item id="FV:2/N" parentID="FV:2" restricted="false">
+ <dc:title>NAME</dc:title>
+ <upnp:class>object.itemobject.item.sonos-favorite</upnp:class>
+ <r:ordinal>N</r:ordinal>
+ <res protocolInfo="sonos.com-spotify:*:audio/x-spotify:*">x-sonos-spotify:…?sid=12&amp;flags=8224&amp;sn=1</res>
+ <upnp:albumArtURI>…</upnp:albumArtURI>
+ <r:type>instantPlay</r:type>
+ <r:description>By ARTIST</r:description>
+ <r:resMD>ESCAPED-DIDL-TO-USE-VERBATIM</r:resMD>
+</item>
+```
+
+`r:resMD` holds the exact DIDL the app passes to `SetAVTransportURI` —
+double-escaped inside the SOAP `Result`. This is the canonical way to learn a
+household's render parameters.
+
+## 6. Topology
+
+`ZoneGroupTopology#GetZoneGroupState` returns escaped XML:
+`<ZoneGroups><ZoneGroup Coordinator="RINCON_…" ID="RINCON_…:N">` containing
+`<ZoneGroupMember UUID=… ZoneName=… Location="http://<IP>:1400/xml/device_description.xml" …/>`.
+Solo players and Bridges appear as single-member groups; `:0` group IDs are
+invisible/satellite entries. Room names may contain non-ASCII (curly
+apostrophes) — normalize quotes when matching by name.
+
+## 7. GENA events
+
+- `SUBSCRIBE http://<IP>:1400/<EventURL>` with headers
+  `CALLBACK: <http://<CONTROLLER_IP>:<PORT>/cb>`, `NT: upnp:event`,
+  `TIMEOUT: Second-300`. Response carries `SID: uuid:RINCON_<MAC>01400_subNNNNN`.
+- Speaker then POSTs `NOTIFY /cb` per change; body is
+  `<e:propertyset><e:property><LastChange>ESCAPED-XML</LastChange>…`.
+- Initial NOTIFY (SEQ 0) carries full state; later NOTIFYs carry changed
+  variables only. Renew before the timeout; `UNSUBSCRIBE` with the `SID`.
+- AVTransport LastChange root: `<Event xmlns="urn:schemas-upnp-org:metadata-1-0/AVT/">`
+  with `<InstanceID val="0">` children: `TransportState`, `CurrentTrackURI`,
+  `CurrentTrackDuration`, `CurrentTrackMetaData` (DIDL, triple-escaped at the
+  wire level), `AVTransportURI`, `CurrentTransportActions`, …
+- RenderingControl LastChange root: `…/RCS/`, children like
+  `<Volume channel="Master" val="19"/>`, plus `LF`/`RF` fixed at 100.
+- ZoneGroupTopology NOTIFYs carry the full current `ZoneGroupState` (not a
+  diff) — a single subscription anywhere in a household tracks all grouping.
+
+## 8. Network notes for the daemon host
+
+- Players may sit on multiple subnets; the controller host can be dual-homed
+  (the owner's Mac reaches the speaker VLAN via `en1` while `en0` carries
+  default traffic). Bind GENA callbacks to the interface that routes to the
+  players, and put that address in `CALLBACK`.
+- SonosNet (S1 mesh) operates on 2.4 GHz channel 11 (2462 MHz) in the owner's
+  deployment; S1 players report `WM: 0` (SonosNet), S2 `WM: 1` (Wi-Fi).
+
+## 9. Firmware (study lane)
+
+- Builds observed: S1 `57.23-74170` (frozen line), S2 `86.10-80260` and
+  `97.1-80312`. `/status/VERSION` returns `<VER>-<BUILD>`.
+- Update acquisition and image analysis are tracked in bead
+  `frankensonos-re-firmware-kds`; findings land here as prose only.
