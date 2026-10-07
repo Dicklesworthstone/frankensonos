@@ -52,6 +52,27 @@ impl Work {
     pub fn needs_expansion(&self) -> bool {
         self.completeness != Completeness::Complete
     }
+
+    /// The composer's grouping key (shared by every movement).
+    #[must_use]
+    pub fn composer_key(&self) -> &str {
+        self.movements
+            .first()
+            .map_or("", |m| m.composer_key.as_str())
+    }
+
+    /// The work's energy: its first movement's, what the listener hears
+    /// first.
+    #[must_use]
+    pub fn energy(&self) -> u8 {
+        self.movements.first().map_or(50, |m| m.energy)
+    }
+
+    /// Whether the owner individually liked any of its movements.
+    #[must_use]
+    pub fn is_liked(&self) -> bool {
+        self.movements.iter().any(|m| m.origin.is_liked())
+    }
 }
 
 /// Group tracks into works, in order of each work's first track. Every

@@ -39,6 +39,23 @@ impl Period {
     pub fn index(self) -> usize {
         self as usize
     }
+
+    /// How the period reads in a sentence ("balancing toward Baroque").
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Medieval => "medieval",
+            Self::Renaissance => "Renaissance",
+            Self::Baroque => "Baroque",
+            Self::Classical => "Classical-era",
+            Self::Romantic => "Romantic",
+            Self::LateRomantic => "late-Romantic",
+            Self::Impressionist => "Impressionist",
+            Self::Modern => "20th-century",
+            Self::Contemporary => "contemporary",
+            Self::Unknown => "unclassified",
+        }
+    }
 }
 
 /// A composer the heuristics recognise. `full` spellings match artist credits

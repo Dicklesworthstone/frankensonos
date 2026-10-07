@@ -1,31 +1,42 @@
-//! The classical-music DJ: pure selection logic.
+//! The classical-music DJ: pure selection over whole works.
 //!
-//! Given the [`CandidatePool`] (the owner's classical tracks, analysed by
-//! [`crate::classical`]) and the play history, pick the next track for
-//! pleasant variety:
+//! The unit of selection is the [`Work`] ([`crate::works`]): a piece's
+//! movements, played together and in order. A parsed work is never split; a
+//! title that doesn't parse is a one-track work. Given the [`WorkPool`] and
+//! the play history — per-track rows, where a work counts as played when any
+//! of its movements plays — pick the next work for pleasant variety:
 //!
-//! * **Anti-repeat.** A track never recurs within
-//!   [`DjConfig::track_cooldown_plays`] plays or
-//!   [`DjConfig::track_cooldown_secs`] seconds, and tracks heard a while ago
-//!   stay de-weighted until they are well clear of the cooldown. If the
-//!   cooldown leaves too few tracks (a small pool, a long session), the DJ
-//!   rotates through the least-recently-played slice instead of repeating.
-//! * **Spread.** The same composer, work, or album is strongly de-weighted
-//!   for a few plays and recovers quadratically; same-period runs are damped
-//!   and periods missing from the last few plays are favored; prolific
-//!   composers are damped (weight ∝ 1/√tracks) so a 300-track Bach shelf
-//!   doesn't drown out five Fauré pieces.
-//! * **Energy.** Prefer tracks near the time-of-day target (calm late at
-//!   night, livelier mid-morning) and avoid jarring jumps from the previous
-//!   track.
+//! * **Anti-repeat.** A work never recurs within
+//!   [`DjConfig::work_cooldown_plays`] work plays or
+//!   [`DjConfig::work_cooldown_secs`] seconds, and works heard a while ago stay
+//!   de-weighted until well clear of that. If the cooldown leaves too few works
+//!   (a small library, a long session), the DJ rotates through the
+//!   least-recently-played slice instead of repeating.
+//! * **Spread.** The same composer or album is strongly de-weighted for a few
+//!   works and recovers quadratically; same-period runs are damped and periods
+//!   missing from the last few works are favored; prolific composers are
+//!   damped (weight ∝ 1/√works) so a shelf of Bach cantatas doesn't drown out
+//!   three Fauré pieces.
+//! * **Energy.** A work's energy is its first movement's. Prefer works near
+//!   the time-of-day target and avoid jarring jumps from one work to the
+//!   next (a finale's Presto into a quiet opening is the concert norm, so the
+//!   step is measured between the works' characters, not their edges).
+//! * **Shape.** Works longer than [`DjConfig::max_work_minutes`] (full operas,
+//!   Passions) are left out unless allowed; works missing movements still play
+//!   — what the library has, in order — at reduced weight; works the owner
+//!   liked are favored.
 //!
-//! Weights are integer per-mille factors and every iteration runs in pool or
-//! history order, so a seeded [`Rng`] reproduces a set exactly anywhere.
+//! Every pick carries a [`PickReason`]. Weights are integer per-mille factors
+//! and every iteration runs in pool or history order, so a seeded [`Rng`]
+//! reproduces a set exactly anywhere.
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
+
 use crate::classical::{CandidatePool, ClassicalTrack, Period};
+use crate::works::{Completeness, Work, group_works};
 
 /// A seedable, dependency-free pseudo-random generator (xorshift64*, seeded
 /// through splitmix64 so nearby seeds diverge immediately). Keeping randomness
@@ -75,7 +86,7 @@ fn as_u64(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
-/// One entry of play history (the store's `play_history` row).
+/// One entry of play history (the store's `play_history` row): a track.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayRecord {
     pub source_uri: String,
@@ -101,39 +112,47 @@ impl PlayRecord {
     }
 }
 
-/// Tuning for [`pick_next`]. Spacings count plays back from the most recent
-/// (0 = the previous track); weights are per-mille (1000 = neutral).
+/// Tuning for [`pick_next`] and [`plan`]. Plays and spacings count *work*
+/// plays: a work's movements heard back to back count once. The track-based
+/// cooldown this replaced (150 track plays) converts at the ~3.7 movements per
+/// work of a typical classical library to 40 work plays; the composer and
+/// album spacings (8 tracks each) to 4 and 3 works.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DjConfig {
-    /// Hard: a track can't recur within this many plays…
-    pub track_cooldown_plays: usize,
+    /// Hard: a work can't recur within this many work plays…
+    pub work_cooldown_plays: usize,
     /// …nor within this many seconds (when history carries timestamps).
-    pub track_cooldown_secs: i64,
-    /// Soft: plays over which a composer recovers from being heard.
+    pub work_cooldown_secs: i64,
+    /// Soft: work plays over which a composer recovers from being heard.
     pub composer_spacing: usize,
-    /// Soft: plays over which a work (all its movements) recovers.
-    pub work_spacing: usize,
-    /// Soft: plays over which an album (≈ the same performers) recovers.
+    /// Soft: work plays over which an album (≈ the same performers) recovers.
     pub album_spacing: usize,
-    /// How many recent pool plays count when favoring absent periods.
+    /// How many recent work plays count when favoring absent periods.
     pub period_memory: usize,
-    /// How much history to scan; older plays are ignored.
+    /// How many history rows (tracks) to scan; older plays are ignored.
     pub history_horizon: usize,
-    /// Weight for tracks the owner individually liked.
+    /// Weight for works with a movement the owner individually liked.
     pub liked_boost_pm: u64,
+    /// Weight for works missing movements (Partial or Unknown).
+    pub incomplete_pm: u64,
+    /// Works longer than this are left out unless `allow_long_works`.
+    pub max_work_minutes: u32,
+    pub allow_long_works: bool,
 }
 
 impl Default for DjConfig {
     fn default() -> Self {
         Self {
-            track_cooldown_plays: 150,
-            track_cooldown_secs: 24 * 60 * 60,
-            composer_spacing: 8,
-            work_spacing: 30,
-            album_spacing: 8,
-            period_memory: 6,
+            work_cooldown_plays: 40,
+            work_cooldown_secs: 24 * 60 * 60,
+            composer_spacing: 4,
+            album_spacing: 3,
+            period_memory: 4,
             history_horizon: 2000,
             liked_boost_pm: 1300,
+            incomplete_pm: 600,
+            max_work_minutes: 75,
+            allow_long_works: false,
         }
     }
 }
@@ -141,7 +160,7 @@ impl Default for DjConfig {
 /// What the DJ knows about "now" when picking.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PickContext<'h> {
-    /// Play history, most recent last.
+    /// Play history, one row per track, most recent last.
     pub history: &'h [PlayRecord],
     /// Current Unix time (enables the time-based cooldown).
     pub now: Option<i64>,
@@ -170,15 +189,127 @@ pub fn energy_target_for_hour(hour: u8) -> u8 {
     }
 }
 
-/// Pick the next track, or `None` for an empty pool. Deterministic for a
+/// A weight factor that moved a work's odds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Factor {
+    /// 1/√(the composer's works in the pool).
+    ComposerBalance,
+    /// The composer was heard a few works ago.
+    ComposerSpacing,
+    /// The album was heard a few works ago.
+    AlbumSpacing,
+    /// The work was heard before and is still recovering.
+    Recency,
+    /// Its period is on a run.
+    PeriodRun,
+    /// Its period is missing from the last few works.
+    PeriodAbsent,
+    /// Closeness to the energy target.
+    EnergyFit,
+    /// The step from the previous work's energy.
+    EnergyJump,
+    /// The owner liked one of its movements.
+    Liked,
+    /// Movements are missing from the library.
+    Incomplete,
+    /// Chosen from the least-recently-played slice (cooldown exhausted).
+    Rotation,
+    /// Longer than the long-work limit, allowed this time.
+    LongWork,
+}
+
+/// Why a work was chosen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PickReason {
+    /// Every non-neutral factor in evaluation order, per-mille (1000 =
+    /// neutral). `Rotation` and `LongWork` are flags, recorded at 1000.
+    pub factors: Vec<(Factor, i32)>,
+    /// One readable line, e.g. "Brahms not heard in 4 days; balancing toward
+    /// late-Romantic; gentle evening target".
+    pub summary: String,
+}
+
+impl PickReason {
+    #[must_use]
+    pub fn has(&self, factor: Factor) -> bool {
+        self.factors.iter().any(|&(f, _)| f == factor)
+    }
+}
+
+/// A planned work: all its movements, in playing order, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedWork<'p> {
+    pub work: &'p Work,
+    /// `work.movements`: the queue takes them all, in this order.
+    pub movements: &'p [ClassicalTrack],
+    pub reason: PickReason,
+}
+
+/// The works the DJ chooses from, indexed for picking.
+#[derive(Debug, Clone, Default)]
+pub struct WorkPool {
+    works: Vec<Work>,
+    /// Track URI → (work, movement).
+    by_track: HashMap<String, (usize, usize)>,
+    composer_works: HashMap<String, usize>,
+}
+
+impl WorkPool {
+    #[must_use]
+    pub fn new(pool: &CandidatePool) -> Self {
+        Self::from_works(group_works(pool.tracks()))
+    }
+
+    #[must_use]
+    pub fn from_works(works: Vec<Work>) -> Self {
+        let mut by_track = HashMap::new();
+        let mut composer_works: HashMap<String, usize> = HashMap::new();
+        for (w, work) in works.iter().enumerate() {
+            *composer_works
+                .entry(work.composer_key().to_owned())
+                .or_default() += 1;
+            for (m, movement) in work.movements.iter().enumerate() {
+                by_track.insert(movement.track.source_uri.clone(), (w, m));
+            }
+        }
+        Self {
+            works,
+            by_track,
+            composer_works,
+        }
+    }
+
+    #[must_use]
+    pub fn works(&self) -> &[Work] {
+        &self.works
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.works.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.works.is_empty()
+    }
+
+    /// The work a track belongs to.
+    #[must_use]
+    pub fn work_of(&self, source_uri: &str) -> Option<&Work> {
+        self.by_track.get(source_uri).map(|&(w, _)| &self.works[w])
+    }
+}
+
+/// Pick the next work, or `None` for an empty pool. Deterministic for a
 /// given pool, context, config and RNG state.
 #[must_use]
 pub fn pick_next<'p>(
-    pool: &'p CandidatePool,
+    pool: &'p WorkPool,
     ctx: &PickContext<'_>,
     config: &DjConfig,
     rng: &mut Rng,
-) -> Option<&'p ClassicalTrack> {
+) -> Option<PlannedWork<'p>> {
     if pool.is_empty() {
         return None;
     }
@@ -186,95 +317,127 @@ pub fn pick_next<'p>(
     let target = ctx
         .energy_target
         .or_else(|| ctx.local_hour.map(energy_target_for_hour));
-    let candidates = candidates(pool, &recency, ctx, config);
-    let weights: Vec<u64> = candidates
+    let eligible = eligible(pool, &recency, ctx, config);
+    let weights: Vec<u64> = eligible
+        .works
         .iter()
-        .map(|&i| weight(pool, i, &recency, target, config))
+        .map(|&w| weigh(pool, w, &recency, target, config, None))
         .collect();
-    Some(&pool.tracks()[candidates[draw(&weights, rng)]])
+    let chosen = eligible.works[draw(&weights, rng)];
+
+    let mut factors = Vec::new();
+    weigh(pool, chosen, &recency, target, config, Some(&mut factors));
+    let work = &pool.works[chosen];
+    if eligible.rotation {
+        factors.push((Factor::Rotation, 1000));
+    }
+    if is_long(work, config) {
+        factors.push((Factor::LongWork, 1000));
+    }
+    let summary = summarize(work, &recency, ctx, target, &factors);
+    Some(PlannedWork {
+        work,
+        movements: &work.movements,
+        reason: PickReason { factors, summary },
+    })
 }
 
-/// Pick `count` tracks ahead (to keep a queue fed); each pick sees the
-/// earlier ones as just played.
+/// Plan `count` works ahead (to keep a queue fed); each pick sees the earlier
+/// ones as just played.
 #[must_use]
 pub fn plan<'p>(
-    pool: &'p CandidatePool,
+    pool: &'p WorkPool,
     ctx: &PickContext<'_>,
     config: &DjConfig,
     count: usize,
     rng: &mut Rng,
-) -> Vec<&'p ClassicalTrack> {
+) -> Vec<PlannedWork<'p>> {
     let mut history = ctx.history.to_vec();
-    let mut picks = Vec::with_capacity(count);
+    let mut planned = Vec::with_capacity(count);
     for _ in 0..count {
         let step = PickContext {
             history: &history,
             ..*ctx
         };
-        let Some(track) = pick_next(pool, &step, config, rng) else {
+        let Some(next) = pick_next(pool, &step, config, rng) else {
             break;
         };
-        history.push(PlayRecord {
-            source_uri: track.track.source_uri.clone(),
+        history.extend(next.movements.iter().map(|m| PlayRecord {
+            source_uri: m.track.source_uri.clone(),
             played_at: ctx.now,
-        });
-        picks.push(track);
+        }));
+        planned.push(next);
     }
-    picks
+    planned
 }
 
-/// What the recent history says about each pool track and grouping key.
+/// What the recent history says about each work and grouping key, counted in
+/// work plays (0 = the work heard last).
 #[derive(Default)]
 struct Recency<'p> {
-    /// Pool index → plays since it last played.
-    track_ago: HashMap<usize, usize>,
-    /// Pool index → when it last played (if timestamped).
-    track_at: HashMap<usize, i64>,
+    work_ago: HashMap<usize, usize>,
+    work_at: HashMap<usize, i64>,
     composer_ago: HashMap<&'p str, usize>,
-    work_ago: HashMap<&'p str, usize>,
+    composer_at: HashMap<&'p str, i64>,
     album_ago: HashMap<&'p str, usize>,
-    /// Period of the latest pool plays and how many in a row share it.
+    /// Period of the latest work plays and how many in a row share it.
     period_run: Option<(Period, usize)>,
-    /// Periods of the last `period_memory` pool plays.
+    /// Periods of the last `period_memory` work plays.
     recent_periods: Vec<Period>,
-    /// Energy of the previous track, if it was a pool track.
+    /// Energy of the previous work, if it was a pool work.
     last_energy: Option<u8>,
 }
 
 impl<'p> Recency<'p> {
-    fn scan(pool: &'p CandidatePool, history: &[PlayRecord], config: &DjConfig) -> Self {
+    fn scan(pool: &'p WorkPool, history: &[PlayRecord], config: &DjConfig) -> Self {
         let mut seen = Self::default();
+        let mut ago = 0;
+        // The work of the play being counted (`Some(None)`: a non-pool track).
+        let mut current: Option<Option<usize>> = None;
         let mut run_open = true;
         let latest_first = history.iter().rev().take(config.history_horizon);
-        for (ago, play) in latest_first.enumerate() {
-            // Plays outside the pool (manual picks) still count as distance.
-            let Some(index) = pool.index_of(&play.source_uri) else {
+        for (row, play) in latest_first.enumerate() {
+            let hit = pool.by_track.get(play.source_uri.as_str()).copied();
+            let work = hit.map(|(w, _)| w);
+            // A work's movements heard back to back are one play; any other
+            // row (including a track outside the pool) is a play of its own.
+            let new_play = match current {
+                None => true,
+                Some(prev) => work.is_none() || work != prev,
+            };
+            if new_play && current.is_some() {
+                ago += 1;
+            }
+            current = Some(work);
+            if row == 0 {
+                seen.last_energy = work.map(|w| pool.works[w].energy());
+            }
+            let Some(w) = work else {
                 continue;
             };
-            let track = &pool.tracks()[index];
-            seen.track_ago.entry(index).or_insert(ago);
+            let entry = &pool.works[w];
+            let composer = entry.composer_key();
+            seen.work_ago.entry(w).or_insert(ago);
+            seen.composer_ago.entry(composer).or_insert(ago);
+            if !entry.album_key.is_empty() {
+                seen.album_ago
+                    .entry(entry.album_key.as_str())
+                    .or_insert(ago);
+            }
             if let Some(at) = play.played_at {
-                seen.track_at.entry(index).or_insert(at);
+                seen.work_at.entry(w).or_insert(at);
+                seen.composer_at.entry(composer).or_insert(at);
             }
-            for (map, key) in [
-                (&mut seen.composer_ago, track.composer_key.as_str()),
-                (&mut seen.work_ago, track.work_key.as_str()),
-                (&mut seen.album_ago, track.album_key.as_str()),
-            ] {
-                if !key.is_empty() {
-                    map.entry(key).or_insert(ago);
-                }
-            }
-            if ago == 0 {
-                seen.last_energy = Some(track.energy);
+            if !new_play {
+                continue;
             }
             if seen.recent_periods.len() < config.period_memory {
-                seen.recent_periods.push(track.period);
+                seen.recent_periods.push(entry.period);
             }
             if run_open {
                 seen.period_run = match seen.period_run {
-                    None => Some((track.period, 1)),
-                    Some((period, run)) if period == track.period => Some((period, run + 1)),
+                    None => Some((entry.period, 1)),
+                    Some((period, run)) if period == entry.period => Some((period, run + 1)),
                     other => {
                         run_open = false;
                         other
@@ -284,98 +447,134 @@ impl<'p> Recency<'p> {
         }
         seen
     }
-
-    fn ago(map: &HashMap<&'p str, usize>, key: &str) -> Option<usize> {
-        map.get(key).copied()
-    }
 }
 
-/// Pool indices eligible for this pick: everything out of cooldown, or — when
-/// that leaves fewer than a tenth of the pool — the least-recently-played
+struct Eligible {
+    works: Vec<usize>,
+    /// Chosen from the stalest slice because the cooldown left too few.
+    rotation: bool,
+}
+
+fn is_long(work: &Work, config: &DjConfig) -> bool {
+    u64::from(work.total_secs) > u64::from(config.max_work_minutes) * 60
+}
+
+/// Works eligible for this pick: those within the length limit (all of them
+/// if none are, so a library of operas still plays), out of cooldown — or,
+/// when that leaves fewer than a tenth of them, the least-recently-played
 /// quarter, so a small pool rotates rather than repeats.
-fn candidates(
-    pool: &CandidatePool,
+fn eligible(
+    pool: &WorkPool,
     recency: &Recency<'_>,
     ctx: &PickContext<'_>,
     config: &DjConfig,
-) -> Vec<usize> {
-    let cooling = |i: &usize| {
+) -> Eligible {
+    let mut allowed: Vec<usize> = (0..pool.len())
+        .filter(|&w| config.allow_long_works || !is_long(&pool.works[w], config))
+        .collect();
+    if allowed.is_empty() {
+        allowed = (0..pool.len()).collect();
+    }
+    let cooling = |w: &usize| {
         recency
-            .track_ago
-            .get(i)
-            .is_some_and(|&ago| ago < config.track_cooldown_plays)
+            .work_ago
+            .get(w)
+            .is_some_and(|&ago| ago < config.work_cooldown_plays)
             || matches!(
-                (ctx.now, recency.track_at.get(i)),
-                (Some(now), Some(&at)) if now.saturating_sub(at) < config.track_cooldown_secs
+                (ctx.now, recency.work_at.get(w)),
+                (Some(now), Some(&at)) if now.saturating_sub(at) < config.work_cooldown_secs
             )
     };
-    let fresh: Vec<usize> = (0..pool.len()).filter(|i| !cooling(i)).collect();
-    if fresh.len() >= (pool.len() / 10).max(1) {
-        return fresh;
+    let fresh: Vec<usize> = allowed.iter().copied().filter(|w| !cooling(w)).collect();
+    if fresh.len() >= (allowed.len() / 10).max(1) {
+        return Eligible {
+            works: fresh,
+            rotation: false,
+        };
     }
-    let mut stalest: Vec<usize> = (0..pool.len()).collect();
-    stalest.sort_by_key(|i| Reverse(recency.track_ago.get(i).copied().unwrap_or(usize::MAX)));
-    stalest.truncate((pool.len() / 4).max(1));
-    stalest
+    let quarter = (allowed.len() / 4).max(1);
+    allowed.sort_by_key(|w| Reverse(recency.work_ago.get(w).copied().unwrap_or(usize::MAX)));
+    allowed.truncate(quarter);
+    Eligible {
+        works: allowed,
+        rotation: true,
+    }
 }
 
 const SCALE: u64 = 1_000_000_000;
 
-fn weight(
-    pool: &CandidatePool,
-    i: usize,
+/// A work's weight; with `factors`, also record every non-neutral factor.
+fn weigh(
+    pool: &WorkPool,
+    w: usize,
     recency: &Recency<'_>,
     target: Option<u8>,
     config: &DjConfig,
+    mut factors: Option<&mut Vec<(Factor, i32)>>,
 ) -> u64 {
-    let t = &pool.tracks()[i];
-    // 1/√(composer's track count): composer share grows with √tracks.
-    let size = as_u64(pool.composer_size(&t.composer_key).max(1));
-    let mut w = SCALE * 1000 / size.saturating_mul(1_000_000).isqrt();
-    w = scale(
-        w,
+    let work = &pool.works[w];
+    let mut weight = SCALE;
+    let mut apply = |factor: Factor, per_mille: u64| {
+        if per_mille != 1000 {
+            weight = weight.saturating_mul(per_mille) / 1000;
+            if let Some(factors) = factors.as_mut() {
+                factors.push((factor, i32::try_from(per_mille).unwrap_or(i32::MAX)));
+            }
+        }
+    };
+    let composer = work.composer_key();
+    // 1/√(composer's works): a composer's share grows with √works.
+    let works = as_u64(
+        pool.composer_works
+            .get(composer)
+            .copied()
+            .unwrap_or(1)
+            .max(1),
+    );
+    apply(
+        Factor::ComposerBalance,
+        1_000_000 / (works * 1_000_000).isqrt(),
+    );
+    apply(
+        Factor::ComposerSpacing,
         spacing_pm(
-            Recency::ago(&recency.composer_ago, &t.composer_key),
+            recency.composer_ago.get(composer).copied(),
             config.composer_spacing,
         ),
     );
-    w = scale(
-        w,
+    apply(
+        Factor::AlbumSpacing,
         spacing_pm(
-            Recency::ago(&recency.work_ago, &t.work_key),
-            config.work_spacing,
-        ),
-    );
-    w = scale(
-        w,
-        spacing_pm(
-            Recency::ago(&recency.album_ago, &t.album_key),
+            recency.album_ago.get(work.album_key.as_str()).copied(),
             config.album_spacing,
         ),
     );
-    w = scale(w, period_pm(t.period, recency));
+    if let Some(&ago) = recency.work_ago.get(&w) {
+        apply(
+            Factor::Recency,
+            staleness_pm(ago, config.work_cooldown_plays),
+        );
+    }
+    let (period_factor, period) = period_pm(work.period, recency);
+    apply(period_factor, period);
     if let Some(target) = target {
-        w = scale(w, energy_fit_pm(t.energy, target));
+        apply(Factor::EnergyFit, energy_fit_pm(work.energy(), target));
     }
     if let Some(last) = recency.last_energy {
-        w = scale(w, energy_jump_pm(t.energy, last));
+        apply(Factor::EnergyJump, energy_jump_pm(work.energy(), last));
     }
-    if t.origin.is_liked() {
-        w = scale(w, config.liked_boost_pm);
+    if work.is_liked() {
+        apply(Factor::Liked, config.liked_boost_pm);
     }
-    if let Some(&ago) = recency.track_ago.get(&i) {
-        w = scale(w, staleness_pm(ago, config.track_cooldown_plays));
+    if work.completeness != Completeness::Complete {
+        apply(Factor::Incomplete, config.incomplete_pm);
     }
-    w
+    weight
 }
 
-fn scale(w: u64, per_mille: u64) -> u64 {
-    w.saturating_mul(per_mille) / 1000
-}
-
-/// A key heard `ago` plays back keeps ((ago+1)/(spacing+1))² of its weight
-/// until it is `spacing` plays old: at the default composer spacing of 8 the
-/// previous track's composer keeps ~1%, one heard four plays back ~31%.
+/// A key heard `ago` work plays back keeps ((ago+1)/(spacing+1))² of its
+/// weight until it is `spacing` plays old: at the default composer spacing of
+/// 4 the previous work's composer keeps 4%, one heard three works back 64%.
 fn spacing_pm(ago: Option<usize>, spacing: usize) -> u64 {
     match ago {
         Some(ago) if ago < spacing => {
@@ -386,34 +585,41 @@ fn spacing_pm(ago: Option<usize>, spacing: usize) -> u64 {
     }
 }
 
-/// Damp a period that is already on a run; favor one absent from the last
-/// few plays. Unknown periods are neutral.
-fn period_pm(period: Period, recency: &Recency<'_>) -> u64 {
+/// Damp a period already on a run; favor one absent from the last few works.
+/// Unknown periods are neutral.
+fn period_pm(period: Period, recency: &Recency<'_>) -> (Factor, u64) {
     if period == Period::Unknown {
-        return 1000;
+        return (Factor::PeriodRun, 1000);
     }
     match recency.period_run {
-        Some((p, run)) if p == period => match run {
-            1 => 550,
-            2 => 250,
-            _ => 100,
-        },
+        Some((p, run)) if p == period => (
+            Factor::PeriodRun,
+            match run {
+                1 => 550,
+                2 => 250,
+                _ => 100,
+            },
+        ),
         _ if !recency.recent_periods.is_empty() && !recency.recent_periods.contains(&period) => {
-            1400
+            (Factor::PeriodAbsent, 1400)
         }
-        _ => 1000,
+        _ => (Factor::PeriodRun, 1000),
     }
 }
 
-/// Closeness to the energy target: 1000 on target, 800 at ±20, 200 at ±40,
-/// floored at 80 so nothing is ever impossible.
+/// Closeness to the energy target: 1000 on target, 810 at ±10, 360 at ±20,
+/// and the floor of 30 from ±30 out, so nothing is ever impossible. Steep on
+/// purpose: most works sit mid-range, and a gentler curve lets the spacing
+/// factors wash out the time of day (a late-night set drifting to 35 against
+/// a target of 25).
 fn energy_fit_pm(energy: u8, target: u8) -> u64 {
     let d = u64::from(energy.abs_diff(target));
-    1000u64.saturating_sub(d * d / 2).max(80)
+    let near = 1000u64.saturating_sub(d * d);
+    (near * near / 1000).max(30)
 }
 
-/// Penalize jarring jumps from the previous track (a Presto straight after
-/// a Nocturne); steps up to 35 are free.
+/// Penalize jarring jumps between consecutive works (a fiery Allegro
+/// opening straight after a Nocturne); steps up to 35 are free.
 fn energy_jump_pm(energy: u8, last: u8) -> u64 {
     let jump = u64::from(energy.abs_diff(last));
     if jump <= 35 {
@@ -423,7 +629,7 @@ fn energy_jump_pm(energy: u8, last: u8) -> u64 {
     }
 }
 
-/// Tracks heard before stay de-weighted after their cooldown: 50% at zero
+/// Works heard before stay de-weighted after their cooldown: 50% at zero
 /// plays ago, recovering linearly to full weight at three cooldowns.
 fn staleness_pm(ago: usize, cooldown: usize) -> u64 {
     if cooldown == 0 {
@@ -447,13 +653,103 @@ fn draw(weights: &[u64], rng: &mut Rng) -> usize {
     weights.len() - 1
 }
 
+/// The readable line of a [`PickReason`]: who and when, then whatever else
+/// shaped the pick, in a fixed order.
+fn summarize(
+    work: &Work,
+    recency: &Recency<'_>,
+    ctx: &PickContext<'_>,
+    target: Option<u8>,
+    factors: &[(Factor, i32)],
+) -> String {
+    let has = |factor: Factor| factors.iter().any(|&(f, _)| f == factor);
+    let who = surname(&work.composer);
+    let key = work.composer_key();
+    let mut parts = vec![match (
+        recency.composer_ago.get(key),
+        recency.composer_at.get(key),
+        ctx.now,
+    ) {
+        (None, _, _) => format!("{who} not heard recently"),
+        (Some(_), Some(&at), Some(now)) => heard(who, now.saturating_sub(at)),
+        (Some(0), _, _) => format!("more {who}"),
+        (Some(&ago), _, _) => format!("{who} last heard {ago} works ago"),
+    }];
+    if has(Factor::PeriodAbsent) {
+        parts.push(format!("balancing toward {}", work.period.label()));
+    }
+    if let Some(target) = target {
+        let mood = match target {
+            0..=30 => "calm",
+            31..=45 => "gentle",
+            46..=55 => "steady",
+            _ => "lively",
+        };
+        parts.push(match (ctx.energy_target, ctx.local_hour) {
+            (None, Some(hour)) => format!("{mood} {} target", part_of_day(hour)),
+            _ => format!("{mood} energy requested"),
+        });
+    }
+    for (factor, note) in [
+        (Factor::Liked, "from your liked tracks"),
+        (
+            Factor::Incomplete,
+            "only some movements are in your library",
+        ),
+        (
+            Factor::Rotation,
+            "rotating through the least recently played",
+        ),
+        (Factor::LongWork, "a long work, allowed this time"),
+    ] {
+        if has(factor) {
+            parts.push(note.to_owned());
+        }
+    }
+    parts.join("; ")
+}
+
+fn heard(who: &str, secs: i64) -> String {
+    let hours = secs / 3600;
+    if hours >= 48 {
+        format!("{who} not heard in {} days", hours / 24)
+    } else if hours >= 2 {
+        format!("{who} not heard in {hours} hours")
+    } else {
+        format!("{who} heard {} minutes ago", secs / 60)
+    }
+}
+
+fn part_of_day(hour: u8) -> &'static str {
+    match hour % 24 {
+        0..=4 => "late-night",
+        5..=11 => "morning",
+        12..=16 => "afternoon",
+        17..=20 => "evening",
+        _ => "late-evening",
+    }
+}
+
+/// "Johannes Brahms" → "Brahms"; "Johann Strauss II" → "Strauss".
+fn surname(name: &str) -> &str {
+    let mut words = name.split_whitespace().rev();
+    let last = words.next().unwrap_or(name);
+    if matches!(last, "II" | "III" | "Jr" | "Jr." | "Sr" | "Sr.") {
+        words.next().unwrap_or(last)
+    } else {
+        last
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet, HashSet};
+    use std::time::Instant;
 
     use super::*;
     use crate::library::{LibraryItem, Origin};
+    use crate::works::movement_number;
 
     /// A realistic, lopsided shelf: (composer, form, works, movements/work).
     const SHELF: &[(&str, &str, usize, usize)] = &[
@@ -476,86 +772,109 @@ mod tests {
         ("Hildegard von Bingen", "Antiphon", 2, 1),
         ("Thomas Tallis", "Motet", 2, 1),
     ];
-    const MOVEMENTS: &[&str] = &[
+    /// First movements rotate so works differ in energy (82, 47, 40, 20).
+    const FIRSTS: &[&str] = &[
         "I. Allegro con brio",
-        "II. Adagio",
-        "III. Menuetto",
-        "IV. Presto",
+        "I. Adagio - Allegro",
+        "I. Andante",
+        "I. Largo",
     ];
+    const REST: &[&str] = &["II. Adagio", "III. Menuetto", "IV. Presto"];
     const MIDNIGHT: i64 = 1_790_035_200; // a UTC midnight
 
-    fn shelf_items() -> Vec<LibraryItem> {
+    fn item(
+        uri: String,
+        title: String,
+        composer: &str,
+        album: (String, String),
+        secs: u32,
+        origin: Origin,
+    ) -> LibraryItem {
+        LibraryItem {
+            source_uri: uri,
+            title,
+            artists: vec![composer.into(), "Test Ensemble".into()],
+            album: Some(album.0),
+            album_uri: Some(album.1),
+            album_artists: vec!["Test Ensemble".into()],
+            disc_number: None,
+            track_number: None,
+            added_at: None,
+            genres: Vec::new(),
+            label: None,
+            duration_secs: Some(secs),
+            explicit: false,
+            origin,
+        }
+    }
+
+    /// The shelf, with `scale` times as many works per composer.
+    fn shelf_items(scale: usize) -> Vec<LibraryItem> {
         let mut items = Vec::new();
         for (ci, &(composer, form, works, movements)) in SHELF.iter().enumerate() {
             let surname = composer.rsplit(' ').next().unwrap();
-            for w in 1..=works {
-                for (m, movement) in MOVEMENTS.iter().take(movements).enumerate() {
-                    let title = if movements == 1 {
-                        format!("{form} No. {w}")
-                    } else {
-                        format!("{form} No. {w} in C Major, Op. {w}: {movement}")
-                    };
-                    let n = items.len();
-                    items.push(LibraryItem {
-                        source_uri: format!("spotify:track:{ci}-{w}-{m}"),
-                        title,
-                        artists: vec![composer.into(), format!("Test Ensemble {ci}")],
-                        album: Some(format!("{surname}: {form}s, Vol. {}", w / 5)),
-                        album_uri: Some(format!("spotify:album:{ci}-{}", w / 5)),
-                        album_artists: vec![format!("Test Ensemble {ci}")],
-                        disc_number: None,
-                        track_number: None,
-                        added_at: None,
-                        genres: Vec::new(),
-                        label: None,
-                        duration_secs: Some(if movements == 1 { 240 } else { 420 }),
-                        explicit: false,
-                        origin: if n % 7 == 0 {
-                            Origin::LikedTrack
-                        } else {
-                            Origin::SavedAlbum
-                        },
-                    });
+            for w in 1..=works * scale {
+                let album = (
+                    format!("{surname}: {form}s, Vol. {}", w / 5),
+                    format!("spotify:album:{ci}-{}", w / 5),
+                );
+                let origin = if (ci + w) % 7 == 0 {
+                    Origin::LikedTrack
+                } else {
+                    Origin::SavedAlbum
+                };
+                if movements == 1 {
+                    let uri = format!("spotify:track:{ci}-{w}-0");
+                    items.push(item(
+                        uri,
+                        format!("{form} No. {w}"),
+                        composer,
+                        album,
+                        240,
+                        origin,
+                    ));
+                    continue;
+                }
+                let titles = std::iter::once(FIRSTS[w % FIRSTS.len()])
+                    .chain(REST.iter().copied().take(movements - 1));
+                for (m, movement) in titles.enumerate() {
+                    let uri = format!("spotify:track:{ci}-{w}-{m}");
+                    let title = format!("{form} No. {w} in C Major, Op. {w}: {movement}");
+                    items.push(item(uri, title, composer, album.clone(), 420, origin));
                 }
             }
-        }
-        for (i, (title, artist)) in [("Shape of You", "Ed Sheeran"), ("Mambo No. 5", "Lou Bega")]
-            .into_iter()
-            .enumerate()
-        {
-            items.push(LibraryItem {
-                source_uri: format!("spotify:track:pop-{i}"),
-                title: title.into(),
-                artists: vec![artist.into()],
-                album: None,
-                album_uri: None,
-                album_artists: Vec::new(),
-                disc_number: None,
-                track_number: None,
-                added_at: None,
-                genres: Vec::new(),
-                label: None,
-                duration_secs: Some(230),
-                explicit: false,
-                origin: Origin::LikedTrack,
-            });
         }
         items
     }
 
-    fn shelf() -> CandidatePool {
-        CandidatePool::build(&shelf_items())
+    /// A two-hour opera: 24 scenes.
+    fn opera() -> Vec<LibraryItem> {
+        (1..=24)
+            .map(|n| {
+                let album = (
+                    "Verdi: La traviata".to_owned(),
+                    "spotify:album:traviata".to_owned(),
+                );
+                let title = format!("La traviata, Act {}: Scene {n}", 1 + n / 9);
+                let uri = format!("spotify:track:traviata-{n}");
+                item(uri, title, "Giuseppe Verdi", album, 300, Origin::SavedAlbum)
+            })
+            .collect()
     }
 
-    /// Simulate continuous listening from midnight. With `hour` fixed the
-    /// time-of-day target stays put; otherwise it follows the clock.
+    fn works_of(items: &[LibraryItem]) -> WorkPool {
+        WorkPool::new(&CandidatePool::build(items))
+    }
+
+    /// Continuous listening from midnight: each pick's movements play back to
+    /// back. With `hour` fixed the energy target stays put.
     fn simulate<'p>(
-        pool: &'p CandidatePool,
+        pool: &'p WorkPool,
         config: &DjConfig,
         seed: u64,
         count: usize,
         hour: Option<u8>,
-    ) -> Vec<&'p ClassicalTrack> {
+    ) -> Vec<PlannedWork<'p>> {
         let mut rng = Rng::new(seed);
         let mut history = Vec::new();
         let mut picks = Vec::new();
@@ -568,53 +887,41 @@ mod tests {
                 local_hour: Some(hour.unwrap_or(clock_hour)),
                 energy_target: None,
             };
-            let t = pick_next(pool, &ctx, config, &mut rng).unwrap();
-            history.push(PlayRecord::at(t.track.source_uri.clone(), now));
-            now += i64::from(t.track.duration_secs.unwrap());
-            picks.push(t);
+            let planned = pick_next(pool, &ctx, config, &mut rng).unwrap();
+            for m in planned.movements {
+                history.push(PlayRecord::at(m.track.source_uri.clone(), now));
+                now += i64::from(m.track.duration_secs.unwrap());
+            }
+            picks.push(planned);
         }
         picks
     }
 
-    /// The pre-refinement selector: uniform among tracks not in the last
-    /// `avoid` plays. The baseline the DJ's variety must beat.
-    fn uniform(
-        pool: &CandidatePool,
-        seed: u64,
-        count: usize,
-        avoid: usize,
-    ) -> Vec<&ClassicalTrack> {
+    /// Uniform among works not in the last `avoid` picks: the baseline.
+    fn uniform(pool: &WorkPool, seed: u64, count: usize, avoid: usize) -> Vec<&Work> {
         let mut rng = Rng::new(seed);
-        let mut picks: Vec<&ClassicalTrack> = Vec::new();
+        let mut picks: Vec<&Work> = Vec::new();
         for _ in 0..count {
-            let recent: HashSet<&str> = picks
+            let fresh: Vec<&Work> = pool
+                .works()
                 .iter()
-                .rev()
-                .take(avoid)
-                .map(|t| t.track.source_uri.as_str())
-                .collect();
-            let fresh: Vec<&ClassicalTrack> = pool
-                .tracks()
-                .iter()
-                .filter(|t| !recent.contains(t.track.source_uri.as_str()))
+                .filter(|w| !picks.iter().rev().take(avoid).any(|r| std::ptr::eq(*r, *w)))
                 .collect();
             picks.push(fresh[rng.below(fresh.len())]);
         }
         picks
     }
 
-    fn repeat_rate<K: PartialEq>(
-        picks: &[&ClassicalTrack],
-        key: impl Fn(&ClassicalTrack) -> K,
-    ) -> f64 {
+    fn works<'p>(picks: &[PlannedWork<'p>]) -> Vec<&'p Work> {
+        picks.iter().map(|p| p.work).collect()
+    }
+
+    fn repeat_rate<K: PartialEq>(picks: &[&Work], key: impl Fn(&Work) -> K) -> f64 {
         let repeats = picks.windows(2).filter(|w| key(w[0]) == key(w[1])).count();
         repeats as f64 / (picks.len() - 1) as f64
     }
 
-    fn longest_run<K: PartialEq>(
-        picks: &[&ClassicalTrack],
-        key: impl Fn(&ClassicalTrack) -> K,
-    ) -> usize {
+    fn longest_run<K: PartialEq>(picks: &[&Work], key: impl Fn(&Work) -> K) -> usize {
         let (mut best, mut run) = (1, 1);
         for w in picks.windows(2) {
             run = if key(w[0]) == key(w[1]) { run + 1 } else { 1 };
@@ -623,18 +930,7 @@ mod tests {
         best
     }
 
-    fn share(picks: &[&ClassicalTrack], composer: &str) -> f64 {
-        picks.iter().filter(|t| t.composer == composer).count() as f64 / picks.len() as f64
-    }
-
-    /// Mean number of distinct keys per sliding window: local spread, which
-    /// is what a listener hears (over a long run the hard cooldown makes any
-    /// selector cycle the whole pool, so totals converge to the shelf mix).
-    fn distinct_per_window<K: Ord>(
-        picks: &[&ClassicalTrack],
-        size: usize,
-        key: impl Fn(&ClassicalTrack) -> K,
-    ) -> f64 {
+    fn distinct_per_window<K: Ord>(picks: &[&Work], size: usize, key: impl Fn(&Work) -> K) -> f64 {
         let windows = picks.windows(size);
         let n = windows.len() as f64;
         windows
@@ -643,31 +939,19 @@ mod tests {
             / n
     }
 
-    fn min_track_gap(picks: &[&ClassicalTrack]) -> usize {
-        let mut last: HashMap<&str, usize> = HashMap::new();
+    fn min_work_gap(picks: &[&Work]) -> usize {
+        let mut last: HashMap<*const Work, usize> = HashMap::new();
         let mut gap = usize::MAX;
-        for (i, t) in picks.iter().enumerate() {
-            if let Some(prev) = last.insert(t.track.source_uri.as_str(), i) {
+        for (i, w) in picks.iter().enumerate() {
+            if let Some(prev) = last.insert(std::ptr::from_ref(*w), i) {
                 gap = gap.min(i - prev);
             }
         }
         gap
     }
 
-    fn mean_energy(picks: &[&ClassicalTrack]) -> f64 {
-        picks.iter().map(|t| f64::from(t.energy)).sum::<f64>() / picks.len() as f64
-    }
-
-    fn mean_energy_step(picks: &[&ClassicalTrack]) -> f64 {
-        let steps: u32 = picks
-            .windows(2)
-            .map(|w| u32::from(w[0].energy.abs_diff(w[1].energy)))
-            .sum();
-        f64::from(steps) / (picks.len() - 1) as f64
-    }
-
-    fn uris(picks: &[&ClassicalTrack]) -> Vec<String> {
-        picks.iter().map(|t| t.track.source_uri.clone()).collect()
+    fn mean_energy(picks: &[&Work]) -> f64 {
+        picks.iter().map(|w| f64::from(w.energy())).sum::<f64>() / picks.len() as f64
     }
 
     #[test]
@@ -691,20 +975,8 @@ mod tests {
     }
 
     #[test]
-    fn shelf_pool_is_classical_only_and_fully_attributed() {
-        let pool = shelf();
-        assert_eq!(pool.len(), 291);
-        assert!(
-            pool.tracks()
-                .iter()
-                .all(|t| t.known_composer && t.period != Period::Unknown)
-        );
-        assert!(pool.get("spotify:track:pop-0").is_none());
-    }
-
-    #[test]
     fn empty_pool_yields_nothing() {
-        let pool = CandidatePool::default();
+        let pool = WorkPool::default();
         let (ctx, config) = (PickContext::default(), DjConfig::default());
         let mut rng = Rng::new(1);
         assert!(pick_next(&pool, &ctx, &config, &mut rng).is_none());
@@ -712,333 +984,521 @@ mod tests {
     }
 
     #[test]
-    fn long_run_spreads_composers_works_and_periods() {
-        let pool = shelf();
+    fn shelf_groups_into_works() {
+        let pool = works_of(&shelf_items(1));
+        assert_eq!(pool.len(), 111);
+        let tracks: usize = pool.works().iter().map(|w| w.movements.len()).sum();
+        assert_eq!(tracks, 291);
+        let cantata = pool.work_of("spotify:track:0-1-2").unwrap();
+        assert_eq!(cantata.movements.len(), 4);
+        assert_eq!(cantata.composer, "Johann Sebastian Bach");
+    }
+
+    #[test]
+    fn long_run_plays_whole_works_with_spread() {
+        // Three times the shelf: with 111 works, round-the-clock listening and
+        // a 24 h cooldown force a near-cycle whose mix is the shelf's own, so
+        // composer balance shows on a library the cooldown doesn't exhaust.
+        let pool = works_of(&shelf_items(3));
+        assert_eq!(pool.len(), 333);
         let config = DjConfig::default();
+        let composer = |w: &Work| w.composer_key().to_owned();
+        let bach = |p: &[&Work]| {
+            p.iter()
+                .filter(|w| w.composer == "Johann Sebastian Bach")
+                .count() as f64
+                / p.len() as f64
+        };
         for seed in [42, 7, 2026] {
-            let dj = simulate(&pool, &config, seed, 1000, None);
-            let base = uniform(&pool, seed, 1000, 5);
-            let composer = |t: &ClassicalTrack| t.composer_key.clone();
-            let bach = "Johann Sebastian Bach";
+            let picks = simulate(&pool, &config, seed, 500, None);
+            // Never split, always in order: the plan is the work's movements.
+            for planned in &picks {
+                assert!(std::ptr::eq(
+                    planned.movements,
+                    planned.work.movements.as_slice()
+                ));
+                let numerals: Vec<u32> = planned
+                    .movements
+                    .iter()
+                    .filter_map(|m| m.movement.as_deref().and_then(movement_number))
+                    .collect();
+                assert!(numerals.windows(2).all(|p| p[0] < p[1]), "{numerals:?}");
+            }
+            let dj = works(&picks);
+            let base = uniform(&pool, seed, 500, 5);
             let (dj_rep, base_rep) = (repeat_rate(&dj, composer), repeat_rate(&base, composer));
-            let (dj_bach, base_bach) = (share(&dj, bach), share(&base, bach));
-            let (dj_periods, base_periods) = (
-                distinct_per_window(&dj, 8, |t| t.period),
-                distinct_per_window(&base, 8, |t| t.period),
-            );
-            let (dj_composers, base_composers) = (
-                distinct_per_window(&dj, 8, composer),
-                distinct_per_window(&base, 8, composer),
-            );
+            let dj_comp = distinct_per_window(&dj, 8, composer);
+            let base_comp = distinct_per_window(&base, 8, composer);
             eprintln!(
                 "seed {seed}: composer repeat {dj_rep:.3} (uniform {base_rep:.3}), \
-                 Bach share {dj_bach:.3} (uniform {base_bach:.3}), \
-                 distinct composers/8 {dj_composers:.2} (uniform {base_composers:.2}), \
-                 distinct periods/8 {dj_periods:.2} (uniform {base_periods:.2}), \
-                 longest period run {}, min track gap {}",
-                longest_run(&dj, |t| t.period),
-                min_track_gap(&dj),
+                 distinct composers/8 {dj_comp:.2} (uniform {base_comp:.2}), \
+                 Bach share {:.3} (uniform {:.3}), longest period run {}, min work gap {}",
+                bach(&dj),
+                bach(&base),
+                longest_run(&dj, |w| w.period),
+                min_work_gap(&dj),
             );
-
-            // Anti-repeat: the hard cooldown holds across the whole run.
-            assert!(min_track_gap(&dj) >= config.track_cooldown_plays);
-
-            // Composers: back-to-back repeats are rare and far below uniform.
-            assert!(dj_rep <= 0.02, "composer repeat rate {dj_rep}");
-            assert!(dj_rep * 4.0 < base_rep, "dj {dj_rep} vs uniform {base_rep}");
-            assert!(longest_run(&dj, composer) <= 2);
-
-            // Works and albums: never back to back.
-            assert_eq!(repeat_rate(&dj, |t| t.work_key.clone()), 0.0);
-            assert!(repeat_rate(&dj, |t| t.album_key.clone()) <= 0.01);
-
-            // Every composer gets airtime; the prolific one is damped below
-            // its shelf share while uniform tracks it.
-            let heard: HashSet<&str> = dj.iter().map(|t| t.composer.as_str()).collect();
+            assert!(
+                min_work_gap(&dj) >= config.work_cooldown_plays,
+                "work cooldown"
+            );
+            assert!(dj_rep <= 0.03, "composer repeat rate {dj_rep}");
+            assert!(dj_rep * 3.0 < base_rep, "dj {dj_rep} vs uniform {base_rep}");
+            // Uniform over works is already spread (single pieces are works).
+            assert!(
+                dj_comp >= 6.8 && dj_comp > base_comp + 0.5,
+                "{dj_comp} vs {base_comp}"
+            );
+            assert!(bach(&dj) < 0.75 * 20.0 / 111.0, "Bach share {}", bach(&dj));
+            assert!(longest_run(&dj, |w| w.period) <= 3);
+            let heard: HashSet<&str> = dj.iter().map(|w| w.composer.as_str()).collect();
             assert_eq!(heard.len(), SHELF.len(), "unheard composers");
-            let bach_shelf = 80.0 / 291.0;
-            assert!(
-                dj_bach < 0.75 * bach_shelf,
-                "Bach share {dj_bach} vs shelf {bach_shelf}"
-            );
-            assert!(
-                base_bach > 0.85 * bach_shelf,
-                "uniform Bach share {base_bach}"
-            );
-
-            // Any eight consecutive tracks: nearly eight composers, and more
-            // eras than uniform manages; never more than three of one era in
-            // a row.
-            assert!(
-                dj_composers >= 7.0,
-                "distinct composers per 8: {dj_composers}"
-            );
-            assert!(dj_composers > base_composers + 1.0);
-            assert!(
-                dj_periods > base_periods + 0.5,
-                "periods per 8: {dj_periods} vs {base_periods}"
-            );
-            assert!(longest_run(&dj, |t| t.period) <= 3);
         }
     }
 
     #[test]
+    fn long_works_stay_out_unless_allowed() {
+        let mut items = shelf_items(1);
+        items.extend(opera());
+        let pool = works_of(&items);
+        let traviata = pool.work_of("spotify:track:traviata-1").unwrap();
+        assert_eq!((traviata.movements.len(), traviata.total_secs), (24, 7200));
+
+        let picks = simulate(&pool, &DjConfig::default(), 5, 500, None);
+        assert!(picks.iter().all(|p| !std::ptr::eq(p.work, traviata)));
+
+        let config = DjConfig {
+            allow_long_works: true,
+            ..DjConfig::default()
+        };
+        let picks = simulate(&pool, &config, 5, 500, None);
+        let operas: Vec<&PlannedWork<'_>> = picks
+            .iter()
+            .filter(|p| std::ptr::eq(p.work, traviata))
+            .collect();
+        assert!(!operas.is_empty(), "allowed long works get played");
+        assert!(
+            operas
+                .iter()
+                .all(|p| p.reason.has(Factor::LongWork) && p.movements.len() == 24)
+        );
+
+        // A library of nothing but long works still plays.
+        let only = works_of(&opera());
+        let ctx = PickContext::default();
+        let planned = pick_next(&only, &ctx, &DjConfig::default(), &mut Rng::new(1)).unwrap();
+        assert!(planned.reason.has(Factor::LongWork));
+        assert!(
+            planned
+                .reason
+                .summary
+                .contains("a long work, allowed this time")
+        );
+    }
+
+    #[test]
+    fn incomplete_works_still_make_a_full_set() {
+        // Liked Songs only, every four-movement work missing its finale.
+        let items: Vec<LibraryItem> = shelf_items(1)
+            .into_iter()
+            .filter(|i| !i.title.ends_with("IV. Presto"))
+            .map(|mut i| {
+                i.origin = Origin::LikedTrack;
+                i
+            })
+            .collect();
+        let pool = works_of(&items);
+        let ctx = PickContext::default();
+        let picks = plan(&pool, &ctx, &DjConfig::default(), 40, &mut Rng::new(11));
+        assert_eq!(picks.len(), 40);
+        let distinct: HashSet<*const Work> =
+            picks.iter().map(|p| std::ptr::from_ref(p.work)).collect();
+        assert_eq!(distinct.len(), 40, "no repeats within the cooldown");
+        let partial = picks
+            .iter()
+            .find(|p| p.reason.has(Factor::Incomplete))
+            .expect("partial works play");
+        assert!(
+            partial
+                .reason
+                .summary
+                .contains("only some movements are in your library")
+        );
+        assert!(partial.reason.summary.contains("from your liked tracks"));
+    }
+
+    #[test]
     fn energy_follows_the_time_of_day() {
-        let pool = shelf();
+        let pool = works_of(&shelf_items(1));
         let config = DjConfig::default();
-        // An evening's worth of picks each (a longer run exhausts the mood's
-        // share of a 291-track shelf under the 24 h cooldown).
-        let night = simulate(&pool, &config, 9, 100, Some(23));
-        let morning = simulate(&pool, &config, 9, 100, Some(10));
-        let base = uniform(&pool, 9, 100, 5);
-        let miss = |picks: &[&ClassicalTrack], hour| {
+        // A night's (or a morning's) listening, ~24 works, over three seeds.
+        // Much longer and the 24 h cooldown exhausts the shelf's ~40 calm
+        // works, forcing livelier ones whatever the target.
+        let session = |hour: Option<u8>| -> Vec<&Work> {
+            [9, 10, 11]
+                .into_iter()
+                .flat_map(|seed| works(&simulate(&pool, &config, seed, 24, hour)))
+                .collect()
+        };
+        let (night, morning) = (session(Some(23)), session(Some(10)));
+        let base: Vec<&Work> = [9, 10, 11]
+            .into_iter()
+            .flat_map(|seed| uniform(&pool, seed, 24, 5))
+            .collect();
+        let miss = |picks: &[&Work], hour| {
             let target = energy_target_for_hour(hour);
             picks
                 .iter()
-                .map(|t| f64::from(t.energy.abs_diff(target)))
+                .map(|w| f64::from(w.energy().abs_diff(target)))
                 .sum::<f64>()
                 / picks.len() as f64
         };
         eprintln!(
-            "mean energy: night {:.1}, morning {:.1}; mean miss from target: night {:.1} \
-             (uniform {:.1}), morning {:.1} (uniform {:.1})",
+            "work energy: night {:.1}, morning {:.1}; target miss night {:.1} (uniform {:.1}), \
+             morning {:.1} (uniform {:.1})",
             mean_energy(&night),
             mean_energy(&morning),
             miss(&night, 23),
             miss(&base, 23),
             miss(&morning, 10),
-            miss(&base, 10),
+            miss(&base, 10)
         );
-        assert!(mean_energy(&night) + 12.0 < mean_energy(&morning));
-        assert!(miss(&night, 23) < 0.6 * miss(&base, 23));
-        assert!(miss(&morning, 10) < 0.8 * miss(&base, 10));
-
-        // An explicit target overrides the clock.
-        let mut rng = Rng::new(5);
-        let calm = PickContext {
-            local_hour: Some(10),
-            energy_target: Some(15),
-            ..PickContext::default()
-        };
-        let picks = plan(&pool, &calm, &config, 100, &mut rng);
-        assert!(
-            mean_energy(&picks) < 40.0,
-            "override mean {}",
-            mean_energy(&picks)
-        );
-    }
-
-    #[test]
-    fn transitions_are_smoother_than_uniform() {
-        let pool = shelf();
-        let dj = simulate(&pool, &DjConfig::default(), 11, 800, Some(14));
-        let base = uniform(&pool, 11, 800, 5);
-        let (dj_step, base_step) = (mean_energy_step(&dj), mean_energy_step(&base));
-        assert!(
-            dj_step + 5.0 < base_step,
-            "dj step {dj_step} vs uniform {base_step}"
-        );
-        let jarring = |p: &[&ClassicalTrack]| {
-            p.windows(2)
-                .filter(|w| w[0].energy.abs_diff(w[1].energy) > 60)
-                .count()
-        };
-        assert!(
-            jarring(&dj) * 3 < jarring(&base),
-            "{} vs {}",
-            jarring(&dj),
-            jarring(&base)
-        );
+        assert!(mean_energy(&night) + 10.0 < mean_energy(&morning));
+        assert!(miss(&night, 23) < 0.7 * miss(&base, 23));
+        assert!(miss(&morning, 10) < miss(&base, 10));
     }
 
     #[test]
     fn same_seed_same_set() {
-        let pool = shelf();
+        let pool = works_of(&shelf_items(1));
         let config = DjConfig::default();
-        let a = simulate(&pool, &config, 1234, 200, None);
-        let b = simulate(&pool, &config, 1234, 200, None);
-        let c = simulate(&pool, &config, 1235, 200, None);
-        assert_eq!(uris(&a), uris(&b));
-        assert_ne!(uris(&a), uris(&c));
+        let keys = |seed| {
+            simulate(&pool, &config, seed, 100, None)
+                .iter()
+                .map(|p| p.work.work_key.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys(1234), keys(1234));
+        assert_ne!(keys(1234), keys(1235));
     }
 
     #[test]
     fn plan_continues_history_without_repeats() {
-        let pool = shelf();
+        let pool = works_of(&shelf_items(1));
         let config = DjConfig::default();
         let mut rng = Rng::new(77);
-        let first = plan(&pool, &PickContext::default(), &config, 40, &mut rng);
+        let first = plan(&pool, &PickContext::default(), &config, 20, &mut rng);
         let history: Vec<PlayRecord> = first
             .iter()
-            .map(|t| PlayRecord::new(t.track.source_uri.clone()))
+            .flat_map(|p| p.movements.iter())
+            .map(|m| PlayRecord::new(m.track.source_uri.clone()))
             .collect();
         let ctx = PickContext {
             history: &history,
             ..PickContext::default()
         };
-        let next = plan(&pool, &ctx, &config, 40, &mut rng);
-        let all: Vec<&ClassicalTrack> = first.into_iter().chain(next).collect();
-        assert_eq!(
-            all.iter()
-                .map(|t| &t.track.source_uri)
-                .collect::<HashSet<_>>()
-                .len(),
-            80
-        );
-        assert_eq!(repeat_rate(&all, |t| t.work_key.clone()), 0.0);
+        let next = plan(&pool, &ctx, &config, 20, &mut rng);
+        let all: HashSet<*const Work> = first
+            .iter()
+            .chain(&next)
+            .map(|p| std::ptr::from_ref(p.work))
+            .collect();
+        assert_eq!(all.len(), 40);
     }
 
-    fn tiny_pool(composers: &[&str]) -> CandidatePool {
+    fn tiny(composers: &[&str]) -> WorkPool {
         let items: Vec<LibraryItem> = composers
             .iter()
             .enumerate()
-            .map(|(i, composer)| LibraryItem {
-                source_uri: format!("spotify:track:tiny-{i}"),
-                title: format!("Sonata No. {i}: I. Allegro"),
-                artists: vec![(*composer).into()],
-                album: None,
-                album_uri: None,
-                album_artists: Vec::new(),
-                disc_number: None,
-                track_number: None,
-                added_at: None,
-                genres: Vec::new(),
-                label: None,
-                duration_secs: Some(300),
-                explicit: false,
-                origin: Origin::SavedAlbum,
+            .map(|(i, composer)| {
+                let album = (format!("Album {i}"), format!("spotify:album:tiny-{i}"));
+                let uri = format!("spotify:track:tiny-{i}");
+                item(
+                    uri,
+                    format!("Sonata No. {i}"),
+                    composer,
+                    album,
+                    300,
+                    Origin::SavedAlbum,
+                )
             })
             .collect();
-        CandidatePool::build(&items)
+        works_of(&items)
     }
 
     #[test]
     fn small_pool_rotates_instead_of_repeating() {
-        let pool = tiny_pool(&["Joseph Haydn", "Franz Schubert", "Claude Debussy"]);
-        assert_eq!(pool.len(), 3);
+        let pool = tiny(&["Joseph Haydn", "Franz Schubert", "Claude Debussy"]);
         let picks = simulate(&pool, &DjConfig::default(), 3, 30, Some(12));
-        assert_eq!(repeat_rate(&picks, |t| t.track.source_uri.clone()), 0.0);
+        let dj = works(&picks);
+        assert_eq!(repeat_rate(&dj, |w| w.work_key.clone()), 0.0);
         let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-        for t in &picks {
-            *counts.entry(t.track.source_uri.as_str()).or_default() += 1;
+        for w in &dj {
+            *counts.entry(w.work_key.as_str()).or_default() += 1;
         }
         assert!(counts.values().all(|&n| n == 10), "{counts:?}");
-
-        let solo = tiny_pool(&["Erik Satie"]);
+        let rotated = picks
+            .iter()
+            .filter(|p| p.reason.has(Factor::Rotation))
+            .count();
+        assert_eq!(rotated, 27, "every pick after the first three rotates");
         assert!(
-            simulate(&solo, &DjConfig::default(), 3, 5, None)
-                .iter()
-                .all(|t| t.composer == "Erik Satie")
+            picks[5]
+                .reason
+                .summary
+                .contains("rotating through the least recently played")
         );
     }
 
     #[test]
-    fn time_cooldown_excludes_recent_plays() {
-        let pool = tiny_pool(&["Joseph Haydn", "Franz Schubert", "Claude Debussy"]);
-        let config = DjConfig {
-            track_cooldown_plays: 0,
-            ..DjConfig::default()
-        };
-        let now = MIDNIGHT + 20 * 3600;
-        let favorite = "spotify:track:tiny-0";
-        let picked_ever = |played_at: i64| {
-            // Forty manual plays since, so only the clock can hold it back.
-            let mut history = vec![PlayRecord::at(favorite, played_at)];
-            history.extend((0..40).map(|i| PlayRecord::new(format!("spotify:track:manual-{i}"))));
-            (0..400).any(|seed| {
-                let ctx = PickContext {
-                    history: &history,
-                    now: Some(now),
-                    ..PickContext::default()
-                };
-                pick_next(&pool, &ctx, &config, &mut Rng::new(seed))
-                    .unwrap()
-                    .track
-                    .source_uri
-                    == favorite
-            })
-        };
-        assert!(!picked_ever(now - 3600), "played an hour ago");
-        assert!(picked_ever(now - 2 * 24 * 3600), "played two days ago");
-    }
-
-    #[test]
-    fn plays_outside_the_pool_are_tolerated() {
-        let pool = shelf();
-        let history: Vec<PlayRecord> = (0..50)
-            .map(|i| PlayRecord::new(format!("spotify:track:manual-{i}")))
-            .collect();
+    fn a_work_counts_as_played_when_any_movement_plays() {
+        let pool = works_of(&shelf_items(1));
+        let symphony = pool.work_of("spotify:track:5-1-0").unwrap(); // Beethoven's first
+        // Only its third movement was heard, an hour ago, then 40 other works.
+        let mut history = vec![PlayRecord::at("spotify:track:5-1-2", MIDNIGHT)];
+        history.extend((0..40).map(|i| PlayRecord::new(format!("spotify:track:manual-{i}"))));
         let ctx = PickContext {
             history: &history,
+            now: Some(MIDNIGHT + 3600),
             ..PickContext::default()
         };
-        let picks = plan(&pool, &ctx, &DjConfig::default(), 10, &mut Rng::new(2));
-        assert_eq!(picks.len(), 10);
+        let config = DjConfig {
+            work_cooldown_plays: 0,
+            ..DjConfig::default()
+        };
+        let ever = (0..300).any(|seed| {
+            let planned = pick_next(&pool, &ctx, &config, &mut Rng::new(seed)).unwrap();
+            std::ptr::eq(planned.work, symphony)
+        });
+        assert!(!ever, "the whole symphony is on its 24 h cooldown");
     }
 
     #[test]
-    fn liked_tracks_are_favored() {
-        let mut items: Vec<LibraryItem> = Vec::new();
-        for (i, origin) in [Origin::LikedTrack, Origin::SavedAlbum]
+    fn liked_works_are_favored() {
+        let items: Vec<LibraryItem> = [Origin::LikedTrack, Origin::SavedAlbum]
             .into_iter()
             .enumerate()
-        {
-            items.push(LibraryItem {
-                source_uri: format!("spotify:track:twin-{i}"),
-                title: format!("Nocturne No. {i}"),
-                artists: vec!["Frédéric Chopin".into()],
-                album: None,
-                album_uri: None,
-                album_artists: Vec::new(),
-                disc_number: None,
-                track_number: None,
-                added_at: None,
-                genres: Vec::new(),
-                label: None,
-                duration_secs: Some(300),
-                explicit: false,
-                origin,
-            });
-        }
-        let pool = CandidatePool::build(&items);
+            .map(|(i, origin)| {
+                let album = (format!("Album {i}"), format!("spotify:album:twin-{i}"));
+                let uri = format!("spotify:track:twin-{i}");
+                item(
+                    uri,
+                    format!("Nocturne No. {i}"),
+                    "Frédéric Chopin",
+                    album,
+                    300,
+                    origin,
+                )
+            })
+            .collect();
+        let pool = works_of(&items);
+        let (ctx, config) = (PickContext::default(), DjConfig::default());
         let mut rng = Rng::new(8);
         let liked = (0..4000)
             .filter(|_| {
-                pick_next(
-                    &pool,
-                    &PickContext::default(),
-                    &DjConfig::default(),
-                    &mut rng,
-                )
-                .unwrap()
-                .origin
-                .is_liked()
+                pick_next(&pool, &ctx, &config, &mut rng)
+                    .unwrap()
+                    .work
+                    .is_liked()
             })
             .count();
         // Expected 1.3 : 1 → ~56.5% liked.
         assert!((2140..2380).contains(&liked), "liked picked {liked}/4000");
     }
 
+    /// Six works: two Brahms symphonies and four from other eras.
+    fn snapshot_library() -> Vec<LibraryItem> {
+        let work = |id: &str, composer: &str, title: &str, movements: &[&str]| {
+            movements
+                .iter()
+                .enumerate()
+                .map(|(m, movement)| {
+                    let album = (
+                        format!("{composer}: {title}"),
+                        format!("spotify:album:{id}"),
+                    );
+                    let uri = format!("spotify:track:{id}-{m}");
+                    let title = format!("{title}: {movement}");
+                    item(uri, title, composer, album, 600, Origin::SavedAlbum)
+                })
+                .collect::<Vec<_>>()
+        };
+        let four = [
+            "I. Allegro con brio",
+            "II. Andante",
+            "III. Poco allegretto",
+            "IV. Allegro",
+        ];
+        let brahms = "Johannes Brahms";
+        let mut items = work(
+            "brahms3",
+            brahms,
+            "Symphony No. 3 in F Major, Op. 90",
+            &four,
+        );
+        items.extend(work(
+            "brahms4",
+            brahms,
+            "Symphony No. 4 in E Minor, Op. 98",
+            &four,
+        ));
+        items.extend(work(
+            "bach",
+            "Johann Sebastian Bach",
+            "Cello Suite No. 1 in G Major, BWV 1007",
+            &["I. Prélude", "II. Allemande"],
+        ));
+        items.extend(work(
+            "mozart",
+            "Wolfgang Amadeus Mozart",
+            "Piano Sonata No. 11 in A Major, K. 331",
+            &[
+                "I. Andante grazioso",
+                "II. Menuetto",
+                "III. Alla Turca: Allegretto",
+            ],
+        ));
+        items.extend(work(
+            "haydn",
+            "Joseph Haydn",
+            "String Quartet in C Major, Op. 76 No. 3",
+            &["I. Allegro", "II. Poco adagio"],
+        ));
+        items.extend(work(
+            "vivaldi",
+            "Antonio Vivaldi",
+            "Violin Concerto in E Major, RV 269",
+            &["I. Allegro", "II. Largo", "III. Allegro"],
+        ));
+        items
+    }
+
+    /// A pick whose reason is fully determined: only one work is out of
+    /// cooldown.
+    #[test]
+    fn pick_reason_snapshot() {
+        let pool = works_of(&snapshot_library());
+
+        let now = MIDNIGHT + 19 * 3600;
+        let mut history = Vec::new();
+        for (id, movements, at) in [
+            ("brahms4", 4, now - 4 * 86_400 - 3600),
+            ("vivaldi", 3, now - 3000),
+            ("haydn", 2, now - 2400),
+            ("bach", 2, now - 1800),
+            ("mozart", 3, now - 1200),
+        ] {
+            history.extend(
+                (0..movements).map(|m| PlayRecord::at(format!("spotify:track:{id}-{m}"), at)),
+            );
+        }
+        let ctx = PickContext {
+            history: &history,
+            now: Some(now),
+            local_hour: Some(19),
+            energy_target: None,
+        };
+        let planned = pick_next(&pool, &ctx, &DjConfig::default(), &mut Rng::new(1)).unwrap();
+        assert_eq!(planned.work.title, "Symphony No. 3 in F Major, Op. 90");
+        assert_eq!(planned.movements.len(), 4);
+        assert_eq!(
+            planned.reason.factors,
+            [
+                (Factor::ComposerBalance, 707),
+                (Factor::PeriodAbsent, 1400),
+                (Factor::EnergyFit, 30),
+                // Mozart's Andante (40) to Brahms's Allegro con brio (82).
+                (Factor::EnergyJump, 790),
+            ]
+        );
+        assert_eq!(
+            planned.reason.summary,
+            "Brahms not heard in 4 days; balancing toward late-Romantic; gentle evening target"
+        );
+
+        // Untimed history reads in works; an explicit target reads as requested.
+        let untimed: Vec<PlayRecord> = history
+            .iter()
+            .map(|p| PlayRecord::new(p.source_uri.clone()))
+            .collect();
+        let ctx = PickContext {
+            history: &untimed,
+            now: None,
+            local_hour: None,
+            energy_target: Some(80),
+        };
+        let planned = pick_next(&pool, &ctx, &DjConfig::default(), &mut Rng::new(1)).unwrap();
+        assert_eq!(
+            planned.reason.summary,
+            "Brahms last heard 4 works ago; balancing toward late-Romantic; lively energy requested"
+        );
+    }
+
+    #[test]
+    fn planning_over_a_10k_track_library_is_fast() {
+        let items = shelf_items(35);
+        assert!(items.len() >= 10_000, "{} tracks", items.len());
+        let pool = works_of(&items);
+        let config = DjConfig::default();
+        let mut history = Vec::new();
+        for planned in plan(
+            &pool,
+            &PickContext::default(),
+            &config,
+            100,
+            &mut Rng::new(1),
+        ) {
+            history.extend(
+                planned
+                    .movements
+                    .iter()
+                    .map(|m| PlayRecord::new(m.track.source_uri.clone())),
+            );
+        }
+        let ctx = PickContext {
+            history: &history,
+            now: Some(MIDNIGHT),
+            local_hour: Some(20),
+            energy_target: None,
+        };
+        let started = Instant::now();
+        let planned = plan(&pool, &ctx, &config, 5, &mut Rng::new(2));
+        let elapsed = started.elapsed();
+        eprintln!(
+            "plan(5) over {} works / {} tracks with {} history rows: {elapsed:?}",
+            pool.len(),
+            items.len(),
+            history.len()
+        );
+        assert_eq!(planned.len(), 5);
+        // The budget is 50 ms in an optimized build; unoptimized test builds
+        // run several times slower, so they get generous headroom.
+        let budget_ms = if cfg!(debug_assertions) { 1000 } else { 50 };
+        assert!(elapsed.as_millis() < budget_ms, "{elapsed:?}");
+    }
+
     #[test]
     fn weight_curves() {
-        assert_eq!(spacing_pm(None, 5), 1000);
-        assert_eq!(spacing_pm(Some(5), 5), 1000);
-        assert_eq!(spacing_pm(Some(0), 5), 27);
-        assert_eq!(spacing_pm(Some(4), 5), 694);
-        assert_eq!(spacing_pm(Some(0), 30), 1);
+        assert_eq!(spacing_pm(None, 4), 1000);
+        assert_eq!(spacing_pm(Some(4), 4), 1000);
+        assert_eq!(spacing_pm(Some(0), 4), 40);
+        assert_eq!(spacing_pm(Some(3), 4), 640);
         assert_eq!(spacing_pm(Some(3), 0), 1000);
         assert_eq!(energy_fit_pm(50, 50), 1000);
-        assert_eq!(energy_fit_pm(70, 50), 800);
-        assert_eq!(energy_fit_pm(90, 10), 80);
+        assert_eq!(energy_fit_pm(60, 50), 810);
+        assert_eq!(energy_fit_pm(70, 50), 360);
+        assert_eq!(energy_fit_pm(90, 10), 30);
         assert_eq!(energy_jump_pm(20, 55), 1000);
         assert_eq!(energy_jump_pm(10, 60), 550);
         assert_eq!(energy_jump_pm(5, 95), 150);
-        assert_eq!(staleness_pm(0, 150), 500);
-        assert_eq!(staleness_pm(450, 150), 1000);
+        assert_eq!(staleness_pm(0, 40), 500);
+        assert_eq!(staleness_pm(120, 40), 1000);
         assert_eq!(staleness_pm(9, 0), 1000);
-        for h in 0..24 {
-            assert!(energy_target_for_hour(h) <= 60);
-        }
+        assert!((0..24).all(|h| energy_target_for_hour(h) <= 60));
         assert!(energy_target_for_hour(2) < energy_target_for_hour(10));
+        assert_eq!(surname("Johannes Brahms"), "Brahms");
+        assert_eq!(surname("Johann Strauss II"), "Strauss");
+        assert_eq!(heard("Bach", 90 * 60), "Bach heard 90 minutes ago");
+        assert_eq!(heard("Bach", 5 * 3600), "Bach not heard in 5 hours");
     }
 }
