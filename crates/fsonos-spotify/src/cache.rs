@@ -12,7 +12,7 @@ use asupersync::Cx;
 use fsonos_core::store::{LibraryEntry, LibraryOrigin, Store};
 
 use crate::SpotifyError;
-use crate::classical::CandidatePool;
+use crate::classical::{CandidatePool, ClassicalTrack};
 use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, split_artists};
 use crate::session::Session;
 
@@ -50,7 +50,7 @@ pub fn apply_library_read<S: Store + ?Sized>(
     let pool = CandidatePool::build(&items);
     let mut entries: Vec<LibraryEntry> = items
         .iter()
-        .map(|item| to_entry(item, pool.get(&item.source_uri).is_some()))
+        .map(|item| to_entry(item, pool.get(&item.source_uri)))
         .collect();
     let read: HashSet<&str> = items.iter().map(|i| i.source_uri.as_str()).collect();
     let mut retired = 0;
@@ -82,12 +82,14 @@ pub fn pool_from_store<S: Store + ?Sized>(store: &S) -> Result<CandidatePool, Sp
     Ok(CandidatePool::from_classical(&items))
 }
 
-/// A library item as a cache row.
+/// A library item as a cache row. `candidate` is the item's analysis when
+/// the DJ may play it; it marks the row classical and stamps its work key.
 #[must_use]
-pub fn to_entry(item: &LibraryItem, is_classical: bool) -> LibraryEntry {
+pub fn to_entry(item: &LibraryItem, candidate: Option<&ClassicalTrack>) -> LibraryEntry {
+    let candidate = candidate.filter(|_| !item.explicit);
     LibraryEntry {
         track: item.to_track(),
-        is_classical: is_classical && !item.explicit,
+        is_classical: candidate.is_some(),
         added: item.added_at.unwrap_or(0),
         album_uri: item.album_uri.clone(),
         album_artists: (!item.album_artists.is_empty())
@@ -99,6 +101,7 @@ pub fn to_entry(item: &LibraryItem, is_classical: bool) -> LibraryEntry {
         },
         disc_number: item.disc_number,
         track_number: item.track_number,
+        work_key: candidate.map(|t| t.work_key.clone()),
     }
 }
 
@@ -132,6 +135,7 @@ mod tests {
     use fsonos_core::store::{MemStore, SqliteStore};
 
     use super::*;
+    use crate::classical::analyze;
     use crate::client::{CachedToken, Paging, SCOPE, SavedAlbum, SavedTrack, TokenCache};
     use crate::fake_spotify::{FakeSpotify, config, runtime, scratch_dir};
 
@@ -180,7 +184,12 @@ mod tests {
     fn entries_round_trip() {
         let mut item = fixture_items()[0].clone();
         item.origin = Origin::Both;
-        let back = from_entry(&to_entry(&item, true));
+        let analysis = analyze(&item);
+        let entry = to_entry(&item, Some(&analysis));
+        assert_eq!(entry.work_key.as_deref(), Some(analysis.work_key.as_str()));
+        assert!(!to_entry(&item, None).is_classical);
+        assert_eq!(to_entry(&item, None).work_key, None);
+        let back = from_entry(&entry);
         assert_eq!(back.source_uri, item.source_uri);
         assert_eq!(back.title, item.title);
         assert_eq!(back.artists, item.artists);
@@ -193,7 +202,8 @@ mod tests {
         assert_eq!(back.origin, Origin::Both);
         let mut explicit = item.clone();
         explicit.explicit = true;
-        assert!(!to_entry(&explicit, true).is_classical);
+        let explicit_entry = to_entry(&explicit, Some(&analysis));
+        assert!(!explicit_entry.is_classical && explicit_entry.work_key.is_none());
     }
 
     #[test]
@@ -220,6 +230,11 @@ mod tests {
         assert!(clair.is_classical);
         assert_eq!(clair.origin, LibraryOrigin::LikedTrack);
         assert_eq!(clair.track_number, Some(3));
+        assert_eq!(
+            clair.work_key.as_deref(),
+            Some("claude debussy|suite bergamasque l 75")
+        );
+        assert_eq!(row("spotify:track:FakePop000000000000001").work_key, None);
 
         // The cache rebuilds the same pool the read produced.
         let rebuilt = pool_from_store(&store).unwrap();
