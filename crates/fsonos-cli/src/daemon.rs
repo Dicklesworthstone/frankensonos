@@ -1,6 +1,6 @@
 //! `fsonos serve`: the long-lived daemon.
 //!
-//! One shared [`Surface`] (the LAN, the household survey, the house policy)
+//! One shared [`Surface`] (the LAN, the house policy, and the live model)
 //! backs both control surfaces: the HTTP API and the MCP server over
 //! streamable HTTP (`/mcp`). Each listens on its own thread and runtime.
 //! Once both are bound, a ready line on stderr names the actual addresses (so
@@ -8,6 +8,12 @@
 //! SIGTERM. It keeps running when discovery finds nothing: calls answer
 //! `NOT_READY` until the speakers do (TN3179: macOS shows the Local Network
 //! prompt only to a process that stays alive).
+//!
+//! The live model ([`Live`]) surveys in the background and keeps the zones
+//! current from the players' GENA events, which arrive on the events port
+//! (`--events-port`). A second line, `fsonos serve: live ...`, says when its
+//! first survey found the households and where events arrive. Stopping the
+//! daemon ends every subscription.
 //!
 //! Callers are identified per listener. A loopback listener's callers are
 //! local processes (`loopback-http`, which is how Tailscale Serve arrives);
@@ -18,12 +24,13 @@ use anyhow::Context as _;
 use fastapi::{ServerConfig, TcpServer};
 use fsonos_api::{Failure, Surface, WebPolicy};
 use fsonos_core::clock::SystemClock;
+use fsonos_core::live::{Live, LiveConfig, LiveEvent};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::SqliteStore;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Weak, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -58,6 +65,80 @@ pub fn surface(global: &GlobalArgs, policy: Policy) -> Result<Surface, Failure> 
         policy,
         Box::new(SystemClock),
     ))
+}
+
+/// The daemon's surface over a live model of the speakers: surveys and
+/// reads through the (confined) transport, events through the LAN on
+/// `events_port`. The caller owns the model: dropping the returned `Arc`
+/// ends every subscription.
+pub fn live_surface(
+    global: &GlobalArgs,
+    events_port: u16,
+    policy: Policy,
+) -> Result<(Surface, Arc<Live>), Failure> {
+    let seeds = global.seed_addrs()?;
+    let wait = global.wait();
+    let network = global.network()?;
+    let config = LiveConfig {
+        callback_port: events_port,
+        ..LiveConfig::new(seeds.clone())
+    };
+    let live = Arc::new(Live::start_with(
+        Arc::clone(&network.transport),
+        network.lan,
+        config,
+    ));
+    // Right after a regroup the surface surveys directly; see
+    // `fsonos_api::surface::SETTLE`.
+    let survey: fsonos_api::surface::Survey = Box::new(move |transport| {
+        Ok(fsonos_core::inventory::survey(transport, &seeds, wait)?.households)
+    });
+    let surface = Surface::new(
+        Box::new(network.transport),
+        survey,
+        policy,
+        Box::new(SystemClock),
+    )
+    .with_live(&live);
+    Ok((surface, live))
+}
+
+/// Print `fsonos serve: live ...` once the model's first survey has found
+/// the households (at once if it already has). Ends with the model.
+fn announce_live(live: &Arc<Live>) {
+    // Subscribe before looking, so a survey finishing in between is seen.
+    let changes = live.subscribe();
+    if announce_if_found(live) {
+        return;
+    }
+    let live: Weak<Live> = Arc::downgrade(live);
+    let _ = thread::Builder::new()
+        .name("fsonos-live-ready".into())
+        .spawn(move || {
+            while let Ok(change) = changes.recv() {
+                if change != LiveEvent::Topology {
+                    continue;
+                }
+                let Some(live) = live.upgrade() else { return };
+                if announce_if_found(&live) {
+                    return;
+                }
+            }
+        });
+}
+
+/// The live line, if the model has found players; whether it was printed.
+fn announce_if_found(live: &Live) -> bool {
+    let snapshot = live.snapshot();
+    let players: usize = snapshot.households.iter().map(|h| h.players.len()).sum();
+    if players > 0 {
+        eprintln!(
+            "fsonos serve: live households={} players={players} events={}",
+            snapshot.households.len(),
+            snapshot.callback.as_deref().unwrap_or("none"),
+        );
+    }
+    players > 0
 }
 
 /// The store's file in the data directory (the name core's store uses).
@@ -105,11 +186,11 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
     }
     let data_dir = data_dir(global)?;
     let checks = args.clone();
+    let (surface, live) = live_surface(global, args.events_port, policy(&data_dir)?)?;
     let surface = Arc::new(
-        with_action_log(surface(global, policy(&data_dir)?)?, &data_dir, "serve")
-            .with_doctor_checks(Box::new(move |runner| {
-                crate::doctor::register(runner, &checks);
-            })),
+        with_action_log(surface, &data_dir, "serve").with_doctor_checks(Box::new(move |runner| {
+            crate::doctor::register(runner, &checks);
+        })),
     );
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -125,6 +206,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
         "fsonos serve: ready http=http://{http_addr} mcp=http://{mcp_addr}/mcp data={}",
         data_dir.display()
     );
+    announce_live(&live);
 
     while !stop.load(Ordering::Acquire) {
         thread::sleep(Duration::from_millis(100));
@@ -133,6 +215,8 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
     http_server.shutdown();
     // Wake the accept loop so it sees the shutdown.
     drop(std::net::TcpStream::connect(http_addr));
+    // The surfaces hold the model weakly: this ends every subscription.
+    drop(live);
     Ok(())
 }
 

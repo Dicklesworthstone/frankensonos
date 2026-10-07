@@ -6,10 +6,9 @@ and Tailscale lets your agents reach it from anywhere on your tailnet. The
 speakers stay on the LAN and are never fronted.
 
 > **Status.** `fsonos serve` runs the HTTP API and the MCP server (streamable
-> HTTP at `/mcp`) over the house policy, verified end to end against the
-> built-in simulator. Not yet: the GENA event listener (state is read from
-> the speakers on each call) and the DJ. Items marked *(planned)* do not
-> exist yet.
+> HTTP at `/mcp`) over the house policy, and keeps a live model of the
+> speakers from their GENA events, verified end to end against the built-in
+> simulator. Not yet: the DJ. Items marked *(planned)* do not exist yet.
 
 ## 1. Shape of the deployment
 
@@ -39,8 +38,8 @@ Six rules hold the design together:
    internet.
 4. **The GENA callback listener is the only LAN-facing socket.** The speakers
    must be able to reach the daemon to deliver state-change events. It accepts
-   event deliveries only, not control requests. (Its port is set by the GENA
-   lane, `a-gena`.)
+   event deliveries only, not control requests, on `FSONOS_EVENTS_PORT`
+   (default 8097) at the Mac's address facing the speakers.
 5. **Browsers can't drive it.** A web page open on the Mac or a tailnet
    device could otherwise reach the unauthenticated API. So each listener
    admits only its own Host names (loopback, its address, the tailnet's
@@ -61,6 +60,7 @@ variables. The environment form is what launchd uses.
 |---|---|---|---|
 | HTTP API address | `FSONOS_HTTP_ADDR` | `127.0.0.1:8099` | Keep on loopback behind Tailscale Serve. |
 | MCP (streamable HTTP) address | `FSONOS_MCP_HTTP_ADDR` | `127.0.0.1:8098` | Endpoint path `/mcp`. |
+| Events port | `FSONOS_EVENTS_PORT` | `8097` | Where the speakers deliver state-change events (GENA), on the Mac's LAN address. The only LAN-facing socket: allow it inbound (§4). `0` picks any free port. |
 | Data directory | `FSONOS_DATA_DIR` | `~/Library/Application Support/fsonos` | Store DB and Spotify token cache. |
 | Direct-seed list | `FSONOS_SEEDS` | unset | Optional file of player addresses for flaky-SSDP networks; every IP address in it is tried (e.g. TOML `players = ["192.0.2.10"]`, or one per line). Every command also takes `--seed <ip>`. Keep the file under `local/` or outside the repo. |
 | Routes file | `FSONOS_ROUTES` | unset | Only for `fsonos sim`: maps the virtual players' advertised addresses to the loopback sockets that serve them, plus the simulator's SSDP target. `fsonos sim` writes it; real players need none. While it is set, `fsonos` reaches nothing the file does not name (other addresses and multicast are refused). |
@@ -177,6 +177,10 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add ~/.local/bin/fsonos
 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp ~/.local/bin/fsonos
 ```
 
+A port-based firewall (pf, or a third-party one) must admit inbound TCP on
+the events port (`FSONOS_EVENTS_PORT`, default 8097) from the speakers'
+subnet. Nothing else needs to be reachable from the LAN.
+
 ## 5. Tailscale
 
 ### Recommended: Tailscale Serve in front of loopback
@@ -279,6 +283,7 @@ Then open the authorize URL locally. The refresh token is cached under
 ```bash
 sudo launchctl print system/$LABEL | grep -E 'state|last exit'   # want: state = running
 grep 'fsonos serve: ready' ~/Library/Logs/fsonos/fsonos.log       # the bound addresses
+grep 'fsonos serve: live' ~/Library/Logs/fsonos/fsonos.log        # households found, events address
 curl -fsS http://127.0.0.1:8099/health                           # on the Mac
 curl -fsS http://127.0.0.1:8099/zones                            # rooms and what they play
 curl -fsS http://127.0.0.1:8099/openapi.json                     # every route, body and error code
@@ -290,7 +295,7 @@ curl -fsS https://<mac>.<tailnet>.ts.net/health                  # from another 
 |---|---|
 | Discovery finds no players under a LaunchAgent; connects fail with "No route to host" | Local Network access denied or never approved. Approve it in System Settings, or switch to the LaunchDaemon. |
 | Every call answers `NOT_READY` ("no rooms discovered yet") | The daemon found no players: SSDP is filtered on this network (set `FSONOS_SEEDS`), or Local Network access is missing (above). It keeps retrying; no restart needed. |
-| Players found, but state never updates after changes made in the Sonos app | Event callbacks are blocked inbound. Check the Application Firewall (§4). |
+| Players found, but state never updates after changes made in the Sonos app | Event callbacks are blocked inbound: `GET /doctor` shows `daemon.live` with no event subscriptions. Check the Application Firewall and the events port (§4). |
 | The log shows bind failures ("Can't assign requested address") right after boot | Direct tailnet bind started before Tailscale. It self-heals via `KeepAlive`; prefer Serve. |
 | `launchctl bootstrap` fails with an I/O or permission error | Plist not `root:wheel` `0644`, or the job is already loaded. Run `bootout` first. |
 | Tailnet clients time out but loopback works | Tailnet policy doesn't grant the port, or Serve isn't configured (`tailscale serve status`). |

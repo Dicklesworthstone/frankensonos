@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use fsonos_api::Failure;
@@ -95,20 +96,43 @@ impl GlobalArgs {
         })
     }
 
-    /// The LAN transport. With `--routes` it is redirected to, and confined
-    /// to, what the file names (see [`crate::confine`]).
+    /// The transport commands survey and control through: the LAN, or with
+    /// `--routes` the LAN redirected to, and confined to, what the file names
+    /// (see [`crate::confine`]).
     pub fn lan(&self) -> Result<Box<dyn Transport + Send + Sync>, Failure> {
+        Ok(Box::new(self.network()?.transport))
+    }
+
+    /// The LAN (redirected by any `--routes`) and the transport over it; see
+    /// [`Network`].
+    pub fn network(&self) -> Result<Network, Failure> {
         let lan = Lan::start().map_err(|e| Failure::from(fsonos_core::CoreError::from(e)))?;
         if self.routes.is_none() {
-            return Ok(Box::new(lan));
+            let lan = Arc::new(lan);
+            return Ok(Network {
+                transport: Arc::clone(&lan) as _,
+                lan,
+            });
         }
         let routes = self.routes()?;
         let mut lan = lan.with_routes(routes.players.clone());
         if let Some(target) = routes.ssdp {
             lan = lan.with_ssdp_target(target);
         }
-        Ok(Box::new(Confined::new(lan, &routes)))
+        let lan = Arc::new(lan);
+        Ok(Network {
+            transport: Arc::new(Confined::new(Arc::clone(&lan), &routes)),
+            lan,
+        })
     }
+}
+
+/// How the daemon reaches the speakers.
+pub struct Network {
+    /// The LAN itself, for GENA: event subscriptions and the event listener.
+    pub lan: Arc<Lan>,
+    /// Surveys, reads and control: the LAN, confined under `--routes`.
+    pub transport: Arc<dyn Transport + Send + Sync>,
 }
 
 /// Where to reach players that do not answer on `ip:1400` (a simulator's
@@ -176,6 +200,12 @@ pub struct ServeArgs {
         default_value = "http://127.0.0.1:8099/auth/spotify/callback"
     )]
     pub spotify_redirect_uri: String,
+
+    /// Port the players deliver their state-change events (GENA) to, on the
+    /// address facing them. Fixed so a firewall rule can name it; 0 picks
+    /// any free port.
+    #[arg(long, env = "FSONOS_EVENTS_PORT", default_value_t = 8097)]
+    pub events_port: u16,
 
     /// Allow binding the API or MCP server to a wildcard or public address.
     /// Neither has authentication: anyone who can reach it controls the

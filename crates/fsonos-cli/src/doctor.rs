@@ -246,6 +246,7 @@ mod tests {
                 mcp_http: "127.0.0.1:0".parse().unwrap(),
                 spotify_client_id: None,
                 spotify_redirect_uri: String::new(),
+                events_port: 0,
                 allow_unsafe_bind: false,
             },
         );

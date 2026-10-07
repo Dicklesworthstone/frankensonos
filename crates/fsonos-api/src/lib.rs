@@ -19,12 +19,14 @@
 //! * [`web`] — browser safety: Host, Origin, JSON-only writes;
 //! * [`zones`] — the zone (group) listings; [`reads`] — zone state, favorites;
 //! * [`log`] — the action log and undo, as the surfaces show them;
+//! * [`live`] — what the surfaces read from the daemon's live model;
 //! * [`failure`] — the one [`Failure`] shape (status + agent-readable detail).
 
 pub mod execute;
 pub mod failure;
 pub mod guard;
 pub mod http;
+pub mod live;
 pub mod log;
 pub mod plan;
 pub mod reads;

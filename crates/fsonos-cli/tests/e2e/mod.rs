@@ -61,8 +61,9 @@ pub const ROUTES_REFUSAL: &str = "refused: outside the routes file";
 const INLINE: usize = 2000;
 
 /// The settings the harness controls; any ambient value is removed first.
-const SETTINGS: [&str; 8] = [
+const SETTINGS: [&str; 9] = [
     "FSONOS_ROUTES",
+    "FSONOS_EVENTS_PORT",
     "FSONOS_HTTP_ADDR",
     "FSONOS_MCP_HTTP_ADDR",
     "FSONOS_DATA_DIR",
@@ -243,6 +244,7 @@ impl Scenario {
         cmd.env("FSONOS_DATA_DIR", self.dir.join("data"))
             .env("FSONOS_HTTP_ADDR", "127.0.0.1:0")
             .env("FSONOS_MCP_HTTP_ADDR", "127.0.0.1:0")
+            .env("FSONOS_EVENTS_PORT", "0")
             .env("RUST_LOG", "warn");
         if self.sim.is_some() {
             cmd.env("FSONOS_SEEDS", self.dir.join("seeds.toml"))

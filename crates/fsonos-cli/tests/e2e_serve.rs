@@ -65,6 +65,15 @@ fn serve_hosts_the_api_and_mcp_over_the_sim() {
         api.starts_with("127.0.0.1:") && mcp.starts_with("127.0.0.1:") && !api.ends_with(":8099"),
         &ready,
     );
+    // Calls answer NOT_READY until the live model's first survey.
+    let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
+    s.check(
+        "live",
+        "daemon",
+        "serve's live model finds the households",
+        live.is_some(),
+        daemon.seen.join("\n"),
+    );
 
     check_http_api(&mut s, api);
     check_http_reads(&mut s, api);

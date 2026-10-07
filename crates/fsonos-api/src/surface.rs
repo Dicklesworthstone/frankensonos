@@ -10,18 +10,24 @@
 //! snapshot the zones it touches, carry it out under the policy, and log who
 //! asked, the policy's decision (allow / clamp / deny) and what happened.
 //! [`Surface::undo`] puts the newest undoable action back.
+//!
+//! With the daemon's live model ([`Surface::with_live`]) the households and
+//! the zones' playback come from GENA events instead of surveys and polls;
+//! for a moment after a regroup, reads survey directly so a caller sees its
+//! own change before the events arrive.
 
 use fsonos_core::actions::{self, UndoReport};
 use fsonos_core::clock::Clock;
 use fsonos_core::doctor::{self, Report, Runner};
 use fsonos_core::favorites;
+use fsonos_core::live::Live;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store};
 use fsonos_core::{HouseholdState, control};
 use fsonos_proto::Transport;
 use fsonos_types::{PlayerId, TransportState};
 use std::fmt::Write as _;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use crate::execute::{OutcomeDto, execute_guarded};
@@ -38,6 +44,10 @@ pub type Survey = Box<dyn Fn(&dyn Transport) -> Result<Vec<HouseholdState>, Fail
 /// How long a survey answer is reused before the next call surveys again.
 pub const REFRESH: Duration = Duration::from_secs(30);
 
+/// How long after a regroup reads survey directly rather than trust the live
+/// model, whose topology events may not have arrived yet.
+pub const SETTLE: Duration = Duration::from_secs(3);
+
 /// See the module docs.
 pub struct Surface {
     transport: Arc<dyn Transport + Send + Sync>,
@@ -47,6 +57,11 @@ pub struct Surface {
     clock: Box<dyn Clock>,
     log: Option<ActionLog>,
     doctor_checks: Option<DoctorChecks>,
+    /// The daemon's live model; not kept alive by the surface (see
+    /// [`Surface::with_live`]).
+    live: Option<Weak<Live>>,
+    /// Until when reads survey directly (set by a regroup).
+    settle_until: Mutex<Option<Instant>>,
 }
 
 /// Doctor checks a surface adds to the core's (the daemon's bind and health
@@ -75,7 +90,24 @@ impl Surface {
             clock,
             log: None,
             doctor_checks: None,
+            live: None,
+            settle_until: Mutex::new(None),
         }
+    }
+
+    /// Read the households and playback from `live` (the daemon's model,
+    /// kept current by GENA) instead of surveying and polling. The surface
+    /// does not keep the model alive: its owner stops it (every subscription
+    /// ends) by dropping the last `Arc`, after which the surface surveys and
+    /// polls again.
+    #[must_use]
+    pub fn with_live(mut self, live: &Arc<Live>) -> Self {
+        self.live = Some(Arc::downgrade(live));
+        self
+    }
+
+    fn live(&self) -> Option<Arc<Live>> {
+        self.live.as_ref().and_then(Weak::upgrade)
     }
 
     /// Add `checks` to every doctor run.
@@ -94,6 +126,11 @@ impl Surface {
         let mut runner = Runner::new();
         if let Some(checks) = &self.doctor_checks {
             checks(&mut runner);
+        }
+        if let Some(live) = self.live() {
+            runner.register(crate::live::LiveCheck {
+                snapshot: live.snapshot(),
+            });
         }
         doctor::spotify::register(&mut runner, &self.transport, &households);
         runner
@@ -158,9 +195,14 @@ impl Surface {
         }
     }
 
-    /// The households, from the last survey while it is fresh and found
-    /// rooms.
+    /// The households: the live model's, or the last survey's while it is
+    /// fresh and found rooms (always a survey for a moment after a regroup).
     pub fn households(&self) -> Result<Vec<HouseholdState>, Failure> {
+        if let Some(live) = self.live()
+            && !self.settling()
+        {
+            return crate::live::households(&live);
+        }
         let mut cache = self
             .cache
             .lock()
@@ -177,10 +219,35 @@ impl Surface {
     }
 
     /// Forget the cached survey, so the next call sees the speakers as they
-    /// are now (after a regroup, or before an undo plans its restore).
+    /// are now (after a regroup, or before an undo plans its restore). The
+    /// live model surveys soon; until it settles, reads survey directly.
     fn invalidate(&self) {
         if let Ok(mut cache) = self.cache.lock() {
             *cache = None;
+        }
+        if let Some(live) = self.live() {
+            live.refresh_soon();
+            if let Ok(mut until) = self.settle_until.lock() {
+                *until = Some(Instant::now() + SETTLE);
+            }
+        }
+    }
+
+    fn settling(&self) -> bool {
+        self.settle_until
+            .lock()
+            .ok()
+            .and_then(|until| *until)
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Ask the live model to survey soon when `failure` says a player is
+    /// gone (moved, rebooted, or off).
+    fn notice(&self, failure: &Failure) {
+        if failure.code == ErrorCode::PlayerUnreachable
+            && let Some(live) = self.live()
+        {
+            live.refresh_soon();
         }
     }
 
@@ -224,6 +291,9 @@ impl Surface {
             if regroups {
                 self.invalidate();
             }
+            if let Err(f) = &result {
+                self.notice(f);
+            }
             return result;
         }
         let intent = format!("{tool}: {command:?}");
@@ -236,6 +306,9 @@ impl Surface {
         let result = execute_guarded(&*self.transport, &households, &guard, command);
         if regroups {
             self.invalidate();
+        }
+        if let Err(f) = &result {
+            self.notice(f);
         }
         let (decision, mut text, before) = match &result {
             Ok(outcome) if outcome.notes.is_empty() => (
@@ -379,24 +452,49 @@ impl Surface {
         self.guard(client).authorize("get_zone_state", true)?;
         let households = self.households()?;
         let target = resolve(&households, zone)?;
-        let playback = control::playback(&*self.transport, &households, &target.coordinator.id)?;
-        let volume = control::volume(&*self.transport, &households, &target.player.id).ok();
-        let state = playback.transport.state;
+        let heard = |p: &PlayerId| self.live().and_then(|live| live.player(p));
+        // The group's transport and track, from its events when it has
+        // reported them, else asked.
+        let (state, track) = match heard(&target.coordinator.id) {
+            Some(group) if group.transport.is_some() => (
+                group.transport.unwrap_or(TransportState::Unknown),
+                crate::live::track(&group, Instant::now()),
+            ),
+            _ => {
+                let playback =
+                    control::playback(&*self.transport, &households, &target.coordinator.id)
+                        .map_err(Failure::from)
+                        .inspect_err(|f| self.notice(f))?;
+                (
+                    playback.transport.state,
+                    TrackDto::from_position(&playback.position),
+                )
+            }
+        };
+        let volume = heard(&target.player.id)
+            .and_then(|room| room.volume)
+            .or_else(|| control::volume(&*self.transport, &households, &target.player.id).ok());
         Ok(ZoneStateDto {
             zone: zone_for_target(&households, &target, |_| state),
             transport_state: crate::zones::transport_state_name(state).to_string(),
             volume,
-            track: TrackDto::from_position(&playback.position),
+            track,
         })
     }
 
+    /// A group's transport state: from its events when it has reported one,
+    /// else asked (`unknown` when the coordinator does not answer).
     fn transport_state(
         &self,
         households: &[HouseholdState],
-        coordinator: &fsonos_types::PlayerId,
+        coordinator: &PlayerId,
     ) -> TransportState {
-        control::playback(&*self.transport, households, coordinator)
-            .map_or(TransportState::Unknown, |p| p.transport.state)
+        self.live()
+            .and_then(|live| live.player(coordinator)?.transport)
+            .unwrap_or_else(|| {
+                control::playback(&*self.transport, households, coordinator)
+                    .map_or(TransportState::Unknown, |p| p.transport.state)
+            })
     }
 }
 
