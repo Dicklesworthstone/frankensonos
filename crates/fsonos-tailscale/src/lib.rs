@@ -11,10 +11,14 @@
 //! short timeout) and, when the CLI is missing or cannot answer, falls back to
 //! scanning this host's interfaces for tailnet addresses. Parsing
 //! ([`parse_status`]) and the interface fallback ([`from_addresses`]) are pure.
+//! [`reach`] and [`describe`] turn the status into the URLs a listener is
+//! reachable at from the tailnet.
 
+pub mod connect;
 mod exec;
 mod status;
 
+pub use connect::{Listener, Reach, describe, reach};
 pub use status::parse_status;
 
 use serde::Serialize;
