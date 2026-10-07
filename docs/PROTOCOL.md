@@ -161,7 +161,16 @@ the queue exactly. Album/playlist containers enqueue with
 
 Album/container favorites use `x-rincon-cpcontainer:1004206c<enc-uri>` with
 `flags=8300` and a container DIDL (`object.container.album.musicAlbum` via the
-`resMD` of the favorite).
+`resMD` of the favorite). Playlists use prefix `1006206c`, same flags.
+
+Container playback (verified live on both generations, 2026-10-07):
+`AddURIToQueue` with the cpcontainer URI + container DIDL makes the **speaker
+expand the container into its full track list at enqueue time** — the
+response carries `FirstTrackNumberEnqueued` (position of track 1) and
+`NumTracksAdded` (8 for the test album on both households). Then point the
+transport at `x-rincon-queue:<COORD_UUID>#0`, `Seek` `TRACK_NR` to the
+returned position, `Play`. Whole-album removal is per-position
+`RemoveTrackFromQueue` in descending order (both queues restored exactly).
 
 Arbitrary HTTP streams also render directly: `x-rincon-mp3radio://host/path`
 via `SetAVTransportURI` (class `object.item.audioItem.audioBroadcast`) played a
