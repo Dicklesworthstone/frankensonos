@@ -2,17 +2,26 @@
 //!
 //! Owns the authoritative in-memory model of the two households (inventory,
 //! zone topology, per-group transport state), the grouping operations, and the
-//! control orchestration that turns high-level intents ("play this on Jeff's
-//! Office") into [`fsonos_proto`] SOAP calls against the right coordinator.
+//! control orchestration that turns high-level intents ("play this in the
+//! Living Room") into [`fsonos_proto`] SOAP calls against the right coordinator.
+//!
+//! * [`topology`] folds ZoneGroupTopology snapshots into groups and [`Room`]s.
+//! * [`inventory`] classifies players (S1/S2) from their device descriptions.
+//! * [`rooms`] resolves what a person or agent types to a [`ControlTarget`].
 //!
 //! The durable [`store`] (device cache, music-library cache, play history, DJ
 //! state) is backed by fsqlite once bead FND-DEPS wires it; the trait here lets
 //! the rest of the daemon be written and tested against an in-memory store.
 
 pub mod inventory;
+pub mod rooms;
 pub mod store;
+pub mod topology;
 
-use fsonos_types::{HouseholdId, Player, PlayerId, ZoneGroup};
+pub use rooms::{ControlTarget, known_rooms, resolve_room};
+pub use topology::Room;
+
+use fsonos_types::{Generation, HouseholdId, Player, PlayerId, ZoneGroup};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,8 +32,23 @@ pub enum CoreError {
     UnknownPlayer(String),
     #[error("unknown household: {0}")]
     UnknownHousehold(String),
+    #[error("unknown room {name:?}; known rooms: {}", list(.known))]
+    UnknownRoom { name: String, known: Vec<String> },
+    #[error("room {name:?} is ambiguous; use one of: {}", list(.candidates))]
+    AmbiguousRoom {
+        name: String,
+        candidates: Vec<String>,
+    },
     #[error("store error: {0}")]
     Store(String),
+}
+
+fn list(items: &[String]) -> String {
+    if items.is_empty() {
+        "(none discovered yet)".to_string()
+    } else {
+        items.join(", ")
+    }
 }
 
 /// The authoritative snapshot of everything the daemon knows about one
@@ -32,8 +56,11 @@ pub enum CoreError {
 #[derive(Debug, Default, Clone)]
 pub struct HouseholdState {
     pub id: Option<HouseholdId>,
+    /// Every playable player with a known address (zone bridges excluded).
     pub players: Vec<Player>,
     pub groups: Vec<ZoneGroup>,
+    /// Logical rooms (a stereo pair or home-theater set is one room).
+    pub rooms: Vec<Room>,
 }
 
 impl HouseholdState {
@@ -44,6 +71,18 @@ impl HouseholdState {
             .iter()
             .find(|g| g.coordinator == *player || g.members.contains(player))
             .map(|g| &g.coordinator)
+    }
+
+    /// The player with id `id`, if it is known and addressable.
+    #[must_use]
+    pub fn player(&self, id: &PlayerId) -> Option<&Player> {
+        self.players.iter().find(|p| p.id == *id)
+    }
+
+    /// The household's software generation, as its players report it.
+    #[must_use]
+    pub fn generation(&self) -> Option<Generation> {
+        self.players.first().map(|p| p.generation)
     }
 }
 
