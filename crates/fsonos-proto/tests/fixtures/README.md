@@ -23,6 +23,7 @@ read-only requests (`GET /xml/device_description.xml`, `GetZoneGroupState`,
 | `gena_notify_rcs_initial_s1.xml` | RenderingControl SUBSCRIBE initial NOTIFY (S1) | full render state: per-channel Volume/Mute, Bass/Treble, Loudness, EQ presets |
 | `gena_notify_zgt_s2.xml` | ZoneGroupTopology SUBSCRIBE initial NOTIFY (S2) | full state plus the `AvailableSoftwareUpdate` firmware-URL oracle and three `VanishedDevices` |
 | `gena_notify_queue_s1.xml` | Queue NOTIFY on `AddURIToQueue` (S1) | LastChange nests under `<QueueID val="0">` (not InstanceID); carries incrementing `UpdateID` |
+| `gena_notify_grc_s1.xml` | GroupRenderingControl NOTIFY on `SetGroupVolume` (S1) | plain properties: `GroupVolume`/`GroupMute`/`GroupVolumeChangeable`, no LastChange |
 | `gena_notify_cd_initial_s1.xml` | ContentDirectory SUBSCRIBE initial NOTIFY (S1) | NOT LastChange-wrapped: plain `SystemUpdateID`/`ContainerUpdateIDs`/`FavoritesUpdateID` counters |
 | `gena_notify_avt_initial_s2.xml` | AVTransport SUBSCRIBE initial NOTIFY (S2) | idle player shape |
 | `musicservices_list_s1.xml` | MusicServices `ListAvailableServices` (S1) | full service descriptor list; Spotify is `Id="12"`, `Auth="AppLink"`, SMAPI endpoint `spotify-v5.ws.sonos.com` |

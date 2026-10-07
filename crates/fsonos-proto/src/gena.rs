@@ -338,4 +338,16 @@ mod tests {
         .unwrap();
         assert_eq!(lc.get("CurrentTrackURI"), Some(""));
     }
+
+    #[test]
+    fn queue_events_use_queueid_container() {
+        // Verified live (S1 57.23): Queue mutations nest under QueueID, not
+        // InstanceID, with an incrementing UpdateID.
+        let lc = parse_last_change(
+            "<Event xmlns=\"urn:schemas-sonos-com:metadata-1-0/Queue/\"><QueueID val=\"0\">\
+            <UpdateID val=\"8\"/></QueueID></Event>",
+        )
+        .unwrap();
+        assert_eq!(lc.get("UpdateID"), Some("8"));
+    }
 }

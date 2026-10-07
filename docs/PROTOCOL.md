@@ -218,6 +218,18 @@ apostrophes) — normalize quotes when matching by name.
   `<Volume channel="Master" val="19"/>`, plus `LF`/`RF` fixed at 100.
 - ZoneGroupTopology NOTIFYs carry the full current `ZoneGroupState` (not a
   diff) — a single subscription anywhere in a household tracks all grouping.
+- Queue LastChange root: `<Event xmlns="urn:schemas-sonos-com:metadata-1-0/Queue/">`
+  with a `<QueueID val="0">` container (NOT `InstanceID`) holding an
+  incrementing `<UpdateID val="N"/>` per mutation (verified live on
+  `AddURIToQueue`/`RemoveTrackFromQueue`, S1 57.23).
+- ContentDirectory events are NOT LastChange-wrapped: plain properties —
+  `SystemUpdateID`, `ContainerUpdateIDs` (`R:,2`), `FavoritesUpdateID`
+  (`RINCON_…,N`), `ShareIndexInProgress` (verified live, S1).
+- GroupRenderingControl events are likewise plain properties: `GroupVolume`,
+  `GroupMute`, `GroupVolumeChangeable` — verified live on a `SetGroupVolume`
+  round-trip (S1). So: LastChange services are AVTransport, RenderingControl
+  and Queue; ZoneGroupTopology, ContentDirectory and GroupRenderingControl
+  send plain properties.
 
 ## 8. Network notes for the daemon host
 

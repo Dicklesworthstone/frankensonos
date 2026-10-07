@@ -512,6 +512,7 @@ const GENA_ZGT_S2: &str = include_str!("fixtures/gena_notify_zgt_s2.xml");
 const GENA_AVT_S2: &str = include_str!("fixtures/gena_notify_avt_initial_s2.xml");
 const GENA_QUEUE_S1: &str = include_str!("fixtures/gena_notify_queue_s1.xml");
 const GENA_CD_S1: &str = include_str!("fixtures/gena_notify_cd_initial_s1.xml");
+const GENA_GRC_S1: &str = include_str!("fixtures/gena_notify_grc_s1.xml");
 const MSERVICES_S1: &str = include_str!("fixtures/musicservices_list_s1.xml");
 
 /// One XML decode pass: named entities first, `&amp;` last.
@@ -621,6 +622,17 @@ fn gena_cd_initial_is_plain_properties_not_last_change() {
     assert_eq!(property(GENA_CD_S1, "SystemUpdateID"), "17");
     assert!(property(GENA_CD_S1, "ContainerUpdateIDs").starts_with("R:,"));
     assert!(property(GENA_CD_S1, "FavoritesUpdateID").starts_with("RINCON_000E58A0"));
+}
+
+#[test]
+fn gena_grc_group_volume_is_plain_properties() {
+    // GroupRenderingControl events: plain properties, no LastChange (captured
+    // live on a SetGroupVolume round-trip, S1; volume restored after capture).
+    let props = fsonos_proto::gena::parse_propertyset(GENA_GRC_S1).unwrap();
+    assert!(props.iter().all(|(k, _)| k != "LastChange"));
+    assert_eq!(property(GENA_GRC_S1, "GroupVolume"), "13");
+    assert_eq!(property(GENA_GRC_S1, "GroupMute"), "0");
+    assert_eq!(property(GENA_GRC_S1, "GroupVolumeChangeable"), "1");
 }
 
 #[test]
