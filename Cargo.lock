@@ -1268,6 +1268,7 @@ dependencies = [
  "fsonos-mcp",
  "fsonos-proto",
  "fsonos-spotify",
+ "fsonos-tailscale",
  "fsonos-types",
  "serde_json",
  "tracing",
@@ -1325,6 +1326,15 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "fsonos-tailscale"
+version = "0.1.0"
+dependencies = [
+ "if-addrs",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1960,6 +1970,16 @@ checksum = "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
 dependencies = [
  "icu_normalizer",
  "icu_properties",
+]
+
+[[package]]
+name = "if-addrs"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0a05c691e1fae256cf7013d99dad472dc52d5543322761f83ec8d47eab40d2b"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

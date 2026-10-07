@@ -1,0 +1,26 @@
+{
+  "Version": "1.90.0-t0000000-g0000000",
+  "TUN": true,
+  "BackendState": "Running",
+  "HaveNodeKey": true,
+  "AuthURL": "",
+  "TailscaleIPs": ["100.101.102.103"],
+  "Self": {
+    "ID": "nEXAMPLE0001",
+    "HostName": "sonos-host",
+    "DNSName": "sonos-host.example-tailnet.ts.net.",
+    "OS": "linux",
+    "TailscaleIPs": ["100.101.102.103"],
+    "Online": true
+  },
+  "Health": [],
+  "MagicDNSSuffix": "example-tailnet.ts.net",
+  "CurrentTailnet": {
+    "Name": "example.com",
+    "MagicDNSSuffix": "example-tailnet.ts.net",
+    "MagicDNSEnabled": false
+  },
+  "Peer": {},
+  "User": {},
+  "ClientVersion": null
+}

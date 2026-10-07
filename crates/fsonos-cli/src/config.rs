@@ -77,12 +77,11 @@ pub fn bind_scope(ip: IpAddr) -> BindScope {
 }
 
 fn v4_scope(ip: Ipv4Addr) -> BindScope {
-    let [a, b, ..] = ip.octets();
     if ip.is_unspecified() {
         BindScope::Wildcard
     } else if ip.is_loopback() {
         BindScope::Loopback
-    } else if a == 100 && (64..128).contains(&b) {
+    } else if fsonos_tailscale::is_tailnet_v4(ip) {
         BindScope::Tailnet
     } else if ip.is_private() || ip.is_link_local() {
         BindScope::Lan
@@ -92,12 +91,11 @@ fn v4_scope(ip: Ipv4Addr) -> BindScope {
 }
 
 fn v6_scope(ip: Ipv6Addr) -> BindScope {
-    const TAILNET: [u16; 3] = [0xfd7a, 0x115c, 0xa1e0];
     if ip.is_unspecified() {
         BindScope::Wildcard
     } else if ip.is_loopback() {
         BindScope::Loopback
-    } else if ip.segments()[..3] == TAILNET {
+    } else if fsonos_tailscale::is_tailnet_v6(ip) {
         BindScope::Tailnet
     } else if ip.is_unique_local() || ip.is_unicast_link_local() {
         BindScope::Lan

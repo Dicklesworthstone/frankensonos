@@ -18,6 +18,7 @@ fsonos-core = { workspace = true }
 fsonos-spotify = { workspace = true }
 fsonos-api = { workspace = true }
 fsonos-mcp = { workspace = true }
+fsonos-tailscale = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }

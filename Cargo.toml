@@ -8,6 +8,7 @@ members = [
     "crates/fsonos-api",
     "crates/fsonos-mcp",
     "crates/fsonos-cli",
+    "crates/fsonos-tailscale",
 ]
 
 [workspace.package]
@@ -27,6 +28,7 @@ fsonos-core    = { path = "crates/fsonos-core" }
 fsonos-spotify = { path = "crates/fsonos-spotify" }
 fsonos-api     = { path = "crates/fsonos-api" }
 fsonos-mcp     = { path = "crates/fsonos-mcp" }
+fsonos-tailscale = { path = "crates/fsonos-tailscale" }
 
 # ── Rock-solid registry deps (the green baseline) ──────────────────────────
 serde = { version = "1", features = ["derive"] }
@@ -41,6 +43,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # ZoneGroupState, DIDL-Lite and device descriptions.
 roxmltree = "0.21"
 tempfile = "3"
+# getifaddrs: the interface-scan fallback for Tailscale detection.
+if-addrs = "0.15"
 
 # ── FRANKEN STACK (bead FND-DEPS; see AGENTS.md "Dependency Recipe") ───────
 # Every franken crate below resolves to the ONE registry asupersync 0.5.0
