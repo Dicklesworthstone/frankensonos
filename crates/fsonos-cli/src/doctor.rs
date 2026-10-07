@@ -143,11 +143,13 @@ impl Check for HealthCheck {
 /// Register the checks this layer owns for `serve`'s settings.
 pub fn register(runner: &mut Runner, serve: &ServeArgs) {
     runner.register(BindCheck {
-        http: serve.http,
-        mcp: serve.mcp_http,
+        http: serve.http_local(),
+        mcp: serve.mcp_local(),
         allow_unsafe: serve.allow_unsafe_bind,
     });
-    runner.register(HealthCheck { http: serve.http });
+    runner.register(HealthCheck {
+        http: serve.http_local(),
+    });
 }
 
 /// Keep only the checks whose id starts with `prefix`.
@@ -242,8 +244,8 @@ mod tests {
         register(
             &mut runner,
             &ServeArgs {
-                http: "127.0.0.1:0".parse().unwrap(),
-                mcp_http: "127.0.0.1:0".parse().unwrap(),
+                http: Some("127.0.0.1:0".parse().unwrap()),
+                mcp_http: Some("127.0.0.1:0".parse().unwrap()),
                 spotify_client_id: None,
                 spotify_redirect_uri: String::new(),
                 events_port: 0,

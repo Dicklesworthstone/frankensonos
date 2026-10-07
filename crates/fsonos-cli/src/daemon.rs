@@ -15,6 +15,11 @@
 //! first survey found the households and where events arrive. Stopping the
 //! daemon ends every subscription.
 //!
+//! Unconfigured, the HTTP API listens on loopback plus this host's tailnet
+//! addresses (ts-autobind) and MCP on loopback; a third line,
+//! `fsonos serve: listening (...)`, and the connect URLs follow the ready
+//! line.
+//!
 //! Callers are identified per listener. A loopback listener's callers are
 //! local processes (`loopback-http`, which is how Tailscale Serve arrives);
 //! any other bind answers as `unknown`, which the default policy keeps
@@ -177,11 +182,17 @@ pub fn listener_client(addr: SocketAddr) -> Client {
 /// Vet the configuration, start both servers, report readiness, and run
 /// until SIGINT / SIGTERM.
 pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
-    for (listener, addr) in [("HTTP API", args.http), ("MCP server", args.mcp_http)] {
-        match config::check_control_bind(listener, addr, args.allow_unsafe_bind) {
-            Ok(None) => {}
-            Ok(Some(warning)) => tracing::warn!("{warning}"),
-            Err(refusal) => return Err(refusal.into()),
+    // Unconfigured listeners bind loopback plus the tailnet (ts-autobind).
+    let tailnet = fsonos_tailscale::detect();
+    let http_plan = args.http_plan(&tailnet);
+    let mcp_plan = args.mcp_plan(&tailnet);
+    for (listener, plan) in [("HTTP API", &http_plan), ("MCP server", &mcp_plan)] {
+        for &addr in &plan.addrs {
+            match config::check_control_bind(listener, addr, args.allow_unsafe_bind) {
+                Ok(None) => {}
+                Ok(Some(warning)) => tracing::warn!("{warning}"),
+                Err(refusal) => return Err(refusal.into()),
+            }
         }
     }
     let data_dir = data_dir(global)?;
@@ -199,32 +210,98 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
             .context("install the SIGINT/SIGTERM handler")?;
     }
 
-    let names = tailnet_names();
-    let (http_server, http_addr) = start_http(&surface, args.http, &names)?;
-    let mcp_addr = start_mcp(&surface, args.mcp_http)?;
+    let names = tailnet_names(&tailnet);
+    let http = start_all("HTTP API", &http_plan, |addr| {
+        start_http(&surface, addr, &names)
+    })?;
+    let mcp = start_all("MCP server", &mcp_plan, |addr| start_mcp(&surface, addr))?;
+    // One value per key: the e2e harness and scripts parse this line.
     eprintln!(
-        "fsonos serve: ready http=http://{http_addr} mcp=http://{mcp_addr}/mcp data={}",
+        "fsonos serve: ready http=http://{} mcp=http://{}/mcp data={}",
+        http[0].1,
+        mcp[0],
         data_dir.display()
     );
+    announce_tailnet(&tailnet, &http_plan, &http, &mcp);
     announce_live(&live);
 
     while !stop.load(Ordering::Acquire) {
         thread::sleep(Duration::from_millis(100));
     }
     eprintln!("fsonos serve: stopping");
-    http_server.shutdown();
-    // Wake the accept loop so it sees the shutdown.
-    drop(std::net::TcpStream::connect(http_addr));
+    for (server, addr) in &http {
+        server.shutdown();
+        // Wake the accept loop so it sees the shutdown.
+        drop(std::net::TcpStream::connect(addr));
+    }
     // The surfaces hold the model weakly: this ends every subscription.
     drop(live);
     Ok(())
 }
 
+/// Bind every address of `plan`. Loopback and a configured address must
+/// bind; a tailnet address that fails in the automatic plan (Tailscale still
+/// coming up, say) is logged and skipped rather than stopping the daemon.
+fn start_all<T>(
+    listener: &str,
+    plan: &fsonos_tailscale::BindPlan,
+    mut start: impl FnMut(SocketAddr) -> anyhow::Result<T>,
+) -> anyhow::Result<Vec<T>> {
+    let mut started = Vec::new();
+    for &addr in &plan.addrs {
+        match start(addr) {
+            Ok(bound) => started.push(bound),
+            Err(e)
+                if plan.reason == fsonos_tailscale::BindReason::Tailnet
+                    && !addr.ip().is_loopback() =>
+            {
+                tracing::warn!("{listener}: not listening on {addr}: {e:#}");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    anyhow::ensure!(!started.is_empty(), "{listener}: nothing to listen on");
+    Ok(started)
+}
+
+/// Say where the listeners are and how tailnet devices reach them (the
+/// connect URLs and the `claude mcp add` line), after the ready line.
+fn announce_tailnet(
+    tailnet: &fsonos_tailscale::TailnetStatus,
+    plan: &fsonos_tailscale::BindPlan,
+    http: &[(Arc<TcpServer>, SocketAddr)],
+    mcp: &[SocketAddr],
+) {
+    eprintln!("fsonos serve: listening ({})", plan.note);
+    // Describe each listener by its tailnet address when it has one.
+    let pick = |addrs: Vec<SocketAddr>| {
+        addrs
+            .iter()
+            .copied()
+            .find(|a| fsonos_tailscale::is_tailnet_ip(a.ip()))
+            .unwrap_or(addrs[0])
+    };
+    let listeners = [
+        fsonos_tailscale::Listener {
+            label: "HTTP API",
+            bind: pick(http.iter().map(|(_, a)| *a).collect()),
+            path: "",
+        },
+        fsonos_tailscale::Listener {
+            label: "MCP server",
+            bind: pick(mcp.to_vec()),
+            path: "/mcp",
+        },
+    ];
+    for line in fsonos_tailscale::describe(tailnet, &listeners).lines() {
+        eprintln!("fsonos serve: {line}");
+    }
+}
+
 /// The names this host has on its tailnet (MagicDNS name and addresses),
 /// which tailnet clients and Tailscale Serve send as the Host. Empty off a
 /// tailnet.
-fn tailnet_names() -> Vec<String> {
-    let status = fsonos_tailscale::detect();
+fn tailnet_names(status: &fsonos_tailscale::TailnetStatus) -> Vec<String> {
     let Some(tailnet) = status.running() else {
         return Vec::new();
     };

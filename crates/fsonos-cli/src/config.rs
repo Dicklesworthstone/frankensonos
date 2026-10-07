@@ -181,13 +181,17 @@ pub fn ip_addresses(text: &str) -> Vec<IpAddr> {
 /// Settings for the long-lived daemon.
 #[derive(Debug, Clone, clap::Args)]
 pub struct ServeArgs {
-    /// HTTP API bind address. Keep it on loopback (or the tailnet address).
-    #[arg(long, env = "FSONOS_HTTP_ADDR", default_value = "127.0.0.1:8099")]
-    pub http: SocketAddr,
+    /// HTTP API bind address [default: 127.0.0.1:8099 plus this host's
+    /// tailnet addresses when Tailscale is up]. Setting it binds exactly this
+    /// address (loopback behind Tailscale Serve, or the tailnet address).
+    #[arg(long, env = "FSONOS_HTTP_ADDR")]
+    pub http: Option<SocketAddr>,
 
-    /// MCP streamable-HTTP bind address (endpoint path `/mcp`).
-    #[arg(long, env = "FSONOS_MCP_HTTP_ADDR", default_value = "127.0.0.1:8098")]
-    pub mcp_http: SocketAddr,
+    /// MCP streamable-HTTP bind address, endpoint path `/mcp` [default:
+    /// 127.0.0.1:8098 plus this host's tailnet addresses when Tailscale is
+    /// up].
+    #[arg(long, env = "FSONOS_MCP_HTTP_ADDR")]
+    pub mcp_http: Option<SocketAddr>,
 
     /// Spotify app client id (PKCE: identifies the app, not a secret).
     #[arg(long, env = "FSONOS_SPOTIFY_CLIENT_ID")]
@@ -212,6 +216,63 @@ pub struct ServeArgs {
     /// speakers.
     #[arg(long)]
     pub allow_unsafe_bind: bool,
+}
+
+/// The HTTP API's port when no address is configured.
+pub const HTTP_PORT: u16 = 8099;
+/// The MCP server's port when no address is configured.
+pub const MCP_PORT: u16 = 8098;
+
+impl ServeArgs {
+    /// Where this machine reaches the HTTP API: the configured address, or
+    /// loopback on the default port (always among the bound addresses).
+    #[must_use]
+    pub fn http_local(&self) -> SocketAddr {
+        self.http
+            .unwrap_or(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), HTTP_PORT))
+    }
+
+    /// Where this machine reaches the MCP server (see [`Self::http_local`]).
+    #[must_use]
+    pub fn mcp_local(&self) -> SocketAddr {
+        self.mcp_http
+            .unwrap_or(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), MCP_PORT))
+    }
+
+    /// Where the HTTP API binds: the configured address, or loopback plus
+    /// the tailnet when Tailscale is up.
+    #[must_use]
+    pub fn http_plan(
+        &self,
+        tailnet: &fsonos_tailscale::TailnetStatus,
+    ) -> fsonos_tailscale::BindPlan {
+        fsonos_tailscale::bind_plan(tailnet, HTTP_PORT, self.http)
+    }
+
+    /// Where the MCP server binds: the configured address, else loopback.
+    /// Not the tailnet automatically: one MCP backend serves every MCP
+    /// listener with a single caller identity, so a tailnet listener would
+    /// share loopback's (full) rights. Tailscale Serve, or a configured
+    /// tailnet address (whose callers are `unknown`), reaches it from the
+    /// tailnet instead.
+    #[must_use]
+    pub fn mcp_plan(
+        &self,
+        tailnet: &fsonos_tailscale::TailnetStatus,
+    ) -> fsonos_tailscale::BindPlan {
+        if self.mcp_http.is_some() {
+            return fsonos_tailscale::bind_plan(tailnet, MCP_PORT, self.mcp_http);
+        }
+        let loopback = self.mcp_local();
+        fsonos_tailscale::BindPlan {
+            addrs: vec![loopback],
+            reason: fsonos_tailscale::BindReason::LoopbackOnly,
+            note: format!(
+                "MCP on loopback only ({loopback}); front it with `tailscale serve` to reach it \
+                 from the tailnet"
+            ),
+        }
+    }
 }
 
 /// Who can reach a listener bound to an address.
@@ -421,11 +482,40 @@ mod tests {
     #[test]
     fn defaults_are_loopback() {
         let h = Harness::try_parse_from(["fsonos"]).unwrap();
-        assert_eq!(bind_scope(h.serve.http.ip()), BindScope::Loopback);
-        assert_eq!(bind_scope(h.serve.mcp_http.ip()), BindScope::Loopback);
+        assert_eq!((h.serve.http, h.serve.mcp_http), (None, None));
+        assert_eq!(h.serve.http_local(), "127.0.0.1:8099".parse().unwrap());
+        assert_eq!(h.serve.mcp_local(), "127.0.0.1:8098".parse().unwrap());
+        assert_eq!(bind_scope(h.serve.http_local().ip()), BindScope::Loopback);
         assert!(!h.serve.allow_unsafe_bind);
+        // Unconfigured: loopback alone off a tailnet, plus the tailnet on one.
+        let off = fsonos_tailscale::TailnetStatus::Unavailable(
+            fsonos_tailscale::Unavailable::NotInstalled,
+        );
+        assert_eq!(
+            h.serve.http_plan(&off).addrs,
+            ["127.0.0.1:8099".parse::<SocketAddr>().unwrap()]
+        );
+        let on = fsonos_tailscale::from_addresses(["100.70.1.2".parse().unwrap()]).unwrap();
+        let on = fsonos_tailscale::TailnetStatus::Available(on);
+        assert_eq!(
+            h.serve.http_plan(&on).addrs,
+            [
+                "127.0.0.1:8099".parse::<SocketAddr>().unwrap(),
+                "100.70.1.2:8099".parse().unwrap()
+            ]
+        );
+        // MCP never joins the tailnet on its own (one shared caller identity).
+        assert_eq!(
+            h.serve.mcp_plan(&on).addrs,
+            ["127.0.0.1:8098".parse::<SocketAddr>().unwrap()]
+        );
         let h = Harness::try_parse_from(["fsonos", "--http", "100.70.1.2:9000"]).unwrap();
-        assert_eq!(h.serve.http, "100.70.1.2:9000".parse().unwrap());
+        assert_eq!(h.serve.http, Some("100.70.1.2:9000".parse().unwrap()));
+        // A configured address is bound alone, even on a tailnet.
+        assert_eq!(
+            h.serve.http_plan(&on).addrs,
+            ["100.70.1.2:9000".parse::<SocketAddr>().unwrap()]
+        );
         assert!(Harness::try_parse_from(["fsonos", "--http", "not-an-addr"]).is_err());
     }
 
