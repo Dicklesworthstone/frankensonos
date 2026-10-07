@@ -38,9 +38,11 @@ impl OutcomeDto {
 
 /// Carry out `command` against `households` over `transport`.
 ///
-/// Playback takes renderer URIs as given and sends no DIDL metadata yet, so
-/// a `title` is not shown on the speaker. `spotify:` URIs and the DJ answer
-/// [`ErrorCode::NotImplemented`] until Spotify rendering and the DJ are wired.
+/// `spotify:track:` URIs render with the household's learned Spotify
+/// parameters ([`ErrorCode::RenderParamsMissing`] when it has no Spotify
+/// favorite to learn from). Other renderer URIs play as given, without DIDL
+/// metadata. Spotify albums and playlists, and the DJ, answer
+/// [`ErrorCode::NotImplemented`] until they are wired.
 pub fn execute<T: Transport + ?Sized>(
     transport: &T,
     households: &[HouseholdState],
@@ -53,16 +55,15 @@ pub fn execute<T: Transport + ?Sized>(
         Command::Play {
             coordinator,
             source_uri,
-            ..
+            title,
         } => {
-            if source_uri.starts_with("spotify:") {
-                return Err(Failure::new(
-                    ErrorCode::NotImplemented,
-                    format!("rendering {source_uri} on Sonos is not wired yet"),
-                )
-                .with_hint("Play a Sonos favorite or a radio/HTTP stream URI for now."));
-            }
-            control::play_uri(transport, households, coordinator, source_uri, "")?;
+            play(
+                transport,
+                households,
+                coordinator,
+                source_uri,
+                title.as_deref(),
+            )?;
             OutcomeDto::sent(format!(
                 "playing {source_uri} in {}'s group",
                 room(coordinator)
@@ -131,6 +132,39 @@ pub fn execute<T: Transport + ?Sized>(
     Ok(outcome)
 }
 
+/// Start `source_uri` on the group `coordinator` leads.
+fn play<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    source_uri: &str,
+    title: Option<&str>,
+) -> Result<(), Failure> {
+    if source_uri.starts_with("spotify:track:") {
+        let title = title.unwrap_or(source_uri);
+        let Some((uri, didl)) =
+            control::spotify_track_source(transport, households, coordinator, source_uri, title)?
+        else {
+            return Err(Failure::new(
+                ErrorCode::RenderParamsMissing,
+                "this household has no Spotify track among its favorites to learn its Spotify \
+                 settings from",
+            ));
+        };
+        control::play_uri(transport, households, coordinator, &uri, &didl)?;
+        return Ok(());
+    }
+    if source_uri.starts_with("spotify:") {
+        return Err(Failure::new(
+            ErrorCode::NotImplemented,
+            format!("only Spotify tracks play so far; {source_uri} is not a track"),
+        )
+        .with_hint("Play one of its tracks (spotify:track:...) for now."));
+    }
+    control::play_uri(transport, households, coordinator, source_uri, "")?;
+    Ok(())
+}
+
 /// Send a transport action; returns the verb for the summary.
 fn run_transport<T: Transport + ?Sized>(
     transport: &T,
@@ -195,14 +229,22 @@ mod tests {
     struct Canned {
         sent: RefCell<Vec<(IpAddr, String)>>,
         out_args: &'static str,
+        /// The whole response to a ContentDirectory Browse.
+        browse: &'static str,
         fail: Option<fn() -> ProtoError>,
     }
+
+    const FAVORITES_S1: &str =
+        include_str!("../../fsonos-proto/tests/fixtures/browse_favorites_s1.xml");
+    const NO_FAVORITES: &str =
+        include_str!("../../fsonos-proto/tests/fixtures/browse_queue_empty.xml");
 
     impl Canned {
         fn ok(out_args: &'static str) -> Self {
             Self {
                 sent: RefCell::new(Vec::new()),
                 out_args,
+                browse: NO_FAVORITES,
                 fail: None,
             }
         }
@@ -229,6 +271,9 @@ mod tests {
             self.sent.borrow_mut().push((host, action.clone()));
             if let Some(fail) = self.fail {
                 return Err(fail());
+            }
+            if action == "Browse" {
+                return Ok(self.browse.to_string());
             }
             Ok(format!(
                 "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
@@ -346,15 +391,52 @@ mod tests {
         assert_eq!(out.done, "Patio already plays on its own");
     }
 
+    fn play_spotify(uri: &str) -> Command {
+        Command::Play {
+            coordinator: id("RINCON_DEN"),
+            source_uri: uri.into(),
+            title: Some("Partita".into()),
+        }
+    }
+
+    #[test]
+    fn spotify_tracks_render_with_the_households_learned_params() {
+        let t = Canned {
+            browse: FAVORITES_S1,
+            ..Canned::ok("")
+        };
+        let out = execute(
+            &t,
+            &households(),
+            &play_spotify("spotify:track:0123456789ABCDEFabcdef"),
+        )
+        .unwrap();
+        assert!(out.changed);
+        assert_eq!(t.actions(), ["Browse", "SetAVTransportURI", "Play"]);
+    }
+
+    #[test]
+    fn spotify_without_a_favorite_to_learn_from_says_what_to_do() {
+        let t = Canned::ok("");
+        let err = execute(
+            &t,
+            &households(),
+            &play_spotify("spotify:track:0123456789ABCDEFabcdef"),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (err.code, err.status()),
+            (ErrorCode::RenderParamsMissing, 409)
+        );
+        assert!(err.hint.contains("My Sonos"), "{}", err.hint);
+        assert_eq!(t.actions(), ["Browse"]);
+    }
+
     #[test]
     fn unwired_paths_say_so_without_touching_speakers() {
         let t = Canned::ok("");
-        let spotify = Command::Play {
-            coordinator: id("RINCON_DEN"),
-            source_uri: "spotify:track:0123456789ABCDEFabcdef".into(),
-            title: None,
-        };
-        let err = execute(&t, &households(), &spotify).unwrap_err();
+        let album = play_spotify("spotify:album:0123456789ABCDEFabcdef");
+        let err = execute(&t, &households(), &album).unwrap_err();
         assert_eq!((err.code, err.status()), (ErrorCode::NotImplemented, 501));
         let dj = Command::Dj {
             coordinator: id("RINCON_DEN"),
