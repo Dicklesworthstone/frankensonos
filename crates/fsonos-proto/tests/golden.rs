@@ -513,6 +513,7 @@ const GENA_AVT_S2: &str = include_str!("fixtures/gena_notify_avt_initial_s2.xml"
 const GENA_QUEUE_S1: &str = include_str!("fixtures/gena_notify_queue_s1.xml");
 const GENA_CD_S1: &str = include_str!("fixtures/gena_notify_cd_initial_s1.xml");
 const GENA_GRC_S1: &str = include_str!("fixtures/gena_notify_grc_s1.xml");
+const GENA_AVT_PLAY_S2: &str = include_str!("fixtures/gena_notify_avt_playing_s2.xml");
 const MSERVICES_S1: &str = include_str!("fixtures/musicservices_list_s1.xml");
 
 /// One XML decode pass: named entities first, `&amp;` last.
@@ -633,6 +634,25 @@ fn gena_grc_group_volume_is_plain_properties() {
     assert_eq!(property(GENA_GRC_S1, "GroupVolume"), "13");
     assert_eq!(property(GENA_GRC_S1, "GroupMute"), "0");
     assert_eq!(property(GENA_GRC_S1, "GroupVolumeChangeable"), "1");
+}
+
+#[test]
+fn gena_avt_playing_s2_carries_learned_params_and_smapi_metadata() {
+    // S2 PLAYING-state event (captured live while the bridge played a track):
+    // the household's learned flags=8232 rides the reported URI, and the
+    // player has replaced our minimal DIDL with full SMAPI metadata.
+    let event = last_change(GENA_AVT_PLAY_S2);
+    assert_eq!(event.get("TransportState"), Some("PLAYING"));
+    let uri = event.current_track_uri().unwrap();
+    assert_eq!(
+        spotify_uri_from_renderer_uri(uri).as_deref(),
+        Some("spotify:track:0FixtureSpotifyTrack2")
+    );
+    assert!(uri.contains("flags=8232"), "{uri}");
+    let track = event.current_track_metadata().unwrap().unwrap();
+    assert_eq!(track.title, "Title 2");
+    assert_eq!(track.creator.as_deref(), Some("Artist 2"));
+    assert_eq!(track.album.as_deref(), Some("Album 2"));
 }
 
 #[test]
