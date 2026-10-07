@@ -56,12 +56,14 @@ variables. The environment form is what launchd uses.
 | Data directory | `FSONOS_DATA_DIR` | `~/Library/Application Support/fsonos` | Store DB and Spotify token cache. |
 | Direct-seed list | `FSONOS_SEEDS` | unset | Optional TOML of player IPs for flaky-SSDP networks. Keep it under `local/` or outside the repo. |
 | Spotify client id | `FSONOS_SPOTIFY_CLIENT_ID` | unset | Needed only for the DJ (see §5). |
+| Spotify redirect URI | `FSONOS_SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8099/auth/spotify/callback` | Must match the URI registered for your Spotify app. |
 | Log filter | `RUST_LOG` | `info` | `tracing` EnvFilter syntax. Logs go to stderr. |
 
 **Bind guard** *(planned, `d-cli-serve`)*: `serve` refuses a wildcard
-(`0.0.0.0`, `::`) or public bind address, and logs a warning for a private-LAN
-address. Loopback and tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`)
-addresses are accepted silently.
+(`0.0.0.0`, `::`) or public bind address for the API or MCP server unless you
+pass `--allow-unsafe-bind`. It logs a warning for a private-LAN address.
+Loopback and tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) addresses are
+accepted silently.
 
 ## 3. Build and install
 
