@@ -24,7 +24,9 @@
 //!   MCP listeners pinned to ephemeral loopback ports, `FSONOS_SEEDS`
 //!   pointing at the sim's seeds file, `FSONOS_ROUTES` sending each player's
 //!   advertised address to its loopback socket and SSDP to the sim's unicast
-//!   responder (no multicast), and no Spotify settings. Tripwire
+//!   responder (no multicast), no Spotify settings, and Tailscale detection
+//!   off (`FSONOS_TAILSCALE=off`; [`Scenario::on_the_tailnet`] lifts it for
+//!   the tests that need this host's real tailnet). Tripwire
 //!   listeners sit on the default ports (8099, 8098); a connection to either
 //!   fails the scenario. The routes file also confines the binary: anything
 //!   it would send outside the file (another address, multicast) is refused
@@ -61,7 +63,7 @@ pub const ROUTES_REFUSAL: &str = "refused: outside the routes file";
 const INLINE: usize = 2000;
 
 /// The settings the harness controls; any ambient value is removed first.
-const SETTINGS: [&str; 9] = [
+const SETTINGS: [&str; 10] = [
     "FSONOS_ROUTES",
     "FSONOS_EVENTS_PORT",
     "FSONOS_HTTP_ADDR",
@@ -70,6 +72,7 @@ const SETTINGS: [&str; 9] = [
     "FSONOS_SEEDS",
     "FSONOS_SPOTIFY_CLIENT_ID",
     "FSONOS_SPOTIFY_REDIRECT_URI",
+    "FSONOS_TAILSCALE",
     "RUST_LOG",
 ];
 
@@ -116,6 +119,8 @@ pub struct Scenario {
     sim: Option<SimHandle>,
     /// Stderr lines where the routes file refused a request.
     refusals: Arc<Mutex<Vec<String>>>,
+    /// `fsonos` may see this host's real tailnet.
+    tailnet: bool,
 }
 
 /// The tripwire listeners on the default ports, bound once per test process
@@ -171,6 +176,7 @@ impl Scenario {
             tally: Vec::new(),
             sim: None,
             refusals: Arc::default(),
+            tailnet: false,
         };
         for port in [8099, 8098] {
             if !tripwires().iter().any(|(p, _)| *p == port) {
@@ -235,6 +241,12 @@ impl Scenario {
         self.sim.as_ref()
     }
 
+    /// Let the `fsonos` runs that follow see this host's real tailnet (the
+    /// `tailscale-live` tests); by default detection is off.
+    pub fn on_the_tailnet(&mut self) {
+        self.tailnet = true;
+    }
+
     /// `fsonos` with the isolation environment applied.
     fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fsonos"));
@@ -246,6 +258,9 @@ impl Scenario {
             .env("FSONOS_MCP_HTTP_ADDR", "127.0.0.1:0")
             .env("FSONOS_EVENTS_PORT", "0")
             .env("RUST_LOG", "warn");
+        if !self.tailnet {
+            cmd.env("FSONOS_TAILSCALE", "off");
+        }
         if self.sim.is_some() {
             cmd.env("FSONOS_SEEDS", self.dir.join("seeds.toml"))
                 .env("FSONOS_ROUTES", self.dir.join("routes.toml"));

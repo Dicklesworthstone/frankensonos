@@ -127,6 +127,9 @@ pub enum Unavailable {
     TimedOut,
     /// The CLI's output was not the expected JSON.
     Unparseable { detail: String },
+    /// Detection is turned off (`fsonos --tailscale off`, or
+    /// `FSONOS_TAILSCALE=off`).
+    Disabled,
 }
 
 /// How to look for Tailscale on this host.
@@ -310,5 +313,13 @@ mod tests {
         assert_eq!(v["status"], "available");
         assert_eq!(v["source"], "interfaces");
         assert_eq!(v["ipv4"][0], "100.101.102.103");
+    }
+
+    #[test]
+    fn detection_turned_off_serializes() {
+        assert_eq!(
+            serde_json::to_value(TailnetStatus::Unavailable(Unavailable::Disabled)).unwrap(),
+            serde_json::json!({ "status": "unavailable", "reason": "disabled" })
+        );
     }
 }

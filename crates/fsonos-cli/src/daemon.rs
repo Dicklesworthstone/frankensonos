@@ -183,7 +183,7 @@ pub fn listener_client(addr: SocketAddr) -> Client {
 /// until SIGINT / SIGTERM.
 pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
     // Unconfigured listeners bind loopback plus the tailnet (ts-autobind).
-    let tailnet = fsonos_tailscale::detect();
+    let tailnet = args.tailnet();
     let http_plan = args.http_plan(&tailnet);
     let mcp_plan = args.mcp_plan(&tailnet);
     for (listener, plan) in [("HTTP API", &http_plan), ("MCP server", &mcp_plan)] {

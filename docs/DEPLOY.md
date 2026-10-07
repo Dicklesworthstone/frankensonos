@@ -60,6 +60,7 @@ variables. The environment form is what launchd uses.
 |---|---|---|---|
 | HTTP API address | `FSONOS_HTTP_ADDR` | unset: `127.0.0.1:8099` plus this host's tailnet addresses when Tailscale is up | Set it to bind exactly one address, e.g. loopback behind Tailscale Serve. |
 | MCP (streamable HTTP) address | `FSONOS_MCP_HTTP_ADDR` | unset: `127.0.0.1:8098` | Endpoint path `/mcp`. Loopback unless set: reach it from the tailnet through Serve. |
+| Tailscale detection | `FSONOS_TAILSCALE` | `auto` | `off` (or `--tailscale off`) stops `fsonos` looking for Tailscale: unconfigured listeners bind loopback only, and `fsonos doctor` skips its `tailscale.*` checks. |
 | Events port | `FSONOS_EVENTS_PORT` | `8097` | Where the speakers deliver state-change events (GENA), on the Mac's LAN address. The only LAN-facing socket: allow it inbound (§4). `0` picks any free port. |
 | Data directory | `FSONOS_DATA_DIR` | `~/Library/Application Support/fsonos` | Store DB and Spotify token cache. |
 | Direct-seed list | `FSONOS_SEEDS` | unset | Optional file of player addresses for flaky-SSDP networks; every IP address in it is tried (e.g. TOML `players = ["192.0.2.10"]`, or one per line). Every command also takes `--seed <ip>`. Keep the file under `local/` or outside the repo. |
@@ -218,6 +219,9 @@ plain HTTP inside WireGuard. Two things to know:
 - The tailnet addresses are read once, at startup. If the daemon starts
   before Tailscale is up, it listens on loopback only and logs why; restart it
   (`launchctl kickstart -k`) once Tailscale is up. Serve avoids this.
+  `fsonos doctor --only tailscale` checks the whole chain: Tailscale up and
+  logged in, the MagicDNS name, and the daemon answering over the tailnet,
+  with the connect URLs or the fix.
 
 The MCP server stays on loopback unless `FSONOS_MCP_HTTP_ADDR` is set: one MCP
 backend serves every MCP listener with a single caller identity, so a direct
@@ -306,6 +310,6 @@ curl -fsS https://<mac>.<tailnet>.ts.net/health                  # from another 
 | Discovery finds no players under a LaunchAgent; connects fail with "No route to host" | Local Network access denied or never approved. Approve it in System Settings, or switch to the LaunchDaemon. |
 | Every call answers `NOT_READY` ("no rooms discovered yet") | The daemon found no players: SSDP is filtered on this network (set `FSONOS_SEEDS`), or Local Network access is missing (above). It keeps retrying; no restart needed. |
 | Players found, but state never updates after changes made in the Sonos app | Event callbacks are blocked inbound: `GET /doctor` shows `daemon.live` with no event subscriptions. Check the Application Firewall and the events port (§4). |
-| The log shows bind failures ("Can't assign requested address") right after boot | Direct tailnet bind started before Tailscale. It self-heals via `KeepAlive`; prefer Serve. |
+| The log shows bind failures ("Can't assign requested address") right after boot | A tailnet address set in `FSONOS_HTTP_ADDR`, bound before Tailscale was up. It self-heals via `KeepAlive`; prefer Serve, or leave the address unset. |
 | `launchctl bootstrap` fails with an I/O or permission error | Plist not `root:wheel` `0644`, or the job is already loaded. Run `bootout` first. |
-| Tailnet clients time out but loopback works | Tailnet policy doesn't grant the port, or Serve isn't configured (`tailscale serve status`). |
+| Tailnet clients time out but loopback works | Run `fsonos doctor --only tailscale` on the Mac: it says whether Tailscale is up and whether the daemon listens on the tailnet. If both pass, the tailnet policy doesn't grant the port, or Serve isn't configured (`tailscale serve status`). |

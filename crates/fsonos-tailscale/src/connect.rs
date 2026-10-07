@@ -164,6 +164,11 @@ fn not_running_hint(status: &TailnetStatus) -> String {
         TailnetStatus::Unavailable(Unavailable::Unparseable { detail }) => {
             format!("Tailscale's status could not be read ({detail}).")
         }
+        TailnetStatus::Unavailable(Unavailable::Disabled) => {
+            "Tailscale is turned off for FrankenSonos (FSONOS_TAILSCALE=off); unset it to use \
+             the tailnet."
+                .into()
+        }
         TailnetStatus::Available(t) if !t.logged_in => {
             "Tailscale is not logged in; run `tailscale up` (or log in from the app).".into()
         }
@@ -307,6 +312,10 @@ mod tests {
             (
                 TailnetStatus::Unavailable(Unavailable::TimedOut),
                 "did not answer in time",
+            ),
+            (
+                TailnetStatus::Unavailable(Unavailable::Disabled),
+                "FSONOS_TAILSCALE=off",
             ),
         ];
         for (status, needle) in cases {

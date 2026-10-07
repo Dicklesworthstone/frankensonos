@@ -5,7 +5,9 @@
 //!
 //! * `daemon.bind`: the bind guard's verdict on the HTTP and MCP addresses;
 //! * `daemon.health`: whether a daemon answers on the HTTP address, and
-//!   which version.
+//!   which version;
+//! * `tailscale.*` ([`tailscale`]): whether the daemon is reachable over the
+//!   tailnet, with the connect URLs, or why not.
 //!
 //! Exit codes: 0 all passed, 6 warnings only, 7 something failed (outside
 //! the CLI's 1-5 error codes and clap's 2).
@@ -20,6 +22,8 @@ use std::time::Duration;
 
 use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::direct::Direct;
+
+pub mod tailscale;
 
 /// `fsonos doctor` arguments.
 #[derive(Debug, Clone, clap::Args)]
@@ -79,37 +83,32 @@ impl Check for BindCheck {
     }
 }
 
+/// `GET /health` on `addr`: the daemon's version, or why there is none.
+fn probe_health(addr: SocketAddr, timeout: Duration) -> Result<String, String> {
+    let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| e.to_string())?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    let request = format!("GET /health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| e.to_string())?;
+    let mut answer = String::new();
+    stream
+        .read_to_string(&mut answer)
+        .map_err(|e| e.to_string())?;
+    let body = answer.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+    let health: serde_json::Value = serde_json::from_str(body)
+        .map_err(|_| format!("not a FrankenSonos answer: {answer:.80}"))?;
+    health["version"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "no version in /health".to_string())
+}
+
 /// Whether `fsonos serve` answers `/health` on the HTTP address.
 struct HealthCheck {
     http: SocketAddr,
-}
-
-impl HealthCheck {
-    fn probe(&self, timeout: Duration) -> Result<String, String> {
-        let mut stream =
-            TcpStream::connect_timeout(&self.http, timeout).map_err(|e| e.to_string())?;
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(|e| e.to_string())?;
-        let request = format!(
-            "GET /health HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-            self.http
-        );
-        stream
-            .write_all(request.as_bytes())
-            .map_err(|e| e.to_string())?;
-        let mut answer = String::new();
-        stream
-            .read_to_string(&mut answer)
-            .map_err(|e| e.to_string())?;
-        let body = answer.split_once("\r\n\r\n").map_or("", |(_, b)| b);
-        let health: serde_json::Value = serde_json::from_str(body)
-            .map_err(|_| format!("not a FrankenSonos answer: {answer:.80}"))?;
-        health["version"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| "no version in /health".to_string())
-    }
 }
 
 impl Check for HealthCheck {
@@ -126,7 +125,7 @@ impl Check for HealthCheck {
             return CheckResult::skip("the HTTP address has no fixed port to probe");
         }
         let timeout = ctx.remaining().min(Duration::from_secs(3));
-        match self.probe(timeout) {
+        match probe_health(self.http, timeout) {
             Ok(version) => {
                 CheckResult::pass(format!("fsonos serve {version} answers on {}", self.http))
                     .with_evidence(json!({ "version": version }))
@@ -150,6 +149,7 @@ pub fn register(runner: &mut Runner, serve: &ServeArgs) {
     runner.register(HealthCheck {
         http: serve.http_local(),
     });
+    tailscale::register(runner, serve);
 }
 
 /// Keep only the checks whose id starts with `prefix`.
@@ -250,6 +250,7 @@ mod tests {
                 spotify_redirect_uri: String::new(),
                 events_port: 0,
                 allow_unsafe_bind: false,
+                tailscale: crate::config::TailscaleMode::Auto,
             },
         );
         let report = only(runner.run().unwrap(), Some("daemon.b"));

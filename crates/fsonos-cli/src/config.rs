@@ -188,10 +188,16 @@ pub struct ServeArgs {
     pub http: Option<SocketAddr>,
 
     /// MCP streamable-HTTP bind address, endpoint path `/mcp` [default:
-    /// 127.0.0.1:8098 plus this host's tailnet addresses when Tailscale is
-    /// up].
+    /// 127.0.0.1:8098]. Loopback unless set: reach it from the tailnet
+    /// through Tailscale Serve.
     #[arg(long, env = "FSONOS_MCP_HTTP_ADDR")]
     pub mcp_http: Option<SocketAddr>,
+
+    /// Look for Tailscale. `off` keeps fsonos off the tailnet: unconfigured
+    /// listeners bind loopback only, and the doctor skips its Tailscale
+    /// checks.
+    #[arg(long, env = "FSONOS_TAILSCALE", value_enum, default_value_t = TailscaleMode::Auto)]
+    pub tailscale: TailscaleMode,
 
     /// Spotify app client id (PKCE: identifies the app, not a secret).
     #[arg(long, env = "FSONOS_SPOTIFY_CLIENT_ID")]
@@ -218,12 +224,32 @@ pub struct ServeArgs {
     pub allow_unsafe_bind: bool,
 }
 
+/// Whether `fsonos` looks for Tailscale (`--tailscale`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TailscaleMode {
+    /// Detect this host's tailnet.
+    Auto,
+    /// Never look: no tailnet.
+    Off,
+}
+
 /// The HTTP API's port when no address is configured.
 pub const HTTP_PORT: u16 = 8099;
 /// The MCP server's port when no address is configured.
 pub const MCP_PORT: u16 = 8098;
 
 impl ServeArgs {
+    /// This host's tailnet, unless `--tailscale off`.
+    #[must_use]
+    pub fn tailnet(&self) -> fsonos_tailscale::TailnetStatus {
+        match self.tailscale {
+            TailscaleMode::Auto => fsonos_tailscale::detect(),
+            TailscaleMode::Off => fsonos_tailscale::TailnetStatus::Unavailable(
+                fsonos_tailscale::Unavailable::Disabled,
+            ),
+        }
+    }
+
     /// Where this machine reaches the HTTP API: the configured address, or
     /// loopback on the default port (always among the bound addresses).
     #[must_use]
@@ -517,6 +543,23 @@ mod tests {
             ["100.70.1.2:9000".parse::<SocketAddr>().unwrap()]
         );
         assert!(Harness::try_parse_from(["fsonos", "--http", "not-an-addr"]).is_err());
+    }
+
+    #[test]
+    fn tailscale_off_means_no_tailnet() {
+        let auto = Harness::try_parse_from(["fsonos"]).unwrap();
+        assert_eq!(auto.serve.tailscale, TailscaleMode::Auto);
+        let h = Harness::try_parse_from(["fsonos", "--tailscale", "off"]).unwrap();
+        assert_eq!(h.serve.tailscale, TailscaleMode::Off);
+        let status = h.serve.tailnet();
+        assert_eq!(
+            status,
+            fsonos_tailscale::TailnetStatus::Unavailable(fsonos_tailscale::Unavailable::Disabled)
+        );
+        let plan = h.serve.http_plan(&status);
+        assert_eq!(plan.reason, fsonos_tailscale::BindReason::LoopbackOnly);
+        assert!(plan.note.contains("FSONOS_TAILSCALE=off"), "{}", plan.note);
+        assert!(Harness::try_parse_from(["fsonos", "--tailscale", "maybe"]).is_err());
     }
 
     #[test]
