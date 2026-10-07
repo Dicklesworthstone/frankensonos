@@ -16,6 +16,14 @@ read-only requests (`GET /xml/device_description.xml`, `GetZoneGroupState`,
 | `browse_queue_empty.xml` | `Browse Q:0` on an idle player | empty DIDL-Lite |
 | `soap_fault_701.xml` | `Browse` of a nonexistent object | HTTP 500 body, UPnP error 701 |
 | `device_description_*.xml` | `/xml/device_description.xml` | Play:5 Gen 1 and Bridge (S1); Play:1 and One (S2) |
+| `gena_notify_avt_initial_s1.xml` | AVTransport SUBSCRIBE initial NOTIFY (S1, office coordinator) | seq 0 full state; `CurrentTrackMetaData` holds the player's own SMAPI-fetched DIDL one escape level deeper |
+| `gena_notify_avt_pause_s1.xml` | AVTransport NOTIFY on `Pause` (S1) | mid-transition snapshot: `TransportState` = `TRANSITIONING` |
+| `gena_notify_rcs_volume_s1.xml` | RenderingControl NOTIFY on `SetVolume` (S1) | per-channel `<Volume channel="Master|LF|RF">` attributes |
+| `gena_notify_zgt_s1.xml` | ZoneGroupTopology SUBSCRIBE initial NOTIFY (S1) | full `ZoneGroupState` as element text (not LastChange), plus `MuseHouseholdId`, `AvailableSoftwareUpdate` |
+| `gena_notify_rcs_initial_s1.xml` | RenderingControl SUBSCRIBE initial NOTIFY (S1) | full render state: per-channel Volume/Mute, Bass/Treble, Loudness, EQ presets |
+| `gena_notify_zgt_s2.xml` | ZoneGroupTopology SUBSCRIBE initial NOTIFY (S2) | full state plus the `AvailableSoftwareUpdate` firmware-URL oracle and three `VanishedDevices` |
+| `gena_notify_avt_initial_s2.xml` | AVTransport SUBSCRIBE initial NOTIFY (S2) | idle player shape |
+| `musicservices_list_s1.xml` | MusicServices `ListAvailableServices` (S1) | full service descriptor list; Spotify is `Id="12"`, `Auth="AppLink"`, SMAPI endpoint `spotify-v5.ws.sonos.com` |
 
 ## Scrubbing
 

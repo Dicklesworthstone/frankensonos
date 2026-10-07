@@ -6,7 +6,8 @@
 use fsonos_proto::content::{self, BrowseFlag};
 use fsonos_proto::description::parse_device_description;
 use fsonos_proto::didl::{
-    DidlKind, DidlObject, SpotifyRenderParams, spotify_track_uri, spotify_uri_from_renderer_uri,
+    DidlKind, DidlObject, SpotifyRenderParams, parse_didl, spotify_track_uri,
+    spotify_uri_from_renderer_uri,
 };
 use fsonos_proto::topology::{self, ZoneGroupState};
 use fsonos_proto::{ProtoError, Transport, soap};
@@ -505,6 +506,166 @@ fn device_descriptions_identify_model_room_and_generation() {
     assert_eq!(one.room_name, "Parlor");
 }
 
+// ── GENA NOTIFY fixtures (captured live from both households 2026-10-07) ──
+
+const GENA_AVT_S1: &str = include_str!("fixtures/gena_notify_avt_initial_s1.xml");
+const GENA_AVT_PAUSE_S1: &str = include_str!("fixtures/gena_notify_avt_pause_s1.xml");
+const GENA_RCS_VOL_S1: &str = include_str!("fixtures/gena_notify_rcs_volume_s1.xml");
+const GENA_RCS_INIT_S1: &str = include_str!("fixtures/gena_notify_rcs_initial_s1.xml");
+const GENA_ZGT_S1: &str = include_str!("fixtures/gena_notify_zgt_s1.xml");
+const GENA_ZGT_S2: &str = include_str!("fixtures/gena_notify_zgt_s2.xml");
+const GENA_AVT_S2: &str = include_str!("fixtures/gena_notify_avt_initial_s2.xml");
+const MSERVICES_S1: &str = include_str!("fixtures/musicservices_list_s1.xml");
+
+/// One XML decode pass: named entities first, `&amp;` last.
+fn xml_unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&")
+}
+
+/// Text of the first `<Name>…</Name>` element (element text, not `val=`).
+fn elem_text<'a>(doc: &'a str, name: &str) -> Option<&'a str> {
+    let open = format!("<{name}>");
+    let start = doc.find(&open)? + open.len();
+    let end = doc[start..].find(&format!("</{name}>"))? + start;
+    Some(&doc[start..end])
+}
+
+/// The `val="…"` attribute of the first `<Name …/>` in an AVT/RCS event.
+fn event_val<'a>(event: &'a str, name: &str) -> Option<&'a str> {
+    let pat = format!("{name} val=\"");
+    let start = event.find(&pat)? + pat.len();
+    let end = event[start..].find('"')? + start;
+    Some(&event[start..end])
+}
+
+/// propertyset → LastChange → inner `<Event>` document (one decode pass).
+fn last_change_event(notify: &str) -> String {
+    let lc = elem_text(notify, "LastChange").expect("NOTIFY carries LastChange");
+    xml_unescape(lc)
+}
+
+#[test]
+fn gena_avt_initial_s1_carries_full_state_and_track_metadata() {
+    let event = last_change_event(GENA_AVT_S1);
+    assert!(event.contains("urn:schemas-upnp-org:metadata-1-0/AVT/"));
+    assert_eq!(event_val(&event, "TransportState"), Some("STOPPED"));
+    assert_eq!(event_val(&event, "NumberOfTracks"), Some("1"));
+    let uri = event_val(&event, "CurrentTrackURI").unwrap();
+    assert_eq!(
+        spotify_uri_from_renderer_uri(uri).as_deref(),
+        Some("spotify:track:0FixtureSpotifyTrack1")
+    );
+    assert!(
+        xml_unescape(uri).ends_with("?sid=12&flags=8224&sn=1"),
+        "{uri}"
+    );
+
+    // The player replaced our minimal DIDL with SMAPI-fetched metadata: a thin
+    // shell with id="-1", real title/album, and NO cdudn desc — event-stream
+    // metadata is display-grade, not render-grade.
+    let md_escaped = event_val(&event, "CurrentTrackMetaData").unwrap();
+    let objects = parse_didl(&xml_unescape(md_escaped)).unwrap();
+    let track = objects.iter().find(|o| o.kind == DidlKind::Item).unwrap();
+    assert_eq!(track.id, "-1");
+    assert_eq!(track.class, "object.item.audioItem.musicTrack");
+    assert_eq!(track.title, "Title 1");
+    assert!(track.desc.is_none());
+}
+
+#[test]
+fn gena_avt_pause_captures_transitioning_state() {
+    let event = last_change_event(GENA_AVT_PAUSE_S1);
+    // Mid-pause snapshot: Sonos reports TRANSITIONING, not PAUSED_PLAYBACK.
+    assert_eq!(event_val(&event, "TransportState"), Some("TRANSITIONING"));
+    let uri = event_val(&event, "CurrentTrackURI").unwrap();
+    assert!(uri.starts_with("x-sonos-spotify:"), "{uri}");
+}
+
+#[test]
+fn gena_rcs_volume_delta_uses_channel_attributes() {
+    let event = last_change_event(GENA_RCS_VOL_S1);
+    assert!(event.contains("urn:schemas-upnp-org:metadata-1-0/RCS/"));
+    assert!(event.contains("<Volume channel=\"Master\" val=\"19\"/>"));
+    assert!(event.contains("<Volume channel=\"LF\" val=\"100\"/>"));
+}
+
+#[test]
+fn gena_zgt_notify_carries_full_zone_group_state() {
+    // ZoneGroupState arrives as element text (not LastChange) in the NOTIFY.
+    let zgs_escaped = elem_text(GENA_ZGT_S1, "ZoneGroupState").expect("ZoneGroupState property");
+    let state = topology::parse_zone_group_state(&xml_unescape(zgs_escaped)).unwrap();
+    assert_eq!(state.groups.len(), 4);
+    let big = state.groups.iter().max_by_key(|g| g.members.len()).unwrap();
+    assert_eq!(big.members.len(), 4);
+    assert!(
+        state
+            .groups
+            .iter()
+            .flat_map(|g| g.members.iter())
+            .all(|m| m.uuid.0.starts_with("RINCON_000E58A0"))
+    );
+    assert_eq!(
+        state.groups.iter().map(|g| g.members.len()).sum::<usize>(),
+        9
+    );
+}
+
+#[test]
+fn gena_avt_initial_s2_idle_player_shape() {
+    let event = last_change_event(GENA_AVT_S2);
+    assert!(event.contains("urn:schemas-upnp-org:metadata-1-0/AVT/"));
+    assert!(event.contains("<InstanceID val=\"0\">"));
+    // Idle S2 player: stopped, empty queue, and the empty-attribute edge case.
+    assert_eq!(event_val(&event, "TransportState"), Some("STOPPED"));
+    assert_eq!(event_val(&event, "NumberOfTracks"), Some("0"));
+    assert_eq!(event_val(&event, "AVTransportURI"), Some(""));
+}
+
+#[test]
+fn gena_rcs_initial_s1_carries_full_render_state() {
+    let event = last_change_event(GENA_RCS_INIT_S1);
+    assert!(event.contains("urn:schemas-upnp-org:metadata-1-0/RCS/"));
+    assert!(event.contains("<Volume channel=\"Master\" val=\"18\"/>"));
+    assert!(event.contains("<Mute channel=\"Master\" val=\"0\"/>"));
+    assert_eq!(event_val(&event, "Bass"), Some("0"));
+    assert_eq!(event_val(&event, "Loudness"), None); // value lives in channel attr
+    assert!(event.contains("<Loudness channel=\"Master\" val=\"1\"/>"));
+}
+
+#[test]
+fn gena_zgt_s2_carries_update_oracle_and_vanished_devices() {
+    let zgs_escaped = elem_text(GENA_ZGT_S2, "ZoneGroupState").expect("ZoneGroupState property");
+    let state = topology::parse_zone_group_state(&xml_unescape(zgs_escaped)).unwrap();
+    assert!(!state.groups.is_empty());
+    assert_eq!(state.vanished.len(), 3, "three offline players remembered");
+    // The AvailableSoftwareUpdate property is the firmware-URL oracle.
+    let update = elem_text(GENA_ZGT_S2, "AvailableSoftwareUpdate").unwrap();
+    let update = xml_unescape(update);
+    assert!(update.contains("UpdateURL=\"http://update-firmware.sonos.com/"));
+    assert!(update.contains("ManifestURL=\"http://update.sonos.com/"));
+    assert!(update.contains("Swgen=\"2\""));
+}
+
+#[test]
+fn musicservices_list_describes_spotify_smapi() {
+    // Fixture integrity anchors: the S1 household's Spotify descriptor.
+    let inner = soap::parse_response(MSERVICES_S1, "ListAvailableServices")
+        .unwrap()
+        .require("AvailableServiceDescriptorList")
+        .unwrap()
+        .to_string();
+    let list = xml_unescape(&xml_unescape(&inner));
+    assert!(
+        list.contains("Id=\"12\" Name=\"Spotify\""),
+        "Spotify service id 12"
+    );
+    assert!(list.contains("https://spotify-v5.ws.sonos.com/smapi"));
+    assert!(list.contains("Auth=\"AppLink\""));
+}
+
 #[test]
 fn fixtures_are_scrubbed() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
@@ -531,5 +692,12 @@ fn fixtures_are_scrubbed() {
         }
         checked += 1;
     }
-    assert_eq!(checked, 12);
+    // Lower bound (not an exact count): the loop already scrubs EVERY fixture,
+    // so a fixed `== N` only broke the gate each time a fixture was added
+    // without buying any extra safety. This still catches an empty/missing
+    // fixtures dir.
+    assert!(
+        checked >= 18,
+        "expected at least 18 scrubbed fixtures, found {checked}"
+    );
 }
