@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use fsonos_api::Failure;
+use fsonos_proto::Transport;
 use fsonos_proto::net::Lan;
+
+use crate::confine::Confined;
 
 /// Options every command accepts (and `serve` uses for discovery).
 #[derive(Debug, Clone, clap::Args)]
@@ -30,7 +33,8 @@ pub struct GlobalArgs {
 
     /// Routes file mapping player addresses to the sockets that serve them,
     /// and an SSDP target to search instead of multicast. `fsonos sim` writes
-    /// one for its virtual players; real players need none.
+    /// one for its virtual players; real players need none. While one is
+    /// set, nothing the file does not name is contacted.
     #[arg(long, env = "FSONOS_ROUTES", global = true)]
     pub routes: Option<PathBuf>,
 
@@ -91,17 +95,19 @@ impl GlobalArgs {
         })
     }
 
-    /// The LAN transport, with any `--routes` applied.
-    pub fn lan(&self) -> Result<Lan, Failure> {
-        let routes = self.routes()?;
-        let mut lan = Lan::start().map_err(|e| Failure::from(fsonos_core::CoreError::from(e)))?;
-        if !routes.players.is_empty() {
-            lan = lan.with_routes(routes.players);
+    /// The LAN transport. With `--routes` it is redirected to, and confined
+    /// to, what the file names (see [`crate::confine`]).
+    pub fn lan(&self) -> Result<Box<dyn Transport + Send + Sync>, Failure> {
+        let lan = Lan::start().map_err(|e| Failure::from(fsonos_core::CoreError::from(e)))?;
+        if self.routes.is_none() {
+            return Ok(Box::new(lan));
         }
+        let routes = self.routes()?;
+        let mut lan = lan.with_routes(routes.players.clone());
         if let Some(target) = routes.ssdp {
             lan = lan.with_ssdp_target(target);
         }
-        Ok(lan)
+        Ok(Box::new(Confined::new(lan, &routes)))
     }
 }
 

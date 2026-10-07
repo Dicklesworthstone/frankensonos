@@ -1,7 +1,8 @@
 //! The e2e harness self-test: needs no product features beyond the binary
 //! starting. It spawns the virtual households, runs `fsonos --version`, opens
-//! an MCP session over stdio and lists the tools, and fetches every virtual
-//! player's device description over real HTTP. See `tests/e2e/mod.rs` for the
+//! an MCP session over stdio and lists the tools, fetches every virtual
+//! player's device description over real HTTP, and proves the routes file
+//! keeps the binary off the real LAN. See `tests/e2e/mod.rs` for the
 //! scenario API and the log layout.
 
 mod e2e;
@@ -40,6 +41,19 @@ fn harness_self_test() {
         "fsonos --version prints the crate version",
         version.ok() && version.stdout.contains(env!("CARGO_PKG_VERSION")),
         &version.stdout,
+    );
+
+    // The routes file confines the binary: a seed outside it is refused,
+    // never contacted, and the harness sees the refusal.
+    let outside = s.cli("confined", &["--seed", "198.51.100.7", "discover"]);
+    let refused = s.take_refusals();
+    s.check(
+        "confined",
+        "isolation",
+        "a seed outside the routes file is refused, not contacted",
+        outside.stderr.contains(e2e::ROUTES_REFUSAL)
+            && refused.iter().any(|l| l.contains("198.51.100.7")),
+        &outside.stderr,
     );
 
     let mut mcp = s.mcp();

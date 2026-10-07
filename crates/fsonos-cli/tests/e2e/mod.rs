@@ -26,7 +26,9 @@
 //!   advertised address to its loopback socket and SSDP to the sim's unicast
 //!   responder (no multicast), and no Spotify settings. Tripwire
 //!   listeners sit on the default ports (8099, 8098); a connection to either
-//!   fails the scenario.
+//!   fails the scenario. The routes file also confines the binary: anything
+//!   it would send outside the file (another address, multicast) is refused
+//!   and reported on stderr, and any such refusal fails the scenario.
 //! * Logs in `target/e2e-logs/<scenario>/<epoch-ms>/` (or under
 //!   `FSONOS_E2E_LOG_DIR`): `steps.jsonl` with one line per step
 //!   (`ts, scenario, step, surface, command, exit_code, stdout, stderr,
@@ -46,10 +48,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// What `fsonos` prints when its routes file refused a request
+/// (`src/confine.rs`); the self-test provokes one to keep the two in step.
+pub const ROUTES_REFUSAL: &str = "refused: outside the routes file";
 
 /// Longest stdout/stderr kept inline in `steps.jsonl`.
 const INLINE: usize = 2000;
@@ -107,6 +113,8 @@ pub struct Scenario {
     seq: usize,
     tally: Vec<(String, Status)>,
     sim: Option<SimHandle>,
+    /// Stderr lines where the routes file refused a request.
+    refusals: Arc<Mutex<Vec<String>>>,
 }
 
 /// The tripwire listeners on the default ports, bound once per test process
@@ -161,6 +169,7 @@ impl Scenario {
             seq: 0,
             tally: Vec::new(),
             sim: None,
+            refusals: Arc::default(),
         };
         for port in [8099, 8098] {
             if !tripwires().iter().any(|(p, _)| *p == port) {
@@ -257,6 +266,7 @@ impl Scenario {
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
             duration_ms: started.elapsed().as_millis(),
         };
+        note_refusals(&self.refusals, run.stderr.lines());
         let command = format!("fsonos {}", args.join(" "));
         self.record(
             step,
@@ -277,7 +287,7 @@ impl Scenario {
     pub fn mcp(&mut self) -> McpSession {
         let mut cmd = self.command();
         cmd.arg("mcp");
-        let session = McpSession::spawn(cmd);
+        let session = McpSession::spawn(cmd, &self.refusals);
         self.record(
             "mcp-spawn",
             "mcp",
@@ -368,9 +378,23 @@ impl Scenario {
         }
     }
 
+    /// The routes-file refusals seen so far, which no longer count against
+    /// the scenario (for a step that provokes one on purpose).
+    pub fn take_refusals(&mut self) -> Vec<String> {
+        std::mem::take(&mut *self.refusals.lock().expect("refusals"))
+    }
+
     /// Check the tripwires, save the sim's logs and the summary, print it,
     /// and panic if any check failed.
     pub fn finish(mut self) -> Summary {
+        let refused = self.take_refusals();
+        self.check(
+            "routes-confined",
+            "isolation",
+            "nothing was sent outside the routes file",
+            refused.is_empty(),
+            refused.join("\n"),
+        );
         let tripped: Vec<u16> = tripwires()
             .iter()
             .filter(|(_, l)| l.accept().is_ok())
@@ -451,6 +475,14 @@ impl Scenario {
     }
 }
 
+/// Keep the `lines` that report a routes-file refusal.
+fn note_refusals<'a>(refusals: &Mutex<Vec<String>>, lines: impl Iterator<Item = &'a str>) {
+    let hits = lines
+        .filter(|l| l.contains(ROUTES_REFUSAL))
+        .map(str::to_string);
+    refusals.lock().expect("refusals").extend(hits);
+}
+
 /// The `--routes` file for `sim`: SSDP to its unicast responder, and each
 /// player's advertised address to its loopback socket.
 fn routes_toml(sim: &SimHandle) -> String {
@@ -480,12 +512,13 @@ impl Scenario {
             .expect("spawn fsonos");
         let stderr = child.stderr.take().expect("daemon stderr");
         let (tx, lines) = mpsc::channel();
+        let refusals = Arc::clone(&self.refusals);
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines() {
                 let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
-                }
+                note_refusals(&refusals, std::iter::once(line.as_str()));
+                // The daemon may be dropped first; keep draining its stderr.
+                let _ = tx.send(line);
             }
         });
         let command = format!("fsonos {}", args.join(" "));
@@ -650,13 +683,20 @@ pub struct McpSession {
 }
 
 impl McpSession {
-    fn spawn(mut cmd: Command) -> Self {
+    fn spawn(mut cmd: Command, refusals: &Arc<Mutex<Vec<String>>>) -> Self {
         let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .expect("spawn fsonos mcp");
+        let stderr = child.stderr.take().expect("mcp stderr");
+        let refusals = Arc::clone(refusals);
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                note_refusals(&refusals, std::iter::once(line.as_str()));
+            }
+        });
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().expect("mcp stdout");
         let (tx, lines) = mpsc::channel();

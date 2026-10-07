@@ -21,6 +21,7 @@
 //!   sim        run a virtual Sonos house on loopback (feature `sim`)
 
 mod config;
+mod confine;
 mod daemon;
 mod direct;
 mod doctor;

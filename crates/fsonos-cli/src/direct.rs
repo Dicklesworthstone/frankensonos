@@ -60,7 +60,7 @@ impl Direct {
         let seeds = global.seed_addrs()?;
         let wait = global.wait();
         let lan = global.lan()?;
-        let survey = inventory::survey(&lan, &seeds, wait)?;
+        let survey = inventory::survey(&*lan, &seeds, wait)?;
         let policy = match global.data_dir() {
             Some(dir) => crate::daemon::policy(&dir)?,
             None => Policy::default(),
@@ -74,7 +74,7 @@ impl Direct {
             }
             Ok(inventory::survey(transport, &seeds, wait)?.households)
         });
-        let mut surface = Surface::new(Box::new(lan), again, policy, Box::new(SystemClock));
+        let mut surface = Surface::new(lan, again, policy, Box::new(SystemClock));
         if let Some(dir) = global.data_dir() {
             surface = crate::daemon::with_action_log(surface, &dir, "cli");
         }

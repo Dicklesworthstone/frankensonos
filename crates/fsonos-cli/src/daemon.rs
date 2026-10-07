@@ -53,7 +53,7 @@ pub fn surface(global: &GlobalArgs, policy: Policy) -> Result<Surface, Failure> 
         Ok(fsonos_core::inventory::survey(transport, &seeds, wait)?.households)
     });
     Ok(Surface::new(
-        Box::new(global.lan()?),
+        global.lan()?,
         survey,
         policy,
         Box::new(SystemClock),
