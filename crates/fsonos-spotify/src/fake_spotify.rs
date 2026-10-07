@@ -40,8 +40,8 @@ pub(crate) struct Fake {
     pub(crate) rate_limit_tracks_once: bool,
     /// Serve this liked-tracks page instead of the fixture.
     pub(crate) liked_tracks: Option<String>,
-    /// Answer the first album-tracks request with a 429.
-    pub(crate) rate_limit_albums_once: bool,
+    /// Answer this many album-tracks requests (any album) with a 429.
+    pub(crate) rate_limit_albums: u32,
     pub(crate) log: Vec<String>,
 }
 
@@ -133,11 +133,23 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
             200,
             rewrite(include_bytes!("../tests/fixtures/saved_tracks_page.json")),
         )
-    } else if uri.starts_with("/v1/albums/FakeAlbum0000000000009/tracks") {
-        if fake.rate_limit_albums_once {
-            fake.rate_limit_albums_once = false;
-            return json(429, "").with_header("Retry-After", "1");
-        }
+    } else if uri.starts_with("/v1/albums/") && fake.rate_limit_albums > 0 {
+        fake.rate_limit_albums -= 1;
+        json(429, "").with_header("Retry-After", "1")
+    } else if uri.starts_with("/v1/albums/") {
+        album_tracks(uri, rewrite)
+    } else {
+        not_found()
+    }
+}
+
+fn not_found() -> Response {
+    json(404, r#"{"error":{"status":404,"message":"Not found"}}"#)
+}
+
+/// `GET /v1/albums/{id}/tracks` for the fake's albums.
+fn album_tracks(uri: &str, rewrite: impl Fn(&[u8]) -> String) -> Response {
+    if uri.starts_with("/v1/albums/FakeAlbum0000000000009/tracks") {
         let page: &[u8] = if uri.contains("offset=3") {
             include_bytes!("../tests/fixtures/album_tracks_page2.json")
         } else {
@@ -153,8 +165,17 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
                 "uri":"spotify:track:FakeTrack0000000000008"}],
                 "next":null,"offset":50,"limit":50,"total":60}"#,
         )
+    } else if uri.starts_with("/v1/albums/FakeAlbumUnplayable001/tracks") {
+        json(
+            200,
+            r#"{"items":[{"artists":[{"name":"Gustav Mahler"}],"duration_ms":604000,
+                "id":"FakeUnplayable00000002","is_playable":false,
+                "name":"Symphony No. 5 in C-Sharp Minor: V. Rondo-Finale",
+                "uri":"spotify:track:FakeUnplayable00000002"}],
+                "next":null,"offset":0,"limit":50,"total":1}"#,
+        )
     } else {
-        json(404, r#"{"error":{"status":404,"message":"Not found"}}"#)
+        not_found()
     }
 }
 

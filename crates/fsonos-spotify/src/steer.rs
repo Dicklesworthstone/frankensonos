@@ -304,6 +304,10 @@ const CHORAL: &[&str] = &[
     "antiphon",
     "kyrie",
     "gloria",
+    "passion",
+    "te deum",
+    "psalm",
+    "psalms",
 ];
 const OPERA: &[&str] = &[
     "opera",
@@ -319,7 +323,18 @@ const SONG: &[&str] = &[
     "songs",
     "lied",
     "lieder",
+    "liederkreis",
+    "song cycle",
+    "winterreise",
+    "mullerin",
+    "schwanengesang",
+    "dichterliebe",
+    "frauenliebe",
+    "kindertotenlieder",
+    "chanson",
+    "chansons",
     "melodie",
+    "melodies",
     "soprano",
     "mezzo",
     "alto",
@@ -442,13 +457,23 @@ const WEEKDAYS: [bool; 7] = [true, true, true, true, true, false, false];
 const WEEKENDS: [bool; 7] = [false, false, false, false, false, true, true];
 
 /// `moods.toml`: `[moods.<name>]` tables of [`DjConstraints`] fields and
-/// `[[programs]]` entries.
+/// `[[programs]]` entries; anything else is a mistake worth reporting.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MoodsFile {
     #[serde(default)]
-    moods: BTreeMap<String, DjConstraints>,
+    moods: BTreeMap<String, toml::Spanned<DjConstraints>>,
     #[serde(default)]
-    programs: Option<Vec<ProgramDef>>,
+    programs: Option<Vec<toml::Spanned<ProgramDef>>>,
+}
+
+/// The 1-based line of byte `offset` in `text`.
+fn line_of(text: &str, offset: usize) -> usize {
+    text.char_indices()
+        .take_while(|&(i, _)| i < offset)
+        .filter(|&(_, c)| c == '\n')
+        .count()
+        + 1
 }
 
 /// A `[[programs]]` entry: `days` ("daily", "weekdays", "weekends", or a
@@ -526,11 +551,13 @@ impl Moods {
                     ..DjConstraints::default()
                 },
             ),
-            // Chamber music and piano, calm, nothing longer than half an hour.
+            // Chamber music and solo piano (no concertos or symphonies), calm,
+            // nothing longer than half an hour.
             (
                 "dinner",
                 DjConstraints {
                     include_keywords: words(&["chamber", "piano"]),
+                    exclude_keywords: words(&["orchestral"]),
                     max_work_minutes: Some(30),
                     energy_bias: -1,
                     ..DjConstraints::default()
@@ -578,9 +605,7 @@ impl Moods {
     /// text. `source` names the file in errors, which give its line.
     pub fn parse(text: &str, source: &str) -> Result<Self, SpotifyError> {
         let file: MoodsFile = toml::from_str(text).map_err(|e| {
-            let line = e
-                .span()
-                .map(|span| text[..span.start.min(text.len())].matches('\n').count() + 1);
+            let line = e.span().map(|span| line_of(text, span.start));
             SpotifyError::Config(match line {
                 Some(line) => format!("{source} line {line}: {}", e.message().trim()),
                 None => format!("{source}: {}", e.message().trim()),
@@ -589,18 +614,20 @@ impl Moods {
         let mut moods = Self::builtin();
         for (name, constraints) in file.moods {
             let name = name.to_lowercase();
+            let at = constraints.span().start;
+            let constraints = constraints.into_inner();
             constraints.validate().map_err(|why| {
                 let header = |l: &str| {
                     let l = l.trim().to_lowercase();
                     l == format!("[moods.{name}]") || l == format!("[moods.\"{name}\"]")
                 };
-                match text.lines().position(header) {
-                    Some(i) => SpotifyError::Config(format!(
-                        "{source} line {}: [moods.{name}] {why}",
-                        i + 1
-                    )),
-                    None => SpotifyError::Config(format!("{source}: mood {name}: {why}")),
-                }
+                // The table's header, else where its value starts (a dotted
+                // key or an inline table).
+                let line = text
+                    .lines()
+                    .position(header)
+                    .map_or_else(|| line_of(text, at), |i| i + 1);
+                SpotifyError::Config(format!("{source} line {line}: [moods.{name}] {why}"))
             })?;
             moods.moods.insert(name, constraints);
         }
@@ -613,6 +640,8 @@ impl Moods {
                 .collect();
             let mut programs = Vec::with_capacity(defs.len());
             for (k, def) in defs.into_iter().enumerate() {
+                let at = def.span().start;
+                let def = def.into_inner();
                 let program = (|| -> Result<Program, String> {
                     let mood = def.mood.to_lowercase();
                     if moods.get(&mood).is_none() {
@@ -626,10 +655,8 @@ impl Moods {
                     ))
                 })()
                 .map_err(|why| {
-                    SpotifyError::Config(match headers.get(k) {
-                        Some(line) => format!("{source} line {line}: [[programs]] {why}"),
-                        None => format!("{source}: program {}: {why}", k + 1),
-                    })
+                    let line = headers.get(k).copied().unwrap_or_else(|| line_of(text, at));
+                    SpotifyError::Config(format!("{source} line {line}: [[programs]] {why}"))
                 })?;
                 programs.push(program);
             }
@@ -742,9 +769,10 @@ mod tests {
     use super::*;
     use crate::classical::composer_matches;
     use crate::dj::{DjConfig, Factor, PickContext, PlannedWork, Rng, WorkPool, pick_next};
-    use crate::library::LibraryItem;
+    use crate::library::{LibraryItem, Origin};
     use crate::test_shelf::{
-        MIDNIGHT, mean_energy, opera, shelf_items, simulate_steered, transcript, works, works_of,
+        MIDNIGHT, item, mean_energy, opera, shelf_items, simulate_steered, transcript, works,
+        works_of,
     };
 
     /// What a pick must satisfy under one constraint.
@@ -876,6 +904,22 @@ mod tests {
         assert!(keyword_matches(&hay("Symphony No. 1"), "orchestral"));
         assert!(!keyword_matches(&hay("Symphony No. 1"), "vocal"));
         assert!(!keyword_matches(&hay("Nocturne No. 1"), "harpsichord"));
+        // Passions and song cycles are sung, whatever their titles say.
+        for sung in [
+            "Matthäus-Passion, BWV 244: Kommt, ihr Töchter",
+            "Winterreise, D. 911: Gute Nacht",
+            "Die schöne Müllerin, D. 795: Das Wandern",
+            "Dichterliebe, Op. 48: Im wunderschönen Monat Mai",
+            "Liederkreis, Op. 39: In der Fremde",
+        ] {
+            assert!(keyword_matches(&normalize(sung), "vocal"), "{sung}");
+        }
+        // Dinner's piano is solo piano: concertos are out.
+        let moods = Moods::builtin();
+        let dinner = moods.get("dinner").unwrap();
+        let fits = |title: &str| admits(find(title), &hay(title), dinner, &[]);
+        assert!(fits("Nocturne No. 1") && fits("String Quartet No. 1"));
+        assert!(!fits("Piano Concerto No. 1"));
 
         assert!(composer_matches("Bach", "Johann Sebastian Bach"));
         assert!(composer_matches("J.S. Bach", "Johann Sebastian Bach"));
@@ -898,6 +942,52 @@ mod tests {
         let picks = honored(&pool, &verdi, 3, 3, |w| w.title == "La traviata");
         assert!(picks.iter().all(|p| p.reason.has(Factor::LongWork)));
         assert!(picks[1].reason.has(Factor::Rotation), "one work rotates");
+
+        // With a short Verdi work too, the limit decides: without the
+        // request the opera never plays; with it, it does.
+        let mut items = library();
+        let album = || {
+            (
+                "Verdi: String Quartet".to_owned(),
+                "spotify:album:verdi-quartet".to_owned(),
+            )
+        };
+        for (m, movement) in [
+            "I. Allegro",
+            "II. Andantino",
+            "III. Prestissimo",
+            "IV. Scherzo Fuga",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let uri = format!("spotify:track:verdi-quartet-{m}");
+            let title = format!("String Quartet in E Minor: {movement}");
+            items.push(item(
+                uri,
+                title,
+                "Giuseppe Verdi",
+                album(),
+                420,
+                Origin::SavedAlbum,
+            ));
+        }
+        let pool = works_of(&items);
+        let just_verdi = steer(DjConstraints {
+            include_composers: words(&["Verdi"]),
+            ..DjConstraints::default()
+        });
+        for seed in 0..4 {
+            let short = honored(&pool, &just_verdi, seed, 4, |w| w.title != "La traviata");
+            assert!(short.iter().all(|p| !p.reason.has(Factor::LongWork)));
+            let both = honored(&pool, &verdi, seed, 2, |w| w.composer == "Giuseppe Verdi");
+            let opera = both.iter().find(|p| p.work.title == "La traviata");
+            assert!(
+                opera.is_some_and(|p| p.reason.has(Factor::LongWork)),
+                "{}",
+                transcript(seed, &pool, &both)
+            );
+        }
     }
 
     #[test]
@@ -1112,6 +1202,23 @@ periods = ["baroque", "late_romantic"]
             bounds.contains("min_work_minutes 30 exceeds max_work_minutes 10"),
             "{bounds}"
         );
+        // Without a [moods.x] header the line comes from the value itself.
+        let inline = err("\n[moods]\nloud = { energy_bias = 5 }\n");
+        assert!(
+            inline.contains("moods.toml line 3: [moods.loud] energy_bias 5"),
+            "{inline}"
+        );
+        let dotted = err("[moods]\nquiet.energy_bias = -1\nloud.energy_bias = 5\n");
+        assert!(
+            dotted.contains("moods.toml line 3: [moods.loud] energy_bias 5"),
+            "{dotted}"
+        );
+        // A misspelled table is an error, not silently ignored.
+        let table = err("[mood.focus]\nenergy_bias = 1\n");
+        assert!(
+            table.contains("moods.toml line 1") && table.contains("mood"),
+            "{table}"
+        );
     }
 
     #[test]
@@ -1245,6 +1352,13 @@ mood = "focus"
         }
         let typo = err("[[programs]]\nfrom = \"06:00\"\nto = \"09:00\"\nmod = \"calm\"\n");
         assert!(typo.contains("moods.toml line"), "{typo}");
+        let inline = err(
+            "programs = [\n  { from = \"06:00\", to = \"09:00\", mood = \"calm\" },\n  { from = \"6\", to = \"09:00\", mood = \"calm\" },\n]\n",
+        );
+        assert!(
+            inline.contains("moods.toml line 3: [[programs]] time \"6\""),
+            "{inline}"
+        );
     }
 
     #[test]
