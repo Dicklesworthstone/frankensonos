@@ -5,18 +5,37 @@
 //! cargo test -p fsonos-proto --test live_lan -- --ignored --nocapture
 //! ```
 //!
-//! Read-only by default: discovery, descriptions, topology, volume/mute, and
-//! transport state. `FSONOS_LIVE_WRITE=1` adds one write that is inaudible by
-//! construction (SetVolume to the volume the player already has). Output
-//! names real rooms and addresses: it stays on the terminal, never in git.
+//! `FSONOS_SEEDS` (player addresses separated by commas or spaces) adds direct
+//! seeds to SSDP. Use it on networks where multicast does not reach every
+//! player, e.g. speakers on several routed subnets.
+//!
+//! Read-only by default: discovery, descriptions, topology, volume/mute,
+//! transport state, and a GENA round-trip (subscribe to one player's
+//! RenderingControl, receive its initial NOTIFY, unsubscribe).
+//! `FSONOS_LIVE_WRITE=1` adds one write that is inaudible by construction
+//! (SetVolume to the volume the player already has). Output names real rooms
+//! and addresses: it stays on the terminal, never in git.
 
 use fsonos_proto::control;
 use fsonos_proto::description::parse_device_description;
-use fsonos_proto::net::Lan;
+use fsonos_proto::net::{EventSink, Lan};
+use fsonos_proto::soap::RENDERING_CONTROL;
 use fsonos_proto::topology::{get_zone_group_state, host_of_location};
 use fsonos_proto::{Transport, ssdp};
-use std::net::IpAddr;
-use std::time::Duration;
+use std::net::{IpAddr, SocketAddr};
+use std::time::{Duration, Instant};
+
+fn seeds() -> Vec<IpAddr> {
+    std::env::var("FSONOS_SEEDS")
+        .unwrap_or_default()
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            s.parse()
+                .unwrap_or_else(|e| panic!("FSONOS_SEEDS entry {s:?}: {e}"))
+        })
+        .collect()
+}
 
 #[test]
 #[ignore = "live LAN: needs the owner's speakers; run with -- --ignored"]
@@ -29,12 +48,16 @@ fn live_lan_read_path() {
         .iter()
         .filter_map(|a| host_of_location(&a.location))
         .collect();
+    println!("SSDP: {} ZonePlayer replies", hosts.len());
+    let seeds = seeds();
+    println!("seeds: {}", seeds.len());
+    hosts.extend(seeds);
     hosts.sort();
     hosts.dedup();
-    println!("SSDP: {} ZonePlayer replies", hosts.len());
     assert!(
         !hosts.is_empty(),
-        "no SSDP replies: check the Local Network permission and multicast on this host"
+        "no players: SSDP got no replies and FSONOS_SEEDS is empty \
+         (check Local Network permission, multicast, and whether the speakers share this host's subnet)"
     );
 
     let mut renderers = Vec::new();
@@ -93,12 +116,99 @@ fn live_lan_read_path() {
         );
     }
 
+    gena_round_trip(&lan, renderers[0]);
+
     if std::env::var("FSONOS_LIVE_WRITE").as_deref() == Ok("1") {
-        let host = renderers[0];
-        let before = control::get_volume(&lan, host).expect("GetVolume");
-        control::set_volume(&lan, host, before).expect("SetVolume to the same level");
-        let after = control::get_volume(&lan, host).expect("GetVolume");
-        println!("write check on {host}: SetVolume({before}) -> {after}");
-        assert_eq!(before, after);
+        write_checks(&lan, &renderers, &coordinators);
     }
+}
+
+/// The opt-in writes, both inaudible by construction: SetVolume to the
+/// current level, and Pause on a group that is already paused or stopped.
+fn write_checks(lan: &Lan, renderers: &[IpAddr], coordinators: &[IpAddr]) {
+    let host = renderers[0];
+    let before = control::get_volume(lan, host).expect("GetVolume");
+    control::set_volume(lan, host, before).expect("SetVolume to the same level");
+    let after = control::get_volume(lan, host).expect("GetVolume");
+    println!("write check on {host}: SetVolume({before}) -> {after}");
+    assert_eq!(before, after);
+
+    // Pause on a coordinator that is already paused or stopped changes
+    // nothing audible; the player either accepts it or refuses the
+    // transition (UPnP 701). Either way the control path is exercised.
+    let idle = coordinators.iter().copied().find(|&c| {
+        matches!(
+            control::get_transport_info(lan, c).map(|i| i.state),
+            Ok(fsonos_types::TransportState::Paused | fsonos_types::TransportState::Stopped)
+        )
+    });
+    if let Some(c) = idle {
+        let before = control::get_transport_info(lan, c)
+            .expect("GetTransportInfo")
+            .state;
+        let outcome = control::pause(lan, c);
+        println!("pause check on idle coordinator {c} ({before:?}): {outcome:?}");
+        assert!(
+            matches!(
+                outcome,
+                Ok(()) | Err(fsonos_proto::ProtoError::SoapFault { code: 701, .. })
+            ),
+            "{outcome:?}"
+        );
+        let after = control::get_transport_info(lan, c)
+            .expect("GetTransportInfo")
+            .state;
+        assert_eq!(before, after, "an idle group stays idle");
+    }
+}
+
+/// Subscribe to `host`'s RenderingControl with a sink on the address this
+/// host uses to reach it, expect the initial full-state NOTIFY, unsubscribe.
+fn gena_round_trip(lan: &Lan, host: IpAddr) {
+    let local = lan.local_address_toward(host).expect("route to the player");
+    let sink = EventSink::start(SocketAddr::new(local, 0)).expect("GENA sink");
+    let sub = lan
+        .subscribe(
+            host,
+            RENDERING_CONTROL.event_path,
+            &sink.callback_url("RenderingControl"),
+            60,
+        )
+        .expect("SUBSCRIBE");
+    println!(
+        "GENA: subscribed to {host} RenderingControl for {}s",
+        sub.timeout_secs
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let initial = loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !left.is_zero(),
+            "no initial NOTIFY from {host} within 10 s: the player could not reach \
+             {} (firewall, or the wrong interface)",
+            sink.local_addr()
+        );
+        if let Some(n) = sink.recv_timeout(left)
+            && n.sid == sub.sid
+        {
+            break n;
+        }
+    };
+    let volume = initial
+        .last_change()
+        .expect("LastChange parses")
+        .and_then(|lc| lc.volume());
+    println!(
+        "GENA: initial NOTIFY seq {} on {}, Master volume {volume:?}",
+        initial.seq, initial.path
+    );
+    assert_eq!(initial.seq, 0, "the first event is the full state");
+    assert_eq!(
+        volume,
+        Some(control::get_volume(lan, host).expect("GetVolume")),
+        "the event agrees with GetVolume"
+    );
+    lan.unsubscribe(host, RENDERING_CONTROL.event_path, &sub.sid)
+        .expect("UNSUBSCRIBE");
+    println!("GENA: unsubscribed");
 }
