@@ -75,8 +75,10 @@ prohibitions above **only as enumerated here**:
 - **Passive observation of the owner's own LAN**: capturing and analyzing
   traffic between the owner's own Sonos devices, apps, and controllers
   (SSDP, SOAP, GENA, SMAPI) with ordinary tools (`tcpdump`, `tshark`) to
-  document the wire protocols. All captures are stored locally in a
-  git-ignored directory and are never committed.
+  document the wire protocols — including read-only/anonymous calls to the
+  same public endpoints the devices themselves use (e.g. the SMAPI service
+  descriptor URLs). All captures are stored locally in a git-ignored
+  directory and are never committed.
 - **Static analysis of Sonos firmware and software binaries** for
   interoperability understanding (update mechanism, service architecture,
   protocol handlers), using disassemblers and debuggers. Findings are
@@ -96,6 +98,7 @@ These remain prohibited even under this exception:
   any account or device the owner does not control.
 - **Committing** captures, secrets, serials, IPs, MACs, household IDs, or
   firmware images to git. The privacy rule below binds this lane unchanged.
+
 ## Privacy / publishability rule
 
 This repository is **public**. No details of any one person's home network,
