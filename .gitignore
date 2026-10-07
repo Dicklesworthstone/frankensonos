@@ -38,6 +38,10 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Agent / session-local Claude Code state (scheduling locks, local settings).
+# Never commit: it is per-machine session state, not project source.
+.claude/
 *~
 
 # Logs / profiling
