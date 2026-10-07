@@ -8,14 +8,14 @@
 //! work within 180 days of each other keep it out for 180 days after the
 //! second — nothing is banned for good.
 //!
-//! Persistence goes through [`FeedbackSource`]; the daemon implements it over
-//! the store's `feedback` table (see [`FeedbackSignal::to_store`]). Pure: the
-//! caller supplies the clock.
+//! Persistence goes through [`FeedbackSource`]; [`StoreFeedback`] reads the
+//! store's `feedback` table (rows written with [`FeedbackSignal::to_store`]).
+//! Pure: the caller supplies the clock.
 
 use std::collections::HashMap;
 use std::ops::Range;
 
-use fsonos_core::store::Feedback;
+use fsonos_core::store::{Feedback, Store};
 use serde::{Deserialize, Serialize};
 
 use crate::SpotifyError;
@@ -140,6 +140,22 @@ impl FeedbackSource for [FeedbackSignal] {
             .iter()
             .filter(|s| window.contains(&s.at))
             .cloned()
+            .collect())
+    }
+}
+
+/// A [`Store`]'s feedback table as a [`FeedbackSource`]. Rows with a signal
+/// value this crate doesn't know are skipped.
+#[derive(Debug, Clone, Copy)]
+pub struct StoreFeedback<'s, S: ?Sized>(pub &'s S);
+
+impl<S: Store + ?Sized> FeedbackSource for StoreFeedback<'_, S> {
+    fn signals(&self, window: Range<i64>) -> Result<Vec<FeedbackSignal>, SpotifyError> {
+        Ok(self
+            .0
+            .feedback_between(window)?
+            .iter()
+            .filter_map(FeedbackSignal::from_store)
             .collect())
     }
 }
@@ -498,6 +514,38 @@ mod tests {
             let back: Vec<FeedbackSignal> =
                 rows.iter().filter_map(FeedbackSignal::from_store).collect();
             assert_eq!(back, given);
+
+            // The model loads straight from the store. Rows with a signal
+            // this crate doesn't know are skipped, and so are rows older
+            // than the model reads.
+            for at in [MIDNIGHT + 120, MIDNIGHT + 180] {
+                let dislike = FeedbackSignal::about(work, Signal::Dislike, at);
+                store.record_feedback(&dislike.to_store()).unwrap();
+            }
+            let unknown = Feedback {
+                signal: 7,
+                ..given[0].to_store()
+            };
+            store.record_feedback(&unknown).unwrap();
+            let key = Some(work.work_key.as_str());
+            let ancient = signal(key, None, Signal::Like, MIDNIGHT - 400 * DAY);
+            store.record_feedback(&ancient.to_store()).unwrap();
+            let source = StoreFeedback(&*store);
+            let all = source
+                .signals(MIDNIGHT - 400 * DAY..MIDNIGHT + DAY)
+                .unwrap();
+            assert_eq!(all.len(), 5, "{all:?}");
+            assert_eq!(all[0], ancient, "oldest first");
+            let model = FeedbackModel::load(&source, MIDNIGHT + DAY).unwrap();
+            assert!(model.excludes(work), "disliked twice");
+            // −1 +3 −3 −3 on the work, its composer and its performer, a day
+            // old: ×0.637 three times.
+            assert_eq!(model.multiplier_pm(work), 257);
+            assert_eq!(
+                model,
+                FeedbackModel::from_signals(&all[1..], MIDNIGHT + DAY),
+                "a 400-day-old like is out of reach"
+            );
         }
         for s in [
             Signal::Like,
