@@ -212,11 +212,11 @@ fn a_rising_boot_seq_marks_a_reboot_and_its_subscriptions_are_replaced() {
     subs.sync(&fake, &w, url, now);
 
     assert!(
-        subs.reboots(&zgs(5, 9)).is_empty(),
+        subs.reboots(zgs(5, 9).boot_seqs()).is_empty(),
         "first sighting only records"
     );
-    assert!(subs.reboots(&zgs(5, 9)).is_empty(), "unchanged");
-    let rebooted = subs.reboots(&zgs(5, 10));
+    assert!(subs.reboots(zgs(5, 9).boot_seqs()).is_empty(), "unchanged");
+    let rebooted = subs.reboots(zgs(5, 10).boot_seqs());
     let study = fsonos_types::PlayerId("RINCON_000E58A0000201400".into());
     assert_eq!(rebooted, std::slice::from_ref(&study));
 
@@ -238,4 +238,8 @@ fn a_rising_boot_seq_marks_a_reboot_and_its_subscriptions_are_replaced() {
         "the rebooted player already forgot its SIDs"
     );
     assert_eq!(subs.len(), w.len());
+
+    // A survey that sees the reboot drops the stale ones for sync to replace.
+    assert_eq!(subs.forget(&study), mine);
+    assert_eq!(subs.len(), w.len() - mine);
 }

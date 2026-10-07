@@ -72,6 +72,11 @@ fn refresh_follows_players_going_offline_and_coming_back() {
     let third = r.refresh(&lan, &[], callback, t2).unwrap();
     assert_eq!(third.players, 3);
     assert!(third.missing.is_empty());
+    assert_eq!(
+        third.rebooted,
+        std::slice::from_ref(&office),
+        "it booted on its way back"
+    );
     assert_eq!(r.subscriptions.len(), all, "back to the full set");
     assert_eq!(r.health.of(&office).unwrap().health, Health::Healthy);
 
@@ -170,6 +175,63 @@ fn a_reboot_in_a_topology_event_resubscribes_and_refreshes_within_5_s() {
 
     // The replacements are live: renewing everything (all are due by a full
     // timeout from now) succeeds without the 412 fallback.
+    let later = Instant::now() + Duration::from_secs(u64::from(events::TIMEOUT_SECS));
+    let renewed = r.subscriptions.renew_due(&lan, callback, later);
+    assert_eq!((renewed.renewed, renewed.resubscribed), (all, 0));
+    r.subscriptions.unsubscribe_all(&lan);
+}
+
+#[test]
+fn a_survey_catches_a_reboot_the_events_missed() {
+    let sim = SimHousehold::builder()
+        .s1([
+            SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
+            SimPlayerSpec::new("Office", SimModel::Play5Gen1),
+        ])
+        .spawn()
+        .unwrap();
+    let lan = Lan::start()
+        .unwrap()
+        .with_routes(sim.players().iter().map(|p| (p.ip, p.addr)).collect())
+        .with_ssdp_target(sim.ssdp_addr());
+    let local = lan
+        .local_address_toward(sim.player("Kitchen").unwrap().ip)
+        .unwrap();
+    let sink = EventSink::start(SocketAddr::new(local, 0)).unwrap();
+    let callback = |s: Service| sink.callback_url(s.tag());
+
+    let t0 = Instant::now();
+    let interval = Duration::from_mins(5);
+    let mut r = Reconciler::new(interval, Duration::from_mins(30), t0);
+    let first = r.refresh(&lan, &[], callback, t0).unwrap();
+    assert!(first.rebooted.is_empty(), "first sighting only records");
+    let all = r.subscriptions.len();
+    let office = r.households[0]
+        .players
+        .iter()
+        .find(|p| p.room_name == "Office")
+        .unwrap()
+        .id
+        .clone();
+    let office_wants = events::wanted(&r.households)
+        .iter()
+        .filter(|w| w.player == office)
+        .count();
+
+    // No NOTIFY is processed here, so only the next survey can see the reboot.
+    sim.reboot("Office", Duration::ZERO).unwrap();
+    let second = r.refresh(&lan, &[], callback, t0 + interval).unwrap();
+    assert_eq!(second.rebooted, std::slice::from_ref(&office));
+    assert!(
+        second.events.failed.is_empty(),
+        "{:?}",
+        second.events.failed
+    );
+    assert_eq!(second.events.subscribed, office_wants, "subscribed afresh");
+    assert_eq!(r.subscriptions.len(), all);
+
+    // No stale SID is left: renewing everything succeeds without the 412
+    // fallback.
     let later = Instant::now() + Duration::from_secs(u64::from(events::TIMEOUT_SECS));
     let renewed = r.subscriptions.renew_due(&lan, callback, later);
     assert_eq!((renewed.renewed, renewed.resubscribed), (all, 0));

@@ -19,7 +19,7 @@ use fsonos_proto::net::Lan;
 use fsonos_proto::soap::{
     AV_TRANSPORT, GROUP_RENDERING_CONTROL, RENDERING_CONTROL, ZONE_GROUP_TOPOLOGY,
 };
-use fsonos_proto::topology::{ZoneGroupState, parse_zone_group_state};
+use fsonos_proto::topology::parse_zone_group_state;
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -225,12 +225,28 @@ impl Subscriptions {
                     *a = active(a.want.clone(), sub, now);
                     report.renewed += 1;
                 }
-                Err(_) => match s.subscribe(&a.want, &callback_url(a.want.service)) {
+                Err(renewal) => match s.subscribe(&a.want, &callback_url(a.want.service)) {
                     Ok(sub) => {
+                        tracing::info!(
+                            player = a.want.player.0.as_str(),
+                            service = ?a.want.service,
+                            cause = %renewal,
+                            action = "resubscribe",
+                            outcome = "ok",
+                            "renewal failed; subscribed afresh"
+                        );
                         *a = active(a.want.clone(), sub, now);
                         report.resubscribed += 1;
                     }
                     Err(e) => {
+                        tracing::warn!(
+                            player = a.want.player.0.as_str(),
+                            service = ?a.want.service,
+                            cause = %renewal,
+                            action = "resubscribe",
+                            outcome = %e,
+                            "renewal failed and so did a fresh subscription; retrying in 30 s"
+                        );
                         // Try again on the next pass.
                         a.renew_at = now + Duration::from_secs(30);
                         report
@@ -259,25 +275,32 @@ impl Subscriptions {
             .map(|a| (&a.want.player, a.want.service))
     }
 
-    /// Players whose `BootSeq` rose since the last topology seen: they
-    /// rebooted, so their subscriptions are gone even if no renewal has
-    /// failed yet. The first sighting of a player only records it.
-    pub fn reboots(&mut self, zgs: &ZoneGroupState) -> Vec<PlayerId> {
+    /// Players whose `BootSeq` rose since last seen, from `(player,
+    /// BootSeq)` pairs (a topology event's or a survey's): they rebooted, so
+    /// their subscriptions are gone even if no renewal has failed yet. The
+    /// first sighting of a player only records it.
+    pub fn reboots<'a>(
+        &mut self,
+        seen: impl IntoIterator<Item = (&'a PlayerId, u32)>,
+    ) -> Vec<PlayerId> {
         let mut rebooted = Vec::new();
-        let members = zgs
-            .groups
-            .iter()
-            .flat_map(|g| &g.members)
-            .flat_map(|m| std::iter::once(m).chain(&m.satellites));
-        for m in members {
-            let Some(seq) = m.boot_seq else { continue };
-            if let Some(prev) = self.boot_seqs.insert(m.uuid.clone(), seq)
+        for (player, seq) in seen {
+            if let Some(prev) = self.boot_seqs.insert(player.clone(), seq)
                 && seq > prev
             {
-                rebooted.push(m.uuid.clone());
+                rebooted.push(player.clone());
             }
         }
         rebooted
+    }
+
+    /// Drop every subscription to `player` without UNSUBSCRIBE (it rebooted
+    /// and has already forgotten them); the next [`Subscriptions::sync`]
+    /// subscribes afresh. Returns how many were dropped.
+    pub fn forget(&mut self, player: &PlayerId) -> usize {
+        let before = self.active.len();
+        self.active.retain(|a| a.want.player != *player);
+        before - self.active.len()
     }
 
     /// Replace every subscription to `player` with a fresh one (after a

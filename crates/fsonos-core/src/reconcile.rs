@@ -177,6 +177,9 @@ pub struct RefreshReport {
     pub households: usize,
     /// Players the previous model had that this survey did not find.
     pub missing: Vec<PlayerId>,
+    /// Players whose `BootSeq` rose since last seen; their subscriptions
+    /// were replaced.
+    pub rebooted: Vec<PlayerId>,
     pub events: events::Report,
 }
 
@@ -228,17 +231,34 @@ impl Reconciler {
         let survey = match inventory::survey(lan, seeds, DISCOVERY_WAIT) {
             Ok(s) if !s.households.is_empty() => s,
             Ok(_) => {
-                self.schedule.failed(now);
+                let retry = self.schedule.failed(now);
+                tracing::warn!(retry_in_s = retry.as_secs(), "survey found no players");
                 return Err(CoreError::Proto(ProtoError::Network {
                     target: "survey".into(),
                     detail: "no players answered".into(),
                 }));
             }
             Err(e) => {
-                self.schedule.failed(now);
+                let retry = self.schedule.failed(now);
+                tracing::warn!(retry_in_s = retry.as_secs(), error = %e, "survey failed");
                 return Err(e);
             }
         };
+        // A player that rebooted since last seen has forgotten its
+        // subscriptions; drop them so the sync below subscribes afresh.
+        let rebooted = self
+            .subscriptions
+            .reboots(survey.boot_seqs.iter().map(|(p, seq)| (p, *seq)));
+        for p in &rebooted {
+            let dropped = self.subscriptions.forget(p);
+            tracing::info!(
+                player = p.0.as_str(),
+                cause = "BootSeq rose",
+                action = "resubscribe",
+                dropped,
+                "player rebooted"
+            );
+        }
         let before: Vec<(PlayerId, IpAddr)> = self
             .households
             .iter()
@@ -247,6 +267,7 @@ impl Reconciler {
         self.households = survey.households;
         let mut report = RefreshReport {
             households: self.households.len(),
+            rebooted,
             ..RefreshReport::default()
         };
         for p in self.households.iter().flat_map(|h| &h.players) {
@@ -265,6 +286,11 @@ impl Reconciler {
                         || "not found by the last survey".to_string(),
                         |(_, error)| error.clone(),
                     );
+                tracing::warn!(
+                    player = id.0.as_str(),
+                    reason = reason.as_str(),
+                    "player missing"
+                );
                 self.health.missing(&id, reason);
                 report.missing.push(id);
             }
@@ -303,8 +329,16 @@ impl Reconciler {
             && let Some(doc) = n.property("ZoneGroupState")
         {
             let zgs = parse_zone_group_state(doc)?;
-            for p in self.subscriptions.reboots(&zgs) {
+            for p in self.subscriptions.reboots(zgs.boot_seqs()) {
                 let r = self.subscriptions.resubscribe(lan, &p, &callback_url, now);
+                tracing::info!(
+                    player = p.0.as_str(),
+                    cause = "BootSeq rose",
+                    action = "resubscribe",
+                    resubscribed = r.resubscribed,
+                    failed = r.failed.len(),
+                    "player rebooted"
+                );
                 self.health.record(&r);
                 report.events.resubscribed += r.resubscribed;
                 report.events.failed.extend(r.failed);

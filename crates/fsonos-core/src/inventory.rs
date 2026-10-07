@@ -26,6 +26,9 @@ pub struct Survey {
     pub unreachable: Vec<(String, String)>,
     /// Set when SSDP itself failed and only the seeds were tried.
     pub ssdp_error: Option<String>,
+    /// Each player's `BootSeq` from the topology reads (it rises on every
+    /// boot, so a reboot between surveys shows here).
+    pub boot_seqs: Vec<(PlayerId, u32)>,
 }
 
 /// Find every household on the LAN. SSDP (plus any direct `seeds`, for
@@ -92,6 +95,8 @@ pub fn survey<T: Transport + ?Sized>(
             .flat_map(|m| std::iter::once(&m.uuid).chain(m.satellites.iter().map(|s| &s.uuid)))
             .cloned()
             .collect();
+        out.boot_seqs
+            .extend(zgs.boot_seqs().map(|(p, seq)| (p.clone(), seq)));
         let mut state = HouseholdState::default();
         state.apply_topology(&zgs);
         for (member_ip, member, household) in &described {

@@ -75,7 +75,17 @@ where
     match to {
         Some(to) if to != from => {
             *households = fresh.households;
-            let r = op(households)?;
+            let retried = op(households);
+            tracing::info!(
+                player = player.0.as_str(),
+                cause = %err,
+                action = "readdress",
+                %from,
+                %to,
+                outcome = %retried.as_ref().map_or_else(ToString::to_string, |_| "ok".into()),
+                "player moved; retried at its new address"
+            );
+            let r = retried?;
             Ok((
                 r,
                 Recovery::Readdressed {
@@ -85,7 +95,16 @@ where
                 },
             ))
         }
-        _ => Err(err),
+        _ => {
+            tracing::warn!(
+                player = player.0.as_str(),
+                cause = %err,
+                action = "resurvey",
+                outcome = "not found at a new address",
+                "player unreachable"
+            );
+            Err(err)
+        }
     }
 }
 
@@ -126,8 +145,25 @@ where
     h.apply_topology(&zgs);
     let to = coordinator(households)?;
     if to == from {
+        tracing::debug!(
+            member = member.0.as_str(),
+            cause = %err,
+            action = "refresh topology",
+            outcome = "coordinator unchanged; the fault stands",
+            "UPnP 800"
+        );
         return Err(err);
     }
-    let r = op(households, &to)?;
+    let retried = op(households, &to);
+    tracing::info!(
+        member = member.0.as_str(),
+        cause = %err,
+        action = "retry on the new coordinator",
+        from = from.0.as_str(),
+        to = to.0.as_str(),
+        outcome = %retried.as_ref().map_or_else(ToString::to_string, |_| "ok".into()),
+        "coordinator moved"
+    );
+    let r = retried?;
     Ok((r, Recovery::CoordinatorMoved { from, to }))
 }

@@ -15,6 +15,7 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 toml = { workspace = true }
+tracing = { workspace = true }
 
 # FRANKEN (FND-DEPS): fsqlite for the durable local store (device
 # cache, music-library cache, play history, DJ state), asupersync for the

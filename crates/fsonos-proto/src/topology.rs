@@ -27,6 +27,17 @@ pub struct ZoneGroupState {
     pub vanished: Vec<VanishedDevice>,
 }
 
+impl ZoneGroupState {
+    /// Each visible member's and satellite's `BootSeq`, where reported.
+    pub fn boot_seqs(&self) -> impl Iterator<Item = (&PlayerId, u32)> {
+        self.groups
+            .iter()
+            .flat_map(|g| &g.members)
+            .flat_map(|m| std::iter::once(m).chain(&m.satellites))
+            .filter_map(|m| Some((&m.uuid, m.boot_seq?)))
+    }
+}
+
 /// One `<ZoneGroup>`: a coordinator plus the players rendering with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ZoneGroupInfo {
@@ -250,6 +261,8 @@ mod tests {
               ZoneName="Den" BootSeq="17"/></ZoneGroup></ZoneGroups></ZoneGroupState>"#;
         let zgs = parse_zone_group_state(doc).unwrap();
         assert_eq!(zgs.groups[0].members[0].boot_seq, Some(17));
+        let seqs: Vec<_> = zgs.boot_seqs().map(|(p, s)| (p.0.as_str(), s)).collect();
+        assert_eq!(seqs, [("RINCON_A01400", 17)]);
     }
 
     #[test]
