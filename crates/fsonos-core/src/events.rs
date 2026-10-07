@@ -148,12 +148,19 @@ pub struct Report {
     pub dropped: usize,
     /// Calls that failed outright: (player, service, error).
     pub failed: Vec<(PlayerId, Service, String)>,
+    /// Players that answered a SUBSCRIBE or renewal in this pass.
+    pub answered: Vec<PlayerId>,
 }
+
+/// How soon a SUBSCRIBE or renewal that failed is tried again.
+pub const RETRY: Duration = Duration::from_secs(30);
 
 /// The active subscriptions.
 #[derive(Debug, Default)]
 pub struct Subscriptions {
     active: Vec<Active>,
+    /// Wanted subscriptions whose SUBSCRIBE failed, and when to try again.
+    pending: Vec<(Want, Instant)>,
     /// The last `BootSeq` each player reported in a topology.
     boot_seqs: HashMap<PlayerId, u32>,
 }
@@ -190,18 +197,24 @@ impl Subscriptions {
             report.dropped += 1;
         }
         self.active = keep;
+        self.pending.retain(|(w, _)| wanted.contains(w));
         for want in wanted {
             if self.active.iter().any(|a| a.want == *want) {
                 continue;
             }
+            self.pending.retain(|(w, _)| w != want);
             match s.subscribe(want, &callback_url(want.service)) {
                 Ok(sub) => {
                     self.active.push(active(want.clone(), sub, now));
                     report.subscribed += 1;
+                    report.answered.push(want.player.clone());
                 }
-                Err(e) => report
-                    .failed
-                    .push((want.player.clone(), want.service, e.to_string())),
+                Err(e) => {
+                    self.pending.push((want.clone(), now + RETRY));
+                    report
+                        .failed
+                        .push((want.player.clone(), want.service, e.to_string()));
+                }
             }
         }
         report
@@ -224,6 +237,7 @@ impl Subscriptions {
                 Ok(sub) => {
                     *a = active(a.want.clone(), sub, now);
                     report.renewed += 1;
+                    report.answered.push(a.want.player.clone());
                 }
                 Err(renewal) => match s.subscribe(&a.want, &callback_url(a.want.service)) {
                     Ok(sub) => {
@@ -237,6 +251,7 @@ impl Subscriptions {
                         );
                         *a = active(a.want.clone(), sub, now);
                         report.resubscribed += 1;
+                        report.answered.push(a.want.player.clone());
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -248,12 +263,32 @@ impl Subscriptions {
                             "renewal failed and so did a fresh subscription; retrying in 30 s"
                         );
                         // Try again on the next pass.
-                        a.renew_at = now + Duration::from_secs(30);
+                        a.renew_at = now + RETRY;
                         report
                             .failed
                             .push((a.want.player.clone(), a.want.service, e.to_string()));
                     }
                 },
+            }
+        }
+        // Subscriptions that never took: try them again.
+        let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending)
+            .into_iter()
+            .partition(|(_, at)| *at <= now);
+        self.pending = later;
+        for (want, _) in due {
+            match s.subscribe(&want, &callback_url(want.service)) {
+                Ok(sub) => {
+                    report.answered.push(want.player.clone());
+                    self.active.push(active(want, sub, now));
+                    report.subscribed += 1;
+                }
+                Err(e) => {
+                    report
+                        .failed
+                        .push((want.player.clone(), want.service, e.to_string()));
+                    self.pending.push((want, now + RETRY));
+                }
             }
         }
         report
@@ -262,7 +297,11 @@ impl Subscriptions {
     /// When the next renewal is due, for the daemon's timer.
     #[must_use]
     pub fn next_due(&self) -> Option<Instant> {
-        self.active.iter().map(|a| a.renew_at).min()
+        self.active
+            .iter()
+            .map(|a| a.renew_at)
+            .chain(self.pending.iter().map(|(_, at)| *at))
+            .min()
     }
 
     /// The player and service a NOTIFY belongs to; `None` for an unknown SID
@@ -300,6 +339,7 @@ impl Subscriptions {
     pub fn forget(&mut self, player: &PlayerId) -> usize {
         let before = self.active.len();
         self.active.retain(|a| a.want.player != *player);
+        self.pending.retain(|(w, _)| w.player != *player);
         before - self.active.len()
     }
 
@@ -319,6 +359,7 @@ impl Subscriptions {
                 Ok(sub) => {
                     *a = active(a.want.clone(), sub, now);
                     report.resubscribed += 1;
+                    report.answered.push(a.want.player.clone());
                 }
                 Err(e) => {
                     a.renew_at = now;
@@ -333,6 +374,7 @@ impl Subscriptions {
 
     /// Unsubscribe everything (daemon shutdown). Best effort.
     pub fn unsubscribe_all<S: Subscriber + ?Sized>(&mut self, s: &S) {
+        self.pending.clear();
         for a in self.active.drain(..) {
             let _ = s.unsubscribe(&a.want, &a.sid);
         }

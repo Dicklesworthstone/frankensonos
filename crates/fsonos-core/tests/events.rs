@@ -3,7 +3,7 @@
 //! resubscribe fallback, and NOTIFY routing.
 
 use fsonos_core::HouseholdState;
-use fsonos_core::events::{Service, Subscriber, Subscriptions, Want, wanted};
+use fsonos_core::events::{self, Service, Subscriber, Subscriptions, Want, wanted};
 use fsonos_proto::ProtoError;
 use fsonos_proto::gena::{Notify, Subscription};
 use fsonos_proto::{soap, topology};
@@ -33,10 +33,19 @@ struct Fake {
     next: Cell<u32>,
     log: RefCell<Vec<String>>,
     stale: RefCell<Vec<String>>,
+    /// Refuse this many SUBSCRIBEs before granting again.
+    refuse: Cell<u32>,
 }
 
 impl Subscriber for Fake {
     fn subscribe(&self, want: &Want, callback_url: &str) -> Result<Subscription, ProtoError> {
+        if self.refuse.get() > 0 {
+            self.refuse.set(self.refuse.get() - 1);
+            return Err(ProtoError::Network {
+                target: "player".into(),
+                detail: "SUBSCRIBE: HTTP 503".into(),
+            });
+        }
         self.next.set(self.next.get() + 1);
         let sid = format!("uuid:sub{}", self.next.get());
         self.log.borrow_mut().push(format!(
@@ -242,4 +251,30 @@ fn a_rising_boot_seq_marks_a_reboot_and_its_subscriptions_are_replaced() {
     // A survey that sees the reboot drops the stale ones for sync to replace.
     assert_eq!(subs.forget(&study), mine);
     assert_eq!(subs.len(), w.len() - mine);
+}
+
+#[test]
+fn a_subscribe_that_failed_is_retried_on_its_own() {
+    let houses = [household(ZGS_S1)];
+    let w = wanted(&houses);
+    let fake = Fake::default();
+    fake.refuse.set(1);
+    let mut subs = Subscriptions::default();
+    let t0 = Instant::now();
+    let report = subs.sync(&fake, &w, url, t0);
+    assert_eq!(report.failed.len(), 1);
+    assert_eq!(subs.len(), w.len() - 1);
+    assert!(
+        subs.next_due().unwrap() <= t0 + events::RETRY,
+        "the retry is scheduled"
+    );
+
+    // Not yet due: nothing happens.
+    let early = subs.renew_due(&fake, url, t0 + Duration::from_secs(1));
+    assert_eq!((early.subscribed, early.failed.len()), (0, 0));
+    // Due: it is subscribed, and its player counts as having answered.
+    let retried = subs.renew_due(&fake, url, t0 + events::RETRY);
+    assert_eq!(retried.subscribed, 1);
+    assert_eq!(retried.answered.len(), 1);
+    assert_eq!(subs.len(), w.len());
 }

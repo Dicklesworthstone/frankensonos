@@ -45,13 +45,28 @@ fn a_player_the_survey_did_not_find_is_offline_at_once() {
 #[test]
 fn subscription_failures_count_against_their_player() {
     let mut board = HealthBoard::default();
-    board.record(&Report {
-        failed: vec![(pid(3), Service::AvTransport, "HTTP 503".into())],
-        ..Report::default()
-    });
+    board.record(
+        &Report {
+            failed: vec![(pid(3), Service::AvTransport, "HTTP 503".into())],
+            ..Report::default()
+        },
+        Instant::now(),
+    );
     let h = board.of(&pid(3)).unwrap();
     assert_eq!(h.health, Health::Degraded);
     assert!(h.last_error.as_deref().unwrap().contains("AvTransport"));
+
+    // Its next renewal answers: healthy again, without waiting for a survey.
+    let later = Instant::now();
+    board.record(
+        &Report {
+            answered: vec![pid(3)],
+            ..Report::default()
+        },
+        later,
+    );
+    let h = board.of(&pid(3)).unwrap();
+    assert_eq!((h.health, h.last_ok), (Health::Healthy, Some(later)));
 }
 
 #[test]

@@ -99,8 +99,13 @@ impl HealthBoard {
         }
     }
 
-    /// Record the failures an [`events`] pass reported.
-    pub fn record(&mut self, report: &events::Report) {
+    /// Record what an [`events`] pass saw at `now`: the players that
+    /// answered are healthy (a quiet player recovers on its next renewal),
+    /// then each failure counts against its player.
+    pub fn record(&mut self, report: &events::Report, now: Instant) {
+        for player in &report.answered {
+            self.ok(player, now);
+        }
         for (player, service, error) in &report.failed {
             self.failed(player, format!("{service:?}: {error}"));
         }
@@ -325,7 +330,7 @@ impl Reconciler {
             self.subscriptions
                 .sync(lan, &events::wanted(&self.households), callback_url, now);
         report.events.dropped += forgotten;
-        self.health.record(&report.events);
+        self.health.record(&report.events, now);
         self.schedule.succeeded(now);
         Ok(report)
     }
@@ -389,7 +394,7 @@ impl Reconciler {
                     failed = r.failed.len(),
                     "player rebooted"
                 );
-                self.health.record(&r);
+                self.health.record(&r, now);
                 report.events.resubscribed += r.resubscribed;
                 report.events.failed.extend(r.failed);
                 report.rebooted.push(p);
@@ -400,7 +405,7 @@ impl Reconciler {
             let r =
                 self.subscriptions
                     .sync(lan, &events::wanted(&self.households), &callback_url, now);
-            self.health.record(&r);
+            self.health.record(&r, now);
             report.events.subscribed += r.subscribed;
             report.events.dropped += r.dropped;
             report.events.failed.extend(r.failed);

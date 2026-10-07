@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// How [`Live`] runs.
 #[derive(Debug, Clone)]
@@ -249,8 +249,23 @@ struct Engine {
 /// The longest the loop waits for a NOTIFY before looking at its schedule.
 const TICK: Duration = Duration::from_millis(200);
 
+/// A wall-clock gap this much longer than the monotonic one means the host
+/// slept.
+const SLEEP_GAP: Duration = Duration::from_secs(60);
+
+/// Whether the host slept between two ticks: `Instant` stands still while
+/// it sleeps (macOS and Linux), the wall clock does not. Subscriptions
+/// renewed by `Instant` can lapse at the players meanwhile.
+fn slept(before: (Instant, SystemTime), after: (Instant, SystemTime)) -> bool {
+    let monotonic = after.0.saturating_duration_since(before.0);
+    let wall = after.1.duration_since(before.1).unwrap_or(Duration::ZERO);
+    wall > monotonic + SLEEP_GAP
+}
+
 /// What the loop owns.
 struct Model {
+    /// The previous tick, by both clocks.
+    ticked: (Instant, SystemTime),
     rec: Reconciler,
     playback: Playback,
     sink: Option<EventSink>,
@@ -309,6 +324,7 @@ impl Engine {
 
     fn run(self) {
         let mut m = Model {
+            ticked: (Instant::now(), SystemTime::now()),
             rec: Reconciler::new(
                 self.config.interval,
                 self.config.max_backoff,
@@ -321,6 +337,15 @@ impl Engine {
         };
         while !self.stop.load(Ordering::Acquire) {
             let now = Instant::now();
+            let wall = SystemTime::now();
+            if slept(m.ticked, (now, wall)) {
+                tracing::warn!(
+                    "this host was asleep; its subscriptions may have lapsed: subscribing afresh"
+                );
+                self.release(&mut m);
+                m.rec.schedule.due_now(now);
+            }
+            m.ticked = (now, wall);
             if self.wake.swap(false, Ordering::AcqRel) {
                 m.rec.schedule.due_now(now);
             }
@@ -440,7 +465,7 @@ impl Engine {
         let Some(s) = &m.sink else { return };
         let callback = |service: Service| s.callback_url(service.tag());
         let report = m.rec.subscriptions.renew_due(&self.via(), callback, now);
-        m.rec.health.record(&report);
+        m.rec.health.record(&report, now);
     }
 
     /// Wait (briefly) for one NOTIFY and fold it in. `None` when none came;
@@ -571,5 +596,29 @@ impl Engine {
                 .iter()
                 .all(|e| !matches!(tx.try_send(e.clone()), Err(TrySendError::Disconnected(_))))
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wall_clock_jump_past_the_monotonic_clock_is_a_sleep() {
+        let (t0, w0) = (Instant::now(), SystemTime::now());
+        let step = Duration::from_secs(1);
+        assert!(!slept((t0, w0), (t0 + step, w0 + step)), "both advanced");
+        assert!(
+            !slept((t0, w0), (t0 + step, w0 + Duration::from_secs(30))),
+            "under a minute of drift"
+        );
+        assert!(
+            slept((t0, w0), (t0 + step, w0 + Duration::from_mins(20))),
+            "twenty minutes asleep"
+        );
+        assert!(
+            !slept((t0, w0 + Duration::from_secs(600)), (t0 + step, w0)),
+            "the wall clock set back is no sleep"
+        );
     }
 }
