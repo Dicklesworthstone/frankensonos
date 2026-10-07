@@ -73,7 +73,7 @@ pub(crate) enum TransportState {
 }
 
 impl TransportState {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Stopped => "STOPPED",
             Self::Playing => "PLAYING",
@@ -120,7 +120,7 @@ pub(crate) struct Transport {
 }
 
 impl Transport {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: TransportState::Stopped,
             source: Source::Nothing,
@@ -134,13 +134,13 @@ impl Transport {
         }
     }
 
-    fn current(&self) -> Option<&QueueItem> {
+    pub(crate) fn current(&self) -> Option<&QueueItem> {
         (self.source == Source::Queue && self.track > 0)
             .then(|| self.queue.get(self.track - 1))
             .flatten()
     }
 
-    fn duration_ms(&self) -> u64 {
+    pub(crate) fn duration_ms(&self) -> u64 {
         self.current().map_or(0, |q| q.duration_ms)
     }
 
@@ -188,6 +188,22 @@ pub(crate) struct Player {
     pub volume: u8,
     pub mute: bool,
     pub transport: Transport,
+    /// Powered off: answers nothing, sends no events, shows as vanished.
+    pub offline: bool,
+    pub faults: Faults,
+}
+
+/// Failures injected into one player (see the `SimHandle` fault API).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Faults {
+    /// Added before every answer.
+    pub latency: std::time::Duration,
+    /// NOTIFYs to swallow instead of delivering.
+    pub drop_notifies: Option<crate::NotifyDrop>,
+    /// `(action, UPnP error code)`: these actions fail until cleared.
+    pub upnp: Vec<(String, u16)>,
+    /// Unreachable (rebooting) until this instant.
+    pub unreachable_until: Option<std::time::Instant>,
 }
 
 impl Player {
@@ -213,6 +229,13 @@ pub(crate) struct State {
     pub players: Vec<Player>,
     pub clock: SimClock,
     pub log: Vec<SoapLogEntry>,
+    pub subscriptions: Vec<crate::gena::Subscription>,
+    pub gena_log: Vec<crate::GenaLogEntry>,
+    /// Where NOTIFYs go to be delivered (`None` once shut down).
+    pub notifier: Option<std::sync::mpsc::Sender<crate::gena::Outgoing>>,
+    pub next_sid: u64,
+    /// xorshift state for probabilistic NOTIFY drops (fixed seed).
+    pub rng: u64,
     next_group: u64,
 }
 
@@ -223,6 +246,11 @@ impl State {
             players: Vec::new(),
             clock,
             log: Vec::new(),
+            subscriptions: Vec::new(),
+            gena_log: Vec::new(),
+            notifier: None,
+            next_sid: 1,
+            rng: 0x9E37_79B9_7F4A_7C15,
             next_group: 1,
         }
     }
@@ -247,6 +275,8 @@ impl State {
             volume: 20,
             mute: false,
             transport: Transport::new(),
+            offline: false,
+            faults: Faults::default(),
         });
         index
     }
@@ -267,7 +297,7 @@ impl State {
     }
 
     /// Keep every pair's hidden half in its primary's group.
-    fn sync_pairs(&mut self) {
+    pub(crate) fn sync_pairs(&mut self) {
         for i in 0..self.players.len() {
             if let Some(primary) = self.players[i].pair_primary {
                 self.players[i].coordinator = self.players[primary].coordinator;
@@ -308,7 +338,7 @@ impl State {
     /// Take `p` (and its pair's hidden half) out of its group into a group
     /// of its own. If it led others, the first visible one becomes their
     /// coordinator (keeping the group id).
-    fn make_standalone(&mut self, p: usize) {
+    pub(crate) fn make_standalone(&mut self, p: usize) {
         let own = self.secondary_of(p);
         let led: Vec<usize> = self
             .members(p)
@@ -329,6 +359,37 @@ impl State {
         self.players[p].coordinator = p;
         self.players[p].group_id = self.new_group_id(p);
         self.sync_pairs();
+    }
+
+    /// Hand the group `coord` leads to its first other visible, online
+    /// member; playback (transport and queue) moves with it.
+    pub(crate) fn reelect(&mut self, coord: usize) -> Result<(), crate::SimError> {
+        let heir = self
+            .members(coord)
+            .into_iter()
+            .find(|&m| {
+                m != coord && self.players[m].pair_primary.is_none() && !self.players[m].offline
+            })
+            .ok_or_else(|| {
+                crate::SimError::Invalid(format!(
+                    "{} leads no other member to take over",
+                    self.players[coord].room
+                ))
+            })?;
+        let mut transport = std::mem::replace(&mut self.players[coord].transport, Transport::new());
+        if transport.source == Source::Queue {
+            transport.uri = format!("x-rincon-queue:{}#0", self.players[heir].uuid);
+        }
+        self.players[heir].transport = transport;
+        let group_id = self.players[coord].group_id.clone();
+        for m in self.members(coord) {
+            self.players[m].coordinator = heir;
+        }
+        self.players[heir].group_id = group_id;
+        self.sync_pairs();
+        let to = self.players[heir].uuid.clone();
+        self.log_gena(coord, "", crate::GenaEvent::CoordinatorReelected { to });
+        Ok(())
     }
 
     /// Join `p` to the group that `target` belongs to.

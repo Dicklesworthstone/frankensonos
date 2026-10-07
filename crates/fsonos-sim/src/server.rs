@@ -2,8 +2,9 @@
 //! each on its own thread and runtime, all sharing one [`State`].
 
 use crate::docs::{self, ServiceDef};
+use crate::gena::{EventService, first_callback};
 use crate::model::{Args, INVALID_ACTION, State};
-use crate::{SimError, SoapLogEntry};
+use crate::{GenaEvent, SimError, SoapLogEntry};
 use asupersync::http::h1::server::HostPolicy;
 use asupersync::http::h1::types::{Method, Request, Response};
 use asupersync::http::h1::{Http1Config, Http1Listener, Http1ListenerConfig};
@@ -12,7 +13,7 @@ use asupersync::server::shutdown::ShutdownSignal;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A running listener: its address, and how to stop it.
 pub(crate) struct Listener {
@@ -97,13 +98,32 @@ fn text(status: u16, reason: &str, body: String) -> Response {
         .with_header("Server", "Linux UPnP/1.0 Sonos/86.10-80260 (fsonos-sim)")
 }
 
-fn respond(state: &Arc<Mutex<State>>, index: usize, req: &Request) -> Response {
-    let Ok(mut state) = state.lock() else {
+fn respond(shared: &Arc<Mutex<State>>, index: usize, req: &Request) -> Response {
+    // Injected latency and unreachability apply before anything is read,
+    // and never while holding the state lock.
+    let (latency, down) = match shared.lock() {
+        Ok(s) => {
+            let p = &s.players[index];
+            let rebooting = p
+                .faults
+                .unreachable_until
+                .is_some_and(|t| Instant::now() < t);
+            (p.faults.latency, p.offline || rebooting)
+        }
+        Err(_) => return text(500, "Internal Server Error", String::new()),
+    };
+    if !latency.is_zero() {
+        thread::sleep(latency);
+    }
+    if down {
+        return text(503, "Service Unavailable", String::new());
+    }
+    let Ok(mut state) = shared.lock() else {
         return text(500, "Internal Server Error", String::new());
     };
     let path = req.uri.split('?').next().unwrap_or_default();
     let model = state.players[index].model;
-    match req.method {
+    match &req.method {
         Method::Get if path == "/xml/device_description.xml" => {
             let sw_gen = state.households[state.players[index].household].sw_gen;
             text(
@@ -119,7 +139,92 @@ fn respond(state: &Arc<Mutex<State>>, index: usize, req: &Request) -> Response {
             Some(service) => soap(&mut state, index, &service, req),
             None => text(404, "Not Found", String::new()),
         },
+        Method::Extension(m)
+            if m.eq_ignore_ascii_case("SUBSCRIBE") || m.eq_ignore_ascii_case("UNSUBSCRIBE") =>
+        {
+            match EventService::from_path(path, model) {
+                Some(service) => gena(&mut state, index, service, m, req),
+                None => text(404, "Not Found", String::new()),
+            }
+        }
         _ => text(404, "Not Found", String::new()),
+    }
+}
+
+fn header<'a>(req: &'a Request, name: &str) -> Option<&'a str> {
+    req.headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.trim())
+}
+
+/// A `TIMEOUT: Second-N` request header, in seconds (`None`: unset/infinite).
+fn requested_timeout(req: &Request) -> Option<u32> {
+    header(req, "TIMEOUT").and_then(fsonos_proto::gena::parse_timeout)
+}
+
+/// SUBSCRIBE (new or renewal) and UNSUBSCRIBE, per UPnP Device Architecture
+/// 4.1: a renewal carries only SID; a new subscription CALLBACK and NT; any
+/// other mix is 400, and an unknown or lapsed SID is 412.
+fn gena(
+    state: &mut State,
+    index: usize,
+    service: EventService,
+    method: &str,
+    req: &Request,
+) -> Response {
+    let sid = header(req, "SID").filter(|s| !s.is_empty());
+    let callback = header(req, "CALLBACK");
+    let nt = header(req, "NT");
+    let refuse = |state: &mut State, status: u16, reason: &str| {
+        state.log_gena(
+            index,
+            service.name(),
+            GenaEvent::Refused {
+                status,
+                reason: reason.to_string(),
+            },
+        );
+        let phrase = if status == 412 {
+            "Precondition Failed"
+        } else {
+            "Bad Request"
+        };
+        text(status, phrase, String::new())
+    };
+    let granted = |sid: &str, timeout: u32| {
+        Response::new(200, "OK", Vec::new())
+            .with_header("SID", sid)
+            .with_header("TIMEOUT", format!("Second-{timeout}"))
+            .with_header("Server", "Linux UPnP/1.0 Sonos/86.10-80260 (fsonos-sim)")
+    };
+    if method.eq_ignore_ascii_case("UNSUBSCRIBE") {
+        return match sid {
+            Some(sid) if callback.is_none() && nt.is_none() => {
+                if state.unsubscribe(index, sid) {
+                    Response::new(200, "OK", Vec::new())
+                } else {
+                    refuse(state, 412, "unknown or lapsed SID")
+                }
+            }
+            Some(_) => refuse(state, 400, "SID with CALLBACK or NT"),
+            None => refuse(state, 412, "UNSUBSCRIBE without SID"),
+        };
+    }
+    match (sid, callback, nt) {
+        (Some(sid), None, None) => match state.renew(index, sid, requested_timeout(req)) {
+            Some(timeout) => granted(sid, timeout),
+            None => refuse(state, 412, "unknown or lapsed SID"),
+        },
+        (None, Some(callback), Some("upnp:event")) => match first_callback(callback) {
+            Some(url) => {
+                let (sid, timeout) = state.subscribe(index, service, url, requested_timeout(req));
+                granted(&sid, timeout)
+            }
+            None => refuse(state, 412, "no usable CALLBACK URL"),
+        },
+        (None, _, _) => refuse(state, 412, "SUBSCRIBE without CALLBACK and NT: upnp:event"),
+        (Some(_), _, _) => refuse(state, 400, "SID with CALLBACK or NT"),
     }
 }
 
@@ -142,8 +247,19 @@ fn soap(state: &mut State, index: usize, service: &ServiceDef, req: &Request) ->
             return fault(state, index, service, action, args, INVALID_ACTION.0);
         }
     };
+    let injected = state.players[index]
+        .faults
+        .upnp
+        .iter()
+        .find(|(a, _)| *a == action)
+        .map(|(_, code)| *code);
+    if let Some(code) = injected {
+        return fault(state, index, service, action, args, code);
+    }
     match state.invoke(index, service, &action, &Args(&args)) {
         Ok(out) => {
+            // Every change reaches the subscribers.
+            state.flush_events();
             let body = docs::soap_response(service, &action, &out);
             log(
                 state,

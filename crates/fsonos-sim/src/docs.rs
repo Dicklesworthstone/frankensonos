@@ -171,6 +171,9 @@ pub(crate) fn zone_group_state(state: &State, h: usize) -> String {
     let sw_gen = state.households[h].sw_gen;
     for coord in state.coordinators(h) {
         let c = &state.players[coord];
+        if c.offline {
+            continue;
+        }
         let _ = write!(
             out,
             "<ZoneGroup Coordinator=\"{}\" ID=\"{}\">",
@@ -178,6 +181,9 @@ pub(crate) fn zone_group_state(state: &State, h: usize) -> String {
         );
         for &m in &state.members(coord) {
             let p = &state.players[m];
+            if p.offline {
+                continue;
+            }
             // A stereo pair: both halves carry the channel map; the RF half
             // is hidden (the S1 fixture's shape).
             let pair = p
@@ -211,7 +217,25 @@ pub(crate) fn zone_group_state(state: &State, h: usize) -> String {
         }
         out.push_str("</ZoneGroup>");
     }
-    out.push_str("</ZoneGroups><VanishedDevices></VanishedDevices></ZoneGroupState>");
+    out.push_str("</ZoneGroups><VanishedDevices>");
+    // Powered-off players, in the live fixture's shape.
+    for p in state
+        .players
+        .iter()
+        .filter(|p| p.household == h && p.offline)
+    {
+        let _ = write!(
+            out,
+            "<Device UUID=\"{uuid}\" ZoneName=\"{room}\" Reason=\"powered off\" ModelInfo=\"{model}\" \
+             Mac=\"{mac}\" LastKnownIP=\"{ip}\" MoreInfo=\"\" SWGen=\"{sw_gen}\"/>",
+            uuid = p.uuid,
+            room = xml_escape(&p.room),
+            model = p.model.model_number(),
+            mac = p.mac(),
+            ip = p.ip,
+        );
+    }
+    out.push_str("</VanishedDevices></ZoneGroupState>");
     out
 }
 

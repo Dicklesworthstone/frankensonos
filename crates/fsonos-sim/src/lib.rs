@@ -23,6 +23,7 @@
 //! `127.0.0.1`, so [`SimTransport`] is per player.
 
 mod docs;
+mod gena;
 mod model;
 mod server;
 
@@ -34,8 +35,9 @@ use fsonos_proto::{ProtoError, Transport};
 use model::{Favorite, Household, State};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// The hardware a virtual player imitates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,10 +151,93 @@ pub struct SoapLogEntry {
     pub at_ms: u64,
 }
 
+/// One GENA event the simulator recorded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenaLogEntry {
+    /// [`SimClock`] time.
+    pub at_ms: u64,
+    pub player: String,
+    /// `AVTransport`, `RenderingControl`, `ZoneGroupTopology`, or empty for
+    /// player-level events (reboots and the like).
+    pub service: String,
+    pub event: GenaEvent,
+}
+
+/// What happened, in a [`GenaLogEntry`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum GenaEvent {
+    Subscribed {
+        sid: String,
+        callback: String,
+        timeout_secs: u32,
+    },
+    Renewed {
+        sid: String,
+        timeout_secs: u32,
+    },
+    Unsubscribed {
+        sid: String,
+    },
+    /// A SUBSCRIBE / UNSUBSCRIBE the player turned away.
+    Refused {
+        status: u16,
+        reason: String,
+    },
+    /// The subscription lapsed without renewal.
+    Expired {
+        sid: String,
+    },
+    /// A NOTIFY was queued for delivery.
+    Notified {
+        sid: String,
+        seq: u32,
+    },
+    /// A NOTIFY swallowed by [`SimHandle::drop_notifies`] (its SEQ is spent).
+    Dropped {
+        sid: String,
+        seq: u32,
+    },
+    /// The subscriber answered a NOTIFY with `status`.
+    Delivered {
+        sid: String,
+        seq: u32,
+        status: u16,
+    },
+    DeliveryFailed {
+        sid: String,
+        seq: u32,
+        error: String,
+    },
+    Rebooted,
+    WentOffline,
+    CameOnline,
+    AddressChanged {
+        from: IpAddr,
+        to: IpAddr,
+    },
+    /// This player handed coordination of its group to `to`.
+    CoordinatorReelected {
+        to: String,
+    },
+}
+
+/// Which NOTIFYs a player swallows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NotifyDrop {
+    /// The next `n`.
+    Next(u32),
+    /// Each with this probability (a fixed-seed generator, so runs repeat).
+    Probability(f64),
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SimError {
     #[error("cannot start the simulator: {0}")]
     Start(String),
+    #[error("no virtual player {0:?}")]
+    UnknownPlayer(String),
+    #[error("{0}")]
+    Invalid(String),
 }
 
 /// A running virtual player.
@@ -244,12 +329,17 @@ impl SimBuilder {
                 }
             }
         }
+        let (notify_tx, notify_rx) = mpsc::channel();
+        state.notifier = Some(notify_tx);
         let state = Arc::new(Mutex::new(state));
         let count = state.lock().map_or(0, |s| s.players.len());
+        let notifier = gena::start_notifier(Arc::clone(&state), notify_rx)
+            .map_err(|e| SimError::Start(e.to_string()))?;
         let mut handle = SimHandle {
             state: Arc::clone(&state),
             players: Vec::with_capacity(count),
             listeners: Vec::with_capacity(count),
+            notifier: Some(notifier),
             clock,
         };
         for index in 0..count {
@@ -367,6 +457,7 @@ pub struct SimHandle {
     state: Arc<Mutex<State>>,
     players: Vec<SimPlayerInfo>,
     listeners: Vec<server::Listener>,
+    notifier: Option<JoinHandle<()>>,
     clock: SimClock,
 }
 
@@ -387,14 +478,11 @@ impl SimHandle {
 
     /// A [`Transport`] for every player, routed by the address each one
     /// advertises, the way the real LAN transport routes by IP.
+    /// It follows address changes ([`Self::change_address`]).
     #[must_use]
     pub fn lan(&self) -> SimLan {
         SimLan {
-            routes: self
-                .players
-                .iter()
-                .map(|p| (p.ip, p.base_url.clone()))
-                .collect(),
+            state: Arc::clone(&self.state),
         }
     }
 
@@ -442,6 +530,148 @@ impl SimHandle {
         for l in self.listeners.drain(..) {
             let _ = l.thread.join();
         }
+        // The last sender goes with the state's; the notifier drains and ends.
+        if let Ok(mut s) = self.state.lock() {
+            s.notifier = None;
+        }
+        if let Some(notifier) = self.notifier.take() {
+            let _ = notifier.join();
+        }
+    }
+
+    /// Every GENA event so far, oldest first.
+    #[must_use]
+    pub fn gena_log(&self) -> Vec<GenaLogEntry> {
+        self.state
+            .lock()
+            .map(|s| s.gena_log.clone())
+            .unwrap_or_default()
+    }
+
+    /// Run `f` on the player named by `who` (a room, its visible player, or a
+    /// player id), then issue any NOTIFYs the change causes.
+    fn with_player<R>(
+        &self,
+        who: &str,
+        f: impl FnOnce(&mut State, usize) -> Result<R, SimError>,
+    ) -> Result<R, SimError> {
+        let mut s = self
+            .state
+            .lock()
+            .map_err(|_| SimError::Invalid("state lock poisoned".into()))?;
+        let p = s
+            .players
+            .iter()
+            .position(|p| p.uuid == who)
+            .or_else(|| {
+                s.players
+                    .iter()
+                    .position(|p| p.pair_primary.is_none() && p.room.eq_ignore_ascii_case(who))
+            })
+            .ok_or_else(|| SimError::UnknownPlayer(who.to_string()))?;
+        let out = f(&mut s, p)?;
+        s.flush_events();
+        Ok(out)
+    }
+
+    /// Delay every answer from `who` by `latency`.
+    pub fn set_latency(&self, who: &str, latency: Duration) -> Result<(), SimError> {
+        self.with_player(who, |s, p| {
+            s.players[p].faults.latency = latency;
+            Ok(())
+        })
+    }
+
+    /// Swallow NOTIFYs `who` would send (`None` delivers them again).
+    pub fn drop_notifies(&self, who: &str, drop: Option<NotifyDrop>) -> Result<(), SimError> {
+        self.with_player(who, |s, p| {
+            s.players[p].faults.drop_notifies = drop;
+            Ok(())
+        })
+    }
+
+    /// Make `action` on `who` fail with UPnP error `code` until
+    /// [`Self::clear_faults`].
+    pub fn upnp_fault(&self, who: &str, action: &str, code: u16) -> Result<(), SimError> {
+        self.with_player(who, |s, p| {
+            s.players[p].faults.upnp.push((action.to_string(), code));
+            Ok(())
+        })
+    }
+
+    /// Remove every injected fault from `who`.
+    pub fn clear_faults(&self, who: &str) -> Result<(), SimError> {
+        self.with_player(who, |s, p| {
+            s.players[p].faults = model::Faults::default();
+            Ok(())
+        })
+    }
+
+    /// Reboot `who`: its subscriptions are gone (renewing one gets 412), its
+    /// BootSeq goes up, and it answers nothing but 503 for `down_for`.
+    pub fn reboot(&self, who: &str, down_for: Duration) -> Result<(), SimError> {
+        self.with_player(who, |s, p| {
+            s.drop_subscriptions(p);
+            s.players[p].boot_seq += 1;
+            s.players[p].faults.unreachable_until = Some(Instant::now() + down_for);
+            s.log_gena(p, "", GenaEvent::Rebooted);
+            Ok(())
+        })
+    }
+
+    /// Give `who` a new address, as a DHCP lease change would: its Location,
+    /// description and the topology show it, [`SimLan`] reaches it there,
+    /// and the old address no longer answers. Returns the new address.
+    pub fn change_address(&mut self, who: &str) -> Result<IpAddr, SimError> {
+        let (uuid, to) = self.with_player(who, |s, p| {
+            let taken: Vec<u8> = s.players.iter().map(|o| o.ip.octets()[3]).collect();
+            let host = (100..=254)
+                .rev()
+                .find(|h| !taken.contains(h))
+                .ok_or_else(|| SimError::Invalid("no free virtual address".into()))?;
+            let from = IpAddr::V4(s.players[p].ip);
+            s.players[p].ip = Ipv4Addr::new(192, 0, 2, host);
+            let to = IpAddr::V4(s.players[p].ip);
+            s.log_gena(p, "", GenaEvent::AddressChanged { from, to });
+            Ok((s.players[p].uuid.clone(), to))
+        })?;
+        if let Some(info) = self.players.iter_mut().find(|i| i.uuid == uuid) {
+            info.ip = to;
+        }
+        Ok(to)
+    }
+
+    /// The coordinator of `who`'s group hands it to another visible member,
+    /// as Sonos does when a coordinator drops out; playback (transport and
+    /// queue) moves to the new coordinator.
+    pub fn reelect_coordinator(&self, who: &str) -> Result<(), SimError> {
+        self.with_player(who, |s, p| s.reelect(s.players[p].coordinator))
+    }
+
+    /// Power `who` off (`true`) or back on. Off: it answers 503, sends no
+    /// events, loses its subscriptions, leaves its group (the group
+    /// re-elects if it led) and shows under `VanishedDevices`. On: it boots
+    /// (BootSeq up) into a group of its own.
+    pub fn set_offline(&self, who: &str, offline: bool) -> Result<(), SimError> {
+        self.with_player(who, |s, p| {
+            if s.players[p].offline == offline {
+                return Ok(());
+            }
+            if offline {
+                if s.players[p].coordinator == p && s.members(p).len() > 1 {
+                    let _ = s.reelect(p);
+                }
+                s.make_standalone(p);
+                s.drop_subscriptions(p);
+                s.players[p].offline = true;
+                s.log_gena(p, "", GenaEvent::WentOffline);
+            } else {
+                s.players[p].offline = false;
+                s.players[p].boot_seq += 1;
+                s.log_gena(p, "", GenaEvent::CameOnline);
+            }
+            Ok(())
+        })
     }
 }
 
@@ -538,21 +768,24 @@ impl Transport for SimTransport {
 /// simulator. Call it from synchronous code.
 #[derive(Debug, Clone)]
 pub struct SimLan {
-    routes: Vec<(IpAddr, String)>,
+    state: Arc<Mutex<State>>,
 }
 
 impl SimLan {
     fn route(&self, host: IpAddr) -> Result<SimTransport, ProtoError> {
-        self.routes
-            .iter()
-            .find(|(ip, _)| *ip == host)
-            .map(|(_, base_url)| SimTransport {
-                base_url: base_url.clone(),
-            })
-            .ok_or_else(|| ProtoError::Network {
-                target: host.to_string(),
-                detail: "no virtual player advertises this address".into(),
-            })
+        let port = self.state.lock().ok().and_then(|s| {
+            s.players
+                .iter()
+                .find(|p| IpAddr::V4(p.ip) == host)
+                .map(|p| p.port)
+        });
+        port.map(|port| SimTransport {
+            base_url: format!("http://127.0.0.1:{port}"),
+        })
+        .ok_or_else(|| ProtoError::Network {
+            target: host.to_string(),
+            detail: "no virtual player advertises this address".into(),
+        })
     }
 }
 
