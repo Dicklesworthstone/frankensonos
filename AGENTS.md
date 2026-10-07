@@ -148,16 +148,31 @@ Swarm doctrine (one lane per agent, disjoint crates):
 1. **Claim** a ready bead; reserve your crate paths if coordinating via Agent
    Mail. Do not take out-of-scope work (`docs/SCOPE.md`).
 2. **Code + real tests in the same bead.** Pass the format/`check` gate. Commit
-   immediately with a conventional message.
+   immediately with a conventional message. **Do not `git push`** — commit
+   locally only; the orchestrator pushes. Concurrent pushers diverge `main` and
+   cause rejected pushes. If you must sync first, `git pull --rebase`, never a
+   force-push.
 3. **The orchestrator runs the verifying pass** (`cargo clippy -D warnings`,
-   `cargo test --workspace`) and is the only one that **closes** beads, citing
-   evidence (the commands that passed, the revision).
+   `cargo test --workspace`) and is the only one that **closes** beads and
+   **pushes**, citing evidence (the commands that passed, the revision).
 
 Honest-credit floor (enforced): process artifacts are not progress; a refusal
 or guard path does not close a positive-capability bead; commits are not a KPI;
 a close without cited evidence is a debt to be reopened. Do not split in-scope
 acceptance conditions into new beads to close the original. Report denominators
 honestly (timeouts and failures stay in the count).
+
+## Product Voice (README and user-facing docs)
+
+FrankenSonos is positioned as **the best way to run Sonos** — confident and
+truthful. Never write deferential comparisons: do not call SoCo / node-sonos /
+Home Assistant "mature", "battle-tested", or "worth using instead", and never
+describe FrankenSonos as "young", "limited", or "not as capable". State what
+FrankenSonos does that nothing else does. Being pre-release may be stated as
+honest status (a roadmap, a limitations list), never as deference to a competitor.
+**Tailscale is central:** keep "command your speakers from anywhere in the world,
+as long as you're on your Tailscale tailnet" a headline capability, and make the
+tailnet path first-class in the daemon and the deploy docs.
 
 ## GitHub And Contributions
 
