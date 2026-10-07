@@ -14,6 +14,9 @@ mod sqlite;
 
 pub use sqlite::SqliteStore;
 
+/// The database file's name inside the data directory.
+pub const FILE_NAME: &str = "fsonos.db";
+
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, Track, ZoneGroup};
 use std::collections::BTreeMap;

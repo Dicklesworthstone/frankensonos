@@ -11,12 +11,15 @@
 //! * [`Check`] — one diagnostic; [`CheckResult`] — what it found.
 //! * [`Runner`] — runs registered checks in prerequisite order, with a
 //!   per-check timeout, and skips the dependents of a failed check.
+//! * [`lan`] — the store, discovery, player, household, event and topology
+//!   checks.
 //! * [`Report`] — the results, their counts and the process exit code, with a
 //!   human table ([`Report::render_table`]) and versioned JSON
 //!   ([`Report::to_json`]).
 //! * [`spotify`] — per-household Spotify checks: a Spotify favorite, the
 //!   linked account, and render parameters that rebuild a favorite exactly.
 
+pub mod lan;
 mod render;
 mod runner;
 pub mod spotify;
