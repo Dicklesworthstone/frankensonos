@@ -24,6 +24,7 @@ asupersync = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+fsonos-sim = { workspace = true }
 
 [lints]
 workspace = true

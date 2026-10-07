@@ -22,6 +22,7 @@
 pub mod clock;
 pub mod control;
 pub mod doctor;
+pub mod grouping;
 pub mod inventory;
 pub mod playback;
 pub mod policy;
