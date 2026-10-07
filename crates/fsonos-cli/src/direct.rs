@@ -6,7 +6,7 @@ use fsonos_api::zones::zone_views;
 use fsonos_api::{Command, ErrorCode, Failure, OutcomeDto, ZoneDto, execute};
 use fsonos_core::inventory::{self, Survey};
 use fsonos_core::rooms::household_labels;
-use fsonos_core::{CoreError, HouseholdState, control};
+use fsonos_core::{HouseholdState, control};
 use fsonos_proto::net::Lan;
 use fsonos_types::{Generation, TransportState};
 use serde::Serialize;
@@ -44,7 +44,7 @@ impl Direct {
     /// Survey the LAN: SSDP for `global.wait`, plus the seeds.
     pub fn survey(global: &GlobalArgs) -> Result<Self, Failure> {
         let seeds = global.seed_addrs()?;
-        let lan = Lan::start().map_err(|e| Failure::from(CoreError::from(e)))?;
+        let lan = global.lan()?;
         let survey = inventory::survey(&lan, &seeds, global.wait())?;
         Ok(Self { lan, survey })
     }

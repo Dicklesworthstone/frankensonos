@@ -1273,6 +1273,8 @@ dependencies = [
  "fsonos-types",
  "serde",
  "serde_json",
+ "signal-hook 0.4.5",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

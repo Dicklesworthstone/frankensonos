@@ -7,11 +7,13 @@
 //! and the MCP server have no authentication of their own, so the bind guard
 //! keeps them off wildcard and public addresses unless explicitly overridden.
 
+use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use fsonos_api::Failure;
+use fsonos_proto::net::Lan;
 
 /// Options every command accepts (and `serve` uses for discovery).
 #[derive(Debug, Clone, clap::Args)]
@@ -25,6 +27,12 @@ pub struct GlobalArgs {
     /// A player address to try directly, in addition to SSDP (repeatable).
     #[arg(long = "seed", value_name = "IP", global = true)]
     pub seed: Vec<IpAddr>,
+
+    /// Routes file mapping player addresses to the sockets that serve them,
+    /// and an SSDP target to search instead of multicast. `fsonos sim` writes
+    /// one for its virtual players; real players need none.
+    #[arg(long, env = "FSONOS_ROUTES", global = true)]
+    pub routes: Option<PathBuf>,
 
     /// Seconds to wait for SSDP replies.
     #[arg(long, value_name = "SECS", default_value_t = 2, global = true)]
@@ -66,6 +74,66 @@ impl GlobalArgs {
             }
         }
         Ok(unique)
+    }
+
+    /// The `--routes` file's contents; empty when none is given.
+    pub fn routes(&self) -> Result<Routes, Failure> {
+        let Some(path) = &self.routes else {
+            return Ok(Routes::default());
+        };
+        let hint = "Fix FSONOS_ROUTES / --routes (fsonos sim writes a valid one), or drop it.";
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            Failure::invalid(format!("cannot read routes file {}: {e}", path.display()))
+                .with_hint(hint)
+        })?;
+        Routes::parse(&text).map_err(|e| {
+            Failure::invalid(format!("routes file {}: {e}", path.display())).with_hint(hint)
+        })
+    }
+
+    /// The LAN transport, with any `--routes` applied.
+    pub fn lan(&self) -> Result<Lan, Failure> {
+        let routes = self.routes()?;
+        let mut lan = Lan::start().map_err(|e| Failure::from(fsonos_core::CoreError::from(e)))?;
+        if !routes.players.is_empty() {
+            lan = lan.with_routes(routes.players);
+        }
+        if let Some(target) = routes.ssdp {
+            lan = lan.with_ssdp_target(target);
+        }
+        Ok(lan)
+    }
+}
+
+/// Where to reach players that do not answer on `ip:1400` (a simulator's
+/// loopback sockets), and where to send the SSDP search instead of multicast.
+///
+/// ```toml
+/// ssdp = "127.0.0.1:53000"
+/// [routes]
+/// "192.0.2.10" = "127.0.0.1:53211"
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Routes {
+    pub players: Vec<(IpAddr, SocketAddr)>,
+    pub ssdp: Option<SocketAddr>,
+}
+
+impl Routes {
+    /// Parse a routes file.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct File {
+            ssdp: Option<SocketAddr>,
+            #[serde(default)]
+            routes: BTreeMap<IpAddr, SocketAddr>,
+        }
+        let file: File = toml::from_str(text).map_err(|e| e.to_string().trim().to_owned())?;
+        Ok(Self {
+            players: file.routes.into_iter().collect(),
+            ssdp: file.ssdp,
+        })
     }
 }
 
@@ -364,6 +432,42 @@ mod tests {
             .unwrap_err();
         assert_eq!(missing.exit_code(), 2);
         assert!(missing.detail.contains("cannot read seed file"));
+    }
+
+    #[test]
+    fn routes_files_parse_and_reject_typos() {
+        let routes = Routes::parse(
+            "# sim\nssdp = \"127.0.0.1:53000\"\n\n[routes]\n\
+             \"192.0.2.11\" = \"127.0.0.1:53212\"\n\"192.0.2.10\" = \"127.0.0.1:53211\"\n",
+        )
+        .unwrap();
+        assert_eq!(routes.ssdp, Some("127.0.0.1:53000".parse().unwrap()));
+        assert_eq!(
+            routes.players,
+            [
+                (
+                    "192.0.2.10".parse().unwrap(),
+                    "127.0.0.1:53211".parse().unwrap()
+                ),
+                (
+                    "192.0.2.11".parse().unwrap(),
+                    "127.0.0.1:53212".parse().unwrap()
+                ),
+            ]
+        );
+        assert_eq!(Routes::parse("").unwrap(), Routes::default());
+        assert!(Routes::parse("[routes]\n\"192.0.2.10\" = \"nowhere\"\n").is_err());
+        assert!(Routes::parse("sdp = \"127.0.0.1:1\"\n").is_err());
+
+        let missing = GlobalHarness::try_parse_from(["fsonos", "--routes", "/nonexistent/routes"])
+            .unwrap()
+            .global
+            .routes()
+            .unwrap_err();
+        assert_eq!(missing.exit_code(), 2);
+        assert!(missing.detail.contains("cannot read routes file"));
+        let none = GlobalHarness::try_parse_from(["fsonos"]).unwrap().global;
+        assert_eq!(none.routes().unwrap(), Routes::default());
     }
 
     #[derive(Parser)]

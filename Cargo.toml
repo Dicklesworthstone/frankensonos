@@ -47,6 +47,8 @@ roxmltree = "0.21"
 # Hand-edited data-dir config (aliases.toml, policy.toml, moods.toml).
 toml = "1"
 tempfile = "3"
+# Ctrl-C / SIGTERM for `fsonos sim` (safe flag API).
+signal-hook = "0.4"
 # getifaddrs: the interface-scan fallback for Tailscale detection.
 if-addrs = "0.15"
 

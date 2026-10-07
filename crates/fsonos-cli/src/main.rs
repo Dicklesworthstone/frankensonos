@@ -14,9 +14,12 @@
 //!   dj         the classical DJ (not wired to the speakers yet)
 //!   serve      run the long-lived daemon (HTTP API + MCP server + GENA sink)
 //!   mcp        serve the MCP tools over stdio (for a local agent)
+//!   sim        run a virtual Sonos house on loopback (feature `sim`)
 
 mod config;
 mod direct;
+#[cfg(feature = "sim")]
+mod sim;
 
 use anyhow::Context as _;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
@@ -98,6 +101,10 @@ enum Command {
     Serve(config::ServeArgs),
     /// Serve the MCP tools over stdio (for a local agent).
     Mcp,
+    /// Run a virtual Sonos house on loopback to try FrankenSonos without
+    /// speakers.
+    #[cfg(feature = "sim")]
+    Sim(sim::SimArgs),
     /// Classical DJ controls.
     Dj {
         #[command(subcommand)]
@@ -148,6 +155,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Serve(args) => serve(global, &args),
         Command::Mcp => run_mcp_stdio(global),
+        #[cfg(feature = "sim")]
+        Command::Sim(args) => sim::run(&args),
         Command::Discover => {
             let found = Direct::survey(global)?.discover();
             for (addr, why) in &found.unreachable {
@@ -251,6 +260,8 @@ fn plan_for(
         Command::Discover | Command::Zones | Command::Serve(_) | Command::Mcp => {
             unreachable!("not a control command")
         }
+        #[cfg(feature = "sim")]
+        Command::Sim(_) => unreachable!("not a control command"),
     }
 }
 
@@ -326,8 +337,7 @@ fn run_mcp_stdio(global: &config::GlobalArgs) -> anyhow::Result<()> {
     let survey: fsonos_mcp::tools::Survey = Box::new(move |transport| {
         Ok(fsonos_core::inventory::survey(transport, &seeds, wait)?.households)
     });
-    let lan = fsonos_proto::net::Lan::start()
-        .map_err(|e| Failure::from(fsonos_core::CoreError::from(e)))?;
+    let lan = global.lan()?;
     let backend = fsonos_mcp::tools::Backend::new(
         Box::new(lan),
         survey,
