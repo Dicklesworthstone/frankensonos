@@ -309,6 +309,9 @@ pub struct Failure {
     pub suggestions: Vec<String>,
     /// The UPnP error code, for [`ErrorCode::UpnpFault`].
     pub upnp_code: Option<u16>,
+    /// The room the request named, for [`ErrorCode::UnknownRoom`] (a surface
+    /// with a live model checks it against the vanished players).
+    pub room: Option<String>,
 }
 
 impl Failure {
@@ -321,6 +324,7 @@ impl Failure {
             hint: code.default_hint().to_string(),
             suggestions: Vec::new(),
             upnp_code: None,
+            room: None,
         }
     }
 
@@ -445,8 +449,11 @@ impl From<CoreError> for Failure {
     fn from(err: CoreError) -> Self {
         let detail = err.to_string();
         match err {
-            CoreError::UnknownRoom { name, known } => Self::new(ErrorCode::UnknownRoom, detail)
-                .with_suggestions(suggest_rooms(&name, &known)),
+            CoreError::UnknownRoom { name, known } => Self {
+                room: Some(name.clone()),
+                ..Self::new(ErrorCode::UnknownRoom, detail)
+                    .with_suggestions(suggest_rooms(&name, &known))
+            },
             CoreError::AmbiguousRoom { candidates, .. } => {
                 Self::new(ErrorCode::AmbiguousRoom, detail).with_suggestions(candidates)
             }

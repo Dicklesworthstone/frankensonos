@@ -50,6 +50,34 @@ pub fn resurvey(live: &Live, timeout: Duration) -> Option<Vec<HouseholdState>> {
     }
 }
 
+/// `failure` as it is, or `PLAYER_UNREACHABLE` when it names an unknown
+/// room the households list as vanished: a speaker that is off or off the
+/// network, not a typo.
+#[must_use]
+pub fn vanished(failure: Failure, snapshot: &Snapshot) -> Failure {
+    if failure.code != ErrorCode::UnknownRoom {
+        return failure;
+    }
+    let Some(device) = failure
+        .room
+        .as_deref()
+        .and_then(|room| snapshot.vanished_room(room))
+    else {
+        return failure;
+    };
+    let seen = device
+        .last_known_ip
+        .map_or_else(String::new, |ip| format!("; last seen at {ip}"));
+    Failure::new(
+        ErrorCode::PlayerUnreachable,
+        format!(
+            "{} is powered off or disconnected (its household lists it as vanished{seen})",
+            device.zone_name
+        ),
+    )
+    .with_hint("Check the speaker's power and network; it reappears on its own once it is back.")
+}
+
 /// The track a player's events describe, or `None` when it is on nothing.
 #[must_use]
 pub fn track(playback: &PlayerPlayback, now: Instant) -> Option<TrackDto> {
@@ -156,6 +184,42 @@ mod tests {
             ..Snapshot::default()
         });
         assert_eq!(found_nothing.status, Status::Pass);
+    }
+
+    #[test]
+    fn an_unknown_room_that_vanished_is_unreachable() {
+        let snapshot = Snapshot {
+            vanished: vec![fsonos_proto::topology::VanishedDevice {
+                uuid: fsonos_types::PlayerId("RINCON_BED".into()),
+                zone_name: "Bedroom".into(),
+                reason: Some("powered off".into()),
+                model: None,
+                last_known_ip: Some("192.0.2.14".parse().unwrap()),
+            }],
+            ..Snapshot::default()
+        };
+        let unknown = |room: &str| {
+            Failure::from(fsonos_core::CoreError::UnknownRoom {
+                name: room.into(),
+                known: vec!["Kitchen@S1".into()],
+            })
+        };
+        let off = vanished(unknown("bedroom"), &snapshot);
+        assert_eq!(off.code, ErrorCode::PlayerUnreachable);
+        assert!(
+            off.detail.contains("Bedroom is powered off"),
+            "{}",
+            off.detail
+        );
+        assert!(off.detail.contains("192.0.2.14"), "{}", off.detail);
+        assert!(off.hint.contains("power and network"));
+        // A typo stays a typo, with its suggestions.
+        let typo = vanished(unknown("Kitchn"), &snapshot);
+        assert_eq!(typo.code, ErrorCode::UnknownRoom);
+        assert_eq!(typo.suggestions, ["Kitchen@S1"]);
+        // Other failures pass through.
+        let other = Failure::new(ErrorCode::NotReady, "x");
+        assert_eq!(vanished(other.clone(), &snapshot), other);
     }
 
     #[test]

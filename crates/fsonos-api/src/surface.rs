@@ -270,6 +270,15 @@ impl Surface {
             .is_some_and(|until| Instant::now() < until)
     }
 
+    /// `failure`, or `PLAYER_UNREACHABLE` when it names a room the live
+    /// model lists as vanished (powered off), not one that does not exist.
+    fn explain(&self, failure: Failure) -> Failure {
+        match self.live() {
+            Some(live) => crate::live::vanished(failure, &live.snapshot()),
+            None => failure,
+        }
+    }
+
     /// Ask the live model to survey soon when `failure` says a player is
     /// gone (moved, rebooted, or off).
     fn notice(&self, failure: &Failure) {
@@ -345,7 +354,7 @@ impl Surface {
             return Err(denied);
         }
         let households = self.households()?;
-        let command = plan(&*self.transport, &households)?;
+        let command = plan(&*self.transport, &households).map_err(|f| self.explain(f))?;
         let regroups = matches!(command, Command::Join { .. } | Command::Leave { .. });
         // Already satisfied requests change nothing and are not logged.
         if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
@@ -488,7 +497,7 @@ impl Surface {
     pub fn zone(&self, client: &Client, room: &str) -> Result<ZoneDto, Failure> {
         self.guard(client).authorize("get_zone", true)?;
         let households = self.households()?;
-        let target = resolve(&households, room)?;
+        let target = resolve(&households, room).map_err(|f| self.explain(f))?;
         Ok(zone_for_target(&households, &target, |c| {
             self.transport_state(&households, c)
         }))
@@ -522,7 +531,7 @@ impl Surface {
         let household_favorites = match req.zone()? {
             Some(zone) => {
                 let households = self.households()?;
-                let target = resolve(&households, zone)?;
+                let target = resolve(&households, zone).map_err(|f| self.explain(f))?;
                 favorites::list(&*self.transport, &households, &target.coordinator.id)?
             }
             None => Vec::new(),
@@ -549,7 +558,8 @@ impl Surface {
         };
         let key = zone
             .map(|z| resolve(&households, z).map(|t| t.coordinator.id.0.clone()))
-            .transpose()?;
+            .transpose()
+            .map_err(|f| self.explain(f))?;
         let plays = self
             .with_store(|s| s.recent_plays(key.as_deref(), limit))?
             .unwrap_or_default();
@@ -609,7 +619,7 @@ impl Surface {
     pub fn favorites(&self, client: &Client, zone: &str) -> Result<Vec<FavoriteDto>, Failure> {
         self.guard(client).authorize("list_favorites", true)?;
         let households = self.households()?;
-        let target = resolve(&households, zone)?;
+        let target = resolve(&households, zone).map_err(|f| self.explain(f))?;
         let listed = favorites::list(&*self.transport, &households, &target.coordinator.id)?;
         Ok(listed.iter().map(FavoriteDto::from).collect())
     }
@@ -619,7 +629,7 @@ impl Surface {
     pub fn zone_state(&self, client: &Client, zone: &str) -> Result<ZoneStateDto, Failure> {
         self.guard(client).authorize("get_zone_state", true)?;
         let households = self.households()?;
-        let target = resolve(&households, zone)?;
+        let target = resolve(&households, zone).map_err(|f| self.explain(f))?;
         let heard = |p: &PlayerId| self.live().and_then(|live| live.player(p));
         // The group's transport and track, from its events when it has
         // reported them, else asked.
