@@ -65,6 +65,10 @@ pub enum SpotifyError {
     Api { status: u16, body: String },
     #[error("invalid config: {0}")]
     Config(String),
+    /// A session or request named a mood that `moods.toml` and the built-ins
+    /// don't define; `known` lists the ones that exist.
+    #[error("no mood {name:?} (known: {})", .known.join(", "))]
+    UnknownMood { name: String, known: Vec<String> },
     #[error("decode error: {0}")]
     Decode(String),
     #[error("http error: {0}")]

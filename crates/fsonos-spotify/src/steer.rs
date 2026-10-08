@@ -746,9 +746,9 @@ impl DjSession {
         let base = match &mood {
             Some(name) => moods
                 .get(name)
-                .ok_or_else(|| {
-                    let known: Vec<&str> = moods.names().collect();
-                    SpotifyError::Config(format!("no mood {name:?} (known: {})", known.join(", ")))
+                .ok_or_else(|| SpotifyError::UnknownMood {
+                    name: name.clone(),
+                    known: moods.names().map(str::to_owned).collect(),
                 })?
                 .clone(),
             None => DjConstraints::default(),
@@ -1561,10 +1561,30 @@ mood = "focus"
             mood: Some("disco".into()),
             ..minimal
         };
-        let err = unknown.steer(&moods, None).unwrap_err().to_string();
+        let err = unknown.steer(&moods, None).unwrap_err();
         assert!(
-            err.contains("no mood \"disco\"") && err.contains("focus"),
-            "{err}"
+            matches!(&err, SpotifyError::UnknownMood { name, known }
+                if name == "disco" && known.iter().any(|k| k == "focus")),
+            "{err:?}"
+        );
+        assert_eq!(
+            err.to_string(),
+            "no mood \"disco\" (known: bright, calm, dinner, focus, sunday-morning)"
+        );
+        // Bounds that clash once the session lays its own on the mood's are
+        // a Config error, not an unknown mood.
+        let clash = DjSession {
+            mood: Some("dinner".into()),
+            constraints: DjConstraints {
+                min_work_minutes: Some(40),
+                ..DjConstraints::default()
+            },
+            ..unknown
+        };
+        let err = clash.steer(&moods, None).unwrap_err();
+        assert!(
+            matches!(&err, SpotifyError::Config(why) if why.contains("exceeds max_work_minutes 30")),
+            "{err:?}"
         );
     }
 
