@@ -12,8 +12,7 @@
 //! `fsonos_cli::config` tests.
 
 const DEPLOY_MD: &str = include_str!("../../../docs/DEPLOY.md");
-const PLIST: &str =
-    include_str!("../../../docs/launchd/io.github.dicklesworthstone.fsonos.plist");
+const PLIST: &str = include_str!("../../../docs/launchd/io.github.dicklesworthstone.fsonos.plist");
 const ENV_EXAMPLE: &str = include_str!("../../../.env.example");
 
 /// IPv4 literals that are legitimate in public documentation.
@@ -77,7 +76,9 @@ fn ipv4_literals(text: &str) -> Vec<String> {
                 }
             }
             // Reject if the next char continues the number (e.g. a 5th group).
-            if ok && groups == 4 && !(j < bytes.len() && (bytes[j] == b'.' || bytes[j].is_ascii_digit()))
+            if ok
+                && groups == 4
+                && !(j < bytes.len() && (bytes[j] == b'.' || bytes[j].is_ascii_digit()))
             {
                 out.push(text[start..j].to_string());
             }
@@ -104,7 +105,8 @@ fn mac_literals(text: &str) -> Vec<String> {
                 let off = g * 3;
                 is_hex(w[off]) && is_hex(w[off + 1]) && (g == 5 || w[off + 2] == b':')
             });
-            let ends_clean = i + 17 >= bytes.len() || !(is_hex(bytes[i + 17]) || bytes[i + 17] == b':');
+            let ends_clean =
+                i + 17 >= bytes.len() || !(is_hex(bytes[i + 17]) || bytes[i + 17] == b':');
             if shaped && ends_clean {
                 out.push(String::from_utf8_lossy(w).into_owned());
                 i += 17;
