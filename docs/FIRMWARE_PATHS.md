@@ -17,15 +17,20 @@ images against an on-device key and carry a vendor debug path
 yet found.
 
 Path to owner software: find/enable the debug update path (`r2` on
-`bin/upgrade` is the next step; the S1 controller's `SCMockUpdateDebugPage`
-and the beta-channel scuri show the update URL is controller-driven), or
-deliver a correctly signed image. Realistic near-term: a custom rootfs built
-from the readable base with the daemon baked in, gated on the signature
-question being answered first.
+State: milestone-era images (34.16) are unencrypted and fully decoded;
+rootfs extracted and readable on both platforms. The updaters signature-check
+images against an on-device key and carry a vendor debug path
+(`allow_policy_bypass`, debug-version flags, no-op mode) whose trigger is not
+yet found.
 
-## Class B: S2-era MIPS players (Play:1 on 86.10) — MIXED
-
-Same hardware family as Class A but current firmware encrypts content
+**VERIFIED 2026-10-08**: the .upd delivery path is **blocked** by RSA
+signature verification on running 57.23 firmware. Live-fire testing proved:
+`BeginSoftwareUpdate` accepts arbitrary URLs and the speaker downloads
+served files, but modified .upd files (with real kernel+rootfs from the
+readable 34.16 base) are rejected — script records never execute, version
+stays unchanged, the speaker recovers. The 34.16-era binary showed the
+signature check as advisory; 57.23 enforces it. The gap between 34.16 and
+57.23 is where Sonos closed it.
 (boundary pinned between 34.16 and 57.19). The readable milestone base gives
 the platform's layout; decryption needs the device-family key from a device's
 install environment (the key is on-device, compiled into the install path).
