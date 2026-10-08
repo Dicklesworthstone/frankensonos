@@ -24,10 +24,15 @@
 //! local processes (`loopback-http`, which is how Tailscale Serve arrives);
 //! any other bind answers as `unknown`, which the default policy keeps
 //! read-only until tailnet identity reaches the HTTP layer.
+//!
+//! Each HTTP listener admits browser requests only from its own origins
+//! (its bound address and names); loopback ones also from the Tailscale
+//! Serve origin the daemon learns while it runs ([`serve_origin`]).
 
 use anyhow::Context as _;
 use fastapi::{ServerConfig, TcpServer};
 use fsonos_api::surface::schedules::Scheduler;
+use fsonos_api::web::ServeOrigin;
 use fsonos_api::{Failure, Identity, Surface, WebPolicy};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::live::{Live, LiveConfig, LiveEvent};
@@ -42,6 +47,8 @@ use std::time::Duration;
 
 use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::schedule_cmd::SchedulerArgs;
+
+mod serve_origin;
 
 /// The data directory, or `INVALID_ARGUMENT` when none can be determined.
 pub fn data_dir(global: &GlobalArgs) -> Result<PathBuf, Failure> {
@@ -233,8 +240,16 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     // The local CLI's proof that it is the CLI (see crate::remote).
     let cli_token = fsonos_core::announce::clip::clip_id().context("make the CLI token")?;
     let names = tailnet_names(&tailnet);
+    let serve = ServeOrigin::default();
     let http = start_all("HTTP API", &http_plan, |addr| {
-        start_http(&surface, addr, &names, args.tailscale_serve, &cli_token)
+        start_http(
+            &surface,
+            addr,
+            &names,
+            args.tailscale_serve,
+            &cli_token,
+            &serve,
+        )
     })?;
     let mcp = start_all("MCP server", &mcp_plan, |addr| start_mcp(&surface, addr))?;
     // One value per key: the e2e harness and scripts parse this line.
@@ -255,6 +270,13 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         }
     }
     announce_tailnet(&tailnet, &http_plan, &http, &mcp);
+    if !matches!(
+        tailnet,
+        fsonos_tailscale::TailnetStatus::Unavailable(fsonos_tailscale::Unavailable::Disabled)
+    ) {
+        let target = crate::tailscale_cmd::mappings(args)[0].target.clone();
+        serve_origin::watch(target, serve, Arc::clone(&stop));
+    }
     if args.tailscale_serve {
         // A first HTTPS certificate can take a while: not on the main thread.
         let (serve, tailnet) = (args.clone(), tailnet.clone());
@@ -379,15 +401,19 @@ fn tailnet_names(status: &fsonos_tailscale::TailnetStatus) -> Vec<String> {
 
 /// Bind the HTTP API on its own thread; returns the server and the bound
 /// address once it listens. Only the listener's own Host names are admitted
-/// (DNS-rebinding defense), and every route applies the browser rules.
+/// (DNS-rebinding defense), and every route applies the browser rules for
+/// the address it bound (so an ephemeral `:0` admits its own origin); a
+/// loopback listener also admits what `serve` learns.
 fn start_http(
     surface: &Arc<Surface>,
     addr: SocketAddr,
     names: &[String],
     behind_serve: bool,
     cli_token: &str,
+    serve: &ServeOrigin,
 ) -> anyhow::Result<(Arc<TcpServer>, SocketAddr)> {
-    let web = WebPolicy::for_listener(addr, names);
+    // Host names do not depend on the port.
+    let hosts = WebPolicy::for_listener(addr, names).hosts().to_vec();
     // Behind Tailscale Serve, its login header names the tailnet user.
     let identity = if behind_serve {
         Identity::behind_serve(listener_client(addr))
@@ -395,8 +421,8 @@ fn start_http(
         Identity::fixed(listener_client(addr))
     }
     .with_cli_token(cli_token.to_string());
-    let app = Arc::new(fsonos_api::app(surface, &identity, &web));
-    let config = ServerConfig::new(addr.to_string()).with_allowed_hosts(web.hosts().to_vec());
+    let (surface, names, serve) = (Arc::clone(surface), names.to_vec(), serve.clone());
+    let config = ServerConfig::new(addr.to_string()).with_allowed_hosts(hosts);
     let server = Arc::new(TcpServer::new(config));
     let (bound_tx, bound_rx) = mpsc::channel();
     let serving = Arc::clone(&server);
@@ -411,6 +437,11 @@ fn start_http(
                         .await
                         .with_context(|| format!("bind the HTTP API on {addr}"))?;
                     let local = listener.local_addr().context("HTTP API address")?;
+                    let mut web = WebPolicy::for_listener(local, &names);
+                    if local.ip().is_loopback() {
+                        web = web.with_serve_origin(&serve);
+                    }
+                    let app = Arc::new(fsonos_api::app(&surface, &identity, &web));
                     let _ = ready_tx.send(Ok(local));
                     // One task per connection: an idle keep-alive client or
                     // an open GET /events stream must not hold up the rest.

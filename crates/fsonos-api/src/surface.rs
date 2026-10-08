@@ -49,6 +49,8 @@ pub mod schedules;
 
 pub mod announce;
 
+pub mod art;
+
 /// Finds the households (a LAN survey, say).
 pub type Survey = Box<dyn Fn(&dyn Transport) -> Result<Vec<HouseholdState>, Failure> + Send + Sync>;
 

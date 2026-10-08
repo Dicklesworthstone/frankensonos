@@ -32,6 +32,8 @@
 //! | `GET`/`POST /sleep`, `GET`/`POST /schedules`, `POST /schedules/remove`, `/pause`, `/resume` | | sleep timers and schedules: see [`schedules`] |
 //! | `POST /announce` | [`crate::surface::announce::AnnounceRequest`] | [`crate::surface::announce::AnnounceDto`] |
 //! | `POST /dj/feedback` | [`crate::surface::dj_feedback::DjFeedbackRequest`] | [`crate::surface::dj_feedback::DjFeedbackDto`] |
+//! | `GET /` (and `/remote.js`, `/remote.css`) | | the web remote: a page that controls the speakers from a browser ([`remote`]) |
+//! | `GET /art?zone=<room>` | | the album art of what the room's group plays, from its own player (`204` when none) |
 //!
 //! Every route first passes the listener's [`WebPolicy`] (a present Origin
 //! must be the daemon's own; POSTs must be JSON); the listener itself admits
@@ -79,6 +81,8 @@ mod schedules;
 mod scenes;
 
 mod announce;
+
+mod remote;
 
 /// The API application over `surface`, answering every caller as `client`,
 /// with the listener's browser-safety rules (`web`, see [`crate::web`]).
@@ -142,6 +146,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(dj(cx));
     routes.extend(dj_feedback::routes(cx));
     routes.extend(schedules::routes(cx));
+    routes.extend(remote::routes(cx));
     routes
 }
 

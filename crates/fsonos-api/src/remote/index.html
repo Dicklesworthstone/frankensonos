@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="referrer" content="no-referrer">
+<title>FrankenSonos</title>
+<link rel="stylesheet" href="/remote.css">
+<script src="/remote.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <h1>FrankenSonos</h1>
+  <p id="live" class="live" role="status" aria-live="polite">Connecting…</p>
+</header>
+<div id="doctor" class="banner" role="alert" hidden></div>
+<section id="scenes-section" class="scenes" aria-labelledby="scenes-title" hidden>
+  <h2 id="scenes-title">Scenes</h2>
+  <div id="scenes" class="scene-buttons"></div>
+</section>
+<main id="households">
+  <p class="empty">Looking for the speakers…</p>
+</main>
+<p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
+<noscript><p class="banner">The remote needs JavaScript. The same controls are in the HTTP API (GET /openapi.json).</p></noscript>
+</body>
+</html>
