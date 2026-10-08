@@ -266,3 +266,37 @@ fn the_same_uri_at_a_new_queue_position_is_a_new_track() {
         Some(1)
     );
 }
+
+#[test]
+fn a_queue_that_grows_under_the_same_track_is_reported() {
+    let mut p = Playback::default();
+    let now = Instant::now();
+    let avt = |body: &str, seq| notify(body, seq);
+    let first = p
+        .apply(
+            &player(),
+            EventSource::AvTransport,
+            &avt(AVT_INITIAL, 0),
+            now,
+        )
+        .unwrap();
+    assert_eq!(first.queue_length, Some(1));
+    // Another app adds two tracks; the same track keeps playing.
+    let grown = AVT_INITIAL.replace(
+        "NumberOfTracks val=&quot;1&quot;",
+        "NumberOfTracks val=&quot;3&quot;",
+    );
+    assert_ne!(grown, AVT_INITIAL, "the fixture names its queue length");
+    let changes = p
+        .apply(&player(), EventSource::AvTransport, &avt(&grown, 1), now)
+        .unwrap();
+    assert_eq!(changes.queue_length, Some(3));
+    assert_eq!(changes.track, None, "the same track is playing");
+    assert!(!changes.is_empty());
+    assert_eq!(p.of(&player()).unwrap().queue_length, Some(3));
+    // Nothing new: nothing reported.
+    let again = p
+        .apply(&player(), EventSource::AvTransport, &avt(&grown, 2), now)
+        .unwrap();
+    assert_eq!(again.queue_length, None);
+}

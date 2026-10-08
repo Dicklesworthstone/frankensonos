@@ -93,6 +93,9 @@ pub struct Changes {
     pub volume: Option<u8>,
     pub mute: Option<bool>,
     pub group_volume: Option<u8>,
+    /// The queue's length changed (tracks added or removed, perhaps from
+    /// another app), even with the same track playing.
+    pub queue_length: Option<u32>,
 }
 
 impl Changes {
@@ -225,6 +228,9 @@ fn apply_av_transport(
         state.queue_position = Some(n);
     }
     if let Some(n) = lc.get("NumberOfTracks").and_then(|v| v.trim().parse().ok()) {
+        if state.queue_length != Some(n) {
+            changes.queue_length = Some(n);
+        }
         state.queue_length = Some(n);
     }
     if let Some(mode) = lc.get("CurrentPlayMode") {
