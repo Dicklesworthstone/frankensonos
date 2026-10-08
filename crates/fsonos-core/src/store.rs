@@ -41,11 +41,14 @@ pub struct CachedPlayer {
 }
 
 /// One track of the owner's Spotify library cache. `track.uri` (the
-/// household-specific renderer URI) is not cached.
+/// household-specific renderer URI) is not cached. Build one in tests with
+/// `..LibraryEntry::default()`, so a new field doesn't break them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryEntry {
     pub track: Track,
-    /// False for explicit tracks too: the DJ never plays those.
+    /// Judged classical (the DJ plays it as part of a whole work). In a row
+    /// cached before `candidate` was recorded, it marks a DJ candidate
+    /// instead (see [`Self::is_candidate`]).
     pub is_classical: bool,
     /// When the owner saved it, in unix seconds.
     pub added: i64,
@@ -59,6 +62,56 @@ pub struct LibraryEntry {
     /// The work this track belongs to (normalized composer and work), so the
     /// DJ can select whole works.
     pub work_key: Option<String>,
+    /// Genre tags the library read gave (album or artist genres; often none).
+    pub genres: Vec<String>,
+    /// The album's release year, when known.
+    pub release_year: Option<u16>,
+    /// Spotify marks it explicit (the owner's DJ preferences decide).
+    pub explicit: bool,
+    /// Whether the DJ may play it: in the owner's library now, in any genre.
+    /// `None` in a row cached before this was recorded.
+    pub candidate: Option<bool>,
+    /// How strongly the owner's own account favors it, per mille (1000 is
+    /// neutral), when known.
+    pub taste_weight: Option<u32>,
+}
+
+impl LibraryEntry {
+    /// Whether the DJ may play it: `candidate`, or `is_classical` in a row
+    /// cached before candidacy was recorded (when only classical tracks were
+    /// candidates).
+    #[must_use]
+    pub fn is_candidate(&self) -> bool {
+        self.candidate.unwrap_or(self.is_classical)
+    }
+}
+
+impl Default for LibraryEntry {
+    fn default() -> Self {
+        Self {
+            track: Track {
+                title: String::new(),
+                artist: None,
+                album: None,
+                source_uri: String::new(),
+                uri: None,
+                duration_secs: None,
+            },
+            is_classical: false,
+            added: 0,
+            album_uri: None,
+            album_artists: None,
+            origin: LibraryOrigin::default(),
+            disc_number: None,
+            track_number: None,
+            work_key: None,
+            genres: Vec::new(),
+            release_year: None,
+            explicit: false,
+            candidate: None,
+            taste_weight: None,
+        }
+    }
 }
 
 /// How a track got into the owner's library.
@@ -146,13 +199,18 @@ pub struct StoredSchedule {
 }
 
 /// One piece of listening feedback about something the DJ played.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Feedback {
     /// When it was given, in unix seconds.
     pub at: i64,
     pub work_key: Option<String>,
     pub composer_key: Option<String>,
     pub performer: Option<String>,
+    /// A song's lead artist, normalized (a classical work keys its composer
+    /// and performer instead).
+    pub artist_key: Option<String>,
+    /// The album it was heard from.
+    pub album_key: Option<String>,
     /// Positive for liked, negative for disliked; the magnitude is strength.
     pub signal: i64,
 }
@@ -163,6 +221,8 @@ pub enum FeedbackKey<'a> {
     Work(&'a str),
     Composer(&'a str),
     Performer(&'a str),
+    Artist(&'a str),
+    Album(&'a str),
 }
 
 impl FeedbackKey<'_> {
@@ -171,6 +231,8 @@ impl FeedbackKey<'_> {
             Self::Work(k) => (&f.work_key, k),
             Self::Composer(k) => (&f.composer_key, k),
             Self::Performer(k) => (&f.performer, k),
+            Self::Artist(k) => (&f.artist_key, k),
+            Self::Album(k) => (&f.album_key, k),
         };
         field.as_deref() == Some(key)
     }

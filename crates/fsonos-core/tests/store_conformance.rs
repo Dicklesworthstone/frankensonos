@@ -41,6 +41,7 @@ fn entry(uri: &str, added: i64, artist: Option<&str>, classical: bool) -> Librar
         disc_number: None,
         track_number: None,
         work_key: None,
+        ..LibraryEntry::default()
     }
 }
 
@@ -214,6 +215,12 @@ fn library_cache(s: &mut dyn Store) {
     movement.disc_number = Some(1);
     movement.track_number = Some(2);
     movement.work_key = Some("mahler|symphony no 5".into());
+    // The genre-agnostic fields too (migration 7).
+    movement.genres = vec!["classical".into(), "late romantic era".into()];
+    movement.release_year = Some(1987);
+    movement.explicit = true;
+    movement.candidate = Some(true);
+    movement.taste_weight = Some(1300);
     s.upsert_library(std::slice::from_ref(&movement)).unwrap();
     movement.origin = LibraryOrigin::Both;
     s.upsert_library(std::slice::from_ref(&movement)).unwrap();
@@ -294,6 +301,7 @@ fn fb(
         composer_key: Some(composer.into()),
         performer: performer.map(str::to_string),
         signal,
+        ..Feedback::default()
     }
 }
 
@@ -352,6 +360,35 @@ fn feedback(s: &mut dyn Store) {
         0
     );
 
+    // A song's feedback keys its artist and album.
+    let song = Feedback {
+        at: 250,
+        work_key: Some("nina marsh quartet|blue hours".into()),
+        artist_key: Some("nina marsh quartet".into()),
+        album_key: Some("spotify:album:blue".into()),
+        signal: 3,
+        ..Feedback::default()
+    };
+    s.record_feedback(&song).unwrap();
+    assert_eq!(
+        s.feedback(FeedbackKey::Artist("nina marsh quartet"), all_time.clone())
+            .unwrap(),
+        std::slice::from_ref(&song)
+    );
+    assert_eq!(
+        s.feedback(FeedbackKey::Album("spotify:album:blue"), all_time.clone())
+            .unwrap(),
+        std::slice::from_ref(&song)
+    );
+    assert!(
+        s.feedback(
+            FeedbackKey::Composer("nina marsh quartet"),
+            all_time.clone()
+        )
+        .unwrap()
+        .is_empty()
+    );
+
     // Everything in a window, whatever it is about; same ordering and bounds.
     let skip = fb(
         100,
@@ -365,9 +402,9 @@ fn feedback(s: &mut dyn Store) {
     let tie = fb(300, None, "mahler", Some("Abbado"), -2);
     assert_eq!(
         s.feedback_between(all_time).unwrap(),
-        [skip, like.clone(), late.clone(), tie.clone()]
+        [skip, like.clone(), song.clone(), late.clone(), tie.clone()]
     );
-    assert_eq!(s.feedback_between(150..300).unwrap(), [like]);
+    assert_eq!(s.feedback_between(150..300).unwrap(), [like, song]);
     assert_eq!(s.feedback_between(300..301).unwrap(), [late, tie]);
     assert_eq!(s.feedback_between(301..400).unwrap(), [] as [Feedback; 0]);
 }
@@ -614,7 +651,7 @@ fn mem_store_conforms() {
 fn sqlite_in_memory_conforms() {
     let mut s = SqliteStore::open_in_memory().unwrap();
     suite(&mut s);
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7]);
     s.close().unwrap();
 }
 
@@ -629,7 +666,7 @@ fn sqlite_file_survives_close_and_reopen() {
 
     // Reopening re-runs no migrations and sees every committed write.
     let s = SqliteStore::open(&path).unwrap();
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7]);
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
     assert_eq!(s.cached_groups("HH_S2").unwrap().len(), 1);

@@ -1,7 +1,8 @@
 //! Learning from the owner: likes, dislikes, early skips and full listens.
 //!
 //! A DJ that never learns keeps making the same mistakes. Each
-//! [`FeedbackSignal`] nudges a work, its composer, or its performer; the
+//! [`FeedbackSignal`] nudges a work and who made it: a classical work's
+//! composer and performer, or a song's artist, featured artist and album; the
 //! [`FeedbackModel`] decays them (half-life 30 days) into weight multipliers
 //! the DJ applies, each clamped to [0.25, 2.0], so taste drifts toward the
 //! owner's without manual curation and nothing dominates. Two dislikes of a
@@ -73,8 +74,9 @@ impl Signal {
     }
 }
 
-/// Feedback about a work, a composer, or a performer (any of the keys may be
-/// set: a like on a work usually carries its composer and performer too).
+/// Feedback about a work and who made it (any of the keys may be set: a like
+/// on a work usually carries its composer and performer, or a song's artist
+/// and album, too).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedbackSignal {
     /// Unix seconds.
@@ -83,20 +85,32 @@ pub struct FeedbackSignal {
     pub work_key: Option<String>,
     /// The composer's key (normalized name).
     pub composer_key: Option<String>,
-    /// A performer, normalized ([`normalize`]).
+    /// A performer, normalized ([`normalize`]): a classical work's lead
+    /// performer, a song's first featured artist.
     pub performer: Option<String>,
+    /// A song's lead artist, normalized (its [`Work::composer_key`]).
+    #[serde(default)]
+    pub artist_key: Option<String>,
+    /// A song's album ([`Work::album_key`]).
+    #[serde(default)]
+    pub album_key: Option<String>,
     pub signal: Signal,
 }
 
 impl FeedbackSignal {
-    /// A signal about a whole work, carrying its composer and lead performer.
+    /// A signal about a whole work, carrying a classical work's composer and
+    /// lead performer, or a song's artist, first featured artist and album.
     #[must_use]
     pub fn about(work: &Work, signal: Signal, at: i64) -> Self {
+        let who = Some(work.composer_key().to_owned());
+        let classical = work.is_classical();
         Self {
             at,
             work_key: Some(work.work_key.clone()),
-            composer_key: Some(work.composer_key().to_owned()),
+            composer_key: who.clone().filter(|_| classical),
             performer: performers(work).into_iter().next(),
+            artist_key: who.filter(|_| !classical),
+            album_key: (!classical && !work.album_key.is_empty()).then(|| work.album_key.clone()),
             signal,
         }
     }
@@ -109,6 +123,8 @@ impl FeedbackSignal {
             work_key: self.work_key.clone(),
             composer_key: self.composer_key.clone(),
             performer: self.performer.clone(),
+            artist_key: self.artist_key.clone(),
+            album_key: self.album_key.clone(),
             signal: self.signal.value(),
         }
     }
@@ -122,6 +138,8 @@ impl FeedbackSignal {
             work_key: row.work_key.clone(),
             composer_key: row.composer_key.clone(),
             performer: row.performer.clone(),
+            artist_key: row.artist_key.clone(),
+            album_key: row.album_key.clone(),
             signal: Signal::from_value(row.signal)?,
         })
     }
@@ -200,8 +218,10 @@ pub fn performers(work: &Work) -> Vec<String> {
         .collect()
 }
 
-/// Feedback decayed to one moment: weight multipliers per work, composer
-/// and performer, and the works two dislikes keep out.
+/// Feedback decayed to one moment: weight multipliers per work, composer or
+/// artist (one namespace: a song cached before artist keys keyed its artist
+/// as the composer), performer and album, and the works two dislikes keep
+/// out.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FeedbackModel {
     /// The moment it was decayed to (unix seconds).
@@ -209,6 +229,7 @@ pub struct FeedbackModel {
     works: HashMap<String, f64>,
     composers: HashMap<String, f64>,
     performers: HashMap<String, f64>,
+    albums: HashMap<String, f64>,
     /// Work key → until when (unix seconds) it is excluded.
     excluded: HashMap<String, i64>,
 }
@@ -235,15 +256,16 @@ impl FeedbackModel {
             let weight = (-(age as f64) / HALF_LIFE_SECS as f64).exp2();
             #[allow(clippy::cast_precision_loss)]
             let score = s.signal.value() as f64 * weight;
-            for (map, key) in [
-                (&mut model.works, &s.work_key),
-                (&mut model.composers, &s.composer_key),
-                (&mut model.performers, &s.performer),
-            ] {
+            let add = |map: &mut HashMap<String, f64>, key: &Option<String>| {
                 if let Some(key) = key {
                     *map.entry(key.clone()).or_default() += score;
                 }
-            }
+            };
+            add(&mut model.works, &s.work_key);
+            add(&mut model.composers, &s.composer_key);
+            add(&mut model.composers, &s.artist_key);
+            add(&mut model.performers, &s.performer);
+            add(&mut model.albums, &s.album_key);
             if s.signal == Signal::Dislike
                 && let Some(work) = &s.work_key
             {
@@ -274,8 +296,8 @@ impl FeedbackModel {
     }
 
     /// The weight multiplier for `work`, per-mille: the product of its work,
-    /// composer and performer multipliers, each — and the product —
-    /// clamped to [250, 2000].
+    /// composer or artist, performer and album multipliers, each — and the
+    /// product — clamped to [250, 2000].
     #[must_use]
     pub fn multiplier_pm(&self, work: &Work) -> u64 {
         let mut pm = 1000u64;
@@ -289,12 +311,16 @@ impl FeedbackModel {
         for performer in performers(work) {
             apply(self.performers.get(&performer));
         }
+        apply(self.albums.get(&work.album_key));
         pm.clamp(MIN_PM, MAX_PM)
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.works.is_empty() && self.composers.is_empty() && self.performers.is_empty()
+        self.works.is_empty()
+            && self.composers.is_empty()
+            && self.performers.is_empty()
+            && self.albums.is_empty()
     }
 }
 
@@ -327,6 +353,8 @@ mod tests {
             work_key: work.map(str::to_owned),
             composer_key: composer.map(str::to_owned),
             performer: None,
+            artist_key: None,
+            album_key: None,
             signal,
         }
     }
@@ -339,7 +367,7 @@ mod tests {
     }
 
     #[test]
-    fn liking_a_song_favors_it_and_its_artist() {
+    fn liking_a_song_favors_it_its_artist_and_its_album() {
         let pool = works_of(&crate::test_shelf::song_items());
         let song = |title: &str| pool.works().iter().find(|w| w.title == title).unwrap();
         let liked = song("Glasshouse");
@@ -347,12 +375,21 @@ mod tests {
             &[FeedbackSignal::about(liked, Signal::Like, MIDNIGHT)],
             MIDNIGHT,
         );
-        // The song and its artist (the work and composer keys): ×√2 each.
-        assert_eq!(model.multiplier_pm(liked), 1999);
+        // The song, its artist and its album: ×√2 each, clamped at ×2.
+        assert_eq!(model.multiplier_pm(liked), 2000);
+        let signal = FeedbackSignal::about(liked, Signal::Like, MIDNIGHT);
+        assert_eq!(signal.artist_key.as_deref(), Some("juniper vale"));
+        assert_eq!(signal.album_key.as_deref(), Some("spotify:album:songs-0"));
+        assert_eq!(signal.composer_key, None, "a song has no composer key");
         assert_eq!(
             model.multiplier_pm(song("Summer Static")),
+            1999,
+            "her other songs on that album"
+        );
+        assert_eq!(
+            model.multiplier_pm(song("Kite Season (feat. Otis Fairweather)")),
             1414,
-            "her other songs"
+            "her single, on another album"
         );
         assert_eq!(
             model.multiplier_pm(song("Blue Hours")),

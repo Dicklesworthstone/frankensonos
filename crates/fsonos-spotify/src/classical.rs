@@ -1005,7 +1005,8 @@ pub struct CandidatePool {
 
 impl CandidatePool {
     /// Build the pool from saved-album tracks and liked tracks, in any
-    /// genre. Explicit tracks are left out; every other track is a candidate.
+    /// genre. Every track is a candidate; explicit ones are flagged, and play
+    /// only if the owner's preferences allow (`crate::prefs`).
     /// A track is analysed as classical ([`analyze`]) if its own evidence
     /// clears [`CLASSICAL_THRESHOLD`], or if at least half the library's
     /// tracks from its album do (so a bare "Aria" on a Goldberg Variations
@@ -1036,7 +1037,6 @@ impl CandidatePool {
             .iter()
             .zip(&scores)
             .zip(&album_keys)
-            .filter(|((item, _), _)| !item.explicit)
             .map(|((item, &score), key)| {
                 if score >= CLASSICAL_THRESHOLD || album_is_classical(key) {
                     analyze(item)
@@ -1423,17 +1423,14 @@ mod tests {
 
         let items = mixed_items();
         let pool = CandidatePool::build(&items);
-        let candidates: HashSet<&str> = items
-            .iter()
-            .filter(|i| !i.explicit)
-            .map(|i| i.source_uri.as_str())
-            .collect();
+        let candidates: HashSet<&str> = items.iter().map(|i| i.source_uri.as_str()).collect();
         let pooled: HashSet<&str> = pool
             .tracks()
             .iter()
             .map(|t| t.track.source_uri.as_str())
             .collect();
-        assert_eq!(pooled, candidates, "every track but the explicit one");
+        assert_eq!(pooled, candidates, "every track, the explicit one flagged");
+        assert!(pool.get("spotify:track:song-explicit").unwrap().explicit);
         let genre_of = |t: &ClassicalTrack| {
             let item = items.iter().find(|i| i.source_uri == t.track.source_uri);
             item.and_then(|i| i.genres.first().cloned())
@@ -1488,7 +1485,7 @@ mod tests {
 
         // No classical music at all: still a pool to play from.
         let songs = CandidatePool::build(&song_items());
-        assert_eq!(songs.len(), song_items().len() - 1);
+        assert_eq!(songs.len(), song_items().len());
         assert!(songs.tracks().iter().all(|t| !t.classical));
     }
 }

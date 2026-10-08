@@ -119,7 +119,26 @@ const MIGRATIONS: &[Migration] = &[
             last_fired INTEGER);
     ",
     },
+    Migration {
+        version: 7,
+        name: "genre-agnostic DJ: library genres, year, explicit, candidacy, taste; \
+               feedback artist and album keys (plan §12.1)",
+        sql: "
+        ALTER TABLE spotify_library ADD COLUMN genres TEXT;
+        ALTER TABLE spotify_library ADD COLUMN release_year INTEGER;
+        ALTER TABLE spotify_library ADD COLUMN explicit INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE spotify_library ADD COLUMN candidate INTEGER;
+        ALTER TABLE spotify_library ADD COLUMN taste_weight INTEGER;
+        ALTER TABLE feedback ADD COLUMN artist_key TEXT;
+        ALTER TABLE feedback ADD COLUMN album_key TEXT;
+        CREATE INDEX feedback_by_artist ON feedback (artist_key, at);
+        CREATE INDEX feedback_by_album ON feedback (album_key, at);
+    ",
+    },
 ];
+
+/// How `spotify_library.genres` joins a row's tags.
+const GENRE_SEPARATOR: &str = "; ";
 
 /// The durable store: one fsqlite database file in the daemon's data dir.
 #[derive(Debug)]
@@ -461,6 +480,11 @@ impl Store for SqliteStore {
                     opt_value(e.disc_number.map(i64::from)),
                     opt_value(e.track_number.map(i64::from)),
                     opt_value(e.work_key.as_deref()),
+                    opt_value((!e.genres.is_empty()).then(|| e.genres.join(GENRE_SEPARATOR))),
+                    opt_value(e.release_year.map(i64::from)),
+                    i64::from(e.explicit).into(),
+                    opt_value(e.candidate.map(i64::from)),
+                    opt_value(e.taste_weight.map(i64::from)),
                 ]
             })
             .collect();
@@ -471,8 +495,10 @@ impl Store for SqliteStore {
             c.execute_many_with_params_in_transaction_sync(
                 "INSERT OR REPLACE INTO spotify_library \
                  (source_uri, title, artist, album, duration_secs, is_classical, added, \
-                  album_uri, album_artists, origin, disc_number, track_number, work_key) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                  album_uri, album_artists, origin, disc_number, track_number, work_key, \
+                  genres, release_year, explicit, candidate, taste_weight) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                  ?16, ?17, ?18)",
                 &rows,
             )
             .map(drop)
@@ -482,7 +508,8 @@ impl Store for SqliteStore {
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError> {
         self.query(
             "SELECT source_uri, title, artist, album, duration_secs, is_classical, added, \
-             album_uri, album_artists, origin, disc_number, track_number, work_key \
+             album_uri, album_artists, origin, disc_number, track_number, work_key, \
+             genres, release_year, explicit, candidate, taste_weight \
              FROM spotify_library ORDER BY added, source_uri",
             &[],
         )?
@@ -498,6 +525,23 @@ impl Store for SqliteStore {
                 disc_number: small(10, "disc_number")?,
                 track_number: small(11, "track_number")?,
                 work_key: opt_text(r, 12)?,
+                genres: opt_text(r, 13)?
+                    .map(|g| {
+                        g.split(GENRE_SEPARATOR)
+                            .filter(|t| !t.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                release_year: opt_int(r, 14)?
+                    .map(|y| {
+                        u16::try_from(y)
+                            .map_err(|_| backend(format!("release_year out of range: {y}")))
+                    })
+                    .transpose()?,
+                explicit: int(r, 15)? != 0,
+                candidate: opt_int(r, 16)?.map(|c| c != 0),
+                taste_weight: small(17, "taste_weight")?,
                 track: Track {
                     source_uri: text(r, 0)?,
                     title: text(r, 1)?,
@@ -633,14 +677,17 @@ impl Store for SqliteStore {
 
     fn record_feedback(&mut self, feedback: &Feedback) -> Result<(), StoreError> {
         self.execute(
-            "INSERT INTO feedback (at, work_key, composer_key, performer, signal) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO feedback \
+             (at, work_key, composer_key, performer, signal, artist_key, album_key) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             &[
                 feedback.at.into(),
                 opt_value(feedback.work_key.as_deref()),
                 opt_value(feedback.composer_key.as_deref()),
                 opt_value(feedback.performer.as_deref()),
                 feedback.signal.into(),
+                opt_value(feedback.artist_key.as_deref()),
+                opt_value(feedback.album_key.as_deref()),
             ],
         )
     }
@@ -653,18 +700,33 @@ impl Store for SqliteStore {
         // The column names are fixed here, never caller text.
         let (sql, key) = match key {
             FeedbackKey::Work(k) => (
-                "SELECT at, work_key, composer_key, performer, signal FROM feedback \
+                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                 FROM feedback \
                  WHERE work_key = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
                 k,
             ),
             FeedbackKey::Composer(k) => (
-                "SELECT at, work_key, composer_key, performer, signal FROM feedback \
+                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                 FROM feedback \
                  WHERE composer_key = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
                 k,
             ),
             FeedbackKey::Performer(k) => (
-                "SELECT at, work_key, composer_key, performer, signal FROM feedback \
+                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                 FROM feedback \
                  WHERE performer = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
+                k,
+            ),
+            FeedbackKey::Artist(k) => (
+                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                 FROM feedback \
+                 WHERE artist_key = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
+                k,
+            ),
+            FeedbackKey::Album(k) => (
+                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                 FROM feedback \
+                 WHERE album_key = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
                 k,
             ),
         };
@@ -676,7 +738,8 @@ impl Store for SqliteStore {
 
     fn feedback_between(&self, window: Range<i64>) -> Result<Vec<Feedback>, StoreError> {
         self.query(
-            "SELECT at, work_key, composer_key, performer, signal FROM feedback \
+            "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                 FROM feedback \
              WHERE at >= ?1 AND at < ?2 ORDER BY at, id",
             &[window.start.into(), window.end.into()],
         )?
@@ -996,6 +1059,8 @@ fn feedback_row(r: &Row) -> Result<Feedback, StoreError> {
         composer_key: opt_text(r, 2)?,
         performer: opt_text(r, 3)?,
         signal: int(r, 4)?,
+        artist_key: opt_text(r, 5)?,
+        album_key: opt_text(r, 6)?,
     })
 }
 
@@ -1030,7 +1095,7 @@ mod tests {
         v1.close().unwrap();
 
         let store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].track.source_uri, "spotify:track:old");
@@ -1068,7 +1133,7 @@ mod tests {
         v2.close().unwrap();
 
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].origin, LibraryOrigin::LikedTrack);
@@ -1086,6 +1151,103 @@ mod tests {
             })
             .unwrap();
         assert_eq!(store.dj_sessions().unwrap().len(), 1);
+        store.close().unwrap();
+    }
+
+    #[test]
+    fn v6_database_upgrades_to_genre_agnostic_candidacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fsonos.db").to_string_lossy().into_owned();
+
+        // Before migration 7: a classical candidate, a song that wasn't a
+        // candidate then, and a feedback row.
+        let v6 = SqliteStore::open_migrated(path.clone(), &MIGRATIONS[..6]).unwrap();
+        v6.execute(
+            "INSERT INTO spotify_library (source_uri, title, is_classical, added, work_key) \
+             VALUES (?1, ?2, 1, 7, ?3)",
+            &[
+                "spotify:track:aria".into(),
+                "Aria".into(),
+                "johann sebastian bach|aria".into(),
+            ],
+        )
+        .unwrap();
+        v6.execute(
+            "INSERT INTO spotify_library (source_uri, title, is_classical, added) \
+             VALUES (?1, ?2, 0, 8)",
+            &["spotify:track:song".into(), "Blue Hours".into()],
+        )
+        .unwrap();
+        v6.execute(
+            "INSERT INTO feedback (at, work_key, composer_key, performer, signal) \
+             VALUES (5, 'johann sebastian bach|aria', 'johann sebastian bach', NULL, 3)",
+            &[],
+        )
+        .unwrap();
+        v6.close().unwrap();
+
+        let mut store = SqliteStore::open(Path::new(&path)).unwrap();
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7]);
+        let lib = store.library().unwrap();
+        assert_eq!(lib.len(), 2, "no row lost");
+        // Legacy rows keep their candidacy: is_classical decides.
+        assert_eq!((lib[0].candidate, lib[0].is_candidate()), (None, true));
+        assert_eq!((lib[1].candidate, lib[1].is_candidate()), (None, false));
+        assert!(lib.iter().all(|e| e.genres.is_empty()
+            && e.release_year.is_none()
+            && !e.explicit
+            && e.taste_weight.is_none()));
+        let old = store.feedback_between(0..10).unwrap();
+        assert_eq!(old.len(), 1);
+        assert_eq!(
+            old[0].composer_key.as_deref(),
+            Some("johann sebastian bach")
+        );
+        assert_eq!(
+            (old[0].artist_key.as_deref(), old[0].album_key.as_deref()),
+            (None, None)
+        );
+
+        // A sync rewrites the song as a candidate, with the new columns.
+        let song = LibraryEntry {
+            track: Track {
+                title: "Blue Hours".into(),
+                artist: Some("Nina Marsh Quartet".into()),
+                album: Some("Blue Hours".into()),
+                source_uri: "spotify:track:song".into(),
+                uri: None,
+                duration_secs: Some(200),
+            },
+            added: 8,
+            work_key: Some("nina marsh quartet|blue hours".into()),
+            genres: vec!["jazz".into(), "cool jazz".into()],
+            release_year: Some(1962),
+            explicit: true,
+            candidate: Some(true),
+            taste_weight: Some(1300),
+            ..LibraryEntry::default()
+        };
+        store.upsert_library(std::slice::from_ref(&song)).unwrap();
+        let lib = store.library().unwrap();
+        assert_eq!(lib[1], song);
+        assert!(lib[1].is_candidate() && !lib[1].is_classical);
+        store
+            .record_feedback(&Feedback {
+                at: 6,
+                artist_key: Some("nina marsh quartet".into()),
+                album_key: Some("spotify:album:blue".into()),
+                signal: 3,
+                ..Feedback::default()
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .feedback(FeedbackKey::Artist("nina marsh quartet"), 0..10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(store.feedback_between(0..10).unwrap().len(), 2);
         store.close().unwrap();
     }
 

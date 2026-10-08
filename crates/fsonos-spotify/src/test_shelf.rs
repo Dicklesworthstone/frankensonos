@@ -183,8 +183,8 @@ pub(crate) const SONGS: &[(&str, &str, &str, &[&str])] = &[
 pub(crate) const SONG_YEARS: [u16; 6] = [2019, 2012, 1962, 1958, 1997, 2021];
 
 /// [`SONGS`] as library items: saved albums with one more song of Juniper
-/// Vale's liked on its own, and an explicit track of MC Halcyon's (never a
-/// candidate).
+/// Vale's liked on its own, and an explicit track of MC Halcyon's (in the
+/// pool, flagged: it plays only if the owner's preferences allow).
 pub(crate) fn song_items() -> Vec<LibraryItem> {
     let mut items = Vec::new();
     for (a, &(artist, album, genre, titles)) in SONGS.iter().enumerate() {

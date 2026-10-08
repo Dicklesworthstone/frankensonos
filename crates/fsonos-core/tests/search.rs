@@ -23,6 +23,7 @@ fn entry(id: &str, title: &str, artist: &str, album: &str) -> LibraryEntry {
         disc_number: None,
         track_number: None,
         work_key: None,
+        ..LibraryEntry::default()
     }
 }
 

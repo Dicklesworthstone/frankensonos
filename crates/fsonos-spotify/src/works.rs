@@ -727,7 +727,11 @@ mod tests {
         });
         // Every song alone: the soundtrack cues and the interludes (titled
         // `Work: Part`) and the deluxe edition's two takes of one song.
-        assert_eq!(songs.len(), 25, "{songs:#?}");
+        assert_eq!(
+            songs.len(),
+            26,
+            "{songs:#?} (the explicit one too, flagged)"
+        );
         for song in &songs {
             assert_eq!(song.movements.len(), 1, "{}", song.title);
             assert_eq!(song.completeness, Completeness::Complete);

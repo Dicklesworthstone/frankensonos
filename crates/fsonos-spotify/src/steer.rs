@@ -1354,7 +1354,7 @@ mod tests {
         };
         let (admitted, relaxed) = relax(without);
         assert!(relaxed.is_empty());
-        assert_eq!(admitted.len(), all.len() - 11);
+        assert_eq!(admitted.len(), all.len() - 12);
         assert!(admitted.iter().all(|&w| {
             !credited(&all[w])
                 .iter()
@@ -1394,7 +1394,7 @@ mod tests {
     fn genres_and_decades_steer_any_genre() {
         let pool = works_of(&crate::test_shelf::mixed_items());
         let all = pool.works();
-        assert_eq!(all.len(), 25 + 27, "songs and classical works");
+        assert_eq!(all.len(), 26 + 27, "songs and classical works");
         let hays: Vec<String> = all.iter().map(haystack).collect();
         let relax = |c: DjConstraints| admit(all, &hays, &c, 5);
         let genres = |include: &[&str], exclude: &[&str]| DjConstraints {
@@ -1415,7 +1415,7 @@ mod tests {
         assert!(admitted.iter().all(|&w| all[w].is_classical()));
         let (admitted, relaxed) = relax(genres(&[], &["hip-hop", "soundtrack"]));
         assert!(relaxed.is_empty());
-        assert_eq!(admitted.len(), all.len() - 5 - 3);
+        assert_eq!(admitted.len(), all.len() - 6 - 3);
         // A genre asked for by name holds while anything matches; with
         // nothing tagged that way, it relaxes, and the reason says so.
         let (admitted, relaxed) = relax(genres(&["polka"], &[]));

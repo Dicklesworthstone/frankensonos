@@ -1506,7 +1506,7 @@ mod tests {
         let sync = apply_library_read(&mut store, &song_items()).unwrap();
         assert_eq!((sync.candidates, sync.classical), (25, 0));
         let pool = WorkPool::new(&pool_from_store(&store).unwrap());
-        assert_eq!(pool.len(), 25);
+        assert_eq!(pool.len(), 26, "the explicit song is in, flagged");
         let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
 
         let started = feed

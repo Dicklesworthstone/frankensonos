@@ -48,6 +48,7 @@ fn library() -> MemStore {
         disc_number: Some(1),
         track_number: Some(1),
         work_key: None,
+        ..LibraryEntry::default()
     };
     store
         .upsert_library(&[

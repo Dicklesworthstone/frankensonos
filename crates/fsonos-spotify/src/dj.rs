@@ -1109,7 +1109,7 @@ mod tests {
     #[test]
     fn a_library_without_classical_music_plays_spread_across_artists() {
         let pool = works_of(&song_items());
-        assert_eq!(pool.len(), 25, "every song but the explicit one");
+        assert_eq!(pool.len(), 26, "every song, the explicit one flagged");
         let artists: HashSet<&str> = pool.works().iter().map(Work::composer_key).collect();
         assert_eq!(artists.len(), 6);
         let config = DjConfig::default();
