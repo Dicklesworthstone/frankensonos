@@ -399,9 +399,21 @@ r2 disassembly, and live GET probes — all reads, no mutations):
   skipped").
 - So the S1 chain is: devmode code (developer-key credential) → unlock flag
   → updater policy bypass. Whether the code is a Sonos-signed per-device
-  statement or a weaker hash is the one question left — the answer lives in
-  the `RIPCHandler::onDevModeUpdate` → `RdeviceUnlockWrapper` handler chain,
-  the next r2 target (binary and symbols are staged locally).
+  statement or a weaker gate is the one question left.
+
+Deeper (same day): the POST path was disassembled end to end.
+`modZPHandleDevMode` gates on `Content-Type: application/x-www-form-urlencoded`
+(else HTTP 405), rate-limits via `RDevMode::getLastUpdateTime`/`sleep` ("Too
+Many Unlocks"), extracts `statement`/`button` with
+`RparseNextQueryStringParam`, **base64-decodes** (`RBase64Dec`), and passes
+the ≤1024-byte blob to `RDevMode::update`, which parses it (an unnamed local
+import), evaluates flags (`isFlagEnabledLocked`), and persists. **No RSA /
+signature / hash call is visible anywhere in the POST path** — `libsonoscrypto`
+is not linked into it, and anacapad carries no signature-failure strings of
+its own (unlike `bin/upgrade`). The two remaining mangled-local helpers (the
+statement parser and flag evaluator) are the only place a hidden credential
+check could live; they are staged for the next r2 pass. If neither contains
+crypto, the devmode gate is a *format* gate, not a cryptographic one.
 
 ## 10. SMAPI (the speaker↔Spotify bridge) — verified against the live endpoint
 
