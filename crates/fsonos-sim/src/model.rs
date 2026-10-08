@@ -931,7 +931,9 @@ impl State {
                 let c = self.players[p].coordinator;
                 let t = &self.players[c].transport;
                 let (uri, meta) = match (t.source, t.current()) {
-                    (Source::Queue, Some(q)) => (q.uri.clone(), q.metadata.clone()),
+                    (Source::Queue, Some(q)) => {
+                        (q.uri.clone(), docs::with_art(&q.uri, &q.metadata))
+                    }
                     (Source::Uri, _) => (t.uri.clone(), t.uri_metadata.clone()),
                     _ => (String::new(), String::new()),
                 };

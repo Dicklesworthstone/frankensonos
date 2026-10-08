@@ -50,6 +50,18 @@ pub enum ProtoError {
     Network { target: String, detail: String },
 }
 
+/// The largest body [`Transport::http_get_bytes`] returns: album art is tens
+/// of kilobytes, and nothing a player serves needs more.
+pub const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// A body fetched with [`Transport::http_get_bytes`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpBody {
+    /// The `Content-Type` header, when the server sent one.
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
+}
+
 /// Minimal network transport the protocol layer needs. [`net::Lan`] is the
 /// real implementation; pure in-memory impls back the unit and golden tests,
 /// which only need [`Transport::soap_post`].
@@ -69,6 +81,12 @@ pub trait Transport {
     /// GET `url` (a device description) and return the body.
     fn http_get(&self, _url: &str) -> Result<String, ProtoError> {
         Err(ProtoError::NotWired("http_get"))
+    }
+
+    /// GET `url` (album art a player serves, say) and return the body as
+    /// bytes, with its content type. At most [`MAX_BODY_BYTES`].
+    fn http_get_bytes(&self, _url: &str) -> Result<HttpBody, ProtoError> {
+        Err(ProtoError::NotWired("http_get_bytes"))
     }
 
     /// Multicast an SSDP `M-SEARCH` for ZonePlayers and collect the replies
@@ -93,6 +111,10 @@ impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
 
     fn http_get(&self, url: &str) -> Result<String, ProtoError> {
         (**self).http_get(url)
+    }
+
+    fn http_get_bytes(&self, url: &str) -> Result<HttpBody, ProtoError> {
+        (**self).http_get_bytes(url)
     }
 
     fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<ssdp::Advert>, ProtoError> {

@@ -134,6 +134,12 @@ fn respond(shared: &Arc<Mutex<State>>, index: usize, req: &Request) -> Response 
                 docs::device_description(&state.players[index], sw_gen),
             )
         }
+        // Album art (`docs::art_path`): the same small image for any track.
+        Method::Get if path == "/getaa" && req.uri.contains("u=") => {
+            Response::new(200, "OK", docs::ART_PNG.to_vec())
+                .with_header("Content-Type", "image/png")
+                .with_header("Server", "Linux UPnP/1.0 Sonos/86.10-80260 (fsonos-sim)")
+        }
         Method::Post => match docs::services(model)
             .into_iter()
             .find(|s| s.control == path)

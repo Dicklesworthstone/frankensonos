@@ -232,6 +232,17 @@ fn queue_flow_and_faults_over_http() {
     assert_eq!(first.source_uri, "spotify:track:A");
     assert_eq!(first.duration_secs, Some(180));
 
+    // The playing track's art is a path on the player, which serves it.
+    let playing = fsonos_proto::control::get_position_info(&t, t.ip()).unwrap();
+    let art = playing.metadata.and_then(|m| m.album_art_uri).unwrap();
+    assert_eq!(
+        art,
+        "/getaa?s=1&u=x-sonos-spotify%3aspotify%253atrack%253aB%3fsid%3d12%26flags%3d8224%26sn%3d1"
+    );
+    let image = t.http_get_bytes(&format!("{}{art}", t.base_url())).unwrap();
+    assert_eq!(image.content_type.as_deref(), Some("image/png"));
+    assert!(image.body.starts_with(b"\x89PNG"));
+
     // Faults arrive as UPnP errors with real players' codes.
     let (_, meta) = track("C", &params.cdudn);
     assert_eq!(fault_code(enqueue("spotify:track:C", &meta)), 714);

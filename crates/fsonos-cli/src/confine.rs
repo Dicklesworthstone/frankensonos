@@ -16,7 +16,7 @@
 
 use fsonos_proto::net::PLAYER_PORT;
 use fsonos_proto::ssdp::Advert;
-use fsonos_proto::{ProtoError, Transport};
+use fsonos_proto::{HttpBody, ProtoError, Transport};
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -89,6 +89,11 @@ impl<T: Transport> Transport for Confined<T> {
         self.inner.http_get(url)
     }
 
+    fn http_get_bytes(&self, url: &str) -> Result<HttpBody, ProtoError> {
+        allow(url, self.url(url))?;
+        self.inner.http_get_bytes(url)
+    }
+
     fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<Advert>, ProtoError> {
         allow("SSDP multicast", self.ssdp)?;
         self.inner.ssdp_search(mx_secs, wait)
@@ -113,6 +118,14 @@ mod tests {
         fn http_get(&self, url: &str) -> Result<String, ProtoError> {
             self.0.lock().unwrap().push(format!("get {url}"));
             Ok(String::new())
+        }
+
+        fn http_get_bytes(&self, url: &str) -> Result<HttpBody, ProtoError> {
+            self.0.lock().unwrap().push(format!("bytes {url}"));
+            Ok(HttpBody {
+                content_type: None,
+                body: Vec::new(),
+            })
         }
 
         fn ssdp_search(&self, _: u8, _: Duration) -> Result<Vec<Advert>, ProtoError> {
@@ -173,7 +186,10 @@ mod tests {
             "https://192.0.2.10:1400/",
         ] {
             assert!(refused(t.http_get(outside)), "{outside}");
+            assert!(refused(t.http_get_bytes(outside)), "{outside}");
         }
+        // Album art: the same rule as any GET.
+        assert!(t.http_get_bytes("http://192.0.2.10:1400/getaa?s=1").is_ok());
 
         assert!(t.ssdp_search(1, Duration::ZERO).is_ok());
         assert!(refused(confined(false).ssdp_search(1, Duration::ZERO)));
@@ -187,6 +203,7 @@ mod tests {
                 "soap 127.0.0.1",
                 "get http://192.0.2.10:1400/xml/device_description.xml",
                 "get http://127.0.0.1:53211/xml/device_description.xml",
+                "bytes http://192.0.2.10:1400/getaa?s=1",
                 "ssdp",
             ]
         );

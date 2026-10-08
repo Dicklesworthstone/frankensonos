@@ -297,6 +297,13 @@ pub(crate) fn queue_items(queue: &[QueueItem], start: usize) -> String {
             uri = xml_escape(&q.uri),
             title = xml_escape(&q.title),
         );
+        if let Some(art) = art_path(&q.uri) {
+            let _ = write!(
+                out,
+                "<upnp:albumArtURI>{}</upnp:albumArtURI>",
+                xml_escape(&art)
+            );
+        }
         if let Some(c) = &q.creator {
             let _ = write!(out, "<dc:creator>{}</dc:creator>", xml_escape(c));
         }
@@ -307,6 +314,47 @@ pub(crate) fn queue_items(queue: &[QueueItem], start: usize) -> String {
     }
     out
 }
+
+/// The album art path a player reports for a track of its queue, as real
+/// players do for a service's (Spotify's) tracks: `/getaa?s=1&u=<the URI,
+/// percent-encoded>`, served by the player itself. `None` for anything else.
+pub(crate) fn art_path(uri: &str) -> Option<String> {
+    if !(uri.starts_with("x-sonos-spotify:") || uri.starts_with("spotify")) {
+        return None;
+    }
+    let mut encoded = String::new();
+    for b in uri.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+            encoded.push(char::from(b));
+        } else {
+            let _ = write!(encoded, "%{b:02x}");
+        }
+    }
+    Some(format!("/getaa?s=1&u={encoded}"))
+}
+
+/// `metadata` (a DIDL item) with the art a player reports for `uri` (see
+/// [`art_path`]) added, unless it names some already.
+pub(crate) fn with_art(uri: &str, metadata: &str) -> String {
+    match (art_path(uri), metadata.find("</item>")) {
+        (Some(path), Some(end)) if !metadata.contains("albumArtURI") => format!(
+            "{}<upnp:albumArtURI>{}</upnp:albumArtURI>{}",
+            &metadata[..end],
+            xml_escape(&path),
+            &metadata[end..]
+        ),
+        _ => metadata.to_string(),
+    }
+}
+
+/// What `/getaa` serves: a 1×1 PNG.
+pub(crate) const ART_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x64, 0x60, 0xf8, 0x5f,
+    0x0f, 0x00, 0x02, 0x87, 0x01, 0x80, 0xeb, 0x47, 0xba, 0x92, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+    0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
 
 /// The `protocolInfo` Sonos reports for a URI's scheme.
 pub(crate) fn protocol_info(uri: &str) -> &'static str {
@@ -361,6 +409,24 @@ mod tests {
         assert_eq!(hms(0), "0:00:00");
         assert_eq!(hms(239_999), "0:03:59");
         assert_eq!(hms(3_725_000), "1:02:05");
+    }
+
+    #[test]
+    fn service_tracks_report_art_the_player_serves() {
+        let uri = "x-sonos-spotify:spotify%3atrack%3aabc?sid=12&flags=8224&sn=1";
+        assert_eq!(
+            art_path(uri).unwrap(),
+            "/getaa?s=1&u=x-sonos-spotify%3aspotify%253atrack%253aabc%3fsid%3d12%26flags%3d8224%26sn%3d1"
+        );
+        assert_eq!(art_path("x-rincon-mp3radio://example.invalid/a.mp3"), None);
+        let md = item_metadata("1", "Song", "object.item.audioItem.musicTrack", "d");
+        let with = with_art(uri, &md);
+        let item = fsonos_proto::didl::parse_didl(&with).unwrap().remove(0);
+        assert_eq!(item.album_art_uri, art_path(uri));
+        // Art already there, or nothing to add it to: unchanged.
+        assert_eq!(with_art(uri, &with), with);
+        assert_eq!(with_art(uri, ""), "");
+        assert_eq!(with_art("x-file:a", &md), md);
     }
 
     #[test]

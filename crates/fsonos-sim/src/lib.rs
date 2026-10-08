@@ -49,7 +49,7 @@ use asupersync::http::Client;
 use asupersync::runtime::{RuntimeBuilder, reactor::create_reactor};
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_proto::ssdp::{Advert, m_search, parse_response};
-use fsonos_proto::{ProtoError, Transport};
+use fsonos_proto::{HttpBody, ProtoError, Transport};
 use model::{Favorite, Household, State};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -862,6 +862,23 @@ impl SimTransport {
         soap_action: Option<&str>,
         body: Option<&str>,
     ) -> Result<String, ProtoError> {
+        let (status, _, body) = self.exchange(path, soap_action, body)?;
+        match status {
+            200 | 500 => Ok(String::from_utf8_lossy(&body).into_owned()),
+            status => Err(ProtoError::Network {
+                target: format!("{}{path}", self.base_url),
+                detail: format!("HTTP {status}"),
+            }),
+        }
+    }
+
+    /// One request: the status, the `Content-Type` and the body.
+    fn exchange(
+        &self,
+        path: &str,
+        soap_action: Option<&str>,
+        body: Option<&str>,
+    ) -> Result<(u16, Option<String>, Vec<u8>), ProtoError> {
         let url = format!("{}{path}", self.base_url);
         let network = |detail: String| ProtoError::Network {
             target: url.clone(),
@@ -888,10 +905,19 @@ impl SimTransport {
             };
             request.send(&cx).await.map_err(|e| network(e.to_string()))
         })?;
-        match response.status {
-            200 | 500 => Ok(String::from_utf8_lossy(&response.body).into_owned()),
-            status => Err(network(format!("HTTP {status}"))),
-        }
+        let content_type = response
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.clone());
+        Ok((response.status, content_type, response.body))
+    }
+
+    /// The path (and query) of `url`; the host part is ignored.
+    fn path_of(url: &str) -> &str {
+        url.split_once("://")
+            .and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..]))
+            .unwrap_or(url)
     }
 }
 
@@ -908,11 +934,19 @@ impl Transport for SimTransport {
 
     /// GET `url`'s path from this player (the host part is ignored).
     fn http_get(&self, url: &str) -> Result<String, ProtoError> {
-        let path = url
-            .split_once("://")
-            .and_then(|(_, rest)| rest.find('/').map(|i| &rest[i..]))
-            .unwrap_or(url);
-        self.request(path, None, None)
+        self.request(Self::path_of(url), None, None)
+    }
+
+    /// GET `url`'s path from this player as bytes (album art, say).
+    fn http_get_bytes(&self, url: &str) -> Result<HttpBody, ProtoError> {
+        let (status, content_type, body) = self.exchange(Self::path_of(url), None, None)?;
+        if status != 200 {
+            return Err(ProtoError::Network {
+                target: url.to_string(),
+                detail: format!("HTTP {status}"),
+            });
+        }
+        Ok(HttpBody { content_type, body })
     }
 }
 
@@ -960,6 +994,12 @@ impl Transport for SimLan {
         let host = fsonos_proto::topology::host_of_location(url)
             .ok_or_else(|| ProtoError::Malformed(format!("no host in {url}")))?;
         self.route(host)?.http_get(url)
+    }
+
+    fn http_get_bytes(&self, url: &str) -> Result<HttpBody, ProtoError> {
+        let host = fsonos_proto::topology::host_of_location(url)
+            .ok_or_else(|| ProtoError::Malformed(format!("no host in {url}")))?;
+        self.route(host)?.http_get_bytes(url)
     }
 
     /// Send an `M-SEARCH` to the simulator's unicast responder and collect

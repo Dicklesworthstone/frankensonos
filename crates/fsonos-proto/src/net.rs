@@ -13,7 +13,7 @@
 
 use crate::gena::{self, Notify, Subscription};
 use crate::ssdp::{self, Advert};
-use crate::{ProtoError, Transport};
+use crate::{HttpBody, MAX_BODY_BYTES, ProtoError, Transport};
 use asupersync::Cx;
 use asupersync::http::Client;
 use asupersync::http::h1::server::HostPolicy;
@@ -69,7 +69,25 @@ enum Job {
 struct Reply {
     status: u16,
     headers: Vec<(String, String)>,
-    body: String,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    /// The body as text (SOAP, descriptions): invalid UTF-8 is replaced.
+    fn text(self) -> String {
+        match String::from_utf8(self.body) {
+            Ok(text) => text,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        }
+    }
+
+    /// A header's value (names ignore case).
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 impl Lan {
@@ -322,7 +340,7 @@ impl Transport for Lan {
         match reply.status {
             // Sonos reports UPnP faults as HTTP 500 with a SOAP Fault body,
             // which soap::parse_response turns into ProtoError::SoapFault.
-            200 | 500 => Ok(reply.body),
+            200 | 500 => Ok(reply.text()),
             status => Err(network(url, format!("HTTP {status}"))),
         }
     }
@@ -330,10 +348,32 @@ impl Transport for Lan {
     fn http_get(&self, url: &str) -> Result<String, ProtoError> {
         let reply = self.http(Method::Get, self.route_url(url), Vec::new(), Vec::new())?;
         if reply.status == 200 {
-            Ok(reply.body)
+            Ok(reply.text())
         } else {
             Err(network(url, format!("HTTP {}", reply.status)))
         }
+    }
+
+    /// Like [`Self::http_get`], routed the same way; a body over
+    /// [`MAX_BODY_BYTES`] is an error.
+    fn http_get_bytes(&self, url: &str) -> Result<HttpBody, ProtoError> {
+        let reply = self.http(Method::Get, self.route_url(url), Vec::new(), Vec::new())?;
+        if reply.status != 200 {
+            return Err(network(url, format!("HTTP {}", reply.status)));
+        }
+        if reply.body.len() > MAX_BODY_BYTES {
+            return Err(network(
+                url,
+                format!(
+                    "the body is {} bytes, over the {MAX_BODY_BYTES}-byte limit",
+                    reply.body.len()
+                ),
+            ));
+        }
+        Ok(HttpBody {
+            content_type: reply.header("content-type").map(str::to_owned),
+            body: reply.body,
+        })
     }
 
     fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<Advert>, ProtoError> {
@@ -423,7 +463,7 @@ async fn http(
     Ok(Reply {
         status: response.status,
         headers: response.headers,
-        body: String::from_utf8_lossy(&response.body).into_owned(),
+        body: response.body,
     })
 }
 
@@ -674,7 +714,8 @@ mod tests {
     }
 
     /// A loopback HTTP server that answers SOAP-ish POSTs with a fixed status
-    /// and echoes the SOAPACTION header, and GETs with "desc <path>".
+    /// and echoes the SOAPACTION header, and GETs with "desc <path>" (but
+    /// `/getaa` with [`ART`], and `/huge` with one byte over the limit).
     fn serve(status: u16) -> (SocketAddr, impl FnOnce()) {
         let config = Http1ListenerConfig::default().http_config(
             Http1Config::default().host_policy(HostPolicy::allow_list(vec!["127.0.0.1".into()])),
@@ -694,6 +735,13 @@ mod tests {
                             .map(|(_, v)| v.clone());
                         let body = match action {
                             Some(a) => format!("{a} {}", String::from_utf8_lossy(&req.body)),
+                            None if req.uri.starts_with("/getaa") => {
+                                return Response::new(status, "X", ART.to_vec())
+                                    .with_header("Content-Type", "image/png");
+                            }
+                            None if req.uri == "/huge" => {
+                                return Response::new(status, "X", vec![0; MAX_BODY_BYTES + 1]);
+                            }
                             None => format!("desc {}", req.uri),
                         };
                         Response::new(status, "X", body.into_bytes())
@@ -738,9 +786,59 @@ mod tests {
             )
             .expect("post");
         assert_eq!(reply.status, 200);
-        assert_eq!(reply.body, "\"urn:x#Play\" <env/>");
+        assert_eq!(reply.text(), "\"urn:x#Play\" <env/>");
         drop(lan);
         stop();
+    }
+
+    /// Bytes that are not UTF-8, as images are.
+    const ART: &[u8] = &[0x89, b'P', b'N', b'G', 0xff, 0x00, 0xfe];
+
+    #[test]
+    fn bytes_arrive_intact_routed_and_capped() {
+        let (addr, stop) = serve(200);
+        let player: IpAddr = "192.0.2.10".parse().unwrap();
+        let lan = Lan::start().expect("lan").with_routes(vec![(player, addr)]);
+        let art = lan
+            .http_get_bytes("http://192.0.2.10:1400/getaa?s=1&u=x")
+            .expect("art");
+        assert_eq!(art.body, ART);
+        assert_eq!(art.content_type.as_deref(), Some("image/png"));
+        match lan.http_get_bytes(&format!("http://{addr}/huge")) {
+            Err(ProtoError::Network { detail, .. }) => {
+                assert!(detail.contains("over the"), "{detail}");
+            }
+            other => panic!("expected the size limit, got {other:?}"),
+        }
+        // Text callers still read text.
+        assert_eq!(
+            lan.http_get("http://192.0.2.10:1400/xml/device_description.xml")
+                .expect("get"),
+            "desc /xml/device_description.xml"
+        );
+        drop(lan);
+        stop();
+    }
+
+    /// A transport that does not fetch bytes refuses rather than guessing.
+    #[test]
+    fn bytes_are_not_wired_by_default() {
+        struct SoapOnly;
+        impl Transport for SoapOnly {
+            fn soap_post(
+                &self,
+                _: IpAddr,
+                _: &str,
+                _: &str,
+                _: &str,
+            ) -> Result<String, ProtoError> {
+                Ok(String::new())
+            }
+        }
+        assert!(matches!(
+            SoapOnly.http_get_bytes("http://192.0.2.10:1400/getaa"),
+            Err(ProtoError::NotWired("http_get_bytes"))
+        ));
     }
 
     #[test]
