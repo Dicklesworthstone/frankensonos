@@ -157,11 +157,14 @@ impl From<CoreError> for FavoriteError {
     }
 }
 
-/// Find a favorite the way a person or agent names it: by its 1-based
-/// position, or by title, exact first, then a unique title prefix, then a
-/// unique title containing every word of the query (case, accents and
-/// punctuation ignored).
+/// Find a favorite the way a person or agent names it: by its id
+/// (`FV:2/<n>`, as listings hand it out), its 1-based position, or by title:
+/// exact first, then a unique title prefix, then a unique title containing
+/// every word of the query (case, accents and punctuation ignored).
 pub fn find<'a>(favorites: &'a [Favorite], query: &str) -> Result<&'a Favorite, FavoriteError> {
+    if let Some(f) = favorites.iter().find(|f| f.id == query.trim()) {
+        return Ok(f);
+    }
     if let Ok(n) = query.trim().parse::<usize>()
         && let Some(f) = n.checked_sub(1).and_then(|i| favorites.get(i))
     {

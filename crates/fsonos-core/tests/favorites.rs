@@ -239,3 +239,19 @@ fn listing_browses_fv2_on_the_coordinator() {
     let listed = favorites::list(&Browse, &house(), &coordinator()).unwrap();
     assert_eq!(listed, parsed(FAV_S1));
 }
+
+#[test]
+fn a_favorite_is_found_by_the_id_listings_hand_out() {
+    for body in [FAV_S1, FAV_S2] {
+        let favs = parsed(body);
+        for f in &favs {
+            let found = favorites::find(&favs, &format!(" {} ", f.id)).unwrap();
+            assert_eq!(found.id, f.id, "{}", f.id);
+        }
+    }
+    let favs = parsed(FAV_S1);
+    assert!(
+        favorites::find(&favs, "FV:2/999").is_err(),
+        "an id that is not there is not a match"
+    );
+}
