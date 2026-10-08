@@ -78,6 +78,8 @@ mod house_policy;
 mod dj_feedback;
 mod schedules;
 
+mod spotify_auth;
+
 mod scenes;
 
 mod announce;
@@ -146,6 +148,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(dj(cx));
     routes.extend(dj_feedback::routes(cx));
     routes.extend(schedules::routes(cx));
+    routes.extend(spotify_auth::routes(cx));
     routes.extend(remote::routes(cx));
     routes
 }

@@ -48,6 +48,8 @@ use std::time::Duration;
 use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::schedule_cmd::SchedulerArgs;
 
+mod spotify_auth;
+
 mod serve_origin;
 
 /// The data directory, or `INVALID_ARGUMENT` when none can be determined.
@@ -222,6 +224,8 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     let surface = surface
         .with_clock(scheduler.clock())
         .with_sleep(scheduler.sleep());
+    // The owner's Spotify sign-in comes back to this daemon's own port.
+    let surface = spotify_auth::install(surface, args, &data_dir);
     let surface = Arc::new(
         with_action_log(surface, &data_dir, "serve").with_doctor_checks(Box::new(move |runner| {
             crate::doctor::register(runner, &checks);

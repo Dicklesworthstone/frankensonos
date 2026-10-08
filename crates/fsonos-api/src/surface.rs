@@ -46,6 +46,7 @@ pub mod dj_feedback;
 pub mod house_policy;
 pub mod scenes;
 pub mod schedules;
+pub mod spotify_auth;
 
 pub mod announce;
 
@@ -91,6 +92,9 @@ pub struct Surface {
     /// The daemon's sleep timers ([`Self::with_sleep`]); without them a
     /// sleep timer is the speaker's own, which does not fade.
     sleep: Option<Arc<schedules::Sleep>>,
+    /// The owner's Spotify sign-in ([`Self::with_spotify_auth`]); without
+    /// it the sign-in routes answer NOT_IMPLEMENTED.
+    spotify_auth: Option<Box<dyn spotify_auth::SpotifyAuth>>,
 }
 
 /// Doctor checks a surface adds to the core's (the daemon's bind and health
@@ -126,6 +130,7 @@ impl Surface {
             settle_until: Mutex::new(None),
             announcements: None,
             sleep: None,
+            spotify_auth: None,
         }
     }
 

@@ -141,7 +141,11 @@ impl Daemon {
         self.call("GET", path, None)
     }
 
-    fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T, Failure> {
+    pub fn post<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, Failure> {
         let body = serde_json::to_string(body)
             .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))?;
         self.call("POST", path, Some(&body))
