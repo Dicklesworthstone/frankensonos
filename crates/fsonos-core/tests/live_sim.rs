@@ -442,3 +442,49 @@ fn stop_returns_promptly_even_when_a_player_is_slow() {
     );
     sim.set_latency("Kitchen", Duration::ZERO).unwrap();
 }
+
+#[test]
+fn the_players_fetch_clips_from_the_event_listener() {
+    use fsonos_core::announce::clip::{Chime, MediaStore};
+    let sim = sim();
+    let lan = routed(&sim);
+    let data = std::env::temp_dir().join(format!("fsonos-live-media-{}", std::process::id()));
+    let media = MediaStore::new(&data);
+    let clip = media.put(&Chime::Bell.wav()).unwrap();
+    let files = media.clone();
+    let config = LiveConfig {
+        media: Some(Arc::new(move |name: &str| files.path(name))),
+        ..LiveConfig::new(Vec::new())
+    };
+    let live = Live::start(Arc::clone(&lan), config);
+    assert!(
+        live.wait_ready(Duration::from_secs(10)),
+        "{:?}",
+        live.snapshot().last_error
+    );
+    let snap = live.snapshot();
+    let base = snap.callback.clone().expect("listening");
+    let url = clip.url(&base);
+    let kitchen = resolve_room(&snap.households, "Kitchen")
+        .unwrap()
+        .player
+        .id
+        .clone();
+    control::play_uri(&*lan, &snap.households, &kitchen, &url, "").unwrap();
+    let fetched = || sim.fetch_log().into_iter().find(|f| f.url == url);
+    assert!(eventually(Duration::from_secs(5), || fetched().is_some()));
+    let fetch = fetched().unwrap();
+    assert_eq!(fetch.result, Ok(200), "{fetch:?}");
+    assert!(fetch.wav_duration_ms.is_some_and(|ms| ms > 0), "{fetch:?}");
+
+    // Only clips the store holds are served.
+    let unknown = format!("{base}/media/{}.wav", "0".repeat(32));
+    control::play_uri(&*lan, &snap.households, &kitchen, &unknown, "").unwrap();
+    assert!(eventually(Duration::from_secs(5), || sim
+        .fetch_log()
+        .iter()
+        .any(|f| f.url == unknown && f.result == Ok(404))));
+    live.stop();
+    sim.shutdown();
+    let _ = std::fs::remove_dir_all(&data);
+}

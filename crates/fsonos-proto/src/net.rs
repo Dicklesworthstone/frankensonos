@@ -1,6 +1,7 @@
 //! The real LAN transport over asupersync: SOAP POST and HTTP GET to players,
 //! the SSDP `M-SEARCH`, GENA SUBSCRIBE / renew / UNSUBSCRIBE, and the
-//! [`EventSink`] that receives the players' NOTIFY callbacks.
+//! [`EventSink`] that receives the players' NOTIFY callbacks (and can serve
+//! them announcement clips, see [`MediaFiles`]).
 //!
 //! One worker thread owns a current-thread asupersync runtime and runs each
 //! request to completion, in order. Callers are ordinary synchronous code (the
@@ -23,7 +24,8 @@ use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use asupersync::server::shutdown::ShutdownSignal;
 use asupersync::time::{timeout, wall_now};
 use std::net::{IpAddr, SocketAddr};
-use std::sync::mpsc;
+use std::path::PathBuf;
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -473,6 +475,11 @@ fn network(target: impl Into<String>, detail: impl std::fmt::Display) -> ProtoEr
     }
 }
 
+/// Files an [`EventSink`] serves read-only at `GET /media/<name>`: the file
+/// `name` (one path segment) stands for, or `None` for a 404. The lookup
+/// decides what may be served; the sink only reads what it names.
+pub type MediaFiles = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
+
 /// Receives the players' GENA NOTIFY callbacks.
 ///
 /// It listens on an address the players can reach (this host's LAN address,
@@ -480,6 +487,10 @@ fn network(target: impl Into<String>, detail: impl std::fmt::Display) -> ProtoEr
 /// here, accepts only requests whose Host is that address. Each NOTIFY is
 /// answered 200 and queued for [`EventSink::recv_timeout`]. Bind a specific
 /// address, not the wildcard: it is also the Host the players will send.
+///
+/// Started with [`MediaFiles`] ([`EventSink::start_serving`]), it also
+/// answers `GET /media/<name>`, so the players fetch announcement clips from
+/// the address they already send events to.
 pub struct EventSink {
     addr: SocketAddr,
     events: mpsc::Receiver<Notify>,
@@ -490,6 +501,12 @@ pub struct EventSink {
 impl EventSink {
     /// Listen on `bind`; port 0 picks a free one.
     pub fn start(bind: SocketAddr) -> Result<Self, ProtoError> {
+        Self::start_serving(bind, None)
+    }
+
+    /// [`Self::start`], also serving `media` at `GET /media/<name>` when
+    /// given. Without it, a GET is refused (405) like any other non-NOTIFY.
+    pub fn start_serving(bind: SocketAddr, media: Option<MediaFiles>) -> Result<Self, ProtoError> {
         let (queue, events) = mpsc::channel::<Notify>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(SocketAddr, ShutdownSignal), String>>();
         let server = thread::Builder::new()
@@ -510,7 +527,15 @@ impl EventSink {
                     );
                     let handler = move |req: Request| {
                         let queue = queue.clone();
-                        async move { accept_notify(&req, &queue) }
+                        let media = media.clone();
+                        async move {
+                            match &media {
+                                Some(files) if matches!(req.method, Method::Get) => {
+                                    serve_media(files, &req.uri)
+                                }
+                                _ => accept_notify(&req, &queue),
+                            }
+                        }
                     };
                     let listener =
                         match Http1Listener::bind_with_config(bind, handler, config).await {
@@ -583,6 +608,26 @@ impl Drop for EventSink {
         if let Some(server) = self.server.take() {
             let _ = server.join();
         }
+    }
+}
+
+/// Answer `GET /media/<name>` with the file `files` names for it.
+fn serve_media(files: &MediaFiles, uri: &str) -> Response {
+    let path = uri.split(['?', '#']).next().unwrap_or_default();
+    let file = path
+        .strip_prefix("/media/")
+        .filter(|name| !name.is_empty() && !name.contains('/'))
+        .and_then(|name| files(name));
+    let Some(file) = file else {
+        return Response::new(404, "Not Found", Vec::new());
+    };
+    let kind = match file.extension().and_then(|e| e.to_str()) {
+        Some(e) if e.eq_ignore_ascii_case("wav") => "audio/wav",
+        _ => "application/octet-stream",
+    };
+    match std::fs::read(&file) {
+        Ok(body) => Response::new(200, "OK", body).with_header("Content-Type", kind),
+        Err(_) => Response::new(404, "Not Found", Vec::new()),
     }
 }
 
@@ -790,6 +835,77 @@ mod tests {
             sink.recv_timeout(Duration::from_millis(50)).is_none(),
             "only the good NOTIFY queued"
         );
+    }
+
+    /// The whole reply to `request`.
+    fn raw_reply(addr: SocketAddr, request: &str) -> String {
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .expect("timeout");
+        stream.write_all(request.as_bytes()).expect("write");
+        let mut reply = Vec::new();
+        let _ = stream.read_to_end(&mut reply);
+        String::from_utf8_lossy(&reply).into_owned()
+    }
+
+    #[test]
+    fn event_sink_serves_media_and_still_takes_notifies() {
+        let dir = std::env::temp_dir().join(format!("fsonos-sink-media-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let clip = dir.join("0123abcd.wav");
+        std::fs::write(&clip, b"RIFF-a-test-clip").unwrap();
+        let served = clip.clone();
+        let files: MediaFiles =
+            Arc::new(move |name| (name == "0123abcd.wav").then(|| served.clone()));
+        let sink =
+            EventSink::start_serving("127.0.0.1:0".parse().unwrap(), Some(files)).expect("sink");
+        let addr = sink.local_addr();
+        let host = addr.to_string();
+        let get = |path: &str| {
+            raw_reply(
+                addr,
+                &format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"),
+            )
+        };
+
+        let reply = get("/media/0123abcd.wav");
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(
+            reply
+                .to_ascii_lowercase()
+                .contains("content-type: audio/wav"),
+            "{reply}"
+        );
+        assert!(reply.ends_with("RIFF-a-test-clip"), "{reply}");
+        assert!(get("/media/0123abcd.wav?x=1").starts_with("HTTP/1.1 200"));
+        for missing in [
+            "/media/ffff.wav",
+            "/media/",
+            "/media/../0123abcd.wav",
+            "/0123abcd.wav",
+            "/",
+        ] {
+            let reply = get(missing);
+            assert!(reply.starts_with("HTTP/1.1 404"), "{missing}: {reply}");
+        }
+        let foreign = raw_reply(
+            addr,
+            "GET /media/0123abcd.wav HTTP/1.1\r\nHost: player.example\r\nConnection: close\r\n\r\n",
+        );
+        assert!(
+            foreign.contains(" 421"),
+            "a foreign Host is refused: {foreign}"
+        );
+
+        let status = raw(
+            addr,
+            &notify_request(addr, &host, Some("uuid:RINCON_X_sub8"), RCS_VOLUME),
+        );
+        assert!(status.contains(" 200"), "{status}");
+        assert!(sink.recv_timeout(Duration::from_secs(5)).is_some());
+        drop(sink);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Each request a fake player saw: its method and GENA headers.

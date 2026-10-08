@@ -20,7 +20,7 @@ use crate::inventory::DISCOVERY_WAIT;
 use crate::playback::{Changes, Playback, PlayerPlayback};
 use crate::reconcile::{Health, HealthBoard, Reconciler};
 use fsonos_proto::gena::Subscription;
-use fsonos_proto::net::{EventSink, Lan};
+use fsonos_proto::net::{EventSink, Lan, MediaFiles};
 use fsonos_proto::ssdp::Advert;
 use fsonos_proto::topology::{VanishedDevice, host_of_location};
 use fsonos_proto::{ProtoError, Transport};
@@ -35,7 +35,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 /// How [`Live`] runs.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LiveConfig {
     /// Player addresses to survey besides SSDP (seeds.toml, `--seeds`).
     pub seeds: Vec<IpAddr>,
@@ -45,6 +45,21 @@ pub struct LiveConfig {
     pub max_backoff: Duration,
     /// The port players send events to (0: any free port).
     pub callback_port: u16,
+    /// Clips the event listener also serves at `GET /media/<name>`, so the
+    /// players fetch announcements from [`Snapshot::callback`].
+    pub media: Option<MediaFiles>,
+}
+
+impl std::fmt::Debug for LiveConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LiveConfig")
+            .field("seeds", &self.seeds)
+            .field("interval", &self.interval)
+            .field("max_backoff", &self.max_backoff)
+            .field("callback_port", &self.callback_port)
+            .field("media", &self.media.is_some())
+            .finish()
+    }
 }
 
 impl LiveConfig {
@@ -56,6 +71,7 @@ impl LiveConfig {
             interval: Duration::from_mins(5),
             max_backoff: Duration::from_mins(30),
             callback_port: 0,
+            media: None,
         }
     }
 }
@@ -72,7 +88,8 @@ pub struct Snapshot {
     pub surveyed_at: Option<Instant>,
     /// Why the last survey (or the event listener) failed, until one works.
     pub last_error: Option<String>,
-    /// Where players send events, once listening (`http://host:port`).
+    /// Where players send events, once listening (`http://host:port`);
+    /// also the base of clip URLs when [`LiveConfig::media`] is set.
     pub callback: Option<String>,
     /// Players the households list as vanished (powered off), with their
     /// room names.
@@ -573,8 +590,11 @@ impl Engine {
             .lan
             .local_address_toward(toward)
             .map_err(|e| format!("no local route to {toward}: {e}"))?;
-        EventSink::start(SocketAddr::new(local, self.config.callback_port))
-            .map_err(|e| format!("cannot listen for events on {local}: {e}"))
+        EventSink::start_serving(
+            SocketAddr::new(local, self.config.callback_port),
+            self.config.media.clone(),
+        )
+        .map_err(|e| format!("cannot listen for events on {local}: {e}"))
     }
 
     fn publish(&self, m: &Model, mut events: Vec<LiveEvent>) {
