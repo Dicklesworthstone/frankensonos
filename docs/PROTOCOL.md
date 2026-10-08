@@ -427,6 +427,23 @@ definitive answer is dynamic: qemu-mips emulation of anacapad, or one live
 POST of a crafted statement (rate-limited, and a mutation — owner approval
 first).
 
+**Reversal (same round, via libsonoscrypto)**: the gate IS cryptographic. The
+three obfuscated helpers resolve to `libsonoscrypto.so.1` functions: ZZ0021
+reads `/tmp/devmode.tmp.bin`, ZZ0022 hex-encodes 6 bytes (`%02X`×6 — the
+14-byte compare string is a hex key ID), and ZZ0019 verifies a signature.
+The library carries numbered-key management strings ("Unknown signing
+key!", "Signed with key %u", "Signing key %u is revoked!") and full mbedtls
+RSA (`mbedtls_rsa_rsassa_pkcs1_v15_verify`). **Three embedded 2048-bit RSA
+public keys** sit at file offsets 0xbe90/0xbfb8/0xc130 — the devmode
+statement must be signed with one of these keys (moduli prefixes
+00ed54d2…, 00b80399…, 00e2601d…). So the S1 devmode gate is an
+RSA-PKCS1v15 signed, numbered, revocable credential — forging requires a
+Sonos private key, not a format trick. The remaining firmware-replacement
+paths for S1: legitimately obtained devmode codes (Sonos developer
+program), or the update-signature chain (`bin/upgrade`'s own verification,
+which uses the same libsonoscrypto with separate keys for the `.upd`
+signature section).
+
 ## 10. SMAPI (the speaker↔Spotify bridge) — verified against the live endpoint
 
 Sonos renders music services through SMAPI, a SOAP API Sonos operates per
