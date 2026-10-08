@@ -38,6 +38,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+# `fsonos completions <shell>`: the static scripts (no unstable features).
+clap_complete = "4.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }

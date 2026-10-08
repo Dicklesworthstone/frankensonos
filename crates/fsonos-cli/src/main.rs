@@ -32,6 +32,7 @@
 //!   sim        run a virtual Sonos house on loopback (feature `sim`)
 
 mod announce_cmd;
+mod completions;
 mod config;
 mod confine;
 mod daemon;
@@ -206,6 +207,12 @@ enum Command {
     Say(announce_cmd::SayArgs),
     /// Play a chime (bell, beep, rise) in rooms, then put the music back.
     Chime(announce_cmd::ChimeArgs),
+    /// A completion script for your shell, completing room names too:
+    /// `fsonos completions zsh > ~/.zfunc/_fsonos`.
+    Completions { shell: completions::Shell },
+    /// The cached room names, one per line, for the completion scripts.
+    #[command(name = "__complete-rooms", hide = true)]
+    CompleteRooms,
     /// Run the long-lived daemon (HTTP API + MCP server + event sink).
     Serve {
         #[command(flatten)]
@@ -310,6 +317,9 @@ fn main() -> ExitCode {
 
 /// Through a running daemon when it answers the command, else directly.
 fn dispatch(cli: Cli) -> anyhow::Result<()> {
+    if let Some(done) = completions::run(&cli) {
+        return done;
+    }
     if remote::run(&cli.global, &cli.command)? {
         return Ok(());
     }
@@ -654,6 +664,8 @@ fn plan_for<'a>(
         | Command::Setup(_)
         | Command::Say(_)
         | Command::Chime(_)
+        | Command::Completions { .. }
+        | Command::CompleteRooms
         | Command::Mcp => {
             unreachable!("not a control command")
         }

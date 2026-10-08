@@ -20,6 +20,7 @@ fsonos-api = { workspace = true }
 fsonos-mcp = { workspace = true }
 fsonos-tailscale = { workspace = true }
 clap = { workspace = true }
+clap_complete = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

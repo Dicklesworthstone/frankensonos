@@ -62,6 +62,15 @@ impl Direct {
         let wait = global.wait();
         let lan = global.lan()?;
         let survey = inventory::survey(&*lan, &seeds, wait)?;
+        if let Some(dir) = global.data_dir() {
+            crate::completions::remember_rooms(
+                &dir,
+                survey
+                    .households
+                    .iter()
+                    .flat_map(|h| h.rooms.iter().map(|r| r.name.clone())),
+            );
+        }
         let policy = match global.data_dir() {
             Some(dir) => crate::daemon::policy(&dir)?,
             None => Policy::default(),

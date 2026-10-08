@@ -331,6 +331,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
     match command {
         Command::Zones => {
             let zones: Vec<ZoneDto> = daemon.get("/zones")?;
+            remember_rooms(global, zones.iter().flat_map(|z| z.members.iter().cloned()));
             emit(json, &zones, |z| direct::zones_text(z))?;
         }
         Command::Status { zone } => {
@@ -339,6 +340,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         }
         Command::Rooms { alias: None } => {
             let rooms: Vec<RoomDto> = daemon.get("/rooms")?;
+            remember_rooms(global, rooms.iter().map(|r| r.name.clone()));
             emit(json, &rooms, |r| direct::rooms_text(r))?;
         }
         Command::Favorites { zone } => {
@@ -384,6 +386,13 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// Refresh the room cache completions read (see `crate::completions`).
+fn remember_rooms(global: &GlobalArgs, rooms: impl IntoIterator<Item = String>) {
+    if let Some(dir) = global.data_dir() {
+        crate::completions::remember_rooms(&dir, rooms);
+    }
 }
 
 /// The route and body a control subcommand sends, as `plan_for` plans it
