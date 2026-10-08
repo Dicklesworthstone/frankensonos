@@ -106,7 +106,8 @@ pub struct AuthEntry {
 }
 
 /// A DJ session's steering, kept so it survives a daemon restart.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Serializable so an action's before-state can carry it for undo.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DjSession {
     /// The group coordinator's player id: stable across regrouping, unlike
     /// zone names.
