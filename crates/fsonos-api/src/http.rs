@@ -19,6 +19,11 @@
 //! | `POST /mute` | [`crate::MuteRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /group` | [`crate::GroupRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /dj/start` | [`crate::DjStartRequest`] | [`crate::OutcomeDto`] |
+//! | `GET /scenes` | | `[SceneDto]` ([`crate::surface::scenes`]) |
+//! | `GET /scenes/{name}` | | [`crate::surface::scenes::SceneDto`] |
+//! | `PUT /scenes/{name}` | | the `SceneDto` saved from the house as it is |
+//! | `POST /scenes/{name}/apply` | `{}` | [`crate::surface::scenes::SceneApplyDto`] |
+//! | `DELETE /scenes/{name}` | | [`crate::surface::scenes::SceneDeletedDto`] |
 //! | `POST /dj/skip`, `/dj/stop` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /dj/steer` | [`crate::DjSteerRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /zones/{room}/dj` | | [`crate::DjStatusDto`] |
@@ -61,6 +66,8 @@ use crate::request::{
 use crate::surface::Surface;
 use crate::web::WebPolicy;
 use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
+
+mod scenes;
 
 /// The API application over `surface`, answering every caller as `client`,
 /// with the listener's browser-safety rules (`web`, see [`crate::web`]).
@@ -118,6 +125,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(house(cx));
     routes.extend(controls(cx));
     routes.extend(house_verbs(cx));
+    routes.extend(scenes::routes(cx));
     routes.extend(dj(cx));
     routes
 }

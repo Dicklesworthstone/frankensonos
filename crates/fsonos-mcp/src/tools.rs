@@ -22,6 +22,9 @@ use std::sync::{Arc, OnceLock};
 
 use crate::tool_error;
 
+mod scenes;
+pub use scenes::{ApplyScene, ListScenes, SaveScene};
+
 /// Finds the households (a LAN survey, say); see [`fsonos_api::surface`].
 pub use fsonos_api::surface::Survey;
 

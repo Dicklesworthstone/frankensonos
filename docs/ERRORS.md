@@ -54,6 +54,7 @@ succeed.
 | `UNTRUSTED_ORIGIN` | 403 | 5 | no | The request came from a web page that is not one of the daemon's own. | Call the API from the CLI, an agent, or the daemon's own pages. |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | 2 | no | A control request whose body is not `application/json`. | Send the request body as JSON with Content-Type: application/json. |
 | `NO_MATCH` | 404 | 3 | no | A library search found nothing to play. | Try fewer or other words: a composer's surname, a performer, or a catalog number (bwv 988). |
+| `UNKNOWN_SCENE` | 404 | 3 | no | No saved scene has that name. | List the scenes with list_scenes (GET /scenes), or use a suggested name. |
 
 ## Notes
 

@@ -76,11 +76,13 @@ pub enum ErrorCode {
     UnsupportedMediaType,
     /// A library search found nothing to play.
     NoMatch,
+    /// No saved scene has that name.
+    UnknownScene,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -104,6 +106,7 @@ impl ErrorCode {
         Self::UntrustedOrigin,
         Self::UnsupportedMediaType,
         Self::NoMatch,
+        Self::UnknownScene,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
@@ -133,6 +136,7 @@ impl ErrorCode {
             Self::UnplayableFavorite => "UNPLAYABLE_FAVORITE",
             Self::UntrustedOrigin => "UNTRUSTED_ORIGIN",
             Self::UnsupportedMediaType => "UNSUPPORTED_MEDIA_TYPE",
+            Self::UnknownScene => "UNKNOWN_SCENE",
         }
     }
 
@@ -146,7 +150,8 @@ impl ErrorCode {
             | Self::UnknownMood
             | Self::NoDjSession
             | Self::UnknownFavorite
-            | Self::NoMatch => 404,
+            | Self::NoMatch
+            | Self::UnknownScene => 404,
             Self::AmbiguousRoom
             | Self::NotCoordinator
             | Self::SpotifyNotLinked
@@ -178,7 +183,8 @@ impl ErrorCode {
             | Self::UnknownMood
             | Self::NoDjSession
             | Self::UnknownFavorite
-            | Self::NoMatch => 3,
+            | Self::NoMatch
+            | Self::UnknownScene => 3,
             Self::NotReady | Self::PlayerUnreachable | Self::NotCoordinator => 4,
             Self::PolicyDenied | Self::UntrustedOrigin => 5,
             Self::UpnpFault
@@ -249,6 +255,9 @@ impl ErrorCode {
             }
             Self::UnsupportedMediaType => {
                 "Send the request body as JSON with Content-Type: application/json."
+            }
+            Self::UnknownScene => {
+                "List the scenes with list_scenes (GET /scenes), or use a suggested name."
             }
         }
     }
