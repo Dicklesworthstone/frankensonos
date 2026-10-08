@@ -14,7 +14,7 @@ use crate::inventory::{self, DISCOVERY_WAIT};
 use crate::playback::{Changes, Playback};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::gena::Notify;
-use fsonos_proto::topology::parse_zone_group_state;
+use fsonos_proto::topology::{VanishedDevice, parse_zone_group_state};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
@@ -218,6 +218,9 @@ pub struct NotifyReport {
 #[derive(Debug)]
 pub struct Reconciler {
     pub households: Vec<HouseholdState>,
+    /// Players the households currently list as vanished, by room name: a
+    /// command to one is to a powered-off speaker, not an unknown room.
+    pub vanished: Vec<VanishedDevice>,
     pub subscriptions: Subscriptions,
     pub health: HealthBoard,
     pub schedule: Refresh,
@@ -230,6 +233,7 @@ impl Reconciler {
     pub fn new(interval: Duration, max_backoff: Duration, now: Instant) -> Self {
         Self {
             households: Vec::new(),
+            vanished: Vec::new(),
             subscriptions: Subscriptions::default(),
             health: HealthBoard::default(),
             schedule: Refresh::new(interval, max_backoff, now),
@@ -284,6 +288,7 @@ impl Reconciler {
             .flat_map(|h| h.players.iter().map(|p| (p.id.clone(), p.ip)))
             .collect();
         self.households = survey.households;
+        self.vanished = survey.vanished;
         let mut report = RefreshReport {
             households: self.households.len(),
             rebooted,
@@ -384,6 +389,16 @@ impl Reconciler {
             && let Some(doc) = n.property("ZoneGroupState")
         {
             let zgs = parse_zone_group_state(doc)?;
+            // This household's vanished players: drop those it lists again,
+            // record (or refresh) those it now lists as vanished.
+            self.vanished.retain(|v| {
+                zgs.groups
+                    .iter()
+                    .flat_map(|g| &g.members)
+                    .all(|m| m.uuid != v.uuid)
+                    && zgs.vanished.iter().all(|now| now.uuid != v.uuid)
+            });
+            self.vanished.extend(zgs.vanished.iter().cloned());
             for p in self.subscriptions.reboots(zgs.boot_seqs()) {
                 let r = self.subscriptions.resubscribe(lan, &p, &callback_url, now);
                 tracing::info!(

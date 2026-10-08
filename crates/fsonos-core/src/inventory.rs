@@ -7,7 +7,7 @@
 
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::description::{DeviceDescription, parse_device_description};
-use fsonos_proto::topology::{get_zone_group_state, host_of_location};
+use fsonos_proto::topology::{VanishedDevice, get_zone_group_state, host_of_location};
 use fsonos_proto::{Transport, ssdp};
 use fsonos_types::{Generation, HouseholdId, Player, PlayerId};
 use std::collections::HashSet;
@@ -29,6 +29,9 @@ pub struct Survey {
     /// Each player's `BootSeq` from the topology reads (it rises on every
     /// boot, so a reboot between surveys shows here).
     pub boot_seqs: Vec<(PlayerId, u32)>,
+    /// Players each household's topology lists as vanished (powered off, or
+    /// out of reach of the household), with their room names.
+    pub vanished: Vec<VanishedDevice>,
 }
 
 /// Find every household on the LAN. SSDP (plus any direct `seeds`, for
@@ -97,6 +100,7 @@ pub fn survey<T: Transport + ?Sized>(
             .collect();
         out.boot_seqs
             .extend(zgs.boot_seqs().map(|(p, seq)| (p.clone(), seq)));
+        out.vanished.extend(zgs.vanished.iter().cloned());
         let mut state = HouseholdState::default();
         state.apply_topology(&zgs);
         for (member_ip, member, household) in &described {

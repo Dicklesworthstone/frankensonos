@@ -22,9 +22,10 @@ use crate::reconcile::{Health, HealthBoard, Reconciler};
 use fsonos_proto::gena::Subscription;
 use fsonos_proto::net::{EventSink, Lan};
 use fsonos_proto::ssdp::Advert;
-use fsonos_proto::topology::host_of_location;
+use fsonos_proto::topology::{VanishedDevice, host_of_location};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
+use fsonos_types::text::normalize;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -73,6 +74,22 @@ pub struct Snapshot {
     pub last_error: Option<String>,
     /// Where players send events, once listening (`http://host:port`).
     pub callback: Option<String>,
+    /// Players the households list as vanished (powered off), with their
+    /// room names.
+    pub vanished: Vec<VanishedDevice>,
+}
+
+impl Snapshot {
+    /// The vanished player whose room is called `name` (compared as room
+    /// names are: case, spacing and accents aside), if any: a command to it
+    /// is to a speaker that is off, not to an unknown room.
+    #[must_use]
+    pub fn vanished_room(&self, name: &str) -> Option<&VanishedDevice> {
+        let wanted = normalize(name);
+        self.vanished
+            .iter()
+            .find(|v| normalize(&v.zone_name) == wanted)
+    }
 }
 
 /// A change the live model saw, pushed to every [`Live::subscribe`]r.
@@ -553,6 +570,7 @@ impl Engine {
                 .sink
                 .as_ref()
                 .map(|s| s.callback_url("").trim_end_matches('/').to_string()),
+            vanished: m.rec.vanished.clone(),
         };
         let mut current = self.snapshot.lock().unwrap_or_else(PoisonError::into_inner);
         let mut changed = Vec::new();

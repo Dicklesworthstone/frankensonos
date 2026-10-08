@@ -122,6 +122,15 @@ fn the_live_model_follows_the_speakers() {
         live.player(office).is_none(),
         "its stale playback state is gone"
     );
+    // Its room is known to be off, not unknown (any case, spacing).
+    assert!(
+        eventually(Duration::from_secs(5), || live
+            .snapshot()
+            .vanished_room("  office ")
+            .is_some_and(|v| v.uuid == *office)),
+        "{:?}",
+        live.snapshot().vanished
+    );
 
     // It comes back, healthy and reporting events again.
     sim.set_offline("Office", false).unwrap();
@@ -133,6 +142,13 @@ fn the_live_model_follows_the_speakers() {
             .is_some_and(|h| h.health == Health::Healthy)
             && live.player(office).is_some_and(|p| p.volume.is_some())
     }));
+    assert!(
+        eventually(Duration::from_secs(5), || live
+            .snapshot()
+            .vanished_room("Office")
+            .is_none()),
+        "back on: no longer listed as vanished"
+    );
 
     // Stopping ends every active subscription.
     let active = live.snapshot().subscriptions;
