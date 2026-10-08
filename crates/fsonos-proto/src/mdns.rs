@@ -263,10 +263,10 @@ pub fn sonos_adverts(msg: &DnsMessage) -> Vec<SonosAdvert> {
                         }
                     }
                 }
-                RecordData::A(addr) => {
-                    if target_host.is_some_and(|h| r.name.eq_ignore_ascii_case(h)) {
-                        advert.addr = Some(*addr);
-                    }
+                RecordData::A(addr)
+                    if target_host.is_some_and(|h| r.name.eq_ignore_ascii_case(h)) =>
+                {
+                    advert.addr = Some(*addr);
                 }
                 _ => {}
             }
@@ -312,12 +312,13 @@ mod tests {
 
     /// Build a minimal response with one Sonos PTR + SRV/TXT/A additional
     /// records, exercising compression (the service name repeats).
+    #[allow(clippy::cast_possible_truncation)] // test packets: every length fits
     fn build_response(instance: &str, txts: &[&str], port: u16, ip: [u8; 4]) -> Vec<u8> {
         let mut b = Vec::new();
         // header: id 0, response, 0 questions, 1 answer, 0 authority, 3 additional
         b.extend_from_slice(&[0, 0, 0x84, 0, 0, 0, 0, 1, 0, 0, 0, 3]);
         let svc = b"_sonos._tcp.local";
-        let mut put_name = |b: &mut Vec<u8>, name: &str| {
+        let put_name = |b: &mut Vec<u8>, name: &str| {
             for label in name.split('.') {
                 b.push(label.len() as u8);
                 b.extend_from_slice(label.as_bytes());
@@ -344,7 +345,7 @@ mod tests {
             .position(|w| w == first_label.as_bytes())
             .unwrap()
             - 1;
-        let mut put_ptr = |b: &mut Vec<u8>| {
+        let put_ptr = |b: &mut Vec<u8>| {
             let ptr = 0xC000u16 | (inst_off as u16);
             b.extend_from_slice(&ptr.to_be_bytes());
         };
