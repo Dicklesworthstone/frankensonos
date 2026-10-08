@@ -30,9 +30,20 @@ controlling it on your own network is exactly what these protocols are for.
   per-household parameters are **discovered from the household's own favorites
   at runtime** (the owner's own linked Spotify account) — not hard-coded, not
   extracted from anywhere else.
-- Spotify **Web API** reads of the **owner's own** saved albums and liked
-  tracks, using the owner's own OAuth (Authorization Code + PKCE) with scope
-  `user-library-read`. Tokens stay in a local, git-ignored cache.
+- Spotify **Web API** reads of the **owner's own** account, read-only, using
+  the owner's own OAuth (Authorization Code + PKCE). Tokens stay in a local,
+  git-ignored cache. The authorized scopes (owner-authorized 2026-10-08 for the
+  DJ's taste, beyond the original `user-library-read`):
+  - `user-library-read`: saved albums and liked tracks;
+  - `user-follow-read`: followed artists;
+  - `playlist-read-private`: the owner's own playlists;
+  - `user-top-read`: top artists and tracks;
+  - `user-read-recently-played`: recently played tracks.
+
+  Reading those items includes their public catalog metadata, which needs no
+  further scope: album track lists (`GET /v1/albums/{id}/tracks`) and artist
+  genres (`GET /v1/artists/{id}`). No scope that changes the account or
+  controls playback is requested; Sonos plays Spotify itself.
 - The daemon, HTTP API, MCP server, CLI, DJ engine, local store, and the
   Tailscale deployment that fronts **the daemon** (never the speakers).
 
