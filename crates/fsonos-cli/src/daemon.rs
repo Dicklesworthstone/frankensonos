@@ -27,7 +27,7 @@
 
 use anyhow::Context as _;
 use fastapi::{ServerConfig, TcpServer};
-use fsonos_api::{Failure, Surface, WebPolicy};
+use fsonos_api::{Failure, Identity, Surface, WebPolicy};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::live::{Live, LiveConfig, LiveEvent};
 use fsonos_core::policy::{Client, Policy};
@@ -213,7 +213,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
 
     let names = tailnet_names(&tailnet);
     let http = start_all("HTTP API", &http_plan, |addr| {
-        start_http(&surface, addr, &names)
+        start_http(&surface, addr, &names, args.tailscale_serve)
     })?;
     let mcp = start_all("MCP server", &mcp_plan, |addr| start_mcp(&surface, addr))?;
     // One value per key: the e2e harness and scripts parse this line.
@@ -337,9 +337,16 @@ fn start_http(
     surface: &Arc<Surface>,
     addr: SocketAddr,
     names: &[String],
+    behind_serve: bool,
 ) -> anyhow::Result<(Arc<TcpServer>, SocketAddr)> {
     let web = WebPolicy::for_listener(addr, names);
-    let app = Arc::new(fsonos_api::app(surface, &listener_client(addr), &web));
+    // Behind Tailscale Serve, its login header names the tailnet user.
+    let identity = if behind_serve {
+        Identity::behind_serve(listener_client(addr))
+    } else {
+        Identity::fixed(listener_client(addr))
+    };
+    let app = Arc::new(fsonos_api::app(surface, &identity, &web));
     let config = ServerConfig::new(addr.to_string()).with_allowed_hosts(web.hosts().to_vec());
     let server = Arc::new(TcpServer::new(config));
     let (bound_tx, bound_rx) = mpsc::channel();

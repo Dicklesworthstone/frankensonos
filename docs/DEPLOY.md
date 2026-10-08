@@ -219,8 +219,13 @@ tailscale serve status
 - To remove one mapping, run `tailscale serve --https=8443 off`.
   `tailscale serve reset` clears **all** Serve config on the machine.
 - For requests from user-owned devices, Serve adds `Tailscale-User-Login` and
-  `Tailscale-User-Name` headers. The daemon ignores them today. They are the
-  hook for per-user authorization later.
+  `Tailscale-User-Name` headers. With `FSONOS_TAILSCALE_SERVE` set, the HTTP
+  API takes `Tailscale-User-Login` on its loopback listeners as the caller:
+  a `[clients."<login>"]` table in `policy.toml` applies to that person, and
+  the action log names them. Requests from tagged devices carry no login and
+  stay `loopback-http`. Any process on the Mac that can reach the loopback
+  port could send the header too, so grant a login no more than you trust
+  the Mac's own processes with. MCP over Serve is still `loopback-http`.
 
 ### Alternative: listen on the tailnet directly
 

@@ -25,7 +25,7 @@
 //! only its own Host names. Failures answer with the code's status and an
 //! [`crate::ApiError`] body
 //! (`docs/ERRORS.md`). Each operation id in the OpenAPI document is the
-//! name of the MCP tool that does the same. Every call runs as the listener's [`Client`] under the
+//! name of the MCP tool that does the same. Every call runs as its caller ([`Identity`]) under the
 //! house policy. Speaker I/O is synchronous inside the handler.
 
 use fastapi::core::{BoxFuture, RouteEntry};
@@ -43,6 +43,7 @@ use std::future::ready;
 use std::sync::Arc;
 
 use crate::failure::{ErrorCode, Failure};
+use crate::identity::Identity;
 use crate::log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 use crate::plan::{
     self, Command, DjAction, TransportAction, plan_group, plan_mute, plan_play, plan_ungroup,
@@ -57,11 +58,11 @@ use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
 /// The API application over `surface`, answering every caller as `client`,
 /// with the listener's browser-safety rules (`web`, see [`crate::web`]).
 #[must_use]
-pub fn app(surface: &Arc<Surface>, client: &Client, web: &WebPolicy) -> App {
+pub fn app(surface: &Arc<Surface>, identity: &Identity, web: &WebPolicy) -> App {
     let web = Arc::new(web.clone());
     let entries = routes(&Ctx {
         surface,
-        client,
+        identity,
         web: &web,
     });
     let spec = openapi_document(&entries);
@@ -369,7 +370,7 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 /// What every route works with.
 struct Ctx<'a> {
     surface: &'a Arc<Surface>,
-    client: &'a Client,
+    identity: &'a Identity,
     web: &'a Arc<WebPolicy>,
 }
 
@@ -379,8 +380,14 @@ impl Ctx<'_> {
     where
         F: Fn(&Surface, &Client, &mut Request) -> Response + Send + Sync + 'static,
     {
-        let (surface, client) = (Arc::clone(self.surface), self.client.clone());
-        op.entry(self.web, Box::new(move |req| work(&surface, &client, req)))
+        let (surface, identity) = (Arc::clone(self.surface), self.identity.clone());
+        op.entry(
+            self.web,
+            Box::new(move |req| {
+                let client = identity.of(req);
+                work(&surface, &client, req)
+            }),
+        )
     }
 
     /// A control route: parse the JSON body as `B`, plan it, carry it out.

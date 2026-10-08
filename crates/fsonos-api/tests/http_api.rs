@@ -82,12 +82,29 @@ fn house() -> Vec<HouseholdState> {
     }]
 }
 
-/// The API on an ephemeral loopback port, answering as `client`.
-/// The API over the canned transport and [`house`].
+/// The API over the canned transport and [`house`], answering every caller
+/// as `client`.
 fn app(
     out_args: &'static str,
     sent: &Arc<Mutex<Vec<String>>>,
     client: &Client,
+    web: &WebPolicy,
+) -> fastapi::App {
+    app_with(
+        out_args,
+        sent,
+        Policy::default(),
+        &fsonos_api::Identity::fixed(client.clone()),
+        web,
+    )
+}
+
+/// [`app`] under `policy`, identifying callers by `identity`.
+fn app_with(
+    out_args: &'static str,
+    sent: &Arc<Mutex<Vec<String>>>,
+    policy: Policy,
+    identity: &fsonos_api::Identity,
     web: &WebPolicy,
 ) -> fastapi::App {
     let surface = Surface::new(
@@ -96,10 +113,10 @@ fn app(
             sent: Arc::clone(sent),
         }),
         Box::new(|_| Ok(house())),
-        Policy::default(),
+        policy,
         Box::new(SystemClock),
     );
-    fsonos_api::app(&Arc::new(surface), client, web)
+    fsonos_api::app(&Arc::new(surface), identity, web)
 }
 
 struct Api {
@@ -110,10 +127,17 @@ struct Api {
 }
 
 impl Api {
+    /// The API on an ephemeral loopback port, answering as `client`.
     fn start(out_args: &'static str, client: &Client) -> Self {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
-        let app = Arc::new(app(out_args, &sent, client, &web));
+        let app = app(out_args, &sent, client, &web);
+        Self::serve(app, sent, &web)
+    }
+
+    /// `app` on an ephemeral loopback port.
+    fn serve(app: fastapi::App, sent: Arc<Mutex<Vec<String>>>, web: &WebPolicy) -> Self {
+        let app = Arc::new(app);
         let config = ServerConfig::new("127.0.0.1:0").with_allowed_hosts(web.hosts().to_vec());
         let server = Arc::new(TcpServer::new(config));
         let (addr_tx, addr_rx) = mpsc::channel();
@@ -486,4 +510,45 @@ fn search_and_history_validate_and_answer_empty_without_a_store() {
         (status, err["code"].as_str()),
         (422, Some("INVALID_ARGUMENT"))
     );
+}
+
+#[test]
+fn behind_serve_the_login_header_is_the_caller() {
+    // Loopback callers may not pause; the tailnet user Ada may.
+    let policy = Policy::from_toml(
+        "[clients.\"loopback-http\"]\ndeny = [\"pause\"]\n\n[clients.\"ada@example.com\"]\nallow = [\"pause\"]\n",
+    )
+    .unwrap();
+    let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let identity = fsonos_api::Identity::behind_serve(Client::LoopbackHttp);
+    let api = Api::serve(
+        app_with("", &sent, policy, &identity, &web),
+        Arc::clone(&sent),
+        &web,
+    );
+    let host = api.host();
+    let pause = |login: Option<&str>| {
+        let mut headers = vec![
+            ("Host", host.as_str()),
+            ("Content-Type", "application/json"),
+        ];
+        if let Some(login) = login {
+            headers.push(("Tailscale-User-Login", login));
+        }
+        api.raw("POST", "/pause", &headers, r#"{"zone":"Kitchen"}"#)
+            .0
+    };
+    assert_eq!(pause(None), 403, "loopback-http is denied pause");
+    assert_eq!(
+        pause(Some("ada@example.com")),
+        200,
+        "Ada, via Serve, may pause"
+    );
+    assert_eq!(
+        pause(Some("eve@example.com")),
+        200,
+        "an unlisted login gets the defaults"
+    );
+    assert_eq!(api.actions(), ["Pause", "Pause"]);
 }

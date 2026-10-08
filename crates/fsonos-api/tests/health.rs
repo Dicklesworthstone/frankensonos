@@ -40,7 +40,7 @@ fn app() -> fastapi::App {
     );
     fsonos_api::app(
         &Arc::new(surface),
-        &fsonos_core::policy::Client::LoopbackHttp,
+        &fsonos_api::Identity::fixed(fsonos_core::policy::Client::LoopbackHttp),
         &fsonos_api::WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]),
     )
 }
