@@ -27,6 +27,7 @@
 //!              teardown): HTTPS for the tailnet, never Funnel
 //!   sim        run a virtual Sonos house on loopback (feature `sim`)
 
+mod announce_cmd;
 mod config;
 mod confine;
 mod daemon;
@@ -183,6 +184,10 @@ enum Command {
         /// single household.
         target: Option<String>,
     },
+    /// Say something in rooms (macOS `say`), then put the music back.
+    Say(announce_cmd::SayArgs),
+    /// Play a chime (bell, beep, rise) in rooms, then put the music back.
+    Chime(announce_cmd::ChimeArgs),
     /// Run the long-lived daemon (HTTP API + MCP server + event sink).
     Serve {
         #[command(flatten)]
@@ -367,6 +372,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             emit(global.json, &outcome, |o: &OutcomeDto| {
                 format!("{}\n", o.done)
             })
+        }
+        Command::Say(args) => {
+            let announced = announce_cmd::run(global, &args.request())?;
+            emit(global.json, &announced, announce_cmd::text)
+        }
+        Command::Chime(args) => {
+            let announced = announce_cmd::run(global, &args.request())?;
+            emit(global.json, &announced, announce_cmd::text)
         }
         control => {
             let direct = Direct::survey(global)?;
@@ -604,6 +617,8 @@ fn plan_for<'a>(
         | Command::Tailscale(_)
         | Command::Rooms { .. }
         | Command::Scene(_)
+        | Command::Say(_)
+        | Command::Chime(_)
         | Command::Mcp => {
             unreachable!("not a control command")
         }

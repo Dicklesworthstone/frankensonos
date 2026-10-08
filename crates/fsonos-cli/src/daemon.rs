@@ -85,8 +85,11 @@ pub fn live_surface(
     let seeds = global.seed_addrs()?;
     let wait = global.wait();
     let network = global.network()?;
+    // The players fetch announcement clips from the event listener.
+    let (media, files) = crate::announce_cmd::media(global.data_dir().as_deref());
     let config = LiveConfig {
         callback_port: events_port,
+        media: Some(files),
         ..LiveConfig::new(seeds.clone())
     };
     let live = Arc::new(Live::start_with(
@@ -109,6 +112,11 @@ pub fn live_surface(
     .with_dj(Box::new(crate::dj::SpotifyDj::new(
         global.data_dir().map(|d| d.join(crate::dj::MOODS_FILE)),
     )));
+    let listener = Arc::downgrade(&live);
+    let surface = surface.with_announcements(fsonos_api::surface::announce::Announcements::new(
+        media,
+        Box::new(move || listener.upgrade()?.snapshot().callback),
+    ));
     Ok((surface, live))
 }
 

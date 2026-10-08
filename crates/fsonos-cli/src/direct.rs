@@ -122,6 +122,19 @@ impl Direct {
         self.surface.control(&Client::Cli, tool, plan)
     }
 
+    /// Announce `req` as the CLI, the players fetching the clip from
+    /// `announcements`' listener.
+    pub fn announce(
+        self,
+        announcements: fsonos_api::surface::announce::Announcements,
+        req: &fsonos_api::surface::announce::AnnounceRequest,
+    ) -> Result<fsonos_api::surface::announce::AnnounceDto, Failure> {
+        self.households()?;
+        self.surface
+            .with_announcements(announcements)
+            .announce(&Client::Cli, req)
+    }
+
     /// Every zone with its live transport state.
     pub fn zones(&self) -> Result<Vec<ZoneDto>, Failure> {
         self.households()?;
