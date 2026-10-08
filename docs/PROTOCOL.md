@@ -232,13 +232,17 @@ Grouping verbs (verified live on S2 97.1, 2026-10-07, with full restore):
   CurrentURIMetaData="")` on the *member* — it slaves to that coordinator.
   (GroupManagement `AddMember(MemberID, BootSeq)` is the newer structured
   path; it also returns volume/transport settings for the join.)
-- **Ungroup**: `GroupManagement#RemoveMember(MemberID="RINCON_<MEMBER_UUID>")`
-  addressed to the group **coordinator** — the only form that worked
-  (member-addressed and `uuid:`/IP/instance forms all 800). Propagation is
-  NOT instant: read-back showed the old group for ~10-15 s before the
-  household converged. **`AVTransport#BecomeCoordinatorOfStandaloneGroup`
-  returns error 1023 on current S2 firmware** — SoCo's `unjoin()` is broken
-  here too; do not use it. (S1's ungroup path is unverified as of this date.)
+- **Ungroup**: `SetAVTransportURI(InstanceID=0,
+  CurrentURI="x-rincon:<OWN_UUID>", CurrentURIMetaData="")` on the *member*
+  — "join yourself". **Returns UPnP 402 but ungroups immediately anyway**
+  (verified on BOTH generations 2026-10-07: solo within ~1 s of the call,
+  timed; the 402 is a red herring — the player rejects then executes).
+  Dead ends, also verified: `BecomeCoordinatorOfStandaloneGroup` returns
+  1023 on both generations (SoCo's `unjoin()` is broken on current firmware);
+  `GroupManagement#RemoveMember` returns success but is a **no-op** on both
+  generations (S1 confirmed still grouped after 95 s; S2's apparent effect
+  was actually the subsequent self-join). A controller must treat the 402
+  on the self-join as success and verify via a topology read-back.
 - ZGT events fire on grouping changes; each NOTIFY carries the new full
   ZoneGroupState (fixtures: solo-state and grouped-state S2 captures).
 
