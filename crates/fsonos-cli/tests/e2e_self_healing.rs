@@ -6,18 +6,21 @@
 //! - a command to a powered-off player fails cleanly as PLAYER_UNREACHABLE,
 //!   with a hint.
 //!
-//! Two scenarios wait on the HTTP/MCP command path retrying through
-//! `fsonos_core::heal`, and are recorded as pending:
-//! - a coordinator re-elected during a group-volume change;
-//! - a player that moved to a new address.
+//! - a group-volume change made while the group's coordinator was re-elected
+//!   behind the daemon's back follows the new coordinator (a HEALED note).
 //!
-//! Core's tests/heal_sim.rs covers both against the simulator.
+//! One scenario is recorded as pending: a player that moved to a new
+//! address. The routes file is fixed when the simulator starts, so a running
+//! simulator cannot be re-routed; core's tests/heal_sim.rs covers it.
 
 mod e2e;
 
 use e2e::{Scenario, http};
-use fsonos_proto::control::{join_group, leave_group, play, set_av_transport_uri, set_volume};
-use fsonos_sim::{GenaEvent, SimHousehold};
+use fsonos_proto::control::{
+    get_group_volume, join_group, leave_group, play, set_av_transport_uri, set_volume,
+};
+use fsonos_proto::topology::get_zone_group_state;
+use fsonos_sim::{GenaEvent, NotifyDrop, SimHousehold};
 use fsonos_types::PlayerId;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -109,16 +112,11 @@ fn serve_heals_around_reboots_regrouping_and_power_loss() {
 
     check_reboot(&mut s, &api);
     check_ungrouped(&mut s, &api);
-    s.pending(
-        "reelect",
-        "a coordinator re-elected during a group-volume change: the command path does not \
-         retry through fsonos_core::heal::on_coordinator yet (core heal_sim covers it)",
-    );
+    check_reelect(&mut s, &api);
     s.pending(
         "moved",
-        "a player that moved (DHCP): the routes file is fixed when the simulator starts and \
-         the command path does not re-resolve through heal::readdressing yet (core heal_sim \
-         covers it)",
+        "a player that moved (DHCP): the routes file is fixed when the simulator starts, so a \
+         running simulator cannot be re-routed (core tests/heal_sim.rs covers it)",
     );
     check_power_loss(&mut s, &api);
 
@@ -264,4 +262,86 @@ fn check_power_loss(s: &mut Scenario, api: &str) {
             && took < Duration::from_secs(15),
         format!("{failed:?} after {} ms", took.as_millis()),
     );
+}
+
+/// The S1 group's coordinator changes behind the daemon's back (the
+/// household's topology events are dropped, so its model is stale). A
+/// group-volume change through the API hits UPnP 800 at the old
+/// coordinator, follows the new one, and lands there.
+fn check_reelect(s: &mut Scenario, api: &str) {
+    let kitchen_uuid = s
+        .sim_handle()
+        .and_then(|sim| sim.player("Kitchen").map(|p| p.uuid.clone()))
+        .unwrap_or_default();
+    let joined = join_group(&s.lan(), s.ip("Office"), &PlayerId(kitchen_uuid.clone()));
+    let grouped = joined.is_ok()
+        && eventually(Duration::from_secs(3), || {
+            get(api, "/zones").as_array().is_some_and(|z| z.len() == 3)
+        });
+    s.check(
+        "reelect",
+        "sim",
+        "the Office joins the Kitchen again",
+        grouped,
+        format!("{joined:?}"),
+    );
+
+    // Silence the S1 household's events so the daemon misses the change.
+    let silenced: Vec<String> = ["Kitchen", "Office"].map(String::from).to_vec();
+    for room in &silenced {
+        let _ = s
+            .sim_handle()
+            .map(|sim| sim.drop_notifies(room, Some(NotifyDrop::Next(10_000))));
+    }
+    let moved = s.sim_handle().map(|sim| sim.reelect_coordinator("Kitchen"));
+    s.check(
+        "reelect",
+        "sim",
+        "the group re-elects its coordinator",
+        matches!(moved, Some(Ok(()))),
+        format!("{moved:?}"),
+    );
+
+    let body = json!({ "zone": "Office", "volume": 23, "group": true }).to_string();
+    let changed = http(
+        api,
+        "POST",
+        "/volume",
+        &[("Content-Type", "application/json")],
+        &body,
+    );
+    let zgs = get_zone_group_state(&s.lan(), s.ip("Kitchen")).ok();
+    let coordinator = zgs
+        .as_ref()
+        .and_then(|z| {
+            z.groups
+                .iter()
+                .find(|g| g.members.iter().any(|m| m.uuid.0 == kitchen_uuid))
+        })
+        .map(|g| g.coordinator.0.clone())
+        .unwrap_or_default();
+    let room = s
+        .sim_handle()
+        .and_then(|sim| {
+            sim.players()
+                .iter()
+                .find(|p| p.uuid == coordinator)
+                .map(|p| p.room.clone())
+        })
+        .unwrap_or_default();
+    let level = get_group_volume(&s.lan(), s.ip(&room)).ok();
+    s.check(
+        "reelect",
+        "http",
+        "the group-volume change follows the new coordinator (a HEALED note) and lands there",
+        changed
+            .as_ref()
+            .is_ok_and(|(code, _, body)| *code == 200 && body.contains("HEALED"))
+            && coordinator != kitchen_uuid
+            && level == Some(23),
+        format!("{changed:?}; new coordinator {room}; group volume {level:?}"),
+    );
+    for room in &silenced {
+        let _ = s.sim_handle().map(|sim| sim.drop_notifies(room, None));
+    }
 }
