@@ -120,6 +120,11 @@ pub struct Live {
     thread: Option<JoinHandle<()>>,
 }
 
+/// How long [`Live::stop`] waits for the loop to end its subscriptions. A
+/// pass stuck on players that time out is left to finish on its own; the
+/// players expire whatever it could not end.
+pub const STOP_WAIT: Duration = Duration::from_secs(3);
+
 impl Live {
     /// Start the loop over `lan`: the first survey begins at once.
     ///
@@ -237,10 +242,24 @@ impl Live {
         self.halt();
     }
 
+    /// Ask the loop to stop and wait up to [`STOP_WAIT`] for it to end its
+    /// subscriptions; a loop still busy after that is left to finish.
     fn halt(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        let deadline = Instant::now() + STOP_WAIT;
+        while !thread.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if thread.is_finished() {
             let _ = thread.join();
+        } else {
+            tracing::warn!(
+                wait_s = STOP_WAIT.as_secs(),
+                "the live model is still busy with the network; leaving it to finish"
+            );
         }
     }
 }

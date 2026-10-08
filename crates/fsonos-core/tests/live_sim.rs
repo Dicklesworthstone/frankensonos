@@ -4,7 +4,7 @@
 //! comes back; a reboot is followed; stopping ends every subscription.
 
 use fsonos_core::events::{Service, wanted};
-use fsonos_core::live::{Live, LiveConfig, LiveEvent};
+use fsonos_core::live::{Live, LiveConfig, LiveEvent, STOP_WAIT};
 use fsonos_core::reconcile::Health;
 use fsonos_core::{control, grouping, resolve_room};
 use fsonos_proto::net::Lan;
@@ -420,4 +420,25 @@ fn known_players_are_surveyed_again_when_ssdp_stops_answering() {
             .sum::<usize>(),
         3
     );
+}
+
+#[test]
+fn stop_returns_promptly_even_when_a_player_is_slow() {
+    let sim = sim();
+    let lan = routed(&sim);
+    let live = Live::start(Arc::clone(&lan), LiveConfig::new(Vec::new()));
+    assert!(live.wait_ready(Duration::from_secs(10)));
+    // Every request to the Kitchen now takes 4 s, so a survey stalls on it
+    // (and ending its subscriptions would, one UNSUBSCRIBE at a time).
+    sim.set_latency("Kitchen", Duration::from_secs(4)).unwrap();
+    live.refresh_soon();
+    std::thread::sleep(Duration::from_millis(500));
+    let started = Instant::now();
+    live.stop();
+    let took = started.elapsed();
+    assert!(
+        took < STOP_WAIT + Duration::from_secs(1),
+        "stop took {took:?}"
+    );
+    sim.set_latency("Kitchen", Duration::ZERO).unwrap();
 }
