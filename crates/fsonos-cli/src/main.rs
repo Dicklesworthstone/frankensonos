@@ -41,6 +41,7 @@ mod dj_cmd;
 mod dj_view;
 mod doctor;
 mod policy_cmd;
+mod remote;
 mod rooms_cmd;
 mod scene_cmd;
 mod schedule_cmd;
@@ -301,10 +302,18 @@ fn main() -> ExitCode {
             Err(err) => report_error(&err),
         };
     }
-    match run(cli) {
+    match dispatch(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => report_error(&err),
     }
+}
+
+/// Through a running daemon when it answers the command, else directly.
+fn dispatch(cli: Cli) -> anyhow::Result<()> {
+    if remote::run(&cli.global, &cli.command)? {
+        return Ok(());
+    }
+    run(cli)
 }
 
 /// Print `err` the `docs/ERRORS.md` way and pick its exit code.

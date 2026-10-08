@@ -230,9 +230,11 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     }
     let ticking = start_scheduler(&surface, &stop)?;
 
+    // The local CLI's proof that it is the CLI (see crate::remote).
+    let cli_token = fsonos_core::announce::clip::clip_id().context("make the CLI token")?;
     let names = tailnet_names(&tailnet);
     let http = start_all("HTTP API", &http_plan, |addr| {
-        start_http(&surface, addr, &names, args.tailscale_serve)
+        start_http(&surface, addr, &names, args.tailscale_serve, &cli_token)
     })?;
     let mcp = start_all("MCP server", &mcp_plan, |addr| start_mcp(&surface, addr))?;
     // One value per key: the e2e harness and scripts parse this line.
@@ -242,6 +244,16 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         mcp[0],
         data_dir.display()
     );
+    if let Some(&(_, loopback)) = http.iter().find(|(_, a)| a.ip().is_loopback()) {
+        let file = crate::remote::DaemonFile {
+            http: loopback,
+            cli_token: cli_token.clone(),
+            pid: std::process::id(),
+        };
+        if let Err(e) = crate::remote::write_daemon_file(&data_dir, &file) {
+            tracing::warn!("the CLI will not find this daemon: {e}");
+        }
+    }
     announce_tailnet(&tailnet, &http_plan, &http, &mcp);
     if args.tailscale_serve {
         // A first HTTPS certificate can take a while: not on the main thread.
@@ -259,6 +271,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         thread::sleep(Duration::from_millis(100));
     }
     eprintln!("fsonos serve: stopping");
+    crate::remote::remove_daemon_file(&data_dir, std::process::id());
     // Fades in flight put their volumes back; runs in flight finish.
     if ticking.join().is_err() {
         tracing::warn!("the scheduler stopped with a panic");
@@ -372,6 +385,7 @@ fn start_http(
     addr: SocketAddr,
     names: &[String],
     behind_serve: bool,
+    cli_token: &str,
 ) -> anyhow::Result<(Arc<TcpServer>, SocketAddr)> {
     let web = WebPolicy::for_listener(addr, names);
     // Behind Tailscale Serve, its login header names the tailnet user.
@@ -379,7 +393,8 @@ fn start_http(
         Identity::behind_serve(listener_client(addr))
     } else {
         Identity::fixed(listener_client(addr))
-    };
+    }
+    .with_cli_token(cli_token.to_string());
     let app = Arc::new(fsonos_api::app(surface, &identity, &web));
     let config = ServerConfig::new(addr.to_string()).with_allowed_hosts(web.hosts().to_vec());
     let server = Arc::new(TcpServer::new(config));

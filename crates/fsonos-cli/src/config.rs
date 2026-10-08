@@ -47,6 +47,11 @@ pub struct GlobalArgs {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Never through a running daemon (`fsonos serve`): find the
+    /// speakers directly.
+    #[arg(long, global = true)]
+    pub direct: bool,
+
     /// Data directory for the store database, the Spotify token cache, and
     /// `policy.toml` [default: the OS per-user data directory, under
     /// `fsonos`].
