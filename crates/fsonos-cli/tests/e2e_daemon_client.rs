@@ -20,6 +20,32 @@ fn json(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or(Value::Null)
 }
 
+/// `fsonos discover` through the daemon (it needs no seeds) prints what a
+/// direct one (`--direct`, its own survey) prints.
+fn same_discover(s: &mut Scenario, no_seeds: &str) {
+    let direct = s
+        .cli("discover-direct", &["--direct", "--json", "discover"])
+        .stdout;
+    let run = s.cli(
+        "discover-daemon",
+        &["--daemon", "--seeds", no_seeds, "--json", "discover"],
+    );
+    s.check(
+        "discover",
+        "cli",
+        "discover answers through the daemon with the same JSON as directly",
+        run.ok()
+            && json(&run.stdout)["players"]
+                .as_array()
+                .is_some_and(|p| !p.is_empty())
+            && json(&run.stdout) == json(&direct),
+        format!(
+            "through the daemon:\n{}\ndirectly:\n{direct}\n{}",
+            run.stdout, run.stderr
+        ),
+    );
+}
+
 #[test]
 fn commands_go_through_a_running_daemon_with_the_same_answers() {
     let mut s = Scenario::start("daemon-client");
@@ -82,6 +108,7 @@ fn commands_go_through_a_running_daemon_with_the_same_answers() {
         status.ok() && json(&status.stdout) == json(&status_direct.stdout),
         format!("{}\n{}", status.stdout, status.stderr),
     );
+    same_discover(&mut s, &no_seeds);
     let forced = s.cli("zones-forced-direct", &["--direct", "--json", "zones"]);
     s.check(
         "direct-flag",

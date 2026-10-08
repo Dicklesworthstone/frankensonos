@@ -13,9 +13,10 @@
 //!
 //! Through the daemon a command sends the same request body the HTTP API
 //! documents and prints the same DTO the direct path prints, so `--json`
-//! output is the same either way. Commands with no route here (discover,
-//! doctor, the DJ, scenes, ...) run directly.
+//! output is the same either way. Commands with no route here (doctor,
+//! scenes, schedules, ...) run directly.
 
+use fsonos_api::surface::players::PlayerDto;
 use fsonos_api::{
     ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, MoveRequest, MuteRequest,
     OutcomeDto, PartyRequest, PlayFavoriteRequest, PlayRequest, RoomDto, UndoDto, ZoneDto,
@@ -301,7 +302,8 @@ pub fn pct(s: &str) -> String {
 fn routable(command: &Command) -> bool {
     matches!(
         command,
-        Command::Zones
+        Command::Discover
+            | Command::Zones
             | Command::Status { .. }
             | Command::Rooms { alias: None }
             | Command::Favorites { .. }
@@ -333,6 +335,18 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
     let json = global.json;
     let done = |o: &OutcomeDto| format!("{}\n", o.done);
     match command {
+        Command::Discover => {
+            let players: Vec<PlayerDto> = daemon.get("/players")?;
+            remember_rooms(global, players.iter().map(|p| p.room.clone()));
+            // The daemon keeps only the players it can read, and discovers on
+            // its own: nothing to report as unreachable or failed here.
+            let found = direct::DiscoverDto {
+                players,
+                unreachable: Vec::new(),
+                ssdp_error: None,
+            };
+            emit(json, &found, direct::discover_text)?;
+        }
         Command::Zones => {
             let zones: Vec<ZoneDto> = daemon.get("/zones")?;
             remember_rooms(global, zones.iter().flat_map(|z| z.members.iter().cloned()));

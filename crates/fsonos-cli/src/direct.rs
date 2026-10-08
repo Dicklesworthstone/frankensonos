@@ -2,6 +2,7 @@
 //! acts through the same [`Surface`] the daemon's HTTP API and MCP server
 //! use, as the house policy's `cli` client.
 
+use fsonos_api::surface::players::{PlayerDto, player_views};
 use fsonos_api::{
     ActionDto, ActionsQuery, Command, DjMoodsDto, DjStatusDto, ErrorCode, Failure, FavoriteDto,
     HitDto, OutcomeDto, PlayFavoriteRequest, RoomDto, SearchRequest, Surface, UndoDto, ZoneDto,
@@ -11,9 +12,7 @@ use fsonos_core::HouseholdState;
 use fsonos_core::clock::SystemClock;
 use fsonos_core::inventory::{self, Survey};
 use fsonos_core::policy::{Client, Policy};
-use fsonos_core::rooms::household_labels;
 use fsonos_core::store::{SqliteStore, Store as _};
-use fsonos_types::Generation;
 use serde::Serialize;
 use std::fmt::Write as _;
 use std::sync::Mutex;
@@ -24,17 +23,6 @@ use crate::config::GlobalArgs;
 pub struct Direct {
     surface: Surface,
     survey: Survey,
-}
-
-/// One player, as `fsonos discover` lists it.
-#[derive(Debug, Serialize)]
-pub struct PlayerDto {
-    pub room: String,
-    pub id: String,
-    pub model: String,
-    pub generation: Generation,
-    pub ip: String,
-    pub household: String,
 }
 
 /// `fsonos discover --json`.
@@ -211,23 +199,7 @@ impl Direct {
     /// Every player found, by household then room.
     #[must_use]
     pub fn discover(&self) -> DiscoverDto {
-        let households = &self.survey.households;
-        let labels = household_labels(households);
-        let mut players: Vec<PlayerDto> = households
-            .iter()
-            .zip(&labels)
-            .flat_map(|(h, label)| {
-                h.players.iter().map(move |p| PlayerDto {
-                    room: p.room_name.clone(),
-                    id: p.id.0.clone(),
-                    model: p.model.clone(),
-                    generation: p.generation,
-                    ip: p.ip.to_string(),
-                    household: label.clone(),
-                })
-            })
-            .collect();
-        players.sort_by(|a, b| (&a.household, &a.room).cmp(&(&b.household, &b.room)));
+        let players = player_views(&self.survey.households);
         DiscoverDto {
             players,
             unreachable: self.survey.unreachable.clone(),
@@ -243,10 +215,7 @@ pub fn discover_text(d: &DiscoverDto) -> String {
         return "no players found\n".to_string();
     }
     d.players.iter().fold(String::new(), |mut out, p| {
-        let generation = match p.generation {
-            Generation::S1 => "S1",
-            Generation::S2 => "S2",
-        };
+        let generation = &p.generation;
         // Writing to a String cannot fail.
         let _ = writeln!(
             out,
@@ -402,7 +371,7 @@ mod tests {
                 room: "Den".into(),
                 id: "RINCON_DEN".into(),
                 model: "Sonos One".into(),
-                generation: Generation::S2,
+                generation: "S2".into(),
                 ip: "192.0.2.10".into(),
                 household: "S2".into(),
             }],
