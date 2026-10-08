@@ -640,9 +640,7 @@ fn eligible(
         let kept: Vec<usize> = allowed
             .iter()
             .copied()
-            .filter(|&w| {
-                pool.verdicts[w].shields_feedback() || !model.excludes(&pool.works[w])
-            })
+            .filter(|&w| pool.verdicts[w].shields_feedback() || !model.excludes(&pool.works[w]))
             .collect();
         if !kept.is_empty() {
             allowed = kept;
@@ -842,6 +840,7 @@ fn draw(weights: &[u64], rng: &mut Rng) -> usize {
 
 /// The energy a pick aimed for, and whether it is the owner's preferred
 /// energy (rather than the time of day's).
+#[derive(Clone, Copy)]
 struct Target {
     energy: Option<u8>,
     preferred: bool,

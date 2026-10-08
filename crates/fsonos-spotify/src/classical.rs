@@ -818,6 +818,7 @@ fn find_phrase(norm: &str, phrase: &str) -> Option<usize> {
 /// its own work: `composer` is its lead artist, its period is unknown and its
 /// energy neutral.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent facts, not a state machine
 pub struct ClassicalTrack {
     pub track: Track,
     /// Display name: the canonical composer, or the lead artist if unknown

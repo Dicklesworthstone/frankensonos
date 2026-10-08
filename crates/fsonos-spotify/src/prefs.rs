@@ -428,6 +428,7 @@ fn mood_holds(mood: &DjConstraints, work: &Work, haystack: &str) -> bool {
 
 /// How the preferences treat one work.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // independent verdicts, not a state machine
 pub struct Verdict {
     pub banned: bool,
     pub avoided: bool,
@@ -460,5 +461,340 @@ impl Verdict {
     #[must_use]
     pub fn shields_feedback(self) -> bool {
         self.pinned || self.favored
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::classical::analyze_song;
+    use crate::dj::{DjConfig, Factor, PickContext, PlannedWork, Rng, WorkPool, pick_next};
+    use crate::feedback::{FeedbackModel, FeedbackSignal, Signal};
+    use crate::library::LibraryItem;
+    use crate::steer::Steer;
+    use crate::test_shelf::{MIDNIGHT, mixed_items, simulate_with, song_items, works_of};
+    use crate::works::group_works;
+
+    const FILE: &str = r#"
+energy = 40
+explicit = false
+
+[favor]
+genres = ["jazz"]
+eras = ["1990s"]
+
+[avoid]
+artists = ["MC Halcyon"]
+moods = ["bright"]
+
+[pin]
+tracks = ["spotify:track:song-1-2"]
+
+[ban]
+albums = ["Starfall (Original Soundtrack)"]
+"#;
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|&w| w.to_owned()).collect()
+    }
+
+    fn steer(constraints: DjConstraints) -> Steer {
+        Steer {
+            mood: None,
+            constraints,
+        }
+    }
+
+    #[test]
+    fn preferences_parse_validate_edit_and_save() {
+        let moods = Moods::builtin();
+        let prefs = Preferences::parse(FILE, "preferences.toml", &moods).unwrap();
+        assert_eq!(prefs.energy, Some(40));
+        assert_eq!(prefs.favor.genres, ["jazz"]);
+        assert_eq!(prefs.ban.albums, ["Starfall (Original Soundtrack)"]);
+        let again = Preferences::parse(&prefs.to_toml().unwrap(), "again", &moods).unwrap();
+        assert_eq!(again, prefs);
+
+        let err = |text: &str| {
+            Preferences::parse(text, "preferences.toml", &moods)
+                .unwrap_err()
+                .to_string()
+        };
+        let typo = err("[favor]\ngenre = [\"jazz\"]\n");
+        assert!(typo.contains("preferences.toml line 2"), "{typo}");
+        assert!(err("energy = 140\n").contains("energy 140 is outside 0..=100"));
+        assert!(err("[avoid]\neras = [\"jurassic\"]\n").contains("unknown era \"jurassic\""));
+        assert!(err("[favor]\nmoods = [\"party\"]\n").contains("no mood \"party\" (known: bright"));
+        assert!(
+            err("[pin]\nartists = [\"Nina Marsh\"]\n[ban]\nartists = [\"nina marsh\"]\n")
+                .contains("artist \"Nina Marsh\" is both pinned and banned")
+        );
+        assert!(err("[favor]\nartists = [\" \"]\n").contains("favor.artists has a blank entry"));
+
+        let mut edited = Preferences::default();
+        edited.add("favor.artists", "Nina Marsh", &moods).unwrap();
+        edited.add("favor.artists", " nina marsh ", &moods).unwrap();
+        assert_eq!(edited.favor.artists, ["Nina Marsh"], "added once");
+        edited.add("energy", "35", &moods).unwrap();
+        edited.add("explicit", "true", &moods).unwrap();
+        assert_eq!((edited.energy, edited.explicit), (Some(35), true));
+        assert!(
+            edited
+                .add("energy", "loud", &moods)
+                .unwrap_err()
+                .contains("not a number")
+        );
+        assert!(
+            edited
+                .add("favor.colors", "blue", &moods)
+                .unwrap_err()
+                .contains("no preference \"favor.colors\" (known: energy, explicit")
+        );
+        assert!(edited.add("avoid.eras", "jurassic", &moods).is_err());
+        assert!(
+            edited.avoid.eras.is_empty(),
+            "a rejected value changes nothing"
+        );
+        assert_eq!(edited.remove("favor.artists", Some("NINA MARSH")), Ok(true));
+        assert_eq!(edited.remove("favor.artists", None), Ok(false));
+        assert_eq!(edited.remove("energy", None), Ok(true));
+        assert_eq!(edited.remove("explicit", None), Ok(true));
+        assert_eq!(edited, Preferences::default());
+
+        let dir = crate::fake_spotify::scratch_dir("prefs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(PREFERENCES_FILE);
+        assert_eq!(
+            Preferences::load(&path, &moods).unwrap(),
+            Preferences::default()
+        );
+        prefs.save(&path).unwrap();
+        assert_eq!(Preferences::load(&path, &moods).unwrap(), prefs);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn eras_are_decades_or_periods() {
+        assert_eq!(Era::parse("1960s"), Some(Era::Decade(1960)));
+        assert_eq!(Era::parse("60s"), Some(Era::Decade(1960)));
+        assert_eq!(Era::parse("'90s"), Some(Era::Decade(1990)));
+        assert_eq!(Era::parse("20s"), Some(Era::Decade(2020)));
+        assert_eq!(Era::parse("1960"), Some(Era::Decade(1960)));
+        assert_eq!(Era::parse("1965"), None);
+        assert_eq!(
+            Era::parse("Late-Romantic"),
+            Some(Era::Period(Period::LateRomantic))
+        );
+        assert_eq!(Era::parse("baroque"), Some(Era::Period(Period::Baroque)));
+        assert_eq!(Era::parse("jurassic"), None);
+    }
+
+    #[test]
+    fn verdicts_cover_genres_artists_eras_moods_and_items() {
+        let moods = Moods::builtin();
+        let prefs = Preferences::parse(FILE, "preferences.toml", &moods).unwrap();
+        let pool = works_of(&mixed_items()).with_preferences(prefs, &moods);
+        let verdict = |title: &str| {
+            let w = pool.works().iter().position(|w| w.title == title).unwrap();
+            pool.verdict(w)
+        };
+        assert!(verdict("Blue Hours").favored, "jazz");
+        let skyline = verdict("Skyline");
+        assert!(
+            skyline.favored && skyline.avoids(),
+            "the 1990s, but MC Halcyon"
+        );
+        assert!(verdict("Every Window").pinned, "by its track URI");
+        assert!(verdict("Starfall: The Chase").banned, "by its album's name");
+        let plain = verdict("Paper Moons");
+        assert_eq!(plain, Verdict::default());
+        assert_eq!(plain.weight_pm(), 1000);
+        // "bright" leans brighter: the lively classical openings fit it.
+        let lively = pool.works().iter().position(|w| w.energy() >= 60).unwrap();
+        assert!(pool.verdict(lively).avoids());
+        let gentle = pool
+            .works()
+            .iter()
+            .position(|w| w.is_classical() && w.energy() < 60)
+            .unwrap();
+        assert!(!pool.verdict(gentle).avoided);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scenario per rung of the precedence ladder
+    fn steer_outranks_preferences_which_outrank_feedback_which_outranks_the_account() {
+        let moods = Moods::builtin();
+        let songs = song_items();
+        let plain = works_of(&songs);
+        let nina = |p: &PlannedWork<'_>| p.work.composer == "Nina Marsh Quartet";
+        let love: Vec<FeedbackSignal> = plain
+            .works()
+            .iter()
+            .filter(|w| w.composer == "Nina Marsh Quartet")
+            .flat_map(|w| (0..4).map(move |i| FeedbackSignal::about(w, Signal::Like, MIDNIGHT - i)))
+            .collect();
+        let loved = FeedbackModel::from_signals(&love, MIDNIGHT);
+        let config = DjConfig::default();
+
+        // Learned feedback alone: the loved quartet plays often.
+        let picks = simulate_with(&plain, &config, 1, 60, Some(20), None, Some(&loved));
+        assert!(picks.iter().filter(|p| nina(p)).count() >= 3);
+        // Preferences outrank it: avoided, the quartet never plays.
+        let avoiding = Preferences {
+            avoid: Taste {
+                artists: words(&["Nina Marsh"]),
+                ..Taste::default()
+            },
+            ..Preferences::default()
+        };
+        let pool = works_of(&songs).with_preferences(avoiding, &moods);
+        for seed in 1..=4 {
+            let picks = simulate_with(&pool, &config, seed, 100, Some(20), None, Some(&loved));
+            assert!(!picks.iter().any(nina), "seed {seed}");
+        }
+        // Steering outranks preferences: asked for by name, only she plays.
+        let ask = steer(DjConstraints {
+            include_artists: words(&["Nina Marsh"]),
+            ..DjConstraints::default()
+        });
+        let picks = simulate_with(&pool, &config, 1, 12, Some(20), Some(&ask), None);
+        assert!(picks.iter().all(nina));
+        // …and a steer that excludes a pinned artist keeps her out.
+        let pinning = Preferences {
+            pin: Items {
+                artists: words(&["Juniper Vale"]),
+                ..Items::default()
+            },
+            ..Preferences::default()
+        };
+        let pinned = works_of(&songs).with_preferences(pinning, &moods);
+        let without = steer(DjConstraints {
+            exclude_artists: words(&["Juniper Vale"]),
+            ..DjConstraints::default()
+        });
+        let picks = simulate_with(&pinned, &config, 1, 40, Some(20), Some(&without), None);
+        assert!(
+            picks
+                .iter()
+                .all(|p| credited(p.work).iter().all(|a| a != "Juniper Vale"))
+        );
+
+        // In the weights of one pick: the single the owner liked on Spotify
+        // (the account's signal), then twice disliked (feedback), alone under
+        // a steer that finds it.
+        let single = plain
+            .works()
+            .iter()
+            .find(|w| w.title.starts_with("Kite Season"))
+            .unwrap();
+        let hated = FeedbackModel::from_signals(
+            &[
+                FeedbackSignal::about(single, Signal::Dislike, MIDNIGHT - 10),
+                FeedbackSignal::about(single, Signal::Dislike, MIDNIGHT - 5),
+            ],
+            MIDNIGHT,
+        );
+        let only = steer(DjConstraints {
+            include_keywords: words(&["kite season"]),
+            ..DjConstraints::default()
+        });
+        let narrow = DjConfig {
+            min_steered_works: 1,
+            ..DjConfig::default()
+        };
+        let factors = |pool: &WorkPool| {
+            let ctx = PickContext {
+                steer: Some(&only),
+                feedback: Some(&hated),
+                ..PickContext::default()
+            };
+            let pick = pick_next(pool, &ctx, &narrow, &mut Rng::new(1)).unwrap();
+            assert!(pick.work.title.starts_with("Kite Season"));
+            pick.reason.factors
+        };
+        let pm = |factors: &[(Factor, i32)], factor: Factor| {
+            factors
+                .iter()
+                .find(|(f, _)| *f == factor)
+                .map_or(1000, |&(_, pm)| i64::from(pm))
+        };
+        let account = factors(&plain);
+        assert_eq!(pm(&account, Factor::Liked), 1300);
+        assert!(
+            pm(&account, Factor::Liked) * pm(&account, Factor::Feedback) < 1000 * 1000,
+            "feedback outweighs the like: {account:?}"
+        );
+        let favoring = Preferences {
+            favor: Taste {
+                artists: words(&["Juniper Vale"]),
+                ..Taste::default()
+            },
+            ..Preferences::default()
+        };
+        let favored = factors(&works_of(&songs).with_preferences(favoring, &moods));
+        assert_eq!(pm(&favored, Factor::Preference), 2000);
+        assert!(
+            pm(&favored, Factor::Feedback) >= 1000,
+            "feedback can't push a favored work below neutral: {favored:?}"
+        );
+    }
+
+    #[test]
+    fn bans_hold_explicit_waits_avoids_relax_and_energy_is_preferred() {
+        let moods = Moods::builtin();
+        let mut items = song_items();
+        let explicit: Vec<LibraryItem> = items.iter().filter(|i| i.explicit).cloned().collect();
+        items.retain(|i| !i.explicit && i.artists[0] == "MC Halcyon");
+        let mut tracks: Vec<_> = items.iter().map(analyze_song).collect();
+        tracks.extend(explicit.iter().map(analyze_song));
+        let works = group_works(&tracks);
+        let config = DjConfig::default();
+        let played_explicit = |pool: &WorkPool| {
+            simulate_with(pool, &config, 2, 30, Some(20), None, None)
+                .iter()
+                .any(|p| p.work.title == "Back Block")
+        };
+        assert!(!played_explicit(&WorkPool::from_works(works.clone())));
+        let allowing = Preferences {
+            explicit: true,
+            ..Preferences::default()
+        };
+        assert!(played_explicit(
+            &WorkPool::from_works(works.clone()).with_preferences(allowing, &moods)
+        ));
+
+        // A ban never relaxes, even when it leaves nothing.
+        let banning = Preferences {
+            ban: Items {
+                artists: words(&["MC Halcyon"]),
+                ..Items::default()
+            },
+            ..Preferences::default()
+        };
+        let banned = WorkPool::from_works(works.clone()).with_preferences(banning, &moods);
+        let ctx = PickContext::default();
+        assert!(pick_next(&banned, &ctx, &config, &mut Rng::new(1)).is_none());
+        // An avoid relaxes rather than play nothing, and says so.
+        let avoiding = Preferences {
+            avoid: Taste {
+                genres: words(&["hip hop"]),
+                ..Taste::default()
+            },
+            energy: Some(25),
+            ..Preferences::default()
+        };
+        let avoided = WorkPool::from_works(works).with_preferences(avoiding, &moods);
+        let ctx = PickContext {
+            local_hour: Some(10),
+            ..PickContext::default()
+        };
+        let pick = pick_next(&avoided, &ctx, &config, &mut Rng::new(1)).unwrap();
+        assert!(pick.reason.has(Factor::Avoided));
+        let summary = &pick.reason.summary;
+        assert!(summary.contains("calm energy, as you prefer"), "{summary}");
+        assert!(
+            summary.contains("everything else left is avoided in your preferences"),
+            "{summary}"
+        );
     }
 }
