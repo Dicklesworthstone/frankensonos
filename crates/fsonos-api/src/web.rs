@@ -8,10 +8,16 @@
 //! * **Host**: only the listener's own names (loopback names and addresses,
 //!   the bound address, the tailnet's MagicDNS name and addresses). The
 //!   listener's `ServerConfig::with_allowed_hosts` enforces this
-//!   ([`WebPolicy::hosts`]), which defeats DNS rebinding.
+//!   ([`WebPolicy::hosts`]), which defeats DNS rebinding. A loopback
+//!   listener also answers any `*.ts.net` name: Tailscale Serve forwards the
+//!   client's Host, and a daemon that started before Tailscale (or with
+//!   detection off) has not seen its own name. Tailscale owns ts.net DNS, so
+//!   no page can rebind such a name onto 127.0.0.1.
 //! * **Origin**: a request that carries one must come from one of the
 //!   daemon's own origins, else `403 UNTRUSTED_ORIGIN`. CLI tools and agents
-//!   send no Origin and are unaffected.
+//!   send no Origin and are unaffected. Origins are exact names, never
+//!   `*.ts.net`: anyone can publish a page on their own ts.net name with
+//!   Funnel.
 //! * **Writes are JSON**: every POST must be `application/json`, else
 //!   `415 UNSUPPORTED_MEDIA_TYPE`. That closes the cross-origin POST a browser
 //!   sends without a CORS preflight (`text/plain`, forms).
@@ -22,6 +28,10 @@ use fastapi::Request;
 use std::net::SocketAddr;
 
 use crate::failure::{ErrorCode, Failure};
+
+/// The Host pattern a loopback listener also answers: the names Tailscale
+/// Serve forwards.
+pub const SERVE_HOSTS: &str = "*.ts.net";
 
 /// The browser-safety rules for one listener. See the module docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +84,10 @@ impl WebPolicy {
             origins.push(format!("https://{literal}"));
             origins.push(format!("https://{literal}:{port}"));
             origins.push(format!("https://{literal}:8443"));
+        }
+        // After the origins: a Host pattern only, never an origin.
+        if addr.ip().is_loopback() {
+            hosts.push(SERVE_HOSTS.to_owned());
         }
         Self { hosts, origins }
     }
@@ -156,11 +170,29 @@ mod tests {
                 "127.0.0.1",
                 "[::1]",
                 "host.tailnet-name.ts.net",
-                "100.70.1.2"
+                "100.70.1.2",
+                "*.ts.net"
             ]
         );
+        // Only loopback answers Serve's names: a direct tailnet listener
+        // answers its own.
         let tailnet = WebPolicy::for_listener("100.70.1.2:8099".parse().unwrap(), &[]);
         assert_eq!(tailnet.hosts(), ["100.70.1.2"]);
+    }
+
+    /// Serve forwards the client's Host: a loopback listener answers any
+    /// ts.net name, but never takes a ts.net page as its own origin.
+    #[test]
+    fn serve_names_are_hosts_not_origins() {
+        let web = WebPolicy::for_listener("127.0.0.1:8099".parse().unwrap(), &[]);
+        assert!(web.hosts().iter().any(|h| h == SERVE_HOSTS));
+        for foreign in [
+            "https://attacker.other-tailnet.ts.net",
+            "https://ts.net",
+            "https://x.ts.net:8443",
+        ] {
+            assert!(!web.allows_origin(foreign), "{foreign}");
+        }
     }
 
     /// Every host is a pattern fastapi's Host check can match; an IPv6
@@ -180,7 +212,8 @@ mod tests {
                 "[::1]"
             ]
         );
-        for host in loopback().hosts().iter().chain(web.hosts()) {
+        let literal = |h: &&String| !h.starts_with("*.");
+        for host in loopback().hosts().iter().chain(web.hosts()).filter(literal) {
             assert!(
                 fastapi::RequestAuthority::parse(host).is_some(),
                 "{host} is not a Host pattern fastapi parses"
