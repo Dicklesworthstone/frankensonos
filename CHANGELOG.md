@@ -27,6 +27,7 @@ live-hardware behavior beyond the owner-run checks named there, is claimed.
 | 5. Tailnet first | Oct 7, evening | Listening on the tailnet by default, Tailscale Serve setup (never Funnel), live events over SSE, a hardened long-running live model |
 | 6. Every capability on every surface | Oct 8, small hours to midday | The DJ playing on the speakers, steering and feedback; scenes, sleep timers, schedules, announcements, aliases, move and party, and the house policy on CLI, HTTP and MCP; `fsonos setup` |
 | 7. Instant CLI and web remote | Oct 8, afternoon | CLI commands through a running daemon, the daemon's web remote with album art |
+| 8. A DJ for every genre | Oct 8, evening | The DJ plays the owner's whole library in any genre, with classical works still whole, and steers by artist |
 
 There is no released version yet. `0.1.0` comes with real-hardware CI and
 prebuilt binaries (see [Status and verification](#status-and-verification)).
@@ -35,8 +36,8 @@ prebuilt binaries (see [Status and verification](#status-and-verification)).
 
 Pre-release work toward `0.1.0`: control the owner's Sonos S1 and S2 players
 from the `fsonos` CLI, an HTTP API, an MCP server and a web page, from any
-device on the owner's tailnet, with a classical DJ playing from the owner's
-own Spotify library.
+device on the owner's tailnet, with a DJ playing from the owner's own Spotify
+library, in whatever genres it spans.
 
 ### Added
 
@@ -129,7 +130,7 @@ own Spotify library.
   [`8ce7640`](https://github.com/Dicklesworthstone/frankensonos/commit/8ce7640),
   [`e5e2ad3`](https://github.com/Dicklesworthstone/frankensonos/commit/e5e2ad3)
 
-#### Spotify library and the classical DJ (`fsonos-spotify`)
+#### Spotify library and the DJ (`fsonos-spotify`)
 
 - **Reading the owner's library.** A read-only Spotify Web API client using
   OAuth Authorization Code with PKCE (S256) and the `user-library-read` scope
@@ -153,6 +154,13 @@ own Spotify library.
   [`823d223`](https://github.com/Dicklesworthstone/frankensonos/commit/823d223),
   [`76d92cc`](https://github.com/Dicklesworthstone/frankensonos/commit/76d92cc),
   [`8604422`](https://github.com/Dicklesworthstone/frankensonos/commit/8604422)
+- **A DJ for every genre.** The pool is the owner's whole library, not only
+  its classical music. A song plays on its own, credited to its artist, and a
+  classical work still plays whole; picks spread across artists, steering
+  takes artists (`fsonos dj steer --artist`, `--not-artist`, MCP `dj_steer`),
+  and the surfaces describe the DJ the same way for every genre.
+  [`98543a8`](https://github.com/Dicklesworthstone/frankensonos/commit/98543a8),
+  [`e41e929`](https://github.com/Dicklesworthstone/frankensonos/commit/e41e929)
 - **Spotify on Sonos.** The `x-sonos-spotify:` render template, with
   per-household parameters learned from the household's own favorites, ends
   the long-standing UPnP 800. Playback continues through the coordinator's

@@ -48,13 +48,13 @@ can drive:
   through one control path: the house policy (per-room volume caps, quiet
   hours, per-client tool allowlists), an action log of who did what, and undo.
   Hand the house to an agent without it playing volume 80 at 2 a.m.
-- **A DJ that plays what you like.** It takes its taste from your own Spotify
-  likes and saves, puts your own steering ahead of anything it infers, follows
-  mood and time of day, explains every pick, and keeps learning from your
-  likes, dislikes, early skips and full listens. Classical works play whole,
-  every movement in order. Today it picks from the classical music in your
-  library; drawing on every genre you save, with standing preferences of your
-  own, is next (see the roadmap).
+- **A DJ that plays what you like.** It plays from your own Spotify likes and
+  saves, in whatever genres they span (pop, jazz, hip-hop, soundtracks,
+  classical), puts your own steering ahead of anything it infers, follows mood
+  and time of day, spreads a set across artists, explains every pick, and
+  keeps learning from your likes, dislikes, early skips and full listens.
+  Classical works play whole, every movement in order. Standing preferences of
+  your own are next (see the roadmap).
 - **One memory-safe binary.** Pure Rust 2024 with `#![forbid(unsafe_code)]`,
   on an owned async stack (no Tokio, no reqwest). Nothing is installed on the
   speakers and nothing about them is changed.
@@ -67,7 +67,7 @@ can drive:
 | **Control** | Play a Spotify link, a source URI, a Sonos favorite or a library search; pause, resume, next, previous; room or group volume (set or ±N); mute; group, ungroup; **move** the music to another room (handing the group over, or `--copy` across households); **party** mode for a whole household. Group commands always go to the group's coordinator |
 | **Live state** | GENA subscriptions keep a live model of every zone (transport, track, volume), so reads need no polling, and `GET /events` streams the changes as server-sent events |
 | **Self-healing** | A player that moved to a new address, or a group whose coordinator changed under a command, is found again and the command retried once (the answer notes `HEALED`); the live model resurveys and resubscribes on its own |
-| **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums (for now, the classical music among them); classical works play whole, every movement in order; varied by composer, era and time-of-day energy; `dj steer` by mood, composers, periods, keywords, work length or energy, for a while or until cleared; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
+| **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, keywords, work length or energy, and for classical music by composers and periods, for a while or until cleared; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
 | **Scenes** | `scene save dinner` captures grouping, volumes, mutes and what each group plays; `scene apply dinner` sends only the steps the house needs, and `fsonos undo` puts it back |
 | **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright`, or a pause, a volume or a scene, at times or after delays; runs with the rights of whoever added it |
 | **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` (macOS `say`) or `chime bell`, at a policy-capped level, then the music comes back exactly as it was |
@@ -255,19 +255,21 @@ your speakers; for access from anywhere, that machine also joins your tailnet.
 ## Roadmap
 
 Shipped: discovery and topology across S1 and S2, coordinator-addressed control
-and grouping, the GENA live model and self-healing, the DJ (drawing on the
-classical music in your Spotify library) with steering, explanations and
-feedback, scenes, sleep timers and schedules, announcements, the house policy
+and grouping, the GENA live model and self-healing, the DJ (drawing on
+everything you save or like on Spotify, in any genre) with steering,
+explanations and feedback, scenes, sleep timers and schedules, announcements, the house policy
 with quiet hours, the action log and undo, `doctor` and `setup`, the
 simulator, and the CLI, HTTP API and MCP server, on loopback and your tailnet.
 
 Next:
 
-- The DJ across everything you like: taste from your Spotify liked tracks,
-  saved albums, followed artists, playlists, top tracks and recent listening,
-  in whatever genres they span, plus standing preferences you set yourself
-  (genres, artists and eras to favor or avoid, energy, explicit tracks) that
-  override what it learns. Classical works keep playing whole.
+- Standing DJ preferences you set yourself (genres, artists and eras to favor
+  or avoid, a default energy, explicit tracks, artists, albums or tracks to
+  pin or ban) that override what it learns, on the CLI, HTTP and MCP, and
+  steering by genre and decade.
+- More taste signals from your Spotify account (followed artists, playlists,
+  top tracks and recent listening). They need extra read-only scopes, so they
+  are under consideration rather than scheduled.
 - An instant CLI that goes through a running daemon (its warm state, its
   sleep-timer fades), with room-name completions.
 - A web remote served by the daemon: rooms, now playing, volume, the DJ and
@@ -293,9 +295,13 @@ learned at runtime and kept locally. The full boundary is in
   each household's Sonos app, and the per-household render parameters are
   learned from your own Sonos favorites. Rendering on legacy S1 players is
   still being confirmed on real hardware.
-- The DJ currently picks only from the classical music among your liked
-  tracks and saved albums, and its overrides are `dj steer` and `moods.toml`;
-  every genre and standing preferences are on the roadmap above.
+- The DJ's taste comes from your liked tracks and saved albums, and its
+  overrides are `dj steer` and `moods.toml`; standing preferences and genre
+  and decade steering are on the roadmap above. Spotify gives new apps no
+  audio features, so a song's energy is neutral and only classical movements
+  get one, from their tempo markings. A library cached before the DJ played
+  every genre needs one re-sync (`fsonos setup`) before the rest of it joins
+  the pool.
 - You run the daemon on a machine on your speaker LAN (a Mac mini, a Pi, a
   NAS). The deploy docs and announcements' speech (`say`) are macOS-first.
 - Until the CLI talks to a running daemon, `fsonos sleep` on its own sets the

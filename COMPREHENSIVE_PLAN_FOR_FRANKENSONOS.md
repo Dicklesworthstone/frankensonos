@@ -275,9 +275,10 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
   across composers, periods and works when the music is classical), respect
   energy/time-of-day, avoid recent repeats (via `Store` history). Feed the
   coordinator's queue ahead of track end (driven by GENA transport events from
-  Lane B). *Current state:* the shipped pool is classical-only (it keeps tracks
-  whose metadata scores as classical and drops explicit tracks); generalizing
-  it is planned work, tracked in §12.1.
+  Lane B). *Current state:* the pool is the owner's whole library in any
+  genre (explicit tracks left out by default), with classical works kept
+  whole; standing preferences and genre and decade steering are in progress,
+  tracked in §12.1.
 - **The "enqueue a Spotify track on Sonos" path** is the crux the prior attempt
   got stuck on: it requires the correct `x-sonos-spotify:` URI **and** the
   byte-right DIDL `desc`/item-id for *that household*, learned from its own
@@ -334,7 +335,7 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
 
 - `players(id TEXT PK, household TEXT, room TEXT, ip TEXT, model TEXT, generation TEXT, last_seen INT)`
 - `zone_groups(id INTEGER PK, household TEXT, coordinator TEXT, member TEXT, updated INT)` (edge list; `id` keeps group order; not `groups`, an SQL keyword)
-- `spotify_library(source_uri TEXT PK, title TEXT, artist TEXT, album TEXT, duration_secs INT, is_classical INT, added INT)` — `is_classical` is the current implementation's DJ-candidacy flag (only rows judged classical enter the pool); it is classical-oriented, and replacing it with genre-agnostic candidacy is planned work (§12.1, below)
+- `spotify_library(source_uri TEXT PK, title TEXT, artist TEXT, album TEXT, duration_secs INT, is_classical INT, added INT)` — `is_classical` is the DJ-candidacy flag: despite its name it marks a playable track in any genre (in the library, not explicit), and whether a track is classical is judged again when the pool is built (§12.1)
 - `play_history(id INTEGER PK, zone TEXT, source_uri TEXT, played_at INT)`
 - `render_params(household TEXT PK, sid INT, flags INT, sn INT, cdudn TEXT, item_id_prefix TEXT, learned_at INT)`
 - `auth(service TEXT PK, refresh_token TEXT, expires INT)` — local only; the DB
@@ -509,28 +510,49 @@ from a genre the DJ was built around.
   apply to every session. Agents turn language into these arguments through
   MCP `dj_steer`; the daemon never parses natural language.
 
-**Current state (2026-10-08): the shipped DJ is classical-oriented.**
-Generalizing it as described above is planned work (bead `c-dj-taste`). What
-exists today:
+**Current state (2026-10-08, evening): the DJ plays the whole library, in any
+genre.** Bead `c-dj-taste` is in progress; its standing preferences reach the
+engine but not yet the surfaces. What exists today:
 
-- The pool is classical-only. `classical::CandidatePool::build` keeps a track
-  when its metadata (composer credits, catalogue numbers, form and tempo
-  words, key signatures, genres, label) clears a classical score, or when most
-  of its album does, and drops explicit tracks; the library cache stores that
-  verdict in `spotify_library.is_classical`, and only those rows become
-  candidates. A library with no classical music gives the DJ nothing to play.
+- The pool is every saved or liked track, in any genre
+  (`classical::CandidatePool::build`). A track whose metadata (composer
+  credits, catalogue numbers, form and tempo words, key signatures, genres,
+  label) clears a classical score, or most of whose album does, is analysed
+  into composer, period, work and movement and plays as a whole work; any
+  other track is a song, a work of its own credited to its lead artist. A
+  library with no classical music gets a working DJ.
+- Explicit tracks stay out by default. That is the default of
+  `preferences.toml` (`explicit = false`), which the owner can change once the
+  preference verbs ship.
+- The library cache marks every playable track a candidate
+  (`spotify_library.is_classical`, now meaning "DJ candidate"); a library
+  cached before this needs one re-sync. A migration that also caches genre
+  tags, release years and the explicit flag, so that genre and decade
+  steering and the explicit preference reach the daemon, is in progress.
 - Only liked tracks and saved albums are read (scope `user-library-read`, plus
   album track lists for whole works). Followed artists, playlists, top items
-  and listening history are not read yet.
-- Variety, energy (estimated from tempo markings), steering (`--composer`,
-  `--not-composer`, `--period`, `--with`/`--without` form keywords) and
-  feedback rows (keyed by `work_key`, `composer_key` and `performer`) all use
-  classical metadata.
-- The only overrides are `dj steer` (per group, for a while or until cleared)
-  and `moods.toml`; there are no persistent owner-wide preferences yet.
+  and listening history need extra read-only scopes; adding them is the
+  owner's decision and is deferred.
+- Variety keys on the lead artist for a song (the composer for classical
+  music), so a set spreads across artists; album spacing applies to both,
+  period balance to classical works. Energy comes from tempo markings for
+  classical movements; a song's is neutral, since Spotify gives new apps no
+  audio features.
+- Steering: include and exclude artists (any credited artist, on the CLI,
+  HTTP and MCP), and for classical music composers and periods, plus
+  keywords, length and energy bias. Genre and decade constraints exist in the
+  engine (`DjConstraints`) and arrive on the surfaces with the cached genre
+  and year data.
+- Feedback rows are keyed by `work_key`, `composer_key` (a song's lead
+  artist) and `performer`; artist and album keys come with the migration.
+- Standing preferences: the `preferences.toml` model (favor or avoid genres,
+  artists, eras and moods; a default energy; explicit tracks; pin or ban
+  artists, albums and tracks) and its precedence (steer, then preferences,
+  then feedback, then account signals) are implemented in `fsonos-spotify`'s
+  `prefs` module. The CLI, HTTP and MCP verbs that show, set and unset them,
+  and the daemon loading the file, are in progress.
 - Whole works in order, the long-work policy, album expansion, `PickReason`s,
-  moods and feedback learning are implemented and stay; the generalization
-  extends them rather than replacing them.
+  moods and feedback learning carry over unchanged for classical music.
 
 ### 12.2 `fsonos doctor` and `fsonos setup`
 
@@ -682,9 +704,10 @@ skips (under 30 s) as a negative signal, and full listens as a weak positive,
 keyed by track or work, artist and album (and by composer and performer for
 classical works), nudging the genres they carry, and decaying over weeks.
 Learned feedback ranks below the owner's manual preferences and above the raw
-account signals (§12.1). Today the `feedback` rows carry only the classical
-keys (`work_key`, `composer_key`, `performer`); the artist and album keys come
-with the genre-agnostic DJ (`c-dj-taste`). Time-of-day programs set the
+account signals (§12.1). Today the `feedback` rows carry `work_key`,
+`composer_key` (a song's lead artist, a classical work's composer) and
+`performer`; separate artist and album keys come with the library migration
+of `c-dj-taste`. Time-of-day programs set the
 default mood when none is given.
 
 ### 12.10 Schedules and a sleep timer

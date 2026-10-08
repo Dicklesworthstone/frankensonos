@@ -7,8 +7,8 @@ speakers stay on the LAN and are never fronted.
 
 > **Status.** `fsonos serve` runs the HTTP API and the MCP server (streamable
 > HTTP at `/mcp`) over the house policy, keeps a live model of the speakers
-> from their GENA events, and drives the classical-music DJ (steer, status,
-> why, moods, feedback), scenes, sleep timers and schedules, announcements,
+> from their GENA events, and drives the DJ over your whole Spotify library
+> (steer, status, why, moods, feedback), scenes, sleep timers and schedules, announcements,
 > quiet hours, and `fsonos doctor` — all verified end to end against the
 > built-in simulator. The behaviour here is simulator-verified; there is no
 > real-hardware CI yet, and the live Tailscale Serve round trip is opt-in
