@@ -84,6 +84,79 @@ pub enum Command {
     Nothing { reason: String },
 }
 
+impl Command {
+    /// Whether sending this again is harmless even if the first request ran
+    /// and only its reply was lost: it sets a state (play this, pause, this
+    /// volume, mute, join, leave) rather than stepping (next, previous, a
+    /// relative volume) or adding. Only these are retried at a player's new
+    /// address (`fsonos_core::heal`).
+    #[must_use]
+    pub fn repeat_safe(&self) -> bool {
+        match self {
+            Self::Play { .. }
+            | Self::PlayFavorite { .. }
+            | Self::Mute { .. }
+            | Self::Join { .. }
+            | Self::Leave { .. } => true,
+            Self::Transport { action, .. } => {
+                matches!(action, TransportAction::Pause | TransportAction::Resume)
+            }
+            Self::Volume { change, .. } => matches!(change, VolumeChange::Set(_)),
+            Self::Dj { .. } | Self::Nothing { .. } => false,
+        }
+    }
+
+    /// The player the command's request is sent to.
+    #[must_use]
+    pub fn addressed(&self) -> Option<&PlayerId> {
+        match self {
+            Self::Play { coordinator, .. }
+            | Self::PlayFavorite { coordinator, .. }
+            | Self::Transport { coordinator, .. }
+            | Self::Dj { coordinator, .. } => Some(coordinator),
+            Self::Volume { target, .. } | Self::Mute { target, .. } => Some(target),
+            Self::Join { member, .. } | Self::Leave { member } => Some(member),
+            Self::Nothing { .. } => None,
+        }
+    }
+
+    /// The coordinator a group command is addressed to (`None` for room
+    /// commands and grouping).
+    #[must_use]
+    pub fn group_coordinator(&self) -> Option<&PlayerId> {
+        match self {
+            Self::Play { coordinator, .. }
+            | Self::PlayFavorite { coordinator, .. }
+            | Self::Transport { coordinator, .. }
+            | Self::Dj { coordinator, .. } => Some(coordinator),
+            Self::Volume {
+                target,
+                scope: VolumeScope::Group,
+                ..
+            } => Some(target),
+            _ => None,
+        }
+    }
+
+    /// The same group command, sent to `to` (the group's new coordinator).
+    #[must_use]
+    pub fn on_coordinator(mut self, to: &PlayerId) -> Self {
+        match &mut self {
+            Self::Play { coordinator, .. }
+            | Self::PlayFavorite { coordinator, .. }
+            | Self::Transport { coordinator, .. }
+            | Self::Dj { coordinator, .. } => coordinator.clone_from(to),
+            Self::Volume {
+                target,
+                scope: VolumeScope::Group,
+                ..
+            } => target.clone_from(to),
+            _ => {}
+        }
+        self
+    }
+}
+
 /// Resolve a room the way every surface does: `503` while nothing has been
 /// discovered (retrying helps), else the core's resolution with its
 /// retry-able `404`/`409` details.
@@ -231,6 +304,44 @@ mod tests {
 
     fn zone(name: &str) -> ZoneRequest {
         ZoneRequest { zone: name.into() }
+    }
+
+    #[test]
+    fn only_state_setting_commands_are_repeat_safe() {
+        let c = || id("RINCON_DEN");
+        let transport = |action| Command::Transport {
+            coordinator: c(),
+            action,
+        };
+        let volume = |change| Command::Volume {
+            target: c(),
+            scope: VolumeScope::Group,
+            change,
+        };
+        assert!(transport(TransportAction::Pause).repeat_safe());
+        assert!(transport(TransportAction::Resume).repeat_safe());
+        assert!(!transport(TransportAction::Next).repeat_safe());
+        assert!(!transport(TransportAction::Previous).repeat_safe());
+        assert!(volume(VolumeChange::Set(20)).repeat_safe());
+        assert!(!volume(VolumeChange::Adjust(5)).repeat_safe());
+        assert!(Command::Leave { member: c() }.repeat_safe());
+        assert!(
+            !Command::Dj {
+                coordinator: c(),
+                action: DjAction::Skip
+            }
+            .repeat_safe()
+        );
+        // A group command can be moved to the new coordinator; a room
+        // command cannot.
+        let moved = volume(VolumeChange::Set(20)).on_coordinator(&id("RINCON_KIT1"));
+        assert_eq!(moved.group_coordinator(), Some(&id("RINCON_KIT1")));
+        let room = Command::Mute {
+            target: c(),
+            mute: true,
+        };
+        assert_eq!(room.group_coordinator(), None);
+        assert_eq!(room.addressed(), Some(&c()));
     }
 
     #[test]

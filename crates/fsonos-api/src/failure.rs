@@ -257,17 +257,21 @@ impl fmt::Display for ErrorCode {
 pub enum NoteCode {
     /// The requested volume exceeded the house policy and was lowered.
     VolumeClamped,
+    /// The speakers had changed under the request (a player at a new
+    /// address, a new group coordinator) and it was retried once there.
+    Healed,
 }
 
 impl NoteCode {
     /// Every note code, in documentation order.
-    pub const ALL: [Self; 1] = [Self::VolumeClamped];
+    pub const ALL: [Self; 2] = [Self::VolumeClamped, Self::Healed];
 
     /// The wire name, e.g. `VOLUME_CLAMPED`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::VolumeClamped => "VOLUME_CLAMPED",
+            Self::Healed => "HEALED",
         }
     }
 }

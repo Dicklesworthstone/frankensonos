@@ -9,7 +9,7 @@ use fsonos_core::live::{Live, Snapshot};
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::reconcile::Health;
 use serde_json::json;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::failure::{ErrorCode, Failure};
 use crate::reads::TrackDto;
@@ -29,6 +29,25 @@ pub fn households(live: &Live) -> Result<Vec<HouseholdState>, Failure> {
     Err(Failure::new(ErrorCode::NotReady, detail).with_hint(
         "Retry in a few seconds. If it persists, run `fsonos doctor` (discovery, seeds).",
     ))
+}
+
+/// Ask the model to survey now and wait up to `timeout` for that survey;
+/// the households it found, or `None` when it did not finish in time.
+#[must_use]
+pub fn resurvey(live: &Live, timeout: Duration) -> Option<Vec<HouseholdState>> {
+    let before = live.snapshot().surveyed_at;
+    live.refresh_soon();
+    let deadline = Instant::now() + timeout;
+    loop {
+        let snapshot = live.snapshot();
+        if snapshot.surveyed_at.is_some() && snapshot.surveyed_at != before {
+            return Some(snapshot.households);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// The track a player's events describe, or `None` when it is on nothing.

@@ -61,3 +61,4 @@ A successful response can carry notes about how the request was carried out.
 | Code | Meaning |
 |---|---|
 | `VOLUME_CLAMPED` | The requested volume exceeded the house policy and was lowered. |
+| `HEALED` | The speakers had changed under the request (a player at a new address, or a new group coordinator) and it was retried once there. Only commands that are safe to repeat are retried at a new address. |

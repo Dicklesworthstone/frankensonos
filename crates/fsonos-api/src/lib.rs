@@ -15,6 +15,7 @@
 //! * [`plan`] — resolving a request to coordinator-addressed [`Command`]s;
 //! * [`execute`] — carrying a [`Command`] out on the speakers;
 //! * [`guard`] — the house policy: who may call what, how loud;
+//! * [`heal`] — retrying once when the speakers changed under a command;
 //! * [`surface`] — the speakers a surface acts on, with its policy;
 //! * [`web`] — browser safety: Host, Origin, JSON-only writes;
 //! * [`zones`] — the zone (group) listings; [`reads`] — zone state, favorites;
@@ -27,6 +28,7 @@ pub mod events;
 pub mod execute;
 pub mod failure;
 pub mod guard;
+pub mod heal;
 pub mod http;
 pub mod live;
 pub mod log;

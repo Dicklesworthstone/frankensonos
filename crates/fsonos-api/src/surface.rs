@@ -31,8 +31,8 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use crate::events::EventBus;
-use crate::execute::{OutcomeDto, execute_guarded};
-use crate::failure::{ErrorCode, Failure};
+use crate::execute::OutcomeDto;
+use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::Guard;
 use crate::plan::{Command, plan_play_favorite, resolve};
 use crate::reads::{FavoriteDto, TrackDto, ZoneStateDto};
@@ -273,11 +273,44 @@ impl Surface {
     /// Ask the live model to survey soon when `failure` says a player is
     /// gone (moved, rebooted, or off).
     fn notice(&self, failure: &Failure) {
-        if failure.code == ErrorCode::PlayerUnreachable
-            && let Some(live) = self.live()
-        {
-            live.refresh_soon();
+        if failure.code != ErrorCode::PlayerUnreachable {
+            return;
         }
+        match self.live() {
+            Some(live) => live.refresh_soon(),
+            // The next call surveys again, so the caller's retry finds it.
+            None => {
+                if let Ok(mut cache) = self.cache.lock() {
+                    *cache = None;
+                }
+            }
+        }
+    }
+
+    /// Carry `command` out, retrying once where the speakers changed under
+    /// it ([`crate::heal`]).
+    fn execute(
+        &self,
+        households: &[HouseholdState],
+        guard: &Guard<'_>,
+        command: &Command,
+    ) -> Result<OutcomeDto, Failure> {
+        crate::heal::execute_healing(&*self.transport, households, guard, command, || {
+            self.resurvey()
+        })
+    }
+
+    /// The speakers as a survey finds them now: the live model's next
+    /// survey (up to 5 s), or a direct one, which the cache keeps.
+    fn resurvey(&self) -> Option<Vec<HouseholdState>> {
+        if let Some(live) = self.live() {
+            return crate::live::resurvey(&live, Duration::from_secs(5));
+        }
+        let households = (self.survey)(&*self.transport).ok()?;
+        if let Ok(mut cache) = self.cache.lock() {
+            *cache = Some((Instant::now(), households.clone()));
+        }
+        Some(households)
     }
 
     /// A control call: authorize `tool` for `client`, plan against the
@@ -316,7 +349,7 @@ impl Surface {
         let regroups = matches!(command, Command::Join { .. } | Command::Leave { .. });
         // Already satisfied requests change nothing and are not logged.
         if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
-            let result = execute_guarded(&*self.transport, &households, &guard, command);
+            let result = self.execute(&households, &guard, &command);
             if regroups {
                 self.invalidate();
             }
@@ -332,7 +365,7 @@ impl Surface {
             &affected(&households, &command),
             self.now(),
         );
-        let result = execute_guarded(&*self.transport, &households, &guard, command);
+        let result = self.execute(&households, &guard, &command);
         if regroups {
             self.invalidate();
         }
@@ -340,24 +373,27 @@ impl Surface {
             self.notice(f);
         }
         let (decision, mut text, before) = match &result {
-            Ok(outcome) if outcome.notes.is_empty() => (
-                "allow".to_string(),
-                outcome.done.clone(),
-                actions::before_state(&snaps),
-            ),
-            Ok(outcome) => (
-                format!(
-                    "clamp: {}",
+            Ok(outcome) => {
+                let noted = |code: NoteCode| {
                     outcome
                         .notes
                         .iter()
+                        .filter(|n| n.code == code)
                         .map(|n| n.detail.as_str())
                         .collect::<Vec<_>>()
-                        .join("; ")
-                ),
-                outcome.done.clone(),
-                actions::before_state(&snaps),
-            ),
+                };
+                let clamps = noted(NoteCode::VolumeClamped);
+                let decision = if clamps.is_empty() {
+                    "allow".to_string()
+                } else {
+                    format!("clamp: {}", clamps.join("; "))
+                };
+                let mut text = outcome.done.clone();
+                for healed in noted(NoteCode::Healed) {
+                    let _ = write!(text, " (healed: {healed})");
+                }
+                (decision, text, actions::before_state(&snaps))
+            }
             Err(f) if f.code == ErrorCode::PolicyDenied => {
                 (format!("deny: {}", f.detail), f.detail.clone(), None)
             }
