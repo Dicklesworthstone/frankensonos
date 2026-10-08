@@ -366,10 +366,11 @@ impl QueueFeed {
     }
 
     /// Re-place every queued movement by reading the queue: each work's
-    /// movements are found in order after the previous work's; a movement
-    /// no longer there (removed by the owner) loses its position, and a work
-    /// with nothing left on the queue is dropped. The recorded play moves
-    /// with its track.
+    /// movements are found in order after the previous work's — back to
+    /// back where they still are, so a copy of a movement the owner queued
+    /// ahead can't capture it; a movement no longer there (removed by the
+    /// owner) loses its position, and a work with nothing left on the queue
+    /// is dropped. The recorded play moves with its track.
     fn resync<T: Transport + ?Sized>(&mut self, at: &Speakers<'_, T>) -> Result<(), FeedError> {
         let host = host_of(at)?;
         let queue: Vec<Option<String>> = browse_all(at.transport, host, QUEUE)?
@@ -388,14 +389,35 @@ impl QueueFeed {
                     .map(|m| (w, m))
             })
         });
+        let place = |i: usize| u32::try_from(i + 1).unwrap_or(u32::MAX);
         let mut cursor = 0;
         for work in &mut self.queued {
+            let added: Vec<String> = work
+                .movements
+                .iter()
+                .filter(|m| m.added)
+                .map(|m| m.uri.clone())
+                .collect();
+            let run = (cursor..queue.len()).find(|&start| {
+                added.iter().enumerate().all(|(k, uri)| {
+                    queue.get(start + k).and_then(Option::as_deref) == Some(uri.as_str())
+                })
+            });
+            if let Some(start) = run {
+                for (k, m) in work.movements.iter_mut().filter(|m| m.added).enumerate() {
+                    m.position = Some(place(start + k));
+                }
+                cursor = start + added.len();
+                continue;
+            }
+            // Not back to back any more (a movement removed, an item
+            // inserted mid-work): each where it is next found.
             for m in work.movements.iter_mut().filter(|m| m.added) {
                 let found = queue[cursor..]
                     .iter()
                     .position(|q| q.as_deref() == Some(m.uri.as_str()))
                     .map(|i| cursor + i);
-                m.position = found.map(|i| u32::try_from(i + 1).unwrap_or(u32::MAX));
+                m.position = found.map(place);
                 if let Some(i) = found {
                     cursor = i + 1;
                 }
@@ -1246,6 +1268,53 @@ mod tests {
                 assert_eq!(rig.queue()[m.position.unwrap() as usize - 1], m.uri);
             }
         }
+    }
+
+    #[test]
+    fn a_copy_queued_ahead_of_a_dj_movement_does_not_capture_it() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = multi_movement_pool();
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 9);
+        let started = feed
+            .start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap()
+            .to_vec();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        // On the current work's last movement, the owner plays next the very
+        // track the waiting work opens with.
+        while rig.position() < started[0].last().unwrap() {
+            rig.next();
+            rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+        }
+        let waiting = &started[1];
+        rig.owner_adds(&waiting.movements[0].uri, true);
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let placed = feed
+            .queued()
+            .iter()
+            .find(|w| w.work_key == waiting.work_key)
+            .unwrap()
+            .clone();
+        assert_eq!(
+            placed.first(),
+            waiting.first().map(|p| p + 1),
+            "the work itself, not the owner's copy ahead of it"
+        );
+        let queue = rig.queue();
+        for m in &placed.movements {
+            assert_eq!(queue[m.position.unwrap() as usize - 1], m.uri);
+        }
+        let next = feed
+            .skip(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap()
+            .clone();
+        assert_eq!(next.work_key, waiting.work_key);
+        assert_eq!(rig.position(), placed.first().unwrap());
     }
 
     #[test]
