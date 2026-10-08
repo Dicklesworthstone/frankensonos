@@ -239,7 +239,7 @@ fn likes_dislikes_skips_and_full_listens_are_recorded_and_steer_the_dj() {
 
     // The work playing now was queued after the likes and the dislike: its
     // pick weighed them, and fsonos dj why says so.
-    let run = s.cli("why", &["dj", "why", ROOM, "--daemon", &api]);
+    let run = s.cli("why", &["dj", "why", ROOM, "--daemon"]);
     s.check(
         "why",
         "cli",

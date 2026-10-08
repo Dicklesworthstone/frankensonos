@@ -308,10 +308,7 @@ fn check_status(s: &mut Scenario, api: &str, mcp: &str) {
         &result,
     );
 
-    let run = s.cli(
-        "status-cli",
-        &["dj", "status", "Living Room", "--daemon", api],
-    );
+    let run = s.cli("status-cli", &["dj", "status", "Living Room", "--daemon"]);
     let title = status["now"]["title"].as_str().unwrap_or("?").to_string();
     s.check(
         "status-cli",
@@ -323,7 +320,7 @@ fn check_status(s: &mut Scenario, api: &str, mcp: &str) {
             && run.stdout.contains("Steering: steered: focus mood"),
         format!("{}{}", run.stdout, run.stderr),
     );
-    let run = s.cli("why-cli", &["dj", "why", "Living Room", "--daemon", api]);
+    let run = s.cli("why-cli", &["dj", "why", "Living Room", "--daemon"]);
     s.check(
         "why-cli",
         "cli",
@@ -380,8 +377,11 @@ fn check_steer_and_undo(s: &mut Scenario, api: &str, mcp: &str) {
 
 /// The CLI on its own: the steering read directly, a clear, and the moods.
 fn check_cli(s: &mut Scenario, api: &str) {
-    // FSONOS_HTTP_ADDR is port 0 here: no daemon to ask.
-    let run = s.cli("status-direct", &["dj", "status", "Living Room"]);
+    // --direct: read directly although the daemon runs.
+    let run = s.cli(
+        "status-direct",
+        &["dj", "status", "Living Room", "--direct"],
+    );
     s.check(
         "status-direct",
         "cli",
@@ -403,7 +403,7 @@ fn check_cli(s: &mut Scenario, api: &str) {
             && status["steering"]["mood"] == "bright",
         format!("{}{}\n{status}", run.stdout, run.stderr),
     );
-    let run = s.cli("moods-cli", &["dj", "moods", "--daemon", api]);
+    let run = s.cli("moods-cli", &["dj", "moods", "--daemon"]);
     s.check(
         "moods-cli",
         "cli",

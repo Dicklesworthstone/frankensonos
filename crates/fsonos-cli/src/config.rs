@@ -52,6 +52,10 @@ pub struct GlobalArgs {
     #[arg(long, global = true)]
     pub direct: bool,
 
+    /// Only through a running daemon: fail when none answers.
+    #[arg(long, global = true, conflicts_with = "direct")]
+    pub daemon: bool,
+
     /// Data directory for the store database, the Spotify token cache, and
     /// `policy.toml` [default: the OS per-user data directory, under
     /// `fsonos`].

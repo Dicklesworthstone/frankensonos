@@ -3,30 +3,24 @@
 //!
 //! The DJ runs in the daemon (`fsonos serve`): only that process holds the
 //! feeds that keep a queue topped up. So the reads (`dj status`, `dj why`,
-//! `dj moods`) ask the daemon when one answers (`--daemon`, else
-//! `FSONOS_HTTP_ADDR`, else 127.0.0.1:8099), through the same HTTP API an
-//! agent uses, and otherwise read directly, which shows the steering (kept in
-//! the data directory) but no running DJ. Steering is stored, so a steer from
-//! here reaches the daemon's next pick.
+//! `dj moods`) ask the daemon when one answers (found the way every command
+//! finds it, see `crate::remote`; `--daemon` requires it, `--direct` skips
+//! it), through the same HTTP API an agent uses, and otherwise read directly,
+//! which shows the steering (kept in the data directory) but no running DJ.
+//! Steering is stored, so a steer from here reaches the daemon's next pick.
 
 use clap::{ArgAction, Subcommand};
 use fsonos_api::dj::{DjMoodsDto, DjStatusDto, SteerConstraints};
 use fsonos_api::plan::{self, DjAction as PlanDj, Rooms};
 use fsonos_api::surface::dj_feedback::DjFeedback;
 use fsonos_api::{
-    ApiError, Command, DjStartRequest, DjSteerRequest, ErrorCode, Failure, ZoneDto, ZoneRequest,
+    Command, DjStartRequest, DjSteerRequest, ErrorCode, Failure, ZoneDto, ZoneRequest,
 };
-use serde::de::DeserializeOwned;
 use std::fmt::Write as _;
-use std::io::{Read as _, Write as _};
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
-use std::time::Duration;
 
-use crate::config::{GlobalArgs, HTTP_PORT};
+use crate::config::GlobalArgs;
 use crate::direct::Direct;
-
-/// How long a read waits for the daemon.
-const DAEMON_TIMEOUT: Duration = Duration::from_secs(5);
+use crate::remote::{Daemon, pct as encode};
 
 #[derive(Subcommand)]
 pub enum DjAction {
@@ -56,44 +50,14 @@ pub enum DjAction {
     Steer(Box<SteerArgs>),
     /// What the DJ plays (in every zone it runs in, without a room), why,
     /// what comes next, and the steering.
-    Status {
-        zone: Option<String>,
-        #[command(flatten)]
-        daemon: DaemonArg,
-    },
+    Status { zone: Option<String> },
     /// Why the DJ chose the work playing: every factor and relaxation.
-    Why {
-        zone: String,
-        #[command(flatten)]
-        daemon: DaemonArg,
-    },
+    Why { zone: String },
     /// The moods and time-of-day programs, and the steering in effect now.
     Moods {
         /// A room: its steering, rather than the house's program.
         zone: Option<String>,
-        #[command(flatten)]
-        daemon: DaemonArg,
     },
-}
-
-/// Where the daemon's HTTP API answers.
-#[derive(clap::Args)]
-pub struct DaemonArg {
-    /// The daemon's HTTP API, which runs the DJ [default: FSONOS_HTTP_ADDR,
-    /// else 127.0.0.1:8099]. When nothing answers there, the steering is read
-    /// directly.
-    #[arg(long, env = "FSONOS_HTTP_ADDR", value_name = "ADDR")]
-    daemon: Option<SocketAddr>,
-}
-
-impl DaemonArg {
-    /// The daemon's address, if one could be there (port 0 never is).
-    fn addr(&self) -> Option<SocketAddr> {
-        let addr = self
-            .daemon
-            .unwrap_or(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), HTTP_PORT));
-        (addr.port() != 0).then_some(addr)
-    }
 }
 
 /// `fsonos dj steer`: the fields of `dj_steer`.
@@ -237,8 +201,8 @@ impl DjAction {
 /// `fsonos dj status|why|moods`.
 pub fn read(global: &GlobalArgs, action: &DjAction) -> anyhow::Result<()> {
     match action {
-        DjAction::Status { zone, daemon } => {
-            let from = Source::find(global, daemon)?;
+        DjAction::Status { zone } => {
+            let from = Source::find(global)?;
             if let Some(zone) = zone {
                 let status = from.status(zone)?;
                 crate::emit(global.json, &status, |s| format!("{}\n", s.summary()))
@@ -247,13 +211,13 @@ pub fn read(global: &GlobalArgs, action: &DjAction) -> anyhow::Result<()> {
                 crate::emit(global.json, &statuses, |all| statuses_text(all))
             }
         }
-        DjAction::Why { zone, daemon } => {
-            let status = Source::find(global, daemon)?.status(zone)?;
+        DjAction::Why { zone } => {
+            let status = Source::find(global)?.status(zone)?;
             let text = why_text(&status)?;
             crate::emit(global.json, &status, |_| text.clone())
         }
-        DjAction::Moods { zone, daemon } => {
-            let moods = Source::find(global, daemon)?.moods(zone.as_deref())?;
+        DjAction::Moods { zone } => {
+            let moods = Source::find(global)?.moods(zone.as_deref())?;
             crate::emit(global.json, &moods, moods_text)
         }
         DjAction::Like { zone } => {
@@ -268,30 +232,25 @@ pub fn read(global: &GlobalArgs, action: &DjAction) -> anyhow::Result<()> {
 
 /// Where the DJ's state is read from.
 enum Source {
-    Daemon(SocketAddr),
+    Daemon(Daemon),
     Direct(Box<Direct>),
 }
 
 impl Source {
     /// The daemon when one answers, else the speakers and store directly.
-    fn find(global: &GlobalArgs, daemon: &DaemonArg) -> Result<Self, Failure> {
-        if let Some(addr) = daemon.addr()
-            && TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok()
-        {
-            return Ok(Self::Daemon(addr));
+    fn find(global: &GlobalArgs) -> Result<Self, Failure> {
+        if let Some(daemon) = Daemon::find(global, global.daemon)? {
+            return Ok(Self::Daemon(daemon));
         }
         tracing::info!(
-            "no daemon answers{}: the DJ runs in fsonos serve, so only its steering shows here",
-            daemon
-                .addr()
-                .map_or_else(String::new, |a| format!(" on {a}"))
+            "no daemon answers: the DJ runs in fsonos serve, so only its steering shows here"
         );
         Ok(Self::Direct(Box::new(Direct::survey(global)?)))
     }
 
     fn status(&self, zone: &str) -> Result<DjStatusDto, Failure> {
         match self {
-            Self::Daemon(addr) => daemon_get(*addr, &format!("/zones/{}/dj", encode(zone))),
+            Self::Daemon(daemon) => daemon.get(&format!("/zones/{}/dj", encode(zone))),
             Self::Direct(direct) => direct.dj_status(zone),
         }
     }
@@ -299,7 +258,7 @@ impl Source {
     /// Every zone's.
     fn statuses(&self) -> Result<Vec<DjStatusDto>, Failure> {
         let zones: Vec<ZoneDto> = match self {
-            Self::Daemon(addr) => daemon_get(*addr, "/zones")?,
+            Self::Daemon(daemon) => daemon.get("/zones")?,
             Self::Direct(direct) => direct.zones()?,
         };
         zones
@@ -310,87 +269,13 @@ impl Source {
 
     fn moods(&self, zone: Option<&str>) -> Result<DjMoodsDto, Failure> {
         match self {
-            Self::Daemon(addr) => {
+            Self::Daemon(daemon) => {
                 let query = zone.map_or_else(String::new, |z| format!("?zone={}", encode(z)));
-                daemon_get(*addr, &format!("/dj/moods{query}"))
+                daemon.get(&format!("/dj/moods{query}"))
             }
             Self::Direct(direct) => direct.dj_moods(zone),
         }
     }
-}
-
-/// `GET path` on the daemon: the answer as `T`, or its failure.
-fn daemon_get<T: DeserializeOwned>(addr: SocketAddr, path: &str) -> Result<T, Failure> {
-    let broken = |why: String| {
-        Failure::new(
-            ErrorCode::Internal,
-            format!("fsonos serve on {addr}: {why}"),
-        )
-    };
-    let mut stream =
-        TcpStream::connect_timeout(&addr, DAEMON_TIMEOUT).map_err(|e| broken(e.to_string()))?;
-    stream
-        .set_read_timeout(Some(DAEMON_TIMEOUT))
-        .map_err(|e| broken(e.to_string()))?;
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
-    );
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| broken(e.to_string()))?;
-    let mut answer = Vec::new();
-    stream
-        .read_to_end(&mut answer)
-        .map_err(|e| broken(e.to_string()))?;
-    let (status, body) =
-        parse_response(&answer).ok_or_else(|| broken("not an HTTP answer".into()))?;
-    if status == 200 {
-        return serde_json::from_str(&body).map_err(|e| broken(format!("unreadable answer: {e}")));
-    }
-    let err: ApiError =
-        serde_json::from_str(&body).map_err(|_| broken(format!("HTTP {status}: {body:.200}")))?;
-    let mut failure = Failure::new(err.code, err.detail).with_suggestions(err.suggestions);
-    if !err.hint.is_empty() {
-        failure = failure.with_hint(err.hint);
-    }
-    Err(failure)
-}
-
-/// An HTTP/1.1 answer's status and body (chunked bodies joined).
-fn parse_response(raw: &[u8]) -> Option<(u16, String)> {
-    let text = String::from_utf8_lossy(raw);
-    let (head, body) = text.split_once("\r\n\r\n")?;
-    let status = head.split_whitespace().nth(1)?.parse().ok()?;
-    let chunked = head.lines().any(|l| {
-        let l = l.to_ascii_lowercase();
-        l.starts_with("transfer-encoding:") && l.contains("chunked")
-    });
-    if !chunked {
-        return Some((status, body.to_owned()));
-    }
-    let mut joined = String::new();
-    let mut rest = body;
-    loop {
-        let (size, after) = rest.split_once("\r\n")?;
-        let size = usize::from_str_radix(size.split(';').next()?.trim(), 16).ok()?;
-        if size == 0 {
-            return Some((status, joined));
-        }
-        joined.push_str(after.get(..size)?);
-        rest = after.get(size..)?.strip_prefix("\r\n")?;
-    }
-}
-
-/// `room` as one path segment or query value.
-fn encode(room: &str) -> String {
-    room.bytes().fold(String::new(), |mut out, b| {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            out.push(char::from(b));
-        } else {
-            let _ = write!(out, "%{b:02X}");
-        }
-        out
-    })
 }
 
 /// A span: `2h`, `90m`, `1h30m`, `1d`, `45s`, or bare minutes (`90`).
@@ -600,17 +485,6 @@ mod tests {
             Cli::try_parse_from(["dj", "start", "Den", "--for", "2h"]).is_err(),
             "--for needs --mood"
         );
-    }
-
-    #[test]
-    fn answers_parse_plain_and_chunked() {
-        let plain = b"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\n\r\n{}";
-        assert_eq!(parse_response(plain), Some((404, "{}".to_owned())));
-        let chunked =
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\n{\"a\"\r\n3\r\n:1}\r\n0\r\n\r\n";
-        assert_eq!(parse_response(chunked), Some((200, "{\"a\":1}".to_owned())));
-        assert_eq!(parse_response(b"garbage"), None);
-        assert_eq!(encode("Ada’s Studio@S1"), "Ada%E2%80%99s%20Studio%40S1");
     }
 
     fn steering() -> DjSteeringDto {

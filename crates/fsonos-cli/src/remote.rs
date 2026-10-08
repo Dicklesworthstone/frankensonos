@@ -8,7 +8,8 @@
 //! that file (or `FSONOS_HTTP_ADDR` when set) and checks it with
 //! `GET /health` within [`PROBE`]. With no file, or no answer, it runs
 //! directly, so the CLI never waits on a daemon that is not there.
-//! `--direct` never asks it.
+//! `--daemon` requires the daemon; `--direct` never asks it. The DJ's reads
+//! (`fsonos dj status|why|moods`, see `crate::dj_cmd`) find it the same way.
 //!
 //! Through the daemon a command sends the same request body the HTTP API
 //! documents and prints the same DTO the direct path prints, so `--json`
@@ -135,7 +136,8 @@ impl Daemon {
         }
     }
 
-    fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
+    /// `GET path`: the answer as `T`, or the daemon's failure.
+    pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
         self.call("GET", path, None)
     }
 
@@ -279,7 +281,7 @@ fn parse_response(raw: &[u8]) -> io::Result<(u16, String)> {
 }
 
 /// Percent-encode a path segment or query value.
-fn pct(s: &str) -> String {
+pub fn pct(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
@@ -321,7 +323,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
     if !routable(command) {
         return Ok(false);
     }
-    let Some(daemon) = Daemon::find(global, false)? else {
+    let Some(daemon) = Daemon::find(global, global.daemon)? else {
         return Ok(false);
     };
     let json = global.json;

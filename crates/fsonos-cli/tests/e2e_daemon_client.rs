@@ -2,8 +2,8 @@
 //! with `fsonos serve` running, commands answer from the daemon (found via
 //! `daemon.json` in the data directory) with the same JSON they print
 //! directly; a control goes through as the CLI (the daemon's log names
-//! `cli`); `--direct` skips the daemon; once the daemon is gone, commands
-//! run directly again at once.
+//! `cli`); `--direct` skips the daemon and `--daemon` requires it; once the
+//! daemon is gone, commands run directly again at once.
 //!
 //! Through the daemon a command never reads the seeds: given a seeds file
 //! that does not exist, it still answers, which a direct run cannot.
@@ -57,7 +57,10 @@ fn commands_go_through_a_running_daemon_with_the_same_answers() {
         daemon.seen.join("\n"),
     );
 
-    let zones = s.cli("zones-daemon", &["--seeds", &no_seeds, "--json", "zones"]);
+    let zones = s.cli(
+        "zones-daemon",
+        &["--daemon", "--seeds", &no_seeds, "--json", "zones"],
+    );
     s.check(
         "zones",
         "cli",
@@ -124,6 +127,29 @@ fn commands_go_through_a_running_daemon_with_the_same_answers() {
                 .as_array()
                 .is_some_and(|z| !z.is_empty()),
         &after.stderr,
+    );
+    s.finish();
+}
+
+#[test]
+fn daemon_and_direct_say_what_they_mean() {
+    let mut s = Scenario::start("daemon-client-flags");
+    s.sim(SimHousehold::standard());
+    let required = s.cli("daemon-required", &["--daemon", "--json", "zones"]);
+    s.check(
+        "daemon-required",
+        "cli",
+        "--daemon with no daemon is NOT_READY (exit 4)",
+        required.code == Some(4) && required.stderr.contains("NOT_READY"),
+        &required.stderr,
+    );
+    let both = s.cli("both-flags", &["--daemon", "--direct", "zones"]);
+    s.check(
+        "both-flags",
+        "cli",
+        "--daemon and --direct together are a usage error (exit 2)",
+        both.code == Some(2),
+        &both.stderr,
     );
     s.finish();
 }
