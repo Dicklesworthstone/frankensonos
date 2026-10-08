@@ -10,7 +10,7 @@
 //!
 //! | `event:` | `data:` |
 //! |---|---|
-//! | `zone.state` | `{player, room, transport?, track?, volume?, mute?, group_volume?}`: only what changed |
+//! | `zone.state` | `{player, room, transport?, track?, volume?, mute?, group_volume?, queue_length?}`: only what changed |
 //! | `topology.changed` | `{households, rooms}` (read `GET /zones` for the new shape) |
 //! | `player.health` | `{player, room, health}`: `healthy`, `degraded` or `offline` |
 //! | `action.logged` | the action as `GET /actions` shows it |
@@ -200,6 +200,9 @@ impl EventBus {
                 }
                 if let Some(volume) = changes.group_volume {
                     data.insert("group_volume".into(), json!(volume));
+                }
+                if let Some(length) = changes.queue_length {
+                    data.insert("queue_length".into(), json!(length));
                 }
                 self.publish("zone.state", Value::Object(data));
             }

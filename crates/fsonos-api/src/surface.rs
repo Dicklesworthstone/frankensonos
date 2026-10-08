@@ -164,9 +164,8 @@ impl Surface {
             households: &households,
             coordinator: player,
         };
-        let now = self.now();
         let fed = self.with_store(|store| {
-            dj.on_playback(at, store, &playback, now);
+            dj.on_playback(at, store, &playback, &*self.clock);
             Ok(())
         });
         if let Ok(None) = fed {
@@ -356,9 +355,8 @@ impl Surface {
                 households,
                 coordinator,
             };
-            let now = self.now();
             return self
-                .with_store(|store| Ok(dj.act(at, store, *action, now)))?
+                .with_store(|store| Ok(dj.act(at, store, *action, &*self.clock)))?
                 .unwrap_or_else(|| {
                     Err(Failure::new(
                         ErrorCode::Internal,

@@ -82,18 +82,7 @@ fn on_now(s: &Scenario) -> String {
 fn the_dj_queues_whole_works_and_skips_and_stops() {
     let mut s = Scenario::start("dj");
     s.sim(SimHousehold::standard());
-    let seeded = SqliteStore::open(&s.dir().join("data").join("fsonos.db"))
-        .map_err(|e| e.to_string())
-        .and_then(|mut store| {
-            apply_library_read(&mut store, &library()).map_err(|e| e.to_string())
-        });
-    s.check(
-        "library",
-        "store",
-        "a synced library with four classical works",
-        seeded.as_ref().is_ok_and(|sync| sync.classical == 8),
-        format!("{seeded:?}"),
-    );
+    seed(&mut s);
 
     let mut daemon = s.spawn(
         "serve",
@@ -126,11 +115,11 @@ fn the_dj_queues_whole_works_and_skips_and_stops() {
     s.check(
         "start",
         "http",
-        "POST /dj/start answers what the DJ is playing",
+        "POST /dj/start answers what the DJ plays, steered by the program's mood",
         status == 200
             && started["done"]
                 .as_str()
-                .is_some_and(|d| d.contains("the DJ is playing")),
+                .is_some_and(|d| d.contains("the DJ is playing") && d.contains("(mood: bright)")),
         &started,
     );
     let state = get_transport_info(&s.lan(), s.ip("Living Room"))
@@ -215,5 +204,35 @@ fn check_skip_and_stop(s: &mut Scenario, api: &str, first: &str) {
         "stopping a DJ that isn't running is NO_DJ_SESSION",
         status == 404 && again["code"] == "NO_DJ_SESSION",
         &again,
+    );
+}
+
+/// The data directory as a sync and the owner leave it: the library in the
+/// store, and a moods.toml with one all-day program.
+fn seed(s: &mut Scenario) {
+    let seeded = SqliteStore::open(&s.dir().join("data").join("fsonos.db"))
+        .map_err(|e| e.to_string())
+        .and_then(|mut store| {
+            apply_library_read(&mut store, &library()).map_err(|e| e.to_string())
+        });
+    s.check(
+        "library",
+        "store",
+        "a synced library with four classical works",
+        seeded.as_ref().is_ok_and(|sync| sync.classical == 8),
+        format!("{seeded:?}"),
+    );
+
+    // One all-day program, so the pick does not depend on when this runs
+    // (a moods.toml's programs replace the built-in ones).
+    let moods =
+        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"23:59\"\nmood = \"bright\"\n";
+    let wrote = std::fs::write(s.dir().join("data").join("moods.toml"), moods);
+    s.check(
+        "moods",
+        "store",
+        "an all-day bright program",
+        wrote.is_ok(),
+        format!("{wrote:?}"),
     );
 }

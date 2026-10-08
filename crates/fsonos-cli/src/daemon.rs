@@ -65,8 +65,9 @@ pub fn surface(global: &GlobalArgs, policy: Policy) -> Result<Surface, Failure> 
         Ok(fsonos_core::inventory::survey(transport, &seeds, wait)?.households)
     });
     Ok(
-        Surface::new(global.lan()?, survey, policy, Box::new(SystemClock))
-            .with_dj(Box::new(crate::dj::SpotifyDj::default())),
+        Surface::new(global.lan()?, survey, policy, Box::new(SystemClock)).with_dj(Box::new(
+            crate::dj::SpotifyDj::new(global.data_dir().map(|d| d.join(crate::dj::MOODS_FILE))),
+        )),
     )
 }
 
@@ -103,7 +104,9 @@ pub fn live_surface(
         Box::new(SystemClock),
     )
     .with_live(&live)
-    .with_dj(Box::new(crate::dj::SpotifyDj::default()));
+    .with_dj(Box::new(crate::dj::SpotifyDj::new(
+        global.data_dir().map(|d| d.join(crate::dj::MOODS_FILE)),
+    )));
     Ok((surface, live))
 }
 

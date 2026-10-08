@@ -6,6 +6,7 @@
 //! plays them, and nothing tops the queue up.
 
 use fsonos_core::HouseholdState;
+use fsonos_core::clock::Clock;
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::Store;
 use fsonos_proto::Transport;
@@ -27,12 +28,14 @@ pub struct DjSpeakers<'a> {
 /// Runs the DJ; see the module docs.
 pub trait DjEngine: Send + Sync {
     /// Start, skip or stop the DJ in the group `at.coordinator` leads.
+    /// `clock` is the house's: its local day and time pick the time-of-day
+    /// program and the energy target.
     fn act(
         &self,
         at: DjSpeakers<'_>,
         store: &mut dyn Store,
         action: DjAction,
-        now: i64,
+        clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure>;
 
     /// Whether the DJ is feeding `coordinator`'s queue.
@@ -46,6 +49,6 @@ pub trait DjEngine: Send + Sync {
         at: DjSpeakers<'_>,
         store: &mut dyn Store,
         playback: &PlayerPlayback,
-        now: i64,
+        clock: &dyn Clock,
     );
 }

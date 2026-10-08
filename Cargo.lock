@@ -1264,6 +1264,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "asupersync",
+ "chrono",
  "clap",
  "fastapi-rust",
  "fsonos-api",
