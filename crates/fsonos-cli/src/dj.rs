@@ -111,8 +111,14 @@ impl State {
             Some((local.weekday(), local.time())),
         )
         .map_err(|e| match e {
-            SpotifyError::Config(why) => Failure::new(ErrorCode::UnknownMood, why)
-                .with_suggestions(self.moods.names().map(str::to_string)),
+            // An unknown mood; any other Config error is steering whose
+            // bounds clash (a session's with its mood's).
+            SpotifyError::Config(why) if why.starts_with("no mood ") => {
+                Failure::new(ErrorCode::UnknownMood, why)
+                    .with_suggestions(self.moods.names().map(str::to_string))
+            }
+            SpotifyError::Config(why) => Failure::invalid(why)
+                .with_hint("Fix the zone's DJ steering: its bounds clash with the mood's."),
             other => Failure::new(ErrorCode::Internal, format!("DJ steering: {other}")),
         })?;
         Ok(Context {
