@@ -14,14 +14,17 @@
 //!    ([`crate::setup_spotify`]; `--skip-spotify` skips it);
 //! 5. Spotify in each household: linked, a Spotify favorite, render
 //!    parameters learned (`spotify.*`);
-//! 6. Tailscale, when it is there (`tailscale.*`);
-//! 7. what to run next.
+//! 6. with `--test-play <room>`, a favorite played softly in the room's
+//!    group for 5 s, then the group put back ([`play`]);
+//! 7. Tailscale, when it is there (`tailscale.*`);
+//! 8. what to run next.
 //!
 //! On a terminal, a step that fails prints its fix and waits: Enter checks
 //! again, `s` skips it. With `--yes`, `--json` or no terminal it never waits;
 //! it reports, writes `seeds.toml` when that is the fix, and goes on. `--json`
 //! prints one JSON object per step. Re-running is safe: whatever is already
-//! in place passes straight through. Setup never changes playback.
+//! in place passes straight through. Setup changes playback only with
+//! `--test-play`, and puts it back.
 //!
 //! The exit code is the doctor's: 0 when every step passed (or was
 //! skipped), 6 when one only warned, 7 when one failed.
@@ -39,6 +42,8 @@ use crate::config::{GlobalArgs, ServeArgs};
 use crate::direct::Direct;
 use crate::setup_spotify::{self, Prompt};
 
+pub mod play;
+
 /// `fsonos setup`.
 #[derive(Debug, Clone, clap::Args)]
 pub struct SetupArgs {
@@ -49,6 +54,10 @@ pub struct SetupArgs {
     /// Leave out the Spotify login.
     #[arg(long)]
     pub skip_spotify: bool,
+    /// Prove the room plays: a favorite at volume 10 for 5 s in its group,
+    /// then the group exactly as it was.
+    #[arg(long, value_name = "ROOM")]
+    pub test_play: Option<String>,
     /// The daemon settings the next steps assume (the same flags and env as
     /// `serve`).
     #[command(flatten)]
@@ -64,17 +73,19 @@ pub enum Step {
     Households,
     SpotifyLogin,
     SpotifyHouseholds,
+    TestPlay,
     Tailscale,
     NextSteps,
 }
 
 impl Step {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Data,
         Self::Discovery,
         Self::Households,
         Self::SpotifyLogin,
         Self::SpotifyHouseholds,
+        Self::TestPlay,
         Self::Tailscale,
         Self::NextSteps,
     ];
@@ -87,6 +98,7 @@ impl Step {
             Self::Households => "Households and rooms",
             Self::SpotifyLogin => "Spotify sign-in",
             Self::SpotifyHouseholds => "Spotify in each household",
+            Self::TestPlay => "Test playback",
             Self::Tailscale => "Tailscale",
             Self::NextSteps => "Next steps",
         }
@@ -100,7 +112,7 @@ impl Step {
             Self::Households => &["lan.households", "lan.topology"],
             Self::SpotifyHouseholds => &["spotify."],
             Self::Tailscale => &["tailscale."],
-            Self::SpotifyLogin | Self::NextSteps => &[],
+            Self::SpotifyLogin | Self::TestPlay | Self::NextSteps => &[],
         }
     }
 }
@@ -234,6 +246,30 @@ fn spotify_login(global: &GlobalArgs, args: &SetupArgs, prompt: Option<&Prompt>)
     )
 }
 
+/// The `--test-play` step, or a skip when it was not asked for.
+fn test_play(global: &GlobalArgs, direct: &Direct, args: &SetupArgs) -> StepOutcome {
+    let Some(room) = &args.test_play else {
+        return StepOutcome::new(
+            Step::TestPlay,
+            Status::Skip,
+            "not asked for (--test-play <room> plays a favorite softly for 5 s, then puts it back)",
+        );
+    };
+    let failed = |why: String| StepOutcome::new(Step::TestPlay, Status::Fail, why);
+    let households = match direct.households() {
+        Ok(households) => households,
+        Err(f) => return failed(f.detail),
+    };
+    let lan = match global.lan() {
+        Ok(lan) => lan,
+        Err(f) => return failed(f.detail),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    play::test_play(&*lan, households, room, play::LISTEN, now)
+}
+
 /// Survey and run every doctor check once.
 fn check(global: &GlobalArgs, serve: &ServeArgs) -> anyhow::Result<(Direct, Report)> {
     let serve = serve.clone();
@@ -341,6 +377,7 @@ pub fn run(global: &GlobalArgs, args: &SetupArgs) -> anyhow::Result<ExitCode> {
         let outcome = loop {
             let mut outcome = match step {
                 Step::SpotifyLogin => spotify_login(global, args, prompt),
+                Step::TestPlay => test_play(global, &direct, args),
                 Step::NextSteps => next_steps(&args.serve),
                 _ => judge(step, &report),
             };

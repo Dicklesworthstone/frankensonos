@@ -9,6 +9,7 @@
 mod e2e;
 
 use e2e::Scenario;
+use fsonos_proto::control::{get_position_info, get_transport_info, get_volume};
 use fsonos_sim::SimHousehold;
 use serde_json::Value;
 
@@ -46,6 +47,7 @@ fn setup_takes_a_fresh_data_dir_through_every_step() {
         ("households", "pass"),
         ("spotify-login", "skip"),
         ("spotify-households", "pass"),
+        ("test-play", "skip"),
         ("tailscale", "skip"),
         ("next-steps", "pass"),
     ]
@@ -123,7 +125,82 @@ fn setup_takes_a_fresh_data_dir_through_every_step() {
         &run.stdout,
     );
     check_sign_in(&mut s);
+    check_test_play(&mut s);
     s.finish();
+}
+
+/// What Kitchen is doing: (volume, transport state, URI).
+fn kitchen(s: &Scenario) -> (Option<u8>, Option<String>, Option<String>) {
+    let (lan, ip) = (s.lan(), s.ip("Kitchen"));
+    (
+        get_volume(&lan, ip).ok(),
+        get_transport_info(&lan, ip)
+            .ok()
+            .map(|t| format!("{:?}", t.state)),
+        get_position_info(&lan, ip).ok().map(|p| p.uri),
+    )
+}
+
+/// `fsonos setup --test-play Kitchen`: the run's code and its test-play
+/// step.
+fn test_play_run(s: &mut Scenario, step: &str) -> (Option<i32>, Value) {
+    let run = s.cli(
+        step,
+        &[
+            "setup",
+            "--yes",
+            "--skip-spotify",
+            "--json",
+            "--test-play",
+            "Kitchen",
+        ],
+    );
+    let found = steps(&run.stdout)
+        .into_iter()
+        .find(|line| line["step"] == "test-play")
+        .unwrap_or_default();
+    (run.code, found)
+}
+
+/// --test-play plays a favorite softly in Kitchen's group and puts it back:
+/// exactly when it was playing, and stopped again when it had nothing
+/// loaded (Sonos cannot unload a source).
+fn check_test_play(s: &mut Scenario) {
+    let before = kitchen(s);
+    let (code, step) = test_play_run(s, "setup-test-play-idle");
+    let after = kitchen(s);
+    s.check(
+        "setup-test-play-idle",
+        "cli",
+        "on an idle Kitchen, --test-play plays at volume 10 for 5 s, then stops again at its old volume, saying the track stays loaded",
+        code == Some(0)
+            && step["status"] == "pass"
+            && step["summary"]
+                .as_str()
+                .is_some_and(|t| t.contains("at volume 10 for 5 s, then stopped it again"))
+            && (before.0, &before.1) == (after.0, &after.1),
+        format!("exit {code:?}\n{step}\nbefore {before:?}\nafter {after:?}"),
+    );
+
+    let stream = "x-rincon-mp3radio://stream.example.invalid/setup.mp3";
+    let run = s.cli("play-stream", &["play", "Kitchen", stream]);
+    let before = kitchen(s);
+    let (code, step) = test_play_run(s, "setup-test-play-playing");
+    let after = kitchen(s);
+    s.check(
+        "setup-test-play-playing",
+        "cli",
+        "on a Kitchen playing a stream, --test-play puts it back exactly: the stream, playing, its volume",
+        run.code == Some(0)
+            && code == Some(0)
+            && step["status"] == "pass"
+            && step["summary"]
+                .as_str()
+                .is_some_and(|t| t.ends_with("then put it back"))
+            && before.2.as_deref() == Some(stream)
+            && before == after,
+        format!("exit {code:?}\n{step}\nbefore {before:?}\nafter {after:?}"),
+    );
 }
 
 /// Without --skip-spotify and no terminal, the sign-in says what is missing
