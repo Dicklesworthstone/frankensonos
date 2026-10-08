@@ -6,9 +6,14 @@ and Tailscale lets your agents reach it from anywhere on your tailnet. The
 speakers stay on the LAN and are never fronted.
 
 > **Status.** `fsonos serve` runs the HTTP API and the MCP server (streamable
-> HTTP at `/mcp`) over the house policy, and keeps a live model of the
-> speakers from their GENA events, verified end to end against the built-in
-> simulator. Not yet: the DJ. Items marked *(planned)* do not exist yet.
+> HTTP at `/mcp`) over the house policy, keeps a live model of the speakers
+> from their GENA events, and drives the classical-music DJ (steer, status,
+> why, moods, feedback), scenes, sleep timers and schedules, announcements,
+> quiet hours, and `fsonos doctor` — all verified end to end against the
+> built-in simulator. The behaviour here is simulator-verified; there is no
+> real-hardware CI yet, and the live Tailscale Serve round trip is opt-in
+> because it records the MagicDNS name in public CT logs (§5). Items marked
+> *(planned)* do not exist yet.
 
 ## 1. Shape of the deployment
 
@@ -296,21 +301,23 @@ same URL, typically as
 Plain HTTP clients use the API directly, e.g.
 `curl https://<mac>.<tailnet>.ts.net/zones`.
 
-### Spotify sign-in (one time, for the DJ) *(planned, `c-auth`)*
+### Spotify sign-in (one time, for the DJ)
 
-The OAuth redirect URI is loopback, `http://127.0.0.1:8099/auth/spotify/callback`.
-Register exactly that URI for your app in the Spotify developer dashboard.
-Spotify accepts plain `http` only for a loopback IP literal, not `localhost`.
+Run `fsonos setup` once on the Mac: it walks you through linking your own
+Spotify account (Authorization Code + PKCE, scope `user-library-read`) and
+caches the refresh token under `FSONOS_DATA_DIR`, never in the repo. Set
+`FSONOS_SPOTIFY_CLIENT_ID` first (your own app from the Spotify developer
+dashboard; for PKCE the client id is not a secret).
 
-Complete the sign-in in a browser on the Mac. From another machine, tunnel the
-port first:
+Under the hood the OAuth redirect URI is loopback,
+`http://127.0.0.1:8099/auth/spotify/callback`. Register exactly that URI for
+your app; Spotify accepts plain `http` only for a loopback IP literal, not
+`localhost`. Complete the sign-in in a browser on the Mac. From another
+machine, tunnel the port first, then open the authorize URL locally:
 
 ```bash
 ssh -L 8099:127.0.0.1:8099 <mac>
 ```
-
-Then open the authorize URL locally. The refresh token is cached under
-`FSONOS_DATA_DIR`, never in the repo.
 
 ## 6. Verify and troubleshoot
 
