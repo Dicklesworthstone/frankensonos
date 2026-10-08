@@ -19,7 +19,7 @@
 use fsonos_core::actions::{self, UndoReport};
 use fsonos_core::clock::Clock;
 use fsonos_core::doctor::{self, Report, Runner};
-use fsonos_core::live::Live;
+use fsonos_core::live::{Live, LiveEvent};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store, StoreError};
 use fsonos_core::{HouseholdState, control};
@@ -30,6 +30,7 @@ use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+use crate::dj::{DjEngine, DjSpeakers};
 use crate::events::EventBus;
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
@@ -58,6 +59,9 @@ pub struct Surface {
     clock: Box<dyn Clock>,
     log: Option<ActionLog>,
     doctor_checks: Option<DoctorChecks>,
+    /// Runs the DJ (`dj_start` / `dj_skip` / `dj_stop`); without one they
+    /// answer NOT_IMPLEMENTED.
+    dj: Option<Box<dyn DjEngine>>,
     /// The daemon's live model; not kept alive by the surface (see
     /// [`Surface::with_live`]).
     live: Option<Weak<Live>>,
@@ -93,6 +97,7 @@ impl Surface {
             clock,
             log: None,
             doctor_checks: None,
+            dj: None,
             live: None,
             events: None,
             settle_until: Mutex::new(None),
@@ -131,6 +136,42 @@ impl Surface {
 
     fn live(&self) -> Option<Arc<Live>> {
         self.live.as_ref().and_then(Weak::upgrade)
+    }
+
+    /// Run `dj_start` / `dj_skip` / `dj_stop` with `engine`; with a live
+    /// model, [`follow`] keeps its queues fed.
+    #[must_use]
+    pub fn with_dj(mut self, engine: Box<dyn DjEngine>) -> Self {
+        self.dj = Some(engine);
+        self
+    }
+
+    /// Fold `player`'s latest playback into the DJ's feed, if it feeds that
+    /// coordinator (see [`follow`]).
+    fn dj_playback(&self, player: &PlayerId) {
+        let (Some(dj), Some(live)) = (&self.dj, self.live()) else {
+            return;
+        };
+        if !dj.feeds(player) {
+            return;
+        }
+        let Some(playback) = live.player(player) else {
+            return;
+        };
+        let households = live.households();
+        let at = DjSpeakers {
+            transport: &*self.transport,
+            households: &households,
+            coordinator: player,
+        };
+        let now = self.now();
+        let fed = self.with_store(|store| {
+            dj.on_playback(at, store, &playback, now);
+            Ok(())
+        });
+        if let Ok(None) = fed {
+            tracing::warn!("the DJ needs the daemon's store to record and top up");
+        }
     }
 
     /// Add `checks` to every doctor run.
@@ -304,6 +345,27 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
     ) -> Result<OutcomeDto, Failure> {
+        if let Command::Dj {
+            coordinator,
+            action,
+        } = command
+            && let Some(dj) = &self.dj
+        {
+            let at = DjSpeakers {
+                transport: &*self.transport,
+                households,
+                coordinator,
+            };
+            let now = self.now();
+            return self
+                .with_store(|store| Ok(dj.act(at, store, *action, now)))?
+                .unwrap_or_else(|| {
+                    Err(Failure::new(
+                        ErrorCode::Internal,
+                        "the DJ needs the daemon's store (its library and history)",
+                    ))
+                });
+        }
         crate::heal::execute_healing(&*self.transport, households, guard, command, || {
             self.resurvey()
         })
@@ -674,6 +736,30 @@ impl Surface {
                     .map_or(TransportState::Unknown, |p| p.transport.state)
             })
     }
+}
+
+/// Keep the DJ fed: fold each playback change the live model sees into the
+/// DJ's feed for that coordinator, on a thread of its own. Does nothing
+/// without a live model or a DJ. Ends with the live model.
+pub fn follow(surface: &Arc<Surface>) {
+    let (Some(live), true) = (surface.live(), surface.dj.is_some()) else {
+        return;
+    };
+    let changes = live.subscribe();
+    let surface = Arc::downgrade(surface);
+    let _ = std::thread::Builder::new()
+        .name("fsonos-dj".into())
+        .spawn(move || {
+            while let Ok(change) = changes.recv() {
+                let LiveEvent::Playback { player, .. } = change else {
+                    continue;
+                };
+                let Some(surface) = surface.upgrade() else {
+                    return;
+                };
+                surface.dj_playback(&player);
+            }
+        });
 }
 
 /// The coordinators of the groups `command` changes (a join changes both

@@ -26,6 +26,7 @@ mod config;
 mod confine;
 mod daemon;
 mod direct;
+mod dj;
 mod doctor;
 #[cfg(feature = "sim")]
 mod sim;

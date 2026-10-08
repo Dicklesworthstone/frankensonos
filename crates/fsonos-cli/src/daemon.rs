@@ -64,12 +64,10 @@ pub fn surface(global: &GlobalArgs, policy: Policy) -> Result<Surface, Failure> 
     let survey: fsonos_api::surface::Survey = Box::new(move |transport| {
         Ok(fsonos_core::inventory::survey(transport, &seeds, wait)?.households)
     });
-    Ok(Surface::new(
-        global.lan()?,
-        survey,
-        policy,
-        Box::new(SystemClock),
-    ))
+    Ok(
+        Surface::new(global.lan()?, survey, policy, Box::new(SystemClock))
+            .with_dj(Box::new(crate::dj::SpotifyDj::default())),
+    )
 }
 
 /// The daemon's surface over a live model of the speakers: surveys and
@@ -104,7 +102,8 @@ pub fn live_surface(
         policy,
         Box::new(SystemClock),
     )
-    .with_live(&live);
+    .with_live(&live)
+    .with_dj(Box::new(crate::dj::SpotifyDj::default()));
     Ok((surface, live))
 }
 
@@ -203,6 +202,8 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
             crate::doctor::register(runner, &checks);
         })),
     );
+    // The live model's playback keeps each DJ queue topped up.
+    fsonos_api::surface::follow(&surface);
 
     let stop = Arc::new(AtomicBool::new(false));
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {

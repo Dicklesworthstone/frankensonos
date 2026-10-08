@@ -74,7 +74,8 @@ impl Direct {
             }
             Ok(inventory::survey(transport, &seeds, wait)?.households)
         });
-        let mut surface = Surface::new(lan, again, policy, Box::new(SystemClock));
+        let mut surface = Surface::new(lan, again, policy, Box::new(SystemClock))
+            .with_dj(Box::new(crate::dj::SpotifyDj::default()));
         if let Some(dir) = global.data_dir() {
             surface = crate::daemon::with_action_log(surface, &dir, "cli");
         }

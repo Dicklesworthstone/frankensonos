@@ -22,8 +22,10 @@
 //! * [`log`] — the action log and undo, as the surfaces show them;
 //! * [`live`] — what the surfaces read from the daemon's live model;
 //! * [`events`] — the event stream (`GET /events`);
+//! * [`dj`] — the DJ engine a surface runs `dj_*` commands with;
 //! * [`failure`] — the one [`Failure`] shape (status + agent-readable detail).
 
+pub mod dj;
 pub mod events;
 pub mod execute;
 pub mod failure;
