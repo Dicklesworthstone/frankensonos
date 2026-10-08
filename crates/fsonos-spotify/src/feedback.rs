@@ -339,6 +339,29 @@ mod tests {
     }
 
     #[test]
+    fn liking_a_song_favors_it_and_its_artist() {
+        let pool = works_of(&crate::test_shelf::song_items());
+        let song = |title: &str| pool.works().iter().find(|w| w.title == title).unwrap();
+        let liked = song("Glasshouse");
+        let model = FeedbackModel::from_signals(
+            &[FeedbackSignal::about(liked, Signal::Like, MIDNIGHT)],
+            MIDNIGHT,
+        );
+        // The song and its artist (the work and composer keys): ×√2 each.
+        assert_eq!(model.multiplier_pm(liked), 1999);
+        assert_eq!(
+            model.multiplier_pm(song("Summer Static")),
+            1414,
+            "her other songs"
+        );
+        assert_eq!(
+            model.multiplier_pm(song("Blue Hours")),
+            1000,
+            "someone else's"
+        );
+    }
+
+    #[test]
     fn signals_decay_with_a_thirty_day_half_life() {
         let pool = works_of(&shelf_items(1));
         let work = by(&pool, "Mozart")[0];

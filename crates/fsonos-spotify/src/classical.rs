@@ -1,7 +1,15 @@
-//! Classical-music metadata heuristics and the DJ's candidate pool.
+//! The DJ's candidate pool, and the classical-music heuristics it applies to
+//! the classical part of the owner's library.
+//!
+//! The pool is the owner's whole library, in any genre: every saved or liked
+//! track (explicit ones aside) is a candidate. Classical recordings are one
+//! case it handles specially, because a listener wants the symphony rather
+//! than its third movement: tracks judged classical are analysed into
+//! composer, period, work and movement, so the DJ keeps works whole. Any other
+//! track is a song — its own work, credited to its lead artist.
 //!
 //! Spotify has no "is this classical?" flag and (for new apps) no audio
-//! features, so everything here is inferred from the metadata the library
+//! features, so the judgment is inferred from the metadata the library
 //! reads return: titles, artist credits, album names and — when present —
 //! genres and label. Classical releases follow strong conventions that carry
 //! most of the signal: the composer is credited as an artist, titles read
@@ -806,17 +814,24 @@ fn find_phrase(norm: &str, phrase: &str) -> Option<usize> {
 // ── Analysis + the candidate pool ──────────────────────────────────────────
 
 /// A library track as the DJ sees it: who wrote it, when, which work it
-/// belongs to, and how energetic it is.
+/// belongs to, and how energetic it is. A song (not judged classical) is
+/// its own work: `composer` is its lead artist, its period is unknown and its
+/// energy neutral.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassicalTrack {
     pub track: Track,
-    /// Display name: the canonical composer, or the lead artist if unknown.
+    /// Display name: the canonical composer, or the lead artist if unknown
+    /// (always, for a song).
     pub composer: String,
-    /// Normalized grouping key for composer variety.
+    /// Normalized grouping key for composer (or artist) variety.
     pub composer_key: String,
     pub known_composer: bool,
+    /// Judged classical ([`CandidatePool::build`]): analysed into work and
+    /// movement, with energy from its tempo marking. False for a song.
+    pub classical: bool,
     pub period: Period,
-    /// Display name of the work (title minus movement).
+    /// Display name of the work (title minus movement; a song's title minus
+    /// version notes).
     pub work: String,
     /// Grouping key for work variety: composer key + normalized work.
     pub work_key: String,
@@ -835,8 +850,9 @@ pub struct ClassicalTrack {
     pub expanded: bool,
 }
 
-/// Analyse one library item. Does not decide whether it is classical — see
-/// [`is_classical`] and [`CandidatePool::build`].
+/// Analyse one library item as a classical recording. Does not decide
+/// whether it is classical — see [`is_classical`] and
+/// [`CandidatePool::build`]; [`analyze_song`] is the other case.
 #[must_use]
 pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
     let composer = detect_composer(item);
@@ -860,6 +876,7 @@ pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
         composer: name,
         composer_key,
         known_composer: known,
+        classical: true,
         period: composer.map_or_else(|| period_from_genres(&item.genres), |c| c.period),
         album_key: item.album_key().unwrap_or_default(),
         album_uri: item.album_uri.clone(),
@@ -871,6 +888,43 @@ pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
         expanded: false,
     }
 }
+
+/// Analyse one library item as a song: its own work, titled without version
+/// notes (`- Remastered 2011`), credited to its lead artist, of unknown
+/// period and neutral energy. Pop, jazz, hip-hop and every other genre take
+/// this path; nothing in a song's title is read as a movement or a tempo.
+#[must_use]
+pub fn analyze_song(item: &LibraryItem) -> ClassicalTrack {
+    let artist = item
+        .artists
+        .first()
+        .or(item.album_artists.first())
+        .cloned()
+        .unwrap_or_default();
+    let artist_key = normalize(&artist);
+    let title = strip_version_suffix(&item.title);
+    ClassicalTrack {
+        track: item.to_track(),
+        work: title.to_owned(),
+        work_key: format!("{artist_key}|{}", normalize(title)),
+        composer: artist,
+        composer_key: artist_key,
+        known_composer: false,
+        classical: false,
+        period: Period::Unknown,
+        album_key: item.album_key().unwrap_or_default(),
+        album_uri: item.album_uri.clone(),
+        disc_number: item.disc_number,
+        track_number: item.track_number,
+        movement: None,
+        energy: NEUTRAL_ENERGY,
+        origin: item.origin,
+        expanded: false,
+    }
+}
+
+/// The energy of a track whose metadata says nothing about it.
+const NEUTRAL_ENERGY: u8 = 50;
 
 fn detect_composer(item: &LibraryItem) -> Option<&'static Composer> {
     item.artists
@@ -891,8 +945,9 @@ fn detect_composer(item: &LibraryItem) -> Option<&'static Composer> {
         })
 }
 
-/// A track that credits no known composer (`"Aria"` by the pianist alone)
-/// takes the composer its album siblings unanimously credit.
+/// A classical track that credits no known composer (`"Aria"` by the pianist
+/// alone) takes the composer its album siblings unanimously credit. Songs
+/// keep their artists.
 fn adopt_album_composers(tracks: &mut [ClassicalTrack]) {
     // album key → the one known composer on it (None once two disagree).
     let mut credited: HashMap<String, Option<(String, String, Period)>> = HashMap::new();
@@ -910,7 +965,10 @@ fn adopt_album_composers(tracks: &mut [ClassicalTrack]) {
             })
             .or_insert(Some(who));
     }
-    for t in tracks.iter_mut().filter(|t| !t.known_composer) {
+    for t in tracks
+        .iter_mut()
+        .filter(|t| t.classical && !t.known_composer)
+    {
         if let Some(Some((name, key, period))) = credited.get(&t.album_key) {
             t.work_key = format!("{key}|{}", normalize(&t.work));
             t.composer.clone_from(name);
@@ -921,8 +979,9 @@ fn adopt_album_composers(tracks: &mut [ClassicalTrack]) {
     }
 }
 
-/// The DJ's candidate pool: the owner's classical tracks, analysed, deduped
-/// by `source_uri`, in a stable order (first sighting wins).
+/// The DJ's candidate pool: the owner's library tracks in any genre,
+/// analysed, deduped by `source_uri`, in a stable order (first sighting
+/// wins).
 #[derive(Debug, Clone, Default)]
 pub struct CandidatePool {
     tracks: Vec<ClassicalTrack>,
@@ -931,11 +990,13 @@ pub struct CandidatePool {
 }
 
 impl CandidatePool {
-    /// Build the pool from saved-album tracks and liked tracks. A track is
-    /// classical if its own evidence clears [`CLASSICAL_THRESHOLD`], or if at
-    /// least half the library's tracks from its album do (so a bare "Aria" on
-    /// a Goldberg Variations album comes along with its siblings). Explicit
-    /// tracks never qualify. Duplicates (liked *and* on a saved album) merge.
+    /// Build the pool from saved-album tracks and liked tracks, in any
+    /// genre. Explicit tracks are left out; every other track is a candidate.
+    /// A track is analysed as classical ([`analyze`]) if its own evidence
+    /// clears [`CLASSICAL_THRESHOLD`], or if at least half the library's
+    /// tracks from its album do (so a bare "Aria" on a Goldberg Variations
+    /// album comes along with its siblings); any other is a song
+    /// ([`analyze_song`]). Duplicates (liked *and* on a saved album) merge.
     #[must_use]
     pub fn build(items: &[LibraryItem]) -> Self {
         let merged = merge_duplicates(items);
@@ -961,22 +1022,15 @@ impl CandidatePool {
             .iter()
             .zip(&scores)
             .zip(&album_keys)
-            .filter(|&((item, &score), key)| {
-                !item.explicit && (score >= CLASSICAL_THRESHOLD || album_is_classical(key))
+            .filter(|((item, _), _)| !item.explicit)
+            .map(|((item, &score), key)| {
+                if score >= CLASSICAL_THRESHOLD || album_is_classical(key) {
+                    analyze(item)
+                } else {
+                    analyze_song(item)
+                }
             })
-            .map(|((item, _), _)| analyze(item))
             .collect();
-        adopt_album_composers(&mut tracks);
-        Self::from_tracks(tracks)
-    }
-
-    /// A pool from items already judged classical — the library cache's
-    /// `is_classical` rows — analysed without re-judging them (the cache
-    /// keeps no genres or label, so re-scoring could drop a track that
-    /// qualified on those).
-    #[must_use]
-    pub fn from_classical(items: &[LibraryItem]) -> Self {
-        let mut tracks: Vec<ClassicalTrack> = merge_duplicates(items).iter().map(analyze).collect();
         adopt_album_composers(&mut tracks);
         Self::from_tracks(tracks)
     }
@@ -1305,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn pool_keeps_classical_merges_duplicates_and_inherits_album_verdict() {
+    fn pool_judges_classical_merges_duplicates_and_inherits_album_verdict() {
         let album_track = |title: &str, artists: &[&str]| {
             let mut it = item(title, artists, Some("Goldberg Variations"));
             it.album_uri = Some("spotify:album:goldberg".into());
@@ -1326,9 +1380,12 @@ mod tests {
         let pool =
             CandidatePool::build(&[aria.clone(), var1.clone(), var2, liked_var1, pop, pop_hit]);
 
-        assert_eq!(pool.len(), 3);
-        assert!(pool.get("spotify:track:shapeofyou").is_none());
+        assert_eq!(pool.len(), 5, "the Ed Sheeran songs are candidates too");
+        let song = pool.get("spotify:track:shapeofyou").unwrap();
+        assert!(!song.classical);
+        assert_eq!(song.composer, "Ed Sheeran");
         let v1 = pool.get(&var1.source_uri).unwrap();
+        assert!(v1.classical);
         assert_eq!(v1.origin, Origin::Both);
         assert_eq!(v1.composer, "Johann Sebastian Bach");
         assert_eq!(pool.index_of(&var1.source_uri), Some(1));
@@ -1340,5 +1397,83 @@ mod tests {
         );
         assert_eq!(aria.work_key, "johann sebastian bach|aria");
         assert_eq!(pool.composer_size("johann sebastian bach"), 3);
+        assert_eq!(pool.composer_size("ed sheeran"), 2);
+    }
+
+    #[test]
+    fn the_pool_is_the_whole_library_in_any_genre() {
+        use std::collections::HashSet;
+
+        use crate::test_shelf::{mixed_items, song_items};
+
+        let items = mixed_items();
+        let pool = CandidatePool::build(&items);
+        let candidates: HashSet<&str> = items
+            .iter()
+            .filter(|i| !i.explicit)
+            .map(|i| i.source_uri.as_str())
+            .collect();
+        let pooled: HashSet<&str> = pool
+            .tracks()
+            .iter()
+            .map(|t| t.track.source_uri.as_str())
+            .collect();
+        assert_eq!(pooled, candidates, "every track but the explicit one");
+        let genre_of = |t: &ClassicalTrack| {
+            let item = items.iter().find(|i| i.source_uri == t.track.source_uri);
+            item.and_then(|i| i.genres.first().cloned())
+                .unwrap_or_else(|| "classical".into())
+        };
+        let genres: HashSet<String> = pool.tracks().iter().map(genre_of).collect();
+        for genre in [
+            "pop",
+            "indie pop",
+            "jazz",
+            "hip hop",
+            "soundtrack",
+            "classical",
+        ] {
+            assert!(genres.contains(genre), "{genre} is in the pool");
+        }
+
+        for t in pool.tracks() {
+            let song = t.track.source_uri.starts_with("spotify:track:song-");
+            assert_eq!(t.classical, !song, "{}", t.track.title);
+            if song {
+                // A song: its own title, its lead artist, nothing read into it.
+                assert_eq!(t.movement, None, "{}", t.track.title);
+                assert_eq!((t.period, t.energy), (Period::Unknown, 50));
+                assert!(!t.known_composer);
+                let artist = t.track.artist.as_deref().unwrap_or_default();
+                assert!(
+                    artist.starts_with(&t.composer),
+                    "{artist} vs {}",
+                    t.composer
+                );
+            }
+        }
+        let cue = pool.get("spotify:track:song-5-2").unwrap();
+        assert_eq!(
+            (cue.work.as_str(), cue.composer.as_str()),
+            ("Starfall: The Chase", "Ada Brightwell")
+        );
+        let acoustic = pool.get("spotify:track:song-1-4").unwrap();
+        assert_eq!(acoustic.work, "Harbor Lights", "version notes dropped");
+        let lullaby = pool.get("spotify:track:song-0-3").unwrap();
+        assert_eq!(lullaby.energy, 50, "a song's title is not a tempo marking");
+
+        // Classical stays one case: composer, period and movements.
+        let symphony = pool
+            .tracks()
+            .iter()
+            .find(|t| t.composer == "Ludwig van Beethoven" && t.movement.is_some())
+            .unwrap();
+        assert!(symphony.classical && symphony.known_composer);
+        assert_eq!(symphony.period, Period::Classical);
+
+        // No classical music at all: still a pool to play from.
+        let songs = CandidatePool::build(&song_items());
+        assert_eq!(songs.len(), song_items().len() - 1);
+        assert!(songs.tracks().iter().all(|t| !t.classical));
     }
 }

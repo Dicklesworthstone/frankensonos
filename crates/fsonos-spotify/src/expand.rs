@@ -347,6 +347,7 @@ fn filled_in(template: &ClassicalTrack, t: &AlbumTrack) -> ClassicalTrack {
         composer: template.composer.clone(),
         composer_key: template.composer_key.clone(),
         known_composer: template.known_composer,
+        classical: template.classical,
         period: template.period,
         work: template.work.clone(),
         work_key: template.work_key.clone(),

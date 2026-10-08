@@ -1,4 +1,5 @@
-//! Spotify Web API client + the classical-music DJ engine.
+//! Spotify Web API client + the DJ engine, for whatever music the owner
+//! keeps (classical works are played whole).
 //!
 //! Eleven concerns:
 //!
@@ -16,8 +17,9 @@
 //! * [`cache`] — the library cache: syncing a library read into the store
 //!   and rebuilding the DJ's pool from it.
 //!
-//! * [`classical`] — metadata heuristics (is it classical? composer, period,
-//!   work, energy) and the DJ's [`classical::CandidatePool`].
+//! * [`classical`] — the DJ's [`classical::CandidatePool`] (the owner's
+//!   library in any genre) and the classical heuristics it applies (is it
+//!   classical? composer, period, work, energy).
 //!
 //! * [`works`] — whole works: a piece's movements grouped and in disc/track
 //!   order, with a completeness flag (the DJ's unit of selection).
@@ -35,9 +37,9 @@
 //!   listens: decayed weight multipliers and a dislike exclusion window.
 //!
 //! * [`dj`] — the DJ: given the pool plus recent play history, pick the next
-//!   track for pleasant variety (spread across composers/periods/works, fit
-//!   the time of day, avoid recent repeats). Pure logic, fully testable
-//!   without any network.
+//!   work for pleasant variety (spread across artists, composers, periods
+//!   and works, fit the time of day, avoid recent repeats). Pure logic,
+//!   fully testable without any network.
 
 pub mod cache;
 pub mod classical;

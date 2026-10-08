@@ -7,7 +7,9 @@
 //! by disc and track number, or by the movement's numeral when the numbers
 //! are missing. The same work on two albums is two works sharing a
 //! `work_key`, and two recordings of it on one album split where the movement
-//! numbering starts over. Pure: no I/O.
+//! numbering starts over. A song (a track not judged classical) is a work of
+//! its own, so the demo and the album take of one song never play as one
+//! work. Pure: no I/O.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -76,13 +78,18 @@ impl Work {
 }
 
 /// Group tracks into works, in order of each work's first track. Every
-/// track lands in exactly one work.
+/// track lands in exactly one work; a song is alone in its own.
 #[must_use]
 pub fn group_works(tracks: &[ClassicalTrack]) -> Vec<Work> {
     let mut groups: Vec<Vec<&ClassicalTrack>> = Vec::new();
     let mut index: HashMap<(&str, &str), usize> = HashMap::new();
     for track in tracks {
-        let key = (track.album_key.as_str(), track.work_key.as_str());
+        let within = if track.classical {
+            track.work_key.as_str()
+        } else {
+            track.track.source_uri.as_str()
+        };
+        let key = (track.album_key.as_str(), within);
         let slot = *index.entry(key).or_insert_with(|| {
             groups.push(Vec::new());
             groups.len() - 1
@@ -664,6 +671,54 @@ mod tests {
         // The concerto spans two discs, listed out of order in the JSON.
         let discs: Vec<Option<u32>> = works[2].movements.iter().map(|m| m.disc_number).collect();
         assert_eq!(discs, [Some(1), Some(1), Some(2), Some(2)]);
+    }
+
+    #[test]
+    fn songs_are_works_of_their_own_and_classical_works_stay_whole() {
+        let items = crate::test_shelf::mixed_items();
+        let works = group_works(CandidatePool::build(&items).tracks());
+        let (songs, classical): (Vec<&Work>, Vec<&Work>) = works.iter().partition(|w| {
+            w.movements[0]
+                .track
+                .source_uri
+                .starts_with("spotify:track:song-")
+        });
+        // Every song alone: the soundtrack cues and the interludes (titled
+        // `Work: Part`) and the deluxe edition's two takes of one song.
+        assert_eq!(songs.len(), 25, "{songs:#?}");
+        for song in &songs {
+            assert_eq!(song.movements.len(), 1, "{}", song.title);
+            assert_eq!(song.completeness, Completeness::Complete);
+            assert!(!song.needs_expansion());
+        }
+        let harbor: Vec<&&Work> = songs
+            .iter()
+            .filter(|w| w.title == "Harbor Lights")
+            .collect();
+        assert_eq!(harbor.len(), 2, "the album take and the acoustic one");
+        assert_eq!(
+            harbor[0].work_key, harbor[1].work_key,
+            "one song to feedback"
+        );
+        // Beethoven's symphonies keep all four movements, in order.
+        let symphonies: Vec<&&Work> = classical
+            .iter()
+            .filter(|w| w.composer == "Ludwig van Beethoven")
+            .collect();
+        assert_eq!(symphonies.len(), 9);
+        for work in symphonies {
+            let numerals: Vec<Option<u32>> = work
+                .movements
+                .iter()
+                .map(|m| m.movement.as_deref().and_then(movement_number))
+                .collect();
+            assert_eq!(
+                numerals,
+                [Some(1), Some(2), Some(3), Some(4)],
+                "{}",
+                work.title
+            );
+        }
     }
 
     #[test]

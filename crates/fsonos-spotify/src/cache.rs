@@ -5,6 +5,12 @@
 //!
 //! Read-only on the Spotify side: syncing never starts playback or changes
 //! the owner's library.
+//!
+//! The table's `is_classical` column predates the genre-agnostic DJ and now
+//! marks a DJ *candidate*: a track in the owner's library, in any genre, that
+//! the DJ may play (not explicit, not since un-saved). Whether a candidate is
+//! classical is judged again from its cached metadata when the pool is
+//! rebuilt.
 
 use std::collections::HashSet;
 
@@ -21,7 +27,10 @@ use crate::session::Session;
 pub struct LibrarySync {
     /// Distinct tracks read from Spotify.
     pub tracks: usize,
-    /// Of those, DJ candidates (classical, not explicit).
+    /// Of those, DJ candidates: the DJ's pool, in any genre (explicit
+    /// tracks left out).
+    pub candidates: usize,
+    /// Of the candidates, how many are classical (played as whole works).
     pub classical: usize,
     /// Cached candidates no longer in the library, now retired.
     pub retired: usize,
@@ -39,9 +48,9 @@ pub async fn sync_library<S: Store + ?Sized>(
 }
 
 /// Write a *complete* library read to the store. Tracks the owner has since
-/// un-saved stay cached but stop being DJ candidates (`is_classical = false`),
-/// so the DJ never plays them; a partial read would wrongly retire whatever
-/// it missed.
+/// un-saved stay cached but stop being DJ candidates (`is_classical =
+/// false`), so the DJ never plays them; a partial read would wrongly retire
+/// whatever it missed.
 pub fn apply_library_read<S: Store + ?Sized>(
     store: &mut S,
     items: &[LibraryItem],
@@ -64,14 +73,16 @@ pub fn apply_library_read<S: Store + ?Sized>(
     store.upsert_library(&entries)?;
     Ok(LibrarySync {
         tracks: items.len(),
-        classical: pool.len(),
+        candidates: pool.len(),
+        classical: pool.tracks().iter().filter(|t| t.classical).count(),
         retired,
     })
 }
 
-/// The DJ's pool from the cache's candidate rows, trusting their
-/// `is_classical` verdict (the cache keeps no genres or label to re-judge
-/// with).
+/// The DJ's pool from the cache's candidate rows, in any genre. Which of
+/// them are classical is judged again from the cached titles, credits and
+/// albums (the cache keeps no genres or label), as
+/// [`CandidatePool::build`] does.
 pub fn pool_from_store<S: Store + ?Sized>(store: &S) -> Result<CandidatePool, SpotifyError> {
     let items: Vec<LibraryItem> = store
         .library()?
@@ -79,11 +90,12 @@ pub fn pool_from_store<S: Store + ?Sized>(store: &S) -> Result<CandidatePool, Sp
         .filter(|entry| entry.is_classical)
         .map(from_entry)
         .collect();
-    Ok(CandidatePool::from_classical(&items))
+    Ok(CandidatePool::build(&items))
 }
 
 /// A library item as a cache row. `candidate` is the item's analysis when
-/// the DJ may play it; it marks the row classical and stamps its work key.
+/// the DJ may play it; it marks the row a candidate (`is_classical`) and
+/// stamps its work key.
 #[must_use]
 pub fn to_entry(item: &LibraryItem, candidate: Option<&ClassicalTrack>) -> LibraryEntry {
     let candidate = candidate.filter(|_| !item.explicit);
@@ -211,11 +223,13 @@ mod tests {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let items = fixture_items();
         let report = apply_library_read(&mut store, &items).unwrap();
-        // 3 Goldberg + 1 Chopin + 1 Debussy + pop + explicit.
+        // 3 Goldberg + 1 Chopin + 1 Debussy + pop + explicit: all but the
+        // explicit one are candidates.
         assert_eq!(
             report,
             LibrarySync {
                 tracks: 7,
+                candidates: 6,
                 classical: 5,
                 retired: 0
             }
@@ -224,7 +238,9 @@ mod tests {
         let rows = store.library().unwrap();
         assert_eq!(rows.len(), 7);
         let row = |uri: &str| rows.iter().find(|r| r.track.source_uri == uri).unwrap();
-        assert!(!row("spotify:track:FakePop000000000000001").is_classical);
+        let pop = row("spotify:track:FakePop000000000000001");
+        assert!(pop.is_classical, "a candidate, in any genre");
+        assert_eq!(pop.work_key.as_deref(), Some("ed sheeran|shape of you"));
         assert!(!row("spotify:track:FakeExplicit0000000001").is_classical);
         let clair = row("spotify:track:FakeTrack0000000000006");
         assert!(clair.is_classical);
@@ -234,11 +250,20 @@ mod tests {
             clair.work_key.as_deref(),
             Some("claude debussy|suite bergamasque l 75")
         );
-        assert_eq!(row("spotify:track:FakePop000000000000001").work_key, None);
 
-        // The cache rebuilds the same pool the read produced.
+        // The cache rebuilds the same pool the read produced, judging the
+        // same tracks classical.
         let rebuilt = pool_from_store(&store).unwrap();
-        assert_eq!(uris(&rebuilt), uris(&CandidatePool::build(&items)));
+        let read = CandidatePool::build(&items);
+        assert_eq!(uris(&rebuilt), uris(&read));
+        for track in read.tracks() {
+            let cached = rebuilt.get(&track.track.source_uri).unwrap();
+            assert_eq!(cached.classical, track.classical, "{}", track.track.title);
+            assert_eq!(cached.work_key, track.work_key);
+        }
+        let song = rebuilt.get("spotify:track:FakePop000000000000001").unwrap();
+        assert!(!song.classical);
+        assert_eq!(song.composer, "Ed Sheeran");
         let aria = rebuilt.get("spotify:track:FakeTrack0000000000001").unwrap();
         assert_eq!(aria.composer, "Johann Sebastian Bach");
         assert_eq!(
@@ -257,13 +282,14 @@ mod tests {
             report,
             LibrarySync {
                 tracks: 6,
+                candidates: 5,
                 classical: 4,
                 retired: 1
             }
         );
         assert_eq!(store.library().unwrap().len(), 7);
         let pool = pool_from_store(&store).unwrap();
-        assert_eq!(pool.len(), 4);
+        assert_eq!(pool.len(), 5);
         assert!(pool.get("spotify:track:FakeTrack0000000000006").is_none());
 
         // Re-syncing the same read retires nothing more.
@@ -316,6 +342,7 @@ mod tests {
             first,
             LibrarySync {
                 tracks: 6,
+                candidates: 6,
                 classical: 6,
                 retired: 0
             }
@@ -324,6 +351,7 @@ mod tests {
             second,
             LibrarySync {
                 tracks: 5,
+                candidates: 5,
                 classical: 5,
                 retired: 1
             }

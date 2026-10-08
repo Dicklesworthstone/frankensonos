@@ -1,5 +1,6 @@
-//! A shared, synthetic classical shelf and simulation helpers for the DJ's
-//! seeded tests (dj and steer). Every identifier is made up.
+//! A shared, synthetic classical shelf, a shelf of songs in other genres,
+//! and simulation helpers for the DJ's seeded tests (dj, steer, feedback and
+//! the feed). Every identifier is made up.
 #![allow(clippy::cast_precision_loss)]
 
 use std::collections::{BTreeSet, HashMap};
@@ -105,6 +106,132 @@ pub(crate) fn shelf_items(scale: usize) -> Vec<LibraryItem> {
             }
         }
     }
+    items
+}
+
+/// Albums of songs, no classical music: (artist, album, genre, titles). The
+/// titles test what a song must not be mistaken for: soundtrack cues and
+/// interludes titled `Work: Part`, a deluxe edition's acoustic take of a song
+/// it also holds, and words from the classical tempo table ("Lullaby").
+pub(crate) const SONGS: &[(&str, &str, &str, &[&str])] = &[
+    (
+        "Juniper Vale",
+        "Paper Moons",
+        "pop",
+        &[
+            "Paper Moons",
+            "Glasshouse",
+            "Lullaby for a Fast Car",
+            "Summer Static",
+            "Neon Harbor",
+        ],
+    ),
+    (
+        "The Lantern Club",
+        "Harbor Lights (Deluxe)",
+        "indie pop",
+        &[
+            "Harbor Lights",
+            "Every Window",
+            "Low Tide",
+            "Harbor Lights - Acoustic Version",
+        ],
+    ),
+    (
+        "Nina Marsh Quartet",
+        "Blue Hours",
+        "jazz",
+        &[
+            "Blue Hours",
+            "Slow Pier",
+            "Take the Long Way",
+            "Ferry at Midnight",
+        ],
+    ),
+    (
+        "Otis Fairweather Trio",
+        "Late Set",
+        "jazz",
+        &["Late Set", "Coffee and Rain", "Walking Bass Blues"],
+    ),
+    (
+        "MC Halcyon",
+        "Rooftop Theory",
+        "hip hop",
+        &[
+            "Intro",
+            "Skyline",
+            "Interlude: Night Drive",
+            "Block Party",
+            "Interlude: Day Shift",
+        ],
+    ),
+    (
+        "Ada Brightwell",
+        "Starfall (Original Soundtrack)",
+        "soundtrack",
+        &[
+            "Starfall: Main Title",
+            "Starfall: The Chase",
+            "Starfall: Homecoming",
+        ],
+    ),
+];
+
+/// [`SONGS`] as library items: saved albums with one more song of Juniper
+/// Vale's liked on its own, and an explicit track of MC Halcyon's (never a
+/// candidate).
+pub(crate) fn song_items() -> Vec<LibraryItem> {
+    let mut items = Vec::new();
+    for (a, &(artist, album, genre, titles)) in SONGS.iter().enumerate() {
+        for (t, title) in (1u32..).zip(titles.iter()) {
+            items.push(LibraryItem {
+                source_uri: format!("spotify:track:song-{a}-{t}"),
+                title: (*title).to_owned(),
+                artists: vec![artist.into()],
+                album: Some(album.into()),
+                album_uri: Some(format!("spotify:album:songs-{a}")),
+                album_artists: vec![artist.into()],
+                disc_number: Some(1),
+                track_number: Some(t),
+                added_at: None,
+                genres: vec![genre.into()],
+                label: None,
+                duration_secs: Some(200),
+                explicit: false,
+                origin: Origin::SavedAlbum,
+            });
+        }
+    }
+    let mut single = items[0].clone();
+    single.source_uri = "spotify:track:song-single".into();
+    single.title = "Kite Season (feat. Otis Fairweather)".into();
+    single.artists.push("Otis Fairweather".into());
+    single.album = Some("Kite Season".into());
+    single.album_uri = Some("spotify:album:songs-single".into());
+    single.track_number = Some(1);
+    single.origin = Origin::LikedTrack;
+    items.push(single);
+    let mut explicit = items
+        .iter()
+        .find(|i| i.artists[0] == "MC Halcyon")
+        .cloned()
+        .expect("MC Halcyon's album");
+    explicit.source_uri = "spotify:track:song-explicit".into();
+    explicit.title = "Back Block".into();
+    explicit.track_number = Some(9);
+    explicit.explicit = true;
+    items.push(explicit);
+    items
+}
+
+/// A mixed-genre library: [`song_items`] plus the shelf's Beethoven,
+/// Chopin and Pärt (multi-movement symphonies among them).
+pub(crate) fn mixed_items() -> Vec<LibraryItem> {
+    let mut items = song_items();
+    items.extend(shelf_items(1).into_iter().filter(|i| {
+        ["Ludwig van Beethoven", "Frédéric Chopin", "Arvo Pärt"].contains(&i.artists[0].as_str())
+    }));
     items
 }
 

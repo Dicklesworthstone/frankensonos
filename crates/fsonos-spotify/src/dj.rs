@@ -1,8 +1,12 @@
-//! The classical-music DJ: pure selection over whole works.
+//! The DJ: pure selection over whole works, in whatever genres the owner's
+//! library holds.
 //!
-//! The unit of selection is the [`Work`] ([`crate::works`]): a piece's
-//! movements, played together and in order. A parsed work is never split; a
-//! title that doesn't parse is a one-track work. Given the [`WorkPool`] and
+//! The unit of selection is the [`Work`] ([`crate::works`]): a classical
+//! piece's movements, played together and in order, or a song on its own. A
+//! parsed work is never split; a title that doesn't parse is a one-track
+//! work. A song's "composer" is its lead artist, so the composer spacing and
+//! balance below spread a pop or jazz set across artists. Given the
+//! [`WorkPool`] and
 //! the play history — per-track rows, where a work counts as played when any
 //! of its movements plays — pick the next work for pleasant variety:
 //!
@@ -740,7 +744,12 @@ fn summarize(
     relaxed: &[Relaxation],
 ) -> String {
     let has = |factor: Factor| factors.iter().any(|&(f, _)| f == factor);
-    let who = surname(&work.composer);
+    // "Brahms", but "Miles Davis" and "The Beatles" in full.
+    let who = if work.movements.first().is_some_and(|m| m.known_composer) {
+        surname(&work.composer)
+    } else {
+        work.composer.as_str()
+    };
     let key = work.composer_key();
     let mut parts = vec![match (
         recency.composer_ago.get(key),
@@ -874,6 +883,62 @@ mod tests {
         assert!(
             hist.iter().all(|&h| (9_000..11_000).contains(&h)),
             "{hist:?}"
+        );
+    }
+
+    #[test]
+    fn a_library_without_classical_music_plays_spread_across_artists() {
+        let pool = works_of(&song_items());
+        assert_eq!(pool.len(), 25, "every song but the explicit one");
+        let artists: HashSet<&str> = pool.works().iter().map(Work::composer_key).collect();
+        assert_eq!(artists.len(), 6);
+        let config = DjConfig::default();
+        for seed in 1..=6 {
+            let picks = simulate(&pool, &config, seed, 60, Some(20));
+            let log = || transcript(seed, &pool, &picks);
+            assert_eq!(picks.len(), 60, "{}", log());
+            let heard: HashSet<&str> = picks.iter().map(|p| p.work.composer_key()).collect();
+            assert_eq!(heard, artists, "{}", log());
+            let repeats = picks
+                .windows(2)
+                .filter(|pair| pair[0].work.composer_key() == pair[1].work.composer_key())
+                .count();
+            assert!(repeats <= 4, "{repeats} artists back to back\n{}", log());
+            for p in &picks {
+                assert_eq!(p.movements.len(), 1, "{}", log());
+                // Named in full: "Nina Marsh Quartet", not "Quartet".
+                assert!(
+                    p.reason.summary.starts_with(&p.work.composer),
+                    "{}",
+                    p.reason.summary
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_mixed_library_plays_songs_and_whole_classical_works() {
+        let pool = works_of(&mixed_items());
+        let picks = simulate(&pool, &DjConfig::default(), 3, 40, Some(10));
+        let log = || transcript(3, &pool, &picks);
+        let (classical, songs): (Vec<_>, Vec<_>) =
+            picks.iter().partition(|p| p.movements[0].classical);
+        assert!(!classical.is_empty() && !songs.is_empty(), "{}", log());
+        for p in classical {
+            assert_eq!(p.movements, p.work.movements.as_slice());
+            let surname = p.work.composer.rsplit(' ').next().unwrap();
+            assert!(
+                p.reason.summary.starts_with(surname),
+                "{}",
+                p.reason.summary
+            );
+        }
+        assert!(
+            picks
+                .iter()
+                .any(|p| p.work.composer == "Ludwig van Beethoven" && p.movements.len() == 4),
+            "{}",
+            log()
         );
     }
 

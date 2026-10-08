@@ -418,6 +418,7 @@ mod tests {
         let synced = verdict(
             SignIn::Synced(LibrarySync {
                 tracks: 120,
+                candidates: 80,
                 classical: 80,
                 retired: 0,
             }),

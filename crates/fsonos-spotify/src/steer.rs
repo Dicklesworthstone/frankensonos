@@ -6,9 +6,11 @@
 //! [`DjConstraints`] or a named mood ([`Moods`]); the DJ applies them as hard
 //! filters before weighting, so its behavior is predictable and testable.
 //! When the filters leave too few works they relax in a fixed order —
-//! keywords, then periods, then length — and an explicit composer request
-//! relaxes only if nothing at all matches; the pick's reason reports every
-//! relaxation. The DJ never silently plays nothing.
+//! keywords, then periods, then length — and an explicit composer or artist
+//! request relaxes only if nothing at all matches; the pick's reason reports
+//! every relaxation. The DJ never silently plays nothing. Composers and
+//! periods steer the classical part of the library; artists and keywords
+//! steer any genre.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -22,6 +24,7 @@ use fsonos_core::store::{DjSession as StoredDjSession, Store};
 
 use crate::SpotifyError;
 use crate::classical::{Period, composer_matches, has_phrase, normalize};
+use crate::library::split_artists;
 use crate::works::Work;
 
 /// Hard filters (and one nudge) on what the DJ may pick. Every field is
@@ -33,6 +36,11 @@ pub struct DjConstraints {
     pub include_composers: Vec<String>,
     /// Never these composers.
     pub exclude_composers: Vec<String>,
+    /// Only works crediting one of these artists ("Miles Davis", "Beatles",
+    /// "Yo-Yo Ma"), in any genre; see [`artist_matches`].
+    pub include_artists: Vec<String>,
+    /// Never works crediting one of these artists.
+    pub exclude_artists: Vec<String>,
     /// Only these periods.
     pub periods: Vec<Period>,
     /// At least one of these in the work's title, movements, album or
@@ -76,6 +84,8 @@ impl DjConstraints {
         Self {
             include_composers: union(&self.include_composers, &over.include_composers),
             exclude_composers: union(&self.exclude_composers, &over.exclude_composers),
+            include_artists: union(&self.include_artists, &over.include_artists),
+            exclude_artists: union(&self.exclude_artists, &over.exclude_artists),
             periods: if over.periods.is_empty() {
                 self.periods.clone()
             } else {
@@ -140,6 +150,9 @@ impl DjConstraints {
             Relaxation::Composers => {
                 !self.include_composers.is_empty() || !self.exclude_composers.is_empty()
             }
+            Relaxation::Artists => {
+                !self.include_artists.is_empty() || !self.exclude_artists.is_empty()
+            }
         }
     }
 }
@@ -152,11 +165,18 @@ pub enum Relaxation {
     Periods,
     Length,
     Composers,
+    Artists,
 }
 
 impl Relaxation {
     /// The order filters relax in.
-    pub const ORDER: [Self; 4] = [Self::Keywords, Self::Periods, Self::Length, Self::Composers];
+    pub const ORDER: [Self; 5] = [
+        Self::Keywords,
+        Self::Periods,
+        Self::Length,
+        Self::Composers,
+        Self::Artists,
+    ];
 
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -165,6 +185,7 @@ impl Relaxation {
             Self::Periods => "period",
             Self::Length => "length",
             Self::Composers => "composer",
+            Self::Artists => "artist",
         }
     }
 }
@@ -179,8 +200,8 @@ pub struct Steer {
 
 /// The works the constraints admit, as indices into `works`. Keywords, then
 /// periods, then length relax until at least `min` pass (or every work, in a
-/// smaller pool); composers relax only when nothing passes, so "just Pärt"
-/// rotates the few Pärt works rather than ignoring the request.
+/// smaller pool); composers, then artists, relax only when nothing passes, so
+/// "just Pärt" rotates the few Pärt works rather than ignoring the request.
 /// `haystacks[i]` is [`haystack`]`(&works[i])`.
 #[must_use]
 pub fn admit(
@@ -204,7 +225,8 @@ pub fn admit(
         let next = Relaxation::ORDER.into_iter().find(|&r| {
             !relaxed.contains(&r)
                 && constraints.constrains(r)
-                && (r != Relaxation::Composers || admitted.is_empty())
+                && (!matches!(r, Relaxation::Composers | Relaxation::Artists)
+                    || admitted.is_empty())
         });
         match next {
             Some(family) => relaxed.push(family),
@@ -239,6 +261,20 @@ pub fn admits(
             return false;
         }
     }
+    if on(Relaxation::Artists) {
+        let credits = credited(work);
+        let credits_any = |queries: &[String]| {
+            queries
+                .iter()
+                .any(|q| credits.iter().any(|a| artist_matches(q, a)))
+        };
+        if !c.include_artists.is_empty() && !credits_any(&c.include_artists) {
+            return false;
+        }
+        if credits_any(&c.exclude_artists) {
+            return false;
+        }
+    }
     if on(Relaxation::Periods) && !c.periods.is_empty() && !c.periods.contains(&work.period) {
         return false;
     }
@@ -267,6 +303,32 @@ pub fn admits(
         }
     }
     true
+}
+
+/// Whether an artist query names `artist` (a credited name): a whole phrase
+/// of it, normalized, so "Beatles" finds "The Beatles" and "Miles Davis"
+/// finds "Miles Davis Quintet". A blank query names no one.
+#[must_use]
+pub fn artist_matches(query: &str, artist: &str) -> bool {
+    let query = normalize(query);
+    !query.is_empty() && has_phrase(&normalize(artist), &query)
+}
+
+/// Every artist a work credits (its composer and performers, for a
+/// classical work), across its movements.
+fn credited(work: &Work) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for movement in &work.movements {
+        for name in split_artists(movement.track.artist.as_deref().unwrap_or_default()) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    if !names.contains(&work.composer) {
+        names.push(work.composer.clone());
+    }
+    names
 }
 
 /// Everything a keyword is matched against, normalized: the work's title,
@@ -1151,6 +1213,76 @@ mod tests {
         );
         assert_eq!(calmer.constraints.biased_target(Some(58)), Some(46));
         assert_eq!(calmer.constraints.biased_target(None), Some(38));
+    }
+
+    #[test]
+    fn artists_steer_any_genre() {
+        let pool = works_of(&crate::test_shelf::mixed_items());
+        let all = pool.works();
+        let hays: Vec<String> = all.iter().map(haystack).collect();
+        let relax = |c: DjConstraints| admit(all, &hays, &c, 5);
+        let only = |names: &[&str]| DjConstraints {
+            include_artists: words(names),
+            ..DjConstraints::default()
+        };
+
+        // Just Nina Marsh: her quartet's four songs, though fewer than the
+        // minimum — an artist request holds while anything matches.
+        let (admitted, relaxed) = relax(only(&["nina marsh"]));
+        assert!(relaxed.is_empty());
+        assert_eq!(admitted.len(), 4);
+        assert!(
+            admitted
+                .iter()
+                .all(|&w| all[w].composer == "Nina Marsh Quartet")
+        );
+        // A featured credit counts: the trio's three and the single he is on.
+        assert_eq!(relax(only(&["Otis Fairweather"])).0.len(), 4);
+        // So do a classical work's performers.
+        let (admitted, _) = relax(only(&["Test Ensemble"]));
+        assert_eq!(admitted.len(), 27);
+        assert!(admitted.iter().all(|&w| all[w].movements[0].classical));
+
+        let without = DjConstraints {
+            exclude_artists: words(&["Juniper Vale", "mc halcyon"]),
+            ..DjConstraints::default()
+        };
+        let (admitted, relaxed) = relax(without);
+        assert!(relaxed.is_empty());
+        assert_eq!(admitted.len(), all.len() - 11);
+        assert!(admitted.iter().all(|&w| {
+            !credited(&all[w])
+                .iter()
+                .any(|a| a == "Juniper Vale" || a == "MC Halcyon")
+        }));
+
+        // No one by that name: the filter relaxes, and the reason says so.
+        let nobody = only(&["Nobody At All"]);
+        let (admitted, relaxed) = relax(nobody.clone());
+        assert_eq!(relaxed, [Relaxation::Artists]);
+        assert_eq!(admitted.len(), all.len());
+        let picks = simulate_steered(
+            &pool,
+            &DjConfig::default(),
+            5,
+            1,
+            Some(15),
+            Some(&steer(nobody)),
+        );
+        assert!(
+            picks[0]
+                .reason
+                .summary
+                .ends_with("relaxed the artist filter (too few matching works)"),
+            "{}",
+            picks[0].reason.summary
+        );
+
+        assert!(artist_matches("Beatles", "The Beatles"));
+        assert!(!artist_matches("Beat", "The Beatles"));
+        assert!(!artist_matches("  ", "The Beatles"));
+        let merged = only(&["Nina Marsh"]).merged(&only(&["Ada Brightwell", "Nina Marsh"]));
+        assert_eq!(merged.include_artists, ["Nina Marsh", "Ada Brightwell"]);
     }
 
     #[test]

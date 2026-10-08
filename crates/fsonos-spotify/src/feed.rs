@@ -65,7 +65,7 @@ pub struct Planning<'a> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum FeedError {
-    #[error("the DJ has nothing to play: the library cache holds no classical works")]
+    #[error("the DJ has nothing to play: the library cache holds no tracks it can play")]
     EmptyPool,
     #[error(
         "this household can't play Spotify yet: add any Spotify track to its Sonos \
@@ -688,7 +688,8 @@ mod tests {
     use fsonos_types::TransportState;
 
     use super::*;
-    use crate::test_shelf::{MIDNIGHT, shelf_items, works_of};
+    use crate::cache::{apply_library_read, pool_from_store};
+    use crate::test_shelf::{MIDNIGHT, shelf_items, song_items, works_of};
 
     const ROOM: &str = "Living Room";
 
@@ -1494,6 +1495,41 @@ mod tests {
         assert_eq!(plays.len(), i + whole + 1, "{plays:?}");
         assert!(!plays.iter().any(|p| p == OWNER));
         assert!(feed.current().is_some(), "on the DJ's next work");
+    }
+
+    #[test]
+    fn a_library_without_classical_music_feeds_the_queue() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        // As a sync leaves it: the cache, then the pool the daemon builds.
+        let mut store = MemStore::default();
+        let sync = apply_library_read(&mut store, &song_items()).unwrap();
+        assert_eq!((sync.candidates, sync.classical), (25, 0));
+        let pool = WorkPool::new(&pool_from_store(&store).unwrap());
+        assert_eq!(pool.len(), 25);
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+
+        let started = feed
+            .start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap()
+            .to_vec();
+        assert_eq!(started.len(), 2, "the first song and one more");
+        assert_eq!(rig.queue().len(), 2, "a song is one track");
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        for _ in 0..4 {
+            rig.next();
+            rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+        }
+        let played = plays(&store);
+        assert_eq!(played.len(), 5, "{played:?}");
+        assert!(played.iter().all(|uri| pool.work_of(uri).is_some()));
+        assert!(
+            rig.queue().len() > usize::try_from(rig.position()).unwrap(),
+            "a song is always waiting"
+        );
+        assert_whole_works(&rig, &pool, 1);
     }
 
     #[test]
