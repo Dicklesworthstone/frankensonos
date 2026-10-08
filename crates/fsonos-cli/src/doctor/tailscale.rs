@@ -320,7 +320,7 @@ fn unreached(
 }
 
 /// The connect URLs for both listeners, as `fsonos serve` prints them.
-fn connect_block(status: &TailnetStatus, serve: &ServeArgs, http: SocketAddr) -> String {
+pub(crate) fn connect_block(status: &TailnetStatus, serve: &ServeArgs, http: SocketAddr) -> String {
     let mcp = serve
         .mcp_plan(status)
         .addrs

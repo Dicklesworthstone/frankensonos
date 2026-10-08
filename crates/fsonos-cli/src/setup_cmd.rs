@@ -219,8 +219,42 @@ pub fn exit_code(outcomes: &[StepOutcome]) -> u8 {
     }
 }
 
-/// What to run once setup is through.
+/// What tailnet devices and agents will connect to once the daemon runs,
+/// when this host is on a running tailnet: the same block `fsonos serve`
+/// and the doctor print (MagicDNS name first, and the line that adds the
+/// MCP server to an agent).
+fn tailnet_block(serve: &ServeArgs) -> Option<String> {
+    if serve.tailscale == crate::config::TailscaleMode::Off {
+        return None;
+    }
+    let status = fsonos_tailscale::detect();
+    status.running()?;
+    let http = serve
+        .http_plan(&status)
+        .addrs
+        .iter()
+        .copied()
+        .find(|a| fsonos_tailscale::is_tailnet_ip(a.ip()))
+        .unwrap_or_else(|| serve.http_local());
+    Some(crate::doctor::tailscale::connect_block(
+        &status, serve, http,
+    ))
+}
+
+/// What to run once setup is through, with the tailnet connect URLs when
+/// this host is on a tailnet.
 fn next_steps(serve: &ServeArgs) -> StepOutcome {
+    let mut next = next_steps_here(serve);
+    if let Some(block) = tailnet_block(serve) {
+        next.summary
+            .push_str(". Once it runs, from your tailnet:\n");
+        next.summary.push_str(block.trim_end());
+    }
+    next
+}
+
+/// The next steps on this host alone.
+fn next_steps_here(serve: &ServeArgs) -> StepOutcome {
     StepOutcome::new(
         Step::NextSteps,
         Status::Pass,
@@ -494,6 +528,33 @@ mod tests {
         assert_eq!(exit_code(&[at(Status::Pass), at(Status::Warn)]), EXIT_WARN);
         assert_eq!(exit_code(&[at(Status::Warn), at(Status::Fail)]), EXIT_FAIL);
         assert_eq!(exit_code(&[]), EXIT_OK);
+    }
+
+    #[test]
+    fn next_steps_name_the_daemon_and_skip_the_tailnet_when_tailscale_is_off() {
+        let serve = ServeArgs {
+            http: Some("127.0.0.1:8099".parse().unwrap()),
+            mcp_http: None,
+            spotify_client_id: None,
+            spotify_redirect_uri: String::new(),
+            events_port: 0,
+            allow_unsafe_bind: false,
+            tailscale: crate::config::TailscaleMode::Off,
+            tailscale_serve: false,
+        };
+        assert_eq!(tailnet_block(&serve), None);
+        let next = next_steps(&serve);
+        assert_eq!(next.status, Status::Pass);
+        assert!(
+            next.summary.contains("http://127.0.0.1:8099"),
+            "{}",
+            next.summary
+        );
+        assert!(
+            !next.summary.contains("Once it runs, from your tailnet"),
+            "{}",
+            next.summary
+        );
     }
 
     #[test]
