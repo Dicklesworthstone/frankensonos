@@ -382,6 +382,27 @@ via `x-sonos-scuri://settings/advanced/beta`), and carries a
 `SCMockUpdateDebugPage` class in its wizard flow. Both S1-gen updaters share
 the debug-path strings, so one trigger would open both lines.
 
+The S1 unlock surface (mapped 2026-10-08 from pristine extracted binaries,
+r2 disassembly, and live GET probes — all reads, no mutations):
+
+- `GET /devmode` (200 on S1 and S2 alike) serves the "Enter DevMode Code"
+  form; `POST /devmode` (field `statement`) submits a code. `/unlock` answers
+  403 while locked. The code is validated by the `RDevMode` class
+  (`update`/`storeDevMode`/`loadPersistentDevMode`/`isFlagEnabled`), which
+  persists the blob to `%s/debug/devmode.bin`; `developerKey` exists as a
+  named parameter (a per-device developer credential).
+- On success the daemon writes `/tmp/device_unlocked_flag`; the updater's
+  `allow_policy_bypass` (exported from `bin/upgrade`, which also exports
+  `is_debug_version`/`set_debug_version`/`update_debug_version`) `stat()`s
+  that flag as one of four policy helpers. Separately, a `/jffs/VERSION`
+  file flips the updater to a no-op dev mode ("download/reboot will be
+  skipped").
+- So the S1 chain is: devmode code (developer-key credential) → unlock flag
+  → updater policy bypass. Whether the code is a Sonos-signed per-device
+  statement or a weaker hash is the one question left — the answer lives in
+  the `RIPCHandler::onDevModeUpdate` → `RdeviceUnlockWrapper` handler chain,
+  the next r2 target (binary and symbols are staged locally).
+
 ## 10. SMAPI (the speaker↔Spotify bridge) — verified against the live endpoint
 
 Sonos renders music services through SMAPI, a SOAP API Sonos operates per
