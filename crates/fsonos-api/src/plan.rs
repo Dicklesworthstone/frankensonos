@@ -8,7 +8,8 @@
 //! already satisfied plans to [`Command::Nothing`] so retries are harmless.
 
 use fsonos_core::favorites::{self, Favorite};
-use fsonos_core::{ControlTarget, HouseholdState, resolve_room};
+use fsonos_core::rooms::{Aliases, ResolveContext, resolve_one};
+use fsonos_core::{ControlTarget, HouseholdState};
 use fsonos_types::PlayerId;
 
 use crate::failure::{ErrorCode, Failure};
@@ -157,26 +158,69 @@ impl Command {
     }
 }
 
+/// The households a request's rooms resolve in, with the owner's aliases
+/// (`aliases.toml`) and the caller, whose default room `here` names. Plain
+/// households (`&[HouseholdState]`, `&Vec<_>`) are rooms without aliases.
+#[derive(Debug, Clone, Copy)]
+pub struct Rooms<'a> {
+    pub households: &'a [HouseholdState],
+    pub aliases: Option<&'a Aliases>,
+    /// The caller's policy key (`cli`, a tailnet login, ...), for `here`.
+    pub client: Option<&'a str>,
+}
+
+impl<'a> From<&'a [HouseholdState]> for Rooms<'a> {
+    fn from(households: &'a [HouseholdState]) -> Self {
+        Self {
+            households,
+            aliases: None,
+            client: None,
+        }
+    }
+}
+
+impl<'a> From<&'a Vec<HouseholdState>> for Rooms<'a> {
+    fn from(households: &'a Vec<HouseholdState>) -> Self {
+        Self::from(households.as_slice())
+    }
+}
+
+impl<'a, const N: usize> From<&'a [HouseholdState; N]> for Rooms<'a> {
+    fn from(households: &'a [HouseholdState; N]) -> Self {
+        Self::from(households.as_slice())
+    }
+}
+
+impl<'a> From<&Rooms<'a>> for Rooms<'a> {
+    fn from(rooms: &Rooms<'a>) -> Self {
+        *rooms
+    }
+}
+
 /// Resolve a room the way every surface does: `503` while nothing has been
-/// discovered (retrying helps), else the core's resolution with its
-/// retry-able `404`/`409` details.
-pub fn resolve<'a>(
-    households: &'a [HouseholdState],
-    room: &str,
-) -> Result<ControlTarget<'a>, Failure> {
-    if households.iter().all(|h| h.rooms.is_empty()) {
+/// discovered (retrying helps), else the core's resolution (names,
+/// `Name@Label`, ids, the owner's aliases, `here`, unique prefixes) with
+/// its retry-able `404`/`409` details. A request names one room; an alias
+/// for several is ambiguous here.
+pub fn resolve<'a>(rooms: impl Into<Rooms<'a>>, room: &str) -> Result<ControlTarget<'a>, Failure> {
+    let rooms = rooms.into();
+    if rooms.households.iter().all(|h| h.rooms.is_empty()) {
         return Err(Failure::new(
             ErrorCode::NotReady,
             "no rooms discovered yet; discovery may still be running, retry in a few seconds",
         ));
     }
-    resolve_room(households, room).map_err(Failure::from)
+    let ctx = ResolveContext {
+        aliases: rooms.aliases,
+        client: rooms.client,
+    };
+    resolve_one(rooms.households, room, ctx).map_err(Failure::from)
 }
 
 /// `POST /play` / the `play` tool.
-pub fn plan_play(households: &[HouseholdState], req: &PlayRequest) -> Result<Command, Failure> {
+pub fn plan_play<'a>(rooms: impl Into<Rooms<'a>>, req: &PlayRequest) -> Result<Command, Failure> {
     let req = req.normalized()?;
-    let target = resolve(households, &req.zone)?;
+    let target = resolve(rooms, &req.zone)?;
     Ok(Command::Play {
         coordinator: target.coordinator.id.clone(),
         source_uri: req.source_uri,
@@ -186,13 +230,13 @@ pub fn plan_play(households: &[HouseholdState], req: &PlayRequest) -> Result<Com
 
 /// `POST /play/favorite` / the `play_favorite` tool, given the favorites of
 /// the zone's household (`fsonos_core::favorites::list`).
-pub fn plan_play_favorite(
-    households: &[HouseholdState],
+pub fn plan_play_favorite<'a>(
+    rooms: impl Into<Rooms<'a>>,
     req: &PlayFavoriteRequest,
     household_favorites: &[Favorite],
 ) -> Result<Command, Failure> {
     let query = req.favorite()?;
-    let target = resolve(households, req.zone()?)?;
+    let target = resolve(rooms, req.zone()?)?;
     // An `FV:2/<n>` id (what list_favorites and search_library hand out)
     // names its favorite exactly; anything else is a position or a title.
     let favorite = match household_favorites.iter().find(|f| f.id == query) {
@@ -206,12 +250,12 @@ pub fn plan_play_favorite(
 }
 
 /// `POST /pause|resume|next|previous` / the matching tools.
-pub fn plan_transport(
-    households: &[HouseholdState],
+pub fn plan_transport<'a>(
+    rooms: impl Into<Rooms<'a>>,
     req: &ZoneRequest,
     action: TransportAction,
 ) -> Result<Command, Failure> {
-    let target = resolve(households, req.zone()?)?;
+    let target = resolve(rooms, req.zone()?)?;
     Ok(Command::Transport {
         coordinator: target.coordinator.id.clone(),
         action,
@@ -219,9 +263,12 @@ pub fn plan_transport(
 }
 
 /// `POST /volume` / the `set_volume` tool.
-pub fn plan_volume(households: &[HouseholdState], req: &VolumeRequest) -> Result<Command, Failure> {
+pub fn plan_volume<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &VolumeRequest,
+) -> Result<Command, Failure> {
     let change = req.change()?;
-    let target = resolve(households, req.zone()?)?;
+    let target = resolve(rooms, req.zone()?)?;
     let (target, scope) = if req.group {
         (target.coordinator, VolumeScope::Group)
     } else {
@@ -235,8 +282,8 @@ pub fn plan_volume(households: &[HouseholdState], req: &VolumeRequest) -> Result
 }
 
 /// `POST /mute` / the `mute` tool.
-pub fn plan_mute(households: &[HouseholdState], req: &MuteRequest) -> Result<Command, Failure> {
-    let target = resolve(households, req.zone()?)?;
+pub fn plan_mute<'a>(rooms: impl Into<Rooms<'a>>, req: &MuteRequest) -> Result<Command, Failure> {
+    let target = resolve(rooms, req.zone()?)?;
     Ok(Command::Mute {
         target: target.player.id.clone(),
         mute: req.mute,
@@ -244,10 +291,11 @@ pub fn plan_mute(households: &[HouseholdState], req: &MuteRequest) -> Result<Com
 }
 
 /// `POST /group` / the `group` tool: move `zone` into `to`'s group.
-pub fn plan_group(households: &[HouseholdState], req: &GroupRequest) -> Result<Command, Failure> {
+pub fn plan_group<'a>(rooms: impl Into<Rooms<'a>>, req: &GroupRequest) -> Result<Command, Failure> {
     let (zone, to) = req.zones()?;
-    let mover = resolve(households, zone)?;
-    let dest = resolve(households, to)?;
+    let rooms = rooms.into();
+    let mover = resolve(rooms, zone)?;
+    let dest = resolve(rooms, to)?;
     if !std::ptr::eq(mover.household, dest.household) {
         return Err(Failure::new(
             ErrorCode::CrossHouseholdGroup,
@@ -272,8 +320,11 @@ pub fn plan_group(households: &[HouseholdState], req: &GroupRequest) -> Result<C
 }
 
 /// `POST /ungroup` / the `ungroup` tool.
-pub fn plan_ungroup(households: &[HouseholdState], req: &ZoneRequest) -> Result<Command, Failure> {
-    let target = resolve(households, req.zone()?)?;
+pub fn plan_ungroup<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &ZoneRequest,
+) -> Result<Command, Failure> {
+    let target = resolve(rooms, req.zone()?)?;
     let shares_group = target
         .household
         .rooms
@@ -290,12 +341,12 @@ pub fn plan_ungroup(households: &[HouseholdState], req: &ZoneRequest) -> Result<
 }
 
 /// `POST /dj/{start|skip|stop}` / the `dj_*` tools.
-pub fn plan_dj(
-    households: &[HouseholdState],
+pub fn plan_dj<'a>(
+    rooms: impl Into<Rooms<'a>>,
     req: &ZoneRequest,
     action: DjAction,
 ) -> Result<Command, Failure> {
-    let target = resolve(households, req.zone()?)?;
+    let target = resolve(rooms, req.zone()?)?;
     Ok(Command::Dj {
         coordinator: target.coordinator.id.clone(),
         action,

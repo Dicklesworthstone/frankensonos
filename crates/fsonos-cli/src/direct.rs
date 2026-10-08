@@ -4,7 +4,7 @@
 
 use fsonos_api::{
     ActionDto, ActionsQuery, Command, ErrorCode, Failure, FavoriteDto, HitDto, OutcomeDto,
-    PlayFavoriteRequest, SearchRequest, Surface, UndoDto, ZoneDto, ZoneStateDto,
+    PlayFavoriteRequest, RoomDto, SearchRequest, Surface, UndoDto, ZoneDto, ZoneStateDto,
 };
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::SystemClock;
@@ -115,7 +115,7 @@ impl Direct {
     pub fn run(
         &self,
         tool: &str,
-        plan: impl FnOnce(&[HouseholdState]) -> Result<Command, Failure>,
+        plan: impl FnOnce(&fsonos_api::plan::Rooms<'_>) -> Result<Command, Failure>,
     ) -> Result<OutcomeDto, Failure> {
         self.households()?;
         self.surface.control(&Client::Cli, tool, plan)
@@ -139,6 +139,12 @@ impl Direct {
             self.households()?;
         }
         self.surface.search_library(&Client::Cli, req)
+    }
+
+    /// Every room with its household, zone and aliases.
+    pub fn rooms(&self) -> Result<Vec<RoomDto>, Failure> {
+        self.households()?;
+        self.surface.rooms(&Client::Cli)
     }
 
     /// The favorites of `zone`'s household.
@@ -292,6 +298,22 @@ pub fn status_text(state: &ZoneStateDto) -> String {
     }
     out.push('\n');
     out
+}
+
+/// One line per room: its household, its zone, and its aliases.
+#[must_use]
+pub fn rooms_text(rooms: &[RoomDto]) -> String {
+    rooms.iter().fold(String::new(), |mut out, r| {
+        let _ = write!(out, "{} [{}]", r.name, r.household);
+        if r.zone != r.name {
+            let _ = write!(out, " in {}'s zone", r.zone);
+        }
+        if !r.aliases.is_empty() {
+            let _ = write!(out, "  aliases: {}", r.aliases.join(", "));
+        }
+        out.push('\n');
+        out
+    })
 }
 
 /// `fsonos favorites` as text: numbered, as `play --favorite <n>` accepts.

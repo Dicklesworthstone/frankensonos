@@ -28,6 +28,7 @@ mod daemon;
 mod direct;
 mod dj;
 mod doctor;
+mod rooms_cmd;
 #[cfg(feature = "sim")]
 mod sim;
 mod tailscale_cmd;
@@ -40,7 +41,6 @@ use fsonos_api::{
     ErrorCode, Failure, GroupRequest, HitDto, MuteRequest, OutcomeDto, PlayFavoriteRequest,
     PlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
 };
-use fsonos_core::HouseholdState;
 use serde::Serialize;
 use std::fmt::Write as _;
 use std::process::ExitCode;
@@ -171,6 +171,34 @@ enum Command {
         #[command(subcommand)]
         action: DjAction,
     },
+    /// Every room with its household, zone and aliases; `fsonos rooms alias
+    /// add|rm` edits aliases.toml (comments and layout are kept).
+    Rooms {
+        #[command(subcommand)]
+        alias: Option<RoomsCommand>,
+    },
+}
+
+#[derive(Subcommand)]
+enum RoomsCommand {
+    /// The owner's names for rooms, in aliases.toml in the data directory.
+    Alias {
+        #[command(subcommand)]
+        action: AliasAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum AliasAction {
+    /// Name one room, or a set: `fsonos rooms alias add downstairs Kitchen
+    /// "Living Room"`. Any command's room then accepts the alias.
+    Add {
+        alias: String,
+        #[arg(required = true)]
+        rooms: Vec<String>,
+    },
+    /// Remove an alias.
+    Rm { alias: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -247,6 +275,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let state = Direct::survey(global)?.status(&zone)?;
             emit(global.json, &state, direct::status_text)
         }
+        Command::Rooms { alias: None } => {
+            let rooms = Direct::survey(global)?.rooms()?;
+            emit(global.json, &rooms, |r| direct::rooms_text(r))
+        }
+        Command::Rooms {
+            alias: Some(RoomsCommand::Alias { action }),
+        } => alias_command(global, &action),
         Command::Favorites { zone } => {
             let favorites = Direct::survey(global)?.favorites(&zone)?;
             emit(global.json, &favorites, |f| direct::favorites_text(f))
@@ -372,6 +407,43 @@ fn play_search(
     })
 }
 
+/// `fsonos rooms alias add|rm`: edit aliases.toml in the data directory.
+fn alias_command(global: &config::GlobalArgs, action: &AliasAction) -> anyhow::Result<()> {
+    let path = daemon::data_dir(global)?.join(fsonos_api::surface::ALIASES_FILE);
+    let done = match action {
+        AliasAction::Add { alias, rooms } => {
+            if fsonos_core::rooms::RESERVED
+                .contains(&fsonos_core::rooms::normalize_room(alias).as_str())
+            {
+                return Err(Failure::invalid(format!(
+                    "{alias:?} is reserved for every room or yours"
+                ))
+                .with_hint("Pick another name; all, everywhere and here have fixed meanings.")
+                .into());
+            }
+            rooms_cmd::edit_file(&path, |text| Ok(rooms_cmd::set_alias(text, alias, rooms)))?;
+            format!("{alias} names {}", rooms.join(", "))
+        }
+        AliasAction::Rm { alias } => {
+            rooms_cmd::edit_file(&path, |text| {
+                rooms_cmd::remove_alias(text, alias).ok_or_else(|| {
+                    Failure::new(
+                        ErrorCode::UnknownRoom,
+                        format!("no alias {alias:?} in aliases.toml"),
+                    )
+                    .with_hint("List the aliases with fsonos rooms.")
+                })
+            })?;
+            format!("removed the alias {alias}")
+        }
+    };
+    emit(
+        global.json,
+        &serde_json::json!({ "done": done, "file": path }),
+        |_| format!("{done}\n"),
+    )
+}
+
 /// Print `value` as pretty JSON, or as `text` renders it.
 fn emit<T: Serialize + ?Sized>(
     json: bool,
@@ -388,10 +460,11 @@ fn emit<T: Serialize + ?Sized>(
 
 /// The shared request a control subcommand stands for, planned against
 /// `households`.
-fn plan_for(
+fn plan_for<'a>(
     command: &Command,
-    households: &[HouseholdState],
+    households: impl Into<fsonos_api::plan::Rooms<'a>>,
 ) -> Result<fsonos_api::Command, Failure> {
+    let households = households.into();
     let zone = |zone: &String| ZoneRequest { zone: zone.clone() };
     match command {
         Command::Play {
@@ -460,6 +533,7 @@ fn plan_for(
         | Command::Undo { .. }
         | Command::Serve(_)
         | Command::Tailscale(_)
+        | Command::Rooms { .. }
         | Command::Mcp => {
             unreachable!("not a control command")
         }
@@ -568,6 +642,7 @@ mod tests {
     use super::*;
     use fsonos_api::plan::VolumeScope;
     use fsonos_api::{Command as Planned, VolumeChange};
+    use fsonos_core::HouseholdState;
     use fsonos_core::Room;
     use fsonos_types::{Generation, Player, PlayerId, ZoneGroup};
 

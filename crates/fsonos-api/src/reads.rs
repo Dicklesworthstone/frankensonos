@@ -96,6 +96,21 @@ impl From<&Favorite> for FavoriteDto {
     }
 }
 
+/// One room: `GET /rooms`, the `list_rooms` tool and `fsonos rooms`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoomDto {
+    pub name: String,
+    /// The household (`S1`, `S2`, or its id); `Name@<household>` names the
+    /// room unambiguously.
+    pub household: String,
+    /// The room whose player coordinates the group this room plays in.
+    pub zone: String,
+    /// The owner's aliases (`aliases.toml`) that name this room, alone or
+    /// with others.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+}
+
 /// One library search result: `search_library` and `GET /library/search`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HitDto {

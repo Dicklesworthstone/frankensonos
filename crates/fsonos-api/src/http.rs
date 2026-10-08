@@ -34,7 +34,6 @@ use fastapi::{
     App, AppBuilder, JsonSchema, Method, OpenApiConfig, PathParams, Request, Response,
     ResponseBody, Route,
 };
-use fsonos_core::HouseholdState;
 use fsonos_core::policy::Client;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -46,11 +45,14 @@ use crate::failure::{ErrorCode, Failure};
 use crate::identity::Identity;
 use crate::log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 use crate::plan::{
-    self, Command, DjAction, TransportAction, plan_group, plan_mute, plan_play, plan_ungroup,
-    plan_volume,
+    self, Command, DjAction, Rooms, TransportAction, plan_group, plan_mute, plan_play,
+    plan_ungroup, plan_volume,
 };
-use crate::reads::{FavoriteDto, HitDto, PlayDto, ZoneStateDto};
-use crate::request::{PlayFavoriteRequest, SearchRequest, ZoneRequest};
+use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, ZoneStateDto};
+use crate::request::{
+    GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeRequest,
+    ZoneRequest,
+};
 use crate::surface::Surface;
 use crate::web::WebPolicy;
 use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
@@ -167,6 +169,16 @@ fn reads(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         .response_schema::<Vec<ZoneDto>>(200, "The zones"),
         cx.route(
             &Op::get(
+                "/rooms",
+                "list_rooms",
+                ZONES,
+                "Every room, its household and zone, and the aliases that name it",
+            ),
+            |s, c, _| answer(s.rooms(c)),
+        )
+        .response_schema::<Vec<RoomDto>>(200, "The rooms"),
+        cx.route(
+            &Op::get(
                 "/zones/{room}",
                 "get_zone",
                 ZONES,
@@ -279,7 +291,7 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 CONTROL,
                 "Play a Spotify item, link or stream on a zone",
             ),
-            plan_play,
+            |h, r: &PlayRequest| plan_play(h, r),
         ),
         cx.control(
             Op::post(
@@ -288,11 +300,11 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 CONTROL,
                 "Set or change a room's volume, or its group's",
             ),
-            plan_volume,
+            |h, r: &VolumeRequest| plan_volume(h, r),
         ),
         cx.control(
             Op::post("/mute", "mute", CONTROL, "Mute or unmute a room"),
-            plan_mute,
+            |h, r: &MuteRequest| plan_mute(h, r),
         ),
         cx.control(
             Op::post(
@@ -301,7 +313,7 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 CONTROL,
                 "Move a room into another room's group",
             ),
-            plan_group,
+            |h, r: &GroupRequest| plan_group(h, r),
         ),
         cx.control(
             Op::post(
@@ -310,7 +322,7 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 CONTROL,
                 "Take a room out of its group",
             ),
-            plan_ungroup,
+            |h, r: &ZoneRequest| plan_ungroup(h, r),
         ),
     ];
     for (path, id, summary, action) in [
@@ -395,7 +407,7 @@ impl Ctx<'_> {
     fn control<B, P>(&self, op: Op, plan: P) -> RouteEntry
     where
         B: DeserializeOwned + fastapi_openapi::JsonSchema + 'static,
-        P: Fn(&[HouseholdState], &B) -> Result<Command, Failure> + Send + Sync + 'static,
+        P: Fn(&Rooms<'_>, &B) -> Result<Command, Failure> + Send + Sync + 'static,
     {
         let tool = op.id;
         self.route(&op, move |surface, client, req| {

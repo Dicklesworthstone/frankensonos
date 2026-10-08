@@ -21,12 +21,14 @@ use fsonos_core::clock::Clock;
 use fsonos_core::doctor::{self, Report, Runner};
 use fsonos_core::live::{Live, LiveEvent};
 use fsonos_core::policy::{Client, Policy};
+use fsonos_core::rooms::Aliases;
 use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store, StoreError};
 use fsonos_core::{HouseholdState, control};
 use fsonos_core::{favorites, search};
 use fsonos_proto::Transport;
 use fsonos_types::{PlayerId, TransportState};
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -35,13 +37,17 @@ use crate::events::EventBus;
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::Guard;
-use crate::plan::{Command, plan_play_favorite, resolve};
-use crate::reads::{FavoriteDto, HitDto, PlayDto, TrackDto, ZoneStateDto};
+use crate::plan::{Command, Rooms, plan_play_favorite, resolve};
+use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto};
 use crate::request::{PlayFavoriteRequest, SearchRequest};
 use crate::zones::{ZoneDto, zone_for_target, zone_views};
 
 /// Finds the households (a LAN survey, say).
 pub type Survey = Box<dyn Fn(&dyn Transport) -> Result<Vec<HouseholdState>, Failure> + Send + Sync>;
+
+/// The owner's room aliases, in the data directory (see
+/// `fsonos_core::rooms::Aliases`).
+pub const ALIASES_FILE: &str = "aliases.toml";
 
 /// How long a survey answer is reused before the next call surveys again.
 pub const REFRESH: Duration = Duration::from_secs(30);
@@ -62,6 +68,8 @@ pub struct Surface {
     /// Runs the DJ (`dj_start` / `dj_skip` / `dj_stop`); without one they
     /// answer NOT_IMPLEMENTED.
     dj: Option<Box<dyn DjEngine>>,
+    /// `aliases.toml`, read on each call that names a room.
+    aliases_file: Option<PathBuf>,
     /// The daemon's live model; not kept alive by the surface (see
     /// [`Surface::with_live`]).
     live: Option<Weak<Live>>,
@@ -98,6 +106,7 @@ impl Surface {
             log: None,
             doctor_checks: None,
             dj: None,
+            aliases_file: None,
             live: None,
             events: None,
             settle_until: Mutex::new(None),
@@ -136,6 +145,27 @@ impl Surface {
 
     fn live(&self) -> Option<Arc<Live>> {
         self.live.as_ref().and_then(Weak::upgrade)
+    }
+
+    /// Resolve rooms with the owner's aliases from `path` (read on each call,
+    /// so edits apply at once; a missing file means none).
+    #[must_use]
+    pub fn with_aliases_file(mut self, path: PathBuf) -> Self {
+        self.aliases_file = Some(path);
+        self
+    }
+
+    /// The owner's aliases as the file says now. A malformed file is logged
+    /// and ignored (the doctor reports it) rather than failing every call.
+    pub fn aliases(&self) -> Option<Aliases> {
+        let path = self.aliases_file.as_ref()?;
+        match Aliases::load(path) {
+            Ok(aliases) => Some(aliases),
+            Err(e) => {
+                tracing::warn!("room aliases ignored: {e}");
+                None
+            }
+        }
     }
 
     /// Run `dj_start` / `dj_skip` / `dj_stop` with `engine`; with a live
@@ -389,9 +419,9 @@ impl Surface {
         &self,
         client: &Client,
         tool: &str,
-        plan: impl FnOnce(&[HouseholdState]) -> Result<Command, Failure>,
+        plan: impl FnOnce(&Rooms<'_>) -> Result<Command, Failure>,
     ) -> Result<OutcomeDto, Failure> {
-        self.control_io(client, tool, |_, households| plan(households))
+        self.control_io(client, tool, |_, rooms| plan(rooms))
     }
 
     /// [`Self::control`] for plans that read from the speakers first (a
@@ -400,7 +430,7 @@ impl Surface {
         &self,
         client: &Client,
         tool: &str,
-        plan: impl FnOnce(&dyn Transport, &[HouseholdState]) -> Result<Command, Failure>,
+        plan: impl FnOnce(&dyn Transport, &Rooms<'_>) -> Result<Command, Failure>,
     ) -> Result<OutcomeDto, Failure> {
         let guard = self.guard(client);
         if let Err(denied) = guard.authorize(tool, false) {
@@ -414,7 +444,9 @@ impl Surface {
             return Err(denied);
         }
         let households = self.households()?;
-        let command = plan(&*self.transport, &households).map_err(|f| self.explain(f))?;
+        let aliases = self.aliases();
+        let rooms = room_view(&households, aliases.as_ref(), client);
+        let command = plan(&*self.transport, &rooms).map_err(|f| self.explain(f))?;
         let regroups = matches!(command, Command::Join { .. } | Command::Leave { .. });
         // Already satisfied requests change nothing and are not logged.
         if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
@@ -540,6 +572,44 @@ impl Surface {
             .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))
     }
 
+    /// Every room with its household, the zone it plays in, and the
+    /// owner's aliases that name it (`list_rooms`, read-only).
+    pub fn rooms(&self, client: &Client) -> Result<Vec<RoomDto>, Failure> {
+        self.guard(client).authorize("list_rooms", true)?;
+        let households = self.households()?;
+        let labels = fsonos_core::rooms::household_labels(&households);
+        let aliases = self.aliases();
+        let named = |primary: &PlayerId| -> Vec<String> {
+            aliases
+                .iter()
+                .flat_map(Aliases::aliases)
+                .filter(|alias| {
+                    alias.rooms.iter().any(|room| {
+                        fsonos_core::resolve_room(&households, room)
+                            .is_ok_and(|t| t.room.primary == *primary)
+                    })
+                })
+                .map(|alias| alias.name.clone())
+                .collect()
+        };
+        Ok(households
+            .iter()
+            .zip(&labels)
+            .flat_map(|(h, label)| {
+                h.rooms.iter().map(|room| RoomDto {
+                    name: room.name.clone(),
+                    household: label.clone(),
+                    zone: h
+                        .rooms
+                        .iter()
+                        .find(|r| r.players.contains(&room.coordinator))
+                        .map_or_else(|| room.name.clone(), |r| r.name.clone()),
+                    aliases: named(&room.primary),
+                })
+            })
+            .collect())
+    }
+
     /// Every zone with its live transport state (`unknown` when a
     /// coordinator does not answer).
     pub fn zones(&self, client: &Client) -> Result<Vec<ZoneDto>, Failure> {
@@ -557,7 +627,9 @@ impl Surface {
     pub fn zone(&self, client: &Client, room: &str) -> Result<ZoneDto, Failure> {
         self.guard(client).authorize("get_zone", true)?;
         let households = self.households()?;
-        let target = resolve(&households, room).map_err(|f| self.explain(f))?;
+        let aliases = self.aliases();
+        let target = resolve(room_view(&households, aliases.as_ref(), client), room)
+            .map_err(|f| self.explain(f))?;
         Ok(zone_for_target(&households, &target, |c| {
             self.transport_state(&households, c)
         }))
@@ -572,7 +644,7 @@ impl Surface {
         self.control_io(client, "play_favorite", |transport, households| {
             let target = resolve(households, req.zone()?)?;
             let household_favorites =
-                favorites::list(transport, households, &target.coordinator.id)?;
+                favorites::list(transport, households.households, &target.coordinator.id)?;
             plan_play_favorite(households, req, &household_favorites)
         })
     }
@@ -591,7 +663,9 @@ impl Surface {
         let household_favorites = match req.zone()? {
             Some(zone) => {
                 let households = self.households()?;
-                let target = resolve(&households, zone).map_err(|f| self.explain(f))?;
+                let aliases = self.aliases();
+                let target = resolve(room_view(&households, aliases.as_ref(), client), zone)
+                    .map_err(|f| self.explain(f))?;
                 favorites::list(&*self.transport, &households, &target.coordinator.id)?
             }
             None => Vec::new(),
@@ -616,8 +690,12 @@ impl Surface {
             // Only to name the rooms: a history read never needs the speakers.
             None => self.households().unwrap_or_default(),
         };
+        let aliases = self.aliases();
         let key = zone
-            .map(|z| resolve(&households, z).map(|t| t.coordinator.id.0.clone()))
+            .map(|z| {
+                resolve(room_view(&households, aliases.as_ref(), client), z)
+                    .map(|t| t.coordinator.id.0.clone())
+            })
             .transpose()
             .map_err(|f| self.explain(f))?;
         let plays = self
@@ -679,7 +757,9 @@ impl Surface {
     pub fn favorites(&self, client: &Client, zone: &str) -> Result<Vec<FavoriteDto>, Failure> {
         self.guard(client).authorize("list_favorites", true)?;
         let households = self.households()?;
-        let target = resolve(&households, zone).map_err(|f| self.explain(f))?;
+        let aliases = self.aliases();
+        let target = resolve(room_view(&households, aliases.as_ref(), client), zone)
+            .map_err(|f| self.explain(f))?;
         let listed = favorites::list(&*self.transport, &households, &target.coordinator.id)?;
         Ok(listed.iter().map(FavoriteDto::from).collect())
     }
@@ -689,7 +769,9 @@ impl Surface {
     pub fn zone_state(&self, client: &Client, zone: &str) -> Result<ZoneStateDto, Failure> {
         self.guard(client).authorize("get_zone_state", true)?;
         let households = self.households()?;
-        let target = resolve(&households, zone).map_err(|f| self.explain(f))?;
+        let aliases = self.aliases();
+        let target = resolve(room_view(&households, aliases.as_ref(), client), zone)
+            .map_err(|f| self.explain(f))?;
         let heard = |p: &PlayerId| self.live().and_then(|live| live.player(p));
         // The group's transport and track, from its events when it has
         // reported them, else asked.
@@ -733,6 +815,19 @@ impl Surface {
                 control::playback(&*self.transport, households, coordinator)
                     .map_or(TransportState::Unknown, |p| p.transport.state)
             })
+    }
+}
+
+/// `households` with `aliases`, for `client`'s requests.
+fn room_view<'a>(
+    households: &'a [HouseholdState],
+    aliases: Option<&'a Aliases>,
+    client: &'a Client,
+) -> Rooms<'a> {
+    Rooms {
+        households,
+        aliases,
+        client: Some(client.key()),
     }
 }
 

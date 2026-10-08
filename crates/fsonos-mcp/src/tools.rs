@@ -13,7 +13,6 @@ use fsonos_api::{
     ActionDto, ActionsQuery, ErrorCode, Failure, GroupRequest, MuteRequest, PlayFavoriteRequest,
     PlayRequest, SearchRequest, Surface, UndoDto, VolumeRequest, ZoneRequest,
 };
-use fsonos_core::HouseholdState;
 use fsonos_core::clock::Clock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_proto::Transport;
@@ -58,7 +57,7 @@ impl Backend {
     pub fn control(
         &self,
         tool: &str,
-        plan: impl FnOnce(&[HouseholdState]) -> Result<fsonos_api::Command, Failure>,
+        plan: impl FnOnce(&fsonos_api::plan::Rooms<'_>) -> Result<fsonos_api::Command, Failure>,
     ) -> McpResult<FinalCallToolResult> {
         respond(|| {
             let outcome = self.surface.control(&self.client, tool, plan)?;
@@ -235,6 +234,26 @@ impl Backend {
     }
 
     /// The `list_zones` tool.
+    /// The `list_rooms` tool.
+    pub fn list_rooms(&self) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let rooms = self.surface.rooms(&self.client)?;
+            let text = rooms
+                .iter()
+                .map(|r| {
+                    let aliases = if r.aliases.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", aliases: {}", r.aliases.join(", "))
+                    };
+                    format!("{} [{}] in {}'s zone{aliases}", r.name, r.household, r.zone)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Ok((text, RoomsDto { rooms }))
+        })
+    }
+
     pub fn list_zones(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
             let zones = self.surface.zones(&self.client)?;
@@ -259,6 +278,12 @@ impl Backend {
 #[derive(Serialize)]
 struct ActionsDto {
     actions: Vec<ActionDto>,
+}
+
+/// `list_rooms` structured content.
+#[derive(Serialize)]
+struct RoomsDto {
+    rooms: Vec<fsonos_api::RoomDto>,
 }
 
 /// `search_library` structured content.
@@ -360,6 +385,14 @@ fn recent_plays(
         usize::try_from(n).unwrap_or(usize::MAX).clamp(1, 200)
     });
     with_backend(move |b| b.recent_plays(zone.as_deref(), limit))
+}
+
+#[tool(
+    description = "List every room: its household (S1/S2), the zone (group) it plays in, and the owner's aliases for it. Any tool's `zone` accepts a room name, Room@S1 / Room@S2, or one of these aliases.",
+    annotations(read_only, idempotent)
+)]
+fn list_rooms(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(Backend::list_rooms)
 }
 
 #[tool(
@@ -599,6 +632,7 @@ fn dj_stop(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCal
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fsonos_core::HouseholdState;
     use fsonos_core::Room;
     use fsonos_core::clock::SystemClock;
     use fsonos_proto::ProtoError;

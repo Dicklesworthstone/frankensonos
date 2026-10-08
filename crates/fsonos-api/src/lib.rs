@@ -51,7 +51,7 @@ pub use http::app;
 pub use identity::Identity;
 pub use log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 pub use plan::Command;
-pub use reads::{FavoriteDto, HitDto, PlayDto, TrackDto, ZoneStateDto};
+pub use reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto};
 pub use request::{
     GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeChange,
     VolumeRequest, ZoneRequest,

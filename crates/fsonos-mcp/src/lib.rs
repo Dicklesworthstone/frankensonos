@@ -36,6 +36,7 @@ pub fn server() -> fastmcp::auto::Server {
     fastmcp::auto::server_builder("fsonos", env!("CARGO_PKG_VERSION"))
         .tool(Echo)
         .tool(tools::ListZones)
+        .tool(tools::ListRooms)
         .tool(tools::GetZoneState)
         .tool(tools::ListFavorites)
         .tool(tools::PlayFavorite)

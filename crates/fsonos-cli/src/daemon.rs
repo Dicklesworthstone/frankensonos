@@ -152,10 +152,12 @@ fn announce_if_found(live: &Live) -> bool {
 pub const DB_FILE: &str = "fsonos.db";
 
 /// `surface` with the action log kept in the data directory's store
-/// (`fsonos.db`), recorded as `label`. A store that cannot open is a warning,
+/// (`fsonos.db`), recorded as `label`, and the owner's room aliases from the
+/// same directory (`aliases.toml`). A store that cannot open is a warning,
 /// not a refusal: control still works, only undo and the log do not.
 #[must_use]
 pub fn with_action_log(surface: Surface, data_dir: &Path, label: &str) -> Surface {
+    let surface = surface.with_aliases_file(data_dir.join(fsonos_api::surface::ALIASES_FILE));
     let opened = std::fs::create_dir_all(data_dir)
         .map_err(|e| e.to_string())
         .and_then(|()| SqliteStore::open(&data_dir.join(DB_FILE)).map_err(|e| e.to_string()));
