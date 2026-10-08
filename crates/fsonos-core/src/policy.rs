@@ -41,7 +41,7 @@
 use crate::rooms::normalize_room;
 use chrono::{DateTime, FixedOffset, NaiveTime};
 use serde::de::Error as _;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -134,7 +134,7 @@ pub enum Decision {
 }
 
 /// Limits that apply to every room unless the room overrides them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Limits {
     pub max_volume: u8,
     /// The largest single increase.
@@ -174,8 +174,10 @@ impl QuietHours {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct RoomLimits {
+    /// The room as the file names it.
+    name: String,
     max_volume: Option<u8>,
     max_step: Option<u8>,
 }
@@ -196,6 +198,48 @@ pub struct Policy {
     rooms: HashMap<String, RoomLimits>,
     /// Keyed by lowercased [`Client::key`].
     clients: HashMap<String, ClientRules>,
+}
+
+/// The effective policy, for showing: see [`Policy::view`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PolicyView {
+    pub defaults: Limits,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quiet_hours: Option<QuietHoursView>,
+    /// Rooms with limits of their own, by name.
+    pub rooms: Vec<RoomView>,
+    /// Clients with rules of their own, by key (lowercase).
+    pub clients: Vec<ClientView>,
+}
+
+/// Quiet hours in local wall-clock time, `HH:MM`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct QuietHoursView {
+    pub start: String,
+    pub end: String,
+    pub max_volume: u8,
+}
+
+/// A room's own limits; an absent one is the default's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RoomView {
+    pub room: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_volume: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_step: Option<u8>,
+}
+
+/// A client's own rules: `allow` (only these tools) when given, `deny`
+/// always, and whether volume caps apply when set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ClientView {
+    pub client: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
+    pub deny: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capped: Option<bool>,
 }
 
 /// A policy file that cannot be used, with where the problem is.
@@ -255,7 +299,11 @@ impl Policy {
         })?;
         let mut rooms = HashMap::new();
         for (name, room) in raw.rooms {
-            if rooms.insert(normalize_room(&name), room.into()).is_some() {
+            let limits = RoomLimits {
+                name: name.clone(),
+                ..room.into()
+            };
+            if rooms.insert(normalize_room(&name), limits).is_some() {
                 return Err(PolicyError {
                     path: None,
                     line: None,
@@ -290,6 +338,43 @@ impl Policy {
             rooms,
             clients,
         })
+    }
+
+    /// The policy as people read it (`fsonos policy show`, `GET /policy`):
+    /// rooms by name and clients by key, each sorted.
+    #[must_use]
+    pub fn view(&self) -> PolicyView {
+        let mut rooms: Vec<RoomView> = self
+            .rooms
+            .values()
+            .map(|r| RoomView {
+                room: r.name.clone(),
+                max_volume: r.max_volume,
+                max_step: r.max_step,
+            })
+            .collect();
+        rooms.sort_by_key(|r| normalize_room(&r.room));
+        let mut clients: Vec<ClientView> = self
+            .clients
+            .iter()
+            .map(|(key, c)| ClientView {
+                client: key.clone(),
+                allow: c.allow.clone(),
+                deny: c.deny.clone(),
+                capped: c.capped,
+            })
+            .collect();
+        clients.sort_by(|a, b| a.client.cmp(&b.client));
+        PolicyView {
+            defaults: self.defaults,
+            quiet_hours: self.quiet_hours.map(|q| QuietHoursView {
+                start: q.start.format("%H:%M").to_string(),
+                end: q.end.format("%H:%M").to_string(),
+                max_volume: q.max_volume,
+            }),
+            rooms,
+            clients,
+        }
     }
 
     fn client_rules(&self, client: &Client) -> Option<&ClientRules> {
@@ -537,6 +622,7 @@ struct RawRoom {
 impl From<RawRoom> for RoomLimits {
     fn from(raw: RawRoom) -> Self {
         Self {
+            name: String::new(),
             max_volume: raw.max_volume.map(|v| v.0),
             max_step: raw.max_step.map(|v| v.0),
         }
@@ -610,6 +696,90 @@ impl<'de> Deserialize<'de> for RawQuietHours {
             end: f.end.0,
             max_volume: f.max_volume.0,
         }))
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    #[test]
+    fn the_view_shows_every_rule_sorted() {
+        let policy = Policy::from_toml(
+            r#"
+[defaults]
+max_volume = 60
+max_step = 10
+
+[quiet_hours]
+start = "22:00"
+end = "07:30"
+max_volume = 25
+
+[rooms."Living Room"]
+max_step = 5
+
+[rooms."Bedroom"]
+max_volume = 40
+
+[clients."tag:agent"]
+deny = ["party"]
+capped = true
+
+[clients."Alice@example.com"]
+allow = ["list_zones", "play"]
+"#,
+        )
+        .unwrap();
+        let view = policy.view();
+        assert_eq!(
+            view.defaults,
+            Limits {
+                max_volume: 60,
+                max_step: 10,
+                fade_secs: 0
+            }
+        );
+        assert_eq!(
+            view.quiet_hours,
+            Some(QuietHoursView {
+                start: "22:00".into(),
+                end: "07:30".into(),
+                max_volume: 25
+            })
+        );
+        assert_eq!(
+            view.rooms,
+            [
+                RoomView {
+                    room: "Bedroom".into(),
+                    max_volume: Some(40),
+                    max_step: None
+                },
+                RoomView {
+                    room: "Living Room".into(),
+                    max_volume: None,
+                    max_step: Some(5)
+                },
+            ]
+        );
+        let clients: Vec<&str> = view.clients.iter().map(|c| c.client.as_str()).collect();
+        assert_eq!(clients, ["alice@example.com", "tag:agent"]);
+        assert_eq!(
+            view.clients[0].allow.as_deref(),
+            Some(&["list_zones".to_string(), "play".to_string()][..])
+        );
+        assert_eq!(
+            (view.clients[1].deny.len(), view.clients[1].capped),
+            (1, Some(true))
+        );
+
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(
+            json["rooms"][0],
+            serde_json::json!({"room": "Bedroom", "max_volume": 40})
+        );
+        assert!(Policy::default().view().quiet_hours.is_none());
     }
 }
 
