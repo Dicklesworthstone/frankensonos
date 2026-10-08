@@ -217,7 +217,7 @@ control URL `/MediaServer/ContentDirectory/Control`. Each favorite item:
 double-escaped inside the SOAP `Result`. This is the canonical way to learn a
 household's render parameters.
 
-## 6. Topology
+## 6. Topology and grouping
 
 `ZoneGroupTopology#GetZoneGroupState` returns escaped XML:
 `<ZoneGroups><ZoneGroup Coordinator="RINCON_…" ID="RINCON_…:N">` containing
@@ -225,6 +225,22 @@ household's render parameters.
 Solo players and Bridges appear as single-member groups; `:0` group IDs are
 invisible/satellite entries. Room names may contain non-ASCII (curly
 apostrophes) — normalize quotes when matching by name.
+
+Grouping verbs (verified live on S2 97.1, 2026-10-07, with full restore):
+
+- **Join**: `SetAVTransportURI(InstanceID=0, CurrentURI="x-rincon:<COORD_UUID>",
+  CurrentURIMetaData="")` on the *member* — it slaves to that coordinator.
+  (GroupManagement `AddMember(MemberID, BootSeq)` is the newer structured
+  path; it also returns volume/transport settings for the join.)
+- **Ungroup**: `GroupManagement#RemoveMember(MemberID="RINCON_<MEMBER_UUID>")`
+  addressed to the group **coordinator** — the only form that worked
+  (member-addressed and `uuid:`/IP/instance forms all 800). Propagation is
+  NOT instant: read-back showed the old group for ~10-15 s before the
+  household converged. **`AVTransport#BecomeCoordinatorOfStandaloneGroup`
+  returns error 1023 on current S2 firmware** — SoCo's `unjoin()` is broken
+  here too; do not use it. (S1's ungroup path is unverified as of this date.)
+- ZGT events fire on grouping changes; each NOTIFY carries the new full
+  ZoneGroupState (fixtures: solo-state and grouped-state S2 captures).
 
 ## 7. GENA events
 

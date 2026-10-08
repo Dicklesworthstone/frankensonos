@@ -26,6 +26,7 @@ read-only requests (`GET /xml/device_description.xml`, `GetZoneGroupState`,
 | `gena_notify_grc_s1.xml` | GroupRenderingControl NOTIFY on `SetGroupVolume` (S1) | plain properties: `GroupVolume`/`GroupMute`/`GroupVolumeChangeable`, no LastChange |
 | `gena_notify_cd_initial_s1.xml` | ContentDirectory SUBSCRIBE initial NOTIFY (S1) | NOT LastChange-wrapped: plain `SystemUpdateID`/`ContainerUpdateIDs`/`FavoritesUpdateID` counters |
 | `gena_notify_avt_playing_s2.xml` | AVTransport NOTIFY into PLAYING (S2) | learned `flags=8232` in the reported URI; SMAPI-fetched title/creator/album metadata |
+| `gena_notify_zgt_grouped_s2.xml` | ZoneGroupTopology NOTIFY after a live group join (S2) | a cross-room two-member group (coordinator with a foreign member), distinct from bonded stereo pairs |
 | `gena_notify_avt_initial_s2.xml` | AVTransport SUBSCRIBE initial NOTIFY (S2) | idle player shape |
 | `mdns_response_s1.bin` | mDNS response from an S1 player (raw DNS message) | `Sonos-<MAC>` instance style; PTR + minimal TXT/SRV/A; 0 questions; no `hhid` |
 | `mdns_response_s2.bin` | mDNS response from an S2 player (raw DNS message) | `RINCON_<uuid>@<room>` style; echoes the question; rich TXT: `uuid`/`hhid`/`bootseq`/`location`/`wss` |

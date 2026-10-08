@@ -192,6 +192,23 @@ the daemon and verification against the owner's real households.
   [`3c274b1`](https://github.com/Dicklesworthstone/frankensonos/commit/3c274b1),
   [`d88cf26`](https://github.com/Dicklesworthstone/frankensonos/commit/d88cf26)
 
+- **mDNS discovery channel (`fsonos-proto::mdns`).** A pure, bounds-checked
+  DNS message parser (RFC 1035 compression, PTR/SRV/TXT/A) plus
+  `SonosAdvert` extraction for both live-observed advertisement styles —
+  S2's `RINCON_<uuid>@Room` with rich TXT (`hhid`, `bootseq`, `location`,
+  `wss`) and S1's `Sonos-<MAC>` minimal TXT — proven against raw wire packets
+  captured on the owner's LAN (scrubbed byte-equal to keep DNS compression
+  offsets valid). Behavioral findings recorded for the socket layer: S2
+  answers direct ephemeral-port probes unicast; S1 only answers
+  responder-pattern queries; S2 echoes the question section.
+- **Reliability architecture.** `docs/ROBUSTNESS.md` maps every failure mode
+  observed on the owner's LAN to its absorbing mechanism (UUID-keyed
+  identity, self-healing addressing, runtime-learned render params, GENA
+  self-repair, safe mutations, supervised daemon), and `docs/PROTOCOL.md` §12
+  records why native on-speaker Tailscale is rejected in favor of the
+  daemon-fronted model (no owner code-execution channel on stock firmware;
+  custom signed images mean brick risk and per-update re-injection).
+
 ### Security / privacy
 
 - The repository is public and deliberately carries **no** site-specific data —

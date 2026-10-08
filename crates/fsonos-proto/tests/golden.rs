@@ -655,6 +655,8 @@ fn gena_avt_playing_s2_carries_learned_params_and_smapi_metadata() {
     assert_eq!(track.album.as_deref(), Some("Album 2"));
 }
 
+const GENA_ZGT_GROUPED_S2: &str = include_str!("fixtures/gena_notify_zgt_grouped_s2.xml");
+
 // ── mDNS/DNS-SD fixtures (captured live on the owner LAN 2026-10-07) ──
 
 const MDNS_S1: &[u8] = include_bytes!("fixtures/mdns_response_s1.bin");
@@ -695,6 +697,30 @@ fn mdns_s2_response_parses_rich_txt_style() {
     assert_eq!(ad.addr, Some(std::net::Ipv4Addr::new(198, 51, 100, 22)));
     let loc = ad.location.as_deref().unwrap();
     assert!(loc.contains("198.51.100.22:1400"), "{loc}");
+}
+
+#[test]
+fn gena_zgt_grouped_s2_shows_coordinator_with_foreign_member() {
+    // Captured live while Parlor grouped Lounge in (then ungrouped, restored):
+    // a two-member group where coordinator and member are different rooms.
+    let state =
+        topology::parse_zone_group_state(&property(GENA_ZGT_GROUPED_S2, "ZoneGroupState")).unwrap();
+    let group = state
+        .groups
+        .iter()
+        .find(|g| {
+            g.members.len() == 2
+                && !g
+                    .members
+                    .iter()
+                    .all(|m| m.zone_name == g.members[0].zone_name.clone())
+        })
+        .expect("a cross-room group");
+    let coord = &group.coordinator;
+    assert!(group.members.iter().any(|m| m.uuid == *coord));
+    assert!(group.members.iter().any(|m| m.uuid != *coord));
+    let names: Vec<_> = group.members.iter().map(|m| m.zone_name.as_str()).collect();
+    assert!(names.contains(&"Parlor") && names.contains(&"Lounge"));
 }
 
 #[test]
