@@ -21,8 +21,24 @@
 //!
 //! Players are addressed by base URL, not IP: every virtual player shares
 //! `127.0.0.1`, so [`SimTransport`] is per player.
+//!
+//! Time is a [`SimClock`] that moves only when told. [`SimHandle::advance`]
+//! moves it the way players live it: a queue track that ends starts the
+//! next, a clip that plays out stops, and a sleep timer that runs out pauses
+//! its group, each evented at its own moment. A player told to play a
+//! loopback `http://` URI fetches it ([`SimHandle::fetch_log`]); one it
+//! cannot fetch leaves it STOPPED, as on a real speaker.
+//!
+//! Faults, for scenarios that need things to go wrong:
+//! [`upnp_fault`](SimHandle::upnp_fault), [`set_latency`](SimHandle::set_latency),
+//! [`drop_notifies`](SimHandle::drop_notifies), [`reboot`](SimHandle::reboot),
+//! [`change_address`](SimHandle::change_address),
+//! [`reelect_coordinator`](SimHandle::reelect_coordinator),
+//! [`set_offline`](SimHandle::set_offline), [`join_lag`](SimHandle::join_lag),
+//! [`retain_favorites`](SimHandle::retain_favorites).
 
 mod docs;
+mod fetch;
 mod gena;
 mod model;
 mod server;
@@ -150,6 +166,22 @@ pub struct SoapLogEntry {
     /// Out-arguments, or the UPnP error code of the fault returned.
     pub result: Result<Vec<(String, String)>, u16>,
     /// [`SimClock`] time of the request.
+    pub at_ms: u64,
+}
+
+/// A media fetch a player made when told to play a loopback `http://` URI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchLogEntry {
+    pub player: String,
+    pub room: String,
+    pub url: String,
+    /// The HTTP status, or why the request failed. A failure (or a status of
+    /// 400 or more) stops the player if it is still on that URI.
+    pub result: Result<u16, String>,
+    pub bytes: usize,
+    /// The length, when the body is a PCM WAV; the player then uses it.
+    pub wav_duration_ms: Option<u64>,
+    /// [`SimClock`] time the fetch finished.
     pub at_ms: u64,
 }
 
@@ -558,6 +590,63 @@ impl SimHandle {
             .ok_or_else(|| SimError::Invalid(format!("no S{sw_gen} household")))?;
         household.favorites.retain(|f| keep(&f.uri));
         Ok(())
+    }
+
+    /// Move simulated time on by `by`, as the players live it: a queue track
+    /// that ends starts the next (the queue ends STOPPED, back on its first
+    /// track), a URI that plays out stops, and a sleep timer that runs out
+    /// pauses its group, each at its own moment and evented then.
+    /// [`SimClock::advance`] only moves the clock: changes then happen at
+    /// the next request, still in order.
+    pub fn advance(&self, by: Duration) {
+        let Ok(mut s) = self.state.lock() else {
+            return;
+        };
+        let target = self
+            .clock
+            .now_ms()
+            .saturating_add(u64::try_from(by.as_millis()).unwrap_or(u64::MAX));
+        for _ in 0..100_000 {
+            let Some(at) = s.next_change().filter(|at| *at <= target) else {
+                break;
+            };
+            let now = self.clock.now_ms();
+            self.clock
+                .advance(Duration::from_millis(at.saturating_sub(now)));
+            s.settle_at(at);
+        }
+        let now = self.clock.now_ms();
+        self.clock
+            .advance(Duration::from_millis(target.saturating_sub(now)));
+    }
+
+    /// Every media fetch finished so far, oldest first.
+    #[must_use]
+    pub fn fetch_log(&self) -> Vec<FetchLogEntry> {
+        self.state
+            .lock()
+            .map(|s| s.fetch_log.clone())
+            .unwrap_or_default()
+    }
+
+    /// Wait until every media fetch players have started is finished, for
+    /// at most `timeout`. Whether they all finished.
+    #[must_use]
+    pub fn wait_for_fetches(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let idle = self
+                .state
+                .lock()
+                .is_ok_and(|s| s.fetches_in_flight == 0 && s.pending_fetches.is_empty());
+            if idle {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// Every SOAP request answered so far, oldest first.

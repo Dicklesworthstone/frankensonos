@@ -124,6 +124,8 @@ pub(crate) struct Transport {
     pub sleep_at: Option<u64>,
     /// Bumped each time the sleep timer is set or cleared.
     pub sleep_generation: u32,
+    /// The current URI's media was fetched (or is being fetched).
+    pub fetched: bool,
 }
 
 impl Transport {
@@ -141,6 +143,7 @@ impl Transport {
             queue_update_id: 0,
             sleep_at: None,
             sleep_generation: 0,
+            fetched: false,
         }
     }
 
@@ -165,6 +168,39 @@ impl Transport {
             0 => pos,
             d => pos.min(d),
         }
+    }
+
+    /// The clock time what is playing ends (`None` when it is not playing or
+    /// has no known length).
+    fn ends_at(&self) -> Option<u64> {
+        let since = self.playing_since?;
+        let length = self.duration_ms();
+        (self.state == TransportState::Playing && length > 0)
+            .then(|| since + length.saturating_sub(self.position_ms))
+    }
+
+    /// Carry playback on to clock time `now`: a queue track that has ended
+    /// starts the next one, the queue ends STOPPED back on its first track,
+    /// and a URI that has played out stops back at its start. Whether
+    /// anything changed.
+    fn play_on(&mut self, now: u64) -> bool {
+        let mut changed = false;
+        while let Some(end) = self.ends_at().filter(|end| *end <= now) {
+            changed = true;
+            if self.source == Source::Queue && self.track < self.queue.len() {
+                self.track += 1;
+                self.position_ms = 0;
+                self.playing_since = Some(end);
+            } else {
+                if self.source == Source::Queue {
+                    self.track = 1;
+                }
+                self.state = TransportState::Stopped;
+                self.position_ms = 0;
+                self.playing_since = None;
+            }
+        }
+        changed
     }
 
     fn set_state(&mut self, to: TransportState, now: u64) {
@@ -255,6 +291,11 @@ pub(crate) struct State {
     /// xorshift state for probabilistic NOTIFY drops (fixed seed).
     pub rng: u64,
     next_group: u64,
+    /// Media fetches to start once the request that asked for them is
+    /// answered: (player, URL).
+    pub pending_fetches: Vec<(usize, String)>,
+    pub fetches_in_flight: usize,
+    pub fetch_log: Vec<crate::FetchLogEntry>,
 }
 
 impl State {
@@ -270,6 +311,9 @@ impl State {
             next_sid: 1,
             rng: 0x9E37_79B9_7F4A_7C15,
             next_group: 1,
+            pending_fetches: Vec::new(),
+            fetches_in_flight: 0,
+            fetch_log: Vec::new(),
         }
     }
 
@@ -478,17 +522,41 @@ impl State {
         ])
     }
 
-    /// A sleep timer that has run out pauses its group.
-    pub(crate) fn settle_sleep(&mut self) {
+    /// The next clock time something changes by itself: a track or URI
+    /// ending, or a sleep timer running out.
+    pub(crate) fn next_change(&self) -> Option<u64> {
+        self.players
+            .iter()
+            .flat_map(|p| [p.transport.ends_at(), p.transport.sleep_at])
+            .flatten()
+            .min()
+    }
+
+    /// Bring every player up to the clock: whatever came due since the last
+    /// look happens in order, each change evented at its own moment.
+    pub(crate) fn settle(&mut self) {
         let now = self.clock.now_ms();
+        for _ in 0..100_000 {
+            match self.next_change().filter(|at| *at <= now) {
+                Some(at) => self.settle_at(at),
+                None => break,
+            }
+        }
+    }
+
+    /// Everything due at clock time `at`: playback carries on (see
+    /// `Transport::play_on`) and a sleep timer that has run out pauses its
+    /// group.
+    pub(crate) fn settle_at(&mut self, at: u64) {
         let mut changed = false;
         for player in &mut self.players {
             let t = &mut player.transport;
-            if t.sleep_at.is_some_and(|at| at <= now) {
+            changed |= t.play_on(at);
+            if t.sleep_at.is_some_and(|due| due <= at) {
                 t.sleep_at = None;
                 t.sleep_generation += 1;
                 if t.state == TransportState::Playing {
-                    t.set_state(TransportState::PausedPlayback, now);
+                    t.set_state(TransportState::PausedPlayback, at);
                 }
                 changed = true;
             }
@@ -498,27 +566,33 @@ impl State {
         }
     }
 
-    /// A URI source that has played to its end stops, as a clip does on a
-    /// real player (STOPPED, back at the start).
-    pub(crate) fn settle_tracks(&mut self) {
+    /// A media fetch started by `Play` has finished. A failed one stops the
+    /// player if it is still on that URI; a WAV teaches it the length.
+    pub(crate) fn media_fetched(&mut self, p: usize, url: &str, outcome: crate::fetch::Fetched) {
+        self.fetches_in_flight = self.fetches_in_flight.saturating_sub(1);
         let now = self.clock.now_ms();
-        let mut changed = false;
-        for player in &mut self.players {
-            let t = &mut player.transport;
-            let length = t.duration_ms();
-            if t.source == Source::Uri
-                && t.state == TransportState::Playing
-                && length > 0
-                && t.position(now) >= length
-            {
+        let ok = matches!(outcome.status, Ok(status) if status < 400);
+        let t = &mut self.players[p].transport;
+        if t.source == Source::Uri && t.uri == url {
+            if !ok && t.state == TransportState::Playing {
                 t.set_state(TransportState::Stopped, now);
                 t.position_ms = 0;
-                changed = true;
+            }
+            if let Some(length) = outcome.wav_duration_ms.filter(|_| ok) {
+                t.uri_duration_ms = length;
             }
         }
-        if changed {
-            self.flush_events();
-        }
+        let entry = crate::FetchLogEntry {
+            player: self.players[p].uuid.clone(),
+            room: self.players[p].room.clone(),
+            url: url.to_string(),
+            result: outcome.status,
+            bytes: outcome.bytes,
+            wav_duration_ms: outcome.wav_duration_ms,
+            at_ms: now,
+        };
+        self.fetch_log.push(entry);
+        self.flush_events();
     }
 
     /// Carry out the lagging joins whose time has come.
@@ -649,6 +723,7 @@ impl State {
                 t.set_state(TransportState::Stopped, now);
                 t.source = source;
                 t.uri_duration_ms = length;
+                t.fetched = false;
                 t.uri = uri;
                 t.uri_metadata = metadata;
                 t.track = usize::from(source == Source::Queue && !t.queue.is_empty());
@@ -735,6 +810,13 @@ impl State {
                 }
                 if t.state != TransportState::Playing {
                     t.set_state(TransportState::Playing, now);
+                }
+                // A player fetches what it is told to play; here only
+                // loopback http:// media is fetched (never the network).
+                if t.source == Source::Uri && !t.fetched && crate::fetch::is_fetchable(&t.uri) {
+                    t.fetched = true;
+                    self.pending_fetches.push((p, t.uri.clone()));
+                    self.fetches_in_flight += 1;
                 }
                 Ok(Vec::new())
             }

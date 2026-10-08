@@ -473,3 +473,66 @@ fn group_rendering_control_events_carry_plain_properties() {
         404,
     );
 }
+
+#[test]
+fn time_moving_on_plays_the_queue_through_with_an_event_per_track() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let kitchen = sim.transport("Kitchen").unwrap();
+    let uuid = sim.player("Kitchen").unwrap().uuid.clone();
+    for name in ["a", "b"] {
+        let uri = format!("x-file-cifs://nas.example/{name}.flac");
+        call(
+            &kitchen,
+            &AV_TRANSPORT,
+            "AddURIToQueue",
+            &[
+                ("InstanceID", "0"),
+                ("EnqueuedURI", &uri),
+                ("EnqueuedURIMetaData", ""),
+                ("DesiredFirstTrackNumberEnqueued", "0"),
+                ("EnqueueAsNext", "0"),
+            ],
+        )
+        .unwrap();
+    }
+    let queue = format!("x-rincon-queue:{uuid}#0");
+    call(
+        &kitchen,
+        &AV_TRANSPORT,
+        "SetAVTransportURI",
+        &[
+            ("InstanceID", "0"),
+            ("CurrentURI", &queue),
+            ("CurrentURIMetaData", ""),
+        ],
+    )
+    .unwrap();
+    call(
+        &kitchen,
+        &AV_TRANSPORT,
+        "Play",
+        &[("InstanceID", "0"), ("Speed", "1")],
+    )
+    .unwrap();
+
+    let mut sub = Subscriber::new();
+    // An hour, so it outlives the sim time this test moves through.
+    let avt = sub.subscribe(&sim, "Kitchen", AVT, 3600);
+    let state = |n: &Notify| {
+        let lc = n.last_change().unwrap().unwrap();
+        (
+            lc.get("TransportState").unwrap_or_default().to_string(),
+            lc.get("CurrentTrack").unwrap_or_default().to_string(),
+        )
+    };
+    assert_eq!(state(&sub.next(&avt)), ("PLAYING".into(), "1".into()));
+    // Each track is 3 minutes: one ends, the next starts, and says so.
+    sim.advance(Duration::from_secs(179));
+    assert!(sub.quiet(&avt, Duration::from_millis(200)), "nothing yet");
+    sim.advance(Duration::from_secs(2));
+    assert_eq!(state(&sub.next(&avt)), ("PLAYING".into(), "2".into()));
+    // Far past the end: the queue stops, back on its first track, once.
+    sim.advance(Duration::from_secs(600));
+    assert_eq!(state(&sub.next(&avt)), ("STOPPED".into(), "1".into()));
+    assert!(sub.quiet(&avt, Duration::from_millis(200)));
+}

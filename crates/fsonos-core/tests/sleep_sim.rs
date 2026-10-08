@@ -206,6 +206,15 @@ fn extending_or_cancelling_during_the_fade_keeps_the_music_at_its_level() {
 #[test]
 fn the_players_own_timer_pauses_when_the_daemon_never_fades() {
     let (sim, lan, h, kitchen) = playing_kitchen();
+    // A stream, which (unlike the queue) plays on for the whole quarter hour.
+    control::play_uri(
+        &lan,
+        &h,
+        &kitchen,
+        "x-rincon-mp3radio://radio.example/night",
+        "",
+    )
+    .unwrap();
     let timers = SleepTimers::new();
     timers
         .start(&lan, &h, &fader(), &kitchen, Duration::from_mins(10), t0())

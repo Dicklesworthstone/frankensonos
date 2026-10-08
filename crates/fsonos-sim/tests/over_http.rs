@@ -11,7 +11,7 @@ use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec, SimTransport};
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 
 fn sim() -> SimHandle {
@@ -592,4 +592,160 @@ fn the_sleep_timer_pauses_the_group_when_it_runs_out() {
     sim.clock().advance(Duration::from_secs(6));
     assert_eq!(transport_state(&kitchen), "PAUSED_PLAYBACK");
     assert_eq!(remaining(), (String::new(), "4".into()));
+}
+
+#[test]
+fn a_clock_moved_alone_catches_up_in_order_at_the_next_request() {
+    let sim = sim();
+    let kitchen = sim.transport("Kitchen").unwrap();
+    let uuid = sim.player("Kitchen").unwrap().uuid.clone();
+    avt(
+        &kitchen,
+        "AddURIToQueue",
+        &[
+            ("EnqueuedURI", "x-file-cifs://nas.example/a.flac"),
+            ("EnqueuedURIMetaData", ""),
+            ("DesiredFirstTrackNumberEnqueued", "0"),
+            ("EnqueueAsNext", "0"),
+        ],
+    )
+    .unwrap();
+    avt(
+        &kitchen,
+        "SetAVTransportURI",
+        &[
+            ("CurrentURI", &format!("x-rincon-queue:{uuid}#0")),
+            ("CurrentURIMetaData", ""),
+        ],
+    )
+    .unwrap();
+    avt(&kitchen, "Play", &[("Speed", "1")]).unwrap();
+    avt(
+        &kitchen,
+        "ConfigureSleepTimer",
+        &[("NewSleepTimerDuration", "00:01:00")],
+    )
+    .unwrap();
+    // Ten minutes pass with nobody asking: the sleep timer ran out at 1:00,
+    // before the track's end at 3:00, so the queue never moved on.
+    sim.clock().advance(Duration::from_secs(600));
+    assert_eq!(transport_state(&kitchen), "PAUSED_PLAYBACK");
+    let pos = avt(&kitchen, "GetPositionInfo", &[]).unwrap();
+    assert_eq!(
+        (
+            pos.require("Track").unwrap(),
+            pos.require("RelTime").unwrap()
+        ),
+        ("1", "0:01:00")
+    );
+}
+
+/// Serve each of `responses` (status, body) to one connection on loopback;
+/// returns the base URL.
+fn serve(responses: Vec<(u16, Vec<u8>)>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for (status, body) in responses {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let head = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    base
+}
+
+/// A silent 44.1 kHz mono 16-bit WAV of `ms` milliseconds.
+fn wav(ms: u32) -> Vec<u8> {
+    let data = 88_200 * ms / 1000;
+    let mut wav = b"RIFF".to_vec();
+    wav.extend_from_slice(&(36 + data).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&[1, 0, 1, 0]);
+    wav.extend_from_slice(&44_100u32.to_le_bytes());
+    wav.extend_from_slice(&88_200u32.to_le_bytes());
+    wav.extend_from_slice(&[2, 0, 16, 0]);
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data.to_le_bytes());
+    wav.resize(wav.len() + data as usize, 0);
+    wav
+}
+
+#[test]
+fn played_loopback_media_is_fetched_and_a_dead_link_stops_the_player() {
+    let sim = sim();
+    let kitchen = sim.transport("Kitchen").unwrap();
+    let play = |url: &str| {
+        avt(
+            &kitchen,
+            "SetAVTransportURI",
+            &[("CurrentURI", url), ("CurrentURIMetaData", "")],
+        )
+        .unwrap();
+        avt(&kitchen, "Play", &[("Speed", "1")]).unwrap();
+        assert!(sim.wait_for_fetches(Duration::from_secs(5)));
+    };
+
+    // A clip on loopback: fetched once, and its WAV length is learned.
+    let clip = wav(1_500);
+    let url = format!("{}/media/clip.wav", serve(vec![(200, clip.clone())]));
+    play(&url);
+    let log = sim.fetch_log();
+    assert_eq!(log.len(), 1);
+    let entry = &log[0];
+    assert_eq!(
+        (
+            entry.room.as_str(),
+            entry.url.as_str(),
+            entry.result.clone()
+        ),
+        ("Kitchen", url.as_str(), Ok(200))
+    );
+    assert_eq!(
+        (entry.bytes, entry.wav_duration_ms),
+        (clip.len(), Some(1_500))
+    );
+    let pos = avt(&kitchen, "GetPositionInfo", &[]).unwrap();
+    assert_eq!(pos.require("TrackDuration").unwrap(), "0:00:01");
+    assert_eq!(transport_state(&kitchen), "PLAYING");
+    sim.advance(Duration::from_secs(2));
+    assert_eq!(transport_state(&kitchen), "STOPPED", "the clip played out");
+
+    // Nothing listening, and a 404: the player stops.
+    let dead = {
+        let gone = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/media/gone.wav", gone.local_addr().unwrap())
+    };
+    play(&dead);
+    assert!(
+        sim.fetch_log()[1].result.is_err(),
+        "{:?}",
+        sim.fetch_log()[1]
+    );
+    assert_eq!(transport_state(&kitchen), "STOPPED");
+    let missing = format!("{}/media/missing.wav", serve(vec![(404, b"no".to_vec())]));
+    play(&missing);
+    assert_eq!(sim.fetch_log()[2].result, Ok(404));
+    assert_eq!(transport_state(&kitchen), "STOPPED");
+
+    // Media anywhere else is never fetched: it is taken to be a stream.
+    play("http://192.0.2.77/stream.mp3");
+    assert_eq!(sim.fetch_log().len(), 3);
+    assert_eq!(transport_state(&kitchen), "PLAYING");
 }

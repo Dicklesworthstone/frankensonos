@@ -122,11 +122,10 @@ fn respond(shared: &Arc<Mutex<State>>, index: usize, req: &Request) -> Response 
         return text(500, "Internal Server Error", String::new());
     };
     state.settle_joins(Instant::now());
-    state.settle_tracks();
-    state.settle_sleep();
+    state.settle();
     let path = req.uri.split('?').next().unwrap_or_default();
     let model = state.players[index].model;
-    match &req.method {
+    let response = match &req.method {
         Method::Get if path == "/xml/device_description.xml" => {
             let sw_gen = state.households[state.players[index].household].sw_gen;
             text(
@@ -151,7 +150,13 @@ fn respond(shared: &Arc<Mutex<State>>, index: usize, req: &Request) -> Response 
             }
         }
         _ => text(404, "Not Found", String::new()),
+    };
+    let fetches = std::mem::take(&mut state.pending_fetches);
+    drop(state);
+    for (player, url) in fetches {
+        crate::fetch::spawn(Arc::clone(shared), player, url);
     }
+    response
 }
 
 fn header<'a>(req: &'a Request, name: &str) -> Option<&'a str> {

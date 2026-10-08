@@ -57,7 +57,7 @@ fn fast() -> Announcer {
     Announcer::with_timing(Duration::from_millis(5), Duration::from_secs(5))
 }
 
-/// Run `f` while the simulator's clock runs about 100 times faster than
+/// Run `f` while the simulator's clock runs about 10 times faster than
 /// real time, so clips reach their end.
 fn with_clock_running<R: Send>(sim: &SimHandle, f: impl FnOnce() -> R + Send) -> R {
     let clock = sim.clock();
@@ -69,7 +69,7 @@ fn with_clock_running<R: Send>(sim: &SimHandle, f: impl FnOnce() -> R + Send) ->
             r
         });
         while !done.load(Ordering::SeqCst) {
-            clock.advance(Duration::from_millis(100));
+            clock.advance(Duration::from_millis(10));
             std::thread::sleep(Duration::from_millis(1));
         }
         job.join().unwrap()
