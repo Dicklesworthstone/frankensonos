@@ -27,6 +27,7 @@ mod confine;
 mod daemon;
 mod direct;
 mod dj;
+mod dj_cmd;
 mod dj_view;
 mod doctor;
 mod rooms_cmd;
@@ -37,7 +38,7 @@ mod tailscale_cmd;
 use anyhow::Context as _;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand, ValueEnum};
-use fsonos_api::plan::{self, DjAction as PlanDj, TransportAction};
+use fsonos_api::plan::{self, TransportAction};
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, HitDto, MoveRequest, MuteRequest, OutcomeDto, PartyRequest,
     PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
@@ -186,10 +187,11 @@ enum Command {
     /// speakers.
     #[cfg(feature = "sim")]
     Sim(sim::SimArgs),
-    /// Classical DJ controls.
+    /// The classical DJ: start, skip, stop and steer it; what it plays, why,
+    /// and its moods.
     Dj {
         #[command(subcommand)]
-        action: DjAction,
+        action: dj_cmd::DjAction,
     },
     /// Every room with its household, zone and aliases; `fsonos rooms alias
     /// add|rm` edits aliases.toml (comments and layout are kept).
@@ -225,13 +227,6 @@ enum AliasAction {
 enum Switch {
     On,
     Off,
-}
-
-#[derive(Subcommand)]
-enum DjAction {
-    Start { zone: String },
-    Skip { zone: String },
-    Stop { zone: String },
 }
 
 /// Exit codes follow `docs/ERRORS.md`: a [`Failure`] exits with its code's
@@ -326,6 +321,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 format!("{}\n", u.summary)
             })
         }
+        Command::Dj { action } if action.is_read() => dj_cmd::read(global, &action),
         Command::Play {
             zone,
             search: Some(query),
@@ -565,14 +561,7 @@ fn plan_for<'a>(
             households,
             &party_request(households.households, target.as_deref()),
         ),
-        Command::Dj { action } => {
-            let (z, action) = match action {
-                DjAction::Start { zone } => (zone, PlanDj::Start),
-                DjAction::Skip { zone } => (zone, PlanDj::Skip),
-                DjAction::Stop { zone } => (zone, PlanDj::Stop),
-            };
-            plan::plan_dj(households, &zone(z), action)
-        }
+        Command::Dj { action } => action.plan(&households),
         Command::Discover
         | Command::Zones
         | Command::Doctor(_)
@@ -606,11 +595,7 @@ fn tool_name(command: &Command) -> &'static str {
         Command::Ungroup { .. } => "ungroup",
         Command::Move { .. } => "move_playback",
         Command::Party { .. } => "group_all",
-        Command::Dj { action } => match action {
-            DjAction::Start { .. } => "dj_start",
-            DjAction::Skip { .. } => "dj_skip",
-            DjAction::Stop { .. } => "dj_stop",
-        },
+        Command::Dj { action } => action.tool(),
         _ => "cli",
     }
 }

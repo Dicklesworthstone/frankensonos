@@ -3,8 +3,9 @@
 //! use, as the house policy's `cli` client.
 
 use fsonos_api::{
-    ActionDto, ActionsQuery, Command, ErrorCode, Failure, FavoriteDto, HitDto, OutcomeDto,
-    PlayFavoriteRequest, RoomDto, SearchRequest, Surface, UndoDto, ZoneDto, ZoneStateDto,
+    ActionDto, ActionsQuery, Command, DjMoodsDto, DjStatusDto, ErrorCode, Failure, FavoriteDto,
+    HitDto, OutcomeDto, PlayFavoriteRequest, RoomDto, SearchRequest, Surface, UndoDto, ZoneDto,
+    ZoneStateDto,
 };
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::SystemClock;
@@ -131,6 +132,21 @@ impl Direct {
     pub fn status(&self, zone: &str) -> Result<ZoneStateDto, Failure> {
         self.households()?;
         self.surface.zone_state(&Client::Cli, zone)
+    }
+
+    /// The DJ in `zone`'s group (`dj_status`). The DJ runs in the daemon,
+    /// so from here this shows the zone's steering, not a running DJ.
+    pub fn dj_status(&self, zone: &str) -> Result<DjStatusDto, Failure> {
+        self.households()?;
+        self.surface.dj_status(&Client::Cli, zone)
+    }
+
+    /// The DJ's moods and programs, and the steering now (`dj_moods`).
+    pub fn dj_moods(&self, zone: Option<&str>) -> Result<DjMoodsDto, Failure> {
+        if zone.is_some() {
+            self.households()?;
+        }
+        self.surface.dj_moods(&Client::Cli, zone)
     }
 
     /// The library (and `req.zone`'s favorites) searched for `req.query`.
