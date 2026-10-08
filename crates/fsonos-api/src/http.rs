@@ -13,6 +13,7 @@
 //! | `GET /doctor` | | the doctor report (`schema`, `exit_code`, `counts`, `checks`) |
 //! | `GET /actions?client=&since=&limit=` | | `[ActionDto]`, newest first |
 //! | `POST /undo` | [`crate::UndoRequest`] | [`crate::UndoDto`] |
+//! | `GET /policy` | | [`crate::surface::house_policy::PolicyDto`]: the house policy, and the caller under it |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /volume` | [`crate::VolumeRequest`] | [`crate::OutcomeDto`] |
@@ -68,6 +69,8 @@ use crate::request::{
 use crate::surface::Surface;
 use crate::web::WebPolicy;
 use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
+
+mod house_policy;
 
 mod schedules;
 
@@ -129,6 +132,7 @@ const LOG: &str = "log";
 fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     let mut routes = reads(cx);
     routes.extend(house(cx));
+    routes.extend(house_policy::routes(cx));
     routes.extend(controls(cx));
     routes.extend(house_verbs(cx));
     routes.extend(announce::routes(cx));

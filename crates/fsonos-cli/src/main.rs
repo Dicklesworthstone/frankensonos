@@ -9,6 +9,8 @@
 //!   status     what a room is doing (track, transport, volume)
 //!   favorites  the household's Sonos favorites, numbered
 //!   log / undo the action log, and undoing the newest action
+//!   policy     the house policy in effect (show), and whether policy.toml
+//!              can be used (check)
 //!   doctor     diagnose the setup (exit 0 / 6 warnings / 7 failures)
 //!   setup      a guided first run on the doctor's checks (--yes for scripts)
 //!   play       play a source URI, or `--favorite <name>`, in a room's group
@@ -38,6 +40,7 @@ mod dj;
 mod dj_cmd;
 mod dj_view;
 mod doctor;
+mod policy_cmd;
 mod rooms_cmd;
 mod scene_cmd;
 mod schedule_cmd;
@@ -110,6 +113,12 @@ enum Command {
         /// Only the CLI's own newest action, not an agent's.
         #[arg(long)]
         mine: bool,
+    },
+    /// The house policy: what is in effect (show), and whether policy.toml
+    /// can be used (check).
+    Policy {
+        #[command(subcommand)]
+        action: policy_cmd::PolicyAction,
     },
     /// Play a source URI, or one of the household's favorites, in a room's
     /// group.
@@ -370,6 +379,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             })
         }
         Command::Dj { action } if action.is_read() => dj_cmd::read(global, &action),
+        Command::Policy { action } => policy_cmd::run(global, &action),
         Command::Play {
             zone,
             search: Some(query),
@@ -625,6 +635,7 @@ fn plan_for<'a>(
         | Command::Favorites { .. }
         | Command::Log { .. }
         | Command::Undo { .. }
+        | Command::Policy { .. }
         | Command::Serve { .. }
         | Command::Sleep(_)
         | Command::Schedule { .. }

@@ -24,6 +24,9 @@ use crate::tool_error;
 
 pub mod schedules;
 
+mod house_policy;
+pub use house_policy::GetPolicy;
+
 mod scenes;
 pub use scenes::{ApplyScene, ListScenes, SaveScene};
 
