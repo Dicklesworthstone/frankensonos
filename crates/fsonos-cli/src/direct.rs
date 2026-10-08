@@ -3,8 +3,8 @@
 //! use, as the house policy's `cli` client.
 
 use fsonos_api::{
-    ActionDto, ActionsQuery, Command, ErrorCode, Failure, FavoriteDto, OutcomeDto,
-    PlayFavoriteRequest, Surface, UndoDto, ZoneDto, ZoneStateDto,
+    ActionDto, ActionsQuery, Command, ErrorCode, Failure, FavoriteDto, HitDto, OutcomeDto,
+    PlayFavoriteRequest, SearchRequest, Surface, UndoDto, ZoneDto, ZoneStateDto,
 };
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::SystemClock;
@@ -128,6 +128,14 @@ impl Direct {
     pub fn status(&self, zone: &str) -> Result<ZoneStateDto, Failure> {
         self.households()?;
         self.surface.zone_state(&Client::Cli, zone)
+    }
+
+    /// The library (and `req.zone`'s favorites) searched for `req.query`.
+    pub fn search(&self, req: &SearchRequest) -> Result<Vec<HitDto>, Failure> {
+        if req.zone.is_some() {
+            self.households()?;
+        }
+        self.surface.search_library(&Client::Cli, req)
     }
 
     /// The favorites of `zone`'s household.

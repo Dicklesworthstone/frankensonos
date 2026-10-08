@@ -74,11 +74,13 @@ pub enum ErrorCode {
     UntrustedOrigin,
     /// A control request whose body is not `application/json`.
     UnsupportedMediaType,
+    /// A library search found nothing to play.
+    NoMatch,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -101,6 +103,7 @@ impl ErrorCode {
         Self::UnplayableFavorite,
         Self::UntrustedOrigin,
         Self::UnsupportedMediaType,
+        Self::NoMatch,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
@@ -125,6 +128,7 @@ impl ErrorCode {
             Self::Internal => "INTERNAL",
             Self::NotImplemented => "NOT_IMPLEMENTED",
             Self::UnknownFavorite => "UNKNOWN_FAVORITE",
+            Self::NoMatch => "NO_MATCH",
             Self::AmbiguousFavorite => "AMBIGUOUS_FAVORITE",
             Self::UnplayableFavorite => "UNPLAYABLE_FAVORITE",
             Self::UntrustedOrigin => "UNTRUSTED_ORIGIN",
@@ -141,7 +145,8 @@ impl ErrorCode {
             | Self::UnknownHousehold
             | Self::UnknownMood
             | Self::NoDjSession
-            | Self::UnknownFavorite => 404,
+            | Self::UnknownFavorite
+            | Self::NoMatch => 404,
             Self::AmbiguousRoom
             | Self::NotCoordinator
             | Self::SpotifyNotLinked
@@ -172,7 +177,8 @@ impl ErrorCode {
             | Self::UnknownHousehold
             | Self::UnknownMood
             | Self::NoDjSession
-            | Self::UnknownFavorite => 3,
+            | Self::UnknownFavorite
+            | Self::NoMatch => 3,
             Self::NotReady | Self::PlayerUnreachable | Self::NotCoordinator => 4,
             Self::PolicyDenied | Self::UntrustedOrigin => 5,
             Self::UpnpFault
@@ -234,6 +240,9 @@ impl ErrorCode {
                 "Use a suggested favorite, or list them with list_favorites (GET /favorites)."
             }
             Self::AmbiguousFavorite => "Repeat the request with one of the suggested titles.",
+            Self::NoMatch => {
+                "Try fewer or other words: a composer's surname, a performer, or a catalog number (bwv 988)."
+            }
             Self::UnplayableFavorite => "Pick a favorite that is a track, a station or a playlist.",
             Self::UntrustedOrigin => {
                 "Call the API from the CLI, an agent, or the daemon's own pages."
@@ -528,6 +537,7 @@ mod tests {
             (ErrorCode::UpnpFault, 502, 1, false),
             (ErrorCode::PolicyDenied, 403, 5, false),
             (ErrorCode::Internal, 500, 1, false),
+            (ErrorCode::NoMatch, 404, 3, false),
         ];
         for (code, status, exit, retryable) in expect {
             let f = Failure::new(code, "x");

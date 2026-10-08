@@ -308,6 +308,8 @@ fn favorites_play_and_the_queue_moves() {
         &run.stdout,
     );
 
+    check_search(&mut s, kitchen);
+
     let run = s.cli(
         "unknown-favorite",
         &["play", "Kitchen", "--favorite", "Symphonees"],
@@ -472,4 +474,39 @@ fn doctor_reports_the_setup_with_its_exit_codes() {
         format!("exit {:?}: {}", run.code, run.stdout),
     );
     s.finish();
+}
+
+/// `fsonos play --search`: a bare --pick lists, a search plays its best
+/// match, and one that finds nothing is NO_MATCH.
+fn check_search(s: &mut Scenario, kitchen: std::net::IpAddr) {
+    let run = s.cli(
+        "search-pick",
+        &["play", "Kitchen", "--search", "sim radio", "--pick"],
+    );
+    s.check(
+        "search-pick",
+        "cli",
+        "--search with a bare --pick lists the matches without playing",
+        run.ok() && run.stdout.starts_with("1. Sim Radio") && run.stdout.contains("[favorite]"),
+        &run.stdout,
+    );
+    let run = s.cli("search-play", &["play", "Kitchen", "--search", "sim radio"]);
+    let uri = get_position_info(&s.lan(), kitchen)
+        .map(|p| p.uri)
+        .unwrap_or_default();
+    s.check(
+        "search-play",
+        "cli",
+        "--search plays the best match: the Sim Radio station",
+        run.ok() && uri.starts_with("x-rincon-mp3radio:"),
+        format!("{}; now on {uri}", run.stderr),
+    );
+    let run = s.cli("search-none", &["play", "Kitchen", "--search", "zzzqqq"]);
+    s.check(
+        "search-none",
+        "cli",
+        "a search that finds nothing exits 3 as NO_MATCH",
+        run.code == Some(3) && run.stderr.contains("error[NO_MATCH]"),
+        &run.stderr,
+    );
 }

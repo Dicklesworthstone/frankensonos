@@ -36,11 +36,12 @@ use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand, ValueEnum};
 use fsonos_api::plan::{self, DjAction as PlanDj, TransportAction};
 use fsonos_api::{
-    Failure, GroupRequest, MuteRequest, OutcomeDto, PlayFavoriteRequest, PlayRequest,
-    VolumeRequest, ZoneRequest,
+    ErrorCode, Failure, GroupRequest, HitDto, MuteRequest, OutcomeDto, PlayFavoriteRequest,
+    PlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
 };
 use fsonos_core::HouseholdState;
 use serde::Serialize;
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use crate::direct::Direct;
@@ -102,6 +103,20 @@ enum Command {
         /// words will do), its number from `fsonos favorites`, or an id.
         #[arg(long, conflicts_with = "source_uri")]
         favorite: Option<String>,
+        /// Search the library and the room's favorites, and play the best
+        /// match (title words, a composer or performer, "bwv 988").
+        #[arg(long, value_name = "QUERY", conflicts_with_all = ["source_uri", "favorite"])]
+        search: Option<String>,
+        /// With --search: list the matches instead (`--pick`), or play the
+        /// Nth of them (`--pick 3`).
+        #[arg(
+            long,
+            value_name = "N",
+            requires = "search",
+            num_args = 0..=1,
+            default_missing_value = "0"
+        )]
+        pick: Option<usize>,
         /// Title to show for a source URI.
         #[arg(long)]
         title: Option<String>,
@@ -257,6 +272,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Play {
             zone,
+            search: Some(query),
+            pick,
+            ..
+        } => play_search(global, zone, query, pick),
+        Command::Play {
+            zone,
             favorite: Some(favorite),
             ..
         } => {
@@ -280,6 +301,74 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             })
         }
     }
+}
+
+/// `fsonos play <room> --search <query> [--pick [N]]`: play the best match
+/// (or the Nth), or with a bare `--pick` list the matches.
+fn play_search(
+    global: &config::GlobalArgs,
+    zone: String,
+    query: String,
+    pick: Option<usize>,
+) -> anyhow::Result<()> {
+    let direct = Direct::survey(global)?;
+    let req = SearchRequest {
+        query,
+        zone: Some(zone.clone()),
+        limit: Some(if pick.is_some() { 10 } else { 1 }),
+    };
+    let hits = direct.search(&req)?;
+    if hits.is_empty() {
+        return Err(Failure::new(
+            ErrorCode::NoMatch,
+            format!(
+                "nothing in the library or {zone}'s favorites matches {:?}",
+                req.query
+            ),
+        )
+        .into());
+    }
+    if pick == Some(0) {
+        return emit(global.json, &hits, |hits: &Vec<HitDto>| {
+            hits.iter()
+                .enumerate()
+                .fold(String::new(), |mut out, (i, h)| {
+                    let _ = write!(out, "{}. {}", i + 1, h.title);
+                    if let Some(by) = &h.subtitle {
+                        let _ = write!(out, " ({by})");
+                    }
+                    let _ = writeln!(out, " [{}]", h.kind);
+                    out
+                })
+        });
+    }
+    let n = pick.unwrap_or(1);
+    let hit = hits.get(n - 1).ok_or_else(|| {
+        Failure::invalid(format!("--pick {n}, but only {} matched", hits.len()))
+            .with_hint("List the matches with --pick and choose one of their numbers.")
+    })?;
+    let outcome = match (&hit.source_uri, &hit.favorite) {
+        (Some(uri), _) => {
+            let play = PlayRequest {
+                zone,
+                source_uri: uri.clone(),
+                title: Some(hit.title.clone()),
+            };
+            direct.run("play", |h| plan::plan_play(h, &play))?
+        }
+        (None, Some(id)) => direct.play_favorite(&PlayFavoriteRequest {
+            zone,
+            favorite: id.clone(),
+        })?,
+        (None, None) => {
+            return Err(
+                Failure::new(ErrorCode::Internal, "a search hit with nothing to play").into(),
+            );
+        }
+    };
+    emit(global.json, &outcome, |o: &OutcomeDto| {
+        format!("{}\n", o.done)
+    })
 }
 
 /// Print `value` as pretty JSON, or as `text` renders it.
