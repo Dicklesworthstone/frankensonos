@@ -15,6 +15,8 @@
 //!   volume     set (0-100) or change (+N / -N) a room's or group's volume
 //!   mute       mute or unmute a room
 //!   group / ungroup   move a room into another's group, or out of its own
+//!   scene      save, apply (undoable), list, show or rm the house's named
+//!              states
 //!   dj         the classical DJ (not wired to the speakers yet)
 //!   serve      run the long-lived daemon (HTTP API + MCP over HTTP)
 //!   mcp        serve the MCP tools over stdio (for a local agent)
@@ -31,6 +33,7 @@ mod dj_cmd;
 mod dj_view;
 mod doctor;
 mod rooms_cmd;
+mod scene_cmd;
 #[cfg(feature = "sim")]
 mod sim;
 mod tailscale_cmd;
@@ -193,6 +196,10 @@ enum Command {
         #[command(subcommand)]
         action: dj_cmd::DjAction,
     },
+    /// Scenes: the house's named states (grouping, volumes, what plays).
+    /// `apply` sends only the steps the house needs; `fsonos undo` puts
+    /// it back.
+    Scene(scene_cmd::SceneArgs),
     /// Every room with its household, zone and aliases; `fsonos rooms alias
     /// add|rm` edits aliases.toml (comments and layout are kept).
     Rooms {
@@ -270,6 +277,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Serve(args) => daemon::run(global, &args),
         Command::Mcp => run_mcp_stdio(global),
         Command::Tailscale(args) => tailscale_cmd::run(global, &args),
+        Command::Scene(args) => scene_cmd::run(global, &args),
         #[cfg(feature = "sim")]
         Command::Sim(args) => sim::run(&args),
         Command::Discover => {
@@ -572,6 +580,7 @@ fn plan_for<'a>(
         | Command::Serve(_)
         | Command::Tailscale(_)
         | Command::Rooms { .. }
+        | Command::Scene(_)
         | Command::Mcp => {
             unreachable!("not a control command")
         }
