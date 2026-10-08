@@ -10,12 +10,14 @@
 //!
 //! It is driven by the coordinator's playback state, which the daemon folds
 //! from GENA AVTransport events (`fsonos_core::events` / `playback`).
-//! [`QueueFeed::on_playback`] checks the playing track against its model of
-//! the queue — re-reading the queue when the owner has inserted or removed
-//! items — records each new DJ track once, and tops up. A top-up that fails
-//! (a network error, a fault) is retried on the next event; a work that only
-//! partly made it onto the queue is completed first, or let go if the queue
-//! has moved on past it. [`QueueFeed::skip`] skips the rest of the current
+//! [`QueueFeed::on_playback`] checks the playing track and the queue's length
+//! against its model of the queue — re-reading the queue when the owner has
+//! inserted, removed or replaced items, and stepping aside when none of the
+//! DJ's works is left on it — records each new DJ track once, and tops up. A
+//! top-up that fails (a network error, a fault) is retried on the next
+//! event; a work that only partly made it onto the queue is completed in
+//! place, right after its first movements, so it still plays whole.
+//! [`QueueFeed::skip`] re-reads the queue and skips the rest of the current
 //! work; [`QueueFeed::stop`] stops.
 //!
 //! Synchronous and generic over the proto `Transport` and the core `Store`, so
@@ -28,10 +30,11 @@ use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::{Store, StoreError};
 use fsonos_core::{CoreError, HouseholdState, control};
 use fsonos_proto::content::{QUEUE, browse_all};
-use fsonos_proto::control::{add_uri_to_queue, get_media_info};
+use fsonos_proto::control::get_position_info;
 use fsonos_proto::didl::{
     SpotifyRenderParams, spotify_queue_uri, spotify_track_didl, spotify_uri_from_renderer_uri,
 };
+use fsonos_proto::soap::{self, AV_TRANSPORT};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 
@@ -69,6 +72,11 @@ pub enum FeedError {
          favorites so FrankenSonos can learn how this household plays Spotify"
     )]
     NoRenderParams,
+    #[error(
+        "the DJ isn't running on this zone (stopped, or the queue was cleared or replaced): \
+         start it again"
+    )]
+    Inactive,
     #[error(transparent)]
     Core(#[from] CoreError),
     #[error(transparent)]
@@ -151,15 +159,18 @@ pub struct QueueFeed {
     rng: Rng,
     /// Whole works kept queued beyond the one playing (at least 1).
     pub lookahead: usize,
-    /// Started and not stopped.
+    /// Started, and neither stopped nor let go.
     active: bool,
     /// The DJ's works from the current one on, in queue order.
     queued: Vec<QueuedWork>,
     /// The queue position last seen playing (or jumped to).
     playing: Option<u32>,
     /// The last play recorded: (position, URI), so repeated events for one
-    /// track record it once.
+    /// track record it once. It moves with the track when the queue shifts.
     recorded: Option<(u32, String)>,
+    /// How long the feed believes the queue is; an event reporting another
+    /// length means the queue changed under it.
+    queue_len: Option<u32>,
 }
 
 impl QueueFeed {
@@ -174,6 +185,7 @@ impl QueueFeed {
             queued: Vec::new(),
             playing: None,
             recorded: None,
+            queue_len: None,
         }
     }
 
@@ -190,6 +202,13 @@ impl QueueFeed {
         self.queued.iter().find(|w| w.contains(at))
     }
 
+    /// Whether the feed is running: started, not stopped, and not let go
+    /// because the owner cleared or replaced the queue.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
     fn lookahead(&self) -> usize {
         self.lookahead.max(1)
     }
@@ -202,10 +221,11 @@ impl QueueFeed {
         plan: Planning<'_>,
         store: &mut S,
     ) -> Result<&[QueuedWork], FeedError> {
-        if !self.active {
-            self.queued.clear();
-            self.playing = None;
-            self.recorded = None;
+        if self.active {
+            // Resuming: the queue may have changed since.
+            self.resync(at)?;
+        } else {
+            self.release();
             self.active = true;
         }
         self.finish_partial(at)?;
@@ -222,11 +242,12 @@ impl QueueFeed {
     }
 
     /// Fold in the coordinator's latest playback state (after a GENA event).
-    /// Re-read the queue if the playing track isn't where the feed expects
-    /// (the owner inserted or removed items); record a new DJ track once; and
-    /// keep `lookahead` works queued beyond the current one — retrying a
-    /// top-up that failed before. Returns how many works it queued. The
-    /// owner's own items are left alone.
+    /// Re-read the queue when the playing track isn't where the feed expects
+    /// it or the queue's length changed (the owner inserted, removed or
+    /// replaced items); let go if the owner cleared or replaced the queue;
+    /// record a new DJ track once; and keep `lookahead` works queued beyond
+    /// the current one — retrying a top-up that failed before. Returns how
+    /// many works it queued. The owner's own items are left alone.
     pub fn on_playback<T: Transport + ?Sized, S: Store + ?Sized>(
         &mut self,
         at: &Speakers<'_, T>,
@@ -237,14 +258,26 @@ impl QueueFeed {
         if !self.active {
             return Ok(0);
         }
-        if let Some(position) = playback.queue_position {
-            let uri = playback
-                .track_uri
-                .as_deref()
-                .and_then(spotify_uri_from_renderer_uri);
-            if !self.agrees(position, uri.as_deref()) {
-                self.resync(at)?;
+        let position = playback.queue_position.filter(|&p| p > 0);
+        let uri = playback
+            .track_uri
+            .as_deref()
+            .and_then(spotify_uri_from_renderer_uri);
+        let moved = position.is_some_and(|p| !self.agrees(p, uri.as_deref()));
+        let resized = playback
+            .queue_length
+            .is_some_and(|n| self.queue_len != Some(n));
+        if moved || resized {
+            let had = !self.queued.is_empty();
+            self.resync(at)?;
+            if had && self.queued.is_empty() {
+                // None of the DJ's works is on the queue any more: the owner
+                // cleared or replaced it, and the DJ steps aside.
+                self.release();
+                return Ok(0);
             }
+        }
+        if let Some(position) = position {
             self.playing = Some(position);
             // Works wholly behind the playing position are history now.
             self.queued
@@ -262,12 +295,23 @@ impl QueueFeed {
 
     /// Skip the rest of the current work (or the owner's item playing): play
     /// the next DJ work from its first movement, queuing one if none waits.
+    /// The queue and the playing position are read afresh first, so an
+    /// insert or removal the feed hasn't heard about yet can't make it land
+    /// mid-work or past the end.
     pub fn skip<T: Transport + ?Sized, S: Store + ?Sized>(
         &mut self,
         at: &Speakers<'_, T>,
         plan: Planning<'_>,
         store: &mut S,
     ) -> Result<&QueuedWork, FeedError> {
+        if !self.active {
+            return Err(FeedError::Inactive);
+        }
+        self.resync(at)?;
+        let track = get_position_info(at.transport, host_of(at)?)?.track;
+        if track > 0 {
+            self.playing = Some(track);
+        }
         self.finish_partial(at)?;
         let playing = self.playing.unwrap_or(0);
         let waiting = self
@@ -292,11 +336,17 @@ impl QueueFeed {
     /// is added).
     pub fn stop<T: Transport + ?Sized>(&mut self, at: &Speakers<'_, T>) -> Result<(), FeedError> {
         control::stop(at.transport, at.households, at.coordinator)?;
+        self.release();
+        Ok(())
+    }
+
+    /// Forget the queue and stop feeding it.
+    fn release(&mut self) {
         self.active = false;
         self.queued.clear();
         self.playing = None;
         self.recorded = None;
-        Ok(())
+        self.queue_len = None;
     }
 
     /// Whether the playing (position, track) matches the feed's model of the
@@ -317,8 +367,9 @@ impl QueueFeed {
 
     /// Re-place every queued movement by reading the queue: each work's
     /// movements are found in order after the previous work's; a movement
-    /// no longer there (removed by the owner) loses its position; a work with
-    /// nothing left on the queue is dropped.
+    /// no longer there (removed by the owner) loses its position, and a work
+    /// with nothing left on the queue is dropped. The recorded play moves
+    /// with its track.
     fn resync<T: Transport + ?Sized>(&mut self, at: &Speakers<'_, T>) -> Result<(), FeedError> {
         let host = host_of(at)?;
         let queue: Vec<Option<String>> = browse_all(at.transport, host, QUEUE)?
@@ -329,6 +380,14 @@ impl QueueFeed {
                     .and_then(|r| spotify_uri_from_renderer_uri(&r.uri))
             })
             .collect();
+        let recorded = self.recorded.as_ref().and_then(|(position, uri)| {
+            self.queued.iter().enumerate().find_map(|(w, work)| {
+                work.movements
+                    .iter()
+                    .position(|m| m.position == Some(*position) && m.uri == *uri)
+                    .map(|m| (w, m))
+            })
+        });
         let mut cursor = 0;
         for work in &mut self.queued {
             for m in work.movements.iter_mut().filter(|m| m.added) {
@@ -342,7 +401,12 @@ impl QueueFeed {
                 }
             }
         }
-        self.queued.retain(|w| w.first().is_some() || !w.is_whole());
+        if let Some((w, m)) = recorded {
+            let moved = &self.queued[w].movements[m];
+            self.recorded = moved.position.map(|p| (p, moved.uri.clone()));
+        }
+        self.queued.retain(|w| w.first().is_some());
+        self.queue_len = Some(u32::try_from(queue.len()).unwrap_or(u32::MAX));
         Ok(())
     }
 
@@ -369,9 +433,9 @@ impl QueueFeed {
         Ok(want - ahead)
     }
 
-    /// Add the movements an earlier failure left unadded — if the queue still
-    /// ends right after the work's last movement, so the work stays whole and
-    /// in order. Otherwise let the unadded movements go.
+    /// Add the movements an earlier failure left unadded, right after the
+    /// ones that made it — ahead of anything queued since — so the work
+    /// plays whole and in order. A work already played past is let go.
     fn finish_partial<T: Transport + ?Sized>(
         &mut self,
         at: &Speakers<'_, T>,
@@ -379,18 +443,60 @@ impl QueueFeed {
         let Some(index) = self.queued.iter().position(|w| !w.is_whole()) else {
             return Ok(());
         };
-        let host = host_of(at)?;
-        let queue_len = get_media_info(at.transport, host)?.tracks;
-        let work = &mut self.queued[index];
-        if work.last().is_some_and(|last| last != queue_len) {
-            work.movements.retain(|m| m.added);
-            if work.movements.is_empty() {
-                self.queued.remove(index);
-            }
+        let Some(last) = self.queued[index].last() else {
+            self.queued.remove(index);
+            return Ok(());
+        };
+        if self.playing.is_some_and(|playing| playing > last) {
+            self.queued.remove(index);
             return Ok(());
         }
         let params = render_params(at)?;
-        append(at.transport, host, &params, &mut self.queued[index])
+        let host = host_of(at)?;
+        while let Some(m) = self.queued[index].movements.iter().position(|m| !m.added) {
+            let desired = self.queued[index].last().map_or(0, |last| last + 1);
+            let (position, len) = add_movement(
+                at.transport,
+                host,
+                &params,
+                &self.queued[index].movements[m],
+                desired,
+            )?;
+            // Inserted ahead of something (rather than appended): that
+            // something moved down one.
+            let before = len.map(|len| len.saturating_sub(1)).or(self.queue_len);
+            if before.is_some_and(|before| position <= before) {
+                self.shift_from(position);
+            }
+            let movement = &mut self.queued[index].movements[m];
+            movement.position = Some(position);
+            movement.added = true;
+            self.queue_len = len.or(Some(position));
+        }
+        Ok(())
+    }
+
+    /// Everything the feed knows at or after queue `position` moves down
+    /// one: an item was inserted there.
+    fn shift_from(&mut self, position: u32) {
+        let shift = |p: &mut u32| {
+            if *p >= position {
+                *p += 1;
+            }
+        };
+        for work in &mut self.queued {
+            for m in &mut work.movements {
+                if let Some(p) = m.position.as_mut() {
+                    shift(p);
+                }
+            }
+        }
+        if let Some(p) = self.playing.as_mut() {
+            shift(p);
+        }
+        if let Some((p, _)) = self.recorded.as_mut() {
+            shift(p);
+        }
     }
 
     /// Pick and enqueue `count` works, each movement added in order. On a
@@ -441,11 +547,29 @@ impl QueueFeed {
                     .iter()
                     .map(|m| PlayRecord::at(m.uri.clone(), plan.now)),
             );
-            let added = append(at.transport, host, &params, &mut work);
+            let added = self.append(at.transport, host, &params, &mut work);
             if work.first().is_some() {
                 self.queued.push(work);
             }
             added?;
+        }
+        Ok(())
+    }
+
+    /// Append a work's unadded movements to the end of the queue, in order,
+    /// recording where each lands.
+    fn append<T: Transport + ?Sized>(
+        &mut self,
+        t: &T,
+        host: IpAddr,
+        params: &SpotifyRenderParams,
+        work: &mut QueuedWork,
+    ) -> Result<(), FeedError> {
+        for m in work.movements.iter_mut().filter(|m| !m.added) {
+            let (position, len) = add_movement(t, host, params, m, 0)?;
+            m.position = Some(position);
+            m.added = true;
+            self.queue_len = len.or(Some(position));
         }
         Ok(())
     }
@@ -486,25 +610,36 @@ fn host_of<T: Transport + ?Sized>(at: &Speakers<'_, T>) -> Result<IpAddr, FeedEr
     Ok(control::locate(at.households, at.coordinator)?.ip)
 }
 
-/// Append a work's unadded movements, in order, recording where each lands.
-fn append<T: Transport + ?Sized>(
+/// Add one movement to the queue at position `desired` (0: the end), the
+/// way the Sonos app does (`AddURIToQueue`). Returns where it landed and,
+/// when the player says, the queue's new length.
+fn add_movement<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
     params: &SpotifyRenderParams,
-    work: &mut QueuedWork,
-) -> Result<(), FeedError> {
-    for m in work.movements.iter_mut().filter(|m| !m.added) {
-        let at = add_uri_to_queue(
-            t,
-            host,
-            &spotify_queue_uri(&m.uri),
-            &spotify_track_didl(&m.uri, &m.title, params),
-            false,
-        )?;
-        m.position = Some(at);
-        m.added = true;
-    }
-    Ok(())
+    m: &Movement,
+    desired: u32,
+) -> Result<(u32, Option<u32>), FeedError> {
+    let response = soap::call(
+        t,
+        host,
+        &AV_TRANSPORT,
+        "AddURIToQueue",
+        &soap::args_xml(&[
+            ("InstanceID", "0"),
+            ("EnqueuedURI", &spotify_queue_uri(&m.uri)),
+            (
+                "EnqueuedURIMetaData",
+                &spotify_track_didl(&m.uri, &m.title, params),
+            ),
+            ("DesiredFirstTrackNumberEnqueued", &desired.to_string()),
+            ("EnqueueAsNext", "0"),
+        ]),
+    )?;
+    let len = response
+        .get("NewQueueLength")
+        .and_then(|n| n.trim().parse().ok());
+    Ok((response.require_u32("FirstTrackNumberEnqueued")?, len))
 }
 
 #[cfg(test)]
@@ -523,9 +658,9 @@ mod tests {
     use fsonos_core::playback::{EventSource, Playback};
     use fsonos_core::resolve_room;
     use fsonos_core::store::MemStore;
+    use fsonos_proto::control::{add_uri_to_queue, remove_all_tracks_from_queue};
     use fsonos_proto::gena::Notify;
     use fsonos_proto::net::{EventSink, Lan};
-    use fsonos_proto::soap::AV_TRANSPORT;
     use fsonos_proto::topology::get_zone_group_state;
     use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
     use fsonos_types::TransportState;
@@ -727,6 +862,40 @@ mod tests {
         fn nudge(&self) {
             control::pause(&self.lan, &self.houses, &self.coordinator).unwrap();
             control::resume(&self.lan, &self.houses, &self.coordinator).unwrap();
+        }
+
+        fn host(&self) -> IpAddr {
+            control::locate(&self.houses, &self.coordinator).unwrap().ip
+        }
+
+        /// The owner adds a track in the Sonos app: at the end, or "Play
+        /// Next" (right after the current track).
+        fn owner_adds(&self, uri: &str, play_next: bool) {
+            let params = self.sim.render_params(2).unwrap();
+            add_uri_to_queue(
+                &self.lan,
+                self.host(),
+                &spotify_queue_uri(uri),
+                &spotify_track_didl(uri, "Owner", &params),
+                play_next,
+            )
+            .unwrap();
+        }
+
+        /// The owner removes the item at a queue position.
+        fn owner_removes(&self, position: u32) {
+            soap::call(
+                &self.lan,
+                self.host(),
+                &AV_TRANSPORT,
+                "RemoveTrackFromQueue",
+                &soap::args_xml(&[
+                    ("InstanceID", "0"),
+                    ("ObjectID", &format!("Q:0/{position}")),
+                    ("UpdateID", "0"),
+                ]),
+            )
+            .unwrap();
         }
     }
 
@@ -1022,6 +1191,240 @@ mod tests {
             .state;
         assert_eq!(state, TransportState::Stopped);
         assert!(feed.queued().is_empty() && feed.current().is_none());
+    }
+
+    const OWNER: &str = "spotify:track:0OwnerPlayNext00000001";
+    const OWNER_2: &str = "spotify:track:0OwnerPlayNext00000002";
+
+    #[test]
+    fn play_next_then_an_immediate_skip_lands_on_the_next_work() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = multi_movement_pool();
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 9);
+        let started = feed
+            .start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap()
+            .to_vec();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        assert!(started[0].movements.len() > 1);
+
+        // "Play Next" lands right after the current track, and the owner
+        // skips before its event arrives: where the next work used to start
+        // is now the current work's last movement.
+        rig.owner_adds(OWNER, true);
+        let next = feed
+            .skip(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap()
+            .clone();
+        assert_eq!(next.work_key, started[1].work_key);
+        assert_eq!(rig.position(), started[1].first().unwrap() + 1);
+        assert_eq!(
+            rig.queue()[rig.position() as usize - 1],
+            next.movements[0].uri,
+            "the next work's first movement, not the current work's last"
+        );
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+
+        // Another "Play Next", heard only through its event (the same track
+        // plays on; the queue grew): the waiting works move down with it.
+        let before: Vec<Option<u32>> = feed.queued().iter().map(QueuedWork::first).collect();
+        rig.owner_adds(OWNER_2, true);
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let after: Vec<Option<u32>> = feed.queued().iter().map(QueuedWork::first).collect();
+        let at = rig.position();
+        for (was, now) in before.iter().zip(&after) {
+            let shifted = was.map(|p| if p > at { p + 1 } else { p });
+            assert_eq!(*now, shifted, "{before:?} -> {after:?}");
+        }
+        for work in feed.queued() {
+            for m in work.movements.iter().filter(|m| m.position.is_some()) {
+                assert_eq!(rig.queue()[m.position.unwrap() as usize - 1], m.uri);
+            }
+        }
+    }
+
+    #[test]
+    fn a_cleared_or_replaced_queue_lets_the_dj_go() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = works_of(&shelf_items(1));
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 13);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+
+        // The owner replaces the queue with two tracks of their own: shorter
+        // than the DJ's, and none of it the DJ's.
+        remove_all_tracks_from_queue(&lan, rig.host()).unwrap();
+        rig.owner_adds(OWNER, false);
+        rig.owner_adds(OWNER_2, false);
+        control::play_queue_from(&lan, &rig.houses, &rig.coordinator, 1).unwrap();
+        let queued = rig
+            .pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        assert_eq!(queued, 0);
+        assert!(!feed.is_active() && feed.queued().is_empty());
+        assert_eq!(rig.queue(), [OWNER, OWNER_2], "nothing added to theirs");
+
+        // Later events change nothing, and a skip says why it can't.
+        rig.next();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        assert_eq!(rig.queue().len(), 2);
+        let err = feed
+            .skip(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap_err();
+        assert!(matches!(err, FeedError::Inactive), "{err}");
+        assert_eq!(rig.queue().len(), 2);
+
+        // Started again, the DJ queues after the owner's tracks.
+        let again = feed
+            .start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap()
+            .to_vec();
+        assert_eq!(again[0].first(), Some(3));
+        assert!(feed.is_active());
+    }
+
+    #[test]
+    fn removals_move_the_recorded_play_and_a_removed_work_is_not_sought() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        control::queue_spotify_tracks(&lan, &rig.houses, &rig.coordinator, &[(OWNER, "Owner")])
+            .unwrap();
+        let pool = multi_movement_pool();
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 17);
+        let started = feed
+            .start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap()
+            .to_vec();
+        assert_eq!(started[0].first(), Some(2));
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.next();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        assert_eq!((rig.position(), plays(&store).len()), (3, 2));
+
+        // The owner removes their own item ahead: the playing movement moves
+        // from 3 to 2 and is not recorded a second time.
+        rig.owner_removes(1);
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        assert_eq!(rig.position(), 2);
+        assert_eq!(plays(&store).len(), 2, "{:?}", plays(&store));
+        assert_eq!(
+            feed.current().and_then(|w| w.track_at(2)),
+            Some(rig.queue()[1].as_str())
+        );
+        rig.next();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        assert_eq!(plays(&store), rig.queue()[..3].to_vec());
+
+        // The owner removes the waiting work outright, and skips before the
+        // events arrive: the DJ queues a fresh work rather than seeking to
+        // where the removed one was (past the end of the queue by now).
+        let waiting = feed.queued().last().unwrap().clone();
+        let mut gone: Vec<u32> = waiting
+            .movements
+            .iter()
+            .filter_map(|m| m.position)
+            .collect();
+        gone.sort_unstable();
+        for position in gone.into_iter().rev() {
+            rig.owner_removes(position);
+        }
+        let len = rig.queue().len();
+        let next = feed
+            .skip(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap()
+            .clone();
+        assert_ne!(next.work_key, waiting.work_key);
+        assert_eq!(next.first(), Some(u32::try_from(len).unwrap() + 1));
+        assert_eq!(rig.position(), next.first().unwrap());
+        assert_eq!(rig.queue()[len], next.movements[0].uri);
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_half_queued_work_is_completed_in_place_ahead_of_later_items() {
+        let mut rig = Rig::new();
+        let flaky = Flaky::new(rig.lan.clone());
+        let pool = multi_movement_pool();
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 5);
+        let started = feed
+            .start(&rig.speakers(&flaky), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap()
+            .to_vec();
+        rig.pump(&flaky, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let second = started[1].first().unwrap();
+        while rig.position() + 1 < second {
+            rig.next();
+            rig.pump(&flaky, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+        }
+        flaky.fail_add_in(2);
+        rig.next();
+        rig.pump(&flaky, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap_err();
+        let partial = feed.queued().last().unwrap().clone();
+        assert!(!partial.is_whole());
+        let first = partial.first().unwrap() as usize;
+
+        // Before the retry the owner queues a track: it lands right after
+        // the half work's first movement. The retry fills the work in ahead
+        // of it rather than leaving a fragment.
+        rig.owner_adds(OWNER, false);
+        rig.nudge();
+        rig.pump(&flaky, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let whole = partial.tracks().len();
+        let queue = rig.queue();
+        assert_eq!(queue[first - 1..first - 1 + whole], partial.tracks()[..]);
+        assert_eq!(queue[first - 1 + whole], OWNER, "the owner's track follows");
+        let completed = feed
+            .queued()
+            .iter()
+            .find(|w| w.work_key == partial.work_key)
+            .unwrap();
+        assert!(completed.is_whole());
+        for work in feed.queued() {
+            for m in &work.movements {
+                let at = m.position.unwrap() as usize;
+                assert_eq!(queue[at - 1], m.uri, "the feed knows where it all is");
+            }
+        }
+
+        // Playback runs on through the current work, the completed one whole,
+        // then the owner's track (not recorded as the DJ's), then the DJ's
+        // next work.
+        let owner_at = first + whole;
+        while (rig.position() as usize) <= owner_at {
+            rig.next();
+            rig.pump(&flaky, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+        }
+        let plays = plays(&store);
+        let i = plays
+            .iter()
+            .position(|p| *p == partial.movements[0].uri)
+            .unwrap();
+        assert_eq!(plays[i..i + whole], partial.tracks()[..]);
+        assert_eq!(plays.len(), i + whole + 1, "{plays:?}");
+        assert!(!plays.iter().any(|p| p == OWNER));
+        assert!(feed.current().is_some(), "on the DJ's next work");
     }
 
     #[test]
