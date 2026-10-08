@@ -55,8 +55,9 @@ paths. Work on `main`; create a branch only when asked.
 
 FrankenSonos is a memory-safe Rust end-run around Sonos's own software: control
 the owner's Sonos gear reliably from a CLI, an HTTP API, and an MCP server, and
-act as a tasteful classical-music DJ from the owner's own Spotify library,
-including off-LAN over Tailscale.
+act as a tasteful DJ that adapts to whatever music the owner likes (learned from
+their own Spotify saves, likes and listening, with their manual preference
+overrides on top; not tied to any genre), including off-LAN over Tailscale.
 
 ```text
 SSDP discover + UPnP/SOAP control + GENA events  (fsonos-proto)

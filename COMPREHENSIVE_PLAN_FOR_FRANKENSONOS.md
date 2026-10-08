@@ -27,10 +27,15 @@ owner wants three things:
 1. **Reliability and control** — a system that reliably discovers every
    speaker, shows true group topology, and plays what it is told, instead of
    phone apps that lose devices or refuse to start playback.
-2. **A real "DJ"** — an agent that plays a pleasant, varied stream of classical
-   music drawn from the owner's *own* Spotify library (saved albums, liked
-   tracks), with sensible variety and anti-repeat, controllable by voice/agent
-   with no phone in hand.
+2. **A real "DJ"** — an agent that plays a pleasant, varied stream of whatever
+   music the owner likes, learned from the owner's *own* Spotify account
+   (liked tracks, saved albums, followed artists, playlists, top artists and
+   tracks, recent listening) and overridden by preferences the owner sets by
+   hand (genres, artists, eras or moods to favor or avoid, energy, explicit
+   content), with sensible variety and anti-repeat, controllable by voice/agent
+   with no phone in hand. The DJ is not tied to a genre: it spans whatever the
+   owner's library spans. Classical music is one case it handles with care
+   (multi-movement works play whole and in order, §12.1), not its premise.
 3. **Agent-native** — first-class control surfaces so personal AI agents (Meta
    Muse on this Mac, Grok, OpenAI "dots", Claude) can manage the house audio
    through a stable, documented API and MCP tools — including from off-LAN over
@@ -71,9 +76,10 @@ the authoritative in-scope / out-of-scope list every contributor must follow.
 2. **Direct control.** `fsonos play "Living Room" spotify:track:...`,
    `fsonos pause "Kitchen"`, volume/group/ungroup — all fast and correct,
    addressing the **coordinator** of the target group automatically.
-3. **The DJ.** `fsonos dj start "Living Room"` begins a varied classical set
-   from the owner's Spotify library; `dj skip` advances; the daemon keeps the
-   queue fed and avoids recent repeats. An agent can do the same via MCP:
+3. **The DJ.** `fsonos dj start "Living Room"` begins a varied set of the
+   music the owner likes on Spotify, shaped by the owner's own preference
+   overrides; `dj skip` advances; the daemon keeps the queue fed and avoids
+   recent repeats. An agent can do the same via MCP:
    `dj_start`, `dj_skip`, `play`, `set_volume`, `list_zones`.
 4. **Always-on daemon.** `fsonos serve` runs a long-lived process that holds
    live state via GENA event subscriptions (no polling storms), exposes the
@@ -252,18 +258,26 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
 
 ### LANE C — `fsonos-spotify` (library + DJ)
 
-- **Spotify Web API client**, read-only on the owner's **own** library:
-  Authorization Code + **PKCE** (helper shape exists), scope
-  `user-library-read`; endpoints: saved albums, liked/saved tracks, and track
-  metadata. Tokens cached in the local git-ignored auth cache. HTTPS over the
-  asupersync client. **The Web API never starts playback** (that is Sonos via
-  SMAPI; see §6) — it only *reads taste*.
-- **Classical DJ engine** (pure, testable; anti-repeat selector exists). Build
-  a candidate pool of the owner's classical tracks (genre/metadata heuristics +
-  saved-albums), then pick for pleasant variety: spread across
-  composers/periods/works, respect energy/time-of-day, avoid recent repeats
-  (via `Store` history). Feed the coordinator's queue ahead of track end
-  (driven by GENA transport events from Lane B).
+- **Spotify Web API client**, read-only on the owner's **own** account:
+  Authorization Code + **PKCE** (helper shape exists). Today: scope
+  `user-library-read`; endpoints: saved albums, liked/saved tracks, album track
+  lists, and track metadata. Planned for the taste model (§12.1): followed
+  artists (`user-follow-read`), the owner's playlists
+  (`playlist-read-private`), top artists and tracks (`user-top-read`), recently
+  played tracks (`user-read-recently-played`), and artist genre tags where the
+  Web API returns them. Tokens cached in the local git-ignored auth cache.
+  HTTPS over the asupersync client. **The Web API never starts playback** (that
+  is Sonos via SMAPI; see §6) — it only *reads taste*.
+- **DJ engine** (pure, testable; anti-repeat selector exists). Build a
+  candidate pool from the owner's own taste signals, whatever genres they span,
+  apply the owner's manual preference overrides and any active steering, then
+  pick for pleasant variety: spread across artists, albums and genres (and
+  across composers, periods and works when the music is classical), respect
+  energy/time-of-day, avoid recent repeats (via `Store` history). Feed the
+  coordinator's queue ahead of track end (driven by GENA transport events from
+  Lane B). *Current state:* the shipped pool is classical-only (it keeps tracks
+  whose metadata scores as classical and drops explicit tracks); generalizing
+  it is planned work, tracked in §12.1.
 - **The "enqueue a Spotify track on Sonos" path** is the crux the prior attempt
   got stuck on: it requires the correct `x-sonos-spotify:` URI **and** the
   byte-right DIDL `desc`/item-id for *that household*, learned from its own
@@ -320,7 +334,7 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
 
 - `players(id TEXT PK, household TEXT, room TEXT, ip TEXT, model TEXT, generation TEXT, last_seen INT)`
 - `zone_groups(id INTEGER PK, household TEXT, coordinator TEXT, member TEXT, updated INT)` (edge list; `id` keeps group order; not `groups`, an SQL keyword)
-- `spotify_library(source_uri TEXT PK, title TEXT, artist TEXT, album TEXT, duration_secs INT, is_classical INT, added INT)`
+- `spotify_library(source_uri TEXT PK, title TEXT, artist TEXT, album TEXT, duration_secs INT, is_classical INT, added INT)` — `is_classical` is the current implementation's DJ-candidacy flag (only rows judged classical enter the pool); it is classical-oriented, and replacing it with genre-agnostic candidacy is planned work (§12.1, below)
 - `play_history(id INTEGER PK, zone TEXT, source_uri TEXT, played_at INT)`
 - `render_params(household TEXT PK, sid INT, flags INT, sn INT, cdudn TEXT, item_id_prefix TEXT, learned_at INT)`
 - `auth(service TEXT PK, refresh_token TEXT, expires INT)` — local only; the DB
@@ -336,8 +350,17 @@ Added by §12 (each table is created by the migration of the bead that needs it)
 - `scenes(name TEXT PK, spec TEXT, updated INT)` (§12.7).
 - `schedules(id INTEGER PK, spec TEXT, action TEXT, enabled INT, last_fired INT)` (§12.10).
 
+Planned, not yet migrated (the genre-agnostic DJ, §12.1): `spotify_library`
+gains the track's genre tags, which taste sources it came from (liked, saved
+album, followed artist, playlist, top item, recent play), and a taste weight,
+and stops using `is_classical` as the candidacy test; `feedback` gains
+`artist_key` and `album_key` beside the classical keys; the other taste reads
+(followed artists, playlists, top items, recent plays) are cached the same way
+the library is.
+
 Policy (`policy.toml`), aliases (`aliases.toml`), and DJ moods (`moods.toml`)
-are hand-edited TOML in the data dir, not tables.
+are hand-edited TOML in the data dir, not tables. The DJ's persistent
+preference overrides (§12.1, planned) are too (`preferences.toml`).
 
 Keep raw tokens and site data out of git; the store file is in the OS data dir.
 
@@ -354,7 +377,10 @@ Keep raw tokens and site data out of git; the store file is in the OS data dir.
   assert the parsers against them (golden tests).
 - **Integration (opt-in, local):** a `--features live-tests` lane that runs
   against the real LAN, gated behind an env flag so CI never needs the network.
-- **DJ behavior:** seeded-RNG determinism; variety metrics over a long run.
+- **DJ behavior:** seeded-RNG determinism; variety metrics over a long run,
+  on a mixed-genre library (say pop, jazz, hip-hop and classical) as well as
+  an all-classical one: the pool spans every genre the taste signals cover,
+  manual overrides beat learned weights, and multi-movement works stay whole.
 - **Virtual household (§12.4):** `fsonos-sim` serves S1 and S2 players over
   real localhost sockets, built from the scrubbed fixtures. The e2e suite in
   `tests/e2e/` runs the §1 workflows (all but the real-tailnet path) through the CLI, HTTP API, and MCP
@@ -383,7 +409,8 @@ Gates after substantive Rust changes: `cargo fmt --check`,
 - **M3 — Spotify render:** learn per-household render params from favorites and
   reliably enqueue a Spotify track on both S1 and S2 (the prior blocker).
 - **M4 — DJ:** library read + DJ engine + queue feeding; `fsonos dj start`
-  delivers a varied classical set that keeps going.
+  delivers a varied set drawn from the owner's own taste (Spotify likes and
+  saves, plus the owner's manual preferences) that keeps going.
 - **M5 — Surfaces & daemon:** HTTP API + MCP server + `serve` + launchd +
   Tailscale deployment; agents control the house end-to-end.
 - **M6 — Reliability polish:** event resubscription robustness, reconnection,
@@ -423,34 +450,87 @@ were weighed; the fifteen below survived, ranked by expected user value. Each is
 tracked as beads labeled `idea-wizard`; bead slugs are in brackets. The beads
 carry the full design, risks, and acceptance criteria.
 
-### 12.1 Classical-aware DJ: whole works, in order, with reasons and steering
+### 12.1 A DJ built on the owner's own taste: whole works, reasons, steering
 
-[`c-dj-works`, `c-dj-work-select`, `c-dj-work-expand`, `c-dj-steer`, `d-dj-explain`]
+[`c-dj-taste`, `c-dj-works`, `c-dj-work-select`, `c-dj-work-expand`,
+`c-dj-steer`, `d-dj-explain`]
 
-Classical tracks on Spotify are movements. A DJ that picks tracks independently
-plays a scherzo, then an aria, then the finale of a different symphony. That is
-the most common way algorithmic classical radio goes wrong, and the current
-`pick_next` (which de-weights repeats of a `work_key` but still picks single
-tracks) does not prevent it.
+The DJ plays what the owner likes, whatever that is. Its taste comes from the
+owner's own Spotify account and from preferences the owner states by hand, not
+from a genre the DJ was built around.
 
-- The DJ's unit becomes the work: every movement of one recording (same album,
-  same `work_key`), in disc and track order. `Track` gains
-  `disc_number`, `track_number`, and `album_uri`; `LibraryItem` gains the two
-  numbers, which the Web API client already parses.
+- **Taste signals (read-only, the owner's own account).** Liked tracks and
+  saved albums (`user-library-read`); followed artists (`user-follow-read`);
+  the owner's playlists (`playlist-read-private`); top artists and tracks
+  (`user-top-read`); recently played tracks (`user-read-recently-played`).
+  Each source has a weight (a liked track counts for more than a track on a
+  followed playlist; heavy recent rotation counts toward taste but also toward
+  "heard lately"). Genre tags come from the artists where the Web API returns
+  them, and from metadata heuristics where it does not. The pool spans every
+  genre these signals cover. The extra scopes are requested at sign-in, and
+  `docs/SCOPE.md` lists them when they land.
+- **Manual preference overrides win.** Persistent, owner-wide preferences in
+  `preferences.toml` (data dir, beside `moods.toml`), with matching CLI, HTTP
+  and MCP verbs: genres, artists, eras and moods to favor or avoid; a default
+  energy; whether explicit tracks are allowed; specific artists, albums or
+  tracks to pin or ban. Precedence, strongest first: an active `dj steer` on
+  the group (until it expires or is cleared), then the persistent preferences,
+  then learned feedback (§12.9), then the raw account signals. A hard "avoid"
+  is never outweighed by a learned or account weight.
+- **Selection is genre-agnostic.** Variety and anti-repeat are keyed by artist,
+  album, track and genre tag (and by composer, period and work when the music
+  is classical). Time-of-day energy, `PickReason`s, steering and feedback use
+  the same keys; energy comes from metadata that applies across genres, with
+  tempo markings as one more input for classical movements.
+- **Multi-movement works stay whole.** Classical tracks on Spotify are
+  movements. A DJ that picks tracks independently plays a scherzo, then an
+  aria, then the finale of a different symphony, which is the most common way
+  algorithmic classical radio goes wrong. When the owner's library includes
+  classical music, the DJ's unit for it is the work: every movement of one
+  recording (same album, same `work_key`), in disc and track order. `Track`
+  gains `disc_number`, `track_number`, and `album_uri`; `LibraryItem` gains the
+  two numbers, which the Web API client already parses. Other music is picked
+  track by track.
 - A liked single movement is completed into its whole work by reading the
   album's track list (`GET /v1/albums/{id}/tracks`, read-only) and caching it.
 - Works longer than `max_work_minutes` (default 75: most complete operas
   and Passions) are left out unless the mood allows them. A parsed work is never
   split; titles that don't parse fall back to single-track units.
-- Each pick carries a `PickReason` (composer not heard in N days, period
-  balance, time-of-day energy, mood match, feedback weight). `fsonos dj status`
-  shows what is playing, why, and what comes next.
+- Each pick carries a `PickReason` (artist or composer not heard in N days,
+  genre or period balance, time-of-day energy, mood match, preference match,
+  feedback weight). `fsonos dj status` shows what is playing, why, and what
+  comes next.
 - Steering is structured constraints, not free text: include/exclude
-  composers, periods, and form or instrumentation keywords (piano, organ,
-  choral, opera), maximum length, and energy bias, with an optional expiry
-  (`--for 2h`). Named moods (`focus`, `dinner`, `sunday-morning`, `bright`,
-  `calm`) are presets in `moods.toml`. Agents turn language into these
-  arguments through MCP `dj_steer`; the daemon never parses natural language.
+  artists, genres and eras, and for classical music composers, periods, and
+  form or instrumentation keywords (piano, organ, choral, opera), maximum
+  length, and energy bias, with an optional expiry (`--for 2h`). Named moods
+  (`focus`, `dinner`, `sunday-morning`, `bright`, `calm`) are presets in
+  `moods.toml`. Steering applies to one group's session; the preferences above
+  apply to every session. Agents turn language into these arguments through
+  MCP `dj_steer`; the daemon never parses natural language.
+
+**Current state (2026-10-08): the shipped DJ is classical-oriented.**
+Generalizing it as described above is planned work (bead `c-dj-taste`). What
+exists today:
+
+- The pool is classical-only. `classical::CandidatePool::build` keeps a track
+  when its metadata (composer credits, catalogue numbers, form and tempo
+  words, key signatures, genres, label) clears a classical score, or when most
+  of its album does, and drops explicit tracks; the library cache stores that
+  verdict in `spotify_library.is_classical`, and only those rows become
+  candidates. A library with no classical music gives the DJ nothing to play.
+- Only liked tracks and saved albums are read (scope `user-library-read`, plus
+  album track lists for whole works). Followed artists, playlists, top items
+  and listening history are not read yet.
+- Variety, energy (estimated from tempo markings), steering (`--composer`,
+  `--not-composer`, `--period`, `--with`/`--without` form keywords) and
+  feedback rows (keyed by `work_key`, `composer_key` and `performer`) all use
+  classical metadata.
+- The only overrides are `dj steer` (per group, for a while or until cleared)
+  and `moods.toml`; there are no persistent owner-wide preferences yet.
+- Whole works in order, the long-work policy, album expansion, `PickReason`s,
+  moods and feedback learning are implemented and stay; the generalization
+  extends them rather than replacing them.
 
 ### 12.2 `fsonos doctor` and `fsonos setup`
 
@@ -599,8 +679,13 @@ complete room names; `--daemon` and `--direct` force a mode.
 
 [`c-dj-feedback`, `d-dj-feedback-surface`] `dj like` and `dj dislike`, early
 skips (under 30 s) as a negative signal, and full listens as a weak positive,
-keyed by work, composer, and performer and decaying over weeks. Time-of-day
-programs set the default mood when none is given.
+keyed by track or work, artist and album (and by composer and performer for
+classical works), nudging the genres they carry, and decaying over weeks.
+Learned feedback ranks below the owner's manual preferences and above the raw
+account signals (§12.1). Today the `feedback` rows carry only the classical
+keys (`work_key`, `composer_key`, `performer`); the artist and album keys come
+with the genre-agnostic DJ (`c-dj-taste`). Time-of-day programs set the
+default mood when none is given.
 
 ### 12.10 Schedules and a sleep timer
 
