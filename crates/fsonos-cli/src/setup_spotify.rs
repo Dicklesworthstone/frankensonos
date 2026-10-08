@@ -13,13 +13,13 @@
 //! The flow's `state` is always checked. The refresh token goes only to the
 //! local, git-ignored token cache in the data directory.
 //!
-//! Re-running is cheap: a cached sign-in with a library already in the store
-//! passes without reading anything.
+//! Re-running reads the library again (read-only), so the DJ's pool
+//! follows the owner's saves and likes, in any genre.
 
 use asupersync::Cx;
 use asupersync::http::Client;
 use fsonos_core::doctor::Status;
-use fsonos_core::store::{SqliteStore, Store as _};
+use fsonos_core::store::SqliteStore;
 use fsonos_spotify::cache::{LibrarySync, sync_library};
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
@@ -91,10 +91,6 @@ pub enum SignIn {
     NoClientId,
     /// Not signed in, and no terminal to sign in on.
     NeedsTerminal,
-    /// Signed in, with this many tracks already in the store.
-    AlreadyIn {
-        tracks: usize,
-    },
     /// Signed in now (or before), and the library just read into the store.
     Synced(LibrarySync),
     /// Signed in through the daemon, but this run has no client id to read
@@ -125,16 +121,11 @@ pub fn verdict(result: SignIn, redirect_uri: &str) -> StepOutcome {
                     .to_owned(),
             ),
         ),
-        SignIn::AlreadyIn { tracks } => (
-            Status::Pass,
-            format!("signed in; the store holds {tracks} library track(s)"),
-            None,
-        ),
         SignIn::Synced(sync) => (
             Status::Pass,
             format!(
-                "signed in; read {} library track(s), {} of them classical (the DJ's pool)",
-                sync.tracks, sync.classical
+                "signed in; read {} library track(s), {} in the DJ's pool ({} classical)",
+                sync.tracks, sync.candidates, sync.classical
             ),
             None,
         ),
@@ -215,12 +206,7 @@ pub fn sign_in(global: &GlobalArgs, serve: &ServeArgs, prompt: Option<&Prompt>) 
             Ok(store) => store,
             Err(e) => return SignIn::Failed(format!("the store: {e}")),
         };
-        if session.is_authorized() {
-            let tracks = store.library().map_or(0, |l| l.len());
-            if tracks > 0 {
-                return SignIn::AlreadyIn { tracks };
-            }
-        } else {
+        if !session.is_authorized() {
             let Some(prompt) = prompt else {
                 return SignIn::NeedsTerminal;
             };
@@ -418,7 +404,7 @@ mod tests {
         let synced = verdict(
             SignIn::Synced(LibrarySync {
                 tracks: 120,
-                candidates: 80,
+                candidates: 95,
                 classical: 80,
                 retired: 0,
             }),
@@ -428,13 +414,9 @@ mod tests {
         assert!(
             synced
                 .summary
-                .contains("120 library track(s), 80 of them classical")
+                .contains("120 library track(s), 95 in the DJ's pool (80 classical)")
         );
-        assert!(
-            verdict(SignIn::AlreadyIn { tracks: 7 }, uri)
-                .remedies
-                .is_empty()
-        );
+        assert!(synced.remedies.is_empty());
         let daemon_only = verdict(SignIn::DaemonOnly, uri);
         assert_eq!(daemon_only.status, Status::Warn);
         assert!(daemon_only.remedies[0].contains("FSONOS_SPOTIFY_CLIENT_ID"));

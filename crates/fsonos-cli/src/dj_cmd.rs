@@ -75,6 +75,13 @@ pub struct SteerArgs {
     /// Never this composer.
     #[arg(long = "not-composer", value_name = "NAME")]
     exclude_composers: Vec<String>,
+    /// Only works by this artist (repeat for more): any credited artist, a
+    /// classical work's performers included.
+    #[arg(long = "artist", value_name = "NAME")]
+    include_artists: Vec<String>,
+    /// Nothing by this artist.
+    #[arg(long = "not-artist", value_name = "NAME")]
+    exclude_artists: Vec<String>,
     /// Only this period: medieval, renaissance, baroque, classical,
     /// romantic, late_romantic, impressionist, modern, contemporary.
     #[arg(long = "period")]
@@ -121,6 +128,8 @@ impl SteerArgs {
             constraints: SteerConstraints {
                 include_composers: self.include_composers.clone(),
                 exclude_composers: self.exclude_composers.clone(),
+                include_artists: self.include_artists.clone(),
+                exclude_artists: self.exclude_artists.clone(),
                 periods: self.periods.clone(),
                 include_keywords: self.include_keywords.clone(),
                 exclude_keywords: self.exclude_keywords.clone(),
@@ -461,6 +470,16 @@ mod tests {
         assert_eq!(req.constraints.max_work_minutes, Some(30));
         assert_eq!(req.constraints.energy_bias, -2);
         assert_eq!(req.for_secs, Some(7200));
+        let artists = steer_of(&[
+            "steer",
+            "Den",
+            "--artist",
+            "Miles Davis",
+            "--not-artist",
+            "The Beatles",
+        ]);
+        assert_eq!(artists.constraints.include_artists, ["Miles Davis"]);
+        assert_eq!(artists.constraints.exclude_artists, ["The Beatles"]);
         assert_eq!(
             steer_of(&["steer", "Den", "--brighter"])
                 .constraints

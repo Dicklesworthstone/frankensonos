@@ -124,8 +124,16 @@ pub struct SteerConstraints {
     /// Never these composers.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exclude_composers: Vec<String>,
-    /// Only these periods: medieval, renaissance, baroque, classical,
-    /// romantic, late_romantic, impressionist, modern, contemporary.
+    /// Only works by these artists: any credited artist, a classical work's
+    /// performers included ("Miles Davis", "The Beatles", "Yo-Yo Ma").
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub include_artists: Vec<String>,
+    /// Nothing by these artists.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude_artists: Vec<String>,
+    /// Only these periods (classical works only: a song has none):
+    /// medieval, renaissance, baroque, classical, romantic, late_romantic,
+    /// impressionist, modern, contemporary.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub periods: Vec<String>,
     /// At least one of these in the work's title, movements, album or
@@ -157,6 +165,7 @@ impl SteerConstraints {
 
 /// What a steer does to a zone's DJ session.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // one per request, never kept in bulk
 pub enum DjSteer {
     /// Replace the session: a mood (lowercase) and constraints laid over
     /// it, lapsing `for_secs` from now (`None`: until cleared).
@@ -186,9 +195,11 @@ pub struct DjStatusDto {
     pub steering: DjSteeringDto,
 }
 
-/// One of the DJ's works: every movement of one recording.
+/// One of the DJ's works: a song, or every movement of one classical
+/// recording.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DjWorkDto {
+    /// The composer, or a song's lead artist.
     pub composer: String,
     pub title: String,
     /// The recording's artists other than the composer.
@@ -220,7 +231,7 @@ pub struct DjReasonDto {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub factors: Vec<DjFactorDto>,
     /// Steering filters dropped because too few works passed them, in the
-    /// order they relaxed: keyword, period, length, composer.
+    /// order they relaxed: keyword, period, length, composer, artist.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relaxed: Vec<String>,
 }
@@ -384,6 +395,8 @@ pub fn describe_steer(mood: Option<&str>, c: &SteerConstraints, for_secs: Option
     };
     list(&c.include_composers, |l| format!("{l} only"));
     list(&c.exclude_composers, |l| format!("no {l}"));
+    list(&c.include_artists, |l| format!("by {l}"));
+    list(&c.exclude_artists, |l| format!("nothing by {l}"));
     list(&c.periods, |l| format!("{} works", l.replace('_', "-")));
     list(&c.include_keywords, |l| format!("with {l}"));
     list(&c.exclude_keywords, |l| format!("without {l}"));

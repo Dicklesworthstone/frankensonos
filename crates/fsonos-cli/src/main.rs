@@ -23,7 +23,7 @@
 //!              runs them)
 //!   scene      save, apply (undoable), list, show or rm the house's named
 //!              states
-//!   dj         the classical DJ: start, skip, stop, steer; status, why,
+//!   dj         the DJ: start, skip, stop, steer; status, why,
 //!              moods
 //!   serve      run the long-lived daemon (HTTP API + MCP over HTTP)
 //!   mcp        serve the MCP tools over stdio (for a local agent)
@@ -239,7 +239,7 @@ enum Command {
     /// speakers.
     #[cfg(feature = "sim")]
     Sim(sim::SimArgs),
-    /// The classical DJ: start, skip, stop and steer it; what it plays, why,
+    /// The DJ: start, skip, stop and steer it; what it plays, why,
     /// and its moods.
     Dj {
         #[command(subcommand)]

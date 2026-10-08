@@ -29,7 +29,7 @@ pub enum TransportAction {
     Previous,
 }
 
-/// Classical DJ controls for a group.
+/// DJ controls for a group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DjAction {
     Start,

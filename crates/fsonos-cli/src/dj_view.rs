@@ -54,6 +54,8 @@ pub fn from_dj(c: &DjConstraints) -> SteerConstraints {
     SteerConstraints {
         include_composers: c.include_composers.clone(),
         exclude_composers: c.exclude_composers.clone(),
+        include_artists: c.include_artists.clone(),
+        exclude_artists: c.exclude_artists.clone(),
         periods: c
             .periods
             .iter()
@@ -284,6 +286,8 @@ mod tests {
     fn constraints_cross_to_the_dj_and_back() {
         let ours = SteerConstraints {
             include_composers: words(&["Bach"]),
+            include_artists: words(&["Yo-Yo Ma"]),
+            exclude_artists: words(&["The Beatles"]),
             periods: words(&["late_romantic", "baroque"]),
             exclude_keywords: words(&["vocal"]),
             max_work_minutes: Some(30),
@@ -325,6 +329,15 @@ mod tests {
         assert_eq!(
             describe(None, &SteerConstraints::default(), None),
             "no steering"
+        );
+        let artists = SteerConstraints {
+            include_artists: words(&["Miles Davis"]),
+            exclude_artists: words(&["The Beatles"]),
+            ..SteerConstraints::default()
+        };
+        assert_eq!(
+            describe(None, &artists, None),
+            "by Miles Davis, nothing by The Beatles"
         );
     }
 

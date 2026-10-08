@@ -671,7 +671,7 @@ fn dj(
 }
 
 #[tool(
-    description = "Start the classical-music DJ in the group a room plays in: it queues whole works (every movement, in order) and keeps the queue topped up. `zone` is a room name. Optional `mood` starts it steered (dj_moods lists the moods), for `for_minutes` (omit: until cleared)."
+    description = "Start the DJ in the group a room plays in: it plays from the owner's own library, in any genre, to their taste (songs one at a time, classical works whole, every movement in order) and keeps the queue topped up. `zone` is a room name. Optional `mood` starts it steered (dj_moods lists the moods), for `for_minutes` (omit: until cleared)."
 )]
 fn dj_start(
     _ctx: &McpContext,
@@ -688,7 +688,7 @@ fn dj_start(
 }
 
 #[tool(
-    description = "Steer the classical DJ in the group a room plays in. Turn the owner's words into these fields; the daemon never parses language. `mood`: a preset (dj_moods lists them: focus, dinner, sunday-morning, bright, calm, and the owner's own). `include_composers` / `exclude_composers`: names (\"Bach\", \"J.S. Bach\", \"Saint-Saëns\"). `periods`: medieval, renaissance, baroque, classical, romantic, late_romantic, impressionist, modern, contemporary. `include_keywords` / `exclude_keywords`: piano, chamber, orchestral, choral, opera, song and vocal find their forms; other words match whole words. `min_minutes` / `max_minutes`: work length. `energy_bias`: -2 (much calmer) to 2 (much brighter). `allow_long`: let operas and Passions in. `for_minutes`: how long, then the time-of-day program returns (omit: until cleared). Examples: 'something calmer for an hour' is energy_bias -1, for_minutes 60; 'no opera' is exclude_keywords [\"opera\"]; 'just piano' is include_keywords [\"piano\"]; 'dinner music' is mood \"dinner\"; 'Bach for the next two hours' is include_composers [\"Bach\"], for_minutes 120. A steer replaces the group's previous steering and applies from the DJ's next piece, whether or not it is running. `clear` true, alone, goes back to the time-of-day program. undo_last puts the previous steering back."
+    description = "Steer the DJ in the group a room plays in. Turn the owner's words into these fields; the daemon never parses language. `mood`: a preset (dj_moods lists them: focus, dinner, sunday-morning, bright, calm, and the owner's own). `include_artists` / `exclude_artists`: any credited artist (\"Miles Davis\", \"The Beatles\"; a classical work's performers count, \"Yo-Yo Ma\"). `include_composers` / `exclude_composers`: classical composers (\"Bach\", \"J.S. Bach\", \"Saint-Saëns\"). `periods`, for classical works only (a song has none): medieval, renaissance, baroque, classical, romantic, late_romantic, impressionist, modern, contemporary. `include_keywords` / `exclude_keywords`: piano, chamber, orchestral, choral, opera, song and vocal find their forms; other words match whole words. `min_minutes` / `max_minutes`: work length. `energy_bias`: -2 (much calmer) to 2 (much brighter). `allow_long`: let operas and Passions in. `for_minutes`: how long, then the time-of-day program returns (omit: until cleared). Examples: 'play some Miles Davis' is include_artists [\"Miles Davis\"]; 'no Beatles today' is exclude_artists [\"The Beatles\"]; 'something calmer for an hour' is energy_bias -1, for_minutes 60; 'no opera' is exclude_keywords [\"opera\"]; 'just piano' is include_keywords [\"piano\"]; 'dinner music' is mood \"dinner\"; 'Bach for the next two hours' is include_composers [\"Bach\"], for_minutes 120. A steer replaces the group's previous steering and applies from the DJ's next piece, whether or not it is running. `clear` true, alone, goes back to the time-of-day program. undo_last puts the previous steering back."
 )]
 #[allow(clippy::too_many_arguments)] // one optional argument per steering field, as agents call it
 fn dj_steer(
@@ -697,6 +697,8 @@ fn dj_steer(
     mood: Option<String>,
     include_composers: Option<Vec<String>>,
     exclude_composers: Option<Vec<String>>,
+    include_artists: Option<Vec<String>>,
+    exclude_artists: Option<Vec<String>>,
     periods: Option<Vec<String>>,
     include_keywords: Option<Vec<String>>,
     exclude_keywords: Option<Vec<String>>,
@@ -713,6 +715,8 @@ fn dj_steer(
         constraints: SteerConstraints {
             include_composers: include_composers.unwrap_or_default(),
             exclude_composers: exclude_composers.unwrap_or_default(),
+            include_artists: include_artists.unwrap_or_default(),
+            exclude_artists: exclude_artists.unwrap_or_default(),
             periods: periods.unwrap_or_default(),
             include_keywords: include_keywords.unwrap_or_default(),
             exclude_keywords: exclude_keywords.unwrap_or_default(),
@@ -728,7 +732,7 @@ fn dj_steer(
 }
 
 #[tool(
-    description = "What the classical DJ plays in the group a room plays in, and why: the work and movement (i of n), composer, performers, album, the reason it was chosen (a summary and the weighted factors), the next two works, and the steering in effect (from dj_steer, or the time-of-day program: mood, constraints, how long it lasts). `zone` is a room name.",
+    description = "What the DJ plays in the group a room plays in, and why: the song or work (with the movement, i of n, for a classical work), its artist or composer, performers, album, the reason it was chosen (a summary and the weighted factors), the next two works, and the steering in effect (from dj_steer, or the time-of-day program: mood, constraints, how long it lasts). `zone` is a room name.",
     annotations(read_only, idempotent)
 )]
 fn dj_status(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {

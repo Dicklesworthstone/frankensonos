@@ -1,7 +1,7 @@
 //! The DJ on the speakers: one fsonos-spotify [`QueueFeed`] per group
 //! coordinator, as the surfaces' [`DjEngine`].
 //!
-//! A start builds the DJ's pool from the library cache (its classical works)
+//! A start builds the DJ's pool from the library cache (songs and classical works)
 //! and the owner's feedback, queues the first works and plays them. The pool
 //! is kept for the playback events that follow, and rebuilt on each start or
 //! skip so a library sync in between is picked up.
@@ -204,7 +204,7 @@ fn failure(err: FeedError) -> Failure {
     let detail = err.to_string();
     match err {
         FeedError::EmptyPool => Failure::new(ErrorCode::SpotifyAuthRequired, detail).with_hint(
-            "Sign in to Spotify on the daemon host and sync the library; the DJ plays its classical works.",
+            "Sign in to Spotify and sync the library: fsonos setup does both, and running it again re-reads a library cached before the DJ played every genre.",
         ),
         FeedError::NoRenderParams => Failure::new(ErrorCode::RenderParamsMissing, detail),
         FeedError::Inactive => Failure::new(ErrorCode::NoDjSession, detail),

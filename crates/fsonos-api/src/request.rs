@@ -411,6 +411,8 @@ fn checked(c: &SteerConstraints) -> Result<SteerConstraints, Failure> {
     Ok(SteerConstraints {
         include_composers: steer_list("include_composers", &c.include_composers, str::to_owned)?,
         exclude_composers: steer_list("exclude_composers", &c.exclude_composers, str::to_owned)?,
+        include_artists: steer_list("include_artists", &c.include_artists, str::to_owned)?,
+        exclude_artists: steer_list("exclude_artists", &c.exclude_artists, str::to_owned)?,
         periods: steer_list("periods", &c.periods, period)?,
         include_keywords: steer_list("include_keywords", &c.include_keywords, str::to_owned)?,
         exclude_keywords: steer_list("exclude_keywords", &c.exclude_keywords, str::to_owned)?,
