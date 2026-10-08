@@ -10,9 +10,9 @@ use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, ContentBlock, FinalCallToolResult, ResultMeta};
 use fsonos_api::plan::{self, DjAction, TransportAction};
 use fsonos_api::{
-    ActionDto, ActionsQuery, ErrorCode, Failure, GroupRequest, MoveRequest, MuteRequest,
-    PartyRequest, PlayFavoriteRequest, PlayRequest, SearchRequest, Surface, UndoDto, VolumeRequest,
-    ZoneRequest,
+    ActionDto, ActionsQuery, DjStartRequest, DjSteerRequest, ErrorCode, Failure, GroupRequest,
+    MoveRequest, MuteRequest, PartyRequest, PlayFavoriteRequest, PlayRequest, SearchRequest,
+    SteerConstraints, Surface, UndoDto, VolumeRequest, ZoneRequest,
 };
 use fsonos_core::clock::Clock;
 use fsonos_core::policy::{Client, Policy};
@@ -67,6 +67,22 @@ impl Backend {
                 .collect::<Vec<_>>()
                 .join(" ");
             Ok((text, outcome))
+        })
+    }
+
+    /// The `dj_status` tool.
+    pub fn dj_status(&self, zone: &str) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let status = self.surface.dj_status(&self.client, zone)?;
+            Ok((status.summary(), status))
+        })
+    }
+
+    /// The `dj_moods` tool.
+    pub fn dj_moods(&self, zone: Option<&str>) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let moods = self.surface.dj_moods(&self.client, zone)?;
+            Ok((moods.summary(), moods))
         })
     }
 
@@ -642,10 +658,79 @@ fn dj(
 }
 
 #[tool(
-    description = "Start the classical-music DJ in the group a room plays in. `zone` is a room name."
+    description = "Start the classical-music DJ in the group a room plays in: it queues whole works (every movement, in order) and keeps the queue topped up. `zone` is a room name. Optional `mood` starts it steered (dj_moods lists the moods), for `for_minutes` (omit: until cleared)."
 )]
-fn dj_start(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    dj(zone, "dj_start", DjAction::Start)
+fn dj_start(
+    _ctx: &McpContext,
+    zone: String,
+    mood: Option<String>,
+    for_minutes: Option<u32>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let req = DjStartRequest {
+        zone,
+        mood,
+        for_secs: for_minutes.map(|m| u64::from(m) * 60),
+    };
+    with_backend(|b| b.control("dj_start", |h| plan::plan_dj_start(h, &req)))
+}
+
+#[tool(
+    description = "Steer the classical DJ in the group a room plays in. Turn the owner's words into these fields; the daemon never parses language. `mood`: a preset (dj_moods lists them: focus, dinner, sunday-morning, bright, calm, and the owner's own). `include_composers` / `exclude_composers`: names (\"Bach\", \"J.S. Bach\", \"Saint-Saëns\"). `periods`: medieval, renaissance, baroque, classical, romantic, late_romantic, impressionist, modern, contemporary. `include_keywords` / `exclude_keywords`: piano, chamber, orchestral, choral, opera, song and vocal find their forms; other words match whole words. `min_minutes` / `max_minutes`: work length. `energy_bias`: -2 (much calmer) to 2 (much brighter). `allow_long`: let operas and Passions in. `for_minutes`: how long, then the time-of-day program returns (omit: until cleared). Examples: 'something calmer for an hour' is energy_bias -1, for_minutes 60; 'no opera' is exclude_keywords [\"opera\"]; 'just piano' is include_keywords [\"piano\"]; 'dinner music' is mood \"dinner\"; 'Bach for the next two hours' is include_composers [\"Bach\"], for_minutes 120. A steer replaces the group's previous steering and applies from the DJ's next piece, whether or not it is running. `clear` true, alone, goes back to the time-of-day program. undo_last puts the previous steering back."
+)]
+#[allow(clippy::too_many_arguments)] // one optional argument per steering field, as agents call it
+fn dj_steer(
+    _ctx: &McpContext,
+    zone: String,
+    mood: Option<String>,
+    include_composers: Option<Vec<String>>,
+    exclude_composers: Option<Vec<String>>,
+    periods: Option<Vec<String>>,
+    include_keywords: Option<Vec<String>>,
+    exclude_keywords: Option<Vec<String>>,
+    min_minutes: Option<u32>,
+    max_minutes: Option<u32>,
+    energy_bias: Option<i8>,
+    allow_long: Option<bool>,
+    for_minutes: Option<u32>,
+    clear: Option<bool>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let req = DjSteerRequest {
+        zone,
+        mood,
+        constraints: SteerConstraints {
+            include_composers: include_composers.unwrap_or_default(),
+            exclude_composers: exclude_composers.unwrap_or_default(),
+            periods: periods.unwrap_or_default(),
+            include_keywords: include_keywords.unwrap_or_default(),
+            exclude_keywords: exclude_keywords.unwrap_or_default(),
+            min_work_minutes: min_minutes,
+            max_work_minutes: max_minutes,
+            energy_bias: energy_bias.unwrap_or(0),
+            allow_long_works: allow_long.unwrap_or(false),
+        },
+        for_secs: for_minutes.map(|m| u64::from(m) * 60),
+        clear: clear.unwrap_or(false),
+    };
+    with_backend(|b| b.control("dj_steer", |h| plan::plan_dj_steer(h, &req)))
+}
+
+#[tool(
+    description = "What the classical DJ plays in the group a room plays in, and why: the work and movement (i of n), composer, performers, album, the reason it was chosen (a summary and the weighted factors), the next two works, and the steering in effect (from dj_steer, or the time-of-day program: mood, constraints, how long it lasts). `zone` is a room name.",
+    annotations(read_only, idempotent)
+)]
+fn dj_status(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(move |b| b.dj_status(&zone))
+}
+
+#[tool(
+    description = "The DJ's moods (built-in and the owner's moods.toml) with their constraints, the time-of-day programs (which mood plays when a zone isn't steered), and the steering in effect now: in `zone`'s group when a room is given, else the house's program. Use a mood's name with dj_steer or dj_start.",
+    annotations(read_only, idempotent)
+)]
+fn dj_moods(
+    _ctx: &McpContext,
+    zone: Option<String>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(move |b| b.dj_moods(zone.as_deref()))
 }
 
 #[tool(

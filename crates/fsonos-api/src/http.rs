@@ -18,7 +18,11 @@
 //! | `POST /volume` | [`crate::VolumeRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /mute` | [`crate::MuteRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /group` | [`crate::GroupRequest`] | [`crate::OutcomeDto`] |
-//! | `POST /dj/start`, `/dj/skip`, `/dj/stop` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
+//! | `POST /dj/start` | [`crate::DjStartRequest`] | [`crate::OutcomeDto`] |
+//! | `POST /dj/skip`, `/dj/stop` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
+//! | `POST /dj/steer` | [`crate::DjSteerRequest`] | [`crate::OutcomeDto`] |
+//! | `GET /zones/{room}/dj` | | [`crate::DjStatusDto`] |
+//! | `GET /dj/moods?zone=<room>` | | [`crate::DjMoodsDto`] (`now` is the room's steering, else the house's program) |
 //!
 //! Every route first passes the listener's [`WebPolicy`] (a present Origin
 //! must be the daemon's own; POSTs must be JSON); the listener itself admits
@@ -41,6 +45,7 @@ use std::collections::BTreeMap;
 use std::future::ready;
 use std::sync::Arc;
 
+use crate::dj::{DjMoodsDto, DjStatusDto};
 use crate::failure::{ErrorCode, Failure};
 use crate::identity::Identity;
 use crate::log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
@@ -50,8 +55,8 @@ use crate::plan::{
 };
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, ZoneStateDto};
 use crate::request::{
-    GroupRequest, MoveRequest, MuteRequest, PartyRequest, PlayFavoriteRequest, PlayRequest,
-    SearchRequest, VolumeRequest, ZoneRequest,
+    DjStartRequest, DjSteerRequest, GroupRequest, MoveRequest, MuteRequest, PartyRequest,
+    PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
 };
 use crate::surface::Surface;
 use crate::web::WebPolicy;
@@ -113,7 +118,82 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(house(cx));
     routes.extend(controls(cx));
     routes.extend(house_verbs(cx));
+    routes.extend(dj(cx));
     routes
+}
+
+/// The DJ: start, skip, stop, steer; its status and moods.
+fn dj(cx: &Ctx<'_>) -> Vec<RouteEntry> {
+    let mut routes = vec![
+        cx.control(
+            Op::post(
+                "/dj/start",
+                "dj_start",
+                DJ,
+                "Start the DJ on a room's zone, in a mood when one is named",
+            ),
+            |h, r: &DjStartRequest| plan::plan_dj_start(h, r),
+        ),
+        cx.control(
+            Op::post(
+                "/dj/steer",
+                "dj_steer",
+                DJ,
+                "Steer the DJ in a room's zone (a mood and constraints, for a while), or clear it",
+            ),
+            |h, r: &DjSteerRequest| plan::plan_dj_steer(h, r),
+        ),
+        cx.route(
+            &Op::get(
+                "/zones/{room}/dj",
+                "dj_status",
+                DJ,
+                "What the DJ plays in a room's zone, why, what comes next, and how it is steered",
+            ),
+            |s, c, req| answer(path_room(req).and_then(|room| s.dj_status(c, &room))),
+        )
+        .response_schema::<DjStatusDto>(200, "The DJ in that zone"),
+        cx.route(
+            &Op::get(
+                "/dj/moods",
+                "dj_moods",
+                DJ,
+                "The DJ's moods and time-of-day programs, and the steering in effect now",
+            ),
+            |s, c, req| answer(dj_moods_query(req).and_then(|q| s.dj_moods(c, q.zone.as_deref()))),
+        )
+        .query_schema::<DjMoodsQuery>(false)
+        .response_schema::<DjMoodsDto>(200, "The moods and programs"),
+    ];
+    for (path, id, summary, action) in [
+        (
+            "/dj/skip",
+            "dj_skip",
+            "Skip the DJ's current pick",
+            DjAction::Skip,
+        ),
+        ("/dj/stop", "dj_stop", "Stop the DJ", DjAction::Stop),
+    ] {
+        routes.push(cx.control(
+            Op::post(path, id, DJ, summary),
+            move |h, r: &ZoneRequest| plan::plan_dj(h, r, action),
+        ));
+    }
+    routes
+}
+
+/// `GET /dj/moods?zone=<room>`.
+#[derive(JsonSchema)]
+struct DjMoodsQuery {
+    /// A room: `now` is its zone's steering rather than the house's
+    /// program.
+    zone: Option<String>,
+}
+
+fn dj_moods_query(req: &Request) -> Result<DjMoodsQuery, Failure> {
+    Ok(DjMoodsQuery {
+        zone: query_param(req, "zone")?,
+    })
 }
 
 /// Moving the music between rooms, and the whole-house party.
@@ -379,26 +459,6 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         routes.push(cx.control(
             Op::post(path, id, CONTROL, summary),
             move |h, r: &ZoneRequest| plan::plan_transport(h, r, action),
-        ));
-    }
-    for (path, id, summary, action) in [
-        (
-            "/dj/start",
-            "dj_start",
-            "Start the DJ on a room's zone",
-            DjAction::Start,
-        ),
-        (
-            "/dj/skip",
-            "dj_skip",
-            "Skip the DJ's current pick",
-            DjAction::Skip,
-        ),
-        ("/dj/stop", "dj_stop", "Stop the DJ", DjAction::Stop),
-    ] {
-        routes.push(cx.control(
-            Op::post(path, id, DJ, summary),
-            move |h, r: &ZoneRequest| plan::plan_dj(h, r, action),
         ));
     }
     routes

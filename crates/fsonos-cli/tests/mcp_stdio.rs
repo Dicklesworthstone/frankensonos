@@ -154,6 +154,9 @@ fn control_tools_are_advertised_with_their_arguments() {
         "dj_start",
         "dj_skip",
         "dj_stop",
+        "dj_steer",
+        "dj_status",
+        "dj_moods",
     ] {
         let t = tool(name);
         assert!(
@@ -175,6 +178,25 @@ fn control_tools_are_advertised_with_their_arguments() {
     );
     assert_eq!(
         tool("list_zones")["annotations"]["readOnlyHint"],
+        true,
+        "{list}"
+    );
+    let steer = &tool("dj_steer")["inputSchema"];
+    for arg in [
+        "mood",
+        "include_composers",
+        "energy_bias",
+        "for_minutes",
+        "clear",
+    ] {
+        assert!(
+            steer["properties"].get(arg).is_some(),
+            "dj_steer lacks {arg}: {steer}"
+        );
+    }
+    assert_eq!(steer["required"], json!(["zone"]), "{steer}");
+    assert_eq!(
+        tool("dj_status")["annotations"]["readOnlyHint"],
         true,
         "{list}"
     );

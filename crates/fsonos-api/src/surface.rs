@@ -32,12 +32,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use crate::dj::{DjEngine, DjSpeakers};
+use crate::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto};
 use crate::events::EventBus;
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::Guard;
-use crate::plan::{Command, Rooms, plan_play_favorite, resolve};
+use crate::plan::{Command, DjAction, Rooms, plan_play_favorite, resolve};
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto};
 use crate::request::{PlayFavoriteRequest, SearchRequest};
 use crate::zones::{ZoneDto, zone_for_target, zone_views};
@@ -374,10 +374,7 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
     ) -> Result<OutcomeDto, Failure> {
-        if let Command::Dj {
-            coordinator,
-            action,
-        } = command
+        if let Command::Dj { coordinator, .. } | Command::DjSteer { coordinator, .. } = command
             && let Some(dj) = &self.dj
         {
             let at = DjSpeakers {
@@ -386,13 +383,8 @@ impl Surface {
                 coordinator,
             };
             return self
-                .with_store(|store| Ok(dj.act(at, store, *action, &*self.clock)))?
-                .unwrap_or_else(|| {
-                    Err(Failure::new(
-                        ErrorCode::Internal,
-                        "the DJ needs the daemon's store (its library and history)",
-                    ))
-                });
+                .with_store(|store| Ok(run_dj(&**dj, at, store, command, &*self.clock)))?
+                .unwrap_or_else(|| Err(no_dj_store()));
         }
         crate::heal::execute_healing(&*self.transport, households, guard, command, || {
             self.resurvey()
@@ -475,6 +467,7 @@ impl Surface {
             &affected(&households, &command),
             self.now(),
         );
+        let sessions = self.sessions_before(&command);
         let result = self.execute(&households, &guard, &command);
         if result.is_ok() {
             self.remember_play(&command);
@@ -505,7 +498,11 @@ impl Surface {
                 for healed in noted(NoteCode::Healed) {
                     let _ = write!(text, " (healed: {healed})");
                 }
-                (decision, text, actions::before_state(&snaps))
+                (
+                    decision,
+                    text,
+                    actions::before_state_with(&snaps, &sessions),
+                )
             }
             Err(f) if f.code == ErrorCode::PolicyDenied => {
                 (format!("deny: {}", f.detail), f.detail.clone(), None)
@@ -514,7 +511,7 @@ impl Surface {
             Err(f) => (
                 "allow".to_string(),
                 format!("failed: {}", f.detail),
-                actions::before_state(&snaps),
+                actions::before_state_with(&snaps, &sessions),
             ),
         };
         if !missed.is_empty() {
@@ -759,6 +756,99 @@ impl Surface {
         }
     }
 
+    /// The DJ sessions `command` replaces (a steer's group's), as they are
+    /// before it runs, so undo can put them back.
+    fn sessions_before(&self, command: &Command) -> Vec<actions::SessionBefore> {
+        let Command::DjSteer { coordinator, .. } = command else {
+            return Vec::new();
+        };
+        let captured = self.with_store(|store| {
+            Ok(actions::capture_sessions(
+                &*store,
+                std::slice::from_ref(coordinator),
+            ))
+        });
+        match captured {
+            Ok(Some(Ok(sessions))) => sessions,
+            Ok(None) => Vec::new(),
+            Ok(Some(Err(e))) => {
+                tracing::warn!("the steering it replaces is not kept for undo: {e}");
+                Vec::new()
+            }
+            Err(f) => {
+                tracing::warn!(
+                    "the steering it replaces is not kept for undo: {}",
+                    f.detail
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// The DJ engine, or why there is none.
+    fn dj_engine(&self) -> Result<&dyn DjEngine, Failure> {
+        self.dj.as_deref().ok_or_else(|| {
+            Failure::new(ErrorCode::NotImplemented, "this surface runs no DJ")
+                .with_hint("Ask the daemon (fsonos serve), which runs the DJ.")
+        })
+    }
+
+    /// What the DJ plays in the zone `zone` plays in, why, what comes next,
+    /// and how its next pick is steered (`dj_status`).
+    pub fn dj_status(&self, client: &Client, zone: &str) -> Result<DjStatusDto, Failure> {
+        self.guard(client).authorize("dj_status", true)?;
+        let dj = self.dj_engine()?;
+        let households = self.households()?;
+        let aliases = self.aliases();
+        let target = resolve(room_view(&households, aliases.as_ref(), client), zone)
+            .map_err(|f| self.explain(f))?;
+        let coordinator = &target.coordinator.id;
+        // Where the group's queue is, which places the movement playing.
+        let queue_position = if dj.feeds(coordinator) {
+            self.live()
+                .and_then(|live| live.player(coordinator)?.queue_position)
+                .or_else(|| {
+                    control::playback(&*self.transport, &households, coordinator)
+                        .ok()
+                        .map(|p| p.position.track)
+                        .filter(|&track| track > 0)
+                })
+        } else {
+            None
+        };
+        let at = DjSpeakers {
+            transport: &*self.transport,
+            households: &households,
+            coordinator,
+        };
+        self.with_store(|store| Ok(dj.status(at, store, queue_position, &*self.clock)))?
+            .unwrap_or_else(|| Err(no_dj_store()))
+    }
+
+    /// The DJ's moods and time-of-day programs, and the steering in effect
+    /// now: in the zone `zone` plays in, else the house's program
+    /// (`dj_moods`).
+    pub fn dj_moods(&self, client: &Client, zone: Option<&str>) -> Result<DjMoodsDto, Failure> {
+        self.guard(client).authorize("dj_moods", true)?;
+        let dj = self.dj_engine()?;
+        let Some(zone) = zone else {
+            return self
+                .with_store(|store| Ok(dj.moods(None, store, &*self.clock)))?
+                .unwrap_or_else(|| Err(no_dj_store()));
+        };
+        let households = self.households()?;
+        let aliases = self.aliases();
+        let target = resolve(room_view(&households, aliases.as_ref(), client), zone)
+            .map_err(|f| self.explain(f))?;
+        let at = DjSpeakers {
+            transport: &*self.transport,
+            households: &households,
+            coordinator: &target.coordinator.id,
+        };
+        self.with_store(|store| Ok(dj.moods(Some(at), store, &*self.clock)))?
+            .unwrap_or_else(|| Err(no_dj_store()))
+    }
+
     /// The favorites of the household `zone` belongs to (`list_favorites`).
     pub fn favorites(&self, client: &Client, zone: &str) -> Result<Vec<FavoriteDto>, Failure> {
         self.guard(client).authorize("list_favorites", true)?;
@@ -861,6 +951,41 @@ pub fn follow(surface: &Arc<Surface>) {
         });
 }
 
+/// Carry a DJ command out with `dj`: a steer, and then with `start` a start.
+fn run_dj(
+    dj: &dyn DjEngine,
+    at: DjSpeakers<'_>,
+    store: &mut dyn Store,
+    command: &Command,
+    clock: &dyn Clock,
+) -> Result<OutcomeDto, Failure> {
+    match command {
+        Command::Dj { action, .. } => dj.act(at, store, *action, clock),
+        Command::DjSteer { steer, start, .. } => {
+            let steered = dj.steer(at, store, steer, clock)?;
+            if !start {
+                return Ok(steered);
+            }
+            let started = dj.act(at, store, DjAction::Start, clock)?;
+            Ok(OutcomeDto {
+                done: format!("{}; {}", steered.done, started.done),
+                ..started
+            })
+        }
+        _ => Err(Failure::new(
+            ErrorCode::Internal,
+            format!("not a DJ command: {command:?}"),
+        )),
+    }
+}
+
+fn no_dj_store() -> Failure {
+    Failure::new(
+        ErrorCode::Internal,
+        "the DJ needs the daemon's store (its library, history and steering)",
+    )
+}
+
 /// The coordinators of the groups `command` changes (a join changes both
 /// the member's old group and the one it joins).
 fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
@@ -874,7 +999,12 @@ fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
         Command::Play { coordinator, .. }
         | Command::PlayFavorite { coordinator, .. }
         | Command::Transport { coordinator, .. }
-        | Command::Dj { coordinator, .. } => vec![coordinator.clone()],
+        | Command::Dj { coordinator, .. }
+        | Command::DjSteer {
+            coordinator,
+            start: true,
+            ..
+        } => vec![coordinator.clone()],
         Command::Volume { target, .. } | Command::Mute { target, .. } => vec![group_of(target)],
         Command::Join {
             member,
@@ -888,7 +1018,8 @@ fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
             .find(|h| h.player(member).is_some())
             .map(|h| h.groups.iter().map(|g| g.coordinator.clone()).collect())
             .unwrap_or_default(),
-        Command::Nothing { .. } => Vec::new(),
+        // A steer changes the stored session, not the speakers.
+        Command::DjSteer { start: false, .. } | Command::Nothing { .. } => Vec::new(),
     }
 }
 

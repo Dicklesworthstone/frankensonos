@@ -148,24 +148,31 @@ pub fn execute<T: Transport + ?Sized>(
         }
         Command::Move { from, to, copy } => move_music(transport, households, from, to, *copy)?,
         Command::Party { member, lead } => party(transport, households, member, lead.as_ref())?,
-        Command::Dj { action, .. } => {
-            let verb = match action {
-                DjAction::Start => "start",
-                DjAction::Skip => "skip",
-                DjAction::Stop => "stop",
-            };
-            return Err(Failure::new(
-                ErrorCode::NotImplemented,
-                format!("dj {verb}: the DJ is not wired to the speakers yet"),
-            )
-            .with_hint("Play a Sonos favorite or a radio/HTTP stream URI for now."));
-        }
+        Command::Dj { .. } | Command::DjSteer { .. } => return Err(no_dj(command)),
         Command::Nothing { reason } => OutcomeDto {
             changed: false,
             ..OutcomeDto::sent(reason.clone())
         },
     };
     Ok(outcome)
+}
+
+/// A DJ command on a surface without a DJ engine (see
+/// [`crate::Surface::with_dj`]).
+fn no_dj(command: &Command) -> Failure {
+    let verb = match command {
+        Command::Dj { action, .. } => match action {
+            DjAction::Start => "start",
+            DjAction::Skip => "skip",
+            DjAction::Stop => "stop",
+        },
+        _ => "steer",
+    };
+    Failure::new(
+        ErrorCode::NotImplemented,
+        format!("dj {verb}: the DJ is not wired to the speakers yet"),
+    )
+    .with_hint("Play a Sonos favorite or a radio/HTTP stream URI for now.")
 }
 
 /// Move (or with `copy`, replay) the music room `from` plays to room `to`.

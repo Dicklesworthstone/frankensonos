@@ -27,6 +27,7 @@ mod confine;
 mod daemon;
 mod direct;
 mod dj;
+mod dj_view;
 mod doctor;
 mod rooms_cmd;
 #[cfg(feature = "sim")]

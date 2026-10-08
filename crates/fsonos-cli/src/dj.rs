@@ -11,25 +11,31 @@
 //! program in `moods.toml` (the built-in moods and programs when there is no
 //! file) picks one for the house's local day and time, which also sets the
 //! energy target.
+//!
+//! A steer replaces the zone's stored session (or a clear deletes it); it is
+//! checked against the moods first, and applies from the next pick whether
+//! or not the DJ runs. Status and moods read the same session and programs
+//! ([`crate::dj_view`]).
 
 use chrono::{Datelike, Timelike};
-use fsonos_api::dj::{DjEngine, DjSpeakers};
+use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
 use fsonos_api::plan::DjAction;
 use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 use fsonos_core::clock::Clock;
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::Store;
 use fsonos_core::{CoreError, control};
-use fsonos_spotify::SpotifyError;
 use fsonos_spotify::cache::pool_from_store;
 use fsonos_spotify::dj::{DjConfig, WorkPool};
 use fsonos_spotify::feed::{FeedError, Planning, QueueFeed, QueuedWork, Speakers};
 use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
-use fsonos_spotify::steer::{Moods, Steer, steering};
+use fsonos_spotify::steer::{DjSession, Moods, Steer, steering};
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+use crate::dj_view::{self, steer_failure, store_failure};
 
 /// The moods file's name inside the data directory.
 pub const MOODS_FILE: &str = "moods.toml";
@@ -53,6 +59,10 @@ impl SpotifyDj {
                 ..State::default()
             }),
         }
+    }
+
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -85,6 +95,11 @@ impl State {
         self.pool = WorkPool::new(&candidates);
         // Feedback only weights the picks; without it the DJ still plays.
         self.feedback = FeedbackModel::load(&StoreFeedback(store), now).ok();
+        self.reload_moods(moods_file)
+    }
+
+    /// Re-read the moods and programs (the built-ins without a file).
+    fn reload_moods(&mut self, moods_file: Option<&PathBuf>) -> Result<(), Failure> {
         if let Some(path) = moods_file {
             self.moods = Moods::load(path).map_err(|e| {
                 Failure::invalid(e.to_string()).with_hint("Fix moods.toml in the data directory.")
@@ -110,15 +125,12 @@ impl State {
             local.timestamp(),
             Some((local.weekday(), local.time())),
         )
-        .map_err(|e| match e {
-            SpotifyError::UnknownMood { name, known } => {
-                Failure::new(ErrorCode::UnknownMood, format!("no mood {name:?}"))
-                    .with_suggestions(known)
-            }
-            // Steering whose bounds clash (a session's with its mood's).
-            SpotifyError::Config(why) => Failure::invalid(why)
-                .with_hint("Fix the zone's DJ steering: its bounds clash with the mood's."),
-            other => Failure::new(ErrorCode::Internal, format!("DJ steering: {other}")),
+        // Bounds that clash are a session's with its mood's.
+        .map_err(|e| {
+            steer_failure(
+                e,
+                "Fix the zone's DJ steering: its bounds clash with the mood's.",
+            )
         })?;
         Ok(Context {
             steer,
@@ -197,6 +209,68 @@ fn failure(err: FeedError) -> Failure {
     }
 }
 
+/// Replace or clear the stored session of `at`'s group (see the module
+/// docs).
+fn steer(
+    state: &State,
+    at: DjSpeakers<'_>,
+    store: &mut dyn Store,
+    steer: &DjSteer,
+    clock: &dyn Clock,
+) -> Result<OutcomeDto, Failure> {
+    let room = room(at);
+    let key = &at.coordinator.0;
+    let when = if state
+        .feeds
+        .get(at.coordinator)
+        .is_some_and(QueueFeed::is_active)
+    {
+        "from the next piece; the one queued ahead stays"
+    } else {
+        "when the DJ plays there"
+    };
+    match steer {
+        DjSteer::Clear => {
+            if store.dj_session(key).map_err(store_failure)?.is_none() {
+                return Ok(OutcomeDto {
+                    changed: false,
+                    ..sent(format!("{room}'s group has no DJ steering to clear"))
+                });
+            }
+            store.delete_dj_session(key).map_err(store_failure)?;
+            Ok(sent(format!(
+                "cleared the DJ steering in {room}'s group: it follows the time-of-day program ({when})"
+            )))
+        }
+        DjSteer::Set {
+            mood,
+            constraints,
+            for_secs,
+        } => {
+            let now = clock.now().timestamp();
+            let session = DjSession {
+                zone: key.clone(),
+                mood: mood.clone(),
+                constraints: dj_view::to_dj(constraints)?,
+                expires_at: for_secs.map(|secs| now.saturating_add_unsigned(secs)),
+            };
+            // An unknown mood, or bounds that clash with the mood's.
+            session.steer(&state.moods, None).map_err(|e| {
+                steer_failure(
+                    e,
+                    "These constraints clash with the mood's own: change one, or pick another mood.",
+                )
+            })?;
+            let row = session.to_store().map_err(store_failure)?;
+            store.save_dj_session(&row).map_err(store_failure)?;
+            Ok(sent(format!(
+                "steered {room}'s group: {} ({when})",
+                dj_view::describe(mood.as_deref(), constraints, *for_secs)
+            )))
+        }
+    }
+}
+
 impl DjEngine for SpotifyDj {
     fn act(
         &self,
@@ -268,6 +342,52 @@ impl DjEngine for SpotifyDj {
                 Ok(sent(format!("the DJ stopped in {room}'s group")))
             }
         }
+    }
+
+    fn steer(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        steer_by: &DjSteer,
+        clock: &dyn Clock,
+    ) -> Result<OutcomeDto, Failure> {
+        let mut state = self.state();
+        state.reload_moods(self.moods_file.as_ref())?;
+        steer(&state, at, store, steer_by, clock)
+    }
+
+    fn status(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        queue_position: Option<u32>,
+        clock: &dyn Clock,
+    ) -> Result<DjStatusDto, Failure> {
+        let mut state = self.state();
+        state.reload_moods(self.moods_file.as_ref())?;
+        let steering = dj_view::steering_of(store, &state.moods, at.coordinator, clock)?;
+        Ok(dj_view::status(
+            room(at),
+            state.feeds.get(at.coordinator),
+            &state.pool,
+            queue_position,
+            steering,
+        ))
+    }
+
+    fn moods(
+        &self,
+        at: Option<DjSpeakers<'_>>,
+        store: &dyn Store,
+        clock: &dyn Clock,
+    ) -> Result<DjMoodsDto, Failure> {
+        let mut state = self.state();
+        state.reload_moods(self.moods_file.as_ref())?;
+        let now = match at {
+            Some(at) => dj_view::steering_of(store, &state.moods, at.coordinator, clock)?,
+            None => dj_view::program_now(&state.moods, clock),
+        };
+        Ok(dj_view::moods_of(&state.moods, now))
     }
 
     fn feeds(&self, coordinator: &PlayerId) -> bool {

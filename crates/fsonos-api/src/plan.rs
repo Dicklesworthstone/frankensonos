@@ -12,11 +12,12 @@ use fsonos_core::rooms::{Aliases, ResolveContext, resolve_one};
 use fsonos_core::{ControlTarget, HouseholdState};
 use fsonos_types::PlayerId;
 
+use crate::dj::DjSteer;
 use crate::failure::{ErrorCode, Failure};
 use crate::request::zone_name;
 use crate::request::{
-    GroupRequest, MoveRequest, MuteRequest, PartyRequest, PlayFavoriteRequest, PlayRequest,
-    VolumeChange, VolumeRequest, ZoneRequest,
+    DjStartRequest, DjSteerRequest, GroupRequest, MoveRequest, MuteRequest, PartyRequest,
+    PlayFavoriteRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest,
 };
 
 /// Pause, resume or skip on a group.
@@ -95,6 +96,13 @@ pub enum Command {
         coordinator: PlayerId,
         action: DjAction,
     },
+    /// Replace or clear the DJ steering of the group `coordinator` leads,
+    /// then, with `start`, start the DJ there.
+    DjSteer {
+        coordinator: PlayerId,
+        steer: DjSteer,
+        start: bool,
+    },
     /// Already in the requested state; nothing to send.
     Nothing { reason: String },
 }
@@ -118,6 +126,8 @@ impl Command {
                 matches!(action, TransportAction::Pause | TransportAction::Resume)
             }
             Self::Volume { change, .. } => matches!(change, VolumeChange::Set(_)),
+            // Steering sets the stored session; starting queues more works.
+            Self::DjSteer { start, .. } => !start,
             // A move that ran once has nothing left to move.
             Self::Move { .. } | Self::Dj { .. } | Self::Nothing { .. } => false,
         }
@@ -130,7 +140,8 @@ impl Command {
             Self::Play { coordinator, .. }
             | Self::PlayFavorite { coordinator, .. }
             | Self::Transport { coordinator, .. }
-            | Self::Dj { coordinator, .. } => Some(coordinator),
+            | Self::Dj { coordinator, .. }
+            | Self::DjSteer { coordinator, .. } => Some(coordinator),
             Self::Volume { target, .. } | Self::Mute { target, .. } => Some(target),
             Self::Join { member, .. } | Self::Leave { member } => Some(member),
             Self::Move { from, .. } => Some(from),
@@ -146,7 +157,8 @@ impl Command {
             Self::Play { coordinator, .. }
             | Self::PlayFavorite { coordinator, .. }
             | Self::Transport { coordinator, .. }
-            | Self::Dj { coordinator, .. } => Some(coordinator),
+            | Self::Dj { coordinator, .. }
+            | Self::DjSteer { coordinator, .. } => Some(coordinator),
             Self::Volume {
                 target,
                 scope: VolumeScope::Group,
@@ -163,7 +175,8 @@ impl Command {
             Self::Play { coordinator, .. }
             | Self::PlayFavorite { coordinator, .. }
             | Self::Transport { coordinator, .. }
-            | Self::Dj { coordinator, .. } => coordinator.clone_from(to),
+            | Self::Dj { coordinator, .. }
+            | Self::DjSteer { coordinator, .. } => coordinator.clone_from(to),
             Self::Volume {
                 target,
                 scope: VolumeScope::Group,
@@ -448,6 +461,41 @@ pub fn plan_dj<'a>(
     })
 }
 
+/// `POST /dj/start` / the `dj_start` tool: with a mood, steer the group and
+/// start the DJ in one go.
+pub fn plan_dj_start<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &DjStartRequest,
+) -> Result<Command, Failure> {
+    let (zone, steer) = (req.zone()?, req.steer()?);
+    let coordinator = resolve(rooms, zone)?.coordinator.id.clone();
+    Ok(match steer {
+        Some(steer) => Command::DjSteer {
+            coordinator,
+            steer,
+            start: true,
+        },
+        None => Command::Dj {
+            coordinator,
+            action: DjAction::Start,
+        },
+    })
+}
+
+/// `POST /dj/steer` / the `dj_steer` tool. Steering is the group's: it is
+/// stored under the group's coordinator.
+pub fn plan_dj_steer<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &DjSteerRequest,
+) -> Result<Command, Failure> {
+    let (zone, steer) = (req.zone()?, req.steer()?);
+    Ok(Command::DjSteer {
+        coordinator: resolve(rooms, zone)?.coordinator.id.clone(),
+        steer,
+        start: false,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,6 +626,17 @@ mod tests {
             }
             .repeat_safe()
         );
+        let steer = |start| Command::DjSteer {
+            coordinator: c(),
+            steer: DjSteer::Clear,
+            start,
+        };
+        assert!(steer(false).repeat_safe());
+        assert!(!steer(true).repeat_safe());
+        assert_eq!(
+            steer(false).on_coordinator(&id("RINCON_KIT1")).addressed(),
+            Some(&id("RINCON_KIT1"))
+        );
         // A group command can be moved to the new coordinator; a room
         // command cannot.
         let moved = volume(VolumeChange::Set(20)).on_coordinator(&id("RINCON_KIT1"));
@@ -588,6 +647,54 @@ mod tests {
         };
         assert_eq!(room.group_coordinator(), None);
         assert_eq!(room.addressed(), Some(&c()));
+    }
+
+    #[test]
+    fn dj_steering_is_the_groups() {
+        let houses = households();
+        // Kitchen@S1 plays in Den's group: its steering is stored under Den.
+        let req = DjSteerRequest {
+            zone: "kitchen@s1".into(),
+            mood: Some("Focus".into()),
+            ..DjSteerRequest::default()
+        };
+        assert_eq!(
+            plan_dj_steer(&houses, &req).unwrap(),
+            Command::DjSteer {
+                coordinator: id("RINCON_DEN"),
+                steer: DjSteer::Set {
+                    mood: Some("focus".into()),
+                    constraints: crate::dj::SteerConstraints::default(),
+                    for_secs: None,
+                },
+                start: false,
+            }
+        );
+        // The request is checked before the room is looked for.
+        let bad = DjSteerRequest {
+            zone: "Nowhere".into(),
+            ..DjSteerRequest::default()
+        };
+        assert_eq!(
+            plan_dj_steer(&houses, &bad).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        let start = |mood: Option<&str>| DjStartRequest {
+            zone: "Den".into(),
+            mood: mood.map(str::to_owned),
+            for_secs: None,
+        };
+        assert_eq!(
+            plan_dj_start(&houses, &start(None)).unwrap(),
+            Command::Dj {
+                coordinator: id("RINCON_DEN"),
+                action: DjAction::Start
+            }
+        );
+        assert!(matches!(
+            plan_dj_start(&houses, &start(Some("calm"))).unwrap(),
+            Command::DjSteer { start: true, .. }
+        ));
     }
 
     #[test]

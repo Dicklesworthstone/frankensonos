@@ -10,6 +10,7 @@
 use fastapi::{JsonSchema, fastapi_openapi};
 use serde::{Deserialize, Serialize};
 
+use crate::dj::{DjSteer, SteerConstraints};
 use crate::failure::Failure;
 use crate::source::normalize_source_uri;
 
@@ -266,6 +267,190 @@ impl GroupRequest {
     }
 }
 
+/// Most entries one steering list takes (composers, periods, keywords).
+pub const MAX_STEER_LIST: usize = 32;
+/// Shortest and longest a timed steer lasts: a minute, a week.
+pub const MIN_STEER_SECS: u64 = 60;
+pub const MAX_STEER_SECS: u64 = 7 * 24 * 60 * 60;
+/// Longest work length a steer can name, in minutes.
+pub const MAX_WORK_MINUTES: u32 = 600;
+
+/// `POST /dj/steer` body: replace the DJ steering of the zone a room plays
+/// in (a mood, constraints, how long), or clear it. It applies from the
+/// DJ's next pick, running or not.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DjSteerRequest {
+    pub zone: String,
+    /// A named mood (`GET /dj/moods` lists them).
+    #[serde(default)]
+    pub mood: Option<String>,
+    /// Laid over the mood's own constraints.
+    #[serde(default)]
+    pub constraints: SteerConstraints,
+    /// How long the steering lasts, in seconds (60 to a week); then the
+    /// time-of-day program takes over. Absent: until cleared.
+    #[serde(default)]
+    pub for_secs: Option<u64>,
+    /// Clear the zone's steering instead, back to the time-of-day program
+    /// (with no other field).
+    #[serde(default)]
+    pub clear: bool,
+}
+
+impl DjSteerRequest {
+    pub fn zone(&self) -> Result<&str, Failure> {
+        zone_name("zone", &self.zone)
+    }
+
+    /// The steer asked for, checked.
+    pub fn steer(&self) -> Result<DjSteer, Failure> {
+        if self.clear {
+            if self.mood.is_some() || !self.constraints.is_empty() || self.for_secs.is_some() {
+                return Err(Failure::invalid(
+                    "`clear` takes no `mood`, `constraints` or `for_secs`",
+                ));
+            }
+            return Ok(DjSteer::Clear);
+        }
+        if self.mood.is_none() && self.constraints.is_empty() {
+            return Err(
+                Failure::invalid("name a `mood` or a constraint to steer by").with_hint(
+                    "To go back to the time-of-day program, clear the steering: clear true \
+                     (fsonos dj steer <room> --clear).",
+                ),
+            );
+        }
+        steer_set(self.mood.as_deref(), &self.constraints, self.for_secs)
+    }
+}
+
+/// `POST /dj/start` body: start the DJ in the zone a room plays in, steered
+/// by `mood` (for `for_secs`) when one is named.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DjStartRequest {
+    pub zone: String,
+    /// A named mood to start in (`GET /dj/moods` lists them).
+    #[serde(default)]
+    pub mood: Option<String>,
+    /// How long the mood lasts, in seconds (60 to a week). Absent: until
+    /// cleared.
+    #[serde(default)]
+    pub for_secs: Option<u64>,
+}
+
+impl DjStartRequest {
+    pub fn zone(&self) -> Result<&str, Failure> {
+        zone_name("zone", &self.zone)
+    }
+
+    /// The steering to start with; `None` when no mood is named.
+    pub fn steer(&self) -> Result<Option<DjSteer>, Failure> {
+        match (self.mood.as_deref(), self.for_secs) {
+            (None, None) => Ok(None),
+            (None, Some(_)) => Err(Failure::invalid("`for_secs` needs a `mood` to steer by")),
+            (Some(mood), for_secs) => {
+                steer_set(Some(mood), &SteerConstraints::default(), for_secs).map(Some)
+            }
+        }
+    }
+}
+
+fn steer_set(
+    mood: Option<&str>,
+    constraints: &SteerConstraints,
+    for_secs: Option<u64>,
+) -> Result<DjSteer, Failure> {
+    let mood = mood
+        .map(|m| steer_word("`mood`", m).map(str::to_lowercase))
+        .transpose()?;
+    if let Some(secs) = for_secs
+        && !(MIN_STEER_SECS..=MAX_STEER_SECS).contains(&secs)
+    {
+        return Err(Failure::invalid(format!(
+            "for_secs {secs} is outside {MIN_STEER_SECS}..={MAX_STEER_SECS} (a minute to a week)"
+        )));
+    }
+    Ok(DjSteer::Set {
+        mood,
+        constraints: checked(constraints)?,
+        for_secs,
+    })
+}
+
+/// `constraints` with every entry trimmed (periods also lowercased, `-` and
+/// spaces as `_`), or the first value the DJ can't honor.
+fn checked(c: &SteerConstraints) -> Result<SteerConstraints, Failure> {
+    if !(-2..=2).contains(&c.energy_bias) {
+        return Err(Failure::invalid(format!(
+            "energy_bias {} is outside -2..=2",
+            c.energy_bias
+        )));
+    }
+    for (field, minutes) in [
+        ("min_work_minutes", c.min_work_minutes),
+        ("max_work_minutes", c.max_work_minutes),
+    ] {
+        if let Some(m) = minutes
+            && !(1..=MAX_WORK_MINUTES).contains(&m)
+        {
+            return Err(Failure::invalid(format!(
+                "{field} {m} is outside 1..={MAX_WORK_MINUTES}"
+            )));
+        }
+    }
+    if let (Some(min), Some(max)) = (c.min_work_minutes, c.max_work_minutes)
+        && min > max
+    {
+        return Err(Failure::invalid(format!(
+            "min_work_minutes {min} exceeds max_work_minutes {max}"
+        )));
+    }
+    let period = |p: &str| p.to_lowercase().replace(['-', ' '], "_");
+    Ok(SteerConstraints {
+        include_composers: steer_list("include_composers", &c.include_composers, str::to_owned)?,
+        exclude_composers: steer_list("exclude_composers", &c.exclude_composers, str::to_owned)?,
+        periods: steer_list("periods", &c.periods, period)?,
+        include_keywords: steer_list("include_keywords", &c.include_keywords, str::to_owned)?,
+        exclude_keywords: steer_list("exclude_keywords", &c.exclude_keywords, str::to_owned)?,
+        ..c.clone()
+    })
+}
+
+fn steer_list(
+    field: &str,
+    items: &[String],
+    fold: impl Fn(&str) -> String,
+) -> Result<Vec<String>, Failure> {
+    if items.len() > MAX_STEER_LIST {
+        return Err(Failure::invalid(format!(
+            "{field} has {} entries; the limit is {MAX_STEER_LIST}",
+            items.len()
+        )));
+    }
+    let entry = format!("an entry of `{field}`");
+    items
+        .iter()
+        .map(|raw| steer_word(&entry, raw).map(&fold))
+        .collect()
+}
+
+/// A mood, composer, period or keyword, trimmed; `what` names it in the
+/// failure.
+fn steer_word<'a>(what: &str, raw: &'a str) -> Result<&'a str, Failure> {
+    let word = raw.trim();
+    if word.is_empty() {
+        return Err(Failure::invalid(format!("{what} is empty")));
+    }
+    if word.chars().count() > MAX_ZONE_LEN {
+        return Err(Failure::invalid(format!(
+            "{what} is longer than {MAX_ZONE_LEN} characters"
+        )));
+    }
+    Ok(word)
+}
+
 pub(crate) fn zone_name<'a>(field: &str, raw: &'a str) -> Result<&'a str, Failure> {
     let name = raw.trim();
     if name.is_empty() {
@@ -395,6 +580,100 @@ mod tests {
                 .unwrap_err()
                 .detail
                 .contains("give `volume`")
+        );
+    }
+
+    fn steer(body: serde_json::Value) -> Result<DjSteer, Failure> {
+        serde_json::from_value::<DjSteerRequest>(body)
+            .map_err(|e| Failure::invalid(e.to_string()))?
+            .steer()
+    }
+
+    #[test]
+    fn a_steer_is_trimmed_and_checked() {
+        assert_eq!(
+            steer(json!({
+                "zone": "Kitchen", "mood": " Focus ",
+                "constraints": {
+                    "include_composers": [" Bach "],
+                    "periods": ["Late Romantic", "baroque"],
+                    "energy_bias": -1,
+                    "max_work_minutes": 30
+                },
+                "for_secs": 7200
+            }))
+            .unwrap(),
+            DjSteer::Set {
+                mood: Some("focus".into()),
+                constraints: SteerConstraints {
+                    include_composers: vec!["Bach".into()],
+                    periods: vec!["late_romantic".into(), "baroque".into()],
+                    energy_bias: -1,
+                    max_work_minutes: Some(30),
+                    ..SteerConstraints::default()
+                },
+                for_secs: Some(7200),
+            }
+        );
+        assert_eq!(
+            steer(json!({ "zone": "Kitchen", "clear": true })).unwrap(),
+            DjSteer::Clear
+        );
+        for (body, says) in [
+            (json!({ "zone": "Kitchen" }), "name a `mood`"),
+            (
+                json!({ "zone": "Kitchen", "clear": true, "mood": "focus" }),
+                "`clear` takes no",
+            ),
+            (
+                json!({ "zone": "Kitchen", "mood": "focus", "for_secs": 30 }),
+                "for_secs 30 is outside",
+            ),
+            (
+                json!({ "zone": "Kitchen", "constraints": { "energy_bias": 3 } }),
+                "energy_bias 3 is outside -2..=2",
+            ),
+            (
+                json!({ "zone": "Kitchen", "constraints": {
+                    "min_work_minutes": 30, "max_work_minutes": 10 } }),
+                "min_work_minutes 30 exceeds max_work_minutes 10",
+            ),
+            (
+                json!({ "zone": "Kitchen", "constraints": { "exclude_keywords": ["  "] } }),
+                "an entry of `exclude_keywords` is empty",
+            ),
+            (
+                json!({ "zone": "Kitchen", "constraints": { "composer": ["Bach"] } }),
+                "unknown field `composer`",
+            ),
+        ] {
+            let err = steer(body.clone()).unwrap_err();
+            assert!(err.detail.contains(says), "{body}: {}", err.detail);
+        }
+    }
+
+    #[test]
+    fn a_dj_start_steers_only_with_a_mood() {
+        let start = |mood: Option<&str>, for_secs| DjStartRequest {
+            zone: "Kitchen".into(),
+            mood: mood.map(str::to_owned),
+            for_secs,
+        };
+        assert_eq!(start(None, None).steer().unwrap(), None);
+        assert_eq!(
+            start(Some("Dinner"), Some(3600)).steer().unwrap(),
+            Some(DjSteer::Set {
+                mood: Some("dinner".into()),
+                constraints: SteerConstraints::default(),
+                for_secs: Some(3600),
+            })
+        );
+        assert!(
+            start(None, Some(3600))
+                .steer()
+                .unwrap_err()
+                .detail
+                .contains("needs a `mood`")
         );
     }
 

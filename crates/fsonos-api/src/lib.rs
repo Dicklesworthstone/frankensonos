@@ -23,7 +23,8 @@
 //! * [`log`] — the action log and undo, as the surfaces show them;
 //! * [`live`] — what the surfaces read from the daemon's live model;
 //! * [`events`] — the event stream (`GET /events`);
-//! * [`dj`] — the DJ engine a surface runs `dj_*` commands with;
+//! * [`dj`] — the DJ engine a surface runs `dj_*` commands with, and its
+//!   status, steering and moods as the surfaces show them;
 //! * [`failure`] — the one [`Failure`] shape (status + agent-readable detail).
 
 pub mod dj;
@@ -44,6 +45,10 @@ pub mod surface;
 pub mod web;
 pub mod zones;
 
+pub use dj::{
+    DjFactorDto, DjMoodDto, DjMoodsDto, DjProgramDto, DjReasonDto, DjStatusDto, DjSteer,
+    DjSteeringDto, DjWorkDto, SteerConstraints,
+};
 pub use execute::{OutcomeDto, execute, execute_guarded};
 pub use failure::{ErrorCode, Failure, NoteCode};
 pub use guard::{Guard, Note};
@@ -53,8 +58,8 @@ pub use log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 pub use plan::Command;
 pub use reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto};
 pub use request::{
-    GroupRequest, MoveRequest, MuteRequest, PartyRequest, PlayFavoriteRequest, PlayRequest,
-    SearchRequest, VolumeChange, VolumeRequest, ZoneRequest,
+    DjStartRequest, DjSteerRequest, GroupRequest, MoveRequest, MuteRequest, PartyRequest,
+    PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeChange, VolumeRequest, ZoneRequest,
 };
 pub use surface::Surface;
 pub use web::WebPolicy;
