@@ -15,6 +15,9 @@
 //!   volume     set (0-100) or change (+N / -N) a room's or group's volume
 //!   mute       mute or unmute a room
 //!   group / ungroup   move a room into another's group, or out of its own
+//!   sleep      pause a room's group after a while (serve fades it out)
+//!   schedule   start the DJ, pause or set a volume at set times (serve
+//!              runs them)
 //!   scene      save, apply (undoable), list, show or rm the house's named
 //!              states
 //!   dj         the classical DJ (not wired to the speakers yet)
@@ -34,6 +37,7 @@ mod dj_view;
 mod doctor;
 mod rooms_cmd;
 mod scene_cmd;
+mod schedule_cmd;
 #[cfg(feature = "sim")]
 mod sim;
 mod tailscale_cmd;
@@ -180,7 +184,22 @@ enum Command {
         target: Option<String>,
     },
     /// Run the long-lived daemon (HTTP API + MCP server + event sink).
-    Serve(config::ServeArgs),
+    Serve {
+        #[command(flatten)]
+        args: config::ServeArgs,
+        #[command(flatten)]
+        scheduler: schedule_cmd::SchedulerArgs,
+    },
+    /// Pause a room's group after a while: `fsonos sleep Bedroom 45m`,
+    /// `--extend 15m`, `--cancel`, or with no duration show its timer.
+    /// On its own the CLI sets the speaker's own timer (no fade); `fsonos
+    /// serve` fades the group out first.
+    Sleep(schedule_cmd::SleepArgs),
+    /// Schedules, run by `fsonos serve`: add, list, rm, pause, resume.
+    Schedule {
+        #[command(subcommand)]
+        action: schedule_cmd::ScheduleCommand,
+    },
     /// Serve the MCP tools over stdio (for a local agent).
     Mcp,
     /// Front the daemon with Tailscale Serve (HTTPS on the tailnet, never
@@ -274,7 +293,9 @@ fn report_error(err: &anyhow::Error) -> ExitCode {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let global = &cli.global;
     match cli.command {
-        Command::Serve(args) => daemon::run(global, &args),
+        Command::Serve { args, scheduler } => daemon::run(global, &args, &scheduler),
+        Command::Sleep(args) => schedule_cmd::sleep(global, &args),
+        Command::Schedule { action } => schedule_cmd::schedule(global, &action),
         Command::Mcp => run_mcp_stdio(global),
         Command::Tailscale(args) => tailscale_cmd::run(global, &args),
         Command::Scene(args) => scene_cmd::run(global, &args),
@@ -577,7 +598,9 @@ fn plan_for<'a>(
         | Command::Favorites { .. }
         | Command::Log { .. }
         | Command::Undo { .. }
-        | Command::Serve(_)
+        | Command::Serve { .. }
+        | Command::Sleep(_)
+        | Command::Schedule { .. }
         | Command::Tailscale(_)
         | Command::Rooms { .. }
         | Command::Scene(_)

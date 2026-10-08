@@ -27,6 +27,7 @@
 
 use anyhow::Context as _;
 use fastapi::{ServerConfig, TcpServer};
+use fsonos_api::surface::schedules::Scheduler;
 use fsonos_api::{Failure, Identity, Surface, WebPolicy};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::live::{Live, LiveConfig, LiveEvent};
@@ -40,6 +41,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::config::{self, GlobalArgs, ServeArgs};
+use crate::schedule_cmd::SchedulerArgs;
 
 /// The data directory, or `INVALID_ARGUMENT` when none can be determined.
 pub fn data_dir(global: &GlobalArgs) -> Result<PathBuf, Failure> {
@@ -185,7 +187,7 @@ pub fn listener_client(addr: SocketAddr) -> Client {
 
 /// Vet the configuration, start both servers, report readiness, and run
 /// until SIGINT / SIGTERM.
-pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
+pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> anyhow::Result<()> {
     // Unconfigured listeners bind loopback plus the tailnet (ts-autobind).
     let tailnet = args.tailnet();
     let http_plan = args.http_plan(&tailnet);
@@ -202,6 +204,9 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
     let data_dir = data_dir(global)?;
     let checks = args.clone();
     let (surface, live) = live_surface(global, args.events_port, policy(&data_dir)?)?;
+    let surface = surface
+        .with_clock(scheduler.clock())
+        .with_sleep(scheduler.sleep());
     let surface = Arc::new(
         with_action_log(surface, &data_dir, "serve").with_doctor_checks(Box::new(move |runner| {
             crate::doctor::register(runner, &checks);
@@ -215,6 +220,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
         signal_hook::flag::register(signal, Arc::clone(&stop))
             .context("install the SIGINT/SIGTERM handler")?;
     }
+    let ticking = start_scheduler(&surface, &stop)?;
 
     let names = tailnet_names(&tailnet);
     let http = start_all("HTTP API", &http_plan, |addr| {
@@ -245,6 +251,10 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
         thread::sleep(Duration::from_millis(100));
     }
     eprintln!("fsonos serve: stopping");
+    // Fades in flight put their volumes back; runs in flight finish.
+    if ticking.join().is_err() {
+        tracing::warn!("the scheduler stopped with a panic");
+    }
     for (server, addr) in &http {
         server.shutdown();
         // Wake the accept loop so it sees the shutdown. Briefly: a host may
@@ -258,6 +268,17 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
     // The surfaces hold the model weakly: this ends every subscription.
     drop(live);
     Ok(())
+}
+
+/// Run the sleep timers and the stored schedules on `surface`: a tick a
+/// second until `stop`, then a graceful stop (see [`Scheduler`]).
+fn start_scheduler(
+    surface: &Arc<Surface>,
+    stop: &Arc<AtomicBool>,
+) -> anyhow::Result<thread::JoinHandle<()>> {
+    Arc::new(Scheduler::new(surface))
+        .start(Arc::clone(stop))
+        .context("start the scheduler")
 }
 
 /// Bind every address of `plan`. Loopback and a configured address must
