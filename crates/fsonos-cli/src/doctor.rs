@@ -3,6 +3,10 @@
 //! The report comes from the shared surface (the core's checks), plus the
 //! checks only this layer can make:
 //!
+//! * `store.open` and `lan.*` ([`lan_checks`]): the core's LAN checks over
+//!   this host's LAN as `--routes` and the seeds shape it (the store, SSDP,
+//!   the seeds, reading each player, the households, a GENA round trip, the
+//!   topology);
 //! * `daemon.bind`: the bind guard's verdict on the HTTP and MCP addresses;
 //! * `daemon.health`: whether a daemon answers on the HTTP address, and
 //!   which version;
@@ -12,12 +16,15 @@
 //! Exit codes: 0 all passed, 6 warnings only, 7 something failed (outside
 //! the CLI's 1-5 error codes and clap's 2).
 
+use fsonos_api::Failure;
+use fsonos_core::doctor::lan::LanProbe;
 use fsonos_core::doctor::{Check, CheckContext, CheckId, CheckResult, Report, Runner};
 use fsonos_core::policy::Client;
 use serde_json::json;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::{self, GlobalArgs, ServeArgs};
@@ -167,12 +174,32 @@ pub fn only(report: Report, prefix: Option<&str>) -> Report {
     }
 }
 
+/// The core's LAN checks over this host's LAN, as `--routes`, the seeds and
+/// `--wait` shape it, with the store check for the data directory. Each run
+/// takes a fresh probe (it discovers once and caches what it saw).
+pub fn lan_checks(
+    global: &GlobalArgs,
+) -> Result<impl Fn(&mut Runner) + Send + Sync + 'static, Failure> {
+    let network = global.network()?;
+    let probe = Arc::new(
+        LanProbe::new(Arc::clone(&network.lan), global.seed_addrs()?).with_ssdp_wait(global.wait()),
+    );
+    let data_dir = crate::daemon::data_dir(global)?;
+    Ok(move |runner: &mut Runner| {
+        fsonos_core::doctor::lan::register(runner, data_dir.clone(), &probe);
+    })
+}
+
 /// Run `fsonos doctor` and print the report; the exit code is the report's.
 pub fn run(global: &GlobalArgs, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     let serve = args.serve.clone();
+    let lan = lan_checks(global)?;
     let direct = Direct::open(
         global,
-        Some(Box::new(move |runner| register(runner, &serve))),
+        Some(Box::new(move |runner| {
+            lan(runner);
+            register(runner, &serve);
+        })),
     )?;
     let report = only(direct.doctor(&Client::Cli)?, args.only.as_deref());
     if global.json {

@@ -10,6 +10,7 @@
 //!   favorites  the household's Sonos favorites, numbered
 //!   log / undo the action log, and undoing the newest action
 //!   doctor     diagnose the setup (exit 0 / 6 warnings / 7 failures)
+//!   setup      a guided first run on the doctor's checks (--yes for scripts)
 //!   play       play a source URI, or `--favorite <name>`, in a room's group
 //!   pause / resume / next / previous   transport for a room's group
 //!   volume     set (0-100) or change (+N / -N) a room's or group's volume
@@ -20,7 +21,8 @@
 //!              runs them)
 //!   scene      save, apply (undoable), list, show or rm the house's named
 //!              states
-//!   dj         the classical DJ (not wired to the speakers yet)
+//!   dj         the classical DJ: start, skip, stop, steer; status, why,
+//!              moods
 //!   serve      run the long-lived daemon (HTTP API + MCP over HTTP)
 //!   mcp        serve the MCP tools over stdio (for a local agent)
 //!   tailscale  put Tailscale Serve in front of the daemon (setup / status /
@@ -39,6 +41,8 @@ mod doctor;
 mod rooms_cmd;
 mod scene_cmd;
 mod schedule_cmd;
+mod setup_cmd;
+mod setup_spotify;
 #[cfg(feature = "sim")]
 mod sim;
 mod tailscale_cmd;
@@ -83,6 +87,10 @@ enum Command {
     /// Diagnose the setup: speakers, Spotify linkage, listener addresses,
     /// the daemon. Exits 0 (all pass), 6 (warnings) or 7 (a failure).
     Doctor(doctor::DoctorArgs),
+    /// A guided first run: the data directory, finding the players (and
+    /// writing seeds.toml when multicast cannot), the households, Spotify,
+    /// Tailscale, and what to run next. Exits as `doctor` does.
+    Setup(setup_cmd::SetupArgs),
     /// The action log, newest first: who did what, the policy's verdict, and
     /// whether it can be undone.
     Log {
@@ -274,6 +282,12 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Command::Doctor(args) = &cli.command {
         return match doctor::run(&cli.global, args) {
+            Ok(code) => code,
+            Err(err) => report_error(&err),
+        };
+    }
+    if let Command::Setup(args) = &cli.command {
+        return match setup_cmd::run(&cli.global, args) {
             Ok(code) => code,
             Err(err) => report_error(&err),
         };
@@ -617,6 +631,7 @@ fn plan_for<'a>(
         | Command::Tailscale(_)
         | Command::Rooms { .. }
         | Command::Scene(_)
+        | Command::Setup(_)
         | Command::Say(_)
         | Command::Chime(_)
         | Command::Mcp => {
