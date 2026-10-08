@@ -6,6 +6,7 @@
 //! | `GET /openapi.json` | | the OpenAPI document of every other route |
 //! | `GET /events?since=<id>` | | server-sent events as the house changes ([`crate::events`]); resumes after `Last-Event-ID` or `since` |
 //! | `GET /zones` | | `[ZoneDto]` |
+//! | `GET /players` | | `[PlayerDto]`: every player, by household and room |
 //! | `GET /zones/{room}` | | [`crate::ZoneDto`] (`room` is percent-decoded) |
 //! | `GET /zones/{room}/state` | | [`crate::ZoneStateDto`] |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
@@ -84,6 +85,8 @@ mod scenes;
 
 mod announce;
 
+mod players;
+
 mod remote;
 
 /// The API application over `surface`, answering every caller as `client`,
@@ -144,6 +147,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(controls(cx));
     routes.extend(house_verbs(cx));
     routes.extend(announce::routes(cx));
+    routes.extend(players::routes(cx));
     routes.extend(scenes::routes(cx));
     routes.extend(dj(cx));
     routes.extend(dj_feedback::routes(cx));

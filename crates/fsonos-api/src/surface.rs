@@ -49,6 +49,7 @@ pub mod schedules;
 pub mod spotify_auth;
 
 pub mod announce;
+pub mod players;
 
 pub mod art;
 

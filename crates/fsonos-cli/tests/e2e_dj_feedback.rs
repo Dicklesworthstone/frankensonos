@@ -86,6 +86,7 @@ fn library() -> Vec<LibraryItem> {
                 duration_secs: Some(180),
                 explicit: false,
                 origin: Origin::SavedAlbum,
+                ..LibraryItem::default()
             });
         }
     }
