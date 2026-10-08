@@ -4,9 +4,10 @@
 
 <img src="frankensonos_illustration.webp" alt="FrankenSonos illustration" width="900">
 
-**Your Sonos, your way.** A memory-safe Rust controller for the Sonos speakers
-you already own. It talks to them directly on your own network, so you can
-script them and let your own AI agents run them instead of the official app.
+**Your Sonos, your way. Command your speakers from anywhere in the world, as
+long as you're on your Tailscale tailnet.** A memory-safe Rust controller and
+daemon for the Sonos speakers you already own: one binary that runs the whole
+house from the terminal, an HTTP API, or any AI agent that speaks MCP.
 
 ![status: pre-release](https://img.shields.io/badge/status-pre--release-orange)
 ![language: Rust 2024](https://img.shields.io/badge/Rust-2024%20(nightly)-dea584)
@@ -16,102 +17,181 @@ script them and let your own AI agents run them instead of the official app.
 
 </div>
 
-> **Status:** under active development (pre-`0.1.0`). The architecture, plan, and
-> a green multi-crate workspace are in place; the control paths are being
-> implemented against real hardware. The features and commands below describe
-> the target design. See [Roadmap](#roadmap) for what works today.
+> **Status: pre-release (before `0.1.0`).** Everything below is implemented,
+> and every feature is tested end to end against `fsonos-sim`, a virtual
+> Sonos house (an S1 and an S2 household speaking SOAP and GENA on loopback,
+> checked against scrubbed captures of real players). Live tests against real
+> players exist but are opt-in; there is no real-hardware CI yet, and
+> interfaces may still change before `0.1.0`.
 
 ---
 
-## The problem
+## Why FrankenSonos
 
-Sonos hardware is excellent and long-lived, but the software around it often
-isn't: apps that lose devices, flaky discovery, grouping that fights you, and
-automation that is either impossible or breaks. The legacy S1 line (Play:5
-Gen 1, Bridges) is frozen on unsupported firmware, and the S2 line has moved on
-without it. The Spotify Web API also cannot start playback on a Sonos at all, so
-"just script Spotify" doesn't work.
+Sonos hardware is excellent and lasts for years; the software around it is
+where it falls short. The app loses speakers, grouping fights you, automation
+is out of reach, the legacy S1 line is frozen while S2 moves on without it, and
+the Spotify Web API cannot start playback on a Sonos at all.
 
-## The solution
+FrankenSonos talks to your speakers directly, over the local protocols they
+already speak (SSDP discovery, UPnP/SOAP on port 1400, GENA events), and turns
+the whole house, both generations at once, into something you and your agents
+can drive:
 
-FrankenSonos is a local controller and daemon that speaks the speakers' own,
-long-documented local protocols: SSDP discovery, UPnP/SOAP control on port
-1400, and GENA event subscriptions. [SoCo](https://github.com/SoCo/SoCo),
-[node-sonos](https://github.com/bencevans/node-sonos), and the
-[Home Assistant Sonos integration](https://www.home-assistant.io/integrations/sonos/)
-work the same way. FrankenSonos adds two things they don't have: a
-classical-music DJ that picks from your own Spotify library, and an MCP server
-(next to the CLI and HTTP API) so Claude, Grok, Meta Muse, OpenAI agents, or any
-other MCP client can run your house, from the same room or from anywhere in
-the world as long as you are on your [Tailscale](https://tailscale.com) tailnet.
+- **From anywhere on your tailnet.** `fsonos serve` listens on loopback and
+  your Tailscale addresses, and `fsonos tailscale setup` puts HTTPS in front of
+  it with Tailscale Serve. Your phone in another city, an agent on a cloud VM,
+  a laptop at work: if it is on your tailnet, it runs your house. Nothing is
+  exposed to the public internet, Funnel is never used, and the speakers never
+  leave your LAN.
+- **Built for agents, with guardrails.** Every surface (CLI, HTTP, MCP) goes
+  through one control path: the house policy (per-room volume caps, quiet
+  hours, per-client tool allowlists), an action log of who did what, and undo.
+  Hand the house to an agent without it playing volume 80 at 2 a.m.
+- **A classical DJ that knows your library.** It plays whole works in order
+  from your own Spotify library, steers by mood and time of day, explains every
+  pick, and learns from your likes, dislikes, early skips and full listens.
+- **One memory-safe binary.** Pure Rust 2024 with `#![forbid(unsafe_code)]`,
+  on an owned async stack (no Tokio, no reqwest). Nothing is installed on the
+  speakers and nothing about them is changed.
 
-### Why use it
+## What it does
 
-| Feature | What it does |
+| Area | What you get |
 |---|---|
-| **Discovery** | Finds every player across both S1 and S2 generations, with a direct-seed fallback when SSDP multicast is flaky |
-| **Control** | Play / pause / next / volume / group / ungroup, always addressed to the group's coordinator |
-| **Spotify DJ** | Reads your saved albums and liked tracks (your account, read-only) and plays a varied classical stream with anti-repeat, without a phone in hand |
-| **Agent control** | An HTTP API and an MCP server (`list_zones`, `play`, `dj_start`, …) expose the house as tools |
-| **From anywhere** | Any device on your Tailscale tailnet commands your speakers from anywhere in the world. Nothing is exposed to the public internet, and the speakers never leave the LAN |
-| **Memory-safe** | Pure Rust 2024, `#![forbid(unsafe_code)]` everywhere, built on an owned async stack (no Tokio/reqwest) |
-| **No site data** | The public repo contains nothing about your setup; it is learned at runtime and stored locally |
+| **Discovery & topology** | Every player of both S1 and S2 households, its zone group and coordinator. Rooms resolve by name, `Room@S1` / `Room@S2`, your own aliases (`fsonos rooms alias add downstairs Kitchen "Living Room"`), or `here` |
+| **Control** | Play a Spotify link, a source URI, a Sonos favorite or a library search; pause, resume, next, previous; room or group volume (set or ±N); mute; group, ungroup; **move** the music to another room (handing the group over, or `--copy` across households); **party** mode for a whole household. Group commands always go to the group's coordinator |
+| **Live state** | GENA subscriptions keep a live model of every zone (transport, track, volume), so reads need no polling, and `GET /events` streams the changes as server-sent events |
+| **Self-healing** | A player that moved to a new address, or a group whose coordinator changed under a command, is found again and the command retried once (the answer notes `HEALED`); the live model resurveys and resubscribes on its own |
+| **Classical DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; whole works with every movement in order; varied by composer, era and time-of-day energy; `dj steer` by mood, composers, periods, keywords, work length or energy, for a while or until cleared; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
+| **Scenes** | `scene save dinner` captures grouping, volumes, mutes and what each group plays; `scene apply dinner` sends only the steps the house needs, and `fsonos undo` puts it back |
+| **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright`, or a pause, a volume or a scene, at times or after delays; runs with the rights of whoever added it |
+| **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` (macOS `say`) or `chime bell`, at a policy-capped level, then the music comes back exactly as it was |
+| **Safety** | `policy.toml`: per-room caps, a per-step limit, quiet hours, per-client tool allowlists; over-limit volumes are clamped and say so; `fsonos log` / `undo`, `fsonos policy show` / `check` |
+| **Setup & diagnosis** | `fsonos setup` walks a first run (including the Spotify sign-in); `fsonos doctor` checks speakers, Spotify linkage, listeners, the daemon and the Tailscale chain, and names the fix for each problem |
+| **Three surfaces** | The `fsonos` CLI (`--json` everywhere), an HTTP API with an OpenAPI document, and an MCP server (tools plus `sonos://zones` and `sonos://dj` resources) over streamable HTTP or stdio, all answering alike, with the same stable error codes ([`docs/ERRORS.md`](docs/ERRORS.md)) |
+| **A house without speakers** | `fsonos sim` starts virtual S1 and S2 households on loopback, so you can try every command, or develop an agent, with no hardware |
 
-## Quick example
+## Quick tour
 
 ```bash
-fsonos discover                               # list every player on the LAN (S1 + S2)
-fsonos zones                                  # show live group topology
-fsonos play "Living Room" spotify:track:...   # render a track on a zone
-fsonos group "Kitchen" "Living Room"          # group two rooms
-fsonos dj start "Living Room"                 # start the classical DJ
-fsonos dj skip  "Living Room"                 # next pick
-fsonos serve                                  # the daemon: HTTP API + MCP + DJ, on loopback and your tailnet
-fsonos tailscale setup                        # HTTPS URLs for the tailnet via Tailscale Serve (never Funnel)
-fsonos doctor                                 # what is wrong with the setup, and how to fix it
+fsonos discover                                   # every player on the LAN, S1 and S2
+fsonos zones                                      # the groups and what each is doing
+fsonos play "Living Room" --favorite "Morning"    # a Sonos favorite (or a URI, or --search "bwv 988")
+fsonos volume "Living Room" +5                    # set, or change by ±N; --group for the whole group
+fsonos group Office Kitchen                       # Office joins Kitchen's group
+fsonos move "Living Room" Bedroom                 # the music follows you
+fsonos dj start "Living Room" --mood calm         # the classical DJ
+fsonos dj why "Living Room"                       # why it chose this work
+fsonos scene save dinner && fsonos scene apply dinner
+fsonos sleep Bedroom 45m                          # fade out, then pause
+fsonos schedule add "weekdays 07:30" dj start Kitchen --mood bright
+fsonos say "Dinner is ready" --rooms Kitchen,Office
+fsonos undo                                       # put the newest action back
+fsonos serve                                      # the daemon: HTTP API + MCP, loopback and your tailnet
+fsonos tailscale setup                            # HTTPS for the tailnet via Tailscale Serve (never Funnel)
+fsonos doctor                                     # what is wrong, and how to fix it
 ```
 
-An agent reaches the same control surface over MCP:
+No speakers handy? Run `fsonos sim` in one terminal; it prints the `--seeds` and
+`--routes` flags that point every other command (and `fsonos mcp`) at the
+virtual house.
 
-```jsonc
-// MCP tools exposed by `fsonos serve`
-list_zones · play · pause · resume · next · set_volume · group · ungroup
-dj_start · dj_skip · dj_stop
+## From anywhere on your tailnet
+
+The daemon is the only thing that leaves your LAN, and only onto your tailnet:
+
+```bash
+fsonos serve            # loopback + every tailnet address; prints the connect URLs
+fsonos tailscale setup  # Serve: https://<mac>.<tailnet>.ts.net/ (API), :8443/mcp (MCP)
+fsonos doctor --only tailscale   # Tailscale up, the MagicDNS name, the daemon answering
 ```
 
-## Design philosophy
+- `fsonos tailscale setup` maps HTTPS on 443 (API) and 8443 (MCP) to the
+  daemon's loopback ports, refuses to run while Funnel is on for either port,
+  and never touches Serve config it didn't make (`status`, `teardown`,
+  `--dry-run`).
+- Behind Serve, the caller's Tailscale login names them: a
+  `[clients."alice@example.com"]` table in `policy.toml` sets what that
+  person's devices may do, and the action log records who did what.
+- Point an agent at it from any tailnet machine:
 
-- FrankenSonos talks to the speakers the way they already expect to be talked
-  to. This is ordinary control of hardware you own on your own network, the same
-  category as SoCo and Home Assistant.
-- Protocol encode/decode (SSDP, SOAP, GENA, DIDL) and DJ selection are pure,
-  unit-tested functions, and all network and disk I/O sits behind narrow traits.
-  The engine can be tested without a speaker in the room.
-- Live state comes from GENA event subscriptions instead of polling, and
-  group-wide commands go to the group's coordinator automatically.
-- S1 and S2 differ in music-service linkage, the Queue service, and SonosNet vs
-  Wi-Fi. The model records each player's generation and branches only where the
-  protocols differ.
-- Only the daemon is exposed. Tailscale fronts the daemon and the speakers stay
-  on the LAN. There is no custom firmware, and nothing on the devices changes.
+```bash
+claude mcp add --transport http fsonos https://<mac>.<tailnet>.ts.net:8443/mcp
+curl https://<mac>.<tailnet>.ts.net/zones
+```
 
-## How it compares
+The full walkthrough (launchd, the firewall, tailnet policy grants, the
+Spotify sign-in) is in [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
-| | FrankenSonos | Official Sonos app | SoCo / node-sonos | Home Assistant |
-|---|---|---|---|---|
-| Local control (no cloud) | ✅ | ⚠️ partial | ✅ | ✅ |
-| S1 **and** S2 together | ✅ | ❌ (separate apps) | ✅ | ✅ |
-| Spotify-library DJ built in | ✅ | ❌ | ❌ | ❌ |
-| MCP server for AI agents | ✅ | ❌ | ❌ | ❌ |
-| Memory-safe, single binary | ✅ Rust | — | ❌ Python/JS | ❌ |
-| Off-LAN via your own tailnet | ✅ | ☁️ via Sonos cloud | DIY | DIY |
+## For agents
 
-Nothing else does all of this. The others stop at local control; FrankenSonos is
-the only one that is agent-native (MCP **and** HTTP API), ships a real
-Spotify-library DJ, drives both Sonos generations at once, and lets any device on
-your Tailscale tailnet command your speakers from anywhere in the world, all in
-one memory-safe binary, with no cloud, no phone app, and nothing installed on the
-speakers. It is built to be the best way to run Sonos, full stop.
+`fsonos serve` exposes the house as MCP tools (also `fsonos mcp` over stdio for
+a local agent):
+
+```text
+reads      list_zones · list_rooms · get_zone_state · list_favorites · search_library
+           recent_plays · recent_actions · get_policy · doctor · dj_status · dj_moods
+           list_scenes · list_sleep_timers · list_schedules
+control    play · play_favorite · pause · resume · next · previous · set_volume · mute
+           group · ungroup · move_playback · group_all · announce · undo_last
+dj         dj_start · dj_skip · dj_stop · dj_steer · dj_feedback
+house      save_scene · apply_scene · set_sleep_timer · add_schedule · pause_schedule
+           resume_schedule · remove_schedule
+resources  sonos://zones · sonos://zones/{room} · sonos://dj
+```
+
+Every HTTP route's operation id is the name of the MCP tool that does the same,
+so an agent gets the same answer, and the same error code, either way. The API
+documents itself at `GET /openapi.json`.
+
+## Safety for a house run by agents
+
+```toml
+# policy.toml in the data directory (a missing file means these defaults)
+[defaults]
+max_volume = 70        # per room
+max_step = 20          # largest single increase
+
+[quiet_hours]          # local time; may wrap midnight
+start = "22:00"
+end = "07:00"
+max_volume = 25
+
+[rooms."Bedroom"]
+max_volume = 40
+
+[clients."alice@example.com"]   # a person behind Tailscale Serve
+allow = ["list_zones", "get_zone_state", "play", "set_volume"]
+```
+
+- One choke point: every mutating call on every surface is authorized,
+  snapshotted, carried out under the policy, and logged with who asked, the
+  verdict (allow, clamp or deny) and what happened.
+- `fsonos undo` (`undo_last`) restores the volumes, grouping and what was
+  playing in the zones the newest action changed, and says what it could not.
+- Callers the daemon cannot identify get read-only tools; the API and MCP
+  listeners refuse wildcard and public binds (unless you pass
+  `--allow-unsafe-bind`); the HTTP API checks Host and Origin and accepts
+  writes only as JSON.
+
+## Design
+
+- **Pure where it can be.** SSDP, SOAP, GENA and DIDL encoding, planning, the
+  policy, scene diffs, schedules and the DJ's picks are pure functions, unit
+  tested without a network; I/O sits behind narrow traits.
+- **Events, not polling.** The live model follows GENA, renews subscriptions,
+  and resurveys when the house changes; group-wide commands are addressed to
+  the coordinator automatically.
+- **S1 and S2 together.** Each player's generation is recorded, and the code
+  branches only where the protocols differ; S1 and S2 rooms never share a
+  group, and the commands say so instead of failing quietly.
+- **End to end against a simulator.** `fsonos-sim` serves the real protocols
+  on loopback (queues, favorites, GENA, sleep timers, media fetches, a clock
+  tests can move), and the e2e suite drives the real `fsonos` binary against
+  it, logging every step as JSON lines.
+- **No site data.** Your rooms, addresses and tokens are learned at runtime and
+  stored locally; the repository holds none of them.
 
 ## Architecture
 
@@ -123,32 +203,34 @@ speakers. It is built to be the best way to run Sonos, full stop.
           │                 events · DIDL/URIs     │
           └───────────────────┬───────────────────┘
                               │
-          ┌───────────────────▼───────────────────┐   ┌───────────────┐
-          │  fsonos-core    inventory · topology · │   │ fsonos-spotify│
-          │                 grouping · store (DB)  │◄──┤ library + DJ  │
-          └───────────────────┬───────────────────┘   └──────┬────────┘
-                              │                              │
-   ┌──────────────┬───────────┼───────────────┐      Spotify Web API
+          ┌───────────────────▼───────────────────┐   ┌────────────────┐
+          │  fsonos-core    inventory · live model │   │ fsonos-spotify │
+          │   policy · scenes · schedules · store  │◄──┤ library + DJ   │
+          └───────────────────┬───────────────────┘   └───────┬────────┘
+                              │                               │
+   ┌──────────────┬───────────┼───────────────┐       Spotify Web API
    ▼              ▼           ▼               ▼       (read-only, your account)
-fsonos-api     fsonos-mcp   fsonos-cli    launchd + Tailscale
-(HTTP API)    (MCP tools)   (`fsonos`)    (daemon, tailnet-fronted)
+fsonos-api     fsonos-mcp   fsonos-cli    fsonos-tailscale
+(HTTP API)    (MCP tools)   (`fsonos`)    (tailnet presence)
 ```
 
 | Crate | Responsibility |
 |---|---|
 | `fsonos-types` | Shared domain vocabulary (players, groups, tracks) |
-| `fsonos-proto` | SSDP, UPnP/SOAP, GENA events, DIDL-Lite / URIs |
-| `fsonos-core` | Inventory, topology, grouping, orchestration, local store |
-| `fsonos-spotify` | Spotify Web API library reads + the DJ engine |
-| `fsonos-api` | HTTP control API (`fastapi_rust`) |
-| `fsonos-mcp` | MCP server with the agent tools (`fastmcp_rust`) |
-| `fsonos-cli` | The `fsonos` binary: CLI and `serve` daemon |
+| `fsonos-proto` | SSDP, UPnP/SOAP, GENA events, DIDL-Lite and URIs |
+| `fsonos-core` | Inventory, the live model, grouping, moving, policy, snapshots and undo, scenes, schedules, sleep timers, announcements, the doctor, the local store |
+| `fsonos-spotify` | Read-only Spotify library sync and the DJ: works, picks, steering, feedback |
+| `fsonos-api` | The shared surface (requests, planning, policy, logging) and the HTTP API (`fastapi_rust`) |
+| `fsonos-mcp` | The MCP server and its tools and resources (`fastmcp_rust`) |
+| `fsonos-cli` | The `fsonos` binary: the CLI, `serve`, `setup`, `doctor`, `sim` |
+| `fsonos-tailscale` | Is this host on a tailnet, at which addresses and name; connect URLs; who a tailnet caller is |
+| `fsonos-sim` | The virtual Sonos house the tests (and `fsonos sim`) run against |
 
 Built on the author's Rust stack: [`asupersync`](https://github.com/Dicklesworthstone/asupersync)
 (async runtime), [`fsqlite`](https://github.com/Dicklesworthstone/frankensqlite)
 (local store), [`fastmcp_rust`](https://github.com/Dicklesworthstone/fastmcp_rust),
-and [`fastapi_rust`](https://github.com/Dicklesworthstone/fastapi_rust). Full
-design: [`COMPREHENSIVE_PLAN_FOR_FRANKENSONOS.md`](COMPREHENSIVE_PLAN_FOR_FRANKENSONOS.md).
+and [`fastapi_rust`](https://github.com/Dicklesworthstone/fastapi_rust). The full
+design is in [`COMPREHENSIVE_PLAN_FOR_FRANKENSONOS.md`](COMPREHENSIVE_PLAN_FOR_FRANKENSONOS.md).
 
 ## Installation
 
@@ -157,83 +239,89 @@ No prebuilt binaries yet (pre-release). Build from source:
 ```bash
 git clone https://github.com/Dicklesworthstone/frankensonos
 cd frankensonos
-cargo build --release      # toolchain is pinned in rust-toolchain.toml
-cargo test --workspace     # run the unit + golden tests
+cargo build --release      # the toolchain is pinned in rust-toolchain.toml
+cargo test --workspace     # unit, golden and end-to-end tests (no speakers needed)
 ```
 
-The binary is `target/release/fsonos`. Run it on a machine that is on the same
-LAN as your speakers (and, for off-LAN agent access, on your tailnet).
+The binary is `target/release/fsonos`. Run it on a machine on the same LAN as
+your speakers; for access from anywhere, that machine also joins your tailnet.
+`fsonos setup` takes it from there. To run the daemon at boot, see
+[`docs/DEPLOY.md`](docs/DEPLOY.md) (launchd plus Tailscale).
 
 ## Roadmap
 
-The plan tracks milestones M0 through M6. The build is driven by a beads task
-graph (`br ready`) and a multi-agent swarm, one lane per agent.
+Shipped: discovery and topology across S1 and S2, coordinator-addressed control
+and grouping, the GENA live model and self-healing, the classical DJ with
+steering, explanations and feedback, scenes, sleep timers and schedules,
+announcements, the house policy with quiet hours, the action log and undo,
+`doctor` and `setup`, the simulator, and the CLI, HTTP API and MCP server, on
+loopback and your tailnet.
 
-- M0, foundation (done): green workspace, plan, docs, task graph.
-- M1, `FND-DEPS` (done): the async/DB/MCP/API stack is wired, with proof tests
-  for an fsqlite round-trip, an HTTP loopback, MCP over stdio, and the API
-  health route.
-- M2, see and control: discovery, topology, and direct play/pause/volume on real
-  hardware.
-- M3, Spotify render: learn per-household render params and enqueue a track on
-  both S1 and S2.
-- M4, DJ: library read and queue feeding, so `fsonos dj start` keeps a varied
-  set going.
-- M5, surfaces and daemon: HTTP API, MCP, `serve`, launchd, and Tailscale.
-- M6, reliability: resubscription, reconnection, health checks, golden fixtures.
+Next:
 
-Next, already in the task graph (plan §12): `fsonos doctor` and `fsonos setup`,
-a DJ that plays whole works in order and explains its picks, read tools for
-agents, volume caps with an action log and undo, scenes, schedules and a sleep
-timer, announcements, and a web remote for any device on your tailnet.
+- An instant CLI that goes through a running daemon (its warm state, its
+  sleep-timer fades), with room-name completions.
+- A web remote served by the daemon: rooms, now playing, volume, the DJ and
+  scenes, from any device on your tailnet.
+- Real-hardware CI, then `0.1.0` with prebuilt binaries.
 
 ## Scope & privacy
 
 FrankenSonos controls hardware you own, on your own network, and reads your own
-Spotify library with your own credentials. It does not touch device firmware,
-reverse-engineer binaries, or handle any secrets beyond your own local OAuth
-cache. This repository is public and contains no site data (IPs, serials,
-tokens, room lists); all of that is learned at runtime and stored locally. The
-full in/out-of-scope boundary is in [`docs/SCOPE.md`](docs/SCOPE.md).
+Spotify library with your own credentials (read-only, PKCE). It never writes
+to device firmware or changes anything on the speakers, and it handles no
+secrets beyond your own local OAuth cache. This repository is public and
+contains no site data (addresses, serials, tokens, room lists); all of that is
+learned at runtime and kept locally. The full boundary is in
+[`docs/SCOPE.md`](docs/SCOPE.md).
 
 ## Limitations
 
-- It is pre-release. Most control paths are still being implemented, so expect
-  sharp edges and changing interfaces until `0.1.0`.
-- Sonos plays Spotify through its own music-service integration; the Spotify Web
-  API is only used to read your library. The per-household render parameters
-  have to be learned from your own Sonos favorites, and Spotify Premium must be
-  linked once in each Sonos app.
-- You run the daemon. It needs a machine on your speaker LAN (a Mac mini, a Pi,
-  a NAS). The speakers themselves do not run anything new.
-- The local API and MCP server have no authentication by default. Bind them to
-  loopback or your tailnet, never a public interface (a bind guard enforces
-  this).
+- It is pre-release: simulator-verified end to end, with opt-in live tests but
+  no real-hardware CI yet. Expect interfaces to change until `0.1.0`.
+- Sonos plays Spotify through its own music-service integration; the Spotify
+  Web API is only used to read your library. Spotify must be linked once in
+  each household's Sonos app, and the per-household render parameters are
+  learned from your own Sonos favorites. Rendering on legacy S1 players is
+  still being confirmed on real hardware.
+- You run the daemon on a machine on your speaker LAN (a Mac mini, a Pi, a
+  NAS). The deploy docs and announcements' speech (`say`) are macOS-first.
+- Until the CLI talks to a running daemon, `fsonos sleep` on its own sets the
+  speaker's own timer (no fade); the fade comes through the daemon (HTTP, MCP).
+- The API and MCP server have no authentication of their own: Tailscale is the
+  boundary. Callers on a direct tailnet listener are read-only until tailnet
+  identity reaches them; use Serve for full control, where the caller's login
+  is their identity.
 
 ## FAQ
 
-**Does this replace the Sonos app?** That's the goal for control, discovery,
-grouping, and the DJ. You still link Spotify once in the official app so Sonos
-can render it.
+**Does this replace the Sonos app?** For day-to-day control, grouping, the DJ,
+scenes, schedules and announcements, yes. You still link Spotify once in the
+official app so Sonos can render it.
 
-**Does it modify my speakers or their firmware?** No. It only sends them the
-same local control requests the official app and other open-source controllers
-use. Nothing is flashed or changed on the devices.
+**Does it modify my speakers or their firmware?** No. It sends them the same
+local control requests a controller always has. Nothing is flashed or changed
+on the devices.
 
 **Why can't it just use the Spotify API to play music?** The Spotify Web API
-can't target a Sonos renderer. Sonos plays Spotify through its own music-service
-integration; FrankenSonos builds the right `x-sonos-spotify:` request for *your*
-household (parameters learned from your own favorites).
+cannot target a Sonos renderer. Sonos plays Spotify through its own
+integration, so FrankenSonos builds the right `x-sonos-spotify:` request for
+*your* household, from parameters learned from your own favorites.
 
-**S1 and S2 at once?** Yes. The model covers both and addresses each household
-correctly.
+**S1 and S2 at once?** Yes. Both households appear together, every command
+addresses the right one, and `Room@S1` / `Room@S2` picks between rooms with the
+same name.
 
-**Can my AI agent control it from my phone / another city?** Yes, over your
-Tailscale tailnet: the agent reaches the daemon, and the daemon reaches the
-speakers on the LAN. The speakers never leave the LAN.
+**Can my AI agent control it from another city?** Yes, over your Tailscale
+tailnet: the agent reaches the daemon, and the daemon reaches the speakers on
+the LAN. The house policy bounds what it may do, and `undo` puts it back.
 
-**What streaming services work?** Spotify first (the author's use case). The
-control layer is source-agnostic, so other services can follow.
+**Can I try it without Sonos speakers?** Yes: `fsonos sim` runs a virtual S1
+and S2 house on loopback, and every command and the MCP server work against it.
+
+**What streaming services work?** Spotify first, plus anything you have saved
+as a Sonos favorite (stations, playlists, other services). The control layer
+is source-agnostic.
 
 ## About Contributions
 
