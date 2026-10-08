@@ -26,6 +26,10 @@ household ID.
   `GET /xml/device_description.xml`. Status pages: `GET /status`,
   `/status/zp`, `/status/VERSION` (build string), `/status/ifconfig`,
   `/status/proc/ath_rincon/status` (SonosNet radio diagnostics).
+  Hidden pages verified live (S1): `/advconfig.htm` (FirstZP/PriorityBridge
+  toggles; POST needs form data) and `/tools.htm` (ping/traceroute/nslookup
+  forms with CSRF tokens — note: the HTML forms are CSRF-protected while the
+  SOAP control surface is not).
 - Player UUID: `RINCON_<MAC>01400` (MAC without colons). This is the
   `udn`/`UUID` used in topology and GENA subscription IDs.
 - Group commands MUST go to the group's **coordinator**; members reject or
