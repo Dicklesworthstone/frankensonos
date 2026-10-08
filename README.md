@@ -66,7 +66,9 @@ fsonos play "Living Room" spotify:track:...   # render a track on a zone
 fsonos group "Kitchen" "Living Room"          # group two rooms
 fsonos dj start "Living Room"                 # start the classical DJ
 fsonos dj skip  "Living Room"                 # next pick
-fsonos serve --http 127.0.0.1:8099            # run the daemon: HTTP API + MCP + DJ
+fsonos serve                                  # the daemon: HTTP API + MCP + DJ, on loopback and your tailnet
+fsonos tailscale setup                        # HTTPS URLs for the tailnet via Tailscale Serve (never Funnel)
+fsonos doctor                                 # what is wrong with the setup, and how to fix it
 ```
 
 An agent reaches the same control surface over MCP:
