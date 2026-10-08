@@ -257,9 +257,13 @@ your speakers; for access from anywhere, that machine also joins your tailnet.
 Shipped: discovery and topology across S1 and S2, coordinator-addressed control
 and grouping, the GENA live model and self-healing, the DJ (drawing on
 everything you save or like on Spotify, in any genre) with steering,
-explanations and feedback, scenes, sleep timers and schedules, announcements, the house policy
-with quiet hours, the action log and undo, `doctor` and `setup`, the
-simulator, and the CLI, HTTP API and MCP server, on loopback and your tailnet.
+explanations and feedback, scenes, sleep timers and schedules, announcements,
+the house policy with quiet hours, the action log and undo, `doctor` and
+`setup`, the simulator, and the CLI, HTTP API and MCP server, on loopback and
+your tailnet. The CLI goes through a running daemon when there is one, with
+room-name completions for zsh, bash and fish, and the daemon serves a web
+remote (rooms, now playing with album art, volume, the DJ and scenes) to any
+device on your tailnet.
 
 Next:
 
@@ -270,10 +274,6 @@ Next:
 - More taste signals from your Spotify account (followed artists, playlists,
   top tracks and recent listening). They need extra read-only scopes, so they
   are under consideration rather than scheduled.
-- An instant CLI that goes through a running daemon (its warm state, its
-  sleep-timer fades), with room-name completions.
-- A web remote served by the daemon: rooms, now playing, volume, the DJ and
-  scenes, from any device on your tailnet.
 - Real-hardware CI, then `0.1.0` with prebuilt binaries.
 
 ## Scope & privacy
