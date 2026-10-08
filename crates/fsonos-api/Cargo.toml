@@ -15,6 +15,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+# Sleep timers and schedules: wall times in the house's time zone.
+chrono = { workspace = true }
 
 # FRANKEN (FND-DEPS): fastapi for the HTTP API, asupersync runtime.
 fastapi = { workspace = true }

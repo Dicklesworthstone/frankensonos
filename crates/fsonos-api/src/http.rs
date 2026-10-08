@@ -28,6 +28,7 @@
 //! | `POST /dj/steer` | [`crate::DjSteerRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /zones/{room}/dj` | | [`crate::DjStatusDto`] |
 //! | `GET /dj/moods?zone=<room>` | | [`crate::DjMoodsDto`] (`now` is the room's steering, else the house's program) |
+//! | `GET`/`POST /sleep`, `GET`/`POST /schedules`, `POST /schedules/remove`, `/pause`, `/resume` | | sleep timers and schedules: see [`schedules`] |
 //!
 //! Every route first passes the listener's [`WebPolicy`] (a present Origin
 //! must be the daemon's own; POSTs must be JSON); the listener itself admits
@@ -66,6 +67,8 @@ use crate::request::{
 use crate::surface::Surface;
 use crate::web::WebPolicy;
 use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
+
+mod schedules;
 
 mod scenes;
 
@@ -127,6 +130,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(house_verbs(cx));
     routes.extend(scenes::routes(cx));
     routes.extend(dj(cx));
+    routes.extend(schedules::routes(cx));
     routes
 }
 

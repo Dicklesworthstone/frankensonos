@@ -43,6 +43,7 @@ use crate::request::{PlayFavoriteRequest, SearchRequest};
 use crate::zones::{ZoneDto, zone_for_target, zone_views};
 
 pub mod scenes;
+pub mod schedules;
 
 /// Finds the households (a LAN survey, say).
 pub type Survey = Box<dyn Fn(&dyn Transport) -> Result<Vec<HouseholdState>, Failure> + Send + Sync>;
@@ -79,6 +80,9 @@ pub struct Surface {
     events: Option<Arc<EventBus>>,
     /// Until when reads survey directly (set by a regroup).
     settle_until: Mutex<Option<Instant>>,
+    /// The daemon's sleep timers ([`Self::with_sleep`]); without them a
+    /// sleep timer is the speaker's own, which does not fade.
+    sleep: Option<Arc<schedules::Sleep>>,
 }
 
 /// Doctor checks a surface adds to the core's (the daemon's bind and health
@@ -112,6 +116,7 @@ impl Surface {
             live: None,
             events: None,
             settle_until: Mutex::new(None),
+            sleep: None,
         }
     }
 

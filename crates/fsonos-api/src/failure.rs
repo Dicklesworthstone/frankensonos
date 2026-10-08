@@ -78,11 +78,13 @@ pub enum ErrorCode {
     NoMatch,
     /// No saved scene has that name.
     UnknownScene,
+    /// No schedule has that id.
+    UnknownSchedule,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -107,6 +109,7 @@ impl ErrorCode {
         Self::UnsupportedMediaType,
         Self::NoMatch,
         Self::UnknownScene,
+        Self::UnknownSchedule,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
@@ -137,6 +140,7 @@ impl ErrorCode {
             Self::UntrustedOrigin => "UNTRUSTED_ORIGIN",
             Self::UnsupportedMediaType => "UNSUPPORTED_MEDIA_TYPE",
             Self::UnknownScene => "UNKNOWN_SCENE",
+            Self::UnknownSchedule => "UNKNOWN_SCHEDULE",
         }
     }
 
@@ -151,7 +155,8 @@ impl ErrorCode {
             | Self::NoDjSession
             | Self::UnknownFavorite
             | Self::NoMatch
-            | Self::UnknownScene => 404,
+            | Self::UnknownScene
+            | Self::UnknownSchedule => 404,
             Self::AmbiguousRoom
             | Self::NotCoordinator
             | Self::SpotifyNotLinked
@@ -184,7 +189,8 @@ impl ErrorCode {
             | Self::NoDjSession
             | Self::UnknownFavorite
             | Self::NoMatch
-            | Self::UnknownScene => 3,
+            | Self::UnknownScene
+            | Self::UnknownSchedule => 3,
             Self::NotReady | Self::PlayerUnreachable | Self::NotCoordinator => 4,
             Self::PolicyDenied | Self::UntrustedOrigin => 5,
             Self::UpnpFault
@@ -259,6 +265,7 @@ impl ErrorCode {
             Self::UnknownScene => {
                 "List the scenes with list_scenes (GET /scenes), or use a suggested name."
             }
+            Self::UnknownSchedule => "Use an id that list_schedules (GET /schedules) shows.",
         }
     }
 }
@@ -547,6 +554,7 @@ mod tests {
             (ErrorCode::PolicyDenied, 403, 5, false),
             (ErrorCode::Internal, 500, 1, false),
             (ErrorCode::NoMatch, 404, 3, false),
+            (ErrorCode::UnknownSchedule, 404, 3, false),
         ];
         for (code, status, exit, retryable) in expect {
             let f = Failure::new(code, "x");

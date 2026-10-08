@@ -55,6 +55,7 @@ succeed.
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | 2 | no | A control request whose body is not `application/json`. | Send the request body as JSON with Content-Type: application/json. |
 | `NO_MATCH` | 404 | 3 | no | A library search found nothing to play. | Try fewer or other words: a composer's surname, a performer, or a catalog number (bwv 988). |
 | `UNKNOWN_SCENE` | 404 | 3 | no | No saved scene has that name. | List the scenes with list_scenes (GET /scenes), or use a suggested name. |
+| `UNKNOWN_SCHEDULE` | 404 | 3 | no | No schedule has that id. | Use an id that list_schedules (GET /schedules) shows. |
 
 ## Notes
 

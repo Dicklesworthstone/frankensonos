@@ -1247,6 +1247,7 @@ name = "fsonos-api"
 version = "0.1.0"
 dependencies = [
  "asupersync",
+ "chrono",
  "fastapi-rust",
  "fsonos-core",
  "fsonos-proto",

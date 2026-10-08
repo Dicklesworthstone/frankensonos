@@ -22,6 +22,8 @@ use std::sync::{Arc, OnceLock};
 
 use crate::tool_error;
 
+pub mod schedules;
+
 mod scenes;
 pub use scenes::{ApplyScene, ListScenes, SaveScene};
 
