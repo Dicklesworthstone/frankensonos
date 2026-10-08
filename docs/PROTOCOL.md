@@ -333,12 +333,39 @@ Update mechanism (verified 2026-10-07):
   `useLegacySpotifySmapiPlayback`, `enableSpotifySMAPIVolumeNormalization`.
 - S1 57.23 payloads (types 4/6) measure 8.00 bits/byte entropy with no known
   compression magic — encrypted with device-family keys, per published
-  research (NCC Group BH-US 2024; blasty/sonos `sonostool`). Decryption is
-  **not pursued**: unneeded for interoperability, and key extraction crosses
-  into defeating protection measures.
+  research (NCC Group BH-US 2024; blasty/sonos `sonostool`). The owner has
+  since directed (2026-10-08) that defeating the protection on his own
+  hardware is in-bounds for the replacement-software goal; see below.
 - `ZoneGroupTopology` also exposes `BeginSoftwareUpdate(UpdateURL, Flags,
   ExtraOptions)` — the install path. **Never called by this project**:
   flashing is human-led per `docs/SCOPE.md`.
+
+Protection analysis (S1 line, 2026-10-08 — owner-directed):
+
+- The 34.16-era milestone image is **fully unencrypted**: gzipped MIPS kernel
+  (type 6 record) + a big-endian CramFS rootfs (type 4) + shell-script
+  records. The rootfs was extracted and read (62 files): `opt/bin/anacapad`
+  (the 1.4 MB daemon — Anacapa is the combined HTTP/UPnP server, per
+  `opt/conf/anacapa.conf`: Port 1400, SSLPort 1443), `bin/upgrade` (the
+  on-device updater), busybox, uClibc libs, mbedTLS.
+- The updater (`bin/upgrade`, `UpgradeController`) verifies a **Sonos
+  signature section** against an on-device key ("Sonos signature verification
+  failed", "No valid signature", `mbedtls_pk_parse_key`); encryption of
+  *content* arrived later (57.23 payloads are encrypted; "encrypted signature
+  section not supported" appears in the 34.16 build). So S1 protection =
+  on-device signature check (+ content encryption in later builds), with keys
+  compiled into the install environment — not per-device OTP like newer S2
+  hardware (NCC/blasty: Amlogic eFUSE).
+- The updater carries a **vendor debug path** (`update_debug_version`,
+  `is_debug_version`, `allow_policy_bypass`, "No-op mode - download/reboot
+  will be skipped") — the classic dev backdoor pattern. Its trigger is not in
+  the readable settings store (SystemProperties GetString on the obvious
+  names all 800); finding it wants `r2` on `bin/upgrade`.
+- Feasibility map for owner-software replacement: S1 is the tractable target
+  (readable images, decoded container, debug path to chase); S2-One class
+  needs the published hardware-exploit route (USB bootrom, per-device keys) —
+  disproportionate for reliability goals. Flashing anything remains
+  human-led per `docs/SCOPE.md`, one explicit approval per operation.
 
 ## 10. SMAPI (the speaker↔Spotify bridge) — verified against the live endpoint
 

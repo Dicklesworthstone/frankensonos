@@ -81,9 +81,13 @@ prohibitions above **only as enumerated here**:
   directory and are never committed.
 - **Static analysis of Sonos firmware and software binaries** for
   interoperability understanding (update mechanism, service architecture,
-  protocol handlers), using disassemblers and debuggers. Findings are
+  protocol handlers), using disassemblers and debuggers. Per the owner's
+  direct instruction of 2026-10-08, this explicitly INCLUDES researching the
+  protection mechanisms (signatures, encryption, debug paths) on hardware he
+  owns, toward replacing vendor software on his own devices. Findings are
   committed only as scrubbed prose documentation — never decompiled code,
   copyrighted firmware images, keys, or certificates.
+
 - **Protocol parameters observed on the owner's own system** (e.g. SMAPI
   `sid`/`flags`/`sn` values, household and device identifiers): may be used
   at runtime to control the owner's own devices, learned at runtime from the
