@@ -92,6 +92,19 @@ impl Work {
         tags
     }
 
+    /// The genre it is balanced under: "classical" for a classical work,
+    /// else its first tag (none for an untagged song).
+    #[must_use]
+    pub fn genre(&self) -> Option<&str> {
+        if self.is_classical() {
+            return Some("classical");
+        }
+        self.movements
+            .first()
+            .and_then(|m| m.genres.first())
+            .map(String::as_str)
+    }
+
     /// Its album's release year, when known.
     #[must_use]
     pub fn year(&self) -> Option<u16> {

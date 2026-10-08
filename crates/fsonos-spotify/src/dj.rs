@@ -16,11 +16,13 @@
 //!   de-weighted until well clear of that. If the cooldown leaves too few works
 //!   (a small library, a long session), the DJ rotates through the
 //!   least-recently-played slice instead of repeating.
-//! * **Spread.** The same composer or album is strongly de-weighted for a few
-//!   works and recovers quadratically; same-period runs are damped and periods
-//!   missing from the last few works are favored; prolific composers are
-//!   damped (weight ∝ 1/√works) so a shelf of Bach cantatas doesn't drown out
-//!   three Fauré pieces.
+//! * **Spread.** No artist or composer recurs within
+//!   [`DjConfig::artist_cooldown_works`] works while any other qualifies. The
+//!   same artist, composer or album is strongly de-weighted for a few works
+//!   and recovers quadratically; same-genre and same-period runs are damped
+//!   and genres or periods missing from the last few works are favored;
+//!   prolific artists and composers are damped (weight ∝ 1/√works) so a
+//!   shelf of Bach cantatas doesn't drown out three Fauré pieces.
 //! * **Energy.** A work's energy is its first movement's. Prefer works near
 //!   the time-of-day target and avoid jarring jumps from one work to the
 //!   next (a finale's Presto into a quiet opening is the concert norm, so the
@@ -140,6 +142,9 @@ pub struct DjConfig {
     pub work_cooldown_plays: usize,
     /// …nor within this many seconds (when history carries timestamps).
     pub work_cooldown_secs: i64,
+    /// Hard: no artist (a song's lead artist, a classical work's composer)
+    /// recurs within this many work plays, while any other work qualifies.
+    pub artist_cooldown_works: usize,
     /// Soft: work plays over which a composer recovers from being heard.
     pub composer_spacing: usize,
     /// Soft: work plays over which an album (≈ the same performers) recovers.
@@ -169,6 +174,7 @@ impl Default for DjConfig {
         Self {
             work_cooldown_plays: 40,
             work_cooldown_secs: 24 * 60 * 60,
+            artist_cooldown_works: 2,
             composer_spacing: 4,
             album_spacing: 3,
             period_memory: 4,
@@ -252,6 +258,15 @@ pub enum Factor {
     Feedback,
     /// The owner's preferences favor (2000) or pin (3000) it.
     Preference,
+    /// 1/√(the artist's songs in the pool): [`Self::ComposerBalance`] for a
+    /// song's lead artist.
+    ArtistBalance,
+    /// The artist was heard a few works ago (a song's lead artist).
+    ArtistSpacing,
+    /// Its genre is on a run.
+    GenreRun,
+    /// Its genre is missing from the last few works.
+    GenreAbsent,
     /// Every work left is avoided in the owner's preferences, so the avoids
     /// relaxed (a flag, recorded at 1000).
     Avoided,
@@ -296,6 +311,9 @@ pub struct WorkPool {
     composer_works: HashMap<String, usize>,
     /// Per work, the normalized text steering keywords match against.
     haystacks: Vec<String>,
+    /// Whether the works span more than one genre (else genre balance is
+    /// moot).
+    mixed_genres: bool,
     /// The owner's standing preferences ([`crate::prefs`]) and, per work,
     /// how they treat it.
     preferences: Preferences,
@@ -321,6 +339,11 @@ impl WorkPool {
             }
         }
         let haystacks = works.iter().map(haystack).collect();
+        let first_genre = works.iter().find_map(Work::genre);
+        let mixed_genres = works
+            .iter()
+            .filter_map(Work::genre)
+            .any(|g| Some(g) != first_genre);
         let verdicts = works
             .iter()
             .map(|work| Verdict {
@@ -333,6 +356,7 @@ impl WorkPool {
             by_track,
             composer_works,
             haystacks,
+            mixed_genres,
             preferences: Preferences::default(),
             verdicts,
         }
@@ -538,6 +562,11 @@ struct Recency<'p> {
     period_run: Option<(Period, usize)>,
     /// Periods of the last `period_memory` work plays.
     recent_periods: Vec<Period>,
+    /// Genre ([`Work::genre`]) of the latest work plays and how many in a
+    /// row share it.
+    genre_run: Option<(Option<&'p str>, usize)>,
+    /// Genres of the last `period_memory` work plays.
+    recent_genres: Vec<Option<&'p str>>,
     /// Energy of the previous work, if it was a pool work.
     last_energy: Option<u8>,
 }
@@ -549,6 +578,7 @@ impl<'p> Recency<'p> {
         // The work of the play being counted (`Some(None)`: a non-pool track).
         let mut current: Option<Option<usize>> = None;
         let mut run_open = true;
+        let mut genre_run_open = true;
         let latest_first = history.iter().rev().take(config.history_horizon);
         for (row, play) in latest_first.enumerate() {
             let hit = pool.by_track.get(play.source_uri.as_str()).copied();
@@ -587,6 +617,17 @@ impl<'p> Recency<'p> {
             }
             if seen.recent_periods.len() < config.period_memory {
                 seen.recent_periods.push(entry.period);
+                seen.recent_genres.push(entry.genre());
+            }
+            if genre_run_open {
+                seen.genre_run = match seen.genre_run {
+                    None => Some((entry.genre(), 1)),
+                    Some((genre, run)) if genre == entry.genre() => Some((genre, run + 1)),
+                    other => {
+                        genre_run_open = false;
+                        other
+                    }
+                };
             }
             if run_open {
                 seen.period_run = match seen.period_run {
@@ -633,6 +674,22 @@ fn eligible(
         .collect();
     if allowed.is_empty() {
         allowed = admitted;
+    }
+    // No artist twice within the window — unless that would leave nothing.
+    if config.artist_cooldown_works > 0 {
+        let spaced: Vec<usize> = allowed
+            .iter()
+            .copied()
+            .filter(|&w| {
+                recency
+                    .composer_ago
+                    .get(pool.works[w].composer_key())
+                    .is_none_or(|&ago| ago >= config.artist_cooldown_works)
+            })
+            .collect();
+        if !spaced.is_empty() {
+            allowed = spaced;
+        }
     }
     // Twice-disliked works sit out — unless the owner's preferences favor
     // them, or that would leave nothing.
@@ -703,12 +760,15 @@ fn weigh(
             .unwrap_or(1)
             .max(1),
     );
+    // A song's composer key is its lead artist: name the factors so.
+    let (balance, spacing) = if work.is_classical() {
+        (Factor::ComposerBalance, Factor::ComposerSpacing)
+    } else {
+        (Factor::ArtistBalance, Factor::ArtistSpacing)
+    };
+    apply(balance, 1_000_000 / (works * 1_000_000).isqrt());
     apply(
-        Factor::ComposerBalance,
-        1_000_000 / (works * 1_000_000).isqrt(),
-    );
-    apply(
-        Factor::ComposerSpacing,
+        spacing,
         spacing_pm(
             recency.composer_ago.get(composer).copied(),
             config.composer_spacing,
@@ -729,6 +789,10 @@ fn weigh(
     }
     let (period_factor, period) = period_pm(work.period, recency);
     apply(period_factor, period);
+    if pool.mixed_genres {
+        let (genre_factor, genre) = genre_pm(work.genre(), recency);
+        apply(genre_factor, genre);
+    }
     if let Some(target) = target {
         apply(Factor::EnergyFit, energy_fit_pm(work.energy(), target));
     }
@@ -789,6 +853,29 @@ fn period_pm(period: Period, recency: &Recency<'_>) -> (Factor, u64) {
             (Factor::PeriodAbsent, 1400)
         }
         _ => (Factor::PeriodRun, 1000),
+    }
+}
+
+/// Damp a genre already on a run; favor one absent from the last few works.
+/// Milder than the period balance (a genre is a broad family); an untagged
+/// song is neutral.
+fn genre_pm(genre: Option<&str>, recency: &Recency<'_>) -> (Factor, u64) {
+    let Some(genre) = genre else {
+        return (Factor::GenreRun, 1000);
+    };
+    match recency.genre_run {
+        Some((Some(g), run)) if g == genre => (
+            Factor::GenreRun,
+            match run {
+                1 => 700,
+                2 => 400,
+                _ => 200,
+            },
+        ),
+        _ if !recency.recent_genres.is_empty() && !recency.recent_genres.contains(&Some(genre)) => {
+            (Factor::GenreAbsent, 1300)
+        }
+        _ => (Factor::GenreRun, 1000),
     }
 }
 
@@ -877,6 +964,10 @@ fn summarize(
     }];
     if has(Factor::PeriodAbsent) {
         parts.push(format!("balancing toward {}", work.period.label()));
+    } else if has(Factor::GenreAbsent)
+        && let Some(genre) = work.genre()
+    {
+        parts.push(format!("balancing toward {genre}"));
     }
     if let Some(energy) = target.energy {
         let mood = match energy {
@@ -1068,6 +1159,131 @@ mod tests {
                 .any(|p| p.work.composer == "Ludwig van Beethoven" && p.movements.len() == 4),
             "{}",
             log()
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one long run, checked several ways
+    fn a_long_mixed_run_spaces_artists_spreads_genres_and_says_why() {
+        let pool = works_of(&mixed_items());
+        let config = DjConfig::default();
+        let window = config.artist_cooldown_works;
+        let genre_shares = |picks: &[PlannedWork<'_>]| {
+            let mut shares: BTreeMap<String, usize> = BTreeMap::new();
+            for p in picks {
+                *shares
+                    .entry(p.work.genre().unwrap_or("none").to_owned())
+                    .or_default() += 1;
+            }
+            shares
+        };
+        // How often two independent draws from the pool share a genre, per
+        // mille.
+        let mut sizes: BTreeMap<&str, usize> = BTreeMap::new();
+        for work in pool.works() {
+            *sizes.entry(work.genre().unwrap_or("none")).or_default() += 1;
+        }
+        let n = pool.len();
+        let independent_pm: usize = sizes.values().map(|&k| k * k * 1000 / (n * n)).sum();
+        let mut plain: BTreeMap<String, usize> = BTreeMap::new();
+        for seed in 1..=3 {
+            let picks = simulate(&pool, &config, seed, 300, Some(14));
+            let log = || transcript(seed, &pool, &picks);
+            // No artist (or composer) twice inside the window.
+            for (i, p) in picks.iter().enumerate() {
+                for back in 1..=window.min(i) {
+                    assert_ne!(
+                        p.work.composer_key(),
+                        picks[i - back].work.composer_key(),
+                        "pick {i}\n{}",
+                        log()
+                    );
+                }
+            }
+            // Genres alternate: back to back well under two thirds as often
+            // as independent draws would make them, and never more than four
+            // in a row (classical is half this library).
+            let works: Vec<&Work> = picks.iter().map(|p| p.work).collect();
+            assert!(
+                longest_run(&works, |w| w.genre().map(str::to_owned)) <= 4,
+                "{}",
+                log()
+            );
+            let same = picks
+                .windows(2)
+                .filter(|pair| pair[0].work.genre() == pair[1].work.genre())
+                .count();
+            assert!(
+                same * 1000 * 3 < independent_pm * (picks.len() - 1) * 2,
+                "{same} same-genre steps\n{}",
+                log()
+            );
+            // Reasons name the artist factors for songs and the genre balance.
+            assert!(picks.iter().any(|p| p.reason.has(Factor::ArtistSpacing)));
+            assert!(picks.iter().any(|p| p.reason.has(Factor::ArtistBalance)));
+            assert!(picks.iter().any(|p| p.reason.has(Factor::GenreRun)));
+            assert!(
+                picks
+                    .iter()
+                    .any(|p| p.reason.summary.contains("balancing toward jazz")),
+                "{}",
+                log()
+            );
+            for (genre, n) in genre_shares(&picks) {
+                *plain.entry(genre).or_default() += n;
+            }
+        }
+        // Every genre of the library plays.
+        assert_eq!(
+            plain.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "classical",
+                "hip hop",
+                "indie pop",
+                "jazz",
+                "pop",
+                "soundtrack"
+            ]
+        );
+        // Taste weights steer the spread: favoring jazz raises its share, and
+        // the reason says so. The lift is moderate by design: the artist
+        // window and spacing still cap any one genre (jazz here is two
+        // artists), and with the default 40-play cooldown the library's seven
+        // jazz works already play about as often as anti-repeat allows, so a
+        // short cooldown lets the weights show.
+        let favoring = Preferences {
+            favor: crate::prefs::Taste {
+                genres: vec!["jazz".into()],
+                ..crate::prefs::Taste::default()
+            },
+            ..Preferences::default()
+        };
+        let favored = works_of(&mixed_items()).with_preferences(favoring, &Moods::builtin());
+        let loose = DjConfig {
+            work_cooldown_plays: 8,
+            work_cooldown_secs: 0,
+            ..DjConfig::default()
+        };
+        let jazz = |pool: &WorkPool| {
+            let mut n = 0;
+            for seed in 1..=3 {
+                let picks = simulate(pool, &loose, seed, 300, Some(14));
+                n += genre_shares(&picks).get("jazz").copied().unwrap_or(0);
+                if pool.preferences().favor.genres.is_empty() {
+                    continue;
+                }
+                assert!(
+                    picks
+                        .iter()
+                        .any(|p| p.reason.summary.contains("favored in your preferences"))
+                );
+            }
+            n
+        };
+        let (leaning, alone) = (jazz(&favored), jazz(&pool));
+        assert!(
+            leaning * 20 > alone * 23,
+            "jazz {leaning} favored vs {alone} plain"
         );
     }
 
