@@ -367,6 +367,17 @@ Protection analysis (S1 line, 2026-10-08 — owner-directed):
   disproportionate for reliability goals. Flashing anything remains
   human-led per `docs/SCOPE.md`, one explicit approval per operation.
 
+More (2026-10-08): the encryption boundary is between 34.16 (readable) and
+57.19 (encrypted) — 57.19 and 73.0 Play:1 images show high-entropy payloads
+with no structure; both S1-gen platforms' milestone-era rootfs images (Play:5
+Gen1 model 5, Play:1 model 12) are extracted and readable. The S1 controller
+app (x86_64, from the still-served 57.23 DMG) shows the update *orchestration*
+side: `BeginSoftwareUpdate` takes the update URL as an argument (the
+controller picks the channel — `update.sonos.com/firmware/latest/` vs beta
+via `x-sonos-scuri://settings/advanced/beta`), and carries a
+`SCMockUpdateDebugPage` class in its wizard flow. Both S1-gen updaters share
+the debug-path strings, so one trigger would open both lines.
+
 ## 10. SMAPI (the speaker↔Spotify bridge) — verified against the live endpoint
 
 Sonos renders music services through SMAPI, a SOAP API Sonos operates per
