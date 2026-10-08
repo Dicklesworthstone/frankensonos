@@ -1023,8 +1023,26 @@ impl State {
     }
 }
 
+/// The URI of track `n` of a Spotify container (album or playlist), as a
+/// real player queues it: its own `x-sonos-spotify:` track, carrying the
+/// container's account parameters.
+fn container_track_uri(container: &str, n: usize) -> Option<String> {
+    let rest = container.strip_prefix("x-rincon-cpcontainer:")?;
+    let (body, query) = rest.split_once('?').unwrap_or((rest, ""));
+    if !body.contains("spotify%3a") {
+        return None;
+    }
+    let id = body.rsplit("%3a").next()?;
+    let query = if query.is_empty() {
+        String::new()
+    } else {
+        format!("?{query}")
+    };
+    Some(format!("x-sonos-spotify:spotify%3atrack%3a{id}{n}{query}"))
+}
+
 /// The queue items an enqueued URI becomes: one track, or three for a
-/// container.
+/// container, each with its own URI.
 fn expand(uri: &str, metadata: &str) -> Vec<QueueItem> {
     let object = parse_didl(metadata).ok().and_then(|o| o.into_iter().next());
     let title = object
@@ -1033,7 +1051,9 @@ fn expand(uri: &str, metadata: &str) -> Vec<QueueItem> {
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| "Untitled".to_string());
     let track = |n: Option<usize>| QueueItem {
-        uri: uri.to_string(),
+        uri: n
+            .and_then(|n| container_track_uri(uri, n))
+            .unwrap_or_else(|| uri.to_string()),
         metadata: metadata.to_string(),
         title: n.map_or_else(|| title.clone(), |n| format!("{title} ({n})")),
         creator: object.as_ref().and_then(|o| o.creator.clone()),
@@ -1362,6 +1382,25 @@ mod tests {
             .unwrap(),
             "CurrentTransportState",
         )
+    }
+
+    #[test]
+    fn a_container_queues_tracks_of_their_own() {
+        let album = "x-rincon-cpcontainer:1004206cspotify%3aalbum%3aABC?sid=12&flags=8300&sn=3";
+        let items = expand(album, "");
+        let uris: Vec<&str> = items.iter().map(|i| i.uri.as_str()).collect();
+        assert_eq!(
+            uris,
+            [
+                "x-sonos-spotify:spotify%3atrack%3aABC1?sid=12&flags=8300&sn=3",
+                "x-sonos-spotify:spotify%3atrack%3aABC2?sid=12&flags=8300&sn=3",
+                "x-sonos-spotify:spotify%3atrack%3aABC3?sid=12&flags=8300&sn=3",
+            ]
+        );
+        assert_eq!(
+            expand("x-file-cifs://nas.example/a.flac", "")[0].uri,
+            "x-file-cifs://nas.example/a.flac"
+        );
     }
 
     #[test]
