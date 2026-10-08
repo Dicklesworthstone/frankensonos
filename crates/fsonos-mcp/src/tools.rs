@@ -30,6 +30,7 @@ pub use scenes::{ApplyScene, ListScenes, SaveScene};
 mod announce;
 pub use announce::Announce;
 
+mod documents;
 /// Finds the households (a LAN survey, say); see [`fsonos_api::surface`].
 pub use fsonos_api::surface::Survey;
 

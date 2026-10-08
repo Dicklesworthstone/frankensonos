@@ -75,6 +75,7 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::schedules::RemoveSchedule)
         .resource(resources::ZonesResource)
         .resource(resources::ZoneResource)
+        .resource(resources::DjResource)
         .build()
 }
 

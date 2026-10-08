@@ -3,7 +3,9 @@
 //!
 //! * `sonos://zones`: every zone (the `list_zones` answer, as JSON);
 //! * `sonos://zones/{room}`: one room's zone state (the `get_zone_state`
-//!   answer). `room` is percent-encoded (`Living%20Room`).
+//!   answer). `room` is percent-encoded (`Living%20Room`);
+//! * `sonos://dj`: the DJ in every zone (each zone's `dj_status`), with its
+//!   moods and time-of-day program (`dj_moods`).
 //!
 //! Change notifications are not sent yet: fastmcp_rust (at the pinned
 //! revision) publishes `notifications/resources/updated` only from inside a
@@ -44,5 +46,15 @@ fn zone(room: String) -> McpResult<String> {
     })?;
     backend()
         .and_then(|b| b.zone_document(&room))
+        .map_err(|f| read_error(&f))
+}
+
+/// The DJ in every zone: whether it feeds the queue, the work it plays and
+/// plays next, and how it is steered; with the moods it can be steered to
+/// and the time-of-day program that steers it otherwise.
+#[resource(uri = "sonos://dj", mime_type = "application/json")]
+fn dj() -> McpResult<String> {
+    backend()
+        .and_then(crate::tools::Backend::dj_document)
         .map_err(|f| read_error(&f))
 }
