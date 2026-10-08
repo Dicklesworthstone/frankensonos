@@ -18,6 +18,8 @@ use std::str::FromStr;
 use chrono::{NaiveTime, Timelike, Weekday};
 use serde::{Deserialize, Serialize};
 
+use fsonos_core::store::{DjSession as StoredDjSession, Store};
+
 use crate::SpotifyError;
 use crate::classical::{Period, composer_matches, has_phrase, normalize};
 use crate::works::Work;
@@ -762,6 +764,84 @@ impl DjSession {
             constraints,
         }))
     }
+
+    /// A session for `coordinator`'s group with no mood, no constraints and
+    /// no end: it follows the time-of-day programs.
+    #[must_use]
+    pub fn open(coordinator: &str) -> Self {
+        Self {
+            zone: coordinator.to_owned(),
+            mood: None,
+            constraints: DjConstraints::default(),
+            expires_at: None,
+        }
+    }
+
+    /// Whether the session has ended by `now`.
+    #[must_use]
+    pub fn expired(&self, now: i64) -> bool {
+        self.expires_at.is_some_and(|expires| now >= expires)
+    }
+
+    /// The store row: `zone` is the group coordinator's id, the constraints
+    /// go as JSON (none when they constrain nothing), and a session without
+    /// an end lapses at the end of time.
+    pub fn to_store(&self) -> Result<StoredDjSession, SpotifyError> {
+        let constraints = if self.constraints == DjConstraints::default() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&self.constraints)
+                    .map_err(|e| SpotifyError::Decode(format!("DJ session constraints: {e}")))?,
+            )
+        };
+        Ok(StoredDjSession {
+            coordinator: self.zone.clone(),
+            mood: self.mood.clone(),
+            constraints,
+            expires: self.expires_at.unwrap_or(NEVER),
+        })
+    }
+
+    /// A store row as a session. Constraints this crate can't read are an
+    /// error rather than silently dropped.
+    pub fn from_store(row: &StoredDjSession) -> Result<Self, SpotifyError> {
+        let constraints = match &row.constraints {
+            Some(json) => serde_json::from_str(json)
+                .map_err(|e| SpotifyError::Decode(format!("DJ session constraints: {e}")))?,
+            None => DjConstraints::default(),
+        };
+        Ok(Self {
+            zone: row.coordinator.clone(),
+            mood: row.mood.clone(),
+            constraints,
+            expires_at: (row.expires != NEVER).then_some(row.expires),
+        })
+    }
+}
+
+/// The store row's `expires` for a session that never ends.
+const NEVER: i64 = i64::MAX;
+
+/// The steering for `coordinator`'s group at `now`: its stored session's mood
+/// and constraints while the session lasts; otherwise (no session, one that
+/// names no mood, or one that has ended) the mood its time-of-day program
+/// picks at the `local` day and time. What the daemon passes as
+/// `Planning::steer` before each pick.
+pub fn steering<S: Store + ?Sized>(
+    store: &S,
+    moods: &Moods,
+    coordinator: &str,
+    now: i64,
+    local: Option<(Weekday, NaiveTime)>,
+) -> Result<Option<Steer>, SpotifyError> {
+    let session = match store.dj_session(coordinator)? {
+        Some(row) => Some(DjSession::from_store(&row)?),
+        None => None,
+    }
+    .filter(|session| !session.expired(now))
+    .unwrap_or_else(|| DjSession::open(coordinator));
+    session.steer_at(moods, Some(now), local)
 }
 
 #[cfg(test)]
@@ -1486,5 +1566,76 @@ mood = "focus"
             err.contains("no mood \"disco\"") && err.contains("focus"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn sessions_round_trip_through_both_stores_and_steer_by_program() {
+        use fsonos_core::store::{MemStore, SqliteStore};
+
+        let moods = Moods::builtin();
+        let saturday_morning = Some((Weekday::Sat, at(8, 0)));
+        let steered = DjSession {
+            zone: "RINCON_TEST0000000000001400".into(),
+            mood: Some("focus".into()),
+            constraints: DjConstraints {
+                include_composers: words(&["Bach"]),
+                ..DjConstraints::default()
+            },
+            expires_at: Some(MIDNIGHT + 3600),
+        };
+        let open = DjSession::open("RINCON_TEST0000000000002400");
+        let row = open.to_store().unwrap();
+        assert_eq!((row.constraints.as_deref(), row.expires), (None, i64::MAX));
+
+        let stores: [Box<dyn Store>; 2] = [
+            Box::new(MemStore::default()),
+            Box::new(SqliteStore::open_in_memory().unwrap()),
+        ];
+        for mut store in stores {
+            store.save_dj_session(&steered.to_store().unwrap()).unwrap();
+            store.save_dj_session(&open.to_store().unwrap()).unwrap();
+            let back = store.dj_session(&steered.zone).unwrap().unwrap();
+            assert_eq!(DjSession::from_store(&back).unwrap(), steered);
+            let back = store.dj_session(&open.zone).unwrap().unwrap();
+            assert_eq!(DjSession::from_store(&back).unwrap(), open);
+
+            // While it lasts, the session's own mood and constraints steer.
+            let steer = steering(&*store, &moods, &steered.zone, MIDNIGHT, saturday_morning)
+                .unwrap()
+                .unwrap();
+            assert_eq!(steer.mood.as_deref(), Some("focus"));
+            assert_eq!(steer.constraints.include_composers, ["Bach"]);
+            // Once it has ended, the program does — not nothing.
+            let steer = steering(
+                &*store,
+                &moods,
+                &steered.zone,
+                MIDNIGHT + 3600,
+                saturday_morning,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(steer.mood.as_deref(), Some("sunday-morning"));
+            assert!(steer.constraints.include_composers.is_empty());
+            // A session without a mood, or none at all, follows the program;
+            // with no local clock there is nothing to follow.
+            for zone in [open.zone.as_str(), "RINCON_TEST0000000000003400"] {
+                let steer = steering(&*store, &moods, zone, MIDNIGHT, saturday_morning)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(steer.mood.as_deref(), Some("sunday-morning"), "{zone}");
+                let plain = steering(&*store, &moods, zone, MIDNIGHT, None)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(plain, Steer::default(), "{zone}");
+            }
+        }
+
+        let garbled = StoredDjSession {
+            constraints: Some("{\"energy_bais\": 1}".into()),
+            ..steered.to_store().unwrap()
+        };
+        let err = DjSession::from_store(&garbled).unwrap_err().to_string();
+        assert!(err.contains("energy_bais"), "{err}");
     }
 }
