@@ -33,6 +33,12 @@
 //!   decayed likes, dislikes, skips and full listens scale each work's weight
 //!   (×0.25 – ×2), and twice-disliked works sit out while any other work
 //!   qualifies.
+//! * **Preferences.** Under the owner's standing preferences
+//!   ([`WorkPool::with_preferences`], [`crate::prefs`]), banned and avoided
+//!   works leave the pool before steering (a steer asking for one by name
+//!   brings it back), explicit ones stay out unless allowed, favored works
+//!   weigh ×2 and pinned ones ×3, and feedback can't push those below
+//!   neutral. A preferred energy replaces the time-of-day curve.
 //!
 //! Every pick carries a [`PickReason`]. Weights are integer per-mille factors
 //! and every iteration runs in pool or history order, so a seeded [`Rng`]
@@ -45,7 +51,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::classical::{CandidatePool, ClassicalTrack, Period};
 use crate::feedback::FeedbackModel;
-use crate::steer::{Relaxation, Steer, admit, haystack};
+use crate::prefs::{Preferences, Verdict};
+use crate::steer::{Moods, Relaxation, Steer, admit_among, haystack, names};
 use crate::works::{Completeness, Work, group_works};
 
 /// A seedable, dependency-free pseudo-random generator (xorshift64*, seeded
@@ -243,6 +250,11 @@ pub enum Factor {
     LongWork,
     /// The owner's feedback on the work, its composer or performer.
     Feedback,
+    /// The owner's preferences favor (2000) or pin (3000) it.
+    Preference,
+    /// Every work left is avoided in the owner's preferences, so the avoids
+    /// relaxed (a flag, recorded at 1000).
+    Avoided,
 }
 
 /// Why a work was chosen.
@@ -284,6 +296,10 @@ pub struct WorkPool {
     composer_works: HashMap<String, usize>,
     /// Per work, the normalized text steering keywords match against.
     haystacks: Vec<String>,
+    /// The owner's standing preferences ([`crate::prefs`]) and, per work,
+    /// how they treat it.
+    preferences: Preferences,
+    verdicts: Vec<Verdict>,
 }
 
 impl WorkPool {
@@ -305,11 +321,69 @@ impl WorkPool {
             }
         }
         let haystacks = works.iter().map(haystack).collect();
+        let verdicts = works
+            .iter()
+            .map(|work| Verdict {
+                explicit: work.movements.iter().any(|m| m.explicit),
+                ..Verdict::default()
+            })
+            .collect();
         Self {
             works,
             by_track,
             composer_works,
             haystacks,
+            preferences: Preferences::default(),
+            verdicts,
+        }
+    }
+
+    /// The pool under the owner's preferences; `moods` resolves the moods
+    /// they name (the same moods steering uses).
+    #[must_use]
+    pub fn with_preferences(mut self, preferences: Preferences, moods: &Moods) -> Self {
+        self.verdicts = self
+            .works
+            .iter()
+            .zip(&self.haystacks)
+            .map(|(work, hay)| preferences.verdict(work, hay, moods))
+            .collect();
+        self.preferences = preferences;
+        self
+    }
+
+    #[must_use]
+    pub fn preferences(&self) -> &Preferences {
+        &self.preferences
+    }
+
+    /// How the preferences treat the work at `index` in [`Self::works`].
+    #[must_use]
+    pub fn verdict(&self, index: usize) -> Verdict {
+        self.verdicts[index]
+    }
+
+    /// The works the preferences let play, before steering: no explicit
+    /// ones unless allowed, nothing banned or avoided, except what an active
+    /// steer asks for by name. Avoids relax (the flag) only when they would
+    /// leave nothing.
+    fn allowed(&self, steer: Option<&Steer>) -> (Vec<usize>, bool) {
+        let named = |w: usize| steer.is_some_and(|s| names(&self.works[w], &s.constraints));
+        let playable: Vec<usize> = (0..self.len())
+            .filter(|&w| {
+                let v = self.verdicts[w];
+                (self.preferences.explicit || !v.explicit) && (!v.banned || named(w))
+            })
+            .collect();
+        let kept: Vec<usize> = playable
+            .iter()
+            .copied()
+            .filter(|&w| !self.verdicts[w].avoids() || named(w))
+            .collect();
+        if kept.is_empty() && !playable.is_empty() {
+            (playable, true)
+        } else {
+            (kept, false)
         }
     }
 
@@ -349,19 +423,26 @@ pub fn pick_next<'p>(
     }
     let recency = Recency::scan(pool, ctx.history, config);
     let steer = ctx.steer.filter(|s| s.constraints.is_active(ctx.now));
+    let (allowed, avoids_relaxed) = pool.allowed(steer);
     let (admitted, relaxed) = match steer {
-        Some(s) => admit(
+        Some(s) => admit_among(
             &pool.works,
             &pool.haystacks,
+            &allowed,
             &s.constraints,
             config.min_steered_works,
         ),
-        None => ((0..pool.len()).collect(), Vec::new()),
+        None => (allowed, Vec::new()),
     };
+    if admitted.is_empty() {
+        // Everything is banned (or explicit, and that isn't allowed).
+        return None;
+    }
     let allow_long =
         config.allow_long_works || steer.is_some_and(|s| s.constraints.allow_long_works);
     let base_target = ctx
         .energy_target
+        .or(pool.preferences.energy)
         .or_else(|| ctx.local_hour.map(energy_target_for_hour));
     let target = steer.map_or(base_target, |s| s.constraints.biased_target(base_target));
     let eligible = eligible(pool, admitted, allow_long, &recency, ctx, config);
@@ -386,10 +467,24 @@ pub fn pick_next<'p>(
     if eligible.rotation {
         factors.push((Factor::Rotation, 1000));
     }
+    if avoids_relaxed {
+        factors.push((Factor::Avoided, 1000));
+    }
     if is_long(work, config) {
         factors.push((Factor::LongWork, 1000));
     }
-    let summary = summarize(work, &recency, ctx, target, steer, &factors, &relaxed);
+    let summary = summarize(
+        work,
+        &recency,
+        ctx,
+        Target {
+            energy: target,
+            preferred: ctx.energy_target.is_none() && pool.preferences.energy.is_some(),
+        },
+        steer,
+        &factors,
+        &relaxed,
+    );
     Some(PlannedWork {
         work,
         movements: &work.movements,
@@ -539,12 +634,15 @@ fn eligible(
     if allowed.is_empty() {
         allowed = admitted;
     }
-    // Twice-disliked works sit out — unless that would leave nothing.
+    // Twice-disliked works sit out — unless the owner's preferences favor
+    // them, or that would leave nothing.
     if let Some(model) = ctx.feedback {
         let kept: Vec<usize> = allowed
             .iter()
             .copied()
-            .filter(|&w| !model.excludes(&pool.works[w]))
+            .filter(|&w| {
+                pool.verdicts[w].shields_feedback() || !model.excludes(&pool.works[w])
+            })
             .collect();
         if !kept.is_empty() {
             allowed = kept;
@@ -645,8 +743,18 @@ fn weigh(
     if work.completeness != Completeness::Complete {
         apply(Factor::Incomplete, config.incomplete_pm);
     }
+    // Preferences outrank feedback: a favored or pinned work's feedback can
+    // lift it further but never below neutral.
+    let verdict = pool.verdicts[w];
+    apply(Factor::Preference, verdict.weight_pm());
     if let Some(model) = feedback {
-        apply(Factor::Feedback, model.multiplier_pm(work));
+        let pm = model.multiplier_pm(work);
+        let pm = if verdict.shields_feedback() {
+            pm.max(1000)
+        } else {
+            pm
+        };
+        apply(Factor::Feedback, pm);
     }
     weight
 }
@@ -732,13 +840,20 @@ fn draw(weights: &[u64], rng: &mut Rng) -> usize {
     weights.len() - 1
 }
 
+/// The energy a pick aimed for, and whether it is the owner's preferred
+/// energy (rather than the time of day's).
+struct Target {
+    energy: Option<u8>,
+    preferred: bool,
+}
+
 /// The readable line of a [`PickReason`]: who and when, then whatever else
 /// shaped the pick, in a fixed order.
 fn summarize(
     work: &Work,
     recency: &Recency<'_>,
     ctx: &PickContext<'_>,
-    target: Option<u8>,
+    target: Target,
     steer: Option<&Steer>,
     factors: &[(Factor, i32)],
     relaxed: &[Relaxation],
@@ -764,14 +879,15 @@ fn summarize(
     if has(Factor::PeriodAbsent) {
         parts.push(format!("balancing toward {}", work.period.label()));
     }
-    if let Some(target) = target {
-        let mood = match target {
+    if let Some(energy) = target.energy {
+        let mood = match energy {
             0..=30 => "calm",
             31..=45 => "gentle",
             46..=55 => "steady",
             _ => "lively",
         };
         parts.push(match (ctx.energy_target, ctx.local_hour) {
+            _ if target.preferred => format!("{mood} energy, as you prefer"),
             (None, Some(hour)) => format!("{mood} {} target", part_of_day(hour)),
             _ => format!("{mood} energy requested"),
         });
@@ -783,6 +899,16 @@ fn summarize(
         Some(s) if s.constraints.energy_bias < 0 => parts.push("steered calmer".to_owned()),
         Some(s) if s.constraints.energy_bias > 0 => parts.push("steered brighter".to_owned()),
         _ => {}
+    }
+    if let Some(&(_, pm)) = factors.iter().find(|(f, _)| *f == Factor::Preference) {
+        parts.push(
+            if pm >= 3000 {
+                "pinned in your preferences"
+            } else {
+                "favored in your preferences"
+            }
+            .to_owned(),
+        );
     }
     if let Some(&(_, pm)) = factors.iter().find(|(f, _)| *f == Factor::Feedback) {
         let note = if pm > 1000 {
@@ -803,6 +929,10 @@ fn summarize(
             "rotating through the least recently played",
         ),
         (Factor::LongWork, "a long work, allowed this time"),
+        (
+            Factor::Avoided,
+            "everything else left is avoided in your preferences",
+        ),
     ] {
         if has(factor) {
             parts.push(note.to_owned());

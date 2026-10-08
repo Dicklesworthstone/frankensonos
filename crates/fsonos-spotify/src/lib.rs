@@ -51,6 +51,7 @@ mod fake_spotify;
 pub mod feed;
 pub mod feedback;
 pub mod library;
+pub mod prefs;
 pub mod session;
 pub mod steer;
 #[cfg(test)]

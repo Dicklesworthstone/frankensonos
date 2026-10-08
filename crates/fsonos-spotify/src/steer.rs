@@ -9,8 +9,8 @@
 //! keywords, then periods, then length — and an explicit composer or artist
 //! request relaxes only if nothing at all matches; the pick's reason reports
 //! every relaxation. The DJ never silently plays nothing. Composers and
-//! periods steer the classical part of the library; artists and keywords
-//! steer any genre.
+//! periods steer the classical part of the library; artists, genres,
+//! decades and keywords steer any genre.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -41,8 +41,17 @@ pub struct DjConstraints {
     pub include_artists: Vec<String>,
     /// Never works crediting one of these artists.
     pub exclude_artists: Vec<String>,
-    /// Only these periods.
+    /// Only works tagged with one of these genres ("jazz", "hip hop",
+    /// "classical"); see [`genre_matches`]. Works carry the genre tags the
+    /// library read gave, and every classical work is "classical".
+    pub include_genres: Vec<String>,
+    /// Never works tagged with one of these genres.
+    pub exclude_genres: Vec<String>,
+    /// Only these periods (classical works).
     pub periods: Vec<Period>,
+    /// Only works released in these decades, each named by its first year
+    /// (`1960` for the sixties).
+    pub decades: Vec<u16>,
     /// At least one of these in the work's title, movements, album or
     /// artists. Categories expand: "piano" also finds nocturnes, "vocal"
     /// finds opera, song and choral works (see [`keyword_matches`]).
@@ -86,10 +95,17 @@ impl DjConstraints {
             exclude_composers: union(&self.exclude_composers, &over.exclude_composers),
             include_artists: union(&self.include_artists, &over.include_artists),
             exclude_artists: union(&self.exclude_artists, &over.exclude_artists),
+            include_genres: union(&self.include_genres, &over.include_genres),
+            exclude_genres: union(&self.exclude_genres, &over.exclude_genres),
             periods: if over.periods.is_empty() {
                 self.periods.clone()
             } else {
                 over.periods.clone()
+            },
+            decades: if over.decades.is_empty() {
+                self.decades.clone()
+            } else {
+                over.decades.clone()
             },
             include_keywords: union(&self.include_keywords, &over.include_keywords),
             exclude_keywords: union(&self.exclude_keywords, &over.exclude_keywords),
@@ -123,6 +139,12 @@ impl DjConstraints {
                 "min_work_minutes {min} exceeds max_work_minutes {max}"
             ));
         }
+        if let Some(decade) = self.decades.iter().find(|&&d| d % 10 != 0) {
+            return Err(format!(
+                "decade {decade} is not a decade's first year (say {})",
+                decade - decade % 10
+            ));
+        }
         Ok(())
     }
 
@@ -144,6 +166,10 @@ impl DjConstraints {
                 !self.include_keywords.is_empty() || !self.exclude_keywords.is_empty()
             }
             Relaxation::Periods => !self.periods.is_empty(),
+            Relaxation::Decades => !self.decades.is_empty(),
+            Relaxation::Genres => {
+                !self.include_genres.is_empty() || !self.exclude_genres.is_empty()
+            }
             Relaxation::Length => {
                 self.min_work_minutes.is_some() || self.max_work_minutes.is_some()
             }
@@ -166,17 +192,27 @@ pub enum Relaxation {
     Length,
     Composers,
     Artists,
+    Decades,
+    Genres,
 }
 
 impl Relaxation {
     /// The order filters relax in.
-    pub const ORDER: [Self; 5] = [
+    pub const ORDER: [Self; 7] = [
         Self::Keywords,
         Self::Periods,
+        Self::Decades,
         Self::Length,
+        Self::Genres,
         Self::Composers,
         Self::Artists,
     ];
+
+    /// Families that relax only when nothing at all passes: the owner asked
+    /// for this music by name, so a few matching works rotate instead.
+    fn by_name(self) -> bool {
+        matches!(self, Self::Genres | Self::Composers | Self::Artists)
+    }
 
     #[must_use]
     pub fn label(self) -> &'static str {
@@ -186,6 +222,8 @@ impl Relaxation {
             Self::Length => "length",
             Self::Composers => "composer",
             Self::Artists => "artist",
+            Self::Decades => "decade",
+            Self::Genres => "genre",
         }
     }
 }
@@ -199,9 +237,10 @@ pub struct Steer {
 }
 
 /// The works the constraints admit, as indices into `works`. Keywords, then
-/// periods, then length relax until at least `min` pass (or every work, in a
-/// smaller pool); composers, then artists, relax only when nothing passes, so
-/// "just Pärt" rotates the few Pärt works rather than ignoring the request.
+/// periods, decades and length relax until at least `min` pass (or every
+/// work, in a smaller pool); genres, composers and artists relax only when
+/// nothing passes, so "just Pärt" rotates the few Pärt works rather than
+/// ignoring the request.
 /// `haystacks[i]` is [`haystack`]`(&works[i])`.
 #[must_use]
 pub fn admit(
@@ -210,13 +249,29 @@ pub fn admit(
     constraints: &DjConstraints,
     min: usize,
 ) -> (Vec<usize>, Vec<Relaxation>) {
-    if works.is_empty() {
+    let all: Vec<usize> = (0..works.len()).collect();
+    admit_among(works, haystacks, &all, constraints, min)
+}
+
+/// [`admit`] among some of the works (indices into `works`): those the
+/// owner's preferences allow.
+#[must_use]
+pub fn admit_among(
+    works: &[Work],
+    haystacks: &[String],
+    among: &[usize],
+    constraints: &DjConstraints,
+    min: usize,
+) -> (Vec<usize>, Vec<Relaxation>) {
+    if among.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let want = min.clamp(1, works.len());
+    let want = min.clamp(1, among.len());
     let mut relaxed = Vec::new();
     loop {
-        let admitted: Vec<usize> = (0..works.len())
+        let admitted: Vec<usize> = among
+            .iter()
+            .copied()
             .filter(|&w| admits(&works[w], &haystacks[w], constraints, &relaxed))
             .collect();
         if admitted.len() >= want {
@@ -225,8 +280,7 @@ pub fn admit(
         let next = Relaxation::ORDER.into_iter().find(|&r| {
             !relaxed.contains(&r)
                 && constraints.constrains(r)
-                && (!matches!(r, Relaxation::Composers | Relaxation::Artists)
-                    || admitted.is_empty())
+                && (!r.by_name() || admitted.is_empty())
         });
         match next {
             Some(family) => relaxed.push(family),
@@ -275,7 +329,29 @@ pub fn admits(
             return false;
         }
     }
+    if on(Relaxation::Genres) {
+        let tags = work.genres();
+        let tagged_any = |queries: &[String]| {
+            queries
+                .iter()
+                .any(|q| tags.iter().any(|t| genre_matches(q, t)))
+        };
+        if !c.include_genres.is_empty() && !tagged_any(&c.include_genres) {
+            return false;
+        }
+        if tagged_any(&c.exclude_genres) {
+            return false;
+        }
+    }
     if on(Relaxation::Periods) && !c.periods.is_empty() && !c.periods.contains(&work.period) {
+        return false;
+    }
+    if on(Relaxation::Decades)
+        && !c.decades.is_empty()
+        && !work
+            .year()
+            .is_some_and(|year| c.decades.contains(&(year - year % 10)))
+    {
         return false;
     }
     if on(Relaxation::Length) {
@@ -305,6 +381,27 @@ pub fn admits(
     true
 }
 
+/// Whether the constraints ask for this work by name: an included artist,
+/// composer or genre names it. Such a request outranks the owner's standing
+/// avoids and bans ([`crate::prefs`]).
+#[must_use]
+pub fn names(work: &Work, constraints: &DjConstraints) -> bool {
+    let c = constraints;
+    let credits = || credited(work);
+    c.include_composers
+        .iter()
+        .any(|q| composer_matches(q, &work.composer))
+        || (!c.include_artists.is_empty()
+            && credits()
+                .iter()
+                .any(|a| c.include_artists.iter().any(|q| artist_matches(q, a))))
+        || (!c.include_genres.is_empty()
+            && work
+                .genres()
+                .iter()
+                .any(|t| c.include_genres.iter().any(|q| genre_matches(q, t))))
+}
+
 /// Whether an artist query names `artist` (a credited name): a whole phrase
 /// of it, normalized, so "Beatles" finds "The Beatles" and "Miles Davis"
 /// finds "Miles Davis Quintet". A blank query names no one.
@@ -314,9 +411,17 @@ pub fn artist_matches(query: &str, artist: &str) -> bool {
     !query.is_empty() && has_phrase(&normalize(artist), &query)
 }
 
+/// Whether a genre query names a genre tag: a whole phrase of it,
+/// normalized, so "jazz" finds "cool jazz" and "hip-hop" finds "east coast
+/// hip hop". A blank query names none.
+#[must_use]
+pub fn genre_matches(query: &str, tag: &str) -> bool {
+    artist_matches(query, tag)
+}
+
 /// Every artist a work credits (its composer and performers, for a
 /// classical work), across its movements.
-fn credited(work: &Work) -> Vec<String> {
+pub(crate) fn credited(work: &Work) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for movement in &work.movements {
         for name in split_artists(movement.track.artist.as_deref().unwrap_or_default()) {
@@ -567,7 +672,7 @@ struct MoodsFile {
 }
 
 /// The 1-based line of byte `offset` in `text`.
-fn line_of(text: &str, offset: usize) -> usize {
+pub(crate) fn line_of(text: &str, offset: usize) -> usize {
     text.char_indices()
         .take_while(|&(i, _)| i < offset)
         .filter(|&(_, c)| c == '\n')
@@ -1283,6 +1388,82 @@ mod tests {
         assert!(!artist_matches("  ", "The Beatles"));
         let merged = only(&["Nina Marsh"]).merged(&only(&["Ada Brightwell", "Nina Marsh"]));
         assert_eq!(merged.include_artists, ["Nina Marsh", "Ada Brightwell"]);
+    }
+
+    #[test]
+    fn genres_and_decades_steer_any_genre() {
+        let pool = works_of(&crate::test_shelf::mixed_items());
+        let all = pool.works();
+        assert_eq!(all.len(), 25 + 27, "songs and classical works");
+        let hays: Vec<String> = all.iter().map(haystack).collect();
+        let relax = |c: DjConstraints| admit(all, &hays, &c, 5);
+        let genres = |include: &[&str], exclude: &[&str]| DjConstraints {
+            include_genres: words(include),
+            exclude_genres: words(exclude),
+            ..DjConstraints::default()
+        };
+
+        // "jazz" finds both jazz albums; "pop" finds indie pop too.
+        let (admitted, relaxed) = relax(genres(&["jazz"], &[]));
+        assert!(relaxed.is_empty());
+        assert_eq!(admitted.len(), 7);
+        assert!(admitted.iter().all(|&w| all[w].genres() == ["jazz"]));
+        assert_eq!(relax(genres(&["pop"], &[])).0.len(), 10);
+        // Every classical work is "classical", tags or not.
+        let (admitted, _) = relax(genres(&["Classical"], &[]));
+        assert_eq!(admitted.len(), 27);
+        assert!(admitted.iter().all(|&w| all[w].is_classical()));
+        let (admitted, relaxed) = relax(genres(&[], &["hip-hop", "soundtrack"]));
+        assert!(relaxed.is_empty());
+        assert_eq!(admitted.len(), all.len() - 5 - 3);
+        // A genre asked for by name holds while anything matches; with
+        // nothing tagged that way, it relaxes, and the reason says so.
+        let (admitted, relaxed) = relax(genres(&["polka"], &[]));
+        assert_eq!(relaxed, [Relaxation::Genres]);
+        assert_eq!(admitted.len(), all.len());
+        let picks = simulate_steered(
+            &pool,
+            &DjConfig::default(),
+            5,
+            1,
+            Some(15),
+            Some(&steer(genres(&["polka"], &[]))),
+        );
+        assert!(
+            picks[0]
+                .reason
+                .summary
+                .ends_with("relaxed the genre filter (too few matching works)"),
+            "{}",
+            picks[0].reason.summary
+        );
+
+        // Decades: the fifties and sixties hold the two jazz albums.
+        let decades = |d: &[u16]| DjConstraints {
+            decades: d.to_vec(),
+            ..DjConstraints::default()
+        };
+        let (admitted, relaxed) = relax(decades(&[1950, 1960]));
+        assert!(relaxed.is_empty());
+        assert_eq!(admitted.len(), 7);
+        assert!(admitted.iter().all(|&w| all[w].year() < Some(1970)));
+        // Four songs from the 2020s are too few: the decade relaxes like a
+        // period, before length.
+        let (admitted, relaxed) = relax(decades(&[2020]));
+        assert_eq!(relaxed, [Relaxation::Decades]);
+        assert_eq!(admitted.len(), all.len());
+        let err = decades(&[1975]).validate().unwrap_err();
+        assert!(err.contains("say 1970"), "{err}");
+
+        assert!(genre_matches("hip-hop", "east coast hip hop"));
+        assert!(!genre_matches("jaz", "jazz"));
+        let merged = genres(&["jazz"], &[]).merged(&DjConstraints {
+            decades: vec![1960],
+            ..genres(&["soul"], &["pop"])
+        });
+        assert_eq!(merged.include_genres, ["jazz", "soul"]);
+        assert_eq!(merged.exclude_genres, ["pop"]);
+        assert_eq!(merged.decades, [1960]);
     }
 
     #[test]

@@ -16,9 +16,10 @@ use crate::classical::normalize;
 use crate::client::{Album, Endpoints, Paging, SavedAlbum, SavedTrack, SimplifiedTrack};
 
 /// How a track entered the owner's library.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Origin {
     /// A track on one of the owner's saved albums.
+    #[default]
     SavedAlbum,
     /// An individually liked ("saved") track.
     LikedTrack,
@@ -40,9 +41,10 @@ impl Origin {
     }
 }
 
-/// One playable track from the owner's library, with the metadata the
-/// classical heuristics read. `source_uri` is the `spotify:track:…` URI.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One playable track from the owner's library, with the metadata the DJ
+/// reads. `source_uri` is the `spotify:track:…` URI. Tests build one with
+/// `..LibraryItem::default()`, so a new field doesn't break them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LibraryItem {
     pub source_uri: String,
     pub title: String,
@@ -62,6 +64,9 @@ pub struct LibraryItem {
     pub added_at: Option<i64>,
     /// Album/artist genres when the read returned any (often empty).
     pub genres: Vec<String>,
+    /// The album's release year, when the read gave a release date.
+    #[serde(default)]
+    pub release_year: Option<u16>,
     /// Record label when available (Spotify dropped it for new apps in 2026).
     pub label: Option<String>,
     pub duration_secs: Option<u32>,
@@ -89,6 +94,7 @@ impl LibraryItem {
             track_number: None,
             added_at: None,
             genres: Vec::new(),
+            release_year: None,
             label: None,
             duration_secs: track.duration_secs,
             explicit: false,
@@ -142,6 +148,9 @@ impl LibraryItem {
         }
         if self.genres.is_empty() {
             self.genres.clone_from(&other.genres);
+        }
+        if self.release_year.is_none() {
+            self.release_year = other.release_year;
         }
         if self.label.is_none() {
             self.label.clone_from(&other.label);
@@ -350,6 +359,7 @@ mod tests {
             track_number: None,
             added_at: None,
             genres: Vec::new(),
+            release_year: None,
             label: None,
             duration_secs: Some(150),
             explicit: false,

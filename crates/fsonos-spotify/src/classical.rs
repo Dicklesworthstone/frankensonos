@@ -830,6 +830,13 @@ pub struct ClassicalTrack {
     /// movement, with energy from its tempo marking. False for a song.
     pub classical: bool,
     pub period: Period,
+    /// Genre tags the library read gave (album or artist genres; often none).
+    pub genres: Vec<String>,
+    /// Spotify marks it explicit (it plays only if the owner's preferences
+    /// allow; see `crate::prefs`).
+    pub explicit: bool,
+    /// The album's release year, when known.
+    pub year: Option<u16>,
     /// Display name of the work (title minus movement; a song's title minus
     /// version notes).
     pub work: String,
@@ -878,6 +885,9 @@ pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
         known_composer: known,
         classical: true,
         period: composer.map_or_else(|| period_from_genres(&item.genres), |c| c.period),
+        genres: item.genres.clone(),
+        explicit: item.explicit,
+        year: item.release_year,
         album_key: item.album_key().unwrap_or_default(),
         album_uri: item.album_uri.clone(),
         disc_number: item.disc_number,
@@ -912,6 +922,9 @@ pub fn analyze_song(item: &LibraryItem) -> ClassicalTrack {
         known_composer: false,
         classical: false,
         period: Period::Unknown,
+        genres: item.genres.clone(),
+        explicit: item.explicit,
+        year: item.release_year,
         album_key: item.album_key().unwrap_or_default(),
         album_uri: item.album_uri.clone(),
         disc_number: item.disc_number,
@@ -1106,6 +1119,7 @@ mod tests {
             track_number: None,
             added_at: None,
             genres: Vec::new(),
+            release_year: None,
             label: None,
             duration_secs: Some(300),
             explicit: false,

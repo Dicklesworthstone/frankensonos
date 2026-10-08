@@ -63,6 +63,7 @@ pub(crate) fn item(
         track_number: None,
         added_at: None,
         genres: Vec::new(),
+        release_year: None,
         label: None,
         duration_secs: Some(secs),
         explicit: false,
@@ -178,6 +179,9 @@ pub(crate) const SONGS: &[(&str, &str, &str, &[&str])] = &[
     ),
 ];
 
+/// The release year of each [`SONGS`] album.
+pub(crate) const SONG_YEARS: [u16; 6] = [2019, 2012, 1962, 1958, 1997, 2021];
+
 /// [`SONGS`] as library items: saved albums with one more song of Juniper
 /// Vale's liked on its own, and an explicit track of MC Halcyon's (never a
 /// candidate).
@@ -196,6 +200,7 @@ pub(crate) fn song_items() -> Vec<LibraryItem> {
                 track_number: Some(t),
                 added_at: None,
                 genres: vec![genre.into()],
+                release_year: Some(SONG_YEARS[a]),
                 label: None,
                 duration_secs: Some(200),
                 explicit: false,
@@ -209,6 +214,7 @@ pub(crate) fn song_items() -> Vec<LibraryItem> {
     single.artists.push("Otis Fairweather".into());
     single.album = Some("Kite Season".into());
     single.album_uri = Some("spotify:album:songs-single".into());
+    single.release_year = Some(2023);
     single.track_number = Some(1);
     single.origin = Origin::LikedTrack;
     items.push(single);

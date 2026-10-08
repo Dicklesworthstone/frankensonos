@@ -699,6 +699,7 @@ impl Album {
             track_number: position(track.track_number),
             added_at: None,
             genres: self.genres.clone(),
+            release_year: release_year(self.release_date.as_deref()),
             label: self.label.clone(),
             duration_secs: secs(track.duration_ms),
             explicit: track.explicit,
@@ -726,12 +727,19 @@ impl SavedTrack {
             track_number: position(track.track_number),
             added_at: unix_seconds(self.added_at.as_deref()),
             genres: Vec::new(),
+            release_year: release_year(track.album.release_date.as_deref()),
             label: None,
             duration_secs: secs(track.duration_ms),
             explicit: track.explicit,
             origin: Origin::LikedTrack,
         })
     }
+}
+
+/// The year of a Spotify `release_date` (`"1982"`, `"2019-05"`,
+/// `"2019-05-10"`); `None` when absent or unknown (`"0000"`).
+fn release_year(date: Option<&str>) -> Option<u16> {
+    date?.get(..4)?.parse::<u16>().ok().filter(|&year| year > 0)
 }
 
 /// Sonos renders only real Spotify tracks the owner's market can play.
@@ -1365,6 +1373,10 @@ mod tests {
         // 2025-01-15T20:31:02Z, the album's added_at.
         assert!(items.iter().all(|i| i.added_at == Some(1_736_973_062)));
         assert_eq!(aria.origin, Origin::SavedAlbum);
+        assert!(
+            items.iter().all(|i| i.release_year == Some(1982)),
+            "\"1982\""
+        );
 
         // 2026 dev-mode shape: no label/popularity; a long album whose
         // embedded page continues, and an unplayable track that is skipped.
@@ -1376,6 +1388,21 @@ mod tests {
             Some(true)
         );
         assert_eq!(long.library_items().len(), 1);
+        assert_eq!(
+            long.library_items()[0].release_year,
+            Some(2019),
+            "2019-05-10"
+        );
+    }
+
+    #[test]
+    fn release_years_parse_every_precision() {
+        assert_eq!(release_year(Some("1982")), Some(1982));
+        assert_eq!(release_year(Some("1971-11")), Some(1971));
+        assert_eq!(release_year(Some("2019-05-10")), Some(2019));
+        assert_eq!(release_year(Some("0000")), None);
+        assert_eq!(release_year(Some("19")), None);
+        assert_eq!(release_year(None), None);
     }
 
     #[test]

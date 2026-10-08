@@ -70,6 +70,34 @@ impl Work {
         self.movements.first().map_or(50, |m| m.energy)
     }
 
+    /// Whether it is a classical work (analysed into movements), not a song.
+    #[must_use]
+    pub fn is_classical(&self) -> bool {
+        self.movements.first().is_some_and(|m| m.classical)
+    }
+
+    /// Its genre tags: those its tracks carry (album or artist genres, when
+    /// the library read gave any), and `"classical"` for a classical work.
+    #[must_use]
+    pub fn genres(&self) -> Vec<&str> {
+        let mut tags: Vec<&str> = Vec::new();
+        for genre in self.movements.iter().flat_map(|m| &m.genres) {
+            if !tags.contains(&genre.as_str()) {
+                tags.push(genre);
+            }
+        }
+        if self.is_classical() && !tags.contains(&"classical") {
+            tags.push("classical");
+        }
+        tags
+    }
+
+    /// Its album's release year, when known.
+    #[must_use]
+    pub fn year(&self) -> Option<u16> {
+        self.movements.first().and_then(|m| m.year)
+    }
+
     /// Whether the owner individually liked any of its movements.
     #[must_use]
     pub fn is_liked(&self) -> bool {
@@ -466,6 +494,7 @@ mod tests {
                     track_number: track,
                     added_at: None,
                     genres: Vec::new(),
+                    release_year: None,
                     label: None,
                     duration_secs: Some(300),
                     explicit: false,
