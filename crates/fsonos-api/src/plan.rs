@@ -13,9 +13,10 @@ use fsonos_core::{ControlTarget, HouseholdState};
 use fsonos_types::PlayerId;
 
 use crate::failure::{ErrorCode, Failure};
+use crate::request::zone_name;
 use crate::request::{
-    GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, VolumeChange, VolumeRequest,
-    ZoneRequest,
+    GroupRequest, MoveRequest, MuteRequest, PartyRequest, PlayFavoriteRequest, PlayRequest,
+    VolumeChange, VolumeRequest, ZoneRequest,
 };
 
 /// Pause, resume or skip on a group.
@@ -77,6 +78,19 @@ pub enum Command {
     },
     /// Take `member` out of its group into a group of its own.
     Leave { member: PlayerId },
+    /// Move the music room `from` plays to room `to` (both primaries),
+    /// handing the group over, regrouping, or with `copy` replaying it there.
+    Move {
+        from: PlayerId,
+        to: PlayerId,
+        copy: bool,
+    },
+    /// Group every room of the household `member` belongs to, under `lead`'s
+    /// group (`None`: the group playing now, else the first room).
+    Party {
+        member: PlayerId,
+        lead: Option<PlayerId>,
+    },
     Dj {
         coordinator: PlayerId,
         action: DjAction,
@@ -98,12 +112,14 @@ impl Command {
             | Self::PlayFavorite { .. }
             | Self::Mute { .. }
             | Self::Join { .. }
-            | Self::Leave { .. } => true,
+            | Self::Leave { .. }
+            | Self::Party { .. } => true,
             Self::Transport { action, .. } => {
                 matches!(action, TransportAction::Pause | TransportAction::Resume)
             }
             Self::Volume { change, .. } => matches!(change, VolumeChange::Set(_)),
-            Self::Dj { .. } | Self::Nothing { .. } => false,
+            // A move that ran once has nothing left to move.
+            Self::Move { .. } | Self::Dj { .. } | Self::Nothing { .. } => false,
         }
     }
 
@@ -117,7 +133,8 @@ impl Command {
             | Self::Dj { coordinator, .. } => Some(coordinator),
             Self::Volume { target, .. } | Self::Mute { target, .. } => Some(target),
             Self::Join { member, .. } | Self::Leave { member } => Some(member),
-            Self::Nothing { .. } => None,
+            Self::Move { from, .. } => Some(from),
+            Self::Party { .. } | Self::Nothing { .. } => None,
         }
     }
 
@@ -340,6 +357,84 @@ pub fn plan_ungroup<'a>(
     })
 }
 
+/// `POST /move` / the `move_playback` tool. Rooms in different households
+/// can never group, so a move between them must be a copy.
+pub fn plan_move<'a>(rooms: impl Into<Rooms<'a>>, req: &MoveRequest) -> Result<Command, Failure> {
+    let rooms = rooms.into();
+    let (zone, to) = req.zones()?;
+    let from = resolve(rooms, zone)?;
+    let dest = resolve(rooms, to)?;
+    if from.room.primary == dest.room.primary {
+        return Ok(Command::Nothing {
+            reason: format!("the music is already in {}", from.room.name),
+        });
+    }
+    if !req.copy && !std::ptr::eq(from.household, dest.household) {
+        return Err(Failure::new(
+            ErrorCode::CrossHouseholdGroup,
+            format!(
+                "{} and {} are in different households, which can never be grouped",
+                from.room.name, dest.room.name
+            ),
+        )
+        .with_hint("Copy the music there instead: copy true (fsonos move --copy)."));
+    }
+    Ok(Command::Move {
+        from: from.room.primary.clone(),
+        to: dest.room.primary.clone(),
+        copy: req.copy,
+    })
+}
+
+/// `POST /party` / the `group_all` tool.
+pub fn plan_party<'a>(rooms: impl Into<Rooms<'a>>, req: &PartyRequest) -> Result<Command, Failure> {
+    let rooms = rooms.into();
+    if let Some(zone) = req.zone.as_deref() {
+        if req.household.is_some() {
+            return Err(Failure::invalid(
+                "give either `zone` (the room that leads) or `household`, not both",
+            ));
+        }
+        let lead = resolve(rooms, zone_name("zone", zone)?)?;
+        return Ok(Command::Party {
+            member: lead.room.primary.clone(),
+            lead: Some(lead.room.primary.clone()),
+        });
+    }
+    let households = rooms.households;
+    let labels = fsonos_core::rooms::household_labels(households);
+    let index = match req.household.as_deref().map(str::trim) {
+        Some(wanted) => labels
+            .iter()
+            .position(|l| l.eq_ignore_ascii_case(wanted))
+            .ok_or_else(|| {
+                Failure::new(
+                    ErrorCode::UnknownHousehold,
+                    format!("no household {wanted:?}"),
+                )
+                .with_suggestions(labels.clone())
+            })?,
+        None if households.len() == 1 => 0,
+        None => {
+            return Err(Failure::invalid(
+                "name the room that leads, or the household (S1, S2), for the party",
+            )
+            .with_suggestions(labels));
+        }
+    };
+    let member = households[index]
+        .rooms
+        .first()
+        .map(|r| r.primary.clone())
+        .ok_or_else(|| {
+            Failure::new(
+                ErrorCode::NotReady,
+                "that household has no rooms discovered yet",
+            )
+        })?;
+    Ok(Command::Party { member, lead: None })
+}
+
 /// `POST /dj/{start|skip|stop}` / the `dj_*` tools.
 pub fn plan_dj<'a>(
     rooms: impl Into<Rooms<'a>>,
@@ -389,6 +484,72 @@ mod tests {
         assert_eq!(pick("FV:2/4"), "FV:2/4");
         assert_eq!(pick("2"), "FV:2/1");
         assert_eq!(pick("sim radio"), "FV:2/4");
+    }
+
+    #[test]
+    fn moves_need_two_rooms_and_a_copy_across_households() {
+        let houses = households();
+        let mv = |zone: &str, to: &str, copy: bool| {
+            plan_move(
+                &houses,
+                &MoveRequest {
+                    zone: zone.into(),
+                    to: to.into(),
+                    copy,
+                },
+            )
+        };
+        assert_eq!(
+            mv("Den", "Kitchen@S1", false).unwrap(),
+            Command::Move {
+                from: id("RINCON_DEN"),
+                to: id("RINCON_KIT1"),
+                copy: false
+            }
+        );
+        assert!(matches!(
+            mv("Den", "den", false).unwrap(),
+            Command::Nothing { .. }
+        ));
+        let across = mv("Den", "Patio", false).unwrap_err();
+        assert_eq!(across.code, ErrorCode::CrossHouseholdGroup);
+        assert!(across.hint.contains("copy"));
+        assert!(matches!(
+            mv("Den", "Patio", true).unwrap(),
+            Command::Move { copy: true, .. }
+        ));
+    }
+
+    #[test]
+    fn a_party_is_led_by_a_room_or_names_its_household() {
+        let houses = households();
+        let party = |zone: Option<&str>, household: Option<&str>| {
+            plan_party(
+                &houses,
+                &PartyRequest {
+                    zone: zone.map(str::to_string),
+                    household: household.map(str::to_string),
+                },
+            )
+        };
+        assert_eq!(
+            party(Some("Patio"), None).unwrap(),
+            Command::Party {
+                member: id("RINCON_PATIO"),
+                lead: Some(id("RINCON_PATIO"))
+            }
+        );
+        assert!(matches!(
+            party(None, Some("s1")).unwrap(),
+            Command::Party { lead: None, .. }
+        ));
+        let which = party(None, None).unwrap_err();
+        assert_eq!(which.code, ErrorCode::InvalidArgument);
+        assert_eq!(which.suggestions, ["S1", "S2"]);
+        assert_eq!(
+            party(None, Some("S9")).unwrap_err().code,
+            ErrorCode::UnknownHousehold
+        );
     }
 
     #[test]

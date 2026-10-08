@@ -10,8 +10,9 @@ use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, ContentBlock, FinalCallToolResult, ResultMeta};
 use fsonos_api::plan::{self, DjAction, TransportAction};
 use fsonos_api::{
-    ActionDto, ActionsQuery, ErrorCode, Failure, GroupRequest, MuteRequest, PlayFavoriteRequest,
-    PlayRequest, SearchRequest, Surface, UndoDto, VolumeRequest, ZoneRequest,
+    ActionDto, ActionsQuery, ErrorCode, Failure, GroupRequest, MoveRequest, MuteRequest,
+    PartyRequest, PlayFavoriteRequest, PlayRequest, SearchRequest, Surface, UndoDto, VolumeRequest,
+    ZoneRequest,
 };
 use fsonos_core::clock::Clock;
 use fsonos_core::policy::{Client, Policy};
@@ -600,6 +601,36 @@ fn group(
 )]
 fn ungroup(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend(|b| b.control("ungroup", |h| plan::plan_ungroup(h, &ZoneRequest { zone })))
+}
+
+#[tool(
+    description = "Move the music a room plays to another room, as if it followed you: in one household the group is handed over (or regrouped) without a gap; between households (S1 and S2 never group) set `copy` true to replay the same track, at the same position, there and stop it here. `zone` is the room the music is in, `to` the room it goes to (names case-insensitive; Room@S1 / Room@S2 picks a household; aliases work)."
+)]
+fn move_playback(
+    _ctx: &McpContext,
+    zone: String,
+    to: String,
+    copy: Option<bool>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let req = MoveRequest {
+        zone,
+        to,
+        copy: copy.unwrap_or(false),
+    };
+    with_backend(|b| b.control("move_playback", |h| plan::plan_move(h, &req)))
+}
+
+#[tool(
+    description = "Party mode: group every room of a household into one zone. Give `zone` (the room whose group the others join), or `household` (S1, S2: the group playing now leads, else the first room); with a single household, neither.",
+    annotations(idempotent)
+)]
+fn group_all(
+    _ctx: &McpContext,
+    zone: Option<String>,
+    household: Option<String>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let req = PartyRequest { zone, household };
+    with_backend(|b| b.control("group_all", |h| plan::plan_party(h, &req)))
 }
 
 fn dj(

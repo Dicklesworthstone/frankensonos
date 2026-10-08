@@ -53,8 +53,8 @@ pub use log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 pub use plan::Command;
 pub use reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto};
 pub use request::{
-    GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeChange,
-    VolumeRequest, ZoneRequest,
+    GroupRequest, MoveRequest, MuteRequest, PartyRequest, PlayFavoriteRequest, PlayRequest,
+    SearchRequest, VolumeChange, VolumeRequest, ZoneRequest,
 };
 pub use surface::Surface;
 pub use web::WebPolicy;

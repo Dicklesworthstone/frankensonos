@@ -6,10 +6,12 @@
 //! actions, so the CLI, the HTTP API and the MCP tools report alike.
 
 use fastapi::{JsonSchema, fastapi_openapi};
-use fsonos_core::{HouseholdState, control};
+use fsonos_core::moving::{self, MoveMethod};
+use fsonos_core::{CoreError, HouseholdState, control, resolve_room};
 use fsonos_proto::Transport;
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 
 use crate::failure::{ErrorCode, Failure};
 use crate::guard::{Guard, Note};
@@ -144,6 +146,8 @@ pub fn execute<T: Transport + ?Sized>(
             control::leave(transport, households, member)?;
             OutcomeDto::sent(format!("{} plays on its own", room(member)))
         }
+        Command::Move { from, to, copy } => move_music(transport, households, from, to, *copy)?,
+        Command::Party { member, lead } => party(transport, households, member, lead.as_ref())?,
         Command::Dj { action, .. } => {
             let verb = match action {
                 DjAction::Start => "start",
@@ -162,6 +166,89 @@ pub fn execute<T: Transport + ?Sized>(
         },
     };
     Ok(outcome)
+}
+
+/// Move (or with `copy`, replay) the music room `from` plays to room `to`.
+fn move_music<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    from: &PlayerId,
+    to: &PlayerId,
+    copy: bool,
+) -> Result<OutcomeDto, Failure> {
+    let source = resolve_room(households, &from.0)?;
+    let dest = resolve_room(households, &to.0)?;
+    let moved = if copy {
+        moving::copy_playback(transport, households, &source, &dest)
+    } else {
+        moving::move_playback(transport, households, &source, &dest)
+    }
+    .map_err(move_failure)?;
+    let how = match moved.method {
+        MoveMethod::Nothing => "nothing to move",
+        MoveMethod::Regrouped => "regrouped",
+        MoveMethod::Delegated => "handed the group over",
+        MoveMethod::Copied => "replayed there",
+    };
+    Ok(OutcomeDto::sent(format!(
+        "moved the music from {} to {} ({how})",
+        source.room.name, dest.room.name
+    )))
+}
+
+/// Group every room of `member`'s household under `lead`'s group.
+fn party<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    member: &PlayerId,
+    lead: Option<&PlayerId>,
+) -> Result<OutcomeDto, Failure> {
+    let household = households
+        .iter()
+        .find(|h| h.player(member).is_some())
+        .ok_or_else(|| CoreError::UnknownPlayer(member.0.clone()))?;
+    let lead = lead.map(|l| resolve_room(households, &l.0)).transpose()?;
+    let outcome = moving::party(transport, households, household, lead.as_ref())?;
+    let mut done = format!("{} joined the party", rooms_list(&outcome.moved));
+    if !outcome.failed.is_empty() {
+        let failed: Vec<String> = outcome
+            .failed
+            .iter()
+            .map(|(room, why)| format!("{room} ({why})"))
+            .collect();
+        let _ = write!(done, "; failed: {}", failed.join(", "));
+    }
+    Ok(OutcomeDto {
+        changed: !outcome.moved.is_empty(),
+        ..OutcomeDto::sent(done)
+    })
+}
+
+/// A move that could not go ahead, coded.
+fn move_failure(err: moving::MoveError) -> Failure {
+    let detail = err.to_string();
+    match err {
+        moving::MoveError::CrossHousehold { .. } => {
+            Failure::new(ErrorCode::CrossHouseholdGroup, detail)
+                .with_hint("Copy the music there instead: copy true (fsonos move --copy).")
+        }
+        moving::MoveError::NoRenderParams(_) => {
+            Failure::new(ErrorCode::RenderParamsMissing, detail)
+        }
+        moving::MoveError::JoinTimedOut { .. } => {
+            Failure::new(ErrorCode::PlayerUnreachable, detail)
+        }
+        moving::MoveError::Core(e) => Failure::from(e),
+    }
+}
+
+/// "Kitchen, Office and Den" ("no room" when empty).
+fn rooms_list(rooms: &[String]) -> String {
+    match rooms {
+        [] => "no room".to_string(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
 }
 
 /// Start `source_uri` on the group `coordinator` leads.

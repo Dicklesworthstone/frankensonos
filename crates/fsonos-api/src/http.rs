@@ -50,8 +50,8 @@ use crate::plan::{
 };
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, ZoneStateDto};
 use crate::request::{
-    GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeRequest,
-    ZoneRequest,
+    GroupRequest, MoveRequest, MuteRequest, PartyRequest, PlayFavoriteRequest, PlayRequest,
+    SearchRequest, VolumeRequest, ZoneRequest,
 };
 use crate::surface::Surface;
 use crate::web::WebPolicy;
@@ -112,7 +112,32 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     let mut routes = reads(cx);
     routes.extend(house(cx));
     routes.extend(controls(cx));
+    routes.extend(house_verbs(cx));
     routes
+}
+
+/// Moving the music between rooms, and the whole-house party.
+fn house_verbs(cx: &Ctx<'_>) -> Vec<RouteEntry> {
+    vec![
+        cx.control(
+            Op::post(
+                "/move",
+                "move_playback",
+                CONTROL,
+                "Move the music a room plays to another room",
+            ),
+            |h, r: &MoveRequest| plan::plan_move(h, r),
+        ),
+        cx.control(
+            Op::post(
+                "/party",
+                "group_all",
+                CONTROL,
+                "Group every room of a household into one zone",
+            ),
+            |h, r: &PartyRequest| plan::plan_party(h, r),
+        ),
+    ]
 }
 
 /// The daemon and the zones.

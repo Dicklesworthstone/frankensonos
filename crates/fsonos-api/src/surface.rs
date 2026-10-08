@@ -447,7 +447,13 @@ impl Surface {
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
         let command = plan(&*self.transport, &rooms).map_err(|f| self.explain(f))?;
-        let regroups = matches!(command, Command::Join { .. } | Command::Leave { .. });
+        let regroups = matches!(
+            command,
+            Command::Join { .. }
+                | Command::Leave { .. }
+                | Command::Move { .. }
+                | Command::Party { .. }
+        );
         // Already satisfied requests change nothing and are not logged.
         if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
             let result = self.execute(&households, &guard, &command);
@@ -875,6 +881,13 @@ fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
             coordinator,
         } => vec![group_of(member), coordinator.clone()],
         Command::Leave { member } => vec![group_of(member)],
+        Command::Move { from, to, .. } => vec![group_of(from), group_of(to)],
+        // Every group of the household joins.
+        Command::Party { member, .. } => households
+            .iter()
+            .find(|h| h.player(member).is_some())
+            .map(|h| h.groups.iter().map(|g| g.coordinator.clone()).collect())
+            .unwrap_or_default(),
         Command::Nothing { .. } => Vec::new(),
     }
 }

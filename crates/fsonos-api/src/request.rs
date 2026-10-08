@@ -215,6 +215,40 @@ impl SearchRequest {
     }
 }
 
+/// `POST /move` body: move the music `zone` plays to `to`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MoveRequest {
+    /// The room whose music moves.
+    pub zone: String,
+    /// The room it moves to.
+    pub to: String,
+    /// Replay the music there instead (the same track and position) and
+    /// stop the source: the only way across households.
+    #[serde(default)]
+    pub copy: bool,
+}
+
+impl MoveRequest {
+    /// The trimmed `(zone, to)` names, or why either is unusable.
+    pub fn zones(&self) -> Result<(&str, &str), Failure> {
+        Ok((zone_name("zone", &self.zone)?, zone_name("to", &self.to)?))
+    }
+}
+
+/// `POST /party` body: group every room of a household. Name the room that
+/// leads (the others join its group), or the household (`S1`, `S2`, or its
+/// id: the group playing now leads, else its first room); with one
+/// household, neither.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PartyRequest {
+    #[serde(default)]
+    pub zone: Option<String>,
+    #[serde(default)]
+    pub household: Option<String>,
+}
+
 /// `POST /group` body: move `zone` into the group that `to` belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -232,7 +266,7 @@ impl GroupRequest {
     }
 }
 
-fn zone_name<'a>(field: &str, raw: &'a str) -> Result<&'a str, Failure> {
+pub(crate) fn zone_name<'a>(field: &str, raw: &'a str) -> Result<&'a str, Failure> {
     let name = raw.trim();
     if name.is_empty() {
         return Err(Failure::invalid(format!("`{field}` is empty; name a room")));

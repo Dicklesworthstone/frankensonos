@@ -52,6 +52,8 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::MuteTool)
         .tool(tools::Group)
         .tool(tools::Ungroup)
+        .tool(tools::MovePlayback)
+        .tool(tools::GroupAll)
         .tool(tools::DjStart)
         .tool(tools::DjSkip)
         .tool(tools::DjStop)

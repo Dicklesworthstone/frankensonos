@@ -38,8 +38,8 @@ use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand, ValueEnum};
 use fsonos_api::plan::{self, DjAction as PlanDj, TransportAction};
 use fsonos_api::{
-    ErrorCode, Failure, GroupRequest, HitDto, MuteRequest, OutcomeDto, PlayFavoriteRequest,
-    PlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
+    ErrorCode, Failure, GroupRequest, HitDto, MoveRequest, MuteRequest, OutcomeDto, PartyRequest,
+    PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
 };
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -155,6 +155,25 @@ enum Command {
     },
     /// Take a room out of its group.
     Ungroup { zone: String },
+    /// Move the music a room plays to another room (handing the group over
+    /// in one household; across households use --copy).
+    Move {
+        /// The room the music is in.
+        zone: String,
+        /// The room it moves to.
+        to: String,
+        /// Replay it there (same track and position) and stop it here: the
+        /// only way between S1 and S2.
+        #[arg(long)]
+        copy: bool,
+    },
+    /// Party mode: group every room of a household, led by a room (its
+    /// group) or a household's playing group (`fsonos party S2`).
+    Party {
+        /// A room to lead, or a household (S1, S2, or its id); none with a
+        /// single household.
+        target: Option<String>,
+    },
     /// Run the long-lived daemon (HTTP API + MCP server + event sink).
     Serve(config::ServeArgs),
     /// Serve the MCP tools over stdio (for a local agent).
@@ -458,6 +477,23 @@ fn emit<T: Serialize + ?Sized>(
     Ok(())
 }
 
+/// `fsonos party [target]`: a household label names the household;
+/// anything else is the room that leads.
+fn party_request(households: &[fsonos_core::HouseholdState], target: Option<&str>) -> PartyRequest {
+    let labels = fsonos_core::rooms::household_labels(households);
+    match target {
+        Some(t) if labels.iter().any(|l| l.eq_ignore_ascii_case(t.trim())) => PartyRequest {
+            zone: None,
+            household: Some(t.to_owned()),
+        },
+        Some(t) => PartyRequest {
+            zone: Some(t.to_owned()),
+            household: None,
+        },
+        None => PartyRequest::default(),
+    }
+}
+
 /// The shared request a control subcommand stands for, planned against
 /// `households`.
 fn plan_for<'a>(
@@ -516,6 +552,18 @@ fn plan_for<'a>(
             },
         ),
         Command::Ungroup { zone: z } => plan::plan_ungroup(households, &zone(z)),
+        Command::Move { zone, to, copy } => plan::plan_move(
+            households,
+            &MoveRequest {
+                zone: zone.clone(),
+                to: to.clone(),
+                copy: *copy,
+            },
+        ),
+        Command::Party { target } => plan::plan_party(
+            households,
+            &party_request(households.households, target.as_deref()),
+        ),
         Command::Dj { action } => {
             let (z, action) = match action {
                 DjAction::Start { zone } => (zone, PlanDj::Start),
@@ -555,6 +603,8 @@ fn tool_name(command: &Command) -> &'static str {
         Command::Mute { .. } => "mute",
         Command::Group { .. } => "group",
         Command::Ungroup { .. } => "ungroup",
+        Command::Move { .. } => "move_playback",
+        Command::Party { .. } => "group_all",
         Command::Dj { action } => match action {
             DjAction::Start { .. } => "dj_start",
             DjAction::Skip { .. } => "dj_skip",
