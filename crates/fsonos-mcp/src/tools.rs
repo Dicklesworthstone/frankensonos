@@ -11,7 +11,7 @@ use fastmcp::{CompleteResult, ContentBlock, FinalCallToolResult, ResultMeta};
 use fsonos_api::plan::{self, DjAction, TransportAction};
 use fsonos_api::{
     ActionDto, ActionsQuery, ErrorCode, Failure, GroupRequest, MuteRequest, PlayFavoriteRequest,
-    PlayRequest, Surface, UndoDto, VolumeRequest, ZoneRequest,
+    PlayRequest, SearchRequest, Surface, UndoDto, VolumeRequest, ZoneRequest,
 };
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::Clock;
@@ -120,6 +120,65 @@ impl Backend {
         })
     }
 
+    /// The `search_library` tool.
+    pub fn search_library(&self, req: &SearchRequest) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let hits = self.surface.search_library(&self.client, req)?;
+            let text = if hits.is_empty() {
+                format!("nothing matches {:?}", req.query.trim())
+            } else {
+                hits.iter()
+                    .enumerate()
+                    .map(|(i, h)| {
+                        let by = h
+                            .subtitle
+                            .as_deref()
+                            .map_or_else(String::new, |s| format!(" ({s})"));
+                        let how = match (&h.source_uri, &h.favorite) {
+                            (Some(uri), _) => format!("play source_uri={uri}"),
+                            (None, Some(id)) => format!("play_favorite favorite={id}"),
+                            (None, None) => String::new(),
+                        };
+                        format!("{}. {}{by}: {how}", i + 1, h.title)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            Ok((text, HitsDto { hits }))
+        })
+    }
+
+    /// The `recent_plays` tool.
+    pub fn recent_plays(&self, zone: Option<&str>, limit: usize) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let plays = self.surface.recent_plays(&self.client, zone, limit)?;
+            let text = if plays.is_empty() {
+                "no plays recorded".to_string()
+            } else {
+                plays
+                    .iter()
+                    .map(|p| {
+                        let room = p.room.as_deref().unwrap_or("a room no longer seen");
+                        format!("{} in {room} at {}", p.source_uri, p.played_at)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            Ok((text, PlaysDto { plays }))
+        })
+    }
+
+    /// `sonos://zones`: every zone, as `list_zones` returns them.
+    pub fn zones_document(&self) -> Result<String, Failure> {
+        let zones = self.surface.zones(&self.client)?;
+        json_document(&ZonesDto { zones })
+    }
+
+    /// `sonos://zones/{room}`: the room's zone state, as `get_zone_state`.
+    pub fn zone_document(&self, room: &str) -> Result<String, Failure> {
+        json_document(&self.surface.zone_state(&self.client, room)?)
+    }
+
     /// The `recent_actions` tool.
     pub fn recent_actions(&self, query: &ActionsQuery) -> McpResult<FinalCallToolResult> {
         respond(|| {
@@ -202,6 +261,23 @@ struct ActionsDto {
     actions: Vec<ActionDto>,
 }
 
+/// `search_library` structured content.
+#[derive(Serialize)]
+struct HitsDto {
+    hits: Vec<fsonos_api::HitDto>,
+}
+
+/// `recent_plays` structured content.
+#[derive(Serialize)]
+struct PlaysDto {
+    plays: Vec<fsonos_api::PlayDto>,
+}
+
+fn json_document<T: Serialize>(value: &T) -> Result<String, Failure> {
+    serde_json::to_string_pretty(value)
+        .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))
+}
+
 /// `list_favorites` structured content.
 #[derive(Serialize)]
 struct FavoritesDto {
@@ -236,16 +312,54 @@ pub fn install(backend: Backend) -> bool {
     BACKEND.set(backend).is_ok()
 }
 
+/// The installed backend, or `NOT_READY` before one is.
+pub(crate) fn backend() -> Result<&'static Backend, Failure> {
+    BACKEND.get().ok_or_else(|| {
+        Failure::new(
+            ErrorCode::NotReady,
+            "this MCP server has no speakers attached yet",
+        )
+    })
+}
+
 fn with_backend(
     run: impl FnOnce(&Backend) -> McpResult<FinalCallToolResult>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    let backend = BACKEND.get().ok_or_else(|| {
-        tool_error(&Failure::new(
-            ErrorCode::NotReady,
-            "this MCP server has no speakers attached yet",
-        ))
-    })?;
+    let backend = backend().map_err(|f| tool_error(&f))?;
     Ok(CompleteResult::new(run(backend)?, ResultMeta::empty()))
+}
+
+#[tool(
+    description = "Search the owner's saved Spotify library for music, and with `zone` also that room's household Sonos favorites. `query` is title words, a composer or performer, an album, or a catalog number ('goldberg gould', 'bwv 988', 'dvorak 9', 'op 67'); case, accents and small typos are forgiven. Results come best first: play a track with `play` (zone, source_uri) or a favorite with `play_favorite` (zone, favorite). `limit` 1-50, default 10.",
+    annotations(read_only, idempotent)
+)]
+fn search_library(
+    _ctx: &McpContext,
+    query: String,
+    zone: Option<String>,
+    limit: Option<u32>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let req = SearchRequest {
+        query,
+        zone,
+        limit: limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+    };
+    with_backend(move |b| b.search_library(&req))
+}
+
+#[tool(
+    description = "What played recently, newest first: each play's URI, the room whose group played it, and when (unix seconds). Plays started through fsonos and by the DJ are recorded. Optional `zone` (a room) narrows it to that group; `limit` default 20, at most 200.",
+    annotations(read_only, idempotent)
+)]
+fn recent_plays(
+    _ctx: &McpContext,
+    zone: Option<String>,
+    limit: Option<u32>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let limit = limit.map_or(20, |n| {
+        usize::try_from(n).unwrap_or(usize::MAX).clamp(1, 200)
+    });
+    with_backend(move |b| b.recent_plays(zone.as_deref(), limit))
 }
 
 #[tool(

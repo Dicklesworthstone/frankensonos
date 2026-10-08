@@ -19,11 +19,11 @@
 use fsonos_core::actions::{self, UndoReport};
 use fsonos_core::clock::Clock;
 use fsonos_core::doctor::{self, Report, Runner};
-use fsonos_core::favorites;
 use fsonos_core::live::Live;
 use fsonos_core::policy::{Client, Policy};
-use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store};
+use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store, StoreError};
 use fsonos_core::{HouseholdState, control};
+use fsonos_core::{favorites, search};
 use fsonos_proto::Transport;
 use fsonos_types::{PlayerId, TransportState};
 use std::fmt::Write as _;
@@ -35,8 +35,8 @@ use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::Guard;
 use crate::plan::{Command, plan_play_favorite, resolve};
-use crate::reads::{FavoriteDto, TrackDto, ZoneStateDto};
-use crate::request::PlayFavoriteRequest;
+use crate::reads::{FavoriteDto, HitDto, PlayDto, TrackDto, ZoneStateDto};
+use crate::request::{PlayFavoriteRequest, SearchRequest};
 use crate::zones::{ZoneDto, zone_for_target, zone_views};
 
 /// Finds the households (a LAN survey, say).
@@ -350,6 +350,9 @@ impl Surface {
         // Already satisfied requests change nothing and are not logged.
         if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
             let result = self.execute(&households, &guard, &command);
+            if result.is_ok() {
+                self.remember_play(&command);
+            }
             if regroups {
                 self.invalidate();
             }
@@ -366,6 +369,9 @@ impl Surface {
             self.now(),
         );
         let result = self.execute(&households, &guard, &command);
+        if result.is_ok() {
+            self.remember_play(&command);
+        }
         if regroups {
             self.invalidate();
         }
@@ -500,6 +506,103 @@ impl Surface {
                 favorites::list(transport, households, &target.coordinator.id)?;
             plan_play_favorite(households, req, &household_favorites)
         })
+    }
+
+    /// Search the owner's saved library and, with a zone, its household's
+    /// Sonos favorites (`search_library`, read-only). Without a store there
+    /// is no library, only favorites.
+    pub fn search_library(
+        &self,
+        client: &Client,
+        req: &SearchRequest,
+    ) -> Result<Vec<HitDto>, Failure> {
+        self.guard(client).authorize("search_library", true)?;
+        let (query, limit) = (req.query()?, req.limit()?);
+        let library = self.with_store(|s| s.library())?.unwrap_or_default();
+        let household_favorites = match req.zone()? {
+            Some(zone) => {
+                let households = self.households()?;
+                let target = resolve(&households, zone)?;
+                favorites::list(&*self.transport, &households, &target.coordinator.id)?
+            }
+            None => Vec::new(),
+        };
+        Ok(search::search(&library, &household_favorites, query, limit)
+            .iter()
+            .map(HitDto::from)
+            .collect())
+    }
+
+    /// What played, newest first (`recent_plays`, read-only): in `zone`'s
+    /// group (as recorded under its current coordinator), or everywhere.
+    pub fn recent_plays(
+        &self,
+        client: &Client,
+        zone: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<PlayDto>, Failure> {
+        self.guard(client).authorize("recent_plays", true)?;
+        let households = match zone {
+            Some(_) => self.households()?,
+            // Only to name the rooms: a history read never needs the speakers.
+            None => self.households().unwrap_or_default(),
+        };
+        let key = zone
+            .map(|z| resolve(&households, z).map(|t| t.coordinator.id.0.clone()))
+            .transpose()?;
+        let plays = self
+            .with_store(|s| s.recent_plays(key.as_deref(), limit))?
+            .unwrap_or_default();
+        Ok(plays
+            .iter()
+            .rev()
+            .map(|p| PlayDto {
+                room: control::locate(&households, &PlayerId(p.zone.clone()))
+                    .ok()
+                    .map(|player| player.room_name.clone()),
+                source_uri: p.source_uri.clone(),
+                played_at: p.played_at,
+            })
+            .collect())
+    }
+
+    /// Run `f` on the store, if the surface keeps one (with its action log).
+    fn with_store<R>(
+        &self,
+        f: impl FnOnce(&mut dyn Store) -> Result<R, StoreError>,
+    ) -> Result<Option<R>, Failure> {
+        let Some(log) = &self.log else {
+            return Ok(None);
+        };
+        let mut store = log
+            .store
+            .lock()
+            .map_err(|_| Failure::new(ErrorCode::Internal, "store poisoned"))?;
+        f(&mut **store)
+            .map(Some)
+            .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))
+    }
+
+    /// Add a play that went through to the history, under the group's
+    /// coordinator (as the DJ records its own), so the DJ hears about it.
+    fn remember_play(&self, command: &Command) {
+        let (coordinator, uri) = match command {
+            Command::Play {
+                coordinator,
+                source_uri,
+                ..
+            } => (coordinator, Some(source_uri.as_str())),
+            Command::PlayFavorite {
+                coordinator,
+                favorite,
+            } => (coordinator, favorite.uri.as_deref()),
+            _ => return,
+        };
+        let Some(uri) = uri else { return };
+        let at = self.now();
+        if let Err(e) = self.with_store(|s| s.record_play(&coordinator.0, uri, at)) {
+            tracing::warn!("play not recorded ({uri}): {}", e.detail);
+        }
     }
 
     /// The favorites of the household `zone` belongs to (`list_favorites`).

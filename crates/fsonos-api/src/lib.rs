@@ -46,10 +46,10 @@ pub use guard::{Guard, Note};
 pub use http::app;
 pub use log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 pub use plan::Command;
-pub use reads::{FavoriteDto, TrackDto, ZoneStateDto};
+pub use reads::{FavoriteDto, HitDto, PlayDto, TrackDto, ZoneStateDto};
 pub use request::{
-    GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, VolumeChange, VolumeRequest,
-    ZoneRequest,
+    GroupRequest, MuteRequest, PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeChange,
+    VolumeRequest, ZoneRequest,
 };
 pub use surface::Surface;
 pub use web::WebPolicy;

@@ -463,3 +463,27 @@ fn the_event_stream_needs_the_live_model() {
         (501, Some("NOT_IMPLEMENTED"))
     );
 }
+
+#[test]
+fn search_and_history_validate_and_answer_empty_without_a_store() {
+    let api = Api::start("", &Client::LoopbackHttp);
+    let (status, err) = api.get("/library/search");
+    assert_eq!(
+        (status, err["code"].as_str()),
+        (422, Some("INVALID_ARGUMENT"))
+    );
+    let (status, hits) = api.get("/library/search?q=goldberg+gould");
+    assert_eq!((status, hits), (200, json!([])));
+    let (status, err) = api.get("/library/search?q=x&limit=500");
+    assert_eq!(
+        (status, err["code"].as_str()),
+        (422, Some("INVALID_ARGUMENT"))
+    );
+    let (status, plays) = api.get("/history");
+    assert_eq!((status, plays), (200, json!([])));
+    let (status, err) = api.get("/history?limit=0");
+    assert_eq!(
+        (status, err["code"].as_str()),
+        (422, Some("INVALID_ARGUMENT"))
+    );
+}

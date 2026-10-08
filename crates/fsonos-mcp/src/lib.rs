@@ -6,10 +6,11 @@
 //! `ungroup`, `dj_start`, `dj_skip`. Served over stdio and streamable HTTP via
 //! `fastmcp_rust`. [`server`] builds the server; [`tools`] holds the tools and
 //! the [`tools::Backend`] of speakers they act on, installed once per process
-//! with [`tools::install`]. The tools take the HTTP API's request bodies
+//! with [`tools::install`]; [`resources`] serves the zones as documents. The tools take the HTTP API's request bodies
 //! (`fsonos_api::request`) and share its validation, planning, execution and
 //! house policy, so both surfaces answer alike.
 
+pub mod resources;
 pub mod tools;
 
 use fastmcp::prelude::*;
@@ -53,6 +54,10 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::DjStart)
         .tool(tools::DjSkip)
         .tool(tools::DjStop)
+        .tool(tools::SearchLibrary)
+        .tool(tools::RecentPlays)
+        .resource(resources::ZonesResource)
+        .resource(resources::ZoneResource)
         .build()
 }
 

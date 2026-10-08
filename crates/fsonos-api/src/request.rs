@@ -167,6 +167,54 @@ impl PlayFavoriteRequest {
     }
 }
 
+/// Most results a library search returns.
+pub const MAX_SEARCH_RESULTS: usize = 50;
+
+/// `search_library` / `GET /library/search?q=&zone=&limit=`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SearchRequest {
+    /// Words of a title, composer, performer or album, or a catalog number
+    /// (`bwv 988`, `op 67`).
+    pub query: String,
+    /// A room: its household's Sonos favorites are searched too.
+    #[serde(default)]
+    pub zone: Option<String>,
+    /// At most this many results, best first (1 to 50, default 10).
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+impl SearchRequest {
+    /// The trimmed query, or why it is unusable.
+    pub fn query(&self) -> Result<&str, Failure> {
+        let query = self.query.trim();
+        if query.is_empty() {
+            return Err(Failure::invalid("`query` is empty; say what to look for"));
+        }
+        Ok(query)
+    }
+
+    /// The result limit, or why it is out of range.
+    pub fn limit(&self) -> Result<usize, Failure> {
+        match self.limit {
+            None => Ok(10),
+            Some(n) if (1..=MAX_SEARCH_RESULTS).contains(&n) => Ok(n),
+            Some(n) => Err(Failure::invalid(format!(
+                "limit must be 1 to {MAX_SEARCH_RESULTS}, got {n}"
+            ))),
+        }
+    }
+
+    /// The trimmed zone, if one was given, or why it is unusable.
+    pub fn zone(&self) -> Result<Option<&str>, Failure> {
+        self.zone
+            .as_deref()
+            .map(|z| zone_name("zone", z))
+            .transpose()
+    }
+}
+
 /// `POST /group` body: move `zone` into the group that `to` belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

@@ -193,7 +193,12 @@ pub fn plan_play_favorite(
 ) -> Result<Command, Failure> {
     let query = req.favorite()?;
     let target = resolve(households, req.zone()?)?;
-    let favorite = favorites::find(household_favorites, query)?;
+    // An `FV:2/<n>` id (what list_favorites and search_library hand out)
+    // names its favorite exactly; anything else is a position or a title.
+    let favorite = match household_favorites.iter().find(|f| f.id == query) {
+        Some(f) => f,
+        None => favorites::find(household_favorites, query)?,
+    };
     Ok(Command::PlayFavorite {
         coordinator: target.coordinator.id.clone(),
         favorite: favorite.clone(),
@@ -304,6 +309,35 @@ mod tests {
 
     fn zone(name: &str) -> ZoneRequest {
         ZoneRequest { zone: name.into() }
+    }
+
+    #[test]
+    fn a_favorite_is_found_by_id_position_or_title() {
+        let houses = households();
+        let fav = |id: &str, title: &str| Favorite {
+            id: id.into(),
+            title: title.into(),
+            kind: fsonos_core::favorites::FavoriteKind::Stream,
+            uri: Some(format!("x-rincon-mp3radio://{id}")),
+            metadata: String::new(),
+            description: None,
+            art_uri: None,
+        };
+        let list = [fav("FV:2/4", "Sim Radio"), fav("FV:2/1", "Symphonies")];
+        let pick = |query: &str| {
+            let req = PlayFavoriteRequest {
+                zone: "Den".into(),
+                favorite: query.into(),
+            };
+            match plan_play_favorite(&houses, &req, &list).unwrap() {
+                Command::PlayFavorite { favorite, .. } => favorite.id,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(pick("FV:2/1"), "FV:2/1");
+        assert_eq!(pick("FV:2/4"), "FV:2/4");
+        assert_eq!(pick("2"), "FV:2/1");
+        assert_eq!(pick("sim radio"), "FV:2/4");
     }
 
     #[test]

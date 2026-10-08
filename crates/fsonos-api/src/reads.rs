@@ -3,6 +3,7 @@
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::favorites::{Favorite, FavoriteKind};
+use fsonos_core::search::{Hit, HitSource};
 use fsonos_proto::control::PositionInfo;
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +94,55 @@ impl From<&Favorite> for FavoriteDto {
             art_uri: f.art_uri.clone(),
         }
     }
+}
+
+/// One library search result: `search_library` and `GET /library/search`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HitDto {
+    /// `track` (play it with `play` and `source_uri`) or `favorite` (play it
+    /// with `play_favorite` and `favorite`, in the same household).
+    pub kind: String,
+    pub title: String,
+    /// The artists of a track, or a favorite's description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    /// `spotify:track:<id>`, for `play`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_uri: Option<String>,
+    /// `FV:2/<n>`, for `play_favorite`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favorite: Option<String>,
+    /// Higher is a better match.
+    pub score: u32,
+}
+
+impl From<&Hit> for HitDto {
+    fn from(hit: &Hit) -> Self {
+        let (kind, source_uri, favorite) = match &hit.source {
+            HitSource::Library { source_uri } => ("track", Some(source_uri.clone()), None),
+            HitSource::Favorite { id } => ("favorite", None, Some(id.clone())),
+        };
+        Self {
+            kind: kind.to_string(),
+            title: hit.title.clone(),
+            subtitle: hit.subtitle.clone(),
+            source_uri,
+            favorite,
+            score: hit.score,
+        }
+    }
+}
+
+/// One recorded play: `recent_plays` and `GET /history`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PlayDto {
+    /// The room whose group played it (its coordinator's room), when the
+    /// households still have that player.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room: Option<String>,
+    pub source_uri: String,
+    /// Unix seconds.
+    pub played_at: i64,
 }
 
 #[cfg(test)]

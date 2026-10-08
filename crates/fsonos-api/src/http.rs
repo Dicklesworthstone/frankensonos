@@ -48,8 +48,8 @@ use crate::plan::{
     self, Command, DjAction, TransportAction, plan_group, plan_mute, plan_play, plan_ungroup,
     plan_volume,
 };
-use crate::reads::{FavoriteDto, ZoneStateDto};
-use crate::request::{PlayFavoriteRequest, ZoneRequest};
+use crate::reads::{FavoriteDto, HitDto, PlayDto, ZoneStateDto};
+use crate::request::{PlayFavoriteRequest, SearchRequest, ZoneRequest};
 use crate::surface::Surface;
 use crate::web::WebPolicy;
 use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
@@ -190,6 +190,33 @@ fn reads(cx: &Ctx<'_>) -> Vec<RouteEntry> {
 /// Favorites, the action log and undo.
 fn house(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     vec![
+        cx.route(
+            &Op::get(
+                "/library/search",
+                "search_library",
+                FAVORITES,
+                "Search the owner's library (and a room's favorites) for music",
+            ),
+            |s, c, req| answer(search_query(req).and_then(|q| s.search_library(c, &q))),
+        )
+        .query_schema::<SearchQuery>(true)
+        .response_schema::<Vec<HitDto>>(200, "The best matches, best first"),
+        cx.route(
+            &Op::get(
+                "/history",
+                "recent_plays",
+                LOG,
+                "What played recently, newest first",
+            ),
+            |s, c, req| {
+                answer(
+                    history_query(req)
+                        .and_then(|q| s.recent_plays(c, q.zone.as_deref(), q.limit.unwrap_or(20))),
+                )
+            },
+        )
+        .query_schema::<HistoryQuery>(false)
+        .response_schema::<Vec<PlayDto>>(200, "The recorded plays"),
         cx.route(
             &Op::get(
                 "/favorites",
@@ -518,6 +545,62 @@ fn favorites_query(req: &Request) -> Result<FavoritesQuery, Failure> {
     Ok(FavoritesQuery { zone })
 }
 
+/// `GET /library/search?q=<words>&zone=<room>&limit=<n>`.
+#[derive(JsonSchema)]
+struct SearchQuery {
+    /// What to look for (see `SearchRequest::query`).
+    q: String,
+    /// A room: its household's favorites are searched too.
+    zone: Option<String>,
+    /// 1 to 50, default 10.
+    limit: Option<usize>,
+}
+
+fn search_query(req: &Request) -> Result<SearchRequest, Failure> {
+    let q = SearchQuery {
+        q: query_param(req, "q")?.ok_or_else(|| {
+            Failure::invalid("say what to look for: GET /library/search?q=<words>")
+        })?,
+        zone: query_param(req, "zone")?,
+        limit: whole_number(req, "limit")?,
+    };
+    Ok(SearchRequest {
+        query: q.q,
+        zone: q.zone,
+        limit: q.limit,
+    })
+}
+
+/// `GET /history?zone=<room>&limit=<n>`: one zone's plays, or everyone's.
+#[derive(JsonSchema)]
+struct HistoryQuery {
+    /// A room: only its group's plays.
+    zone: Option<String>,
+    /// At most this many, newest first (default 20, at most 200).
+    limit: Option<usize>,
+}
+
+fn history_query(req: &Request) -> Result<HistoryQuery, Failure> {
+    let limit = whole_number(req, "limit")?;
+    if limit.is_some_and(|n| n == 0 || n > 200) {
+        return Err(Failure::invalid("limit must be 1 to 200"));
+    }
+    Ok(HistoryQuery {
+        zone: query_param(req, "zone")?,
+        limit,
+    })
+}
+
+/// A non-negative whole-number query parameter.
+fn whole_number(req: &Request, name: &str) -> Result<Option<usize>, Failure> {
+    query_param(req, name)?
+        .map(|v| {
+            v.parse::<usize>()
+                .map_err(|_| Failure::invalid(format!("{name} must be a whole number, got {v:?}")))
+        })
+        .transpose()
+}
+
 /// `GET /events?since=<id>`: resume after event `since` (or the
 /// `Last-Event-ID` header); by default only events from now on.
 #[derive(JsonSchema)]
@@ -571,7 +654,8 @@ fn body_or_default<B: DeserializeOwned>(req: &mut Request, default: B) -> Result
 }
 
 /// Decode `%XX` escapes (and nothing else) into UTF-8 text.
-fn percent_decode(raw: &str) -> Option<String> {
+#[must_use]
+pub fn percent_decode(raw: &str) -> Option<String> {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
