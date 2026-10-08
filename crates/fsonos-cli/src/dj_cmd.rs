@@ -1,5 +1,5 @@
-//! `fsonos dj …`: start, skip, stop and steer the DJ, and show what it plays,
-//! why, and its moods.
+//! `fsonos dj …`: start, skip, stop and steer the DJ, show what it plays,
+//! why, and its moods, and like or dislike the work playing.
 //!
 //! The DJ runs in the daemon (`fsonos serve`): only that process holds the
 //! feeds that keep a queue topped up. So the reads (`dj status`, `dj why`,
@@ -12,6 +12,7 @@
 use clap::{ArgAction, Subcommand};
 use fsonos_api::dj::{DjMoodsDto, DjStatusDto, SteerConstraints};
 use fsonos_api::plan::{self, DjAction as PlanDj, Rooms};
+use fsonos_api::surface::dj_feedback::DjFeedback;
 use fsonos_api::{
     ApiError, Command, DjStartRequest, DjSteerRequest, ErrorCode, Failure, ZoneDto, ZoneRequest,
 };
@@ -44,6 +45,12 @@ pub enum DjAction {
     Skip { zone: String },
     /// Stop the DJ.
     Stop { zone: String },
+    /// You like the work playing: the DJ favors it, its composer and its
+    /// performer. Without a room, the group the DJ plays in.
+    Like { zone: Option<String> },
+    /// You dislike the work playing: the DJ plays it, its composer and its
+    /// performer less (a second dislike keeps the work out for 180 days).
+    Dislike { zone: Option<String> },
     /// Steer the DJ in a room's group from its next piece, running or not:
     /// a mood, constraints, how long; or --clear for the time-of-day program.
     Steer(Box<SteerArgs>),
@@ -167,12 +174,17 @@ impl SteerArgs {
 }
 
 impl DjAction {
-    /// Whether it only reads (status, why, moods).
+    /// Whether it runs on its own rather than as a planned control command:
+    /// the reads (status, why, moods), and like and dislike.
     #[must_use]
     pub fn is_read(&self) -> bool {
         matches!(
             self,
-            Self::Status { .. } | Self::Why { .. } | Self::Moods { .. }
+            Self::Status { .. }
+                | Self::Why { .. }
+                | Self::Moods { .. }
+                | Self::Like { .. }
+                | Self::Dislike { .. }
         )
     }
 
@@ -186,6 +198,7 @@ impl DjAction {
             Self::Steer(_) => "dj_steer",
             Self::Status { .. } | Self::Why { .. } => "dj_status",
             Self::Moods { .. } => "dj_moods",
+            Self::Like { .. } | Self::Dislike { .. } => "dj_feedback",
         }
     }
 
@@ -209,9 +222,13 @@ impl DjAction {
             Self::Skip { zone: z } => plan::plan_dj(rooms, &zone(z), PlanDj::Skip),
             Self::Stop { zone: z } => plan::plan_dj(rooms, &zone(z), PlanDj::Stop),
             Self::Steer(args) => plan::plan_dj_steer(rooms, &args.request()),
-            Self::Status { .. } | Self::Why { .. } | Self::Moods { .. } => Err(Failure::new(
+            Self::Status { .. }
+            | Self::Why { .. }
+            | Self::Moods { .. }
+            | Self::Like { .. }
+            | Self::Dislike { .. } => Err(Failure::new(
                 ErrorCode::Internal,
-                "dj status, why and moods only read",
+                "dj status, why, moods, like and dislike run on their own",
             )),
         }
     }
@@ -238,6 +255,12 @@ pub fn read(global: &GlobalArgs, action: &DjAction) -> anyhow::Result<()> {
         DjAction::Moods { zone, daemon } => {
             let moods = Source::find(global, daemon)?.moods(zone.as_deref())?;
             crate::emit(global.json, &moods, moods_text)
+        }
+        DjAction::Like { zone } => {
+            crate::dj::feedback::run(global, zone.as_deref(), DjFeedback::Like)
+        }
+        DjAction::Dislike { zone } => {
+            crate::dj::feedback::run(global, zone.as_deref(), DjFeedback::Dislike)
         }
         _ => Err(Failure::new(ErrorCode::Internal, "not a DJ read").into()),
     }

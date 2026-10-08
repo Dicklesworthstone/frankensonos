@@ -31,6 +31,7 @@
 //! | `GET /dj/moods?zone=<room>` | | [`crate::DjMoodsDto`] (`now` is the room's steering, else the house's program) |
 //! | `GET`/`POST /sleep`, `GET`/`POST /schedules`, `POST /schedules/remove`, `/pause`, `/resume` | | sleep timers and schedules: see [`schedules`] |
 //! | `POST /announce` | [`crate::surface::announce::AnnounceRequest`] | [`crate::surface::announce::AnnounceDto`] |
+//! | `POST /dj/feedback` | [`crate::surface::dj_feedback::DjFeedbackRequest`] | [`crate::surface::dj_feedback::DjFeedbackDto`] |
 //!
 //! Every route first passes the listener's [`WebPolicy`] (a present Origin
 //! must be the daemon's own; POSTs must be JSON); the listener itself admits
@@ -72,6 +73,7 @@ use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
 
 mod house_policy;
 
+mod dj_feedback;
 mod schedules;
 
 mod scenes;
@@ -138,6 +140,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(announce::routes(cx));
     routes.extend(scenes::routes(cx));
     routes.extend(dj(cx));
+    routes.extend(dj_feedback::routes(cx));
     routes.extend(schedules::routes(cx));
     routes
 }

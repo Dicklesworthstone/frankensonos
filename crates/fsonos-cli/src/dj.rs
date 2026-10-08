@@ -20,6 +20,7 @@
 use chrono::{Datelike, Timelike};
 use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
 use fsonos_api::plan::DjAction;
+use fsonos_api::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
 use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 use fsonos_core::clock::Clock;
 use fsonos_core::playback::PlayerPlayback;
@@ -36,6 +37,8 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::dj_view::{self, steer_failure, store_failure};
+
+pub(crate) mod feedback;
 
 /// The moods file's name inside the data directory.
 pub const MOODS_FILE: &str = "moods.toml";
@@ -73,6 +76,8 @@ struct State {
     pool: WorkPool,
     feedback: Option<FeedbackModel>,
     moods: Moods,
+    /// What each group is hearing, for early skips and full listens.
+    listening: HashMap<PlayerId, feedback::Listening>,
 }
 
 /// What a pick is planned with right now, beyond the pool.
@@ -339,6 +344,7 @@ impl DjEngine for SpotifyDj {
                     .filter(QueueFeed::is_active)
                     .ok_or_else(|| no_session(&room))?;
                 feed.stop(&speakers).map_err(failure)?;
+                state.listening.remove(at.coordinator);
                 Ok(sent(format!("the DJ stopped in {room}'s group")))
             }
         }
@@ -425,6 +431,7 @@ impl DjEngine for SpotifyDj {
             feeds,
             pool,
             feedback,
+            listening,
             ..
         } = &mut *state;
         let Some(feed) = feeds.get_mut(at.coordinator) else {
@@ -442,9 +449,39 @@ impl DjEngine for SpotifyDj {
                 tracing::warn!(error = %e, "the DJ could not top up; retrying on the next change");
             }
         }
+        // An early skip or a full listen, as the movement heard ends.
+        if feedback::implicit(
+            listening.entry(at.coordinator.clone()).or_default(),
+            feed,
+            pool,
+            store,
+            playback,
+            cx.now,
+        ) {
+            // From the DJ's next pick on.
+            *feedback = FeedbackModel::load(&StoreFeedback(&*store), cx.now).ok();
+        }
         if !feed.is_active() {
             // The owner cleared or replaced the queue: the DJ steps aside.
             feeds.remove(at.coordinator);
+            listening.remove(at.coordinator);
         }
+    }
+
+    fn feedback(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        signal: DjFeedback,
+        clock: &dyn Clock,
+    ) -> Result<DjFeedbackDto, Failure> {
+        feedback::explicit(
+            &mut self.state(),
+            self.moods_file.as_ref(),
+            at,
+            store,
+            signal,
+            clock,
+        )
     }
 }

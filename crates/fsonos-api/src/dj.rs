@@ -23,8 +23,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use crate::execute::OutcomeDto;
-use crate::failure::Failure;
+use crate::failure::{ErrorCode, Failure};
 use crate::plan::DjAction;
+use crate::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
 
 /// The speakers a DJ command acts on.
 #[derive(Clone, Copy)]
@@ -93,6 +94,22 @@ pub trait DjEngine: Send + Sync {
         playback: &PlayerPlayback,
         clock: &dyn Clock,
     );
+
+    /// Record the owner's like or dislike of the work playing in the
+    /// group `at.coordinator` leads (its composer and performer too).
+    fn feedback(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        signal: DjFeedback,
+        clock: &dyn Clock,
+    ) -> Result<DjFeedbackDto, Failure> {
+        let _ = (at, store, signal, clock);
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this DJ takes no feedback",
+        ))
+    }
 }
 
 /// Hard filters (and one nudge) on what the DJ may pick: fsonos-spotify's

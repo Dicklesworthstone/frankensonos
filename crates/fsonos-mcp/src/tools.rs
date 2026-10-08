@@ -22,6 +22,7 @@ use std::sync::{Arc, OnceLock};
 
 use crate::tool_error;
 
+pub mod dj_feedback;
 pub mod schedules;
 
 mod house_policy;

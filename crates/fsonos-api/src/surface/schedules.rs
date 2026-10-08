@@ -624,7 +624,7 @@ impl Surface {
 
     /// Authorize the write `tool`; a denial is logged, as [`Self::control`]
     /// logs one.
-    fn authorize_write(&self, client: &Client, tool: &str) -> Result<(), Failure> {
+    pub(super) fn authorize_write(&self, client: &Client, tool: &str) -> Result<(), Failure> {
         self.guard(client)
             .authorize(tool, false)
             .inspect_err(|denied| {
@@ -640,7 +640,7 @@ impl Surface {
 
     /// Log a write that went through (or failed): there is no before-state
     /// to undo.
-    fn log_write<T>(
+    pub(super) fn log_write<T>(
         &self,
         client: &Client,
         intent: String,
