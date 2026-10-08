@@ -439,6 +439,20 @@ impl Program {
         }
     }
 
+    /// The days it plays on, Monday first.
+    #[must_use]
+    pub fn days(&self) -> [bool; 7] {
+        self.days
+    }
+
+    /// Its window, `(from, to)` in minutes after midnight (24:00 is 1440). A
+    /// window ending before it starts wraps past midnight; equal ends cover
+    /// the whole day.
+    #[must_use]
+    pub fn window(&self) -> (u16, u16) {
+        (self.from, self.to)
+    }
+
     /// Whether it plays at `minute` (after midnight) on `day`. A window past
     /// midnight belongs to the day it starts: Friday 21:00–06:00 covers
     /// Saturday 03:00.
@@ -451,6 +465,27 @@ impl Program {
                 (on(day) && minute >= self.from) || (on(day.pred()) && minute < self.to)
             }
         }
+    }
+}
+
+/// As `moods.toml` writes it: `{"days": ["sat", "sun"], "from": "06:00",
+/// "to": "11:00", "mood": "sunday-morning"}`.
+impl Serialize for Program {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        const NAMES: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+        let hhmm = |minute: u16| format!("{:02}:{:02}", minute / 60, minute % 60);
+        let days: Vec<&str> = NAMES
+            .iter()
+            .zip(self.days)
+            .filter_map(|(name, on)| on.then_some(*name))
+            .collect();
+        let mut program = serializer.serialize_struct("Program", 4)?;
+        program.serialize_field("days", &days)?;
+        program.serialize_field("from", &hhmm(self.from))?;
+        program.serialize_field("to", &hhmm(self.to))?;
+        program.serialize_field("mood", &self.mood)?;
+        program.end()
     }
 }
 
@@ -1347,6 +1382,53 @@ periods = ["baroque", "late_romantic"]
         for (day, time, want) in cases {
             assert_eq!(moods.program_at(day, time), want, "{day} {time}");
         }
+    }
+
+    #[test]
+    fn programs_show_their_days_and_window_as_moods_toml_writes_them() {
+        #[derive(Serialize)]
+        struct File<'a> {
+            programs: &'a [Program],
+        }
+
+        let builtin = Moods::builtin();
+        let programs = builtin.programs();
+        assert_eq!(
+            programs[0].days(),
+            [false, false, false, false, false, true, true]
+        );
+        assert_eq!(programs[0].window(), (6 * 60, 11 * 60));
+        assert_eq!(
+            programs[3].window(),
+            (21 * 60, 6 * 60),
+            "wraps past midnight"
+        );
+        assert_eq!(
+            serde_json::to_value(&programs[0]).unwrap(),
+            serde_json::json!({
+                "days": ["sat", "sun"], "from": "06:00", "to": "11:00", "mood": "sunday-morning"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&programs[3]).unwrap()["days"]
+                .as_array()
+                .unwrap()
+                .len(),
+            7
+        );
+        // Written out as moods.toml, the programs read back the same.
+        let text = toml::to_string(&File { programs }).unwrap();
+        let back = Moods::parse(&text, "moods.toml").unwrap();
+        assert_eq!(back.programs(), programs, "{text}");
+        let end_of_day = Moods::parse(
+            "[[programs]]\nfrom = \"18:00\"\nto = \"24:00\"\nmood = \"calm\"\n",
+            "moods.toml",
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&end_of_day.programs()[0]).unwrap()["to"],
+            "24:00"
+        );
     }
 
     #[test]
