@@ -415,6 +415,18 @@ statement parser and flag evaluator) are the only place a hidden credential
 check could live; they are staged for the next r2 pass. If neither contains
 crypto, the devmode gate is a *format* gate, not a cryptographic one.
 
+The two helpers are **statically unresolvable**: the S1 anacapad binary has
+only 13 relocations (R_MIPS_REL32, no JUMP_SLOTs) and the helpers' GOT
+entries are lazy-bound at runtime — their true names exist only in the
+dynamic linker's resolution, not in any static table. The S2 86.10 overlay
+binary is stripped the same way. Confirmed shared lineage: both generations'
+devmode code comes from `anacapa-1.0/oc/common/src/devmode.cxx` (assert-path
+string in both binaries); the S2 build adds a `RRuntimePolicyInterface`
+(muse::rp) policy engine and a `DevModeEventGenerator`. Next step for a
+definitive answer is dynamic: qemu-mips emulation of anacapad, or one live
+POST of a crafted statement (rate-limited, and a mutation — owner approval
+first).
+
 ## 10. SMAPI (the speaker↔Spotify bridge) — verified against the live endpoint
 
 Sonos renders music services through SMAPI, a SOAP API Sonos operates per
