@@ -61,6 +61,7 @@ variables. The environment form is what launchd uses.
 | HTTP API address | `FSONOS_HTTP_ADDR` | unset: `127.0.0.1:8099` plus this host's tailnet addresses when Tailscale is up | Set it to bind exactly one address, e.g. loopback behind Tailscale Serve. |
 | MCP (streamable HTTP) address | `FSONOS_MCP_HTTP_ADDR` | unset: `127.0.0.1:8098` | Endpoint path `/mcp`. Loopback unless set: reach it from the tailnet through Serve. |
 | Tailscale detection | `FSONOS_TAILSCALE` | `auto` | `off` (or `--tailscale off`) stops `fsonos` looking for Tailscale: unconfigured listeners bind loopback only, and `fsonos doctor` skips its `tailscale.*` checks. |
+| Tailscale Serve at startup | `FSONOS_TAILSCALE_SERVE` | off | `true` (or `--tailscale-serve`) runs `fsonos tailscale setup` when the daemon starts (§ "Recommended: Tailscale Serve"); a refusal or failure is logged and the daemon serves on. |
 | Events port | `FSONOS_EVENTS_PORT` | `8097` | Where the speakers deliver state-change events (GENA), on the Mac's LAN address. The only LAN-facing socket: allow it inbound (§4). `0` picks any free port. |
 | Data directory | `FSONOS_DATA_DIR` | `~/Library/Application Support/fsonos` | Store DB and Spotify token cache. |
 | Direct-seed list | `FSONOS_SEEDS` | unset | Optional file of player addresses for flaky-SSDP networks; every IP address in it is tried (e.g. TOML `players = ["192.0.2.10"]`, or one per line). Every command also takes `--seed <ip>`. Keep the file under `local/` or outside the repo. |
@@ -190,6 +191,17 @@ Enable **MagicDNS** and **HTTPS certificates** in the Tailscale admin console
 (DNS page). Then, on the Mac:
 
 ```bash
+fsonos tailscale setup      # both mappings below; running it again changes nothing
+fsonos tailscale status     # what Serve does on 443 / 8443, and the URLs
+fsonos tailscale teardown   # remove the daemon's mappings (only those)
+```
+
+`setup` refuses while **Funnel** is on for either port (Funnel would publish
+the unauthenticated API to the public internet; FrankenSonos never uses it),
+and never replaces Serve config it did not make. `--dry-run` shows the
+commands. By hand, the same thing is:
+
+```bash
 tailscale serve --bg --https=443  http://127.0.0.1:8099   # HTTP API
 tailscale serve --bg --https=8443 http://127.0.0.1:8098   # MCP
 tailscale serve status
@@ -199,7 +211,11 @@ tailscale serve status
   `https://<mac>.<tailnet>.ts.net:8443/mcp`.
 - `--bg` configurations persist across reboots; `tailscaled` holds them.
 - The daemon only ever binds loopback, so there is no boot-time race with
-  Tailscale coming up.
+  Tailscale coming up: its loopback listeners answer any `*.ts.net` Host, the
+  name Serve forwards, even if Tailscale was down when the daemon started.
+- The HTTPS certificate is issued for the Mac's MagicDNS name, and issued
+  certificates are recorded in public Certificate Transparency logs: the
+  machine and tailnet names become public (nothing else does).
 - To remove one mapping, run `tailscale serve --https=8443 off`.
   `tailscale serve reset` clears **all** Serve config on the machine.
 - For requests from user-owned devices, Serve adds `Tailscale-User-Login` and

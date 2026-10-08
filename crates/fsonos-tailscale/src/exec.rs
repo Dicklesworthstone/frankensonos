@@ -8,19 +8,23 @@
 use std::io::{self, Read};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::thread::{self, JoinHandle};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const POLL: Duration = Duration::from_millis(10);
 const DETAIL_MAX: usize = 300;
 const BUSY_RETRIES: u32 = 50;
+/// How long a killed child's output may take to arrive.
+const LATE_OUTPUT: Duration = Duration::from_millis(200);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExecError {
     /// The program does not exist (or is not executable).
     NotFound,
-    /// It did not exit before the deadline and was killed.
-    TimedOut,
+    /// It did not exit before the deadline and was killed; `output` is what
+    /// it had printed (stdout, then stderr), trimmed for display.
+    TimedOut { output: String },
     /// It could not be run, or exited unsuccessfully; `detail` is stderr (or
     /// the exit status) trimmed for display.
     Failed { detail: String },
@@ -70,7 +74,13 @@ pub fn run(program: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>, 
         Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(ExecError::TimedOut);
+            // The pipes close with the child; don't wait on a grandchild
+            // that kept one open.
+            let mut printed = stdout.recv_timeout(LATE_OUTPUT).unwrap_or_default();
+            printed.extend(stderr.recv_timeout(LATE_OUTPUT).unwrap_or_default());
+            return Err(ExecError::TimedOut {
+                output: for_display(String::from_utf8_lossy(&printed).trim().to_owned()),
+            });
         }
         Err(e) => {
             let _ = child.kill();
@@ -80,37 +90,46 @@ pub fn run(program: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>, 
             });
         }
     };
-    let stdout = stdout.join().unwrap_or_default();
-    let stderr = stderr.join().unwrap_or_default();
+    let stdout = stdout.recv().unwrap_or_default();
+    let stderr = stderr.recv().unwrap_or_default();
     if status.success() {
         Ok(stdout)
     } else {
         let detail = String::from_utf8_lossy(&stderr).trim().to_owned();
-        let mut detail = if detail.is_empty() {
+        let detail = if detail.is_empty() {
             status.to_string()
         } else {
             detail
         };
-        if detail.len() > DETAIL_MAX {
-            let cut = (0..=DETAIL_MAX)
-                .rev()
-                .find(|&i| detail.is_char_boundary(i))
-                .unwrap_or(0);
-            detail.truncate(cut);
-            detail.push('…');
-        }
-        Err(ExecError::Failed { detail })
+        Err(ExecError::Failed {
+            detail: for_display(detail),
+        })
     }
 }
 
-fn drain(pipe: Option<impl Read + Send + 'static>) -> JoinHandle<Vec<u8>> {
+/// `text`, cut to [`DETAIL_MAX`] bytes on a character boundary.
+fn for_display(mut text: String) -> String {
+    if text.len() > DETAIL_MAX {
+        let cut = (0..=DETAIL_MAX)
+            .rev()
+            .find(|&i| text.is_char_boundary(i))
+            .unwrap_or(0);
+        text.truncate(cut);
+        text.push('…');
+    }
+    text
+}
+
+fn drain(pipe: Option<impl Read + Send + 'static>) -> Receiver<Vec<u8>> {
+    let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let mut buf = Vec::new();
         if let Some(mut pipe) = pipe {
             let _ = pipe.read_to_end(&mut buf);
         }
-        buf
-    })
+        let _ = tx.send(buf);
+    });
+    rx
 }
 
 fn wait_until(
@@ -176,10 +195,32 @@ mod tests {
     }
 
     #[test]
+    fn a_hung_program_keeps_what_it_printed() {
+        // Like `tailscale serve` waiting for HTTPS to be enabled: it prints a
+        // URL, then waits.
+        let err = sh(
+            "echo 'To enable, visit: https://login.example/f/serve'; exec sleep 30",
+            Duration::from_millis(500),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ExecError::TimedOut {
+                output: "To enable, visit: https://login.example/f/serve".into()
+            }
+        );
+    }
+
+    #[test]
     fn hung_program_is_killed_at_the_deadline() {
         let started = Instant::now();
         let err = sh("exec sleep 30", Duration::from_millis(200)).unwrap_err();
-        assert_eq!(err, ExecError::TimedOut);
+        assert_eq!(
+            err,
+            ExecError::TimedOut {
+                output: String::new()
+            }
+        );
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 }

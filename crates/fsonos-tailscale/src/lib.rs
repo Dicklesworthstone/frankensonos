@@ -13,11 +13,14 @@
 //! ([`parse_status`]) and the interface fallback ([`from_addresses`]) are pure.
 //! [`reach`] and [`describe`] turn the status into the URLs a listener is
 //! reachable at from the tailnet; [`WhoIs`] says who is on the other end of a
-//! tailnet connection.
+//! tailnet connection; [`serve`] plans Tailscale Serve in front of the daemon
+//! (never Funnel), and [`Probe::serve_config`] / [`Probe::run_step`] carry it
+//! out.
 
 pub mod bind;
 pub mod connect;
 mod exec;
+pub mod serve;
 mod status;
 pub mod whois;
 
@@ -182,7 +185,7 @@ impl Probe {
         for program in &self.cli_candidates {
             match exec::run(program, args, self.timeout) {
                 Err(exec::ExecError::NotFound) => {}
-                Err(exec::ExecError::TimedOut) => return Err(Unavailable::TimedOut),
+                Err(exec::ExecError::TimedOut { .. }) => return Err(Unavailable::TimedOut),
                 Err(exec::ExecError::Failed { detail }) => {
                     return Err(Unavailable::CliFailed { detail });
                 }
@@ -190,6 +193,54 @@ impl Probe {
             }
         }
         Err(Unavailable::NotInstalled)
+    }
+}
+
+/// Why one `tailscale` step did not complete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepError {
+    /// No `tailscale` CLI on this host.
+    NotInstalled,
+    /// It did not finish within the probe's timeout; what it had printed
+    /// (`tailscale serve` waiting for HTTPS to be enabled prints a URL).
+    TimedOut { output: String },
+    /// It failed; its stderr, or the exit status.
+    Failed { detail: String },
+}
+
+impl Probe {
+    /// Tailscale Serve's current config (`tailscale serve status --json`).
+    ///
+    /// # Errors
+    /// The CLI is missing, failed or timed out, or printed something other
+    /// than Serve's JSON.
+    pub fn serve_config(&self) -> Result<serve::ServeConfig, Unavailable> {
+        let json = self.run_cli(&["serve", "status", "--json"])?;
+        serve::parse_serve_config(&json).map_err(|e| Unavailable::Unparseable {
+            detail: e.to_string(),
+        })
+    }
+
+    /// Run one step, `tailscale <argv>` (a [`serve`] setup or teardown
+    /// step); what it printed.
+    ///
+    /// # Errors
+    /// See [`StepError`].
+    pub fn run_step(&self, argv: &[String]) -> Result<String, StepError> {
+        let words: Vec<&str> = argv.iter().map(String::as_str).collect();
+        for program in &self.cli_candidates {
+            match exec::run(program, &words, self.timeout) {
+                Err(exec::ExecError::NotFound) => {}
+                Err(exec::ExecError::TimedOut { output }) => {
+                    return Err(StepError::TimedOut { output });
+                }
+                Err(exec::ExecError::Failed { detail }) => {
+                    return Err(StepError::Failed { detail });
+                }
+                Ok(stdout) => return Ok(String::from_utf8_lossy(&stdout).trim().to_owned()),
+            }
+        }
+        Err(StepError::NotInstalled)
     }
 }
 

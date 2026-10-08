@@ -223,6 +223,16 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs) -> anyhow::Result<()> {
         data_dir.display()
     );
     announce_tailnet(&tailnet, &http_plan, &http, &mcp);
+    if args.tailscale_serve {
+        // A first HTTPS certificate can take a while: not on the main thread.
+        let (serve, tailnet) = (args.clone(), tailnet.clone());
+        thread::spawn(
+            move || match crate::tailscale_cmd::setup_at_startup(&serve, &tailnet) {
+                Ok(done) => eprintln!("fsonos serve: {done}"),
+                Err(e) => eprintln!("fsonos serve: Tailscale Serve not set up: {e:#}"),
+            },
+        );
+    }
     announce_live(&live);
 
     while !stop.load(Ordering::Acquire) {

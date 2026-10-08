@@ -494,6 +494,7 @@ mod tests {
             events_port: 0,
             allow_unsafe_bind: false,
             tailscale: crate::config::TailscaleMode::Auto,
+            tailscale_serve: false,
         }
     }
 

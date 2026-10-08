@@ -199,6 +199,12 @@ pub struct ServeArgs {
     #[arg(long, env = "FSONOS_TAILSCALE", value_enum, default_value_t = TailscaleMode::Auto)]
     pub tailscale: TailscaleMode,
 
+    /// Put Tailscale Serve in front of the daemon when it starts, as
+    /// `fsonos tailscale setup` does: HTTPS on 443 (the API) and 8443 (MCP).
+    /// Never Funnel. A refusal or failure is logged; the daemon serves on.
+    #[arg(long, env = "FSONOS_TAILSCALE_SERVE")]
+    pub tailscale_serve: bool,
+
     /// Spotify app client id (PKCE: identifies the app, not a secret).
     #[arg(long, env = "FSONOS_SPOTIFY_CLIENT_ID")]
     pub spotify_client_id: Option<String>,

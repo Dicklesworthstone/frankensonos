@@ -18,6 +18,8 @@
 //!   dj         the classical DJ (not wired to the speakers yet)
 //!   serve      run the long-lived daemon (HTTP API + MCP over HTTP)
 //!   mcp        serve the MCP tools over stdio (for a local agent)
+//!   tailscale  put Tailscale Serve in front of the daemon (setup / status /
+//!              teardown): HTTPS for the tailnet, never Funnel
 //!   sim        run a virtual Sonos house on loopback (feature `sim`)
 
 mod config;
@@ -27,6 +29,7 @@ mod direct;
 mod doctor;
 #[cfg(feature = "sim")]
 mod sim;
+mod tailscale_cmd;
 
 use anyhow::Context as _;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
@@ -140,6 +143,9 @@ enum Command {
     Serve(config::ServeArgs),
     /// Serve the MCP tools over stdio (for a local agent).
     Mcp,
+    /// Front the daemon with Tailscale Serve (HTTPS on the tailnet, never
+    /// Funnel): `setup`, `status`, `teardown`.
+    Tailscale(tailscale_cmd::TailscaleArgs),
     /// Run a virtual Sonos house on loopback to try FrankenSonos without
     /// speakers.
     #[cfg(feature = "sim")]
@@ -204,6 +210,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Serve(args) => daemon::run(global, &args),
         Command::Mcp => run_mcp_stdio(global),
+        Command::Tailscale(args) => tailscale_cmd::run(global, &args),
         #[cfg(feature = "sim")]
         Command::Sim(args) => sim::run(&args),
         Command::Discover => {
@@ -362,6 +369,7 @@ fn plan_for(
         | Command::Log { .. }
         | Command::Undo { .. }
         | Command::Serve(_)
+        | Command::Tailscale(_)
         | Command::Mcp => {
             unreachable!("not a control command")
         }
