@@ -655,6 +655,48 @@ fn gena_avt_playing_s2_carries_learned_params_and_smapi_metadata() {
     assert_eq!(track.album.as_deref(), Some("Album 2"));
 }
 
+// ── mDNS/DNS-SD fixtures (captured live on the owner LAN 2026-10-07) ──
+
+const MDNS_S1: &[u8] = include_bytes!("fixtures/mdns_response_s1.bin");
+const MDNS_S2: &[u8] = include_bytes!("fixtures/mdns_response_s2.bin");
+
+#[test]
+fn mdns_s1_response_parses_minimal_txt_style() {
+    // S1 player answer: 0 questions, PTR + TXT/SRV/A, minimal TXT, no hhid.
+    let msg = fsonos_proto::mdns::parse_message(MDNS_S1).unwrap();
+    assert!(msg.is_response);
+    let ads = fsonos_proto::mdns::sonos_adverts(&msg);
+    assert_eq!(ads.len(), 1);
+    let ad = &ads[0];
+    assert_eq!(ad.instance, "Sonos-000E58A00007");
+    assert_eq!(ad.uuid.as_deref(), Some("RINCON_000E58A0000701400"));
+    assert_eq!(ad.household, None, "S1 carries no household in TXT");
+    assert_eq!(ad.port, Some(1443));
+    assert_eq!(ad.addr, Some(std::net::Ipv4Addr::new(192, 0, 2, 17)));
+}
+
+#[test]
+fn mdns_s2_response_parses_rich_txt_style() {
+    // S2 player answer: echoes the question, PTR + SRV/TXT/A, rich TXT.
+    let msg = fsonos_proto::mdns::parse_message(MDNS_S2).unwrap();
+    assert!(msg.is_response);
+    assert_eq!(msg.questions.len(), 1);
+    let ads = fsonos_proto::mdns::sonos_adverts(&msg);
+    assert_eq!(ads.len(), 1);
+    let ad = &ads[0];
+    assert_eq!(ad.instance, "RINCON_000E58A0000F01400@Kitchen        ");
+    assert_eq!(ad.uuid.as_deref(), Some("RINCON_000E58A0000F01400"));
+    assert_eq!(
+        ad.household.as_deref(),
+        Some("Sonos_AAAAAAAAAAAAAAAAAAAAAAAAAA")
+    );
+    assert_eq!(ad.boot_seq, Some(39));
+    assert_eq!(ad.port, Some(1443));
+    assert_eq!(ad.addr, Some(std::net::Ipv4Addr::new(198, 51, 100, 22)));
+    let loc = ad.location.as_deref().unwrap();
+    assert!(loc.contains("198.51.100.22:1400"), "{loc}");
+}
+
 #[test]
 fn fixtures_are_scrubbed() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");

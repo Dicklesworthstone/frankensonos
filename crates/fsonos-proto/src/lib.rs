@@ -26,6 +26,7 @@ pub mod control;
 pub mod description;
 pub mod didl;
 pub mod gena;
+pub mod mdns;
 pub mod net;
 pub mod soap;
 pub mod ssdp;
