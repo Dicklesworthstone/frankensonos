@@ -5,6 +5,7 @@
 use fsonos_core::inventory::survey;
 use fsonos_proto::mdns;
 use fsonos_proto::{ProtoError, Transport, ssdp};
+use fsonos_types::{Generation, PlayerId};
 use std::cell::RefCell;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -237,12 +238,11 @@ fn mdns_finds_players_when_ssdp_multicast_is_dead() {
         found.households[1].id.as_ref().map(|h| h.0.as_str()),
         Some("Sonos_S2Household")
     );
-    // The S1 player advertised without a household (S1 TXT has no hhid=);
-    // its household still resolves through the topology read.
-    assert_eq!(
-        found.households[0].id.as_ref().map(|h| h.0.as_str()),
-        Some("Sonos_S1Household")
-    );
+    // The S1 player advertised without a household (S1 TXT has no hhid=),
+    // and with SSDP dead there is no USN hint either: the S1 household id
+    // stays unknown until SSDP or a seed names it. Its players, groups and
+    // rooms are all there.
+    assert_eq!(found.households[0].id.as_ref().map(|h| h.0.as_str()), None);
     // Both channels running together dedupe by address: no double reads.
     assert_eq!(
         *lan.topology_reads.borrow(),
