@@ -61,6 +61,9 @@ pub async fn sync_library<S: Store + ?Sized>(
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
     let (taste, read) = read_taste(session, cx, store, now).await;
+    if let Some(playlists) = &taste.playlists {
+        store.save_playlists(playlists)?;
+    }
     items.extend(taste.tracks.iter().cloned());
     if read.incomplete() {
         // An unfinished read keeps what the last one found: every track's

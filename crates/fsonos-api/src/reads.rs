@@ -114,15 +114,17 @@ pub struct RoomDto {
 /// One library search result: `search_library` and `GET /library/search`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct HitDto {
-    /// `track` or `album` (play it with `play` and `source_uri`; an album
-    /// replaces the group's queue) or `favorite` (play it with
-    /// `play_favorite` and `favorite`, in the same household).
+    /// `track`, `album` or `playlist` (play it with `play` and
+    /// `source_uri`; an album or playlist replaces the group's queue) or
+    /// `favorite` (play it with `play_favorite` and `favorite`, in the same
+    /// household).
     pub kind: String,
     pub title: String,
     /// The artists of a track or album, or a favorite's description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtitle: Option<String>,
-    /// `spotify:track:<id>` or `spotify:album:<id>`, for `play`.
+    /// `spotify:track:<id>`, `spotify:album:<id>` or `spotify:playlist:<id>`,
+    /// for `play`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_uri: Option<String>,
     /// `FV:2/<n>`, for `play_favorite`.
@@ -138,6 +140,7 @@ impl From<&Hit> for HitDto {
             HitSource::Library { source_uri } => ("track", Some(source_uri.clone()), None),
             HitSource::Favorite { id } => ("favorite", None, Some(id.clone())),
             HitSource::Album { source_uri } => ("album", Some(source_uri.clone()), None),
+            HitSource::Playlist { source_uri } => ("playlist", Some(source_uri.clone()), None),
         };
         Self {
             kind: kind.to_string(),

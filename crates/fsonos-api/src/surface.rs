@@ -676,9 +676,10 @@ impl Surface {
         })
     }
 
-    /// Search the owner's saved library and, with a zone, its household's
-    /// Sonos favorites (`search_library`, read-only). Without a store there
-    /// is no library, only favorites.
+    /// Search the owner's saved library (tracks, saved albums and their
+    /// playlists) and, with a zone, its household's Sonos favorites
+    /// (`search_library`, read-only). Without a store there is no library,
+    /// only favorites.
     pub fn search_library(
         &self,
         client: &Client,
@@ -687,6 +688,7 @@ impl Surface {
         self.guard(client).authorize("search_library", true)?;
         let (query, limit) = (req.query()?, req.limit()?);
         let library = self.with_store(|s| s.library())?.unwrap_or_default();
+        let playlists = self.with_store(|s| s.playlists())?.unwrap_or_default();
         let household_favorites = match req.zone()? {
             Some(zone) => {
                 let households = self.households()?;
@@ -697,10 +699,12 @@ impl Surface {
             }
             None => Vec::new(),
         };
-        Ok(search::search(&library, &household_favorites, query, limit)
-            .iter()
-            .map(HitDto::from)
-            .collect())
+        Ok(
+            search::search_all(&library, &playlists, &household_favorites, query, limit)
+                .iter()
+                .map(HitDto::from)
+                .collect(),
+        )
     }
 
     /// What played, newest first (`recent_plays`, read-only): in `zone`'s

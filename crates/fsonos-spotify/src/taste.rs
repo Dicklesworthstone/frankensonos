@@ -11,7 +11,8 @@
 //! weakest rung of the DJ's precedence: learned feedback, the owner's
 //! preferences and steering all outrank them (see `crate::prefs`). Followed
 //! and top artists come with their genres, which go to the artist genre cache
-//! (`crate::genres`).
+//! (`crate::genres`). The playlists in the owner's list (their own and the
+//! ones they follow) are kept by name, so a search can play one.
 //!
 //! A grant without the taste scopes reads none of this and fails nothing:
 //! the DJ's taste is the library alone, and [`TasteRead::missing_scopes`]
@@ -83,6 +84,10 @@ impl TasteRead {
 #[derive(Debug, Clone, Default)]
 pub struct Taste {
     pub tracks: Vec<LibraryItem>,
+    /// The playlists in the owner's list (`spotify:playlist:<id>`, name), in
+    /// its order, when the whole list was read; `None` when it wasn't (no
+    /// grant, or a failed read), so the cached ones stay.
+    pub playlists: Option<Vec<(String, String)>>,
     track_pm: HashMap<String, u32>,
     artist_pm: HashMap<String, u32>,
 }
@@ -197,7 +202,9 @@ pub async fn read_taste<S: Store + ?Sized>(
         }
     }
     if playlists {
-        for item in reader.playlist_tracks().await {
+        let (tracks, listed) = reader.playlist_tracks().await;
+        taste.playlists = listed;
+        for item in tracks {
             taste.track(item, PLAYLIST_PM);
         }
     }
@@ -297,16 +304,25 @@ impl Reader<'_> {
     }
 
     /// The tracks of the owner's own and collaborative playlists (others'
-    /// playlists' items aren't readable since February 2026).
-    async fn playlist_tracks(&mut self) -> Vec<LibraryItem> {
+    /// playlists' items aren't readable since February 2026), and every
+    /// playlist in their list when the whole list was read.
+    async fn playlist_tracks(&mut self) -> (Vec<LibraryItem>, Option<Vec<(String, String)>>) {
         let Some(me) = self
             .get::<Me>(&self.session.endpoints().me(), "the user")
             .await
         else {
-            return Vec::new();
+            return (Vec::new(), None);
         };
         let url = self.session.endpoints().my_playlists(0);
+        let failed = self.read.failed.len();
         let lists: Vec<SimplifiedPlaylist> = self.page(&url, "playlists", MAX_PAGES).await;
+        let listed = (self.read.failed.len() == failed && self.read.halted.is_none()).then(|| {
+            lists
+                .iter()
+                .filter(|l| !l.id.is_empty())
+                .map(|l| (format!("spotify:playlist:{}", l.id), l.name.clone()))
+                .collect()
+        });
         let mut tracks = Vec::new();
         for list in lists
             .iter()
@@ -324,7 +340,7 @@ impl Reader<'_> {
                 }
             }
         }
-        tracks
+        (tracks, listed)
     }
 }
 
@@ -426,6 +442,20 @@ mod tests {
             "{gets:?}"
         );
         assert!(taste.tracks.iter().all(|t| t.origin == Origin::Taste));
+        // Every playlist in their list is kept by name, a friend's too.
+        assert_eq!(
+            taste.playlists,
+            Some(vec![
+                (
+                    "spotify:playlist:FakePlaylist000000001".into(),
+                    "Mine".into()
+                ),
+                (
+                    "spotify:playlist:FakePlaylist000000002".into(),
+                    "A Friend's".into()
+                ),
+            ])
+        );
         // Followed and top artists' genres go to the artist genre cache.
         assert_eq!(
             store.artist_genres("FakeArtist000000000007").unwrap(),
@@ -480,6 +510,7 @@ mod tests {
             "a warning, not a failure"
         );
         assert!(taste.tracks.is_empty() && !read.incomplete());
+        assert_eq!(taste.playlists, None, "no playlists read");
         assert!(taste_gets(&fake).is_empty(), "nothing was asked for");
         assert_eq!(
             CachedToken {
@@ -499,7 +530,7 @@ mod tests {
         let (spotify, cache, dir) = signed_in("taste-sync", &requested_scope());
         let endpoints = spotify.endpoints();
         let state = Arc::clone(&spotify.state);
-        let (first, second, pool, rows) = runtime().block_on(async move {
+        let (first, second, pool, rows, playlists) = runtime().block_on(async move {
             let cx = Cx::current().expect("ambient Cx");
             let http = Client::default_for_runtime(&cx);
             let mut session = Session::open(config(), cache, http)
@@ -515,10 +546,25 @@ mod tests {
                 second,
                 pool_from_store(&store).unwrap(),
                 store.library().unwrap(),
+                store.playlists().unwrap(),
             )
         });
         spotify.stop();
 
+        // The first sync's playlists stay through the failed second read.
+        assert_eq!(
+            playlists,
+            [
+                (
+                    "spotify:playlist:FakePlaylist000000001".to_owned(),
+                    "Mine".to_owned()
+                ),
+                (
+                    "spotify:playlist:FakePlaylist000000002".to_owned(),
+                    "A Friend's".to_owned()
+                ),
+            ]
+        );
         // The library's 6 tracks, plus the top track, a recent play and a
         // playlist track (the recently played aria is already saved).
         assert_eq!((first.tracks, first.candidates, first.retired), (9, 9, 0));

@@ -1,7 +1,7 @@
 //! Library search ranking over a small synthetic library and favorites.
 
 use fsonos_core::favorites::{Favorite, FavoriteKind};
-use fsonos_core::search::{HitSource, search};
+use fsonos_core::search::{HitSource, search, search_all};
 use fsonos_core::store::{LibraryEntry, LibraryOrigin};
 use fsonos_types::Track;
 
@@ -88,7 +88,7 @@ fn top(query: &str) -> Vec<String> {
                 source_uri.trim_start_matches("spotify:track:").to_string()
             }
             HitSource::Favorite { id } => id,
-            HitSource::Album { source_uri } => source_uri,
+            HitSource::Album { source_uri } | HitSource::Playlist { source_uri } => source_uri,
         })
         .collect()
 }
@@ -205,4 +205,42 @@ fn a_saved_album_is_a_result_of_its_own() {
             .iter()
             .all(|h| !matches!(h.source, HitSource::Album { .. }))
     );
+}
+
+#[test]
+fn a_playlist_is_found_by_its_name() {
+    let playlists = [
+        (
+            "spotify:playlist:sunday".to_owned(),
+            "Sunday Morning".to_owned(),
+        ),
+        (
+            "spotify:playlist:goldberg".to_owned(),
+            "Goldberg Variations".to_owned(),
+        ),
+    ];
+    let hits = search_all(&library(), &playlists, &[], "sunday morning", 5);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(
+        hits[0].source,
+        HitSource::Playlist {
+            source_uri: "spotify:playlist:sunday".into()
+        }
+    );
+    assert_eq!(
+        (hits[0].title.as_str(), hits[0].subtitle.as_deref()),
+        ("Sunday Morning", None)
+    );
+    // Named like library tracks, a playlist comes after them in a tie.
+    let hits = search_all(&library(), &playlists, &[], "goldberg", 5);
+    assert!(
+        matches!(
+            hits.last().map(|h| &h.source),
+            Some(HitSource::Playlist { .. })
+        ),
+        "{hits:?}"
+    );
+    assert!(hits.len() > 1);
+    // Without playlists, search is as before.
+    assert!(search(&library(), &[], "sunday morning", 5).is_empty());
 }

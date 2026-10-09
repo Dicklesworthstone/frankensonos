@@ -1,6 +1,7 @@
-//! Library search: rank the owner's cached Spotify library (its tracks and
-//! saved albums) and the Sonos favorites against what a person or agent
-//! typed ("goldberg gould", "bwv 988", "dvorak 9", "abbey road").
+//! Library search: rank the owner's cached Spotify library (its tracks,
+//! saved albums and playlists) and the Sonos favorites against what a person
+//! or agent typed ("goldberg gould", "bwv 988", "dvorak 9", "abbey road",
+//! "sunday morning").
 //!
 //! Every query word must match somewhere in a result (title, artists, album,
 //! or a favorite's description). A word matches a field word exactly, as a
@@ -10,8 +11,9 @@
 //! that appears in the title is a strong boost. Case, accents and punctuation
 //! are ignored. A saved album is a result of its own (its title, then its
 //! artists), after the tracks and favorites it ties with, so a query naming
-//! an album rather than a track plays the album. Pure: the caller supplies
-//! the library and favorites.
+//! an album rather than a track plays the album; so is each playlist in the
+//! owner's list (by its name), after everything else it ties with. Pure:
+//! the caller supplies the library, playlists and favorites.
 
 use crate::favorites::Favorite;
 use crate::store::{LibraryEntry, LibraryOrigin};
@@ -27,6 +29,8 @@ pub enum HitSource {
     Favorite { id: String },
     /// An album the owner saved: its `spotify:album:<id>` URI.
     Album { source_uri: String },
+    /// A playlist in the owner's list: its `spotify:playlist:<id>` URI.
+    Playlist { source_uri: String },
 }
 
 /// One ranked result.
@@ -57,6 +61,19 @@ struct Doc<'a> {
 #[must_use]
 pub fn search(
     library: &[LibraryEntry],
+    favorites: &[Favorite],
+    query: &str,
+    limit: usize,
+) -> Vec<Hit> {
+    search_all(library, &[], favorites, query, limit)
+}
+
+/// [`search`] over the owner's playlists too (`spotify:playlist:<id>`,
+/// name), which come last in a tie.
+#[must_use]
+pub fn search_all(
+    library: &[LibraryEntry],
+    playlists: &[(String, String)],
     favorites: &[Favorite],
     query: &str,
     limit: usize,
@@ -107,7 +124,15 @@ pub fn search(
                 (normalize(f.description.as_deref().unwrap_or("")), 2),
             ],
         }))
-        .chain(albums);
+        .chain(albums)
+        .chain(playlists.iter().map(|(uri, name)| Doc {
+            source: HitSource::Playlist {
+                source_uri: uri.clone(),
+            },
+            title: name,
+            subtitle: None,
+            fields: vec![(normalize(name), 4)],
+        }));
     let mut hits: Vec<Hit> = docs
         .filter_map(|doc| {
             let mut score = 0;

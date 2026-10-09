@@ -441,6 +441,14 @@ pub trait Store {
     /// Those albums and when each may be read again, by album URI.
     fn album_misses(&self) -> Result<Vec<(String, i64)>, StoreError>;
 
+    /// Replace the playlists in the owner's Spotify list
+    /// (`spotify:playlist:<id>`, name), in its order. A repeated playlist
+    /// keeps its first place.
+    fn save_playlists(&mut self, playlists: &[(String, String)]) -> Result<(), StoreError>;
+
+    /// Those playlists, in the list's order.
+    fn playlists(&self) -> Result<Vec<(String, String)>, StoreError>;
+
     /// Log `action`; returns its id.
     fn record_action(&mut self, action: &Action) -> Result<i64, StoreError>;
 
@@ -514,6 +522,7 @@ pub struct MemStore {
     album_tracks: BTreeMap<String, (TracksByPosition, i64)>,
     artist_genres: BTreeMap<String, (Vec<String>, i64)>,
     album_misses: BTreeMap<String, i64>,
+    playlists: Vec<(String, String)>,
     actions: Vec<LoggedAction>,
     scenes: BTreeMap<String, StoredScene>,
     schedules: BTreeMap<i64, StoredSchedule>,
@@ -749,6 +758,20 @@ impl Store for MemStore {
             .iter()
             .map(|(uri, &at)| (uri.clone(), at))
             .collect())
+    }
+
+    fn save_playlists(&mut self, playlists: &[(String, String)]) -> Result<(), StoreError> {
+        self.playlists.clear();
+        for (uri, name) in playlists {
+            if !self.playlists.iter().any(|(u, _)| u == uri) {
+                self.playlists.push((uri.clone(), name.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    fn playlists(&self) -> Result<Vec<(String, String)>, StoreError> {
+        Ok(self.playlists.clone())
     }
 
     fn record_action(&mut self, action: &Action) -> Result<i64, StoreError> {

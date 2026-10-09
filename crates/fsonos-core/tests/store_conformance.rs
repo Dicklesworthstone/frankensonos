@@ -689,6 +689,34 @@ fn album_misses(s: &mut dyn Store) {
     assert!(s.album_misses().unwrap().is_empty());
 }
 
+fn playlists(s: &mut dyn Store) {
+    assert!(s.playlists().unwrap().is_empty());
+    let list = |uri: &str, name: &str| (uri.to_owned(), name.to_owned());
+    s.save_playlists(&[
+        list("spotify:playlist:sunday", "Sunday Morning"),
+        list("spotify:playlist:focus", "Focus"),
+        list("spotify:playlist:sunday", "Sunday (again)"),
+    ])
+    .unwrap();
+    assert_eq!(
+        s.playlists().unwrap(),
+        [
+            list("spotify:playlist:sunday", "Sunday Morning"),
+            list("spotify:playlist:focus", "Focus")
+        ],
+        "in the list's order, a repeat keeping its first place"
+    );
+    // A save replaces the lot.
+    s.save_playlists(&[list("spotify:playlist:dinner", "Dinner")])
+        .unwrap();
+    assert_eq!(
+        s.playlists().unwrap(),
+        [list("spotify:playlist:dinner", "Dinner")]
+    );
+    s.save_playlists(&[]).unwrap();
+    assert!(s.playlists().unwrap().is_empty());
+}
+
 fn suite(s: &mut dyn Store) {
     play_history(s);
     inventory_cache(s);
@@ -699,6 +727,7 @@ fn suite(s: &mut dyn Store) {
     album_tracks(s);
     artist_genres(s);
     album_misses(s);
+    playlists(s);
     action_log(s);
     scenes(s);
     schedules(s);
@@ -713,7 +742,10 @@ fn mem_store_conforms() {
 fn sqlite_in_memory_conforms() {
     let mut s = SqliteStore::open_in_memory().unwrap();
     suite(&mut s);
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert_eq!(
+        s.schema_versions().unwrap(),
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    );
     s.close().unwrap();
 }
 
@@ -728,7 +760,10 @@ fn sqlite_file_survives_close_and_reopen() {
 
     // Reopening re-runs no migrations and sees every committed write.
     let s = SqliteStore::open(&path).unwrap();
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert_eq!(
+        s.schema_versions().unwrap(),
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    );
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
     assert_eq!(s.cached_groups("HH_S2").unwrap().len(), 1);
