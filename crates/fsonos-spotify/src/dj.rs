@@ -258,6 +258,9 @@ pub enum Factor {
     Feedback,
     /// The owner's preferences favor (2000) or pin (3000) it.
     Preference,
+    /// The owner's other Spotify signals favor it: top tracks, their own
+    /// playlists, recent plays, followed and top artists.
+    Taste,
     /// 1/√(the artist's songs in the pool): [`Self::ComposerBalance`] for a
     /// song's lead artist.
     ArtistBalance,
@@ -802,6 +805,7 @@ fn weigh(
     if work.is_liked() {
         apply(Factor::Liked, config.liked_boost_pm);
     }
+    apply(Factor::Taste, u64::from(work.taste_pm()));
     if work.completeness != Completeness::Complete {
         apply(Factor::Incomplete, config.incomplete_pm);
     }
@@ -1010,6 +1014,7 @@ fn summarize(
     }
     for (factor, note) in [
         (Factor::Liked, "from your liked tracks"),
+        (Factor::Taste, "in your Spotify listening"),
         (
             Factor::Incomplete,
             "only some movements are in your library",

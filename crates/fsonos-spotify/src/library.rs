@@ -25,13 +25,21 @@ pub enum Origin {
     LikedTrack,
     /// Both liked and on a saved album.
     Both,
+    /// Not saved: known from the owner's other taste signals (their own
+    /// playlists, top tracks, recent plays).
+    Taste,
 }
 
 impl Origin {
-    /// Combine the origins of two sightings of the same track.
+    /// Combine the origins of two sightings of the same track. A saved
+    /// sighting outranks a taste-only one.
     #[must_use]
     pub fn merge(self, other: Self) -> Self {
-        if self == other { self } else { Self::Both }
+        match (self, other) {
+            (a, b) if a == b => a,
+            (Self::Taste, saved) | (saved, Self::Taste) => saved,
+            _ => Self::Both,
+        }
     }
 
     /// The owner explicitly liked this track (the DJ favors these slightly).
@@ -71,6 +79,11 @@ pub struct LibraryItem {
     /// The album's release year, when the read gave a release date.
     #[serde(default)]
     pub release_year: Option<u16>,
+    /// How strongly the owner's other taste signals favor it (top tracks,
+    /// their playlists, recent plays, followed and top artists), per mille;
+    /// `None` is neutral. See `crate::taste`.
+    #[serde(default)]
+    pub taste_pm: Option<u32>,
     /// Record label when available (Spotify dropped it for new apps in 2026).
     pub label: Option<String>,
     pub duration_secs: Option<u32>,
@@ -100,6 +113,7 @@ impl LibraryItem {
             added_at: None,
             genres: Vec::new(),
             release_year: None,
+            taste_pm: None,
             label: None,
             duration_secs: track.duration_secs,
             explicit: false,
@@ -160,6 +174,10 @@ impl LibraryItem {
         if self.artist_id.is_none() {
             self.artist_id.clone_from(&other.artist_id);
         }
+        self.taste_pm = match (self.taste_pm, other.taste_pm) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
         if self.label.is_none() {
             self.label.clone_from(&other.label);
         }
@@ -369,6 +387,7 @@ mod tests {
             added_at: None,
             genres: Vec::new(),
             release_year: None,
+            taste_pm: None,
             label: None,
             duration_secs: Some(150),
             explicit: false,
@@ -386,6 +405,11 @@ mod tests {
         assert_eq!(Origin::Both.merge(Origin::LikedTrack), Origin::Both);
         assert!(Origin::Both.is_liked() && Origin::LikedTrack.is_liked());
         assert!(!Origin::SavedAlbum.is_liked());
+        // A saved sighting outranks a taste-only one.
+        assert_eq!(Origin::Taste.merge(Origin::SavedAlbum), Origin::SavedAlbum);
+        assert_eq!(Origin::LikedTrack.merge(Origin::Taste), Origin::LikedTrack);
+        assert_eq!(Origin::Taste.merge(Origin::Taste), Origin::Taste);
+        assert!(!Origin::Taste.is_liked());
     }
 
     #[test]

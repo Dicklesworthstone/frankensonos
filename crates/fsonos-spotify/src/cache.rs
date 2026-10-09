@@ -14,7 +14,7 @@
 //! tags, release year and explicit flag, so the DJ's genre and decade
 //! steering and the explicit preference work from it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use asupersync::Cx;
@@ -25,6 +25,7 @@ use crate::classical::{CandidatePool, ClassicalTrack};
 use crate::genres::tag_genres;
 use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, split_artists};
 use crate::session::Session;
+use crate::taste::read_taste;
 
 /// What one sync did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -40,10 +41,11 @@ pub struct LibrarySync {
     pub retired: usize,
 }
 
-/// Read the owner's whole library from Spotify, tag it with its artists'
-/// genres ([`tag_genres`]: best effort, a halted read resumes next sync),
-/// and write it to the store. Nothing is written unless the library read
-/// completes.
+/// Read the owner's whole library from Spotify, add and weigh what their
+/// other taste signals name ([`read_taste`], as far as the grant allows),
+/// tag it all with its artists' genres ([`tag_genres`]), and write it to the
+/// store. The taste and genre reads are best effort (a halted read resumes
+/// next sync); nothing is written unless the library read completes.
 pub async fn sync_library<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
@@ -53,6 +55,29 @@ pub async fn sync_library<S: Store + ?Sized>(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let (taste, read) = read_taste(session, cx, store, now).await;
+    items.extend(taste.tracks.iter().cloned());
+    if read.incomplete() {
+        // An unfinished read keeps what the last one found: every track's
+        // weight, and the taste-only tracks (not retired for being missed).
+        let cached = store.library()?;
+        let weights: HashMap<&str, u32> = cached
+            .iter()
+            .filter_map(|e| Some((e.track.source_uri.as_str(), e.taste_weight?)))
+            .collect();
+        for item in &mut items {
+            if item.taste_pm.is_none() {
+                item.taste_pm = weights.get(item.source_uri.as_str()).copied();
+            }
+        }
+        items.extend(
+            cached
+                .iter()
+                .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
+                .map(from_entry),
+        );
+    }
+    taste.weigh(&mut items);
     tag_genres(session, cx, store, &mut items, now).await;
     apply_library_read(store, &items)
 }
@@ -119,6 +144,7 @@ pub fn to_entry(item: &LibraryItem, candidate: Option<&ClassicalTrack>) -> Libra
             Origin::SavedAlbum => LibraryOrigin::SavedAlbum,
             Origin::LikedTrack => LibraryOrigin::LikedTrack,
             Origin::Both => LibraryOrigin::Both,
+            Origin::Taste => LibraryOrigin::Taste,
         },
         disc_number: item.disc_number,
         track_number: item.track_number,
@@ -127,8 +153,7 @@ pub fn to_entry(item: &LibraryItem, candidate: Option<&ClassicalTrack>) -> Libra
         release_year: item.release_year,
         explicit: item.explicit,
         candidate: Some(candidate.is_some()),
-        // Filled when taste sources beyond the library itself are read.
-        taste_weight: None,
+        taste_weight: item.taste_pm,
     }
 }
 
@@ -139,6 +164,7 @@ pub fn from_entry(entry: &LibraryEntry) -> LibraryItem {
         LibraryOrigin::SavedAlbum => Origin::SavedAlbum,
         LibraryOrigin::LikedTrack => Origin::LikedTrack,
         LibraryOrigin::Both => Origin::Both,
+        LibraryOrigin::Taste => Origin::Taste,
     };
     let mut item = LibraryItem::from_track(&entry.track, origin);
     item.album_uri.clone_from(&entry.album_uri);
@@ -153,6 +179,7 @@ pub fn from_entry(entry: &LibraryEntry) -> LibraryItem {
     item.genres.clone_from(&entry.genres);
     item.release_year = entry.release_year;
     item.explicit = entry.explicit;
+    item.taste_pm = entry.taste_weight;
     item
 }
 

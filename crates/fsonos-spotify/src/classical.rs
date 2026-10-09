@@ -858,6 +858,9 @@ pub struct ClassicalTrack {
     pub explicit: bool,
     /// The album's release year, when known.
     pub year: Option<u16>,
+    /// How strongly the owner's other taste signals favor it, per mille
+    /// (1000 neutral; see `crate::taste`).
+    pub taste_pm: u32,
     /// Display name of the work (title minus movement; a song's title minus
     /// version notes).
     pub work: String,
@@ -909,6 +912,7 @@ pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
         genres: item.genres.clone(),
         explicit: item.explicit,
         year: item.release_year,
+        taste_pm: item.taste_pm.unwrap_or(NEUTRAL_TASTE_PM),
         album_key: item.album_key().unwrap_or_default(),
         album_uri: item.album_uri.clone(),
         disc_number: item.disc_number,
@@ -947,6 +951,7 @@ pub fn analyze_song(item: &LibraryItem) -> ClassicalTrack {
         genres: item.genres.clone(),
         explicit: item.explicit,
         year: item.release_year,
+        taste_pm: item.taste_pm.unwrap_or(NEUTRAL_TASTE_PM),
         album_key: item.album_key().unwrap_or_default(),
         album_uri: item.album_uri.clone(),
         disc_number: item.disc_number,
@@ -960,6 +965,8 @@ pub fn analyze_song(item: &LibraryItem) -> ClassicalTrack {
 
 /// The energy of a track whose metadata says nothing about it.
 const NEUTRAL_ENERGY: u8 = 50;
+/// The taste weight of a track no other signal mentions.
+const NEUTRAL_TASTE_PM: u32 = 1000;
 
 /// Genre words with a typical energy on the 0–100 scale, most specific
 /// phrases first (a tag takes its first match: "indie folk" is folk). With
@@ -1214,6 +1221,7 @@ mod tests {
             added_at: None,
             genres: Vec::new(),
             release_year: None,
+            taste_pm: None,
             label: None,
             duration_secs: Some(300),
             explicit: false,

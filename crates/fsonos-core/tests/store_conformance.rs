@@ -228,6 +228,15 @@ fn library_cache(s: &mut dyn Store) {
     expected.track.uri = None;
     assert_eq!(s.library().unwrap().last(), Some(&expected));
     assert_eq!(s.library().unwrap().len(), 4);
+    // A track known only from the owner's other taste signals.
+    let mut heard = entry("spotify:track:heard", 50, Some("Nina Marsh Quartet"), false);
+    heard.origin = LibraryOrigin::Taste;
+    heard.candidate = Some(true);
+    heard.taste_weight = Some(1100);
+    s.upsert_library(std::slice::from_ref(&heard)).unwrap();
+    heard.track.uri = None;
+    assert_eq!(s.library().unwrap().last(), Some(&heard));
+    s.upsert_library(&[]).unwrap();
 }
 
 fn render_params_and_auth(s: &mut dyn Store) {
@@ -694,7 +703,7 @@ fn sqlite_file_survives_close_and_reopen() {
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
     assert_eq!(s.cached_groups("HH_S2").unwrap().len(), 1);
-    assert_eq!(s.library().unwrap().len(), 4);
+    assert_eq!(s.library().unwrap().len(), 5);
     assert_eq!(
         s.render_params("HH_S1").unwrap(),
         Some((params(8300), 2_000))
@@ -720,10 +729,12 @@ fn sqlite_file_survives_close_and_reopen() {
             .fetched_at,
         1_001
     );
-    assert_eq!(
-        s.library().unwrap().last().unwrap().work_key.as_deref(),
-        Some("mahler|symphony no 5")
-    );
+    let library = s.library().unwrap();
+    let movement = library
+        .iter()
+        .find(|e| e.track.source_uri == "spotify:track:m2")
+        .unwrap();
+    assert_eq!(movement.work_key.as_deref(), Some("mahler|symphony no 5"));
     assert_eq!(recent(&s, None, None, 0).len(), 3);
     assert!(s.last_undoable_action(None).unwrap().is_some());
 

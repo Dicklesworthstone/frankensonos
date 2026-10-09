@@ -1,7 +1,10 @@
 //! Spotify Web API client (read-only, user's own library).
 //!
-//! Scope needed: `user-library-read` (saved albums + liked tracks) — nothing
-//! else is ever requested. Auth is Authorization Code with PKCE (RFC 7636):
+//! Scopes: `user-library-read` (saved albums + liked tracks) is required;
+//! the read-only taste scopes ([`TASTE_SCOPES`]: followed artists, the
+//! owner's own playlists, top artists and tracks, recently played) are
+//! requested too, and a grant without them still works, library-only.
+//! Nothing else is ever requested, and nothing is ever written. Auth is Authorization Code with PKCE (RFC 7636):
 //! there is no client secret, and the refresh token is cached only in the
 //! local, git-ignored auth cache. This file is the pure half of the client —
 //! endpoint URLs, token request bodies, the PKCE pair, callback parsing, token
@@ -23,8 +26,37 @@ use crate::library::{LibraryItem, Origin};
 pub const AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 pub const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 pub const API_BASE: &str = "https://api.spotify.com/v1";
-/// The one scope this client ever requests.
+/// The scope the library needs (saved albums and liked tracks); a grant
+/// without it fails.
 pub const SCOPE: &str = "user-library-read";
+/// The read-only scopes of the owner's other taste signals: followed
+/// artists, their own playlists, top artists and tracks, and recently played
+/// tracks. A grant without them still works, library-only (the doctor
+/// warns).
+pub const TASTE_SCOPES: [&str; 4] = [
+    "user-follow-read",
+    "playlist-read-private",
+    "user-top-read",
+    "user-read-recently-played",
+];
+
+/// Every scope sign-in asks for, space-separated.
+#[must_use]
+pub fn requested_scope() -> String {
+    std::iter::once(SCOPE)
+        .chain(TASTE_SCOPES)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The taste scopes a grant (a token's space-separated `scope`) lacks.
+#[must_use]
+pub fn missing_taste_scopes(granted: &str) -> Vec<&'static str> {
+    TASTE_SCOPES
+        .into_iter()
+        .filter(|s| !granted.split_whitespace().any(|g| g == *s))
+        .collect()
+}
 /// Maximum page size of the library endpoints.
 pub const PAGE_LIMIT: u32 = 50;
 /// Content type of the token endpoint request bodies.
@@ -137,16 +169,18 @@ impl SpotifyConfig {
         Ok(())
     }
 
-    /// The URL to open in the owner's browser to grant `user-library-read`.
+    /// The URL to open in the owner's browser to grant the library scope and
+    /// the taste scopes (all read-only).
     #[must_use]
     pub fn authorize_url(&self, pkce: &Pkce, state: &str) -> String {
+        let scope = requested_scope();
         let query = form_encode(&[
             ("client_id", &self.client_id),
             ("response_type", "code"),
             ("redirect_uri", &self.redirect_uri),
             ("code_challenge_method", "S256"),
             ("code_challenge", &pkce.challenge),
-            ("scope", SCOPE),
+            ("scope", &scope),
             ("state", state),
         ]);
         format!("{AUTHORIZE_URL}?{query}")
@@ -292,6 +326,13 @@ impl CachedToken {
                 resp.scope
             },
         })
+    }
+
+    /// The taste scopes this grant lacks ([`TASTE_SCOPES`]): the doctor warns
+    /// that the DJ's taste is library-only until a new sign-in grants them.
+    #[must_use]
+    pub fn missing_taste_scopes(&self) -> Vec<&'static str> {
+        missing_taste_scopes(&self.scope)
     }
 
     /// Whether the access token stays valid for `margin_secs` more seconds.
@@ -505,6 +546,53 @@ impl Endpoints {
         format!("{}/artists/{}", self.api, percent_encode(artist_id))
     }
 
+    /// The artists the owner follows (cursor paging: `next` carries on).
+    #[must_use]
+    pub fn followed_artists(&self) -> String {
+        format!("{}/me/following?type=artist&limit={PAGE_LIMIT}", self.api)
+    }
+
+    /// The owner's top `kind` (`artists` or `tracks`) over about six months.
+    #[must_use]
+    pub fn top(&self, kind: &str) -> String {
+        format!(
+            "{}/me/top/{kind}?limit={PAGE_LIMIT}&time_range=medium_term",
+            self.api
+        )
+    }
+
+    /// The owner's last 50 played tracks.
+    #[must_use]
+    pub fn recently_played(&self) -> String {
+        format!("{}/me/player/recently-played?limit={PAGE_LIMIT}", self.api)
+    }
+
+    /// The signed-in user (their id tells their own playlists apart).
+    #[must_use]
+    pub fn me(&self) -> String {
+        format!("{}/me", self.api)
+    }
+
+    /// A page of the owner's playlists.
+    #[must_use]
+    pub fn my_playlists(&self, offset: u32) -> String {
+        format!(
+            "{}/me/playlists?limit={PAGE_LIMIT}&offset={offset}",
+            self.api
+        )
+    }
+
+    /// A page of one playlist's items (`/items` replaced `/tracks` in
+    /// February 2026; only the owner's own or collaborative playlists).
+    #[must_use]
+    pub fn playlist_items(&self, playlist_id: &str, offset: u32) -> String {
+        format!(
+            "{}/playlists/{}/items?limit={PAGE_LIMIT}&offset={offset}&market=from_token",
+            self.api,
+            percent_encode(playlist_id)
+        )
+    }
+
     /// A page of one album's tracks, for albums longer than their embedded
     /// page.
     #[must_use]
@@ -562,6 +650,97 @@ pub struct Artist {
 impl Artist {
     pub fn parse(body: &[u8]) -> Result<Self, SpotifyError> {
         serde_json::from_slice(body).map_err(|e| SpotifyError::Decode(format!("artist: {e}")))
+    }
+}
+
+/// Decode a Web API response body.
+pub fn decode<T: serde::de::DeserializeOwned>(body: &[u8], what: &str) -> Result<T, SpotifyError> {
+    serde_json::from_slice(body).map_err(|e| SpotifyError::Decode(format!("{what}: {e}")))
+}
+
+/// A cursor-paged list (followed artists, recently played).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CursorPage<T> {
+    #[serde(default = "Vec::new")]
+    pub items: Vec<T>,
+    #[serde(default)]
+    pub next: Option<String>,
+}
+
+/// `GET /me/following?type=artist`: the page sits under `artists`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FollowedArtists {
+    pub artists: CursorPage<Artist>,
+}
+
+/// `GET /me/player/recently-played` item.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlayHistory {
+    #[serde(default)]
+    pub track: Option<FullTrack>,
+    #[serde(default)]
+    pub played_at: Option<String>,
+}
+
+/// `GET /me`: the fields read.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Me {
+    pub id: String,
+}
+
+/// `GET /me/playlists` item.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SimplifiedPlaylist {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub owner: Option<PlaylistOwner>,
+    #[serde(default)]
+    pub collaborative: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlaylistOwner {
+    #[serde(default)]
+    pub id: String,
+}
+
+impl SimplifiedPlaylist {
+    /// Whether `user` may read its items: theirs, or collaborative.
+    #[must_use]
+    pub fn readable_by(&self, user: &str) -> bool {
+        self.collaborative || self.owner.as_ref().is_some_and(|o| o.id == user)
+    }
+}
+
+/// `GET /playlists/{id}/items` entry: the track is `item` (`track` is its
+/// deprecated name); episodes are skipped.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlaylistItem {
+    #[serde(default)]
+    pub added_at: Option<String>,
+    #[serde(default)]
+    pub item: Option<serde_json::Value>,
+    #[serde(default)]
+    pub track: Option<serde_json::Value>,
+}
+
+impl PlaylistItem {
+    /// The entry's track as a library item of `origin`; `None` for an
+    /// episode, a local file or an unrenderable track.
+    #[must_use]
+    pub fn library_item(&self, origin: Origin) -> Option<LibraryItem> {
+        let value = self.item.as_ref().or(self.track.as_ref())?;
+        if value
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| kind != "track")
+        {
+            return None;
+        }
+        let track: FullTrack = serde_json::from_value(value.clone()).ok()?;
+        track.library_item(origin, unix_seconds(self.added_at.as_deref()))
     }
 }
 
@@ -727,6 +906,7 @@ impl Album {
             added_at: None,
             genres: self.genres.clone(),
             release_year: release_year(self.release_date.as_deref()),
+            taste_pm: None,
             label: self.label.clone(),
             duration_secs: secs(track.duration_ms),
             explicit: track.explicit,
@@ -739,27 +919,38 @@ impl SavedTrack {
     /// The liked track as a library item; `None` if absent or unrenderable.
     #[must_use]
     pub fn library_item(&self) -> Option<LibraryItem> {
-        let track = self.track.as_ref()?;
-        if !renderable(&track.uri, track.is_local, track.is_playable) {
+        self.track
+            .as_ref()?
+            .library_item(Origin::LikedTrack, unix_seconds(self.added_at.as_deref()))
+    }
+}
+
+impl FullTrack {
+    /// This track as a library item of `origin`; `None` if Sonos can't
+    /// render it (a local file, or unplayable in the owner's market).
+    #[must_use]
+    pub fn library_item(&self, origin: Origin, added_at: Option<i64>) -> Option<LibraryItem> {
+        if !renderable(&self.uri, self.is_local, self.is_playable) {
             return None;
         }
         Some(LibraryItem {
-            source_uri: track.uri.clone(),
-            title: track.name.clone(),
-            artists: names(&track.artists),
-            artist_id: lead_id(&track.artists),
-            album: Some(track.album.name.clone()),
-            album_uri: track.album.uri.clone(),
-            album_artists: names(&track.album.artists),
-            disc_number: position(track.disc_number),
-            track_number: position(track.track_number),
-            added_at: unix_seconds(self.added_at.as_deref()),
+            source_uri: self.uri.clone(),
+            title: self.name.clone(),
+            artists: names(&self.artists),
+            artist_id: lead_id(&self.artists),
+            album: Some(self.album.name.clone()),
+            album_uri: self.album.uri.clone(),
+            album_artists: names(&self.album.artists),
+            disc_number: position(self.disc_number),
+            track_number: position(self.track_number),
+            added_at,
             genres: Vec::new(),
-            release_year: release_year(track.album.release_date.as_deref()),
+            release_year: release_year(self.album.release_date.as_deref()),
             label: None,
-            duration_secs: secs(track.duration_ms),
-            explicit: track.explicit,
-            origin: Origin::LikedTrack,
+            duration_secs: secs(self.duration_ms),
+            explicit: self.explicit,
+            origin,
+            ..LibraryItem::default()
         })
     }
 }
@@ -1162,7 +1353,8 @@ mod tests {
              &redirect_uri=http%3A%2F%2F127.0.0.1%3A8099%2Fauth%2Fspotify%2Fcallback\
              &code_challenge_method=S256\
              &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\
-             &scope=user-library-read&state=st%2Fate"
+             &scope=user-library-read%20user-follow-read%20playlist-read-private\
+             %20user-top-read%20user-read-recently-played&state=st%2Fate"
         );
         assert_eq!(
             config().code_exchange_body("AQ+code", &pkce),
@@ -1430,6 +1622,33 @@ mod tests {
             Some(2019),
             "2019-05-10"
         );
+    }
+
+    #[test]
+    fn sign_in_asks_for_the_library_and_taste_scopes() {
+        assert_eq!(
+            requested_scope(),
+            "user-library-read user-follow-read playlist-read-private user-top-read \
+             user-read-recently-played"
+        );
+        assert_eq!(missing_taste_scopes(SCOPE), TASTE_SCOPES);
+        assert!(missing_taste_scopes(&requested_scope()).is_empty());
+        assert_eq!(
+            missing_taste_scopes("user-library-read user-top-read"),
+            [
+                "user-follow-read",
+                "playlist-read-private",
+                "user-read-recently-played"
+            ]
+        );
+        // A library-only grant still signs in.
+        let library_only = TokenResponse::parse(
+            br#"{"access_token":"a","token_type":"Bearer","scope":"user-library-read",
+                "expires_in":3600,"refresh_token":"r"}"#,
+        )
+        .unwrap();
+        let token = CachedToken::from_exchange(library_only, 0).unwrap();
+        assert_eq!(token.missing_taste_scopes(), TASTE_SCOPES);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Spotify Web API client + the DJ engine, for whatever music the owner
 //! keeps (classical works are played whole).
 //!
-//! Thirteen concerns:
+//! Fourteen concerns:
 //!
 //! * [`client`] — a Spotify Web API client (OAuth Authorization Code + PKCE)
 //!   used **only to read the user's own library**: saved albums and liked
@@ -28,6 +28,10 @@
 //!
 //! * [`steer`] — steering: structured constraints, named moods, and the
 //!   session that carries them; applied as hard filters before weighting.
+//!
+//! * [`taste`] — the owner's taste beyond the saved library (followed and
+//!   top artists, top tracks, their own playlists, recent plays), read when
+//!   the grant allows and weighed into the pool.
 //!
 //! * [`genres`] — the artists' genre tags, read once per artist at sync
 //!   and cached, so songs carry genres to steer, balance and prefer by.
@@ -64,6 +68,7 @@ pub mod library;
 pub mod prefs;
 pub mod session;
 pub mod steer;
+pub mod taste;
 #[cfg(test)]
 mod test_shelf;
 pub mod works;

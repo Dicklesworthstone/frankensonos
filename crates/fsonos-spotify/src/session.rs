@@ -17,7 +17,8 @@ use asupersync::time::{sleep, wall_now};
 use crate::SpotifyError;
 use crate::client::{
     Artist, CachedToken, Endpoints, FORM_CONTENT_TYPE, Pkce, SpotifyConfig, TokenCache,
-    TokenResponse, api_error, parse_callback, random_state, retry_after_secs, token_error,
+    TokenResponse, api_error, missing_taste_scopes, parse_callback, random_state, retry_after_secs,
+    token_error,
 };
 use crate::library::{LibraryItem, LibraryRead};
 
@@ -110,6 +111,12 @@ impl Session {
     #[must_use]
     pub fn is_authorized(&self) -> bool {
         self.token.is_some()
+    }
+
+    /// The taste scopes the owner's grant lacks (all of them before sign-in).
+    #[must_use]
+    pub fn missing_taste_scopes(&self) -> Vec<&'static str> {
+        missing_taste_scopes(self.token.as_ref().map_or("", |t| t.scope.as_str()))
     }
 
     /// Start the Authorization Code + PKCE flow.
@@ -263,7 +270,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::client::SCOPE;
+    use crate::client::{SCOPE, requested_scope};
     use crate::fake_spotify::{FakeSpotify, REDIRECT, config, query_param, runtime, scratch_dir};
 
     #[test]
@@ -288,7 +295,7 @@ mod tests {
 
             // The owner opens the consent URL; Spotify redirects back.
             let pending = session.begin_authorization().unwrap();
-            assert_eq!(query_param(pending.url(), "scope"), SCOPE);
+            assert_eq!(query_param(pending.url(), "scope"), requested_scope());
             assert_eq!(query_param(pending.url(), "code_challenge_method"), "S256");
             state.lock().unwrap().expected_challenge =
                 Some(query_param(pending.url(), "code_challenge"));

@@ -48,6 +48,9 @@ pub(crate) struct Fake {
     pub(crate) artist_genres: HashMap<String, Vec<String>>,
     /// Answer this many artist requests with a 429.
     pub(crate) rate_limit_artists: u32,
+    /// Answer every taste request (followed, top, recent, playlists) with a
+    /// 500.
+    pub(crate) taste_down: bool,
     pub(crate) log: Vec<String>,
 }
 
@@ -117,6 +120,9 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
             .replace("https://api.spotify.com/v1", &fake.base)
     };
     let uri = req.uri.as_str();
+    if let Some(response) = taste(&fake, uri) {
+        return response;
+    }
     if uri.starts_with("/v1/me/albums") && uri.contains("offset=0") {
         json(
             200,
@@ -152,6 +158,130 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
     } else {
         not_found()
     }
+}
+
+/// The owner's taste signals: one followed artist, one top artist, one top
+/// track, two recent plays, and two playlists (theirs, and someone else's
+/// whose items are not theirs to read) — all made up.
+fn taste(fake: &Fake, uri: &str) -> Option<Response> {
+    let taste_route = uri == "/v1/me"
+        || [
+            "/v1/me/following",
+            "/v1/me/top/",
+            "/v1/me/player/",
+            "/v1/me/playlists",
+            "/v1/playlists/",
+        ]
+        .iter()
+        .any(|p| uri.starts_with(p));
+    if !taste_route {
+        return None;
+    }
+    if fake.taste_down {
+        return Some(json(500, r#"{"error":{"status":500,"message":"down"}}"#));
+    }
+    let page = |items: serde_json::Value| {
+        serde_json::json!({ "items": items, "next": null, "offset": 0, "limit": 50, "total": 1 })
+            .to_string()
+    };
+    Some(if uri == "/v1/me" {
+        json(200, r#"{"id":"fake-owner","display_name":"Owner"}"#)
+    } else if uri.starts_with("/v1/me/following") {
+        json(
+            200,
+            serde_json::json!({ "artists": {
+                "items": [fake_artist("FakeArtist000000000007", "Nina Marsh Quartet", "cool jazz")],
+                "next": null, "cursors": { "after": null }, "total": 1, "limit": 50,
+            }})
+            .to_string(),
+        )
+    } else if uri.starts_with("/v1/me/top/artists") {
+        json(
+            200,
+            page(serde_json::json!([fake_artist(
+                "FakeArtist000000000003",
+                "Frédéric Chopin",
+                "romantic era"
+            )])),
+        )
+    } else if uri.starts_with("/v1/me/top/tracks") {
+        json(
+            200,
+            page(serde_json::json!([fake_track(
+                101,
+                "Take the Long Way",
+                7,
+                "Nina Marsh Quartet"
+            )])),
+        )
+    } else if uri.starts_with("/v1/me/player/recently-played") {
+        json(
+            200,
+            serde_json::json!({
+                "items": [
+                    { "track": fake_track(102, "Glasshouse", 8, "Juniper Vale"),
+                      "played_at": "2026-10-07T20:00:00Z" },
+                    { "track": fake_track(1, "Goldberg Variations, BWV 988: Aria", 1,
+                                          "Johann Sebastian Bach"),
+                      "played_at": "2026-10-07T19:00:00Z" },
+                ],
+                "next": null, "cursors": { "after": "1", "before": "0" }, "limit": 50,
+            })
+            .to_string(),
+        )
+    } else if uri.starts_with("/v1/me/playlists") {
+        json(
+            200,
+            page(serde_json::json!([
+                { "id": "FakePlaylist000000001", "name": "Mine", "collaborative": false,
+                  "owner": { "id": "fake-owner" } },
+                { "id": "FakePlaylist000000002", "name": "A Friend's", "collaborative": false,
+                  "owner": { "id": "someone-else" } },
+            ])),
+        )
+    } else if uri.starts_with("/v1/playlists/FakePlaylist000000001/items") {
+        json(
+            200,
+            page(serde_json::json!([
+                { "added_at": "2026-01-01T00:00:00Z",
+                  "item": fake_track(103, "Paper Moons", 8, "Juniper Vale") },
+                { "added_at": "2026-01-02T00:00:00Z",
+                  "item": { "type": "episode", "name": "A Podcast", "uri": "spotify:episode:FakeEpisode01" } },
+            ])),
+        )
+    } else {
+        // Since February 2026 only the owner's own (or collaborative)
+        // playlists' items are readable.
+        json(403, r#"{"error":{"status":403,"message":"Forbidden"}}"#)
+    })
+}
+
+fn fake_artist(id: &str, name: &str, genre: &str) -> serde_json::Value {
+    serde_json::json!({ "id": id, "name": name, "type": "artist", "genres": [genre] })
+}
+
+/// A made-up playable track `FakeTrack0000000000{n}` by artist
+/// `FakeArtist0000000000{artist}`.
+fn fake_track(n: u32, name: &str, artist: u32, artist_name: &str) -> serde_json::Value {
+    let artist =
+        serde_json::json!({ "id": format!("FakeArtist{artist:012}"), "name": artist_name });
+    serde_json::json!({
+        "type": "track",
+        "id": format!("FakeTrack{n:013}"),
+        "uri": format!("spotify:track:FakeTrack{n:013}"),
+        "name": name,
+        "artists": [artist],
+        "album": {
+            "name": format!("{name} (Album)"),
+            "uri": format!("spotify:album:FakeAlbumTaste{n:07}"),
+            "artists": [artist],
+            "release_date": "1962",
+        },
+        "duration_ms": 200_000,
+        "disc_number": 1,
+        "track_number": 1,
+        "is_playable": true,
+    })
 }
 
 /// `GET /v1/artists/{id}`: the genres the test gave the artist.

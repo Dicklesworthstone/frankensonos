@@ -125,16 +125,20 @@ pub enum LibraryOrigin {
     LikedTrack,
     /// Both of the above.
     Both,
+    /// Not saved: known from the owner's other taste signals (their own
+    /// playlists, top tracks, recent plays).
+    Taste,
 }
 
 impl LibraryOrigin {
-    /// The stored form: `saved_album`, `liked_track` or `both`.
+    /// The stored form: `saved_album`, `liked_track`, `both` or `taste`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SavedAlbum => "saved_album",
             Self::LikedTrack => "liked_track",
             Self::Both => "both",
+            Self::Taste => "taste",
         }
     }
 
@@ -145,6 +149,7 @@ impl LibraryOrigin {
             "saved_album" => Some(Self::SavedAlbum),
             "liked_track" => Some(Self::LikedTrack),
             "both" => Some(Self::Both),
+            "taste" => Some(Self::Taste),
             _ => None,
         }
     }

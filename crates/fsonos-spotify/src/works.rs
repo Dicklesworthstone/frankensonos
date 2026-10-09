@@ -105,6 +105,17 @@ impl Work {
             .map(String::as_str)
     }
 
+    /// How strongly the owner's other taste signals favor it, per mille:
+    /// its most favored movement's.
+    #[must_use]
+    pub fn taste_pm(&self) -> u32 {
+        self.movements
+            .iter()
+            .map(|m| m.taste_pm)
+            .max()
+            .unwrap_or(1000)
+    }
+
     /// Its album's release year, when known.
     #[must_use]
     pub fn year(&self) -> Option<u16> {
@@ -509,6 +520,7 @@ mod tests {
                     added_at: None,
                     genres: Vec::new(),
                     release_year: None,
+                    taste_pm: None,
                     label: None,
                     duration_secs: Some(300),
                     explicit: false,
