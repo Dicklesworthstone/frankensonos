@@ -362,3 +362,159 @@ fn nothing_is_queued_without_spotify_favorites_or_tracks() {
     );
     assert!(!t.sent.borrow().iter().any(|(_, a, _)| a == "AddURIToQueue"));
 }
+
+/// How the drifting lan misbehaves on `SetAVTransportURI`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Drift {
+    /// The first render (stale `sn=1`) is refused 800; after a relearn the
+    /// fresh `sn=7` render succeeds.
+    Recovers,
+    /// Every render is refused 800, even after the relearn.
+    Persistent,
+    /// The first render fails with a non-800 fault, which must propagate
+    /// without a retry.
+    OtherFault,
+}
+
+/// A lan whose household's Spotify render parameters drift: the first
+/// `Browse FV:2` serves favorites whose track carries `sn=1`, later browses
+/// serve the same favorites with `sn=7` (Spotify was relinked). The renderer
+/// refuses a stale render with UPnP 800, per `mode`.
+struct DriftLan {
+    mode: Drift,
+    browses: std::cell::Cell<usize>,
+    renders: RefCell<Vec<String>>,
+    plays: std::cell::Cell<usize>,
+}
+
+impl DriftLan {
+    fn new(mode: Drift) -> Self {
+        Self {
+            mode,
+            browses: std::cell::Cell::new(0),
+            renders: RefCell::default(),
+            plays: std::cell::Cell::new(0),
+        }
+    }
+
+    fn ok(action: &str) -> String {
+        format!(
+            "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\">\
+             <s:Body><u:{action}Response xmlns:u=\"urn:x\">\
+             </u:{action}Response></s:Body></s:Envelope>"
+        )
+    }
+
+    fn fault(code: u16) -> ProtoError {
+        ProtoError::SoapFault {
+            code,
+            reason: "refused".to_string(),
+        }
+    }
+}
+
+impl Transport for DriftLan {
+    fn soap_post(
+        &self,
+        _: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let name = action
+            .trim_matches('"')
+            .rsplit('#')
+            .next()
+            .unwrap()
+            .to_string();
+        match name.as_str() {
+            "Browse" => {
+                assert_eq!(path, "/MediaServer/ContentDirectory/Control");
+                let stale = self.browses.get() == 0;
+                self.browses.set(self.browses.get() + 1);
+                Ok(if stale {
+                    FAV_S1.to_string()
+                } else {
+                    FAV_S1.replace("sn=1", "sn=7")
+                })
+            }
+            "SetAVTransportURI" => {
+                self.renders.borrow_mut().push(body.to_string());
+                let stale = body.contains("sn=1<");
+                match self.mode {
+                    Drift::Recovers if stale => Err(Self::fault(800)),
+                    Drift::Persistent => Err(Self::fault(800)),
+                    Drift::OtherFault => Err(Self::fault(701)),
+                    Drift::Recovers => Ok(Self::ok("SetAVTransportURI")),
+                }
+            }
+            "Play" => {
+                self.plays.set(self.plays.get() + 1);
+                Ok(Self::ok("Play"))
+            }
+            other => panic!("unexpected action {other}"),
+        }
+    }
+}
+
+#[test]
+fn render_800_relearns_params_and_retries_once() {
+    let h = house();
+    let t = DriftLan::new(Drift::Recovers);
+    control::play_spotify_track(
+        &t,
+        &h,
+        &pid(2),
+        "spotify:track:0FixtureSpotify0000002",
+        "Drift Test",
+    )
+    .unwrap();
+    assert_eq!(t.browses.get(), 2, "one browse before the 800, one relearn");
+    let renders = t.renders.borrow();
+    assert_eq!(renders.len(), 2, "exactly one retry");
+    assert!(renders[0].contains("sn=1<"), "{}", renders[0]);
+    assert!(renders[1].contains("sn=7<"), "{}", renders[1]);
+    assert_eq!(t.plays.get(), 1);
+}
+
+#[test]
+fn persistent_render_800_reports_stale_after_one_retry() {
+    let h = house();
+    let t = DriftLan::new(Drift::Persistent);
+    let err = control::play_spotify_track(
+        &t,
+        &h,
+        &pid(2),
+        "spotify:track:0FixtureSpotify0000002",
+        "Drift Test",
+    )
+    .unwrap_err();
+    assert!(matches!(err, CoreError::RenderParamsStale), "{err}");
+    assert_eq!(t.renders.borrow().len(), 2, "the retry never loops");
+    assert_eq!(t.browses.get(), 2);
+    assert_eq!(
+        t.plays.get(),
+        0,
+        "nothing starts when the render is refused"
+    );
+}
+
+#[test]
+fn a_non_800_render_fault_propagates_without_retry() {
+    let h = house();
+    let t = DriftLan::new(Drift::OtherFault);
+    let err = control::play_spotify_track(
+        &t,
+        &h,
+        &pid(2),
+        "spotify:track:0FixtureSpotify0000002",
+        "Drift Test",
+    )
+    .unwrap_err();
+    match err {
+        CoreError::Proto(ProtoError::SoapFault { code, .. }) => assert_eq!(code, 701),
+        other => panic!("expected the raw fault, got {other:?}"),
+    }
+    assert_eq!(t.renders.borrow().len(), 1, "no retry for foreign faults");
+    assert_eq!(t.browses.get(), 1);
+}

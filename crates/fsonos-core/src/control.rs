@@ -7,6 +7,7 @@
 //! the action log hook in.
 
 use crate::{CoreError, HouseholdState};
+use fsonos_proto::ProtoError;
 use fsonos_proto::Transport;
 use fsonos_proto::content;
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
@@ -117,6 +118,53 @@ pub fn spotify_track_source<T: Transport + ?Sized>(
             spotify_track_didl(spotify_uri, title, &p),
         )
     }))
+}
+
+/// A UPnP fault code the renderer uses to refuse a render whose service
+/// parameters it does not accept (stale `sid`/`flags`/`sn`/descriptor).
+fn is_render_800(e: &CoreError) -> bool {
+    matches!(
+        e,
+        CoreError::Proto(ProtoError::SoapFault { code: 800, .. })
+    )
+}
+
+/// Play `spotify_uri` (a `spotify:track:<id>`) on the group `coordinator`
+/// leads, self-healing one round of parameter drift: if the renderer
+/// refuses the first attempt with UPnP 800, the household's render
+/// parameters are relearned from its favorites and the render retried
+/// exactly once. A second 800 (or a household that lost its Spotify
+/// favorites mid-flight) fails with [`CoreError::RenderParamsStale`] /
+/// [`CoreError::NoSpotifyFavorite`]; the retry never loops.
+pub fn play_spotify_track<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    spotify_uri: &str,
+    title: &str,
+) -> Result<(), CoreError> {
+    let source = |uri: &str| spotify_track_source(t, households, coordinator, uri, title);
+    let Some((uri, didl)) = source(spotify_uri)? else {
+        return Err(CoreError::NoSpotifyFavorite);
+    };
+    match play_uri(t, households, coordinator, &uri, &didl) {
+        Ok(()) => Ok(()),
+        // Parameters drift when Spotify is relinked, the service updates,
+        // or the household is rebuilt: what the favorites carried when we
+        // learned them is no longer what the renderer accepts. Learn them
+        // again and render once more.
+        Err(e) if is_render_800(&e) => {
+            let Some((uri, didl)) = source(spotify_uri)? else {
+                return Err(CoreError::NoSpotifyFavorite);
+            };
+            match play_uri(t, households, coordinator, &uri, &didl) {
+                Ok(()) => Ok(()),
+                Err(e) if is_render_800(&e) => Err(CoreError::RenderParamsStale),
+                Err(e) => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Append Spotify tracks (`(spotify:track URI, title)`) to the queue of the

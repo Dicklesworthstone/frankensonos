@@ -78,6 +78,18 @@ pub enum CoreError {
     },
     #[error("store error: {0}")]
     Store(String),
+    #[error("this household has no Spotify track favorite to learn render parameters from")]
+    NoSpotifyFavorite,
+    /// The renderer refused a Spotify render with UPnP 800, the parameters
+    /// were relearned from the household's favorites and the render retried
+    /// once, and it still failed. Remedy: re-link Spotify in that
+    /// household's Sonos app (or remove and re-add a Spotify track
+    /// favorite) and retry.
+    #[error(
+        "Spotify render parameters are stale: relearned and retried once, \
+             the player still refuses the render with UPnP 800"
+    )]
+    RenderParamsStale,
 }
 
 fn list(items: &[String]) -> String {

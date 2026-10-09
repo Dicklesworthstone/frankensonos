@@ -52,6 +52,9 @@ pub enum ErrorCode {
     SpotifyNotLinked,
     /// The household's Spotify render parameters have not been learned.
     RenderParamsMissing,
+    /// The household's Spotify render parameters are stale: the player
+    /// refused the render with UPnP 800 even after relearning them once.
+    RenderParamsStale,
     /// The daemon has no valid Spotify sign-in.
     SpotifyAuthRequired,
     /// The house policy forbids the request.
@@ -96,6 +99,7 @@ impl ErrorCode {
         Self::UpnpFault,
         Self::SpotifyNotLinked,
         Self::RenderParamsMissing,
+        Self::RenderParamsStale,
         Self::SpotifyAuthRequired,
         Self::PolicyDenied,
         Self::UnknownMood,
@@ -126,7 +130,7 @@ impl ErrorCode {
             Self::NotCoordinator => "NOT_COORDINATOR",
             Self::UpnpFault => "UPNP_FAULT",
             Self::SpotifyNotLinked => "SPOTIFY_NOT_LINKED",
-            Self::RenderParamsMissing => "RENDER_PARAMS_MISSING",
+            Self::RenderParamsStale => "RENDER_PARAMS_STALE",
             Self::SpotifyAuthRequired => "SPOTIFY_AUTH_REQUIRED",
             Self::PolicyDenied => "POLICY_DENIED",
             Self::UnknownMood => "UNKNOWN_MOOD",
@@ -161,12 +165,12 @@ impl ErrorCode {
             | Self::NotCoordinator
             | Self::SpotifyNotLinked
             | Self::RenderParamsMissing
+            | Self::RenderParamsStale
             | Self::SpotifyAuthRequired
             | Self::AmbiguousFavorite => 409,
             Self::PolicyDenied | Self::UntrustedOrigin => 403,
             Self::UnsupportedMediaType => 415,
             Self::NotReady | Self::PlayerUnreachable => 503,
-            Self::UpnpFault => 502,
             Self::Internal => 500,
             Self::NotImplemented => 501,
         }
@@ -196,6 +200,7 @@ impl ErrorCode {
             Self::UpnpFault
             | Self::SpotifyNotLinked
             | Self::RenderParamsMissing
+            | Self::RenderParamsStale
             | Self::SpotifyAuthRequired
             | Self::Internal
             | Self::NotImplemented => 1,
@@ -242,7 +247,10 @@ impl ErrorCode {
             Self::RenderParamsMissing => {
                 "Add any Spotify track to My Sonos in that household's app, then retry."
             }
-            Self::SpotifyAuthRequired => "Sign in to Spotify on the daemon host, then retry.",
+            Self::RenderParamsStale => {
+                "Re-link Spotify in that household's Sonos app (or remove and re-add a Spotify \
+                 track favorite), then retry."
+            }
             Self::PolicyDenied => "The house policy forbids this; ask the owner to change it.",
             Self::UnknownMood => "Use one of the suggested moods.",
             Self::NoDjSession => "Start the DJ in that zone first (dj_start).",
@@ -491,6 +499,8 @@ impl From<CoreError> for Failure {
             // Store errors can carry a DB path or engine internals; keep them
             // out of the client response. The caller logs the full error.
             CoreError::Store(_) => Self::new(ErrorCode::Internal, "internal error"),
+            CoreError::NoSpotifyFavorite => Self::new(ErrorCode::RenderParamsMissing, detail),
+            CoreError::RenderParamsStale => Self::new(ErrorCode::RenderParamsStale, detail),
         }
     }
 }

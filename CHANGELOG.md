@@ -163,8 +163,11 @@ library, in whatever genres it spans.
   [`e41e929`](https://github.com/Dicklesworthstone/frankensonos/commit/e41e929)
 - **Spotify on Sonos.** The `x-sonos-spotify:` render template, with
   per-household parameters learned from the household's own favorites, ends
-  the long-standing UPnP 800. Playback continues through the coordinator's
-  queue, and a queue feed keeps whole works playing as GENA reports progress.
+  the long-standing UPnP 800 — and when a household's parameters drift
+  (Spotify relinked, service updated), the render self-heals: on a UPnP 800
+  the parameters are relearned from the favorites and the render retried
+  exactly once; a second refusal reports `RENDER_PARAMS_STALE` with the
+  re-link remedy instead of looping. Playback continues through the coordinator's
   [`739a8ee`](https://github.com/Dicklesworthstone/frankensonos/commit/739a8ee),
   [`f7f4cd2`](https://github.com/Dicklesworthstone/frankensonos/commit/f7f4cd2),
   [`a3d9802`](https://github.com/Dicklesworthstone/frankensonos/commit/a3d9802),

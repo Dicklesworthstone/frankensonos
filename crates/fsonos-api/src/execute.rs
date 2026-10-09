@@ -268,17 +268,26 @@ fn play<T: Transport + ?Sized>(
 ) -> Result<(), Failure> {
     if source_uri.starts_with("spotify:track:") {
         let title = title.unwrap_or(source_uri);
-        let Some((uri, didl)) =
-            control::spotify_track_source(transport, households, coordinator, source_uri, title)?
-        else {
-            return Err(Failure::new(
+        return match control::play_spotify_track(
+            transport,
+            households,
+            coordinator,
+            source_uri,
+            title,
+        ) {
+            Ok(()) => Ok(()),
+            Err(CoreError::NoSpotifyFavorite) => Err(Failure::new(
                 ErrorCode::RenderParamsMissing,
                 "this household has no Spotify track among its favorites to learn its Spotify \
                  settings from",
-            ));
+            )),
+            Err(CoreError::RenderParamsStale) => Err(Failure::new(
+                ErrorCode::RenderParamsStale,
+                "the speaker refused this Spotify render (UPnP 800) even after relearning the \
+                 household's settings from its favorites once",
+            )),
+            Err(e) => Err(e.into()),
         };
-        control::play_uri(transport, households, coordinator, &uri, &didl)?;
-        return Ok(());
     }
     if source_uri.starts_with("spotify:") {
         return Err(Failure::new(
