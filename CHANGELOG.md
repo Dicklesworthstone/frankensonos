@@ -28,6 +28,7 @@ live-hardware behavior beyond the owner-run checks named there, is claimed.
 | 6. Every capability on every surface | Oct 8, small hours to midday | The DJ playing on the speakers, steering and feedback; scenes, sleep timers, schedules, announcements, aliases, move and party, and the house policy on CLI, HTTP and MCP; `fsonos setup` |
 | 7. Instant CLI and web remote | Oct 8, afternoon | CLI commands through a running daemon, the daemon's web remote with album art |
 | 8. A DJ for every genre | Oct 8, evening | The DJ plays the owner's whole library in any genre, with classical works still whole, and steers by artist |
+| 9. Albums, playlists and fades | Oct 9, evening | Spotify albums and playlists play on every surface; `fsonos sleep` fades through a running daemon |
 
 There is no released version yet. `0.1.0` comes with real-hardware CI and
 prebuilt binaries (see [Status and verification](#status-and-verification)).
@@ -176,6 +177,14 @@ library, in whatever genres it spans.
   [`f7f4cd2`](https://github.com/Dicklesworthstone/frankensonos/commit/f7f4cd2),
   [`a3d9802`](https://github.com/Dicklesworthstone/frankensonos/commit/a3d9802),
   [`8c4702e`](https://github.com/Dicklesworthstone/frankensonos/commit/8c4702e)
+- **Albums and playlists play.** `fsonos play`, HTTP and MCP take a Spotify
+  album or playlist (`spotify:album:…`, `spotify:playlist:…` or an
+  open.spotify.com link). The group's queue is replaced with it, and it
+  plays from its first track. The household's account and item-id prefix
+  are learned from its own favorites, and on a UPnP 800 they are relearned
+  once, as for tracks. Artists, episodes and shows still answer
+  `NOT_IMPLEMENTED`.
+  [`8f2b7b8`](https://github.com/Dicklesworthstone/frankensonos/commit/8f2b7b8)
 
 #### The daemon and its surfaces (`fsonos-api`, `fsonos-mcp`, `fsonos-cli`)
 
@@ -235,9 +244,12 @@ library, in whatever genres it spans.
   [`715952a`](https://github.com/Dicklesworthstone/frankensonos/commit/715952a),
   [`bef99d9`](https://github.com/Dicklesworthstone/frankensonos/commit/bef99d9)
 - **An instant CLI.** When a daemon is running, CLI commands go through it,
-  using its warm state and its sleep-timer fades, and are identified as the
-  CLI by a token in the data directory.
-  [`d1af970`](https://github.com/Dicklesworthstone/frankensonos/commit/d1af970)
+  using its warm state, and are identified as the CLI by a token in the data
+  directory. `fsonos sleep` goes through it too, so the group fades out with
+  the speaker's own timer as a backstop; `--direct`, or no daemon, sets the
+  speaker's timer alone.
+  [`d1af970`](https://github.com/Dicklesworthstone/frankensonos/commit/d1af970),
+  [`032dcbb`](https://github.com/Dicklesworthstone/frankensonos/commit/032dcbb)
 - **The web remote.** The daemon serves a page at `/`, reachable from any
   device on the tailnet. It shows:
   - rooms by household;

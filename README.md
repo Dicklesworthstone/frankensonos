@@ -66,7 +66,7 @@ can drive:
 | Area | What you get |
 |---|---|
 | **Discovery & topology** | Every player of both S1 and S2 households, its zone group and coordinator. Rooms resolve by name, `Room@S1` / `Room@S2`, your own aliases (`fsonos rooms alias add downstairs Kitchen "Living Room"`), or `here` |
-| **Control** | Play a Spotify link, a source URI, a Sonos favorite or a library search; pause, resume, next, previous; room or group volume (set or ±N); mute; group, ungroup; **move** the music to another room (handing the group over, or `--copy` across households); **party** mode for a whole household. Group commands always go to the group's coordinator |
+| **Control** | Play a Spotify link (a track, album or playlist), a source URI, a Sonos favorite or a library search; pause, resume, next, previous; room or group volume (set or ±N); mute; group, ungroup; **move** the music to another room (handing the group over, or `--copy` across households); **party** mode for a whole household. Group commands always go to the group's coordinator |
 | **Live state** | GENA subscriptions keep a live model of every zone (transport, track, volume), so reads need no polling, and `GET /events` streams the changes as server-sent events |
 | **Self-healing** | A player that moved to a new address, or a group whose coordinator changed under a command, is found again and the command retried once (the answer notes `HEALED`); the live model resurveys and resubscribes on its own |
 | **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, genre, decade, keywords (which also match genres), work length or energy, and for classical music by composers and periods, for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
@@ -303,8 +303,11 @@ learned at runtime and kept locally. The full boundary is in
   `fsonos dj sync`.
 - You run the daemon on a machine on your speaker LAN (a Mac mini, a Pi, a
   NAS). The deploy docs and announcements' speech (`say`) are macOS-first.
-- Until the CLI talks to a running daemon, `fsonos sleep` on its own sets the
-  speaker's own timer (no fade); the fade comes through the daemon (HTTP, MCP).
+- A sleep timer fades only through the daemon: the CLI's when one is running,
+  HTTP and MCP. `fsonos sleep --direct`, or `fsonos sleep` with no daemon,
+  sets the speaker's own timer, which pauses without a fade.
+- Spotify artists, podcast episodes and shows don't play yet; tracks, albums
+  and playlists do.
 - The API and MCP server have no authentication of their own: Tailscale is the
   boundary. Callers on a direct tailnet listener are read-only until tailnet
   identity reaches them; use Serve for full control, where the caller's login
