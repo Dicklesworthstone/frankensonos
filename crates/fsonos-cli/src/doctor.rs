@@ -10,6 +10,8 @@
 //! * `daemon.bind`: the bind guard's verdict on the HTTP and MCP addresses;
 //! * `daemon.health`: whether a daemon answers on the HTTP address, and
 //!   which version;
+//! * `spotify.taste`: whether the cached Spotify grant carries the taste
+//!   scopes, so the DJ learns beyond the owner's saved library;
 //! * `tailscale.*` ([`tailscale`]): whether the daemon is reachable over the
 //!   tailnet, with the connect URLs, or why not.
 //!
@@ -20,9 +22,11 @@ use fsonos_api::Failure;
 use fsonos_core::doctor::lan::LanProbe;
 use fsonos_core::doctor::{Check, CheckContext, CheckId, CheckResult, Report, Runner};
 use fsonos_core::policy::Client;
+use fsonos_spotify::client::TokenCache;
 use serde_json::json;
 use std::io::{Read as _, Write as _};
 use std::net::{SocketAddr, TcpStream};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,6 +49,7 @@ pub struct DoctorArgs {
 
 const BIND: CheckId = CheckId("daemon.bind");
 const HEALTH: CheckId = CheckId("daemon.health");
+const TASTE: CheckId = CheckId("spotify.taste");
 
 /// The bind guard's verdict for both control listeners.
 struct BindCheck {
@@ -146,8 +151,57 @@ impl Check for HealthCheck {
     }
 }
 
+/// Whether the cached Spotify grant carries the taste scopes, so the DJ can
+/// learn beyond the owner's saved library (followed and top artists, top
+/// tracks, recent plays, playlists). Without them the DJ runs library-only,
+/// which this warns about; it never fails.
+struct TasteScopesCheck {
+    data_dir: PathBuf,
+}
+
+impl Check for TasteScopesCheck {
+    fn id(&self) -> CheckId {
+        TASTE
+    }
+
+    fn title(&self) -> &'static str {
+        "Spotify taste scopes"
+    }
+
+    fn run(&self, _: &CheckContext) -> CheckResult {
+        match TokenCache::in_data_dir(&self.data_dir).load() {
+            Ok(None) => {
+                CheckResult::skip("not signed in to Spotify yet (run `fsonos setup spotify`)")
+            }
+            Ok(Some(token)) => {
+                let missing = token.missing_taste_scopes();
+                if missing.is_empty() {
+                    CheckResult::pass(
+                        "the grant carries every taste scope; the DJ learns from your \
+                         follows, top artists and tracks, recent plays and playlists",
+                    )
+                } else {
+                    CheckResult::warn(
+                        format!(
+                            "the DJ's taste is library-only: the Spotify grant is missing {}",
+                            missing.join(", ")
+                        ),
+                        "Re-run `fsonos setup spotify` (or sign in again) to grant the taste scopes.",
+                    )
+                    .with_evidence(json!({ "missing_scopes": missing }))
+                }
+            }
+            Err(e) => CheckResult::warn(
+                "could not read the Spotify token cache".to_owned(),
+                "Check the data directory, or re-run `fsonos setup spotify`.",
+            )
+            .with_detail(e.to_string()),
+        }
+    }
+}
+
 /// Register the checks this layer owns for `serve`'s settings.
-pub fn register(runner: &mut Runner, serve: &ServeArgs) {
+pub fn register(runner: &mut Runner, serve: &ServeArgs, data_dir: &Path) {
     runner.register(BindCheck {
         http: serve.http_local(),
         mcp: serve.mcp_local(),
@@ -155,6 +209,9 @@ pub fn register(runner: &mut Runner, serve: &ServeArgs) {
     });
     runner.register(HealthCheck {
         http: serve.http_local(),
+    });
+    runner.register(TasteScopesCheck {
+        data_dir: data_dir.to_path_buf(),
     });
     tailscale::register(runner, serve);
 }
@@ -194,11 +251,12 @@ pub fn lan_checks(
 pub fn run(global: &GlobalArgs, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
     let serve = args.serve.clone();
     let lan = lan_checks(global)?;
+    let data_dir = crate::daemon::data_dir(global)?;
     let direct = Direct::open(
         global,
         Some(Box::new(move |runner| {
             lan(runner);
-            register(runner, &serve);
+            register(runner, &serve, &data_dir);
         })),
     )?;
     let report = only(direct.doctor(&Client::Cli)?, args.only.as_deref());
@@ -280,9 +338,17 @@ mod tests {
                 tailscale: crate::config::TailscaleMode::Auto,
                 tailscale_serve: false,
             },
+            &std::env::temp_dir(),
         );
         let report = only(runner.run().unwrap(), Some("daemon.b"));
         assert_eq!(report.entries.len(), 1);
         assert_eq!(report.entries[0].id, BIND);
+    }
+
+    #[test]
+    fn taste_scopes_skip_when_not_signed_in() {
+        let dir =
+            std::env::temp_dir().join(format!("fsonos-doctor-taste-{}-absent", std::process::id()));
+        assert_eq!(run_one(TasteScopesCheck { data_dir: dir }).status, Status::Skip);
     }
 }

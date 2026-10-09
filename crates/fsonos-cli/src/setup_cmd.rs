@@ -308,11 +308,12 @@ fn test_play(global: &GlobalArgs, direct: &Direct, args: &SetupArgs) -> StepOutc
 fn check(global: &GlobalArgs, serve: &ServeArgs) -> anyhow::Result<(Direct, Report)> {
     let serve = serve.clone();
     let lan = crate::doctor::lan_checks(global)?;
+    let data_dir = crate::daemon::data_dir(global)?;
     let direct = Direct::open(
         global,
         Some(Box::new(move |runner| {
             lan(runner);
-            crate::doctor::register(runner, &serve);
+            crate::doctor::register(runner, &serve, &data_dir);
         })),
     )?;
     let report = direct.doctor(&Client::Cli)?;

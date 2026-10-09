@@ -220,6 +220,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     }
     let data_dir = data_dir(global)?;
     let checks = args.clone();
+    let doctor_data_dir = data_dir.clone();
     let (surface, live) = live_surface(global, args.events_port, policy(&data_dir)?)?;
     let surface = surface
         .with_clock(scheduler.clock())
@@ -228,7 +229,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     let surface = spotify_auth::install(surface, args, &data_dir);
     let surface = Arc::new(
         with_action_log(surface, &data_dir, "serve").with_doctor_checks(Box::new(move |runner| {
-            crate::doctor::register(runner, &checks);
+            crate::doctor::register(runner, &checks, &doctor_data_dir);
         })),
     );
     // The live model's playback keeps each DJ queue topped up.
