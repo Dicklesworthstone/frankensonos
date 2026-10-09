@@ -123,10 +123,7 @@ pub fn spotify_track_source<T: Transport + ?Sized>(
 /// A UPnP fault code the renderer uses to refuse a render whose service
 /// parameters it does not accept (stale `sid`/`flags`/`sn`/descriptor).
 fn is_render_800(e: &CoreError) -> bool {
-    matches!(
-        e,
-        CoreError::Proto(ProtoError::SoapFault { code: 800, .. })
-    )
+    matches!(e, CoreError::Proto(ProtoError::SoapFault { code: 800, .. }))
 }
 
 /// Play `spotify_uri` (a `spotify:track:<id>`) on the group `coordinator`
