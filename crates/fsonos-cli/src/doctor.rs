@@ -170,9 +170,7 @@ impl Check for TasteScopesCheck {
 
     fn run(&self, _: &CheckContext) -> CheckResult {
         match TokenCache::in_data_dir(&self.data_dir).load() {
-            Ok(None) => {
-                CheckResult::skip("not signed in to Spotify yet (run `fsonos setup`)")
-            }
+            Ok(None) => CheckResult::skip("not signed in to Spotify yet (run `fsonos setup`)"),
             Ok(Some(token)) => {
                 let missing = token.missing_taste_scopes();
                 if missing.is_empty() {
@@ -349,6 +347,9 @@ mod tests {
     fn taste_scopes_skip_when_not_signed_in() {
         let dir =
             std::env::temp_dir().join(format!("fsonos-doctor-taste-{}-absent", std::process::id()));
-        assert_eq!(run_one(TasteScopesCheck { data_dir: dir }).status, Status::Skip);
+        assert_eq!(
+            run_one(TasteScopesCheck { data_dir: dir }).status,
+            Status::Skip
+        );
     }
 }
