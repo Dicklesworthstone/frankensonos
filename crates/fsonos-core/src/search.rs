@@ -1,6 +1,6 @@
-//! Library search: rank the owner's cached Spotify library and the Sonos
-//! favorites against what a person or agent typed ("goldberg gould",
-//! "bwv 988", "dvorak 9").
+//! Library search: rank the owner's cached Spotify library (its tracks and
+//! saved albums) and the Sonos favorites against what a person or agent
+//! typed ("goldberg gould", "bwv 988", "dvorak 9", "abbey road").
 //!
 //! Every query word must match somewhere in a result (title, artists, album,
 //! or a favorite's description). A word matches a field word exactly, as a
@@ -8,11 +8,15 @@
 //! the title count most, then the artists (the composer is usually first),
 //! then the album. A catalog number the query names (BWV 988, Op. 67, K. 525)
 //! that appears in the title is a strong boost. Case, accents and punctuation
-//! are ignored. Pure: the caller supplies the library and favorites.
+//! are ignored. A saved album is a result of its own (its title, then its
+//! artists), after the tracks and favorites it ties with, so a query naming
+//! an album rather than a track plays the album. Pure: the caller supplies
+//! the library and favorites.
 
 use crate::favorites::Favorite;
-use crate::store::LibraryEntry;
+use crate::store::{LibraryEntry, LibraryOrigin};
 use fsonos_types::text::normalize;
+use std::collections::HashSet;
 
 /// Where a result came from, and how to play it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +25,8 @@ pub enum HitSource {
     Library { source_uri: String },
     /// A Sonos favorite: its `FV:2/<n>` id.
     Favorite { id: String },
+    /// An album the owner saved: its `spotify:album:<id>` URI.
+    Album { source_uri: String },
 }
 
 /// One ranked result.
@@ -28,7 +34,7 @@ pub enum HitSource {
 pub struct Hit {
     pub source: HitSource,
     pub title: String,
-    /// Artists for a track, the description for a favorite.
+    /// Artists for a track or album, the description for a favorite.
     pub subtitle: Option<String>,
     pub score: u32,
 }
@@ -61,6 +67,22 @@ pub fn search(
         return Vec::new();
     }
     let catalog = catalog_pairs(&words);
+    let mut albums_seen = HashSet::new();
+    let albums = library.iter().filter_map(|e| {
+        let saved = matches!(e.origin, LibraryOrigin::SavedAlbum | LibraryOrigin::Both);
+        let (uri, title) = (e.album_uri.as_deref()?, e.track.album.as_deref()?);
+        (saved && albums_seen.insert(uri)).then(|| Doc {
+            source: HitSource::Album {
+                source_uri: uri.to_string(),
+            },
+            title,
+            subtitle: e.album_artists.as_deref(),
+            fields: vec![
+                (normalize(title), 4),
+                (normalize(e.album_artists.as_deref().unwrap_or("")), 3),
+            ],
+        })
+    });
     let docs = library
         .iter()
         .map(|e| Doc {
@@ -84,7 +106,8 @@ pub fn search(
                 (normalize(&f.title), 4),
                 (normalize(f.description.as_deref().unwrap_or("")), 2),
             ],
-        }));
+        }))
+        .chain(albums);
     let mut hits: Vec<Hit> = docs
         .filter_map(|doc| {
             let mut score = 0;

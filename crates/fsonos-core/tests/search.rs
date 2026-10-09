@@ -88,6 +88,7 @@ fn top(query: &str) -> Vec<String> {
                 source_uri.trim_start_matches("spotify:track:").to_string()
             }
             HitSource::Favorite { id } => id,
+            HitSource::Album { source_uri } => source_uri,
         })
         .collect()
 }
@@ -136,5 +137,72 @@ fn limits_and_empty_queries() {
     assert!(
         hits.iter()
             .all(|h| h.subtitle.as_deref().unwrap().contains("Berliner"))
+    );
+}
+
+/// A saved album's tracks (two of them), plus a liked track from another
+/// album, whose album is not the owner's.
+fn with_albums() -> Vec<LibraryEntry> {
+    let track = |id: &str, title: &str, album: &str, origin: LibraryOrigin| LibraryEntry {
+        album_uri: Some(format!("spotify:album:{album}")),
+        album_artists: Some("The Lanterns".into()),
+        origin,
+        ..entry(id, title, "The Lanterns", &album.replace('-', " "))
+    };
+    let mut all = library();
+    all.extend([
+        track(
+            "tide",
+            "Low Tide",
+            "harbor-lights",
+            LibraryOrigin::SavedAlbum,
+        ),
+        track(
+            "window",
+            "Every Window",
+            "harbor-lights",
+            LibraryOrigin::Both,
+        ),
+        track(
+            "kite",
+            "Kite Season",
+            "paper-moons",
+            LibraryOrigin::LikedTrack,
+        ),
+    ]);
+    all
+}
+
+#[test]
+fn a_saved_album_is_a_result_of_its_own() {
+    // Named by its title, the album comes first, then its tracks (once
+    // each: one album hit for its two tracks).
+    let hits = search(&with_albums(), &[], "harbor lights", 5);
+    assert_eq!(hits.len(), 3, "{hits:?}");
+    assert_eq!(
+        hits[0].source,
+        HitSource::Album {
+            source_uri: "spotify:album:harbor-lights".into()
+        }
+    );
+    assert_eq!(hits[0].title, "harbor lights");
+    assert_eq!(hits[0].subtitle.as_deref(), Some("The Lanterns"));
+    // A track's own title outranks the album it is on.
+    let hits = search(&with_albums(), &[], "low tide", 5);
+    assert_eq!(
+        hits[0].source,
+        HitSource::Library {
+            source_uri: "spotify:track:tide".into()
+        }
+    );
+    // The artist names both; the tracks come first in a tie.
+    let hits = search(&with_albums(), &[], "lanterns", 10);
+    assert_eq!(hits.len(), 4, "three tracks and one album: {hits:?}");
+    assert!(matches!(hits[3].source, HitSource::Album { .. }));
+    // A liked track's album is not the owner's.
+    assert!(
+        search(&with_albums(), &[], "paper moons", 5)
+            .iter()
+            .all(|h| !matches!(h.source, HitSource::Album { .. }))
     );
 }

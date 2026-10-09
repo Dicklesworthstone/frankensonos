@@ -387,7 +387,7 @@ fn with_backend(
 }
 
 #[tool(
-    description = "Search the owner's saved Spotify library for music, and with `zone` also that room's household Sonos favorites. `query` is title words, a composer or performer, an album, or a catalog number ('goldberg gould', 'bwv 988', 'dvorak 9', 'op 67'); case, accents and small typos are forgiven. Results come best first: play a track with `play` (zone, source_uri) or a favorite with `play_favorite` (zone, favorite). `limit` 1-50, default 10.",
+    description = "Search the owner's saved Spotify library for music, and with `zone` also that room's household Sonos favorites. `query` is title words, a composer or performer, an album, or a catalog number ('goldberg gould', 'bwv 988', 'dvorak 9', 'op 67'); case, accents and small typos are forgiven. Results come best first: play a track or a saved album with `play` (zone, source_uri; an album replaces the queue) or a favorite with `play_favorite` (zone, favorite). `limit` 1-50, default 10.",
     annotations(read_only, idempotent)
 )]
 fn search_library(

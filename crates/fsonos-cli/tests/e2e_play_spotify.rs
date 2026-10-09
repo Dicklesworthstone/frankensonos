@@ -2,12 +2,16 @@
 //! CLI takes an open.spotify.com album link and MCP a playlist URI, and the
 //! sim confirms each replaced the queue with its own tracks and plays from
 //! the first. An artist says it can't play yet, and what plays plays on.
+//! A library search that names a saved album plays the whole album.
 
 mod e2e;
 
 use e2e::Scenario;
+use fsonos_core::store::SqliteStore;
 use fsonos_proto::control::{get_position_info, get_transport_info};
 use fsonos_sim::SimHousehold;
+use fsonos_spotify::cache::apply_library_read;
+use fsonos_spotify::library::{LibraryItem, Origin};
 use fsonos_types::TransportState;
 use serde_json::json;
 
@@ -96,6 +100,77 @@ fn spotify_albums_and_playlists_play_from_their_first_track() {
             && run.stderr.contains("error[NOT_IMPLEMENTED]")
             && uri.contains(&format!("{PLAYLIST}1")),
         &run.stderr,
+    );
+    s.finish();
+}
+
+const SAVED: &str = "0SimHarborLightsAlbum1";
+
+/// Two tracks of an album the owner saved, as a library sync leaves them.
+fn saved_album() -> Vec<LibraryItem> {
+    ["Low Tide", "Every Window"]
+        .iter()
+        .zip(1u32..)
+        .map(|(title, n)| LibraryItem {
+            source_uri: format!("spotify:track:0SimHarborLightsTrack{n}"),
+            title: (*title).to_owned(),
+            artists: vec!["The Sim Lanterns".into()],
+            album: Some("Harbor Lights".into()),
+            album_uri: Some(format!("spotify:album:{SAVED}")),
+            album_artists: vec!["The Sim Lanterns".into()],
+            track_number: Some(n),
+            duration_secs: Some(200),
+            origin: Origin::SavedAlbum,
+            ..LibraryItem::default()
+        })
+        .collect()
+}
+
+#[test]
+fn a_search_naming_a_saved_album_plays_the_album() {
+    let mut s = Scenario::start("play-saved-album");
+    s.sim(SimHousehold::standard());
+    let kitchen = s.ip("Kitchen");
+    let seeded = SqliteStore::open(&s.dir().join("data").join("fsonos.db"))
+        .map_err(|e| e.to_string())
+        .and_then(|mut store| {
+            apply_library_read(&mut store, &saved_album()).map_err(|e| e.to_string())
+        });
+    s.check(
+        "library",
+        "store",
+        "a synced library with one saved album",
+        seeded.is_ok(),
+        format!("{seeded:?}"),
+    );
+
+    let run = s.cli(
+        "pick",
+        &["play", "Kitchen", "--search", "harbor lights", "--pick"],
+    );
+    s.check(
+        "pick",
+        "cli",
+        "the album is the first match, then its tracks",
+        run.ok()
+            && run
+                .stdout
+                .starts_with("1. Harbor Lights (The Sim Lanterns) [album]"),
+        &run.stdout,
+    );
+    let run = s.cli("play", &["play", "Kitchen", "--search", "harbor lights"]);
+    let state = get_transport_info(&s.lan(), kitchen).map(|t| t.state).ok();
+    let position = get_position_info(&s.lan(), kitchen).ok();
+    let (track, uri) = position.map_or((None, String::new()), |p| (Some(p.track), p.uri));
+    s.check(
+        "play",
+        "sim",
+        "the whole album replaced the queue and plays from its first track",
+        run.ok()
+            && state == Some(TransportState::Playing)
+            && track == Some(1)
+            && uri.contains(&format!("{SAVED}1")),
+        format!("{}; {state:?}, track {track:?}, {uri}", run.stderr),
     );
     s.finish();
 }
