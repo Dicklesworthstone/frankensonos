@@ -266,13 +266,11 @@ the house policy with quiet hours, the action log and undo, `doctor` and
 your tailnet. The CLI goes through a running daemon when there is one, with
 room-name completions for zsh, bash and fish, and the daemon serves a web
 remote (rooms, now playing with album art, volume, the DJ and scenes) to any
-device on your tailnet.
+device on your tailnet. The daemon keeps the DJ's library fresh on its own,
+and `fsonos dj sync` refreshes it on demand.
 
 Next:
 
-- The daemon refreshing your Spotify library on its own, on a schedule (today
-  a running daemon picks up new saves, likes and taste signals after you re-run
-  `fsonos setup`).
 - Real-hardware CI, then `0.1.0` with prebuilt binaries.
 
 ## Scope & privacy
@@ -300,9 +298,9 @@ learned at runtime and kept locally. The full boundary is in
   your library alone, and `doctor` says so). `dj steer`, standing preferences
   and `moods.toml` are your overrides. Spotify gives new apps no audio
   features, so a song's energy comes from its artists' genre tags, and a
-  classical movement's from its tempo marking. A library cached before the DJ
-  played every genre needs one re-sync (`fsonos setup`) before the rest of it
-  joins the pool.
+  classical movement's from its tempo marking. New saves and likes reach the
+  DJ at the daemon's next daily read of your library, or at once with
+  `fsonos dj sync`.
 - You run the daemon on a machine on your speaker LAN (a Mac mini, a Pi, a
   NAS). The deploy docs and announcements' speech (`say`) are macOS-first.
 - Until the CLI talks to a running daemon, `fsonos sleep` on its own sets the

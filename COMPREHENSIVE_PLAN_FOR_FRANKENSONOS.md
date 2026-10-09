@@ -527,9 +527,12 @@ their standing preferences on every surface and in the daemon. What is on
 - The library cache records, per track, whether it is a DJ candidate, its
   genres, release year, explicit flag and taste weight (migration 7), and
   caches each artist's genres (migration 8). `is_classical` again means "judged
-  classical" and is only a legacy row's candidacy fallback. A library cached
-  before this upgrade needs one re-sync — today via `fsonos setup`; a daemon
-  that refreshes on its own is tracked separately (`daemon-library-sync`).
+  classical" and is only a legacy row's candidacy fallback. A running daemon
+  keeps the cache fresh: it re-reads the library at start when the last read
+  is more than a day old (as after an upgrade), then a day after each success,
+  retrying a failed read at its next 15-minute check, on a thread of its own.
+  `fsonos dj sync` (`POST /dj/sync`, MCP `dj_sync`) asks for a read now, and
+  `GET /dj/sync` (`dj_sync_status`) says where it stands.
 - Taste beyond the library is read with the owner's grant
   (`user-follow-read`, `user-top-read`, `user-read-recently-played`,
   `playlist-read-private`: owner-authorized, requested at sign-in, listed in
@@ -550,11 +553,12 @@ their standing preferences on every surface and in the daemon. What is on
   keywords, length and energy bias, and for classical music composers and
   periods. Keywords also match a work's genre tags, and the genre and decade
   constraints (`include_genres`, `exclude_genres`, `decades`) apply in the
-  engine and in `moods.toml` presets too. Because keywords see genres, `dinner`
-  and `focus` pick fitting songs on
-  a song library (the classical presets unchanged), and `sunday-morning`
-  relaxes its period filter on a library without classical music and says
-  so.
+  engine and in `moods.toml` presets too. Because keywords see genres,
+  `dinner` and `focus` pick fitting songs on a song library (the classical
+  presets unchanged). `sunday-morning` keeps its Renaissance and Baroque
+  periods for classical works, and for songs takes gospel, soul, folk,
+  acoustic, singer-songwriter and choral music instead (`song_keywords`,
+  which stand in for the periods on a song and relax with them).
 - Feedback rows are keyed by `work_key`, `composer_key` (a song's lead
   artist), `performer`, and now `artist_key` and `album_key`.
 - Standing preferences ship on every surface: the `preferences.toml` model
