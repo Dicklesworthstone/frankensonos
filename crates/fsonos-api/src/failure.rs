@@ -87,7 +87,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
