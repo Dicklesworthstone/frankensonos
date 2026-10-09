@@ -13,10 +13,12 @@
 //!
 //! Through the daemon a command sends the same request body the HTTP API
 //! documents and prints the same DTO the direct path prints, so `--json`
-//! output is the same either way. Commands with no route here (doctor,
-//! scenes, schedules, ...) run directly.
+//! output is the same either way; `fsonos sleep` through the daemon gets
+//! its fade. Commands with no route here (doctor, scenes, schedules, ...)
+//! run directly.
 
 use fsonos_api::surface::players::PlayerDto;
+use fsonos_api::surface::schedules::SleepTimerDto;
 use fsonos_api::{
     ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, MoveRequest, MuteRequest,
     OutcomeDto, PartyRequest, PlayFavoriteRequest, PlayRequest, RoomDto, UndoDto, ZoneDto,
@@ -31,7 +33,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::config::GlobalArgs;
-use crate::{Command, Switch, direct, emit};
+use crate::{Command, Switch, direct, emit, schedule_cmd};
 
 /// The daemon's address file in the data directory.
 pub const DAEMON_FILE: &str = "daemon.json";
@@ -320,6 +322,7 @@ fn routable(command: &Command) -> bool {
             | Command::Ungroup { .. }
             | Command::Move { .. }
             | Command::Party { .. }
+            | Command::Sleep(_)
     )
 }
 
@@ -385,6 +388,17 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             let undone: UndoDto = daemon.post("/undo", &serde_json::json!({ "own_only": mine }))?;
             emit(json, &undone, |u: &UndoDto| format!("{}\n", u.summary))?;
         }
+        Command::Sleep(args) => match schedule_cmd::sleep_request(args) {
+            None => {
+                let timers: Vec<SleepTimerDto> =
+                    daemon.get(&format!("/sleep?zone={}", pct(&args.zone)))?;
+                emit(json, &timers, |t| schedule_cmd::timers_text(&args.zone, t))?;
+            }
+            Some(req) => {
+                let timer: SleepTimerDto = daemon.post("/sleep", &req)?;
+                emit(json, &timer, schedule_cmd::timer_text)?;
+            }
+        },
         Command::Play {
             zone,
             favorite: Some(favorite),

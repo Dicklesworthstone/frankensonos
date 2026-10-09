@@ -5,8 +5,9 @@
 //! * A sleep timer set through serve (`POST /sleep`) fades the group out,
 //!   pauses it and puts its volume back when the daemon's time reaches it;
 //!   the speaker's own timer backs it up five minutes later until then.
-//!   On its own, the CLI sets only the speaker's own timer (`fsonos sleep`),
-//!   and extends and cancels it.
+//!   `fsonos sleep` goes through serve and gets the same fade; with
+//!   `--direct` the CLI sets only the speaker's own timer, and extends and
+//!   cancels it.
 //! * A daily DJ start in a mood, added with `fsonos schedule add` (in the
 //!   store, while serve runs), fires once at its time, as the CLI that added
 //!   it, not again that day, and again the next day; it pauses, resumes and
@@ -433,11 +434,44 @@ fn a_daily_dj_start_fires_once_a_day_as_the_client_that_added_it() {
     s.finish();
 }
 
-/// On its own the CLI sets the speaker's own timer: set, shown, extended,
+/// `fsonos sleep` through serve fades like `POST /sleep`; on its own
+/// (`--direct`) the CLI sets the speaker's own timer: set, shown, extended,
 /// cancelled, and with none left, nothing to extend.
 fn check_cli_sleep(s: &mut Scenario) {
+    let json = |run: &e2e::Run| serde_json::from_str::<Value>(&run.stdout).unwrap_or_default();
+    let run = s.cli("cli-daemon-sleep", &["--json", "sleep", ROOM, "20m"]);
+    let set = json(&run);
+    let backstop = speaker_timer(s);
+    s.check(
+        "cli-daemon-sleep",
+        "cli",
+        "fsonos sleep goes through serve: a fading timer, the speaker's own five minutes later",
+        run.code == Some(0)
+            && set["fades"] == true
+            && set["remaining_secs"] == 1200
+            && backstop.is_some_and(|left| (1490..=1500).contains(&left)),
+        format!("{run:?}; {backstop:?}"),
+    );
+    let run = s.cli("cli-daemon-show", &["--json", "sleep", ROOM]);
+    let listed = json(&run);
+    s.check(
+        "cli-daemon-show",
+        "cli",
+        "fsonos sleep <room> shows serve's fading timer",
+        run.code == Some(0) && listed[0]["fades"] == true,
+        format!("{run:?}"),
+    );
+    let run = s.cli("cli-daemon-cancel", &["sleep", ROOM, "--cancel"]);
+    s.check(
+        "cli-daemon-cancel",
+        "cli",
+        "--cancel through serve clears it, the speaker's own timer too",
+        run.code == Some(0) && speaker_timer(s).is_none(),
+        format!("{run:?}; {:?}", speaker_timer(s)),
+    );
+
     // On its own the CLI sets the speaker's own timer.
-    let run = s.cli("cli-sleep", &["sleep", ROOM, "30m"]);
+    let run = s.cli("cli-sleep", &["--direct", "sleep", ROOM, "30m"]);
     s.check(
         "cli-sleep",
         "cli",
@@ -447,7 +481,7 @@ fn check_cli_sleep(s: &mut Scenario) {
             && speaker_timer(s) == Some(1800),
         format!("{run:?}; {:?}", speaker_timer(s)),
     );
-    let run = s.cli("cli-show", &["sleep", ROOM]);
+    let run = s.cli("cli-show", &["--direct", "sleep", ROOM]);
     s.check(
         "cli-show",
         "cli",
@@ -455,7 +489,10 @@ fn check_cli_sleep(s: &mut Scenario) {
         run.code == Some(0) && run.stdout.contains("pauses in 30m"),
         format!("{run:?}"),
     );
-    let run = s.cli("cli-extend", &["sleep", ROOM, "--extend", "15m"]);
+    let run = s.cli(
+        "cli-extend",
+        &["--direct", "sleep", ROOM, "--extend", "15m"],
+    );
     s.check(
         "cli-extend",
         "cli",
@@ -463,7 +500,7 @@ fn check_cli_sleep(s: &mut Scenario) {
         run.code == Some(0) && speaker_timer(s) == Some(2700),
         format!("{run:?}; {:?}", speaker_timer(s)),
     );
-    let run = s.cli("cli-cancel", &["sleep", ROOM, "--cancel"]);
+    let run = s.cli("cli-cancel", &["--direct", "sleep", ROOM, "--cancel"]);
     s.check(
         "cli-cancel",
         "cli",
@@ -471,7 +508,10 @@ fn check_cli_sleep(s: &mut Scenario) {
         run.code == Some(0) && speaker_timer(s).is_none(),
         format!("{run:?}; {:?}", speaker_timer(s)),
     );
-    let run = s.cli("cli-extend-none", &["sleep", ROOM, "--extend", "5m"]);
+    let run = s.cli(
+        "cli-extend-none",
+        &["--direct", "sleep", ROOM, "--extend", "5m"],
+    );
     s.check(
         "cli-extend-none",
         "cli",

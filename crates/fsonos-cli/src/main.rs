@@ -224,8 +224,8 @@ enum Command {
     },
     /// Pause a room's group after a while: `fsonos sleep Bedroom 45m`,
     /// `--extend 15m`, `--cancel`, or with no duration show its timer.
-    /// On its own the CLI sets the speaker's own timer (no fade); `fsonos
-    /// serve` fades the group out first.
+    /// Through a running `fsonos serve` the group fades out first; on its
+    /// own (or `--direct`) the CLI sets the speaker's own timer (no fade).
     Sleep(schedule_cmd::SleepArgs),
     /// Schedules, run by `fsonos serve`: add, list, rm, pause, resume.
     Schedule {

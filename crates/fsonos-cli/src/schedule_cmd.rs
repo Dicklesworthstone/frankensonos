@@ -3,9 +3,10 @@
 //! the house policy's `cli` client). Also the scheduler options and clock of
 //! `fsonos serve`, which runs both.
 //!
-//! On its own the CLI sets the speaker's own sleep timer, which pauses
-//! without a fade; `fsonos serve` fades the group out (`POST /sleep`, the
-//! `set_sleep_timer` tool). Schedules go into the store in the data
+//! Through a running `fsonos serve` (see `crate::remote`) a sleep timer
+//! fades the group out (`POST /sleep`, the `set_sleep_timer` tool); on its
+//! own, or with `--direct`, the CLI sets the speaker's own timer, which
+//! pauses without a fade. Schedules go into the store in the data
 //! directory, where a running `fsonos serve` picks them up within a second.
 
 use chrono::{DateTime, FixedOffset};
@@ -76,35 +77,49 @@ fn surface(global: &GlobalArgs) -> Result<Surface, Failure> {
     Ok(crate::daemon::with_action_log(surface, &dir, "cli"))
 }
 
-/// `fsonos sleep`.
+/// `fsonos sleep`, directly.
 pub fn sleep(global: &GlobalArgs, args: &SleepArgs) -> anyhow::Result<()> {
     let surface = surface(global)?;
+    match sleep_request(args) {
+        None => {
+            let timers = surface.sleep_timers(&Client::Cli, Some(&args.zone))?;
+            crate::emit(global.json, &timers, |t| timers_text(&args.zone, t))
+        }
+        Some(req) => {
+            let timer = surface.set_sleep_timer(&Client::Cli, &req)?;
+            crate::emit(global.json, &timer, timer_text)
+        }
+    }
+}
+
+/// What `fsonos sleep` asks for: a timer set, extended or cancelled; `None`
+/// to show the timer.
+pub fn sleep_request(args: &SleepArgs) -> Option<SleepRequest> {
     let (duration, extend) = match (&args.duration, &args.extend) {
         (_, Some(by)) => (Some(by.clone()), true),
         (Some(after), None) => (Some(after.clone()), false),
-        (None, None) if !args.cancel => {
-            let timers = surface.sleep_timers(&Client::Cli, Some(&args.zone))?;
-            return crate::emit(
-                global.json,
-                &timers,
-                |timers: &Vec<SleepTimerDto>| match timers.first() {
-                    Some(timer) => format!("{}\n", timer.done),
-                    None => format!("no sleep timer runs in {}'s group\n", args.zone),
-                },
-            );
-        }
+        (None, None) if !args.cancel => return None,
         (None, None) => (None, false),
     };
-    let req = SleepRequest {
+    Some(SleepRequest {
         zone: args.zone.clone(),
         duration,
         extend,
         cancel: args.cancel,
-    };
-    let timer = surface.set_sleep_timer(&Client::Cli, &req)?;
-    crate::emit(global.json, &timer, |t: &SleepTimerDto| {
-        format!("{}\n", t.done)
     })
+}
+
+/// The timer `zone`'s group runs, or that it runs none.
+pub fn timers_text(zone: &str, timers: &[SleepTimerDto]) -> String {
+    match timers.first() {
+        Some(timer) => format!("{}\n", timer.done),
+        None => format!("no sleep timer runs in {zone}'s group\n"),
+    }
+}
+
+/// What a set, extended or cancelled timer did.
+pub fn timer_text(timer: &SleepTimerDto) -> String {
+    format!("{}\n", timer.done)
 }
 
 /// `fsonos schedule ...`.
