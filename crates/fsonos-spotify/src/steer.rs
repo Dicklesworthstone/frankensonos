@@ -49,6 +49,11 @@ pub struct DjConstraints {
     pub exclude_genres: Vec<String>,
     /// Only these periods (classical works).
     pub periods: Vec<Period>,
+    /// What stands in for [`Self::periods`] on a song, which has no period:
+    /// at least one of these in its title, album, artists or genres. A
+    /// mood's way to say "Baroque, or gospel and folk"; classical works
+    /// still answer to the periods alone.
+    pub song_keywords: Vec<String>,
     /// Only works released in these decades, each named by its first year
     /// (`1960` for the sixties).
     pub decades: Vec<u16>,
@@ -101,6 +106,13 @@ impl DjConstraints {
                 self.periods.clone()
             } else {
                 over.periods.clone()
+            },
+            // A song's stand-in for the periods goes with them: asked for
+            // the Baroque over a mood, the songs it let in leave too.
+            song_keywords: if over.periods.is_empty() && over.song_keywords.is_empty() {
+                self.song_keywords.clone()
+            } else {
+                over.song_keywords.clone()
             },
             decades: if over.decades.is_empty() {
                 self.decades.clone()
@@ -165,7 +177,7 @@ impl DjConstraints {
             Relaxation::Keywords => {
                 !self.include_keywords.is_empty() || !self.exclude_keywords.is_empty()
             }
-            Relaxation::Periods => !self.periods.is_empty(),
+            Relaxation::Periods => !self.periods.is_empty() || !self.song_keywords.is_empty(),
             Relaxation::Decades => !self.decades.is_empty(),
             Relaxation::Genres => {
                 !self.include_genres.is_empty() || !self.exclude_genres.is_empty()
@@ -343,7 +355,7 @@ pub fn admits(
             return false;
         }
     }
-    if on(Relaxation::Periods) && !c.periods.is_empty() && !c.periods.contains(&work.period) {
+    if on(Relaxation::Periods) && !in_period(work, haystack, c) {
         return false;
     }
     if on(Relaxation::Decades)
@@ -379,6 +391,15 @@ pub fn admits(
         }
     }
     true
+}
+
+/// The period filter: a classical work in one of the periods; a song (it has
+/// none) by the song keywords when there are some.
+fn in_period(work: &Work, haystack: &str, c: &DjConstraints) -> bool {
+    if !work.is_classical() && !c.song_keywords.is_empty() {
+        return c.song_keywords.iter().any(|k| keyword_matches(haystack, k));
+    }
+    c.periods.is_empty() || c.periods.contains(&work.period)
 }
 
 /// Whether the constraints ask for this work by name: an included artist,
@@ -795,11 +816,21 @@ impl Moods {
                     ..DjConstraints::default()
                 },
             ),
-            // The great choral eras, Renaissance and Baroque, on the bright side.
+            // The great choral eras, Renaissance and Baroque, or the songs
+            // that sit with them: gospel, soul, folk, acoustic, singer-
+            // songwriter and choirs. On the bright side.
             (
                 "sunday-morning",
                 DjConstraints {
                     periods: vec![Period::Renaissance, Period::Baroque],
+                    song_keywords: words(&[
+                        "gospel",
+                        "soul",
+                        "folk",
+                        "acoustic",
+                        "singer songwriter",
+                        "choral",
+                    ]),
                     energy_bias: 1,
                     ..DjConstraints::default()
                 },
@@ -1279,6 +1310,53 @@ mod tests {
         assert!(composer_matches("Saint-Saens", "Camille Saint-Saëns"));
         assert!(composer_matches("Gould", "Glenn Gould"));
         assert!(!composer_matches("Mozart", "Johann Sebastian Bach"));
+    }
+
+    #[test]
+    fn sunday_morning_takes_songs_and_keeps_its_classical_works() {
+        // Sunday morning: on the classical shelf, exactly the Renaissance and
+        // Baroque works the periods alone admit; on songs, by their genres
+        // (here a folk album and the acoustic take), no pop or jazz.
+        let moods = Moods::builtin();
+        let sunday = moods.get("sunday-morning").unwrap();
+        let shelf = works_of(&shelf_items(1));
+        let classical = shelf.works();
+        let shelf_hays: Vec<String> = classical.iter().map(haystack).collect();
+        let periods_only = DjConstraints {
+            periods: sunday.periods.clone(),
+            energy_bias: sunday.energy_bias,
+            ..DjConstraints::default()
+        };
+        let before = admit(classical, &shelf_hays, &periods_only, 5);
+        assert!(before.1.is_empty(), "{:?}", before.1);
+        assert_eq!(admit(classical, &shelf_hays, sunday, 5), before);
+        let mut folk = crate::test_shelf::song_items();
+        for item in folk
+            .iter_mut()
+            .filter(|i| i.artists[0] == "Nina Marsh Quartet")
+        {
+            item.genres = words(&["folk"]);
+        }
+        let folk = works_of(&folk);
+        let all = folk.works();
+        let hays: Vec<String> = all.iter().map(haystack).collect();
+        let (admitted, relaxed) = admit(all, &hays, sunday, 5);
+        assert!(relaxed.is_empty(), "{relaxed:?}");
+        assert_eq!(admitted.len(), 5);
+        assert!(admitted.iter().all(|&w| {
+            all[w].genres() == ["folk"] || all[w].movements[0].track.title.contains("Acoustic")
+        }));
+        // Asked for a period by name, the songs the mood let in leave.
+        let baroque = sunday.merged(&DjConstraints {
+            periods: vec![Period::Baroque],
+            ..DjConstraints::default()
+        });
+        assert!(baroque.song_keywords.is_empty());
+        let soul = sunday.merged(&DjConstraints {
+            include_genres: words(&["soul"]),
+            ..DjConstraints::default()
+        });
+        assert_eq!(soul.song_keywords, sunday.song_keywords);
     }
 
     #[test]
