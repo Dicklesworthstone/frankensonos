@@ -560,7 +560,7 @@ fn expand(keyword: &str) -> Vec<&str> {
     match keyword {
         "choral" | "choir" => CHORAL.to_vec(),
         "opera" => OPERA.to_vec(),
-        "vocal" | "voice" | "singing" => [CHORAL, OPERA, SONG].concat(),
+        "vocal" | "voice" | "singing" => [CHORAL, OPERA, SONG, &["vocal"]].concat(),
         "song" | "songs" | "lieder" => SONG.to_vec(),
         "piano" => PIANO.to_vec(),
         "chamber" => CHAMBER.to_vec(),
@@ -751,10 +751,23 @@ impl Moods {
     pub fn builtin() -> Self {
         let words = |list: &[&str]| list.iter().map(|&w| w.to_owned()).collect::<Vec<_>>();
         let moods = [
-            // Instrumental and mid-low energy: nothing sung.
+            // Instrumental and mid-low energy: nothing sung. Classical works,
+            // or songs from the instrumental genres.
             (
                 "focus",
                 DjConstraints {
+                    include_keywords: words(&[
+                        "classical",
+                        "instrumental",
+                        "ambient",
+                        "lo fi",
+                        "post rock",
+                        "soundtrack",
+                        "jazz",
+                        "piano",
+                        "electronic",
+                        "chill",
+                    ]),
                     exclude_keywords: words(&["vocal"]),
                     energy_bias: -1,
                     ..DjConstraints::default()
@@ -1234,6 +1247,31 @@ mod tests {
             keyword_matches(&hays[0], "pop"),
             "genres are in the haystack"
         );
+
+        // Focus: on songs, the instrumental genres (jazz and soundtrack
+        // here), nothing tagged vocal; on the classical shelf, every work
+        // not sung, as before.
+        let focus = moods.get("focus").unwrap();
+        let (admitted, relaxed) = admit(all, &hays, focus, 5);
+        assert!(relaxed.is_empty(), "{relaxed:?}");
+        assert_eq!(admitted.len(), 10);
+        assert!(
+            admitted
+                .iter()
+                .all(|&w| matches!(all[w].genres().as_slice(), ["jazz" | "soundtrack"]))
+        );
+        assert!(keyword_matches(
+            &normalize("Blue Hours vocal jazz"),
+            "vocal"
+        ));
+        let shelf = works_of(&shelf_items(1));
+        let classical = shelf.works();
+        let shelf_hays: Vec<String> = classical.iter().map(haystack).collect();
+        let unsung = shelf_hays
+            .iter()
+            .filter(|h| !keyword_matches(h, "vocal"))
+            .count();
+        assert_eq!(admit(classical, &shelf_hays, focus, 5).0.len(), unsung);
 
         assert!(composer_matches("Bach", "Johann Sebastian Bach"));
         assert!(composer_matches("J.S. Bach", "Johann Sebastian Bach"));
