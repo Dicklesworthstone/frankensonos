@@ -46,8 +46,10 @@ pub(crate) struct Fake {
     /// `GET /v1/artists/{id}`: each artist's genres (an id not here is a
     /// 404).
     pub(crate) artist_genres: HashMap<String, Vec<String>>,
-    /// Answer this many artist requests with a 429.
+    /// Answer this many artist requests with a 429, asking to wait this
+    /// many seconds (1 when unset).
     pub(crate) rate_limit_artists: u32,
+    pub(crate) artist_retry_after: Option<u32>,
     /// Answer every taste request (followed, top, recent, playlists) with a
     /// 500.
     pub(crate) taste_down: bool,
@@ -152,7 +154,8 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
         album_tracks(uri, rewrite)
     } else if uri.starts_with("/v1/artists/") && fake.rate_limit_artists > 0 {
         fake.rate_limit_artists -= 1;
-        json(429, "").with_header("Retry-After", "1")
+        let wait = fake.artist_retry_after.unwrap_or(1).to_string();
+        json(429, "").with_header("Retry-After", &wait)
     } else if let Some(id) = uri.strip_prefix("/v1/artists/") {
         artist(&fake, id)
     } else {

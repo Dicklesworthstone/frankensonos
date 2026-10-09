@@ -26,6 +26,9 @@ use crate::library::{LibraryItem, LibraryRead};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Refresh the access token this long before it expires.
 const REFRESH_MARGIN_SECS: i64 = 60;
+/// The longest rate limit a background read waits out ([`Session::get_brief`]).
+pub const BRIEF_WAIT_SECS: u64 = 5;
+
 /// How many 429s one GET waits out before giving up.
 const MAX_RATE_LIMIT_WAITS: u32 = 3;
 
@@ -166,6 +169,23 @@ impl Session {
     /// and retries once; a 429 waits out `Retry-After` (a few times); any
     /// other failure maps to [`SpotifyError::Api`].
     pub async fn get(&mut self, cx: &Cx, url: &str) -> Result<Vec<u8>, SpotifyError> {
+        self.get_waiting(cx, url, u64::MAX).await
+    }
+
+    /// [`Self::get`] for a background read (taste, artist genres, album
+    /// lists): a rate limit asking for more than [`BRIEF_WAIT_SECS`] is
+    /// returned as the 429 at once, so the read halts and resumes next sync
+    /// rather than holding the sync for up to an hour.
+    pub async fn get_brief(&mut self, cx: &Cx, url: &str) -> Result<Vec<u8>, SpotifyError> {
+        self.get_waiting(cx, url, BRIEF_WAIT_SECS).await
+    }
+
+    async fn get_waiting(
+        &mut self,
+        cx: &Cx,
+        url: &str,
+        max_wait_secs: u64,
+    ) -> Result<Vec<u8>, SpotifyError> {
         if !self.endpoints.is_api_url(url) {
             return Err(SpotifyError::Config(format!(
                 "refusing to send the Spotify token outside the Web API: {url}"
@@ -191,8 +211,11 @@ impl Session {
                     self.refresh(cx).await?;
                 }
                 429 if waits < MAX_RATE_LIMIT_WAITS => {
-                    waits += 1;
                     let secs = retry_after_secs(response.header_value("Retry-After"));
+                    if secs > max_wait_secs {
+                        return Err(api_error(429, &response.body));
+                    }
+                    waits += 1;
                     sleep(wall_now(), Duration::from_secs(secs)).await;
                 }
                 status => return Err(api_error(status, &response.body)),
@@ -218,7 +241,7 @@ impl Session {
         artist_id: &str,
     ) -> Result<Vec<String>, SpotifyError> {
         let url = self.endpoints.artist(artist_id);
-        let body = self.get(cx, &url).await?;
+        let body = self.get_brief(cx, &url).await?;
         Ok(Artist::parse(&body)?.genres)
     }
 

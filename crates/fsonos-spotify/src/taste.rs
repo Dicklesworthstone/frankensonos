@@ -224,7 +224,7 @@ impl Reader<'_> {
         if self.read.halted.is_some() {
             return None;
         }
-        let body = match self.session.get(self.cx, url).await {
+        let body = match self.session.get_brief(self.cx, url).await {
             Ok(body) => body,
             Err(e) if halts(&e) => {
                 self.read.halted = Some(format!("{what}: {e}"));

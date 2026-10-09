@@ -245,6 +245,35 @@ mod tests {
     }
 
     #[test]
+    fn a_long_rate_limit_halts_at_once_instead_of_waiting() {
+        let (spotify, cache, dir) = spotify("genres-429-long");
+        {
+            let mut fake = spotify.state.lock().unwrap();
+            fake.rate_limit_artists = 1;
+            fake.artist_retry_after = Some(3600);
+        }
+        let endpoints = spotify.endpoints();
+        let started = std::time::Instant::now();
+        let read = runtime().block_on(async move {
+            let cx = Cx::current().expect("ambient Cx");
+            let http = Client::default_for_runtime(&cx);
+            let mut session = Session::open(config(), cache, http)
+                .unwrap()
+                .with_endpoints(endpoints);
+            let mut store = MemStore::default();
+            tag_genres(&mut session, &cx, &mut store, &mut library(), NOW).await
+        });
+        spotify.stop();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "a background read never waits out an hour-long Retry-After"
+        );
+        assert!(read.halted.is_some(), "{read:?}");
+        assert_eq!(read.fetched, 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_rate_limit_halts_the_read_and_the_next_sync_resumes() {
         let (spotify, cache, dir) = spotify("genres-429");
         // More 429s than one GET waits out.

@@ -245,7 +245,7 @@ pub async fn fetch_album_tracks(
         if !requested.insert(url.clone()) {
             return Err(SpotifyError::Decode(format!("paging loop at {url}")));
         }
-        let page = Paging::<SimplifiedTrack>::parse(&session.get(cx, &url).await?)?;
+        let page = Paging::<SimplifiedTrack>::parse(&session.get_brief(cx, &url).await?)?;
         tracks.extend(page.items.iter().filter_map(album_track));
         next = page.next;
     }
