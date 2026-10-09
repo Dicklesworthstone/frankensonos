@@ -318,6 +318,29 @@ fn album_tracks(uri: &str, rewrite: impl Fn(&[u8]) -> String) -> Response {
                 "uri":"spotify:track:FakeTrack0000000000008"}],
                 "next":null,"offset":50,"limit":50,"total":60}"#,
         )
+    } else if uri.starts_with("/v1/albums/FakeAlbum0000000000003/tracks") {
+        // The Suite bergamasque whose Clair de lune the owner liked.
+        let movement = |n: u32, name: &str, id: &str| {
+            serde_json::json!({
+                "artists": [{ "name": "Claude Debussy" }], "duration_ms": 240_000,
+                "disc_number": 1, "track_number": n, "id": id, "is_playable": true,
+                "name": format!("Suite bergamasque, L. 75: {name}"),
+                "uri": format!("spotify:track:{id}"),
+            })
+        };
+        json(
+            200,
+            serde_json::json!({
+                "items": [
+                    movement(1, "I. Prélude", "FakeTrack0000000000201"),
+                    movement(2, "II. Menuet", "FakeTrack0000000000202"),
+                    movement(3, "III. Clair de lune", "FakeTrack0000000000006"),
+                    movement(4, "IV. Passepied", "FakeTrack0000000000204"),
+                ],
+                "next": null, "offset": 0, "limit": 50, "total": 4,
+            })
+            .to_string(),
+        )
     } else if uri.starts_with("/v1/albums/FakeAlbumUnplayable001/tracks") {
         json(
             200,

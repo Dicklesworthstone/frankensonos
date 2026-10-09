@@ -1,7 +1,9 @@
 //! The library cache: the owner's Spotify library persisted in the store's
 //! `spotify_library` table, so the DJ starts from disk instead of a full
-//! re-read. [`sync_library`] reads the library and writes it;
-//! [`pool_from_store`] rebuilds the DJ's pool from the cached rows.
+//! re-read. [`sync_library`] reads the library and writes it, and caches
+//! the album track lists that complete partly-held works;
+//! [`works_from_store`] rebuilds the DJ's works from the cache, no network
+//! needed ([`pool_from_store`] is its track-level half).
 //!
 //! Read-only on the Spotify side: syncing never starts playback or changes
 //! the owner's library.
@@ -22,10 +24,13 @@ use fsonos_core::store::{LibraryEntry, LibraryOrigin, Store};
 
 use crate::SpotifyError;
 use crate::classical::{CandidatePool, ClassicalTrack};
+use crate::dj::{DjConfig, WorkPool};
+use crate::expand::{AlbumMisses, complete_from_cache, complete_works};
 use crate::genres::tag_genres;
 use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, split_artists};
 use crate::session::Session;
 use crate::taste::read_taste;
+use crate::works::group_works;
 
 /// What one sync did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -79,7 +84,22 @@ pub async fn sync_library<S: Store + ?Sized>(
     }
     taste.weigh(&mut items);
     tag_genres(session, cx, store, &mut items, now).await;
-    apply_library_read(store, &items)
+    let report = apply_library_read(store, &items)?;
+    // Read and cache the album track lists that complete partly-held works
+    // (a liked Adagietto), so the DJ plays them whole from the cache. Best
+    // effort, like the reads above: a halted run resumes next sync.
+    let works = group_works(pool_from_store(store)?.tracks());
+    let _ = complete_works(
+        session,
+        cx,
+        store,
+        works,
+        &DjConfig::default(),
+        now,
+        &mut AlbumMisses::default(),
+    )
+    .await;
+    Ok(report)
 }
 
 /// Write a *complete* library read to the store. Tracks the owner has since
@@ -126,6 +146,15 @@ pub fn pool_from_store<S: Store + ?Sized>(store: &S) -> Result<CandidatePool, Sp
         .map(from_entry)
         .collect();
     Ok(CandidatePool::build(&items))
+}
+
+/// The DJ's works from the cache: the candidate pool grouped into works,
+/// with partly-held works completed from the album track lists the store has
+/// cached (a sync fills that cache). No network: what the daemon builds its
+/// DJ from.
+pub fn works_from_store<S: Store + ?Sized>(store: &S) -> Result<WorkPool, SpotifyError> {
+    let works = group_works(pool_from_store(store)?.tracks());
+    Ok(WorkPool::from_works(complete_from_cache(store, works)?))
 }
 
 /// A library item as a cache row. `candidate` is the item's analysis when
@@ -385,7 +414,7 @@ mod tests {
         let endpoints = spotify.endpoints();
         let state = Arc::clone(&spotify.state);
 
-        let (first, second, pool, rows) = runtime().block_on(async move {
+        let (first, second, pool, rows, debussy) = runtime().block_on(async move {
             let cx = Cx::current().expect("ambient Cx");
             let http = Client::default_for_runtime(&cx);
             let mut session = Session::open(config(), cache, http)
@@ -393,6 +422,12 @@ mod tests {
                 .with_endpoints(endpoints);
             let mut store = MemStore::default();
             let first = sync_library(&mut session, &cx, &mut store).await.unwrap();
+            // The liked Clair de lune comes back as its whole suite, from the
+            // album list the sync cached.
+            let works = works_from_store(&store).unwrap();
+            let debussy = works
+                .work_of("spotify:track:FakeTrack0000000000006")
+                .map(|w| w.movements.len());
             // The owner un-likes everything; the next sync retires it.
             state.lock().unwrap().liked_tracks =
                 Some(r#"{"items":[],"next":null,"offset":0,"limit":50,"total":0}"#.into());
@@ -402,6 +437,7 @@ mod tests {
                 second,
                 pool_from_store(&store).unwrap(),
                 store.library().unwrap(),
+                debussy,
             )
         });
         spotify.stop();
@@ -427,6 +463,7 @@ mod tests {
             }
         );
         assert_eq!(pool.len(), 5);
+        assert_eq!(debussy, Some(4), "the suite, completed from its album");
         // The artists' genres reach the cache and the pool the daemon builds.
         let aria = rows
             .iter()
