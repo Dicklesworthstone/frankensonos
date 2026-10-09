@@ -541,9 +541,29 @@ const CLASSICAL_GENRE_STEMS: &[&str] = &[
     "early modern",
 ];
 
+/// Words that make a classical-sounding tag another genre's: "baroque pop",
+/// "chamber pop", "symphonic metal", "classical crossover".
+const NON_CLASSICAL_WORDS: &[&str] = &[
+    "pop",
+    "rock",
+    "metal",
+    "folk",
+    "indie",
+    "hip hop",
+    "rap",
+    "jazz",
+    "electronic",
+    "dance",
+    "punk",
+    "soul",
+    "country",
+    "crossover",
+];
+
 fn is_classical_genre(genre: &str) -> bool {
     let norm = normalize(genre);
     CLASSICAL_GENRE_STEMS.iter().any(|stem| norm.contains(stem))
+        && !has_any(&norm, NON_CLASSICAL_WORDS)
 }
 
 fn is_classical_label(label: &str) -> bool {
@@ -902,8 +922,9 @@ pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
 
 /// Analyse one library item as a song: its own work, titled without version
 /// notes (`- Remastered 2011`), credited to its lead artist, of unknown
-/// period and neutral energy. Pop, jazz, hip-hop and every other genre take
-/// this path; nothing in a song's title is read as a movement or a tempo.
+/// period, with its energy from its genre tags ([`genre_energy`]; neutral
+/// without them). Pop, jazz, hip-hop and every other genre take this path;
+/// nothing in a song's title is read as a movement or a tempo.
 #[must_use]
 pub fn analyze_song(item: &LibraryItem) -> ClassicalTrack {
     let artist = item
@@ -931,7 +952,7 @@ pub fn analyze_song(item: &LibraryItem) -> ClassicalTrack {
         disc_number: item.disc_number,
         track_number: item.track_number,
         movement: None,
-        energy: NEUTRAL_ENERGY,
+        energy: genre_energy(&item.genres).unwrap_or(NEUTRAL_ENERGY),
         origin: item.origin,
         expanded: false,
     }
@@ -939,6 +960,77 @@ pub fn analyze_song(item: &LibraryItem) -> ClassicalTrack {
 
 /// The energy of a track whose metadata says nothing about it.
 const NEUTRAL_ENERGY: u8 = 50;
+
+/// Genre words with a typical energy on the 0–100 scale, most specific
+/// phrases first (a tag takes its first match: "indie folk" is folk). With
+/// no audio features for new apps, a song's genres are the only guide to its
+/// energy; a rough one, which the time-of-day target needs all the same.
+const GENRE_ENERGY: &[(&str, u8)] = &[
+    ("death metal", 92),
+    ("drum and bass", 88),
+    ("pop punk", 78),
+    ("hard rock", 78),
+    ("dance pop", 70),
+    ("folk rock", 55),
+    ("soft rock", 42),
+    ("cool jazz", 34),
+    ("smooth jazz", 38),
+    ("singer songwriter", 36),
+    ("bossa nova", 36),
+    ("lo fi", 30),
+    ("new age", 20),
+    ("thrash", 90),
+    ("metal", 86),
+    ("hardcore", 86),
+    ("punk", 84),
+    ("edm", 84),
+    ("techno", 82),
+    ("trance", 80),
+    ("house", 76),
+    ("dance", 76),
+    ("disco", 74),
+    ("reggaeton", 72),
+    ("trap", 72),
+    ("funk", 70),
+    ("rap", 68),
+    ("hip hop", 66),
+    ("rock", 66),
+    ("bebop", 64),
+    ("latin", 64),
+    ("swing", 62),
+    ("pop", 60),
+    ("country", 56),
+    ("reggae", 54),
+    ("soul", 50),
+    ("r b", 50),
+    ("blues", 46),
+    ("soundtrack", 45),
+    ("jazz", 44),
+    ("folk", 38),
+    ("indie", 54),
+    ("acoustic", 34),
+    ("chill", 30),
+    ("ambient", 15),
+    ("sleep", 10),
+];
+
+/// A song's energy from its genre tags: the mean of the tags any
+/// [`GENRE_ENERGY`] phrase names; `None` when none does.
+#[must_use]
+pub fn genre_energy(genres: &[String]) -> Option<u8> {
+    let found: Vec<u32> = genres
+        .iter()
+        .filter_map(|tag| {
+            let tag = normalize(tag);
+            GENRE_ENERGY
+                .iter()
+                .find(|(phrase, _)| has_phrase(&tag, phrase))
+                .map(|&(_, energy)| u32::from(energy))
+        })
+        .collect();
+    let count = u32::try_from(found.len()).ok().filter(|&n| n > 0)?;
+    u8::try_from(found.iter().sum::<u32>() / count).ok()
+}
 
 fn detect_composer(item: &LibraryItem) -> Option<&'static Composer> {
     item.artists
@@ -1113,6 +1205,7 @@ mod tests {
             source_uri: format!("spotify:track:{}", normalize(title).replace(' ', "")),
             title: title.into(),
             artists: artists.iter().map(|s| (*s).to_owned()).collect(),
+            artist_id: None,
             album: album.map(str::to_owned),
             album_uri: None,
             album_artists: Vec::new(),
@@ -1416,6 +1509,43 @@ mod tests {
     }
 
     #[test]
+    fn a_pop_genre_with_a_classical_word_is_not_classical() {
+        let tagged = |genres: &[&str]| {
+            let mut song = item("Lanterns", &["The Lantern Club"], Some("Harbor Lights"));
+            song.genres = genres.iter().map(|&g| g.to_owned()).collect();
+            classical_score(&song)
+        };
+        assert!(tagged(&["baroque pop", "chamber pop"]) < CLASSICAL_THRESHOLD);
+        assert!(tagged(&["symphonic metal"]) < CLASSICAL_THRESHOLD);
+        assert!(tagged(&["classical crossover"]) < CLASSICAL_THRESHOLD);
+        assert!(tagged(&["baroque"]) >= CLASSICAL_THRESHOLD);
+        assert!(tagged(&["late romantic era"]) >= CLASSICAL_THRESHOLD);
+        assert!(is_classical_genre("Early Music") && !is_classical_genre("indie folk"));
+    }
+
+    #[test]
+    fn a_songs_genres_set_its_energy() {
+        let tags = |list: &[&str]| list.iter().map(|&t| t.to_owned()).collect::<Vec<_>>();
+        assert_eq!(genre_energy(&tags(&["ambient"])), Some(15));
+        assert_eq!(genre_energy(&tags(&["Death Metal"])), Some(92));
+        assert_eq!(
+            genre_energy(&tags(&["indie folk"])),
+            Some(38),
+            "folk, not indie"
+        );
+        assert_eq!(genre_energy(&tags(&["cool jazz", "hard bop"])), Some(34));
+        assert_eq!(genre_energy(&tags(&["pop", "rap"])), Some(64), "the mean");
+        assert_eq!(genre_energy(&tags(&["R&B"])), Some(50));
+        assert_eq!(genre_energy(&tags(&["polka"])), None);
+        assert_eq!(genre_energy(&[]), None);
+        let mut calm = item("Low Light", &["Juniper Vale"], Some("Paper Moons"));
+        calm.genres = tags(&["ambient", "new age"]);
+        assert_eq!(analyze_song(&calm).energy, 17);
+        let plain = item("Low Light", &["Juniper Vale"], Some("Paper Moons"));
+        assert_eq!(analyze_song(&plain).energy, 50, "no genre: neutral");
+    }
+
+    #[test]
     fn the_pool_is_the_whole_library_in_any_genre() {
         use std::collections::HashSet;
 
@@ -1452,9 +1582,11 @@ mod tests {
             let song = t.track.source_uri.starts_with("spotify:track:song-");
             assert_eq!(t.classical, !song, "{}", t.track.title);
             if song {
-                // A song: its own title, its lead artist, nothing read into it.
+                // A song: its own title, its lead artist, its energy from its
+                // genre, nothing read into its title.
                 assert_eq!(t.movement, None, "{}", t.track.title);
-                assert_eq!((t.period, t.energy), (Period::Unknown, 50));
+                let energy = genre_energy(std::slice::from_ref(&genre_of(t)));
+                assert_eq!((t.period, Some(t.energy)), (Period::Unknown, energy));
                 assert!(!t.known_composer);
                 let artist = t.track.artist.as_deref().unwrap_or_default();
                 assert!(
@@ -1472,7 +1604,10 @@ mod tests {
         let acoustic = pool.get("spotify:track:song-1-4").unwrap();
         assert_eq!(acoustic.work, "Harbor Lights", "version notes dropped");
         let lullaby = pool.get("spotify:track:song-0-3").unwrap();
-        assert_eq!(lullaby.energy, 50, "a song's title is not a tempo marking");
+        assert_eq!(
+            lullaby.energy, 60,
+            "pop's energy: a title is not a tempo marking"
+        );
 
         // Classical stays one case: composer, period and movements.
         let symphony = pool

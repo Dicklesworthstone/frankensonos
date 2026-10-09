@@ -497,6 +497,14 @@ impl Endpoints {
         )
     }
 
+    /// One artist (`GET /artists/{id}`): its genre tags. The batch form is
+    /// gone for development-mode apps (February 2026), so it is one request
+    /// per artist.
+    #[must_use]
+    pub fn artist(&self, artist_id: &str) -> String {
+        format!("{}/artists/{}", self.api, percent_encode(artist_id))
+    }
+
     /// A page of one album's tracks, for albums longer than their embedded
     /// page.
     #[must_use]
@@ -536,6 +544,24 @@ impl<T: serde::de::DeserializeOwned> Paging<T> {
     pub fn parse(body: &[u8]) -> Result<Self, SpotifyError> {
         serde_json::from_slice(body)
             .map_err(|e| SpotifyError::Decode(format!("paging object: {e}")))
+    }
+}
+
+/// `GET /artists/{id}`: the fields the DJ reads. Development-mode apps
+/// (February 2026) lose `followers` and `popularity`, not `genres`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Artist {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub genres: Vec<String>,
+}
+
+impl Artist {
+    pub fn parse(body: &[u8]) -> Result<Self, SpotifyError> {
+        serde_json::from_slice(body).map_err(|e| SpotifyError::Decode(format!("artist: {e}")))
     }
 }
 
@@ -692,6 +718,7 @@ impl Album {
             source_uri: track.uri.clone(),
             title: track.name.clone(),
             artists: names(&track.artists),
+            artist_id: lead_id(&track.artists),
             album: Some(self.name.clone()),
             album_uri: Some(self.uri.clone()),
             album_artists: names(&self.artists),
@@ -720,6 +747,7 @@ impl SavedTrack {
             source_uri: track.uri.clone(),
             title: track.name.clone(),
             artists: names(&track.artists),
+            artist_id: lead_id(&track.artists),
             album: Some(track.album.name.clone()),
             album_uri: track.album.uri.clone(),
             album_artists: names(&track.album.artists),
@@ -740,6 +768,14 @@ impl SavedTrack {
 /// `"2019-05-10"`); `None` when absent or unknown (`"0000"`).
 fn release_year(date: Option<&str>) -> Option<u16> {
     date?.get(..4)?.parse::<u16>().ok().filter(|&year| year > 0)
+}
+
+/// The lead (first credited) artist's id, when the read gave one.
+fn lead_id(artists: &[SimplifiedArtist]) -> Option<String> {
+    artists
+        .first()
+        .and_then(|a| a.id.clone())
+        .filter(|id| !id.is_empty())
 }
 
 /// Sonos renders only real Spotify tracks the owner's market can play.
@@ -1363,6 +1399,7 @@ mod tests {
         assert_eq!(aria.source_uri, "spotify:track:FakeTrack0000000000001");
         assert_eq!(aria.title, "Goldberg Variations, BWV 988: Aria");
         assert_eq!(aria.artists, ["Johann Sebastian Bach", "Test Pianist"]);
+        assert_eq!(aria.artist_id.as_deref(), Some("FakeArtist000000000001"));
         assert_eq!(
             aria.album_uri.as_deref(),
             Some("spotify:album:FakeAlbum0000000000001")
@@ -1392,6 +1429,25 @@ mod tests {
             long.library_items()[0].release_year,
             Some(2019),
             "2019-05-10"
+        );
+    }
+
+    #[test]
+    fn artists_parse_with_or_without_the_dev_mode_fields() {
+        let classic = Artist::parse(
+            br#"{"id":"FakeArtist01","name":"Nina Marsh Quartet","type":"artist",
+                "genres":["cool jazz","hard bop"],"popularity":40,
+                "followers":{"href":null,"total":12}}"#,
+        )
+        .unwrap();
+        assert_eq!(classic.genres, ["cool jazz", "hard bop"]);
+        let dev_mode =
+            Artist::parse(br#"{"id":"FakeArtist02","name":"X","type":"artist"}"#).unwrap();
+        assert!(dev_mode.genres.is_empty());
+        assert!(Artist::parse(br#"{"genres":"jazz"}"#).is_err());
+        assert_eq!(
+            Endpoints::default().artist("FakeArtist01"),
+            "https://api.spotify.com/v1/artists/FakeArtist01"
         );
     }
 

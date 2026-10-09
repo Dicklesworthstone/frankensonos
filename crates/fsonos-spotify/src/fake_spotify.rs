@@ -1,10 +1,11 @@
 //! A fake Spotify (accounts + Web API) served by a real asupersync
 //! `Http1Listener` on loopback, for tests of the I/O half of the client: no
 //! mocks of the HTTP client, no network beyond 127.0.0.1. It verifies PKCE
-//! server-side, rotates tokens on refresh, can rate-limit once, and serves
-//! the library and album-track fixtures with paging links rewritten to
-//! itself.
+//! server-side, rotates tokens on refresh, can rate-limit, and serves the
+//! library and album-track fixtures with paging links rewritten to itself,
+//! and artists with the genres a test gives them.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -42,6 +43,11 @@ pub(crate) struct Fake {
     pub(crate) liked_tracks: Option<String>,
     /// Answer this many album-tracks requests (any album) with a 429.
     pub(crate) rate_limit_albums: u32,
+    /// `GET /v1/artists/{id}`: each artist's genres (an id not here is a
+    /// 404).
+    pub(crate) artist_genres: HashMap<String, Vec<String>>,
+    /// Answer this many artist requests with a 429.
+    pub(crate) rate_limit_artists: u32,
     pub(crate) log: Vec<String>,
 }
 
@@ -138,8 +144,25 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
         json(429, "").with_header("Retry-After", "1")
     } else if uri.starts_with("/v1/albums/") {
         album_tracks(uri, rewrite)
+    } else if uri.starts_with("/v1/artists/") && fake.rate_limit_artists > 0 {
+        fake.rate_limit_artists -= 1;
+        json(429, "").with_header("Retry-After", "1")
+    } else if let Some(id) = uri.strip_prefix("/v1/artists/") {
+        artist(&fake, id)
     } else {
         not_found()
+    }
+}
+
+/// `GET /v1/artists/{id}`: the genres the test gave the artist.
+fn artist(fake: &Fake, id: &str) -> Response {
+    match fake.artist_genres.get(id) {
+        Some(genres) => json(
+            200,
+            serde_json::json!({ "id": id, "name": id, "type": "artist", "genres": genres })
+                .to_string(),
+        ),
+        None => not_found(),
     }
 }
 

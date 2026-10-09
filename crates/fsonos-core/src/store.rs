@@ -416,6 +416,18 @@ pub trait Store {
     /// `album_uri`'s cached track list, if it has one.
     fn album_tracks(&self, album_uri: &str) -> Result<Option<CachedAlbum>, StoreError>;
 
+    /// Cache an artist's genre tags (none is an answer too: the Web API had
+    /// no tags for it), read at `fetched_at`.
+    fn save_artist_genres(
+        &mut self,
+        artist_id: &str,
+        genres: &[String],
+        fetched_at: i64,
+    ) -> Result<(), StoreError>;
+
+    /// An artist's cached genre tags and when they were read.
+    fn artist_genres(&self, artist_id: &str) -> Result<Option<(Vec<String>, i64)>, StoreError>;
+
     /// Log `action`; returns its id.
     fn record_action(&mut self, action: &Action) -> Result<i64, StoreError>;
 
@@ -487,6 +499,7 @@ pub struct MemStore {
     dj_sessions: BTreeMap<String, DjSession>,
     feedback: Vec<Feedback>,
     album_tracks: BTreeMap<String, (TracksByPosition, i64)>,
+    artist_genres: BTreeMap<String, (Vec<String>, i64)>,
     actions: Vec<LoggedAction>,
     scenes: BTreeMap<String, StoredScene>,
     schedules: BTreeMap<i64, StoredSchedule>,
@@ -694,6 +707,21 @@ impl Store for MemStore {
                 tracks: tracks.values().cloned().collect(),
                 fetched_at: *fetched_at,
             }))
+    }
+
+    fn save_artist_genres(
+        &mut self,
+        artist_id: &str,
+        genres: &[String],
+        fetched_at: i64,
+    ) -> Result<(), StoreError> {
+        self.artist_genres
+            .insert(artist_id.to_string(), (genres.to_vec(), fetched_at));
+        Ok(())
+    }
+
+    fn artist_genres(&self, artist_id: &str) -> Result<Option<(Vec<String>, i64)>, StoreError> {
+        Ok(self.artist_genres.get(artist_id).cloned())
     }
 
     fn record_action(&mut self, action: &Action) -> Result<i64, StoreError> {

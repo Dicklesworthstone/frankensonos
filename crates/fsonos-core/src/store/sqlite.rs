@@ -135,10 +135,29 @@ const MIGRATIONS: &[Migration] = &[
         CREATE INDEX feedback_by_album ON feedback (album_key, at);
     ",
     },
+    Migration {
+        version: 8,
+        name: "artist genre cache for the genre-agnostic DJ (plan §12.1)",
+        sql: "
+        CREATE TABLE artist_genres (
+            artist_id TEXT PRIMARY KEY, genres TEXT, fetched_at INTEGER NOT NULL);
+    ",
+    },
 ];
 
-/// How `spotify_library.genres` joins a row's tags.
+/// How `spotify_library.genres` and `artist_genres.genres` join tags.
 const GENRE_SEPARATOR: &str = "; ";
+
+fn split_genres(joined: Option<String>) -> Vec<String> {
+    joined
+        .map(|g| {
+            g.split(GENRE_SEPARATOR)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 /// The durable store: one fsqlite database file in the daemon's data dir.
 #[derive(Debug)]
@@ -525,14 +544,7 @@ impl Store for SqliteStore {
                 disc_number: small(10, "disc_number")?,
                 track_number: small(11, "track_number")?,
                 work_key: opt_text(r, 12)?,
-                genres: opt_text(r, 13)?
-                    .map(|g| {
-                        g.split(GENRE_SEPARATOR)
-                            .filter(|t| !t.is_empty())
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default(),
+                genres: split_genres(opt_text(r, 13)?),
                 release_year: opt_int(r, 14)?
                     .map(|y| {
                         u16::try_from(y)
@@ -811,6 +823,34 @@ impl Store for SqliteStore {
             })
             .collect::<Result<_, StoreError>>()?;
         Ok(Some(CachedAlbum { tracks, fetched_at }))
+    }
+
+    fn save_artist_genres(
+        &mut self,
+        artist_id: &str,
+        genres: &[String],
+        fetched_at: i64,
+    ) -> Result<(), StoreError> {
+        self.execute(
+            "INSERT OR REPLACE INTO artist_genres (artist_id, genres, fetched_at) \
+             VALUES (?1, ?2, ?3)",
+            &[
+                artist_id.into(),
+                opt_value((!genres.is_empty()).then(|| genres.join(GENRE_SEPARATOR))),
+                fetched_at.into(),
+            ],
+        )
+    }
+
+    fn artist_genres(&self, artist_id: &str) -> Result<Option<(Vec<String>, i64)>, StoreError> {
+        let rows = self.query(
+            "SELECT genres, fetched_at FROM artist_genres WHERE artist_id = ?1",
+            &[artist_id.into()],
+        )?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        Ok(Some((split_genres(opt_text(row, 0)?), int(row, 1)?)))
     }
 
     fn record_action(&mut self, action: &Action) -> Result<i64, StoreError> {
@@ -1095,7 +1135,7 @@ mod tests {
         v1.close().unwrap();
 
         let store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].track.source_uri, "spotify:track:old");
@@ -1133,7 +1173,7 @@ mod tests {
         v2.close().unwrap();
 
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].origin, LibraryOrigin::LikedTrack);
@@ -1187,7 +1227,7 @@ mod tests {
         v6.close().unwrap();
 
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 2, "no row lost");
         // Legacy rows keep their candidacy: is_classical decides.

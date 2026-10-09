@@ -15,12 +15,14 @@
 //! steering and the explicit preference work from it.
 
 use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use asupersync::Cx;
 use fsonos_core::store::{LibraryEntry, LibraryOrigin, Store};
 
 use crate::SpotifyError;
 use crate::classical::{CandidatePool, ClassicalTrack};
+use crate::genres::tag_genres;
 use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, split_artists};
 use crate::session::Session;
 
@@ -38,14 +40,20 @@ pub struct LibrarySync {
     pub retired: usize,
 }
 
-/// Read the owner's whole library from Spotify and write it to the store.
-/// Nothing is written unless the read completes.
+/// Read the owner's whole library from Spotify, tag it with its artists'
+/// genres ([`tag_genres`]: best effort, a halted read resumes next sync),
+/// and write it to the store. Nothing is written unless the library read
+/// completes.
 pub async fn sync_library<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
     store: &mut S,
 ) -> Result<LibrarySync, SpotifyError> {
-    let items = session.read_library(cx).await?;
+    let mut items = session.read_library(cx).await?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    tag_genres(session, cx, store, &mut items, now).await;
     apply_library_read(store, &items)
 }
 
@@ -342,11 +350,15 @@ mod tests {
             let mut fake = spotify.state.lock().unwrap();
             "access-1".clone_into(&mut fake.access);
             "refresh-1".clone_into(&mut fake.refresh);
+            fake.artist_genres.insert(
+                "FakeArtist000000000001".into(),
+                vec!["baroque".into(), "early music".into()],
+            );
         }
         let endpoints = spotify.endpoints();
         let state = Arc::clone(&spotify.state);
 
-        let (first, second, pool_len) = runtime().block_on(async move {
+        let (first, second, pool, rows) = runtime().block_on(async move {
             let cx = Cx::current().expect("ambient Cx");
             let http = Client::default_for_runtime(&cx);
             let mut session = Session::open(config(), cache, http)
@@ -358,7 +370,12 @@ mod tests {
             state.lock().unwrap().liked_tracks =
                 Some(r#"{"items":[],"next":null,"offset":0,"limit":50,"total":0}"#.into());
             let second = sync_library(&mut session, &cx, &mut store).await.unwrap();
-            (first, second, pool_from_store(&store).unwrap().len())
+            (
+                first,
+                second,
+                pool_from_store(&store).unwrap(),
+                store.library().unwrap(),
+            )
         });
         spotify.stop();
 
@@ -382,7 +399,15 @@ mod tests {
                 retired: 1
             }
         );
-        assert_eq!(pool_len, 5);
+        assert_eq!(pool.len(), 5);
+        // The artists' genres reach the cache and the pool the daemon builds.
+        let aria = rows
+            .iter()
+            .find(|r| r.track.source_uri == "spotify:track:FakeTrack0000000000001")
+            .unwrap();
+        assert_eq!(aria.genres, ["baroque", "early music"]);
+        let pooled = pool.get("spotify:track:FakeTrack0000000000001").unwrap();
+        assert_eq!(pooled.genres, ["baroque", "early music"]);
         std::fs::remove_dir_all(&data_dir).unwrap();
     }
 }

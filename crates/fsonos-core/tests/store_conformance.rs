@@ -629,6 +629,29 @@ fn schedules(s: &mut dyn Store) {
     assert_eq!(s.schedules().unwrap().len(), 1);
 }
 
+fn artist_genres(s: &mut dyn Store) {
+    assert_eq!(s.artist_genres("FakeArtist01").unwrap(), None);
+    let tags = vec!["cool jazz".to_string(), "hard bop".to_string()];
+    s.save_artist_genres("FakeArtist01", &tags, 1_000).unwrap();
+    // No tags is an answer too, so the artist isn't read again.
+    s.save_artist_genres("FakeArtist02", &[], 1_001).unwrap();
+    assert_eq!(
+        s.artist_genres("FakeArtist01").unwrap(),
+        Some((tags.clone(), 1_000))
+    );
+    assert_eq!(
+        s.artist_genres("FakeArtist02").unwrap(),
+        Some((Vec::new(), 1_001))
+    );
+    // A re-read replaces the tags and the time.
+    s.save_artist_genres("FakeArtist01", &tags[..1], 2_000)
+        .unwrap();
+    assert_eq!(
+        s.artist_genres("FakeArtist01").unwrap(),
+        Some((tags[..1].to_vec(), 2_000))
+    );
+}
+
 fn suite(s: &mut dyn Store) {
     play_history(s);
     inventory_cache(s);
@@ -637,6 +660,7 @@ fn suite(s: &mut dyn Store) {
     dj_sessions(s);
     feedback(s);
     album_tracks(s);
+    artist_genres(s);
     action_log(s);
     scenes(s);
     schedules(s);
@@ -651,7 +675,7 @@ fn mem_store_conforms() {
 fn sqlite_in_memory_conforms() {
     let mut s = SqliteStore::open_in_memory().unwrap();
     suite(&mut s);
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);
     s.close().unwrap();
 }
 
@@ -666,7 +690,7 @@ fn sqlite_file_survives_close_and_reopen() {
 
     // Reopening re-runs no migrations and sees every committed write.
     let s = SqliteStore::open(&path).unwrap();
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
     assert_eq!(s.cached_groups("HH_S2").unwrap().len(), 1);

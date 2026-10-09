@@ -485,7 +485,7 @@ eras = ["1990s"]
 
 [avoid]
 artists = ["MC Halcyon"]
-moods = ["bright"]
+moods = ["calm"]
 
 [pin]
 tracks = ["spotify:track:song-1-2"]
@@ -609,15 +609,15 @@ albums = ["Starfall (Original Soundtrack)"]
         let plain = verdict("Paper Moons");
         assert_eq!(plain, Verdict::default());
         assert_eq!(plain.weight_pm(), 1000);
-        // "bright" leans brighter: the lively classical openings fit it.
-        let lively = pool.works().iter().position(|w| w.energy() >= 60).unwrap();
-        assert!(pool.verdict(lively).avoids());
-        let gentle = pool
+        // "calm" leans calmer: the quiet classical openings fit it.
+        let quiet = pool.works().iter().position(|w| w.energy() <= 40).unwrap();
+        assert!(pool.verdict(quiet).avoids());
+        let lively = pool
             .works()
             .iter()
-            .position(|w| w.is_classical() && w.energy() < 60)
+            .position(|w| w.is_classical() && w.energy() > 40)
             .unwrap();
-        assert!(!pool.verdict(gentle).avoided);
+        assert!(!pool.verdict(lively).avoided);
     }
 
     #[test]

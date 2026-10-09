@@ -16,8 +16,8 @@ use asupersync::time::{sleep, wall_now};
 
 use crate::SpotifyError;
 use crate::client::{
-    CachedToken, Endpoints, FORM_CONTENT_TYPE, Pkce, SpotifyConfig, TokenCache, TokenResponse,
-    api_error, parse_callback, random_state, retry_after_secs, token_error,
+    Artist, CachedToken, Endpoints, FORM_CONTENT_TYPE, Pkce, SpotifyConfig, TokenCache,
+    TokenResponse, api_error, parse_callback, random_state, retry_after_secs, token_error,
 };
 use crate::library::{LibraryItem, LibraryRead};
 
@@ -202,6 +202,17 @@ impl Session {
             read.ingest(&body)?;
         }
         Ok(read.into_items())
+    }
+
+    /// An artist's genre tags (`GET /artists/{id}`, read-only; often none).
+    pub async fn read_artist_genres(
+        &mut self,
+        cx: &Cx,
+        artist_id: &str,
+    ) -> Result<Vec<String>, SpotifyError> {
+        let url = self.endpoints.artist(artist_id);
+        let body = self.get(cx, &url).await?;
+        Ok(Artist::parse(&body)?.genres)
     }
 
     async fn refresh(&mut self, cx: &Cx) -> Result<(), SpotifyError> {

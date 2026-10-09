@@ -1201,11 +1201,12 @@ mod tests {
                 }
             }
             // Genres alternate: back to back well under two thirds as often
-            // as independent draws would make them, and never more than four
-            // in a row (classical is half this library).
+            // as independent draws would make them, and never more than five
+            // in a row (classical is half this library, and once most songs
+            // have played, the cooldown leaves mostly classical works).
             let works: Vec<&Work> = picks.iter().map(|p| p.work).collect();
             assert!(
-                longest_run(&works, |w| w.genre().map(str::to_owned)) <= 4,
+                longest_run(&works, |w| w.genre().map(str::to_owned)) <= 5,
                 "{}",
                 log()
             );
@@ -1284,6 +1285,29 @@ mod tests {
         assert!(
             leaning * 20 > alone * 23,
             "jazz {leaning} favored vs {alone} plain"
+        );
+    }
+
+    #[test]
+    fn songs_follow_the_time_of_day_by_their_genres() {
+        // Jazz and soundtrack sit calmer (44, 45) than pop and hip-hop (60,
+        // 66): the first picks of a night lean to them, a morning's away. The
+        // lean is moderate: three calm artists, and the artist window keeps
+        // any one from playing twice in a row.
+        let pool = works_of(&song_items());
+        let config = DjConfig::default();
+        let mean = |hour: u8| {
+            let mut energies = Vec::new();
+            for seed in 1..=8 {
+                let picks = simulate(&pool, &config, seed, 6, Some(hour));
+                energies.extend(picks.iter().map(|p| f64::from(p.work.energy())));
+            }
+            energies.iter().sum::<f64>() / energies.len() as f64
+        };
+        let (night, morning) = (mean(1), mean(10));
+        assert!(
+            night + 3.0 < morning,
+            "night {night:.1} vs morning {morning:.1}"
         );
     }
 

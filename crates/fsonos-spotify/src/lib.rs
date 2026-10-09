@@ -1,11 +1,13 @@
 //! Spotify Web API client + the DJ engine, for whatever music the owner
 //! keeps (classical works are played whole).
 //!
-//! Eleven concerns:
+//! Thirteen concerns:
 //!
 //! * [`client`] — a Spotify Web API client (OAuth Authorization Code + PKCE)
 //!   used **only to read the user's own library**: saved albums and liked
-//!   tracks. It does NOT start playback — Sonos renders Spotify itself via
+//!   tracks, and the catalog metadata of what is on them (album track lists,
+//!   artists' genres), with no scope beyond `user-library-read`. It does NOT
+//!   start playback — Sonos renders Spotify itself via
 //!   SMAPI (`fsonos_proto::didl`); the Web API cannot command a Sonos.
 //!
 //! * [`session`] — the I/O half: the owner's authorization, the local token
@@ -27,6 +29,9 @@
 //! * [`steer`] — steering: structured constraints, named moods, and the
 //!   session that carries them; applied as hard filters before weighting.
 //!
+//! * [`genres`] — the artists' genre tags, read once per artist at sync
+//!   and cached, so songs carry genres to steer, balance and prefer by.
+//!
 //! * [`expand`] — completing partly-held works (a liked Adagietto) from
 //!   their albums' track lists, cached in the store.
 //!
@@ -35,6 +40,10 @@
 //!
 //! * [`feedback`] — learning from likes, dislikes, early skips and full
 //!   listens: decayed weight multipliers and a dislike exclusion window.
+//!
+//! * [`prefs`] — the owner's standing preferences (`preferences.toml`):
+//!   favor or avoid genres, artists, eras and moods; pin or ban artists,
+//!   albums and tracks; a default energy; explicit tracks.
 //!
 //! * [`dj`] — the DJ: given the pool plus recent play history, pick the next
 //!   work for pleasant variety (spread across artists, composers, periods
@@ -50,6 +59,7 @@ pub mod expand;
 mod fake_spotify;
 pub mod feed;
 pub mod feedback;
+pub mod genres;
 pub mod library;
 pub mod prefs;
 pub mod session;

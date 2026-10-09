@@ -200,7 +200,7 @@ async fn album_list<S: Store + ?Sized>(
 /// Whether a failure is the Web API's rather than one album's — rate
 /// limited past the waits, a server error, signed out, offline — so asking
 /// for the next album now would only fail (or wait) again.
-fn halts(e: &SpotifyError) -> bool {
+pub(crate) fn halts(e: &SpotifyError) -> bool {
     match e {
         SpotifyError::Api { status, .. } => matches!(status, 401 | 403 | 429) || *status >= 500,
         SpotifyError::Decode(_) => false,
@@ -392,6 +392,7 @@ mod tests {
             source_uri: uri.into(),
             title: "Symphony No. 5 in C-Sharp Minor: IV. Adagietto. Sehr langsam".into(),
             artists: vec!["Gustav Mahler".into(), "Test Philharmonic".into()],
+            artist_id: None,
             album: Some("Mahler: Symphony No. 5".into()),
             album_uri: Some(album_uri.into()),
             album_artists: vec!["Gustav Mahler".into()],

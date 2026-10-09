@@ -500,6 +500,7 @@ mod tests {
                     source_uri: format!("spotify:track:works-{a}-{t}"),
                     title,
                     artists: vec![composer.into(), "Test Ensemble".into()],
+                    artist_id: None,
                     album: Some(album.into()),
                     album_uri: Some(format!("spotify:album:works-{a}")),
                     album_artists: vec![composer.into()],

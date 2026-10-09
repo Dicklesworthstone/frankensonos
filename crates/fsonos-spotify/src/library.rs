@@ -51,6 +51,10 @@ pub struct LibraryItem {
     /// Track artists in credit order. Spotify credits the composer here for
     /// classical recordings, usually first.
     pub artists: Vec<String>,
+    /// The lead artist's Spotify id, when the read gave one (their genre
+    /// tags are read by it; see `crate::genres`).
+    #[serde(default)]
+    pub artist_id: Option<String>,
     pub album: Option<String>,
     pub album_uri: Option<String>,
     pub album_artists: Vec<String>,
@@ -87,6 +91,7 @@ impl LibraryItem {
                 .as_deref()
                 .map(split_artists)
                 .unwrap_or_default(),
+            artist_id: None,
             album: track.album.clone(),
             album_uri: None,
             album_artists: Vec::new(),
@@ -151,6 +156,9 @@ impl LibraryItem {
         }
         if self.release_year.is_none() {
             self.release_year = other.release_year;
+        }
+        if self.artist_id.is_none() {
+            self.artist_id.clone_from(&other.artist_id);
         }
         if self.label.is_none() {
             self.label.clone_from(&other.label);
@@ -352,6 +360,7 @@ mod tests {
             source_uri: uri.into(),
             title: "Cello Suite No. 1 in G Major, BWV 1007: I. Prélude".into(),
             artists: vec!["Johann Sebastian Bach".into(), "Yo-Yo Ma".into()],
+            artist_id: None,
             album: None,
             album_uri: None,
             album_artists: Vec::new(),
