@@ -200,9 +200,7 @@ fn standing_preferences_hold_on_every_surface() {
         "banned-never-picked",
         "http",
         "the DJ started after the ban picks none of Brahms's works",
-        code == 200
-            && !composers.is_empty()
-            && composers.iter().all(|c| c != "Johannes Brahms"),
+        code == 200 && !composers.is_empty() && composers.iter().all(|c| c != "Johannes Brahms"),
         format!("{started}\n{status}"),
     );
 
@@ -295,10 +293,7 @@ fn check_cli(s: &mut Scenario) {
         run.code == Some(2) && run.stderr.contains("INVALID_ARGUMENT"),
         format!("{}{}", run.stdout, run.stderr),
     );
-    let run = s.cli(
-        "key-bad",
-        &["dj", "prefs", "set", "favour.genres", "jazz"],
-    );
+    let run = s.cli("key-bad", &["dj", "prefs", "set", "favour.genres", "jazz"]);
     s.check(
         "key-bad",
         "cli",

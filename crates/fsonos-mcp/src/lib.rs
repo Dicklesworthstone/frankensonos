@@ -68,6 +68,8 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::RecentPlays)
         .tool(tools::Announce)
         .tool(tools::dj_feedback::DjFeedback)
+        .tool(tools::dj_prefs::DjPreferences)
+        .tool(tools::dj_prefs::DjPrefer)
         .tool(tools::schedules::SetSleepTimer)
         .tool(tools::schedules::ListSleepTimers)
         .tool(tools::schedules::ListSchedules)

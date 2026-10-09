@@ -58,6 +58,13 @@ pub enum DjAction {
         /// A room: its steering, rather than the house's program.
         zone: Option<String>,
     },
+    /// The standing preferences, for every group's DJ: favor or avoid
+    /// genres, artists, eras and moods; pin or ban artists, albums and
+    /// tracks; a default energy; whether explicit tracks may play.
+    Prefs {
+        #[command(subcommand)]
+        action: crate::dj::prefs::PrefsAction,
+    },
 }
 
 /// `fsonos dj steer`: the fields of `dj_steer`.
@@ -158,6 +165,7 @@ impl DjAction {
                 | Self::Moods { .. }
                 | Self::Like { .. }
                 | Self::Dislike { .. }
+                | Self::Prefs { .. }
         )
     }
 
@@ -172,6 +180,10 @@ impl DjAction {
             Self::Status { .. } | Self::Why { .. } => "dj_status",
             Self::Moods { .. } => "dj_moods",
             Self::Like { .. } | Self::Dislike { .. } => "dj_feedback",
+            Self::Prefs {
+                action: crate::dj::prefs::PrefsAction::Show,
+            } => "dj_preferences",
+            Self::Prefs { .. } => "dj_prefer",
         }
     }
 
@@ -199,7 +211,8 @@ impl DjAction {
             | Self::Why { .. }
             | Self::Moods { .. }
             | Self::Like { .. }
-            | Self::Dislike { .. } => Err(Failure::new(
+            | Self::Dislike { .. }
+            | Self::Prefs { .. } => Err(Failure::new(
                 ErrorCode::Internal,
                 "dj status, why, moods, like and dislike run on their own",
             )),
@@ -235,6 +248,7 @@ pub fn read(global: &GlobalArgs, action: &DjAction) -> anyhow::Result<()> {
         DjAction::Dislike { zone } => {
             crate::dj::feedback::run(global, zone.as_deref(), DjFeedback::Dislike)
         }
+        DjAction::Prefs { action } => crate::dj::prefs::run(global, action),
         _ => Err(Failure::new(ErrorCode::Internal, "not a DJ read").into()),
     }
 }

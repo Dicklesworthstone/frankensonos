@@ -26,6 +26,7 @@ use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure};
 use crate::plan::DjAction;
 use crate::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
+use crate::surface::dj_prefs::{PrefChange, PreferencesDto, PreferredDto};
 
 /// The speakers a DJ command acts on.
 #[derive(Clone, Copy)]
@@ -108,6 +109,23 @@ pub trait DjEngine: Send + Sync {
         Err(Failure::new(
             ErrorCode::NotImplemented,
             "this DJ takes no feedback",
+        ))
+    }
+
+    /// The owner's standing preferences ([`crate::surface::dj_prefs`]).
+    fn preferences(&self) -> Result<PreferencesDto, Failure> {
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this DJ keeps no preferences",
+        ))
+    }
+
+    /// Set or unset one standing preference; it applies from the next pick.
+    fn prefer(&self, change: &PrefChange) -> Result<PreferredDto, Failure> {
+        let _ = change;
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this DJ keeps no preferences",
         ))
     }
 }

@@ -216,7 +216,11 @@ impl Surface {
     }
 
     /// Set or unset one standing preference (`dj_prefer`), logged.
-    pub fn dj_prefer(&self, client: &Client, req: &DjPreferRequest) -> Result<PreferredDto, Failure> {
+    pub fn dj_prefer(
+        &self,
+        client: &Client,
+        req: &DjPreferRequest,
+    ) -> Result<PreferredDto, Failure> {
         self.authorize_write(client, "dj_prefer")?;
         let change = req.change()?;
         let result = self.dj_engine()?.prefer(&change);
@@ -269,16 +273,26 @@ mod tests {
         assert_eq!(unknown.code, ErrorCode::InvalidArgument);
         assert!(unknown.suggestions.iter().any(|s| s == "favor.genres"));
         let empty = change("energy", Some("  "), false).unwrap_err();
-        assert!(empty.detail.contains("`value` is needed"), "{}", empty.detail);
         assert!(
-            serde_json::from_value::<DjPreferRequest>(serde_json::json!({ "key": "energy", "set": 3 }))
-                .is_err()
+            empty.detail.contains("`value` is needed"),
+            "{}",
+            empty.detail
+        );
+        assert!(
+            serde_json::from_value::<DjPreferRequest>(
+                serde_json::json!({ "key": "energy", "set": 3 })
+            )
+            .is_err()
         );
     }
 
     #[test]
     fn preferences_read_as_lines() {
-        assert!(PreferencesDto::default().text().starts_with("No preferences stated"));
+        assert!(
+            PreferencesDto::default()
+                .text()
+                .starts_with("No preferences stated")
+        );
         let shown = PreferencesDto {
             energy: Some(30),
             favor: TasteDto {

@@ -224,9 +224,16 @@ mod tests {
 
         let done = change(&mut state, moods, &set("ban.artists", "Johannes Brahms")).unwrap();
         assert!(done.changed, "{}", done.done);
-        assert!(done.done.starts_with("ban.artists: Johannes Brahms"), "{}", done.done);
+        assert!(
+            done.done.starts_with("ban.artists: Johannes Brahms"),
+            "{}",
+            done.done
+        );
         assert!(moods_file.with_file_name(PREFERENCES_FILE).exists());
-        assert_eq!(show(&mut state, moods).unwrap().ban.artists, ["Johannes Brahms"]);
+        assert_eq!(
+            show(&mut state, moods).unwrap().ban.artists,
+            ["Johannes Brahms"]
+        );
         assert_eq!(
             state.pool.preferences().ban.artists,
             ["Johannes Brahms"],

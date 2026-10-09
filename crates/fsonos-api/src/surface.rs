@@ -43,6 +43,7 @@ use crate::request::{PlayFavoriteRequest, SearchRequest};
 use crate::zones::{ZoneDto, zone_for_target, zone_views};
 
 pub mod dj_feedback;
+pub mod dj_prefs;
 pub mod house_policy;
 pub mod scenes;
 pub mod schedules;

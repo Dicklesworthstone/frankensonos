@@ -21,6 +21,7 @@ use chrono::{Datelike, Timelike};
 use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
 use fsonos_api::plan::DjAction;
 use fsonos_api::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
+use fsonos_api::surface::dj_prefs::{PrefChange, PreferencesDto, PreferredDto};
 use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 use fsonos_core::clock::Clock;
 use fsonos_core::playback::PlayerPlayback;
@@ -39,6 +40,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use crate::dj_view::{self, steer_failure, store_failure};
 
 pub(crate) mod feedback;
+pub(crate) mod prefs;
 
 /// The moods file's name inside the data directory.
 pub const MOODS_FILE: &str = "moods.toml";
@@ -100,7 +102,9 @@ impl State {
         self.pool = WorkPool::new(&candidates);
         // Feedback only weights the picks; without it the DJ still plays.
         self.feedback = FeedbackModel::load(&StoreFeedback(store), now).ok();
-        self.reload_moods(moods_file)
+        self.reload_moods(moods_file)?;
+        // The owner's standing preferences shape every pick from here.
+        prefs::apply(self, moods_file)
     }
 
     /// Re-read the moods and programs (the built-ins without a file).
@@ -483,5 +487,13 @@ impl DjEngine for SpotifyDj {
             signal,
             clock,
         )
+    }
+
+    fn preferences(&self) -> Result<PreferencesDto, Failure> {
+        prefs::show(&mut self.state(), self.moods_file.as_ref())
+    }
+
+    fn prefer(&self, change: &PrefChange) -> Result<PreferredDto, Failure> {
+        prefs::change(&mut self.state(), self.moods_file.as_ref(), change)
     }
 }
