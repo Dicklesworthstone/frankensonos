@@ -171,7 +171,7 @@ impl Check for TasteScopesCheck {
     fn run(&self, _: &CheckContext) -> CheckResult {
         match TokenCache::in_data_dir(&self.data_dir).load() {
             Ok(None) => {
-                CheckResult::skip("not signed in to Spotify yet (run `fsonos setup spotify`)")
+                CheckResult::skip("not signed in to Spotify yet (run `fsonos setup`)")
             }
             Ok(Some(token)) => {
                 let missing = token.missing_taste_scopes();
@@ -186,14 +186,14 @@ impl Check for TasteScopesCheck {
                             "the DJ's taste is library-only: the Spotify grant is missing {}",
                             missing.join(", ")
                         ),
-                        "Re-run `fsonos setup spotify` (or sign in again) to grant the taste scopes.",
+                        "Re-run `fsonos setup` (or sign in again) to grant the taste scopes.",
                     )
                     .with_evidence(json!({ "missing_scopes": missing }))
                 }
             }
             Err(e) => CheckResult::warn(
                 "could not read the Spotify token cache".to_owned(),
-                "Check the data directory, or re-run `fsonos setup spotify`.",
+                "Check the data directory, or re-run `fsonos setup`.",
             )
             .with_detail(e.to_string()),
         }
