@@ -130,6 +130,7 @@ impl ErrorCode {
             Self::NotCoordinator => "NOT_COORDINATOR",
             Self::UpnpFault => "UPNP_FAULT",
             Self::SpotifyNotLinked => "SPOTIFY_NOT_LINKED",
+            Self::RenderParamsMissing => "RENDER_PARAMS_MISSING",
             Self::RenderParamsStale => "RENDER_PARAMS_STALE",
             Self::SpotifyAuthRequired => "SPOTIFY_AUTH_REQUIRED",
             Self::PolicyDenied => "POLICY_DENIED",
@@ -170,6 +171,7 @@ impl ErrorCode {
             | Self::AmbiguousFavorite => 409,
             Self::PolicyDenied | Self::UntrustedOrigin => 403,
             Self::UnsupportedMediaType => 415,
+            Self::UpnpFault => 502,
             Self::NotReady | Self::PlayerUnreachable => 503,
             Self::Internal => 500,
             Self::NotImplemented => 501,
@@ -251,6 +253,7 @@ impl ErrorCode {
                 "Re-link Spotify in that household's Sonos app (or remove and re-add a Spotify \
                  track favorite), then retry."
             }
+            Self::SpotifyAuthRequired => "Sign in to Spotify on the daemon host, then retry.",
             Self::PolicyDenied => "The house policy forbids this; ask the owner to change it.",
             Self::UnknownMood => "Use one of the suggested moods.",
             Self::NoDjSession => "Start the DJ in that zone first (dj_start).",
