@@ -42,6 +42,7 @@ succeed.
 | `UPNP_FAULT` | 502 | 1 | no | A speaker answered with a UPnP fault (`upnp_code`) or an unreadable response. | The speaker refused the command in its current state; check it and retry. |
 | `SPOTIFY_NOT_LINKED` | 409 | 1 | no | The household's Sonos app has no linked Spotify account. | Link Spotify in that household's Sonos app once, then retry. |
 | `RENDER_PARAMS_MISSING` | 409 | 1 | no | The household's Spotify render parameters have not been learned. | Add any Spotify track to My Sonos in that household's app, then retry. |
+| `RENDER_PARAMS_STALE` | 409 | 1 | no | The player refused a Spotify render (UPnP 800) even after the parameters were relearned once. | Re-link Spotify in that household's Sonos app (or re-add a Spotify track favorite), then retry. |
 | `SPOTIFY_AUTH_REQUIRED` | 409 | 1 | no | The daemon has no valid Spotify sign-in. | Sign in to Spotify on the daemon host, then retry. |
 | `POLICY_DENIED` | 403 | 5 | no | The house policy forbids the request. | The house policy forbids this; ask the owner to change it. |
 | `UNKNOWN_MOOD` | 404 | 3 | no | No DJ mood has that name. | Use one of the suggested moods. |

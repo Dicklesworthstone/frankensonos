@@ -250,8 +250,8 @@ impl ErrorCode {
                 "Add any Spotify track to My Sonos in that household's app, then retry."
             }
             Self::RenderParamsStale => {
-                "Re-link Spotify in that household's Sonos app (or remove and re-add a Spotify \
-                 track favorite), then retry."
+                "Re-link Spotify in that household's Sonos app (or re-add a Spotify track \
+                 favorite), then retry."
             }
             Self::SpotifyAuthRequired => "Sign in to Spotify on the daemon host, then retry.",
             Self::PolicyDenied => "The house policy forbids this; ask the owner to change it.",
