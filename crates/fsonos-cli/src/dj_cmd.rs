@@ -16,6 +16,7 @@ use fsonos_api::surface::dj_feedback::DjFeedback;
 use fsonos_api::{
     Command, DjStartRequest, DjSteerRequest, ErrorCode, Failure, ZoneDto, ZoneRequest,
 };
+use fsonos_spotify::prefs::Era;
 use std::fmt::Write as _;
 
 use crate::config::GlobalArgs;
@@ -89,10 +90,21 @@ pub struct SteerArgs {
     /// Nothing by this artist.
     #[arg(long = "not-artist", value_name = "NAME")]
     exclude_artists: Vec<String>,
+    /// Only works tagged with this genre (repeat for more): "jazz" finds
+    /// "cool jazz"; every classical work is "classical".
+    #[arg(long = "genre", value_name = "NAME")]
+    include_genres: Vec<String>,
+    /// Nothing tagged with this genre.
+    #[arg(long = "not-genre", value_name = "NAME")]
+    exclude_genres: Vec<String>,
     /// Only this period: medieval, renaissance, baroque, classical,
     /// romantic, late_romantic, impressionist, modern, contemporary.
     #[arg(long = "period")]
     periods: Vec<String>,
+    /// Only works released in this decade (repeat for more): 1960s, 60s or
+    /// 1960.
+    #[arg(long = "decade", value_name = "DECADE", value_parser = parse_decade)]
+    decades: Vec<u16>,
     /// A keyword the work must have: piano, chamber, orchestral, choral,
     /// opera, song, vocal (each finds its forms), or any whole word.
     #[arg(long = "with", value_name = "KEYWORD")]
@@ -137,7 +149,10 @@ impl SteerArgs {
                 exclude_composers: self.exclude_composers.clone(),
                 include_artists: self.include_artists.clone(),
                 exclude_artists: self.exclude_artists.clone(),
+                include_genres: self.include_genres.clone(),
+                exclude_genres: self.exclude_genres.clone(),
                 periods: self.periods.clone(),
+                decades: self.decades.clone(),
                 include_keywords: self.include_keywords.clone(),
                 exclude_keywords: self.exclude_keywords.clone(),
                 min_work_minutes: self.min_work_minutes,
@@ -302,6 +317,13 @@ impl Source {
 }
 
 /// A span: `2h`, `90m`, `1h30m`, `1d`, `45s`, or bare minutes (`90`).
+pub fn parse_decade(text: &str) -> Result<u16, String> {
+    match Era::parse(text) {
+        Some(Era::Decade(year)) => Ok(year),
+        _ => Err(format!("{text:?} is not a decade: say 1960s, 60s or 1960")),
+    }
+}
+
 pub fn parse_span(text: &str) -> Result<u64, String> {
     let bad = || format!("{text:?} is not a span like 2h, 90m or 1h30m");
     let span = text.trim().to_ascii_lowercase();
@@ -455,6 +477,31 @@ mod tests {
     }
 
     #[test]
+    fn genre_and_decade_flags_become_the_shared_request() {
+        let req = steer_of(&[
+            "steer",
+            "Den",
+            "--genre",
+            "jazz",
+            "--not-genre",
+            "pop",
+            "--decade",
+            "60s",
+            "--decade",
+            "1970s",
+        ]);
+        assert_eq!(req.constraints.include_genres, ["jazz"]);
+        assert_eq!(req.constraints.exclude_genres, ["pop"]);
+        assert_eq!(req.constraints.decades, [1960, 1970]);
+        for bad in ["1965", "baroque", "sixties"] {
+            assert!(
+                Cli::try_parse_from(["dj", "steer", "Den", "--decade", bad]).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
     fn steer_flags_become_the_shared_request() {
         let req = steer_of(&[
             "steer",
@@ -525,8 +572,13 @@ mod tests {
             source: "session".into(),
             mood: Some("focus".into()),
             constraints: SteerConstraints {
+                include_composers: vec!["Bach".into()],
                 exclude_keywords: vec!["vocal".into()],
                 energy_bias: -1,
+                ..SteerConstraints::default()
+            },
+            added: SteerConstraints {
+                include_composers: vec!["Bach".into()],
                 ..SteerConstraints::default()
             },
             expires_at: Some(1_790_007_200),
@@ -575,7 +627,7 @@ mod tests {
              composer_spacing  ×1.40\n  \
              energy_fit        ×0.85\n\
              Relaxed (too few works passed): keyword\n\
-             Steering: steered: focus mood, without vocal, calmer, for another 2 hours\n"
+             Steering: steered: focus mood, Bach only, for another 2 hours\n"
         );
         let idle = DjStatusDto {
             now: None,

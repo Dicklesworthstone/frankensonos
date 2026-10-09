@@ -362,16 +362,21 @@ fn check_steer_and_undo(s: &mut Scenario, api: &str, mcp: &str) {
 
     let (code, undone) = call(api, "POST", "/undo", Some(&json!({ "own_only": false })));
     let (_, status) = call(api, "GET", STATUS, None);
+    // The focus mood's own keywords (piano among its instrumental genres)
+    // show in its constraints, so the session put back is told by focus's
+    // calmer energy and the two hours it had left, not by a missing keyword.
+    let left = status["steering"]["expires_in_secs"].as_u64().unwrap_or(0);
     s.check(
         "undo-steer",
         "http",
-        "undo puts the previous steering back: focus, no piano filter",
+        "undo puts the previous steering back: focus, calmer, with its two hours",
         code == 200
             && undone["summary"]
                 .as_str()
                 .is_some_and(|t| t.contains("steering for Living Room put back"))
             && status["steering"]["mood"] == "focus"
-            && status["steering"]["constraints"]["include_keywords"].is_null(),
+            && status["steering"]["constraints"]["energy_bias"] == -1
+            && left > 1800,
         format!("{undone}\n{status}"),
     );
 }

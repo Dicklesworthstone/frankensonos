@@ -56,11 +56,14 @@ pub fn from_dj(c: &DjConstraints) -> SteerConstraints {
         exclude_composers: c.exclude_composers.clone(),
         include_artists: c.include_artists.clone(),
         exclude_artists: c.exclude_artists.clone(),
+        include_genres: c.include_genres.clone(),
+        exclude_genres: c.exclude_genres.clone(),
         periods: c
             .periods
             .iter()
             .filter_map(|p| serde_json::to_value(p).ok()?.as_str().map(str::to_owned))
             .collect(),
+        decades: c.decades.clone(),
         include_keywords: c.include_keywords.clone(),
         exclude_keywords: c.exclude_keywords.clone(),
         min_work_minutes: c.min_work_minutes,
@@ -107,6 +110,10 @@ pub fn steering_of(
             .as_ref()
             .map(|s| from_dj(&s.constraints))
             .unwrap_or_default(),
+        added: session
+            .as_ref()
+            .map(|s| from_dj(&s.constraints))
+            .unwrap_or_default(),
         mood: steer.and_then(|s| s.mood),
         expires_at,
         expires_in_secs: expires_at.map(|at| at.saturating_sub(now).max(0).unsigned_abs()),
@@ -124,6 +131,7 @@ pub fn program_now(moods: &Moods, clock: &dyn Clock) -> DjSteeringDto {
             .and_then(|m| moods.get(m))
             .map(from_dj)
             .unwrap_or_default(),
+        added: SteerConstraints::default(),
         mood: mood.map(str::to_owned),
         expires_at: None,
         expires_in_secs: None,
@@ -288,7 +296,10 @@ mod tests {
             include_composers: words(&["Bach"]),
             include_artists: words(&["Yo-Yo Ma"]),
             exclude_artists: words(&["The Beatles"]),
+            include_genres: words(&["jazz"]),
+            exclude_genres: words(&["pop"]),
             periods: words(&["late_romantic", "baroque"]),
+            decades: vec![1960, 1970],
             exclude_keywords: words(&["vocal"]),
             max_work_minutes: Some(30),
             energy_bias: -1,
@@ -339,6 +350,16 @@ mod tests {
             describe(None, &artists, None),
             "by Miles Davis, nothing by The Beatles"
         );
+        let genres = SteerConstraints {
+            include_genres: words(&["jazz", "soul"]),
+            exclude_genres: words(&["pop"]),
+            decades: vec![1960, 1970],
+            ..SteerConstraints::default()
+        };
+        assert_eq!(
+            describe(None, &genres, None),
+            "jazz or soul only, no pop, from the 1960s or the 1970s"
+        );
     }
 
     #[test]
@@ -383,11 +404,13 @@ mod tests {
         );
         assert_eq!(shown.constraints.include_composers, ["Bach"]);
         assert_eq!(shown.constraints.energy_bias, -1, "focus's own");
+        assert_eq!(shown.added.include_composers, ["Bach"]);
+        assert_eq!(shown.added.energy_bias, 0, "the session adds no shift");
         assert_eq!(shown.expires_at, Some(now + 3600));
         assert_eq!(shown.expires_in_secs, Some(3600));
         assert_eq!(
             shown.summary(),
-            "steered: focus mood, Bach only, without vocal, calmer, for another 1 hour"
+            "steered: focus mood, Bach only, for another 1 hour"
         );
 
         // Four hours on, the session has lapsed, and at 12:00 no program plays.
@@ -428,6 +451,7 @@ mod tests {
             source: "none".into(),
             mood: None,
             constraints: SteerConstraints::default(),
+            added: SteerConstraints::default(),
             expires_at: None,
             expires_in_secs: None,
         };

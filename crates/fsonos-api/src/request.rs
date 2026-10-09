@@ -407,12 +407,25 @@ fn checked(c: &SteerConstraints) -> Result<SteerConstraints, Failure> {
             "min_work_minutes {min} exceeds max_work_minutes {max}"
         )));
     }
+    if c.decades.len() > MAX_STEER_LIST {
+        return Err(Failure::invalid(format!(
+            "decades has {} entries; the limit is {MAX_STEER_LIST}",
+            c.decades.len()
+        )));
+    }
+    if let Some(decade) = c.decades.iter().find(|&&d| d < 1000 || d % 10 != 0) {
+        return Err(Failure::invalid(format!(
+            "decade {decade} is not a decade's first year: say 1960 for the sixties"
+        )));
+    }
     let period = |p: &str| p.to_lowercase().replace(['-', ' '], "_");
     Ok(SteerConstraints {
         include_composers: steer_list("include_composers", &c.include_composers, str::to_owned)?,
         exclude_composers: steer_list("exclude_composers", &c.exclude_composers, str::to_owned)?,
         include_artists: steer_list("include_artists", &c.include_artists, str::to_owned)?,
         exclude_artists: steer_list("exclude_artists", &c.exclude_artists, str::to_owned)?,
+        include_genres: steer_list("include_genres", &c.include_genres, str::to_owned)?,
+        exclude_genres: steer_list("exclude_genres", &c.exclude_genres, str::to_owned)?,
         periods: steer_list("periods", &c.periods, period)?,
         include_keywords: steer_list("include_keywords", &c.include_keywords, str::to_owned)?,
         exclude_keywords: steer_list("exclude_keywords", &c.exclude_keywords, str::to_owned)?,
@@ -652,6 +665,47 @@ mod tests {
             let err = steer(body.clone()).unwrap_err();
             assert!(err.detail.contains(says), "{body}: {}", err.detail);
         }
+    }
+
+    #[test]
+    fn genres_are_trimmed_and_decades_are_first_years() {
+        assert_eq!(
+            steer(json!({
+                "zone": "Kitchen",
+                "constraints": {
+                    "include_genres": [" jazz "],
+                    "exclude_genres": ["pop"],
+                    "decades": [1960, 1970]
+                }
+            }))
+            .unwrap(),
+            DjSteer::Set {
+                mood: None,
+                constraints: SteerConstraints {
+                    include_genres: vec!["jazz".into()],
+                    exclude_genres: vec!["pop".into()],
+                    decades: vec![1960, 1970],
+                    ..SteerConstraints::default()
+                },
+                for_secs: None,
+            }
+        );
+        for (decades, says) in [
+            (json!([1965]), "decade 1965 is not a decade's first year"),
+            (json!([60]), "decade 60 is not a decade's first year"),
+            (json!(["1960s"]), "invalid type"),
+        ] {
+            let body = json!({ "zone": "Kitchen", "constraints": { "decades": decades } });
+            let err = steer(body.clone()).unwrap_err();
+            assert!(err.detail.contains(says), "{body}: {}", err.detail);
+        }
+        let blank = json!({ "zone": "Kitchen", "constraints": { "include_genres": [" "] } });
+        assert!(
+            steer(blank)
+                .unwrap_err()
+                .detail
+                .contains("an entry of `include_genres` is empty")
+        );
     }
 
     #[test]

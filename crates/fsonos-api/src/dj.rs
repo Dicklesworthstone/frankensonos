@@ -149,11 +149,23 @@ pub struct SteerConstraints {
     /// Nothing by these artists.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exclude_artists: Vec<String>,
+    /// Only works tagged with one of these genres, as the library read
+    /// tags them ("jazz" finds "cool jazz"; every classical work is
+    /// "classical").
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub include_genres: Vec<String>,
+    /// Nothing tagged with these genres.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude_genres: Vec<String>,
     /// Only these periods (classical works only: a song has none):
     /// medieval, renaissance, baroque, classical, romantic, late_romantic,
     /// impressionist, modern, contemporary.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub periods: Vec<String>,
+    /// Only works released in these decades, each named by its first year
+    /// (1960 for the sixties).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub decades: Vec<u16>,
     /// At least one of these in the work's title, movements, album or
     /// artists. Categories expand (piano, chamber, orchestral, choral,
     /// opera, song, vocal); other words match whole words.
@@ -275,6 +287,11 @@ pub struct DjSteeringDto {
     /// The constraints in effect: the mood's, with the session's on top.
     #[serde(default, skip_serializing_if = "SteerConstraints::is_empty")]
     pub constraints: SteerConstraints,
+    /// What a session adds to its mood: its own constraints (empty for the
+    /// program). The summary names the mood and these; the mood's own
+    /// filters come with its name.
+    #[serde(default, skip_serializing_if = "SteerConstraints::is_empty")]
+    pub added: SteerConstraints,
     /// When the session lapses (unix seconds); the program takes over then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
@@ -355,10 +372,16 @@ impl DjWorkDto {
 
 impl DjSteeringDto {
     /// "steered: focus mood, Bach only, for another 2 hours", "the
-    /// time-of-day program: calm mood, much calmer", or "none".
+    /// time-of-day program: calm mood", or "none". A mood is named with
+    /// only what a session adds to it, not its own filters.
     #[must_use]
     pub fn summary(&self) -> String {
-        let steering = describe_steer(self.mood.as_deref(), &self.constraints, None);
+        let shown = if self.mood.is_some() {
+            &self.added
+        } else {
+            &self.constraints
+        };
+        let steering = describe_steer(self.mood.as_deref(), shown, None);
         match self.source.as_str() {
             "session" => match self.expires_in_secs {
                 Some(secs) => format!("steered: {steering}, for another {}", span(secs)),
@@ -415,7 +438,11 @@ pub fn describe_steer(mood: Option<&str>, c: &SteerConstraints, for_secs: Option
     list(&c.exclude_composers, |l| format!("no {l}"));
     list(&c.include_artists, |l| format!("by {l}"));
     list(&c.exclude_artists, |l| format!("nothing by {l}"));
+    list(&c.include_genres, |l| format!("{l} only"));
+    list(&c.exclude_genres, |l| format!("no {l}"));
     list(&c.periods, |l| format!("{} works", l.replace('_', "-")));
+    let decades: Vec<String> = c.decades.iter().map(|d| format!("the {d}s")).collect();
+    list(&decades, |l| format!("from {l}"));
     list(&c.include_keywords, |l| format!("with {l}"));
     list(&c.exclude_keywords, |l| format!("without {l}"));
     match (c.min_work_minutes, c.max_work_minutes) {
