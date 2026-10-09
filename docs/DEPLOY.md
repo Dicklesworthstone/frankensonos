@@ -306,9 +306,9 @@ Plain HTTP clients use the API directly, e.g.
 Run `fsonos setup` once on the Mac: it walks you through linking your own
 Spotify account (Authorization Code + PKCE, requesting `user-library-read` plus
 the read-only taste scopes `user-follow-read`, `user-top-read`,
-`user-read-recently-played` and `playlist-read-private`; the DJ falls back to
-library-only if you decline any) and
-caches the refresh token under `FSONOS_DATA_DIR`, never in the repo. Set
+`user-read-recently-played` and `playlist-read-private`; without the taste
+scopes the DJ uses your library alone and `fsonos doctor` warns) and caches
+the refresh token under `FSONOS_DATA_DIR`, never in the repo. Set
 `FSONOS_SPOTIFY_CLIENT_ID` first (your own app from the Spotify developer
 dashboard; for PKCE the client id is not a secret).
 

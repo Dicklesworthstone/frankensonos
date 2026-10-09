@@ -277,8 +277,8 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
   coordinator's queue ahead of track end (driven by GENA transport events from
   Lane B). *Current state:* the pool is the owner's whole library in any
   genre (explicit tracks left out by default), with classical works kept
-  whole; standing preferences and genre and decade steering have shipped on
-  every surface (§12.1).
+  whole; standing preferences have shipped on every surface, and genre and
+  decade steering in the engine and `moods.toml` (§12.1).
 - **The "enqueue a Spotify track on Sonos" path** is the crux the prior attempt
   got stuck on: it requires the correct `x-sonos-spotify:` URI **and** the
   byte-right DIDL `desc`/item-id for *that household*, learned from its own
@@ -528,27 +528,32 @@ their standing preferences on every surface and in the daemon. What is on
   genres, release year, explicit flag and taste weight (migration 7), and
   caches each artist's genres (migration 8). `is_classical` again means "judged
   classical" and is only a legacy row's candidacy fallback. A library cached
-  before this upgrade needs one re-sync — today via `fsonos setup spotify`; a
-  daemon that refreshes on its own is tracked separately
-  (`daemon-library-sync`).
-- Taste beyond the library is read with the owner's grant: followed and top
-  artists, top tracks, recent plays and the owner's own playlists
+  before this upgrade needs one re-sync — today via `fsonos setup`; a daemon
+  that refreshes on its own is tracked separately (`daemon-library-sync`).
+- Taste beyond the library is read with the owner's grant
   (`user-follow-read`, `user-top-read`, `user-read-recently-played`,
-  `playlist-read-private`, owner-authorized, requested at sign-in, listed in
-  `docs/SCOPE.md`). Those tracks join the pool at the lowest precedence rung
-  (`Factor::Taste`); a grant without the extra scopes falls back to
-  library-only taste, and `fsonos doctor` warns that it did (never a failure).
-  Background reads halt on a long rate limit and resume on the next sync.
+  `playlist-read-private`: owner-authorized, requested at sign-in, listed in
+  `docs/SCOPE.md`). Top tracks, the last 50 plays and the owner's own or
+  collaborative playlists add their tracks to the pool; those, and the tracks
+  of followed and top artists, weigh more (×1.1 to ×1.3 a signal, at most
+  ×1.8: `Factor::Taste`, the lowest precedence rung). A grant without the
+  extra scopes falls back to library-only taste, and `fsonos doctor` warns
+  that it did (never a failure). Background reads halt on a long rate limit
+  and resume on the next sync.
 - Variety keys on the lead artist for a song (the composer for classical
   music): no artist within two works, a genre run damped and an absent genre
   favored, album spacing for both, period balance for classical works. Energy
   comes from tempo markings for classical movements and from the track's genre
   tags (read once per artist, cached) for songs.
-- Steering: include and exclude artists, genres and decades on the CLI, HTTP
-  and MCP, and for classical music composers, periods, keywords, length and
-  energy bias. Mood keywords match genre tags, so `dinner` and `focus` pick
-  fitting songs on a song library (the classical presets unchanged) and
-  `sunday-morning` relaxes on a library without classical music and says so.
+- Steering: include and exclude artists on the CLI, HTTP and MCP, with
+  keywords, length and energy bias, and for classical music composers and
+  periods. Keywords also match a work's genre tags. Genre and decade
+  constraints (`include_genres`, `exclude_genres`, `decades`) work in the
+  engine and in `moods.toml` presets; the `dj steer` surfaces don't take them
+  yet. Because keywords see genres, `dinner` and `focus` pick fitting songs on
+  a song library (the classical presets unchanged), and `sunday-morning`
+  relaxes its period filter on a library without classical music and says
+  so.
 - Feedback rows are keyed by `work_key`, `composer_key` (a song's lead
   artist), `performer`, and now `artist_key` and `album_key`.
 - Standing preferences ship on every surface: the `preferences.toml` model

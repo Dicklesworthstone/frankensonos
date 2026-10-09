@@ -69,7 +69,7 @@ can drive:
 | **Control** | Play a Spotify link, a source URI, a Sonos favorite or a library search; pause, resume, next, previous; room or group volume (set or ±N); mute; group, ungroup; **move** the music to another room (handing the group over, or `--copy` across households); **party** mode for a whole household. Group commands always go to the group's coordinator |
 | **Live state** | GENA subscriptions keep a live model of every zone (transport, track, volume), so reads need no polling, and `GET /events` streams the changes as server-sent events |
 | **Self-healing** | A player that moved to a new address, or a group whose coordinator changed under a command, is found again and the command retried once (the answer notes `HEALED`); the live model resurveys and resubscribes on its own |
-| **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, genre, decade, keywords, work length or energy, and for classical music by composers and periods, for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
+| **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, keywords (which match genres too), work length or energy, and for classical music by composers and periods, for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
 | **Scenes** | `scene save dinner` captures grouping, volumes, mutes and what each group plays; `scene apply dinner` sends only the steps the house needs, and `fsonos undo` puts it back |
 | **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright`, or a pause, a volume or a scene, at times or after delays; runs with the rights of whoever added it |
 | **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` (macOS `say`) or `chime bell`, at a policy-capped level, then the music comes back exactly as it was |
@@ -258,10 +258,9 @@ your speakers; for access from anywhere, that machine also joins your tailnet.
 
 Shipped: discovery and topology across S1 and S2, coordinator-addressed control
 and grouping, the GENA live model and self-healing, the DJ (drawing on
-everything you save or like on Spotify, plus your followed and top artists, top
-tracks, recent listening and playlists, in any genre) with your standing
-preferences, steering by mood, artist, genre and decade, explanations and
-feedback, scenes, sleep timers and schedules, announcements,
+everything you save or like on Spotify, plus your top tracks, recent plays and
+own playlists, in any genre) with your standing preferences, steering,
+explanations and feedback, scenes, sleep timers and schedules, announcements,
 the house policy with quiet hours, the action log and undo, `doctor` and
 `setup`, the simulator, and the CLI, HTTP API and MCP server, on loopback and
 your tailnet. The CLI goes through a running daemon when there is one, with
@@ -271,9 +270,12 @@ device on your tailnet.
 
 Next:
 
-- The daemon refreshing your Spotify library on its own, on a schedule (today a
-  running daemon picks up new saves, likes and taste signals after you re-run
+- The daemon refreshing your Spotify library on its own, on a schedule (today
+  a running daemon picks up new saves, likes and taste signals after you re-run
   `fsonos setup`).
+- `dj steer` by genre and decade on the CLI, HTTP and MCP. The DJ already
+  steers by them in `moods.toml` and favors or avoids them in your
+  preferences.
 - Real-hardware CI, then `0.1.0` with prebuilt binaries.
 
 ## Scope & privacy
@@ -295,14 +297,15 @@ learned at runtime and kept locally. The full boundary is in
   each household's Sonos app, and the per-household render parameters are
   learned from your own Sonos favorites. Rendering on legacy S1 players is
   still being confirmed on real hardware.
-- The DJ's taste comes from your liked tracks and saved albums, plus your
-  followed and top artists, top tracks, recent listening and playlists (behind
-  the read-only scopes you grant; `doctor` warns if you skip them), with
-  `dj steer`, standing preferences and `moods.toml` as your overrides. Spotify
-  gives new apps no audio features, so a song's energy comes from its genre
-  tags and classical movements also take their tempo markings. A library cached before the DJ played
-  every genre needs one re-sync (`fsonos setup`) before the rest of it joins
-  the pool.
+- The DJ's taste comes from your liked tracks and saved albums, plus your top
+  tracks, recent plays and own playlists, leaning toward the artists you follow
+  and play most (read-only scopes you grant at sign-in; without them it uses
+  your library alone, and `doctor` says so). `dj steer`, standing preferences
+  and `moods.toml` are your overrides. Spotify gives new apps no audio
+  features, so a song's energy comes from its artists' genre tags, and a
+  classical movement's from its tempo marking. A library cached before the DJ
+  played every genre needs one re-sync (`fsonos setup`) before the rest of it
+  joins the pool.
 - You run the daemon on a machine on your speaker LAN (a Mac mini, a Pi, a
   NAS). The deploy docs and announcements' speech (`say`) are macOS-first.
 - Until the CLI talks to a running daemon, `fsonos sleep` on its own sets the
