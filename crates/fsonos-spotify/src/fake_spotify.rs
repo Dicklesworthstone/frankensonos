@@ -224,6 +224,8 @@ fn taste(fake: &Fake, uri: &str) -> Option<Response> {
                 "items": [
                     { "track": fake_track(102, "Glasshouse", 8, "Juniper Vale"),
                       "played_at": "2026-10-07T20:00:00Z" },
+                    { "track": fake_track(102, "Glasshouse", 8, "Juniper Vale"),
+                      "played_at": "2026-10-07T19:30:00Z" },
                     { "track": fake_track(1, "Goldberg Variations, BWV 988: Aria", 1,
                                           "Johann Sebastian Bach"),
                       "played_at": "2026-10-07T19:00:00Z" },

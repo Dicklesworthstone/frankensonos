@@ -20,7 +20,7 @@
 //! what it read; the sync then keeps the taste-only tracks it cached
 //! before, rather than retiring what it didn't get to read.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use asupersync::Cx;
 use fsonos_core::store::Store;
@@ -44,10 +44,12 @@ pub const PLAYLIST_PM: u32 = 1100;
 pub const RECENT_PM: u32 = 1100;
 /// No track weighs more than this from account signals alone.
 pub const MAX_TASTE_PM: u32 = 1800;
-/// Bounds on one sync's reads: pages of followed artists and of playlists,
-/// playlists read, and pages per playlist.
+/// Bounds on one sync's reads, so a daily sync stays cheap: pages of a
+/// list (followed artists, playlists), playlists read, and pages per
+/// playlist (its first 200 tracks speak for it).
 const MAX_PAGES: usize = 20;
-const MAX_PLAYLISTS: usize = 50;
+const MAX_PLAYLISTS: usize = 25;
+const MAX_PLAYLIST_PAGES: usize = 4;
 
 /// What one taste read did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -159,13 +161,16 @@ pub async fn read_taste<S: Store + ?Sized>(
     }
     if top {
         let url = reader.session.endpoints().top("artists");
-        for artist in reader.page::<Artist>(&url, "top artists").await {
+        for artist in reader.page::<Artist>(&url, "top artists", MAX_PAGES).await {
             remember_genres(store, &artist, now, reader.read);
             taste.artist(&artist, ARTIST_PM);
             reader.read.top_artists += 1;
         }
         let url = reader.session.endpoints().top("tracks");
-        for track in reader.page::<FullTrack>(&url, "top tracks").await {
+        for track in reader
+            .page::<FullTrack>(&url, "top tracks", MAX_PAGES)
+            .await
+        {
             if let Some(item) = track.library_item(Origin::Taste, None) {
                 taste.track(item, TOP_TRACK_PM);
                 reader.read.top_tracks += 1;
@@ -178,8 +183,13 @@ pub async fn read_taste<S: Store + ?Sized>(
             .get::<CursorPage<PlayHistory>>(&url, "recently played")
             .await
         {
+            // A track played over and over counts once: recent rotation is a
+            // nudge, not a top track.
+            let mut heard = HashSet::new();
             for track in page.items.iter().filter_map(|h| h.track.as_ref()) {
-                if let Some(item) = track.library_item(Origin::Taste, None) {
+                if let Some(item) = track.library_item(Origin::Taste, None)
+                    && heard.insert(item.source_uri.clone())
+                {
                     taste.track(item, RECENT_PM);
                     reader.read.recent_tracks += 1;
                 }
@@ -202,7 +212,9 @@ fn remember_genres<S: Store + ?Sized>(
     now: i64,
     read: &mut TasteRead,
 ) {
-    let Some(id) = &artist.id else {
+    // An artist listed without genres may still have them: leave it to the
+    // genre read rather than cache "none".
+    let Some(id) = artist.id.as_ref().filter(|_| !artist.genres.is_empty()) else {
         return;
     };
     if let Err(e) = store.save_artist_genres(id, &artist.genres, now) {
@@ -244,11 +256,17 @@ impl Reader<'_> {
         }
     }
 
-    /// Every item of an offset-paged list, following `next` (bounded).
-    async fn page<T: serde::de::DeserializeOwned>(&mut self, url: &str, what: &str) -> Vec<T> {
+    /// Every item of an offset-paged list, following `next` for at most
+    /// `pages` pages.
+    async fn page<T: serde::de::DeserializeOwned>(
+        &mut self,
+        url: &str,
+        what: &str,
+        pages: usize,
+    ) -> Vec<T> {
         let mut items = Vec::new();
         let mut next = Some(url.to_owned());
-        for _ in 0..MAX_PAGES {
+        for _ in 0..pages {
             let Some(url) = next.take() else {
                 break;
             };
@@ -288,7 +306,7 @@ impl Reader<'_> {
             return Vec::new();
         };
         let url = self.session.endpoints().my_playlists(0);
-        let lists: Vec<SimplifiedPlaylist> = self.page(&url, "playlists").await;
+        let lists: Vec<SimplifiedPlaylist> = self.page(&url, "playlists", MAX_PAGES).await;
         let mut tracks = Vec::new();
         for list in lists
             .iter()
@@ -296,7 +314,8 @@ impl Reader<'_> {
             .take(MAX_PLAYLISTS)
         {
             let url = self.session.endpoints().playlist_items(&list.id, 0);
-            let entries: Vec<PlaylistItem> = self.page(&url, "playlist items").await;
+            let entries: Vec<PlaylistItem> =
+                self.page(&url, "playlist items", MAX_PLAYLIST_PAGES).await;
             self.read.playlists += 1;
             for entry in &entries {
                 if let Some(item) = entry.library_item(Origin::Taste) {
@@ -431,7 +450,11 @@ mod tests {
             by_uri(&items, 101).taste_pm,
             Some(TOP_TRACK_PM * ARTIST_PM / 1000)
         );
-        assert_eq!(by_uri(&items, 102).taste_pm, Some(RECENT_PM));
+        assert_eq!(
+            by_uri(&items, 102).taste_pm,
+            Some(RECENT_PM),
+            "played twice lately, counted once"
+        );
         assert_eq!(by_uri(&items, 103).taste_pm, Some(PLAYLIST_PM));
         assert_eq!(items[items.len() - 2].taste_pm, Some(ARTIST_PM));
         assert_eq!(items[items.len() - 1].taste_pm, None);
