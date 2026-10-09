@@ -27,7 +27,7 @@ use fsonos_core::clock::Clock;
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::Store;
 use fsonos_core::{CoreError, control};
-use fsonos_spotify::cache::pool_from_store;
+use fsonos_spotify::cache::works_from_store;
 use fsonos_spotify::dj::{DjConfig, WorkPool};
 use fsonos_spotify::feed::{FeedError, Planning, QueueFeed, QueuedWork, Speakers};
 use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
@@ -97,9 +97,10 @@ impl State {
         moods_file: Option<&PathBuf>,
         now: i64,
     ) -> Result<(), Failure> {
-        let candidates = pool_from_store(store)
+        // The daemon's DJ plays from works, with partly-held works completed
+        // from the album track lists a sync cached (no network here).
+        self.pool = works_from_store(store)
             .map_err(|e| Failure::new(ErrorCode::Internal, format!("the DJ's pool: {e}")))?;
-        self.pool = WorkPool::new(&candidates);
         // Feedback only weights the picks; without it the DJ still plays.
         self.feedback = FeedbackModel::load(&StoreFeedback(store), now).ok();
         self.reload_moods(moods_file)?;
