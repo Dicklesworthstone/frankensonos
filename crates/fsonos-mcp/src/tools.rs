@@ -502,7 +502,7 @@ fn undo_last(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>
 }
 
 #[tool(
-    description = "Play something in the group a room plays in. `source_uri` is a spotify:track:<id> URI or open.spotify.com track link (rendered through the household's own Spotify link), or a radio/HTTP stream or Sonos favorite URI. Optional `title` is shown on the speaker. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household)."
+    description = "Play something in the group a room plays in. `source_uri` is a Spotify track, album or playlist (spotify:track:<id>, spotify:album:<id>, spotify:playlist:<id>, or an open.spotify.com link; rendered through the household's own Spotify link, and an album or playlist replaces the group's queue), or a radio/HTTP stream or Sonos favorite URI. Optional `title` is shown on the speaker. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household)."
 )]
 fn play(
     _ctx: &McpContext,

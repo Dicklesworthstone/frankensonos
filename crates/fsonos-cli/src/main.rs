@@ -127,7 +127,9 @@ enum Command {
     Play {
         /// Room name (`Room@S1` / `Room@S2` picks a household).
         zone: String,
-        /// Source URI or open.spotify.com track link.
+        /// Source URI, or a Spotify track, album or playlist (an
+        /// open.spotify.com link will do); an album or playlist replaces the
+        /// group's queue.
         source_uri: Option<String>,
         /// Play this favorite instead: a title (a unique prefix or all its
         /// words will do), its number from `fsonos favorites`, or an id.

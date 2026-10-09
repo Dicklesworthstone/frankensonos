@@ -9,6 +9,7 @@ use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::moving::{self, MoveMethod};
 use fsonos_core::{CoreError, HouseholdState, control, resolve_room};
 use fsonos_proto::Transport;
+use fsonos_proto::didl::SpotifyContainer;
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -64,9 +65,11 @@ pub fn execute_guarded<T: Transport + ?Sized>(
 ///
 /// `spotify:track:` URIs render with the household's learned Spotify
 /// parameters ([`ErrorCode::RenderParamsMissing`] when it has no Spotify
-/// favorite to learn from). Other renderer URIs play as given, without DIDL
-/// metadata. Spotify albums and playlists, and the DJ, answer
-/// [`ErrorCode::NotImplemented`] until they are wired.
+/// favorite to learn from); `spotify:album:` and `spotify:playlist:` URIs
+/// replace the group's queue with the album or playlist and play it from the
+/// top. Other renderer URIs play as given, without DIDL metadata. Other
+/// Spotify kinds (artists, episodes, shows) and the DJ answer
+/// [`ErrorCode::NotImplemented`].
 pub fn execute<T: Transport + ?Sized>(
     transport: &T,
     households: &[HouseholdState],
@@ -266,38 +269,50 @@ fn play<T: Transport + ?Sized>(
     source_uri: &str,
     title: Option<&str>,
 ) -> Result<(), Failure> {
+    let title = title.unwrap_or(source_uri);
     if source_uri.starts_with("spotify:track:") {
-        let title = title.unwrap_or(source_uri);
-        return match control::play_spotify_track(
+        return control::play_spotify_track(transport, households, coordinator, source_uri, title)
+            .map_err(spotify_failure);
+    }
+    if let Some(kind) = SpotifyContainer::of(source_uri) {
+        return control::play_spotify_container(
             transport,
             households,
             coordinator,
+            kind,
             source_uri,
             title,
-        ) {
-            Ok(()) => Ok(()),
-            Err(CoreError::NoSpotifyFavorite) => Err(Failure::new(
-                ErrorCode::RenderParamsMissing,
-                "this household has no Spotify track among its favorites to learn its Spotify \
-                 settings from",
-            )),
-            Err(CoreError::RenderParamsStale) => Err(Failure::new(
-                ErrorCode::RenderParamsStale,
-                "the speaker refused this Spotify render (UPnP 800) even after relearning the \
-                 household's settings from its favorites once",
-            )),
-            Err(e) => Err(e.into()),
-        };
+        )
+        .map_err(spotify_failure);
     }
     if source_uri.starts_with("spotify:") {
         return Err(Failure::new(
             ErrorCode::NotImplemented,
-            format!("only Spotify tracks play so far; {source_uri} is not a track"),
+            format!(
+                "Spotify tracks, albums and playlists play so far; {source_uri} is none of them"
+            ),
         )
-        .with_hint("Play one of its tracks (spotify:track:...) for now."));
+        .with_hint("Play one of its tracks, albums or playlists for now."));
     }
     control::play_uri(transport, households, coordinator, source_uri, "")?;
     Ok(())
+}
+
+/// A Spotify render's failure, saying what to do about it.
+fn spotify_failure(e: CoreError) -> Failure {
+    match e {
+        CoreError::NoSpotifyFavorite => Failure::new(
+            ErrorCode::RenderParamsMissing,
+            "this household has no Spotify track among its favorites to learn its Spotify \
+             settings from",
+        ),
+        CoreError::RenderParamsStale => Failure::new(
+            ErrorCode::RenderParamsStale,
+            "the speaker refused this Spotify render (UPnP 800) even after relearning the \
+             household's settings from its favorites once",
+        ),
+        e => e.into(),
+    }
 }
 
 /// Send a transport action; returns the verb for the summary.
@@ -595,10 +610,46 @@ mod tests {
     }
 
     #[test]
+    fn spotify_albums_and_playlists_replace_the_queue_and_play() {
+        for uri in [
+            "spotify:album:0123456789ABCDEFabcdef",
+            "spotify:playlist:0123456789ABCDEFabcdef",
+        ] {
+            let t = Canned {
+                browse: FAVORITES_S1,
+                ..Canned::ok("<FirstTrackNumberEnqueued>1</FirstTrackNumberEnqueued>")
+            };
+            let out = execute(&t, &households(), &play_spotify(uri)).unwrap();
+            assert!(out.changed && out.done.contains(uri), "{}", out.done);
+            assert_eq!(
+                t.actions(),
+                [
+                    "Browse",
+                    "RemoveAllTracksFromQueue",
+                    "AddURIToQueue",
+                    "SetAVTransportURI",
+                    "Seek",
+                    "Play"
+                ]
+            );
+        }
+        // No favorite to learn the account from: said so, the queue untouched.
+        let t = Canned::ok("");
+        let err = execute(
+            &t,
+            &households(),
+            &play_spotify("spotify:album:0123456789ABCDEFabcdef"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::RenderParamsMissing);
+        assert_eq!(t.actions(), ["Browse"]);
+    }
+
+    #[test]
     fn unwired_paths_say_so_without_touching_speakers() {
         let t = Canned::ok("");
-        let album = play_spotify("spotify:album:0123456789ABCDEFabcdef");
-        let err = execute(&t, &households(), &album).unwrap_err();
+        let artist = play_spotify("spotify:artist:0123456789ABCDEFabcdef");
+        let err = execute(&t, &households(), &artist).unwrap_err();
         assert_eq!((err.code, err.status()), (ErrorCode::NotImplemented, 501));
         let dj = Command::Dj {
             coordinator: id("RINCON_DEN"),

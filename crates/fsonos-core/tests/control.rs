@@ -3,6 +3,7 @@
 //! the member. Households come from the scrubbed S1/S2 fixtures.
 
 use fsonos_core::{CoreError, HouseholdState, control};
+use fsonos_proto::didl::SpotifyContainer;
 use fsonos_proto::{ProtoError, Transport, soap, topology};
 use fsonos_types::PlayerId;
 use std::cell::RefCell;
@@ -517,4 +518,190 @@ fn a_non_800_render_fault_propagates_without_retry() {
     }
     assert_eq!(t.renders.borrow().len(), 1, "no retry for foreign faults");
     assert_eq!(t.browses.get(), 1);
+}
+
+#[test]
+fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
+    let h = house();
+    let t = QueueLan::default();
+    control::play_spotify_container(
+        &t,
+        &h,
+        &pid(2),
+        SpotifyContainer::Album,
+        "spotify:album:0FixtureSpotify0000201",
+        "Symphonies",
+    )
+    .unwrap();
+
+    let sent = t.sent.borrow();
+    let actions: Vec<&str> = sent.iter().map(|(_, a, _)| a.as_str()).collect();
+    assert_eq!(
+        actions,
+        [
+            "Browse",
+            "RemoveAllTracksFromQueue",
+            "AddURIToQueue",
+            "SetAVTransportURI",
+            "Seek",
+            "Play"
+        ]
+    );
+    assert!(
+        sent.iter().all(|(host, ..)| *host == ip("192.0.2.13")),
+        "all on the coordinator"
+    );
+    // The household's own album prefix and account, as an album.
+    let add = &sent[2].2;
+    assert!(
+        add.contains(
+            "<EnqueuedURI>x-rincon-cpcontainer:1004206cspotify%3aalbum%3a0FixtureSpotify0000201\
+             ?sid=12&amp;flags=8300&amp;sn=1</EnqueuedURI>"
+        ),
+        "{add}"
+    );
+    assert!(
+        add.contains("object.container.album.musicAlbum")
+            && add.contains("SA_RINCON3079_X_#Svc3079-0-Token"),
+        "{add}"
+    );
+    assert!(
+        sent[4]
+            .2
+            .contains("<Unit>TRACK_NR</Unit><Target>5</Target>")
+    );
+
+    // A playlist, on a household with no playlist favorite: the common prefix.
+    let t = QueueLan::default();
+    control::play_spotify_container(
+        &t,
+        &h,
+        &pid(2),
+        SpotifyContainer::Playlist,
+        "spotify:playlist:0FixtureSpotify0000202",
+        "Mix",
+    )
+    .unwrap();
+    let sent = t.sent.borrow();
+    assert!(
+        sent[2]
+            .2
+            .contains("x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a0FixtureSpotify0000202"),
+        "{}",
+        sent[2].2
+    );
+    assert!(sent[2].2.contains("object.container.playlistContainer"));
+}
+
+#[test]
+fn a_household_without_spotify_favorites_keeps_its_queue() {
+    let h = house();
+    // `Favorites` answers Browse only: clearing the queue would fail the test.
+    let err = control::play_spotify_container(
+        &Favorites(EMPTY),
+        &h,
+        &pid(2),
+        SpotifyContainer::Album,
+        "spotify:album:x",
+        "x",
+    )
+    .unwrap_err();
+    assert!(matches!(err, CoreError::NoSpotifyFavorite), "{err}");
+}
+
+/// Serves the S1 favorites with `sn=1` on the first browse and `sn=7` after
+/// (Spotify was relinked), and refuses a container enqueue that carries
+/// `sn=1` with UPnP 800 (every one, when `persistent`).
+struct ContainerDrift {
+    persistent: bool,
+    browses: std::cell::Cell<usize>,
+    actions: RefCell<Vec<String>>,
+    adds: RefCell<Vec<String>>,
+}
+
+impl ContainerDrift {
+    fn new(persistent: bool) -> Self {
+        Self {
+            persistent,
+            browses: std::cell::Cell::new(0),
+            actions: RefCell::default(),
+            adds: RefCell::default(),
+        }
+    }
+}
+
+impl Transport for ContainerDrift {
+    fn soap_post(
+        &self,
+        _: IpAddr,
+        _: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let name = action
+            .trim_matches('"')
+            .rsplit('#')
+            .next()
+            .unwrap()
+            .to_string();
+        self.actions.borrow_mut().push(name.clone());
+        let out = match name.as_str() {
+            "Browse" => {
+                let stale = self.browses.get() == 0;
+                self.browses.set(self.browses.get() + 1);
+                return Ok(if stale {
+                    FAV_S1.to_string()
+                } else {
+                    FAV_S1.replace("sn=1", "sn=7")
+                });
+            }
+            "AddURIToQueue" => {
+                self.adds.borrow_mut().push(body.to_string());
+                if self.persistent || body.contains("sn=1<") {
+                    return Err(ProtoError::SoapFault {
+                        code: 800,
+                        reason: "refused".to_string(),
+                    });
+                }
+                "<FirstTrackNumberEnqueued>1</FirstTrackNumberEnqueued>"
+            }
+            _ => "",
+        };
+        Ok(format!(
+            "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+             <u:{name}Response xmlns:u=\"urn:x\">{out}</u:{name}Response></s:Body></s:Envelope>"
+        ))
+    }
+}
+
+#[test]
+fn a_refused_container_relearns_once_then_reports_stale() {
+    let h = house();
+    let play = |t: &ContainerDrift| {
+        control::play_spotify_container(
+            t,
+            &h,
+            &pid(2),
+            SpotifyContainer::Album,
+            "spotify:album:0FixtureSpotify0000201",
+            "Symphonies",
+        )
+    };
+
+    let t = ContainerDrift::new(false);
+    play(&t).unwrap();
+    assert_eq!(t.browses.get(), 2, "one browse before the 800, one relearn");
+    let adds = t.adds.borrow();
+    assert_eq!(adds.len(), 2, "exactly one retry");
+    assert!(adds[0].contains("sn=1<") && adds[1].contains("sn=7<"));
+    assert_eq!(t.actions.borrow().last().map(String::as_str), Some("Play"));
+
+    let t = ContainerDrift::new(true);
+    let err = play(&t).unwrap_err();
+    assert!(matches!(err, CoreError::RenderParamsStale), "{err}");
+    assert_eq!(t.adds.borrow().len(), 2, "the retry never loops");
+    assert!(
+        !t.actions.borrow().iter().any(|a| a == "Play"),
+        "nothing starts when the render is refused"
+    );
 }

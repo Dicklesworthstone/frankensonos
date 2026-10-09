@@ -152,6 +152,119 @@ pub fn spotify_queue_uri(spotify_uri: &str) -> String {
     spotify_uri.replace(':', "%3a")
 }
 
+/// A Spotify album or playlist: a container the speaker expands into its
+/// tracks when it is enqueued (docs/PROTOCOL.md, "Container playback").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpotifyContainer {
+    Album,
+    Playlist,
+}
+
+/// The `flags` every Spotify container favorite carries.
+const CONTAINER_FLAGS: u32 = 8300;
+
+impl SpotifyContainer {
+    /// The container a `spotify:album:<id>` or `spotify:playlist:<id>` names.
+    #[must_use]
+    pub fn of(spotify_uri: &str) -> Option<Self> {
+        let rest = spotify_uri.strip_prefix("spotify:")?;
+        match rest.split(':').next()? {
+            "album" => Some(Self::Album),
+            "playlist" => Some(Self::Playlist),
+            _ => None,
+        }
+    }
+
+    fn class(self) -> &'static str {
+        match self {
+            Self::Album => "object.container.album.musicAlbum",
+            Self::Playlist => "object.container.playlistContainer",
+        }
+    }
+
+    /// The item-id prefix the household's own favorites of this kind use
+    /// most (playlists vary: `1006206c`, `10062a6c`), else the common one.
+    #[must_use]
+    pub fn prefix_in(self, favorites: &[DidlObject]) -> String {
+        let mut seen: Vec<(String, usize)> = Vec::new();
+        for fav in favorites {
+            let Ok(Some(item)) = fav.res_md_object() else {
+                continue;
+            };
+            if item.class != self.class() {
+                continue;
+            }
+            let Some(at) = item.id.to_ascii_lowercase().find("spotify%3a") else {
+                continue;
+            };
+            let prefix = item.id[..at].to_string();
+            match seen.iter_mut().find(|(p, _)| *p == prefix) {
+                Some((_, n)) => *n += 1,
+                None => seen.push((prefix, 1)),
+            }
+        }
+        let mut best: Option<&(String, usize)> = None;
+        for entry in &seen {
+            if best.is_none_or(|top| entry.1 > top.1) {
+                best = Some(entry);
+            }
+        }
+        best.map_or_else(
+            || {
+                match self {
+                    Self::Album => "1004206c",
+                    Self::Playlist => "1006206c",
+                }
+                .to_string()
+            },
+            |(prefix, _)| prefix.clone(),
+        )
+    }
+}
+
+/// The `AddURIToQueue` URI for a Spotify album or playlist on this
+/// household: `x-rincon-cpcontainer:` with the container's item id and the
+/// household's account. Pair it with [`spotify_container_didl`].
+#[must_use]
+pub fn spotify_container_uri(spotify_uri: &str, prefix: &str, p: &SpotifyRenderParams) -> String {
+    let encoded = spotify_uri.replace(':', "%3a");
+    format!(
+        "x-rincon-cpcontainer:{prefix}{encoded}?sid={sid}&flags={CONTAINER_FLAGS}&sn={sn}",
+        sid = p.sid,
+        sn = p.sn
+    )
+}
+
+/// The DIDL-Lite metadata a Spotify album or playlist needs on this
+/// household; like a track's, its `desc` must name the household's own
+/// Spotify account. `title` is display-only.
+#[must_use]
+pub fn spotify_container_didl(
+    spotify_uri: &str,
+    title: &str,
+    kind: SpotifyContainer,
+    prefix: &str,
+    p: &SpotifyRenderParams,
+) -> String {
+    let encoded = spotify_uri.replace(':', "%3a");
+    format!(
+        "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+         xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" \
+         xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/\" \
+         xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">\
+         <item id=\"{prefix}{encoded}\" parentID=\"-1\" restricted=\"true\">\
+         <dc:title>{title}</dc:title>\
+         <upnp:class>{class}</upnp:class>\
+         <desc id=\"cdudn\" nameSpace=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">{cdudn}</desc>\
+         </item></DIDL-Lite>",
+        prefix = xml_escape(prefix),
+        encoded = xml_escape(&encoded),
+        title = xml_escape(title),
+        class = kind.class(),
+        cdudn = xml_escape(&p.cdudn),
+    )
+}
+
 /// Recover the service-facing `spotify:…` URI from a renderer URI such as
 /// `x-sonos-spotify:spotify%3atrack%3a<id>?sid=…` or
 /// `x-rincon-cpcontainer:1004206cspotify%3aalbum%3a<id>?sid=…` (the inverse
@@ -435,6 +548,72 @@ mod tests {
 
     const FAV_S1: &str = include_str!("../tests/fixtures/browse_favorites_s1.xml");
     const FAV_S2: &str = include_str!("../tests/fixtures/browse_favorites_s2.xml");
+
+    #[test]
+    fn spotify_containers_render_with_the_households_account_and_prefixes() {
+        use SpotifyContainer::{Album, Playlist};
+        assert_eq!(SpotifyContainer::of("spotify:album:abc"), Some(Album));
+        assert_eq!(SpotifyContainer::of("spotify:playlist:abc"), Some(Playlist));
+        for other in ["spotify:track:abc", "spotify:artist:abc", "album:abc", ""] {
+            assert_eq!(SpotifyContainer::of(other), None, "{other}");
+        }
+
+        // S1 has an album favorite (1004206c) and no playlist one.
+        let s1 = favorites(FAV_S1);
+        assert_eq!(Album.prefix_in(&s1), "1004206c");
+        assert_eq!(Playlist.prefix_in(&s1), "1006206c", "the common default");
+        assert_eq!(Album.prefix_in(&[]), "1004206c");
+        // S2's playlists use two prefixes; the one more of them use wins.
+        let mut s2 = favorites(FAV_S2);
+        let odd = s2
+            .iter()
+            .find(|f| f.res_md.as_deref().is_some_and(|m| m.contains("10062a6c")))
+            .cloned()
+            .expect("a 10062a6c playlist favorite");
+        assert!(["1006206c", "10062a6c"].contains(&Playlist.prefix_in(&s2).as_str()));
+        s2.push(odd);
+        assert_eq!(Playlist.prefix_in(&s2), "10062a6c");
+
+        let p = SpotifyRenderParams {
+            sid: 12,
+            flags: 8224,
+            sn: 3,
+            cdudn: "SA_RINCON3079_X_#Svc3079-0-Token".into(),
+            item_id_prefix: "10032020".into(),
+        };
+        assert_eq!(
+            spotify_container_uri("spotify:album:abc123", "1004206c", &p),
+            "x-rincon-cpcontainer:1004206cspotify%3aalbum%3aabc123?sid=12&flags=8300&sn=3"
+        );
+        assert_eq!(
+            spotify_container_didl(
+                "spotify:playlist:xyz",
+                "Mix & Match",
+                Playlist,
+                "10062a6c",
+                &p
+            ),
+            "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+             xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" \
+             xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/\" \
+             xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">\
+             <item id=\"10062a6cspotify%3aplaylist%3axyz\" parentID=\"-1\" restricted=\"true\">\
+             <dc:title>Mix &amp; Match</dc:title>\
+             <upnp:class>object.container.playlistContainer</upnp:class>\
+             <desc id=\"cdudn\" nameSpace=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">\
+             SA_RINCON3079_X_#Svc3079-0-Token</desc></item></DIDL-Lite>"
+        );
+        // The renderer URI maps back to the Spotify URI it plays.
+        assert_eq!(
+            spotify_uri_from_renderer_uri(&spotify_container_uri(
+                "spotify:album:abc123",
+                "1004206c",
+                &p
+            ))
+            .as_deref(),
+            Some("spotify:album:abc123")
+        );
+    }
 
     #[test]
     fn learns_render_params_from_each_households_favorites() {

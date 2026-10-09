@@ -12,8 +12,8 @@ use fsonos_proto::Transport;
 use fsonos_proto::content;
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
 use fsonos_proto::didl::{
-    SpotifyRenderParams, learn_spotify_params, spotify_queue_uri, spotify_track_didl,
-    spotify_track_uri,
+    SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_container_didl,
+    spotify_container_uri, spotify_queue_uri, spotify_track_didl, spotify_track_uri,
 };
 use fsonos_types::{Player, PlayerId};
 use std::net::IpAddr;
@@ -162,6 +162,46 @@ pub fn play_spotify_track<T: Transport + ?Sized>(
         }
         Err(e) => Err(e),
     }
+}
+
+/// Replace the queue of the group `coordinator` leads with a Spotify album
+/// or playlist (`spotify:album:<id>`, `spotify:playlist:<id>`) and play it
+/// from its first track: the speaker expands the container into its tracks
+/// as it is enqueued. Rendered with the household's own Spotify account and
+/// container prefix (learned from its favorites), self-healing one round of
+/// parameter drift as [`play_spotify_track`] does.
+pub fn play_spotify_container<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    kind: SpotifyContainer,
+    spotify_uri: &str,
+    title: &str,
+) -> Result<(), CoreError> {
+    let host = addr(households, coordinator)?;
+    let source = || -> Result<(String, String), CoreError> {
+        let favorites = content::browse_all(t, host, "FV:2")?;
+        let params = learn_spotify_params(&favorites).ok_or(CoreError::NoSpotifyFavorite)?;
+        let prefix = kind.prefix_in(&favorites);
+        Ok((
+            spotify_container_uri(spotify_uri, &prefix, &params),
+            spotify_container_didl(spotify_uri, title, kind, &prefix, &params),
+        ))
+    };
+    let enqueue = |(uri, didl): &(String, String)| -> Result<u32, CoreError> {
+        soap::remove_all_tracks_from_queue(t, host)?;
+        Ok(soap::add_uri_to_queue(t, host, uri, didl, false)?)
+    };
+    let first = match enqueue(&source()?) {
+        Ok(first) => first,
+        Err(e) if is_render_800(&e) => match enqueue(&source()?) {
+            Ok(first) => first,
+            Err(e) if is_render_800(&e) => return Err(CoreError::RenderParamsStale),
+            Err(e) => return Err(e),
+        },
+        Err(e) => return Err(e),
+    };
+    play_queue_from(t, households, coordinator, first)
 }
 
 /// Append Spotify tracks (`(spotify:track URI, title)`) to the queue of the
