@@ -69,7 +69,7 @@ can drive:
 | **Control** | Play a Spotify link, a source URI, a Sonos favorite or a library search; pause, resume, next, previous; room or group volume (set or ±N); mute; group, ungroup; **move** the music to another room (handing the group over, or `--copy` across households); **party** mode for a whole household. Group commands always go to the group's coordinator |
 | **Live state** | GENA subscriptions keep a live model of every zone (transport, track, volume), so reads need no polling, and `GET /events` streams the changes as server-sent events |
 | **Self-healing** | A player that moved to a new address, or a group whose coordinator changed under a command, is found again and the command retried once (the answer notes `HEALED`); the live model resurveys and resubscribes on its own |
-| **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, keywords (which match genres too), work length or energy, and for classical music by composers and periods, for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
+| **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, genre, decade, keywords (which also match genres), work length or energy, and for classical music by composers and periods, for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
 | **Scenes** | `scene save dinner` captures grouping, volumes, mutes and what each group plays; `scene apply dinner` sends only the steps the house needs, and `fsonos undo` puts it back |
 | **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright`, or a pause, a volume or a scene, at times or after delays; runs with the rights of whoever added it |
 | **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` (macOS `say`) or `chime bell`, at a policy-capped level, then the music comes back exactly as it was |
@@ -273,9 +273,6 @@ Next:
 - The daemon refreshing your Spotify library on its own, on a schedule (today
   a running daemon picks up new saves, likes and taste signals after you re-run
   `fsonos setup`).
-- `dj steer` by genre and decade on the CLI, HTTP and MCP. The DJ already
-  steers by them in `moods.toml` and favors or avoids them in your
-  preferences.
 - Real-hardware CI, then `0.1.0` with prebuilt binaries.
 
 ## Scope & privacy

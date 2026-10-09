@@ -277,8 +277,8 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
   coordinator's queue ahead of track end (driven by GENA transport events from
   Lane B). *Current state:* the pool is the owner's whole library in any
   genre (explicit tracks left out by default), with classical works kept
-  whole; standing preferences have shipped on every surface, and genre and
-  decade steering in the engine and `moods.toml` (§12.1).
+  whole; standing preferences and genre and decade steering have shipped on
+  every surface (§12.1).
 - **The "enqueue a Spotify track on Sonos" path** is the crux the prior attempt
   got stuck on: it requires the correct `x-sonos-spotify:` URI **and** the
   byte-right DIDL `desc`/item-id for *that household*, learned from its own
@@ -545,12 +545,13 @@ their standing preferences on every surface and in the daemon. What is on
   favored, album spacing for both, period balance for classical works. Energy
   comes from tempo markings for classical movements and from the track's genre
   tags (read once per artist, cached) for songs.
-- Steering: include and exclude artists on the CLI, HTTP and MCP, with
+- Steering: include and exclude artists, genres and decades on the CLI, HTTP
+  and MCP (`--genre`/`--not-genre`/`--decade`, and the dj_steer args), with
   keywords, length and energy bias, and for classical music composers and
-  periods. Keywords also match a work's genre tags. Genre and decade
-  constraints (`include_genres`, `exclude_genres`, `decades`) work in the
-  engine and in `moods.toml` presets; the `dj steer` surfaces don't take them
-  yet. Because keywords see genres, `dinner` and `focus` pick fitting songs on
+  periods. Keywords also match a work's genre tags, and the genre and decade
+  constraints (`include_genres`, `exclude_genres`, `decades`) apply in the
+  engine and in `moods.toml` presets too. Because keywords see genres, `dinner`
+  and `focus` pick fitting songs on
   a song library (the classical presets unchanged), and `sunday-morning`
   relaxes its period filter on a library without classical music and says
   so.
