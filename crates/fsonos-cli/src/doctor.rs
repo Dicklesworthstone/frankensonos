@@ -10,7 +10,7 @@
 //! * `daemon.bind`: the bind guard's verdict on the HTTP and MCP addresses;
 //! * `daemon.health`: whether a daemon answers on the HTTP address, and
 //!   which version;
-//! * `spotify.taste`: whether the cached Spotify grant carries the taste
+//! * `dj.taste`: whether the cached Spotify grant carries the taste
 //!   scopes, so the DJ learns beyond the owner's saved library;
 //! * `tailscale.*` ([`tailscale`]): whether the daemon is reachable over the
 //!   tailnet, with the connect URLs, or why not.
@@ -49,7 +49,7 @@ pub struct DoctorArgs {
 
 const BIND: CheckId = CheckId("daemon.bind");
 const HEALTH: CheckId = CheckId("daemon.health");
-const TASTE: CheckId = CheckId("spotify.taste");
+const TASTE: CheckId = CheckId("dj.taste");
 
 /// The bind guard's verdict for both control listeners.
 struct BindCheck {
