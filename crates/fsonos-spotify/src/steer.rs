@@ -437,7 +437,8 @@ pub(crate) fn credited(work: &Work) -> Vec<String> {
 }
 
 /// Everything a keyword is matched against, normalized: the work's title,
-/// every movement's full title, the album, and the credited artists.
+/// every movement's full title, the album, the credited artists, and its
+/// genre tags (so "jazz" or "acoustic" finds songs by their genre).
 #[must_use]
 pub fn haystack(work: &Work) -> String {
     let mut text = work.title.clone();
@@ -450,6 +451,10 @@ pub fn haystack(work: &Work) -> String {
     for movement in &work.movements {
         text.push(' ');
         text.push_str(&movement.track.title);
+    }
+    for genre in work.genres() {
+        text.push(' ');
+        text.push_str(genre);
     }
     normalize(&text)
 }
@@ -755,12 +760,22 @@ impl Moods {
                     ..DjConstraints::default()
                 },
             ),
-            // Chamber music and solo piano (no concertos or symphonies), calm,
-            // nothing longer than half an hour.
+            // Chamber music and solo piano (no concertos or symphonies), or
+            // the songs that sit with them: jazz, acoustic, bossa nova, soul,
+            // lounge and folk. Calm, nothing longer than half an hour.
             (
                 "dinner",
                 DjConstraints {
-                    include_keywords: words(&["chamber", "piano"]),
+                    include_keywords: words(&[
+                        "chamber",
+                        "piano",
+                        "jazz",
+                        "acoustic",
+                        "bossa nova",
+                        "soul",
+                        "lounge",
+                        "folk",
+                    ]),
                     exclude_keywords: words(&["orchestral"]),
                     max_work_minutes: Some(30),
                     energy_bias: -1,
@@ -1202,6 +1217,23 @@ mod tests {
         let fits = |title: &str| admits(find(title), &hay(title), dinner, &[]);
         assert!(fits("Nocturne No. 1") && fits("String Quartet No. 1"));
         assert!(!fits("Piano Concerto No. 1"));
+
+        // Dinner fits a library of songs too, by their genres: the jazz
+        // albums and the acoustic take, without relaxing anything; the rest
+        // of the pop and hip-hop stays out.
+        let songs = works_of(&crate::test_shelf::song_items());
+        let all = songs.works();
+        let hays: Vec<String> = all.iter().map(haystack).collect();
+        let (admitted, relaxed) = admit(all, &hays, dinner, 5);
+        assert!(relaxed.is_empty(), "{relaxed:?}");
+        assert_eq!(admitted.len(), 8);
+        assert!(admitted.iter().all(|&w| {
+            all[w].genres() == ["jazz"] || all[w].movements[0].track.title.contains("Acoustic")
+        }));
+        assert!(
+            keyword_matches(&hays[0], "pop"),
+            "genres are in the haystack"
+        );
 
         assert!(composer_matches("Bach", "Johann Sebastian Bach"));
         assert!(composer_matches("J.S. Bach", "Johann Sebastian Bach"));
