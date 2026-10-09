@@ -64,8 +64,12 @@ library, in whatever genres it spans.
   DIDL-Lite and `x-sonos-spotify:` URIs from per-household parameters; a real
   LAN transport over asupersync; `RampToVolume` with the three ramp types; the
   complete GENA event catalog; live-verified grouping verbs; and an mDNS/DNS-SD
-  discovery parser. Each is proven by golden tests, many of them on scrubbed
-  live captures.
+  discovery parser — now also a query builder and a live second discovery
+  channel: the survey asks `_sonos._tcp.local` (multicast-QU, the pattern
+  both generations answer) next to SSDP, mDNS findings fill addresses SSDP
+  missed and refine household hints from the S2 TXT `hhid=`, and the survey
+  survives an SSDP failure on the mDNS channel alone. Each is proven by
+  golden tests, many of them on scrubbed live captures.
   [`635d1cf`](https://github.com/Dicklesworthstone/frankensonos/commit/635d1cf),
   [`bacf067`](https://github.com/Dicklesworthstone/frankensonos/commit/bacf067),
   [`739a8ee`](https://github.com/Dicklesworthstone/frankensonos/commit/739a8ee),

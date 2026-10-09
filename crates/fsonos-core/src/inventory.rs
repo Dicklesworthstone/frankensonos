@@ -24,7 +24,8 @@ pub struct Survey {
     pub households: Vec<HouseholdState>,
     /// Players that were found but could not be read, with the reason.
     pub unreachable: Vec<(String, String)>,
-    /// Set when SSDP itself failed and only the seeds were tried.
+    /// Set when SSDP itself failed and the survey continued anyway: the
+    /// seeds were tried, or mDNS found the players.
     pub ssdp_error: Option<String>,
     /// Each player's `BootSeq` from the topology reads (it rises on every
     /// boot, so a reboot between surveys shows here).
@@ -46,7 +47,7 @@ pub fn survey<T: Transport + ?Sized>(
 ) -> Result<Survey, CoreError> {
     let mut out = Survey::default();
     let mut found: Vec<(IpAddr, Option<String>)> = Vec::new();
-    match t.ssdp_search(1, wait) {
+    let ssdp_error = match t.ssdp_search(1, wait) {
         Ok(adverts) => {
             for advert in adverts {
                 if let Some(ip) = host_of_location(&advert.location)
@@ -55,9 +56,40 @@ pub fn survey<T: Transport + ?Sized>(
                     found.push((ip, advert.household));
                 }
             }
+            None
         }
-        Err(e) if !seeds.is_empty() => out.ssdp_error = Some(e.to_string()),
-        Err(e) => return Err(e.into()),
+        Err(e) => Some(e),
+    };
+
+    // The second channel: mDNS sightings of `_sonos._tcp.local`. It fills
+    // addresses SSDP missed and refines household hints (the S2 TXT carries
+    // `hhid=`, which SSDP's USN only implies). A failure here never fails
+    // the survey — with multicast blocked both channels fall back to seeds.
+    if let Ok(adverts) = t.mdns_search(wait) {
+        for advert in adverts {
+            let Some(addr) = advert.addr else { continue };
+            let ip = IpAddr::V4(addr);
+            match found.iter_mut().find(|(seen, _)| *seen == ip) {
+                Some(entry) => {
+                    if entry.1.is_none() {
+                        entry.1 = advert.household;
+                    }
+                }
+                None => found.push((ip, advert.household)),
+            }
+        }
+    }
+
+    // SSDP's failure only surfaces now that both channels ran: with nothing
+    // from either (and no seeds to fall back on) it is the survey's error;
+    // with seeds it is recorded for the caller to see.
+    if let Some(e) = ssdp_error {
+        if found.is_empty() && seeds.is_empty() {
+            return Err(e.into());
+        }
+        if !seeds.is_empty() {
+            out.ssdp_error = Some(e.to_string());
+        }
     }
     for &ip in seeds {
         if !found.iter().any(|(seen, _)| *seen == ip) {

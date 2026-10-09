@@ -18,6 +18,28 @@ pub const MDNS_ADDR: &str = "224.0.0.251:5353";
 /// The DNS-SD service type Sonos players advertise.
 pub const SONOS_SERVICE: &str = "_sonos._tcp.local";
 
+/// A multicast-QU PTR question for [`SONOS_SERVICE`]: `id` 0, recursion
+/// off, one question, the unicast-response (QU) class bit set. Both
+/// generations answer this pattern (S1 players ignore raw ephemeral-port
+/// probes; the capture notes in `docs/PROTOCOL.md` §1 record the
+/// difference), so it is the one query [`crate::net::Lan::mdns_search`]
+/// sends.
+#[must_use]
+pub fn query() -> Vec<u8> {
+    let mut b = Vec::with_capacity(12 + SONOS_SERVICE.len() + 2 + 6);
+    // Header: id 0, flags 0 (query), 1 question, nothing else.
+    b.extend_from_slice(&[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+    for label in SONOS_SERVICE.split('.') {
+        b.push(u8::try_from(label.len()).expect("service labels are short"));
+        b.extend_from_slice(label.as_bytes());
+    }
+    b.push(0);
+    b.extend_from_slice(&TYPE_PTR.to_be_bytes());
+    // QU (top bit) + class IN: the responder may unicast its reply.
+    b.extend_from_slice(&0x8001u16.to_be_bytes());
+    b
+}
+
 /// A resource record's payload, decoded for the types Sonos uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordData {
@@ -392,6 +414,20 @@ mod tests {
         b.extend_from_slice(&4u16.to_be_bytes());
         b.extend_from_slice(&ip);
         b
+    }
+
+    #[test]
+    fn query_is_the_standard_multicast_qu_ptr_question() {
+        let bytes = query();
+        // Header (id 0, query, one question), `_sonos._tcp.local`,
+        // QTYPE PTR, QCLASS QU+IN — byte for byte.
+        let expected: Vec<u8> = [
+            &b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00"[..],
+            b"\x06_sonos\x04_tcp\x05local\x00",
+            &b"\x00\x0c\x80\x01"[..],
+        ]
+        .concat();
+        assert_eq!(bytes, expected);
     }
 
     #[test]

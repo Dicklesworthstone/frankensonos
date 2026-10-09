@@ -3,8 +3,8 @@
 //! ZoneGroupTopology read per household.
 
 use fsonos_core::inventory::survey;
+use fsonos_proto::mdns;
 use fsonos_proto::{ProtoError, Transport, ssdp};
-use fsonos_types::{Generation, PlayerId};
 use std::cell::RefCell;
 use std::net::IpAddr;
 use std::time::Duration;
@@ -31,6 +31,8 @@ const LAN: [(&str, &str, &str); 4] = [
 struct FakeLan {
     /// Answer SSDP at all (false simulates a network that drops multicast).
     ssdp: bool,
+    /// Answer mDNS (simulates the second channel alive while SSDP is dead).
+    mdns: bool,
     /// An address that is advertised but never answers.
     dead: Option<&'static str>,
     topology_reads: RefCell<Vec<IpAddr>>,
@@ -40,6 +42,7 @@ impl FakeLan {
     fn new() -> Self {
         Self {
             ssdp: true,
+            mdns: false,
             dead: None,
             topology_reads: RefCell::new(Vec::new()),
         }
@@ -104,6 +107,14 @@ impl Transport for FakeLan {
             });
         }
         Ok(adverts)
+    }
+
+    fn mdns_search(&self, _wait: Duration) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
+        if self.mdns {
+            Ok(mdns_adverts())
+        } else {
+            Err(ProtoError::NotWired("mdns_search"))
+        }
     }
 }
 
@@ -178,4 +189,63 @@ fn seeds_stand_in_when_ssdp_fails() {
 
     // Without seeds an SSDP failure is the survey's failure.
     assert!(survey(&lan, &[], Duration::from_millis(1)).is_err());
+}
+
+/// mDNS answer style: the S2 players advertise with their household in the
+/// TXT; the S1 players (and the bridge, which does not advertise at all)
+/// carry no household — the S1 household still resolves through topology.
+fn mdns_adverts() -> Vec<mdns::SonosAdvert> {
+    vec![
+        mdns::SonosAdvert {
+            instance: "Sonos-000E58A00011".into(),
+            uuid: Some("RINCON_000E58A0001101400".into()),
+            household: None,
+            boot_seq: None,
+            location: None,
+            port: Some(1443),
+            addr: Some("192.0.2.11".parse().unwrap()),
+        },
+        mdns::SonosAdvert {
+            instance: "RINCON_000E58A0001901400@Study".into(),
+            uuid: Some("RINCON_000E58A0001901400".into()),
+            household: Some("Sonos_S2Household".into()),
+            boot_seq: Some(39),
+            location: None,
+            port: Some(1443),
+            addr: Some("192.0.2.19".parse().unwrap()),
+        },
+    ]
+}
+
+#[test]
+fn mdns_finds_players_when_ssdp_multicast_is_dead() {
+    let lan = FakeLan {
+        ssdp: false,
+        mdns: true,
+        ..FakeLan::new()
+    };
+    // No seeds: the second channel alone carries the survey.
+    let found = survey(&lan, &[], Duration::from_millis(1)).unwrap();
+    assert!(
+        found.ssdp_error.is_none(),
+        "mdns saved it: nothing to report"
+    );
+    assert!(found.unreachable.is_empty(), "{:?}", found.unreachable);
+    assert_eq!(found.households.len(), 2);
+    // The S2 TXT hhid= named the household before any topology read.
+    assert_eq!(
+        found.households[1].id.as_ref().map(|h| h.0.as_str()),
+        Some("Sonos_S2Household")
+    );
+    // The S1 player advertised without a household (S1 TXT has no hhid=);
+    // its household still resolves through the topology read.
+    assert_eq!(
+        found.households[0].id.as_ref().map(|h| h.0.as_str()),
+        Some("Sonos_S1Household")
+    );
+    // Both channels running together dedupe by address: no double reads.
+    assert_eq!(
+        *lan.topology_reads.borrow(),
+        [ip("192.0.2.11"), ip("192.0.2.19")]
+    );
 }

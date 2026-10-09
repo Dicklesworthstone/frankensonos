@@ -94,6 +94,14 @@ pub trait Transport {
     fn ssdp_search(&self, _mx_secs: u8, _wait: Duration) -> Result<Vec<ssdp::Advert>, ProtoError> {
         Err(ProtoError::NotWired("ssdp_search"))
     }
+
+    /// Multicast an mDNS query for `_sonos._tcp.local` and collect the Sonos
+    /// advertisements that arrive within `wait`: the second discovery
+    /// channel next to [`Self::ssdp_search`]. `addr` carries the player's
+    /// IPv4; `household` (S2 TXT `hhid=`) refines what SSDP's USN hinted.
+    fn mdns_search(&self, _wait: Duration) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
+        Err(ProtoError::NotWired("mdns_search"))
+    }
 }
 
 /// A shared transport is a transport: one [`net::Lan`] can serve the

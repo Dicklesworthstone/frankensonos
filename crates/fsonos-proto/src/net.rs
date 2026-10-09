@@ -12,6 +12,7 @@
 //! plenty.
 
 use crate::gena::{self, Notify, Subscription};
+use crate::mdns;
 use crate::ssdp::{self, Advert};
 use crate::{HttpBody, MAX_BODY_BYTES, ProtoError, Transport};
 use asupersync::Cx;
@@ -43,6 +44,7 @@ pub struct Lan {
     timeout: Duration,
     routes: Vec<(IpAddr, SocketAddr)>,
     ssdp_target: SocketAddr,
+    mdns_target: SocketAddr,
 }
 
 enum Job {
@@ -59,6 +61,11 @@ enum Job {
         mx_secs: u8,
         wait: Duration,
         reply: mpsc::Sender<Result<Vec<Advert>, ProtoError>>,
+    },
+    MdnsSearch {
+        target: SocketAddr,
+        wait: Duration,
+        reply: mpsc::Sender<Result<Vec<mdns::SonosAdvert>, ProtoError>>,
     },
     Route {
         toward: SocketAddr,
@@ -125,6 +132,7 @@ impl Lan {
                 timeout,
                 routes: Vec::new(),
                 ssdp_target: SocketAddr::from(([239, 255, 255, 250], 1900)),
+                mdns_target: mdns::MDNS_ADDR.parse().expect("literal group"),
             }),
             Ok(Err(e)) => Err(network("asupersync runtime", e)),
             Err(e) => Err(network("LAN worker", e)),
@@ -147,6 +155,15 @@ impl Lan {
     #[must_use]
     pub fn with_ssdp_target(mut self, target: SocketAddr) -> Self {
         self.ssdp_target = target;
+        self
+    }
+
+    /// Send the mDNS query to `target` (e.g. a simulator's unicast
+    /// responder) instead of the multicast group. Test plumbing, the
+    /// counterpart of [`Self::with_ssdp_target`].
+    #[must_use]
+    pub fn with_mdns_target(mut self, target: SocketAddr) -> Self {
+        self.mdns_target = target;
         self
     }
 
@@ -385,6 +402,15 @@ impl Transport for Lan {
             reply,
         })
     }
+
+    fn mdns_search(&self, wait: Duration) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
+        let target = self.mdns_target;
+        self.submit(|reply| Job::MdnsSearch {
+            target,
+            wait,
+            reply,
+        })
+    }
 }
 
 async fn run(job: Job) {
@@ -406,6 +432,13 @@ async fn run(job: Job) {
             reply,
         } => {
             let _ = reply.send(search(target, mx_secs, wait).await);
+        }
+        Job::MdnsSearch {
+            target,
+            wait,
+            reply,
+        } => {
+            let _ = reply.send(mdns_search(target, wait).await);
         }
         Job::Route { toward, reply } => {
             let _ = reply.send(route(toward).await);
@@ -502,6 +535,49 @@ async fn search(
                 }
             }
             Ok(Err(e)) => return Err(network("SSDP", e)),
+            Err(_elapsed) => break,
+        }
+    }
+    Ok(found)
+}
+
+/// Send the mDNS query for `_sonos._tcp.local` (twice: UDP may drop one)
+/// and collect Sonos advertisements from the replies that arrive within
+/// `wait`, deduplicated by instance name. Parse failures are skipped, not
+/// errors: anything else on the group must not break discovery.
+async fn mdns_search(
+    target: SocketAddr,
+    wait: Duration,
+) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
+    let mut socket = UdpSocket::bind("0.0.0.0:0")
+        .await
+        .map_err(|e| network("mDNS", e))?;
+    let message = mdns::query();
+    for _ in 0..2 {
+        socket
+            .send_to(&message, target)
+            .await
+            .map_err(|e| network("mDNS", e))?;
+    }
+    let started = Instant::now();
+    let mut buf = vec![0u8; 4096];
+    let mut found: Vec<mdns::SonosAdvert> = Vec::new();
+    loop {
+        let left = wait.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            break;
+        }
+        match timeout(wall_now(), left, socket.recv_from(&mut buf)).await {
+            Ok(Ok((n, _from))) => {
+                if let Ok(msg) = mdns::parse_message(&buf[..n]) {
+                    for advert in mdns::sonos_adverts(&msg) {
+                        if !found.iter().any(|f| f.instance == advert.instance) {
+                            found.push(advert);
+                        }
+                    }
+                }
+            }
+            Ok(Err(e)) => return Err(network("mDNS", e)),
             Err(_elapsed) => break,
         }
     }
@@ -1185,4 +1261,70 @@ mod tests {
         );
         answering.join().expect("responder thread");
     }
+}
+
+#[test]
+fn mdns_target_sends_the_query_and_parses_the_fixture_reply() {
+    let fixture = include_bytes!("../tests/fixtures/mdns_response_s2.bin");
+    let responder = std::net::UdpSocket::bind("127.0.0.1:0").expect("responder");
+    let target = responder.local_addr().expect("addr");
+    responder
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    let answering = thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        for _ in 0..2 {
+            let Ok((n, from)) = responder.recv_from(&mut buf) else {
+                return;
+            };
+            // The QU question, byte for byte.
+            assert_eq!(&buf[..n], mdns::query().as_slice());
+            responder.send_to(fixture, from).expect("reply");
+        }
+    });
+    let lan = Lan::start().expect("lan").with_mdns_target(target);
+    let found = lan
+        .mdns_search(Duration::from_secs(1))
+        .expect("mdns search");
+    assert_eq!(found.len(), 1, "the duplicated reply dedupes");
+    let advert = &found[0];
+    assert!(advert.instance.contains("RINCON_"), "{:?}", advert);
+    assert!(
+        advert
+            .household
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("Sonos_")
+    );
+    assert!(advert.addr.is_some());
+    answering.join().expect("responder thread");
+}
+
+#[test]
+fn mdns_target_sends_the_query_and_parses_the_fixture_reply_s1() {
+    let fixture = include_bytes!("../tests/fixtures/mdns_response_s1.bin");
+    let responder = std::net::UdpSocket::bind("127.0.0.1:0").expect("responder");
+    let target = responder.local_addr().expect("addr");
+    responder
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
+    let answering = thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        for _ in 0..2 {
+            let Ok((n, from)) = responder.recv_from(&mut buf) else {
+                return;
+            };
+            assert_eq!(&buf[..n], mdns::query().as_slice());
+            responder.send_to(fixture, from).expect("reply");
+        }
+    });
+    let lan = Lan::start().expect("lan").with_mdns_target(target);
+    let found = lan
+        .mdns_search(Duration::from_secs(1))
+        .expect("mdns search");
+    assert_eq!(found.len(), 1, "the duplicated reply dedupes");
+    let advert = &found[0];
+    assert!(advert.instance.starts_with("Sonos-"), "{:?}", advert);
+    assert!(advert.uuid.is_some(), "parsed from the instance name");
+    answering.join().expect("responder thread");
 }
