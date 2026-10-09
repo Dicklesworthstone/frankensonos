@@ -1288,7 +1288,7 @@ fn mdns_target_sends_the_query_and_parses_the_fixture_reply() {
         .expect("mdns search");
     assert_eq!(found.len(), 1, "the duplicated reply dedupes");
     let advert = &found[0];
-    assert!(advert.instance.contains("RINCON_"), "{:?}", advert);
+    assert!(advert.instance.contains("RINCON_"), "{advert:?}");
     assert!(
         advert
             .household
@@ -1324,7 +1324,7 @@ fn mdns_target_sends_the_query_and_parses_the_fixture_reply_s1() {
         .expect("mdns search");
     assert_eq!(found.len(), 1, "the duplicated reply dedupes");
     let advert = &found[0];
-    assert!(advert.instance.starts_with("Sonos-"), "{:?}", advert);
+    assert!(advert.instance.starts_with("Sonos-"), "{advert:?}");
     assert!(advert.uuid.is_some(), "parsed from the instance name");
     answering.join().expect("responder thread");
 }
