@@ -661,6 +661,34 @@ fn artist_genres(s: &mut dyn Store) {
     );
 }
 
+fn album_misses(s: &mut dyn Store) {
+    assert!(s.album_misses().unwrap().is_empty());
+    let miss = |uri: &str, at: i64| (uri.to_owned(), at);
+    s.save_album_misses(&[
+        miss("spotify:album:gone", 5_000),
+        miss("spotify:album:empty", 6_000),
+        miss("spotify:album:gone", 7_000),
+    ])
+    .unwrap();
+    assert_eq!(
+        s.album_misses().unwrap(),
+        [
+            miss("spotify:album:empty", 6_000),
+            miss("spotify:album:gone", 7_000)
+        ],
+        "by URI, a repeat keeping the last time"
+    );
+    // A save replaces the lot.
+    s.save_album_misses(&[miss("spotify:album:later", 9_000)])
+        .unwrap();
+    assert_eq!(
+        s.album_misses().unwrap(),
+        [miss("spotify:album:later", 9_000)]
+    );
+    s.save_album_misses(&[]).unwrap();
+    assert!(s.album_misses().unwrap().is_empty());
+}
+
 fn suite(s: &mut dyn Store) {
     play_history(s);
     inventory_cache(s);
@@ -670,6 +698,7 @@ fn suite(s: &mut dyn Store) {
     feedback(s);
     album_tracks(s);
     artist_genres(s);
+    album_misses(s);
     action_log(s);
     scenes(s);
     schedules(s);
@@ -684,7 +713,7 @@ fn mem_store_conforms() {
 fn sqlite_in_memory_conforms() {
     let mut s = SqliteStore::open_in_memory().unwrap();
     suite(&mut s);
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
     s.close().unwrap();
 }
 
@@ -699,7 +728,7 @@ fn sqlite_file_survives_close_and_reopen() {
 
     // Reopening re-runs no migrations and sees every committed write.
     let s = SqliteStore::open(&path).unwrap();
-    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(s.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
     assert_eq!(s.cached_groups("HH_S2").unwrap().len(), 1);

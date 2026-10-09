@@ -88,7 +88,10 @@ pub async fn sync_library<S: Store + ?Sized>(
     // Read and cache the album track lists that complete partly-held works
     // (a liked Adagietto), so the DJ plays them whole from the cache. Best
     // effort, like the reads above: a halted run resumes next sync.
+    // An album that couldn't be had waits out its week across syncs and
+    // restarts; a store that can't say which just asks again.
     let works = group_works(pool_from_store(store)?.tracks());
+    let mut misses = AlbumMisses::load(&*store, now).unwrap_or_default();
     let _ = complete_works(
         session,
         cx,
@@ -96,9 +99,10 @@ pub async fn sync_library<S: Store + ?Sized>(
         works,
         &DjConfig::default(),
         now,
-        &mut AlbumMisses::default(),
+        &mut misses,
     )
     .await;
+    let _ = misses.save(store, now);
     Ok(report)
 }
 
@@ -414,13 +418,22 @@ mod tests {
         let endpoints = spotify.endpoints();
         let state = Arc::clone(&spotify.state);
 
-        let (first, second, pool, rows, debussy) = runtime().block_on(async move {
+        let gone = "spotify:album:FakeAlbumGone00000001";
+        let (first, second, pool, rows, debussy, misses) = runtime().block_on(async move {
             let cx = Cx::current().expect("ambient Cx");
             let http = Client::default_for_runtime(&cx);
             let mut session = Session::open(config(), cache, http)
                 .unwrap()
                 .with_endpoints(endpoints);
             let mut store = MemStore::default();
+            // A miss whose week is long over doesn't keep the Debussy album
+            // from being read; one still waiting is kept.
+            store
+                .save_album_misses(&[
+                    ("spotify:album:FakeAlbum0000000000003".into(), 1),
+                    (gone.into(), i64::MAX),
+                ])
+                .unwrap();
             let first = sync_library(&mut session, &cx, &mut store).await.unwrap();
             // The liked Clair de lune comes back as its whole suite, from the
             // album list the sync cached.
@@ -438,6 +451,7 @@ mod tests {
                 pool_from_store(&store).unwrap(),
                 store.library().unwrap(),
                 debussy,
+                store.album_misses().unwrap(),
             )
         });
         spotify.stop();
@@ -464,6 +478,7 @@ mod tests {
         );
         assert_eq!(pool.len(), 5);
         assert_eq!(debussy, Some(4), "the suite, completed from its album");
+        assert_eq!(misses, [(gone.to_owned(), i64::MAX)]);
         // The artists' genres reach the cache and the pool the daemon builds.
         let aria = rows
             .iter()

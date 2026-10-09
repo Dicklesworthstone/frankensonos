@@ -433,6 +433,14 @@ pub trait Store {
     /// An artist's cached genre tags and when they were read.
     fn artist_genres(&self, artist_id: &str) -> Result<Option<(Vec<String>, i64)>, StoreError>;
 
+    /// Replace the albums whose track lists couldn't be had (not there, or
+    /// nothing in them playable), each with when it may be read again. A
+    /// repeated album keeps the last time given.
+    fn save_album_misses(&mut self, misses: &[(String, i64)]) -> Result<(), StoreError>;
+
+    /// Those albums and when each may be read again, by album URI.
+    fn album_misses(&self) -> Result<Vec<(String, i64)>, StoreError>;
+
     /// Log `action`; returns its id.
     fn record_action(&mut self, action: &Action) -> Result<i64, StoreError>;
 
@@ -505,6 +513,7 @@ pub struct MemStore {
     feedback: Vec<Feedback>,
     album_tracks: BTreeMap<String, (TracksByPosition, i64)>,
     artist_genres: BTreeMap<String, (Vec<String>, i64)>,
+    album_misses: BTreeMap<String, i64>,
     actions: Vec<LoggedAction>,
     scenes: BTreeMap<String, StoredScene>,
     schedules: BTreeMap<i64, StoredSchedule>,
@@ -727,6 +736,19 @@ impl Store for MemStore {
 
     fn artist_genres(&self, artist_id: &str) -> Result<Option<(Vec<String>, i64)>, StoreError> {
         Ok(self.artist_genres.get(artist_id).cloned())
+    }
+
+    fn save_album_misses(&mut self, misses: &[(String, i64)]) -> Result<(), StoreError> {
+        self.album_misses = misses.iter().cloned().collect();
+        Ok(())
+    }
+
+    fn album_misses(&self) -> Result<Vec<(String, i64)>, StoreError> {
+        Ok(self
+            .album_misses
+            .iter()
+            .map(|(uri, &at)| (uri.clone(), at))
+            .collect())
     }
 
     fn record_action(&mut self, action: &Action) -> Result<i64, StoreError> {

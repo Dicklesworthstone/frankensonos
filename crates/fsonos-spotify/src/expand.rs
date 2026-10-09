@@ -20,7 +20,7 @@
 use std::collections::{HashMap, HashSet};
 
 use asupersync::Cx;
-use fsonos_core::store::{AlbumTrack, Store};
+use fsonos_core::store::{AlbumTrack, Store, StoreError};
 use fsonos_types::Track;
 
 use crate::SpotifyError;
@@ -61,8 +61,9 @@ impl Expansion {
 }
 
 /// Albums whose track list couldn't be had — not found, or nothing in it
-/// playable — and when each may be tried again. Keep one across runs (the
-/// daemon does) so such an album isn't fetched on every sync.
+/// playable — and when each may be tried again. The store keeps them across
+/// runs ([`AlbumMisses::load`], [`AlbumMisses::save`]) so such an album
+/// isn't fetched on every sync.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AlbumMisses {
     retry_at: HashMap<String, i64>,
@@ -76,6 +77,28 @@ impl AlbumMisses {
     fn record(&mut self, album_uri: &str, now: i64) {
         self.retry_at
             .insert(album_uri.to_owned(), now + MISS_RETRY_SECS);
+    }
+
+    /// The misses `store` keeps that still wait at `now`.
+    pub fn load<S: Store + ?Sized>(store: &S, now: i64) -> Result<Self, StoreError> {
+        let retry_at = store
+            .album_misses()?
+            .into_iter()
+            .filter(|&(_, at)| now < at)
+            .collect();
+        Ok(Self { retry_at })
+    }
+
+    /// Keep the ones still waiting at `now` in `store`, in place of what it
+    /// kept.
+    pub fn save<S: Store + ?Sized>(&self, store: &mut S, now: i64) -> Result<(), StoreError> {
+        let waiting: Vec<(String, i64)> = self
+            .retry_at
+            .iter()
+            .filter(|&(_, &at)| now < at)
+            .map(|(uri, &at)| (uri.clone(), at))
+            .collect();
+        store.save_album_misses(&waiting)
     }
 
     #[must_use]
@@ -740,6 +763,57 @@ mod tests {
         );
 
         spotify.stop();
+        std::fs::remove_dir_all(&data_dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_album_waits_its_week_across_runs_through_the_store() {
+        let (spotify, cache, data_dir) = authorized("expand-misses");
+        spotify.state.lock().unwrap().rate_limit_albums = 0;
+        let endpoints = spotify.endpoints();
+        let state = Arc::clone(&spotify.state);
+        let items = [liked("spotify:track:FakeElsewhere0000000001", MISSING)];
+        let (asked, kept) = runtime().block_on(async move {
+            let cx = Cx::current().expect("ambient Cx");
+            let http = Client::default_for_runtime(&cx);
+            let mut session = Session::open(config(), cache, http)
+                .unwrap()
+                .with_endpoints(endpoints);
+            let mut store = MemStore::default();
+            let config = DjConfig::default();
+            let mut asked = Vec::new();
+            // Each run starts afresh, like a restarted daemon: only the
+            // store remembers.
+            for now in [NOW, NOW + 3600, NOW + MISS_RETRY_SECS] {
+                let mut misses = AlbumMisses::load(&store, now).unwrap();
+                let _ = complete_works(
+                    &mut session,
+                    &cx,
+                    &mut store,
+                    works_of(&items),
+                    &config,
+                    now,
+                    &mut misses,
+                )
+                .await;
+                misses.save(&mut store, now).unwrap();
+                asked.push(requests(&state, "/v1/albums/"));
+            }
+            (asked, store.album_misses().unwrap())
+        });
+        spotify.stop();
+
+        assert_eq!(asked, [1, 1, 2], "asked, left alone, asked a week on");
+        assert_eq!(kept, [(MISSING.to_owned(), NOW + 2 * MISS_RETRY_SECS)]);
+        // A kept miss whose week is over is dropped on the way in and out.
+        let mut store = MemStore::default();
+        store
+            .save_album_misses(&[(MISSING.to_owned(), NOW), (ALBUM.to_owned(), NOW + 1)])
+            .unwrap();
+        let loaded = AlbumMisses::load(&store, NOW).unwrap();
+        assert_eq!(loaded.len(), 1);
+        loaded.save(&mut store, NOW + 1).unwrap();
+        assert!(store.album_misses().unwrap().is_empty());
         std::fs::remove_dir_all(&data_dir).unwrap();
     }
 

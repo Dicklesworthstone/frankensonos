@@ -143,6 +143,13 @@ const MIGRATIONS: &[Migration] = &[
             artist_id TEXT PRIMARY KEY, genres TEXT, fetched_at INTEGER NOT NULL);
     ",
     },
+    Migration {
+        version: 9,
+        name: "albums whose track lists couldn't be read, and when to try again",
+        sql: "
+        CREATE TABLE album_misses (album_uri TEXT PRIMARY KEY, retry_at INTEGER NOT NULL);
+    ",
+    },
 ];
 
 /// How `spotify_library.genres` and `artist_genres.genres` join tags.
@@ -853,6 +860,34 @@ impl Store for SqliteStore {
         Ok(Some((split_genres(opt_text(row, 0)?), int(row, 1)?)))
     }
 
+    fn save_album_misses(&mut self, misses: &[(String, i64)]) -> Result<(), StoreError> {
+        let rows: Vec<Vec<SqliteValue>> = misses
+            .iter()
+            .map(|(uri, at)| vec![uri.as_str().into(), (*at).into()])
+            .collect();
+        self.in_transaction(|c| {
+            c.execute_sync("DELETE FROM album_misses")?;
+            if rows.is_empty() {
+                return Ok(());
+            }
+            c.execute_many_with_params_in_transaction_sync(
+                "INSERT OR REPLACE INTO album_misses (album_uri, retry_at) VALUES (?1, ?2)",
+                &rows,
+            )
+            .map(drop)
+        })
+    }
+
+    fn album_misses(&self) -> Result<Vec<(String, i64)>, StoreError> {
+        self.query(
+            "SELECT album_uri, retry_at FROM album_misses ORDER BY album_uri",
+            &[],
+        )?
+        .iter()
+        .map(|r| Ok((text(r, 0)?, int(r, 1)?)))
+        .collect()
+    }
+
     fn record_action(&mut self, action: &Action) -> Result<i64, StoreError> {
         self.in_transaction(|c| {
             c.execute_with_params_sync(
@@ -1135,7 +1170,10 @@ mod tests {
         v1.close().unwrap();
 
         let store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            store.schema_versions().unwrap(),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].track.source_uri, "spotify:track:old");
@@ -1173,7 +1211,10 @@ mod tests {
         v2.close().unwrap();
 
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            store.schema_versions().unwrap(),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
         assert_eq!(lib[0].origin, LibraryOrigin::LikedTrack);
@@ -1227,7 +1268,10 @@ mod tests {
         v6.close().unwrap();
 
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
-        assert_eq!(store.schema_versions().unwrap(), [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            store.schema_versions().unwrap(),
+            [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 2, "no row lost");
         // Legacy rows keep their candidacy: is_classical decides.
