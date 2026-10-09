@@ -12,6 +12,10 @@
 //! file) picks one for the house's local day and time, which also sets the
 //! energy target.
 //!
+//! The library cache is refreshed by [`sync`] (daily in the daemon, or on
+//! `fsonos dj sync`); once a refresh lands, a running DJ rebuilds its pool
+//! at its next top-up.
+//!
 //! A steer replaces the zone's stored session (or a clear deletes it); it is
 //! checked against the moods first, and applies from the next pick whether
 //! or not the DJ runs. Status and moods read the same session and programs
@@ -22,6 +26,7 @@ use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
 use fsonos_api::plan::DjAction;
 use fsonos_api::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
 use fsonos_api::surface::dj_prefs::{PrefChange, PreferencesDto, PreferredDto};
+use fsonos_api::surface::dj_sync::LibrarySyncDto;
 use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 use fsonos_core::clock::Clock;
 use fsonos_core::playback::PlayerPlayback;
@@ -35,12 +40,13 @@ use fsonos_spotify::steer::{DjSession, Moods, Steer, steering};
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::dj_view::{self, steer_failure, store_failure};
 
 pub(crate) mod feedback;
 pub(crate) mod prefs;
+pub(crate) mod sync;
 
 /// The moods file's name inside the data directory.
 pub const MOODS_FILE: &str = "moods.toml";
@@ -50,6 +56,8 @@ pub struct SpotifyDj {
     /// `moods.toml`, read on each start and skip; `None`: the built-ins.
     moods_file: Option<PathBuf>,
     state: Mutex<State>,
+    /// Refreshes the library cache (the daemon's, with a Spotify app).
+    library: Option<Arc<sync::LibrarySync>>,
 }
 
 impl SpotifyDj {
@@ -63,7 +71,28 @@ impl SpotifyDj {
                 moods: Moods::builtin(),
                 ..State::default()
             }),
+            library: None,
         }
+    }
+
+    /// Refresh the library cache through `library` (`dj_sync`).
+    #[must_use]
+    pub fn with_library(mut self, library: Option<Arc<sync::LibrarySync>>) -> Self {
+        self.library = library;
+        self
+    }
+
+    fn library(&self) -> Result<&Arc<sync::LibrarySync>, Failure> {
+        self.library.as_ref().ok_or_else(|| {
+            Failure::new(
+                ErrorCode::NotImplemented,
+                "this daemon has no Spotify app to refresh the library with",
+            )
+            .with_hint(
+                "Start fsonos serve with FSONOS_SPOTIFY_CLIENT_ID set (fsonos setup), or run \
+                 fsonos dj sync with it set.",
+            )
+        })
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -421,6 +450,12 @@ impl DjEngine for SpotifyDj {
         if !state.feeds.contains_key(at.coordinator) {
             return;
         }
+        // A library refresh landed: plan from what it found from here.
+        if self.library.as_ref().is_some_and(|l| l.take_fresh())
+            && let Err(f) = state.reload(store, self.moods_file.as_ref(), clock.now().timestamp())
+        {
+            tracing::warn!(detail = %f.detail, "the DJ keeps its pool from before the refresh");
+        }
         // A session that names a mood no longer defined still plays, unsteered.
         let cx = state
             .context(store, at.coordinator, clock)
@@ -496,5 +531,13 @@ impl DjEngine for SpotifyDj {
 
     fn prefer(&self, change: &PrefChange) -> Result<PreferredDto, Failure> {
         prefs::change(&mut self.state(), self.moods_file.as_ref(), change)
+    }
+
+    fn sync_library(&self) -> Result<LibrarySyncDto, Failure> {
+        self.library()?.start()
+    }
+
+    fn library_sync(&self) -> Result<LibrarySyncDto, Failure> {
+        Ok(self.library()?.status())
     }
 }

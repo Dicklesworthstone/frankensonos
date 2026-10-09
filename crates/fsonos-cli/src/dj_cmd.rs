@@ -66,6 +66,10 @@ pub enum DjAction {
         #[command(subcommand)]
         action: crate::dj::prefs::PrefsAction,
     },
+    /// Refresh the DJ's library from Spotify now: new saves and likes,
+    /// their genres, and the taste signals the sign-in allows. The daemon
+    /// does it daily on its own.
+    Sync(crate::dj::sync::SyncArgs),
 }
 
 /// `fsonos dj steer`: the fields of `dj_steer`.
@@ -181,6 +185,7 @@ impl DjAction {
                 | Self::Like { .. }
                 | Self::Dislike { .. }
                 | Self::Prefs { .. }
+                | Self::Sync(_)
         )
     }
 
@@ -199,6 +204,7 @@ impl DjAction {
                 action: crate::dj::prefs::PrefsAction::Show,
             } => "dj_preferences",
             Self::Prefs { .. } => "dj_prefer",
+            Self::Sync(_) => "dj_sync",
         }
     }
 
@@ -227,7 +233,8 @@ impl DjAction {
             | Self::Moods { .. }
             | Self::Like { .. }
             | Self::Dislike { .. }
-            | Self::Prefs { .. } => Err(Failure::new(
+            | Self::Prefs { .. }
+            | Self::Sync(_) => Err(Failure::new(
                 ErrorCode::Internal,
                 "dj status, why, moods, like and dislike run on their own",
             )),
@@ -264,6 +271,7 @@ pub fn read(global: &GlobalArgs, action: &DjAction) -> anyhow::Result<()> {
             crate::dj::feedback::run(global, zone.as_deref(), DjFeedback::Dislike)
         }
         DjAction::Prefs { action } => crate::dj::prefs::run(global, action),
+        DjAction::Sync(args) => crate::dj::sync::run(global, args),
         _ => Err(Failure::new(ErrorCode::Internal, "not a DJ read").into()),
     }
 }

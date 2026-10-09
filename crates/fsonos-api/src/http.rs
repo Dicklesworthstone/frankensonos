@@ -35,6 +35,8 @@
 //! | `POST /dj/feedback` | [`crate::surface::dj_feedback::DjFeedbackRequest`] | [`crate::surface::dj_feedback::DjFeedbackDto`] |
 //! | `GET /dj/preferences` | | [`crate::surface::dj_prefs::PreferencesDto`] |
 //! | `POST /dj/preferences` | [`crate::surface::dj_prefs::DjPreferRequest`] | [`crate::surface::dj_prefs::PreferredDto`] |
+//! | `GET /dj/sync` | | [`crate::surface::dj_sync::LibrarySyncDto`]: the DJ's library refresh from Spotify |
+//! | `POST /dj/sync` | `{}` | [`crate::surface::dj_sync::LibrarySyncDto`]: a refresh started in the background |
 //! | `GET /` (and `/remote.js`, `/remote.css`) | | the web remote: a page that controls the speakers from a browser ([`remote`]) |
 //! | `GET /art?zone=<room>` | | the album art of what the room's group plays, from its own player (`204` when none) |
 //!
@@ -80,6 +82,7 @@ mod house_policy;
 
 mod dj_feedback;
 mod dj_prefs;
+mod dj_sync;
 mod schedules;
 
 mod spotify_auth;
@@ -155,6 +158,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(dj(cx));
     routes.extend(dj_feedback::routes(cx));
     routes.extend(dj_prefs::routes(cx));
+    routes.extend(dj_sync::routes(cx));
     routes.extend(schedules::routes(cx));
     routes.extend(spotify_auth::routes(cx));
     routes.extend(remote::routes(cx));

@@ -27,6 +27,7 @@ use crate::failure::{ErrorCode, Failure};
 use crate::plan::DjAction;
 use crate::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
 use crate::surface::dj_prefs::{PrefChange, PreferencesDto, PreferredDto};
+use crate::surface::dj_sync::LibrarySyncDto;
 
 /// The speakers a DJ command acts on.
 #[derive(Clone, Copy)]
@@ -126,6 +127,24 @@ pub trait DjEngine: Send + Sync {
         Err(Failure::new(
             ErrorCode::NotImplemented,
             "this DJ keeps no preferences",
+        ))
+    }
+
+    /// Start refreshing the library cache from Spotify, in the
+    /// background, unless a refresh is running
+    /// ([`crate::surface::dj_sync`]); where it stands.
+    fn sync_library(&self) -> Result<LibrarySyncDto, Failure> {
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this DJ has no library to refresh",
+        ))
+    }
+
+    /// Where the library refresh stands.
+    fn library_sync(&self) -> Result<LibrarySyncDto, Failure> {
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this DJ has no library to refresh",
         ))
     }
 }

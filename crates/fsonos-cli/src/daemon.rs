@@ -46,6 +46,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::config::{self, GlobalArgs, ServeArgs};
+use crate::dj::sync::LibrarySync;
 use crate::schedule_cmd::SchedulerArgs;
 
 mod spotify_auth;
@@ -85,11 +86,13 @@ pub fn surface(global: &GlobalArgs, policy: Policy) -> Result<Surface, Failure> 
 /// The daemon's surface over a live model of the speakers: surveys and
 /// reads through the (confined) transport, events through the LAN on
 /// `events_port`. The caller owns the model: dropping the returned `Arc`
-/// ends every subscription.
+/// ends every subscription. With `library`, the DJ can refresh its
+/// library from Spotify (`dj_sync`).
 pub fn live_surface(
     global: &GlobalArgs,
     events_port: u16,
     policy: Policy,
+    library: Option<Arc<LibrarySync>>,
 ) -> Result<(Surface, Arc<Live>), Failure> {
     let seeds = global.seed_addrs()?;
     let wait = global.wait();
@@ -118,9 +121,10 @@ pub fn live_surface(
         Box::new(SystemClock),
     )
     .with_live(&live)
-    .with_dj(Box::new(crate::dj::SpotifyDj::new(
-        global.data_dir().map(|d| d.join(crate::dj::MOODS_FILE)),
-    )));
+    .with_dj(Box::new(
+        crate::dj::SpotifyDj::new(global.data_dir().map(|d| d.join(crate::dj::MOODS_FILE)))
+            .with_library(library),
+    ));
     let listener = Arc::downgrade(&live);
     let surface = surface.with_announcements(fsonos_api::surface::announce::Announcements::new(
         media,
@@ -221,7 +225,8 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     let data_dir = data_dir(global)?;
     let checks = args.clone();
     let doctor_data_dir = data_dir.clone();
-    let (surface, live) = live_surface(global, args.events_port, policy(&data_dir)?)?;
+    let (house, library) = (policy(&data_dir)?, LibrarySync::for_serve(args, &data_dir));
+    let (surface, live) = live_surface(global, args.events_port, house, library.clone())?;
     let surface = surface
         .with_clock(scheduler.clock())
         .with_sleep(scheduler.sleep());
@@ -241,6 +246,8 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             .context("install the SIGINT/SIGTERM handler")?;
     }
     let ticking = start_scheduler(&surface, &stop)?;
+    // The DJ's library: refreshed when due at start, then daily.
+    crate::dj::sync::watch(library, Arc::clone(&stop));
 
     // The local CLI's proof that it is the CLI (see crate::remote).
     let cli_token = fsonos_core::announce::clip::clip_id().context("make the CLI token")?;

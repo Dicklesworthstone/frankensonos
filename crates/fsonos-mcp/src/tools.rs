@@ -24,6 +24,7 @@ use crate::tool_error;
 
 pub mod dj_feedback;
 pub mod dj_prefs;
+pub mod dj_sync;
 pub mod schedules;
 
 mod house_policy;
