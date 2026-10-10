@@ -512,8 +512,16 @@ impl Engine {
                 // no event, so the position would otherwise stay stale or
                 // empty until the next track. Best effort per player: a
                 // player that does not answer keeps its interpolated
-                // position.
+                // position, and a player the survey just found offline is
+                // not asked at all (its timeout would stall every survey).
                 for player in m.rec.households.iter().flat_map(|h| &h.players) {
+                    if m.rec
+                        .health
+                        .of(&player.id)
+                        .is_some_and(|h| h.health == Health::Offline)
+                    {
+                        continue;
+                    }
                     if let Ok(info) =
                         fsonos_proto::control::get_position_info(&self.via(), player.ip)
                     {
