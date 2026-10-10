@@ -301,7 +301,10 @@ mod modern_http_only {
         }
 
         pub fn open_session(&self) -> Result<DualEraHttpSession, DualEraHttpEndpointError> {
-            let mut transport = StreamableHttpTransport::with_capacity(self.capacity)?;
+            let mut transport = StreamableHttpTransport::with_capacity_and_max_message_size(
+                self.capacity,
+                self.handler.config().max_body_size,
+            )?;
             let ingress = transport.request_ingress()?;
             let responses = transport.response_stream()?;
             Ok(DualEraHttpSession {

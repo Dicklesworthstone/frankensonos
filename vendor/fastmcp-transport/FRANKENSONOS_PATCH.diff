@@ -1,0 +1,53 @@
+--- a/src/http.rs
++++ b/src/http.rs
+@@ -5425,6 +5425,37 @@
+         Self::with_queue_limits(capacity, MAX_STREAMABLE_QUEUED_BYTES_PER_DIRECTION)
+     }
+ 
++    /// Creates bounded queues using an endpoint's configured message-size limit.
++    ///
++    /// The limit is captured by both handles before they are externalized. Each
++    /// direction retains its existing byte budget or enough for one maximum-size
++    /// message plus its NDJSON newline, whichever is larger. Queue-count and
++    /// serialized-byte accounting remain enforced.
++    ///
++    /// # Errors
++    ///
++    /// Returns an invalid-input error for an invalid capacity, a zero message
++    /// limit, or a message limit that leaves no room for its framing byte.
++    pub fn with_capacity_and_max_message_size(
++        capacity: usize,
++        max_message_size: usize,
++    ) -> Result<Self, TransportError> {
++        let framed_message_size = max_message_size
++            .checked_add(1)
++            .filter(|_| max_message_size != 0)
++            .ok_or_else(|| {
++                TransportError::Io(std::io::Error::new(
++                    std::io::ErrorKind::InvalidInput,
++                    "streamable HTTP message limit must be nonzero and leave room for framing",
++                ))
++            })?;
++        let mut transport = Self::with_capacity(capacity)?;
++        transport.codec.set_max_message_size(max_message_size);
++        transport.max_queued_bytes_per_direction =
++            MAX_STREAMABLE_QUEUED_BYTES_PER_DIRECTION.max(framed_message_size);
++        Ok(transport)
++    }
++
+     fn with_queue_limits(
+         capacity: usize,
+         max_queued_bytes_per_direction: usize,
+@@ -6145,8 +6176,10 @@
+     /// three deterministically.
+     pub fn open_session(&self) -> Result<DualEraHttpSession, DualEraHttpEndpointError> {
+         let session_id = generate_session_id()?;
+-        let mut transport =
+-            StreamableHttpTransport::with_capacity(self.config.legacy_request_capacity)?;
++        let mut transport = StreamableHttpTransport::with_capacity_and_max_message_size(
++            self.config.legacy_request_capacity,
++            self.handler.config().max_body_size,
++        )?;
+         let (modern_ingress, modern_responses) = transport.split_handles()?;
+         let mut legacy_codec = Codec::new();
+         legacy_codec.set_max_message_size(self.handler.config().max_body_size);

@@ -1,0 +1,44 @@
+[package]
+name = "fastmcp-transport"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+description = "Transport layer (stdio, SSE, WebSocket) for FastMCP"
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+documentation = "https://docs.rs/fastmcp-transport"
+keywords = ["mcp", "transport", "stdio", "sse", "websocket"]
+categories = ["network-programming"]
+
+[features]
+# Exact MCP 2024-11-05 adapters remain opt-in so an embedding that ships only
+# final transport surfaces does not retain the legacy SSE/HTTP route family.
+legacy-2024-11-05 = ["fastmcp-protocol/legacy-2024-11-05"]
+
+# Compatibility feature for workspace feature forwarding. WebSocket transport
+# is now public unconditionally; selecting this name no longer changes the
+# transport dependency graph or public API.
+websocket-experimental = []
+
+[dependencies]
+fastmcp-core.workspace = true
+fastmcp-protocol.workspace = true
+# WebSocket transport uses asupersync's native TCP, RFC 6455, and Rustls
+# stream surfaces. `tls-webpki-roots` supplies an explicit public trust-root
+# path for `wss://`; callers can instead pass their own `TlsConnector`.
+asupersync = { workspace = true, features = ["tls", "tls-webpki-roots"] }
+serde.workspace = true
+serde_json.workspace = true
+# FND-01 TRANSPORT-NO-GETRANDOM: WebSocket masking uses fastmcp-core crypto.
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["event", "fs", "std"] }
+
+[dev-dependencies]
+# Test-only context construction; transport production APIs receive `&Cx`.
+asupersync = { workspace = true, features = ["test-internals"] }
+
+[lints]
+workspace = true

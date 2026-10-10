@@ -11,7 +11,7 @@ mod e2e;
 
 use e2e::{Scenario, http};
 use fsonos_api::surface::announce::AnnounceRequest;
-use fsonos_core::announce::clip::Chime;
+use fsonos_core::announce::clip::{Chime, MAX_WAV_BYTES};
 use fsonos_proto::control::{get_media_info, get_transport_info, get_volume};
 use fsonos_sim::{SimClock, SimHousehold};
 use fsonos_types::TransportState;
@@ -327,7 +327,8 @@ fn a_local_wav_plays_in_direct_mode_and_restores_the_music() {
 }
 
 /// Keep the audio short while exercising upload limits beyond the previous
-/// one-MiB HTTP and ten-MiB MCP defaults. RIFF allows unknown chunks.
+/// one-MiB HTTP, ten-MiB MCP codec, and sixteen-MiB ingress queue defaults.
+/// RIFF allows unknown chunks.
 fn wav_with_metadata(bytes: usize) -> Vec<u8> {
     let mut wav = Chime::Bell.wav();
     wav.extend_from_slice(b"JUNK");
@@ -409,11 +410,17 @@ fn upload_wavs_over_http_and_mcp(s: &mut Scenario, clock: &SimClock, api: &str, 
         format!("{response:?}"),
     );
 
+    let wav = wav_with_metadata(12 * 1024 * 1024);
+    assert!(wav.len() < MAX_WAV_BYTES);
     let request = AnnounceRequest {
         rooms: vec!["Kitchen".into()],
         volume: Some(90),
-        ..AnnounceRequest::from_wav(&wav_with_metadata(8 * 1024 * 1024)).unwrap()
+        ..AnnounceRequest::from_wav(&wav).unwrap()
     };
+    assert!(
+        request.wav_base64.as_ref().unwrap().len() > 16 * 1024 * 1024,
+        "the MCP fixture must cross the former ingress queue byte limit"
+    );
     let result = {
         let _ticking = Ticker::start(clock.clone());
         mcp_announce(mcp, &serde_json::to_value(request).unwrap())
@@ -421,7 +428,7 @@ fn upload_wavs_over_http_and_mcp(s: &mut Scenario, clock: &SimClock, api: &str, 
     s.check(
         "mcp-wav",
         "mcp-http",
-        "MCP accepts more than ten MiB of base64 and shares WAV playback and caps",
+        "MCP accepts more than sixteen MiB of base64 and shares WAV playback and caps",
         result.as_ref().is_ok_and(|result| {
             result["isError"] != true
                 && result["structuredContent"]["clean"] == true

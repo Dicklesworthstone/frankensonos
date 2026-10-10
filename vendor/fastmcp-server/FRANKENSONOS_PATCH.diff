@@ -1,6 +1,18 @@
 --- a/src/lib.rs
 +++ b/src/lib.rs
-@@ -10359,6 +10359,13 @@
+@@ -301,7 +301,10 @@
+         }
+ 
+         pub fn open_session(&self) -> Result<DualEraHttpSession, DualEraHttpEndpointError> {
+-            let mut transport = StreamableHttpTransport::with_capacity(self.capacity)?;
++            let mut transport = StreamableHttpTransport::with_capacity_and_max_message_size(
++                self.capacity,
++                self.handler.config().max_body_size,
++            )?;
+             let ingress = transport.request_ingress()?;
+             let responses = transport.response_stream()?;
+             Ok(DualEraHttpSession {
+@@ -10359,6 +10362,13 @@
      )
  }
  
@@ -14,7 +26,7 @@
  async fn next_native_http1_request(
      cx: &Cx,
      listener_shutdown: &HttpListenerShutdown,
-@@ -11777,7 +11784,8 @@
+@@ -11777,7 +11787,8 @@
      listener_shutdown: HttpListenerShutdown,
  ) {
      let http_config = &endpoint.server.http_config.handler_config;
@@ -24,7 +36,7 @@
      #[cfg(test)]
      lib_unit_tests::record_live_http_connection_read_wait();
      let Some(request) = next_native_http1_request(cx, &listener_shutdown, &mut framed).await else {
-@@ -12170,7 +12178,8 @@
+@@ -12170,7 +12181,8 @@
      listener_shutdown: HttpListenerShutdown,
  ) {
      let http_config = &endpoint.server.http_config.handler_config;
