@@ -239,9 +239,13 @@ on every tailnet address of the Mac whenever Tailscale is up at startup; the
 startup log prints the URLs (MagicDNS first) for tailnet devices. Traffic is
 plain HTTP inside WireGuard. Two things to know:
 
-- Callers on a direct tailnet listener are identified as `unknown`, which the
-  default house policy keeps read-only until tailnet identity reaches the
-  HTTP layer. Serve traffic arrives on loopback and has full control.
+- On a direct tailnet listener, Tailscale names each caller by its address
+  (WhoIs: the user's login, or a tagged device's tag such as `tag:agent`),
+  and the house policy treats it as that client. Identified callers get
+  every tool by default, still volume-capped; a `[clients."<login>"]` or
+  `[clients."tag:<name>"]` table in `policy.toml` narrows that. A caller
+  Tailscale can't name is `unknown`, which the default policy keeps
+  read-only. Serve traffic arrives on loopback and has full control.
 - The tailnet addresses are read once, at startup. If the daemon starts
   before Tailscale is up, it listens on loopback only and logs why; restart it
   (`launchctl kickstart -k`) once Tailscale is up. Serve avoids this.
