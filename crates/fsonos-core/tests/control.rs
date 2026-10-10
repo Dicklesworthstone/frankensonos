@@ -705,3 +705,26 @@ fn a_refused_container_relearns_once_then_reports_stale() {
         "nothing starts when the render is refused"
     );
 }
+
+/// Answers every action with the S1 topology.
+struct Topology;
+
+impl Transport for Topology {
+    fn soap_post(&self, _: IpAddr, _: &str, action: &str, _: &str) -> Result<String, ProtoError> {
+        assert!(action.ends_with("#GetZoneGroupState\""), "{action}");
+        Ok(ZGS_S1.to_string())
+    }
+}
+
+#[test]
+fn the_coordinator_now_comes_from_the_players_own_topology() {
+    let h = house();
+    // The study plays in the den's group; the bedroom leads its own.
+    let now = |n| fsonos_core::moving::coordinator_now(&Topology, &h, &pid(n));
+    assert_eq!(now(4).unwrap(), pid(2));
+    assert_eq!(now(3).unwrap(), pid(3));
+    assert!(matches!(
+        fsonos_core::moving::coordinator_now(&Topology, &h, &PlayerId("RINCON_NOWHERE".into())),
+        Err(CoreError::UnknownPlayer(_))
+    ));
+}

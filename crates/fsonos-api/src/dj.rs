@@ -86,6 +86,14 @@ pub trait DjEngine: Send + Sync {
     /// Whether the DJ is feeding `coordinator`'s queue.
     fn feeds(&self, coordinator: &PlayerId) -> bool;
 
+    /// The music moved: the group `from` led plays on under `to` now (a
+    /// `move` handed it over or replayed it there). The engine carries what
+    /// it keeps per group, its feed, across; the stored session is the
+    /// surface's to re-key.
+    fn moved(&self, from: &PlayerId, to: &PlayerId) {
+        let _ = (from, to);
+    }
+
     /// Fold `playback`, the coordinator's latest state, into its feed: record
     /// what plays and top the queue up. Failures are the engine's to log; the
     /// next playback change retries.

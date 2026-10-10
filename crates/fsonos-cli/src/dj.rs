@@ -439,6 +439,20 @@ impl DjEngine for SpotifyDj {
             .is_some_and(QueueFeed::is_active)
     }
 
+    fn moved(&self, from: &PlayerId, to: &PlayerId) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let State {
+            feeds, listening, ..
+        } = &mut *state;
+        if let Some(mut feed) = feeds.remove(from) {
+            feed.rekey(to);
+            feeds.insert(to.clone(), feed);
+        }
+        if let Some(heard) = listening.remove(from) {
+            listening.insert(to.clone(), heard);
+        }
+    }
+
     fn on_playback(
         &self,
         at: DjSpeakers<'_>,

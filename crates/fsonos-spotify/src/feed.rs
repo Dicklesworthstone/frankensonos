@@ -155,6 +155,9 @@ impl QueuedWork {
 pub struct QueueFeed {
     /// The zone plays are recorded under: the coordinator's id.
     zone: String,
+    /// Zones the feed recorded under before the music moved, oldest first:
+    /// their plays still count against repeats.
+    earlier: Vec<String>,
     config: DjConfig,
     rng: Rng,
     /// Whole works kept queued beyond the one playing (at least 1).
@@ -178,6 +181,7 @@ impl QueueFeed {
     pub fn new(coordinator: &PlayerId, config: DjConfig, seed: u64) -> Self {
         Self {
             zone: coordinator.0.clone(),
+            earlier: Vec::new(),
             config,
             rng: Rng::new(seed),
             lookahead: 1,
@@ -200,6 +204,17 @@ impl QueueFeed {
     pub fn current(&self) -> Option<&QueuedWork> {
         let at = self.playing?;
         self.queued.iter().find(|w| w.contains(at))
+    }
+
+    /// Feed `coordinator`'s group from here on, recording its plays there:
+    /// the music moved with its queue (`fsonos_core::moving`).
+    pub fn rekey(&mut self, coordinator: &PlayerId) {
+        if coordinator.0 == self.zone {
+            return;
+        }
+        let old = std::mem::replace(&mut self.zone, coordinator.0.clone());
+        self.earlier.retain(|z| *z != old && *z != self.zone);
+        self.earlier.push(old);
     }
 
     /// Whether the feed is running: started, not stopped, and not let go
@@ -596,18 +611,25 @@ impl QueueFeed {
         Ok(())
     }
 
-    /// The zone's recorded plays, then the queued movements not yet reached,
-    /// as if just played: the DJ must not pick what is already waiting.
+    /// The zone's recorded plays (with those of the zones it fed before the
+    /// music moved), then the queued movements not yet reached, as if just
+    /// played: the DJ must not pick what is already waiting.
     fn history<S: Store + ?Sized>(
         &self,
         store: &S,
         now: i64,
     ) -> Result<Vec<PlayRecord>, FeedError> {
-        let mut history: Vec<PlayRecord> = store
-            .recent_plays(Some(&self.zone), self.config.history_horizon)?
-            .into_iter()
-            .map(|p| PlayRecord::at(p.source_uri, p.played_at))
-            .collect();
+        let mut history: Vec<PlayRecord> = Vec::new();
+        for zone in self.earlier.iter().chain(std::iter::once(&self.zone)) {
+            let plays = store.recent_plays(Some(zone), self.config.history_horizon)?;
+            history.extend(
+                plays
+                    .into_iter()
+                    .map(|p| PlayRecord::at(p.source_uri, p.played_at)),
+            );
+        }
+        // Oldest first, the earlier zones' first in a tie.
+        history.sort_by_key(|p| p.played_at);
         let reached = self.playing.unwrap_or(0);
         for work in &self.queued {
             for m in &work.movements {
@@ -1039,6 +1061,40 @@ mod tests {
             "the plays are exactly the tracks heard"
         );
         assert_whole_works(&rig, &pool, 1);
+    }
+
+    #[test]
+    fn a_rekeyed_feed_plays_on_under_its_new_coordinator() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = works_of(&shelf_items(1));
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        // The music moved: the group plays on under another coordinator.
+        let moved = PlayerId("RINCON_000E58A0MOVED01400".into());
+        feed.rekey(&moved);
+        rig.next();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT + 300), &mut store)
+            .unwrap();
+        let under = |zone: &PlayerId| store.recent_plays(Some(&zone.0), 500).unwrap().len();
+        assert_eq!((under(&rig.coordinator), under(&moved)), (1, 1));
+        assert!(feed.is_active());
+        // Both plays still count against repeats, oldest first.
+        let heard: Vec<String> = feed
+            .history(&store, MIDNIGHT + 300)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.source_uri)
+            .take(2)
+            .collect();
+        assert_eq!(heard, plays(&store));
+        // Moving back keeps one key per zone.
+        feed.rekey(&rig.coordinator);
+        assert_eq!(feed.earlier, [moved.0.as_str()]);
     }
 
     #[test]

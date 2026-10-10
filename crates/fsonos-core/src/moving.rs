@@ -13,8 +13,8 @@
 //! [`copy_playback`] replays the music there instead.
 //!
 //! A DJ session follows its group's coordinator: after a move, re-key it with
-//! [`rekey_dj_session`] (or, for a queue the DJ feeds, re-plan on the new
-//! coordinator rather than relying on the copied queue).
+//! [`rekey_dj_session`] from the old coordinator to [`coordinator_now`] of the
+//! target, as the surfaces do (a DJ feeding the queue moves its feed too).
 
 use crate::rooms::ControlTarget;
 use crate::snapshot::{self, SnapshotSource, ZoneSnapshot};
@@ -403,6 +403,21 @@ pub fn rekey_dj_session(
     session.coordinator.clone_from(&new.0);
     store.save_dj_session(&session)?;
     Ok(true)
+}
+
+/// The coordinator of the group `player` is in now, as the player's own
+/// topology says (the cached households may not show a move yet).
+pub fn coordinator_now<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    player: &PlayerId,
+) -> Result<PlayerId, CoreError> {
+    let zgs = get_zone_group_state(t, ip(households, player)?)?;
+    zgs.groups
+        .iter()
+        .find(|g| g.coordinator == *player || g.members.iter().any(|m| m.uuid == *player))
+        .map(|g| g.coordinator.clone())
+        .ok_or_else(|| CoreError::UnknownPlayer(player.0.clone()))
 }
 
 fn ip(households: &[HouseholdState], player: &PlayerId) -> Result<IpAddr, CoreError> {

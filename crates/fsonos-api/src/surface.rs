@@ -23,7 +23,7 @@ use fsonos_core::live::{Live, LiveEvent};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::rooms::Aliases;
 use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store, StoreError};
-use fsonos_core::{HouseholdState, control};
+use fsonos_core::{HouseholdState, control, moving};
 use fsonos_core::{favorites, search};
 use fsonos_proto::Transport;
 use fsonos_types::{PlayerId, TransportState};
@@ -475,6 +475,7 @@ impl Surface {
             let result = self.execute(&households, &guard, &command);
             if result.is_ok() {
                 self.remember_play(&command);
+                self.dj_follows(&households, &command);
             }
             if regroups {
                 self.invalidate();
@@ -495,6 +496,7 @@ impl Surface {
         let result = self.execute(&households, &guard, &command);
         if result.is_ok() {
             self.remember_play(&command);
+            self.dj_follows(&households, &command);
         }
         if regroups {
             self.invalidate();
@@ -781,6 +783,43 @@ impl Surface {
         let at = self.now();
         if let Err(e) = self.with_store(|s| s.record_play(&coordinator.0, uri, at)) {
             tracing::warn!("play not recorded ({uri}): {}", e.detail);
+        }
+    }
+
+    /// After a move, the DJ follows the music: when the group plays on under
+    /// another coordinator (handed over, or replayed there), its stored
+    /// session and the DJ's feed move there too. `before` is the speakers as
+    /// they were; the new coordinator comes from the target's own topology.
+    fn dj_follows(&self, before: &[HouseholdState], command: &Command) {
+        let Command::Move { from, to, .. } = command else {
+            return;
+        };
+        let Some(old) = before.iter().find_map(|h| h.coordinator_of(from)).cloned() else {
+            return;
+        };
+        let new = match moving::coordinator_now(&*self.transport, before, to) {
+            Ok(new) if new != old => new,
+            Ok(_) => return,
+            Err(e) => {
+                tracing::warn!("the DJ stays with {}: {e}", old.0);
+                return;
+            }
+        };
+        // A DJ that moved with no steering of its own leaves none behind it:
+        // the target's old session was for music it no longer plays. With no
+        // DJ running, the target keeps its standing steering.
+        let feeding = self.dj.as_ref().is_some_and(|dj| dj.feeds(&old));
+        let rekeyed = self.with_store(|s| {
+            if moving::rekey_dj_session(s, &old, &new)? || !feeding {
+                return Ok(());
+            }
+            s.delete_dj_session(&new.0)
+        });
+        if let Err(f) = rekeyed {
+            tracing::warn!("the DJ's steering stays with {}: {}", old.0, f.detail);
+        }
+        if let Some(dj) = &self.dj {
+            dj.moved(&old, &new);
         }
     }
 
