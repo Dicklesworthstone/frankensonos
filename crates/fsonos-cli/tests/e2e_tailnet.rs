@@ -12,9 +12,10 @@
 //! already running here is not in the way), answers `/health` over it, and
 //! stops promptly. (A host that cannot reach its own tailnet IPv6 address,
 //! as with Tailscale on macOS, leaves that probe pending.)
-//! Over IPv4 it also answers by MagicDNS name, treats the tailnet caller as
-//! `unknown` (reads work, writes are refused), and `fsonos doctor` finds it
-//! on the tailnet. The bind set the default plan would choose, and what serve
+//! Over IPv4 it also answers by MagicDNS name, names the tailnet caller by
+//! Tailscale's WhoIs (this host's own node: the owner's login, or its tag),
+//! whose policy then lets it control, and `fsonos doctor` finds it on the
+//! tailnet. The bind set the default plan would choose, and what serve
 //! logged, are printed.
 #![cfg(feature = "tailscale-live")]
 
@@ -99,7 +100,8 @@ fn check_health(s: &mut Scenario, step: &str, api: &str, name: Option<&str>) {
     }
 }
 
-/// A tailnet caller is `unknown`: it may read, not write.
+/// A tailnet caller is named by Tailscale's WhoIs (here this host's own
+/// node), not `unknown`, and its own policy applies: it may read and write.
 fn check_policy(s: &mut Scenario, api: &str) {
     let zones = http(api, "GET", "/zones", &[], "");
     let zone_count = zones
@@ -114,6 +116,20 @@ fn check_policy(s: &mut Scenario, api: &str) {
         zone_count == Some(4),
         format!("{zones:?}"),
     );
+    let policy = http(api, "GET", "/policy", &[], "");
+    let you = policy
+        .as_ref()
+        .ok()
+        .and_then(|(_, _, b)| serde_json::from_str::<Value>(b).ok())
+        .and_then(|v| v["you"].as_str().map(str::to_owned));
+    s.check(
+        "named",
+        "http",
+        "WhoIs names the tailnet caller: GET /policy says who, not `unknown`",
+        you.as_deref()
+            .is_some_and(|who| !who.is_empty() && who != "unknown"),
+        format!("{policy:?}"),
+    );
     let paused = http(
         api,
         "POST",
@@ -122,12 +138,10 @@ fn check_policy(s: &mut Scenario, api: &str) {
         &json!({ "zone": "Kitchen" }).to_string(),
     );
     s.check(
-        "write-refused",
+        "write",
         "http",
-        "a tailnet caller is unknown, so POST /pause is 403 POLICY_DENIED",
-        paused
-            .as_ref()
-            .is_ok_and(|(code, _, body)| *code == 403 && body.contains("POLICY_DENIED")),
+        "the named caller's policy lets it control: POST /pause is 200",
+        paused.as_ref().is_ok_and(|(code, _, _)| *code == 200),
         format!("{paused:?}"),
     );
 }
