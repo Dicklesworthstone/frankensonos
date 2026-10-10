@@ -7,7 +7,7 @@
 
 mod e2e;
 
-use e2e::{Scenario, http};
+use e2e::{Daemon, Scenario, http};
 use fsonos_core::store::SqliteStore;
 use fsonos_sim::SimHousehold;
 use fsonos_spotify::cache::apply_library_read;
@@ -79,10 +79,9 @@ fn status_when(api: &str, room: &str, ready: impl Fn(&Value) -> bool) -> Value {
     }
 }
 
-#[test]
-fn the_dj_and_its_steering_follow_the_music_to_another_room() {
-    let mut s = Scenario::start("dj-move");
-    s.sim(SimHousehold::standard());
+/// The library in the store, and `fsonos serve` up with its live model:
+/// the daemon and its API's `host:port`.
+fn serve_seeded(s: &mut Scenario) -> (Daemon, String) {
     let seeded = SqliteStore::open(&s.dir().join("data").join("fsonos.db"))
         .map_err(|e| e.to_string())
         .and_then(|mut store| {
@@ -111,6 +110,40 @@ fn the_dj_and_its_steering_follow_the_music_to_another_room() {
         !api.is_empty() && live.is_some(),
         daemon.seen.join("\n"),
     );
+    (daemon, api)
+}
+
+/// Unsteered now, the DJ moves back to a Kitchen steered while idle: the
+/// Kitchen's old steering was for music it no longer plays.
+fn check_moving_back_unsteered(s: &mut Scenario, api: &str) {
+    let clear = json!({ "zone": "Office", "clear": true });
+    let (cleared, _) = call(api, "POST", "/dj/steer", Some(&clear));
+    let focus = json!({ "zone": "Kitchen", "mood": "focus" });
+    let (stale, _) = call(api, "POST", "/dj/steer", Some(&focus));
+    let back = json!({ "zone": "Office", "to": "Kitchen" });
+    let (moved_back, outcome) = call(api, "POST", "/move", Some(&back));
+    s.check(
+        "move-back",
+        "http",
+        "the unsteered DJ moves back to the Kitchen, steered focus while idle",
+        cleared == 200 && stale == 200 && moved_back == 200,
+        &outcome,
+    );
+    let kitchen_back = status_when(api, "Kitchen", |st| st["running"] == true);
+    s.check(
+        "stale",
+        "http",
+        "the Kitchen has the DJ without its stale focus steering",
+        kitchen_back["running"] == true && kitchen_back["steering"]["source"] != "session",
+        &kitchen_back,
+    );
+}
+
+#[test]
+fn the_dj_and_its_steering_follow_the_music_to_another_room() {
+    let mut s = Scenario::start("dj-move");
+    s.sim(SimHousehold::standard());
+    let (mut daemon, api) = serve_seeded(&mut s);
 
     let kitchen = json!({ "zone": "Kitchen" });
     let (started, start) = call(&api, "POST", "/dj/start", Some(&kitchen));
@@ -161,29 +194,7 @@ fn the_dj_and_its_steering_follow_the_music_to_another_room() {
         &skip,
     );
 
-    // Unsteered now, the DJ moves back to a Kitchen steered while idle: the
-    // Kitchen's old steering was for music it no longer plays.
-    let clear = json!({ "zone": "Office", "clear": true });
-    let (cleared, _) = call(&api, "POST", "/dj/steer", Some(&clear));
-    let focus = json!({ "zone": "Kitchen", "mood": "focus" });
-    let (stale, _) = call(&api, "POST", "/dj/steer", Some(&focus));
-    let back = json!({ "zone": "Office", "to": "Kitchen" });
-    let (moved_back, outcome) = call(&api, "POST", "/move", Some(&back));
-    s.check(
-        "move-back",
-        "http",
-        "the unsteered DJ moves back to the Kitchen, steered focus while idle",
-        cleared == 200 && stale == 200 && moved_back == 200,
-        &outcome,
-    );
-    let kitchen_back = status_when(&api, "Kitchen", |st| st["running"] == true);
-    s.check(
-        "stale",
-        "http",
-        "the Kitchen has the DJ without its stale focus steering",
-        kitchen_back["running"] == true && kitchen_back["steering"]["source"] != "session",
-        &kitchen_back,
-    );
+    check_moving_back_unsteered(&mut s, &api);
 
     let code = daemon.interrupt(Duration::from_secs(10));
     s.check(
