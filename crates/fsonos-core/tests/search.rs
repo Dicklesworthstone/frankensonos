@@ -208,6 +208,32 @@ fn a_saved_album_is_a_result_of_its_own() {
 }
 
 #[test]
+fn an_un_saved_album_is_not_an_album_result() {
+    // The owner un-saved "harbor lights": its rows are retired
+    // (candidate == Some(false)) but keep the SavedAlbum origin. They must
+    // not resurface as a saved-album hit; track hits are unaffected.
+    let mut lib = with_albums();
+    for e in lib.iter_mut().filter(|e| e.album_uri.as_deref() == Some("spotify:album:harbor-lights")) {
+        e.candidate = Some(false);
+    }
+    let hits = search(&lib, &[], "harbor lights", 5);
+    assert!(
+        hits.iter().all(|h| !matches!(h.source, HitSource::Album { .. })),
+        "retired album returned as album hit: {hits:?}"
+    );
+    // The tracks themselves still rank (track hits include retired rows).
+    assert!(
+        search(&lib, &[], "low tide", 5)
+            .iter()
+            .any(|h| matches!(h.source, HitSource::Library { .. })),
+        "retired album's track lost from track hits"
+    );
+    // Legacy rows (candidate == None) keep the old behavior: album hit.
+    let hits = search(&with_albums(), &[], "harbor lights", 5);
+    assert!(matches!(hits[0].source, HitSource::Album { .. }));
+}
+
+#[test]
 fn a_playlist_is_found_by_its_name() {
     let playlists = [
         (

@@ -86,7 +86,11 @@ pub fn search_all(
     let catalog = catalog_pairs(&words);
     let mut albums_seen = HashSet::new();
     let albums = library.iter().filter_map(|e| {
-        let saved = matches!(e.origin, LibraryOrigin::SavedAlbum | LibraryOrigin::Both);
+        // Retired rows (un-saved albums) still carry the SavedAlbum origin;
+        // they must not resurface as saved-album hits. Legacy rows
+        // (candidate == None) are unaffected.
+        let saved = matches!(e.origin, LibraryOrigin::SavedAlbum | LibraryOrigin::Both)
+            && e.candidate != Some(false);
         let (uri, title) = (e.album_uri.as_deref()?, e.track.album.as_deref()?);
         (saved && albums_seen.insert(uri)).then(|| Doc {
             source: HitSource::Album {
