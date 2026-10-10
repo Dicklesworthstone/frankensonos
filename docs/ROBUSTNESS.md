@@ -44,6 +44,7 @@ us and is re-learned, never assumed.
 | Subscription silently dies (player reboot, timeout) | Renew at ≤85% of granted timeout; renew failure (412) → resubscribe + re-fetch; one ZGT subscription anywhere tracks the whole household | `b-self-healing-7ts`, `a-gena-gz5` |
 | Parser breaks on a shape Sonos changes | Every state-bearing service's event shape is pinned by a live-captured golden fixture (11 fixtures, both generations) | `re-fixtures-eji` |
 | Sonos ships new firmware under us | `AvailableSoftwareUpdate` oracle on ZGT events → doctor warns; S1 is frozen forever (stable target) | `re-firmware-kds`, doctor |
+| Sonos's own updater is fragile | **Verified on the owner's bridge (57.23, 2026-10-10): an update stream interrupted at the wrong record boundary crashes the player outright** (anacapad restart or watchdog reboot; 20+ live fires incl. Sonos's own shipping descriptor records). FrankenSonos never auto-updates; it warns, and the owner decides | `re-firmware-kds` |
 
 ## 5. Mutations are safe by construction
 
