@@ -1,0 +1,48 @@
+[package]
+name = "fastapi-http"
+description = "Zero-copy HTTP/1.1 parser for fastapi_rust"
+version = "0.4.4"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.95"
+repository = "https://github.com/Dicklesworthstone/fastapi_rust"
+homepage = "https://github.com/Dicklesworthstone/fastapi_rust"
+documentation = "https://docs.rs/fastapi-http"
+readme = "UPSTREAM_README.md"
+keywords = ["http", "parser", "zero-copy", "fastapi", "server"]
+categories = ["network-programming", "web-programming::http-server", "asynchronous"]
+
+[dependencies]
+fastapi-core = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d", version = "0.4.3", default-features = false }
+asupersync = { version = "0.5.0", default-features = false }
+
+[features]
+default = []
+
+[dev-dependencies]
+# Standalone HTTP unit tests construct contexts without widening normal consumers.
+asupersync = { version = "0.5.0", default-features = false, features = ["test-internals"] }
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+name = "http_parser"
+harness = false
+
+[lints.rust]
+unsafe_code = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Allow these during early development
+doc_markdown = "allow"
+missing_const_for_fn = "allow"
+doc_link_with_quotes = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# New in nightly-2026-08-19 clippy: prefers `assert_eq!(v, [] as [T; 0])` over
+# `assert!(v.is_empty())`, which is less readable in test code.
+assert_is_empty = "allow"
+# Trait contracts (FromRequest, Middleware, ...) mandate async signatures;
+# impls that happen not to await cannot drop `async` without desugaring.
+unused_async_trait_impl = "allow"

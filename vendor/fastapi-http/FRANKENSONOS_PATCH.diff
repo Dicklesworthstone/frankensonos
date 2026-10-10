@@ -1,0 +1,15 @@
+--- a/crates/fastapi-http/src/server.rs
++++ b/crates/fastapi-http/src/server.rs
+@@ -2536,7 +2536,11 @@
+                 .await;
+         }
+ 
+-        let mut parser = StatefulParser::new().with_limits(self.config.parse_limits.clone());
++        let mut parser = StatefulParser::new()
++            .with_limits(self.config.parse_limits.clone())
++            .with_body_config(
++                crate::body::BodyConfig::new().with_max_size(app.config().max_body_size),
++            );
+         if !buffered.is_empty() {
+             parser.feed(&buffered)?;
+         }

@@ -1,0 +1,130 @@
+[package]
+name = "fastmcp-server"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+description = "MCP server implementation for FastMCP"
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+documentation = "https://docs.rs/fastmcp-server"
+keywords = ["mcp", "server", "json-rpc", "async", "tools"]
+categories = ["network-programming", "development-tools"]
+# Preserve deferred docket.rs bytes on disk without compiling it.
+exclude = ["src/docket.rs"]
+
+[features]
+default = ["legacy-2024-11-05"]
+# Direct server consumers retain the historical dual-era default. The facade
+# disables dependency defaults and forwards this feature explicitly, so every
+# no-legacy facade profile excludes the dated runtime graph.
+legacy-2024-11-05 = [
+    "fastmcp-protocol/legacy-2024-11-05",
+    "fastmcp-transport/legacy-2024-11-05",
+    "fastmcp-console/legacy-2024-11-05",
+    "fastmcp-client?/legacy-2024-11-05",
+]
+# When proxy activates the optional client, keep its Tasks protocol surface in
+# lockstep with the server. The `?` avoids adding a client dependency to a
+# server that enables Tasks without proxy support.
+tasks = [
+    "fastmcp-protocol/tasks",
+    "fastmcp-console/tasks",
+    "fastmcp-client?/tasks",
+]
+apps = ["fastmcp-protocol/apps", "fastmcp-console/apps", "dep:html5ever"]
+enterprise-auth = ["fastmcp-protocol/jose"]
+oauth-client-credentials = ["fastmcp-protocol/jose"]
+builtin-auth-server = ["fastmcp-protocol/jose", "dep:argon2"]
+proxy = ["dep:fastmcp-client"]
+# Opt in to host-provisioned root certificates for native HTTPS egress. Do not
+# activate the optional proxy client merely to select the shared TLS root policy.
+native-tls-roots = ["asupersync/tls-native-roots", "fastmcp-client?/native-tls-roots"]
+proxy-legacy = [
+    "proxy",
+    "legacy-2024-11-05",
+    "fastmcp-client/legacy-2024-11-05",
+]
+proxy-tasks = ["proxy", "tasks"]
+# Enables the server-owned WebSocket listener and HTTP Upgrade bridge.
+websocket = ["fastmcp-transport/websocket-experimental"]
+# Retained while the facade's caller-upgraded transport profile remains named
+# `websocket-experimental`; it does not enable the turnkey listener.
+websocket-experimental = ["fastmcp-transport/websocket-experimental"]
+jwt-resource-auth = ["fastmcp-protocol/jose"]
+
+[dependencies]
+fastmcp-core.workspace = true
+fastmcp-client = { workspace = true, default-features = false, optional = true }
+fastmcp-console.workspace = true
+fastmcp-protocol.workspace = true
+fastmcp-transport.workspace = true
+asupersync.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+log.workspace = true
+chrono.workspace = true
+base64.workspace = true
+url.workspace = true
+cap-std.workspace = true
+cap-fs-ext.workspace = true
+zeroize.workspace = true
+html5ever = { version = "=0.40.1", optional = true }
+argon2 = { version = "=0.6.0", default-features = false, features = ["alloc", "password-hash", "zeroize"], optional = true }
+# FND-01 SERVER-NO-*: ambient crypto, JWT, and Redis edges are forbidden.
+# Crypto flows through fastmcp-core; Redis Tasks belongs to a later package.
+
+[dev-dependencies]
+fastmcp-derive.workspace = true
+# The OIDC external-custody adapter is exercised with a real RS256 operation
+# only in the cfg(test) module; this never enters the shipped server graph.
+ring = { workspace = true }
+# Unit tests exercise the dated adapter explicitly, without making it part of
+# the production dependency graph selected by a no-legacy facade profile.
+fastmcp-protocol = { workspace = true, features = ["legacy-2024-11-05"] }
+fastmcp-transport = { workspace = true, features = ["legacy-2024-11-05"] }
+# Test-only context construction and deterministic lab exercises.
+asupersync = { workspace = true, features = ["test-internals"] }
+
+[[test]]
+name = "pxy_leg_01_dual_era"
+path = "tests/pxy_leg_01_dual_era.rs"
+required-features = ["proxy-legacy"]
+
+[[test]]
+name = "pxy_leg_01_translation"
+path = "tests/pxy_leg_01_translation.rs"
+required-features = ["proxy-legacy"]
+
+[[test]]
+name = "leg_02_a_contract"
+path = "tests/leg_02_a_contract.rs"
+required-features = ["legacy-2024-11-05"]
+
+[[test]]
+name = "leg_02_b_contract"
+path = "tests/leg_02_b_contract.rs"
+required-features = ["legacy-2024-11-05"]
+
+[[test]]
+name = "http_continuation_recovery"
+path = "tests/http_continuation_recovery.rs"
+required-features = ["proxy", "native-tls-roots"]
+
+[[test]]
+# TASK-02-B's durability proofs (bd-mcp-task-02-b-x5r3). `FinalTaskStore`,
+# `InMemoryFinalTaskStore`, `FinalTaskSnapshot`, `FinalTaskWorkDescriptor` and
+# `FinalTaskRetentionDeadline` are all exported from `lib.rs` behind
+# `#[cfg(feature = "tasks")]`, and this package's default is
+# `["legacy-2024-11-05"]`. Without this stanza the target is always built and
+# always fails E0432, breaking every other test target here.
+#
+# As above: this stanza is exactly why the runner card must pass
+# `--features tasks`. It converts a loud compile failure into a silent skip.
+name = "task_02_b"
+path = "tests/task_02_b.rs"
+required-features = ["tasks"]
+
+[lints]
+workspace = true

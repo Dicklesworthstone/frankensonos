@@ -1,0 +1,59 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -10359,6 +10359,13 @@
+     )
+ }
+ 
++// Match Http1Codec's existing 64 KiB header budget while letting the complete
++// configured body reach its decoder. A saturated sum never disables Framed's
++// cap (where zero would mean unbounded).
++fn native_http1_buffer_limit(max_body_size: usize) -> usize {
++    max_body_size.saturating_add(64 * 1024)
++}
++
+ async fn next_native_http1_request(
+     cx: &Cx,
+     listener_shutdown: &HttpListenerShutdown,
+@@ -11777,7 +11784,8 @@
+     listener_shutdown: HttpListenerShutdown,
+ ) {
+     let http_config = &endpoint.server.http_config.handler_config;
+-    let mut framed = Framed::new(stream, native_http1_codec(&endpoint));
++    let mut framed = Framed::new(stream, native_http1_codec(&endpoint))
++        .with_max_buffer_len(native_http1_buffer_limit(http_config.max_body_size));
+     #[cfg(test)]
+     lib_unit_tests::record_live_http_connection_read_wait();
+     let Some(request) = next_native_http1_request(cx, &listener_shutdown, &mut framed).await else {
+@@ -12170,7 +12178,8 @@
+     listener_shutdown: HttpListenerShutdown,
+ ) {
+     let http_config = &endpoint.server.http_config.handler_config;
+-    let mut framed = Framed::new(stream, native_http1_codec(&endpoint));
++    let mut framed = Framed::new(stream, native_http1_codec(&endpoint))
++        .with_max_buffer_len(native_http1_buffer_limit(http_config.max_body_size));
+     let Some(request) = next_native_http1_request(cx, &listener_shutdown, &mut framed).await else {
+         return;
+     };
+--- a/src/http_admission/security/endpoint/listener/connection.rs
++++ b/src/http_admission/security/endpoint/listener/connection.rs
+@@ -27,7 +27,7 @@
+     close_detached_modern_http_session, dispatch_modern_http_request_with_cancellation_and_transport_authorization,
+     final_subscription_terminal_event, final_subscription_terminal_response_event,
+     h1_request_to_transport, h1_transport_authorization, http_endpoint_error_response,
+-    http_endpoint_response_to_static, http_request_accepts_sse, native_http1_codec,
++    http_endpoint_response_to_static, http_request_accepts_sse, native_http1_buffer_limit, native_http1_codec,
+     next_live_modern_http_response_body_generation, next_modern_http_stream_generation,
+     pop_sse_body_event, request_id_to_u64, send_h1_bad_request_response, send_h1_response,
+     spawn_modern_sse_dispatch, sse_response_head,
+@@ -44,7 +44,10 @@
+ ) {
+     let body_limit = endpoint.server.http_config.handler_config.max_body_size;
+     let mut framed = Framed::new(stream, SecuredCodec::new(Arc::clone(&policy), body_limit)
+-        .with_oauth_routes(endpoint.server.oauth_http_routes.as_ref()));
++        .with_oauth_routes(endpoint.server.oauth_http_routes.as_ref()))
++        .with_max_buffer_len(native_http1_buffer_limit(
++            body_limit.min(policy.endpoint().limits().max_body_bytes()),
++        ));
+     let mut writing_continue = false;
+     let read = super::ingress::receive(
+         cx, &shutdown, &mut framed, io.write_timeout, &mut writing_continue,

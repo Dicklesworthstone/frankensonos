@@ -990,7 +990,6 @@ dependencies = [
 [[package]]
 name = "fastapi-http"
 version = "0.4.4"
-source = "git+https://github.com/Dicklesworthstone/fastapi_rust?rev=cb9d72926434e2ec3e08cced5eae7f7c13168c7d#cb9d72926434e2ec3e08cced5eae7f7c13168c7d"
 dependencies = [
  "asupersync",
  "fastapi-core",
@@ -1145,7 +1144,6 @@ dependencies = [
 [[package]]
 name = "fastmcp-server"
 version = "0.10.0"
-source = "git+https://github.com/Dicklesworthstone/fastmcp_rust?rev=03b5274544048babf6b358874310038a9ee4f76a#03b5274544048babf6b358874310038a9ee4f76a"
 dependencies = [
  "asupersync",
  "base64",

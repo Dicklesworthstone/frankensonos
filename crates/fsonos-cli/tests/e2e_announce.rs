@@ -338,7 +338,7 @@ fn wav_with_metadata(bytes: usize) -> Vec<u8> {
     wav
 }
 
-fn mcp_announce(mcp: &str, arguments: &Value) -> Value {
+fn mcp_announce(mcp: &str, arguments: &Value) -> Result<Value, String> {
     let call = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {
@@ -349,7 +349,7 @@ fn mcp_announce(mcp: &str, arguments: &Value) -> Value {
             }
         }
     });
-    http(
+    let (status, headers, body) = http(
         mcp,
         "POST",
         "/mcp",
@@ -362,15 +362,22 @@ fn mcp_announce(mcp: &str, arguments: &Value) -> Value {
         ],
         &call.to_string(),
     )
-    .map_or(Value::Null, |(_, _, body)| {
-        let rpc: Value = serde_json::from_str(&body).unwrap_or_else(|_| {
+    .map_err(|e| format!("MCP HTTP transport failed: {e}"))?;
+    if status != 200 {
+        return Err(format!(
+            "MCP HTTP {status}, headers={headers:?}, body={body}"
+        ));
+    }
+    let rpc: Value = serde_json::from_str(&body)
+        .or_else(|error| {
             body.lines()
                 .find_map(|line| line.strip_prefix("data:"))
-                .and_then(|data| serde_json::from_str(data.trim()).ok())
-                .unwrap_or(Value::Null)
-        });
-        rpc["result"].clone()
-    })
+                .map_or(Err(error), |data| serde_json::from_str(data.trim()))
+        })
+        .map_err(|e| format!("MCP HTTP {status} response is not JSON: {e}; body={body}"))?;
+    rpc.get("result")
+        .cloned()
+        .ok_or_else(|| format!("MCP returned no result: {rpc}"))
 }
 
 fn upload_wavs_over_http_and_mcp(s: &mut Scenario, clock: &SimClock, api: &str, mcp: &str) {
@@ -379,7 +386,7 @@ fn upload_wavs_over_http_and_mcp(s: &mut Scenario, clock: &SimClock, api: &str, 
         volume: Some(90),
         ..AnnounceRequest::from_wav(&wav_with_metadata(2 * 1024 * 1024)).unwrap()
     };
-    let (status, _, body) = {
+    let response = {
         let _ticking = Ticker::start(clock.clone());
         http(
             api,
@@ -388,17 +395,18 @@ fn upload_wavs_over_http_and_mcp(s: &mut Scenario, clock: &SimClock, api: &str, 
             &[("Content-Type", "application/json")],
             &serde_json::to_string(&request).unwrap(),
         )
-        .unwrap_or((0, Vec::new(), String::new()))
     };
-    let reply = json(&body);
     s.check(
         "http-wav",
         "http",
         "HTTP accepts a WAV upload above one MiB, caps volume, and restores",
-        status == 200
-            && reply["clean"] == true
-            && reply["households"][0]["levels"][0]["volume"] == 25,
-        &body,
+        response.as_ref().is_ok_and(|(status, _, body)| {
+            let reply = json(body);
+            *status == 200
+                && reply["clean"] == true
+                && reply["households"][0]["levels"][0]["volume"] == 25
+        }),
+        format!("{response:?}"),
     );
 
     let request = AnnounceRequest {
@@ -414,10 +422,12 @@ fn upload_wavs_over_http_and_mcp(s: &mut Scenario, clock: &SimClock, api: &str, 
         "mcp-wav",
         "mcp-http",
         "MCP accepts more than ten MiB of base64 and shares WAV playback and caps",
-        result["isError"] != true
-            && result["structuredContent"]["clean"] == true
-            && result["structuredContent"]["households"][0]["levels"][0]["volume"] == 25,
-        &result,
+        result.as_ref().is_ok_and(|result| {
+            result["isError"] != true
+                && result["structuredContent"]["clean"] == true
+                && result["structuredContent"]["households"][0]["levels"][0]["volume"] == 25
+        }),
+        format!("{result:?}"),
     );
 }
 
@@ -445,7 +455,11 @@ fn reject_invalid_wav_uploads(s: &mut Scenario, api: &str, mcp: &str, expected_f
             status == 422
                 && json(&body)["code"] == "INVALID_ARGUMENT"
                 && clip_fetches(s).len() == expected_fetches,
-            &body,
+            format!(
+                "HTTP {status}; fetches={}/{}; body={body}",
+                clip_fetches(s).len(),
+                expected_fetches
+            ),
         );
     }
     let result = mcp_announce(mcp, &json!({"wav_base64": "%%%"}));
@@ -453,12 +467,17 @@ fn reject_invalid_wav_uploads(s: &mut Scenario, api: &str, mcp: &str, expected_f
         "bad-mcp-wav",
         "mcp-http",
         "MCP reports the shared validation failure without playback",
-        result["isError"] == true
-            && result["content"][0]["text"]
-                .as_str()
-                .is_some_and(|s| s.contains("INVALID_ARGUMENT"))
-            && clip_fetches(s).len() == expected_fetches,
-        &result,
+        result.as_ref().is_ok_and(|result| {
+            result["isError"] == true
+                && result["content"][0]["text"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("INVALID_ARGUMENT"))
+        }) && clip_fetches(s).len() == expected_fetches,
+        format!(
+            "fetches={}/{}; response={result:?}",
+            clip_fetches(s).len(),
+            expected_fetches
+        ),
     );
 }
 
@@ -561,11 +580,15 @@ fn wav_uploads_share_playback_and_policy_on_http_mcp_and_daemon_cli() {
 }
 
 #[cfg(unix)]
-#[test]
-fn daemon_speech_preserves_text_and_voice_and_uses_the_announcement_pipeline() {
-    let mut s = Scenario::start("announce-speech-daemon");
-    let clock = s.sim(SimHousehold::standard()).clock().clone();
-    let (kitchen_before, office_before) = set_the_scene(&mut s);
+fn configure_speech_fixture(s: &Scenario) -> (std::path::PathBuf, std::path::PathBuf) {
+    // Serialize typed integers directly: serde_json::Value's arbitrary-precision
+    // number representation is not a TOML integer.
+    #[derive(serde::Serialize)]
+    struct Config {
+        backend: &'static str,
+        command: Vec<String>,
+        timeout_secs: u64,
+    }
     let fixture = s.dir().join("voice.wav");
     let script = s.dir().join("speech-engine.sh");
     let heard_text = s.dir().join("speech-input.txt");
@@ -576,16 +599,36 @@ fn daemon_speech_preserves_text_and_voice_and_uses_the_announcement_pipeline() {
         "cat > \"$5\"\nprintf '%s' \"$4\" > \"$3\"\ncp \"$1\" \"$2\"\n",
     )
     .unwrap();
-    let config = json!({
-        "backend": "command",
-        "command": ["/bin/sh", script, fixture, "{output}", heard_voice, "{voice}", heard_text],
-        "timeout_secs": 5
-    });
-    std::fs::write(
-        s.dir().join("data/speech.toml"),
-        toml::to_string(&config).unwrap(),
-    )
+    let config = toml::to_string(&Config {
+        backend: "command",
+        command: [
+            "/bin/sh",
+            script.to_str().unwrap(),
+            fixture.to_str().unwrap(),
+            "{output}",
+            heard_voice.to_str().unwrap(),
+            "{voice}",
+            heard_text.to_str().unwrap(),
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect(),
+        timeout_secs: 5,
+    })
     .unwrap();
+    let parsed: fsonos_core::announce::speech::SpeechConfig = toml::from_str(&config).unwrap();
+    assert_eq!(parsed.timeout_secs, 5);
+    std::fs::write(s.dir().join("data/speech.toml"), config).unwrap();
+    (heard_text, heard_voice)
+}
+
+#[cfg(unix)]
+#[test]
+fn daemon_speech_preserves_text_and_voice_and_uses_the_announcement_pipeline() {
+    let mut s = Scenario::start("announce-speech-daemon");
+    let clock = s.sim(SimHousehold::standard()).clock().clone();
+    let (kitchen_before, office_before) = set_the_scene(&mut s);
+    let (heard_text, heard_voice) = configure_speech_fixture(&s);
     let mut daemon = s.spawn("serve", &["serve", "--http", "127.0.0.1:0"]);
     let ready = daemon.wait_line("fsonos serve: ready", Duration::from_secs(20));
     let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
@@ -616,13 +659,15 @@ fn daemon_speech_preserves_text_and_voice_and_uses_the_announcement_pipeline() {
         run.ok() && reply["clean"] == true && reply["households"][0]["outcome"] == "finished",
         format!("{}\n{}", run.stdout, run.stderr),
     );
+    let spoken_text = std::fs::read_to_string(&heard_text);
+    let spoken_voice = std::fs::read_to_string(&heard_voice);
     s.check(
         "speech-input",
         "engine",
         "text reaches stdin and the full voice stays one literal argument",
-        std::fs::read_to_string(&heard_text).ok().as_deref() == Some(text)
-            && std::fs::read_to_string(&heard_voice).ok().as_deref() == Some(voice),
-        "",
+        spoken_text.as_deref().is_ok_and(|actual| actual == text)
+            && spoken_voice.as_deref().is_ok_and(|actual| actual == voice),
+        format!("text={spoken_text:?}; voice={spoken_voice:?}"),
     );
 
     let run = {

@@ -1,0 +1,199 @@
+[package]
+name = "fastmcp-server"
+version = "0.10.0"
+edition = "2024"
+license-file = "LICENSE"
+rust-version = "1.100"
+description = "MCP server implementation for FastMCP"
+repository = "https://github.com/Dicklesworthstone/fastmcp_rust"
+homepage = "https://github.com/Dicklesworthstone/fastmcp_rust"
+readme = "UPSTREAM_README.md"
+documentation = "https://docs.rs/fastmcp-server"
+keywords = ["mcp", "server", "json-rpc", "async", "tools"]
+categories = ["network-programming", "development-tools"]
+# Preserve deferred docket.rs bytes on disk without compiling it.
+exclude = ["src/docket.rs"]
+
+[features]
+default = ["legacy-2024-11-05"]
+# Direct server consumers retain the historical dual-era default. The facade
+# disables dependency defaults and forwards this feature explicitly, so every
+# no-legacy facade profile excludes the dated runtime graph.
+legacy-2024-11-05 = [
+    "fastmcp-protocol/legacy-2024-11-05",
+    "fastmcp-transport/legacy-2024-11-05",
+    "fastmcp-console/legacy-2024-11-05",
+    "fastmcp-client?/legacy-2024-11-05",
+]
+# When proxy activates the optional client, keep its Tasks protocol surface in
+# lockstep with the server. The `?` avoids adding a client dependency to a
+# server that enables Tasks without proxy support.
+tasks = [
+    "fastmcp-protocol/tasks",
+    "fastmcp-console/tasks",
+    "fastmcp-client?/tasks",
+]
+apps = ["fastmcp-protocol/apps", "fastmcp-console/apps", "dep:html5ever"]
+enterprise-auth = ["fastmcp-protocol/jose"]
+oauth-client-credentials = ["fastmcp-protocol/jose"]
+builtin-auth-server = ["fastmcp-protocol/jose", "dep:argon2"]
+proxy = ["dep:fastmcp-client"]
+# Opt in to host-provisioned root certificates for native HTTPS egress. Do not
+# activate the optional proxy client merely to select the shared TLS root policy.
+native-tls-roots = ["asupersync/tls-native-roots", "fastmcp-client?/native-tls-roots"]
+proxy-legacy = [
+    "proxy",
+    "legacy-2024-11-05",
+    "fastmcp-client/legacy-2024-11-05",
+]
+proxy-tasks = ["proxy", "tasks"]
+# Enables the server-owned WebSocket listener and HTTP Upgrade bridge.
+websocket = ["fastmcp-transport/websocket-experimental"]
+# Retained while the facade's caller-upgraded transport profile remains named
+# `websocket-experimental`; it does not enable the turnkey listener.
+websocket-experimental = ["fastmcp-transport/websocket-experimental"]
+jwt-resource-auth = ["fastmcp-protocol/jose"]
+
+[dependencies]
+fastmcp-core = { version = "0.10.0", git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+fastmcp-client = { version = "0.10.0", default-features = false, git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a", optional = true }
+fastmcp-console = { version = "0.10.0", git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+fastmcp-protocol = { version = "0.10.0", git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+fastmcp-transport = { version = "0.10.0", git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+asupersync = { version = "=0.5.0" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151", features = ["arbitrary_precision"] }
+log = { version = "=0.4.34" }
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "clock"] }
+base64 = { version = "=0.23.1" }
+url = { version = "=2.5.8", default-features = false, features = ["std"] }
+cap-std = { version = "=4.0.3", default-features = false }
+cap-fs-ext = { version = "=4.0.3", default-features = false, features = ["std"] }
+zeroize = { version = "=1.9.0", default-features = false, features = ["alloc", "derive"] }
+html5ever = { version = "=0.40.1", optional = true }
+argon2 = { version = "=0.6.0", default-features = false, features = ["alloc", "password-hash", "zeroize"], optional = true }
+# FND-01 SERVER-NO-*: ambient crypto, JWT, and Redis edges are forbidden.
+# Crypto flows through fastmcp-core; Redis Tasks belongs to a later package.
+
+[dev-dependencies]
+fastmcp-derive = { version = "0.10.0", git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+# The OIDC external-custody adapter is exercised with a real RS256 operation
+# only in the cfg(test) module; this never enters the shipped server graph.
+ring = { version = "=0.17.14", default-features = false, features = ["alloc"] }
+# Unit tests exercise the dated adapter explicitly, without making it part of
+# the production dependency graph selected by a no-legacy facade profile.
+fastmcp-protocol = { version = "0.10.0", git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a", features = ["legacy-2024-11-05"] }
+fastmcp-transport = { version = "0.10.0", git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a", features = ["legacy-2024-11-05"] }
+# Test-only context construction and deterministic lab exercises.
+asupersync = { version = "=0.5.0", features = ["test-internals"] }
+
+[[test]]
+name = "pxy_leg_01_dual_era"
+path = "tests/pxy_leg_01_dual_era.rs"
+required-features = ["proxy-legacy"]
+
+[[test]]
+name = "pxy_leg_01_translation"
+path = "tests/pxy_leg_01_translation.rs"
+required-features = ["proxy-legacy"]
+
+[[test]]
+name = "leg_02_a_contract"
+path = "tests/leg_02_a_contract.rs"
+required-features = ["legacy-2024-11-05"]
+
+[[test]]
+name = "leg_02_b_contract"
+path = "tests/leg_02_b_contract.rs"
+required-features = ["legacy-2024-11-05"]
+
+[[test]]
+name = "http_continuation_recovery"
+path = "tests/http_continuation_recovery.rs"
+required-features = ["proxy", "native-tls-roots"]
+
+[[test]]
+# TASK-02-B's durability proofs (bd-mcp-task-02-b-x5r3). `FinalTaskStore`,
+# `InMemoryFinalTaskStore`, `FinalTaskSnapshot`, `FinalTaskWorkDescriptor` and
+# `FinalTaskRetentionDeadline` are all exported from `lib.rs` behind
+# `#[cfg(feature = "tasks")]`, and this package's default is
+# `["legacy-2024-11-05"]`. Without this stanza the target is always built and
+# always fails E0432, breaking every other test target here.
+#
+# As above: this stanza is exactly why the runner card must pass
+# `--features tasks`. It converts a loud compile failure into a silent skip.
+name = "task_02_b"
+path = "tests/task_02_b.rs"
+required-features = ["tasks"]
+
+[lints.rust]
+unsafe_code = "forbid"
+# Admit the FND-01 bootstrap harness custom cfg only; all other unexpected_cfgs
+# remain fatal under -D warnings.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fnd01_bootstrap)"] }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Allow these during early development
+doc_markdown = "allow"
+missing_const_for_fn = "allow"
+doc_link_with_quotes = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+uninlined_format_args = "allow"
+unused_self = "allow"
+cast_precision_loss = "allow"
+format_push_string = "allow"
+needless_continue = "allow"
+map_unwrap_or = "allow"
+cast_possible_truncation = "allow"
+similar_names = "allow"
+must_use_candidate = "allow"
+cast_lossless = "allow"
+return_self_not_must_use = "allow"
+match_same_arms = "allow"
+collapsible_if = "allow"
+clone_on_copy = "allow"
+match_wildcard_for_single_variants = "allow"
+manual_assert = "allow"
+# `assert!(value.is_empty())` states the tested predicate directly. Rewriting
+# hundreds of tests to construct type-heavy empty comparison values adds noise.
+assert_is_empty = "allow"
+if_not_else = "allow"
+trivially_copy_pass_by_ref = "allow"
+struct_excessive_bools = "allow"
+should_implement_trait = "allow"
+vec_init_then_push = "allow"
+unreadable_literal = "allow"
+ref_option = "allow"
+manual_pattern_char_comparison = "allow"
+implicit_clone = "allow"
+decimal_bitwise_operands = "allow"
+cast_sign_loss = "allow"
+needless_pass_by_value = "allow"
+field_reassign_with_default = "allow"
+# Additional pedantic lints allowed for early development
+cast_possible_wrap = "allow"
+assigning_clones = "allow"
+derivable_impls = "allow"
+manual_div_ceil = "allow"
+manual_split_once = "allow"
+unchecked_time_subtraction = "allow"
+redundant_closure_for_method_calls = "allow"
+missing_fields_in_debug = "allow"
+manual_let_else = "allow"
+single_match_else = "allow"
+len_zero = "allow"
+needless_borrows_for_generic_args = "allow"
+io_other_error = "allow"
+mut_range_bound = "allow"
+ptr_arg = "allow"
+approx_constant = "allow"
+manual_string_new = "allow"
+redundant_else = "allow"
+unnecessary_unwrap = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+too_many_lines = "allow"
+items_after_statements = "allow"

@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "crates/**"
+      - "vendor/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"
