@@ -408,7 +408,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             search: Some(query),
             pick,
             ..
-        } => play_search(global, zone, query, pick),
+        } => play_search(global, zone, query, pick, &Direct::survey(global)?),
         Command::Play {
             zone,
             favorite: Some(favorite),
@@ -439,6 +439,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
 }
 
+/// Where `fsonos play --search` searches and plays: directly ([`Direct`]),
+/// or through a running daemon (`crate::remote`).
+trait SearchAndPlay {
+    fn search(&self, req: &SearchRequest) -> Result<Vec<HitDto>, Failure>;
+    fn play(&self, req: &PlayRequest) -> Result<OutcomeDto, Failure>;
+    fn play_favorite(&self, req: &PlayFavoriteRequest) -> Result<OutcomeDto, Failure>;
+}
+
+impl SearchAndPlay for Direct {
+    fn search(&self, req: &SearchRequest) -> Result<Vec<HitDto>, Failure> {
+        Direct::search(self, req)
+    }
+
+    fn play(&self, req: &PlayRequest) -> Result<OutcomeDto, Failure> {
+        self.run("play", |h| plan::plan_play(h, req))
+    }
+
+    fn play_favorite(&self, req: &PlayFavoriteRequest) -> Result<OutcomeDto, Failure> {
+        Direct::play_favorite(self, req)
+    }
+}
+
 /// `fsonos play <room> --search <query> [--pick [N]]`: play the best match
 /// (or the Nth), or with a bare `--pick` list the matches.
 fn play_search(
@@ -446,14 +468,14 @@ fn play_search(
     zone: String,
     query: String,
     pick: Option<usize>,
+    via: &dyn SearchAndPlay,
 ) -> anyhow::Result<()> {
-    let direct = Direct::survey(global)?;
     let req = SearchRequest {
         query,
         zone: Some(zone.clone()),
         limit: Some(if pick.is_some() { 10 } else { 1 }),
     };
-    let hits = direct.search(&req)?;
+    let hits = via.search(&req)?;
     if hits.is_empty() {
         return Err(Failure::new(
             ErrorCode::NoMatch,
@@ -484,15 +506,12 @@ fn play_search(
             .with_hint("List the matches with --pick and choose one of their numbers.")
     })?;
     let outcome = match (&hit.source_uri, &hit.favorite) {
-        (Some(uri), _) => {
-            let play = PlayRequest {
-                zone,
-                source_uri: uri.clone(),
-                title: Some(hit.title.clone()),
-            };
-            direct.run("play", |h| plan::plan_play(h, &play))?
-        }
-        (None, Some(id)) => direct.play_favorite(&PlayFavoriteRequest {
+        (Some(uri), _) => via.play(&PlayRequest {
+            zone,
+            source_uri: uri.clone(),
+            title: Some(hit.title.clone()),
+        })?,
+        (None, Some(id)) => via.play_favorite(&PlayFavoriteRequest {
             zone,
             favorite: id.clone(),
         })?,

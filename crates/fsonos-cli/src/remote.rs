@@ -14,16 +14,17 @@
 //! Through the daemon a command sends the same request body the HTTP API
 //! documents and prints the same DTO the direct path prints, so `--json`
 //! output is the same either way; `fsonos sleep` through the daemon gets
-//! its fade. Commands with no route here (doctor, scenes, schedules, ...)
+//! its fade, and `fsonos play --search` searches the daemon's library and
+//! favorites. Commands with no route here (doctor, scenes, schedules, ...)
 //! run directly.
 
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
 use fsonos_api::surface::schedules::SleepTimerDto;
 use fsonos_api::{
-    ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, MoveRequest, MuteRequest,
-    OutcomeDto, PartyRequest, PlayFavoriteRequest, PlayRequest, RoomDto, UndoDto, ZoneDto,
-    ZoneRequest, ZoneStateDto,
+    ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, MoveRequest,
+    MuteRequest, OutcomeDto, PartyRequest, PlayFavoriteRequest, PlayRequest, RoomDto,
+    SearchRequest, UndoDto, ZoneDto, ZoneRequest, ZoneStateDto,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -339,7 +340,7 @@ fn routable(command: &Command) -> bool {
             | Command::Favorites { .. }
             | Command::Log { .. }
             | Command::Undo { .. }
-            | Command::Play { search: None, .. }
+            | Command::Play { .. }
             | Command::Pause { .. }
             | Command::Resume { .. }
             | Command::Next { .. }
@@ -419,17 +420,13 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             let undone: UndoDto = daemon.post("/undo", &serde_json::json!({ "own_only": mine }))?;
             emit(json, &undone, |u: &UndoDto| format!("{}\n", u.summary))?;
         }
-        Command::Sleep(args) => match schedule_cmd::sleep_request(args) {
-            None => {
-                let timers: Vec<SleepTimerDto> =
-                    daemon.get(&format!("/sleep?zone={}", pct(&args.zone)))?;
-                emit(json, &timers, |t| schedule_cmd::timers_text(&args.zone, t))?;
-            }
-            Some(req) => {
-                let timer: SleepTimerDto = daemon.post("/sleep", &req)?;
-                emit(json, &timer, schedule_cmd::timer_text)?;
-            }
-        },
+        Command::Play {
+            zone,
+            search: Some(query),
+            pick,
+            ..
+        } => crate::play_search(global, zone.clone(), query.clone(), *pick, &daemon)?,
+        Command::Sleep(args) => sleep(&daemon, json, args)?,
         Command::Say(args) => {
             let announced = daemon.announce(&args.request())?;
             emit(json, &announced, announce_cmd::text)?;
@@ -461,6 +458,43 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// `fsonos sleep` through the daemon: set, extend or cancel its fading
+/// timer, or show the group's.
+fn sleep(daemon: &Daemon, json: bool, args: &schedule_cmd::SleepArgs) -> anyhow::Result<()> {
+    match schedule_cmd::sleep_request(args) {
+        None => {
+            let timers: Vec<SleepTimerDto> =
+                daemon.get(&format!("/sleep?zone={}", pct(&args.zone)))?;
+            emit(json, &timers, |t| schedule_cmd::timers_text(&args.zone, t))
+        }
+        Some(req) => {
+            let timer: SleepTimerDto = daemon.post("/sleep", &req)?;
+            emit(json, &timer, schedule_cmd::timer_text)
+        }
+    }
+}
+
+impl crate::SearchAndPlay for Daemon {
+    fn search(&self, req: &SearchRequest) -> Result<Vec<HitDto>, Failure> {
+        let mut path = format!("/library/search?q={}", pct(&req.query));
+        if let Some(zone) = &req.zone {
+            let _ = write!(path, "&zone={}", pct(zone));
+        }
+        if let Some(limit) = req.limit {
+            let _ = write!(path, "&limit={limit}");
+        }
+        self.get(&path)
+    }
+
+    fn play(&self, req: &PlayRequest) -> Result<OutcomeDto, Failure> {
+        self.post("/play", req)
+    }
+
+    fn play_favorite(&self, req: &PlayFavoriteRequest) -> Result<OutcomeDto, Failure> {
+        self.post("/play/favorite", req)
+    }
 }
 
 /// Refresh the room cache completions read (see `crate::completions`).

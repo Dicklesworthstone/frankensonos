@@ -6,12 +6,13 @@
 //! daemon is gone, commands run directly again at once.
 //!
 //! Through the daemon a command never reads the seeds: given a seeds file
-//! that does not exist, it still answers, which a direct run cannot.
+//! that does not exist, it still answers, which a direct run cannot. That
+//! holds for `play --search` too: the daemon searches and plays.
 
 mod e2e;
 
 use e2e::Scenario;
-use fsonos_proto::control::get_volume;
+use fsonos_proto::control::{get_position_info, get_volume};
 use fsonos_sim::SimHousehold;
 use serde_json::Value;
 use std::time::Duration;
@@ -46,6 +47,53 @@ fn same_discover(s: &mut Scenario, no_seeds: &str) {
     );
 }
 
+/// `fsonos play --search` through the daemon (it needs no seeds): a bare
+/// --pick lists the daemon's matches, and the search plays the best.
+fn search_through_daemon(s: &mut Scenario, no_seeds: &str) {
+    let pick = s.cli(
+        "search-pick-daemon",
+        &[
+            "--daemon",
+            "--seeds",
+            no_seeds,
+            "play",
+            "Kitchen",
+            "--search",
+            "sim radio",
+            "--pick",
+        ],
+    );
+    s.check(
+        "search-pick",
+        "cli",
+        "play --search --pick lists the daemon's matches, as directly",
+        pick.ok() && pick.stdout.starts_with("1. Sim Radio") && pick.stdout.contains("[favorite]"),
+        format!("{}\n{}", pick.stdout, pick.stderr),
+    );
+    let run = s.cli(
+        "search-daemon",
+        &[
+            "--daemon",
+            "--seeds",
+            no_seeds,
+            "play",
+            "Kitchen",
+            "--search",
+            "sim radio",
+        ],
+    );
+    let uri = get_position_info(&s.lan(), s.ip("Kitchen"))
+        .map(|p| p.uri)
+        .unwrap_or_default();
+    s.check(
+        "search-play",
+        "cli",
+        "play --search through the daemon plays the best match: the Sim Radio station",
+        run.ok() && uri.starts_with("x-rincon-mp3radio:"),
+        format!("{}; now on {uri}", run.stderr),
+    );
+}
+
 #[test]
 fn commands_go_through_a_running_daemon_with_the_same_answers() {
     let mut s = Scenario::start("daemon-client");
@@ -54,8 +102,7 @@ fn commands_go_through_a_running_daemon_with_the_same_answers() {
     // Directly first: no daemon has run in this data directory.
     let zones_direct = s.cli("zones-direct", &["--json", "zones"]);
     let status_direct = s.cli("status-direct", &["--json", "status", "Kitchen"]);
-    let no_seeds = s.dir().join("no-such-seeds.toml");
-    let no_seeds = no_seeds.to_str().unwrap_or_default().to_string();
+    let no_seeds = s.dir().join("no-such-seeds.toml").display().to_string();
     let blind = s.cli("blind-direct", &["--seeds", &no_seeds, "--json", "zones"]);
     s.check(
         "blind-direct",
@@ -118,6 +165,9 @@ fn commands_go_through_a_running_daemon_with_the_same_answers() {
         &forced.stderr,
     );
 
+    // Searches and controls change what plays, so they come after the
+    // same-answer comparisons above.
+    search_through_daemon(&mut s, &no_seeds);
     // A control, then the daemon's log: the CLI's own entry, logged by serve.
     let kitchen = s.ip("Kitchen");
     let volume = s.cli("volume-daemon", &["volume", "Kitchen", "33"]);
