@@ -35,6 +35,10 @@ async fn echo(ctx: &McpContext, text: String) -> McpResult<String> {
 pub fn server() -> fastmcp::auto::Server {
     let mut http = fastmcp::HttpServerConfig::new();
     http.handler_config.max_body_size = fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES;
+    http.tool_input_max_bytes.insert(
+        "announce".into(),
+        fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES,
+    );
     fastmcp::auto::server_builder("fsonos", env!("CARGO_PKG_VERSION"))
         .http_config(http)
         .request_timeout(fsonos_api::surface::announce::ANNOUNCE_TIMEOUT_SECS)
@@ -101,6 +105,62 @@ pub fn tool_error(failure: &Failure) -> McpError {
 mod tests {
     use super::*;
     use fsonos_api::ErrorCode;
+    use fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES;
+
+    fn announce_input_limit_builder(tool: &str, maximum: usize) -> fastmcp_server::ServerBuilder {
+        let mut http = fastmcp::HttpServerConfig::new();
+        http.handler_config.max_body_size = MAX_ANNOUNCE_REQUEST_BYTES;
+        http.tool_input_max_bytes.insert(tool.into(), maximum);
+        fastmcp_server::ServerBuilder::try_new_with_fixed_protocol_policy(
+            "announcement-limit-test",
+            "1.0",
+            fastmcp::ProtocolPolicy::Auto,
+        )
+        .unwrap()
+        .http_config(http)
+        .tool(tools::Announce)
+    }
+
+    fn assert_input_limit_refused(tool: &str, maximum: usize, reason: &str) {
+        let result = announce_input_limit_builder(tool, maximum).try_build();
+        let Err(fastmcp_server::ServerBuildError::InvalidConfiguration(refused)) = result else {
+            panic!("invalid input budget for {tool} unexpectedly built a server");
+        };
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert_eq!(refused[0].kind, fastmcp_server::RegistrationKind::Tool);
+        assert_eq!(refused[0].name, tool);
+        assert!(refused[0].reason.contains(reason), "{refused:?}");
+    }
+
+    #[test]
+    fn registered_announce_accepts_the_validated_upload_budget() {
+        announce_input_limit_builder("announce", MAX_ANNOUNCE_REQUEST_BYTES)
+            .try_build()
+            .expect("the registered announcement tool supports its bounded upload budget");
+    }
+
+    #[test]
+    fn zero_tool_input_budget_prevents_server_startup() {
+        assert_input_limit_refused("announce", 0, "nonzero");
+    }
+
+    #[test]
+    fn tool_input_budget_cannot_exceed_the_http_body_budget() {
+        assert_input_limit_refused(
+            "announce",
+            MAX_ANNOUNCE_REQUEST_BYTES + 1,
+            "fit the HTTP body budget",
+        );
+    }
+
+    #[test]
+    fn input_budget_for_an_unknown_tool_prevents_server_startup() {
+        assert_input_limit_refused(
+            "missing-tool",
+            MAX_ANNOUNCE_REQUEST_BYTES,
+            "unregistered tool",
+        );
+    }
 
     #[test]
     fn failures_render_as_tool_errors() {

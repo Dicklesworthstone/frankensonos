@@ -48,6 +48,10 @@ use fastmcp_protocol::common_types::{
 use fastmcp_protocol::extensions::OFFICIAL_TASKS_EXTENSION_ID;
 use fastmcp_protocol::methods::COMPLETION_COMPLETE;
 use fastmcp_protocol::protocol_policy::ProtocolEra;
+use fastmcp_protocol::schema::{
+    MAX_SCHEMA_INSTANCE_STRING_BYTES, validate_strict_with_string_byte_limit,
+    validate_with_string_byte_limit,
+};
 use fastmcp_protocol::uri_template::{ReversibleResourceTemplate, UriTemplatePart};
 use fastmcp_protocol::{
     AdmittedSchema, CacheScope, CacheTtl, CallToolParams, CallToolResult, CompleteResult, Content,
@@ -64,7 +68,7 @@ use fastmcp_protocol::{
     ListResourcesParams, ListResourcesResult, ListToolsParams, ListToolsResult, PROTOCOL_VERSION,
     ProgressMarker, Prompt, PromptMessage, ReadResourceParams, ReadResourceResult, Resource,
     ResourceContent, ResourceTemplate, Role, ServerBehavior, ServerBehaviorRegistry, TemplateValue,
-    Tool, admit_final_schema, exact_json_to_serde, validate, validate_strict,
+    Tool, admit_final_schema, exact_json_to_serde,
 };
 
 /// Type alias for a notification sender callback.
@@ -693,6 +697,10 @@ fn admit_mrtr_raw_json_value(value: &serde_json::Value, max_bytes: usize) -> Mcp
 
     let mut values = 0;
     count_values(value, 0, &mut values)?;
+    admit_mrtr_json_bytes(value, max_bytes)
+}
+
+fn admit_mrtr_json_bytes(value: &impl serde::Serialize, max_bytes: usize) -> McpResult<()> {
     let mut counter = MrtrRawJsonCounter {
         max_bytes,
         bytes: 0,
@@ -708,9 +716,16 @@ enum FinalMrtrDispatch {
 }
 
 fn mrtr_digest(value: &impl serde::Serialize) -> McpResult<[u8; 32]> {
+    mrtr_digest_with_byte_limit(value, MAX_MRTR_BINDING_BYTES)
+}
+
+fn mrtr_digest_with_byte_limit(
+    value: &impl serde::Serialize,
+    max_bytes: usize,
+) -> McpResult<[u8; 32]> {
     let bytes = serde_json::to_vec(value)
         .map_err(|_| McpError::invalid_params("invalid MRTR operation binding"))?;
-    let digest = sha256_bounded(&bytes, MAX_MRTR_BINDING_BYTES)
+    let digest = sha256_bounded(&bytes, max_bytes)
         .map_err(|_| McpError::invalid_params("MRTR operation binding exceeds its limit"))?;
     Ok(*digest.as_bytes())
 }
@@ -720,6 +735,7 @@ fn final_mrtr_binding(
     method: &'static str,
     target: String,
     arguments: &impl serde::Serialize,
+    max_arguments_bytes: usize,
 ) -> McpResult<Option<MrtrExchangeBinding>> {
     if target.len() > MAX_MRTR_BINDING_BYTES {
         return Err(McpError::invalid_params("MRTR target exceeds its limit"));
@@ -775,7 +791,7 @@ fn final_mrtr_binding(
         MrtrExchangeBinding::stateless(
             method,
             target,
-            mrtr_digest(arguments)?,
+            mrtr_digest_with_byte_limit(arguments, max_arguments_bytes)?,
             session_partition,
             principal_digest,
             verified_grants_digest,
@@ -784,7 +800,7 @@ fn final_mrtr_binding(
         MrtrExchangeBinding::new(
             method,
             target,
-            mrtr_digest(arguments)?,
+            mrtr_digest_with_byte_limit(arguments, max_arguments_bytes)?,
             session_partition,
             principal_digest,
             verified_grants_digest,
@@ -2175,6 +2191,8 @@ pub struct Router {
     sorted_template_keys: Vec<String>,
     /// Whether to enforce strict input validation (reject extra properties).
     strict_input_validation: bool,
+    /// Explicit, finite input budgets for registered tools only.
+    tool_input_max_bytes: HashMap<String, usize>,
     /// Optional list page size for cursor-based pagination.
     ///
     /// When `None`, list methods return all items in a single response and
@@ -2226,6 +2244,7 @@ impl Router {
             resource_template_order: Vec::new(),
             sorted_template_keys: Vec::new(),
             strict_input_validation: false,
+            tool_input_max_bytes: HashMap::new(),
             list_page_size: None,
             final_catalog_revision: 0,
             final_cache_hints: FinalCacheHintPolicy::default(),
@@ -2247,6 +2266,24 @@ impl Router {
     /// continuation when the owning HTTP listener begins shutdown.
     pub(crate) fn close_stateless_mrtr_exchanges(&self) -> usize {
         self.mrtr_exchanges.close_stateless()
+    }
+
+    pub(crate) fn set_tool_input_max_bytes(&mut self, limits: HashMap<String, usize>) {
+        self.tool_input_max_bytes = limits;
+    }
+
+    fn tool_input_string_byte_limit(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> McpResult<usize> {
+        let Some(maximum) = self.tool_input_max_bytes.get(name).copied() else {
+            return Ok(MAX_SCHEMA_INSTANCE_STRING_BYTES);
+        };
+        // Local and nested calls must honor the same encoded budget even
+        // when they did not pass through an HTTP or raw-params boundary.
+        admit_mrtr_raw_json_value(arguments, maximum)?;
+        Ok(maximum)
     }
 
     #[cfg(feature = "tasks")]
@@ -4401,13 +4438,30 @@ impl Router {
                 )?
             }
             "tools/call" => {
-                self.admit_final_mrtr_response_map(params)?;
-                let request = CoreRequest::decode_with_raw_params(
-                    ProtocolEra::Modern2026,
-                    "tools/call",
+                let input_max_bytes = params
+                    .and_then(|value| value.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|name| self.tool_input_max_bytes.get(name))
+                    .copied();
+                self.admit_final_mrtr_response_map(
                     params,
-                    raw_params,
-                )
+                    input_max_bytes.unwrap_or(MAX_MRTR_RAW_PARAMS_BYTES),
+                )?;
+                let request = match input_max_bytes {
+                    Some(maximum) => CoreRequest::decode_with_raw_params_and_argument_byte_limit(
+                        ProtocolEra::Modern2026,
+                        "tools/call",
+                        params,
+                        raw_params,
+                        maximum,
+                    ),
+                    None => CoreRequest::decode_with_raw_params(
+                        ProtocolEra::Modern2026,
+                        "tools/call",
+                        params,
+                        raw_params,
+                    ),
+                }
                 .map_err(|error| McpError::invalid_params(error.to_string()))?;
                 let CoreRequest::Final(FinalCoreRequest::ToolsCall(params)) = request else {
                     return Err(McpError::internal_error(
@@ -4419,6 +4473,7 @@ impl Router {
                     "tools/call",
                     params.name.clone(),
                     &params.arguments,
+                    input_max_bytes.unwrap_or(MAX_MRTR_BINDING_BYTES),
                 )?;
                 match self.resolve_final_mrtr_retry(
                     params.request_state.as_deref(),
@@ -4489,7 +4544,7 @@ impl Router {
                 )?
             }
             "resources/read" => {
-                self.admit_final_mrtr_response_map(params)?;
+                self.admit_final_mrtr_response_map(params, MAX_MRTR_RAW_PARAMS_BYTES)?;
                 let request = CoreRequest::decode_with_raw_params(
                     ProtocolEra::Modern2026,
                     "resources/read",
@@ -4507,6 +4562,7 @@ impl Router {
                     "resources/read",
                     params.uri.as_str().to_owned(),
                     &(),
+                    MAX_MRTR_BINDING_BYTES,
                 )?;
                 match self.resolve_final_mrtr_retry(
                     params.request_state.as_deref(),
@@ -4555,7 +4611,7 @@ impl Router {
                 )?
             }
             "prompts/get" => {
-                self.admit_final_mrtr_response_map(params)?;
+                self.admit_final_mrtr_response_map(params, MAX_MRTR_RAW_PARAMS_BYTES)?;
                 let request = CoreRequest::decode_with_raw_params(
                     ProtocolEra::Modern2026,
                     "prompts/get",
@@ -4573,6 +4629,7 @@ impl Router {
                     "prompts/get",
                     params.name.clone(),
                     &params.arguments,
+                    MAX_MRTR_BINDING_BYTES,
                 )?;
                 match self.resolve_final_mrtr_retry(
                     params.request_state.as_deref(),
@@ -4618,11 +4675,29 @@ impl Router {
 
     /// Admits bounded raw retry values before final parameter decoding clones
     /// them into method-specific fields or materializes `inputResponses`.
-    fn admit_final_mrtr_response_map(&self, params: Option<&serde_json::Value>) -> McpResult<()> {
+    fn admit_final_mrtr_response_map(
+        &self,
+        params: Option<&serde_json::Value>,
+        max_params_bytes: usize,
+    ) -> McpResult<()> {
         let Some(params) = params else {
             return Ok(());
         };
-        admit_mrtr_raw_json_value(params, MAX_MRTR_RAW_PARAMS_BYTES)?;
+        admit_mrtr_raw_json_value(params, max_params_bytes)?;
+        if max_params_bytes > MAX_MRTR_RAW_PARAMS_BYTES {
+            if let Some(members) = params.as_object() {
+                // Only tool arguments receive a larger budget. Retain the
+                // original combined ceiling for every other parameter,
+                // using borrowed values so large argument strings are never
+                // copied merely to exclude them from this check.
+                let other_params = members
+                    .iter()
+                    .filter(|(name, _)| name.as_str() != "arguments")
+                    .map(|(name, value)| (name.as_str(), value))
+                    .collect::<BTreeMap<_, _>>();
+                admit_mrtr_json_bytes(&other_params, MAX_MRTR_RAW_PARAMS_BYTES)?;
+            }
+        }
         let Some(input_responses) = params
             .as_object()
             .and_then(|members| members.get("inputResponses"))
@@ -5224,10 +5299,19 @@ impl Router {
         }
         let handler = &entry.handler;
         let arguments = params.arguments.unwrap_or_else(|| serde_json::json!({}));
+        let string_byte_limit = self.tool_input_string_byte_limit(&params.name, &arguments)?;
         let validation_result = if self.strict_input_validation {
-            validate_strict(&entry.definition.input_schema, &arguments)
+            validate_strict_with_string_byte_limit(
+                &entry.definition.input_schema,
+                &arguments,
+                string_byte_limit,
+            )
         } else {
-            validate(&entry.definition.input_schema, &arguments)
+            validate_with_string_byte_limit(
+                &entry.definition.input_schema,
+                &arguments,
+                string_byte_limit,
+            )
         };
         if let Err(validation_errors) = validation_result {
             let error_messages: Vec<String> = validation_errors
@@ -5367,12 +5451,17 @@ impl Router {
                 headers,
             )?;
         }
+        let string_byte_limit = self.tool_input_string_byte_limit(&params.name, &arguments)?;
         let input_validation_failed = match input_schema {
             Some(schema) => {
                 let validation = if self.strict_input_validation {
-                    validate_strict(schema.schema(), &arguments)
+                    validate_strict_with_string_byte_limit(
+                        schema.schema(),
+                        &arguments,
+                        string_byte_limit,
+                    )
                 } else {
-                    schema.validate(&arguments)
+                    schema.validate_with_string_byte_limit(&arguments, string_byte_limit)
                 };
                 validation.is_err()
             }
@@ -5381,9 +5470,10 @@ impl Router {
                 // non-object catalog schema can be retained without inventing
                 // an error payload. Gateway strict mode still refuses
                 // additionalProperties against that catalog input schema.
-                validate_strict(
+                validate_strict_with_string_byte_limit(
                     &final_registration.final_definition.input_schema,
                     &arguments,
+                    string_byte_limit,
                 )
                 .is_err()
             }
@@ -8342,10 +8432,19 @@ impl RouterToolCaller {
             return Err(McpError::method_not_found(&format!("tool: {name}")));
         }
         let handler = &entry.handler;
+        let string_byte_limit = router.tool_input_string_byte_limit(&name, &args)?;
         let validation_result = if router.strict_input_validation {
-            validate_strict(&entry.definition.input_schema, &args)
+            validate_strict_with_string_byte_limit(
+                &entry.definition.input_schema,
+                &args,
+                string_byte_limit,
+            )
         } else {
-            validate(&entry.definition.input_schema, &args)
+            validate_with_string_byte_limit(
+                &entry.definition.input_schema,
+                &args,
+                string_byte_limit,
+            )
         };
         if let Err(validation_errors) = validation_result {
             let error_messages: Vec<String> = validation_errors
@@ -8448,17 +8547,27 @@ impl RouterToolCaller {
             ));
         }
         let input_schema = final_registration.schemas.input.as_ref();
+        let string_byte_limit = router.tool_input_string_byte_limit(&name, &args)?;
         let input_validation_failed = match input_schema {
             Some(schema) => {
                 let validation = if router.strict_input_validation {
-                    validate_strict(schema.schema(), &args)
+                    validate_strict_with_string_byte_limit(
+                        schema.schema(),
+                        &args,
+                        string_byte_limit,
+                    )
                 } else {
-                    schema.validate(&args)
+                    schema.validate_with_string_byte_limit(&args, string_byte_limit)
                 };
                 validation.is_err()
             }
             None if router.strict_input_validation => {
-                validate_strict(&final_registration.final_definition.input_schema, &args).is_err()
+                validate_strict_with_string_byte_limit(
+                    &final_registration.final_definition.input_schema,
+                    &args,
+                    string_byte_limit,
+                )
+                .is_err()
             }
             None => false,
         };

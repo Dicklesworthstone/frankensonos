@@ -1,6 +1,6 @@
-# Pinned transport patches for WAV announcements
+# Pinned input and transport patches for WAV announcements
 
-These three crates carry narrowly scoped transport fixes required by the
+These four crates carry narrowly scoped input and transport fixes required by the
 announcement upload path. They are copied from the same Git revisions used by
 the rest of the workspace; this does not upgrade the Franken stack.
 
@@ -9,6 +9,7 @@ the rest of the workspace; this does not upgrade the Franken stack.
 | `fastapi-http` | [`fastapi_rust@cb9d72926434e2ec3e08cced5eae7f7c13168c7d`](https://github.com/Dicklesworthstone/fastapi_rust/tree/cb9d72926434e2ec3e08cced5eae7f7c13168c7d/crates/fastapi-http) |
 | `fastmcp-server` | [`fastmcp_rust@03b5274544048babf6b358874310038a9ee4f76a`](https://github.com/Dicklesworthstone/fastmcp_rust/tree/03b5274544048babf6b358874310038a9ee4f76a/crates/fastmcp-server) |
 | `fastmcp-transport` | [`fastmcp_rust@03b5274544048babf6b358874310038a9ee4f76a`](https://github.com/Dicklesworthstone/fastmcp_rust/tree/03b5274544048babf6b358874310038a9ee4f76a/crates/fastmcp-transport) |
+| `fastmcp-protocol` | [`fastmcp_rust@03b5274544048babf6b358874310038a9ee4f76a`](https://github.com/Dicklesworthstone/fastmcp_rust/tree/03b5274544048babf6b358874310038a9ee4f76a/crates/fastmcp-protocol) |
 
 ## Why the copies are needed
 
@@ -34,7 +35,28 @@ byte. Zero limits and framing overflow are rejected. Existing default
 constructors, queue counts, cancellation, and byte accounting stay unchanged.
 Both the dual-era endpoint and the modern-only server shim use this constructor.
 
-The root Cargo manifest applies all three copies through `[patch]`. The other
+After transport admission, final tool dispatch had additional fixed limits:
+256 KiB for raw parameters, 64 KiB for the argument digest, one MiB for its
+exact JSON parser, and 64 KiB per schema instance string. The local server
+configuration gives only the registered `announce` tool an explicit input
+budget, no larger than the already configured HTTP body limit. Unknown tool
+names, zero limits, and limits beyond that body budget fail server construction.
+Unlisted tools retain every original default.
+
+That one budget reaches raw parameter admission, the argument digest, exact
+request parsing, and all four legacy/modern and direct/nested schema validation
+paths. Local and nested calls also check the encoded argument size. The exact
+parser enlarges value strings only beneath the decoded top-level `arguments`
+member; result decoding and sibling strings retain their original limits.
+Object keys, duplicate-key rejection, exact numbers, nesting, value/container
+counts, schema rules, strict additional-property checks, metadata, and request
+routing remain validated. The combined non-argument parameters retain their
+256 KiB ceiling, and MRTR input responses retain their separate 192 KiB limit.
+Continuation bindings remain active: only the argument digest receives the
+configured budget; target, principal, grant, retry ownership, and replay checks
+are unchanged.
+
+The root Cargo manifest applies all four copies through `[patch]`. The other
 FastAPI/FastMCP crates retain their exact Git revisions, and the runtime remains
 the single registry `asupersync 0.5.0` required by the workspace.
 
@@ -57,7 +79,14 @@ through HTTP and one with twelve MiB of metadata through MCP (more than sixteen
 MiB after base64 encoding). The scenario verifies valid media fetches from the
 daemon's shared listener, volume caps, state restoration, the daemon CLI upload,
 and rejection of malformed or ambiguous input without additional playback.
-These sizes intentionally exceed the old transport ceilings.
+These sizes intentionally exceed the old transport and semantic ceilings.
+The same scenario confirms that a large `echo` request still hits the default
+limit, and malformed or over-limit WAV bytes are rejected after decoding without
+an extra playback. Focused protocol regressions exercise configured boundaries,
+unchanged defaults, exact raw/source equality, and retained structural checks.
 
 The Linux speech workflow watches `vendor/**` and runs formatting, the complete
-workspace check and Clippy gates, and the full regression/simulator suite.
+workspace check and Clippy gates, and the full regression/simulator suite. It
+also runs `cargo test --locked -p fastmcp-protocol --lib tool_input_limit`
+explicitly, because the vendored protocol crate is excluded from the workspace
+and its focused regression tests would otherwise be omitted.

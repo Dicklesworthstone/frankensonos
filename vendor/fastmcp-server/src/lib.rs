@@ -3724,6 +3724,12 @@ pub struct HttpServerConfig {
     pub max_connections: usize,
     /// Inner HTTP handler configuration (endpoint path, CORS, and body size).
     pub handler_config: HttpHandlerConfig,
+    /// Opt-in encoded input budgets for named tools, in bytes.
+    ///
+    /// The builder requires registered names and nonzero limits no larger
+    /// than the HTTP body budget. These limits also apply to local tool
+    /// dispatch; unlisted tools retain the protocol's conservative defaults.
+    pub tool_input_max_bytes: HashMap<String, usize>,
     /// Maximum requests buffered for one live HTTP session.
     pub request_capacity: usize,
     /// GET path for the exact MCP 2024-11-05 SSE stream.
@@ -3793,6 +3799,7 @@ impl Default for HttpServerConfig {
                 base_path: "/mcp".to_string(),
                 ..HttpHandlerConfig::default()
             },
+            tool_input_max_bytes: HashMap::new(),
             request_capacity: 64,
             #[cfg(any(feature = "legacy-2024-11-05", test))]
             legacy_sse_path: "/sse".to_string(),

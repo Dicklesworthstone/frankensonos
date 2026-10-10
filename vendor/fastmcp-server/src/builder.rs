@@ -2777,6 +2777,20 @@ impl ServerBuilder {
     /// tool, resource, resource template, prompt or mount, with its reason.
     /// No server is built.
     pub fn try_build(mut self) -> Result<Server, ServerBuildError> {
+        for (name, maximum) in self.http_config.tool_input_max_bytes.clone() {
+            let reason = if maximum == 0
+                || maximum > self.http_config.handler_config.max_body_size
+            {
+                Some("tool input limit must be nonzero and fit the HTTP body budget")
+            } else if self.router.get_tool(&name).is_none() {
+                Some("tool input limit names an unregistered tool")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                self.refuse(RegistrationKind::Tool, name, McpError::invalid_params(reason));
+            }
+        }
         if !self.refused_registrations.is_empty() {
             return Err(ServerBuildError::InvalidConfiguration(std::mem::take(
                 &mut self.refused_registrations,
@@ -2789,6 +2803,8 @@ impl ServerBuilder {
         // Configure router with strict input validation setting
         self.router
             .set_strict_input_validation(self.strict_input_validation);
+        self.router
+            .set_tool_input_max_bytes(self.http_config.tool_input_max_bytes.clone());
         let console = fastmcp_console::console::FastMcpConsole::with_enabled(
             self.console_config.should_use_rich(),
         );

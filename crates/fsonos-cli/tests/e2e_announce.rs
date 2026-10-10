@@ -10,7 +10,9 @@
 mod e2e;
 
 use e2e::{Scenario, http};
-use fsonos_api::surface::announce::AnnounceRequest;
+use fsonos_api::surface::announce::{
+    AnnounceRequest, MAX_ANNOUNCE_REQUEST_BYTES, MAX_WAV_BASE64_BYTES,
+};
 use fsonos_core::announce::clip::{Chime, MAX_WAV_BYTES};
 use fsonos_proto::control::{get_media_info, get_transport_info, get_volume};
 use fsonos_sim::{SimClock, SimHousehold};
@@ -339,17 +341,20 @@ fn wav_with_metadata(bytes: usize) -> Vec<u8> {
     wav
 }
 
-fn mcp_announce(mcp: &str, arguments: &Value) -> Result<Value, String> {
-    let call = json!({
+fn mcp_tool_request(name: &str, arguments: &Value) -> Value {
+    json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {
-            "name": "announce", "arguments": arguments,
+            "name": name, "arguments": arguments,
             "_meta": {
                 "io.modelcontextprotocol/protocolVersion": "2026-07-28",
                 "io.modelcontextprotocol/clientCapabilities": {}
             }
         }
-    });
+    })
+}
+
+fn mcp_tool_rpc(mcp: &str, name: &str, arguments: &Value) -> Result<Value, String> {
     let (status, headers, body) = http(
         mcp,
         "POST",
@@ -359,9 +364,9 @@ fn mcp_announce(mcp: &str, arguments: &Value) -> Result<Value, String> {
             ("Accept", "application/json"),
             ("MCP-Protocol-Version", "2026-07-28"),
             ("Mcp-Method", "tools/call"),
-            ("Mcp-Name", "announce"),
+            ("Mcp-Name", name),
         ],
-        &call.to_string(),
+        &mcp_tool_request(name, arguments).to_string(),
     )
     .map_err(|e| format!("MCP HTTP transport failed: {e}"))?;
     if status != 200 {
@@ -369,13 +374,17 @@ fn mcp_announce(mcp: &str, arguments: &Value) -> Result<Value, String> {
             "MCP HTTP {status}, headers={headers:?}, body={body}"
         ));
     }
-    let rpc: Value = serde_json::from_str(&body)
+    serde_json::from_str(&body)
         .or_else(|error| {
             body.lines()
                 .find_map(|line| line.strip_prefix("data:"))
                 .map_or(Err(error), |data| serde_json::from_str(data.trim()))
         })
-        .map_err(|e| format!("MCP HTTP {status} response is not JSON: {e}; body={body}"))?;
+        .map_err(|e| format!("MCP HTTP {status} response is not JSON: {e}; body={body}"))
+}
+
+fn mcp_announce(mcp: &str, arguments: &Value) -> Result<Value, String> {
+    let rpc = mcp_tool_rpc(mcp, "announce", arguments)?;
     rpc.get("result")
         .cloned()
         .ok_or_else(|| format!("MCP returned no result: {rpc}"))
@@ -488,6 +497,61 @@ fn reject_invalid_wav_uploads(s: &mut Scenario, api: &str, mcp: &str, expected_f
     );
 }
 
+fn reject_mcp_input_limits(s: &mut Scenario, mcp: &str, expected_fetches: usize) {
+    let result = mcp_tool_rpc(mcp, "echo", &json!({"text": "x".repeat(512 * 1024)}));
+    s.check(
+        "mcp-other-tool-limit",
+        "mcp-http",
+        "the registered echo tool retains its conservative input byte limit",
+        result.as_ref().is_ok_and(|rpc| {
+            rpc["error"]["code"] == -32602
+                && rpc["error"]["message"] == "MRTR JSON exceeds its byte limit"
+        }) && clip_fetches(s).len() == expected_fetches,
+        format!(
+            "fetches={}/{}; response={result:?}",
+            clip_fetches(s).len(),
+            expected_fetches
+        ),
+    );
+    for (step, bytes, expected_message) in [
+        (
+            "large-malformed-mcp-wav",
+            512 * 1024,
+            "not a playable WAV file",
+        ),
+        (
+            "oversized-mcp-wav",
+            MAX_WAV_BASE64_BYTES + 4,
+            "16 MiB announcement limit",
+        ),
+    ] {
+        // Repeated A is valid base64 that decodes to a buffer of zeros. Both cases
+        // fit the configured request allowance, so the shared WAV validator
+        // must reject them after MCP admission and schema validation.
+        let arguments = json!({"wav_base64": "A".repeat(bytes)});
+        assert!(
+            mcp_tool_request("announce", &arguments).to_string().len() < MAX_ANNOUNCE_REQUEST_BYTES
+        );
+        let result = mcp_announce(mcp, &arguments);
+        s.check(
+            step,
+            "mcp-http",
+            "the larger announce allowance preserves WAV format and size validation",
+            result.as_ref().is_ok_and(|result| {
+                result["isError"] == true
+                    && result["content"][0]["text"].as_str().is_some_and(|text| {
+                        text.contains("INVALID_ARGUMENT") && text.contains(expected_message)
+                    })
+            }) && clip_fetches(s).len() == expected_fetches,
+            format!(
+                "fetches={}/{}; expected={expected_message}; response={result:?}",
+                clip_fetches(s).len(),
+                expected_fetches
+            ),
+        );
+    }
+}
+
 #[test]
 fn wav_uploads_share_playback_and_policy_on_http_mcp_and_daemon_cli() {
     let mut s = Scenario::start("announce-wav-daemon");
@@ -582,6 +646,7 @@ fn wav_uploads_share_playback_and_policy_on_http_mcp_and_daemon_cli() {
     );
 
     reject_invalid_wav_uploads(&mut s, &api, &mcp, 3);
+    reject_mcp_input_limits(&mut s, &mcp, 3);
     drop(daemon);
     s.finish();
 }

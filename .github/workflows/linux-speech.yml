@@ -47,6 +47,9 @@ jobs:
         run: cargo check --locked --workspace --all-targets
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --keep-going -- -D warnings
+      - name: MCP tool input boundary regressions
+        if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        run: cargo test --locked -p fastmcp-protocol --lib tool_input_limit
       - name: Regression, simulator, and real Linux speech tests
         if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         run: cargo test --locked --workspace --no-fail-fast

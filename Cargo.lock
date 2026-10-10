@@ -1113,7 +1113,6 @@ dependencies = [
 [[package]]
 name = "fastmcp-protocol"
 version = "0.10.0"
-source = "git+https://github.com/Dicklesworthstone/fastmcp_rust?rev=03b5274544048babf6b358874310038a9ee4f76a#03b5274544048babf6b358874310038a9ee4f76a"
 dependencies = [
  "base64",
  "fastmcp-core",

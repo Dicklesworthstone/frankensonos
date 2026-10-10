@@ -1,2 +1,4 @@
 # Unified diffs require a leading space on blank context lines.
 vendor/**/FRANKENSONOS_PATCH.diff -whitespace
+# Preserve the published SHA-256 of this exact upstream schema, including its final blank line.
+vendor/fastmcp-protocol/schema/mcp-schema-2024-11-05-48234828.json whitespace=-blank-at-eof

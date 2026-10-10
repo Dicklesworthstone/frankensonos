@@ -11,7 +11,12 @@ members = [
     "crates/fsonos-tailscale",
     "crates/fsonos-sim",
 ]
-exclude = ["vendor/fastapi-http", "vendor/fastmcp-server", "vendor/fastmcp-transport"]
+exclude = [
+    "vendor/fastapi-http",
+    "vendor/fastmcp-server",
+    "vendor/fastmcp-transport",
+    "vendor/fastmcp-protocol",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -81,7 +86,7 @@ fastmcp-server = { git = "https://github.com/Dicklesworthstone/fastmcp_rust", re
 fastapi = { git = "https://github.com/Dicklesworthstone/fastapi_rust", rev = "cb9d72926434e2ec3e08cced5eae7f7c13168c7d", package = "fastapi-rust", default-features = false }
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Carry only the request-body, framing, and bounded-queue fixes for WAV uploads.
+# Carry bounded transport and per-tool input-limit fixes for WAV uploads.
 # These are exact pinned source copies with small patches; see vendor/README.md.
 [patch."https://github.com/Dicklesworthstone/fastapi_rust"]
 fastapi-http = { path = "vendor/fastapi-http" }
@@ -89,6 +94,7 @@ fastapi-http = { path = "vendor/fastapi-http" }
 [patch."https://github.com/Dicklesworthstone/fastmcp_rust"]
 fastmcp-server = { path = "vendor/fastmcp-server" }
 fastmcp-transport = { path = "vendor/fastmcp-transport" }
+fastmcp-protocol = { path = "vendor/fastmcp-protocol" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
