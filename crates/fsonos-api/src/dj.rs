@@ -86,10 +86,19 @@ pub trait DjEngine: Send + Sync {
     /// Whether the DJ is feeding `coordinator`'s queue.
     fn feeds(&self, coordinator: &PlayerId) -> bool;
 
+    /// The music is about to move away from the group `from` leads: until
+    /// [`Self::moved`], the engine must not act on `from`'s playback (its
+    /// queue is handed over and then empty, which is not the owner clearing
+    /// it).
+    fn moving(&self, from: &PlayerId) {
+        let _ = from;
+    }
+
     /// The music moved: the group `from` led plays on under `to` now (a
-    /// `move` handed it over or replayed it there). The engine carries what
-    /// it keeps per group, its feed, across; the stored session is the
-    /// surface's to re-key.
+    /// `move` handed it over or replayed it there; `to == from` when it
+    /// failed or the coordinator stayed). The engine carries what it keeps
+    /// per group, its feed, across, and acts on playback again; the stored
+    /// session is the surface's to re-key.
     fn moved(&self, from: &PlayerId, to: &PlayerId) {
         let _ = (from, to);
     }

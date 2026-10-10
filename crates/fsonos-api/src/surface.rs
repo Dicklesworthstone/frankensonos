@@ -472,11 +472,7 @@ impl Surface {
         );
         // Already satisfied requests change nothing and are not logged.
         if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
-            let result = self.execute(&households, &guard, &command);
-            if result.is_ok() {
-                self.remember_play(&command);
-                self.dj_follows(&households, &command);
-            }
+            let result = self.execute_following(&households, &guard, &command);
             if regroups {
                 self.invalidate();
             }
@@ -493,11 +489,7 @@ impl Surface {
             self.now(),
         );
         let sessions = self.sessions_before(&command);
-        let result = self.execute(&households, &guard, &command);
-        if result.is_ok() {
-            self.remember_play(&command);
-            self.dj_follows(&households, &command);
-        }
+        let result = self.execute_following(&households, &guard, &command);
         if regroups {
             self.invalidate();
         }
@@ -786,25 +778,71 @@ impl Surface {
         }
     }
 
-    /// After a move, the DJ follows the music: when the group plays on under
-    /// another coordinator (handed over, or replayed there), its stored
-    /// session and the DJ's feed move there too. `before` is the speakers as
-    /// they were; the new coordinator comes from the target's own topology.
-    fn dj_follows(&self, before: &[HouseholdState], command: &Command) {
-        let Command::Move { from, to, .. } = command else {
+    /// [`Self::execute`], recording a play, and with the DJ held across a
+    /// move ([`Self::dj_hold`]) and then following the music
+    /// ([`Self::dj_follows`]).
+    fn execute_following(
+        &self,
+        households: &[HouseholdState],
+        guard: &Guard<'_>,
+        command: &Command,
+    ) -> Result<OutcomeDto, Failure> {
+        let held = self.dj_hold(households, command);
+        let result = self.execute(households, guard, command);
+        if result.is_ok() {
+            self.remember_play(command);
+        }
+        self.dj_follows(households, command, held, result.is_ok());
+        result
+    }
+
+    /// Before a move, hold the DJ in the group the music leaves (see
+    /// [`DjEngine::moving`]): the old coordinator's events while its queue is
+    /// handed over must not make the DJ let go. Returns that coordinator.
+    fn dj_hold(&self, before: &[HouseholdState], command: &Command) -> Option<PlayerId> {
+        let Command::Move { from, .. } = command else {
+            return None;
+        };
+        let old = before
+            .iter()
+            .find_map(|h| h.coordinator_of(from))
+            .cloned()?;
+        if let Some(dj) = &self.dj {
+            dj.moving(&old);
+        }
+        Some(old)
+    }
+
+    /// After a move (`moved`: it succeeded), the DJ follows the music: when
+    /// the group plays on under another coordinator (handed over, or
+    /// replayed there), its stored session and the DJ's feed move there too.
+    /// Either way the DJ held by [`Self::dj_hold`] acts on playback again.
+    /// `before` is the speakers as they were; the new coordinator comes from
+    /// the target's own topology.
+    fn dj_follows(
+        &self,
+        before: &[HouseholdState],
+        command: &Command,
+        held: Option<PlayerId>,
+        moved: bool,
+    ) {
+        let (Some(old), Command::Move { to, .. }) = (held, command) else {
             return;
         };
-        let Some(old) = before.iter().find_map(|h| h.coordinator_of(from)).cloned() else {
-            return;
-        };
-        let new = match moving::coordinator_now(&*self.transport, before, to) {
-            Ok(new) if new != old => new,
-            Ok(_) => return,
-            Err(e) => {
+        let new = if moved {
+            moving::coordinator_now(&*self.transport, before, to).unwrap_or_else(|e| {
                 tracing::warn!("the DJ stays with {}: {e}", old.0);
-                return;
-            }
+                old.clone()
+            })
+        } else {
+            old.clone()
         };
+        if new == old {
+            if let Some(dj) = &self.dj {
+                dj.moved(&old, &old);
+            }
+            return;
+        }
         // A DJ that moved with no steering of its own leaves none behind it:
         // the target's old session was for music it no longer plays. With no
         // DJ running, the target keeps its standing steering.

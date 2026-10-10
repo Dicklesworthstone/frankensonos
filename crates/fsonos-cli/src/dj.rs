@@ -38,7 +38,7 @@ use fsonos_spotify::feed::{FeedError, Planning, QueueFeed, QueuedWork, Speakers}
 use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
 use fsonos_spotify::steer::{DjSession, Moods, Steer, steering};
 use fsonos_types::PlayerId;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -109,6 +109,9 @@ struct State {
     moods: Moods,
     /// What each group is hearing, for early skips and full listens.
     listening: HashMap<PlayerId, feedback::Listening>,
+    /// Groups the music is moving away from: their playback is not acted on
+    /// until the move settles (`DjEngine::moving`).
+    held: HashSet<PlayerId>,
 }
 
 /// What a pick is planned with right now, beyond the pool.
@@ -439,11 +442,23 @@ impl DjEngine for SpotifyDj {
             .is_some_and(QueueFeed::is_active)
     }
 
+    fn moving(&self, from: &PlayerId) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.held.insert(from.clone());
+    }
+
     fn moved(&self, from: &PlayerId, to: &PlayerId) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let State {
-            feeds, listening, ..
+            feeds,
+            listening,
+            held,
+            ..
         } = &mut *state;
+        held.remove(from);
+        if from == to {
+            return;
+        }
         if let Some(mut feed) = feeds.remove(from) {
             feed.rekey(to);
             feeds.insert(to.clone(), feed);
@@ -461,7 +476,7 @@ impl DjEngine for SpotifyDj {
         clock: &dyn Clock,
     ) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if !state.feeds.contains_key(at.coordinator) {
+        if !state.feeds.contains_key(at.coordinator) || state.held.contains(at.coordinator) {
             return;
         }
         // A library refresh landed: plan from what it found from here.
