@@ -660,7 +660,7 @@ pub async fn process_connection<H, Fut>(
     cx: &Cx,
     request_counter: &AtomicU64,
     mut stream: TcpStream,
-    _peer_addr: SocketAddr,
+    peer_addr: SocketAddr,
     config: &ServerConfig,
     handler: H,
 ) -> Result<(), ServerError>
@@ -726,6 +726,7 @@ where
         };
 
         requests_on_connection += 1;
+        note_peer(&mut request, peer_addr);
 
         // Generate unique request ID for this request with timeout budget
         let request_id = request_counter.fetch_add(1, Ordering::Relaxed);
@@ -821,6 +822,14 @@ where
 
 /// Finalize registered resources even if transmitting the response failed.
 /// Background work retains its successful-write policy and resource lifetime.
+/// FrankenSonos local patch: name the caller's address on `request`, as the
+/// contract of [`fastapi_core::middleware::RemoteAddr`] asks of the server.
+/// Upstream passes each connection's peer address in but never sets it, so
+/// handlers (the daemon's tailnet identity) could not tell who called.
+fn note_peer(request: &mut Request, peer: SocketAddr) {
+    request.insert_extension(fastapi_core::middleware::RemoteAddr(peer.ip()));
+}
+
 async fn finish_request(
     ctx: &RequestContext,
     request: &mut Request,
@@ -2591,6 +2600,7 @@ impl TcpServer {
             };
 
             requests_on_connection += 1;
+            note_peer(&mut request, peer_addr);
 
             let request_id = self.request_counter.fetch_add(1, Ordering::Relaxed);
 
@@ -2782,7 +2792,7 @@ impl TcpServer {
         &self,
         cx: &Cx,
         stream: TcpStream,
-        _peer_addr: SocketAddr,
+        peer_addr: SocketAddr,
         app: &App,
     ) -> Result<(), ServerError> {
         const FLAG_END_STREAM: u8 = 0x1;
@@ -2936,6 +2946,7 @@ impl TcpServer {
                         .map_err(http2::Http2Error::from)?;
                     let mut request = request_from_h2_headers(headers)?;
                     request.set_version(fastapi_core::HttpVersion::Http2);
+                    note_peer(&mut request, peer_addr);
 
                     // If there is a body, read DATA frames until END_STREAM.
                     if !end_stream {
@@ -3722,7 +3733,7 @@ impl TcpServer {
         &self,
         cx: &Cx,
         mut stream: TcpStream,
-        _peer_addr: SocketAddr,
+        peer_addr: SocketAddr,
         handler: &dyn fastapi_core::Handler,
     ) -> Result<(), ServerError> {
         let (proto, buffered) = sniff_protocol(&mut stream, self.config.keep_alive_timeout).await?;
@@ -3789,6 +3800,7 @@ impl TcpServer {
             };
 
             requests_on_connection += 1;
+            note_peer(&mut request, peer_addr);
 
             // Create request context
             let request_id = self.request_counter.fetch_add(1, Ordering::Relaxed);

@@ -1,4 +1,4 @@
-# Pinned input and transport patches for WAV announcements
+# Pinned input, transport and caller-address patches
 
 These four crates carry narrowly scoped input and transport fixes required by the
 announcement upload path. They are copied from the same Git revisions used by
@@ -72,6 +72,18 @@ Keep these patches narrow. Once the upstream revisions used by FrankenSonos
 include equivalent fixes, remove the corresponding local override in a reviewed
 dependency update and rerun the same upload regression tests.
 
+## Caller addresses for tailnet identity
+
+`fastapi-http`'s connection handlers receive each connection's peer address but
+never set the `RemoteAddr` request extension, although
+`fastapi_core::middleware::RemoteAddr` documents setting it as the server's job.
+So no handler could tell who called. The local patch (`note_peer`) sets it on
+every request of the HTTP/1 and h2c application listeners and of the HTTP/1
+handler listener. The handler h2c path is given no address by its caller and
+is unchanged. FrankenSonos uses the address to name tailnet callers with
+Tailscale's WhoIs (`fsonos_api::Identity::with_tailnet`). Routing, limits and
+the Host checks are unchanged.
+
 ## Regression coverage
 
 `crates/fsonos-cli/tests/e2e_announce.rs` sends a WAV with two MiB of metadata
@@ -84,6 +96,11 @@ The same scenario confirms that a large `echo` request still hits the default
 limit, and malformed or over-limit WAV bytes are rejected after decoding without
 an extra playback. Focused protocol regressions exercise configured boundaries,
 unchanged defaults, exact raw/source equality, and retained structural checks.
+
+`crates/fsonos-api/tests/http_api.rs`
+(`a_tailnet_caller_is_named_by_the_tailnet`) serves the API over a real socket
+and passes only if each request carries its caller's address: the tailnet namer
+gets that address, names the caller, and the caller's own policy applies.
 
 The Linux speech workflow watches `vendor/**` and runs formatting, the complete
 workspace check and Clippy gates, and the full regression/simulator suite. It

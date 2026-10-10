@@ -19,9 +19,18 @@
 //! ([`Identity::with_cli_token`], header [`CLI_TOKEN`]). Reading the token
 //! takes what running the CLI directly takes (the daemon user's files), so
 //! it grants nothing new; it is honoured only on the loopback listener.
+//!
+//! On a listener bound to the tailnet (any non-loopback address), a caller
+//! is named by the tailnet itself: [`Identity::with_tailnet`] asks a namer
+//! (the daemon's is Tailscale's WhoIs) who has the request's peer address,
+//! and the answer (a login, `tag:<name>`, or a node name) is that caller's
+//! [`Client::Tailnet`]. A peer the tailnet can't name stays `unknown`.
 
 use fastapi::Request;
+use fastapi::core::middleware::RemoteAddr;
 use fsonos_core::policy::Client;
+use std::net::IpAddr;
+use std::sync::Arc;
 
 /// The header Tailscale Serve sets to the requesting user's login name.
 pub const SERVE_LOGIN: &str = "tailscale-user-login";
@@ -32,12 +41,17 @@ const MAX_LOGIN: usize = 256;
 /// The header the local CLI proves itself with; see the module docs.
 pub const CLI_TOKEN: &str = "x-fsonos-cli-token";
 
+/// Names a tailnet peer by its address (a login, `tag:<name>`, or a node
+/// name), or `None` when the tailnet can't say who it is.
+pub type TailnetNamer = Arc<dyn Fn(IpAddr) -> Option<String> + Send + Sync>;
+
 /// How a listener identifies its callers; see the module docs.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Identity {
     listener: Client,
     serve_headers: bool,
     cli_token: Option<String>,
+    tailnet: Option<TailnetNamer>,
 }
 
 // By hand, so the CLI token never reaches a log.
@@ -47,9 +61,25 @@ impl std::fmt::Debug for Identity {
             .field("listener", &self.listener)
             .field("serve_headers", &self.serve_headers)
             .field("cli_token", &self.cli_token.as_ref().map(|_| "<set>"))
+            .field("tailnet", &self.tailnet.is_some())
             .finish()
     }
 }
+
+// By hand: namers compare as the same one.
+impl PartialEq for Identity {
+    fn eq(&self, other: &Self) -> bool {
+        self.listener == other.listener
+            && self.serve_headers == other.serve_headers
+            && self.cli_token == other.cli_token
+            && match (&self.tailnet, &other.tailnet) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (a, b) => a.is_none() && b.is_none(),
+            }
+    }
+}
+
+impl Eq for Identity {}
 
 impl Identity {
     /// Every caller is `client`.
@@ -59,6 +89,7 @@ impl Identity {
             listener: client,
             serve_headers: false,
             cli_token: None,
+            tailnet: None,
         }
     }
 
@@ -70,6 +101,7 @@ impl Identity {
             listener: client,
             serve_headers: true,
             cli_token: None,
+            tailnet: None,
         }
     }
 
@@ -81,9 +113,27 @@ impl Identity {
         self
     }
 
+    /// Name an `unknown` listener's callers by `namer` (see the module
+    /// docs); loopback listeners are unchanged.
+    #[must_use]
+    pub fn with_tailnet(
+        mut self,
+        namer: impl Fn(IpAddr) -> Option<String> + Send + Sync + 'static,
+    ) -> Self {
+        self.tailnet = Some(Arc::new(namer));
+        self
+    }
+
     /// The caller of `req`.
     #[must_use]
     pub fn of(&self, req: &Request) -> Client {
+        if self.listener == Client::Unknown
+            && let Some(namer) = &self.tailnet
+            && let Some(RemoteAddr(peer)) = req.get_extension::<RemoteAddr>()
+            && let Some(name) = namer(*peer).filter(|n| plausible(n))
+        {
+            return Client::Tailnet(name);
+        }
         if self.listener == Client::LoopbackHttp
             && let Some(token) = &self.cli_token
             && req
@@ -100,16 +150,17 @@ impl Identity {
             .get(SERVE_LOGIN)
             .and_then(|v| std::str::from_utf8(v).ok())
             .map(str::trim)
-            .filter(|login| {
-                !login.is_empty()
-                    && login.len() <= MAX_LOGIN
-                    && !login.chars().any(char::is_control)
-            })
+            .filter(|login| plausible(login))
             .map_or_else(
                 || self.listener.clone(),
                 |login| Client::Tailnet(login.to_string()),
             )
     }
+}
+
+/// A name a caller can go by: not empty, bounded, no control characters.
+fn plausible(name: &str) -> bool {
+    !name.is_empty() && name.len() <= MAX_LOGIN && !name.chars().any(char::is_control)
 }
 
 /// `a == b`, taking the same time wherever they first differ.
@@ -152,6 +203,48 @@ mod tests {
         assert_eq!(
             direct.of(&request(Some("ada@example.com"))),
             Client::Unknown
+        );
+    }
+
+    #[test]
+    fn a_tailnet_listener_names_its_callers_by_the_tailnet() {
+        let from = |ip: &str| {
+            let mut req = request(Some("ada@example.com"));
+            req.insert_extension(RemoteAddr(ip.parse().unwrap()));
+            req
+        };
+        let namer = |peer: IpAddr| match peer.to_string().as_str() {
+            "100.64.0.7" => Some("grace@example.com".to_owned()),
+            "100.64.0.8" => Some("tag:agent".to_owned()),
+            "100.64.0.9" => Some("bad\u{7}name".to_owned()),
+            _ => None,
+        };
+        let direct = Identity::fixed(Client::Unknown).with_tailnet(namer);
+        assert_eq!(
+            direct.of(&from("100.64.0.7")),
+            Client::Tailnet("grace@example.com".into()),
+            "the tailnet's name, not a header's"
+        );
+        assert_eq!(
+            direct.of(&from("100.64.0.8")),
+            Client::Tailnet("tag:agent".into())
+        );
+        // Unnamed, implausibly named, or no address known: still unknown.
+        assert_eq!(direct.of(&from("100.64.0.1")), Client::Unknown);
+        assert_eq!(direct.of(&from("100.64.0.9")), Client::Unknown);
+        assert_eq!(direct.of(&request(None)), Client::Unknown);
+        // Loopback listeners are not the tailnet's to name.
+        let loopback = Identity::behind_serve(Client::LoopbackHttp).with_tailnet(namer);
+        assert_eq!(
+            loopback.of(&from("100.64.0.7")),
+            Client::Tailnet("ada@example.com".into()),
+            "Serve's login, as before"
+        );
+        assert_eq!(
+            Identity::fixed(Client::LoopbackHttp)
+                .with_tailnet(namer)
+                .of(&from("100.64.0.7")),
+            Client::LoopbackHttp
         );
     }
 

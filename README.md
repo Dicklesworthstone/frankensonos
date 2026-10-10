@@ -355,9 +355,10 @@ learned at runtime and kept locally. The full boundary is in
 - Spotify artists, podcast episodes and shows don't play yet; tracks, albums
   and playlists do.
 - The API and MCP server have no authentication of their own: Tailscale is the
-  boundary. Callers on a direct tailnet listener are read-only until tailnet
-  identity reaches them; use Serve for full control, where the caller's login
-  is their identity.
+  boundary, and it names the HTTP API's callers (Tailscale's WhoIs on a direct
+  tailnet listener, the login behind Serve) for the house policy's `[clients]`
+  tables. A caller Tailscale can't name, and any MCP caller off loopback, is
+  read-only.
 
 ## FAQ
 

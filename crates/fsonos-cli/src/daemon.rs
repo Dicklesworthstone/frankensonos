@@ -22,8 +22,10 @@
 //!
 //! Callers are identified per listener. A loopback listener's callers are
 //! local processes (`loopback-http`, which is how Tailscale Serve arrives);
-//! any other bind answers as `unknown`, which the default policy keeps
-//! read-only until tailnet identity reaches the HTTP layer.
+//! on any other bind (the tailnet), Tailscale names each caller by its
+//! address (WhoIs: a login, `tag:<name>` or node name, which the house
+//! policy's `[clients]` tables apply to), and a caller it can't name is
+//! `unknown`, which the default policy keeps read-only.
 //!
 //! Each HTTP listener admits browser requests only from its own origins
 //! (its bound address and names); loopback ones also from the Tailscale
@@ -433,6 +435,14 @@ fn start_http(
         Identity::fixed(listener_client(addr))
     }
     .with_cli_token(cli_token.to_string());
+    // On the tailnet, Tailscale names each caller (see the module docs);
+    // each listener keeps its own short WhoIs cache.
+    let identity = if addr.ip().is_loopback() {
+        identity
+    } else {
+        let whois = fsonos_tailscale::WhoIs::default();
+        identity.with_tailnet(move |peer| whois.resolve(peer).map(|id| id.principal()))
+    };
     let (surface, names, serve) = (Arc::clone(surface), names.to_vec(), serve.clone());
     let mut config = ServerConfig::new(addr.to_string())
         .with_allowed_hosts(hosts)

@@ -339,6 +339,42 @@ fn unknown_callers_may_read_but_not_control() {
 }
 
 #[test]
+fn a_tailnet_caller_is_named_by_the_tailnet() {
+    // As on a tailnet listener: callers are `unknown` unless the tailnet
+    // names them. The namer stands in for Tailscale's WhoIs and knows this
+    // test's (loopback) peer, so the server must hand it the caller's
+    // address (the RemoteAddr patch in vendor/fastapi-http).
+    let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
+    let start = |name: Option<&'static str>| {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let identity =
+            fsonos_api::Identity::fixed(Client::Unknown).with_tailnet(move |peer: IpAddr| {
+                name.filter(|_| peer.is_loopback()).map(str::to_owned)
+            });
+        let app = app_with("", &sent, Policy::default(), &identity, &web);
+        Api::serve(app, sent, &web)
+    };
+    let named = start(Some("grace@example.com"));
+    let (status, policy) = named.get("/policy");
+    assert_eq!(
+        (status, policy["you"].as_str()),
+        (200, Some("grace@example.com"))
+    );
+    let (status, out) = named.post("/pause", &json!({ "zone": "Kitchen" }));
+    assert_eq!(status, 200, "a named caller has its own policy: {out}");
+    drop(named);
+
+    let unnamed = start(None);
+    let (_, policy) = unnamed.get("/policy");
+    assert_eq!(policy["you"], "unknown");
+    let (status, err) = unnamed.post("/pause", &json!({ "zone": "Kitchen" }));
+    assert_eq!(
+        status, 403,
+        "a caller the tailnet can't name stays read-only: {err}"
+    );
+}
+
+#[test]
 fn a_foreign_host_is_refused_dns_rebinding() {
     let api = Api::start("", &Client::LoopbackHttp);
     let (status, _) = api.raw("GET", "/zones", &[("Host", "evil.example")], "");
