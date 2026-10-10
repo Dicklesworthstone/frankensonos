@@ -33,7 +33,11 @@ async fn echo(ctx: &McpContext, text: String) -> McpResult<String> {
 /// its client opened with.
 #[must_use]
 pub fn server() -> fastmcp::auto::Server {
+    let mut http = fastmcp::HttpServerConfig::new();
+    http.handler_config.max_body_size = fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES;
     fastmcp::auto::server_builder("fsonos", env!("CARGO_PKG_VERSION"))
+        .http_config(http)
+        .request_timeout(fsonos_api::surface::announce::ANNOUNCE_TIMEOUT_SECS)
         .tool(Echo)
         .tool(tools::ListZones)
         .tool(tools::ListRooms)

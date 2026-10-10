@@ -1,18 +1,16 @@
 //! Announcement clips: speech, chimes, and WAV files, kept in the media
 //! directory for the players to fetch.
 //!
-//! Every clip is a 16-bit PCM WAV. Speech comes from macOS `say`, which
-//! renders 44.1 kHz WAV; chimes are synthesized here, so no recorded audio is
-//! shipped; a WAV file can be imported from the CLI. Clips live in
+//! Every clip is a validated 16-bit PCM WAV. Local speech engines are
+//! configured by the owner (see [`super::speech`]); chimes are synthesized
+//! here, so no recorded audio is shipped. Clips live in
 //! `<data-dir>/media` under unguessable 128-bit ids for [`DEFAULT_TTL`]. The
 //! daemon serves them read-only at `/media/<id>.wav` from its GENA listener,
 //! which the players can already reach; [`MediaStore::path`] is the only
 //! lookup that serving needs.
 //!
-//! [`ClipSource`] lists only what a remote client may ask for. Importing a
-//! file ([`MediaStore::import_wav`]) is CLI-only: over HTTP or MCP it would
-//! let a remote caller make the daemon read any local file and serve it on
-//! the LAN.
+//! Remote clients may upload WAV bytes but cannot name files on the host.
+//! [`MediaStore::import_wav`] reads a local file only on behalf of local code.
 
 use std::fmt;
 use std::fs;
@@ -20,6 +18,8 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, SystemTime};
+
+use super::speech::SpeechConfig;
 
 /// Sample rate of synthesized chimes, and the rate `say` is asked for.
 pub const SAMPLE_RATE: u32 = 44_100;
@@ -29,6 +29,11 @@ pub const DEFAULT_TTL: Duration = Duration::from_hours(1);
 
 /// The longest text spoken in one announcement.
 pub const MAX_SPEECH_CHARS: usize = 1_000;
+
+/// Maximum encoded WAV size, including metadata chunks.
+pub const MAX_WAV_BYTES: usize = 16 * 1024 * 1024;
+/// An announcement can interrupt music for at most five minutes.
+pub const MAX_WAV_DURATION: Duration = Duration::from_secs(300);
 
 /// Why a clip could not be made or stored.
 #[derive(Debug, thiserror::Error)]
@@ -43,8 +48,16 @@ pub enum ClipError {
     SpeechTooLong(usize),
     #[error("voice {0:?} is not a voice name")]
     BadVoice(String),
-    #[error("`say` failed: {0}")]
+    #[error("speech synthesis failed: {0}")]
     Speech(String),
+    #[error("invalid speech configuration: {0}")]
+    SpeechConfig(String),
+    #[error("speech backend unavailable: {0}")]
+    SpeechUnavailable(String),
+    #[error("{backend} speech synthesis timed out after {seconds} seconds")]
+    SpeechTimeout { backend: String, seconds: u64 },
+    #[error("WAV exceeds the 16 MiB announcement limit")]
+    TooLarge,
     #[error("not a playable WAV file: {0}")]
     NotWav(&'static str),
     #[error(transparent)]
@@ -54,10 +67,12 @@ pub enum ClipError {
 /// A clip a remote client may ask for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipSource {
-    /// Speak `text` with macOS `say`, in `voice` or the system voice.
+    /// Speak through the configured local engine, in the requested voice.
     Tts { text: String, voice: Option<String> },
     /// A synthesized chime, by [`Chime`] name.
     Chime { name: String },
+    /// Uploaded bytes, never a filename on the daemon host.
+    Wav { bytes: Vec<u8> },
 }
 
 /// A clip in the media directory.
@@ -82,6 +97,7 @@ impl StoredClip {
 pub struct MediaStore {
     dir: PathBuf,
     ttl: Duration,
+    speech: Option<SpeechConfig>,
 }
 
 impl MediaStore {
@@ -91,12 +107,21 @@ impl MediaStore {
         Self {
             dir: data_dir.join("media"),
             ttl: DEFAULT_TTL,
+            speech: None,
         }
     }
 
     #[must_use]
     pub fn with_ttl(mut self, ttl: Duration) -> Self {
         self.ttl = ttl;
+        self
+    }
+
+    /// Use an explicit configuration instead of loading the owner's file and
+    /// environment. Useful to embedders and deterministic integration tests.
+    #[must_use]
+    pub fn with_speech_config(mut self, config: SpeechConfig) -> Self {
+        self.speech = Some(config);
         self
     }
 
@@ -110,6 +135,7 @@ impl MediaStore {
         match source {
             ClipSource::Chime { name } => self.put(&name.parse::<Chime>()?.wav()),
             ClipSource::Tts { text, voice } => self.speak(text, voice.as_deref()),
+            ClipSource::Wav { bytes } => self.put(bytes),
         }
     }
 
@@ -124,17 +150,19 @@ impl MediaStore {
     /// Copy the WAV file at `path` into the store. CLI only: never reachable
     /// from HTTP or MCP (see the module docs).
     pub fn import_wav(&self, path: &Path) -> Result<StoredClip, ClipError> {
-        self.put(&fs::read(path)?)
+        self.put(&read_wav(path)?)
     }
 
-    /// Speak `text` into a new clip with macOS `say`.
+    /// Speak through the local engine. Only complete, valid output is
+    /// published under a media id; errors leave no playable partial clip.
     pub fn speak(&self, text: &str, voice: Option<&str>) -> Result<StoredClip, ClipError> {
         check_speech(text, voice)?;
-        let id = self.new_id()?;
-        let path = self.dir.join(format!("{id}.wav"));
-        say(text, voice, &path)?;
-        let duration = wav_info(&fs::read(&path)?)?.duration;
-        Ok(StoredClip { id, duration })
+        let config = match &self.speech {
+            Some(config) => config.clone(),
+            None => SpeechConfig::load(self.dir.parent().expect("media has a data directory"))?,
+        };
+        let backend = config.discover(voice)?;
+        self.put(&backend.render(text, &self.dir)?)
     }
 
     /// The file for a request path's last segment, `<id>.wav`, if it is a
@@ -203,7 +231,7 @@ pub fn clip_id() -> io::Result<String> {
     }))
 }
 
-fn check_speech(text: &str, voice: Option<&str>) -> Result<(), ClipError> {
+pub(super) fn check_speech(text: &str, voice: Option<&str>) -> Result<(), ClipError> {
     if text.trim().is_empty() {
         return Err(ClipError::EmptySpeech);
     }
@@ -213,57 +241,14 @@ fn check_speech(text: &str, voice: Option<&str>) -> Result<(), ClipError> {
     }
     if let Some(v) = voice {
         let ok = !v.is_empty()
-            && v.len() <= 64
+            && v.len() <= 4096
             && !v.starts_with('-')
-            && v.chars().all(|c| {
-                c.is_alphanumeric() || matches!(c, ' ' | '(' | ')' | '.' | '_' | '-' | '\'')
-            });
+            && !v.chars().any(char::is_control);
         if !ok {
             return Err(ClipError::BadVoice(v.to_string()));
         }
     }
     Ok(())
-}
-
-/// Render `text` to a 44.1 kHz 16-bit WAV at `out`. The text goes in on
-/// stdin (`-f -`), so text that starts with `-` is never read as an option.
-#[cfg(target_os = "macos")]
-fn say(text: &str, voice: Option<&str>, out: &Path) -> Result<(), ClipError> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new("/usr/bin/say");
-    cmd.arg("-o")
-        .arg(out)
-        .arg("--file-format=WAVE")
-        .arg(format!("--data-format=LEI16@{SAMPLE_RATE}"));
-    if let Some(v) = voice {
-        cmd.arg("-v").arg(v);
-    }
-    let mut child = cmd
-        .args(["-f", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes())?;
-    }
-    let output = child.wait_with_output()?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(ClipError::Speech(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ))
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn say(_text: &str, _voice: Option<&str>, _out: &Path) -> Result<(), ClipError> {
-    Err(ClipError::Unsupported(
-        "speech uses macOS `say`, which this system does not have; \
-         announce a chime or a WAV file instead",
-    ))
 }
 
 /// A synthesized chime.
@@ -405,54 +390,134 @@ pub struct WavInfo {
 
 /// Read a PCM WAV's `fmt ` and `data` chunks (other chunks, such as the
 /// padding `say` writes, are skipped).
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the bounded RIFF walk, chunk ordering, and complete PCM validation together"
+)]
 pub fn wav_info(wav: &[u8]) -> Result<WavInfo, ClipError> {
+    if wav.len() > MAX_WAV_BYTES {
+        return Err(ClipError::TooLarge);
+    }
     if wav.len() < 12 || &wav[..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
         return Err(ClipError::NotWav("no RIFF/WAVE header"));
     }
     let u16_at = |i: usize| u16::from_le_bytes([wav[i], wav[i + 1]]);
     let u32_at = |i: usize| u32::from_le_bytes([wav[i], wav[i + 1], wav[i + 2], wav[i + 3]]);
+    if u64::from(u32_at(4)) + 8 != wav.len() as u64 {
+        return Err(ClipError::NotWav(
+            "RIFF length does not match the complete file",
+        ));
+    }
     let mut format = None;
+    let mut data_len = None;
     let mut at = 12;
     while at + 8 <= wav.len() {
         let id = &wav[at..at + 4];
         let len = u32_at(at + 4) as usize;
         let body = at + 8;
+        let end = body
+            .checked_add(len)
+            .filter(|end| *end <= wav.len())
+            .ok_or(ClipError::NotWav("truncated chunk"))?;
         match id {
             b"fmt " => {
-                if len < 16 || body + 16 > wav.len() {
+                if format.is_some() {
+                    return Err(ClipError::NotWav("duplicate fmt chunk"));
+                }
+                if len < 16 {
                     return Err(ClipError::NotWav("short fmt chunk"));
                 }
                 // PCM, or WAVE_FORMAT_EXTENSIBLE around PCM.
-                if !matches!(u16_at(body), 1 | 0xFFFE) {
-                    return Err(ClipError::NotWav("not PCM"));
+                match u16_at(body) {
+                    1 => {}
+                    0xFFFE => {
+                        const PCM_GUID: [u8; 16] = [
+                            1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
+                        ];
+                        if len < 40
+                            || u16_at(body + 16) < 22
+                            || usize::from(u16_at(body + 16)) + 18 > len
+                            || u16_at(body + 18) != 16
+                            || wav[body + 24..body + 40] != PCM_GUID
+                        {
+                            return Err(ClipError::NotWav("extensible format is not 16-bit PCM"));
+                        }
+                    }
+                    _ => return Err(ClipError::NotWav("not PCM")),
                 }
+                let sample_rate = u32_at(body + 4);
+                let channels = u16_at(body + 2);
+                let bits = u16_at(body + 14);
+                let block_align = u16_at(body + 12);
                 let byte_rate = u32_at(body + 8);
-                if byte_rate == 0 {
-                    return Err(ClipError::NotWav("zero byte rate"));
+                if !matches!(channels, 1 | 2) || bits != 16 {
+                    return Err(ClipError::NotWav("expected mono or stereo 16-bit PCM"));
                 }
-                format = Some((
-                    u32_at(body + 4),
-                    u16_at(body + 2),
-                    u16_at(body + 14),
-                    byte_rate,
-                ));
+                if !matches!(
+                    sample_rate,
+                    8000 | 11025 | 12000 | 16000 | 22050 | 24000 | 32000 | 44100 | 48000
+                ) {
+                    return Err(ClipError::NotWav(
+                        "unsupported sample rate (expected 8-48 kHz PCM)",
+                    ));
+                }
+                if block_align != channels * 2 || byte_rate != sample_rate * u32::from(block_align)
+                {
+                    return Err(ClipError::NotWav(
+                        "inconsistent PCM block alignment or byte rate",
+                    ));
+                }
+                format = Some((sample_rate, channels, bits, byte_rate, block_align));
             }
             b"data" => {
-                let (sample_rate, channels, bits, byte_rate) =
+                let (_, _, _, _, block_align) =
                     format.ok_or(ClipError::NotWav("data before fmt"))?;
-                let data = u64::try_from(len.min(wav.len() - body)).unwrap_or(u64::MAX);
-                return Ok(WavInfo {
-                    sample_rate,
-                    channels,
-                    bits,
-                    duration: Duration::from_millis(data * 1000 / u64::from(byte_rate)),
-                });
+                if data_len.is_some() || len == 0 || !len.is_multiple_of(usize::from(block_align)) {
+                    return Err(ClipError::NotWav("empty, duplicate, or unaligned PCM data"));
+                }
+                data_len = Some(len);
             }
             _ => {}
         }
-        at = body + len + (len & 1);
+        at = end + (len & 1);
+        if at > wav.len() {
+            return Err(ClipError::NotWav("missing chunk padding"));
+        }
     }
-    Err(ClipError::NotWav("no data chunk"))
+    if at != wav.len() {
+        return Err(ClipError::NotWav("truncated chunk header"));
+    }
+    let data = data_len.ok_or(ClipError::NotWav("no data chunk"))? as u64;
+    let (sample_rate, channels, bits, byte_rate, _) =
+        format.ok_or(ClipError::NotWav("no fmt chunk"))?;
+    let duration = Duration::from_nanos(data * 1_000_000_000 / u64::from(byte_rate));
+    if duration > MAX_WAV_DURATION {
+        return Err(ClipError::NotWav("announcement exceeds five minutes"));
+    }
+    Ok(WavInfo {
+        sample_rate,
+        channels,
+        bits,
+        duration,
+    })
+}
+
+/// Read a bounded, regular file and validate its entire WAV container before
+/// allowing playback. In particular, never block reading an engine's FIFO.
+pub fn read_wav(path: &Path) -> Result<Vec<u8>, ClipError> {
+    let metadata = fs::metadata(path)?;
+    if !metadata.is_file() {
+        return Err(ClipError::NotWav("expected a regular WAV file"));
+    }
+    if metadata.len() > MAX_WAV_BYTES as u64 {
+        return Err(ClipError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MAX_WAV_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    wav_info(&bytes)?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -463,6 +528,108 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = MediaStore::new(dir.path());
         (dir, store)
+    }
+
+    #[test]
+    fn local_engine_rates_and_stereo_are_playable() {
+        for rate in [8_000, 16_000, 22_050, 24_000, 44_100, 48_000] {
+            let wav = encode_wav(&vec![123; rate as usize], rate);
+            let info = wav_info(&wav).unwrap();
+            assert_eq!(info.duration, Duration::from_secs(1));
+            assert_eq!((info.channels, info.bits), (1, 16));
+        }
+        let mut stereo = encode_wav(&vec![123; 48_000], 24_000);
+        stereo[22..24].copy_from_slice(&2u16.to_le_bytes());
+        stereo[28..32].copy_from_slice(&96_000u32.to_le_bytes());
+        stereo[32..34].copy_from_slice(&4u16.to_le_bytes());
+        let info = wav_info(&stereo).unwrap();
+        assert_eq!((info.channels, info.duration), (2, Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn truncated_or_inconsistent_wav_cannot_be_stored() {
+        let (_dir, store) = store();
+        let wav = encode_wav(&[123; 16], 24_000);
+        for end in 0..wav.len() {
+            assert!(store.put(&wav[..end]).is_err(), "prefix {end}");
+        }
+        // Corrupt each critical field without changing the actual file size.
+        for (offset, value) in [
+            (4, 0),    // RIFF length
+            (20, 3),   // IEEE float
+            (22, 0),   // no channels
+            (22, 3),   // surround
+            (24, 0),   // unrecognized sample rate
+            (28, 1),   // byte rate
+            (32, 1),   // block alignment
+            (34, 24),  // unsupported bit depth
+            (40, 31),  // partial sample frame
+            (40, 255), // truncated data
+        ] {
+            let mut bad = wav.clone();
+            bad[offset] = value;
+            assert!(store.put(&bad).is_err(), "offset {offset}: {value}");
+        }
+        assert!(!store.dir().exists(), "invalid files never enter media");
+        assert!(wav_info(&encode_wav(&[], 24_000)).is_err());
+    }
+
+    #[test]
+    fn extensible_wav_checks_the_pcm_subtype_and_valid_bits() {
+        let pcm = encode_wav(&[12; 240], 24_000);
+        let mut wav = pcm[..36].to_vec();
+        wav[16..20].copy_from_slice(&40u32.to_le_bytes());
+        wav[20..22].copy_from_slice(&0xfffeu16.to_le_bytes());
+        wav.extend_from_slice(&22u16.to_le_bytes()); // extension length
+        wav.extend_from_slice(&16u16.to_le_bytes()); // valid bits
+        wav.extend_from_slice(&4u32.to_le_bytes()); // front center
+        wav.extend_from_slice(&[
+            1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
+        ]);
+        wav.extend_from_slice(&pcm[36..]);
+        let size = u32::try_from(wav.len() - 8).unwrap();
+        wav[4..8].copy_from_slice(&size.to_le_bytes());
+        assert_eq!(wav_info(&wav).unwrap().duration, Duration::from_millis(10));
+        let mut float = wav.clone();
+        float[44] = 3; // IEEE float subtype
+        assert!(wav_info(&float).is_err());
+        wav[38] = 12; // valid bits differs from container bits
+        assert!(wav_info(&wav).is_err());
+    }
+
+    #[test]
+    fn wav_size_and_duration_are_bounded_before_playback() {
+        assert!(matches!(
+            wav_info(&vec![0; MAX_WAV_BYTES + 1]),
+            Err(ClipError::TooLarge)
+        ));
+        let long = encode_wav(&vec![0; 8_000 * 300 + 1], 8_000);
+        assert!(matches!(
+            wav_info(&long),
+            Err(ClipError::NotWav("announcement exceeds five minutes"))
+        ));
+        let (dir, store) = store();
+        let input = dir.path().join("huge.wav");
+        let file = fs::File::create(&input).unwrap();
+        file.set_len(MAX_WAV_BYTES as u64 + 1).unwrap();
+        assert!(matches!(store.import_wav(&input), Err(ClipError::TooLarge)));
+        assert!(matches!(read_wav(dir.path()), Err(ClipError::NotWav(_))));
+    }
+
+    #[test]
+    fn uploaded_wav_reuses_the_validated_clip_store() {
+        let (_dir, store) = store();
+        let bytes = encode_wav(&vec![10; 24_000], 24_000);
+        let clip = store
+            .make(&ClipSource::Wav {
+                bytes: bytes.clone(),
+            })
+            .unwrap();
+        assert_eq!(clip.duration, Duration::from_secs(1));
+        assert_eq!(
+            fs::read(store.path(&format!("{}.wav", clip.id)).unwrap()).unwrap(),
+            bytes
+        );
     }
 
     #[test]
@@ -491,6 +658,9 @@ mod tests {
         padded.extend_from_slice(&3u32.to_le_bytes());
         padded.extend_from_slice(&[0, 0, 0, 0]); // 3 bytes + 1 pad
         padded.extend_from_slice(&wav[36..36 + 8 + 22_050]);
+        let size = u32::try_from(padded.len() - 8).unwrap();
+        padded[4..8].copy_from_slice(&size.to_le_bytes());
+        padded[52..56].copy_from_slice(&22_050u32.to_le_bytes());
         assert_eq!(
             wav_info(&padded).unwrap().duration,
             Duration::from_millis(250)
@@ -506,10 +676,7 @@ mod tests {
             wav_info(&float),
             Err(ClipError::NotWav("not PCM"))
         ));
-        assert!(matches!(
-            wav_info(&wav[..40]),
-            Err(ClipError::NotWav("no data chunk"))
-        ));
+        assert!(matches!(wav_info(&wav[..40]), Err(ClipError::NotWav(_))));
     }
 
     #[test]
@@ -609,7 +776,10 @@ mod tests {
         assert!(check_speech("-v Bad starts with a dash; still fine as text", None).is_ok());
         assert!(check_speech("Dinner", Some("Samantha")).is_ok());
         assert!(check_speech("Dinner", Some("Eddy (English (UK))")).is_ok());
-        for voice in ["-o /tmp/x", "", "a;b", "a/b"] {
+        assert!(check_speech("Dinner", Some("/voices/My voice.ftvoice")).is_ok());
+        assert!(check_speech("Dinner", Some("en-us+f3")).is_ok());
+        assert!(check_speech("Dinner", Some("a;b $(literal)")).is_ok());
+        for voice in ["-o /tmp/x", "", "a\nb", "a\0b"] {
             assert!(
                 matches!(
                     check_speech("Dinner", Some(voice)),
@@ -620,17 +790,25 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
-    fn speech_is_unsupported_off_macos() {
-        let (_dir, store) = store();
+    fn missing_engine_fails_before_publishing_a_clip() {
+        let (dir, store) = store();
+        let store = store.with_speech_config(SpeechConfig {
+            backend: super::super::speech::BackendKind::Command,
+            command: vec![
+                dir.path().join("missing-engine").display().to_string(),
+                "{output}".into(),
+            ],
+            ..SpeechConfig::default()
+        });
         let err = store
             .make(&ClipSource::Tts {
                 text: "Dinner is ready".into(),
                 voice: None,
             })
             .unwrap_err();
-        assert!(err.to_string().contains("chime"), "{err}");
+        assert!(matches!(err, ClipError::SpeechUnavailable(_)), "{err}");
+        assert!(!store.dir().exists());
     }
 
     /// Runs `say` for real: set `FSONOS_TEST_SAY=1` on a Mac.

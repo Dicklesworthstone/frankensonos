@@ -157,6 +157,7 @@ fn control_tools_are_advertised_with_their_arguments() {
         "dj_steer",
         "dj_status",
         "dj_moods",
+        "announce",
     ] {
         let t = tool(name);
         assert!(
@@ -195,6 +196,14 @@ fn control_tools_are_advertised_with_their_arguments() {
         );
     }
     assert_eq!(steer["required"], json!(["zone"]), "{steer}");
+    let announcement = &tool("announce")["inputSchema"];
+    for arg in ["text", "chime", "wav_base64", "voice", "rooms", "volume"] {
+        assert!(
+            announcement["properties"].get(arg).is_some(),
+            "announce lacks {arg}: {announcement}"
+        );
+    }
+    assert!(announcement["properties"].get("file").is_none());
     assert_eq!(
         tool("dj_status")["annotations"]["readOnlyHint"],
         true,

@@ -749,10 +749,19 @@ together, and the command says so instead of failing quietly.
 ### 12.12 Announcements
 
 [`b-announce`, `d-announce-surface`] Snapshot, set a policy-capped announcement
-volume, play a clip, wait for STOPPED via GENA, restore. Speech comes from macOS
-`say` (WAV); chimes are generated, not copied. Clips are served from the
-GENA sink listener, which the speakers can already reach on the LAN; control
-endpoints never move onto that listener.
+volume, play a clip, wait for STOPPED via GENA, restore. Offline Linux speech
+prefers FrankenTTS (`ftts`), with espeak-ng discovery and explicit local Piper
+models; macOS keeps `/usr/bin/say`. Owner-controlled `speech.toml` or environment
+settings can select a backend, voice, deadline, or an executable argument array.
+Text goes on stdin and arguments are never shell-interpolated. Generation runs
+in private staging, with bounded output, deadline cleanup, and complete PCM WAV
+validation before playback. `doctor` identifies the selected executable without
+claiming that models or synthesis were tested. Chimes are generated, not copied;
+`announce --file` and HTTP/MCP `wav_base64` reuse the same validated clip path.
+Clips are served from the GENA sink listener, which the speakers can already
+reach on the LAN; control endpoints never move onto that listener. Regression
+and simulator checks remain separate from opt-in real speech and physical-Sonos
+acceptance.
 
 ### 12.13 Live events and a web remote
 

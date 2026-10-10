@@ -29,6 +29,7 @@
 //! back to the snapshot (rewound) afterwards.
 
 pub mod clip;
+pub mod speech;
 
 use crate::control;
 use crate::snapshot::{self, Aspect, RestoreReport, ZoneSnapshot};

@@ -1,17 +1,21 @@
 //! Announcements on every surface: `POST /announce`, the MCP `announce`
-//! tool, and `fsonos say|chime`.
+//! tool, and `fsonos say|chime|announce`.
 //!
-//! The clip is made in the media directory (speech with macOS `say`, or a
-//! synthesized chime) and served read-only to the players from the media
+//! The clip is made in the media directory (local speech, a synthesized
+//! chime, or an uploaded WAV) and served read-only to the players from the media
 //! listener (the daemon's GENA sink, see `fsonos_proto::net::MediaFiles`).
 //! [`Announcer`] plays it in the target rooms and puts every zone back
 //! afterwards. Each room's level is capped by the house policy for the
 //! caller. Announcements are logged, but not undoable: they restore
 //! themselves.
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::HouseholdState;
-use fsonos_core::announce::clip::{Chime, ClipError, ClipSource, MediaStore};
+use fsonos_core::announce::clip::{
+    Chime, ClipError, ClipSource, MAX_WAV_BYTES, MediaStore, wav_info,
+};
 use fsonos_core::announce::{
     AnnounceReport, Announcer, Clip, DEFAULT_VOLUME, Ending, HouseholdAnnouncement,
 };
@@ -31,6 +35,15 @@ pub const TOOL: &str = "announce";
 
 /// The longest title a clip's DIDL carries, in characters.
 const TITLE_CHARS: usize = 60;
+
+/// The largest base64-encoded WAV accepted, checked before decoding.
+pub const MAX_WAV_BASE64_BYTES: usize = MAX_WAV_BYTES.div_ceil(3) * 4;
+
+/// A WAV upload plus room names and the JSON / MCP envelope.
+pub const MAX_ANNOUNCE_REQUEST_BYTES: usize = MAX_WAV_BASE64_BYTES + 16 * 1024;
+
+/// Time for local speech synthesis, playback, and restoration over HTTP or MCP.
+pub const ANNOUNCE_TIMEOUT_SECS: u64 = 1200;
 
 /// Where the players fetch clips: the media listener's base URL
 /// (`http://<address>:<port>`), once it is up.
@@ -63,19 +76,24 @@ impl Announcements {
     }
 }
 
-/// `POST /announce` / the `announce` tool: speak `text` or play a `chime`
-/// in `rooms`, then put the music back.
+/// `POST /announce` / the `announce` tool: speak `text`, play a `chime`, or
+/// upload `wav_base64` in `rooms`, then put the music back.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AnnounceRequest {
-    /// Text to speak (macOS `say`), at most 1000 characters. Give this or
-    /// `chime`.
+    /// Text for the host's local speech backend, at most 1000 characters.
+    /// Give exactly one of `text`, `chime`, or `wav_base64`.
     #[serde(default)]
     pub text: Option<String>,
-    /// A chime: `bell`, `beep` or `rise`. Give this or `text`.
+    /// A chime: `bell`, `beep` or `rise`.
     #[serde(default)]
     pub chime: Option<String>,
-    /// The `say` voice for `text`; the system voice when omitted.
+    /// A 16-bit PCM WAV as standard padded base64, at most 16 MiB decoded
+    /// and five minutes long.
+    /// Upload bytes; paths on the daemon host are never accepted.
+    #[serde(default)]
+    pub wav_base64: Option<String>,
+    /// The local backend's voice for `text`; the configured default when omitted.
     #[serde(default)]
     pub voice: Option<String>,
     /// Rooms, aliases, or `all`; every room when omitted.
@@ -88,26 +106,53 @@ pub struct AnnounceRequest {
 }
 
 impl AnnounceRequest {
+    /// Make a request from a caller's WAV bytes, validating before encoding.
+    /// The caller may then set `rooms` and `volume`.
+    pub fn from_wav(wav: &[u8]) -> Result<Self, Failure> {
+        validate_upload(wav)?;
+        Ok(Self {
+            wav_base64: Some(BASE64.encode(wav)),
+            ..Self::default()
+        })
+    }
+
     /// The clip asked for, or why the request is unusable.
     pub fn source(&self) -> Result<ClipSource, Failure> {
         let text = self.text.as_deref().map(str::trim);
         let chime = self.chime.as_deref().map(str::trim);
-        match (text, chime) {
-            (Some(_), Some(_)) => Err(Failure::invalid(
-                "give either `text` to speak or a `chime`, not both",
-            )),
-            (None, None) => Err(Failure::invalid("give `text` to speak or a `chime`")
-                .with_suggestions(Chime::NAMES.to_vec())),
-            (Some(text), None) => Ok(ClipSource::Tts {
+        let wav = self.wav_base64.as_deref();
+        if [text.is_some(), chime.is_some(), wav.is_some()]
+            .into_iter()
+            .filter(|present| *present)
+            .count()
+            != 1
+        {
+            return Err(Failure::invalid(
+                "give exactly one of `text`, `chime`, or `wav_base64`",
+            ));
+        }
+        if text.is_none() && self.voice.is_some() {
+            return Err(Failure::invalid("`voice` is only valid with `text`"));
+        }
+        match (text, chime, wav) {
+            (Some(text), None, None) => Ok(ClipSource::Tts {
                 text: text.to_string(),
                 voice: self.voice.as_deref().map(str::trim).map(str::to_string),
             }),
-            (None, Some(_)) if self.voice.is_some() => {
-                Err(Failure::invalid("`voice` is for `text`; a chime has none"))
-            }
-            (None, Some(name)) => Ok(ClipSource::Chime {
+            (None, Some(name), None) => Ok(ClipSource::Chime {
                 name: name.to_string(),
             }),
+            (None, None, Some(encoded)) => {
+                if encoded.len() > MAX_WAV_BASE64_BYTES {
+                    return Err(Failure::invalid(ClipError::TooLarge.to_string()));
+                }
+                let bytes = BASE64
+                    .decode(encoded)
+                    .map_err(|_| Failure::invalid("`wav_base64` must be standard padded base64"))?;
+                validate_upload(&bytes)?;
+                Ok(ClipSource::Wav { bytes })
+            }
+            _ => unreachable!("one source was checked above"),
         }
     }
 
@@ -121,6 +166,16 @@ impl AnnounceRequest {
                 .ok_or_else(|| Failure::invalid(format!("`volume` {v} is not 0 to 100"))),
         }
     }
+}
+
+fn validate_upload(wav: &[u8]) -> Result<(), Failure> {
+    if wav.len() > MAX_WAV_BYTES {
+        return Err(Failure::invalid(ClipError::TooLarge.to_string()));
+    }
+    wav_info(wav).map(|_| ()).map_err(|e| {
+        Failure::invalid(e.to_string())
+            .with_hint("Upload a valid 16-bit PCM WAV, at most 16 MiB and five minutes.")
+    })
 }
 
 /// What an announcement did.
@@ -167,7 +222,7 @@ impl Surface {
         self
     }
 
-    /// Speak or chime in the rooms `req` names (every room by default) for
+    /// Play the clip in the rooms `req` names (every room by default) for
     /// `client`, then put everything back. Blocks until done, including any
     /// wait for an earlier announcement in the same household.
     pub fn announce(&self, client: &Client, req: &AnnounceRequest) -> Result<AnnounceDto, Failure> {
@@ -280,6 +335,7 @@ fn title(source: &ClipSource) -> String {
         }
         ClipSource::Tts { text, .. } => text.clone(),
         ClipSource::Chime { name } => format!("{} chime", name.to_lowercase()),
+        ClipSource::Wav { .. } => "WAV announcement".to_string(),
     }
 }
 
@@ -293,8 +349,15 @@ fn clip_failure(e: &ClipError) -> Failure {
             Failure::invalid(e.to_string())
         }
         ClipError::Unsupported(_) => Failure::new(ErrorCode::NotImplemented, e.to_string())
-            .with_hint("Speech needs macOS `say` on the daemon's host; chimes work anywhere."),
-        ClipError::Speech(_) | ClipError::NotWav(_) | ClipError::Io(_) => {
+            .with_hint("Configure a local speech command on the daemon host, or upload a WAV."),
+        ClipError::SpeechUnavailable(_) | ClipError::SpeechConfig(_) => {
+            Failure::new(ErrorCode::NotReady, e.to_string()).with_hint(
+                "Run fsonos doctor --only speech on the daemon host and check speech.toml.",
+            )
+        }
+        ClipError::SpeechTimeout { .. } => Failure::new(ErrorCode::NotReady, e.to_string())
+            .with_hint("Check the local speech engine and its configured synthesis timeout."),
+        ClipError::Speech(_) | ClipError::NotWav(_) | ClipError::Io(_) | ClipError::TooLarge => {
             Failure::new(ErrorCode::Internal, e.to_string())
         }
     }
@@ -420,6 +483,59 @@ mod tests {
     }
 
     #[test]
+    fn wav_upload_round_trips_and_excludes_other_sources_and_voices() {
+        let bytes = Chime::Beep.wav();
+        let upload = AnnounceRequest::from_wav(&bytes).unwrap();
+        let wire = serde_json::to_vec(&upload).unwrap();
+        let request: AnnounceRequest = serde_json::from_slice(&wire).unwrap();
+        assert_eq!(request.source().unwrap(), ClipSource::Wav { bytes });
+        assert_eq!(title(&request.source().unwrap()), "WAV announcement");
+        for bad in [
+            AnnounceRequest {
+                text: Some("hi".into()),
+                ..upload.clone()
+            },
+            AnnounceRequest {
+                chime: Some("bell".into()),
+                ..upload.clone()
+            },
+            AnnounceRequest {
+                voice: Some("en".into()),
+                ..upload
+            },
+        ] {
+            assert_eq!(bad.source().unwrap_err().code, ErrorCode::InvalidArgument);
+        }
+    }
+
+    #[test]
+    fn wav_upload_rejects_bad_encoding_format_and_size_before_playback() {
+        for encoded in ["%%%".to_string(), String::new(), BASE64.encode(b"not WAV")] {
+            let upload = AnnounceRequest {
+                wav_base64: Some(encoded),
+                ..AnnounceRequest::default()
+            };
+            assert_eq!(
+                upload.source().unwrap_err().code,
+                ErrorCode::InvalidArgument
+            );
+        }
+        let upload = AnnounceRequest {
+            // Deliberately invalid encoding: size must be checked before decoding.
+            wav_base64: Some("!".repeat(MAX_WAV_BASE64_BYTES + 1)),
+            ..AnnounceRequest::default()
+        };
+        assert_eq!(
+            upload.source().unwrap_err().detail,
+            ClipError::TooLarge.to_string()
+        );
+        assert_eq!(
+            AnnounceRequest::from_wav(b"not WAV").unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+    }
+
+    #[test]
     fn volume_defaults_and_is_bounded() {
         assert_eq!(req(None, Some("bell")).volume().unwrap(), DEFAULT_VOLUME);
         for (v, ok) in [(0, true), (100, true), (101, false), (-1, false)] {
@@ -435,6 +551,12 @@ mod tests {
     fn unknown_fields_are_rejected() {
         let err = serde_json::from_str::<AnnounceRequest>(r#"{"text":"hi","room":"Kitchen"}"#);
         assert!(err.is_err());
+        for body in [
+            r#"{"file":"/private/clip.wav"}"#,
+            r#"{"wav_path":"clip.wav"}"#,
+        ] {
+            assert!(serde_json::from_str::<AnnounceRequest>(body).is_err());
+        }
     }
 
     #[test]
@@ -454,6 +576,22 @@ mod tests {
         assert_eq!(
             clip_failure(&ClipError::SpeechTooLong(1001)).code,
             ErrorCode::InvalidArgument
+        );
+        for error in [
+            ClipError::SpeechUnavailable("no engine".into()),
+            ClipError::SpeechConfig("bad speech.toml".into()),
+            ClipError::SpeechTimeout {
+                backend: "franken-tts".into(),
+                seconds: 1,
+            },
+        ] {
+            assert_eq!(clip_failure(&error).code, ErrorCode::NotReady);
+        }
+        // Backend-generated bad audio is a host failure; uploaded bad audio
+        // is rejected as INVALID_ARGUMENT by source(), above.
+        assert_eq!(
+            clip_failure(&ClipError::NotWav("bad format")).code,
+            ErrorCode::Internal
         );
     }
 

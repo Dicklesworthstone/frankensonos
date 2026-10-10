@@ -17,6 +17,7 @@
 //! its fade. Commands with no route here (doctor, scenes, schedules, ...)
 //! run directly.
 
+use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
 use fsonos_api::surface::schedules::SleepTimerDto;
 use fsonos_api::{
@@ -33,7 +34,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::config::GlobalArgs;
-use crate::{Command, Switch, direct, emit, schedule_cmd};
+use crate::{Command, Switch, announce_cmd, direct, emit, schedule_cmd};
 
 /// The daemon's address file in the data directory.
 pub const DAEMON_FILE: &str = "daemon.json";
@@ -42,9 +43,13 @@ pub const DAEMON_FILE: &str = "daemon.json";
 /// directly.
 pub const PROBE: Duration = Duration::from_millis(150);
 
-/// How long a command through the daemon may take (an announcement waits
-/// for its clip to play).
+/// How long a command through the daemon may take.
 const CALL: Duration = Duration::from_secs(120);
+
+/// Synthesis and playback can each take minutes; allow the daemon's
+/// twenty-minute request deadline to report its outcome first.
+const ANNOUNCE_CALL: Duration =
+    Duration::from_secs(fsonos_api::surface::announce::ANNOUNCE_TIMEOUT_SECS + 30);
 
 /// What `fsonos serve` leaves in the data directory for the CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,7 +146,7 @@ impl Daemon {
 
     /// `GET path`: the answer as `T`, or the daemon's failure.
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
-        self.call("GET", path, None)
+        self.call("GET", path, None, CALL)
     }
 
     pub fn post<B: Serialize, T: DeserializeOwned>(
@@ -149,9 +154,23 @@ impl Daemon {
         path: &str,
         body: &B,
     ) -> Result<T, Failure> {
+        self.post_with_timeout(path, body, CALL)
+    }
+
+    /// The announcement response arrives after synthesis, playback, and restore.
+    pub fn announce(&self, req: &AnnounceRequest) -> Result<AnnounceDto, Failure> {
+        self.post_with_timeout("/announce", req, ANNOUNCE_CALL)
+    }
+
+    fn post_with_timeout<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+        timeout: Duration,
+    ) -> Result<T, Failure> {
         let body = serde_json::to_string(body)
             .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))?;
-        self.call("POST", path, Some(&body))
+        self.call("POST", path, Some(&body), timeout)
     }
 
     fn call<T: DeserializeOwned>(
@@ -159,16 +178,25 @@ impl Daemon {
         method: &str,
         path: &str,
         body: Option<&str>,
+        timeout: Duration,
     ) -> Result<T, Failure> {
-        let (status, text) = self.exchange(method, path, body, CALL).map_err(|e| {
-            Failure::new(
-                ErrorCode::NotReady,
-                format!(
-                    "the daemon at {} did not answer {method} {path}: {e}",
-                    self.addr
-                ),
-            )
-            .with_hint("Retry, or run the command with --direct.")
+        let response = self.exchange(method, path, body, timeout);
+        let (status, text) = response.map_err(|e| {
+            // A dropped response does not mean playback stopped. Mark its
+            // unknown outcome non-retryable; never replay it in direct mode.
+            let (code, hint) = if method == "POST" && path == "/announce" {
+                (
+                    ErrorCode::Internal,
+                    "The announcement may still be running. Check playback before sending it again.",
+                )
+            } else {
+                (ErrorCode::NotReady, "Retry, or run the command with --direct.")
+            };
+            let detail = format!(
+                "the daemon at {} did not answer {method} {path}: {e}",
+                self.addr
+            );
+            Failure::new(code, detail).with_hint(hint)
         })?;
         if (200..300).contains(&status) {
             return serde_json::from_str(&text).map_err(|e| {
@@ -323,6 +351,9 @@ fn routable(command: &Command) -> bool {
             | Command::Move { .. }
             | Command::Party { .. }
             | Command::Sleep(_)
+            | Command::Say(_)
+            | Command::Chime(_)
+            | Command::Announce(_)
     )
 }
 
@@ -399,6 +430,18 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
                 emit(json, &timer, schedule_cmd::timer_text)?;
             }
         },
+        Command::Say(args) => {
+            let announced = daemon.announce(&args.request())?;
+            emit(json, &announced, announce_cmd::text)?;
+        }
+        Command::Chime(args) => {
+            let announced = daemon.announce(&args.request())?;
+            emit(json, &announced, announce_cmd::text)?;
+        }
+        Command::Announce(args) => {
+            let announced = daemon.announce(&args.request()?)?;
+            emit(json, &announced, announce_cmd::text)?;
+        }
         Command::Play {
             zone,
             favorite: Some(favorite),
@@ -521,6 +564,65 @@ fn control_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_announcement_command_has_a_daemon_route() {
+        use clap::Parser;
+        for args in [
+            vec!["fsonos", "say", "hello"],
+            vec!["fsonos", "chime", "bell"],
+            vec!["fsonos", "announce", "--file", "clip.wav"],
+        ] {
+            assert!(routable(&crate::Cli::try_parse_from(args).unwrap().command));
+        }
+    }
+
+    #[test]
+    fn a_lost_announcement_response_never_suggests_replaying_it() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let daemon = Daemon {
+            addr: listener.local_addr().unwrap(),
+            token: None,
+        };
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = std::io::BufReader::new(&mut stream);
+            let mut line = String::new();
+            let mut body_len = 0;
+            loop {
+                use std::io::BufRead as _;
+                line.clear();
+                assert!(
+                    reader.read_line(&mut line).unwrap() > 0,
+                    "request headers ended early"
+                );
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.strip_prefix("Content-Length: ") {
+                    body_len = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            let mut body = vec![0; body_len];
+            reader.read_exact(&mut body).unwrap();
+            let request: AnnounceRequest = serde_json::from_slice(&body).unwrap();
+            assert_eq!(request.chime.as_deref(), Some("bell"));
+            // The command was received, but no response reached its caller.
+        });
+        let failure = daemon
+            .announce(&AnnounceRequest {
+                chime: Some("bell".into()),
+                ..AnnounceRequest::default()
+            })
+            .unwrap_err();
+        worker.join().unwrap();
+        assert!(!failure.retryable());
+        assert!(failure.hint.contains("may still be running"));
+        assert!(!failure.hint.contains("--direct"));
+    }
 
     #[test]
     fn responses_parse_with_a_length_or_in_chunks() {

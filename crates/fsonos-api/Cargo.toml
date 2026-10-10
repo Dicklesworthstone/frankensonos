@@ -13,6 +13,8 @@ fsonos-core = { workspace = true }
 fsonos-proto = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# WAV uploads share the same request on HTTP, MCP, and the daemon CLI.
+base64 = "0.23"
 tracing = { workspace = true }
 thiserror = { workspace = true }
 # Sleep timers and schedules: wall times in the house's time zone.

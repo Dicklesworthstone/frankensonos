@@ -443,6 +443,15 @@ fn the_openapi_document_describes_every_route() {
     }
     assert_eq!(volume["required"], json!(["zone"]), "{volume}");
 
+    let schema =
+        &doc["paths"]["/announce"]["post"]["requestBody"]["content"]["application/json"]["schema"];
+    let announcement = schema["$ref"]
+        .as_str()
+        .and_then(|r| r.rsplit('/').next())
+        .map_or(schema, |name| &doc["components"]["schemas"][name]);
+    assert!(announcement["properties"]["wav_base64"].is_object());
+    assert!(announcement["properties"].get("file").is_none());
+
     // Error answers carry the wire codes.
     let not_found = doc["paths"]["/zones/{room}"]["get"]["responses"]["404"]["description"]
         .as_str()

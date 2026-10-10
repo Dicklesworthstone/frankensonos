@@ -205,10 +205,12 @@ enum Command {
         /// single household.
         target: Option<String>,
     },
-    /// Say something in rooms (macOS `say`), then put the music back.
+    /// Say something with the local speech backend, then put the music back.
     Say(announce_cmd::SayArgs),
     /// Play a chime (bell, beep, rise) in rooms, then put the music back.
     Chime(announce_cmd::ChimeArgs),
+    /// Play a local WAV in rooms, then put the music back.
+    Announce(announce_cmd::AnnounceArgs),
     /// A completion script for your shell, completing room names too:
     /// `fsonos completions zsh > ~/.zfunc/_fsonos`.
     Completions { shell: completions::Shell },
@@ -424,6 +426,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Command::Chime(args) => {
             let announced = announce_cmd::run(global, &args.request())?;
+            emit(global.json, &announced, announce_cmd::text)
+        }
+        Command::Announce(args) => {
+            let announced = announce_cmd::run(global, &args.request()?)?;
             emit(global.json, &announced, announce_cmd::text)
         }
         control => {
@@ -666,6 +672,7 @@ fn plan_for<'a>(
         | Command::Setup(_)
         | Command::Say(_)
         | Command::Chime(_)
+        | Command::Announce(_)
         | Command::Completions { .. }
         | Command::CompleteRooms
         | Command::Mcp => {
@@ -908,6 +915,26 @@ mod tests {
             ["192.0.2.10".parse::<std::net::IpAddr>().unwrap()]
         );
         assert_eq!(cli.global.wait().as_secs(), 1);
+    }
+
+    #[test]
+    fn announce_requires_a_local_file_and_accepts_room_options() {
+        assert!(Cli::try_parse_from(["fsonos", "announce"]).is_err());
+        let command = parse(&[
+            "announce",
+            "--file",
+            "clip.wav",
+            "--rooms",
+            "Kitchen,Office",
+            "--volume",
+            "25",
+        ]);
+        let Command::Announce(args) = command else {
+            panic!("announce command")
+        };
+        assert_eq!(args.file, std::path::Path::new("clip.wav"));
+        assert_eq!(args.at.rooms, ["Kitchen", "Office"]);
+        assert_eq!(args.at.volume, Some(25));
     }
 
     #[test]

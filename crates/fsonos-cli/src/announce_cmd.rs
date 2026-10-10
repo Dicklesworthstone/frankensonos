@@ -1,4 +1,4 @@
-//! `fsonos say` and `fsonos chime`: an announcement from the command line.
+//! `fsonos say`, `chime`, and `announce --file`: an announcement from the command line.
 //!
 //! In direct mode the CLI serves the clip itself, for as long as the
 //! announcement takes, from a listener on the address it uses to reach the
@@ -8,10 +8,10 @@
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest, Announcements};
 use fsonos_api::{ErrorCode, Failure};
 use fsonos_core::CoreError;
-use fsonos_core::announce::clip::MediaStore;
+use fsonos_core::announce::clip::{MediaStore, read_wav};
 use fsonos_proto::net::{EventSink, MediaFiles};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::config::GlobalArgs;
@@ -20,9 +20,9 @@ use crate::direct::Direct;
 /// `fsonos say` options.
 #[derive(Debug, Clone, clap::Args)]
 pub struct SayArgs {
-    /// What to say (macOS `say`; at most 1000 characters).
+    /// What to say with the local speech backend (at most 1000 characters).
     pub text: String,
-    /// The `say` voice [default: the system voice].
+    /// The backend's voice [default: the configured voice].
     #[arg(long)]
     pub voice: Option<String>,
     #[command(flatten)]
@@ -34,6 +34,17 @@ pub struct SayArgs {
 pub struct ChimeArgs {
     /// The chime: bell, beep or rise.
     pub name: String,
+    #[command(flatten)]
+    pub at: Where,
+}
+
+/// `fsonos announce --file` options.
+#[derive(Debug, Clone, clap::Args)]
+pub struct AnnounceArgs {
+    /// A local 16-bit PCM WAV (at most 16 MiB and five minutes).
+    /// The CLI uploads its bytes when using the daemon.
+    #[arg(long)]
+    pub file: PathBuf,
     #[command(flatten)]
     pub at: Where,
 }
@@ -69,6 +80,20 @@ impl ChimeArgs {
             chime: Some(self.name.clone()),
             ..self.at.request()
         }
+    }
+}
+
+impl AnnounceArgs {
+    pub fn request(&self) -> Result<AnnounceRequest, Failure> {
+        let bytes = read_wav(&self.file).map_err(|e| {
+            Failure::invalid(format!("cannot read announcement WAV: {e}"))
+                .with_hint("Choose a readable 16-bit PCM WAV, at most 16 MiB and five minutes.")
+        })?;
+        Ok(AnnounceRequest {
+            rooms: self.at.rooms.clone(),
+            volume: self.at.volume.map(i64::from),
+            ..AnnounceRequest::from_wav(&bytes)?
+        })
     }
 }
 
@@ -163,6 +188,41 @@ mod tests {
         .request();
         assert_eq!(chime.chime.as_deref(), Some("bell"));
         assert!(chime.rooms.is_empty() && chime.volume.is_none());
+    }
+
+    #[test]
+    fn a_file_argument_uploads_validated_bytes_without_a_daemon_path() {
+        use fsonos_core::announce::clip::{Chime, ClipSource};
+        let dir = std::env::temp_dir().join(format!("fsonos-cli-wav-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let args = AnnounceArgs {
+            file: dir.join("local announcement.wav"),
+            at: Where {
+                rooms: vec!["Kitchen".into()],
+                volume: Some(25),
+            },
+        };
+        let bytes = Chime::Beep.wav();
+        std::fs::write(&args.file, &bytes).unwrap();
+        let request = args.request().unwrap();
+        assert_eq!(request.source().unwrap(), ClipSource::Wav { bytes });
+        assert_eq!(
+            (request.rooms.as_slice(), request.volume),
+            (&["Kitchen".to_string()][..], Some(25))
+        );
+        let wire = serde_json::to_string(&request).unwrap();
+        assert!(!wire.contains("local announcement.wav"));
+        std::fs::write(&args.file, b"broken WAV").unwrap();
+        assert_eq!(args.request().unwrap_err().code, ErrorCode::InvalidArgument);
+        let missing = AnnounceArgs {
+            file: dir.join("missing.wav"),
+            ..args
+        };
+        assert_eq!(
+            missing.request().unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

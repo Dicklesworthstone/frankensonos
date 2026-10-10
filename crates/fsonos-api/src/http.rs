@@ -48,7 +48,7 @@
 //! name of the MCP tool that does the same. Every call runs as its caller ([`Identity`]) under the
 //! house policy. Speaker I/O is synchronous inside the handler.
 
-use fastapi::core::{BoxFuture, RouteEntry};
+use fastapi::core::{AppConfig, BoxFuture, RouteEntry};
 use fastapi::fastapi_openapi;
 use fastapi::{
     App, AppBuilder, JsonSchema, Method, OpenApiConfig, PathParams, Request, Response,
@@ -116,7 +116,14 @@ pub fn app(surface: &Arc<Surface>, identity: &Identity, web: &WebPolicy) -> App 
     entries
         .into_iter()
         .chain([openapi])
-        .fold(App::builder(), AppBuilder::route_entry)
+        .fold(
+            App::builder().config(
+                AppConfig::new()
+                    .max_body_size(crate::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES)
+                    .request_timeout_ms(crate::surface::announce::ANNOUNCE_TIMEOUT_SECS * 1000),
+            ),
+            AppBuilder::route_entry,
+        )
         .build()
 }
 

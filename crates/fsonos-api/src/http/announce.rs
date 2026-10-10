@@ -1,4 +1,4 @@
-//! `POST /announce`: speak or chime in rooms, then put the music back (see
+//! `POST /announce`: speak, chime or upload a WAV, then put the music back (see
 //! [`crate::surface::announce`]).
 
 use fastapi::core::RouteEntry;
@@ -14,7 +14,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/announce",
                 TOOL,
                 CONTROL,
-                "Speak or chime in rooms, then put the music back",
+                "Speak, chime or play an uploaded WAV in rooms, then put the music back",
             ),
             |surface, client, req| {
                 answer(body::<AnnounceRequest>(req).and_then(|r| surface.announce(client, &r)))

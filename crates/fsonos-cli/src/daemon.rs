@@ -434,7 +434,13 @@ fn start_http(
     }
     .with_cli_token(cli_token.to_string());
     let (surface, names, serve) = (Arc::clone(surface), names.to_vec(), serve.clone());
-    let config = ServerConfig::new(addr.to_string()).with_allowed_hosts(hosts);
+    let mut config = ServerConfig::new(addr.to_string())
+        .with_allowed_hosts(hosts)
+        .with_request_timeout_secs(fsonos_api::surface::announce::ANNOUNCE_TIMEOUT_SECS);
+    // The request parser also counts HTTP headers; the app enforces the
+    // smaller body limit before deserializing a WAV upload.
+    config.parse_limits.max_request_size = fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES
+        + config.parse_limits.max_headers_size;
     let server = Arc::new(TcpServer::new(config));
     let (bound_tx, bound_rx) = mpsc::channel();
     let serving = Arc::clone(&server);

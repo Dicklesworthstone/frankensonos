@@ -1256,6 +1256,7 @@ name = "fsonos-api"
 version = "0.1.0"
 dependencies = [
  "asupersync",
+ "base64",
  "chrono",
  "fastapi-rust",
  "fsonos-core",
@@ -1304,6 +1305,7 @@ dependencies = [
  "fsonos-sim",
  "fsonos-types",
  "fsqlite",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

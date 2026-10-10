@@ -195,7 +195,7 @@ fn fish(mut generated: String) -> String {
     let _ = write!(
         generated,
         "\ncomplete -c fsonos -n \"__fish_seen_subcommand_from {}\" -f -a \"(fsonos __complete-rooms)\"\n\
-         complete -c fsonos -n \"__fish_seen_subcommand_from say chime\" -l rooms -f -r -a \"(fsonos __complete-rooms)\"\n",
+         complete -c fsonos -n \"__fish_seen_subcommand_from say chime announce\" -l rooms -f -r -a \"(fsonos __complete-rooms)\"\n",
         ROOM_COMMANDS.join(" ")
     );
     generated

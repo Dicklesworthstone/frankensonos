@@ -12,6 +12,7 @@
 //!   which version;
 //! * `dj.taste`: whether the cached Spotify grant carries the taste
 //!   scopes, so the DJ learns beyond the owner's saved library;
+//! * `speech.backend`: which local speech executable announcements select;
 //! * `tailscale.*` ([`tailscale`]): whether the daemon is reachable over the
 //!   tailnet, with the connect URLs, or why not.
 //!
@@ -19,6 +20,7 @@
 //! the CLI's 1-5 error codes and clap's 2).
 
 use fsonos_api::Failure;
+use fsonos_core::announce::speech::SpeechConfig;
 use fsonos_core::doctor::lan::LanProbe;
 use fsonos_core::doctor::{Check, CheckContext, CheckId, CheckResult, Report, Runner};
 use fsonos_core::policy::Client;
@@ -50,6 +52,7 @@ pub struct DoctorArgs {
 const BIND: CheckId = CheckId("daemon.bind");
 const HEALTH: CheckId = CheckId("daemon.health");
 const TASTE: CheckId = CheckId("dj.taste");
+const SPEECH: CheckId = CheckId("speech.backend");
 
 /// The bind guard's verdict for both control listeners.
 struct BindCheck {
@@ -198,6 +201,71 @@ impl Check for TasteScopesCheck {
     }
 }
 
+/// Discover the configured speech command without running it or generating audio.
+struct SpeechBackendCheck {
+    data_dir: PathBuf,
+}
+
+impl Check for SpeechBackendCheck {
+    fn id(&self) -> CheckId {
+        SPEECH
+    }
+
+    fn title(&self) -> &'static str {
+        "Local speech backend"
+    }
+
+    fn run(&self, _: &CheckContext) -> CheckResult {
+        let config_path = self.data_dir.join("speech.toml");
+        let config = match SpeechConfig::load(&self.data_dir) {
+            Ok(config) => config,
+            Err(error) => {
+                return CheckResult::fail(
+                    "could not load the speech configuration",
+                    format!("Correct the configuration in {}.", config_path.display()),
+                )
+                .with_detail(error.to_string())
+                .with_evidence(json!({ "config_path": config_path }));
+            }
+        };
+        match config.discover(None) {
+            Ok(backend) => {
+                let detail = if backend.name() == "frankentts" {
+                    "FrankenTTS model readiness and speech synthesis were not tested. \
+                     Run `ftts pull` once to install the local models before the first announcement."
+                } else {
+                    "The executable is available; speech synthesis was not run."
+                };
+                CheckResult::pass(format!(
+                    "{} executable available at {}",
+                    backend.name(),
+                    backend.executable().display()
+                ))
+                .with_detail(detail)
+                .with_evidence(json!({
+                    "backend": backend.name(),
+                    "executable": backend.executable(),
+                    "config_path": config_path,
+                    "synthesis_tested": false,
+                }))
+            }
+            Err(error) => CheckResult::warn(
+                "no usable local speech backend was found",
+                format!(
+                    "Install FrankenTTS (`ftts`) and run `ftts pull`, or install espeak-ng; \
+                     configure another local engine in {}.",
+                    config_path.display()
+                ),
+            )
+            .with_detail(error.to_string())
+            .with_evidence(json!({
+                "config_path": config_path,
+                "synthesis_tested": false,
+            })),
+        }
+    }
+}
+
 /// Register the checks this layer owns for `serve`'s settings.
 pub fn register(runner: &mut Runner, serve: &ServeArgs, data_dir: &Path) {
     runner.register(BindCheck {
@@ -209,6 +277,9 @@ pub fn register(runner: &mut Runner, serve: &ServeArgs, data_dir: &Path) {
         http: serve.http_local(),
     });
     runner.register(TasteScopesCheck {
+        data_dir: data_dir.to_path_buf(),
+    });
+    runner.register(SpeechBackendCheck {
         data_dir: data_dir.to_path_buf(),
     });
     tailscale::register(runner, serve);
@@ -351,5 +422,68 @@ mod tests {
             run_one(TasteScopesCheck { data_dir: dir }).status,
             Status::Skip
         );
+    }
+
+    fn speech_data_dir(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "fsonos-doctor-speech-{}-{nonce}-{label}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    fn configure_speech_command(dir: &Path, executable: &Path) {
+        let config = json!({
+            "backend": "command",
+            "command": [executable, "{output}"],
+        });
+        std::fs::write(dir.join("speech.toml"), toml::to_string(&config).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn malformed_speech_config_is_a_failure_with_the_path_to_fix() {
+        let dir = speech_data_dir("malformed");
+        std::fs::write(dir.join("speech.toml"), "backend = [").unwrap();
+        let r = run_one(SpeechBackendCheck { data_dir: dir });
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.detail.is_some());
+        assert!(r.remedy.unwrap().contains("speech.toml"));
+    }
+
+    #[test]
+    fn missing_speech_command_warns_with_local_engine_setup() {
+        let dir = speech_data_dir("missing");
+        configure_speech_command(&dir, &dir.join("missing-engine"));
+        let r = run_one(SpeechBackendCheck { data_dir: dir });
+        assert_eq!(r.status, Status::Warn);
+        assert_eq!(r.evidence["synthesis_tested"], false);
+        let remedy = r.remedy.unwrap();
+        assert!(remedy.contains("ftts pull"));
+        assert!(remedy.contains("speech.toml"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn speech_discovery_does_not_execute_the_configured_command() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = speech_data_dir("read-only");
+        let executable = dir.join("speech-engine");
+        // It is discoverable, but executing it would fail: doctor must only
+        // inspect availability, never start synthesis or an arbitrary command.
+        std::fs::write(&executable, "#!/nonexistent-fsonos-doctor-interpreter\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        configure_speech_command(&dir, &executable);
+        let r = run_one(SpeechBackendCheck { data_dir: dir });
+        assert_eq!(r.status, Status::Pass);
+        assert_eq!(r.evidence["backend"], "command");
+        assert_eq!(r.evidence["executable"], json!(executable));
+        assert_eq!(r.evidence["synthesis_tested"], false);
+        assert!(r.detail.unwrap().contains("not run"));
     }
 }

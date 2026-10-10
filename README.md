@@ -72,7 +72,7 @@ can drive:
 | **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, genre, decade, keywords (which also match genres), work length or energy, and for classical music by composers and periods, for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
 | **Scenes** | `scene save dinner` captures grouping, volumes, mutes and what each group plays; `scene apply dinner` sends only the steps the house needs, and `fsonos undo` puts it back |
 | **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright`, or a pause, a volume or a scene, at times or after delays; runs with the rights of whoever added it |
-| **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` (macOS `say`) or `chime bell`, at a policy-capped level, then the music comes back exactly as it was |
+| **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` with offline Linux speech (FrankenTTS, espeak-ng or Piper) or macOS `say`; `chime bell`; `announce --file clip.wav`. Policy-capped playback restores the previous music and speaker state |
 | **Safety** | `policy.toml`: per-room caps, a per-step limit, quiet hours, per-client tool allowlists; over-limit volumes are clamped and say so; `fsonos log` / `undo`, `fsonos policy show` / `check` |
 | **Setup & diagnosis** | `fsonos setup` walks a first run (including the Spotify sign-in); `fsonos doctor` checks speakers, Spotify linkage, listeners, the daemon and the Tailscale chain, and names the fix for each problem |
 | **Three surfaces** | The `fsonos` CLI (`--json` everywhere), an HTTP API with an OpenAPI document, and an MCP server (tools plus `sonos://zones` and `sonos://dj` resources) over streamable HTTP or stdio, all answering alike, with the same stable error codes ([`docs/ERRORS.md`](docs/ERRORS.md)) |
@@ -93,6 +93,7 @@ fsonos scene save dinner && fsonos scene apply dinner
 fsonos sleep Bedroom 45m                          # fade out, then pause
 fsonos schedule add "weekdays 07:30" dj start Kitchen --mood bright
 fsonos say "Dinner is ready" --rooms Kitchen,Office
+fsonos announce --file clip.wav --rooms Kitchen   # an existing 16-bit PCM WAV
 fsonos undo                                       # put the newest action back
 fsonos serve                                      # the daemon: HTTP API + MCP, loopback and your tailnet
 fsonos tailscale setup                            # HTTPS for the tailnet via Tailscale Serve (never Funnel)
@@ -102,6 +103,50 @@ fsonos doctor                                     # what is wrong, and how to fi
 No speakers handy? Run `fsonos sim` in one terminal; it prints the `--seeds` and
 `--routes` flags that point every other command (and `fsonos mcp`) at the
 virtual house.
+
+### Offline speech and WAV announcements
+
+Linux discovers [FrankenTTS](https://github.com/Dicklesworthstone/franken_tts)
+(`ftts`) first, then `espeak-ng`. Install the engine and its local models before
+announcing; FrankenTTS's `ftts pull` prepares its models. An explicit Piper
+model takes priority in automatic Linux selection: set `piper_model` or
+`FSONOS_PIPER_MODEL` to a local `.onnx` file with its `.onnx.json` sidecar, or
+pass that model as `--voice`. macOS keeps using `/usr/bin/say` by default.
+`fsonos say "Dinner is ready" --voice <voice>` selects the backend's voice,
+and `fsonos doctor --only speech` identifies the executable.
+
+Configure the data directory's `speech.toml` on the machine generating speech:
+the daemon host with `--daemon`, or the CLI host with `--direct`. For native
+FrankenTTS:
+
+```toml
+backend = "frankentts"
+timeout_secs = 180
+```
+
+Alternatively, this custom adapter runs espeak-ng with a default voice:
+
+```toml
+backend = "command"
+command = ["espeak-ng", "--stdin", "-w", "{output}", "-v", "{voice}"]
+voice = "en"
+```
+
+The adapter sends text on stdin and substitutes exactly one `{output}` and
+optional `{voice}` inside individual arguments, without shell interpolation.
+`FSONOS_TTS_BACKEND`, `FSONOS_TTS_VOICE`, `FSONOS_PIPER_MODEL`, and
+`FSONOS_TTS_TIMEOUT_SECS` override their file settings. `FSONOS_TTS_COMMAND`
+is a JSON argument array (the same shape as `command` above) and selects the
+command adapter even when another backend is configured. A request's `--voice`
+overrides the configured voice. Synthesis defaults to 180 seconds; allowed
+`timeout_secs` values are 1–600.
+
+`announce --file` uploads the client's WAV bytes to the daemon. `POST /announce`
+and the daemon's MCP `announce` tool accept exactly one of `text`, `chime`, or
+`wav_base64` (standard padded base64), plus `rooms` and `volume`. Uploaded WAVs
+must be 16-bit PCM, at most 16 MiB and five minutes; all clips use the same
+validated media listener, volume caps and restoration. Announcement playback
+over MCP requires `fsonos serve`; standalone `fsonos mcp` has no media listener.
 
 ## From anywhere on your tailnet
 
@@ -302,7 +347,8 @@ learned at runtime and kept locally. The full boundary is in
   DJ at the daemon's next daily read of your library, or at once with
   `fsonos dj sync`.
 - You run the daemon on a machine on your speaker LAN (a Mac mini, a Pi, a
-  NAS). The deploy docs and announcements' speech (`say`) are macOS-first.
+  NAS). The deploy docs describe macOS launchd; Linux speech uses a locally
+  installed engine and models.
 - A sleep timer fades only through the daemon: the CLI's when one is running,
   HTTP and MCP. `fsonos sleep --direct`, or `fsonos sleep` with no daemon,
   sets the speaker's own timer, which pauses without a fade.
