@@ -373,6 +373,95 @@ fn mcp_announce(mcp: &str, arguments: &Value) -> Value {
     })
 }
 
+fn upload_wavs_over_http_and_mcp(s: &mut Scenario, clock: &SimClock, api: &str, mcp: &str) {
+    let request = AnnounceRequest {
+        rooms: vec!["Kitchen".into()],
+        volume: Some(90),
+        ..AnnounceRequest::from_wav(&wav_with_metadata(2 * 1024 * 1024)).unwrap()
+    };
+    let (status, _, body) = {
+        let _ticking = Ticker::start(clock.clone());
+        http(
+            api,
+            "POST",
+            "/announce",
+            &[("Content-Type", "application/json")],
+            &serde_json::to_string(&request).unwrap(),
+        )
+        .unwrap_or((0, Vec::new(), String::new()))
+    };
+    let reply = json(&body);
+    s.check(
+        "http-wav",
+        "http",
+        "HTTP accepts a WAV upload above one MiB, caps volume, and restores",
+        status == 200
+            && reply["clean"] == true
+            && reply["households"][0]["levels"][0]["volume"] == 25,
+        &body,
+    );
+
+    let request = AnnounceRequest {
+        rooms: vec!["Kitchen".into()],
+        volume: Some(90),
+        ..AnnounceRequest::from_wav(&wav_with_metadata(8 * 1024 * 1024)).unwrap()
+    };
+    let result = {
+        let _ticking = Ticker::start(clock.clone());
+        mcp_announce(mcp, &serde_json::to_value(request).unwrap())
+    };
+    s.check(
+        "mcp-wav",
+        "mcp-http",
+        "MCP accepts more than ten MiB of base64 and shares WAV playback and caps",
+        result["isError"] != true
+            && result["structuredContent"]["clean"] == true
+            && result["structuredContent"]["households"][0]["levels"][0]["volume"] == 25,
+        &result,
+    );
+}
+
+fn reject_invalid_wav_uploads(s: &mut Scenario, api: &str, mcp: &str, expected_fetches: usize) {
+    for (step, request) in [
+        ("bad-wav", json!({"wav_base64": "bm90IFdBVg=="})),
+        (
+            "ambiguous-source",
+            json!({"text": "hello", "wav_base64": "bm90IFdBVg=="}),
+        ),
+        ("host-path", json!({"file": "/private/clip.wav"})),
+    ] {
+        let (status, _, body) = http(
+            api,
+            "POST",
+            "/announce",
+            &[("Content-Type", "application/json")],
+            &request.to_string(),
+        )
+        .unwrap();
+        s.check(
+            step,
+            "http",
+            "invalid upload input is rejected before playback",
+            status == 422
+                && json(&body)["code"] == "INVALID_ARGUMENT"
+                && clip_fetches(s).len() == expected_fetches,
+            &body,
+        );
+    }
+    let result = mcp_announce(mcp, &json!({"wav_base64": "%%%"}));
+    s.check(
+        "bad-mcp-wav",
+        "mcp-http",
+        "MCP reports the shared validation failure without playback",
+        result["isError"] == true
+            && result["content"][0]["text"]
+                .as_str()
+                .is_some_and(|s| s.contains("INVALID_ARGUMENT"))
+            && clip_fetches(s).len() == expected_fetches,
+        &result,
+    );
+}
+
 #[test]
 fn wav_uploads_share_playback_and_policy_on_http_mcp_and_daemon_cli() {
     let mut s = Scenario::start("announce-wav-daemon");
@@ -416,51 +505,7 @@ fn wav_uploads_share_playback_and_policy_on_http_mcp_and_daemon_cli() {
         daemon.seen.join("\n"),
     );
 
-    let request = AnnounceRequest {
-        rooms: vec!["Kitchen".into()],
-        volume: Some(90),
-        ..AnnounceRequest::from_wav(&wav_with_metadata(2 * 1024 * 1024)).unwrap()
-    };
-    let (status, _, body) = {
-        let _ticking = Ticker::start(clock.clone());
-        http(
-            &api,
-            "POST",
-            "/announce",
-            &[("Content-Type", "application/json")],
-            &serde_json::to_string(&request).unwrap(),
-        )
-        .unwrap_or((0, Vec::new(), String::new()))
-    };
-    let reply = json(&body);
-    s.check(
-        "http-wav",
-        "http",
-        "HTTP accepts a WAV upload above one MiB, caps volume, and restores",
-        status == 200
-            && reply["clean"] == true
-            && reply["households"][0]["levels"][0]["volume"] == 25,
-        &body,
-    );
-
-    let request = AnnounceRequest {
-        rooms: vec!["Kitchen".into()],
-        volume: Some(90),
-        ..AnnounceRequest::from_wav(&wav_with_metadata(8 * 1024 * 1024)).unwrap()
-    };
-    let result = {
-        let _ticking = Ticker::start(clock.clone());
-        mcp_announce(&mcp, &serde_json::to_value(request).unwrap())
-    };
-    s.check(
-        "mcp-wav",
-        "mcp-http",
-        "MCP accepts more than ten MiB of base64 and shares WAV playback and caps",
-        result["isError"] != true
-            && result["structuredContent"]["clean"] == true
-            && result["structuredContent"]["households"][0]["levels"][0]["volume"] == 25,
-        &result,
-    );
+    upload_wavs_over_http_and_mcp(&mut s, &clock, &api, &mcp);
 
     let path = s.dir().join("client announcement.wav");
     std::fs::write(&path, Chime::Bell.wav()).unwrap();
@@ -510,44 +555,7 @@ fn wav_uploads_share_playback_and_policy_on_http_mcp_and_daemon_cli() {
         "",
     );
 
-    for (step, request) in [
-        ("bad-wav", json!({"wav_base64": "bm90IFdBVg=="})),
-        (
-            "ambiguous-source",
-            json!({"text": "hello", "wav_base64": "bm90IFdBVg=="}),
-        ),
-        ("host-path", json!({"file": "/private/clip.wav"})),
-    ] {
-        let (status, _, body) = http(
-            &api,
-            "POST",
-            "/announce",
-            &[("Content-Type", "application/json")],
-            &request.to_string(),
-        )
-        .unwrap();
-        s.check(
-            step,
-            "http",
-            "invalid upload input is rejected before playback",
-            status == 422
-                && json(&body)["code"] == "INVALID_ARGUMENT"
-                && clip_fetches(&s).len() == 3,
-            &body,
-        );
-    }
-    let result = mcp_announce(&mcp, &json!({"wav_base64": "%%%"}));
-    s.check(
-        "bad-mcp-wav",
-        "mcp-http",
-        "MCP reports the shared validation failure without playback",
-        result["isError"] == true
-            && result["content"][0]["text"]
-                .as_str()
-                .is_some_and(|s| s.contains("INVALID_ARGUMENT"))
-            && clip_fetches(&s).len() == 3,
-        &result,
-    );
+    reject_invalid_wav_uploads(&mut s, &api, &mcp, 3);
     drop(daemon);
     s.finish();
 }

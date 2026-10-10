@@ -225,7 +225,7 @@ impl Check for SpeechBackendCheck {
                     format!("Correct the configuration in {}.", config_path.display()),
                 )
                 .with_detail(error.to_string())
-                .with_evidence(json!({ "config_path": config_path }));
+                .with_evidence(json!({ "config_path": config_path.display().to_string() }));
             }
         };
         match config.discover(None) {
@@ -244,8 +244,8 @@ impl Check for SpeechBackendCheck {
                 .with_detail(detail)
                 .with_evidence(json!({
                     "backend": backend.name(),
-                    "executable": backend.executable(),
-                    "config_path": config_path,
+                    "executable": backend.executable().display().to_string(),
+                    "config_path": config_path.display().to_string(),
                     "synthesis_tested": false,
                 }))
             }
@@ -259,7 +259,7 @@ impl Check for SpeechBackendCheck {
             )
             .with_detail(error.to_string())
             .with_evidence(json!({
-                "config_path": config_path,
+                "config_path": config_path.display().to_string(),
                 "synthesis_tested": false,
             })),
         }
@@ -453,6 +453,37 @@ mod tests {
         assert_eq!(r.status, Status::Fail);
         assert!(r.detail.is_some());
         assert!(r.remedy.unwrap().contains("speech.toml"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn speech_evidence_handles_a_non_utf8_data_directory() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let parent = speech_data_dir("non-utf8");
+        let dir = parent.join(OsString::from_vec(b"speech-\xff".to_vec()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("speech.toml");
+        let expected_path = path.display().to_string();
+        for (contents, status) in [
+            ("backend = [", Status::Fail),
+            (
+                "backend = 'command'\ncommand = ['/dev/null/missing-engine', '{output}']",
+                Status::Warn,
+            ),
+            (
+                "backend = 'command'\ncommand = ['/bin/sh', '{output}']",
+                Status::Pass,
+            ),
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            let result = run_one(SpeechBackendCheck {
+                data_dir: dir.clone(),
+            });
+            assert_eq!(result.status, status);
+            assert_eq!(result.evidence["config_path"], expected_path);
+        }
     }
 
     #[test]
