@@ -28,7 +28,7 @@ live-hardware behavior beyond the owner-run checks named there, is claimed.
 | 6. Every capability on every surface | Oct 8, small hours to midday | The DJ playing on the speakers, steering and feedback; scenes, sleep timers, schedules, announcements, aliases, move and party, and the house policy on CLI, HTTP and MCP; `fsonos setup` |
 | 7. Instant CLI and web remote | Oct 8, afternoon | CLI commands through a running daemon, the daemon's web remote with album art |
 | 8. A DJ for every genre | Oct 8, evening | The DJ plays the owner's whole library in any genre, with classical works still whole, and steers by artist |
-| 9. Albums, playlists and fades | Oct 9, evening | Spotify albums and playlists play on every surface; `fsonos sleep` fades through a running daemon |
+| 9. Albums, playlists and fades | Oct 9, evening | Spotify albums and playlists play on every surface, and library search finds saved albums and playlists by name; `fsonos sleep` fades through a running daemon |
 
 There is no released version yet. `0.1.0` comes with real-hardware CI and
 prebuilt binaries (see [Status and verification](#status-and-verification)).
@@ -185,6 +185,18 @@ library, in whatever genres it spans.
   once, as for tracks. Artists, episodes and shows still answer
   `NOT_IMPLEMENTED`.
   [`8f2b7b8`](https://github.com/Dicklesworthstone/frankensonos/commit/8f2b7b8)
+- **Search finds albums and playlists.** Library search returns them
+  (`fsonos play --search`, `search_library`, `GET /library/search`):
+  - each saved album as a result of its own, which plays whole from its
+    first track;
+  - the playlists in the owner's list by name, their own and the ones they
+    follow. The taste read keeps the list, cached in `spotify_playlists`
+    (migration 10), with `playlist-read-private` granted.
+
+  In a tie, tracks and favorites come first, then albums, then playlists,
+  so a query that names a track still plays the track.
+  [`d4bffdb`](https://github.com/Dicklesworthstone/frankensonos/commit/d4bffdb),
+  [`13682d8`](https://github.com/Dicklesworthstone/frankensonos/commit/13682d8)
 
 #### The daemon and its surfaces (`fsonos-api`, `fsonos-mcp`, `fsonos-cli`)
 
