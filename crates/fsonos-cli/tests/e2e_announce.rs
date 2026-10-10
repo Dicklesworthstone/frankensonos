@@ -9,7 +9,7 @@
 
 mod e2e;
 
-use e2e::{Scenario, http};
+use e2e::{Scenario, http, http_waiting};
 use fsonos_api::surface::announce::{
     AnnounceRequest, MAX_ANNOUNCE_REQUEST_BYTES, MAX_WAV_BASE64_BYTES,
 };
@@ -25,6 +25,11 @@ use std::thread;
 use std::time::Duration;
 
 const STREAM: &str = "x-rincon-mp3radio://stream.example.org/before.mp3";
+
+/// An upload answers once its clip has played and the music is back; a
+/// debug build decoding and serving many MiB on a busy machine takes longer
+/// than [`http`]'s twenty seconds (the CLI waits the daemon's twenty minutes).
+const UPLOAD_WAIT: Duration = Duration::from_secs(300);
 
 /// Runs the sim's clock while it lives.
 struct Ticker {
@@ -355,7 +360,7 @@ fn mcp_tool_request(name: &str, arguments: &Value) -> Value {
 }
 
 fn mcp_tool_rpc(mcp: &str, name: &str, arguments: &Value) -> Result<Value, String> {
-    let (status, headers, body) = http(
+    let (status, headers, body) = http_waiting(
         mcp,
         "POST",
         "/mcp",
@@ -367,6 +372,7 @@ fn mcp_tool_rpc(mcp: &str, name: &str, arguments: &Value) -> Result<Value, Strin
             ("Mcp-Name", name),
         ],
         &mcp_tool_request(name, arguments).to_string(),
+        UPLOAD_WAIT,
     )
     .map_err(|e| format!("MCP HTTP transport failed: {e}"))?;
     if status != 200 {
@@ -398,12 +404,13 @@ fn upload_wavs_over_http_and_mcp(s: &mut Scenario, clock: &SimClock, api: &str, 
     };
     let response = {
         let _ticking = Ticker::start(clock.clone());
-        http(
+        http_waiting(
             api,
             "POST",
             "/announce",
             &[("Content-Type", "application/json")],
             &serde_json::to_string(&request).unwrap(),
+            UPLOAD_WAIT,
         )
     };
     s.check(

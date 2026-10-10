@@ -626,9 +626,22 @@ pub fn http(
     headers: &[(&str, &str)],
     body: &str,
 ) -> std::io::Result<HttpAnswer> {
+    http_waiting(addr, method, path, headers, body, Duration::from_secs(20))
+}
+
+/// [`http`], waiting up to `wait` for each read of the answer: for a call
+/// that answers only once its work is done.
+pub fn http_waiting(
+    addr: &str,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+    wait: Duration,
+) -> std::io::Result<HttpAnswer> {
     use std::io::Read as _;
     let mut stream = std::net::TcpStream::connect(addr)?;
-    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    stream.set_read_timeout(Some(wait))?;
     let mut request = format!(
         "{method} {path} HTTP/1.1\r\nConnection: close\r\nContent-Length: {}\r\n",
         body.len()
