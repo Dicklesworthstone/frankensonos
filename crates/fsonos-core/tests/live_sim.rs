@@ -66,6 +66,66 @@ fn unsubscribes(sim: &SimHandle) -> usize {
 }
 
 #[test]
+fn a_seek_made_elsewhere_is_reflected_on_the_next_survey() {
+    // No track-change event follows an external seek (the sim sends none),
+    // so only the survey's position sweep can learn it: after a daemon
+    // restart the position is populated by the first survey, and a seek
+    // shows up on a running model on the next one.
+    let sim = sim();
+    let lan = routed(&sim);
+    let live = Live::start(Arc::clone(&lan), LiveConfig::new(Vec::new()));
+    assert!(
+        live.wait_ready(Duration::from_secs(10)),
+        "{:?}",
+        live.snapshot().last_error
+    );
+    let kitchen_id = id_of(&live, "Kitchen");
+    let kitchen_addr = sim.player("Kitchen").unwrap().ip;
+    // A stream playing: positions interpolate from the last survey read.
+    let stream = "x-rincon-mp3radio://example.invalid/seek-test.mp3";
+    control::play_uri(&*lan, &live.households(), &kitchen_id, stream, "").unwrap();
+    assert!(eventually(Duration::from_secs(5), || live
+        .player(&kitchen_id)
+        .is_some_and(|p| p.track_uri.as_deref() == Some(stream))));
+    let pos_of =
+        |live: &Live, id: &PlayerId| live.player(id).and_then(|p| p.position_at(Instant::now()));
+    let near =
+        |want: u32| move |got: Option<u32>| got.is_some_and(|p| (want..want + 15).contains(&p));
+
+    // External seek: reaches the running model on the next survey (the sim
+    // emits no track-change for it; its clock only moves when advanced, so
+    // the sim's position stays put until then).
+    fsonos_proto::control::seek_position(&*lan, kitchen_addr, 95).unwrap();
+    live.refresh_soon();
+    assert!(
+        eventually(Duration::from_secs(10), || near(95)(pos_of(
+            &live,
+            &kitchen_id
+        ))),
+        "position after the external seek: {pos_of:?}",
+        pos_of = pos_of(&live, &kitchen_id)
+    );
+
+    // Daemon-restart case: a fresh model's first survey reports it, before
+    // any track-change event could have.
+    live.stop();
+    let live2 = Live::start(Arc::clone(&lan), LiveConfig::new(Vec::new()));
+    assert!(
+        live2.wait_ready(Duration::from_secs(10)),
+        "{:?}",
+        live2.snapshot().last_error
+    );
+    let kitchen2 = id_of(&live2, "Kitchen");
+    assert!(
+        near(95)(pos_of(&live2, &kitchen2)),
+        "position after daemon restart: {pos_of:?}",
+        pos_of = pos_of(&live2, &kitchen2)
+    );
+    live2.stop();
+    sim.shutdown();
+}
+
+#[test]
 fn the_live_model_follows_the_speakers() {
     let sim = sim();
     let lan = routed(&sim);

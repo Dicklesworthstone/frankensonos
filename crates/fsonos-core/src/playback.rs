@@ -80,7 +80,13 @@ impl PlayerPlayback {
         } else {
             secs
         };
-        Some(self.duration_secs.map_or(advanced, |d| advanced.min(d)))
+        // A zero duration is "no fixed end" (a stream), not "clamp to zero",
+        // matching the players' own convention.
+        Some(
+            self.duration_secs
+                .filter(|&d| d > 0)
+                .map_or(advanced, |d| advanced.min(d)),
+        )
     }
 }
 
@@ -216,9 +222,15 @@ fn apply_av_transport(
     if uri_moved || position_moved {
         let to = uri.clone().unwrap_or_else(|| state.track_uri.clone());
         changes.track = Some((state.track_uri.clone(), to.clone()));
+        // The first time this model hears about the current track is not a
+        // transition: a position already read from GetPositionInfo (e.g. a
+        // survey's ground-truth sweep after a restart) stays authoritative.
+        // Only a change between two observed tracks starts over from zero.
+        let first_observation = state.track_uri.is_none();
         state.track_uri = to;
-        // A new track starts from the top; its duration comes with it.
-        state.position = Some((0, now));
+        if !first_observation {
+            state.position = Some((0, now));
+        }
         state.duration_secs = None;
     }
     if let Some(d) = lc.current_track_duration_secs() {

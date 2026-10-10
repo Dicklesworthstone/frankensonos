@@ -506,6 +506,20 @@ impl Engine {
                 for gone in &report.missing {
                     m.playback.remove(gone);
                 }
+                // Reconcile play positions from ground truth every survey,
+                // not only on GENA track-change: a daemon restart or an
+                // external seek (the Sonos app, another controller) leaves
+                // no event, so the position would otherwise stay stale or
+                // empty until the next track. Best effort per player: a
+                // player that does not answer keeps its interpolated
+                // position.
+                for player in m.rec.households.iter().flat_map(|h| &h.players) {
+                    if let Ok(info) =
+                        fsonos_proto::control::get_position_info(&self.via(), player.ip)
+                    {
+                        m.playback.apply_position(&player.id, &info, now);
+                    }
+                }
                 m.surveyed_at = Some(now);
                 m.last_error = None;
             }
