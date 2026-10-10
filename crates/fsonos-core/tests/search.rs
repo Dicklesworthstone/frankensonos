@@ -213,12 +213,16 @@ fn an_un_saved_album_is_not_an_album_result() {
     // (candidate == Some(false)) but keep the SavedAlbum origin. They must
     // not resurface as a saved-album hit; track hits are unaffected.
     let mut lib = with_albums();
-    for e in lib.iter_mut().filter(|e| e.album_uri.as_deref() == Some("spotify:album:harbor-lights")) {
+    for e in lib
+        .iter_mut()
+        .filter(|e| e.album_uri.as_deref() == Some("spotify:album:harbor-lights"))
+    {
         e.candidate = Some(false);
     }
     let hits = search(&lib, &[], "harbor lights", 5);
     assert!(
-        hits.iter().all(|h| !matches!(h.source, HitSource::Album { .. })),
+        hits.iter()
+            .all(|h| !matches!(h.source, HitSource::Album { .. })),
         "retired album returned as album hit: {hits:?}"
     );
     // The tracks themselves still rank (track hits include retired rows).
