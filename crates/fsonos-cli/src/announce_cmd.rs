@@ -119,6 +119,12 @@ pub fn media(data_dir: Option<&Path>) -> (MediaStore, MediaFiles) {
     (store, Arc::new(move |name: &str| files.path(name)))
 }
 
+/// Run a direct announcement and print its result in the requested format.
+pub fn run_and_emit(global: &GlobalArgs, req: &AnnounceRequest) -> anyhow::Result<()> {
+    let announced = run(global, req)?;
+    crate::emit(global.json, &announced, text)
+}
+
 /// Announce `req` in direct mode, serving the clip from a listener of its
 /// own until the announcement is over.
 pub fn run(global: &GlobalArgs, req: &AnnounceRequest) -> Result<AnnounceDto, Failure> {

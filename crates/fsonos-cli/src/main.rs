@@ -420,18 +420,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 format!("{}\n", o.done)
             })
         }
-        Command::Say(args) => {
-            let announced = announce_cmd::run(global, &args.request())?;
-            emit(global.json, &announced, announce_cmd::text)
-        }
-        Command::Chime(args) => {
-            let announced = announce_cmd::run(global, &args.request())?;
-            emit(global.json, &announced, announce_cmd::text)
-        }
-        Command::Announce(args) => {
-            let announced = announce_cmd::run(global, &args.request()?)?;
-            emit(global.json, &announced, announce_cmd::text)
-        }
+        Command::Say(args) => announce_cmd::run_and_emit(global, &args.request()),
+        Command::Chime(args) => announce_cmd::run_and_emit(global, &args.request()),
+        Command::Announce(args) => announce_cmd::run_and_emit(global, &args.request()?),
         control => {
             let direct = Direct::survey(global)?;
             let outcome = direct.run(tool_name(&control), |households| {

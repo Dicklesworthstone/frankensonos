@@ -42,8 +42,10 @@ jobs:
       - name: Formatting
         run: cargo fmt --all --check
       - name: Check every target
+        id: check
         run: cargo check --locked --workspace --all-targets
       - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --keep-going -- -D warnings
       - name: Regression, simulator, and real Linux speech tests
-        run: cargo test --locked --workspace
+        if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        run: cargo test --locked --workspace --no-fail-fast
