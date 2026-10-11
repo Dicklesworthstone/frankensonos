@@ -9,7 +9,7 @@
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::ProtoError;
 use fsonos_proto::Transport;
-use fsonos_proto::content;
+use fsonos_proto::content::{self, BrowseFlag, QUEUE};
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
 use fsonos_proto::didl::{
     SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_container_didl,
@@ -276,6 +276,134 @@ pub fn play_queue_from<T: Transport + ?Sized>(
     soap::play_from_queue(t, host, coordinator)?;
     soap::seek_track(t, host, position)?;
     Ok(soap::play(t, host)?)
+}
+
+/// Tracks [`enqueue_spotify`] added to a group's queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Queued {
+    /// The queue position (1-based) of the first.
+    pub first: u32,
+    /// What each added track renders, in queue order.
+    pub uris: Vec<String>,
+    /// Whether the group plays from its queue now, so they will play.
+    pub playing_queue: bool,
+}
+
+/// Add a Spotify track, album or playlist (`spotify:<kind>:<id>`) to the
+/// queue of the group `coordinator` leads: at its end, or with `next` right
+/// after the track playing (when the group plays its queue; else at the
+/// end too). An album or playlist adds its tracks. Rendered with the
+/// household's own Spotify account, relearned and retried once on UPnP 800
+/// as [`play_spotify_track`] does.
+pub fn enqueue_spotify<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    spotify_uri: &str,
+    title: &str,
+    next: bool,
+) -> Result<Queued, CoreError> {
+    let host = addr(households, coordinator)?;
+    let playing_queue = soap::get_media_info(t, host)?
+        .uri
+        .starts_with("x-rincon-queue:");
+    let at = if next && playing_queue {
+        soap::get_position_info(t, host)?.track.saturating_add(1)
+    } else {
+        0
+    };
+    let kind = SpotifyContainer::of(spotify_uri);
+    let source = || -> Result<(String, String), CoreError> {
+        let favorites = content::browse_all(t, host, "FV:2")?;
+        let params = learn_spotify_params(&favorites).ok_or(CoreError::NoSpotifyFavorite)?;
+        Ok(match kind {
+            Some(kind) => {
+                let prefix = kind.prefix_in(&favorites);
+                (
+                    spotify_container_uri(spotify_uri, &prefix, &params),
+                    spotify_container_didl(spotify_uri, title, kind, &prefix, &params),
+                )
+            }
+            None => (
+                spotify_queue_uri(spotify_uri),
+                spotify_track_didl(spotify_uri, title, &params),
+            ),
+        })
+    };
+    let add = |(uri, didl): &(String, String)| -> Result<soap::Enqueued, CoreError> {
+        Ok(soap::enqueue_uri(t, host, uri, didl, at, next)?)
+    };
+    let added = match add(&source()?) {
+        Err(e) if is_render_800(&e) => match add(&source()?) {
+            Err(e) if is_render_800(&e) => return Err(CoreError::RenderParamsStale),
+            other => other?,
+        },
+        other => other?,
+    };
+    let (uris, _) = queue_uris(t, host, added.first, added.count)?;
+    Ok(Queued {
+        first: added.first,
+        uris,
+        playing_queue,
+    })
+}
+
+/// Take tracks [`enqueue_spotify`] added (`uris`, from queue position
+/// `first`) off the queue of the group `coordinator` leads again.
+/// `Ok(false)`, with nothing removed, when the queue no longer holds them
+/// there.
+pub fn unqueue<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    first: u32,
+    uris: &[String],
+) -> Result<bool, CoreError> {
+    if uris.is_empty() {
+        return Ok(true);
+    }
+    let host = addr(households, coordinator)?;
+    let count = u32::try_from(uris.len()).unwrap_or(u32::MAX);
+    let (now, update_id) = queue_uris(t, host, first, count)?;
+    if now != uris {
+        return Ok(false);
+    }
+    soap::remove_track_range_from_queue(t, host, update_id, first, count)?;
+    Ok(true)
+}
+
+/// The URIs of up to `count` queue tracks from position `first` (1-based)
+/// of the coordinator at `host`, and the queue's update id as read.
+fn queue_uris<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    first: u32,
+    count: u32,
+) -> Result<(Vec<String>, u32), CoreError> {
+    let mut uris = Vec::new();
+    let mut update_id = 0;
+    let mut got = 0;
+    while got < count {
+        let page = content::browse(
+            t,
+            host,
+            QUEUE,
+            BrowseFlag::DirectChildren,
+            first.saturating_sub(1).saturating_add(got),
+            (count - got).min(100),
+        )?;
+        update_id = page.update_id;
+        if page.objects.is_empty() {
+            break;
+        }
+        uris.extend(
+            page.objects
+                .into_iter()
+                .map(|o| o.res.map_or_else(String::new, |r| r.uri)),
+        );
+        got = u32::try_from(uris.len()).unwrap_or(u32::MAX);
+    }
+    Ok((uris, update_id))
 }
 
 /// Set one room's volume (on the room's own player); returns the new level.

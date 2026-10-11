@@ -58,7 +58,7 @@ use anyhow::Context as _;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand, ValueEnum};
 use fsonos_api::plan::{self, TransportAction};
-use fsonos_api::surface::queue::QueueDto;
+use fsonos_api::surface::queue::{QueueAddRequest, QueueAddedDto, QueueDto};
 use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, HitDto, MoveRequest, MuteRequest, OutcomeDto, PartyRequest,
@@ -179,6 +179,14 @@ enum Command {
         /// Title to show for a source URI.
         #[arg(long)]
         title: Option<String>,
+        /// Add the Spotify track, album or playlist to the group's queue,
+        /// right after the track playing, instead of playing it now
+        /// (`fsonos undo` takes it off again).
+        #[arg(long, requires = "source_uri", conflicts_with = "queue")]
+        next: bool,
+        /// Add it to the end of the group's queue instead.
+        #[arg(long, requires = "source_uri")]
+        queue: bool,
     },
     /// Pause a room's group.
     Pause {
@@ -502,6 +510,9 @@ fn rooms(global: &config::GlobalArgs, alias: Option<RoomsCommand>) -> anyhow::Re
 /// A control command, carried out directly under the house policy.
 fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result<()> {
     let direct = Direct::survey(global)?;
+    if let Some(req) = queue_add_request(control) {
+        return emit(global.json, &direct.queue_add(&req)?, QueueAddedDto::text);
+    }
     let tool = tool_name(control);
     let outcome = match control {
         Command::Volume {
@@ -529,6 +540,26 @@ fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result
         }
         text
     })
+}
+
+/// `fsonos play <room> <link> --next|--queue`: what to add to the queue.
+fn queue_add_request(command: &Command) -> Option<QueueAddRequest> {
+    match command {
+        Command::Play {
+            zone,
+            source_uri: Some(source_uri),
+            title,
+            next,
+            queue,
+            ..
+        } if *next || *queue => Some(QueueAddRequest {
+            zone: zone.clone(),
+            source_uri: source_uri.clone(),
+            title: title.clone(),
+            next: *next,
+        }),
+        _ => None,
+    }
 }
 
 /// Where `fsonos play --search` searches and plays: directly ([`Direct`]),

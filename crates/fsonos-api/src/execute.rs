@@ -300,7 +300,7 @@ fn play<T: Transport + ?Sized>(
 }
 
 /// A Spotify render's failure, saying what to do about it.
-fn spotify_failure(e: CoreError) -> Failure {
+pub(crate) fn spotify_failure(e: CoreError) -> Failure {
     match e {
         CoreError::NoSpotifyFavorite => Failure::new(
             ErrorCode::RenderParamsMissing,

@@ -691,7 +691,8 @@ impl State {
             "SetAVTransportURI"
             | "AddURIToQueue"
             | "RemoveTrackFromQueue"
-            | "RemoveAllTracksFromQueue" => self.av_sources(p, action, args, now),
+            | "RemoveAllTracksFromQueue"
+            | "RemoveTrackRangeFromQueue" => self.av_sources(p, action, args, now),
             "Play" | "Pause" | "Stop" => self.av_verbs(p, action, now),
             "Next" | "Previous" | "Seek" => self.av_navigation(p, action, args, now),
             // Refused on current firmware; a member leaves by joining
@@ -800,6 +801,7 @@ impl State {
                 t.queue_update_id += 1;
                 Ok(Vec::new())
             }
+            "RemoveTrackRangeFromQueue" => self.remove_track_range(p, args),
             "RemoveAllTracksFromQueue" => {
                 self.require_coordinator(p)?;
                 let t = &mut self.players[p].transport;
@@ -814,6 +816,31 @@ impl State {
             }
             _ => Err(INVALID_ACTION),
         }
+    }
+
+    /// `RemoveTrackRangeFromQueue`: `NumberOfTracks` from `StartingIndex`
+    /// (1-based), under the queue's current `UpdateID` (0 takes the queue as
+    /// it is).
+    fn remove_track_range(&mut self, p: usize, args: &Args<'_>) -> Result<Out, Fault> {
+        self.require_coordinator(p)?;
+        let update_id: u32 = args.num("UpdateID")?;
+        let first: usize = args.num("StartingIndex")?;
+        let count: usize = args.num("NumberOfTracks")?;
+        let t = &mut self.players[p].transport;
+        if update_id != 0 && update_id != t.queue_update_id {
+            return Err(INVALID_ARGS);
+        }
+        if first == 0 || first + count > t.queue.len() + 1 {
+            return Err(INVALID_ARGS);
+        }
+        t.queue.drain(first - 1..first - 1 + count);
+        if t.track >= first + count {
+            t.track -= count;
+        } else if t.track >= first {
+            t.track = first.min(t.queue.len());
+        }
+        t.queue_update_id += 1;
+        Ok(vec![("NewUpdateID", t.queue_update_id.to_string())])
     }
 
     /// Start, pause, and stop (coordinator only).
@@ -1724,6 +1751,47 @@ mod tests {
         assert_eq!(join(&mut s, kitchen, kitchen), Err(INVALID_ARGS));
         assert_eq!(s.members(den), [den, rf]);
         assert_eq!(s.members(kitchen), [kitchen]);
+    }
+
+    #[test]
+    fn a_range_comes_off_the_queue_only_while_its_update_id_holds() {
+        let mut s = state();
+        let cdudn = s.households[0].params.cdudn.clone();
+        for id in ["T1", "T2", "T3", "T4"] {
+            let (uri, meta) = spotify_track(&s, 0, id, &cdudn);
+            enqueue(&mut s, 0, &uri, &meta).unwrap();
+        }
+        let range = |s: &mut State, update: &str, first: &str, count: &str| {
+            call(
+                s,
+                0,
+                &AV_TRANSPORT,
+                "RemoveTrackRangeFromQueue",
+                &[
+                    ("InstanceID", "0"),
+                    ("UpdateID", update),
+                    ("StartingIndex", first),
+                    ("NumberOfTracks", count),
+                ],
+            )
+        };
+        let stale = (s.players[0].transport.queue_update_id - 1).to_string();
+        assert_eq!(range(&mut s, &stale, "2", "2"), Err(INVALID_ARGS));
+        assert_eq!(
+            range(&mut s, "0", "4", "2"),
+            Err(INVALID_ARGS),
+            "past the end"
+        );
+        let now = s.players[0].transport.queue_update_id.to_string();
+        let out = range(&mut s, &now, "2", "2").unwrap();
+        let q = &s.players[0].transport;
+        assert_eq!(get(&out, "NewUpdateID"), q.queue_update_id.to_string());
+        assert_eq!(q.queue.len(), 2);
+        assert!(
+            q.queue[0].uri.contains("%3aT1") && q.queue[1].uri.contains("%3aT4"),
+            "{:?}",
+            q.queue.iter().map(|i| &i.uri).collect::<Vec<_>>()
+        );
     }
 
     #[test]

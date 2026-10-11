@@ -96,8 +96,8 @@ pub struct UndoDto {
     pub undone: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<String>,
-    /// Zones (and DJ steering, and tones) that could not be restored, with
-    /// why.
+    /// Zones (and DJ steering, tones and queued tracks) that could not be
+    /// restored, with why.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<String>,
 }
@@ -128,6 +128,11 @@ impl From<Option<UndoReport>> for UndoDto {
                         r.tone_failures
                             .into_iter()
                             .map(|(room, why)| format!("{} tone: {why}", room.0)),
+                    )
+                    .chain(
+                        r.unqueue_failures
+                            .into_iter()
+                            .map(|(zone, why)| format!("{} queue: {why}", zone.0)),
                     )
                     .collect(),
             },

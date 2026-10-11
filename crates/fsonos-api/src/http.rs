@@ -18,6 +18,7 @@
 //! | `POST /undo` | [`crate::UndoRequest`] | [`crate::UndoDto`] |
 //! | `GET /policy` | | [`crate::surface::house_policy::PolicyDto`]: the house policy, and the caller under it |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
+//! | `POST /queue` | [`crate::surface::queue::QueueAddRequest`] | [`crate::surface::queue::QueueAddedDto`] |
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /volume` | [`crate::VolumeRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /mute` | [`crate::MuteRequest`] | [`crate::OutcomeDto`] |
@@ -85,6 +86,8 @@ use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
 mod house_policy;
 
 mod eq;
+
+mod queue;
 
 mod dj_feedback;
 mod dj_prefs;
@@ -165,6 +168,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(house_policy::routes(cx));
     routes.extend(controls(cx));
     routes.extend(eq::routes(cx));
+    routes.extend(queue::routes(cx));
     routes.extend(house_verbs(cx));
     routes.extend(announce::routes(cx));
     routes.extend(players::routes(cx));

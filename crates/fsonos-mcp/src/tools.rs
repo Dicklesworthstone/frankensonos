@@ -44,6 +44,9 @@ pub use announce::Announce;
 mod eq;
 pub use eq::{GetEq, SetEq};
 
+mod queue_add;
+pub use queue_add::AddToQueue;
+
 mod documents;
 /// Finds the households (a LAN survey, say); see [`fsonos_api::surface`].
 pub use fsonos_api::surface::Survey;

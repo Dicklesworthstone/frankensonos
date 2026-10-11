@@ -6,9 +6,11 @@
 //! requests too, with nothing to undo. An action that steers the DJ also
 //! carries the zones' DJ session rows as they were ([`SessionBefore`]).
 //! An action that changes a room's tone carries the tone as it was
-//! ([`ToneBefore`]). [`undo_last`] puts the newest undoable action's zones
+//! ([`ToneBefore`]), and one that adds to a group's queue what it added
+//! ([`QueuedBefore`]). [`undo_last`] puts the newest undoable action's zones
 //! back the way they were (via [`snapshot::restore`]), puts its DJ sessions
-//! back in the store and its rooms' tones on the speakers, and logs the undo
+//! back in the store and its rooms' tones on the speakers, takes the tracks
+//! it queued off again, and logs the undo
 //! itself, which is never undoable (no redo).
 //!
 //! The surfaces own the flow (authorize, plan, bound by the policy, capture,
@@ -77,6 +79,17 @@ pub struct ToneBefore {
     pub tone: Tone,
 }
 
+/// Tracks an action added to a group's queue (by coordinator): undo takes
+/// them off again, while they are still where they were added.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueuedBefore {
+    pub coordinator: PlayerId,
+    /// The queue position (1-based) of the first.
+    pub first: u32,
+    /// What each added track renders, in queue order.
+    pub uris: Vec<String>,
+}
+
 /// Everything an action's undo puts back, as parsed from its log row.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct BeforeState {
@@ -86,13 +99,15 @@ pub struct BeforeState {
     pub dj_sessions: Vec<SessionBefore>,
     #[serde(default)]
     pub tones: Vec<ToneBefore>,
+    #[serde(default)]
+    pub queued: Vec<QueuedBefore>,
 }
 
 impl BeforeState {
     /// Parse a logged before-state in either form: a bare array of zone
     /// snapshots (every row logged before sessions could be undone, and
-    /// zones-only rows since) or `{"zones":[…],"dj_sessions":[…],"tones":[…]}`
-    /// (each part optional).
+    /// zones-only rows since) or `{"zones":[…],"dj_sessions":[…],"tones":[…],
+    /// "queued":[…]}` (each part optional).
     ///
     /// # Errors
     /// The JSON is neither form.
@@ -160,6 +175,13 @@ pub fn before_state_tones(tones: &[ToneBefore]) -> Option<String> {
     (!tones.is_empty()).then(|| serde_json::json!({ "tones": tones }).to_string())
 }
 
+/// Tracks added to queues as an action's before-state; `None` when there
+/// are none.
+#[must_use]
+pub fn before_state_queued(queued: &[QueuedBefore]) -> Option<String> {
+    (!queued.is_empty()).then(|| serde_json::json!({ "queued": queued }).to_string())
+}
+
 /// Log `action`, then apply the retention policy. Returns the action's id.
 pub fn record<S: Store + ?Sized>(store: &mut S, action: &Action) -> Result<i64, CoreError> {
     let id = store.record_action(action).map_err(|e| store_err(&e))?;
@@ -190,6 +212,10 @@ pub struct UndoReport {
     pub tones: Vec<PlayerId>,
     /// Tones that could not be put back, with why.
     pub tone_failures: Vec<(PlayerId, String)>,
+    /// Groups (by coordinator) whose queued tracks were taken off again.
+    pub unqueued: Vec<PlayerId>,
+    /// Queued tracks that could not be taken off, with why.
+    pub unqueue_failures: Vec<(PlayerId, String)>,
     /// One line for people.
     pub summary: String,
 }
@@ -253,26 +279,27 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
             Err(e) => session_failures.push((coordinator, e.to_string())),
         }
     }
-    let mut tones = Vec::new();
-    let mut tone_failures = Vec::new();
-    for was in &before.tones {
-        match control::set_tone(t, households, &was.player, ToneChange::all(was.tone)) {
-            Ok(()) => tones.push(was.player.clone()),
-            Err(e) => tone_failures.push((was.player.clone(), e.to_string())),
-        }
-    }
-    let summary = summarize(
-        target.id,
-        &target.action.intent,
-        &zones,
-        &failures,
+    let (tones, tone_failures) = put_back_tones(t, households, &before.tones);
+    let (unqueued, unqueue_failures) = take_off_queued(t, households, &before.queued);
+    let mut others = outcome_lines(
+        "steering for",
+        "put back",
         &named(households, &sessions),
         &session_failures,
-        (
-            named(households, &tones).as_slice(),
-            tone_failures.as_slice(),
-        ),
     );
+    others.extend(outcome_lines(
+        "the tone of",
+        "put back",
+        &named(households, &tones),
+        &tone_failures,
+    ));
+    others.extend(outcome_lines(
+        "the tracks queued in",
+        "taken off",
+        &named(households, &unqueued),
+        &unqueue_failures,
+    ));
+    let summary = summarize(target.id, &target.action.intent, &zones, &failures, &others);
     let undo_id = record(
         store,
         &Action {
@@ -296,6 +323,8 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
         session_failures,
         tones,
         tone_failures,
+        unqueued,
+        unqueue_failures,
         summary,
     }))
 }
@@ -314,19 +343,73 @@ fn named(households: &[HouseholdState], coordinators: &[PlayerId]) -> Vec<String
         .collect()
 }
 
+/// What an undo put back, and what it could not (with why).
+type Outcomes = (Vec<PlayerId>, Vec<(PlayerId, String)>);
+
+/// Each room's tone in `tones` put back on its player.
+fn put_back_tones<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    tones: &[ToneBefore],
+) -> Outcomes {
+    let (mut done, mut failed) = (Vec::new(), Vec::new());
+    for was in tones {
+        match control::set_tone(t, households, &was.player, ToneChange::all(was.tone)) {
+            Ok(()) => done.push(was.player.clone()),
+            Err(e) => failed.push((was.player.clone(), e.to_string())),
+        }
+    }
+    (done, failed)
+}
+
+/// The tracks in `queued` taken off their groups' queues again.
+fn take_off_queued<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    queued: &[QueuedBefore],
+) -> Outcomes {
+    let (mut done, mut failed) = (Vec::new(), Vec::new());
+    for added in queued {
+        let coordinator = added.coordinator.clone();
+        match control::unqueue(t, households, &coordinator, added.first, &added.uris) {
+            Ok(true) => done.push(coordinator),
+            Ok(false) => failed.push((
+                coordinator,
+                "the queue changed since: they are no longer where they were added".to_string(),
+            )),
+            Err(e) => failed.push((coordinator, e.to_string())),
+        }
+    }
+    (done, failed)
+}
+
+/// `{what} {names} {done}`, and `{what} {id} not {done}: {why}` per
+/// failure: what an undo put back besides the zones.
+fn outcome_lines(
+    what: &str,
+    done: &str,
+    names: &[String],
+    failures: &[(PlayerId, String)],
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if !names.is_empty() {
+        lines.push(format!("{what} {} {done}", names.join(", ")));
+    }
+    for (id, why) in failures {
+        lines.push(format!("{what} {} not {done}: {why}", id.0));
+    }
+    lines
+}
+
 fn summarize(
     id: i64,
     intent: &str,
     zones: &[(PlayerId, RestoreReport)],
     failures: &[(PlayerId, String)],
-    sessions: &[String],
-    session_failures: &[(PlayerId, String)],
-    (tones, tone_failures): (&[String], &[(PlayerId, String)]),
+    others: &[String],
 ) -> String {
     let mut parts = Vec::new();
-    let steering = !sessions.is_empty() || !session_failures.is_empty();
-    let any_tone = !tones.is_empty() || !tone_failures.is_empty();
-    if !zones.is_empty() || !failures.is_empty() || !(steering || any_tone) {
+    if !zones.is_empty() || !failures.is_empty() || others.is_empty() {
         parts.push(format!(
             "restored {} of {} zone(s)",
             zones.len(),
@@ -341,21 +424,7 @@ fn summarize(
     for (coordinator, why) in failures {
         parts.push(format!("{} failed: {why}", coordinator.0));
     }
-    if !sessions.is_empty() {
-        parts.push(format!("steering for {} put back", sessions.join(", ")));
-    }
-    for (coordinator, why) in session_failures {
-        parts.push(format!(
-            "steering for {} not put back: {why}",
-            coordinator.0
-        ));
-    }
-    if !tones.is_empty() {
-        parts.push(format!("the tone of {} put back", tones.join(", ")));
-    }
-    for (player, why) in tone_failures {
-        parts.push(format!("the tone of {} not put back: {why}", player.0));
-    }
+    parts.extend(others.iter().cloned());
     format!("undid #{id} ({intent}): {}", parts.join("; "))
 }
 
@@ -447,8 +516,6 @@ mod tests {
             &[(PlayerId("RINCON_A".into()), report)],
             &[(PlayerId("RINCON_B".into()), "unknown player".into())],
             &[],
-            &[],
-            (&[], &[]),
         );
         assert_eq!(
             text,
@@ -464,9 +531,12 @@ mod tests {
             "dj steer Kitchen calm",
             &[],
             &[],
-            &["Kitchen".into()],
-            &[(PlayerId("RINCON_B".into()), "disk full".into())],
-            (&[], &[]),
+            &outcome_lines(
+                "steering for",
+                "put back",
+                &["Kitchen".into()],
+                &[(PlayerId("RINCON_B".into()), "disk full".into())],
+            ),
         );
         assert_eq!(
             text,
@@ -508,7 +578,7 @@ mod tests {
             BeforeState {
                 zones: vec![snap("RINCON_A")],
                 dj_sessions: sessions.to_vec(),
-                tones: Vec::new(),
+                ..BeforeState::default()
             }
         );
         let steer_only = before_state_with(&[], &sessions[1..]).unwrap();
@@ -517,6 +587,33 @@ mod tests {
             sessions[1..]
         );
         assert!(BeforeState::parse(r#""zones""#).is_err());
+    }
+
+    #[test]
+    fn queued_tracks_alone_are_undoable() {
+        assert_eq!(before_state_queued(&[]), None);
+        let added = QueuedBefore {
+            coordinator: PlayerId("RINCON_A".into()),
+            first: 3,
+            uris: vec!["x-sonos-spotify:spotify%3atrack%3aX".into()],
+        };
+        let json = before_state_queued(std::slice::from_ref(&added)).unwrap();
+        assert_eq!(
+            BeforeState::parse(&json).unwrap(),
+            BeforeState {
+                queued: vec![added],
+                ..BeforeState::default()
+            }
+        );
+        assert_eq!(
+            outcome_lines(
+                "the tracks queued in",
+                "taken off",
+                &[],
+                &[(PlayerId("RINCON_A".into()), "the queue changed".into())],
+            ),
+            ["the tracks queued in RINCON_A not taken off: the queue changed"]
+        );
     }
 
     #[test]
@@ -543,9 +640,9 @@ mod tests {
             "set_eq: Kitchen bass +4",
             &[],
             &[],
-            &[],
-            &[],
-            (
+            &outcome_lines(
+                "the tone of",
+                "put back",
                 &["Kitchen".into()],
                 &[(PlayerId("RINCON_B".into()), "unreachable".into())],
             ),

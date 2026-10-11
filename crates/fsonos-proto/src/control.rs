@@ -156,6 +156,71 @@ pub fn remove_all_tracks_from_queue<T: Transport + ?Sized>(
     .map(drop)
 }
 
+/// What an enqueue added: the queue position of its first track, and how
+/// many tracks (an album or playlist adds its tracks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Enqueued {
+    pub first: u32,
+    pub count: u32,
+}
+
+/// Add `uri` (with its DIDL metadata) to the queue of the coordinator at
+/// `host` at position `at` (1-based; 0 appends). `as_next` marks it to play
+/// next, which players honour only while shuffling: `at` is what places it.
+pub fn enqueue_uri<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    uri: &str,
+    metadata: &str,
+    at: u32,
+    as_next: bool,
+) -> Result<Enqueued, ProtoError> {
+    let at = at.to_string();
+    let r = call(
+        t,
+        host,
+        &AV_TRANSPORT,
+        "AddURIToQueue",
+        &[
+            INSTANCE,
+            ("EnqueuedURI", uri),
+            ("EnqueuedURIMetaData", metadata),
+            ("DesiredFirstTrackNumberEnqueued", &at),
+            ("EnqueueAsNext", if as_next { "1" } else { "0" }),
+        ],
+    )?;
+    Ok(Enqueued {
+        first: r.require_u32("FirstTrackNumberEnqueued")?,
+        count: r.require_u32("NumTracksAdded")?,
+    })
+}
+
+/// Remove `count` tracks from position `first` (1-based) of the queue of
+/// the coordinator at `host`. `update_id` is the queue's as last read (a
+/// browse of `Q:0`), so a player whose queue changed since refuses.
+pub fn remove_track_range_from_queue<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    update_id: u32,
+    first: u32,
+    count: u32,
+) -> Result<(), ProtoError> {
+    let (update_id, first, count) = (update_id.to_string(), first.to_string(), count.to_string());
+    call(
+        t,
+        host,
+        &AV_TRANSPORT,
+        "RemoveTrackRangeFromQueue",
+        &[
+            INSTANCE,
+            ("UpdateID", &update_id),
+            ("StartingIndex", &first),
+            ("NumberOfTracks", &count),
+        ],
+    )
+    .map(drop)
+}
+
 // ---------------------------------------------------------------- grouping
 
 /// Join the player at `host` to the group `coordinator` leads.
@@ -677,6 +742,41 @@ mod tests {
             t.last().2.contains("<DesiredLoudness>1</DesiredLoudness>"),
             "{:?}",
             t.last()
+        );
+    }
+
+    #[test]
+    fn an_enqueue_says_where_and_how_many_and_a_range_comes_off() {
+        let t = Canned::new(
+            "<FirstTrackNumberEnqueued>4</FirstTrackNumberEnqueued><NumTracksAdded>12</NumTracksAdded>\
+             <NewQueueLength>15</NewQueueLength>",
+        );
+        let added = enqueue_uri(&t, host(), "x-rincon-cpcontainer:abc", "", 4, true).unwrap();
+        assert_eq!(
+            added,
+            Enqueued {
+                first: 4,
+                count: 12
+            }
+        );
+        let body = t.last().2;
+        assert!(
+            body.contains(
+                "<DesiredFirstTrackNumberEnqueued>4</DesiredFirstTrackNumberEnqueued>\
+                 <EnqueueAsNext>1</EnqueueAsNext>"
+            ),
+            "{body}"
+        );
+        let t = Canned::new("<NewUpdateID>9</NewUpdateID>");
+        remove_track_range_from_queue(&t, host(), 8, 4, 12).unwrap();
+        let (_, action, body) = t.last();
+        assert!(action.ends_with("#RemoveTrackRangeFromQueue\""), "{action}");
+        assert!(
+            body.contains(
+                "<UpdateID>8</UpdateID><StartingIndex>4</StartingIndex>\
+                 <NumberOfTracks>12</NumberOfTracks>"
+            ),
+            "{body}"
         );
     }
 

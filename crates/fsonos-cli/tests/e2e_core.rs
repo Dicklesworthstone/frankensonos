@@ -446,6 +446,96 @@ fn eq_reads_and_changes_a_rooms_tone_and_undo_puts_it_back() {
 }
 
 #[test]
+fn play_next_and_queue_add_to_the_queue_and_undo_takes_them_off() {
+    let mut s = Scenario::start("queue-add");
+    s.sim(SimHousehold::standard());
+    let queue = |s: &mut Scenario, step: &str| {
+        let run = s.cli(step, &["--json", "queue", "Living Room"]);
+        json(&run)["items"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|i| i["title"].as_str().unwrap_or("").to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+
+    let run = s.cli(
+        "queue-end",
+        &[
+            "play",
+            "Living Room",
+            "spotify:album:0SimQueueAlbum00000001",
+            "--title",
+            "Suite",
+            "--queue",
+        ],
+    );
+    s.check(
+        "queue-end",
+        "cli",
+        "an album goes to the end of the queue, its tracks counted",
+        run.ok() && run.stdout.contains("queued 3 track(s)"),
+        format!("{}{}", run.stdout, run.stderr),
+    );
+    let run = s.cli(
+        "queue-next",
+        &[
+            "play",
+            "Living Room",
+            "spotify:track:0SimQueueTrack00000009",
+            "--title",
+            "Encore",
+            "--next",
+        ],
+    );
+    s.check(
+        "queue-next",
+        "cli",
+        "a track can be added next",
+        run.ok() && run.stdout.contains("queued 1 track(s)"),
+        format!("{}{}", run.stdout, run.stderr),
+    );
+    let titles = queue(&mut s, "queue-read");
+    s.check(
+        "queue-read",
+        "cli",
+        "the queue holds the album's three tracks and the track",
+        titles.len() == 4 && titles.iter().any(|t| t == "Encore"),
+        format!("{titles:?}"),
+    );
+
+    let run = s.cli("queue-undo", &["undo"]);
+    let titles = queue(&mut s, "queue-after-undo");
+    s.check(
+        "queue-undo",
+        "cli",
+        "undo takes the newest addition off again",
+        run.ok() && titles.len() == 3 && !titles.iter().any(|t| t == "Encore"),
+        format!("{titles:?}: {}{}", run.stdout, run.stderr),
+    );
+    let run = s.cli(
+        "queue-refused",
+        &[
+            "play",
+            "Living Room",
+            "x-rincon-mp3radio://example.invalid/a.mp3",
+            "--queue",
+        ],
+    );
+    s.check(
+        "queue-refused",
+        "cli",
+        "a stream can't be queued: exit 2 (usage)",
+        run.code == Some(2),
+        format!("{:?}: {}", run.code, run.stderr),
+    );
+    s.finish();
+}
+
+#[test]
 fn doctor_reports_the_setup_with_its_exit_codes() {
     let mut s = Scenario::start("doctor");
     s.sim(SimHousehold::standard());

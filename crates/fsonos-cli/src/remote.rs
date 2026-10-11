@@ -25,7 +25,7 @@
 
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
-use fsonos_api::surface::queue::QueueDto;
+use fsonos_api::surface::queue::{QueueAddedDto, QueueDto};
 use fsonos_api::surface::schedules::{FadePauseRequest, SleepTimerDto};
 use fsonos_api::{
     ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, MoveRequest,
@@ -511,6 +511,11 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             emit(json, &outcome, done)?;
         }
         command => {
+            if let Some(req) = crate::queue_add_request(command) {
+                let added: QueueAddedDto = daemon.post("/queue", &req)?;
+                emit(json, &added, QueueAddedDto::text)?;
+                return Ok(true);
+            }
             let (path, body) = control_request(&daemon, command)?;
             let outcome: OutcomeDto = daemon.post(path, &body)?;
             emit(json, &outcome, done)?;
