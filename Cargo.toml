@@ -59,6 +59,10 @@ tempfile = "3"
 signal-hook = "0.4"
 # getifaddrs: the interface-scan fallback for Tailscale detection.
 if-addrs = "0.15"
+# Safe sockopt access (IP_MULTICAST_IF) for per-interface multicast egress:
+# discovery must M-SEARCH/query out of EVERY LAN interface, not just the one
+# the multicast route picks (a multi-homed host strands the rest).
+socket2 = "0.6"
 
 # ── FRANKEN STACK (bead FND-DEPS; see AGENTS.md "Dependency Recipe") ───────
 # Every franken crate below resolves to the ONE registry asupersync 0.5.0

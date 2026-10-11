@@ -12,6 +12,11 @@ fsonos-types = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 roxmltree = { workspace = true }
+# Multi-homed discovery: enumerate LAN interfaces (if-addrs) and pin each
+# multicast query socket's egress to one of them (socket2's
+# set_multicast_if_v4).
+if-addrs = { workspace = true }
+socket2 = { workspace = true }
 
 # FRANKEN (FND-DEPS): asupersync for UDP multicast (SSDP), the HTTP/1.1
 # client (SOAP control) and HTTP server (GENA callback sink), plus TLS.
