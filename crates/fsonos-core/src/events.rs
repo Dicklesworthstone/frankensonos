@@ -136,6 +136,8 @@ struct Active {
     want: Want,
     sid: String,
     renew_at: Instant,
+    /// The highest SEQ seen on it: a NOTIFY further on means some were lost.
+    last_seq: Option<u32>,
 }
 
 /// What one [`Subscriptions`] pass did, for logs and health.
@@ -314,6 +316,56 @@ impl Subscriptions {
             .map(|a| (&a.want.player, a.want.service))
     }
 
+    /// Note `n`'s SEQ on its subscription: whether NOTIFYs were lost before
+    /// it. After the initial one (SEQ 0, the full state) a player sends only
+    /// what changed, so a lost one leaves that state stale until replaced
+    /// ([`Subscriptions::refresh`]). A subscription's first NOTIFY, and one
+    /// at or below the highest seen (a repeat), are no gap.
+    pub fn missed(&mut self, n: &Notify) -> bool {
+        let Some(a) = self.active.iter_mut().find(|a| a.sid == n.sid) else {
+            return false;
+        };
+        let gap = a
+            .last_seq
+            .is_some_and(|last| n.seq > last.saturating_add(1));
+        if a.last_seq.is_none_or(|last| n.seq > last) {
+            a.last_seq = Some(n.seq);
+        }
+        gap
+    }
+
+    /// Replace subscription `sid` with a fresh one, whose initial NOTIFY
+    /// carries the whole state again (after [`Subscriptions::missed`]). The
+    /// old one is unsubscribed once the new one stands: the player still
+    /// has it. A refused SUBSCRIBE keeps the old one.
+    pub fn refresh<S: Subscriber + ?Sized>(
+        &mut self,
+        s: &S,
+        sid: &str,
+        callback_url: impl Fn(Service) -> String,
+        now: Instant,
+    ) -> Report {
+        let mut report = Report::default();
+        let Some(a) = self.active.iter_mut().find(|a| a.sid == sid) else {
+            return report;
+        };
+        match s.subscribe(&a.want, &callback_url(a.want.service)) {
+            Ok(sub) => {
+                let fresh = active(a.want.clone(), sub, now);
+                let old = std::mem::replace(a, fresh);
+                let _ = s.unsubscribe(&old.want, &old.sid);
+                report.resubscribed += 1;
+                report.answered.push(a.want.player.clone());
+            }
+            Err(e) => {
+                report
+                    .failed
+                    .push((a.want.player.clone(), a.want.service, e.to_string()));
+            }
+        }
+        report
+    }
+
     /// Players whose `BootSeq` rose since last seen, from `(player,
     /// BootSeq)` pairs (a topology event's or a survey's): they rebooted, so
     /// their subscriptions are gone even if no renewal has failed yet. The
@@ -387,6 +439,7 @@ fn active(want: Want, sub: Subscription, now: Instant) -> Active {
         want,
         sid: sub.sid,
         renew_at: now + half,
+        last_seq: None,
     }
 }
 

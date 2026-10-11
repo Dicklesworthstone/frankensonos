@@ -358,6 +358,7 @@ impl Reconciler {
             return Ok(None);
         };
         self.health.ok(&player, now);
+        let missed = self.subscriptions.missed(n);
         // A topology event rebuilds its household's players: note who was
         // there, so a player it drops is marked rather than just forgotten
         // (the next survey would not miss what the model no longer has).
@@ -373,6 +374,24 @@ impl Reconciler {
             changes: events::apply(&mut self.households, playback, &player, service, n, now)?,
             ..NotifyReport::default()
         };
+        if missed {
+            // Events were lost: what they changed is stale. A fresh
+            // subscription's initial NOTIFY brings the whole state back.
+            let r = self.subscriptions.refresh(lan, &n.sid, &callback_url, now);
+            tracing::info!(
+                player = player.0.as_str(),
+                service = ?service,
+                seq = n.seq,
+                cause = "a NOTIFY was lost (SEQ skipped)",
+                action = "resubscribe",
+                resubscribed = r.resubscribed,
+                failed = r.failed.len(),
+                "events resynced"
+            );
+            self.health.record(&r, now);
+            report.events.resubscribed += r.resubscribed;
+            report.events.failed.extend(r.failed);
+        }
         for id in before {
             if self.households.iter().all(|h| h.player(&id).is_none()) {
                 tracing::warn!(

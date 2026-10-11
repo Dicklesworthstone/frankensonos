@@ -10,7 +10,7 @@ use fsonos_core::{control, grouping, resolve_room};
 use fsonos_proto::net::Lan;
 use fsonos_proto::ssdp::Advert;
 use fsonos_proto::{ProtoError, Transport};
-use fsonos_sim::{GenaEvent, SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_sim::{GenaEvent, NotifyDrop, SimHandle, SimHousehold, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -547,4 +547,34 @@ fn the_players_fetch_clips_from_the_event_listener() {
     live.stop();
     sim.shutdown();
     let _ = std::fs::remove_dir_all(&data);
+}
+
+#[test]
+fn a_lost_event_is_noticed_and_what_it_carried_comes_back() {
+    let sim = sim();
+    let lan = routed(&sim);
+    let live = Live::start(Arc::clone(&lan), LiveConfig::new(Vec::new()));
+    assert!(live.wait_ready(Duration::from_secs(10)));
+    let kitchen = id_of(&live, "Kitchen");
+    assert!(eventually(Duration::from_secs(5), || live
+        .player(&kitchen)
+        .is_some_and(|p| p.volume.is_some() && p.mute == Some(false))));
+
+    // The Kitchen's events about a volume change are lost on the way...
+    sim.drop_notifies("Kitchen", Some(NotifyDrop::Next(10)))
+        .unwrap();
+    control::set_volume(&*lan, &live.households(), &kitchen, 41).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    sim.drop_notifies("Kitchen", None).unwrap();
+    assert_ne!(live.player(&kitchen).and_then(|p| p.volume), Some(41));
+    // ...and the next carries only the mute: its SEQ shows what was missed,
+    // and the fresh subscription's initial event brings the volume back.
+    control::set_mute(&*lan, &live.households(), &kitchen, true).unwrap();
+    assert!(
+        eventually(Duration::from_secs(5), || live
+            .player(&kitchen)
+            .is_some_and(|p| p.volume == Some(41) && p.mute == Some(true))),
+        "{:?}",
+        live.player(&kitchen)
+    );
 }

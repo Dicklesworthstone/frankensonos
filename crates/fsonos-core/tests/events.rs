@@ -278,3 +278,54 @@ fn a_subscribe_that_failed_is_retried_on_its_own() {
     assert_eq!(retried.answered.len(), 1);
     assert_eq!(subs.len(), w.len());
 }
+
+#[test]
+fn a_skipped_seq_replaces_that_subscription_and_ends_the_old_one() {
+    let houses = [household(ZGS_S1)];
+    let w = wanted(&houses);
+    let fake = Fake::default();
+    let mut subs = Subscriptions::default();
+    let now = Instant::now();
+    subs.sync(&fake, &w, url, now);
+    let n = |sid: &str, seq: u32| Notify {
+        sid: sid.into(),
+        seq,
+        path: "/".into(),
+        properties: Vec::new(),
+    };
+    // The initial event and the next: nothing lost; a repeat is no gap.
+    assert!(!subs.missed(&n("uuid:sub1", 0)));
+    assert!(!subs.missed(&n("uuid:sub1", 1)));
+    assert!(!subs.missed(&n("uuid:sub1", 1)));
+    // SEQ 3 after 1: one was lost.
+    assert!(subs.missed(&n("uuid:sub1", 3)));
+
+    let r = subs.refresh(&fake, "uuid:sub1", url, now);
+    assert_eq!(r.resubscribed, 1);
+    let fresh = format!("uuid:sub{}", w.len() + 1);
+    let log = fake.log.borrow().clone();
+    assert!(
+        log.iter().any(|l| l.ends_with(&format!("-> {fresh}"))),
+        "{log:?}"
+    );
+    assert_eq!(
+        log.last().map(String::as_str),
+        Some("UNSUBSCRIBE uuid:sub1"),
+        "the old one ends once the new one stands: {log:?}"
+    );
+    assert!(subs.route(&n("uuid:sub1", 4)).is_none());
+    assert_eq!(
+        subs.route(&n(&fresh, 0)).map(|(p, s)| (p.clone(), s)),
+        Some((w[0].player.clone(), w[0].service))
+    );
+    assert!(
+        !subs.missed(&n(&fresh, 0)),
+        "a new subscription starts over"
+    );
+
+    // A refused SUBSCRIBE keeps the old one.
+    fake.refuse.set(1);
+    let kept = subs.refresh(&fake, &fresh, url, now);
+    assert_eq!((kept.resubscribed, kept.failed.len()), (0, 1));
+    assert!(subs.route(&n(&fresh, 1)).is_some());
+}
