@@ -38,9 +38,9 @@ already speak (SSDP discovery, UPnP/SOAP on port 1400, GENA events), and turns
 the whole house, both generations at once, into something you and your agents
 can drive:
 
-- **From anywhere on your tailnet.** `fsonos serve` listens on loopback and
-  your Tailscale addresses, and `fsonos tailscale setup` puts HTTPS in front of
-  it with Tailscale Serve. Your phone in another city, an agent on a cloud VM,
+- **From anywhere on your tailnet.** `fsonos serve` serves its HTTP API on
+  loopback and your Tailscale addresses (MCP on loopback), and `fsonos tailscale
+  setup` puts HTTPS in front of both with Tailscale Serve. Your phone in another city, an agent on a cloud VM,
   a laptop at work: if it is on your tailnet, it runs your house. Nothing is
   exposed to the public internet, Funnel is never used, and the speakers never
   leave your LAN.
@@ -68,7 +68,7 @@ can drive:
 
 | Area | What you get |
 |---|---|
-| **Discovery & topology** | Every player of both S1 and S2 households, its zone group and coordinator. Rooms resolve by name, `Room@S1` / `Room@S2`, your own aliases (`fsonos rooms alias add downstairs Kitchen "Living Room"`), `here`, or `all` / `everywhere` |
+| **Discovery & topology** | Every player of both S1 and S2 households, its zone group and coordinator. Rooms resolve by name, `Room@S1` / `Room@S2`, your own aliases (`fsonos rooms alias add downstairs Kitchen "Living Room"`), `here` (your default room, `[defaults] room` in `aliases.toml`), or `all` / `everywhere` |
 | **Control** | Play a Spotify link (a track, album or playlist), a source URI, a Sonos favorite or a library search (your tracks, saved albums and playlists); pause, resume, next, previous; room or group volume (set or ±N); mute — each on one room, an alias or `everywhere` at once (`fsonos pause everywhere`), logged and undone as one action; group, ungroup; **move** the music to another room (handing the group over, or `--copy` across households); **party** mode for a whole household. Group commands always go to the group's coordinator |
 | **Live state** | GENA subscriptions keep a live model of every zone (transport, track, volume), so reads need no polling, and `GET /events` streams the changes as server-sent events; `fsonos queue Kitchen` lists what is queued and what plays, `fsonos history` what played |
 | **Self-healing** | A player that moved to a new address, or a group whose coordinator changed under a command, is found again and the command retried once (the answer notes `HEALED`); the live model resurveys and resubscribes on its own |
@@ -98,7 +98,7 @@ fsonos schedule add "weekdays 07:30" dj start Kitchen --mood bright
 fsonos say "Dinner is ready" --rooms Kitchen,Office
 fsonos announce --file clip.wav --rooms Kitchen   # an existing 16-bit PCM WAV
 fsonos undo                                       # put the newest action back
-fsonos serve                                      # the daemon: HTTP API + MCP, loopback and your tailnet
+fsonos serve                                      # the daemon: HTTP API on loopback + tailnet, MCP on loopback
 fsonos tailscale setup                            # HTTPS for the tailnet via Tailscale Serve (never Funnel)
 fsonos doctor                                     # what is wrong, and how to fix it
 ```
@@ -156,7 +156,7 @@ over MCP requires `fsonos serve`; standalone `fsonos mcp` has no media listener.
 The daemon is the only thing that leaves your LAN, and only onto your tailnet:
 
 ```bash
-fsonos serve            # loopback + every tailnet address; prints the connect URLs
+fsonos serve            # API on loopback + every tailnet address, MCP on loopback; prints the URLs
 fsonos tailscale setup  # Serve: https://<mac>.<tailnet>.ts.net/ (API), :8443/mcp (MCP)
 fsonos doctor --only tailscale   # Tailscale up, the MagicDNS name, the daemon answering, Serve in front
 ```
@@ -165,13 +165,16 @@ fsonos doctor --only tailscale   # Tailscale up, the MagicDNS name, the daemon a
   daemon's loopback ports, refuses to run while Funnel is on for either port,
   and never touches Serve config it didn't make (`status`, `teardown`,
   `--dry-run`).
-- Behind Serve, the caller's Tailscale login names them — but only when the
-  daemon is told it is behind Serve, with `--tailscale-serve` (or
-  `FSONOS_TAILSCALE_SERVE=1`). With that set, a `[clients."alice@example.com"]`
-  table in `policy.toml` sets what that person's devices may do, and the action
-  log records who did what. Without it, every tailnet caller gets the daemon's
-  own loopback rights and no `[clients]` table applies; `fsonos doctor --only
-  tailscale` warns when Serve fronts the daemon but the flag is unset.
+- Run the daemon with `--tailscale-serve` (or `FSONOS_TAILSCALE_SERVE=1`)
+  behind Serve: it sets Serve up at startup and trusts the login Serve passes
+  along, so each HTTP caller is named by their Tailscale login, a
+  `[clients."alice@example.com"]` table in `policy.toml` sets what that
+  person's devices may do, and the action log records who did what. Without the
+  flag, HTTP callers arriving through Serve get the daemon's own loopback rights
+  (`loopback-http`), and `fsonos doctor --only tailscale` warns about it. MCP
+  through Serve (`:8443`) is always one client, `loopback-http`: narrow it with
+  `[clients."loopback-http"]`. Callers on the daemon's direct tailnet address
+  are named by Tailscale either way.
 - Point an agent at it from any tailnet machine:
 
 ```bash
@@ -200,8 +203,8 @@ house      save_scene · apply_scene · delete_scene · set_sleep_timer · add_s
 resources  sonos://zones · sonos://zones/{room} · sonos://dj
 ```
 
-Every HTTP route's operation id is the name of the MCP tool that does the same,
-so an agent gets the same answer, and the same error code, either way. The API
+Every HTTP route that an MCP tool mirrors has that tool's name as its operation
+id, so an agent gets the same answer, and the same error code, either way. The API
 documents itself at `GET /openapi.json`.
 
 ## Safety for a house run by agents
@@ -232,12 +235,13 @@ allow = ["list_zones", "get_zone_state", "play", "set_volume"]
 - Edit `policy.toml` while the daemon runs and its next call obeys the new
   rules, no restart needed. An edit that does not parse is logged and the last
   good policy stays in force (`fsonos policy check` says what is wrong).
-- `fsonos undo` (`undo_last`) restores the volumes, grouping and what was
-  playing in the zones the newest action changed, and says what it could not.
+- `fsonos undo` restores the volumes, grouping and what was playing in the
+  zones the newest action changed (`--mine`: your own newest), and says what it
+  could not. The `undo_last` tool and `POST /undo` undo the caller's own newest.
 - Callers the daemon cannot identify get read-only tools; the API and MCP
   listeners refuse wildcard and public binds (unless you pass
-  `--allow-unsafe-bind`); the HTTP API checks Host and Origin and accepts
-  writes only as JSON.
+  `--allow-unsafe-bind`); the HTTP API checks Host and Origin and accepts POST
+  bodies only as JSON.
 
 ## Design
 
