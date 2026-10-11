@@ -66,8 +66,8 @@ use crate::failure::{ErrorCode, Failure};
 use crate::identity::Identity;
 use crate::log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 use crate::plan::{
-    self, Command, DjAction, Rooms, TransportAction, plan_group, plan_mute, plan_play,
-    plan_ungroup, plan_volume,
+    self, Command, DjAction, Rooms, TransportAction, plan_group, plan_mute_set, plan_play,
+    plan_ungroup, plan_volume_set,
 };
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, ZoneStateDto};
 use crate::request::{
@@ -448,18 +448,18 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             ),
             |h, r: &PlayRequest| plan_play(h, r),
         ),
-        cx.control(
+        cx.control_set(
             Op::post(
                 "/volume",
                 "set_volume",
                 CONTROL,
                 "Set or change a room's volume, or its group's",
             ),
-            |h, r: &VolumeRequest| plan_volume(h, r),
+            |h, r: &VolumeRequest| plan_volume_set(h, r),
         ),
-        cx.control(
+        cx.control_set(
             Op::post("/mute", "mute", CONTROL, "Mute or unmute a room"),
-            |h, r: &MuteRequest| plan_mute(h, r),
+            |h, r: &MuteRequest| plan_mute_set(h, r),
         ),
         cx.control(
             Op::post(
@@ -506,9 +506,9 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             TransportAction::Previous,
         ),
     ] {
-        routes.push(cx.control(
+        routes.push(cx.control_set(
             Op::post(path, id, CONTROL, summary),
-            move |h, r: &ZoneRequest| plan::plan_transport(h, r, action),
+            move |h, r: &ZoneRequest| plan::plan_transport_set(h, r, action),
         ));
     }
     routes
@@ -547,6 +547,22 @@ impl Ctx<'_> {
         let tool = op.id;
         self.route(&op, move |surface, client, req| {
             answer(body::<B>(req).and_then(|b| surface.control(client, tool, |h| plan(h, &b))))
+        })
+        .request_schema::<B>(true)
+        .response_schema::<OutcomeDto>(200, "What was done")
+    }
+
+    /// A control route for the verbs that accept a *set* of rooms
+    /// (`all`/`everywhere` or a multi-room alias): the plan resolves to one
+    /// command per room or group, carried out as a single logged action.
+    fn control_set<B, P>(&self, op: Op, plan: P) -> RouteEntry
+    where
+        B: DeserializeOwned + fastapi_openapi::JsonSchema + 'static,
+        P: Fn(&Rooms<'_>, &B) -> Result<Vec<Command>, Failure> + Send + Sync + 'static,
+    {
+        let tool = op.id;
+        self.route(&op, move |surface, client, req| {
+            answer(body::<B>(req).and_then(|b| surface.control_set(client, tool, |h| plan(h, &b))))
         })
         .request_schema::<B>(true)
         .response_schema::<OutcomeDto>(200, "What was done")

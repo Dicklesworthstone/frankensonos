@@ -425,9 +425,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Announce(args) => announce_cmd::run_and_emit(global, &args.request()?),
         control => {
             let direct = Direct::survey(global)?;
-            let outcome = direct.run(tool_name(&control), |households| {
-                plan_for(&control, households)
-            })?;
+            let tool = tool_name(&control);
+            let outcome = if takes_set(&control) {
+                direct.run_set(tool, |households| plan_set_for(&control, households))?
+            } else {
+                direct.run(tool, |households| plan_for(&control, households))?
+            };
             emit(global.json, &outcome, |o: &OutcomeDto| {
                 format!(
                     "{}
@@ -622,28 +625,12 @@ fn plan_for<'a>(
                 },
             )
         }
-        Command::Pause { zone: z } => {
-            plan::plan_transport(households, &zone(z), TransportAction::Pause)
-        }
-        Command::Resume { zone: z } => {
-            plan::plan_transport(households, &zone(z), TransportAction::Resume)
-        }
-        Command::Next { zone: z } => {
-            plan::plan_transport(households, &zone(z), TransportAction::Next)
-        }
-        Command::Previous { zone: z } => {
-            plan::plan_transport(households, &zone(z), TransportAction::Previous)
-        }
-        Command::Volume { zone, level, group } => {
-            plan::plan_volume(households, &volume_request(zone, level, *group)?)
-        }
-        Command::Mute { zone, state } => plan::plan_mute(
-            households,
-            &MuteRequest {
-                zone: zone.clone(),
-                mute: *state == Switch::On,
-            },
-        ),
+        Command::Pause { .. }
+        | Command::Resume { .. }
+        | Command::Next { .. }
+        | Command::Previous { .. }
+        | Command::Volume { .. }
+        | Command::Mute { .. } => unreachable!("a set-accepting command: see plan_set_for"),
         Command::Group { zone, to } => plan::plan_group(
             households,
             &GroupRequest {
@@ -690,6 +677,57 @@ fn plan_for<'a>(
         }
         #[cfg(feature = "sim")]
         Command::Sim(_) => unreachable!("not a control command"),
+    }
+}
+
+/// Does `command` accept a set of rooms (`all`, `everywhere`, a multi-room
+/// alias)? Those plan with [`plan_set_for`], the rest with [`plan_for`].
+fn takes_set(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Pause { .. }
+            | Command::Resume { .. }
+            | Command::Next { .. }
+            | Command::Previous { .. }
+            | Command::Volume { .. }
+            | Command::Mute { .. }
+    )
+}
+
+/// The commands a set-accepting subcommand stands for, planned against
+/// `households`: one per room (volume, mute) or group (transport) its zone
+/// names, so `fsonos pause everywhere` or `fsonos mute downstairs` reach every
+/// room.
+fn plan_set_for<'a>(
+    command: &Command,
+    households: impl Into<fsonos_api::plan::Rooms<'a>>,
+) -> Result<Vec<fsonos_api::Command>, Failure> {
+    let households = households.into();
+    let zone = |zone: &String| ZoneRequest { zone: zone.clone() };
+    match command {
+        Command::Pause { zone: z } => {
+            plan::plan_transport_set(households, &zone(z), TransportAction::Pause)
+        }
+        Command::Resume { zone: z } => {
+            plan::plan_transport_set(households, &zone(z), TransportAction::Resume)
+        }
+        Command::Next { zone: z } => {
+            plan::plan_transport_set(households, &zone(z), TransportAction::Next)
+        }
+        Command::Previous { zone: z } => {
+            plan::plan_transport_set(households, &zone(z), TransportAction::Previous)
+        }
+        Command::Volume { zone, level, group } => {
+            plan::plan_volume_set(households, &volume_request(zone, level, *group)?)
+        }
+        Command::Mute { zone, state } => plan::plan_mute_set(
+            households,
+            &MuteRequest {
+                zone: zone.clone(),
+                mute: *state == Switch::On,
+            },
+        ),
+        _ => unreachable!("not a set-accepting command"),
     }
 }
 
@@ -854,42 +892,43 @@ mod tests {
     fn subcommands_plan_to_the_right_players() {
         let houses = house();
         let plan = |args: &[&str]| plan_for(&parse(args), &houses).unwrap();
+        let plan_set = |args: &[&str]| plan_set_for(&parse(args), &houses).unwrap();
         assert_eq!(
-            plan(&["pause", "kitchen"]),
-            Planned::Transport {
+            plan_set(&["pause", "kitchen"]),
+            [Planned::Transport {
                 coordinator: PlayerId("RINCON_DEN".into()),
                 action: TransportAction::Pause
-            }
+            }]
         );
         assert_eq!(
-            plan(&["volume", "Kitchen", "-5"]),
-            Planned::Volume {
+            plan_set(&["volume", "Kitchen", "-5"]),
+            [Planned::Volume {
                 target: PlayerId("RINCON_KIT".into()),
                 scope: VolumeScope::Room,
                 change: VolumeChange::Adjust(-5)
-            }
+            }]
         );
         assert_eq!(
-            plan(&["volume", "Kitchen", "40", "--group"]),
-            Planned::Volume {
+            plan_set(&["volume", "Kitchen", "40", "--group"]),
+            [Planned::Volume {
                 target: PlayerId("RINCON_DEN".into()),
                 scope: VolumeScope::Group,
                 change: VolumeChange::Set(40)
-            }
+            }]
         );
         assert_eq!(
-            plan(&["mute", "Kitchen"]),
-            Planned::Mute {
+            plan_set(&["mute", "Kitchen"]),
+            [Planned::Mute {
                 target: PlayerId("RINCON_KIT".into()),
                 mute: true
-            }
+            }]
         );
         assert_eq!(
-            plan(&["mute", "Kitchen", "off"]),
-            Planned::Mute {
+            plan_set(&["mute", "Kitchen", "off"]),
+            [Planned::Mute {
                 target: PlayerId("RINCON_KIT".into()),
                 mute: false
-            }
+            }]
         );
         assert_eq!(
             plan(&["ungroup", "Kitchen"]),
@@ -949,11 +988,46 @@ mod tests {
 
     #[test]
     fn unknown_rooms_fail_with_suggestions() {
-        let err = plan_for(&parse(&["pause", "Kitchn"]), &house()).unwrap_err();
+        let err = plan_set_for(&parse(&["pause", "Kitchn"]), &house()).unwrap_err();
         assert_eq!(
             (err.code, err.exit_code()),
             (fsonos_api::ErrorCode::UnknownRoom, 3)
         );
         assert_eq!(err.suggestions, ["Kitchen@S2"]);
+    }
+
+    #[test]
+    fn a_set_of_rooms_plans_one_command_per_room_or_group() {
+        let houses = house();
+        let plan_set = |args: &[&str]| plan_set_for(&parse(args), &houses).unwrap();
+        // Den and Kitchen play in one group: pausing everywhere pauses it once.
+        assert_eq!(
+            plan_set(&["pause", "everywhere"]),
+            [Planned::Transport {
+                coordinator: PlayerId("RINCON_DEN".into()),
+                action: TransportAction::Pause
+            }]
+        );
+        // Room volume and mute act on every room.
+        let muted = plan_set(&["mute", "all"]);
+        assert_eq!(muted.len(), 2, "{muted:?}");
+        for pid in ["RINCON_DEN", "RINCON_KIT"] {
+            assert!(muted.contains(&Planned::Mute {
+                target: PlayerId(pid.into()),
+                mute: true
+            }));
+        }
+        let quieter = plan_set(&["volume", "all", "-5"]);
+        assert_eq!(quieter.len(), 2, "{quieter:?}");
+        assert!(quieter.iter().all(|c| matches!(
+            c,
+            Planned::Volume {
+                scope: VolumeScope::Room,
+                change: VolumeChange::Adjust(-5),
+                ..
+            }
+        )));
+        // Group volume on everywhere is one command per group.
+        assert_eq!(plan_set(&["volume", "all", "30", "--group"]).len(), 1);
     }
 }

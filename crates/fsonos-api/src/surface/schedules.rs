@@ -37,9 +37,10 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::{Surface, room_view};
+use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure};
 use crate::plan::{self, TransportAction, resolve};
-use crate::request::{DjStartRequest, VolumeRequest, ZoneRequest, zone_name};
+use crate::request::{DjStartRequest, VolumeChange, VolumeRequest, ZoneRequest, zone_name};
 
 /// The longest sleep timer. The speaker's own timer, which backs the
 /// daemon's up five minutes later, counts down from just under a day.
@@ -661,6 +662,16 @@ impl Surface {
         self.record(client, intent, "allow".into(), text, None);
     }
 
+    /// Check `zone` names a room, or a set of rooms (`all`, `everywhere`, a
+    /// multi-room alias), the house has now.
+    fn rooms_of(&self, client: &Client, zone: &str) -> Result<(), Failure> {
+        let households = self.households()?;
+        let aliases = self.aliases();
+        plan::resolve_set(&room_view(&households, aliases.as_ref(), client), zone)
+            .map_err(|f| self.explain(f))?;
+        Ok(())
+    }
+
     /// The group `zone` plays in.
     fn zone_of(&self, client: &Client, zone: &str) -> Result<(Vec<HouseholdState>, Zone), Failure> {
         let households = self.households()?;
@@ -929,7 +940,12 @@ impl Surface {
                     self.check_mood(client, room, mood)?;
                 }
             }
-            ScheduleAction::Pause { room, .. } | ScheduleAction::Volume { room, .. } => {
+            // An immediate pause or a volume may name a set of rooms.
+            ScheduleAction::Pause { room, fade_secs: 0 } | ScheduleAction::Volume { room, .. } => {
+                self.rooms_of(client, room)?;
+            }
+            // A faded pause fades one group.
+            ScheduleAction::Pause { room, .. } => {
                 self.zone_of(client, room)?;
             }
         }
@@ -1022,6 +1038,103 @@ impl Surface {
         result
     }
 
+    /// Ramp every room `room` names to `level` over `over`: a scheduled
+    /// volume change under the house policy's `fade_secs`. Each room's target
+    /// is bounded as an immediate change would be (room cap, quiet hours, step
+    /// limit); rooms bound for the same level ramp together, and a manual
+    /// change to a room meanwhile wins there. Logged with its before-state, so
+    /// undo puts the volumes back.
+    fn fade_volume(
+        &self,
+        client: &Client,
+        room: &str,
+        level: u8,
+        over: Duration,
+    ) -> Result<String, Failure> {
+        self.authorize_write(client, "set_volume")?;
+        let guard = self.guard(client);
+        let households = self.households()?;
+        let aliases = self.aliases();
+        let req = VolumeRequest {
+            zone: room.into(),
+            volume: Some(i64::from(level)),
+            delta: None,
+            group: false,
+        };
+        let planned = plan::plan_volume_set(room_view(&households, aliases.as_ref(), client), &req)
+            .map_err(|f| self.explain(f))?;
+        let mut targets: Vec<PlayerId> = Vec::new();
+        for command in &planned {
+            for player in super::affected(&households, command) {
+                if !targets.contains(&player) {
+                    targets.push(player);
+                }
+            }
+        }
+        let (snaps, missed) = fsonos_core::actions::capture_zones(
+            &*self.transport,
+            &households,
+            &targets,
+            self.now(),
+        );
+        let own;
+        let fader = if let Some(sleep) = &self.sleep {
+            &sleep.fader
+        } else {
+            own = Fader::default();
+            &own
+        };
+        // Each room's target, bounded as an immediate change would be.
+        let bounded = planned
+            .into_iter()
+            .map(|command| guard.bound(&*self.transport, &households, command))
+            .collect::<Result<Vec<_>, Failure>>();
+        let ramped = bounded.and_then(|bounded| {
+            let (mut lanes, mut notes) = (Vec::new(), Vec::new());
+            for (command, noted) in bounded {
+                if let plan::Command::Volume {
+                    target,
+                    change: VolumeChange::Set(to),
+                    ..
+                } = command
+                {
+                    lanes.push((target, to));
+                }
+                notes.extend(noted);
+            }
+            let mut levels: Vec<u8> = lanes.iter().map(|(_, to)| *to).collect();
+            levels.sort_unstable();
+            levels.dedup();
+            let mut overridden = false;
+            for to in levels {
+                let players: Vec<PlayerId> = lanes
+                    .iter()
+                    .filter(|(_, l)| *l == to)
+                    .map(|(p, _)| p.clone())
+                    .collect();
+                let outcome = fader
+                    .fade_group(&*self.transport, &households, &players, to, over)
+                    .map_err(Failure::from)?;
+                overridden |= matches!(outcome, FadeOutcome::Superseded { .. });
+            }
+            let mut done = format!("ramped {room}'s volume to {level} over {}", span(over));
+            if overridden {
+                done.push_str(" (a room's volume was changed meanwhile and stays as set)");
+            }
+            Ok(OutcomeDto {
+                done,
+                changed: true,
+                volume: None,
+                notes,
+            })
+        });
+        let before = fsonos_core::actions::before_state_with(&snaps, &[]);
+        let (decision, text, before) = super::log_entry(&ramped, before, missed.len());
+        let intent = format!("set_volume: {room} to {level} over {}", span(over));
+        self.record(client, intent, decision, text, before);
+        ramped.map(|outcome| outcome.done)
+    }
+
     /// Fade the group `room` plays in out over `over` and pause it, putting
     /// the volumes back (a scheduled pause with a fade).
     fn fade_and_pause(
@@ -1076,12 +1189,16 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
                 .map(|o| o.done)
         }
         ScheduleAction::Pause { room, fade_secs: 0 } => surface
-            .control(&client, "pause", |rooms| {
-                plan::plan_transport(rooms, &zone(room), TransportAction::Pause)
+            .control_set(&client, "pause", |rooms| {
+                plan::plan_transport_set(rooms, &zone(room), TransportAction::Pause)
             })
             .map(|o| o.done),
         ScheduleAction::Pause { room, fade_secs } => {
             surface.fade_and_pause(&client, room, Duration::from_secs(u64::from(*fade_secs)))
+        }
+        ScheduleAction::Volume { room, level } if surface.policy().defaults.fade_secs > 0 => {
+            let over = Duration::from_secs(u64::from(surface.policy().defaults.fade_secs));
+            surface.fade_volume(&client, room, *level, over)
         }
         ScheduleAction::Volume { room, level } => {
             let req = VolumeRequest {
@@ -1091,8 +1208,8 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
                 group: false,
             };
             surface
-                .control(&client, "set_volume", |rooms| {
-                    plan::plan_volume(rooms, &req)
+                .control_set(&client, "set_volume", |rooms| {
+                    plan::plan_volume_set(rooms, &req)
                 })
                 .map(|o| o.done)
         }
@@ -1501,6 +1618,13 @@ mod tests {
     /// A surface over the fixture households at `T0`, with a store; the
     /// canned speakers answer every action with `out_args`.
     fn surface(out_args: &'static str) -> (Arc<Surface>, Arc<Mutex<Vec<String>>>, Arc<FakeClock>) {
+        surface_with(out_args, Policy::default())
+    }
+
+    fn surface_with(
+        out_args: &'static str,
+        policy: Policy,
+    ) -> (Arc<Surface>, Arc<Mutex<Vec<String>>>, Arc<FakeClock>) {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let canned = Canned {
             out_args,
@@ -1510,13 +1634,8 @@ mod tests {
         let survey: Survey = Box::new(move |_| Ok(houses.clone()));
         let clock = Arc::new(FakeClock::new(DateTime::parse_from_rfc3339(T0).unwrap()));
         let shared = SharedClock(Arc::clone(&clock));
-        let s = Surface::new(
-            Box::new(canned),
-            survey,
-            Policy::default(),
-            Box::new(shared),
-        )
-        .with_action_log(Box::new(MemStore::default()), "test");
+        let s = Surface::new(Box::new(canned), survey, policy, Box::new(shared))
+            .with_action_log(Box::new(MemStore::default()), "test");
         (Arc::new(s), sent, clock)
     }
 
@@ -1615,6 +1734,54 @@ mod tests {
                 ..req
             },
         )
+    }
+
+    #[test]
+    fn a_scheduled_volume_ramps_over_the_policys_fade() {
+        let volume_patio = || ScheduleRequest {
+            zone: Some("Patio".into()),
+            volume: Some(30),
+            ..sched("volume")
+        };
+        let fire_once = |s: &Arc<Surface>, clock: &FakeClock| {
+            let t0 = clock.now().to_utc();
+            add(s, "in 10m", volume_patio()).unwrap();
+            let scheduler = Scheduler::new(s);
+            let fired =
+                scheduler.tick_at(t0 + TimeDelta::minutes(10) + TimeDelta::seconds(1), &Local);
+            assert_eq!(fired.len(), 1, "{fired:?}");
+            assert!(scheduler.wait(Duration::from_secs(10)));
+        };
+        let set_volumes =
+            |log: &Mutex<Vec<String>>| sent(log).iter().filter(|a| *a == "SetVolume").count();
+        // Without a fade, a scheduled volume is one SetVolume.
+        let (s, log, clock) = surface("<CurrentVolume>10</CurrentVolume>");
+        fire_once(&s, &clock);
+        assert_eq!(set_volumes(&log), 1);
+
+        // With `fade_secs`, it ramps there in steps, logged as one action.
+        let policy = Policy::from_toml("[defaults]\nfade_secs = 1\n").unwrap();
+        let (s, log, clock) = surface_with("<CurrentVolume>10</CurrentVolume>", policy);
+        fire_once(&s, &clock);
+        let steps = set_volumes(&log);
+        assert!(steps > 1, "a ramp, not a jump: {steps} step(s)");
+        let actions = s
+            .recent_actions(&Client::Cli, &fsonos_core::store::ActionFilter::default())
+            .unwrap();
+        let ramp = actions
+            .iter()
+            .find(|a| {
+                a.action
+                    .intent
+                    .starts_with("set_volume: Patio to 30 over 1s")
+            })
+            .expect("the ramp is logged");
+        assert_eq!(ramp.action.decision, "allow");
+        assert!(
+            ramp.action
+                .result
+                .starts_with("ramped Patio's volume to 30 over 1s")
+        );
     }
 
     fn pause_patio() -> ScheduleRequest {

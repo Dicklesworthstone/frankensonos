@@ -47,6 +47,7 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::ListRooms)
         .tool(tools::ListPlayers)
         .tool(tools::GetZoneState)
+        .tool(tools::GetZone)
         .tool(tools::ListFavorites)
         .tool(tools::PlayFavorite)
         .tool(tools::RecentActions)

@@ -266,7 +266,7 @@ impl Surface {
             title: title(&source),
             duration: stored.duration,
         };
-        let policy = &self.policy;
+        let policy = self.policy();
         let now = self.clock.now();
         let cap = |room: &str| policy.max_volume(room, client, now);
         let report = with

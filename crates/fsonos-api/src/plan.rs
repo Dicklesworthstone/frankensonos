@@ -8,7 +8,7 @@
 //! already satisfied plans to [`Command::Nothing`] so retries are harmless.
 
 use fsonos_core::favorites::{self, Favorite};
-use fsonos_core::rooms::{Aliases, ResolveContext, resolve_one};
+use fsonos_core::rooms::{Aliases, ResolveContext, resolve_one, resolve_targets};
 use fsonos_core::{ControlTarget, HouseholdState};
 use fsonos_types::PlayerId;
 
@@ -318,6 +318,103 @@ pub fn plan_mute<'a>(rooms: impl Into<Rooms<'a>>, req: &MuteRequest) -> Result<C
         target: target.player.id.clone(),
         mute: req.mute,
     })
+}
+
+/// Resolve a room argument that may name a *set* — `all`/`everywhere` or a
+/// multi-room alias — to one or more control targets, deduped by room (the
+/// same fan-out `announce` uses). A single room yields one target; the
+/// empty-house `503` and the core's retry-able `404`/`409` details pass
+/// through, as [`resolve`] does for a single room.
+pub fn resolve_set<'a>(rooms: &Rooms<'a>, room: &str) -> Result<Vec<ControlTarget<'a>>, Failure> {
+    if rooms.households.iter().all(|h| h.rooms.is_empty()) {
+        return Err(Failure::new(
+            ErrorCode::NotReady,
+            "no rooms discovered yet; discovery may still be running, retry in a few seconds",
+        ));
+    }
+    let ctx = ResolveContext {
+        aliases: rooms.aliases,
+        client: rooms.client,
+    };
+    let mut out: Vec<ControlTarget<'a>> = Vec::new();
+    for target in resolve_targets(rooms.households, room, ctx)
+        .map_err(Failure::from)?
+        .targets
+    {
+        if !out.iter().any(|t| t.room.primary == target.room.primary) {
+            out.push(target);
+        }
+    }
+    Ok(out)
+}
+
+/// Set-aware [`plan_transport`]: pause/resume/skip every group the room
+/// argument names (`all`/`everywhere`, a multi-room alias, or one room).
+/// Rooms sharing a coordinator collapse to a single command, so `pause
+/// everywhere` pauses each group once.
+pub fn plan_transport_set<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &ZoneRequest,
+    action: TransportAction,
+) -> Result<Vec<Command>, Failure> {
+    let rooms = rooms.into();
+    let mut commands = Vec::new();
+    for target in resolve_set(&rooms, req.zone()?)? {
+        let command = Command::Transport {
+            coordinator: target.coordinator.id.clone(),
+            action,
+        };
+        if !commands.contains(&command) {
+            commands.push(command);
+        }
+    }
+    Ok(commands)
+}
+
+/// Set-aware [`plan_volume`]: set or adjust volume on every room (room scope)
+/// or group (group scope) the argument names, deduped.
+pub fn plan_volume_set<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &VolumeRequest,
+) -> Result<Vec<Command>, Failure> {
+    let change = req.change()?;
+    let rooms = rooms.into();
+    let mut commands = Vec::new();
+    for target in resolve_set(&rooms, req.zone()?)? {
+        let (target, scope) = if req.group {
+            (target.coordinator, VolumeScope::Group)
+        } else {
+            (target.player, VolumeScope::Room)
+        };
+        let command = Command::Volume {
+            target: target.id.clone(),
+            scope,
+            change,
+        };
+        if !commands.contains(&command) {
+            commands.push(command);
+        }
+    }
+    Ok(commands)
+}
+
+/// Set-aware [`plan_mute`]: mute or unmute every room the argument names.
+pub fn plan_mute_set<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &MuteRequest,
+) -> Result<Vec<Command>, Failure> {
+    let rooms = rooms.into();
+    let mut commands = Vec::new();
+    for target in resolve_set(&rooms, req.zone()?)? {
+        let command = Command::Mute {
+            target: target.player.id.clone(),
+            mute: req.mute,
+        };
+        if !commands.contains(&command) {
+            commands.push(command);
+        }
+    }
+    Ok(commands)
 }
 
 /// `POST /group` / the `group` tool: move `zone` into `to`'s group.
@@ -863,5 +960,69 @@ mod tests {
         assert_eq!(err.suggestions, ["Kitchen@S1", "Kitchen@S2"]);
         let err = plan_dj(&houses, &zone("  "), DjAction::Skip).unwrap_err();
         assert_eq!(err.status(), 422);
+    }
+
+    #[test]
+    fn a_set_of_rooms_plans_one_command_per_group_or_room() {
+        let houses = households();
+        let pause = |arg: &str| plan_transport_set(&houses, &zone(arg), TransportAction::Pause);
+        let coordinators = |commands: Vec<Command>| -> Vec<String> {
+            let mut ids: Vec<String> = commands
+                .into_iter()
+                .map(|c| match c {
+                    Command::Transport {
+                        coordinator,
+                        action: TransportAction::Pause,
+                    } => coordinator.0,
+                    other => panic!("{other:?}"),
+                })
+                .collect();
+            ids.sort();
+            ids
+        };
+        // Every group of both households, once each: Den's group holds
+        // Kitchen@S1, so pausing everywhere pauses it a single time.
+        assert_eq!(
+            coordinators(pause("everywhere").unwrap()),
+            ["RINCON_DEN", "RINCON_KIT2", "RINCON_PATIO", "RINCON_STU_L"]
+        );
+        // A household qualifier narrows the set; one room is one command.
+        assert_eq!(
+            coordinators(pause("all@S1").unwrap()),
+            ["RINCON_DEN", "RINCON_STU_L"]
+        );
+        assert_eq!(coordinators(pause("Den").unwrap()), ["RINCON_DEN"]);
+        // Mute and room volume reach every room; group volume every group.
+        let muted = plan_mute_set(
+            &houses,
+            &MuteRequest {
+                zone: "all".into(),
+                mute: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(muted.len(), 5, "{muted:?}");
+        let louder = |group: bool| {
+            plan_volume_set(
+                &houses,
+                &VolumeRequest {
+                    zone: "everywhere".into(),
+                    volume: None,
+                    delta: Some(5),
+                    group,
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(louder(false).len(), 5);
+        assert_eq!(louder(true).len(), 4);
+        // Unknown rooms and an undiscovered house fail as one room would.
+        assert_eq!(pause("Attic").unwrap_err().code, ErrorCode::UnknownRoom);
+        assert_eq!(
+            plan_transport_set(&[], &zone("all"), TransportAction::Pause)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotReady
+        );
     }
 }

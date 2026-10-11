@@ -10,14 +10,16 @@ use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, ContentBlock, FinalCallToolResult, ResultMeta};
 use fsonos_api::plan::{self, DjAction, TransportAction};
 use fsonos_api::{
-    ActionDto, ActionsQuery, DjStartRequest, DjSteerRequest, ErrorCode, Failure, GroupRequest,
-    MoveRequest, MuteRequest, PartyRequest, PlayFavoriteRequest, PlayRequest, SearchRequest,
-    SteerConstraints, Surface, UndoDto, VolumeRequest, ZoneRequest,
+    ActionDto, ActionsQuery, DjStartRequest, DjStatusDto, DjSteerRequest, ErrorCode, Failure,
+    GroupRequest, MoveRequest, MuteRequest, OutcomeDto, PartyRequest, PlayFavoriteRequest,
+    PlayRequest, SearchRequest, SteerConstraints, Surface, UndoDto, VolumeRequest, ZoneRequest,
 };
 use fsonos_core::clock::Clock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_proto::Transport;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
+use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
 
 use crate::tool_error;
@@ -48,6 +50,25 @@ pub use fsonos_api::surface::Survey;
 pub struct Backend {
     surface: Arc<Surface>,
     client: Client,
+    /// The running daemon the stdio server hands its stateful tools to
+    /// ([`Backend::with_daemon`]).
+    daemon: Option<Arc<dyn Daemon>>,
+}
+
+/// A running daemon that the stdio server hands the tools needing its running
+/// state to: the DJ (which keeps its queues fed), scenes that start it, and
+/// sleep timers (which fade). The calls reach the daemon as the stdio
+/// client, so the house policy reads the same.
+pub trait Daemon: Send + Sync {
+    /// `method path`, with `body` as JSON, on the daemon if one runs now: its
+    /// answer, or its failure. `None` when none runs, and the tool acts on the
+    /// speakers itself.
+    fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Option<Result<serde_json::Value, Failure>>;
 }
 
 impl Backend {
@@ -69,7 +90,68 @@ impl Backend {
     /// HTTP API, say), as `client`.
     #[must_use]
     pub fn shared(surface: Arc<Surface>, client: Client) -> Self {
-        Self { surface, client }
+        Self {
+            surface,
+            client,
+            daemon: None,
+        }
+    }
+
+    /// Hand the DJ, scene-apply and sleep-timer tools to `daemon` whenever it
+    /// runs (the stdio server, `fsonos mcp`, alongside `fsonos serve`).
+    #[must_use]
+    pub fn with_daemon(mut self, daemon: Arc<dyn Daemon>) -> Self {
+        self.daemon = Some(daemon);
+        self
+    }
+
+    /// `method path` on the daemon when one runs: its answer as `T`, said
+    /// with `say`. `None` to act here instead.
+    fn on_daemon<T: Serialize + DeserializeOwned>(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+        say: impl FnOnce(&T) -> String,
+    ) -> Option<McpResult<FinalCallToolResult>> {
+        let answer = self.daemon.as_ref()?.call(method, path, body)?;
+        Some(respond(|| {
+            let value: T = from_daemon(answer, method, path)?;
+            Ok((say(&value), value))
+        }))
+    }
+
+    /// The `dj_start` tool: on the daemon when one runs (its DJ keeps the
+    /// queue fed), else here.
+    pub fn dj_start(&self, req: &DjStartRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).ok();
+        self.on_daemon("POST", "/dj/start", body.as_ref(), sentence)
+            .unwrap_or_else(|| self.control("dj_start", |h| plan::plan_dj_start(h, req)))
+    }
+
+    /// The `dj_steer` tool, on the daemon when one runs.
+    pub fn dj_steer(&self, req: &DjSteerRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).ok();
+        self.on_daemon("POST", "/dj/steer", body.as_ref(), sentence)
+            .unwrap_or_else(|| self.control("dj_steer", |h| plan::plan_dj_steer(h, req)))
+    }
+
+    /// `dj_skip` / `dj_stop`, on the daemon's DJ when one runs.
+    pub fn dj_action(
+        &self,
+        tool: &str,
+        zone: String,
+        action: DjAction,
+    ) -> McpResult<FinalCallToolResult> {
+        let req = ZoneRequest { zone };
+        let path = match action {
+            DjAction::Skip => Some("/dj/skip"),
+            DjAction::Stop => Some("/dj/stop"),
+            DjAction::Start => None,
+        };
+        let body = serde_json::to_value(&req).ok();
+        path.and_then(|path| self.on_daemon("POST", path, body.as_ref(), sentence))
+            .unwrap_or_else(|| self.control(tool, |h| plan::plan_dj(h, &req, action)))
     }
 
     /// Run a control tool: authorize `tool`, plan, execute under the policy.
@@ -78,18 +160,26 @@ impl Backend {
         tool: &str,
         plan: impl FnOnce(&fsonos_api::plan::Rooms<'_>) -> Result<fsonos_api::Command, Failure>,
     ) -> McpResult<FinalCallToolResult> {
-        respond(|| {
-            let outcome = self.surface.control(&self.client, tool, plan)?;
-            let text = std::iter::once(outcome.done.clone())
-                .chain(outcome.notes.iter().map(|n| format!("Note: {}.", n.detail)))
-                .collect::<Vec<_>>()
-                .join(" ");
-            Ok((text, outcome))
-        })
+        respond(|| Ok(said(self.surface.control(&self.client, tool, plan)?)))
+    }
+
+    /// [`Self::control`] for the tools that accept a set of rooms (`all`,
+    /// `everywhere`, a multi-room alias): one command per room or group,
+    /// carried out and logged as a single action.
+    pub fn control_set(
+        &self,
+        tool: &str,
+        plan: impl FnOnce(&fsonos_api::plan::Rooms<'_>) -> Result<Vec<fsonos_api::Command>, Failure>,
+    ) -> McpResult<FinalCallToolResult> {
+        respond(|| Ok(said(self.surface.control_set(&self.client, tool, plan)?)))
     }
 
     /// The `dj_status` tool.
     pub fn dj_status(&self, zone: &str) -> McpResult<FinalCallToolResult> {
+        let path = format!("/zones/{}/dj", segment(zone));
+        if let Some(answer) = self.on_daemon("GET", &path, None, DjStatusDto::summary) {
+            return answer;
+        }
         respond(|| {
             let status = self.surface.dj_status(&self.client, zone)?;
             Ok((status.summary(), status))
@@ -127,6 +217,25 @@ impl Backend {
                 state.transport_state
             );
             Ok((text, state))
+        })
+    }
+
+    /// The `get_zone` tool.
+    pub fn zone(&self, room: &str) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let zone = self.surface.zone(&self.client, room)?;
+            let degraded = if zone.degraded.is_empty() {
+                String::new()
+            } else {
+                format!(", degraded: {}", zone.degraded.join(", "))
+            };
+            let text = format!(
+                "{} [{}]: {}{degraded}",
+                zone.members.join(" + "),
+                zone.household,
+                zone.transport_state
+            );
+            Ok((text, zone))
         })
     }
 
@@ -350,6 +459,46 @@ struct ZonesDto {
     zones: Vec<fsonos_api::ZoneDto>,
 }
 
+/// A control outcome as a tool says it: the sentence, then its notes.
+fn said(outcome: OutcomeDto) -> (String, OutcomeDto) {
+    (sentence(&outcome), outcome)
+}
+
+/// A control outcome's sentence, then its notes.
+fn sentence(outcome: &OutcomeDto) -> String {
+    std::iter::once(outcome.done.clone())
+        .chain(outcome.notes.iter().map(|n| format!("Note: {}.", n.detail)))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The daemon's `answer` to `method path`, read as `T`.
+fn from_daemon<T: DeserializeOwned>(
+    answer: Result<serde_json::Value, Failure>,
+    method: &str,
+    path: &str,
+) -> Result<T, Failure> {
+    serde_json::from_value(answer?).map_err(|e| {
+        Failure::new(
+            ErrorCode::Internal,
+            format!("the daemon's answer to {method} {path} is unreadable: {e}"),
+        )
+    })
+}
+
+/// `s` percent-encoded for a path segment or query value.
+fn segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
 /// A tool result: `text` plus `value` as structured content, or the failure
 /// as a tool error.
 fn respond<T: Serialize>(
@@ -450,6 +599,14 @@ fn get_zone_state(
 }
 
 #[tool(
+    description = "The zone (group) a room plays in: the rooms grouped with it (coordinator first), the household (S1/S2), whether the group is playing, paused or stopped, and any degraded rooms (e.g. one half of a stereo pair offline). For the current track and volume use get_zone_state. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
+    annotations(read_only, idempotent)
+)]
+fn get_zone(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(move |b| b.zone(&zone))
+}
+
+#[tool(
     description = "List the Sonos favorites of the household a room belongs to (tracks, stations, albums and playlists the owner saved in the Sonos app), numbered. Play one with play_favorite. `zone` is any room of that household.",
     annotations(read_only, idempotent)
 )]
@@ -533,14 +690,14 @@ fn transport(
     action: TransportAction,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend(|b| {
-        b.control(tool, |h| {
-            plan::plan_transport(h, &ZoneRequest { zone }, action)
+        b.control_set(tool, |h| {
+            plan::plan_transport_set(h, &ZoneRequest { zone }, action)
         })
     })
 }
 
 #[tool(
-    description = "Pause the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
+    description = "Pause the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room.",
     annotations(idempotent)
 )]
 fn pause(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -548,7 +705,7 @@ fn pause(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallT
 }
 
 #[tool(
-    description = "Resume (or start) playback in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
+    description = "Resume (or start) playback in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room.",
     annotations(idempotent)
 )]
 fn resume(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -556,21 +713,21 @@ fn resume(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCall
 }
 
 #[tool(
-    description = "Skip to the next track in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household)."
+    description = "Skip to the next track in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
 fn next(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
     transport(zone, "next", TransportAction::Next)
 }
 
 #[tool(
-    description = "Go back a track in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household)."
+    description = "Go back a track in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
 fn previous(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
     transport(zone, "previous", TransportAction::Previous)
 }
 
 #[tool(
-    description = "Change a room's volume: give exactly one of `volume` (0-100, absolute) or `delta` (-100..100, relative; e.g. +5 for 'a bit louder'). With `group` true the change applies to the room's whole group. The house policy may lower a loud request; the reply then says so. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household)."
+    description = "Change a room's volume: give exactly one of `volume` (0-100, absolute) or `delta` (-100..100, relative; e.g. +5 for 'a bit louder'). With `group` true the change applies to the room's whole group. The house policy may lower a loud request; the reply then says so. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
 fn set_volume(
     _ctx: &McpContext,
@@ -580,8 +737,8 @@ fn set_volume(
     group: Option<bool>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend(|b| {
-        b.control("set_volume", |h| {
-            plan::plan_volume(
+        b.control_set("set_volume", |h| {
+            plan::plan_volume_set(
                 h,
                 &VolumeRequest {
                     zone,
@@ -596,7 +753,7 @@ fn set_volume(
 
 #[tool(
     name = "mute",
-    description = "Mute a room, or unmute it with `mute` false (default true). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
+    description = "Mute a room, or unmute it with `mute` false (default true). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room.",
     annotations(idempotent)
 )]
 fn mute_tool(
@@ -605,8 +762,8 @@ fn mute_tool(
     mute: Option<bool>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend(|b| {
-        b.control("mute", |h| {
-            plan::plan_mute(
+        b.control_set("mute", |h| {
+            plan::plan_mute_set(
                 h,
                 &MuteRequest {
                     zone,
@@ -672,7 +829,7 @@ fn dj(
     tool: &str,
     action: DjAction,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| b.control(tool, |h| plan::plan_dj(h, &ZoneRequest { zone }, action)))
+    with_backend(|b| b.dj_action(tool, zone, action))
 }
 
 #[tool(
@@ -689,7 +846,7 @@ fn dj_start(
         mood,
         for_secs: for_minutes.map(|m| u64::from(m) * 60),
     };
-    with_backend(|b| b.control("dj_start", |h| plan::plan_dj_start(h, &req)))
+    with_backend(|b| b.dj_start(&req))
 }
 
 #[tool(
@@ -739,7 +896,7 @@ fn dj_steer(
         for_secs: for_minutes.map(|m| u64::from(m) * 60),
         clear: clear.unwrap_or(false),
     };
-    with_backend(|b| b.control("dj_steer", |h| plan::plan_dj_steer(h, &req)))
+    with_backend(|b| b.dj_steer(&req))
 }
 
 #[tool(
@@ -903,6 +1060,30 @@ mod tests {
     }
 
     #[test]
+    fn get_zone_reports_a_rooms_group() {
+        let (b, _, _) = backend(
+            "<CurrentTransportState>PLAYING</CurrentTransportState>",
+            Client::McpStdio,
+        );
+        let r = b.zone("Kitchen").unwrap();
+        assert!(!r.is_error, "{}", text(&r));
+        assert!(
+            text(&r).contains("Den") && text(&r).contains("Kitchen"),
+            "{}",
+            text(&r)
+        );
+        let z = r.structured_content.unwrap();
+        assert_eq!(z["coordinator_room"], "Den");
+        assert!(
+            z["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m.as_str() == Some("Kitchen"))
+        );
+    }
+
+    #[test]
     fn control_tools_plan_execute_and_report() {
         let (b, sent, surveys) = backend("", Client::McpStdio);
         let r = b
@@ -930,6 +1111,44 @@ mod tests {
         })
         .unwrap();
         assert_eq!(surveys.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn set_tools_reach_every_room_the_zone_names() {
+        let (b, sent, _) = backend("", Client::McpStdio);
+        // Den and Kitchen share a group: pausing everywhere pauses it once.
+        let r = b
+            .control_set("pause", |h| {
+                plan::plan_transport_set(
+                    h,
+                    &ZoneRequest {
+                        zone: "everywhere".into(),
+                    },
+                    TransportAction::Pause,
+                )
+            })
+            .unwrap();
+        assert!(!r.is_error, "{}", text(&r));
+        assert_eq!(text(&r), "paused Den's group");
+        assert_eq!(*sent.lock().unwrap(), ["Pause"]);
+        // Muting all mutes each room's own player.
+        sent.lock().unwrap().clear();
+        b.control_set("mute", |h| {
+            plan::plan_mute_set(
+                h,
+                &MuteRequest {
+                    zone: "all".into(),
+                    mute: true,
+                },
+            )
+        })
+        .unwrap();
+        let sent = sent.lock().unwrap();
+        assert_eq!(
+            sent.iter().filter(|a| *a == "SetMute").count(),
+            2,
+            "{sent:?}"
+        );
     }
 
     #[test]

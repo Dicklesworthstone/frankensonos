@@ -16,6 +16,7 @@ use fsonos_core::{HouseholdState, control};
 use fsonos_proto::Transport;
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::plan::{Command, VolumeScope};
@@ -28,9 +29,11 @@ pub struct Note {
     pub detail: String,
 }
 
-/// The policy, the caller, and the time, for one call.
+/// The policy, the caller, and the time, for one call. The policy is the
+/// one in force when the call started, so a reload mid-call cannot change
+/// its rules halfway.
 pub struct Guard<'a> {
-    pub policy: &'a Policy,
+    pub policy: Arc<Policy>,
     pub client: &'a Client,
     pub clock: &'a dyn Clock,
 }
@@ -200,7 +203,7 @@ mod tests {
 
     fn guard<'a>(policy: &'a Policy, client: &'a Client) -> Guard<'a> {
         Guard {
-            policy,
+            policy: Arc::new(policy.clone()),
             client,
             clock: &SystemClock,
         }

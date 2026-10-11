@@ -11,13 +11,15 @@
 //!   quiet-hours cap and the per-step limit, given the current volumes.
 //!
 //! Enforcement is central (every surface asks the same [`Policy`]), so the
-//! HTTP API, MCP server and CLI agree.
+//! HTTP API, MCP server and CLI agree. A running daemon re-reads the file
+//! when it changes; an edit that no longer parses is logged and the last good
+//! policy stays in force.
 //!
 //! ```toml
 //! [defaults]
 //! max_volume = 70        # per room
 //! max_step = 20          # largest single increase
-//! fade_secs = 0
+//! fade_secs = 0         # scheduled volume changes ramp over this long
 //!
 //! [quiet_hours]          # local wall-clock time; may wrap midnight
 //! start = "22:00"

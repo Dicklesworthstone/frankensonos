@@ -119,6 +119,18 @@ impl Direct {
         self.surface.control(&Client::Cli, tool, plan)
     }
 
+    /// [`Self::run`] for the commands that accept a set of rooms (`all`,
+    /// `everywhere`, a multi-room alias): one command per room or group,
+    /// carried out and logged as a single action.
+    pub fn run_set(
+        &self,
+        tool: &str,
+        plan: impl FnOnce(&fsonos_api::plan::Rooms<'_>) -> Result<Vec<Command>, Failure>,
+    ) -> Result<OutcomeDto, Failure> {
+        self.households()?;
+        self.surface.control_set(&Client::Cli, tool, plan)
+    }
+
     /// Announce `req` as the CLI, the players fetching the clip from
     /// `announcements`' listener.
     pub fn announce(

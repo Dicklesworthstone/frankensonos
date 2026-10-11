@@ -538,7 +538,7 @@ mod tests {
 
         let policy = Policy::default();
         let guard = Guard {
-            policy: &policy,
+            policy: std::sync::Arc::new(policy),
             client: &Client::McpStdio,
             clock: &SystemClock,
         };

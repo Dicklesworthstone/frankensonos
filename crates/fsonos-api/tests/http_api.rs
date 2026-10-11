@@ -291,6 +291,26 @@ fn control_routes_address_the_coordinator() {
 }
 
 #[test]
+fn control_routes_accept_a_set_of_rooms() {
+    // Living Room and Kitchen share a group: pausing everywhere pauses it once.
+    let api = Api::start("", &Client::LoopbackHttp);
+    let (status, out) = api.post("/pause", &json!({ "zone": "everywhere" }));
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["done"], "paused Living Room's group");
+    assert_eq!(api.actions(), ["Pause"]);
+    // Muting all reaches each room's own player.
+    let api = Api::start("", &Client::LoopbackHttp);
+    let (status, out) = api.post("/mute", &json!({ "zone": "all", "mute": true }));
+    assert_eq!(status, 200, "{out}");
+    let actions = api.actions();
+    assert_eq!(
+        actions.iter().filter(|a| *a == "SetMute").count(),
+        2,
+        "{actions:?}"
+    );
+}
+
+#[test]
 fn agents_over_http_are_volume_capped_with_a_note() {
     let api = Api::start("<CurrentVolume>60</CurrentVolume>", &Client::LoopbackHttp);
     let (status, out) = api.post("/volume", &json!({ "zone": "Kitchen", "volume": 100 }));

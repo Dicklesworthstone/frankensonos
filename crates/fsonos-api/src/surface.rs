@@ -29,8 +29,8 @@ use fsonos_proto::Transport;
 use fsonos_types::{PlayerId, TransportState};
 use std::fmt::Write as _;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto};
 use crate::events::EventBus;
@@ -74,7 +74,10 @@ pub struct Surface {
     transport: Arc<dyn Transport + Send + Sync>,
     survey: Survey,
     cache: Mutex<Option<(Instant, Vec<HouseholdState>)>>,
-    policy: Policy,
+    /// The house policy in force (see [`Surface::policy`]).
+    policy: RwLock<Arc<Policy>>,
+    /// `policy.toml`, re-read when it changes ([`Surface::with_policy_file`]).
+    policy_file: Option<PolicyFile>,
     clock: Box<dyn Clock>,
     log: Option<ActionLog>,
     doctor_checks: Option<DoctorChecks>,
@@ -104,6 +107,42 @@ pub struct Surface {
 /// checks, say); registered on each run.
 pub type DoctorChecks = Box<dyn Fn(&mut Runner) + Send + Sync>;
 
+/// `policy.toml` in a data directory, and the size and modification time it
+/// had when last read.
+struct PolicyFile {
+    dir: PathBuf,
+    seen: Mutex<Option<(SystemTime, u64)>>,
+}
+
+impl PolicyFile {
+    fn stamp(&self) -> Option<(SystemTime, u64)> {
+        let meta = std::fs::metadata(self.dir.join(fsonos_core::policy::FILE_NAME)).ok()?;
+        Some((meta.modified().ok()?, meta.len()))
+    }
+
+    /// Re-read the file into `policy` if it changed since it was last read.
+    /// A file that no longer parses is logged and the policy left as it was:
+    /// a typo must not lift the owner's caps.
+    fn refresh(&self, policy: &RwLock<Arc<Policy>>) {
+        let now = self.stamp();
+        let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
+        if *seen == now {
+            return;
+        }
+        *seen = now;
+        match Policy::load(&self.dir) {
+            Ok(fresh) => {
+                *policy.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(fresh);
+                tracing::info!(
+                    "house policy reloaded from {}",
+                    fsonos_core::policy::FILE_NAME
+                );
+            }
+            Err(e) => tracing::warn!("the house policy in force is unchanged: {e}"),
+        }
+    }
+}
+
 /// Where a surface logs its actions, and its name in the log.
 struct ActionLog {
     store: Mutex<Box<dyn Store + Send>>,
@@ -122,7 +161,8 @@ impl Surface {
             transport: Arc::from(transport),
             survey,
             cache: Mutex::new(None),
-            policy,
+            policy: RwLock::new(Arc::new(policy)),
+            policy_file: None,
             clock,
             log: None,
             doctor_checks: None,
@@ -177,6 +217,31 @@ impl Surface {
     pub fn with_aliases_file(mut self, path: PathBuf) -> Self {
         self.aliases_file = Some(path);
         self
+    }
+
+    /// Follow `policy.toml` in `data_dir`: each call reads the policy anew
+    /// when the file has changed (a missing file is the defaults), so an
+    /// edited cap takes hold without restarting the daemon. The policy given
+    /// to [`Surface::new`] stands until the file changes.
+    #[must_use]
+    pub fn with_policy_file(mut self, data_dir: PathBuf) -> Self {
+        let file = PolicyFile {
+            dir: data_dir,
+            seen: Mutex::new(None),
+        };
+        *file.seen.lock().unwrap_or_else(PoisonError::into_inner) = file.stamp();
+        self.policy_file = Some(file);
+        self
+    }
+
+    /// The house policy in force now, re-read first when its file has
+    /// changed ([`Self::with_policy_file`]).
+    #[must_use]
+    pub fn policy(&self) -> Arc<Policy> {
+        if let Some(file) = &self.policy_file {
+            file.refresh(&self.policy);
+        }
+        Arc::clone(&self.policy.read().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// The owner's aliases as the file says now. A malformed file is logged
@@ -312,7 +377,7 @@ impl Surface {
 
     fn guard<'a>(&'a self, client: &'a Client) -> Guard<'a> {
         Guard {
-            policy: &self.policy,
+            policy: self.policy(),
             client,
             clock: &*self.clock,
         }
@@ -505,51 +570,120 @@ impl Surface {
         if let Err(f) = &result {
             self.notice(f);
         }
-        let (decision, mut text, before) = match &result {
-            Ok(outcome) => {
-                let noted = |code: NoteCode| {
-                    outcome
-                        .notes
-                        .iter()
-                        .filter(|n| n.code == code)
-                        .map(|n| n.detail.as_str())
-                        .collect::<Vec<_>>()
-                };
-                let clamps = noted(NoteCode::VolumeClamped);
-                let decision = if clamps.is_empty() {
-                    "allow".to_string()
-                } else {
-                    format!("clamp: {}", clamps.join("; "))
-                };
-                let mut text = outcome.done.clone();
-                for healed in noted(NoteCode::Healed) {
-                    let _ = write!(text, " (healed: {healed})");
-                }
-                (
-                    decision,
-                    text,
-                    actions::before_state_with(&snaps, &sessions),
-                )
-            }
-            Err(f) if f.code == ErrorCode::PolicyDenied => {
-                (format!("deny: {}", f.detail), f.detail.clone(), None)
-            }
-            // It may have half happened: keep the before-state for undo.
-            Err(f) => (
-                "allow".to_string(),
-                format!("failed: {}", f.detail),
-                actions::before_state_with(&snaps, &sessions),
-            ),
-        };
-        if !missed.is_empty() {
-            let _ = write!(
-                text,
-                " (before-state missing for {} zone(s): undo cannot fully restore)",
-                missed.len()
-            );
-        }
+        let before = actions::before_state_with(&snaps, &sessions);
+        let (decision, text, before) = log_entry(&result, before, missed.len());
         self.record(client, intent, decision, text, before);
         result
+    }
+
+    /// Like [`Self::control_io`] but for commands that act on a *set* of
+    /// rooms — `pause`/`resume`/`next`/`previous`, `mute` and `volume` given
+    /// `all`/`everywhere` or a multi-room alias. The plan resolves to one
+    /// command per room or group; they run under one authorization, share one
+    /// before-state, and record as a single action, so `undo` restores every
+    /// affected room together.
+    pub fn control_set(
+        &self,
+        client: &Client,
+        tool: &str,
+        plan: impl FnOnce(&Rooms<'_>) -> Result<Vec<Command>, Failure>,
+    ) -> Result<OutcomeDto, Failure> {
+        let guard = self.guard(client);
+        if let Err(denied) = guard.authorize(tool, false) {
+            self.record(
+                client,
+                tool.to_string(),
+                format!("deny: {}", denied.detail),
+                denied.detail.clone(),
+                None,
+            );
+            return Err(denied);
+        }
+        let households = self.households()?;
+        let aliases = self.aliases();
+        let rooms = room_view(&households, aliases.as_ref(), client);
+        let commands = plan(&rooms).map_err(|f| self.explain(f))?;
+        // A volume or mute change ends a sleep fade in flight on each affected
+        // group, so the fade does not override the new level.
+        if let Some(sleep) = &self.sleep {
+            for command in &commands {
+                if matches!(command, Command::Volume { .. } | Command::Mute { .. }) {
+                    for coordinator in affected(&households, command) {
+                        sleep.volume_changed(&coordinator);
+                    }
+                }
+            }
+        }
+        // Already-satisfied rooms change nothing and are dropped.
+        let commands: Vec<Command> = commands
+            .into_iter()
+            .filter(|c| !matches!(c, Command::Nothing { .. }))
+            .collect();
+        if commands.is_empty() {
+            return Ok(OutcomeDto {
+                done: "already so; nothing to do".to_string(),
+                changed: false,
+                volume: None,
+                notes: Vec::new(),
+            });
+        }
+        // No action log: the per-command path is enough.
+        if self.log.is_none() {
+            let outcome = self.execute_set(&households, &guard, &commands);
+            if let Err(f) = &outcome {
+                self.notice(f);
+            }
+            return outcome;
+        }
+        let intent = format!("{tool}: {commands:?}");
+        // One before-state across every affected zone, so one undo restores
+        // the whole set.
+        let mut targets: Vec<PlayerId> = Vec::new();
+        for command in &commands {
+            for player in affected(&households, command) {
+                if !targets.contains(&player) {
+                    targets.push(player);
+                }
+            }
+        }
+        let (snaps, missed) =
+            actions::capture_zones(&*self.transport, &households, &targets, self.now());
+        let result = self.execute_set(&households, &guard, &commands);
+        if let Err(f) = &result {
+            self.notice(f);
+        }
+        let before = actions::before_state_with(&snaps, &[]);
+        let (decision, text, before) = log_entry(&result, before, missed.len());
+        self.record(client, intent, decision, text, before);
+        result
+    }
+
+    /// Run each command of a set, stopping at the first hard error, and fold
+    /// the outcomes into one: the sentences joined, the notes merged, and
+    /// `changed` true if any room changed.
+    fn execute_set(
+        &self,
+        households: &[HouseholdState],
+        guard: &Guard<'_>,
+        commands: &[Command],
+    ) -> Result<OutcomeDto, Failure> {
+        let mut combined = OutcomeDto {
+            done: String::new(),
+            changed: false,
+            volume: None,
+            notes: Vec::new(),
+        };
+        for command in commands {
+            let outcome = self.execute_following(households, guard, command)?;
+            if !combined.done.is_empty() && !outcome.done.is_empty() {
+                combined.done.push_str("; ");
+            }
+            combined.done.push_str(&outcome.done);
+            combined.changed |= outcome.changed;
+            combined.volume = combined.volume.or(outcome.volume);
+            combined.notes.extend(outcome.notes);
+        }
+        Ok(combined)
     }
 
     /// Undo the newest undoable action — only `client`'s own when
@@ -1100,6 +1234,52 @@ fn no_dj_store() -> Failure {
     )
 }
 
+/// A control call's outcome as the action log keeps it: the decision
+/// (`allow`, the policy's `clamp: ...`, or `deny: ...`), the result with any
+/// healing noted, and the before-state undo restores. A failed call keeps its
+/// before-state, since it may have half happened; `missed` zones the capture
+/// could not read are noted, as undo cannot fully restore them.
+fn log_entry(
+    result: &Result<OutcomeDto, Failure>,
+    before: Option<String>,
+    missed: usize,
+) -> (String, String, Option<String>) {
+    let (decision, mut text, before) = match result {
+        Ok(outcome) => {
+            let noted = |code: NoteCode| {
+                outcome
+                    .notes
+                    .iter()
+                    .filter(|n| n.code == code)
+                    .map(|n| n.detail.as_str())
+                    .collect::<Vec<_>>()
+            };
+            let clamps = noted(NoteCode::VolumeClamped);
+            let decision = if clamps.is_empty() {
+                "allow".to_string()
+            } else {
+                format!("clamp: {}", clamps.join("; "))
+            };
+            let mut text = outcome.done.clone();
+            for healed in noted(NoteCode::Healed) {
+                let _ = write!(text, " (healed: {healed})");
+            }
+            (decision, text, before)
+        }
+        Err(f) if f.code == ErrorCode::PolicyDenied => {
+            (format!("deny: {}", f.detail), f.detail.clone(), None)
+        }
+        Err(f) => ("allow".to_string(), format!("failed: {}", f.detail), before),
+    };
+    if missed > 0 {
+        let _ = write!(
+            text,
+            " (before-state missing for {missed} zone(s): undo cannot fully restore)"
+        );
+    }
+    (decision, text, before)
+}
+
 /// The coordinators of the groups `command` changes (a join changes both
 /// the member's old group and the one it joins).
 fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
@@ -1248,6 +1428,44 @@ mod tests {
         .with_action_log(Box::new(fsonos_core::store::MemStore::default()), "test");
         let denied = s.undo(&Client::McpStdio, false).unwrap_err();
         assert_eq!(denied.code, ErrorCode::PolicyDenied);
+    }
+
+    #[test]
+    fn an_edited_policy_file_takes_hold_without_a_restart() {
+        let dir = std::env::temp_dir().join(format!("fsonos-policy-reload-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(fsonos_core::policy::FILE_NAME);
+        let write = |text: &str| std::fs::write(&file, text).unwrap();
+        write("[defaults]\nmax_volume = 55\n");
+        let survey: Survey = Box::new(|_| Ok(households()));
+        let s = Surface::new(
+            Box::new(super::testing::Canned {
+                out_args: "",
+                sent: Arc::new(Mutex::new(Vec::new())),
+            }),
+            survey,
+            Policy::load(&dir).unwrap(),
+            Box::new(fsonos_core::clock::SystemClock),
+        )
+        .with_action_log(Box::new(fsonos_core::store::MemStore::default()), "test")
+        .with_policy_file(dir.clone());
+        assert_eq!(s.policy().defaults.max_volume, 55);
+        assert_eq!(s.undo(&Client::McpStdio, false).unwrap(), None);
+
+        // The owner edits the file while the daemon runs: the next call obeys.
+        write("[defaults]\nmax_volume = 40\n\n[clients.\"mcp-stdio\"]\ndeny = [\"undo_last\"]\n");
+        assert_eq!(s.policy().defaults.max_volume, 40);
+        let denied = s.undo(&Client::McpStdio, false).unwrap_err();
+        assert_eq!(denied.code, ErrorCode::PolicyDenied);
+
+        // An edit that no longer parses leaves the last good policy in force.
+        write("[defaults]\nmax_volume = \"loud\"\n");
+        assert_eq!(s.policy().defaults.max_volume, 40);
+
+        // Without the file, the defaults apply.
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(*s.policy(), Policy::default());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

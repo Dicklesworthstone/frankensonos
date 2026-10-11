@@ -38,7 +38,7 @@ impl PolicyDto {
     pub fn text(&self) -> String {
         let p = &self.policy;
         let mut text = format!(
-            "Defaults: rooms up to {}, steps of at most {}, fades of {} s.\n",
+            "Defaults: rooms up to {}, steps of at most {}, scheduled volume ramps of {} s.\n",
             p.defaults.max_volume, p.defaults.max_step, p.defaults.fade_secs
         );
         match &p.quiet_hours {
@@ -103,7 +103,7 @@ impl Surface {
     /// The effective house policy and the caller under it (`get_policy`).
     pub fn policy_view(&self, client: &Client) -> Result<PolicyDto, Failure> {
         self.guard(client).authorize("get_policy", true)?;
-        Ok(PolicyDto::of(&self.policy, client))
+        Ok(PolicyDto::of(&self.policy(), client))
     }
 }
 
@@ -138,7 +138,7 @@ capped = true
         assert!(!shown.you_are_capped, "the CLI is uncapped by default");
         assert_eq!(
             shown.text(),
-            "Defaults: rooms up to 60, steps of at most 15, fades of 0 s.\n\
+            "Defaults: rooms up to 60, steps of at most 15, scheduled volume ramps of 0 s.\n\
              Quiet hours: 22:00–07:00, rooms up to 25.\n\
              Room Ada’s Studio: up to 40.\n\
              Client agent@example.com: only list_zones, set_volume; never dj_start; capped.\n\
