@@ -517,11 +517,11 @@ fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result
         _ => direct.run(tool, |households| plan_for(control, households))?,
     };
     emit(global.json, &outcome, |o: &OutcomeDto| {
-        format!(
-            "{}
-",
-            o.done
-        )
+        let mut text = format!("{}\n", o.done);
+        for note in &o.notes {
+            let _ = writeln!(text, "note: {}", note.detail);
+        }
+        text
     })
 }
 

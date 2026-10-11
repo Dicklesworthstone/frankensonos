@@ -37,7 +37,7 @@ use crate::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto};
 use crate::events::EventBus;
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
-use crate::guard::Guard;
+use crate::guard::{Guard, Note};
 use crate::plan::{Command, DjAction, Rooms, plan_play_favorite, resolve};
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto};
 use crate::request::{PlayFavoriteRequest, SearchRequest};
@@ -700,9 +700,12 @@ impl Surface {
         result
     }
 
-    /// Run each command of a set, stopping at the first hard error, and fold
-    /// the outcomes into one: the sentences joined, the notes merged, and
-    /// `changed` true if any room changed.
+    /// Run each command of a set and fold the outcomes into one: the
+    /// sentences joined, the notes merged, and `changed` true if any room
+    /// changed. A room or group whose speaker fails ([`speaker_side`]) is
+    /// noted as SKIPPED and the rest go ahead, so one offline or idle group
+    /// does not stop `pause everywhere`; the call fails when none went
+    /// ahead, or at the first failure of any other kind.
     fn execute_set(
         &self,
         households: &[HouseholdState],
@@ -715,8 +718,25 @@ impl Surface {
             volume: None,
             notes: Vec::new(),
         };
+        let (mut skipped, mut went) = (None, false);
         for command in commands {
-            let outcome = self.execute_following(households, guard, command)?;
+            let outcome = match self.execute_following(households, guard, command) {
+                Ok(outcome) => outcome,
+                Err(failure) if commands.len() > 1 && speaker_side(&failure) => {
+                    let room = command
+                        .addressed()
+                        .and_then(|id| households.iter().find_map(|h| h.player(id)))
+                        .map_or("a room", |p| p.room_name.as_str());
+                    combined.notes.push(Note {
+                        code: NoteCode::Skipped,
+                        detail: format!("{room} skipped: {}", failure.detail),
+                    });
+                    skipped.get_or_insert(failure);
+                    continue;
+                }
+                Err(failure) => return Err(failure),
+            };
+            went = true;
             if !combined.done.is_empty() && !outcome.done.is_empty() {
                 combined.done.push_str("; ");
             }
@@ -725,7 +745,10 @@ impl Surface {
             combined.volume = combined.volume.or(outcome.volume);
             combined.notes.extend(outcome.notes);
         }
-        Ok(combined)
+        match skipped {
+            Some(failure) if !went => Err(failure),
+            _ => Ok(combined),
+        }
     }
 
     /// Undo the newest undoable action — only `client`'s own when
@@ -1269,6 +1292,15 @@ fn run_dj(
     }
 }
 
+/// A failure at one speaker (it did not answer, or answered with a fault),
+/// which a set notes and steps past rather than stopping for.
+fn speaker_side(failure: &Failure) -> bool {
+    matches!(
+        failure.code,
+        ErrorCode::PlayerUnreachable | ErrorCode::UpnpFault | ErrorCode::NotCoordinator
+    )
+}
+
 fn no_dj_store() -> Failure {
     Failure::new(
         ErrorCode::Internal,
@@ -1449,6 +1481,85 @@ mod tests {
             .control(&Client::Unknown, "pause", |_| unreachable!())
             .unwrap_err();
         assert_eq!(denied.code, ErrorCode::PolicyDenied);
+    }
+
+    /// Refuses the `refuse`d action with UPnP 701: every time, or only its
+    /// `nth` (0-based) time.
+    struct Refusing {
+        refuse: &'static str,
+        nth: Option<usize>,
+        seen: Mutex<usize>,
+    }
+
+    impl Transport for Refusing {
+        fn soap_post(
+            &self,
+            _: std::net::IpAddr,
+            _: &str,
+            action: &str,
+            _: &str,
+        ) -> Result<String, fsonos_proto::ProtoError> {
+            let action = action
+                .trim_matches('"')
+                .rsplit('#')
+                .next()
+                .unwrap_or_default();
+            if action == self.refuse {
+                let mut seen = self.seen.lock().unwrap();
+                let this = *seen;
+                *seen += 1;
+                if self.nth.is_none_or(|n| n == this) {
+                    return Err(fsonos_proto::ProtoError::SoapFault {
+                        code: 701,
+                        reason: "Transition not available".into(),
+                    });
+                }
+            }
+            Ok(format!(
+                "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+                 <u:{action}Response xmlns:u=\"urn:x\"></u:{action}Response></s:Body></s:Envelope>"
+            ))
+        }
+    }
+
+    #[test]
+    fn a_set_steps_past_a_group_that_fails_and_notes_it() {
+        let resume_everywhere = |nth: Option<usize>| {
+            let survey: Survey = Box::new(|_| Ok(households()));
+            let s = Surface::new(
+                Box::new(Refusing {
+                    refuse: "Play",
+                    nth,
+                    seen: Mutex::new(0),
+                }),
+                survey,
+                Policy::default(),
+                Box::new(fsonos_core::clock::SystemClock),
+            );
+            s.control_set(&Client::Cli, "resume", |h| {
+                crate::plan::plan_transport_set(
+                    h,
+                    &ZoneRequest {
+                        zone: "everywhere".into(),
+                    },
+                    TransportAction::Resume,
+                )
+            })
+        };
+        // One group of four has nothing to resume: the other three resume,
+        // and the one is noted.
+        let out = resume_everywhere(Some(1)).unwrap();
+        assert_eq!(out.done.matches("resumed").count(), 3, "{}", out.done);
+        let skipped: Vec<&Note> = out
+            .notes
+            .iter()
+            .filter(|n| n.code == NoteCode::Skipped)
+            .collect();
+        assert_eq!(skipped.len(), 1, "{:?}", out.notes);
+        assert!(skipped[0].detail.contains("skipped: "), "{:?}", skipped[0]);
+        // None can: the call fails with the speaker's own fault.
+        let err = resume_everywhere(None).unwrap_err();
+        assert_eq!((err.code, err.upnp_code), (ErrorCode::UpnpFault, Some(701)));
     }
 
     #[test]
