@@ -717,6 +717,34 @@ fn playlists(s: &mut dyn Store) {
     assert!(s.playlists().unwrap().is_empty());
 }
 
+fn spotify_heard(s: &mut dyn Store) {
+    assert!(s.spotify_heard().unwrap().is_empty());
+    let play = |uri: &str, at: i64| (uri.to_owned(), at);
+    s.save_spotify_heard(&[
+        play("spotify:track:glasshouse", 2_000),
+        play("spotify:track:aria", 1_000),
+        play("spotify:track:glasshouse", 1_500),
+    ])
+    .unwrap();
+    assert_eq!(
+        s.spotify_heard().unwrap(),
+        [
+            play("spotify:track:aria", 1_000),
+            play("spotify:track:glasshouse", 2_000)
+        ],
+        "oldest first, a track heard twice at its latest"
+    );
+    // A save replaces the lot.
+    s.save_spotify_heard(&[play("spotify:track:nocturne", 3_000)])
+        .unwrap();
+    assert_eq!(
+        s.spotify_heard().unwrap(),
+        [play("spotify:track:nocturne", 3_000)]
+    );
+    s.save_spotify_heard(&[]).unwrap();
+    assert!(s.spotify_heard().unwrap().is_empty());
+}
+
 fn suite(s: &mut dyn Store) {
     play_history(s);
     inventory_cache(s);
@@ -728,6 +756,7 @@ fn suite(s: &mut dyn Store) {
     artist_genres(s);
     album_misses(s);
     playlists(s);
+    spotify_heard(s);
     action_log(s);
     scenes(s);
     schedules(s);
@@ -744,7 +773,7 @@ fn sqlite_in_memory_conforms() {
     suite(&mut s);
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     );
     s.close().unwrap();
 }
@@ -762,7 +791,7 @@ fn sqlite_file_survives_close_and_reopen() {
     let s = SqliteStore::open(&path).unwrap();
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     );
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);

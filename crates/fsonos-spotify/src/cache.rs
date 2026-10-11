@@ -64,6 +64,9 @@ pub async fn sync_library<S: Store + ?Sized>(
     if let Some(playlists) = &taste.playlists {
         store.save_playlists(playlists)?;
     }
+    if let Some(heard) = &taste.heard {
+        store.save_spotify_heard(heard)?;
+    }
     items.extend(taste.tracks.iter().cloned());
     if read.incomplete() {
         // An unfinished read keeps what the last one found: every track's

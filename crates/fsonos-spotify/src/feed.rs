@@ -49,6 +49,11 @@ use crate::dj::{DjConfig, PickContext, PickReason, PlayRecord, Rng, WorkPool, pi
 use crate::feedback::FeedbackModel;
 use crate::steer::Steer;
 
+/// How far apart a play recorded here and the owner's Spotify history's
+/// record of it can be (Spotify notes a play when it ends; a movement can
+/// run long).
+const SAME_PLAY_SECS: u64 = 60 * 60;
+
 /// Where the feed plays: the transport, the households' state, and the group
 /// coordinator it feeds.
 pub struct Speakers<'a, T: ?Sized> {
@@ -689,6 +694,18 @@ impl QueueFeed {
                     .map(|p| PlayRecord::at(p.source_uri, p.played_at)),
             );
         }
+        // What the owner played on Spotify lately, on any device, counts as
+        // heard too; a play recorded here as well counts once.
+        for (uri, at) in store.spotify_heard()? {
+            let here = history.iter().any(|p| {
+                p.source_uri == uri
+                    && p.played_at
+                        .is_some_and(|t| t.abs_diff(at) <= SAME_PLAY_SECS)
+            });
+            if !here {
+                history.push(PlayRecord::at(uri, at));
+            }
+        }
         // Oldest first, the earlier zones' first in a tie.
         history.sort_by_key(|p| p.played_at);
         let reached = self.playing.unwrap_or(0);
@@ -1156,6 +1173,66 @@ mod tests {
         // Moving back keeps one key per zone.
         feed.rekey(&rig.coordinator);
         assert_eq!(feed.earlier, [moved.0.as_str()]);
+    }
+
+    /// The DJ's next pick for `feed` with `store`'s history, seed 7.
+    fn first_pick<'p>(
+        pool: &'p WorkPool,
+        feed: &QueueFeed,
+        store: &MemStore,
+    ) -> crate::dj::PlannedWork<'p> {
+        let history = feed.history(store, MIDNIGHT).unwrap();
+        let ctx = PickContext {
+            history: &history,
+            now: Some(MIDNIGHT),
+            local_hour: Some(20),
+            ..PickContext::default()
+        };
+        pick_next(pool, &ctx, &DjConfig::default(), &mut Rng::new(7)).unwrap()
+    }
+
+    #[test]
+    fn a_work_heard_lately_on_spotify_waits_like_one_played_here() {
+        let pool = multi_movement_pool();
+        let zone = PlayerId("RINCON_000000000000001400".into());
+        let feed = QueueFeed::new(&zone, DjConfig::default(), 7);
+        let mut store = MemStore::default();
+        let planned = first_pick(&pool, &feed, &store);
+        let movements: Vec<String> = planned
+            .movements
+            .iter()
+            .map(|m| m.track.source_uri.clone())
+            .collect();
+
+        // The owner played that work on their phone an hour ago.
+        let heard: Vec<(String, i64)> = movements
+            .iter()
+            .map(|uri| (uri.clone(), MIDNIGHT - 3600))
+            .collect();
+        store.save_spotify_heard(&heard).unwrap();
+        let history = feed.history(&store, MIDNIGHT).unwrap();
+        assert!(
+            movements
+                .iter()
+                .all(|uri| history.contains(&PlayRecord::at(uri.clone(), MIDNIGHT - 3600))),
+            "{history:?}"
+        );
+        let next = first_pick(&pool, &feed, &store);
+        assert_ne!(
+            next.work.work_key, planned.work.work_key,
+            "heard lately, it waits its turn"
+        );
+
+        // A play recorded here that Spotify also lists counts once.
+        store
+            .record_play(&zone.0, &movements[0], MIDNIGHT - 3500)
+            .unwrap();
+        let history = feed.history(&store, MIDNIGHT).unwrap();
+        let once = history
+            .iter()
+            .filter(|p| p.source_uri == movements[0])
+            .count();
+        assert_eq!(once, 1, "{history:?}");
     }
 
     /// A feed saved and read back, as across a daemon restart.

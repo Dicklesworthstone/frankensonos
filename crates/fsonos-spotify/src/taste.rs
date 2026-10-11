@@ -12,7 +12,9 @@
 //! preferences and steering all outrank them (see `crate::prefs`). Followed
 //! and top artists come with their genres, which go to the artist genre cache
 //! (`crate::genres`). The playlists in the owner's list (their own and the
-//! ones they follow) are kept by name, so a search can play one.
+//! ones they follow) are kept by name, so a search can play one. What they
+//! played lately, on any device, is kept with when ([`Taste::heard`]): the
+//! DJ counts it as heard, so it doesn't come straight back.
 //!
 //! A grant without the taste scopes reads none of this and fails nothing:
 //! the DJ's taste is the library alone, and [`TasteRead::missing_scopes`]
@@ -29,7 +31,7 @@ use fsonos_core::store::Store;
 use crate::SpotifyError;
 use crate::client::{
     Artist, CursorPage, FollowedArtists, FullTrack, Me, Paging, PlayHistory, PlaylistItem,
-    SimplifiedPlaylist, TASTE_SCOPES, decode,
+    SimplifiedPlaylist, TASTE_SCOPES, decode, unix_seconds,
 };
 use crate::expand::halts;
 use crate::library::{LibraryItem, Origin};
@@ -88,6 +90,10 @@ pub struct Taste {
     /// its order, when the whole list was read; `None` when it wasn't (no
     /// grant, or a failed read), so the cached ones stay.
     pub playlists: Option<Vec<(String, String)>>,
+    /// What the owner played lately (`spotify:track:` URI, unix seconds),
+    /// when that read succeeded; `None` when it wasn't read, so the cached
+    /// plays stay.
+    pub heard: Option<Vec<(String, i64)>>,
     track_pm: HashMap<String, u32>,
     artist_pm: HashMap<String, u32>,
 }
@@ -191,14 +197,24 @@ pub async fn read_taste<S: Store + ?Sized>(
             // A track played over and over counts once: recent rotation is a
             // nudge, not a top track.
             let mut heard = HashSet::new();
-            for track in page.items.iter().filter_map(|h| h.track.as_ref()) {
-                if let Some(item) = track.library_item(Origin::Taste, None)
-                    && heard.insert(item.source_uri.clone())
-                {
+            let mut when = Vec::new();
+            for h in &page.items {
+                let Some(item) = h
+                    .track
+                    .as_ref()
+                    .and_then(|t| t.library_item(Origin::Taste, None))
+                else {
+                    continue;
+                };
+                if let Some(at) = unix_seconds(h.played_at.as_deref()) {
+                    when.push((item.source_uri.clone(), at));
+                }
+                if heard.insert(item.source_uri.clone()) {
                     taste.track(item, RECENT_PM);
                     reader.read.recent_tracks += 1;
                 }
             }
+            taste.heard = Some(when);
         }
     }
     if playlists {
@@ -456,6 +472,16 @@ mod tests {
                 ),
             ])
         );
+        // What they played lately is kept with when: every play.
+        let track = |n: u32| format!("spotify:track:FakeTrack{n:013}");
+        assert_eq!(
+            taste.heard,
+            Some(vec![
+                (track(102), 1_791_403_200),
+                (track(102), 1_791_401_400),
+                (track(1), 1_791_399_600),
+            ])
+        );
         // Followed and top artists' genres go to the artist genre cache.
         assert_eq!(
             store.artist_genres("FakeArtist000000000007").unwrap(),
@@ -530,7 +556,7 @@ mod tests {
         let (spotify, cache, dir) = signed_in("taste-sync", &requested_scope());
         let endpoints = spotify.endpoints();
         let state = Arc::clone(&spotify.state);
-        let (first, second, pool, rows, playlists) = runtime().block_on(async move {
+        let (first, second, pool, rows, playlists, heard) = runtime().block_on(async move {
             let cx = Cx::current().expect("ambient Cx");
             let http = Client::default_for_runtime(&cx);
             let mut session = Session::open(config(), cache, http)
@@ -547,10 +573,26 @@ mod tests {
                 pool_from_store(&store).unwrap(),
                 store.library().unwrap(),
                 store.playlists().unwrap(),
+                store.spotify_heard().unwrap(),
             )
         });
         spotify.stop();
 
+        // What the owner played lately stays through the failed read too,
+        // each track at its latest play, oldest first.
+        assert_eq!(
+            heard,
+            [
+                (
+                    "spotify:track:FakeTrack0000000000001".to_owned(),
+                    1_791_399_600
+                ),
+                (
+                    "spotify:track:FakeTrack0000000000102".to_owned(),
+                    1_791_403_200
+                ),
+            ]
+        );
         // The first sync's playlists stay through the failed second read.
         assert_eq!(
             playlists,

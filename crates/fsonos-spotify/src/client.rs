@@ -974,8 +974,8 @@ pub(crate) fn renderable(uri: &str, is_local: bool, is_playable: Option<bool>) -
     uri.starts_with("spotify:track:") && !is_local && is_playable != Some(false)
 }
 
-/// An RFC 3339 timestamp (Spotify's `added_at`) as Unix seconds.
-fn unix_seconds(rfc3339: Option<&str>) -> Option<i64> {
+/// An RFC 3339 timestamp (Spotify's `added_at`, `played_at`) as Unix seconds.
+pub(crate) fn unix_seconds(rfc3339: Option<&str>) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(rfc3339?)
         .ok()
         .map(|t| t.timestamp())

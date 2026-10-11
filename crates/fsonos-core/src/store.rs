@@ -450,6 +450,14 @@ pub trait Store {
     /// Those playlists, in the list's order.
     fn playlists(&self) -> Result<Vec<(String, String)>, StoreError>;
 
+    /// Replace what the owner played on Spotify lately, on any device
+    /// (`spotify:track:` URI, unix seconds), as a sync read it. A track
+    /// heard more than once keeps its latest play.
+    fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError>;
+
+    /// Those plays, oldest first.
+    fn spotify_heard(&self) -> Result<Vec<(String, i64)>, StoreError>;
+
     /// Log `action`; returns its id.
     fn record_action(&mut self, action: &Action) -> Result<i64, StoreError>;
 
@@ -508,6 +516,21 @@ pub enum StoreError {
 /// An album's tracks keyed by (disc, track), so iteration is in album order.
 type TracksByPosition = BTreeMap<(u32, u32), AlbumTrack>;
 
+/// Each track's latest play in `plays`, oldest first (by time, then URI).
+pub(crate) fn latest_plays(plays: &[(String, i64)]) -> Vec<(String, i64)> {
+    let mut latest: BTreeMap<&str, i64> = BTreeMap::new();
+    for (uri, at) in plays {
+        let kept = latest.entry(uri.as_str()).or_insert(*at);
+        *kept = (*kept).max(*at);
+    }
+    let mut plays: Vec<(String, i64)> = latest
+        .into_iter()
+        .map(|(uri, at)| (uri.to_owned(), at))
+        .collect();
+    plays.sort_by(|a, b| (a.1, &a.0).cmp(&(b.1, &b.0)));
+    plays
+}
+
 /// An in-memory [`Store`] with the same semantics as [`SqliteStore`]
 /// (`tests/store_conformance.rs` runs one suite against both).
 #[derive(Debug, Default)]
@@ -524,6 +547,7 @@ pub struct MemStore {
     artist_genres: BTreeMap<String, (Vec<String>, i64)>,
     album_misses: BTreeMap<String, i64>,
     playlists: Vec<(String, String)>,
+    spotify_heard: Vec<(String, i64)>,
     actions: Vec<LoggedAction>,
     scenes: BTreeMap<String, StoredScene>,
     schedules: BTreeMap<i64, StoredSchedule>,
@@ -773,6 +797,15 @@ impl Store for MemStore {
 
     fn playlists(&self) -> Result<Vec<(String, String)>, StoreError> {
         Ok(self.playlists.clone())
+    }
+
+    fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError> {
+        self.spotify_heard = latest_plays(plays);
+        Ok(())
+    }
+
+    fn spotify_heard(&self) -> Result<Vec<(String, i64)>, StoreError> {
+        Ok(self.spotify_heard.clone())
     }
 
     fn record_action(&mut self, action: &Action) -> Result<i64, StoreError> {
