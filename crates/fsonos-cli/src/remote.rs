@@ -200,6 +200,11 @@ impl Daemon {
         self.call("GET", path, None, CALL)
     }
 
+    /// `PUT path` with no body: the answer as `T`, or the daemon's failure.
+    pub fn put<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
+        self.call("PUT", path, None, CALL)
+    }
+
     pub fn post<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,

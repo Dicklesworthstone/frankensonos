@@ -4,7 +4,7 @@
 
 use fsonos_core::fade::Fader;
 use fsonos_core::scenes::{
-    self, ApplyOptions, Scene, SceneError, SceneGroup, SceneHooks, SceneOp, SceneSource,
+    self, ApplyOptions, PlayingDj, Scene, SceneError, SceneGroup, SceneHooks, SceneOp, SceneSource,
 };
 use fsonos_core::snapshot;
 use fsonos_core::store::MemStore;
@@ -123,6 +123,19 @@ fn a_saved_scene_brings_the_house_back_in_both_generations() {
         .find(|g| g.coordinator == "Den")
         .unwrap();
     assert_eq!((&den.source, den.playing), (&SceneSource::Keep, false));
+    // Where the DJ plays, the scene has the DJ, whatever the group is on.
+    let djs = [PlayingDj {
+        coordinator: id(&h, "Den"),
+        mood: Some("calm".into()),
+    }];
+    let with_dj = scenes::capture(&lan, &h, "Evening", &djs, 0).unwrap();
+    let den = with_dj.groups.iter().find(|g| g.coordinator == "Den");
+    assert_eq!(
+        den.map(|g| &g.source),
+        Some(&SceneSource::Dj {
+            mood: Some("calm".into())
+        })
+    );
     assert_eq!(
         scene.groups.len(),
         4,

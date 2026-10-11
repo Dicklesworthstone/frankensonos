@@ -1,11 +1,12 @@
 //! `fsonos scene save|apply|list|show|rm`: the house's named states, through
 //! the same surface calls as `/scenes` and the scene tools, as the house
 //! policy's `cli` client. Listing, showing and removing read only the store
-//! in the data directory; saving surveys the LAN first. Applying goes
-//! through the daemon when one answers (found as every command finds it,
-//! see `crate::remote`), so a DJ the scene starts is the daemon's, which
-//! keeps the group's queue going; else it surveys and applies right here,
-//! and that DJ plays the works it queues and no more.
+//! in the data directory. Saving and applying go through the daemon when
+//! one answers (found as every command finds it, see `crate::remote`): a
+//! scene records the DJ where the daemon's DJ plays, and a DJ the scene
+//! starts is the daemon's, which keeps the group's queue going. Without a
+//! daemon they survey and act right here; no DJ plays to be saved, and one
+//! the scene starts plays the works it queues and no more.
 
 use clap::{Args, Subcommand};
 use fsonos_api::Failure;
@@ -53,7 +54,11 @@ pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
     let cli = Client::Cli;
     match &args.action {
         SceneAction::Save { name } => {
-            let scene = s()?.save_scene(&cli, name)?;
+            // The DJ plays in the daemon: only it knows where.
+            let scene: SceneDto = match Daemon::find(global, global.daemon)? {
+                Some(daemon) => daemon.put(&format!("/scenes/{}", pct(name)))?,
+                None => s()?.save_scene(&cli, name)?,
+            };
             crate::emit(global.json, &scene, |scene| {
                 format!("saved scene {}", show_text(scene))
             })

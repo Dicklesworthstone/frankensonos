@@ -4,15 +4,19 @@
 //! failures every surface reports (UNKNOWN_SCENE, CROSS_HOUSEHOLD_GROUP,
 //! INVALID_ARGUMENT, POLICY_DENIED, and no store).
 
+use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
 use fsonos_api::plan::{
-    TransportAction, plan_group, plan_play, plan_transport, plan_ungroup, plan_volume,
+    DjAction, TransportAction, plan_group, plan_play, plan_transport, plan_ungroup, plan_volume,
 };
 use fsonos_api::surface::{Surface, Survey};
-use fsonos_api::{ErrorCode, GroupRequest, NoteCode, PlayRequest, VolumeRequest, ZoneRequest};
-use fsonos_core::clock::SystemClock;
+use fsonos_api::{
+    ErrorCode, Failure, GroupRequest, NoteCode, OutcomeDto, PlayRequest, VolumeRequest, ZoneRequest,
+};
+use fsonos_core::clock::{Clock, SystemClock};
+use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::scenes::{self, Scene, SceneGroup, SceneSource};
-use fsonos_core::store::{ActionFilter, MemStore};
+use fsonos_core::store::{ActionFilter, DjSession, MemStore, Store};
 use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_sim::{SimHandle, SimHousehold};
 use fsonos_types::{PlayerId, TransportState};
@@ -270,4 +274,98 @@ fn scene_failures_carry_their_codes() {
     let err = bare.scenes(&Client::Cli).unwrap_err();
     assert_eq!(err.code, ErrorCode::NotImplemented, "{err:?}");
     sim.shutdown();
+}
+
+/// A DJ that plays in the groups `.0` lead, and only there.
+struct PlaysIn(Vec<PlayerId>);
+
+impl DjEngine for PlaysIn {
+    fn act(
+        &self,
+        _: DjSpeakers<'_>,
+        _: &mut dyn Store,
+        _: DjAction,
+        _: &dyn Clock,
+    ) -> Result<OutcomeDto, Failure> {
+        Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
+    }
+
+    fn steer(
+        &self,
+        _: DjSpeakers<'_>,
+        _: &mut dyn Store,
+        _: &DjSteer,
+        _: &dyn Clock,
+    ) -> Result<OutcomeDto, Failure> {
+        Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
+    }
+
+    fn status(
+        &self,
+        _: DjSpeakers<'_>,
+        _: &dyn Store,
+        _: Option<u32>,
+        _: &dyn Clock,
+    ) -> Result<DjStatusDto, Failure> {
+        Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
+    }
+
+    fn moods(
+        &self,
+        _: Option<DjSpeakers<'_>>,
+        _: &dyn Store,
+        _: &dyn Clock,
+    ) -> Result<DjMoodsDto, Failure> {
+        Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
+    }
+
+    fn feeds(&self, coordinator: &PlayerId) -> bool {
+        self.0.contains(coordinator)
+    }
+
+    fn on_playback(&self, _: DjSpeakers<'_>, _: &mut dyn Store, _: &PlayerPlayback, _: &dyn Clock) {
+    }
+
+    fn moving(&self, _: &PlayerId) {}
+
+    fn moved(&self, _: &PlayerId, _: &PlayerId) {}
+}
+
+#[test]
+fn a_scene_has_the_dj_where_it_plays_not_where_it_is_only_steered() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let houses = house(&sim);
+    let (kitchen, office, den) = (
+        id(&houses, "Kitchen"),
+        id(&houses, "Office"),
+        id(&houses, "Den"),
+    );
+    // Steered in the Kitchen and the Den; the DJ plays in the Kitchen and,
+    // unsteered, in the Office, but not in the Den.
+    let mut store = MemStore::default();
+    for (zone, mood) in [(&kitchen, "calm"), (&den, "focus")] {
+        store
+            .save_dj_session(&DjSession {
+                coordinator: zone.0.clone(),
+                mood: Some(mood.into()),
+                constraints: None,
+                expires: i64::MAX,
+            })
+            .unwrap();
+    }
+    let s = surface(&sim, store).with_dj(Box::new(PlaysIn(vec![kitchen, office])));
+    let saved = s.save_scene(&Client::Cli, "Steered").unwrap();
+    let source = |room: &str| {
+        saved
+            .groups
+            .iter()
+            .find(|g| g.coordinator == room)
+            .map(|g| (g.source.kind.as_str(), g.source.mood.as_deref()))
+    };
+    assert_eq!(source("Kitchen"), Some(("dj", Some("calm"))), "{saved:#?}");
+    assert_eq!(source("Office"), Some(("dj", None)), "{saved:#?}");
+    assert!(
+        source("Den").is_some_and(|(kind, _)| kind != "dj"),
+        "steering alone isn't the DJ playing: {saved:#?}"
+    );
 }

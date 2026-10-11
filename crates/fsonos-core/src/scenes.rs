@@ -25,7 +25,7 @@
 use crate::fade::Fader;
 use crate::favorites::{self, Favorite};
 use crate::snapshot::{self, SnapshotSource, ZoneSnapshot};
-use crate::store::{DjSession, Store, StoreError, StoredScene};
+use crate::store::{Store, StoreError, StoredScene};
 use crate::{CoreError, HouseholdState, Room, control};
 use fsonos_proto::Transport;
 use fsonos_types::{PlayerId, TransportState};
@@ -552,14 +552,22 @@ fn run<T: Transport + ?Sized>(
     }
 }
 
+/// A group the DJ is playing in as a scene is saved, and the mood its
+/// steering names (`None`: the time-of-day program picks).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayingDj {
+    pub coordinator: PlayerId,
+    pub mood: Option<String>,
+}
+
 /// The house as it is now, as a scene called `name`: every group, every
-/// room's level, and what each group plays (a live DJ session, a favorite
-/// when the URI is one, a URI, or else whatever it has).
+/// room's level, and what each group plays (the DJ where `djs` says it
+/// plays, a favorite when the URI is one, a URI, or else whatever it has).
 pub fn capture<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     name: &str,
-    dj_sessions: &[DjSession],
+    djs: &[PlayingDj],
     now: i64,
 ) -> Result<Scene, SceneError> {
     check_name(name)?;
@@ -591,9 +599,7 @@ pub fn capture<T: Transport + ?Sized>(
                     scene.mutes.insert(r.name.clone(), level.mute);
                 }
             }
-            let dj = dj_sessions
-                .iter()
-                .find(|d| d.coordinator == group.coordinator.0 && d.expires > now);
+            let dj = djs.iter().find(|d| d.coordinator == group.coordinator);
             let source = match (dj, &snap.source) {
                 (Some(d), _) => SceneSource::Dj {
                     mood: d.mood.clone(),

@@ -16,7 +16,8 @@ use fsonos_core::actions;
 use fsonos_core::policy::Client;
 use fsonos_core::rooms::suggest_rooms;
 use fsonos_core::scenes::{
-    self, ApplyOptions, Scene, SceneError, SceneHooks, SceneOp, ScenePlan, SceneReport, SceneSource,
+    self, ApplyOptions, PlayingDj, Scene, SceneError, SceneHooks, SceneOp, ScenePlan, SceneReport,
+    SceneSource,
 };
 use fsonos_core::store::{Store, StoreError};
 use fsonos_types::PlayerId;
@@ -373,7 +374,21 @@ impl Surface {
         let households = self.scene_house()?;
         let now = self.now();
         let sessions = self.scene_store(|store| Ok(store.dj_sessions()?))?;
-        let scene = scenes::capture(&*self.transport, &households, name, &sessions, now)
+        // Where the DJ plays now, with its steering's mood. A session alone
+        // is only steering, kept whether or not the DJ runs.
+        let djs: Vec<PlayingDj> = households
+            .iter()
+            .flat_map(|h| &h.groups)
+            .filter(|g| self.dj.as_ref().is_some_and(|dj| dj.feeds(&g.coordinator)))
+            .map(|g| PlayingDj {
+                coordinator: g.coordinator.clone(),
+                mood: sessions
+                    .iter()
+                    .find(|s| s.coordinator == g.coordinator.0 && s.expires > now)
+                    .and_then(|s| s.mood.clone()),
+            })
+            .collect();
+        let scene = scenes::capture(&*self.transport, &households, name, &djs, now)
             .map_err(|e| self.explain(scene_failure(e)))?;
         let replaced = self.scene_store(|store| {
             let replaced = store.scenes()?.iter().find_map(|s| {
