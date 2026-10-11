@@ -335,15 +335,15 @@ impl DjEngine for PlaysIn {
 fn a_scene_has_the_dj_where_it_plays_not_where_it_is_only_steered() {
     let sim = SimHousehold::standard().spawn().unwrap();
     let houses = house(&sim);
-    let (kitchen, office, den) = (
+    let (kitchen, office, living) = (
         id(&houses, "Kitchen"),
         id(&houses, "Office"),
-        id(&houses, "Den"),
+        id(&houses, "Living Room"),
     );
-    // Steered in the Kitchen and the Den; the DJ plays in the Kitchen and,
-    // unsteered, in the Office, but not in the Den.
+    // Steered in the Kitchen and the Living Room; the DJ plays in the
+    // Kitchen and, unsteered, in the Office, but not in the Living Room.
     let mut store = MemStore::default();
-    for (zone, mood) in [(&kitchen, "calm"), (&den, "focus")] {
+    for (zone, mood) in [(&kitchen, "calm"), (&living, "focus")] {
         store
             .save_dj_session(&DjSession {
                 coordinator: zone.0.clone(),
@@ -365,7 +365,7 @@ fn a_scene_has_the_dj_where_it_plays_not_where_it_is_only_steered() {
     assert_eq!(source("Kitchen"), Some(("dj", Some("calm"))), "{saved:#?}");
     assert_eq!(source("Office"), Some(("dj", None)), "{saved:#?}");
     assert!(
-        source("Den").is_some_and(|(kind, _)| kind != "dj"),
+        source("Living Room").is_some_and(|(kind, _)| kind != "dj"),
         "steering alone isn't the DJ playing: {saved:#?}"
     );
 }
