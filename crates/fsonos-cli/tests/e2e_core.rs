@@ -535,6 +535,26 @@ fn play_next_and_queue_add_to_the_queue_and_undo_takes_them_off() {
     s.finish();
 }
 
+/// A doctor report's checks that warn or fail, which a whole report
+/// (truncated in a failure's detail) can hide.
+fn flagged(report: &Value) -> String {
+    report["checks"]
+        .as_array()
+        .map(|c| {
+            c.iter()
+                .filter(|x| x["status"] == "warn" || x["status"] == "fail")
+                .map(|x| {
+                    format!(
+                        "{} {}: {} ({})",
+                        x["id"], x["status"], x["summary"], x["detail"]
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_default()
+}
+
 #[test]
 fn doctor_reports_the_setup_with_its_exit_codes() {
     let mut s = Scenario::start("doctor");
@@ -546,6 +566,15 @@ fn doctor_reports_the_setup_with_its_exit_codes() {
             .map(|x| x["status"].as_str().unwrap_or("").to_string())
     };
 
+    // A host need not have a speech engine (the rch workers have none, CI
+    // installs one): name one that is there. Doctor only checks it exists.
+    let engine = std::env::current_exe().unwrap().display().to_string();
+    std::fs::write(
+        s.dir().join("data/speech.toml"),
+        format!("backend = \"command\"\ncommand = [{engine:?}, \"{{output}}\"]\n"),
+    )
+    .unwrap();
+
     // Under the harness the HTTP address is 127.0.0.1:0: nothing to probe.
     let run = s.cli("doctor", &["doctor", "--json"]);
     let report = json(&run);
@@ -554,7 +583,7 @@ fn doctor_reports_the_setup_with_its_exit_codes() {
         "cli",
         "an all-pass setup exits 0 with schema 1",
         run.code == Some(0) && report["schema"] == 1 && report["exit_code"] == 0,
-        format!("exit {:?}: {}", run.code, run.stdout),
+        format!("exit {:?}: {} | {}", run.code, flagged(&report), run.stderr),
     );
     s.check(
         "doctor",
