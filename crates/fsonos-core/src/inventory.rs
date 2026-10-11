@@ -159,6 +159,37 @@ pub fn survey<T: Transport + ?Sized>(
     Ok(out)
 }
 
+/// [`survey`], and when that finds no players, again with the
+/// `remembered` addresses as seeds too: the players an earlier survey found,
+/// which a network that drops multicast hides. The second try waits on no
+/// SSDP or mDNS replies, it only reads those addresses. While discovery or
+/// the seeds find the players, the remembered addresses are neither looked
+/// up nor tried, so one that no longer answers costs nothing.
+pub fn survey_or_remembered<T: Transport + ?Sized>(
+    t: &T,
+    seeds: &[IpAddr],
+    remembered: impl FnOnce() -> Vec<IpAddr>,
+    wait: Duration,
+) -> Result<Survey, CoreError> {
+    let first = survey(t, seeds, wait);
+    if first.as_ref().is_ok_and(|s| !s.households.is_empty()) {
+        return first;
+    }
+    let mut again = seeds.to_vec();
+    for ip in remembered() {
+        if !again.contains(&ip) {
+            again.push(ip);
+        }
+    }
+    if again.len() == seeds.len() {
+        return first;
+    }
+    match survey(t, &again, Duration::ZERO) {
+        Ok(found) if !found.households.is_empty() => Ok(found),
+        _ => first,
+    }
+}
+
 /// The generation a player's `swGen` (device description) or `SWGen`
 /// (topology) value names.
 #[must_use]

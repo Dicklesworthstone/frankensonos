@@ -276,12 +276,18 @@ impl Scenario {
     /// Run `fsonos <args>` to completion and log it as step `step`. The
     /// caller asserts on the result with [`Self::check`].
     pub fn cli(&mut self, step: &str, args: &[&str]) -> Run {
+        self.cli_without(step, args, &[])
+    }
+
+    /// [`Self::cli`] without the isolation variables named in `unset` (to
+    /// run, say, with no seed file configured).
+    pub fn cli_without(&mut self, step: &str, args: &[&str], unset: &[&str]) -> Run {
         let started = Instant::now();
-        let out = self
-            .command()
-            .args(args)
-            .output()
-            .expect("run the fsonos binary");
+        let mut cmd = self.command();
+        for var in unset {
+            cmd.env_remove(var);
+        }
+        let out = cmd.args(args).output().expect("run the fsonos binary");
         let run = Run {
             code: out.status.code(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),

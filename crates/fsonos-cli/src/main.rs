@@ -41,6 +41,7 @@ mod dj;
 mod dj_cmd;
 mod dj_view;
 mod doctor;
+mod known_players;
 mod policy_cmd;
 mod remote;
 mod rooms_cmd;

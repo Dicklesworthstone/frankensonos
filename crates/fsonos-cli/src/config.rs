@@ -19,12 +19,16 @@ use fsonos_proto::net::Lan;
 
 use crate::confine::Confined;
 
+/// The seed file in the data directory (see [`GlobalArgs::seed_addrs`]).
+pub const SEEDS_FILE: &str = "seeds.toml";
+
 /// Options every command accepts (and `serve` uses for discovery).
 #[derive(Debug, Clone, clap::Args)]
 pub struct GlobalArgs {
     /// Seed file of player addresses for networks where SSDP multicast is
     /// unreliable; every IP address in it is tried (e.g. TOML
     /// `players = ["192.0.2.10"]`, or one per line). Discovery still runs.
+    /// [default: `seeds.toml` in the data directory, when there is one]
     #[arg(long, env = "FSONOS_SEEDS", global = true)]
     pub seeds: Option<PathBuf>,
 
@@ -70,11 +74,17 @@ impl GlobalArgs {
         Duration::from_secs(self.wait)
     }
 
-    /// Every seed address: `--seed` flags, then the seed file's, without
-    /// duplicates.
+    /// Every seed address: `--seed` flags, then the seed file's (`--seeds`,
+    /// else the data directory's [`SEEDS_FILE`], which `fsonos setup`
+    /// writes), without duplicates.
     pub fn seed_addrs(&self) -> Result<Vec<IpAddr>, Failure> {
         let mut addrs = self.seed.clone();
-        if let Some(path) = &self.seeds {
+        let file = self.seeds.clone().or_else(|| {
+            self.data_dir()
+                .map(|d| d.join(SEEDS_FILE))
+                .filter(|p| p.exists())
+        });
+        if let Some(path) = &file {
             let text = std::fs::read_to_string(path).map_err(|e| {
                 Failure::invalid(format!("cannot read seed file {}: {e}", path.display()))
                     .with_hint("Fix FSONOS_SEEDS / --seeds, or drop it to rely on SSDP.")
@@ -616,6 +626,32 @@ mod tests {
             .unwrap_err();
         assert_eq!(missing.exit_code(), 2);
         assert!(missing.detail.contains("cannot read seed file"));
+    }
+
+    #[test]
+    fn the_seed_file_setup_writes_is_read_unless_another_is_named() {
+        let dir = std::env::temp_dir().join(format!("fsonos-seeds-dd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let data = dir.to_str().unwrap();
+        let none = GlobalHarness::try_parse_from(["fsonos", "--data-dir", data])
+            .unwrap()
+            .global;
+        assert_eq!(none.seed_addrs().unwrap(), Vec::<IpAddr>::new());
+        std::fs::write(dir.join(SEEDS_FILE), "players = [\"192.0.2.10\"]").unwrap();
+        let addrs = |g: &GlobalArgs| g.seed_addrs().unwrap();
+        assert_eq!(addrs(&none), ["192.0.2.10".parse::<IpAddr>().unwrap()]);
+        let other = dir.join("other.toml");
+        std::fs::write(&other, "players = [\"192.0.2.12\"]").unwrap();
+        let named = GlobalHarness::try_parse_from([
+            "fsonos",
+            "--data-dir",
+            data,
+            "--seeds",
+            other.to_str().unwrap(),
+        ])
+        .unwrap()
+        .global;
+        assert_eq!(addrs(&named), ["192.0.2.12".parse::<IpAddr>().unwrap()]);
     }
 
     #[test]

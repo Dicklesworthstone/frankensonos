@@ -74,9 +74,13 @@ pub fn policy(data_dir: &Path) -> Result<Policy, Failure> {
 /// surveyed with the global seeds and SSDP wait.
 pub fn surface(global: &GlobalArgs, policy: Policy) -> Result<Surface, Failure> {
     let seeds = global.seed_addrs()?;
+    let data_dir = global.data_dir();
+    let remembered = move || crate::known_players::remembered(data_dir.as_deref());
     let wait = global.wait();
     let survey: fsonos_api::surface::Survey = Box::new(move |transport| {
-        Ok(fsonos_core::inventory::survey(transport, &seeds, wait)?.households)
+        let found =
+            fsonos_core::inventory::survey_or_remembered(transport, &seeds, &remembered, wait)?;
+        Ok(found.households)
     });
     Ok(
         Surface::new(global.lan()?, survey, policy, Box::new(SystemClock)).with_dj(Box::new(
@@ -97,6 +101,8 @@ pub fn live_surface(
     library: Option<Arc<LibrarySync>>,
 ) -> Result<(Surface, Arc<Live>), Failure> {
     let seeds = global.seed_addrs()?;
+    let data_dir = global.data_dir();
+    let remembered = move || crate::known_players::remembered(data_dir.as_deref());
     let wait = global.wait();
     let network = global.network()?;
     // The players fetch announcement clips from the event listener.
@@ -104,6 +110,9 @@ pub fn live_surface(
     let config = LiveConfig {
         callback_port: events_port,
         media: Some(files),
+        remembered: remembered(),
+        // Each survey's players are remembered for the next start.
+        surveyed: crate::known_players::remembering(global),
         ..LiveConfig::new(seeds.clone())
     };
     let live = Arc::new(Live::start_with(
@@ -114,7 +123,9 @@ pub fn live_surface(
     // Right after a regroup the surface surveys directly; see
     // `fsonos_api::surface::SETTLE`.
     let survey: fsonos_api::surface::Survey = Box::new(move |transport| {
-        Ok(fsonos_core::inventory::survey(transport, &seeds, wait)?.households)
+        let found =
+            fsonos_core::inventory::survey_or_remembered(transport, &seeds, &remembered, wait)?;
+        Ok(found.households)
     });
     let surface = Surface::new(
         Box::new(network.transport),

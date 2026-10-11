@@ -47,9 +47,11 @@ impl Direct {
         doctor_checks: Option<fsonos_api::surface::DoctorChecks>,
     ) -> Result<Self, Failure> {
         let seeds = global.seed_addrs()?;
+        let data_dir = global.data_dir();
+        let remembered = move || crate::known_players::remembered(data_dir.as_deref());
         let wait = global.wait();
         let lan = global.lan()?;
-        let survey = inventory::survey(&*lan, &seeds, wait)?;
+        let survey = inventory::survey_or_remembered(&*lan, &seeds, &remembered, wait)?;
         if let Some(dir) = global.data_dir() {
             crate::completions::remember_rooms(
                 &dir,
@@ -58,6 +60,9 @@ impl Direct {
                     .iter()
                     .flat_map(|h| h.rooms.iter().map(|r| r.name.clone())),
             );
+            if !survey.households.is_empty() {
+                crate::known_players::remember_in(&dir, &survey.households);
+            }
         }
         let policy = match global.data_dir() {
             Some(dir) => crate::daemon::policy(&dir)?,
@@ -70,7 +75,7 @@ impl Direct {
             if let Some(households) = first.lock().ok().and_then(|mut f| f.take()) {
                 return Ok(households);
             }
-            Ok(inventory::survey(transport, &seeds, wait)?.households)
+            Ok(inventory::survey_or_remembered(transport, &seeds, &remembered, wait)?.households)
         });
         let mut surface =
             Surface::new(lan, again, policy, Box::new(SystemClock)).with_dj(Box::new(

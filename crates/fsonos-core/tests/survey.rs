@@ -2,7 +2,7 @@
 //! and S2 fixtures: SSDP replies, device descriptions, and one
 //! ZoneGroupTopology read per household.
 
-use fsonos_core::inventory::survey;
+use fsonos_core::inventory::{survey, survey_or_remembered};
 use fsonos_proto::mdns;
 use fsonos_proto::{ProtoError, Transport, ssdp};
 use fsonos_types::{Generation, PlayerId};
@@ -190,6 +190,35 @@ fn seeds_stand_in_when_ssdp_fails() {
 
     // Without seeds an SSDP failure is the survey's failure.
     assert!(survey(&lan, &[], Duration::from_millis(1)).is_err());
+}
+
+#[test]
+fn remembered_players_stand_in_only_when_nothing_else_finds_any() {
+    // SSDP dead and no seeds: a player an earlier survey found is found
+    // again, and with it its household.
+    let quiet = FakeLan {
+        ssdp: false,
+        ..FakeLan::new()
+    };
+    let wait = Duration::from_millis(1);
+    let found = survey_or_remembered(&quiet, &[], || vec![ip("192.0.2.21")], wait).unwrap();
+    assert_eq!(found.households.len(), 1);
+    assert_eq!(found.households[0].generation(), Some(Generation::S2));
+    // With nothing remembered either, it is still the survey's failure.
+    assert!(survey_or_remembered(&quiet, &[], Vec::new, wait).is_err());
+
+    // While SSDP finds the players, a remembered address that no longer
+    // answers is never tried.
+    let lan = FakeLan::new();
+    let looked_up = std::cell::Cell::new(false);
+    let remembered = || {
+        looked_up.set(true);
+        vec![ip("192.0.2.99")]
+    };
+    let found = survey_or_remembered(&lan, &[], remembered, wait).unwrap();
+    assert!(!looked_up.get(), "nor looked up");
+    assert_eq!(found.households.len(), 2);
+    assert!(found.unreachable.is_empty(), "{:?}", found.unreachable);
 }
 
 /// mDNS answer style: the S2 players advertise with their household in the

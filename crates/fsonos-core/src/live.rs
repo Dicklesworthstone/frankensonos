@@ -40,6 +40,9 @@ use std::time::{Duration, Instant, SystemTime};
 pub struct LiveConfig {
     /// Player addresses to survey besides SSDP (seeds.toml, `--seeds`).
     pub seeds: Vec<IpAddr>,
+    /// Players an earlier run found: surveyed too until the model has found
+    /// the households itself (after that, the players it knows are).
+    pub remembered: Vec<IpAddr>,
     /// How often to survey.
     pub interval: Duration,
     /// The longest a failing survey backs off to.
@@ -49,16 +52,24 @@ pub struct LiveConfig {
     /// Clips the event listener also serves at `GET /media/<name>`, so the
     /// players fetch announcements from [`Snapshot::callback`].
     pub media: Option<MediaFiles>,
+    /// Called with the households after every survey that found them, so
+    /// the caller can remember the players for the next start.
+    pub surveyed: Option<Surveyed>,
 }
+
+/// See [`LiveConfig::surveyed`].
+pub type Surveyed = Arc<dyn Fn(&[HouseholdState]) + Send + Sync>;
 
 impl std::fmt::Debug for LiveConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveConfig")
             .field("seeds", &self.seeds)
+            .field("remembered", &self.remembered)
             .field("interval", &self.interval)
             .field("max_backoff", &self.max_backoff)
             .field("callback_port", &self.callback_port)
             .field("media", &self.media.is_some())
+            .field("surveyed", &self.surveyed.is_some())
             .finish()
     }
 }
@@ -69,10 +80,12 @@ impl LiveConfig {
     pub fn new(seeds: Vec<IpAddr>) -> Self {
         Self {
             seeds,
+            remembered: Vec::new(),
             interval: Duration::from_mins(5),
             max_backoff: Duration::from_mins(30),
             callback_port: 0,
             media: None,
+            surveyed: None,
         }
     }
 }
@@ -522,15 +535,22 @@ impl Engine {
         let Some(s) = &m.sink else { return };
         let callback = |service: Service| s.callback_url(service.tag());
         // Survey the players already known as well as the seeds, so they
-        // are found again even when SSDP stops answering.
+        // are found again even when SSDP stops answering; before the first
+        // survey finds them, the players an earlier run found.
         let mut seeds = self.config.seeds.clone();
-        for ip in m
+        let known: Vec<IpAddr> = m
             .rec
             .households
             .iter()
             .flat_map(|h| &h.players)
             .map(|p| p.ip)
-        {
+            .collect();
+        let also = if known.is_empty() {
+            self.config.remembered.clone()
+        } else {
+            known
+        };
+        for ip in also {
             if !seeds.contains(&ip) {
                 seeds.push(ip);
             }
@@ -539,6 +559,9 @@ impl Engine {
             Ok(report) => {
                 for gone in &report.missing {
                     m.playback.remove(gone);
+                }
+                if let Some(surveyed) = &self.config.surveyed {
+                    surveyed(&m.rec.households);
                 }
                 // Reconcile play positions from ground truth every survey,
                 // not only on GENA track-change: a daemon restart or an

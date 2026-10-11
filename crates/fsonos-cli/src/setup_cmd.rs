@@ -375,7 +375,7 @@ fn offer_seeds(
     direct: &Direct,
     prompt: Option<&Prompt>,
 ) -> anyhow::Result<bool> {
-    let path = data_dir.join("seeds.toml");
+    let path = data_dir.join(crate::config::SEEDS_FILE);
     let players: Vec<IpAddr> = direct
         .discover()
         .players
