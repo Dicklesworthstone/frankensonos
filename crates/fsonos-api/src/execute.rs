@@ -522,7 +522,7 @@ mod tests {
             t.actions(),
             [
                 "SetAVTransportURI",
-                "BecomeCoordinatorOfStandaloneGroup",
+                "SetAVTransportURI",
                 "SetMute",
                 "SetAVTransportURI",
                 "Play"

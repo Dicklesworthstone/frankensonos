@@ -23,6 +23,9 @@ pub(crate) const TRANSITION_NOT_AVAILABLE: Fault = Fault(701);
 pub(crate) const ILLEGAL_SEEK_TARGET: Fault = Fault(711);
 pub(crate) const ILLEGAL_MIME_TYPE: Fault = Fault(714);
 pub(crate) const SONOS_FAILURE: Fault = Fault(800);
+/// What current firmware answers `BecomeCoordinatorOfStandaloneGroup`
+/// (docs/PROTOCOL.md §6).
+pub(crate) const STANDALONE_REFUSED: Fault = Fault(1023);
 
 /// Out-arguments of a successful action, in wire order.
 pub(crate) type Out = Vec<(&'static str, String)>;
@@ -483,6 +486,12 @@ impl State {
     /// `SetAVTransportURI x-rincon:<target>`: join `target`'s group, now or,
     /// with a join lag, later (see [`Self::settle_joins`]).
     fn join_uri(&mut self, p: usize, target: &str) -> Result<Out, Fault> {
+        // Joining itself is how a player leaves its group: real ones answer
+        // 402 and leave anyway (docs/PROTOCOL.md §6).
+        if target == self.players[p].uuid {
+            self.make_standalone(p);
+            return Err(INVALID_ARGS);
+        }
         let t = self.find(target).ok_or(SONOS_FAILURE)?;
         let lag = self.players[p].faults.join_lag;
         if lag.is_zero() {
@@ -675,9 +684,10 @@ impl State {
             | "RemoveTrackFromQueue"
             | "RemoveAllTracksFromQueue" => self.av_sources(p, action, args, now),
             "Play" | "Pause" | "Stop" => self.av_verbs(p, action, now),
-            "Next" | "Previous" | "Seek" | "BecomeCoordinatorOfStandaloneGroup" => {
-                self.av_navigation(p, action, args, now)
-            }
+            "Next" | "Previous" | "Seek" => self.av_navigation(p, action, args, now),
+            // Refused on current firmware; a member leaves by joining
+            // itself instead (`join_uri`, docs/PROTOCOL.md §6).
+            "BecomeCoordinatorOfStandaloneGroup" => Err(STANDALONE_REFUSED),
             "DelegateGroupCoordinationTo" => self.delegate(p, args),
             "ConfigureSleepTimer" | "GetRemainingSleepTimerDuration" => {
                 self.sleep_timer(p, action, args, now)
@@ -895,22 +905,6 @@ impl State {
                     _ => return Err(INVALID_ARGS),
                 }
                 Ok(Vec::new())
-            }
-            "BecomeCoordinatorOfStandaloneGroup" => {
-                self.require_not_secondary(p)?;
-                let delegated = (self.players[p].coordinator == p)
-                    .then(|| self.members(p).get(1).copied())
-                    .flatten();
-                self.make_standalone(p);
-                Ok(vec![
-                    (
-                        "DelegatedGroupCoordinatorID",
-                        delegated
-                            .map(|d| self.players[d].uuid.clone())
-                            .unwrap_or_default(),
-                    ),
-                    ("NewGroupID", self.players[p].group_id.clone()),
-                ])
             }
             _ => Err(INVALID_ACTION),
         }
@@ -1630,16 +1624,21 @@ mod tests {
         assert_eq!(join(&mut s, 0, &living), Err(SONOS_FAILURE));
         let bridge = format!("x-rincon:{}", s.players[2].uuid);
         assert_eq!(join(&mut s, 0, &bridge), Err(SONOS_FAILURE));
-        // The coordinator leaving hands the group to its member.
-        let out = call(
-            &mut s,
-            0,
-            &AV_TRANSPORT,
-            "BecomeCoordinatorOfStandaloneGroup",
-            &[("InstanceID", "0")],
-        )
-        .unwrap();
-        assert_eq!(get(&out, "DelegatedGroupCoordinatorID"), s.players[1].uuid);
+        // The standalone verb is refused, as on current firmware.
+        assert_eq!(
+            call(
+                &mut s,
+                0,
+                &AV_TRANSPORT,
+                "BecomeCoordinatorOfStandaloneGroup",
+                &[("InstanceID", "0")],
+            ),
+            Err(STANDALONE_REFUSED)
+        );
+        // The coordinator joining itself answers 402 and leaves anyway,
+        // handing the group to its member.
+        let own = format!("x-rincon:{}", s.players[0].uuid);
+        assert_eq!(join(&mut s, 0, &own), Err(INVALID_ARGS));
         assert_eq!((s.players[0].coordinator, s.players[1].coordinator), (0, 1));
         assert_ne!(s.players[0].group_id, s.players[1].group_id);
         let zgs = docs::zone_group_state(&s, 0);
@@ -1675,28 +1674,13 @@ mod tests {
         };
         // The hidden half refuses group verbs; the primary carries both.
         assert_eq!(join(&mut s, rf, kitchen), Err(SONOS_FAILURE));
-        assert_eq!(
-            call(
-                &mut s,
-                rf,
-                &AV_TRANSPORT,
-                "BecomeCoordinatorOfStandaloneGroup",
-                &[("InstanceID", "0")]
-            ),
-            Err(SONOS_FAILURE)
-        );
+        assert_eq!(join(&mut s, rf, rf), Err(SONOS_FAILURE));
         join(&mut s, den, kitchen).unwrap();
         assert_eq!(s.members(kitchen), [kitchen, den, rf]);
         assert_eq!(s.players[rf].group_id, s.players[kitchen].group_id);
-        // Kitchen leaving hands the group to the pair's primary, never its hidden half.
-        call(
-            &mut s,
-            kitchen,
-            &AV_TRANSPORT,
-            "BecomeCoordinatorOfStandaloneGroup",
-            &[("InstanceID", "0")],
-        )
-        .unwrap();
+        // Kitchen leaving (joining itself: 402, and it leaves) hands the
+        // group to the pair's primary, never its hidden half.
+        assert_eq!(join(&mut s, kitchen, kitchen), Err(INVALID_ARGS));
         assert_eq!(s.members(den), [den, rf]);
         assert_eq!(s.members(kitchen), [kitchen]);
     }

@@ -227,10 +227,9 @@ fn a_member_steps_out_to_announce_and_back_in_while_its_group_plays_on() {
     assert!(house.restore_failed.is_empty(), "{report:#?}");
     assert_eq!(house.lead, id(&h, "Office"));
     let log = &sim.soap_log()[log_from..];
-    assert!(
-        log.iter()
-            .any(|e| e.room == "Office" && e.action == "BecomeCoordinatorOfStandaloneGroup")
-    );
+    // The Office left the Kitchen's group by joining itself.
+    let own = format!("x-rincon:{}", id(&h, "Office").0);
+    assert!(sent(log, "Office", "SetAVTransportURI", "CurrentURI").contains(&own));
     assert!(sent(log, "Kitchen", "SetAVTransportURI", "CurrentURI").is_empty());
     let h = houses(&sim, &lan);
     assert_eq!(

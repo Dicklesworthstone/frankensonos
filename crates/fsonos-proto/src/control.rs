@@ -167,16 +167,31 @@ pub fn join_group<T: Transport + ?Sized>(
     set_av_transport_uri(t, host, &format!("x-rincon:{}", coordinator.0), "")
 }
 
-/// Take the player at `host` out of its group into a group of its own.
-pub fn leave_group<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<(), ProtoError> {
-    call(
-        t,
-        host,
-        &AV_TRANSPORT,
-        "BecomeCoordinatorOfStandaloneGroup",
-        &[INSTANCE],
-    )
-    .map(drop)
+/// How a player answered [`leave_group`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leaving {
+    /// It said it left.
+    Done,
+    /// It answered UPnP 402, as real players do while leaving anyway:
+    /// confirm against the topology.
+    Unconfirmed,
+}
+
+/// Take the player at `host`, whose id is `own`, out of its group into a
+/// group of its own: it joins itself (`x-rincon:<own>`). Players answer
+/// that with UPnP 402 and leave anyway (docs/PROTOCOL.md §6, verified on S1
+/// and S2): [`Leaving::Unconfirmed`]. `BecomeCoordinatorOfStandaloneGroup`
+/// is refused (1023) on current firmware.
+pub fn leave_group<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    own: &PlayerId,
+) -> Result<Leaving, ProtoError> {
+    match set_av_transport_uri(t, host, &format!("x-rincon:{}", own.0), "") {
+        Ok(()) => Ok(Leaving::Done),
+        Err(ProtoError::SoapFault { code: 402, .. }) => Ok(Leaving::Unconfirmed),
+        Err(e) => Err(e),
+    }
 }
 
 // ---------------------------------------------------------------- volume
@@ -649,11 +664,37 @@ mod tests {
                 .2
                 .contains("x-rincon-queue:RINCON_000E58A0000001400#0")
         );
-        leave_group(&t, host()).unwrap();
+        // Leaving is joining itself.
+        let own = PlayerId("RINCON_000E58A0000002400".into());
+        assert_eq!(leave_group(&t, host(), &own).unwrap(), Leaving::Done);
+        let (_, action, body) = t.last();
+        assert!(action.ends_with("#SetAVTransportURI\""), "{action}");
+        assert!(body.contains("<CurrentURI>x-rincon:RINCON_000E58A0000002400</CurrentURI>"));
+    }
+
+    /// Answers every call with one UPnP fault.
+    struct Refuses(u16);
+
+    impl Transport for Refuses {
+        fn soap_post(&self, _: IpAddr, _: &str, _: &str, _: &str) -> Result<String, ProtoError> {
+            Err(ProtoError::SoapFault {
+                code: self.0,
+                reason: "refused".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn leaving_takes_the_players_402_as_unconfirmed() {
+        let own = PlayerId("RINCON_000E58A0000002400".into());
+        assert_eq!(
+            leave_group(&Refuses(402), host(), &own).unwrap(),
+            Leaving::Unconfirmed
+        );
+        let other = leave_group(&Refuses(800), host(), &own).unwrap_err();
         assert!(
-            t.last()
-                .1
-                .ends_with("#BecomeCoordinatorOfStandaloneGroup\"")
+            matches!(other, ProtoError::SoapFault { code: 800, .. }),
+            "{other}"
         );
     }
 

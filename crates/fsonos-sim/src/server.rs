@@ -285,7 +285,13 @@ fn soap(state: &mut State, index: usize, service: &ServiceDef, req: &Request) ->
             );
             text(200, "OK", body)
         }
-        Err(f) => fault(state, index, service, action, args, f.0),
+        Err(f) => {
+            // A player can refuse a request and carry it out anyway (a
+            // member joining itself leaves its group): what changed still
+            // reaches the subscribers.
+            state.flush_events();
+            fault(state, index, service, action, args, f.0)
+        }
     }
 }
 

@@ -442,7 +442,9 @@ fn run<T: Transport + ?Sized>(
     op: &RestoreOp,
 ) -> Result<(), CoreError> {
     match op {
-        RestoreOp::Leave { player } => soap::leave_group(t, ip(household, player)?)?,
+        RestoreOp::Leave { player } => {
+            crate::control::leave(t, std::slice::from_ref(household), player)?;
+        }
         RestoreOp::Join { player } => soap::join_group(t, ip(household, player)?, coordinator)?,
         RestoreOp::PlayQueue => soap::play_from_queue(t, host, coordinator)?,
         RestoreOp::SetUri { uri, metadata } => soap::set_av_transport_uri(t, host, uri, metadata)?,

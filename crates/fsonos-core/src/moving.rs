@@ -224,7 +224,7 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
 ) -> Result<(), MoveError> {
     let snap = snapshot::capture(t, households, coordinator, 0)?;
     let queue = queue_of(t, households, &snap)?;
-    soap::leave_group(t, ip(households, target)?)?;
+    control::leave(t, households, target)?;
     replay_on(t, households, &snap, &queue, target)?;
     for member in snap
         .members

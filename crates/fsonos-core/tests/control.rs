@@ -150,14 +150,12 @@ fn join_targets_the_member_and_names_the_coordinator() {
     assert_eq!(sent[0].0, ip("192.0.2.15"));
     assert!(sent[0].2.contains("x-rincon:RINCON_000E58A0000201400"));
     drop(sent);
+    // Leaving is joining itself (docs/PROTOCOL.md §6).
     control::leave(&t, &h, &pid(3)).unwrap();
-    assert_eq!(
-        t.actions()[1],
-        (
-            ip("192.0.2.15"),
-            "BecomeCoordinatorOfStandaloneGroup".into()
-        )
-    );
+    let sent = t.sent.borrow();
+    assert_eq!(sent[1].0, ip("192.0.2.15"));
+    assert_eq!(sent[1].1, "SetAVTransportURI");
+    assert!(sent[1].2.contains(&format!("x-rincon:{}", pid(3).0)));
 }
 
 #[test]

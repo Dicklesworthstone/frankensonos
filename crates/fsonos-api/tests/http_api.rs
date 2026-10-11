@@ -286,7 +286,8 @@ fn control_routes_address_the_coordinator() {
     assert_eq!(status, 200, "{out}");
     assert_eq!(
         api.actions(),
-        ["Pause", "BecomeCoordinatorOfStandaloneGroup"]
+        ["Pause", "SetAVTransportURI"],
+        "ungroup: the room joins itself (docs/PROTOCOL.md §6)"
     );
 }
 

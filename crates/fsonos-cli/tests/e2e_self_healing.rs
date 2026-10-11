@@ -186,7 +186,11 @@ fn check_reboot(s: &mut Scenario, api: &str) {
 /// 3 s through its own events, with nothing read from the players.
 fn check_ungrouped(s: &mut Scenario, api: &str) {
     let office = s.ip("Office");
-    let left = leave_group(&s.lan(), office);
+    let own = s
+        .sim_handle()
+        .and_then(|sim| sim.player("Office"))
+        .map_or_else(|| PlayerId(String::new()), |p| PlayerId(p.uuid.clone()));
+    let left = leave_group(&s.lan(), office, &own);
     s.check(
         "ungrouped",
         "sim",

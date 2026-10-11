@@ -15,8 +15,15 @@ use fsonos_proto::didl::{
     SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_container_didl,
     spotify_container_uri, spotify_queue_uri, spotify_track_didl, spotify_track_uri,
 };
+use fsonos_proto::topology::get_zone_group_state;
 use fsonos_types::{Player, PlayerId};
 use std::net::IpAddr;
+use std::time::{Duration, Instant};
+
+/// How long a player that left its group may take to show alone (real ones
+/// do within about a second).
+const LEAVE_WAIT: Duration = Duration::from_secs(3);
+const LEAVE_POLL: Duration = Duration::from_millis(100);
 
 /// The player `id`, in whichever household knows it.
 pub fn locate<'a>(
@@ -321,13 +328,39 @@ pub fn join<T: Transport + ?Sized>(
     Ok(soap::join_group(t, addr(households, member)?, coordinator)?)
 }
 
-/// Take `member` out of its group into a group of its own.
+/// Take `member` out of its group into a group of its own. Players answer
+/// the request with UPnP 402 and leave anyway (docs/PROTOCOL.md §6), so
+/// then the topology is read back until `member` leads a group of its own;
+/// still grouped after [`LEAVE_WAIT`], the player's 402 stands.
 pub fn leave<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     member: &PlayerId,
 ) -> Result<(), CoreError> {
-    Ok(soap::leave_group(t, addr(households, member)?)?)
+    let host = addr(households, member)?;
+    if soap::leave_group(t, host, member)? == soap::Leaving::Done {
+        return Ok(());
+    }
+    let started = Instant::now();
+    loop {
+        // Alone: it leads its group, with nobody visible but itself (a
+        // stereo pair's other half and a sub are invisible members).
+        let alone = get_zone_group_state(t, host)?.groups.iter().any(|g| {
+            g.coordinator == *member && g.members.iter().all(|m| m.uuid == *member || m.invisible)
+        });
+        if alone {
+            return Ok(());
+        }
+        let left = LEAVE_WAIT.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return Err(ProtoError::SoapFault {
+                code: 402,
+                reason: "asked to leave its group, the player is still in it".into(),
+            }
+            .into());
+        }
+        std::thread::sleep(LEAVE_POLL.min(left));
+    }
 }
 
 /// What the group `coordinator` leads is doing right now.
