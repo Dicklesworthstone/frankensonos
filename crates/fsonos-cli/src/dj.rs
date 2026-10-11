@@ -20,6 +20,9 @@
 //! checked against the moods first, and applies from the next pick whether
 //! or not the DJ runs. Status and moods read the same session and programs
 //! ([`crate::dj_view`]).
+//!
+//! The daemon's DJ keeps its running feeds in the data directory
+//! ([`saved`]), so a restarted serve feeds the queues it fed before.
 
 use chrono::{Datelike, Timelike};
 use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
@@ -46,6 +49,7 @@ use crate::dj_view::{self, steer_failure, store_failure};
 
 pub(crate) mod feedback;
 pub(crate) mod prefs;
+pub(crate) mod saved;
 pub(crate) mod sync;
 
 /// The moods file's name inside the data directory.
@@ -58,6 +62,8 @@ pub struct SpotifyDj {
     state: Mutex<State>,
     /// Refreshes the library cache (the daemon's, with a Spotify app).
     library: Option<Arc<sync::LibrarySync>>,
+    /// Where the running feeds are kept across restarts (the daemon's).
+    feeds_file: Option<PathBuf>,
 }
 
 impl SpotifyDj {
@@ -72,7 +78,30 @@ impl SpotifyDj {
                 ..State::default()
             }),
             library: None,
+            feeds_file: None,
         }
+    }
+
+    /// Keep the running feeds in `path` across restarts ([`saved`]),
+    /// taking up the ones it holds now.
+    #[must_use]
+    pub fn with_saved_feeds(mut self, path: Option<PathBuf>) -> Self {
+        if let Some(path) = &path {
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let mut state = self.state();
+            state.feeds = saved::load(path, seed);
+            state.saved = saved::encode(&state.feeds);
+            if !state.feeds.is_empty() {
+                tracing::info!(
+                    feeds = state.feeds.len(),
+                    "the DJ takes up the queues it fed"
+                );
+            }
+        }
+        self.feeds_file = path;
+        self
     }
 
     /// Refresh the library cache through `library` (`dj_sync`).
@@ -98,6 +127,23 @@ impl SpotifyDj {
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// Save the running feeds, if they changed since last saved.
+    fn save(&self, state: &mut State) {
+        let Some(path) = &self.feeds_file else {
+            return;
+        };
+        let text = saved::encode(&state.feeds);
+        if text == state.saved {
+            return;
+        }
+        match saved::write(path, &text) {
+            Ok(()) => state.saved = text,
+            Err(e) => {
+                tracing::warn!(error = %e, "the DJ's feeds weren't saved: a restart may forget them");
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -112,6 +158,10 @@ struct State {
     /// Groups the music is moving away from: their playback is not acted on
     /// until the move settles (`DjEngine::moving`).
     held: HashSet<PlayerId>,
+    /// The pool has been built (feeds taken up after a restart have none).
+    planned: bool,
+    /// The feeds as last saved.
+    saved: String,
 }
 
 /// What a pick is planned with right now, beyond the pool.
@@ -137,7 +187,9 @@ impl State {
         self.feedback = FeedbackModel::load(&StoreFeedback(store), now).ok();
         self.reload_moods(moods_file)?;
         // The owner's standing preferences shape every pick from here.
-        prefs::apply(self, moods_file)
+        prefs::apply(self, moods_file)?;
+        self.planned = true;
+        Ok(())
     }
 
     /// Re-read the moods and programs (the built-ins without a file).
@@ -313,15 +365,16 @@ fn steer(
     }
 }
 
-impl DjEngine for SpotifyDj {
-    fn act(
+impl SpotifyDj {
+    /// A start, skip or stop (see [`DjEngine::act`]).
+    fn carry_out(
         &self,
+        state: &mut State,
         at: DjSpeakers<'_>,
         store: &mut dyn Store,
         action: DjAction,
         clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         let room = room(at);
         let speakers = speakers(at);
         let now = clock.now().timestamp();
@@ -385,6 +438,22 @@ impl DjEngine for SpotifyDj {
                 Ok(sent(format!("the DJ stopped in {room}'s group")))
             }
         }
+    }
+}
+
+impl DjEngine for SpotifyDj {
+    fn act(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &mut dyn Store,
+        action: DjAction,
+        clock: &dyn Clock,
+    ) -> Result<OutcomeDto, Failure> {
+        let mut state = self.state();
+        let done = self.carry_out(&mut state, at, store, action, clock);
+        // Even a failed start can leave a feed running, part-queued.
+        self.save(&mut state);
+        done
     }
 
     fn steer(
@@ -466,6 +535,7 @@ impl DjEngine for SpotifyDj {
         if let Some(heard) = listening.remove(from) {
             listening.insert(to.clone(), heard);
         }
+        self.save(&mut state);
     }
 
     fn on_playback(
@@ -479,11 +549,13 @@ impl DjEngine for SpotifyDj {
         if !state.feeds.contains_key(at.coordinator) || state.held.contains(at.coordinator) {
             return;
         }
-        // A library refresh landed: plan from what it found from here.
-        if self.library.as_ref().is_some_and(|l| l.take_fresh())
+        // A library refresh landed (plan from what it found from here), or
+        // feeds taken up after a restart plan for the first time.
+        let fresh = self.library.as_ref().is_some_and(|l| l.take_fresh());
+        if (fresh || !state.planned)
             && let Err(f) = state.reload(store, self.moods_file.as_ref(), clock.now().timestamp())
         {
-            tracing::warn!(detail = %f.detail, "the DJ keeps its pool from before the refresh");
+            tracing::warn!(detail = %f.detail, "the DJ plans from the pool it had");
         }
         // A session that names a mood no longer defined still plays, unsteered.
         let cx = state
@@ -535,6 +607,7 @@ impl DjEngine for SpotifyDj {
             feeds.remove(at.coordinator);
             listening.remove(at.coordinator);
         }
+        self.save(&mut state);
     }
 
     fn feedback(

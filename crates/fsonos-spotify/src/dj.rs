@@ -276,7 +276,7 @@ pub enum Factor {
 }
 
 /// Why a work was chosen.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PickReason {
     /// Every non-neutral factor in evaluation order, per-mille (1000 =
     /// neutral). `Rotation` and `LongWork` are flags, recorded at 1000.

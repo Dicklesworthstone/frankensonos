@@ -136,7 +136,12 @@ pub fn live_surface(
     .with_live(&live)
     .with_dj(Box::new(
         crate::dj::SpotifyDj::new(global.data_dir().map(|d| d.join(crate::dj::MOODS_FILE)))
-            .with_library(library),
+            .with_library(library)
+            .with_saved_feeds(
+                global
+                    .data_dir()
+                    .map(|d| d.join(crate::dj::saved::FEEDS_FILE)),
+            ),
     ));
     let listener = Arc::downgrade(&live);
     let surface = surface.with_announcements(fsonos_api::surface::announce::Announcements::new(

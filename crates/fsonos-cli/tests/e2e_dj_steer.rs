@@ -2,7 +2,8 @@
 //! virtual households: the moods and programs, an unknown mood, a clear with
 //! nothing to clear, a start in a mood, its status (what plays, why, the
 //! steering) over HTTP, MCP and the CLI, a steer from MCP and its undo, a
-//! daemon restart that keeps the steering, and a clear from the CLI.
+//! daemon restart that keeps the DJ playing and its steering, and a clear
+//! from the CLI.
 
 mod e2e;
 
@@ -236,7 +237,8 @@ fn the_dj_is_steered_alike_on_every_surface_and_keeps_its_steering() {
     check_status(&mut s, &api, &mcp);
     check_steer_and_undo(&mut s, &api, &mcp);
 
-    // The steering is in the store: a new daemon still has it.
+    // The steering is in the store and the DJ's feed in the data
+    // directory: a new daemon has both.
     let code = daemon.interrupt(Duration::from_secs(10));
     s.check(
         "stop-serve",
@@ -250,9 +252,9 @@ fn the_dj_is_steered_alike_on_every_surface_and_keeps_its_steering() {
     s.check(
         "restart-keeps-steering",
         "http",
-        "after a restart the DJ is no longer running, but its steering is still the zone's",
+        "after a restart the DJ plays on, still steered by the zone's session",
         code == 200
-            && status["running"] == false
+            && status["running"] == true
             && status["steering"]["source"] == "session"
             && status["steering"]["mood"] == "focus",
         &status,

@@ -148,6 +148,9 @@ tail -f ~/Library/Logs/fsonos/fsonos.log
 The job sets `KeepAlive` to restart on any exit, at most once every 10 s
 (`ThrottleInterval`). It also gets 20 s between SIGTERM and SIGKILL
 (`ExitTimeOut`) so the daemon can cancel its event subscriptions cleanly.
+A DJ that was playing keeps playing across a restart: serve keeps its queues
+in `dj-feeds.json` in the data directory and feeds them on, unless the queue
+was cleared or replaced meanwhile.
 
 ### Alternative: a LaunchAgent
 

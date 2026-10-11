@@ -20,6 +20,12 @@
 //! [`QueueFeed::skip`] re-reads the queue and skips the rest of the current
 //! work; [`QueueFeed::stop`] stops.
 //!
+//! A running feed outlives its process as a [`FeedSnapshot`]: the daemon
+//! saves one per feed and, restarted, [`QueueFeed::restore`]s them. A
+//! restored feed checks the queue against its works at the first playback
+//! event, and steps aside if none is left (the owner cleared or replaced
+//! the queue meanwhile).
+//!
 //! Synchronous and generic over the proto `Transport` and the core `Store`, so
 //! the daemon drives it from its event loop and tests drive it against
 //! `fsonos-sim` over real localhost sockets.
@@ -37,6 +43,7 @@ use fsonos_proto::didl::{
 use fsonos_proto::soap::{self, AV_TRANSPORT};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
+use serde::{Deserialize, Serialize};
 
 use crate::dj::{DjConfig, PickContext, PickReason, PlayRecord, Rng, WorkPool, pick_next};
 use crate::feedback::FeedbackModel;
@@ -86,7 +93,7 @@ pub enum FeedError {
 }
 
 /// One movement of a queued work.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Movement {
     /// `spotify:track:` URI.
     pub uri: String,
@@ -99,7 +106,7 @@ pub struct Movement {
 }
 
 /// One of the DJ's works on the coordinator's queue.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueuedWork {
     pub title: String,
     pub composer: String,
@@ -176,6 +183,19 @@ pub struct QueueFeed {
     queue_len: Option<u32>,
 }
 
+/// What a running feed knows of its queue, to carry it across a restart
+/// ([`QueueFeed::snapshot`], [`QueueFeed::restore`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeedSnapshot {
+    /// The coordinator it feeds (and records plays under).
+    pub zone: String,
+    pub earlier: Vec<String>,
+    pub lookahead: usize,
+    pub queued: Vec<QueuedWork>,
+    pub playing: Option<u32>,
+    pub recorded: Option<(u32, String)>,
+}
+
 impl QueueFeed {
     #[must_use]
     pub fn new(coordinator: &PlayerId, config: DjConfig, seed: u64) -> Self {
@@ -191,6 +211,44 @@ impl QueueFeed {
             recorded: None,
             queue_len: None,
         }
+    }
+
+    /// The feed as it stands, if it is running.
+    #[must_use]
+    pub fn snapshot(&self) -> Option<FeedSnapshot> {
+        self.active.then(|| FeedSnapshot {
+            zone: self.zone.clone(),
+            earlier: self.earlier.clone(),
+            lookahead: self.lookahead,
+            queued: self.queued.clone(),
+            playing: self.playing,
+            recorded: self.recorded.clone(),
+        })
+    }
+
+    /// A running feed again, from `snapshot`. It doesn't know the queue's
+    /// length, so its first playback event re-reads the queue: works still
+    /// there are fed on, and with none left it lets go.
+    #[must_use]
+    pub fn restore(snapshot: FeedSnapshot, config: DjConfig, seed: u64) -> Self {
+        Self {
+            zone: snapshot.zone,
+            earlier: snapshot.earlier,
+            config,
+            rng: Rng::new(seed),
+            lookahead: snapshot.lookahead,
+            active: true,
+            queued: snapshot.queued,
+            playing: snapshot.playing,
+            recorded: snapshot.recorded,
+            queue_len: None,
+        }
+    }
+
+    /// The coordinator it feeds.
+    #[must_use]
+    pub fn coordinator(&self) -> PlayerId {
+        PlayerId(self.zone.clone())
     }
 
     /// The DJ's works on the queue, the current one first.
@@ -279,9 +337,12 @@ impl QueueFeed {
             .as_deref()
             .and_then(spotify_uri_from_renderer_uri);
         let moved = position.is_some_and(|p| !self.agrees(p, uri.as_deref()));
-        let resized = playback
-            .queue_length
-            .is_some_and(|n| self.queue_len != Some(n));
+        // A feed that doesn't know the queue's length (restored after a
+        // restart, or a start that failed early) reads it.
+        let resized = self.queue_len.is_none()
+            || playback
+                .queue_length
+                .is_some_and(|n| self.queue_len != Some(n));
         if moved || resized {
             let had = !self.queued.is_empty();
             self.resync(at)?;
@@ -1095,6 +1156,84 @@ mod tests {
         // Moving back keeps one key per zone.
         feed.rekey(&rig.coordinator);
         assert_eq!(feed.earlier, [moved.0.as_str()]);
+    }
+
+    /// A feed saved and read back, as across a daemon restart.
+    fn reread(feed: &QueueFeed, seed: u64) -> QueueFeed {
+        let saved = serde_json::to_string(&feed.snapshot().expect("a running feed")).unwrap();
+        QueueFeed::restore(
+            serde_json::from_str(&saved).unwrap(),
+            DjConfig::default(),
+            seed,
+        )
+    }
+
+    #[test]
+    fn a_restored_feed_plays_on_and_lets_go_of_a_queue_changed_meanwhile() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = works_of(&shelf_items(1));
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        let started = feed
+            .start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap()
+            .to_vec();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        assert_eq!(plays(&store).len(), 1);
+
+        // Restarted on the same track: it is not recorded again, and
+        // nothing is queued.
+        let mut feed = reread(&feed, 8);
+        assert!(feed.is_active());
+        assert_eq!(feed.coordinator(), rig.coordinator);
+        rig.nudge();
+        let queued = rig
+            .pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        assert_eq!((queued, plays(&store).len()), (0, 1));
+
+        // While the daemon is down, the music plays on into the last queued
+        // work and the owner adds a track of their own.
+        let saved = reread(&feed, 9);
+        let last = started[1].first().unwrap();
+        while rig.position() < last {
+            rig.next();
+        }
+        rig.owner_adds(OWNER, false);
+        rig.notifies();
+        let mut feed = saved;
+        rig.nudge();
+        let queued = rig
+            .pump(&lan, &mut feed, plan(&pool, MIDNIGHT + 600), &mut store)
+            .unwrap();
+        assert_eq!(queued, 1, "in the last queued work, it tops up");
+        assert_eq!(feed.current().unwrap().title, started[1].title);
+        assert_eq!(
+            plays(&store).last().map(String::as_str),
+            Some(started[1].tracks()[0])
+        );
+        let end = started[1].last().unwrap();
+        assert_eq!(rig.queue()[end as usize], OWNER, "the owner's track stays");
+        assert_eq!(feed.queued().last().unwrap().first(), Some(end + 2));
+        assert_whole_works(&rig, &pool, end as usize + 2);
+
+        // Down again, and the owner replaces the queue: restarted, the DJ
+        // lets go and adds nothing.
+        let saved = reread(&feed, 10);
+        remove_all_tracks_from_queue(&lan, rig.host()).unwrap();
+        rig.owner_adds(OWNER_2, false);
+        control::play_queue_from(&lan, &rig.houses, &rig.coordinator, 1).unwrap();
+        rig.notifies();
+        let mut feed = saved;
+        rig.nudge();
+        let queued = rig
+            .pump(&lan, &mut feed, plan(&pool, MIDNIGHT + 900), &mut store)
+            .unwrap();
+        assert_eq!(queued, 0);
+        assert!(!feed.is_active() && feed.snapshot().is_none());
+        assert_eq!(rig.queue(), [OWNER_2]);
     }
 
     #[test]
