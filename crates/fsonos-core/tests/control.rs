@@ -29,11 +29,13 @@ fn ip(s: &str) -> IpAddr {
     s.parse().unwrap()
 }
 
-/// Records (host, action, body) and answers every action with `out_args`.
+/// Records (host, action, body) and answers every action with `out_args`,
+/// except `refuse`'s action, which gets its UPnP fault.
 #[derive(Default)]
 struct Recorder {
     sent: RefCell<Vec<(IpAddr, String, String)>>,
     out_args: &'static str,
+    refuse: Option<(&'static str, u16)>,
 }
 
 impl Transport for Recorder {
@@ -53,6 +55,14 @@ impl Transport for Recorder {
         self.sent
             .borrow_mut()
             .push((host, action.clone(), body.into()));
+        if let Some((refused, code)) = self.refuse
+            && refused == action
+        {
+            return Err(ProtoError::SoapFault {
+                code,
+                reason: "refused".into(),
+            });
+        }
         Ok(format!(
             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
              <u:{action}Response xmlns:u=\"urn:x\">{}</u:{action}Response></s:Body></s:Envelope>",
@@ -91,6 +101,35 @@ fn group_commands_reach_the_coordinator_address() {
             (ip("192.0.2.13"), "Next".into()),
         ]
     );
+}
+
+#[test]
+fn a_refused_pause_is_read_back_and_a_playing_stream_stops() {
+    let h = house();
+    let refusing = |state: &'static str| Recorder {
+        out_args: state,
+        refuse: Some(("Pause", 701)),
+        ..Recorder::default()
+    };
+    let names = |t: &Recorder| t.actions().into_iter().map(|(_, a)| a).collect::<Vec<_>>();
+    // Still playing: a stream that cannot pause, so it stops.
+    let t = refusing("<CurrentTransportState>PLAYING</CurrentTransportState>");
+    control::pause(&t, &h, &pid(2)).unwrap();
+    assert_eq!(names(&t), ["Pause", "GetTransportInfo", "Stop"]);
+    // Already paused (or stopped): nothing more to do.
+    let t = refusing("<CurrentTransportState>PAUSED_PLAYBACK</CurrentTransportState>");
+    control::pause(&t, &h, &pid(2)).unwrap();
+    assert_eq!(names(&t), ["Pause", "GetTransportInfo"]);
+    // Any other fault stands, unread.
+    let t = Recorder {
+        refuse: Some(("Pause", 800)),
+        ..Recorder::default()
+    };
+    assert!(matches!(
+        control::pause(&t, &h, &pid(2)),
+        Err(CoreError::Proto(ProtoError::SoapFault { code: 800, .. }))
+    ));
+    assert_eq!(names(&t), ["Pause"]);
 }
 
 #[test]

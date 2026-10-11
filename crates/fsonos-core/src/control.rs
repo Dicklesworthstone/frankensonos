@@ -16,7 +16,7 @@ use fsonos_proto::didl::{
     spotify_container_uri, spotify_queue_uri, spotify_track_didl, spotify_track_uri,
 };
 use fsonos_proto::topology::get_zone_group_state;
-use fsonos_types::{Player, PlayerId};
+use fsonos_types::{Player, PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -49,12 +49,30 @@ pub fn resume<T: Transport + ?Sized>(
     Ok(soap::play(t, addr(households, coordinator)?)?)
 }
 
+/// Pause the group `coordinator` leads (see [`pause_at`]).
 pub fn pause<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    Ok(soap::pause(t, addr(households, coordinator)?)?)
+    pause_at(t, addr(households, coordinator)?)
+}
+
+/// Pause the group whose coordinator answers at `host`. A player refuses
+/// Pause (UPnP 701) both when its group is not playing and when what plays
+/// is a stream that cannot pause, so a refusal is read back: a group already
+/// paused or stopped stays as it is (a set's pause goes on to the next
+/// group), and one still playing is stopped, as a stream resumes live anyway.
+pub fn pause_at<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<(), CoreError> {
+    let refused = match soap::pause(t, host) {
+        Err(e @ ProtoError::SoapFault { code: 701, .. }) => e,
+        done => return Ok(done?),
+    };
+    match soap::get_transport_info(t, host).map(|info| info.state) {
+        Ok(TransportState::Paused | TransportState::Stopped) => Ok(()),
+        Ok(TransportState::Playing | TransportState::Transitioning) => Ok(soap::stop(t, host)?),
+        _ => Err(refused.into()),
+    }
 }
 
 pub fn stop<T: Transport + ?Sized>(

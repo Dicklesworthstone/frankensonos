@@ -254,7 +254,7 @@ impl Fader {
         if outcome != FadeOutcome::Reached {
             return Ok(outcome);
         }
-        soap::pause(t, ip(households, coordinator)?)?;
+        crate::control::pause(t, households, coordinator)?;
         for (player, level) in before {
             soap::set_volume(t, ip(households, &player)?, level)?;
         }

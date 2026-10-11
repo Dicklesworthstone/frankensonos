@@ -321,7 +321,7 @@ impl SleepTimers {
         soap::configure_sleep_timer(t, host, None)?;
         match outcome {
             FadeOutcome::Reached => {
-                soap::pause(t, host)?;
+                crate::control::pause_at(t, host)?;
                 put_back()?;
                 Ok(SleepOutcome::Paused)
             }
