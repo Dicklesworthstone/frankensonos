@@ -2,12 +2,14 @@
 //! why, and its moods, and like or dislike the work playing.
 //!
 //! The DJ runs in the daemon (`fsonos serve`): only that process holds the
-//! feeds that keep a queue topped up. So the reads (`dj status`, `dj why`,
-//! `dj moods`) ask the daemon when one answers (found the way every command
-//! finds it, see `crate::remote`; `--daemon` requires it, `--direct` skips
-//! it), through the same HTTP API an agent uses, and otherwise read directly,
-//! which shows the steering (kept in the data directory) but no running DJ.
-//! Steering is stored, so a steer from here reaches the daemon's next pick.
+//! feeds that keep a queue topped up. So start, skip, stop and steer go to
+//! the daemon when one answers (found the way every command finds it, see
+//! `crate::remote`; `--daemon` requires it, `--direct` skips it), through the
+//! same HTTP API an agent uses, and so do the reads (`dj status`, `dj why`,
+//! `dj moods`). With no daemon a start plays the works it queues and no
+//! more, and the reads show the steering (kept in the data directory) but no
+//! running DJ. Steering is stored, so a steer from here reaches the daemon's
+//! next pick.
 
 use clap::{ArgAction, Subcommand};
 use fsonos_api::dj::{DjMoodsDto, DjStatusDto, SteerConstraints};
@@ -206,6 +208,37 @@ impl DjAction {
             Self::Prefs { .. } => "dj_prefer",
             Self::Sync(_) => "dj_sync",
         }
+    }
+
+    /// The daemon's route for a control action, with the request it sends
+    /// there; `None` for the rest, which run on their own.
+    #[must_use]
+    pub fn daemon_request(&self) -> Option<(&'static str, serde_json::Result<serde_json::Value>)> {
+        let zone = |zone: &String| serde_json::to_value(ZoneRequest { zone: zone.clone() });
+        Some(match self {
+            Self::Start {
+                zone,
+                mood,
+                for_secs,
+            } => (
+                "/dj/start",
+                serde_json::to_value(DjStartRequest {
+                    zone: zone.clone(),
+                    mood: mood.clone(),
+                    for_secs: *for_secs,
+                }),
+            ),
+            Self::Skip { zone: z } => ("/dj/skip", zone(z)),
+            Self::Stop { zone: z } => ("/dj/stop", zone(z)),
+            Self::Steer(args) => ("/dj/steer", serde_json::to_value(args.request())),
+            Self::Status { .. }
+            | Self::Why { .. }
+            | Self::Moods { .. }
+            | Self::Like { .. }
+            | Self::Dislike { .. }
+            | Self::Prefs { .. }
+            | Self::Sync(_) => return None,
+        })
     }
 
     /// The shared request a control action stands for, planned against

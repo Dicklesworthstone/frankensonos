@@ -14,9 +14,10 @@
 //! Through the daemon a command sends the same request body the HTTP API
 //! documents and prints the same DTO the direct path prints, so `--json`
 //! output is the same either way; `fsonos sleep` through the daemon gets
-//! its fade, and `fsonos play --search` searches the daemon's library and
-//! favorites. Commands with no route here (doctor, scenes, schedules, ...)
-//! run directly.
+//! its fade, `fsonos play --search` searches the daemon's library and
+//! favorites, and `fsonos dj start|skip|stop|steer` reach the DJ that keeps
+//! the group's queue going. Commands with no route here (doctor, scenes,
+//! schedules, ...) run directly.
 
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
@@ -35,6 +36,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::config::GlobalArgs;
+use crate::dj_cmd::DjAction;
 use crate::{Command, Switch, announce_cmd, direct, emit, schedule_cmd};
 
 /// The daemon's address file in the data directory.
@@ -355,7 +357,7 @@ fn routable(command: &Command) -> bool {
             | Command::Say(_)
             | Command::Chime(_)
             | Command::Announce(_)
-    )
+    ) || matches!(command, Command::Dj { action } if action.daemon_request().is_some())
 }
 
 /// Carry out `command` through the daemon when one runs and the command has
@@ -365,6 +367,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         return Ok(false);
     }
     let Some(daemon) = Daemon::find(global, global.daemon)? else {
+        warn_direct(command);
         return Ok(false);
     };
     let json = global.json;
@@ -458,6 +461,20 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         }
     }
     Ok(true)
+}
+
+/// What a command with a route loses run directly: a DJ started from here
+/// plays the works it queues, with no daemon to queue more.
+fn warn_direct(command: &Command) {
+    if let Command::Dj {
+        action: DjAction::Start { .. },
+    } = command
+    {
+        tracing::warn!(
+            "the DJ runs in fsonos serve: started without it, it plays \
+             the works it queues now and no more"
+        );
+    }
 }
 
 /// `fsonos sleep` through the daemon: set, extend or cancel its fading
@@ -589,6 +606,10 @@ fn control_request(
             };
             ("/party", value(serde_json::to_value(req))?)
         }
+        Command::Dj { action } => match action.daemon_request() {
+            Some((path, body)) => (path, value(body)?),
+            None => return Err(Failure::new(ErrorCode::Internal, "not a DJ control")),
+        },
         _ => {
             return Err(Failure::new(ErrorCode::Internal, "not a control command"));
         }

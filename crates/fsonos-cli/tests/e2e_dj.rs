@@ -2,7 +2,8 @@
 //! of synthetic classical works, as a Spotify sync leaves it, then
 //! `POST /dj/start` queues whole works and plays them (confirmed in the
 //! sim), the live model's playback records the DJ's track in the history,
-//! `POST /dj/skip` moves to another work, and `POST /dj/stop` stops.
+//! `POST /dj/skip` moves to another work, and `POST /dj/stop` stops. Then
+//! `fsonos dj start|skip|stop` do the same through the daemon.
 
 mod e2e;
 
@@ -157,6 +158,7 @@ fn the_dj_queues_whole_works_and_skips_and_stops() {
     );
 
     check_skip_and_stop(&mut s, &api, &first);
+    check_the_cli_through_the_daemon(&mut s, &api);
 
     let code = daemon.interrupt(Duration::from_secs(10));
     s.check(
@@ -205,6 +207,55 @@ fn check_skip_and_stop(s: &mut Scenario, api: &str, first: &str) {
         "stopping a DJ that isn't running is NO_DJ_SESSION",
         status == 404 && again["code"] == "NO_DJ_SESSION",
         &again,
+    );
+}
+
+/// `fsonos dj start|skip|stop` reach the daemon's DJ: a start from the CLI
+/// is one the daemon runs (its status says so, where a CLI-run DJ would end
+/// with the process), and a skip and a stop from the CLI find it.
+fn check_the_cli_through_the_daemon(s: &mut Scenario, api: &str) {
+    let running = || {
+        http(api, "GET", "/zones/Living%20Room/dj", &[], "")
+            .ok()
+            .and_then(|(_, _, b)| serde_json::from_str::<Value>(&b).ok())
+            .is_some_and(|st| st["running"] == true)
+    };
+    let start = s.cli(
+        "cli-start",
+        &["--daemon", "dj", "start", "Living Room", "--mood", "calm"],
+    );
+    let after_start = running();
+    s.check(
+        "cli-start",
+        "cli",
+        "fsonos dj start starts the daemon's DJ, steered by the mood",
+        start.code == Some(0)
+            && start.stdout.contains("the DJ is playing")
+            && start.stdout.contains("(mood: calm)")
+            && after_start,
+        format!("{start:?}; daemon running: {after_start}"),
+    );
+
+    let skip = s.cli("cli-skip", &["--daemon", "dj", "skip", "Living Room"]);
+    s.check(
+        "cli-skip",
+        "cli",
+        "fsonos dj skip skips in the daemon's DJ",
+        skip.code == Some(0) && skip.stdout.starts_with("skipped to"),
+        format!("{skip:?}"),
+    );
+
+    let stop = s.cli("cli-stop", &["--daemon", "dj", "stop", "Living Room"]);
+    let state = get_transport_info(&s.lan(), s.ip("Living Room"))
+        .map(|t| t.state)
+        .ok();
+    let after_stop = running();
+    s.check(
+        "cli-stop",
+        "cli",
+        "fsonos dj stop stops the daemon's DJ and the group",
+        stop.code == Some(0) && state == Some(TransportState::Stopped) && !after_stop,
+        format!("{stop:?}; {state:?}; daemon running: {after_stop}"),
     );
 }
 
