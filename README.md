@@ -47,7 +47,10 @@ can drive:
 - **Built for agents, with guardrails.** Every surface (CLI, HTTP, MCP) goes
   through one control path: the house policy (per-room volume caps, quiet
   hours, per-client tool allowlists), an action log of who did what, and undo.
-  Hand the house to an agent without it playing volume 80 at 2 a.m.
+  The volume caps and quiet hours bind the agent surfaces; the local CLI is
+  trusted and runs uncapped by default (set `[clients.cli] capped = true` to
+  cap it too). Hand the house to an agent without it playing volume 80 at
+  2 a.m.
 - **A DJ that plays what you like.** It plays from your own Spotify likes and
   saves, in whatever genres they span (pop, jazz, hip-hop, soundtracks,
   classical), puts your own steering ahead of anything it infers, follows mood
@@ -65,15 +68,15 @@ can drive:
 
 | Area | What you get |
 |---|---|
-| **Discovery & topology** | Every player of both S1 and S2 households, its zone group and coordinator. Rooms resolve by name, `Room@S1` / `Room@S2`, your own aliases (`fsonos rooms alias add downstairs Kitchen "Living Room"`), or `here` |
-| **Control** | Play a Spotify link (a track, album or playlist), a source URI, a Sonos favorite or a library search (your tracks, saved albums and playlists); pause, resume, next, previous; room or group volume (set or ±N); mute; group, ungroup; **move** the music to another room (handing the group over, or `--copy` across households); **party** mode for a whole household. Group commands always go to the group's coordinator |
+| **Discovery & topology** | Every player of both S1 and S2 households, its zone group and coordinator. Rooms resolve by name, `Room@S1` / `Room@S2`, your own aliases (`fsonos rooms alias add downstairs Kitchen "Living Room"`), `here`, or `all` / `everywhere` |
+| **Control** | Play a Spotify link (a track, album or playlist), a source URI, a Sonos favorite or a library search (your tracks, saved albums and playlists); pause, resume, next, previous; room or group volume (set or ±N); mute — each on one room, an alias or `everywhere` at once (`fsonos pause everywhere`), logged and undone as one action; group, ungroup; **move** the music to another room (handing the group over, or `--copy` across households); **party** mode for a whole household. Group commands always go to the group's coordinator |
 | **Live state** | GENA subscriptions keep a live model of every zone (transport, track, volume), so reads need no polling, and `GET /events` streams the changes as server-sent events; `fsonos queue Kitchen` lists what is queued and what plays, `fsonos history` what played |
 | **Self-healing** | A player that moved to a new address, or a group whose coordinator changed under a command, is found again and the command retried once (the answer notes `HEALED`); the live model resurveys and resubscribes on its own |
 | **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, genre, decade, keywords (which also match genres), work length or energy, and for classical music by composers and periods, for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
 | **Scenes** | `scene save dinner` captures grouping, volumes, mutes and what each group plays; `scene apply dinner` sends only the steps the house needs, and `fsonos undo` puts it back |
 | **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright`, or a pause, a volume or a scene, at times or after delays; runs with the rights of whoever added it |
 | **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` with offline Linux speech (FrankenTTS, espeak-ng or Piper) or macOS `say`; `chime bell`; `announce --file clip.wav`. Policy-capped playback restores the previous music and speaker state |
-| **Safety** | `policy.toml`: per-room caps, a per-step limit, quiet hours, per-client tool allowlists; over-limit volumes are clamped and say so; `fsonos log` / `undo`, `fsonos policy show` / `check` |
+| **Safety** | `policy.toml`: per-room caps, a per-step limit, quiet hours, per-client tool allowlists; over-limit volumes are clamped and say so (the local CLI runs uncapped by default); `fsonos log` / `undo`, `fsonos policy show` / `check` |
 | **Setup & diagnosis** | `fsonos setup` walks a first run (including the Spotify sign-in); `fsonos doctor` checks speakers, Spotify linkage, listeners, the daemon and the Tailscale chain, and names the fix for each problem |
 | **Three surfaces** | The `fsonos` CLI (`--json` everywhere), an HTTP API with an OpenAPI document, and an MCP server (tools plus `sonos://zones` and `sonos://dj` resources) over streamable HTTP or stdio, all answering alike, with the same stable error codes ([`docs/ERRORS.md`](docs/ERRORS.md)) |
 | **A house without speakers** | `fsonos sim` starts virtual S1 and S2 households on loopback, so you can try every command, or develop an agent, with no hardware |
@@ -162,9 +165,13 @@ fsonos doctor --only tailscale   # Tailscale up, the MagicDNS name, the daemon a
   daemon's loopback ports, refuses to run while Funnel is on for either port,
   and never touches Serve config it didn't make (`status`, `teardown`,
   `--dry-run`).
-- Behind Serve, the caller's Tailscale login names them: a
-  `[clients."alice@example.com"]` table in `policy.toml` sets what that
-  person's devices may do, and the action log records who did what.
+- Behind Serve, the caller's Tailscale login names them — but only when the
+  daemon is told it is behind Serve, with `--tailscale-serve` (or
+  `FSONOS_TAILSCALE_SERVE=1`). With that set, a `[clients."alice@example.com"]`
+  table in `policy.toml` sets what that person's devices may do, and the action
+  log records who did what. Without it, every tailnet caller gets the daemon's
+  own loopback rights and no `[clients]` table applies; `fsonos doctor --only
+  tailscale` warns when Serve fronts the daemon but the flag is unset.
 - Point an agent at it from any tailnet machine:
 
 ```bash
@@ -178,7 +185,7 @@ Spotify sign-in) is in [`docs/DEPLOY.md`](docs/DEPLOY.md).
 ## For agents
 
 `fsonos serve` exposes the house as MCP tools (also `fsonos mcp` over stdio for
-a local agent; the live DJ, scene DJs and fading sleep timers need `serve`):
+a local agent, which hands the DJ, scenes and sleep timers to a running `serve`):
 
 ```text
 reads      list_zones · list_rooms · list_players · get_zone_state · list_favorites · search_library
@@ -200,7 +207,9 @@ documents itself at `GET /openapi.json`.
 ## Safety for a house run by agents
 
 ```toml
-# policy.toml in the data directory (a missing file means these defaults)
+# policy.toml in the data directory. A missing file falls back to the
+# [defaults] below only (no quiet hours, room caps or client tables until you
+# add them); the other sections here are examples.
 [defaults]
 max_volume = 70        # per room
 max_step = 20          # largest single increase
@@ -220,6 +229,9 @@ allow = ["list_zones", "get_zone_state", "play", "set_volume"]
 - One choke point: every mutating call on every surface is authorized,
   snapshotted, carried out under the policy, and logged with who asked, the
   verdict (allow, clamp or deny) and what happened.
+- Edit `policy.toml` while the daemon runs and its next call obeys the new
+  rules, no restart needed. An edit that does not parse is logged and the last
+  good policy stays in force (`fsonos policy check` says what is wrong).
 - `fsonos undo` (`undo_last`) restores the volumes, grouping and what was
   playing in the zones the newest action changed, and says what it could not.
 - Callers the daemon cannot identify get read-only tools; the API and MCP
@@ -357,8 +369,9 @@ learned at runtime and kept locally. The full boundary is in
   and playlists do.
 - The API and MCP server have no authentication of their own: Tailscale is the
   boundary, and it names the HTTP API's callers (Tailscale's WhoIs on a direct
-  tailnet listener, the login behind Serve) for the house policy's `[clients]`
-  tables. A caller Tailscale can't name, and any MCP caller off loopback, is
+  tailnet listener, or the login header behind Serve when the daemon runs with
+  `FSONOS_TAILSCALE_SERVE`) for the house policy's `[clients]` tables. A caller
+  Tailscale can't name, and any MCP caller off loopback, is
   read-only.
 
 ## FAQ

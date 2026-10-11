@@ -652,10 +652,13 @@ localhost sockets, which is what AGENTS.md asks for in place of mocks.
   re-election.
 - `fsonos sim --scenario two-households` lets a new user or an agent developer
   try every command before pointing it at a real house.
-- The same e2e scenarios run against the owner's real players with
-  `FSONOS_E2E_LIVE=1`: volume capped at 15, every touched zone snapshotted and
-  restored, logs under the git-ignored `target/`. The owner's final live check
-  is one command, never part of CI.
+- Live checks against the owner's real players are opt-in, `#[ignore]`d and
+  never part of CI: `cargo test -p fsonos-proto --test live_lan -- --ignored`
+  reads discovery, topology, levels, transport state and a GENA round trip;
+  `FSONOS_LIVE_WRITE=1` adds one write that is inaudible by construction
+  (SetVolume to the level the player already has); the Tailscale Serve round
+  trip (`e2e_tailnet_serve`, `FSONOS_LIVE_SERVE=1`) is the owner's to run.
+  Their output names real rooms and addresses, so it stays on the terminal.
 - The sim implements only the community-documented control surface, from our
   own scrubbed fixtures. It is a test double for our own client.
 
