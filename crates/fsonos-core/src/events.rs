@@ -319,15 +319,17 @@ impl Subscriptions {
     /// Note `n`'s SEQ on its subscription: whether NOTIFYs were lost before
     /// it. After the initial one (SEQ 0, the full state) a player sends only
     /// what changed, so a lost one leaves that state stale until replaced
-    /// ([`Subscriptions::refresh`]). A subscription's first NOTIFY, and one
-    /// at or below the highest seen (a repeat), are no gap.
+    /// ([`Subscriptions::refresh`]). A subscription's first NOTIFY is no gap
+    /// only when it is the initial one (SEQ 0): a later one first means the
+    /// full state was lost. One at or below the highest seen (a repeat) is
+    /// no gap.
     pub fn missed(&mut self, n: &Notify) -> bool {
         let Some(a) = self.active.iter_mut().find(|a| a.sid == n.sid) else {
             return false;
         };
         let gap = a
             .last_seq
-            .is_some_and(|last| n.seq > last.saturating_add(1));
+            .map_or(n.seq > 0, |last| n.seq > last.saturating_add(1));
         if a.last_seq.is_none_or(|last| n.seq > last) {
             a.last_seq = Some(n.seq);
         }

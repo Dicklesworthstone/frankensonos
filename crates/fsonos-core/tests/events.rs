@@ -329,3 +329,25 @@ fn a_skipped_seq_replaces_that_subscription_and_ends_the_old_one() {
     assert_eq!((kept.resubscribed, kept.failed.len()), (0, 1));
     assert!(subs.route(&n(&fresh, 1)).is_some());
 }
+
+#[test]
+fn a_subscription_whose_first_event_is_not_seq_0_lost_its_full_state() {
+    let houses = [household(ZGS_S1)];
+    let w = wanted(&houses);
+    let fake = Fake::default();
+    let mut subs = Subscriptions::default();
+    subs.sync(&fake, &w, url, Instant::now());
+    let n = |sid: &str, seq: u32| Notify {
+        sid: sid.into(),
+        seq,
+        path: "/".into(),
+        properties: Vec::new(),
+    };
+    // The initial NOTIFY (SEQ 0, the whole state) never came: the first one
+    // heard is a delta.
+    assert!(subs.missed(&n("uuid:sub2", 1)));
+    // Counted from there, the next is no gap.
+    assert!(!subs.missed(&n("uuid:sub2", 2)));
+    // A subscription whose first heard is SEQ 0 is whole.
+    assert!(!subs.missed(&n("uuid:sub3", 0)));
+}
