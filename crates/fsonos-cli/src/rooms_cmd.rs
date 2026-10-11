@@ -1,8 +1,10 @@
 //! `fsonos rooms`: the rooms with their aliases, and `fsonos rooms alias
-//! add|rm`, which edits `aliases.toml` in the data directory.
+//! add|rm` and `fsonos rooms default`, which edit `aliases.toml` in the data
+//! directory.
 //!
-//! The edit touches only the alias's own entry in the `[aliases]` table
-//! (added at the table's end, or replaced or removed where it stands), so the
+//! An edit touches only its own entry (an alias in the `[aliases]` table, or
+//! the `room` of `[defaults]` or of a client's `[defaults.clients."<id>"]`):
+//! added at the table's end, or replaced or removed where it stands, so the
 //! owner's comments, ordering and layout survive. The result is checked with
 //! the same parser the daemon uses before it replaces the file.
 
@@ -51,14 +53,85 @@ pub fn remove_alias(text: &str, name: &str) -> Option<String> {
     Some(out)
 }
 
+/// `text` with `room` as the room `here` means, for everyone or for
+/// `client`'s requests: the `room` line of that defaults table replaced where
+/// it stands, or added (with the table, when there is none).
+#[must_use]
+pub fn set_default_room(text: &str, client: Option<&str>, room: &str) -> String {
+    let header = defaults_table(client);
+    let entry = format!("room = {}", toml::Value::String(room.to_string()));
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    if let Some((start, end)) = table(&lines, &header) {
+        if let Some(at) = room_line(&lines, start, end) {
+            lines[at] = entry;
+        } else {
+            let mut at = end;
+            while at > start + 1 && lines[at - 1].trim().is_empty() {
+                at -= 1;
+            }
+            lines.insert(at, entry);
+        }
+    } else {
+        if lines.last().is_some_and(|l| !l.trim().is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push(header);
+        lines.push(entry);
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// `text` without that default room, or `None` when none is set there. A
+/// client's table goes with it (it holds nothing else); `[defaults]` stays.
+#[must_use]
+pub fn clear_default_room(text: &str, client: Option<&str>) -> Option<String> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, end) = table(&lines, &defaults_table(client))?;
+    let at = room_line(&lines, start, end)?;
+    lines.remove(at);
+    if client.is_some() {
+        lines.remove(start);
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    Some(out)
+}
+
+/// `[defaults]`, or `client`'s `[defaults.clients."<id>"]`.
+fn defaults_table(client: Option<&str>) -> String {
+    client.map_or_else(
+        || "[defaults]".to_owned(),
+        |c| format!("[defaults.clients.{}]", toml_key(c)),
+    )
+}
+
+/// The `room = ...` line in the table spanning `start..end`.
+fn room_line(lines: &[String], start: usize, end: usize) -> Option<usize> {
+    (start + 1..end).find(|&at| {
+        let line = lines[at].trim();
+        !line.starts_with('#')
+            && line
+                .split_once('=')
+                .is_some_and(|(k, _)| k.trim() == "room")
+    })
+}
+
 /// The `[aliases]` table: its header line and the line its body ends before.
 fn section(lines: &[String]) -> Option<(usize, usize)> {
-    let header = lines.iter().position(|l| l.trim() == "[aliases]")?;
-    let end = lines[header + 1..]
+    table(lines, "[aliases]")
+}
+
+/// The table `header` (as written): its header line and the line its body
+/// ends before.
+fn table(lines: &[String], header: &str) -> Option<(usize, usize)> {
+    let at = lines.iter().position(|l| l.trim() == header)?;
+    let end = lines[at + 1..]
         .iter()
         .position(|l| l.trim_start().starts_with('['))
-        .map_or(lines.len(), |i| header + 1 + i);
-    Some((header, end))
+        .map_or(lines.len(), |i| at + 1 + i);
+    Some((at, end))
 }
 
 /// Where alias `name`'s entry starts in the `[aliases]` table, and how many
@@ -182,6 +255,40 @@ room = \"Office\"
         assert!(gone.contains("kitchen = "));
         assert_eq!(remove_alias(&gone, "nowhere"), None);
         Aliases::parse(&gone).unwrap();
+    }
+
+    #[test]
+    fn the_default_room_is_set_where_it_stands_or_in_a_new_table() {
+        let office = Aliases::parse(OWNERS).unwrap();
+        assert_eq!(office.default_room(None), Some("Office"));
+
+        let den = set_default_room(OWNERS, None, "Den");
+        assert!(den.ends_with("[defaults]\nroom = \"Den\"\n"), "{den}");
+        assert!(den.contains("# the long name"), "the rest stays");
+        let alice = set_default_room(&den, Some("alice@example.com"), "Bedroom");
+        assert!(
+            alice.ends_with("\n[defaults.clients.\"alice@example.com\"]\nroom = \"Bedroom\"\n"),
+            "{alice}"
+        );
+        let parsed = Aliases::parse(&alice).unwrap();
+        assert_eq!(parsed.default_room(None), Some("Den"));
+        assert_eq!(
+            parsed.default_room(Some("alice@example.com")),
+            Some("Bedroom")
+        );
+        assert_eq!(parsed.default_room(Some("bob@example.com")), Some("Den"));
+
+        let cleared = clear_default_room(&alice, Some("alice@example.com")).unwrap();
+        let parsed = Aliases::parse(&cleared).unwrap();
+        assert_eq!(parsed.default_room(Some("alice@example.com")), Some("Den"));
+        assert_eq!(
+            clear_default_room(&cleared, Some("alice@example.com")),
+            None
+        );
+        assert_eq!(
+            set_default_room("", None, "Office"),
+            "[defaults]\nroom = \"Office\"\n"
+        );
     }
 
     #[test]

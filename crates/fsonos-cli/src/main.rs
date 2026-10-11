@@ -289,6 +289,17 @@ enum RoomsCommand {
         #[command(subcommand)]
         action: AliasAction,
     },
+    /// The room `here` means: `fsonos rooms default Office`, or for one
+    /// client's requests with `--client alice@example.com`. `--clear` drops
+    /// it; with neither, show it.
+    Default {
+        room: Option<String>,
+        /// Whose requests: a policy client (a tailnet login, `cli`, ...).
+        #[arg(long)]
+        client: Option<String>,
+        #[arg(long, conflicts_with = "room")]
+        clear: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -398,6 +409,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Rooms {
             alias: Some(RoomsCommand::Alias { action }),
         } => alias_command(global, &action),
+        Command::Rooms {
+            alias:
+                Some(RoomsCommand::Default {
+                    room,
+                    client,
+                    clear,
+                }),
+        } => default_room_command(global, room.as_deref(), client.as_deref(), clear),
         Command::Favorites { zone } => {
             let favorites = Direct::survey(global)?.favorites(&zone)?;
             emit(global.json, &favorites, |f| direct::favorites_text(f))
@@ -591,6 +610,57 @@ fn alias_command(global: &config::GlobalArgs, action: &AliasAction) -> anyhow::R
                 })
             })?;
             format!("removed the alias {alias}")
+        }
+    };
+    emit(
+        global.json,
+        &serde_json::json!({ "done": done, "file": path }),
+        |_| format!("{done}\n"),
+    )
+}
+
+/// `fsonos rooms default`: set, clear or show the room `here` means.
+fn default_room_command(
+    global: &config::GlobalArgs,
+    room: Option<&str>,
+    client: Option<&str>,
+    clear: bool,
+) -> anyhow::Result<()> {
+    let path = daemon::data_dir(global)?.join(fsonos_api::surface::ALIASES_FILE);
+    let whose = client.unwrap_or("everyone");
+    let done = match (room, clear) {
+        (Some(room), _) => {
+            if fsonos_core::rooms::RESERVED
+                .contains(&fsonos_core::rooms::normalize_room(room).as_str())
+            {
+                return Err(Failure::invalid(format!("{room:?} names no one room"))
+                    .with_hint("Name a room; all, everywhere and here can't be the default.")
+                    .into());
+            }
+            rooms_cmd::edit_file(&path, |text| {
+                Ok(rooms_cmd::set_default_room(text, client, room))
+            })?;
+            format!("here now means {room} for {whose}")
+        }
+        (None, true) => {
+            rooms_cmd::edit_file(&path, |text| {
+                rooms_cmd::clear_default_room(text, client).ok_or_else(|| {
+                    Failure::new(
+                        ErrorCode::UnknownRoom,
+                        format!("no default room is set for {whose}"),
+                    )
+                    .with_hint("Set one with fsonos rooms default <room>.")
+                })
+            })?;
+            format!("here has no default of its own for {whose} now")
+        }
+        (None, false) => {
+            let aliases = fsonos_core::rooms::Aliases::load(&path)
+                .map_err(|e| Failure::invalid(e.to_string()))?;
+            aliases.default_room(client).map_or_else(
+                || format!("here means no room for {whose} yet: fsonos rooms default <room>"),
+                |room| format!("here means {room} for {whose}"),
+            )
         }
     };
     emit(
