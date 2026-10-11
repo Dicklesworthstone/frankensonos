@@ -31,7 +31,10 @@ mod house_policy;
 pub use house_policy::GetPolicy;
 
 mod scenes;
-pub use scenes::{ApplyScene, ListScenes, SaveScene};
+pub use scenes::{ApplyScene, DeleteScene, GetScene, ListScenes, SaveScene};
+
+mod players;
+pub use players::ListPlayers;
 
 mod announce;
 pub use announce::Announce;
@@ -878,6 +881,25 @@ mod tests {
             Ok(r) => panic!("expected a tool error, got {}", text(&r)),
             Err(e) => e.message,
         }
+    }
+
+    #[test]
+    fn list_players_reports_every_player() {
+        let (b, _, _) = backend("", Client::McpStdio);
+        let r = b.list_players().unwrap();
+        assert!(!r.is_error, "{}", text(&r));
+        assert!(
+            text(&r).contains("Den") && text(&r).contains("Kitchen"),
+            "{}",
+            text(&r)
+        );
+        let structured = r.structured_content.unwrap();
+        let players = structured["players"].as_array().unwrap();
+        assert_eq!(players.len(), 2);
+        assert_eq!(players[0]["room"], "Den");
+        assert_eq!(players[0]["generation"], "S2");
+        assert_eq!(players[0]["ip"], "192.0.2.10");
+        assert_eq!(players[1]["room"], "Kitchen");
     }
 
     #[test]

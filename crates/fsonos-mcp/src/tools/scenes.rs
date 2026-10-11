@@ -84,6 +84,22 @@ impl Backend {
             Ok((apply_text(&applied), applied))
         })
     }
+
+    /// The `get_scene` tool.
+    pub fn get_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let scene = self.surface.scene(&self.client, name)?;
+            Ok((scene_line(&scene), scene))
+        })
+    }
+
+    /// The `delete_scene` tool.
+    pub fn delete_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let deleted = self.surface.delete_scene(&self.client, name)?;
+            Ok((deleted.done.clone(), deleted))
+        })
+    }
 }
 
 #[tool(
@@ -107,6 +123,21 @@ fn save_scene(_ctx: &McpContext, name: String) -> McpResult<CompleteResult<Final
 )]
 fn apply_scene(_ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend(move |b| b.apply_scene(&name))
+}
+
+#[tool(
+    description = "Show one saved scene by `name` (case ignored; list_scenes names the saved ones): how its rooms group, what each group plays and whether it plays, and each room's volume and mute. Nothing on the speakers changes; put the house in it with apply_scene.",
+    annotations(read_only, idempotent)
+)]
+fn get_scene(_ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(move |b| b.get_scene(&name))
+}
+
+#[tool(
+    description = "Forget the saved scene `name` (case ignored; list_scenes names the saved ones). Only the saved scene is removed; nothing on the speakers changes. An unknown name is an error."
+)]
+fn delete_scene(_ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(move |b| b.delete_scene(&name))
 }
 
 #[cfg(test)]
@@ -216,5 +247,30 @@ mod tests {
         assert!(empty.starts_with("NOT_READY: "), "{empty}");
         let denied = error_text(backend(Client::Unknown, &[evening()]).apply_scene("Evening"));
         assert!(denied.starts_with("POLICY_DENIED: "), "{denied}");
+    }
+
+    #[test]
+    fn get_scene_shows_one_scene() {
+        let b = backend(Client::McpStdio, &[evening()]);
+        let got = b.get_scene("Evening").unwrap();
+        assert_eq!(
+            text(&got),
+            "Evening: Kitchen + Office: favorite Night Radio, playing"
+        );
+        let unknown = error_text(b.get_scene("Morning"));
+        assert!(unknown.starts_with("UNKNOWN_SCENE: "), "{unknown}");
+    }
+
+    #[test]
+    fn delete_scene_forgets_it() {
+        let b = backend(Client::McpStdio, &[evening()]);
+        let gone = b.delete_scene("Evening").unwrap();
+        assert_eq!(text(&gone), "deleted scene Evening");
+        assert!(
+            text(&b.list_scenes().unwrap()).starts_with("No scenes saved yet"),
+            "still listed after delete"
+        );
+        let twice = error_text(b.delete_scene("Evening"));
+        assert!(twice.starts_with("UNKNOWN_SCENE: "), "{twice}");
     }
 }
