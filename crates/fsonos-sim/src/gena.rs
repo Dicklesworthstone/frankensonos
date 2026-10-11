@@ -395,24 +395,31 @@ impl State {
             .iter()
             .map(|&m| self.players[m].uuid.as_str())
             .collect();
-        [
+        let mut props = vec![
             ("ZoneGroupState", docs::zone_group_state(self, h)),
             ("ZoneGroupName", names.join(" + ")),
             ("ZoneGroupID", self.players[c].group_id.clone()),
             ("ZonePlayerUUIDsInGroup", uuids.join(",")),
             ("MuseHouseholdId", self.households[h].id.clone()),
-        ]
-        .into_iter()
-        .map(|(name, value)| {
-            (
-                name.to_string(),
-                format!(
-                    "<e:property><{name}>{}</{name}></e:property>",
-                    xml_escape(&value)
-                ),
-            )
-        })
-        .collect()
+        ];
+        if let Some(version) = &self.households[h].offered_update {
+            props.push((
+                "AvailableSoftwareUpdate",
+                docs::update_item(version, self.households[h].sw_gen),
+            ));
+        }
+        props
+            .into_iter()
+            .map(|(name, value)| {
+                (
+                    name.to_string(),
+                    format!(
+                        "<e:property><{name}>{}</{name}></e:property>",
+                        xml_escape(&value)
+                    ),
+                )
+            })
+            .collect()
     }
 }
 

@@ -509,6 +509,7 @@ fn device_descriptions_identify_model_room_and_generation() {
 
 const GENA_AVT_S1: &str = include_str!("fixtures/gena_notify_avt_initial_s1.xml");
 const GENA_ZGT_S2: &str = include_str!("fixtures/gena_notify_zgt_s2.xml");
+const GENA_ZGT_S1: &str = include_str!("fixtures/gena_notify_zgt_s1.xml");
 const GENA_AVT_S2: &str = include_str!("fixtures/gena_notify_avt_initial_s2.xml");
 const GENA_QUEUE_S1: &str = include_str!("fixtures/gena_notify_queue_s1.xml");
 const GENA_CD_S1: &str = include_str!("fixtures/gena_notify_cd_initial_s1.xml");
@@ -586,6 +587,53 @@ fn gena_zgt_s2_carries_update_oracle_and_vanished_devices() {
     assert!(update.contains("UpdateURL=\"http://update-firmware.sonos.com/"));
     assert!(update.contains("ManifestURL=\"http://update.sonos.com/"));
     assert!(update.contains("Swgen=\"2\""));
+}
+
+#[test]
+fn an_update_offer_reads_only_its_version_and_generation() {
+    let offer = |body: &str| {
+        topology::parse_update_offer(&property(body, "AvailableSoftwareUpdate")).unwrap()
+    };
+    let s2 = offer(GENA_ZGT_S2);
+    assert_eq!(
+        s2,
+        topology::UpdateOffer {
+            version: "97.1-80312".into(),
+            sw_gen: Some(2),
+        }
+    );
+    let s1 = offer(GENA_ZGT_S1);
+    assert_eq!((s1.version.as_str(), s1.sw_gen), ("57.23-74170", Some(1)));
+
+    // Against what each household's players run: S2 has players behind
+    // its offer, S1 none.
+    let behind = |body: &str, offered: &str| {
+        let state = topology::parse_zone_group_state(&property(body, "ZoneGroupState")).unwrap();
+        state
+            .groups
+            .iter()
+            .flat_map(|g| &g.members)
+            .filter(|m| {
+                m.software_version
+                    .as_deref()
+                    .is_some_and(|v| topology::is_older_version(v, offered))
+            })
+            .count()
+    };
+    assert!(behind(GENA_ZGT_S2, &s2.version) > 0);
+    assert_eq!(behind(GENA_ZGT_S1, &s1.version), 0);
+
+    assert!(topology::is_older_version("86.10-80260", "97.1-80312"));
+    assert!(!topology::is_older_version("97.1-80312", "97.1-80312"));
+    assert!(!topology::is_older_version("97.2-80400", "97.1-80312"));
+    assert!(
+        topology::is_older_version("9.9", "10.0-1"),
+        "unparsed: older when they differ"
+    );
+    assert!(topology::parse_update_offer("").is_none());
+    assert!(
+        topology::parse_update_offer(r#"<UpdateItem Type="Firmware" Version="1.0-1"/>"#).is_none()
+    );
 }
 
 #[test]

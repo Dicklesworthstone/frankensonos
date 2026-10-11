@@ -485,6 +485,7 @@ fn household(sw_gen: u8) -> Household {
         sw_gen,
         params,
         favorites,
+        offered_update: None,
     }
 }
 
@@ -749,6 +750,17 @@ impl SimHandle {
     pub fn join_lag(&self, who: &str, lag: Duration) -> Result<(), SimError> {
         self.with_player(who, |s, p| {
             s.players[p].faults.join_lag = lag;
+            Ok(())
+        })
+    }
+
+    /// Make the topology events of `who`'s household offer software
+    /// `version` in `AvailableSoftwareUpdate` (`None`: offer nothing, the
+    /// default), as Sonos does when it has an update for the household.
+    pub fn offer_update(&self, who: &str, version: Option<&str>) -> Result<(), SimError> {
+        self.with_player(who, |s, p| {
+            let h = s.players[p].household;
+            s.households[h].offered_update = version.map(str::to_string);
             Ok(())
         })
     }

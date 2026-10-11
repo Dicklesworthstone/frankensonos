@@ -71,6 +71,8 @@ fn a_healthy_house_passes() {
         );
     }
     assert_eq!(status(&report, lan::SEEDS), Status::Skip);
+    // The sim offers no software update unless asked to.
+    assert_eq!(status(&report, lan::UPDATES), Status::Skip);
     assert_eq!(report.exit_code(), EXIT_OK);
     let ssdp = report.get(lan::SSDP).unwrap();
     assert!(
@@ -137,13 +139,24 @@ fn the_event_round_trip_ends_its_subscription() {
     let report = doctor(&sim, Vec::new());
     assert_eq!(status(&report, lan::GENA_ROUNDTRIP), Status::Pass);
     let log = sim.gena_log();
-    let count = |is: fn(&GenaEvent) -> bool| log.iter().filter(|e| is(&e.event)).count();
+    let count = |service: Option<&str>, is: fn(&GenaEvent) -> bool| {
+        log.iter()
+            .filter(|e| service.is_none_or(|s| e.service == s) && is(&e.event))
+            .count()
+    };
+    let subscribed = |e: &GenaEvent| matches!(e, GenaEvent::Subscribed { .. });
+    let unsubscribed = |e: &GenaEvent| matches!(e, GenaEvent::Unsubscribed { .. });
+    // The round trip's own subscription, then every one the doctor made
+    // (lan.updates reads each household's topology event too).
+    let rc = Some("RenderingControl");
     assert_eq!(
-        (
-            count(|e| matches!(e, GenaEvent::Subscribed { .. })),
-            count(|e| matches!(e, GenaEvent::Unsubscribed { .. })),
-        ),
+        (count(rc, subscribed), count(rc, unsubscribed)),
         (1, 1),
+        "{log:?}"
+    );
+    assert_eq!(
+        count(None, subscribed),
+        count(None, unsubscribed),
         "{log:?}"
     );
 }
@@ -217,4 +230,52 @@ fn rooms_discovery_never_found_warn_in_the_topology() {
         "a bridge plays nothing: {summary}"
     );
     assert!(topology.remedy.as_deref().unwrap().contains("seeds.toml"));
+}
+
+#[test]
+fn a_pending_software_update_warns_without_naming_where_it_comes_from() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    // Sonos offers the S2 household (Living Room, Bedroom) a newer version
+    // than its players run; the S1 household is offered nothing.
+    sim.offer_update("Living Room", Some("97.1-80312")).unwrap();
+    let report = doctor(&sim, Vec::new());
+    let updates = report.get(lan::UPDATES).expect("lan.updates ran");
+    assert_eq!(updates.status, Status::Warn, "{updates:?}");
+    assert!(
+        updates
+            .summary
+            .contains("Sonos offers 97.1-80312 to the S2 household")
+            && updates.summary.contains("86.10-80260"),
+        "{}",
+        updates.summary
+    );
+    assert!(
+        updates
+            .remedy
+            .as_deref()
+            .unwrap_or("")
+            .contains("never installs")
+    );
+    // The offer's update and manifest addresses never surface.
+    let shown = serde_json::to_string(updates).unwrap();
+    assert!(
+        !shown.contains("update.invalid") && !shown.contains("http://"),
+        "{shown}"
+    );
+    assert_eq!(report.exit_code(), EXIT_WARN);
+    // The read is read-only: every topology subscription it made is gone.
+    let log = sim.gena_log();
+    let zgt = |subscribed: bool| {
+        log.iter()
+            .filter(|e| e.service == "ZoneGroupTopology")
+            .filter(|e| {
+                if subscribed {
+                    matches!(e.event, GenaEvent::Subscribed { .. })
+                } else {
+                    matches!(e.event, GenaEvent::Unsubscribed { .. })
+                }
+            })
+            .count()
+    };
+    assert!(zgt(true) > 0 && zgt(true) == zgt(false), "{log:?}");
 }

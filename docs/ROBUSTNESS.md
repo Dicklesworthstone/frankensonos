@@ -43,7 +43,7 @@ us and is re-learned, never assumed.
 | Polling costs/lag | GENA subscriptions: initial NOTIFY is full state; deltas after | `a-gena-gz5` |
 | Subscription silently dies (player reboot, timeout) | Renew at ≤85% of granted timeout; renew failure (412) → resubscribe + re-fetch; one ZGT subscription anywhere tracks the whole household | `b-self-healing-7ts`, `a-gena-gz5` |
 | Parser breaks on a shape Sonos changes | Every state-bearing service's event shape is pinned by a live-captured golden fixture (11 fixtures, both generations) | `re-fixtures-eji` |
-| Sonos ships new firmware under us | `AvailableSoftwareUpdate` oracle on ZGT events → doctor warns; S1 is frozen forever (stable target) | `re-firmware-kds`, doctor |
+| Sonos ships new firmware under us | `AvailableSoftwareUpdate` on ZGT events (only the offered version is read) → doctor `lan.updates` warns which rooms run older software; S1 is frozen forever (stable target) | doctor `lan.updates`, `re-firmware-kds` |
 | Sonos's own updater is fragile | **Verified live on both generations (2026-10-10): an update stream interrupted at the wrong record boundary crashes the player outright** — S1 bridge (57.23, 20+ fires incl. Sonos's own shipping descriptor records; anacapad restart or watchdog reboot) and S2 One (97.1, descriptor-class inputs; anacapad restart). FrankenSonos never auto-updates; it warns, and the owner decides | `re-firmware-kds` |
 
 ## 5. Mutations are safe by construction

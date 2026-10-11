@@ -4,7 +4,8 @@
 //! Discovery and eventing failures are the most common and most confusing
 //! problems with local Sonos control: they look like "nothing happens". Each
 //! check here names the failure and the fix. All of them are read-only; the
-//! GENA round trip cancels its one subscription even when it times out.
+//! GENA round trip and the update read (`lan.updates`) cancel their
+//! subscriptions even when they time out.
 //!
 //! The checks share one [`LanProbe`] (a real [`Lan`] transport, so the daemon
 //! can run them too), which discovers once and reads each player once. Every
@@ -17,9 +18,11 @@ use crate::inventory::{self, Survey, classify};
 use crate::store::SqliteStore;
 use fsonos_proto::description::{DeviceDescription, parse_device_description};
 use fsonos_proto::net::{EventSink, Lan};
-use fsonos_proto::soap::RENDERING_CONTROL;
+use fsonos_proto::soap::{RENDERING_CONTROL, ZONE_GROUP_TOPOLOGY};
 use fsonos_proto::ssdp::{Advert, description_url};
-use fsonos_proto::topology::host_of_location;
+use fsonos_proto::topology::{
+    UpdateOffer, host_of_location, is_older_version, parse_update_offer, parse_zone_group_state,
+};
 use fsonos_proto::{Transport, control as soap};
 use fsonos_types::{Generation, PlayerId};
 use serde_json::json;
@@ -36,6 +39,7 @@ pub const PLAYERS: CheckId = CheckId("lan.players");
 pub const HOUSEHOLDS: CheckId = CheckId("lan.households");
 pub const GENA_ROUNDTRIP: CheckId = CheckId("lan.gena_roundtrip");
 pub const TOPOLOGY: CheckId = CheckId("lan.topology");
+pub const UPDATES: CheckId = CheckId("lan.updates");
 
 /// A player read slower than this is a warning.
 pub const SLOW_PLAYER: Duration = Duration::from_millis(500);
@@ -159,6 +163,7 @@ pub fn register(runner: &mut Runner, data_dir: PathBuf, probe: &Arc<LanProbe>) {
         Kind::Households,
         Kind::GenaRoundtrip,
         Kind::Topology,
+        Kind::Updates,
     ] {
         runner.register(LanCheck {
             kind,
@@ -228,6 +233,7 @@ enum Kind {
     Households,
     GenaRoundtrip,
     Topology,
+    Updates,
 }
 
 struct LanCheck {
@@ -244,6 +250,7 @@ impl Check for LanCheck {
             Kind::Households => HOUSEHOLDS,
             Kind::GenaRoundtrip => GENA_ROUNDTRIP,
             Kind::Topology => TOPOLOGY,
+            Kind::Updates => UPDATES,
         }
     }
 
@@ -255,6 +262,7 @@ impl Check for LanCheck {
             Kind::Households => "Households (S1/S2)",
             Kind::GenaRoundtrip => "Event callbacks (GENA)",
             Kind::Topology => "Group topology",
+            Kind::Updates => "Software updates",
         }
     }
 
@@ -264,6 +272,8 @@ impl Check for LanCheck {
         match self.kind {
             Kind::Ssdp | Kind::Seeds => &[],
             Kind::Players | Kind::Households | Kind::GenaRoundtrip | Kind::Topology => &[SSDP],
+            // The offer arrives only in a topology event.
+            Kind::Updates => &[GENA_ROUNDTRIP],
         }
     }
 
@@ -299,6 +309,10 @@ impl Check for LanCheck {
                 households_result(&found)
             }
             Kind::GenaRoundtrip => gena_result(gena_roundtrip(p, ctx)),
+            Kind::Updates => match p.survey() {
+                Ok(survey) => updates_result(&update_offers(p, &survey.households, ctx)),
+                Err(e) => CheckResult::skip(format!("no household to ask: {e}")),
+            },
             Kind::Topology => match p.survey() {
                 Ok(survey) => {
                     let reachable: Vec<(PlayerId, Result<(), String>)> = survey
@@ -419,6 +433,116 @@ fn gena_roundtrip(p: &LanProbe, ctx: &CheckContext) -> GenaOutcome {
         .lan
         .unsubscribe(ip, RENDERING_CONTROL.event_path, &sub.sid);
     outcome
+}
+
+/// One household's update offer, as its topology event told it.
+#[derive(Debug)]
+pub(crate) struct HouseholdOffer {
+    /// S1, S2, or the household id.
+    pub household: String,
+    /// The offer (`None`: the event carried none), or why the event could
+    /// not be read.
+    pub read: Result<Option<Offered>, String>,
+}
+
+/// An update offer, and every player's room and software version.
+#[derive(Debug)]
+pub(crate) struct Offered {
+    pub offer: UpdateOffer,
+    pub players: Vec<(String, String)>,
+}
+
+/// Ask one player of each household for its topology event and read the
+/// update offer in it. The subscriptions end before this returns.
+fn update_offers(
+    p: &LanProbe,
+    households: &[HouseholdState],
+    ctx: &CheckContext,
+) -> Vec<HouseholdOffer> {
+    let mut sink: Option<EventSink> = None;
+    households
+        .iter()
+        .filter_map(|h| {
+            let player = h.players.first()?;
+            let household = match h.generation() {
+                Some(Generation::S1) => "S1".to_string(),
+                Some(Generation::S2) => "S2".to_string(),
+                None => {
+                    h.id.as_ref()
+                        .map_or_else(|| "a household".to_string(), |id| id.0.clone())
+                }
+            };
+            let read =
+                topology_event(p, player.ip, &mut sink, ctx).and_then(|props| offer_in(&props));
+            Some(HouseholdOffer { household, read })
+        })
+        .collect()
+}
+
+/// The properties of the first topology event the player at `ip` sends.
+fn topology_event(
+    p: &LanProbe,
+    ip: IpAddr,
+    sink: &mut Option<EventSink>,
+    ctx: &CheckContext,
+) -> Result<Vec<(String, String)>, String> {
+    if sink.is_none() {
+        let local = p.lan.local_address_toward(ip).map_err(|e| e.to_string())?;
+        *sink = Some(EventSink::start(SocketAddr::new(local, 0)).map_err(|e| e.to_string())?);
+    }
+    let Some(sink) = sink.as_ref() else {
+        return Err("no event listener".into());
+    };
+    let started = Instant::now();
+    let sub = p
+        .lan
+        .subscribe(
+            ip,
+            ZONE_GROUP_TOPOLOGY.event_path,
+            &sink.callback_url("doctor-updates"),
+            60,
+        )
+        .map_err(|e| e.to_string())?;
+    let wait = NOTIFY_WAIT.min(ctx.remaining());
+    let mut props = None;
+    while props.is_none() && started.elapsed() < wait && !ctx.is_cancelled() {
+        if let Some(notify) = sink.recv_timeout(Duration::from_millis(100))
+            && notify.sid == sub.sid
+        {
+            props = Some(notify.properties);
+        }
+    }
+    // Always clean up, whatever happened.
+    let _ = p
+        .lan
+        .unsubscribe(ip, ZONE_GROUP_TOPOLOGY.event_path, &sub.sid);
+    props.ok_or_else(|| format!("no topology event within {} s", wait.as_secs()))
+}
+
+/// The update offer in a topology event, with each player's room and
+/// software version from the same event.
+fn offer_in(props: &[(String, String)]) -> Result<Option<Offered>, String> {
+    let property = |name: &str| {
+        props
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    };
+    let Some(offer) = property("AvailableSoftwareUpdate").and_then(parse_update_offer) else {
+        return Ok(None);
+    };
+    let state = property("ZoneGroupState").ok_or("the topology event has no ZoneGroupState")?;
+    let state = parse_zone_group_state(state).map_err(|e| e.to_string())?;
+    let players = state
+        .groups
+        .iter()
+        .flat_map(|g| &g.members)
+        .flat_map(|m| std::iter::once(m).chain(&m.satellites))
+        // The offer is for one generation: an S1 offer says nothing of S2.
+        .filter(|m| offer.sw_gen.is_none() || m.sw_gen.is_none() || m.sw_gen == offer.sw_gen)
+        .filter_map(|m| Some((m.zone_name.clone(), m.software_version.clone()?)))
+        .collect();
+    Ok(Some(Offered { offer, players }))
 }
 
 // ── verdicts: pure functions of what was observed ────────────────────────
@@ -679,6 +803,78 @@ pub(crate) fn topology_result(
     }
 }
 
+/// `lan.updates`: whether Sonos offers software newer than some player
+/// runs. Only the offered version is read, never where it would come from:
+/// FrankenSonos never installs updates.
+pub(crate) fn updates_result(found: &[HouseholdOffer]) -> CheckResult {
+    let mut behind: Vec<String> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut unread: Vec<String> = Vec::new();
+    let mut evidence = Vec::new();
+    for h in found {
+        match &h.read {
+            Ok(Some(Offered { offer, players })) => {
+                let old: Vec<&(String, String)> = players
+                    .iter()
+                    .filter(|(_, version)| is_older_version(version, &offer.version))
+                    .collect();
+                let behind_rooms: Vec<serde_json::Value> = old
+                    .iter()
+                    .map(|(room, version)| json!({ "room": room, "version": version }))
+                    .collect();
+                evidence.push(json!({
+                    "household": h.household,
+                    "offered": offer.version,
+                    "behind": behind_rooms,
+                }));
+                if old.is_empty() {
+                    current.push(format!("{} runs {}", h.household, offer.version));
+                } else {
+                    let rooms: Vec<String> = old
+                        .iter()
+                        .map(|(room, version)| format!("{room} ({version})"))
+                        .collect();
+                    behind.push(format!(
+                        "Sonos offers {} to the {} household; {} player(s) run older software: {}",
+                        offer.version,
+                        h.household,
+                        old.len(),
+                        rooms.join(", ")
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(e) => unread.push(format!("{}: {e}", h.household)),
+        }
+    }
+    let evidence = json!({ "households": evidence });
+    if !behind.is_empty() {
+        let mut result = CheckResult::warn(
+            behind.join("; "),
+            "FrankenSonos never installs updates. Update from the Sonos app when you choose: an \
+             update interrupted at the wrong moment can crash a player (docs/ROBUSTNESS.md).",
+        )
+        .with_evidence(evidence);
+        if !unread.is_empty() {
+            result = result.with_detail(format!("not read: {}", unread.join("; ")));
+        }
+        result
+    } else if !current.is_empty() {
+        CheckResult::pass(format!(
+            "every player runs the software Sonos offers ({})",
+            current.join(", ")
+        ))
+        .with_evidence(evidence)
+    } else if !unread.is_empty() {
+        CheckResult::skip(format!(
+            "could not read the update offers: {}",
+            unread.join("; ")
+        ))
+    } else {
+        CheckResult::skip("the players offer no software update")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -907,5 +1103,74 @@ mod tests {
         let r = store_open(&file);
         assert_eq!(r.status, Status::Fail);
         assert!(r.remedy.as_deref().unwrap().contains("FSONOS_DATA_DIR"));
+    }
+
+    fn offer(household: &str, version: &str, players: &[(&str, &str)]) -> HouseholdOffer {
+        HouseholdOffer {
+            household: household.into(),
+            read: Ok(Some(Offered {
+                offer: UpdateOffer {
+                    version: version.into(),
+                    sw_gen: Some(2),
+                },
+                players: players
+                    .iter()
+                    .map(|(room, v)| ((*room).to_string(), (*v).to_string()))
+                    .collect(),
+            })),
+        }
+    }
+
+    #[test]
+    fn a_pending_update_warns_and_names_the_rooms_behind() {
+        let r = updates_result(&[
+            offer(
+                "S2",
+                "97.1-80312",
+                &[("Kitchen", "86.10-80260"), ("Study", "97.1-80312")],
+            ),
+            HouseholdOffer {
+                household: "S1".into(),
+                read: Err("no topology event within 5 s".into()),
+            },
+        ]);
+        assert_eq!(r.status, Status::Warn);
+        assert_eq!(
+            r.summary,
+            "Sonos offers 97.1-80312 to the S2 household; 1 player(s) run older software: \
+             Kitchen (86.10-80260)"
+        );
+        assert!(
+            r.remedy
+                .as_deref()
+                .unwrap()
+                .contains("never installs updates")
+        );
+        assert!(
+            r.detail
+                .as_deref()
+                .unwrap()
+                .contains("S1: no topology event")
+        );
+        assert_eq!(r.evidence["households"][0]["behind"][0]["room"], "Kitchen");
+    }
+
+    #[test]
+    fn current_software_passes_and_no_offer_skips() {
+        let r = updates_result(&[offer("S2", "97.1-80312", &[("Study", "97.1-80312")])]);
+        assert_eq!(r.status, Status::Pass);
+        assert!(r.summary.contains("S2 runs 97.1-80312"), "{}", r.summary);
+        let none = HouseholdOffer {
+            household: "S2".into(),
+            read: Ok(None),
+        };
+        assert_eq!(updates_result(&[none]).status, Status::Skip);
+        let unread = HouseholdOffer {
+            household: "S1".into(),
+            read: Err("refused".into()),
+        };
+        let r = updates_result(&[unread]);
+        assert_eq!(r.status, Status::Skip);
+        assert!(r.summary.contains("S1: refused"));
     }
 }

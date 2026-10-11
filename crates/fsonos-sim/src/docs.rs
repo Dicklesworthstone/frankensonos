@@ -161,6 +161,18 @@ pub(crate) fn software_version(sw_gen: u8) -> &'static str {
     }
 }
 
+/// An `AvailableSoftwareUpdate` value offering `version`, shaped like a real
+/// player's. Its addresses are placeholders (`.invalid`): FrankenSonos never
+/// reads them.
+pub(crate) fn update_item(version: &str, sw_gen: u8) -> String {
+    format!(
+        "<UpdateItem xmlns=\"urn:schemas-rinconnetworks-com:update-1-0\" Type=\"Software\" \
+         Version=\"{version}\" UpdateURL=\"http://update.invalid/sim/update.upd\" \
+         DownloadSize=\"0\" ManifestURL=\"http://update.invalid/sim/manifest.xml\" \
+         Swgen=\"{sw_gen}\" LatestSwgen=\"{sw_gen}\" ManifestRevision=\"0\"/>"
+    )
+}
+
 fn display_version(sw_gen: u8) -> &'static str {
     if sw_gen == 1 { "11.16.1" } else { "17.2.7" }
 }

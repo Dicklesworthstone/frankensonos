@@ -63,6 +63,9 @@ pub(crate) struct Household {
     pub sw_gen: u8,
     pub params: SpotifyRenderParams,
     pub favorites: Vec<Favorite>,
+    /// The software version an `AvailableSoftwareUpdate` offers, if any
+    /// (see [`crate::SimHandle::offer_update`]).
+    pub offered_update: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

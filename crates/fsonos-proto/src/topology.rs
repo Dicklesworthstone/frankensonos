@@ -184,6 +184,61 @@ pub fn parse_zone_group_state(doc_text: &str) -> Result<ZoneGroupState, ProtoErr
     Ok(ZoneGroupState { groups, vanished })
 }
 
+/// What `AvailableSoftwareUpdate` (a ZoneGroupTopology event variable) says
+/// Sonos offers the household: the software version, and the generation it
+/// is for. Only those are read. The document also says where the update
+/// would come from, which FrankenSonos never reads: it never installs
+/// updates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateOffer {
+    /// e.g. `97.1-80312`, as [`ZoneMember::software_version`] reads.
+    pub version: String,
+    /// `Swgen`: the generation (1 = S1, 2 = S2) it is for.
+    pub sw_gen: Option<u8>,
+}
+
+/// Parse a decoded `AvailableSoftwareUpdate` value (one `<UpdateItem/>`):
+/// `None` when it is empty, malformed, not a software update or names no
+/// version.
+#[must_use]
+pub fn parse_update_offer(doc_text: &str) -> Option<UpdateOffer> {
+    let doc = xml::parse(doc_text).ok()?;
+    let item = doc.root_element();
+    if item.tag_name().name() != "UpdateItem"
+        || item.attribute("Type").is_some_and(|t| t != "Software")
+    {
+        return None;
+    }
+    let version = item.attribute("Version")?.trim();
+    if version.is_empty() {
+        return None;
+    }
+    Some(UpdateOffer {
+        version: version.to_string(),
+        sw_gen: item.attribute("Swgen").and_then(|g| g.trim().parse().ok()),
+    })
+}
+
+/// Whether software `current` is older than `offered` (`major.minor-build`,
+/// e.g. `86.10-80260` is older than `97.1-80312`). Versions that don't parse
+/// that way count as older when they differ.
+#[must_use]
+pub fn is_older_version(current: &str, offered: &str) -> bool {
+    fn parts(v: &str) -> Option<(u32, u32, u32)> {
+        let (release, build) = v.trim().split_once('-')?;
+        let (major, minor) = release.split_once('.')?;
+        Some((
+            major.parse().ok()?,
+            minor.parse().ok()?,
+            build.parse().ok()?,
+        ))
+    }
+    match (parts(current), parts(offered)) {
+        (Some(c), Some(o)) => c < o,
+        _ => current.trim() != offered.trim(),
+    }
+}
+
 fn parse_member(node: roxmltree::Node<'_, '_>) -> Result<ZoneMember, ProtoError> {
     let flag = |name: &str| node.attribute(name) == Some("1");
     Ok(ZoneMember {
