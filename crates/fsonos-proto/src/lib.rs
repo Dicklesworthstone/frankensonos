@@ -128,4 +128,80 @@ impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
     fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<ssdp::Advert>, ProtoError> {
         (**self).ssdp_search(mx_secs, wait)
     }
+
+    fn mdns_search(&self, wait: Duration) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
+        (**self).mdns_search(wait)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// Answers every channel a transport has, each in its own way.
+    struct Everything;
+
+    impl Transport for Everything {
+        fn soap_post(
+            &self,
+            _host: std::net::IpAddr,
+            _control_path: &str,
+            _soap_action: &str,
+            _body: &str,
+        ) -> Result<String, ProtoError> {
+            Ok("soap".into())
+        }
+
+        fn http_get(&self, _url: &str) -> Result<String, ProtoError> {
+            Ok("description".into())
+        }
+
+        fn http_get_bytes(&self, _url: &str) -> Result<HttpBody, ProtoError> {
+            Ok(HttpBody {
+                content_type: Some("image/png".into()),
+                body: vec![1, 2, 3],
+            })
+        }
+
+        fn ssdp_search(
+            &self,
+            _mx_secs: u8,
+            _wait: Duration,
+        ) -> Result<Vec<ssdp::Advert>, ProtoError> {
+            Ok(vec![ssdp::Advert {
+                location: "http://192.0.2.10:1400/xml/device_description.xml".into(),
+                st: "urn:schemas-upnp-org:device:ZonePlayer:1".into(),
+                usn: None,
+                household: None,
+                boot_seq: None,
+            }])
+        }
+
+        fn mdns_search(&self, _wait: Duration) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
+            Ok(vec![mdns::SonosAdvert {
+                instance: "RINCON_000000000000001400@Living Room".into(),
+                uuid: None,
+                household: Some("Sonos_example".into()),
+                boot_seq: None,
+                location: None,
+                port: Some(1443),
+                addr: Some(std::net::Ipv4Addr::new(192, 0, 2, 10)),
+            }])
+        }
+    }
+
+    #[test]
+    fn a_shared_transport_is_the_one_it_shares_on_every_channel() {
+        let shared: Arc<dyn Transport + Send + Sync> = Arc::new(Everything);
+        let host = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 10));
+        assert_eq!(shared.soap_post(host, "/", "a", "").unwrap(), "soap");
+        assert_eq!(shared.http_get("http://x/").unwrap(), "description");
+        assert_eq!(shared.http_get_bytes("http://x/").unwrap().body, [1, 2, 3]);
+        assert_eq!(shared.ssdp_search(1, Duration::ZERO).unwrap().len(), 1);
+        // The second discovery channel too: a daemon's shared LAN finds by
+        // mDNS what SSDP missed.
+        let seen = shared.mdns_search(Duration::ZERO).unwrap();
+        assert_eq!(seen[0].household.as_deref(), Some("Sonos_example"));
+    }
 }

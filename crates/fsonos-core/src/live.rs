@@ -20,10 +20,11 @@ use crate::inventory::DISCOVERY_WAIT;
 use crate::playback::{Changes, Playback, PlayerPlayback};
 use crate::reconcile::{Health, HealthBoard, Reconciler};
 use fsonos_proto::gena::Subscription;
+use fsonos_proto::mdns::SonosAdvert;
 use fsonos_proto::net::{EventSink, Lan, MediaFiles};
 use fsonos_proto::ssdp::Advert;
 use fsonos_proto::topology::{VanishedDevice, host_of_location};
-use fsonos_proto::{ProtoError, Transport};
+use fsonos_proto::{HttpBody, ProtoError, Transport};
 use fsonos_types::PlayerId;
 use fsonos_types::text::normalize;
 use std::collections::HashMap;
@@ -348,8 +349,16 @@ impl Transport for Via<'_> {
         self.transport.http_get(url)
     }
 
+    fn http_get_bytes(&self, url: &str) -> Result<HttpBody, ProtoError> {
+        self.transport.http_get_bytes(url)
+    }
+
     fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<Advert>, ProtoError> {
         self.transport.ssdp_search(mx_secs, wait)
+    }
+
+    fn mdns_search(&self, wait: Duration) -> Result<Vec<SonosAdvert>, ProtoError> {
+        self.transport.mdns_search(wait)
     }
 }
 
@@ -681,6 +690,60 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A player seen only by mDNS, and the bytes of its album art.
+    struct MdnsOnly;
+
+    impl Transport for MdnsOnly {
+        fn soap_post(
+            &self,
+            _host: IpAddr,
+            _control_path: &str,
+            _soap_action: &str,
+            _body: &str,
+        ) -> Result<String, ProtoError> {
+            Err(ProtoError::NotWired("soap_post"))
+        }
+
+        fn http_get_bytes(&self, _url: &str) -> Result<HttpBody, ProtoError> {
+            Ok(HttpBody {
+                content_type: Some("image/png".into()),
+                body: vec![7],
+            })
+        }
+
+        fn mdns_search(&self, _wait: Duration) -> Result<Vec<SonosAdvert>, ProtoError> {
+            Ok(vec![SonosAdvert {
+                instance: "RINCON_000000000000001400@Living Room".into(),
+                uuid: None,
+                household: Some("Sonos_example".into()),
+                boot_seq: None,
+                location: None,
+                port: Some(1443),
+                addr: Some(std::net::Ipv4Addr::new(192, 0, 2, 10)),
+            }])
+        }
+    }
+
+    #[test]
+    fn the_live_model_surveys_and_reads_through_every_channel_of_its_transport() {
+        let lan = Lan::start().expect("lan");
+        let via = Via {
+            transport: &MdnsOnly,
+            lan: &lan,
+        };
+        // The survey's second discovery channel (see `inventory`).
+        let seen = via
+            .mdns_search(Duration::ZERO)
+            .expect("mdns through the live model");
+        assert_eq!(seen[0].household.as_deref(), Some("Sonos_example"));
+        assert_eq!(
+            via.http_get_bytes("http://192.0.2.10:1400/art")
+                .unwrap()
+                .body,
+            [7]
+        );
+    }
 
     #[test]
     fn a_wall_clock_jump_past_the_monotonic_clock_is_a_sleep() {
