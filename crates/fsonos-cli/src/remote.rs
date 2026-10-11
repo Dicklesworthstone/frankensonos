@@ -101,7 +101,7 @@ pub struct Daemon {
     addr: SocketAddr,
     token: Option<String>,
     /// The local client the calls come from when not the CLI
-    /// ([`Daemon::as_stdio_mcp`]).
+    /// ([`Daemon::for_stdio_mcp`]).
     claim: Option<&'static str>,
 }
 
@@ -146,7 +146,7 @@ impl Daemon {
     /// Call as the stdio MCP server (`fsonos mcp`) rather than the CLI, so
     /// the house policy's rules for that client apply on the daemon too.
     #[must_use]
-    pub fn as_stdio_mcp(mut self) -> Self {
+    pub fn for_stdio_mcp(mut self) -> Self {
         self.claim = Some("mcp-stdio");
         self
     }
@@ -732,7 +732,7 @@ mod tests {
             token: Some("secret".into()),
             claim: None,
         }
-        .as_stdio_mcp();
+        .for_stdio_mcp();
         let sent = headers(with_token, listener);
         assert!(
             sent.contains(&"x-fsonos-client: mcp-stdio".to_string()),
@@ -745,7 +745,7 @@ mod tests {
             token: None,
             claim: None,
         }
-        .as_stdio_mcp();
+        .for_stdio_mcp();
         let sent = headers(without, listener);
         assert!(
             !sent.iter().any(|h| h.starts_with("x-fsonos-client")),

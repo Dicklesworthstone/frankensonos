@@ -821,7 +821,7 @@ impl fsonos_mcp::tools::Daemon for StdioDaemon {
         let daemon = remote::Daemon::find(&self.0, false)
             .ok()
             .flatten()?
-            .as_stdio_mcp();
+            .for_stdio_mcp();
         let empty = serde_json::json!({});
         Some(if method == "GET" {
             daemon.get(path)
