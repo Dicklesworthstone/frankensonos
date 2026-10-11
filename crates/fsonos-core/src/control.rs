@@ -340,7 +340,7 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
         },
         other => other?,
     };
-    let (uris, _) = queue_uris(t, host, added.first, added.count)?;
+    let uris = queue_uris(t, host, added.first, added.count)?;
     Ok(Queued {
         first: added.first,
         uris,
@@ -364,24 +364,25 @@ pub fn unqueue<T: Transport + ?Sized>(
     }
     let host = addr(households, coordinator)?;
     let count = u32::try_from(uris.len()).unwrap_or(u32::MAX);
-    let (now, update_id) = queue_uris(t, host, first, count)?;
-    if now != uris {
+    if queue_uris(t, host, first, count)? != uris {
         return Ok(false);
     }
-    soap::remove_track_range_from_queue(t, host, update_id, first, count)?;
+    // UpdateID 0 takes the queue as it is, as SoCo and node-sonos send it:
+    // the tracks were just read back where they were added, and players
+    // need not count a queue's changes the way its Browse does.
+    soap::remove_track_range_from_queue(t, host, 0, first, count)?;
     Ok(true)
 }
 
 /// The URIs of up to `count` queue tracks from position `first` (1-based)
-/// of the coordinator at `host`, and the queue's update id as read.
+/// of the coordinator at `host`.
 fn queue_uris<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
     first: u32,
     count: u32,
-) -> Result<(Vec<String>, u32), CoreError> {
+) -> Result<Vec<String>, CoreError> {
     let mut uris = Vec::new();
-    let mut update_id = 0;
     let mut got = 0;
     while got < count {
         let page = content::browse(
@@ -392,7 +393,6 @@ fn queue_uris<T: Transport + ?Sized>(
             first.saturating_sub(1).saturating_add(got),
             (count - got).min(100),
         )?;
-        update_id = page.update_id;
         if page.objects.is_empty() {
             break;
         }
@@ -403,7 +403,7 @@ fn queue_uris<T: Transport + ?Sized>(
         );
         got = u32::try_from(uris.len()).unwrap_or(u32::MAX);
     }
-    Ok((uris, update_id))
+    Ok(uris)
 }
 
 /// Set one room's volume (on the room's own player); returns the new level.
