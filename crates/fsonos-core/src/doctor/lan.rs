@@ -88,6 +88,15 @@ impl LanProbe {
         self
     }
 
+    /// The households the probe's survey found (surveying once if no check
+    /// has yet), or why the survey failed.
+    pub fn households(&self) -> Result<&[HouseholdState], &str> {
+        self.survey()
+            .as_ref()
+            .map(|s| s.households.as_slice())
+            .map_err(String::as_str)
+    }
+
     fn adverts(&self) -> &Result<Vec<Advert>, String> {
         self.adverts.get_or_init(|| {
             self.lan

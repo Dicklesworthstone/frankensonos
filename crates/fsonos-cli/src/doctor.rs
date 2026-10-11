@@ -313,6 +313,8 @@ pub fn lan_checks(
     let data_dir = crate::daemon::data_dir(global)?;
     Ok(move |runner: &mut Runner| {
         fsonos_core::doctor::lan::register(runner, data_dir.clone(), &probe);
+        let aliases = data_dir.join(fsonos_api::surface::ALIASES_FILE);
+        fsonos_core::doctor::rooms::register(runner, aliases, &probe);
     })
 }
 

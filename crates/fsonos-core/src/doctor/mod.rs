@@ -18,9 +18,11 @@
 //!   ([`Report::to_json`]).
 //! * [`spotify`] — per-household Spotify checks: a Spotify favorite, the
 //!   linked account, and render parameters that rebuild a favorite exactly.
+//! * [`rooms`] — the owner's room aliases parse and name rooms the house has.
 
 pub mod lan;
 mod render;
+pub mod rooms;
 mod runner;
 pub mod spotify;
 
