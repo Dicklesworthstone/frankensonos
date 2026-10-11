@@ -28,7 +28,7 @@
 //! | `POST /dj/start` | [`crate::DjStartRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /scenes` | | `[SceneDto]` ([`crate::surface::scenes`]) |
 //! | `GET /scenes/{name}` | | [`crate::surface::scenes::SceneDto`] |
-//! | `PUT /scenes/{name}` | | the `SceneDto` saved from the house as it is |
+//! | `PUT /scenes/{name}` | none, or a [`crate::surface::scenes::SceneDefinition`] | the `SceneDto` saved from the house as it is, or as the body writes it |
 //! | `POST /scenes/{name}/apply` | `{}` | [`crate::surface::scenes::SceneApplyDto`] |
 //! | `DELETE /scenes/{name}` | | [`crate::surface::scenes::SceneDeletedDto`] |
 //! | `POST /dj/skip`, `/dj/stop` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |

@@ -3,8 +3,8 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::scenes::{SceneApplyDto, SceneApplyRequest, SceneDto};
-use serde::Serialize;
+use fsonos_api::surface::scenes::{SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDto};
+use serde::{Deserialize as _, Serialize};
 
 use super::{Backend, respond, segment, with_backend};
 
@@ -84,6 +84,20 @@ impl Backend {
         })
     }
 
+    /// The `save_scene` tool with a `scene` written out.
+    pub fn save_scene_from(
+        &self,
+        name: &str,
+        scene: &serde_json::Value,
+    ) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let def = SceneDefinition::deserialize(scene)
+                .map_err(|e| fsonos_api::Failure::invalid(format!("scene: {e}")))?;
+            let saved = self.surface.save_scene_from(&self.client, name, &def)?;
+            Ok((format!("Saved {}", scene_line(&saved)), saved))
+        })
+    }
+
     /// The `apply_scene` tool.
     pub fn apply_scene(
         &self,
@@ -128,10 +142,17 @@ fn list_scenes(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResul
 }
 
 #[tool(
-    description = "Save the house as it is now as a scene called `name` (1-64 characters): how the rooms group, each room's volume and mute, and what each group plays and whether it plays. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes."
+    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind dj with an optional mood, uri with a stream uri, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. Its rooms must be in the house now, and its favorites in their group's household. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes."
 )]
-fn save_scene(_ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.save_scene(&name))
+fn save_scene(
+    _ctx: &McpContext,
+    name: String,
+    scene: Option<serde_json::Value>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(move |b| match &scene {
+        Some(scene) => b.save_scene_from(&name, scene),
+        None => b.save_scene(&name),
+    })
 }
 
 #[tool(

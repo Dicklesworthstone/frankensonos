@@ -10,7 +10,9 @@ use fastapi::{Method, PathParams, Request};
 
 use super::{Ctx, Op, answer, body_or_default, percent_decode};
 use crate::failure::Failure;
-use crate::surface::scenes::{SceneApplyDto, SceneApplyRequest, SceneDeletedDto, SceneDto};
+use crate::surface::scenes::{
+    SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDeletedDto, SceneDto,
+};
 
 const SCENES: &str = "scenes";
 
@@ -74,10 +76,21 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/scenes/{name}",
                 "save_scene",
                 SCENES,
-                "Save the house as it is now as a scene (replacing one of that name)",
+                "Save a scene (replacing one of that name): the house as it is now, or the one the body writes out",
             ),
-            |s, c, req| answer(path_name(req).and_then(|name| s.save_scene(c, &name))),
+            |s, c, req| {
+                // No body (or `{}`): the house as it is now.
+                let saved = body_or_default::<Option<SceneDefinition>>(req, None).and_then(|def| {
+                    let name = path_name(req)?;
+                    match def.filter(|d| *d != SceneDefinition::default()) {
+                        Some(def) => s.save_scene_from(c, &name, &def),
+                        None => s.save_scene(c, &name),
+                    }
+                });
+                answer(saved)
+            },
         )
+        .request_schema::<SceneDefinition>(false)
         .response_schema::<SceneDto>(200, "The scene as saved"),
         cx.route(
             &Op::post(

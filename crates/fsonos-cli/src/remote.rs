@@ -219,6 +219,17 @@ impl Daemon {
         self.call("PUT", path, None, CALL)
     }
 
+    /// `PUT path` with `body` as JSON.
+    pub fn put_json<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, Failure> {
+        let body = serde_json::to_string(body)
+            .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))?;
+        self.call("PUT", path, Some(&body), CALL)
+    }
+
     pub fn post<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,

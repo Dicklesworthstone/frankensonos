@@ -4,11 +4,14 @@
 //! failures every surface reports (UNKNOWN_SCENE, CROSS_HOUSEHOLD_GROUP,
 //! INVALID_ARGUMENT, POLICY_DENIED, and no store).
 
-use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
+use fsonos_api::dj::{
+    DjEngine, DjMoodDto, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer, DjSteeringDto,
+    SteerConstraints,
+};
 use fsonos_api::plan::{
     DjAction, TransportAction, plan_group, plan_play, plan_transport, plan_ungroup, plan_volume,
 };
-use fsonos_api::surface::scenes::SceneApplyRequest;
+use fsonos_api::surface::scenes::{SceneApplyRequest, SceneDefinition};
 use fsonos_api::surface::{Surface, Survey};
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, NoteCode, OutcomeDto, PlayRequest, VolumeRequest, ZoneRequest,
@@ -86,6 +89,69 @@ fn volume(s: &Surface, client: &Client, zone: &str, level: i64) {
 
 fn zone(name: &str) -> ZoneRequest {
     ZoneRequest { zone: name.into() }
+}
+
+#[test]
+fn a_scene_written_out_is_checked_saved_and_applied() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let s = surface(&sim, MemStore::default());
+    let cli = Client::Cli;
+    let def = |v: serde_json::Value| -> SceneDefinition { serde_json::from_value(v).unwrap() };
+    let dinner = def(serde_json::json!({
+        "groups": [{
+            "coordinator": "kitchen",
+            "members": ["Office"],
+            "source": {"kind": "uri", "uri": STREAM}
+        }],
+        "volumes": {"Kitchen": 22, "office": 18}
+    }));
+    let saved = s.save_scene_from(&cli, "Dinner", &dinner).unwrap();
+    let lead = &saved.groups[0];
+    assert_eq!(lead.coordinator, "Kitchen", "named as the house names it");
+    assert_eq!(lead.members, ["Office"]);
+    assert!(lead.playing, "a group with a source plays by default");
+    assert_eq!(saved.volumes.get("Office"), Some(&18));
+
+    let applied = s.apply_scene(&cli, "dinner").unwrap();
+    assert!(applied.complete, "{applied:?}");
+    let (level, together, state, uri) = kitchen(&sim);
+    assert_eq!(
+        (level, together, state, uri.as_str()),
+        (22, true, TransportState::Playing, STREAM)
+    );
+
+    for (bad, code) in [
+        // Nothing written out is not "a scene that does nothing".
+        (serde_json::json!({}), ErrorCode::InvalidArgument),
+        (
+            serde_json::json!({"groups": [{"coordinator": "Atticc"}]}),
+            ErrorCode::UnknownRoom,
+        ),
+        (
+            serde_json::json!({"groups": [{"coordinator": "Kitchen",
+                "source": {"kind": "uri", "uri": "spotify:track:0SimQueueTrack00000001"}}]}),
+            ErrorCode::InvalidArgument,
+        ),
+        (
+            serde_json::json!({"groups": [{"coordinator": "Kitchen", "source": {"kind": "radio"}}]}),
+            ErrorCode::InvalidArgument,
+        ),
+        (
+            serde_json::json!({"groups": [{"coordinator": "Kitchen", "members": ["Living Room"]}]}),
+            ErrorCode::CrossHouseholdGroup,
+        ),
+        (
+            serde_json::json!({"groups": [{"coordinator": "Kitchen",
+                "source": {"kind": "favorite", "name": "No Such Favorite Anywhere"}}]}),
+            ErrorCode::UnknownFavorite,
+        ),
+    ] {
+        let err = s
+            .save_scene_from(&cli, "Bad", &def(bad.clone()))
+            .unwrap_err();
+        assert_eq!(err.code, code, "{bad}: {err:?}");
+    }
+    assert!(s.scene(&cli, "Bad").is_err(), "nothing refused was saved");
 }
 
 #[test]
@@ -344,7 +410,21 @@ impl DjEngine for PlaysIn {
         _: &dyn Store,
         _: &dyn Clock,
     ) -> Result<DjMoodsDto, Failure> {
-        Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
+        Ok(DjMoodsDto {
+            moods: vec![DjMoodDto {
+                name: "calm".into(),
+                constraints: SteerConstraints::default(),
+            }],
+            programs: Vec::new(),
+            now: DjSteeringDto {
+                source: "none".into(),
+                mood: None,
+                constraints: SteerConstraints::default(),
+                added: SteerConstraints::default(),
+                expires_at: None,
+                expires_in_secs: None,
+            },
+        })
     }
 
     fn feeds(&self, coordinator: &PlayerId) -> bool {
@@ -357,6 +437,29 @@ impl DjEngine for PlaysIn {
     fn moving(&self, _: &PlayerId) {}
 
     fn moved(&self, _: &PlayerId, _: &PlayerId) {}
+}
+
+#[test]
+fn a_written_scene_names_a_mood_the_dj_has() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let s = surface(&sim, MemStore::default()).with_dj(Box::new(PlaysIn(Vec::new())));
+    let cli = Client::Cli;
+    let dj = |mood: &str| -> SceneDefinition {
+        serde_json::from_value(serde_json::json!({
+            "groups": [{"coordinator": "Kitchen", "source": {"kind": "dj", "mood": mood}}]
+        }))
+        .unwrap()
+    };
+    let typo = s.save_scene_from(&cli, "Typo", &dj("clam")).unwrap_err();
+    assert_eq!(typo.code, ErrorCode::UnknownMood, "{typo:?}");
+    assert_eq!(typo.suggestions, ["calm"]);
+    assert!(s.scene(&cli, "Typo").is_err(), "nothing refused was saved");
+    let saved = s.save_scene_from(&cli, "Evening", &dj("Calm")).unwrap();
+    assert_eq!(
+        saved.groups[0].source.mood.as_deref(),
+        Some("calm"),
+        "as the DJ names it"
+    );
 }
 
 #[test]

@@ -8,12 +8,16 @@
 //! daemon they survey and act right here; no DJ plays to be saved, and one
 //! the scene starts plays the works it queues and no more.
 
+use anyhow::Context as _;
 use clap::{Args, Subcommand};
 use fsonos_api::Failure;
 use fsonos_api::surface::Surface;
-use fsonos_api::surface::scenes::{SceneApplyDto, SceneApplyRequest, SceneDto, SceneGroupDto};
+use fsonos_api::surface::scenes::{
+    SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDto, SceneGroupDto,
+};
 use fsonos_core::policy::Client;
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
 use crate::config::GlobalArgs;
 use crate::remote::{Daemon, pct};
@@ -27,8 +31,17 @@ pub struct SceneArgs {
 #[derive(Subcommand)]
 enum SceneAction {
     /// Save the house as it is now as a scene: grouping, volumes and mutes,
-    /// what each group plays (replaces a scene of that name).
-    Save { name: String },
+    /// what each group plays (replaces a scene of that name). With --from, the
+    /// scene a TOML file writes out instead.
+    Save {
+        name: String,
+        /// A TOML file writing the scene out: `[[groups]]` with `coordinator`,
+        /// `members`, `source = { kind = "favorite", name = "…" }` (or `dj`
+        /// with a `mood`, a `uri`, `keep`) and `playing`; `[volumes]` and
+        /// `[mutes]` by room.
+        #[arg(long, value_name = "FILE")]
+        from: Option<PathBuf>,
+    },
     /// Put the house in a scene: only the steps it needs are sent;
     /// `fsonos undo` puts it back. Exits 1 if a step failed.
     Apply {
@@ -59,7 +72,35 @@ pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
     let s = || surface(global);
     let cli = Client::Cli;
     match &args.action {
-        SceneAction::Save { name } => {
+        SceneAction::Save {
+            name,
+            from: Some(file),
+        } => {
+            let text = std::fs::read_to_string(file)
+                .with_context(|| format!("read {}", file.display()))?;
+            let def: SceneDefinition = toml::from_str(&text).map_err(|e| {
+                Failure::invalid(format!("{}: {e}", file.display())).with_hint(
+                    "Write [[groups]] with a coordinator, and [volumes] and [mutes] by room.",
+                )
+            })?;
+            // Checked here: to the daemon an empty body is "the house as it is".
+            if def == SceneDefinition::default() {
+                return Err(Failure::invalid(format!(
+                    "{} names no group, volume or mute",
+                    file.display()
+                ))
+                .with_hint("Write at least one, or drop --from to save the house as it is.")
+                .into());
+            }
+            let scene: SceneDto = match Daemon::find(global, global.daemon)? {
+                Some(daemon) => daemon.put_json(&format!("/scenes/{}", pct(name)), &def)?,
+                None => s()?.save_scene_from(&cli, name, &def)?,
+            };
+            crate::emit(global.json, &scene, |scene| {
+                format!("saved scene {}", show_text(scene))
+            })
+        }
+        SceneAction::Save { name, from: None } => {
             // The DJ plays in the daemon: only it knows where.
             let scene: SceneDto = match Daemon::find(global, global.daemon)? {
                 Some(daemon) => daemon.put(&format!("/scenes/{}", pct(name)))?,

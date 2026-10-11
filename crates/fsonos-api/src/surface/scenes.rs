@@ -1,7 +1,9 @@
 //! Scenes on every surface: list, show, save, apply and delete the named
 //! house states core keeps ([`fsonos_core::scenes`]), alike over HTTP
 //! (`/scenes`), the MCP tools (`list_scenes`, `save_scene`, `apply_scene`)
-//! and the CLI (`fsonos scene`).
+//! and the CLI (`fsonos scene`). A scene is saved from the house as it is,
+//! or written out ([`SceneDefinition`]): its groups, what each plays, and
+//! room volumes and mutes, checked against the house as it is saved.
 //!
 //! Applying is a control call like any other: authorize `apply_scene`,
 //! snapshot the zones the scene touches, carry out only the steps the house
@@ -13,11 +15,12 @@
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::HouseholdState;
 use fsonos_core::actions;
+use fsonos_core::favorites;
 use fsonos_core::policy::Client;
 use fsonos_core::rooms::suggest_rooms;
 use fsonos_core::scenes::{
-    self, ApplyOptions, PlayingDj, Scene, SceneError, SceneHooks, SceneOp, ScenePlan, SceneReport,
-    SceneSource,
+    self, ApplyOptions, PlayingDj, Scene, SceneError, SceneGroup, SceneHooks, SceneOp, ScenePlan,
+    SceneReport, SceneSource,
 };
 use fsonos_core::store::{Store, StoreError};
 use fsonos_types::PlayerId;
@@ -32,6 +35,7 @@ use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::Note;
 use crate::plan::{Command, DjAction, VolumeScope};
 use crate::request::VolumeChange;
+use crate::source::normalize_source_uri;
 
 /// A saved scene (`GET /scenes`, `list_scenes`, `fsonos scene show`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -95,6 +99,142 @@ pub struct SceneApplyDto {
     /// Volumes the house policy lowered or left alone (`VOLUME_CLAMPED`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+}
+
+/// A scene written out rather than saved from the house as it is (the
+/// `PUT /scenes/{name}` body, `save_scene`'s `scene`, `fsonos scene save
+/// --from`). Rooms are named as the house names them (any case) and must be
+/// in it now; `volumes` and `mutes` leave the rooms they don't name alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SceneDefinition {
+    /// How the rooms group, and what each group plays.
+    #[serde(default)]
+    pub groups: Vec<SceneGroupDefinition>,
+    /// Room → volume (0-100).
+    #[serde(default)]
+    pub volumes: BTreeMap<String, u8>,
+    /// Room → muted.
+    #[serde(default)]
+    pub mutes: BTreeMap<String, bool>,
+}
+
+/// One group of a [`SceneDefinition`]; a room on its own is a group without
+/// members.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SceneGroupDefinition {
+    /// The room that leads the group.
+    pub coordinator: String,
+    /// The other rooms in it.
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// What it plays: `keep` (whatever it has; the default), a `favorite`
+    /// (`name`), a stream or file `uri` (Spotify plays through a favorite or
+    /// the DJ), or the `dj` (`mood`, optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SceneSourceDto>,
+    /// Playing, or else paused; by default it plays when it has a source
+    /// other than `keep`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playing: Option<bool>,
+}
+
+impl SceneDefinition {
+    /// The scene `name` this defines, its rooms named as the house names
+    /// them, or why it can't be one (a room not in the house, a source that
+    /// can't play, two households in one group).
+    fn scene(&self, name: &str, households: &[HouseholdState]) -> Result<Scene, Failure> {
+        let room = |asked: &str| -> Result<String, Failure> {
+            let rooms = || households.iter().flat_map(|h| &h.rooms);
+            rooms()
+                .find(|r| r.name.eq_ignore_ascii_case(asked.trim()))
+                .map(|r| r.name.clone())
+                .ok_or_else(|| {
+                    let known: Vec<String> = rooms().map(|r| r.name.clone()).collect();
+                    Failure::new(
+                        ErrorCode::UnknownRoom,
+                        format!("no room {asked:?} in the house"),
+                    )
+                    .with_suggestions(suggest_rooms(asked, &known))
+                })
+        };
+        let mut groups = Vec::with_capacity(self.groups.len());
+        for g in &self.groups {
+            let source = g
+                .source
+                .as_ref()
+                .map(source_of)
+                .transpose()?
+                .unwrap_or_default();
+            groups.push(SceneGroup {
+                coordinator: room(&g.coordinator)?,
+                members: g
+                    .members
+                    .iter()
+                    .map(|m| room(m))
+                    .collect::<Result<_, _>>()?,
+                playing: g.playing.unwrap_or(!matches!(source, SceneSource::Keep)),
+                source,
+            });
+        }
+        let mut volumes = BTreeMap::new();
+        for (asked, level) in &self.volumes {
+            if *level > 100 {
+                return Err(Failure::invalid(format!(
+                    "the volume for {asked} must be 0 to 100, not {level}"
+                )));
+            }
+            volumes.insert(room(asked)?, *level);
+        }
+        let mut mutes = BTreeMap::new();
+        for (asked, muted) in &self.mutes {
+            mutes.insert(room(asked)?, *muted);
+        }
+        let scene = Scene {
+            name: name.trim().to_string(),
+            groups,
+            volumes,
+            mutes,
+        };
+        scenes::check(&scene, households).map_err(scene_failure)?;
+        Ok(scene)
+    }
+}
+
+/// What a written-out group plays, or why that can't be a scene's source.
+fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
+    let needs =
+        |field: &str| Failure::invalid(format!("a {} source needs its `{field}`", dto.kind));
+    match dto.kind.as_str() {
+        "keep" => Ok(SceneSource::Keep),
+        "favorite" => {
+            let name = dto.name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+            Ok(SceneSource::Favorite {
+                name: name.ok_or_else(|| needs("name"))?.to_string(),
+                uri: None,
+            })
+        }
+        "uri" => {
+            let uri = normalize_source_uri(dto.uri.as_deref().ok_or_else(|| needs("uri"))?)?;
+            if uri.starts_with("spotify:") {
+                return Err(Failure::invalid(format!(
+                    "a scene plays {uri} only through a favorite of it or the DJ"
+                ))
+                .with_hint("Add it to My Sonos and name the favorite, or use the dj source."));
+            }
+            Ok(SceneSource::Uri {
+                uri,
+                metadata: String::new(),
+            })
+        }
+        "dj" => Ok(SceneSource::Dj {
+            mood: dto.mood.clone(),
+        }),
+        other => Err(Failure::invalid(format!(
+            "no scene source {other:?}: use keep, favorite, uri or dj"
+        ))),
+    }
 }
 
 /// `POST /scenes/{name}/apply` body (`apply_scene`): with `fade_secs`, the
@@ -400,6 +540,85 @@ impl Surface {
             .collect();
         let scene = scenes::capture(&*self.transport, &households, name, &djs, now)
             .map_err(|e| self.explain(scene_failure(e)))?;
+        self.store_scene(client, tool, &scene)
+    }
+
+    /// Save `def` as the scene `name` (`save_scene` with a scene): checked
+    /// against the house as it is now, each favorite found in its group's
+    /// household, rather than captured from the speakers.
+    pub fn save_scene_from(
+        &self,
+        client: &Client,
+        name: &str,
+        def: &SceneDefinition,
+    ) -> Result<SceneDto, Failure> {
+        let tool = "save_scene";
+        self.authorize_logged(client, tool)?;
+        let length = name.trim().chars().count();
+        if length == 0 || length > scenes::MAX_NAME {
+            return Err(scene_failure(SceneError::BadName));
+        }
+        if *def == SceneDefinition::default() {
+            return Err(
+                Failure::invalid("the scene written out names no group, volume or mute").with_hint(
+                    "Name at least one, or leave the scene out to save the house as it is.",
+                ),
+            );
+        }
+        let households = self.scene_house()?;
+        let mut scene = def.scene(name, &households)?;
+        for group in &mut scene.groups {
+            if let SceneSource::Dj { mood: Some(mood) } = &mut group.source {
+                *mood = self.scene_mood(mood)?;
+                continue;
+            }
+            let SceneSource::Favorite { name, uri } = &mut group.source else {
+                continue;
+            };
+            let Some(lead) = households
+                .iter()
+                .flat_map(|h| &h.rooms)
+                .find(|r| r.name == group.coordinator)
+            else {
+                continue;
+            };
+            let found = favorites::list(&*self.transport, &households, &lead.primary)
+                .map_err(Failure::from)
+                .inspect_err(|f| self.notice(f))?;
+            let favorite = favorites::find(&found, name)?;
+            name.clone_from(&favorite.title);
+            uri.clone_from(&favorite.uri);
+        }
+        self.store_scene(client, tool, &scene)
+    }
+
+    /// `mood` as the DJ names it, or `UNKNOWN_MOOD`, where this surface runs
+    /// the DJ; elsewhere `mood` as written (applying the scene finds out).
+    fn scene_mood(&self, mood: &str) -> Result<String, Failure> {
+        let Some(dj) = self.dj.as_deref() else {
+            return Ok(mood.to_string());
+        };
+        let known = self.with_store(|store| Ok(dj.moods(None, store, &*self.clock)))?;
+        let Some(Ok(known)) = known else {
+            return Ok(mood.to_string());
+        };
+        if let Some(named) = known
+            .moods
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(mood.trim()))
+        {
+            return Ok(named.name.clone());
+        }
+        Err(Failure::new(
+            ErrorCode::UnknownMood,
+            format!("no DJ mood is called {mood:?}"),
+        )
+        .with_suggestions(known.moods.into_iter().map(|m| m.name)))
+    }
+
+    /// Keep `scene`, replacing one of the same name in any case, and log it.
+    fn store_scene(&self, client: &Client, tool: &str, scene: &Scene) -> Result<SceneDto, Failure> {
+        let now = self.now();
         let replaced = self.scene_store(|store| {
             let replaced = store.scenes()?.iter().find_map(|s| {
                 s.name
@@ -409,7 +628,7 @@ impl Surface {
             if let Some(old) = replaced.as_deref().filter(|old| *old != scene.name) {
                 store.delete_scene(old)?;
             }
-            scenes::save(store, &scene, now)?;
+            scenes::save(store, scene, now)?;
             Ok(replaced.is_some())
         })?;
         let rooms = scene.volumes.len();
@@ -426,7 +645,7 @@ impl Surface {
             done,
             None,
         );
-        Ok(SceneDto::new(&scene, now))
+        Ok(SceneDto::new(scene, now))
     }
 
     /// Forget the scene called `name` (`delete_scene`).
