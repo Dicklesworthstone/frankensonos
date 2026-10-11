@@ -1140,6 +1140,9 @@ mod tests {
             "{}",
             text(&r)
         );
+        // Kitchen plays in Den's group, and both the line and the data say so.
+        assert!(text(&r).contains("Kitchen [S2]"), "{}", text(&r));
+        assert!(text(&r).contains("(in Den's group)"), "{}", text(&r));
         let structured = r.structured_content.unwrap();
         let players = structured["players"].as_array().unwrap();
         assert_eq!(players.len(), 2);
@@ -1147,10 +1150,7 @@ mod tests {
         assert_eq!(players[0]["generation"], "S2");
         assert_eq!(players[0]["ip"], "192.0.2.10");
         assert_eq!(players[1]["room"], "Kitchen");
-        // Kitchen plays in Den's group, and both the line and the data say so.
         assert_eq!(players[1]["coordinator_room"], "Den");
-        assert!(text(&r).contains("Kitchen [S2]"), "{}", text(&r));
-        assert!(text(&r).contains("(in Den's group)"), "{}", text(&r));
     }
 
     #[test]
