@@ -539,10 +539,21 @@ impl Sleep {
         }
     }
 
-    /// A volume or mute change on `coordinator`'s group: if a sleep fade is in
-    /// flight there, end it where it is (the new level stands and the group is
-    /// not paused). Returns whether a fade was superseded.
-    pub fn volume_changed(&self, coordinator: &PlayerId) -> bool {
+    /// A volume or mute change on `coordinator`'s group: every fade in flight
+    /// on its rooms ends where it is (a sleep timer's, a schedule's, or one
+    /// asked for with `--fade`), so the new level stands and the group is not
+    /// paused. Returns whether a sleep fade was superseded.
+    pub fn volume_changed(&self, households: &[HouseholdState], coordinator: &PlayerId) -> bool {
+        self.fader.supersede(coordinator);
+        for household in households {
+            for room in household
+                .rooms
+                .iter()
+                .filter(|r| r.coordinator == *coordinator)
+            {
+                self.fader.supersede(&room.primary);
+            }
+        }
         self.timers.interrupt(&self.fader, coordinator)
     }
 }
@@ -1529,6 +1540,62 @@ mod tests {
     use fsonos_core::store::MemStore;
 
     const MIN: fn(u64) -> Duration = Duration::from_mins;
+
+    #[test]
+    fn a_volume_change_ends_a_ramp_in_flight_where_it_is() {
+        let houses = households();
+        let survey: Survey = Box::new(move |_| Ok(houses.clone()));
+        let s = Arc::new(
+            Surface::new(
+                Box::new(Canned {
+                    out_args: "<CurrentVolume>10</CurrentVolume>",
+                    sent: Arc::new(Mutex::new(Vec::new())),
+                }),
+                survey,
+                Policy::default(),
+                Box::new(fsonos_core::clock::SystemClock),
+            )
+            .with_sleep(Sleep::default()),
+        );
+        let started = Instant::now();
+        let ramp = {
+            let s = Arc::clone(&s);
+            thread::spawn(move || {
+                s.fade_volume_to(
+                    &Client::Cli,
+                    &FadeVolumeRequest {
+                        zone: "Patio".into(),
+                        volume: 40,
+                        fade_secs: 3,
+                    },
+                )
+            })
+        };
+        thread::sleep(Duration::from_millis(400));
+        s.control_set(&Client::Cli, "set_volume", |h| {
+            plan::plan_volume_set(
+                h,
+                &VolumeRequest {
+                    zone: "Patio".into(),
+                    volume: Some(25),
+                    delta: None,
+                    group: false,
+                },
+            )
+        })
+        .unwrap();
+        let ramped = ramp.join().unwrap().unwrap();
+        assert!(
+            ramped.done.contains("was changed meanwhile"),
+            "{}",
+            ramped.done
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "the ramp stopped early: {:?}",
+            started.elapsed()
+        );
+    }
 
     #[test]
     fn durations_read_as_people_type_them() {

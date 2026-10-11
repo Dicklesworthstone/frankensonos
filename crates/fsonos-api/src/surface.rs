@@ -576,7 +576,7 @@ impl Surface {
             && matches!(command, Command::Volume { .. } | Command::Mute { .. })
         {
             for coordinator in affected(&households, &command) {
-                sleep.volume_changed(&coordinator);
+                sleep.volume_changed(&households, &coordinator);
             }
         }
         let regroups = matches!(
@@ -651,7 +651,7 @@ impl Surface {
             for command in &commands {
                 if matches!(command, Command::Volume { .. } | Command::Mute { .. }) {
                     for coordinator in affected(&households, command) {
-                        sleep.volume_changed(&coordinator);
+                        sleep.volume_changed(&households, &coordinator);
                     }
                 }
             }
