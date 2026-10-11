@@ -155,7 +155,7 @@ The daemon is the only thing that leaves your LAN, and only onto your tailnet:
 ```bash
 fsonos serve            # loopback + every tailnet address; prints the connect URLs
 fsonos tailscale setup  # Serve: https://<mac>.<tailnet>.ts.net/ (API), :8443/mcp (MCP)
-fsonos doctor --only tailscale   # Tailscale up, the MagicDNS name, the daemon answering
+fsonos doctor --only tailscale   # Tailscale up, the MagicDNS name, the daemon answering, Serve in front
 ```
 
 - `fsonos tailscale setup` maps HTTPS on 443 (API) and 8443 (MCP) to the

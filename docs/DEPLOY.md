@@ -251,7 +251,10 @@ plain HTTP inside WireGuard. Two things to know:
   (`launchctl kickstart -k`) once Tailscale is up. Serve avoids this.
   `fsonos doctor --only tailscale` checks the whole chain: Tailscale up and
   logged in, the MagicDNS name, and the daemon answering over the tailnet,
-  with the connect URLs or the fix.
+  with the connect URLs or the fix. With Serve in front, `tailscale.serve`
+  checks it fronts both listeners, that Funnel is off for them, and that the
+  daemon names Serve's callers (`FSONOS_TAILSCALE_SERVE`); it reads Serve's
+  config and sends nothing through it.
 
 The MCP server stays on loopback unless `FSONOS_MCP_HTTP_ADDR` is set: one MCP
 backend serves every MCP listener with a single caller identity, so a direct

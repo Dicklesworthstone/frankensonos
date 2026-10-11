@@ -8,15 +8,22 @@
 //!   share, resolves to its tailnet address;
 //! * `tailscale.reach`: the daemon answers `/health` over the tailnet; on
 //!   success the detail lists the connect URLs for the HTTP API and the MCP
-//!   server (the `fsonos serve` banner's block).
+//!   server (the `fsonos serve` banner's block);
+//! * `tailscale.serve`: when Tailscale Serve fronts the daemon, it fronts
+//!   both listeners, never with Funnel, and the daemon names Serve's callers
+//!   (`FSONOS_TAILSCALE_SERVE`). It reads Serve's config and sends nothing
+//!   through it.
 //!
-//! Tailscale is detected once per doctor run, shared by the three checks. A
+//! Tailscale is detected once per doctor run, shared by the checks. A
 //! host without a working tailnet warns, with the fix, rather than fails:
 //! the speakers still answer from this machine. `--tailscale off`
 //! (`FSONOS_TAILSCALE=off`) turns detection off, and these checks skip.
 
 use fsonos_core::doctor::{Check, CheckContext, CheckId, CheckResult, Runner};
-use fsonos_tailscale::{BindReason, Listener, Reach, Source, Tailnet, TailnetStatus, Unavailable};
+use fsonos_tailscale::serve::{self, MappingStatus, ServeConfig};
+use fsonos_tailscale::{
+    BindReason, Listener, Probe, Reach, Source, Tailnet, TailnetStatus, Unavailable,
+};
 use serde_json::json;
 use std::fmt::Write as _;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs as _};
@@ -29,11 +36,14 @@ use crate::config::ServeArgs;
 pub const RUNNING: CheckId = CheckId("tailscale.running");
 pub const MAGICDNS: CheckId = CheckId("tailscale.magicdns");
 pub const REACH: CheckId = CheckId("tailscale.reach");
+pub const SERVE: CheckId = CheckId("tailscale.serve");
 
 /// Probing one address: the daemon's version, or why not.
 type HealthProbe = dyn Fn(SocketAddr) -> Result<String, String> + Send + Sync;
 /// Resolving a name: its addresses, or why not.
 type Resolve = dyn Fn(&str) -> Result<Vec<IpAddr>, String> + Send + Sync;
+/// Reading Tailscale Serve's config: it, or why not.
+type ReadServe = dyn Fn() -> Result<ServeConfig, String> + Send + Sync;
 
 /// This host's tailnet, detected when a check first asks.
 struct Detected {
@@ -345,6 +355,82 @@ pub(crate) fn connect_block(status: &TailnetStatus, serve: &ServeArgs, http: Soc
     )
 }
 
+/// `tailscale.serve`'s verdict on how Serve stands for the daemon's two
+/// mappings (`statuses`), and whether the daemon names Serve's callers.
+fn serve_result(statuses: &[MappingStatus], names_callers: bool) -> CheckResult {
+    let evidence = json!({ "mappings": statuses, "names_callers": names_callers });
+    if let Some(open) = statuses.iter().find(|s| s.funnel) {
+        let (label, port) = (&open.mapping.label, open.mapping.https_port);
+        return CheckResult::fail(
+            format!(
+                "Funnel is on for HTTPS port {port}: it publishes the {label}, which has no \
+                 authentication of its own, to the internet"
+            ),
+            format!(
+                "Turn it off: tailscale funnel --https={port} off. FrankenSonos never uses \
+                 Funnel; the tailnet's ACLs are the access control."
+            ),
+        )
+        .with_evidence(evidence);
+    }
+    let active: Vec<&MappingStatus> = statuses.iter().filter(|s| s.active).collect();
+    if active.is_empty() {
+        return CheckResult::skip(
+            "Tailscale Serve does not front the daemon (fsonos tailscale setup puts it in front)",
+        )
+        .with_evidence(evidence);
+    }
+    if active.len() < statuses.len() {
+        let missing: Vec<String> = statuses
+            .iter()
+            .filter(|s| !s.active)
+            .map(|s| {
+                format!(
+                    "{} (HTTPS port {} serves {})",
+                    s.mapping.label, s.mapping.https_port, s.current
+                )
+            })
+            .collect();
+        return CheckResult::warn(
+            format!(
+                "Tailscale Serve fronts only part of the daemon; not: {}",
+                missing.join(", ")
+            ),
+            "Run fsonos tailscale setup to add the missing mapping (it never replaces Serve \
+             config it did not make).",
+        )
+        .with_evidence(evidence);
+    }
+    let fronted: Vec<String> = statuses
+        .iter()
+        .map(|s| {
+            format!(
+                "the {} on HTTPS port {}",
+                s.mapping.label, s.mapping.https_port
+            )
+        })
+        .collect();
+    if names_callers {
+        CheckResult::pass(format!(
+            "Tailscale Serve fronts {}; each caller is named by their Tailscale login",
+            fronted.join(" and ")
+        ))
+        .with_evidence(evidence)
+    } else {
+        CheckResult::warn(
+            format!(
+                "Tailscale Serve fronts {}, but fsonos serve, with these settings, does not name \
+                 Serve's callers: every tailnet caller gets this host's own loopback rights, \
+                 and no [clients] table in policy.toml applies",
+                fronted.join(" and ")
+            ),
+            "Set FSONOS_TAILSCALE_SERVE=true for fsonos serve (under launchd, in the plist's \
+             EnvironmentVariables) and restart it.",
+        )
+        .with_evidence(evidence)
+    }
+}
+
 struct RunningCheck(Arc<Detected>);
 
 impl Check for RunningCheck {
@@ -408,6 +494,51 @@ impl Check for ReachCheck {
     }
 }
 
+struct ServeCheck {
+    detected: Arc<Detected>,
+    serve: ServeArgs,
+    read: Box<ReadServe>,
+}
+
+impl Check for ServeCheck {
+    fn id(&self) -> CheckId {
+        SERVE
+    }
+
+    fn title(&self) -> &'static str {
+        "Tailscale Serve"
+    }
+
+    fn requires(&self) -> &[CheckId] {
+        &[RUNNING]
+    }
+
+    fn run(&self, _: &CheckContext) -> CheckResult {
+        if self.detected.get().running().is_none() {
+            return CheckResult::skip("Tailscale is not running here");
+        }
+        match (self.read)() {
+            Ok(config) => serve_result(
+                &serve::status(&config, &crate::tailscale_cmd::mappings(&self.serve)),
+                self.serve.tailscale_serve,
+            ),
+            Err(why) => {
+                CheckResult::skip(format!("could not read Tailscale Serve's config: {why}"))
+            }
+        }
+    }
+}
+
+/// Tailscale Serve's config, through the `tailscale` CLI.
+fn read_serve_config() -> Result<ServeConfig, String> {
+    Probe {
+        timeout: PROBE_TIMEOUT,
+        ..Probe::default()
+    }
+    .serve_config()
+    .map_err(|why| format!("{why:?}"))
+}
+
 /// Resolve `name` with the system resolver (what this host's tools see).
 fn system_resolve(name: &str) -> Result<Vec<IpAddr>, String> {
     (name, 0)
@@ -425,6 +556,7 @@ pub fn register(runner: &mut Runner, serve: &ServeArgs) {
         Detected::new(move || detecting.tailnet()),
         Box::new(system_resolve),
         Box::new(|addr| probe_health(addr, PROBE_TIMEOUT)),
+        Box::new(read_serve_config),
     );
 }
 
@@ -438,6 +570,7 @@ fn register_with(
     detected: Detected,
     resolve: Box<Resolve>,
     probe: Box<HealthProbe>,
+    read: Box<ReadServe>,
 ) {
     let detected = Arc::new(detected);
     runner.register(RunningCheck(Arc::clone(&detected)));
@@ -446,9 +579,14 @@ fn register_with(
         resolve,
     });
     runner.register(ReachCheck {
-        detected,
+        detected: Arc::clone(&detected),
         serve: serve.clone(),
         probe,
+    });
+    runner.register(ServeCheck {
+        detected,
+        serve: serve.clone(),
+        read,
     });
 }
 
@@ -773,7 +911,8 @@ mod tests {
         assert_eq!(r.status, Status::Skip);
     }
 
-    /// The three checks through a runner, detecting `status` once.
+    /// The checks through a runner, detecting `status` once (Serve not set
+    /// up).
     fn doctor(
         status: TailnetStatus,
         probe: &'static [&'static str],
@@ -785,6 +924,7 @@ mod tests {
             Detected::new(move || status.clone()),
             Box::new(|_: &str| Ok(vec![IpAddr::V4(V4)])),
             Box::new(answering(probe)),
+            Box::new(|| Ok(serve_config("{}"))),
         );
         let report = runner.run().unwrap();
         eprintln!("{}", report.render_table());
@@ -797,15 +937,86 @@ mod tests {
         for id in [RUNNING, MAGICDNS, REACH] {
             assert_eq!(report.get(id).unwrap().status, Status::Pass, "{id}");
         }
+        // Serve is not set up: nothing to say about it.
+        assert_eq!(report.get(SERVE).unwrap().status, Status::Skip);
         assert_eq!(report.exit_code(), EXIT_OK);
 
         let report = doctor(
             TailnetStatus::Unavailable(Unavailable::Disabled),
             EVERYWHERE,
         );
-        for id in [RUNNING, MAGICDNS, REACH] {
+        for id in [RUNNING, MAGICDNS, REACH, SERVE] {
             assert_eq!(report.get(id).unwrap().status, Status::Skip, "{id}");
         }
         assert_eq!(report.exit_code(), EXIT_OK);
+    }
+
+    /// Serve's config as `tailscale serve status --json` prints it, `HOST`
+    /// standing for the MagicDNS name.
+    fn serve_config(json: &str) -> ServeConfig {
+        serve::parse_serve_config(json.replace("HOST", NAME).as_bytes()).unwrap()
+    }
+
+    /// Serve fronting the API (443) and MCP (8443) at the daemon's defaults,
+    /// with `extra` merged into the top-level object.
+    fn fronted(extra: &str) -> ServeConfig {
+        serve_config(&format!(
+            r#"{{
+                "TCP": {{"443": {{"HTTPS": true}}, "8443": {{"HTTPS": true}}}},
+                "Web": {{
+                    "HOST:443": {{"Handlers": {{"/": {{"Proxy": "http://127.0.0.1:8099"}}}}}},
+                    "HOST:8443": {{"Handlers": {{"/": {{"Proxy": "http://127.0.0.1:8098"}}}}}}
+                }}{extra}
+            }}"#
+        ))
+    }
+
+    fn serve_check(config: &ServeConfig, names_callers: bool) -> CheckResult {
+        let ours = crate::tailscale_cmd::mappings(&serve(None));
+        logged(
+            "serve",
+            serve_result(&serve::status(config, &ours), names_callers),
+        )
+    }
+
+    #[test]
+    fn serve_must_front_both_listeners_name_its_callers_and_never_funnel() {
+        let r = serve_check(&fronted(""), true);
+        assert_eq!(r.status, Status::Pass);
+        assert!(r.summary.contains("HTTPS port 443") && r.summary.contains("HTTPS port 8443"));
+
+        // Fronted, but the daemon doesn't read Serve's caller names.
+        let r = serve_check(&fronted(""), false);
+        assert_eq!(r.status, Status::Warn);
+        assert!(r.summary.contains("loopback rights"), "{}", r.summary);
+        assert!(remedy(&r).contains("FSONOS_TAILSCALE_SERVE=true"));
+
+        // Funnel publishes the unauthenticated API: a failure, whatever else.
+        let r = serve_check(&fronted(r#", "AllowFunnel": {"HOST:8443": true}"#), true);
+        assert_eq!(r.status, Status::Fail);
+        assert!(r.summary.contains("HTTPS port 8443") && r.summary.contains("internet"));
+        assert!(remedy(&r).contains("tailscale funnel --https=8443 off"));
+
+        // Only the API mapped; 8443 is someone else's.
+        let partial = serve_config(
+            r#"{
+                "TCP": {"443": {"HTTPS": true}, "8443": {"HTTPS": true}},
+                "Web": {
+                    "HOST:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8099"}}},
+                    "HOST:8443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:3000"}}}
+                }
+            }"#,
+        );
+        let r = serve_check(&partial, true);
+        assert_eq!(r.status, Status::Warn);
+        assert!(
+            r.summary
+                .contains("MCP server (HTTPS port 8443 serves a proxy to http://127.0.0.1:3000)"),
+            "{}",
+            r.summary
+        );
+
+        // Not set up at all: a direct tailnet bind is a fine deployment.
+        assert_eq!(serve_check(&serve_config("{}"), true).status, Status::Skip);
     }
 }
