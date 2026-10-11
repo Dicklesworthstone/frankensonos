@@ -231,8 +231,12 @@ pub fn discover_text(d: &DiscoverDto) -> String {
         // Writing to a String cannot fail.
         let _ = writeln!(
             out,
-            "{:<24} {generation}  {:<18} {:<15} {}",
-            p.room, p.model, p.ip, p.household
+            "{:<24} {generation}  {:<18} {:<15} {}{}",
+            p.room,
+            p.model,
+            p.ip,
+            p.household,
+            p.grouped()
         );
         out
     })
@@ -386,6 +390,7 @@ mod tests {
                 generation: "S2".into(),
                 ip: "192.0.2.10".into(),
                 household: "S2".into(),
+                coordinator_room: "Living Room".into(),
             }],
             unreachable: Vec::new(),
             ssdp_error: None,
@@ -395,6 +400,7 @@ mod tests {
             text.starts_with("Den")
                 && text.contains(" S2  Sonos One")
                 && text.contains("192.0.2.10")
+                && text.contains("S2 (in Living Room's group)")
         );
         let empty = DiscoverDto {
             players: Vec::new(),

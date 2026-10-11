@@ -26,6 +26,23 @@ pub struct PlayerDto {
     pub ip: String,
     /// The household's label (`S1`, `S2`, or its id).
     pub household: String,
+    /// The room whose player leads this one's group: its own room when it
+    /// leads or plays alone, empty when the topology does not say.
+    #[serde(default)]
+    pub coordinator_room: String,
+}
+
+impl PlayerDto {
+    /// " (in Den's group)" for a player another room's player leads, else
+    /// nothing.
+    #[must_use]
+    pub fn grouped(&self) -> String {
+        if self.coordinator_room.is_empty() || self.coordinator_room == self.room {
+            String::new()
+        } else {
+            format!(" (in {}'s group)", self.coordinator_room)
+        }
+    }
 }
 
 /// Every player in `households`, by household and then room.
@@ -47,6 +64,11 @@ pub fn player_views(households: &[HouseholdState]) -> Vec<PlayerDto> {
                 .to_string(),
                 ip: p.ip.to_string(),
                 household: label.clone(),
+                coordinator_room: h
+                    .coordinator_of(&p.id)
+                    .and_then(|c| h.players.iter().find(|q| q.id == *c))
+                    .map(|q| q.room_name.clone())
+                    .unwrap_or_default(),
             })
         })
         .collect();
@@ -80,5 +102,25 @@ mod tests {
             assert_eq!(serde_json::to_value(generation).unwrap(), label);
         }
         assert!(player_views(&[]).is_empty());
+    }
+
+    #[test]
+    fn each_player_names_the_room_that_leads_its_group() {
+        let players = player_views(&crate::zones::fixtures::households());
+        let leader = |room: &str, household: &str| {
+            let p = players
+                .iter()
+                .find(|p| p.room == room && p.household == household)
+                .unwrap();
+            (p.coordinator_room.clone(), p.grouped())
+        };
+        // Kitchen@S1 plays in Den's group; Den leads it; the Studio plays alone.
+        assert_eq!(
+            leader("Kitchen", "S1"),
+            ("Den".to_string(), " (in Den's group)".to_string())
+        );
+        assert_eq!(leader("Den", "S1"), ("Den".to_string(), String::new()));
+        assert_eq!(leader("Kitchen", "S2").1, "");
+        assert_eq!(leader("Ada\u{2019}s Studio", "S1").1, "");
     }
 }

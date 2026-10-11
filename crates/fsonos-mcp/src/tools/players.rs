@@ -14,7 +14,8 @@ struct PlayersDto {
     players: Vec<PlayerDto>,
 }
 
-/// One player in a line: room, household, model, generation, address.
+/// One player in a line: room, household, model, generation, address, and
+/// the room that leads its group when another does.
 fn player_line(p: &PlayerDto) -> String {
     let model = if p.model.is_empty() {
         "Sonos"
@@ -22,8 +23,12 @@ fn player_line(p: &PlayerDto) -> String {
         p.model.as_str()
     };
     format!(
-        "{} [{}] {model} ({}) at {}",
-        p.room, p.household, p.generation, p.ip
+        "{} [{}] {model} ({}) at {}{}",
+        p.room,
+        p.household,
+        p.generation,
+        p.ip,
+        p.grouped()
     )
 }
 
