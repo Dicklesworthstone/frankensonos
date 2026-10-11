@@ -41,6 +41,7 @@ mod dj;
 mod dj_cmd;
 mod dj_view;
 mod doctor;
+mod eq_cmd;
 mod known_players;
 mod policy_cmd;
 mod remote;
@@ -111,6 +112,10 @@ enum Command {
         #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]
         limit: u32,
     },
+    /// A room's tone: bass and treble (-10 to 10, 0 is flat) and loudness.
+    /// `--bass`, `--treble` or `--loudness` change them, and `fsonos undo`
+    /// puts them back.
+    Eq(eq_cmd::EqArgs),
     /// Diagnose the setup: speakers, Spotify linkage, listener addresses,
     /// the daemon. Exits 0 (all pass), 6 (warnings) or 7 (a failure).
     Doctor(doctor::DoctorArgs),
@@ -389,6 +394,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Serve { args, scheduler } => daemon::run(global, &args, &scheduler),
         Command::Sleep(args) => schedule_cmd::sleep(global, &args),
+        Command::Eq(args) => eq_cmd::run(global, &args),
         Command::Schedule { action } => schedule_cmd::schedule(global, &action),
         Command::Mcp => run_mcp_stdio(global),
         Command::Tailscale(args) => tailscale_cmd::run(global, &args),
@@ -791,6 +797,7 @@ fn plan_for<'a>(
         | Command::Status { .. }
         | Command::Favorites { .. }
         | Command::Queue { .. }
+        | Command::Eq(_)
         | Command::History { .. }
         | Command::Log { .. }
         | Command::Undo { .. }

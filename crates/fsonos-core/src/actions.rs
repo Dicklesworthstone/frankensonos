@@ -5,15 +5,18 @@
 //! happened, and snapshots of the zones it touched taken just before — denied
 //! requests too, with nothing to undo. An action that steers the DJ also
 //! carries the zones' DJ session rows as they were ([`SessionBefore`]).
-//! [`undo_last`] puts the newest undoable action's zones back the way they
-//! were (via [`snapshot::restore`]), puts its DJ sessions back in the store,
-//! and logs the undo itself, which is never undoable (no redo).
+//! An action that changes a room's tone carries the tone as it was
+//! ([`ToneBefore`]). [`undo_last`] puts the newest undoable action's zones
+//! back the way they were (via [`snapshot::restore`]), puts its DJ sessions
+//! back in the store and its rooms' tones on the speakers, and logs the undo
+//! itself, which is never undoable (no redo).
 //!
 //! The surfaces own the flow (authorize, plan, bound by the policy, capture,
 //! execute, [`record`]); this module owns the parts every surface shares, so
 //! they all log and undo alike. Retention keeps the newest [`KEEP_ACTIONS`]
 //! rows and nothing older than [`KEEP_SECS`].
 
+use crate::control::{self, Tone, ToneChange};
 use crate::policy::Client;
 use crate::snapshot::{self, RestoreReport, ZoneSnapshot};
 use crate::store::{Action, DjSession, Store, StoreError};
@@ -66,6 +69,14 @@ pub struct SessionBefore {
     pub row: Option<DjSession>,
 }
 
+/// A room's tone before an action changed it, addressed through the
+/// room's primary player.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToneBefore {
+    pub player: PlayerId,
+    pub tone: Tone,
+}
+
 /// Everything an action's undo puts back, as parsed from its log row.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 pub struct BeforeState {
@@ -73,12 +84,15 @@ pub struct BeforeState {
     pub zones: Vec<ZoneSnapshot>,
     #[serde(default)]
     pub dj_sessions: Vec<SessionBefore>,
+    #[serde(default)]
+    pub tones: Vec<ToneBefore>,
 }
 
 impl BeforeState {
     /// Parse a logged before-state in either form: a bare array of zone
     /// snapshots (every row logged before sessions could be undone, and
-    /// zones-only rows since) or `{"zones":[…],"dj_sessions":[…]}`.
+    /// zones-only rows since) or `{"zones":[…],"dj_sessions":[…],"tones":[…]}`
+    /// (each part optional).
     ///
     /// # Errors
     /// The JSON is neither form.
@@ -87,7 +101,7 @@ impl BeforeState {
         if value.is_array() {
             return Ok(Self {
                 zones: serde_json::from_value(value)?,
-                dj_sessions: Vec::new(),
+                ..Self::default()
             });
         }
         serde_json::from_value(value)
@@ -140,6 +154,12 @@ pub fn before_state_with(snaps: &[ZoneSnapshot], sessions: &[SessionBefore]) -> 
     Some(serde_json::json!({ "zones": snaps, "dj_sessions": sessions }).to_string())
 }
 
+/// Rooms' tones as an action's before-state; `None` when there are none.
+#[must_use]
+pub fn before_state_tones(tones: &[ToneBefore]) -> Option<String> {
+    (!tones.is_empty()).then(|| serde_json::json!({ "tones": tones }).to_string())
+}
+
 /// Log `action`, then apply the retention policy. Returns the action's id.
 pub fn record<S: Store + ?Sized>(store: &mut S, action: &Action) -> Result<i64, CoreError> {
     let id = store.record_action(action).map_err(|e| store_err(&e))?;
@@ -166,6 +186,10 @@ pub struct UndoReport {
     pub sessions: Vec<PlayerId>,
     /// DJ sessions that could not be put back, with why.
     pub session_failures: Vec<(PlayerId, String)>,
+    /// Rooms whose tone was put back (by primary player).
+    pub tones: Vec<PlayerId>,
+    /// Tones that could not be put back, with why.
+    pub tone_failures: Vec<(PlayerId, String)>,
     /// One line for people.
     pub summary: String,
 }
@@ -229,6 +253,14 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
             Err(e) => session_failures.push((coordinator, e.to_string())),
         }
     }
+    let mut tones = Vec::new();
+    let mut tone_failures = Vec::new();
+    for was in &before.tones {
+        match control::set_tone(t, households, &was.player, ToneChange::all(was.tone)) {
+            Ok(()) => tones.push(was.player.clone()),
+            Err(e) => tone_failures.push((was.player.clone(), e.to_string())),
+        }
+    }
     let summary = summarize(
         target.id,
         &target.action.intent,
@@ -236,6 +268,10 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
         &failures,
         &named(households, &sessions),
         &session_failures,
+        (
+            named(households, &tones).as_slice(),
+            tone_failures.as_slice(),
+        ),
     );
     let undo_id = record(
         store,
@@ -258,6 +294,8 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
         failures,
         sessions,
         session_failures,
+        tones,
+        tone_failures,
         summary,
     }))
 }
@@ -283,10 +321,12 @@ fn summarize(
     failures: &[(PlayerId, String)],
     sessions: &[String],
     session_failures: &[(PlayerId, String)],
+    (tones, tone_failures): (&[String], &[(PlayerId, String)]),
 ) -> String {
     let mut parts = Vec::new();
     let steering = !sessions.is_empty() || !session_failures.is_empty();
-    if !zones.is_empty() || !failures.is_empty() || !steering {
+    let any_tone = !tones.is_empty() || !tone_failures.is_empty();
+    if !zones.is_empty() || !failures.is_empty() || !(steering || any_tone) {
         parts.push(format!(
             "restored {} of {} zone(s)",
             zones.len(),
@@ -309,6 +349,12 @@ fn summarize(
             "steering for {} not put back: {why}",
             coordinator.0
         ));
+    }
+    if !tones.is_empty() {
+        parts.push(format!("the tone of {} put back", tones.join(", ")));
+    }
+    for (player, why) in tone_failures {
+        parts.push(format!("the tone of {} not put back: {why}", player.0));
     }
     format!("undid #{id} ({intent}): {}", parts.join("; "))
 }
@@ -402,6 +448,7 @@ mod tests {
             &[(PlayerId("RINCON_B".into()), "unknown player".into())],
             &[],
             &[],
+            (&[], &[]),
         );
         assert_eq!(
             text,
@@ -419,6 +466,7 @@ mod tests {
             &[],
             &["Kitchen".into()],
             &[(PlayerId("RINCON_B".into()), "disk full".into())],
+            (&[], &[]),
         );
         assert_eq!(
             text,
@@ -448,7 +496,7 @@ mod tests {
             BeforeState::parse(&zones_only).unwrap(),
             BeforeState {
                 zones: vec![snap("RINCON_A")],
-                dj_sessions: Vec::new(),
+                ..BeforeState::default()
             }
         );
 
@@ -460,6 +508,7 @@ mod tests {
             BeforeState {
                 zones: vec![snap("RINCON_A")],
                 dj_sessions: sessions.to_vec(),
+                tones: Vec::new(),
             }
         );
         let steer_only = before_state_with(&[], &sessions[1..]).unwrap();
@@ -468,5 +517,43 @@ mod tests {
             sessions[1..]
         );
         assert!(BeforeState::parse(r#""zones""#).is_err());
+    }
+
+    #[test]
+    fn a_tone_alone_is_undoable_and_its_undo_names_the_room() {
+        assert_eq!(before_state_tones(&[]), None);
+        let was = ToneBefore {
+            player: PlayerId("RINCON_A".into()),
+            tone: Tone {
+                bass: -2,
+                treble: 3,
+                loudness: true,
+            },
+        };
+        let json = before_state_tones(std::slice::from_ref(&was)).unwrap();
+        assert_eq!(
+            BeforeState::parse(&json).unwrap(),
+            BeforeState {
+                tones: vec![was],
+                ..BeforeState::default()
+            }
+        );
+        let text = summarize(
+            9,
+            "set_eq: Kitchen bass +4",
+            &[],
+            &[],
+            &[],
+            &[],
+            (
+                &["Kitchen".into()],
+                &[(PlayerId("RINCON_B".into()), "unreachable".into())],
+            ),
+        );
+        assert_eq!(
+            text,
+            "undid #9 (set_eq: Kitchen bass +4): the tone of Kitchen put back; \
+             the tone of RINCON_B not put back: unreachable"
+        );
     }
 }

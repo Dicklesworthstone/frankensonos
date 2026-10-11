@@ -61,6 +61,8 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::Previous)
         .tool(tools::SetVolume)
         .tool(tools::MuteTool)
+        .tool(tools::GetEq)
+        .tool(tools::SetEq)
         .tool(tools::Group)
         .tool(tools::Ungroup)
         .tool(tools::MovePlayback)

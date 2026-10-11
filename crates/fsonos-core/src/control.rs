@@ -17,6 +17,7 @@ use fsonos_proto::didl::{
 };
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_types::{Player, PlayerId, TransportState};
+use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -337,6 +338,74 @@ pub fn set_mute<T: Transport + ?Sized>(
     mute: bool,
 ) -> Result<(), CoreError> {
     Ok(soap::set_mute(t, addr(households, player)?, mute)?)
+}
+
+/// A room's tone: bass and treble from -10 to 10 (0 is flat), and whether
+/// loudness compensation is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tone {
+    pub bass: i8,
+    pub treble: i8,
+    pub loudness: bool,
+}
+
+/// What to change of a room's tone; `None` leaves that part as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToneChange {
+    pub bass: Option<i8>,
+    pub treble: Option<i8>,
+    pub loudness: Option<bool>,
+}
+
+impl ToneChange {
+    /// Every part, as `tone` has it (an undo puts a tone back whole).
+    #[must_use]
+    pub fn all(tone: Tone) -> Self {
+        Self {
+            bass: Some(tone.bass),
+            treble: Some(tone.treble),
+            loudness: Some(tone.loudness),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.bass.is_none() && self.treble.is_none() && self.loudness.is_none()
+    }
+}
+
+/// The tone of `player` (a room's primary: it sets it for the room).
+pub fn tone<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    player: &PlayerId,
+) -> Result<Tone, CoreError> {
+    let host = addr(households, player)?;
+    Ok(Tone {
+        bass: soap::get_bass(t, host)?,
+        treble: soap::get_treble(t, host)?,
+        loudness: soap::get_loudness(t, host)?,
+    })
+}
+
+/// Change what `change` names of `player`'s tone.
+pub fn set_tone<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    player: &PlayerId,
+    change: ToneChange,
+) -> Result<(), CoreError> {
+    let host = addr(households, player)?;
+    if let Some(bass) = change.bass {
+        soap::set_bass(t, host, bass)?;
+    }
+    if let Some(treble) = change.treble {
+        soap::set_treble(t, host, treble)?;
+    }
+    if let Some(loudness) = change.loudness {
+        soap::set_loudness(t, host, loudness)?;
+    }
+    Ok(())
 }
 
 /// Move `member` into the group `coordinator` leads.

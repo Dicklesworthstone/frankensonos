@@ -431,6 +431,7 @@ fn routable(command: &Command) -> bool {
             | Command::Rooms { alias: None }
             | Command::Favorites { .. }
             | Command::Queue { .. }
+            | Command::Eq(_)
             | Command::History { .. }
             | Command::Log { .. }
             | Command::Undo { .. }
@@ -484,6 +485,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             ..
         } => crate::play_search(global, zone.clone(), query.clone(), *pick, &daemon)?,
         Command::Sleep(args) => sleep(&daemon, json, args)?,
+        Command::Eq(args) => crate::eq_cmd::through(&daemon, json, args)?,
         Command::Say(args) => {
             let announced = daemon.announce(&args.request())?;
             emit(json, &announced, announce_cmd::text)?;

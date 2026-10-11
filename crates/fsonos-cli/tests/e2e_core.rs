@@ -6,7 +6,9 @@
 mod e2e;
 
 use e2e::{Run, Scenario};
-use fsonos_proto::control::{get_position_info, get_transport_info, get_volume};
+use fsonos_proto::control::{
+    get_bass, get_loudness, get_position_info, get_transport_info, get_volume,
+};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::SimHousehold;
 use fsonos_types::TransportState;
@@ -386,6 +388,59 @@ fn the_log_records_actions_and_undo_restores_them() {
         "the undo is logged and points at what it reversed",
         newest["undo_of"].is_i64(),
         &run.stdout,
+    );
+    s.finish();
+}
+
+#[test]
+fn eq_reads_and_changes_a_rooms_tone_and_undo_puts_it_back() {
+    let mut s = Scenario::start("eq");
+    s.sim(SimHousehold::standard());
+    let kitchen = s.ip("Kitchen");
+    let tone = |s: &Scenario| {
+        let lan = s.lan();
+        (
+            get_bass(&lan, kitchen).ok(),
+            get_loudness(&lan, kitchen).ok(),
+        )
+    };
+
+    let run = s.cli(
+        "eq-set",
+        &["eq", "Kitchen", "--bass", "-3", "--loudness", "off"],
+    );
+    s.check(
+        "eq-set",
+        "cli",
+        "says what the tone is now",
+        run.ok() && run.stdout.contains("bass -3, treble 0, loudness off"),
+        format!("{}{}", run.stdout, run.stderr),
+    );
+    s.check(
+        "eq-set",
+        "sim",
+        "Kitchen's bass is -3 and loudness off",
+        tone(&s) == (Some(-3), Some(false)),
+        format!("{:?}", tone(&s)),
+    );
+
+    let run = s.cli("eq-read", &["--json", "eq", "Kitchen"]);
+    let eq = json(&run);
+    s.check(
+        "eq-read",
+        "cli",
+        "fsonos eq --json reads the tone back",
+        run.ok() && eq["bass"] == -3 && eq["treble"] == 0 && eq["loudness"] == false,
+        &run.stdout,
+    );
+
+    let run = s.cli("eq-undo", &["undo"]);
+    s.check(
+        "eq-undo",
+        "sim",
+        "undo puts Kitchen's tone back to flat with loudness on",
+        run.ok() && tone(&s) == (Some(0), Some(true)),
+        format!("{:?}: {}{}", tone(&s), run.stdout, run.stderr),
     );
     s.finish();
 }

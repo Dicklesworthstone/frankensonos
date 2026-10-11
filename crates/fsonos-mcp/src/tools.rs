@@ -41,6 +41,9 @@ pub use players::ListPlayers;
 mod announce;
 pub use announce::Announce;
 
+mod eq;
+pub use eq::{GetEq, SetEq};
+
 mod documents;
 /// Finds the households (a LAN survey, say); see [`fsonos_api::surface`].
 pub use fsonos_api::surface::Survey;

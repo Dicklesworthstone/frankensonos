@@ -10,6 +10,7 @@
 //! | `GET /zones/{room}` | | [`crate::ZoneDto`] (`room` is percent-decoded) |
 //! | `GET /zones/{room}/state` | | [`crate::ZoneStateDto`] |
 //! | `GET /zones/{room}/queue?offset=<n>&limit=<n>` | | [`crate::surface::queue::QueueDto`] |
+//! | `GET /zones/{room}/eq` | | [`crate::surface::eq::EqDto`]: the room's bass, treble and loudness |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /doctor` | | the doctor report (`schema`, `exit_code`, `counts`, `checks`) |
@@ -21,6 +22,7 @@
 //! | `POST /volume` | [`crate::VolumeRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /mute` | [`crate::MuteRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /volume/fade`, `/pause/fade` | `FadeVolumeRequest`, `FadePauseRequest` | [`crate::OutcomeDto`]: when the fade is done |
+//! | `POST /eq` | [`crate::surface::eq::EqRequest`] | [`crate::surface::eq::EqSetDto`] |
 //! | `POST /group` | [`crate::GroupRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /dj/start` | [`crate::DjStartRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /scenes` | | `[SceneDto]` ([`crate::surface::scenes`]) |
@@ -81,6 +83,8 @@ use crate::web::WebPolicy;
 use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
 
 mod house_policy;
+
+mod eq;
 
 mod dj_feedback;
 mod dj_prefs;
@@ -160,6 +164,7 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(house(cx));
     routes.extend(house_policy::routes(cx));
     routes.extend(controls(cx));
+    routes.extend(eq::routes(cx));
     routes.extend(house_verbs(cx));
     routes.extend(announce::routes(cx));
     routes.extend(players::routes(cx));

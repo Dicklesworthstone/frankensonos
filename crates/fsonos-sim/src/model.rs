@@ -243,6 +243,10 @@ pub(crate) struct Player {
     pub boot_seq: u32,
     pub volume: u8,
     pub mute: bool,
+    /// -10..=10, flat at 0.
+    pub bass: i8,
+    pub treble: i8,
+    pub loudness: bool,
     pub transport: Transport,
     /// Powered off: answers nothing, sends no events, shows as vanished.
     pub offline: bool,
@@ -344,6 +348,9 @@ impl State {
             boot_seq: 1,
             volume: 20,
             mute: false,
+            bass: 0,
+            treble: 0,
+            loudness: true,
             transport: Transport::new(),
             offline: false,
             faults: Faults::default(),
@@ -1112,6 +1119,28 @@ impl State {
                 self.players[p].mute = bool_arg(args, "DesiredMute")?;
                 Ok(Vec::new())
             }
+            "GetBass" => Ok(vec![("CurrentBass", self.players[p].bass.to_string())]),
+            "GetTreble" => Ok(vec![("CurrentTreble", self.players[p].treble.to_string())]),
+            "SetBass" => {
+                self.players[p].bass = tone_level(args, "DesiredBass")?;
+                Ok(Vec::new())
+            }
+            "SetTreble" => {
+                self.players[p].treble = tone_level(args, "DesiredTreble")?;
+                Ok(Vec::new())
+            }
+            "GetLoudness" => {
+                channel(args)?;
+                Ok(vec![(
+                    "CurrentLoudness",
+                    u8::from(self.players[p].loudness).to_string(),
+                )])
+            }
+            "SetLoudness" => {
+                channel(args)?;
+                self.players[p].loudness = bool_arg(args, "DesiredLoudness")?;
+                Ok(Vec::new())
+            }
             _ => Err(INVALID_ACTION),
         }
     }
@@ -1270,6 +1299,16 @@ impl State {
 fn volume_arg(args: &Args<'_>, name: &str) -> Result<u8, Fault> {
     let v: u8 = args.num(name)?;
     if v > 100 { Err(INVALID_ARGS) } else { Ok(v) }
+}
+
+/// A bass or treble level: -10 to 10.
+fn tone_level(args: &Args<'_>, name: &str) -> Result<i8, Fault> {
+    let v: i8 = args.num(name)?;
+    if (-10..=10).contains(&v) {
+        Ok(v)
+    } else {
+        Err(INVALID_ARGS)
+    }
 }
 
 fn bool_arg(args: &Args<'_>, name: &str) -> Result<bool, Fault> {
@@ -1685,6 +1724,33 @@ mod tests {
         assert_eq!(join(&mut s, kitchen, kitchen), Err(INVALID_ARGS));
         assert_eq!(s.members(den), [den, rf]);
         assert_eq!(s.members(kitchen), [kitchen]);
+    }
+
+    #[test]
+    fn tone_starts_flat_with_loudness_on_and_keeps_levels_in_range() {
+        let mut s = state();
+        let rc = |s: &mut State, action: &str, args: &[(&str, &str)]| {
+            call(s, 0, &RENDERING_CONTROL, action, args)
+        };
+        let i = ("InstanceID", "0");
+        let m = ("Channel", "Master");
+        assert_eq!(
+            get(&rc(&mut s, "GetBass", &[i]).unwrap(), "CurrentBass"),
+            "0"
+        );
+        let on = rc(&mut s, "GetLoudness", &[i, m]).unwrap();
+        assert_eq!(get(&on, "CurrentLoudness"), "1");
+
+        rc(&mut s, "SetBass", &[i, ("DesiredBass", "-4")]).unwrap();
+        rc(&mut s, "SetTreble", &[i, ("DesiredTreble", "10")]).unwrap();
+        rc(&mut s, "SetLoudness", &[i, m, ("DesiredLoudness", "0")]).unwrap();
+        assert_eq!((s.players[0].bass, s.players[0].treble), (-4, 10));
+        assert!(!s.players[0].loudness);
+        assert_eq!(
+            rc(&mut s, "SetTreble", &[i, ("DesiredTreble", "11")]),
+            Err(INVALID_ARGS)
+        );
+        assert_eq!(s.players[0].treble, 10, "a refused level changes nothing");
     }
 
     #[test]

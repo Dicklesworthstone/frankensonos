@@ -526,7 +526,7 @@ impl Surface {
 
     /// Authorize `tool` (a write), logging a refusal as every control call
     /// does.
-    fn authorize_logged(&self, client: &Client, tool: &str) -> Result<(), Failure> {
+    pub(super) fn authorize_logged(&self, client: &Client, tool: &str) -> Result<(), Failure> {
         self.guard(client)
             .authorize(tool, false)
             .inspect_err(|denied| {

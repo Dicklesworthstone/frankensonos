@@ -346,11 +346,17 @@ impl State {
                 "Mute".into(),
                 channels("Mute", u8::from(player.mute).to_string(), "0"),
             ),
-            ("Bass".into(), "<Bass val=\"0\"/>".into()),
-            ("Treble".into(), "<Treble val=\"0\"/>".into()),
+            ("Bass".into(), format!("<Bass val=\"{}\"/>", player.bass)),
+            (
+                "Treble".into(),
+                format!("<Treble val=\"{}\"/>", player.treble),
+            ),
             (
                 "Loudness".into(),
-                "<Loudness channel=\"Master\" val=\"1\"/>".into(),
+                format!(
+                    "<Loudness channel=\"Master\" val=\"{}\"/>",
+                    u8::from(player.loudness)
+                ),
             ),
         ]
     }

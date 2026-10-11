@@ -46,6 +46,7 @@ use crate::zones::{ZoneDto, zone_for_target, zone_views};
 pub mod dj_feedback;
 pub mod dj_prefs;
 pub mod dj_sync;
+pub mod eq;
 pub mod house_policy;
 pub mod queue;
 pub mod scenes;

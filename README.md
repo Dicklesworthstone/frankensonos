@@ -88,6 +88,7 @@ fsonos discover                                   # every player on the LAN, S1 
 fsonos zones                                      # the groups and what each is doing
 fsonos play "Living Room" --favorite "Morning"    # a Sonos favorite (or a URI, or --search "bwv 988")
 fsonos volume "Living Room" +5                    # set, or change by ±N; --group for the whole group
+fsonos eq Kitchen --bass 2 --loudness off         # tone: bass and treble -10..10, loudness on/off
 fsonos group Office Kitchen                       # Office joins Kitchen's group
 fsonos move "Living Room" Bedroom                 # the music follows you
 fsonos dj start "Living Room" --mood calm         # the DJ, from your own Spotify taste
@@ -195,9 +196,9 @@ running `serve`):
 reads      list_zones · list_rooms · list_players · get_zone · get_zone_state · list_favorites
            search_library · get_queue · recent_plays · recent_actions · get_policy · doctor
            dj_status · dj_moods · echo
-           list_scenes · get_scene · list_sleep_timers · list_schedules
+           list_scenes · get_scene · list_sleep_timers · list_schedules · get_eq
 control    play · play_favorite · pause · resume · next · previous · set_volume · mute
-           group · ungroup · move_playback · group_all · announce · undo_last
+           group · ungroup · move_playback · group_all · set_eq · announce · undo_last
            fade_volume · fade_and_pause
 dj         dj_start · dj_skip · dj_stop · dj_steer · dj_feedback · dj_preferences · dj_prefer
            dj_sync · dj_sync_status

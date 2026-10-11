@@ -2,6 +2,7 @@
 //! acts through the same [`Surface`] the daemon's HTTP API and MCP server
 //! use, as the house policy's `cli` client.
 
+use fsonos_api::surface::eq::{EqDto, EqRequest, EqSetDto};
 use fsonos_api::surface::players::{PlayerDto, player_views};
 use fsonos_api::surface::queue::QueueDto;
 use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
@@ -185,6 +186,18 @@ impl Direct {
     pub fn queue(&self, zone: &str, offset: u32, limit: u32) -> Result<QueueDto, Failure> {
         self.households()?;
         self.surface.queue(&Client::Cli, zone, offset, limit)
+    }
+
+    /// The tone of the room `zone` (`get_eq`).
+    pub fn get_eq(&self, zone: &str) -> Result<EqDto, Failure> {
+        self.households()?;
+        self.surface.get_eq(&Client::Cli, zone)
+    }
+
+    /// Change a room's tone (`set_eq`), logged for `fsonos undo`.
+    pub fn set_eq(&self, req: &EqRequest) -> Result<EqSetDto, Failure> {
+        self.households()?;
+        self.surface.set_eq(&Client::Cli, req)
     }
 
     /// The DJ in `zone`'s group (`dj_status`). The DJ runs in the daemon,

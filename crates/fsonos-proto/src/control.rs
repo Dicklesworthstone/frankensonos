@@ -257,6 +257,89 @@ pub fn set_mute<T: Transport + ?Sized>(t: &T, host: IpAddr, mute: bool) -> Resul
     .map(drop)
 }
 
+// ---------------------------------------------------------------- tone
+
+/// Bass and treble run from -10 to 10 (0 is flat).
+pub const TONE_RANGE: std::ops::RangeInclusive<i8> = -10..=10;
+
+/// The bass of the player at `host`.
+pub fn get_bass<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<i8, ProtoError> {
+    let r = call(t, host, &RENDERING_CONTROL, "GetBass", &[INSTANCE])?;
+    tone_arg(&r, "CurrentBass")
+}
+
+/// Set the bass of the player at `host` (clamped to [`TONE_RANGE`]).
+pub fn set_bass<T: Transport + ?Sized>(t: &T, host: IpAddr, level: i8) -> Result<(), ProtoError> {
+    let level = level.clamp(-10, 10).to_string();
+    call(
+        t,
+        host,
+        &RENDERING_CONTROL,
+        "SetBass",
+        &[INSTANCE, ("DesiredBass", &level)],
+    )
+    .map(drop)
+}
+
+/// The treble of the player at `host`.
+pub fn get_treble<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<i8, ProtoError> {
+    let r = call(t, host, &RENDERING_CONTROL, "GetTreble", &[INSTANCE])?;
+    tone_arg(&r, "CurrentTreble")
+}
+
+/// Set the treble of the player at `host` (clamped to [`TONE_RANGE`]).
+pub fn set_treble<T: Transport + ?Sized>(t: &T, host: IpAddr, level: i8) -> Result<(), ProtoError> {
+    let level = level.clamp(-10, 10).to_string();
+    call(
+        t,
+        host,
+        &RENDERING_CONTROL,
+        "SetTreble",
+        &[INSTANCE, ("DesiredTreble", &level)],
+    )
+    .map(drop)
+}
+
+/// Whether loudness compensation is on at `host`.
+pub fn get_loudness<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<bool, ProtoError> {
+    let r = call(
+        t,
+        host,
+        &RENDERING_CONTROL,
+        "GetLoudness",
+        &[INSTANCE, MASTER],
+    )?;
+    Ok(r.require("CurrentLoudness")?.trim() == "1")
+}
+
+/// Turn loudness compensation on or off at `host`.
+pub fn set_loudness<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    on: bool,
+) -> Result<(), ProtoError> {
+    call(
+        t,
+        host,
+        &RENDERING_CONTROL,
+        "SetLoudness",
+        &[
+            INSTANCE,
+            MASTER,
+            ("DesiredLoudness", if on { "1" } else { "0" }),
+        ],
+    )
+    .map(drop)
+}
+
+fn tone_arg(r: &SoapResponse, name: &str) -> Result<i8, ProtoError> {
+    let raw = r.require(name)?.trim();
+    raw.parse::<i8>()
+        .ok()
+        .filter(|v| TONE_RANGE.contains(v))
+        .ok_or_else(|| ProtoError::Malformed(format!("{name} out of range: {raw}")))
+}
+
 /// The group volume, as the coordinator at `host` reports it.
 pub fn get_group_volume<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<u8, ProtoError> {
     let r = call(
@@ -565,6 +648,36 @@ mod tests {
 
     fn host() -> IpAddr {
         "192.0.2.10".parse().unwrap()
+    }
+
+    #[test]
+    fn tone_levels_are_read_in_range_and_set_clamped() {
+        assert_eq!(
+            get_bass(&Canned::new("<CurrentBass>-3</CurrentBass>"), host()).unwrap(),
+            -3
+        );
+        let wild = get_treble(&Canned::new("<CurrentTreble>42</CurrentTreble>"), host());
+        assert!(matches!(wild, Err(ProtoError::Malformed(_))), "{wild:?}");
+        let off = Canned::new("<CurrentLoudness>0</CurrentLoudness>");
+        assert!(!get_loudness(&off, host()).unwrap());
+        assert!(
+            off.last().2.contains("<Channel>Master</Channel>"),
+            "{:?}",
+            off.last()
+        );
+
+        let t = Canned::new("");
+        set_bass(&t, host(), 99).unwrap();
+        let (path, action, body) = t.last();
+        assert_eq!(path, "/MediaRenderer/RenderingControl/Control");
+        assert!(action.ends_with("#SetBass\""), "{action}");
+        assert!(body.contains("<DesiredBass>10</DesiredBass>"), "{body}");
+        set_loudness(&t, host(), true).unwrap();
+        assert!(
+            t.last().2.contains("<DesiredLoudness>1</DesiredLoudness>"),
+            "{:?}",
+            t.last()
+        );
     }
 
     #[test]
