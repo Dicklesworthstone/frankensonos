@@ -383,7 +383,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Tailscale(args) => tailscale_cmd::run(global, &args),
         Command::Scene(args) => scene_cmd::run(global, &args),
         #[cfg(feature = "sim")]
-        Command::Sim(args) => sim::run(&args),
+        Command::Sim(args) => sim::run(&args, global.json),
         Command::Discover => {
             let found = Direct::survey(global)?.discover();
             for (addr, why) in &found.unreachable {

@@ -12,6 +12,7 @@
 use anyhow::Context as _;
 use clap::ValueEnum;
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use serde_json::{Value, json};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -124,6 +125,31 @@ fn banner(sim: &SimHandle, seeds: &Path, routes: &Path) -> String {
     out
 }
 
+/// The startup report as JSON (`--json`): every player and where the seeds
+/// and routes files are.
+fn ready_json(sim: &SimHandle, seeds: &Path, routes: &Path) -> Value {
+    let players: Vec<Value> = sim
+        .players()
+        .iter()
+        .map(|p| {
+            json!({
+                "room": p.room,
+                "household": p.household,
+                "generation": format!("S{}", p.generation),
+                "model": p.model.display_name(),
+                "ip": p.ip,
+                "addr": p.addr,
+            })
+        })
+        .collect();
+    json!({
+        "ready": true,
+        "players": players,
+        "seeds": seeds.display().to_string(),
+        "routes": routes.display().to_string(),
+    })
+}
+
 /// `path` as one shell word (single-quoted when it needs to be).
 fn shell_word(path: &Path) -> String {
     let s = path.display().to_string();
@@ -136,8 +162,9 @@ fn shell_word(path: &Path) -> String {
     }
 }
 
-/// Run the virtual house until Ctrl-C / SIGTERM.
-pub fn run(args: &SimArgs) -> anyhow::Result<()> {
+/// Run the virtual house until Ctrl-C / SIGTERM, reporting it as text or,
+/// with `json`, as one JSON object.
+pub fn run(args: &SimArgs, json: bool) -> anyhow::Result<()> {
     let (seeds, temp_dir) = if let Some(path) = &args.seeds_out {
         (path.clone(), None)
     } else {
@@ -158,7 +185,11 @@ pub fn run(args: &SimArgs) -> anyhow::Result<()> {
         .with_context(|| format!("write {}", seeds.display()))?;
     std::fs::write(&routes, routes_toml(&sim))
         .with_context(|| format!("write {}", routes.display()))?;
-    print!("{}", banner(&sim, &seeds, &routes));
+    if json {
+        println!("{}", ready_json(&sim, &seeds, &routes));
+    } else {
+        print!("{}", banner(&sim, &seeds, &routes));
+    }
 
     while !stop.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(100));
@@ -227,5 +258,27 @@ mod tests {
         assert!(s2.players().iter().all(|p| p.generation == 2));
         assert_eq!(s2.players().len(), 2);
         s2.shutdown();
+    }
+
+    #[test]
+    fn the_json_report_names_every_player_and_both_files() {
+        let sim = spawn(Scenario::TwoHouseholds).unwrap();
+        let report = ready_json(
+            &sim,
+            Path::new("/tmp/s/seeds.toml"),
+            Path::new("/tmp/s/routes.toml"),
+        );
+        assert_eq!(report["ready"], true);
+        let players = report["players"].as_array().unwrap();
+        assert_eq!(players.len(), sim.players().len());
+        assert!(players.iter().any(|p| p["room"] == "Kitchen"), "{report}");
+        assert!(
+            players
+                .iter()
+                .all(|p| p["generation"] == "S1" || p["generation"] == "S2")
+        );
+        assert_eq!(report["seeds"], "/tmp/s/seeds.toml");
+        assert_eq!(report["routes"], "/tmp/s/routes.toml");
+        sim.shutdown();
     }
 }
