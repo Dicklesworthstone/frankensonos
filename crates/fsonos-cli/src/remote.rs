@@ -100,6 +100,9 @@ fn read_daemon_file(dir: &Path) -> Option<DaemonFile> {
 pub struct Daemon {
     addr: SocketAddr,
     token: Option<String>,
+    /// The local client the calls come from when not the CLI
+    /// ([`Daemon::as_stdio_mcp`]).
+    claim: Option<&'static str>,
 }
 
 impl Daemon {
@@ -129,11 +132,23 @@ impl Daemon {
             // the CLI's: run directly so the policy reads the same.
             return Ok(None);
         }
-        let daemon = Self { addr, token };
+        let daemon = Self {
+            addr,
+            token,
+            claim: None,
+        };
         match daemon.healthy() {
             Ok(()) => Ok(Some(daemon)),
             Err(why) => refuse(require, &format!("no daemon answered at {addr}: {why}")),
         }
+    }
+
+    /// Call as the stdio MCP server (`fsonos mcp`) rather than the CLI, so
+    /// the house policy's rules for that client apply on the daemon too.
+    #[must_use]
+    pub fn as_stdio_mcp(mut self) -> Self {
+        self.claim = Some("mcp-stdio");
+        self
     }
 
     fn healthy(&self) -> Result<(), String> {
@@ -249,6 +264,13 @@ impl Daemon {
         }
         if let Some(token) = &self.token {
             let _ = write!(request, "{}: {token}\r\n", fsonos_api::identity::CLI_TOKEN);
+            if let Some(claim) = self.claim {
+                let _ = write!(
+                    request,
+                    "{}: {claim}\r\n",
+                    fsonos_api::identity::LOCAL_CLIENT
+                );
+            }
         }
         request.push_str("\r\n");
         request.push_str(body);
@@ -640,6 +662,7 @@ mod tests {
         let daemon = Daemon {
             addr: listener.local_addr().unwrap(),
             token: None,
+            claim: None,
         };
         let worker = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -679,6 +702,55 @@ mod tests {
         assert!(!failure.retryable());
         assert!(failure.hint.contains("may still be running"));
         assert!(!failure.hint.contains("--direct"));
+    }
+
+    #[test]
+    fn the_stdio_server_names_itself_only_alongside_the_token() {
+        let headers = |daemon: Daemon, listener: std::net::TcpListener| {
+            let worker = std::thread::spawn(move || {
+                use std::io::BufRead as _;
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(stream);
+                let mut seen = Vec::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                    seen.push(line.trim_end().to_lowercase());
+                }
+                seen
+            });
+            // No answer comes back; only the request matters here.
+            let _ = daemon.get::<serde_json::Value>("/zones");
+            worker.join().unwrap()
+        };
+        let bind = || std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let listener = bind();
+        let with_token = Daemon {
+            addr: listener.local_addr().unwrap(),
+            token: Some("secret".into()),
+            claim: None,
+        }
+        .as_stdio_mcp();
+        let sent = headers(with_token, listener);
+        assert!(
+            sent.contains(&"x-fsonos-client: mcp-stdio".to_string()),
+            "{sent:?}"
+        );
+        // Without the token there is nothing to claim with.
+        let listener = bind();
+        let without = Daemon {
+            addr: listener.local_addr().unwrap(),
+            token: None,
+            claim: None,
+        }
+        .as_stdio_mcp();
+        let sent = headers(without, listener);
+        assert!(
+            !sent.iter().any(|h| h.starts_with("x-fsonos-client")),
+            "{sent:?}"
+        );
     }
 
     #[test]
@@ -737,7 +809,11 @@ mod tests {
         let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = free.local_addr().unwrap();
         drop(free);
-        let daemon = Daemon { addr, token: None };
+        let daemon = Daemon {
+            addr,
+            token: None,
+            claim: None,
+        };
         let started = std::time::Instant::now();
         assert!(daemon.healthy().is_err());
         assert!(started.elapsed() < PROBE * 4, "{:?}", started.elapsed());

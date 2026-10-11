@@ -305,13 +305,15 @@ same URL, typically as
 Plain HTTP clients use the API directly, e.g.
 `curl https://<mac>.<tailnet>.ts.net/zones`.
 
-Over stdio, `fsonos mcp` runs its own in-process surface without the daemon's
-live model: the DJ (and `apply_scene` on a group it starts) queues its first
-works but nothing tops the queue up, `dj skip`/`dj stop` and like/dislike do
-not reach a running `fsonos serve`, and a sleep timer is the speaker's own,
-without a fade. Reads and one-shot controls answer the same either way; for the
-live DJ, scene DJs and fading sleep timers, connect over HTTP to a running
-`fsonos serve` (the options above).
+Over stdio, `fsonos mcp` hands the tools that need the daemon's running state
+to `fsonos serve` whenever it runs: `dj_start`, `dj_steer`, `dj_skip`,
+`dj_stop`, `dj_status`, `apply_scene` and the sleep-timer tools act on serve's
+DJ (which keeps its queues fed) and serve's fading timers. They reach serve as
+the `mcp-stdio` client, so `[clients."mcp-stdio"]` in `policy.toml` applies
+either way. Without a running serve (or with `--direct`), `fsonos mcp` does them
+itself: the DJ queues its first works but nothing tops the queue up, and a
+sleep timer is the speaker's own, without a fade. Reads and one-shot controls
+answer the same either way.
 
 ### Spotify sign-in (one time, for the DJ)
 

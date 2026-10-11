@@ -1026,6 +1026,96 @@ mod tests {
         (b, sent, surveys)
     }
 
+    /// A daemon that answers every call with `answer` (`None`: none runs),
+    /// recording each call.
+    struct FakeDaemon {
+        answer: Option<serde_json::Value>,
+        calls: Mutex<Vec<(String, String, Option<serde_json::Value>)>>,
+    }
+
+    impl Daemon for FakeDaemon {
+        fn call(
+            &self,
+            method: &str,
+            path: &str,
+            body: Option<&serde_json::Value>,
+        ) -> Option<Result<serde_json::Value, Failure>> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((method.into(), path.into(), body.cloned()));
+            self.answer.clone().map(Ok)
+        }
+    }
+
+    fn fake(answer: Option<serde_json::Value>) -> Arc<FakeDaemon> {
+        Arc::new(FakeDaemon {
+            answer,
+            calls: Mutex::new(Vec::new()),
+        })
+    }
+
+    #[test]
+    fn stateful_tools_go_to_a_running_daemon() {
+        let (b, sent, _) = backend("", Client::McpStdio);
+        let daemon = fake(Some(serde_json::json!({
+            "done": "the DJ plays in Den's group",
+            "changed": true
+        })));
+        let b = b.with_daemon(Arc::clone(&daemon) as Arc<dyn Daemon>);
+        let r = b
+            .dj_start(&DjStartRequest {
+                zone: "Den".into(),
+                mood: None,
+                for_secs: None,
+            })
+            .unwrap();
+        assert!(!r.is_error, "{}", text(&r));
+        assert_eq!(text(&r), "the DJ plays in Den's group");
+        assert!(sent.lock().unwrap().is_empty(), "nothing sent from here");
+        let calls = daemon.calls.lock().unwrap().clone();
+        assert_eq!(
+            (calls[0].0.as_str(), calls[0].1.as_str()),
+            ("POST", "/dj/start")
+        );
+        assert_eq!(calls[0].2.as_ref().unwrap()["zone"], "Den");
+
+        // A room name is percent-encoded into the path; a list keeps its shape.
+        let daemon = fake(Some(serde_json::json!([])));
+        let (b, _, _) = backend("", Client::McpStdio);
+        let b = b.with_daemon(Arc::clone(&daemon) as Arc<dyn Daemon>);
+        let r = b.list_sleep_timers(Some("Living Room")).unwrap();
+        assert_eq!(text(&r), "no sleep timer runs");
+        assert_eq!(
+            r.structured_content.unwrap(),
+            serde_json::json!({ "timers": [] })
+        );
+        assert_eq!(
+            daemon.calls.lock().unwrap()[0].1,
+            "/sleep?zone=Living%20Room"
+        );
+    }
+
+    #[test]
+    fn without_a_daemon_running_the_tools_act_here() {
+        let (b, sent, _) = backend(
+            "<RemainingSleepTimerDuration></RemainingSleepTimerDuration>",
+            Client::McpStdio,
+        );
+        let daemon = fake(None);
+        let b = b.with_daemon(Arc::clone(&daemon) as Arc<dyn Daemon>);
+        let r = b.list_sleep_timers(Some("Den")).unwrap();
+        assert!(!r.is_error, "{}", text(&r));
+        assert_eq!(daemon.calls.lock().unwrap().len(), 1, "it asked first");
+        assert!(
+            sent.lock()
+                .unwrap()
+                .iter()
+                .any(|a| a == "GetRemainingSleepTimerDuration"),
+            "then read the speaker itself"
+        );
+    }
+
     fn text(result: &FinalCallToolResult) -> String {
         serde_json::to_value(result).unwrap()["content"][0]["text"]
             .as_str()
@@ -1057,6 +1147,10 @@ mod tests {
         assert_eq!(players[0]["generation"], "S2");
         assert_eq!(players[0]["ip"], "192.0.2.10");
         assert_eq!(players[1]["room"], "Kitchen");
+        // Kitchen plays in Den's group, and both the line and the data say so.
+        assert_eq!(players[1]["coordinator_room"], "Den");
+        assert!(text(&r).contains("Kitchen [S2]"), "{}", text(&r));
+        assert!(text(&r).contains("(in Den's group)"), "{}", text(&r));
     }
 
     #[test]

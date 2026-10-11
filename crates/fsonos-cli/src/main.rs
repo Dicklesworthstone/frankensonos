@@ -807,14 +807,40 @@ fn runtime() -> anyhow::Result<Runtime> {
         .context("build asupersync runtime")
 }
 
+/// The daemon as `fsonos mcp` sees it: looked up on each call (it may start
+/// or stop while the stdio server runs) and called as the stdio client.
+struct StdioDaemon(config::GlobalArgs);
+
+impl fsonos_mcp::tools::Daemon for StdioDaemon {
+    fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Option<Result<serde_json::Value, Failure>> {
+        let daemon = remote::Daemon::find(&self.0, false)
+            .ok()
+            .flatten()?
+            .as_stdio_mcp();
+        let empty = serde_json::json!({});
+        Some(if method == "GET" {
+            daemon.get(path)
+        } else {
+            daemon.post(path, body.unwrap_or(&empty))
+        })
+    }
+}
+
 /// Serve the MCP tools over stdio, acting on this LAN's speakers as the
-/// `mcp-stdio` client of the house policy.
+/// `mcp-stdio` client of the house policy. While `fsonos serve` runs, the
+/// DJ, scene-apply and sleep-timer tools act through it (see [`StdioDaemon`]).
 fn run_mcp_stdio(global: &config::GlobalArgs) -> anyhow::Result<()> {
     let data_dir = daemon::data_dir(global)?;
     let surface = daemon::surface(global, daemon::policy(&data_dir)?)?;
     let surface = std::sync::Arc::new(daemon::with_action_log(surface, &data_dir, "mcp"));
     let backend =
-        fsonos_mcp::tools::Backend::shared(surface, fsonos_core::policy::Client::McpStdio);
+        fsonos_mcp::tools::Backend::shared(surface, fsonos_core::policy::Client::McpStdio)
+            .with_daemon(std::sync::Arc::new(StdioDaemon(global.clone())));
     if !fsonos_mcp::tools::install(backend) {
         anyhow::bail!("the MCP backend is already installed");
     }

@@ -6,7 +6,7 @@ use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::scenes::{SceneApplyDto, SceneDto};
 use serde::Serialize;
 
-use super::{Backend, respond, with_backend};
+use super::{Backend, respond, segment, with_backend};
 
 /// `list_scenes` structured content (MCP wants an object).
 #[derive(Serialize)]
@@ -79,6 +79,12 @@ impl Backend {
 
     /// The `apply_scene` tool.
     pub fn apply_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
+        // A scene that starts the DJ needs the daemon's DJ to keep it going.
+        let path = format!("/scenes/{}/apply", segment(name));
+        let body = serde_json::json!({});
+        if let Some(answer) = self.on_daemon("POST", &path, Some(&body), apply_text) {
+            return answer;
+        }
         respond(|| {
             let applied = self.surface.apply_scene(&self.client, name)?;
             Ok((apply_text(&applied), applied))

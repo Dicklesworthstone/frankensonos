@@ -8,7 +8,7 @@ use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::schedules::{ScheduleDto, ScheduleRequest, SleepRequest, SleepTimerDto};
 use serde::Serialize;
 
-use super::{Backend, respond, with_backend};
+use super::{Backend, from_daemon, respond, segment, with_backend};
 
 /// `list_sleep_timers` structured content.
 #[derive(Serialize)]
@@ -22,9 +22,27 @@ struct SchedulesDto {
     schedules: Vec<ScheduleDto>,
 }
 
+/// The running timers, one line each.
+fn timers_text(timers: &[SleepTimerDto]) -> String {
+    if timers.is_empty() {
+        return "no sleep timer runs".to_string();
+    }
+    timers
+        .iter()
+        .map(|t| t.done.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 impl Backend {
     /// The `set_sleep_timer` tool.
     pub fn set_sleep_timer(&self, req: &SleepRequest) -> McpResult<FinalCallToolResult> {
+        // The daemon's timers fade out; the speaker's own do not.
+        let body = serde_json::to_value(req).ok();
+        let done = |t: &SleepTimerDto| t.done.clone();
+        if let Some(answer) = self.on_daemon("POST", "/sleep", body.as_ref(), done) {
+            return answer;
+        }
         respond(|| {
             let timer = self.surface.set_sleep_timer(&self.client, req)?;
             Ok((timer.done.clone(), timer))
@@ -33,18 +51,23 @@ impl Backend {
 
     /// The `list_sleep_timers` tool.
     pub fn list_sleep_timers(&self, zone: Option<&str>) -> McpResult<FinalCallToolResult> {
+        let path = zone.map_or_else(
+            || "/sleep".to_string(),
+            |z| format!("/sleep?zone={}", segment(z)),
+        );
+        if let Some(answer) = self
+            .daemon
+            .as_ref()
+            .and_then(|d| d.call("GET", &path, None))
+        {
+            return respond(|| {
+                let timers: Vec<SleepTimerDto> = from_daemon(answer, "GET", &path)?;
+                Ok((timers_text(&timers), SleepTimersDto { timers }))
+            });
+        }
         respond(|| {
             let timers = self.surface.sleep_timers(&self.client, zone)?;
-            let text = if timers.is_empty() {
-                "no sleep timer runs".to_string()
-            } else {
-                timers
-                    .iter()
-                    .map(|t| t.done.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            };
-            Ok((text, SleepTimersDto { timers }))
+            Ok((timers_text(&timers), SleepTimersDto { timers }))
         })
     }
 

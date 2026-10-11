@@ -18,7 +18,11 @@
 //! the token `fsonos serve` wrote to its data directory
 //! ([`Identity::with_cli_token`], header [`CLI_TOKEN`]). Reading the token
 //! takes what running the CLI directly takes (the daemon user's files), so
-//! it grants nothing new; it is honoured only on the loopback listener.
+//! it grants nothing new; it is honoured only on the loopback listener. A
+//! token holder may instead name itself the stdio MCP server
+//! ([`LOCAL_CLIENT`]: `mcp-stdio`), as `fsonos mcp` does when it hands its
+//! tools to the daemon, so the owner's rules for that client still apply; the
+//! same user could run that server directly, so this grants nothing either.
 //!
 //! On a listener bound to the tailnet (any non-loopback address), a caller
 //! is named by the tailnet itself: [`Identity::with_tailnet`] asks a namer
@@ -40,6 +44,10 @@ const MAX_LOGIN: usize = 256;
 
 /// The header the local CLI proves itself with; see the module docs.
 pub const CLI_TOKEN: &str = "x-fsonos-cli-token";
+
+/// The header with which a caller holding the CLI token names itself the
+/// stdio MCP server (`mcp-stdio`) rather than the CLI.
+pub const LOCAL_CLIENT: &str = "x-fsonos-client";
 
 /// Names a tailnet peer by its address (a login, `tag:<name>`, or a node
 /// name), or `None` when the tailnet can't say who it is.
@@ -141,7 +149,12 @@ impl Identity {
                 .get(CLI_TOKEN)
                 .is_some_and(|sent| same_secret(sent, token.as_bytes()))
         {
-            return Client::Cli;
+            let stdio = req
+                .headers()
+                .get(LOCAL_CLIENT)
+                .and_then(|v| std::str::from_utf8(v).ok())
+                .is_some_and(|v| v.trim() == "mcp-stdio");
+            return if stdio { Client::McpStdio } else { Client::Cli };
         }
         if !self.serve_headers || self.listener != Client::LoopbackHttp {
             return self.listener.clone();
@@ -275,5 +288,27 @@ mod tests {
         assert_eq!(tailnet.of(&with_token(token)), Client::Unknown);
         let empty = Identity::fixed(Client::LoopbackHttp).with_cli_token(String::new());
         assert_eq!(empty.of(&with_token("")), Client::LoopbackHttp);
+    }
+
+    #[test]
+    fn a_token_holder_may_name_itself_the_stdio_mcp_server_and_nothing_else() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let loopback = Identity::behind_serve(Client::LoopbackHttp).with_cli_token(token.into());
+        let claiming = |token: &str, client: &str| {
+            let mut req = with_token(token);
+            req.headers_mut()
+                .insert(LOCAL_CLIENT, client.as_bytes().to_vec());
+            req
+        };
+        assert_eq!(loopback.of(&claiming(token, "mcp-stdio")), Client::McpStdio);
+        // Any other name is the CLI, as without the header.
+        assert_eq!(loopback.of(&claiming(token, "tailnet")), Client::Cli);
+        // Without the token the claim means nothing: the ordinary caller.
+        assert_eq!(
+            loopback.of(&claiming("wrong", "mcp-stdio")),
+            Client::Tailnet("ada@example.com".into())
+        );
+        let tailnet = Identity::fixed(Client::Unknown).with_cli_token(token.into());
+        assert_eq!(tailnet.of(&claiming(token, "mcp-stdio")), Client::Unknown);
     }
 }
