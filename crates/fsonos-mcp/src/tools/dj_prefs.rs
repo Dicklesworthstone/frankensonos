@@ -3,21 +3,31 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::dj_prefs::DjPreferRequest;
+use fsonos_api::surface::dj_prefs::{DjPreferRequest, PreferencesDto, PreferredDto};
 
 use super::{Backend, respond, with_backend};
 
 impl Backend {
-    /// The `dj_preferences` tool.
+    /// The `dj_preferences` tool, read from the running daemon when there is
+    /// one.
     pub fn dj_preferences(&self) -> McpResult<FinalCallToolResult> {
+        if let Some(answer) = self.on_daemon("GET", "/dj/preferences", None, PreferencesDto::text) {
+            return answer;
+        }
         respond(|| {
             let preferences = self.surface.dj_preferences(&self.client)?;
             Ok((preferences.text(), preferences))
         })
     }
 
-    /// The `dj_prefer` tool.
+    /// The `dj_prefer` tool: on the running daemon when there is one, so its
+    /// DJ's pool follows at once.
     pub fn dj_prefer(&self, req: &DjPreferRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).ok();
+        let done = |preferred: &PreferredDto| preferred.done.clone();
+        if let Some(answer) = self.on_daemon("POST", "/dj/preferences", body.as_ref(), done) {
+            return answer;
+        }
         respond(|| {
             let preferred = self.surface.dj_prefer(&self.client, req)?;
             Ok((preferred.done.clone(), preferred))

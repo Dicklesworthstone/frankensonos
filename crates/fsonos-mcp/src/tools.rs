@@ -1119,6 +1119,48 @@ mod tests {
     }
 
     #[test]
+    fn the_djs_library_feedback_and_preferences_go_to_a_running_daemon() {
+        let (b, sent, _) = backend("", Client::McpStdio);
+        let daemon = fake(Some(serde_json::json!({
+            "done": "a library refresh started",
+            "running": true
+        })));
+        let b = b.with_daemon(Arc::clone(&daemon) as Arc<dyn Daemon>);
+        let r = b.dj_sync().unwrap();
+        assert_eq!(text(&r), "a library refresh started");
+        let r = b.dj_sync_status().unwrap();
+        assert!(!r.is_error, "{}", text(&r));
+        let feedback = fake(Some(serde_json::json!({
+            "zone": "Den",
+            "work": "Symphony No. 5",
+            "composer": "Ludwig van Beethoven",
+            "signal": "like",
+            "done": "noted: more like Symphony No. 5"
+        })));
+        let (b, _, _) = backend("", Client::McpStdio);
+        let b = b.with_daemon(Arc::clone(&feedback) as Arc<dyn Daemon>);
+        let req = fsonos_api::surface::dj_feedback::DjFeedbackRequest {
+            zone: Some("Den".into()),
+            signal: "like".into(),
+        };
+        assert_eq!(
+            text(&b.dj_feedback(&req).unwrap()),
+            "noted: more like Symphony No. 5"
+        );
+        assert!(sent.lock().unwrap().is_empty(), "nothing sent from here");
+        let paths = |d: &FakeDaemon| {
+            d.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(m, p, _)| format!("{m} {p}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paths(&daemon), ["POST /dj/sync", "GET /dj/sync"]);
+        assert_eq!(paths(&feedback), ["POST /dj/feedback"]);
+    }
+
+    #[test]
     fn without_a_daemon_running_the_tools_act_here() {
         let (b, sent, _) = backend(
             "<RemainingSleepTimerDuration></RemainingSleepTimerDuration>",

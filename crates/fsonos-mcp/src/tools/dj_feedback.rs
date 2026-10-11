@@ -2,13 +2,19 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::dj_feedback::DjFeedbackRequest;
+use fsonos_api::surface::dj_feedback::{DjFeedbackDto, DjFeedbackRequest};
 
 use super::{Backend, respond, with_backend};
 
 impl Backend {
-    /// The `dj_feedback` tool.
+    /// The `dj_feedback` tool: on the running daemon when there is one, whose
+    /// DJ is the one playing.
     pub fn dj_feedback(&self, req: &DjFeedbackRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).ok();
+        let done = |given: &DjFeedbackDto| given.done.clone();
+        if let Some(answer) = self.on_daemon("POST", "/dj/feedback", body.as_ref(), done) {
+            return answer;
+        }
         respond(|| {
             let given = self.surface.dj_feedback(&self.client, req)?;
             Ok((given.done.clone(), given))

@@ -3,20 +3,34 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
+use fsonos_api::surface::dj_sync::LibrarySyncDto;
 
 use super::{Backend, respond, with_backend};
 
+/// A library refresh's state, said.
+fn done(state: &LibrarySyncDto) -> String {
+    state.done.clone()
+}
+
 impl Backend {
-    /// The `dj_sync_status` tool.
+    /// The `dj_sync_status` tool: the running daemon's refresh when there is
+    /// one (the stdio server has no Spotify library of its own).
     pub fn dj_sync_status(&self) -> McpResult<FinalCallToolResult> {
+        if let Some(answer) = self.on_daemon("GET", "/dj/sync", None, done) {
+            return answer;
+        }
         respond(|| {
             let state = self.surface.dj_sync_status(&self.client)?;
             Ok((state.done.clone(), state))
         })
     }
 
-    /// The `dj_sync` tool.
+    /// The `dj_sync` tool, on the running daemon when there is one.
     pub fn dj_sync(&self) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::json!({});
+        if let Some(answer) = self.on_daemon("POST", "/dj/sync", Some(&body), done) {
+            return answer;
+        }
         respond(|| {
             let state = self.surface.dj_sync(&self.client)?;
             Ok((state.done.clone(), state))
