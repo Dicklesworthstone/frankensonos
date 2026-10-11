@@ -194,6 +194,14 @@ impl Backend {
         })
     }
 
+    /// The `get_queue` tool.
+    pub fn queue(&self, zone: &str, offset: u32, limit: u32) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let queue = self.surface.queue(&self.client, zone, offset, limit)?;
+            Ok((queue.text(), queue))
+        })
+    }
+
     /// The `get_zone_state` tool.
     pub fn zone_state(&self, zone: &str) -> McpResult<FinalCallToolResult> {
         respond(|| {
@@ -569,6 +577,20 @@ fn recent_plays(
         usize::try_from(n).unwrap_or(usize::MAX).clamp(1, 200)
     });
     with_backend(move |b| b.recent_plays(zone.as_deref(), limit))
+}
+
+#[tool(
+    description = "The queue a room's group plays from: its tracks in order (position, title, artist, album, URI), how many there are, and the position playing now (absent when the group isn't playing from its queue). `zone` is a room; `offset` skips that many tracks from the start (default 0); `limit` 1-100, default 50.",
+    annotations(read_only, idempotent)
+)]
+fn get_queue(
+    _ctx: &McpContext,
+    zone: String,
+    offset: Option<u32>,
+    limit: Option<u32>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let limit = limit.map_or(50, |n| n.clamp(1, 100));
+    with_backend(move |b| b.queue(&zone, offset.unwrap_or(0), limit))
 }
 
 #[tool(

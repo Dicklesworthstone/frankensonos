@@ -57,6 +57,7 @@ use anyhow::Context as _;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand, ValueEnum};
 use fsonos_api::plan::{self, TransportAction};
+use fsonos_api::surface::queue::QueueDto;
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, HitDto, MoveRequest, MuteRequest, OutcomeDto, PartyRequest,
     PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
@@ -90,6 +91,16 @@ enum Command {
     Status { zone: String },
     /// List the Sonos favorites of a room's household, numbered.
     Favorites { zone: String },
+    /// The queue a room's group plays from: its tracks, and which one plays.
+    Queue {
+        zone: String,
+        /// Tracks to skip from the start.
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+        /// At most this many (1-100).
+        #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]
+        limit: u32,
+    },
     /// Diagnose the setup: speakers, Spotify linkage, listener addresses,
     /// the daemon. Exits 0 (all pass), 6 (warnings) or 7 (a failure).
     Doctor(doctor::DoctorArgs),
@@ -382,6 +393,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let favorites = Direct::survey(global)?.favorites(&zone)?;
             emit(global.json, &favorites, |f| direct::favorites_text(f))
         }
+        Command::Queue {
+            zone,
+            offset,
+            limit,
+        } => {
+            let queue = Direct::survey(global)?.queue(&zone, offset, limit)?;
+            emit(global.json, &queue, QueueDto::text)
+        }
         Command::Log {
             client,
             since,
@@ -658,6 +677,7 @@ fn plan_for<'a>(
         | Command::Doctor(_)
         | Command::Status { .. }
         | Command::Favorites { .. }
+        | Command::Queue { .. }
         | Command::Log { .. }
         | Command::Undo { .. }
         | Command::Policy { .. }

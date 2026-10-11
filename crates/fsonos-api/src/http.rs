@@ -9,6 +9,7 @@
 //! | `GET /players` | | `[PlayerDto]`: every player, by household and room |
 //! | `GET /zones/{room}` | | [`crate::ZoneDto`] (`room` is percent-decoded) |
 //! | `GET /zones/{room}/state` | | [`crate::ZoneStateDto`] |
+//! | `GET /zones/{room}/queue?offset=<n>&limit=<n>` | | [`crate::surface::queue::QueueDto`] |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /doctor` | | the doctor report (`schema`, `exit_code`, `counts`, `checks`) |
@@ -352,6 +353,22 @@ fn reads(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             |s, c, req| answer(path_room(req).and_then(|room| s.zone_state(c, &room))),
         )
         .response_schema::<ZoneStateDto>(200, "The zone's live state"),
+        cx.route(
+            &Op::get(
+                "/zones/{room}/queue",
+                crate::surface::queue::TOOL,
+                ZONES,
+                "The queue a room's group plays from, a page at a time",
+            ),
+            |s, c, req| {
+                answer(path_room(req).and_then(|room| {
+                    let q = queue_query(req)?;
+                    s.queue(c, &room, q.offset.unwrap_or(0), q.limit.unwrap_or(50))
+                }))
+            },
+        )
+        .query_schema::<QueueQuery>(false)
+        .response_schema::<crate::surface::queue::QueueDto>(200, "A page of the queue"),
     ]
 }
 
@@ -757,6 +774,34 @@ fn history_query(req: &Request) -> Result<HistoryQuery, Failure> {
     }
     Ok(HistoryQuery {
         zone: query_param(req, "zone")?,
+        limit,
+    })
+}
+
+/// `GET /zones/{room}/queue?offset=<n>&limit=<n>`.
+#[derive(JsonSchema)]
+struct QueueQuery {
+    /// Tracks to skip from the start (default 0).
+    offset: Option<u32>,
+    /// At most this many (default 50, at most 100).
+    limit: Option<u32>,
+}
+
+fn queue_query(req: &Request) -> Result<QueueQuery, Failure> {
+    let number = |name: &str| -> Result<Option<u32>, Failure> {
+        whole_number(req, name)?
+            .map(|n| u32::try_from(n).map_err(|_| Failure::invalid(format!("{name} is too large"))))
+            .transpose()
+    };
+    let limit = number("limit")?;
+    if limit.is_some_and(|n| n == 0 || n > crate::surface::queue::MAX_PAGE) {
+        return Err(Failure::invalid(format!(
+            "limit must be 1 to {}",
+            crate::surface::queue::MAX_PAGE
+        )));
+    }
+    Ok(QueueQuery {
+        offset: number("offset")?,
         limit,
     })
 }

@@ -23,9 +23,10 @@ pub enum Shell {
 }
 
 /// Subcommands whose positional arguments name rooms.
-const ROOM_COMMANDS: [&str; 14] = [
+const ROOM_COMMANDS: [&str; 15] = [
     "status",
     "favorites",
+    "queue",
     "play",
     "pause",
     "resume",

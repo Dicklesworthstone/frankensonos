@@ -3,6 +3,7 @@
 //! use, as the house policy's `cli` client.
 
 use fsonos_api::surface::players::{PlayerDto, player_views};
+use fsonos_api::surface::queue::QueueDto;
 use fsonos_api::{
     ActionDto, ActionsQuery, Command, DjMoodsDto, DjStatusDto, ErrorCode, Failure, FavoriteDto,
     HitDto, OutcomeDto, PlayFavoriteRequest, RoomDto, SearchRequest, Surface, UndoDto, ZoneDto,
@@ -159,6 +160,12 @@ impl Direct {
     pub fn status(&self, zone: &str) -> Result<ZoneStateDto, Failure> {
         self.households()?;
         self.surface.zone_state(&Client::Cli, zone)
+    }
+
+    /// A page of the queue `zone`'s group plays from.
+    pub fn queue(&self, zone: &str, offset: u32, limit: u32) -> Result<QueueDto, Failure> {
+        self.households()?;
+        self.surface.queue(&Client::Cli, zone, offset, limit)
     }
 
     /// The DJ in `zone`'s group (`dj_status`). The DJ runs in the daemon,

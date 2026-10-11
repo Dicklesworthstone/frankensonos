@@ -78,6 +78,7 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::DjMoods)
         .tool(tools::SearchLibrary)
         .tool(tools::RecentPlays)
+        .tool(tools::GetQueue)
         .tool(tools::Announce)
         .tool(tools::dj_feedback::DjFeedback)
         .tool(tools::dj_prefs::DjPreferences)

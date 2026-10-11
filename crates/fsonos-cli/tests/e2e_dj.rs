@@ -248,6 +248,34 @@ fn check_the_cli_through_the_daemon(s: &mut Scenario, api: &str) {
         format!("{skip:?}"),
     );
 
+    // The queue the DJ feeds, as the daemon reads it.
+    let queue = s.cli(
+        "cli-queue",
+        &[
+            "--daemon",
+            "--json",
+            "queue",
+            "Living Room",
+            "--limit",
+            "100",
+        ],
+    );
+    let page: Value = serde_json::from_str(&queue.stdout).unwrap_or(Value::Null);
+    let playing = page["playing"].as_u64();
+    let items = page["items"].as_array().cloned().unwrap_or_default();
+    s.check(
+        "cli-queue",
+        "cli",
+        "fsonos queue shows the DJ's movements in order, and the one playing",
+        queue.code == Some(0)
+            && page["zone"] == "Living Room"
+            && playing.is_some_and(|at| items.iter().any(|i| i["position"].as_u64() == Some(at)))
+            && items
+                .iter()
+                .any(|i| i["uri"].as_str().is_some_and(|u| u.contains("simdj"))),
+        format!("{queue:?}"),
+    );
+
     let stop = s.cli("cli-stop", &["--daemon", "dj", "stop", "Living Room"]);
     let state = get_transport_info(&s.lan(), s.ip("Living Room"))
         .map(|t| t.state)

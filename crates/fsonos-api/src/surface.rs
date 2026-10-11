@@ -46,6 +46,7 @@ pub mod dj_feedback;
 pub mod dj_prefs;
 pub mod dj_sync;
 pub mod house_policy;
+pub mod queue;
 pub mod scenes;
 pub mod schedules;
 pub mod spotify_auth;

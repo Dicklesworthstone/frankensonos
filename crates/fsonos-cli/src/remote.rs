@@ -25,6 +25,7 @@
 
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
+use fsonos_api::surface::queue::QueueDto;
 use fsonos_api::surface::schedules::SleepTimerDto;
 use fsonos_api::{
     ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, MoveRequest,
@@ -416,6 +417,7 @@ fn routable(command: &Command) -> bool {
             | Command::Status { .. }
             | Command::Rooms { alias: None }
             | Command::Favorites { .. }
+            | Command::Queue { .. }
             | Command::Log { .. }
             | Command::Undo { .. }
             | Command::Play { .. }
@@ -479,6 +481,17 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             let favorites: Vec<FavoriteDto> =
                 daemon.get(&format!("/favorites?zone={}", pct(zone)))?;
             emit(json, &favorites, |f| direct::favorites_text(f))?;
+        }
+        Command::Queue {
+            zone,
+            offset,
+            limit,
+        } => {
+            let queue: QueueDto = daemon.get(&format!(
+                "/zones/{}/queue?offset={offset}&limit={limit}",
+                pct(zone)
+            ))?;
+            emit(json, &queue, QueueDto::text)?;
         }
         Command::Log {
             client,
