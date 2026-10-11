@@ -216,7 +216,7 @@ enum Command {
         /// Any room in the group it joins.
         to: String,
     },
-    /// Take a room out of its group.
+    /// Take a room out of its group (`everywhere` breaks every group up).
     Ungroup { zone: String },
     /// Move the music a room plays to another room (handing the group over
     /// in one household; across households use --copy).
@@ -738,7 +738,6 @@ fn plan_for<'a>(
     households: impl Into<fsonos_api::plan::Rooms<'a>>,
 ) -> Result<fsonos_api::Command, Failure> {
     let households = households.into();
-    let zone = |zone: &String| ZoneRequest { zone: zone.clone() };
     match command {
         Command::Play {
             zone,
@@ -764,7 +763,8 @@ fn plan_for<'a>(
         | Command::Next { .. }
         | Command::Previous { .. }
         | Command::Volume { .. }
-        | Command::Mute { .. } => unreachable!("a set-accepting command: see plan_set_for"),
+        | Command::Mute { .. }
+        | Command::Ungroup { .. } => unreachable!("a set-accepting command: see plan_set_for"),
         Command::Group { zone, to } => plan::plan_group(
             households,
             &GroupRequest {
@@ -772,7 +772,6 @@ fn plan_for<'a>(
                 to: to.clone(),
             },
         ),
-        Command::Ungroup { zone: z } => plan::plan_ungroup(households, &zone(z)),
         Command::Move { zone, to, copy } => plan::plan_move(
             households,
             &MoveRequest {
@@ -827,6 +826,7 @@ fn takes_set(command: &Command) -> bool {
             | Command::Previous { .. }
             | Command::Volume { .. }
             | Command::Mute { .. }
+            | Command::Ungroup { .. }
     )
 }
 
@@ -863,6 +863,7 @@ fn plan_set_for<'a>(
                 mute: *state == Switch::On,
             },
         ),
+        Command::Ungroup { zone: z } => plan::plan_ungroup_set(households, &zone(z)),
         _ => unreachable!("not a set-accepting command"),
     }
 }
@@ -1167,12 +1168,12 @@ mod tests {
                 mute: false
             }]
         );
-        assert_eq!(
-            plan(&["ungroup", "Kitchen"]),
-            Planned::Leave {
-                member: PlayerId("RINCON_KIT".into())
-            }
-        );
+        let leave = |pid: &str| Planned::Leave {
+            member: PlayerId(pid.into()),
+        };
+        assert_eq!(plan_set(&["ungroup", "Kitchen"]), [leave("RINCON_KIT")]);
+        assert_eq!(plan_set(&["ungroup", "everywhere"]), [leave("RINCON_KIT")]);
+        assert_eq!(plan_set(&["ungroup", "Den"]), [leave("RINCON_DEN")]);
         assert!(matches!(
             plan(&["group", "Kitchen", "Den"]),
             Planned::Nothing { .. }

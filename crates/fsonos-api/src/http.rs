@@ -69,7 +69,7 @@ use crate::identity::Identity;
 use crate::log::{ActionDto, ActionsQuery, UndoDto, UndoRequest};
 use crate::plan::{
     self, Command, DjAction, Rooms, TransportAction, plan_group, plan_mute_set, plan_play,
-    plan_ungroup, plan_volume_set,
+    plan_ungroup_set, plan_volume_set,
 };
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, ZoneStateDto};
 use crate::request::{
@@ -488,14 +488,14 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             ),
             |h, r: &GroupRequest| plan_group(h, r),
         ),
-        cx.control(
+        cx.control_set(
             Op::post(
                 "/ungroup",
                 "ungroup",
                 CONTROL,
-                "Take a room out of its group",
+                "Take a room, or every room of a set, out of its group",
             ),
-            |h, r: &ZoneRequest| plan_ungroup(h, r),
+            |h, r: &ZoneRequest| plan_ungroup_set(h, r),
         ),
     ];
     for (path, id, summary, action) in [

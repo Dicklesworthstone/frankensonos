@@ -299,6 +299,11 @@ fn control_routes_accept_a_set_of_rooms() {
     assert_eq!(status, 200, "{out}");
     assert_eq!(out["done"], "paused Living Room's group");
     assert_eq!(api.actions(), ["Pause"]);
+    // Ungrouping everywhere takes the member out; Living Room plays on.
+    let api = Api::start("", &Client::LoopbackHttp);
+    let (status, out) = api.post("/ungroup", &json!({ "zone": "everywhere" }));
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["done"], "Kitchen plays on its own");
     // Muting all reaches each room's own player.
     let api = Api::start("", &Client::LoopbackHttp);
     let (status, out) = api.post("/mute", &json!({ "zone": "all", "mute": true }));

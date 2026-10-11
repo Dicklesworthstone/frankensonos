@@ -809,11 +809,15 @@ fn group(
 }
 
 #[tool(
-    description = "Take a room out of its group so it plays on its own. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
+    description = "Take a room out of its group so it plays on its own. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to break every group up (each group's leading room plays on).",
     annotations(idempotent)
 )]
 fn ungroup(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| b.control("ungroup", |h| plan::plan_ungroup(h, &ZoneRequest { zone })))
+    with_backend(|b| {
+        b.control_set("ungroup", |h| {
+            plan::plan_ungroup_set(h, &ZoneRequest { zone })
+        })
+    })
 }
 
 #[tool(
