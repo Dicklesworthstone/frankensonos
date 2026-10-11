@@ -434,6 +434,8 @@ fn doctor_reports_the_setup_with_its_exit_codes() {
         &run.stdout,
     );
 
+    check_mcp_doctor(&mut s);
+
     let run = s.cli("doctor-only", &["doctor", "--json", "--only", "spotify"]);
     s.check(
         "doctor-only",
@@ -474,6 +476,37 @@ fn doctor_reports_the_setup_with_its_exit_codes() {
         format!("exit {:?}: {}", run.code, run.stdout),
     );
     s.finish();
+}
+
+/// An agent on stdio gets the same doctor checks as `fsonos doctor`, not only
+/// Spotify's.
+fn check_mcp_doctor(s: &mut Scenario) {
+    let mut mcp = s.mcp();
+    mcp.initialize();
+    let call = mcp.request(
+        "tools/call",
+        &serde_json::json!({ "name": "doctor", "arguments": {} }),
+    );
+    let text = call["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    s.check(
+        "doctor-mcp",
+        "mcp",
+        "fsonos mcp's doctor runs the store, LAN, alias and daemon checks too",
+        [
+            "store.open",
+            "lan.players",
+            "rooms.aliases",
+            "daemon.bind",
+            "daemon.health",
+        ]
+        .iter()
+        .all(|id| text.contains(id)),
+        &text,
+    );
+    drop(mcp);
 }
 
 /// `fsonos play --search`: a bare --pick lists, a search plays its best

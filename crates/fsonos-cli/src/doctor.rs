@@ -1,7 +1,8 @@
 //! `fsonos doctor`: what is wrong with this setup, and how to fix it.
 //!
 //! The report comes from the shared surface (the core's checks), plus the
-//! checks only this layer can make:
+//! checks only this layer can make ([`checks`], which `fsonos setup` and the
+//! stdio MCP server's `doctor` tool run too):
 //!
 //! * `store.open` and `lan.*` ([`lan_checks`]): the core's LAN checks over
 //!   this host's LAN as `--routes` and the seeds shape it (the store, SSDP,
@@ -22,6 +23,7 @@
 //! the CLI's 1-5 error codes and clap's 2).
 
 use fsonos_api::Failure;
+use fsonos_api::surface::DoctorChecks;
 use fsonos_core::announce::speech::SpeechConfig;
 use fsonos_core::doctor::lan::LanProbe;
 use fsonos_core::doctor::{Check, CheckContext, CheckId, CheckResult, Report, Runner};
@@ -322,18 +324,20 @@ pub fn lan_checks(
     })
 }
 
-/// Run `fsonos doctor` and print the report; the exit code is the report's.
-pub fn run(global: &GlobalArgs, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
-    let serve = args.serve.clone();
+/// Every check this layer adds for `serve`'s settings: [`lan_checks`], then
+/// [`register`]'s.
+pub fn checks(global: &GlobalArgs, serve: ServeArgs) -> Result<DoctorChecks, Failure> {
     let lan = lan_checks(global)?;
     let data_dir = crate::daemon::data_dir(global)?;
-    let direct = Direct::open(
-        global,
-        Some(Box::new(move |runner| {
-            lan(runner);
-            register(runner, &serve, &data_dir);
-        })),
-    )?;
+    Ok(Box::new(move |runner| {
+        lan(runner);
+        register(runner, &serve, &data_dir);
+    }))
+}
+
+/// Run `fsonos doctor` and print the report; the exit code is the report's.
+pub fn run(global: &GlobalArgs, args: &DoctorArgs) -> anyhow::Result<ExitCode> {
+    let direct = Direct::open(global, Some(checks(global, args.serve.clone())?))?;
     let report = only(direct.doctor(&Client::Cli)?, args.only.as_deref());
     if global.json {
         println!("{}", serde_json::to_string_pretty(&report.to_json())?);

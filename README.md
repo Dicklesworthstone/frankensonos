@@ -191,8 +191,9 @@ Spotify sign-in) is in [`docs/DEPLOY.md`](docs/DEPLOY.md).
 a local agent, which hands the DJ, scenes and sleep timers to a running `serve`):
 
 ```text
-reads      list_zones · list_rooms · list_players · get_zone_state · list_favorites · search_library
-           get_queue · recent_plays · recent_actions · get_policy · doctor · dj_status · dj_moods
+reads      list_zones · list_rooms · list_players · get_zone · get_zone_state · list_favorites
+           search_library · get_queue · recent_plays · recent_actions · get_policy · doctor
+           dj_status · dj_moods · echo
            list_scenes · get_scene · list_sleep_timers · list_schedules
 control    play · play_favorite · pause · resume · next · previous · set_volume · mute
            group · ungroup · move_playback · group_all · announce · undo_last

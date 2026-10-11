@@ -1013,10 +1013,16 @@ impl fsonos_mcp::tools::Daemon for StdioDaemon {
 /// Serve the MCP tools over stdio, acting on this LAN's speakers as the
 /// `mcp-stdio` client of the house policy. While `fsonos serve` runs, the
 /// DJ, scene-apply and sleep-timer tools act through it (see [`StdioDaemon`]).
+/// Its `doctor` runs what `fsonos doctor` runs, for the daemon settings in
+/// the environment.
 fn run_mcp_stdio(global: &config::GlobalArgs) -> anyhow::Result<()> {
     let data_dir = daemon::data_dir(global)?;
+    let serve =
+        config::ServeArgs::from_env().context("read serve's settings from the environment")?;
     let surface = daemon::surface(global, daemon::policy(&data_dir)?)?;
-    let surface = std::sync::Arc::new(daemon::with_action_log(surface, &data_dir, "mcp"));
+    let surface = daemon::with_action_log(surface, &data_dir, "mcp")
+        .with_doctor_checks(doctor::checks(global, serve)?);
+    let surface = std::sync::Arc::new(surface);
     let backend =
         fsonos_mcp::tools::Backend::shared(surface, fsonos_core::policy::Client::McpStdio)
             .with_daemon(std::sync::Arc::new(StdioDaemon(global.clone())));

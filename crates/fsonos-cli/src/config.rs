@@ -264,6 +264,15 @@ pub const HTTP_PORT: u16 = 8099;
 pub const MCP_PORT: u16 = 8098;
 
 impl ServeArgs {
+    /// The settings `serve` takes from its environment alone (no flags), for
+    /// a command that checks the daemon without taking its flags.
+    pub fn from_env() -> Result<Self, clap::Error> {
+        use clap::{Args as _, FromArgMatches as _};
+        let matches =
+            Self::augment_args(clap::Command::new("serve")).try_get_matches_from(["serve"])?;
+        Self::from_arg_matches(&matches)
+    }
+
     /// This host's tailnet, unless `--tailscale off`.
     #[must_use]
     pub fn tailnet(&self) -> fsonos_tailscale::TailnetStatus {
