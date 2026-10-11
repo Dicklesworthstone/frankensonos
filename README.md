@@ -178,17 +178,18 @@ Spotify sign-in) is in [`docs/DEPLOY.md`](docs/DEPLOY.md).
 ## For agents
 
 `fsonos serve` exposes the house as MCP tools (also `fsonos mcp` over stdio for
-a local agent):
+a local agent; the live DJ, scene DJs and fading sleep timers need `serve`):
 
 ```text
-reads      list_zones · list_rooms · get_zone_state · list_favorites · search_library
+reads      list_zones · list_rooms · list_players · get_zone_state · list_favorites · search_library
            recent_plays · recent_actions · get_policy · doctor · dj_status · dj_moods
-           list_scenes · list_sleep_timers · list_schedules
+           list_scenes · get_scene · list_sleep_timers · list_schedules
 control    play · play_favorite · pause · resume · next · previous · set_volume · mute
            group · ungroup · move_playback · group_all · announce · undo_last
-dj         dj_start · dj_skip · dj_stop · dj_steer · dj_feedback
-house      save_scene · apply_scene · set_sleep_timer · add_schedule · pause_schedule
-           resume_schedule · remove_schedule
+dj         dj_start · dj_skip · dj_stop · dj_steer · dj_feedback · dj_preferences · dj_prefer
+           dj_sync · dj_sync_status
+house      save_scene · apply_scene · delete_scene · set_sleep_timer · add_schedule
+           pause_schedule · resume_schedule · remove_schedule
 resources  sonos://zones · sonos://zones/{room} · sonos://dj
 ```
 

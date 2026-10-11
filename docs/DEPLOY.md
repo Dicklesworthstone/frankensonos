@@ -305,6 +305,14 @@ same URL, typically as
 Plain HTTP clients use the API directly, e.g.
 `curl https://<mac>.<tailnet>.ts.net/zones`.
 
+Over stdio, `fsonos mcp` runs its own in-process surface without the daemon's
+live model: the DJ (and `apply_scene` on a group it starts) queues its first
+works but nothing tops the queue up, `dj skip`/`dj stop` and like/dislike do
+not reach a running `fsonos serve`, and a sleep timer is the speaker's own,
+without a fade. Reads and one-shot controls answer the same either way; for the
+live DJ, scene DJs and fading sleep timers, connect over HTTP to a running
+`fsonos serve` (the options above).
+
 ### Spotify sign-in (one time, for the DJ)
 
 Run `fsonos setup` once on the Mac: it walks you through linking your own
