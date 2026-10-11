@@ -13,12 +13,17 @@ const ROUTES = {
   doctor: ['GET', '/doctor'],
   events: ['GET', '/events'],
   art: ['GET', '/art'],
+  favorites: ['GET', '/favorites'],
   pause: ['POST', '/pause'],
   resume: ['POST', '/resume'],
   next: ['POST', '/next'],
+  previous: ['POST', '/previous'],
   volume: ['POST', '/volume'],
+  playFavorite: ['POST', '/play/favorite'],
   djStart: ['POST', '/dj/start'],
   djStop: ['POST', '/dj/stop'],
+  djSkip: ['POST', '/dj/skip'],
+  djFeedback: ['POST', '/dj/feedback'],
   applyScene: ['POST', '/scenes/{name}/apply'],
 };
 
@@ -108,6 +113,8 @@ const house = {
   cards: new Map(),
   moods: null,
   dj: true,
+  // Household -> its playable Sonos favorites, as last read.
+  favorites: new Map(),
 };
 
 /** How to name `room` of `household` to the API. */
@@ -168,12 +175,18 @@ function card(zone) {
     title: el('div', { class: 'title', text: 'Nothing playing' }),
     by: el('div', { class: 'by' }),
     state: el('div', { class: 'state', text: zone.transport_state }),
+    previous: el('button', { type: 'button', text: 'Prev', 'aria-label': `Previous track in ${label}` }),
     play: el('button', { class: 'primary', type: 'button', text: 'Play', 'aria-label': `Play ${label}` }),
     next: el('button', { type: 'button', text: 'Next', 'aria-label': `Next track in ${label}` }),
+    favorite: el('select', { 'aria-label': `Play a favorite in ${label}`, hidden: true }),
     sliders: new Map(),
     mood: el('select', { 'aria-label': `DJ mood for ${label}` }),
     dj: el('button', { type: 'button', text: 'Start DJ', 'aria-label': `Start the DJ in ${label}` }),
+    skip: el('button', { type: 'button', text: 'Skip', 'aria-label': `Skip to the DJ's next pick in ${label}` }),
+    like: el('button', { type: 'button', text: 'Like', 'aria-label': `Like what the DJ plays in ${label}` }),
+    dislike: el('button', { type: 'button', text: 'Dislike', 'aria-label': `Dislike what the DJ plays in ${label}` }),
     djRow: null,
+    djPlaying: null,
     djRunning: false,
     tag: '',
   };
@@ -184,6 +197,20 @@ function card(zone) {
     act(parts, call(verb, { body: { zone: name } }));
   });
   parts.next.addEventListener('click', () => act(parts, call('next', { body: { zone: name } })));
+  parts.previous.addEventListener('click', () => act(parts, call('previous', { body: { zone: name } })));
+  parts.favorite.addEventListener('change', () => {
+    const favorite = parts.favorite.value;
+    parts.favorite.value = '';
+    if (favorite) act(parts, call('playFavorite', { body: { zone: name, favorite } }));
+  });
+  parts.skip.addEventListener('click', () => act(parts, call('djSkip', { body: { zone: name } })));
+  for (const [button, signal] of [[parts.like, 'like'], [parts.dislike, 'dislike']]) {
+    button.addEventListener('click', () => {
+      call('djFeedback', { body: { zone: name, signal } })
+        .then((recorded) => toast(recorded.done))
+        .catch(failed);
+    });
+  }
   parts.dj.addEventListener('click', () => {
     if (parts.djRunning) {
       act(parts, call('djStop', { body: { zone: name } }));
@@ -196,14 +223,18 @@ function card(zone) {
   const volumes = el('div', { class: 'volumes' });
   for (const room of zone.members) volumes.append(slider(parts, room, zone.household));
   parts.djRow = el('div', { class: 'row', hidden: !house.dj }, parts.mood, parts.dj);
+  parts.djPlaying = el('div', { class: 'row', hidden: true }, parts.skip, parts.like, parts.dislike);
   fillMoods(parts.mood);
+  fillFavorites(parts);
   house.cards.set(zoneKey(zone), parts);
   return el('article', { class: 'zone', 'aria-label': label },
     el('h3', { text: label }),
     el('div', { class: 'now' }, parts.art, el('div', { class: 'track' }, parts.title, parts.by, parts.state)),
-    el('div', { class: 'row' }, parts.play, parts.next),
+    el('div', { class: 'row' }, parts.previous, parts.play, parts.next),
+    parts.favorite,
     volumes,
-    parts.djRow);
+    parts.djRow,
+    parts.djPlaying);
 }
 
 /** A room's volume slider, sent once the hand rests (debounced). */
@@ -291,7 +322,10 @@ async function refreshDj(parts) {
   } catch (error) {
     if (error.code === 'NOT_IMPLEMENTED') {
       house.dj = false;
-      for (const each of house.cards.values()) each.djRow.hidden = true;
+      for (const each of house.cards.values()) {
+        each.djRow.hidden = true;
+        each.djPlaying.hidden = true;
+      }
       return;
     }
     parts.djRunning = false;
@@ -299,6 +333,36 @@ async function refreshDj(parts) {
   const label = parts.zone.members.join(' + ');
   parts.dj.textContent = parts.djRunning ? 'Stop DJ' : 'Start DJ';
   parts.dj.setAttribute('aria-label', `${parts.djRunning ? 'Stop' : 'Start'} the DJ in ${label}`);
+  parts.djPlaying.hidden = !parts.djRunning;
+}
+
+/** A zone's favorites picker, from its household's favorites. */
+function fillFavorites(parts) {
+  const favorites = house.favorites.get(parts.zone.household) || [];
+  parts.favorite.replaceChildren(el('option', { value: '', text: 'Play a favorite…' }));
+  for (const favorite of favorites) {
+    parts.favorite.append(el('option', { value: favorite.id, text: favorite.title }));
+  }
+  parts.favorite.hidden = favorites.length === 0;
+}
+
+/** Each household's playable favorites, read through one of its rooms. */
+async function loadFavorites() {
+  const firsts = new Map();
+  for (const zone of house.zones) {
+    if (!firsts.has(zone.household)) firsts.set(zone.household, zone);
+  }
+  await Promise.all([...firsts].map(async ([household, zone]) => {
+    try {
+      const favorites = await call('favorites', {
+        query: { zone: roomName(zone.coordinator_room, household) },
+      });
+      house.favorites.set(household, favorites.filter((f) => f.kind !== 'unplayable'));
+    } catch (_) {
+      house.favorites.set(household, []);
+    }
+  }));
+  for (const parts of house.cards.values()) fillFavorites(parts);
 }
 
 function fillMoods(select) {
@@ -421,6 +485,7 @@ async function start() {
   }
   listen();
   loadMoods();
+  loadFavorites();
   loadScenes();
   loadDoctor();
 }
