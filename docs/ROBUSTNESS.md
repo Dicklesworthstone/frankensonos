@@ -51,7 +51,7 @@ us and is re-learned, never assumed.
 | Failure | Mechanism | Lives in |
 |---|---|---|
 | Destructive-ish op (ungroup, queue clear) regrets | Zone snapshot before mutation + persisted action log + undo | `b-snapshot-dpa`, `b-action-log-undo-jti` |
-| "Did it actually work?" | Verify-after-mutate reads (e.g. GetTransportInfo after Play) on the orchestration path | `b-orchestration-jtz` |
+| "Did it actually work?" | Every SOAP answer is checked: a UPnP fault is a coded failure (with its `upnp_code`), never a silent success; a player that moved, or a coordinator that changed under a command, is found again and the command retried once (noted `HEALED`); scene apply and undo report each step that failed | api `heal`, `b-self-healing-7ts`, scenes, undo |
 | Whole-container cleanup is 491 calls of fragile | `RemoveTrackRangeFromQueue` — one atomic call (verified live, both generations) | PROTOCOL.md §4 |
 | Volume/group abuse by a buggy client | House policy: volume caps, step limits, quiet hours, client allowlists | `b-policy-23m` |
 

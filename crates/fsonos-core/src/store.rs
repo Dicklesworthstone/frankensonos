@@ -5,10 +5,11 @@
 //! (players and group edges, for reconnecting when SSDP is quiet), the
 //! owner's Spotify library cache, play history (for the DJ's variety and
 //! anti-repeat logic), the per-household Spotify render parameters learned
-//! from favorites, the local OAuth refresh token, and the DJ's own state:
-//! session steering, listening feedback, and album track lists for completing
-//! whole works. All times are unix seconds stamped by the caller, which keeps
-//! behavior deterministic in tests.
+//! from favorites, and the DJ's own state: session steering, listening
+//! feedback, and album track lists for completing whole works. The Spotify
+//! sign-in's refresh token is not kept here: it is `fsonos-spotify`'s
+//! owner-only `TokenCache` file in the data directory. All times are unix
+//! seconds stamped by the caller, which keeps behavior deterministic in tests.
 
 mod sqlite;
 
