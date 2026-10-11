@@ -27,6 +27,7 @@ use fsonos_core::{HouseholdState, control, moving};
 use fsonos_core::{favorites, search};
 use fsonos_proto::Transport;
 use fsonos_types::{PlayerId, TransportState};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
@@ -92,6 +93,9 @@ pub struct Surface {
     live: Option<Weak<Live>>,
     /// The event stream, fed by the live model and the action log.
     events: Option<Arc<EventBus>>,
+    /// The DJ status last published per coordinator (`dj.status`), so an
+    /// event goes out only when it changed.
+    dj_seen: Mutex<HashMap<PlayerId, DjStatusDto>>,
     /// Until when reads survey directly (set by a regroup).
     settle_until: Mutex<Option<Instant>>,
     /// Clips and where the players fetch them (see [`announce`]).
@@ -171,6 +175,7 @@ impl Surface {
             aliases_file: None,
             live: None,
             events: None,
+            dj_seen: Mutex::new(HashMap::new()),
             settle_until: Mutex::new(None),
             announcements: None,
             sleep: None,
@@ -266,8 +271,36 @@ impl Surface {
         self
     }
 
+    /// Publish the DJ's status in the group `at.coordinator` leads as a
+    /// `dj.status` event (what it plays, what it picked next and why, its
+    /// steering), when it changed since the last one. Only a surface with
+    /// an event stream does anything.
+    fn publish_dj(
+        &self,
+        dj: &dyn DjEngine,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        queue_position: Option<u32>,
+    ) {
+        let Some(bus) = &self.events else {
+            return;
+        };
+        let Ok(status) = dj.status(at, store, queue_position, &*self.clock) else {
+            return;
+        };
+        let mut seen = self.dj_seen.lock().unwrap_or_else(PoisonError::into_inner);
+        if seen.get(at.coordinator) == Some(&status) {
+            return;
+        }
+        if let Ok(serde_json::Value::Object(mut data)) = serde_json::to_value(&status) {
+            data.insert("player".into(), at.coordinator.0.clone().into());
+            bus.publish("dj.status", data.into());
+        }
+        seen.insert(at.coordinator.clone(), status);
+    }
+
     /// Fold `player`'s latest playback into the DJ's feed, if it feeds that
-    /// coordinator (see [`follow`]).
+    /// coordinator (see [`follow`]), and publish what changed.
     fn dj_playback(&self, player: &PlayerId) {
         let (Some(dj), Some(live)) = (&self.dj, self.live()) else {
             return;
@@ -286,6 +319,7 @@ impl Surface {
         };
         let fed = self.with_store(|store| {
             dj.on_playback(at, store, &playback, &*self.clock);
+            self.publish_dj(&**dj, at, store, playback.queue_position);
             Ok(())
         });
         if let Ok(None) = fed {
@@ -473,7 +507,14 @@ impl Surface {
                 coordinator,
             };
             return self
-                .with_store(|store| Ok(run_dj(&**dj, at, store, command, &*self.clock)))?
+                .with_store(|store| {
+                    let done = run_dj(&**dj, at, store, command, &*self.clock);
+                    let queue_position = self
+                        .live()
+                        .and_then(|live| live.player(coordinator)?.queue_position);
+                    self.publish_dj(&**dj, at, store, queue_position);
+                    Ok(done)
+                })?
                 .unwrap_or_else(|| Err(no_dj_store()));
         }
         crate::heal::execute_healing(&*self.transport, households, guard, command, || {

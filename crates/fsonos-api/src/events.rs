@@ -2,8 +2,9 @@
 //! a client can resume from (`GET /events`, server-sent events).
 //!
 //! One [`EventBus`] per daemon. The live model's changes are published to it
-//! ([`EventBus::publish_live`]), and so is every logged action. The bus keeps
-//! the last [`RING`] events, so a client that reconnects with
+//! ([`EventBus::publish_live`]), and so is every logged action and every
+//! change in what the DJ plays or picks. The bus keeps the last [`RING`]
+//! events, so a client that reconnects with
 //! `Last-Event-ID` (or `?since=<id>`) gets what it missed. One that has
 //! fallen further behind gets an `events.reset` event first and should read
 //! the state afresh (`GET /zones`).
@@ -14,6 +15,7 @@
 //! | `topology.changed` | `{households, rooms}` (read `GET /zones` for the new shape) |
 //! | `player.health` | `{player, room, health}`: `healthy`, `degraded` or `offline` |
 //! | `action.logged` | the action as `GET /actions` shows it |
+//! | `dj.status` | `{player, zone, running, now?, next, steering}` as `GET /zones/{room}/dj` shows it: what the DJ plays, the works it picked next and why, and its steering, sent when that changes (a pick, a new work, a start, skip, stop or steer) |
 //! | `events.reset` | `{oldest}`: events before it are gone |
 //!
 //! While nothing happens the stream sends a `: heartbeat` comment every

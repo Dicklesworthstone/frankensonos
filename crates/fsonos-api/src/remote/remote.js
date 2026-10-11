@@ -472,6 +472,16 @@ function listen() {
     }
     soon(zoneKey(zone), () => refreshZone(zone));
   });
+  stream.addEventListener('dj.status', (event) => {
+    let change = {};
+    try {
+      change = JSON.parse(event.data);
+    } catch (_) {
+      return;
+    }
+    const zone = zoneOf(change.zone);
+    if (zone) soon(zoneKey(zone), () => refreshZone(zone));
+  });
   for (const kind of ['topology.changed', 'player.health', 'events.reset']) {
     stream.addEventListener(kind, () => soon('all', loadZones));
   }
