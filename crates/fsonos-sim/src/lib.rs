@@ -744,6 +744,16 @@ impl SimHandle {
         })
     }
 
+    /// Make `who` answer `action` with success and not carry it out, as
+    /// real players do with some grouping verbs (`RemoveMember`,
+    /// docs/PROTOCOL.md §6), until [`Self::clear_faults`].
+    pub fn ignore_action(&self, who: &str, action: &str) -> Result<(), SimError> {
+        self.with_player(who, |s, p| {
+            s.players[p].faults.ignored.push(action.to_string());
+            Ok(())
+        })
+    }
+
     /// Make `who` slow to join: a join (`SetAVTransportURI` to `x-rincon:`)
     /// is answered at once but shows in the topology only `lag` later, as on
     /// a busy real network.

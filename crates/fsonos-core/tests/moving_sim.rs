@@ -4,7 +4,7 @@
 use fsonos_core::moving::{self, MoveError, MoveMethod};
 use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_proto::topology::get_zone_group_state;
-use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
+use fsonos_sim::{SimError, SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::{PlayerId, TransportState};
 use std::time::{Duration, Instant};
 
@@ -188,6 +188,45 @@ fn without_delegation_the_music_is_replayed_on_the_target() {
         resolve_room(&h, "Kitchen").unwrap().coordinator.id,
         id(&h, "Office")
     );
+}
+
+#[test]
+fn a_delegation_that_does_nothing_or_is_refused_moves_by_replaying() {
+    // A player that answers DelegateGroupCoordinationTo with success and
+    // does nothing (grouping verbs can, docs/PROTOCOL.md §6), and one that
+    // refuses it with another code than 401.
+    type Setup = fn(&SimHandle) -> Result<(), SimError>;
+    let setups: [Setup; 2] = [
+        |sim| sim.ignore_action("Kitchen", "DelegateGroupCoordinationTo"),
+        |sim| sim.upnp_fault("Kitchen", "DelegateGroupCoordinationTo", 1023),
+    ];
+    for (n, setup) in setups.iter().enumerate() {
+        let sim = sim();
+        let lan = sim.lan();
+        setup(&sim).unwrap();
+        play_queue(&sim, &lan, "Kitchen");
+        let h = houses(&sim, &lan);
+        let report = moving::move_playback_within(
+            &lan,
+            &h,
+            &resolve_room(&h, "Kitchen").unwrap(),
+            &resolve_room(&h, "Office").unwrap(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(report.method, MoveMethod::Copied, "case {n}");
+        let h = houses(&sim, &lan);
+        assert_eq!(
+            playing(&lan, &h, "Office").0,
+            TransportState::Playing,
+            "case {n}: the music plays on in the Office"
+        );
+        assert_eq!(
+            resolve_room(&h, "Office").unwrap().coordinator.id,
+            id(&h, "Office"),
+            "case {n}: the Office leads its group"
+        );
+    }
 }
 
 #[test]

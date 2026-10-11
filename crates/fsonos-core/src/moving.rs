@@ -26,7 +26,7 @@ use fsonos_proto::didl::{
     DidlObject, parse_didl, spotify_queue_uri, spotify_track_didl, spotify_uri_from_renderer_uri,
 };
 use fsonos_proto::soap::{AV_TRANSPORT, args_xml, call};
-use fsonos_proto::topology::get_zone_group_state;
+use fsonos_proto::topology::{ZoneGroupState, get_zone_group_state};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
@@ -175,13 +175,21 @@ pub fn move_playback_within<T: Transport + ?Sized>(
                     ("NewCoordinator", &to.player.id.0),
                     ("RejoinGroup", "0"),
                 ]);
-                match call(t, host, &AV_TRANSPORT, "DelegateGroupCoordinationTo", &args) {
-                    Ok(_) => report.method = MoveMethod::Delegated,
-                    Err(ProtoError::SoapFault { code: 401, .. }) => {
-                        replay_instead_of_delegating(t, households, &coordinator, &to.player.id)?;
-                        report.method = MoveMethod::Copied;
-                    }
-                    Err(e) => return Err(e.into()),
+                let handed =
+                    match call(t, host, &AV_TRANSPORT, "DelegateGroupCoordinationTo", &args) {
+                        // Grouping verbs can answer success and do nothing
+                        // (docs/PROTOCOL.md §6): the topology must show it.
+                        Ok(_) => leads_within(t, host, &to.player.id, join_deadline)?,
+                        // Refused (401 where the player lacks it, or any other
+                        // fault): the target is in the group, so copy instead.
+                        Err(ProtoError::SoapFault { .. }) => false,
+                        Err(e) => return Err(e.into()),
+                    };
+                if handed {
+                    report.method = MoveMethod::Delegated;
+                } else {
+                    replay_instead_of_delegating(t, households, &coordinator, &to.player.id)?;
+                    report.method = MoveMethod::Copied;
                 }
                 report.new_coordinator = to.player.id.clone();
             }
@@ -199,23 +207,49 @@ fn joined_within<T: Transport + ?Sized>(
     member: &PlayerId,
     deadline: Duration,
 ) -> Result<bool, ProtoError> {
+    topology_within(t, host, deadline, |zgs| {
+        zgs.groups
+            .iter()
+            .any(|g| g.coordinator == *coordinator && g.members.iter().any(|m| m.uuid == *member))
+    })
+}
+
+/// Whether `leader` leads a group, checking the topology until it does or
+/// `deadline` has passed.
+fn leads_within<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    leader: &PlayerId,
+    deadline: Duration,
+) -> Result<bool, ProtoError> {
+    topology_within(t, host, deadline, |zgs| {
+        zgs.groups.iter().any(|g| g.coordinator == *leader)
+    })
+}
+
+/// Whether `holds` comes true of the topology read from `host`, checking
+/// until it does or `deadline` has passed.
+fn topology_within<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    deadline: Duration,
+    holds: impl Fn(&ZoneGroupState) -> bool,
+) -> Result<bool, ProtoError> {
     let started = Instant::now();
     loop {
-        let joined = get_zone_group_state(t, host)?
-            .groups
-            .iter()
-            .any(|g| g.coordinator == *coordinator && g.members.iter().any(|m| m.uuid == *member));
+        let held = holds(&get_zone_group_state(t, host)?);
         let left = deadline.saturating_sub(started.elapsed());
-        if joined || left.is_zero() {
-            return Ok(joined);
+        if held || left.is_zero() {
+            return Ok(held);
         }
         std::thread::sleep(JOIN_POLL.min(left));
     }
 }
 
-/// The fallback for a player without DelegateGroupCoordinationTo: the target
-/// (already in the group) leaves, plays what the group played from where it
-/// was, takes the group's other rooms along, and the old coordinator stops.
+/// The fallback for a player that lacks DelegateGroupCoordinationTo, or
+/// refuses or ignores it: the target (already in the group) leaves, plays
+/// what the group played from where it was, takes the group's other rooms
+/// along, and the old coordinator stops.
 fn replay_instead_of_delegating<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],

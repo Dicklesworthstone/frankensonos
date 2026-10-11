@@ -270,6 +270,11 @@ fn soap(state: &mut State, index: usize, service: &ServiceDef, req: &Request) ->
     if let Some(code) = injected {
         return fault(state, index, service, action, args, code);
     }
+    if state.players[index].faults.ignored.contains(&action) {
+        let body = docs::soap_response(service, &action, &[]);
+        log(state, index, service, action, args, Ok(Vec::new()));
+        return text(200, "OK", body);
+    }
     match state.invoke(index, service, &action, &Args(&args)) {
         Ok(out) => {
             // Every change reaches the subscribers.

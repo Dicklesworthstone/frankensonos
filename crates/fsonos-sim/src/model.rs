@@ -258,6 +258,8 @@ pub(crate) struct Faults {
     pub drop_notifies: Option<crate::NotifyDrop>,
     /// `(action, UPnP error code)`: these actions fail until cleared.
     pub upnp: Vec<(String, u16)>,
+    /// Actions answered with success and not carried out, until cleared.
+    pub ignored: Vec<String>,
     /// Unreachable (rebooting) until this instant.
     pub unreachable_until: Option<std::time::Instant>,
     /// How long a join (`x-rincon:`) takes to show in the topology.
