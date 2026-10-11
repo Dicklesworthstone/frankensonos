@@ -25,7 +25,7 @@ use asupersync::net::UdpSocket;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use asupersync::server::shutdown::ShutdownSignal;
 use asupersync::time::{timeout, wall_now};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::task::Poll;
@@ -539,48 +539,176 @@ async fn http(
     })
 }
 
-/// Send the `M-SEARCH` (twice: UDP may drop one) and collect distinct Sonos
+/// Every IPv4 LAN address this host answers on: not loopback, not
+/// link-local, not unspecified. Discovery must query out of each one: the
+/// kernel sends multicast by the routing table's single multicast route, so a
+/// multi-homed host (speaker VLAN + main LAN + a tunnel) otherwise asks only
+/// one network and misses the players on the others.
+fn lan_ipv4s() -> Vec<Ipv4Addr> {
+    lan_ipv4s_from(
+        if_addrs::get_if_addrs().map(|ifs| ifs.iter().map(if_addrs::Interface::ip).collect()),
+    )
+}
+
+/// The pure filter behind [`lan_ipv4s`], testable without real interfaces.
+fn lan_ipv4s_from(addrs: Result<Vec<IpAddr>, std::io::Error>) -> Vec<Ipv4Addr> {
+    let mut out: Vec<Ipv4Addr> = addrs
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|ip| match ip {
+            IpAddr::V4(v4) => Some(v4),
+            IpAddr::V6(_) => None,
+        })
+        .filter(|v4| !v4.is_loopback() && !v4.is_link_local() && !v4.is_unspecified())
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// A nonblocking UDP socket whose multicast egress is pinned to `iface`
+/// (the wildcard route when `None`), ready for the asupersync runtime.
+fn query_socket(iface: Option<Ipv4Addr>) -> Result<UdpSocket, ProtoError> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .map_err(|e| network("multicast query", e))?;
+    socket
+        .set_reuse_address(true)
+        .map_err(|e| network("multicast query", e))?;
+    if let Some(ip) = iface {
+        socket
+            .set_multicast_if_v4(&ip)
+            .map_err(|e| network("multicast query", e))?;
+    }
+    socket
+        .bind(&SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0).into())
+        .map_err(|e| network("multicast query", e))?;
+    socket
+        .set_nonblocking(true)
+        .map_err(|e| network("multicast query", e))?;
+    UdpSocket::from_std(socket.into()).map_err(|e| network("multicast query", e))
+}
+
+/// One socket's half of a multicast survey: the query went out already;
+/// collect its reply datagrams until `wait` (counted from `started`) passes.
+async fn collect_replies(
+    mut socket: UdpSocket,
+    started: Instant,
+    wait: Duration,
+) -> Result<Vec<Vec<u8>>, ProtoError> {
+    let mut buf = vec![0u8; 4096];
+    let mut datagrams = Vec::new();
+    loop {
+        let left = wait.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return Ok(datagrams);
+        }
+        match timeout(wall_now(), left, socket.recv_from(&mut buf)).await {
+            Ok(Ok((n, _from))) => datagrams.push(buf[..n].to_vec()),
+            Ok(Err(e)) => return Err(network("multicast query", e)),
+            Err(_elapsed) => return Ok(datagrams),
+        }
+    }
+}
+
+/// Every future's output, all polled side by side in this one task (the
+/// N-way [`both`]): each wakes it when its socket or timer is ready.
+async fn all<F: Future>(futures: Vec<F>) -> Vec<F::Output> {
+    let mut pending: Vec<_> = futures.into_iter().map(|f| (Box::pin(f), false)).collect();
+    let mut out: Vec<Option<F::Output>> = (0..pending.len()).map(|_| None).collect();
+    std::future::poll_fn(move |cx| {
+        let mut done = true;
+        for (i, (f, finished)) in pending.iter_mut().enumerate() {
+            if !*finished {
+                if let Poll::Ready(v) = f.as_mut().poll(cx) {
+                    out[i] = Some(v);
+                    *finished = true;
+                } else {
+                    done = false;
+                }
+            }
+        }
+        if done {
+            Poll::Ready(
+                std::mem::take(&mut out)
+                    .into_iter()
+                    .map(Option::unwrap)
+                    .collect(),
+            )
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
+}
+
+/// Send a multicast query out of every LAN interface (twice each: UDP may
+/// drop one) and hand every reply datagram to `on_datagram` until `wait` has
+/// passed. A host with one interface behaves exactly as before; one with a
+/// speaker VLAN plus a main LAN asks both.
+async fn multicast_query(
+    target: SocketAddr,
+    message: &[u8],
+    wait: Duration,
+    on_datagram: &mut dyn FnMut(&[u8]),
+) -> Result<(), ProtoError> {
+    let mut sockets: Vec<UdpSocket> = Vec::new();
+    for ip in lan_ipv4s() {
+        if let Ok(socket) = query_socket(Some(ip)) {
+            sockets.push(socket);
+        }
+    }
+    if sockets.is_empty() {
+        // No interface list (or every one refused the pin): the wildcard
+        // socket still reaches hosts where the multicast route is right.
+        sockets.push(query_socket(None)?);
+    }
+    for socket in &mut sockets {
+        for _ in 0..2 {
+            socket
+                .send_to(message, target)
+                .await
+                .map_err(|e| network("multicast query", e))?;
+        }
+    }
+    let started = Instant::now();
+    let collections: Vec<_> = sockets
+        .into_iter()
+        .map(|socket| collect_replies(socket, started, wait))
+        .collect();
+    for replies in all(collections).await {
+        for datagram in replies? {
+            on_datagram(&datagram);
+        }
+    }
+    Ok(())
+}
+
+/// Send the `M-SEARCH` out of every LAN interface and collect distinct Sonos
 /// replies until `wait` has passed.
 async fn search(
     target: SocketAddr,
     mx_secs: u8,
     wait: Duration,
 ) -> Result<Vec<Advert>, ProtoError> {
-    let mut socket = UdpSocket::bind("0.0.0.0:0")
-        .await
-        .map_err(|e| network("SSDP", e))?;
-    let message = ssdp::m_search(mx_secs);
-    for _ in 0..2 {
-        socket
-            .send_to(message.as_bytes(), target)
-            .await
-            .map_err(|e| network("SSDP", e))?;
-    }
-    let started = Instant::now();
-    let mut buf = vec![0u8; 4096];
     let mut found: Vec<Advert> = Vec::new();
-    loop {
-        let left = wait.saturating_sub(started.elapsed());
-        if left.is_zero() {
-            break;
+    let message = ssdp::m_search(mx_secs);
+    multicast_query(target, message.as_bytes(), wait, &mut |datagram| {
+        if let Some(advert) = ssdp::parse_response(datagram)
+            && advert.st.eq_ignore_ascii_case(ssdp::SONOS_ST)
+            && !found.iter().any(|f| f.location == advert.location)
+        {
+            found.push(advert);
         }
-        match timeout(wall_now(), left, socket.recv_from(&mut buf)).await {
-            Ok(Ok((n, _from))) => {
-                if let Some(advert) = ssdp::parse_response(&buf[..n])
-                    && advert.st.eq_ignore_ascii_case(ssdp::SONOS_ST)
-                    && !found.iter().any(|f| f.location == advert.location)
-                {
-                    found.push(advert);
-                }
-            }
-            Ok(Err(e)) => return Err(network("SSDP", e)),
-            Err(_elapsed) => break,
-        }
-    }
+    })
+    .await?;
     Ok(found)
 }
 
-/// Send the mDNS query for `_sonos._tcp.local` (twice: UDP may drop one)
+/// Send the mDNS query for `_sonos._tcp.local` out of every LAN interface
 /// and collect Sonos advertisements from the replies that arrive within
 /// `wait`, deduplicated by instance name. Parse failures are skipped, not
 /// errors: anything else on the group must not break discovery.
@@ -588,38 +716,17 @@ async fn mdns_search(
     target: SocketAddr,
     wait: Duration,
 ) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
-    let mut socket = UdpSocket::bind("0.0.0.0:0")
-        .await
-        .map_err(|e| network("mDNS", e))?;
-    let message = mdns::query();
-    for _ in 0..2 {
-        socket
-            .send_to(&message, target)
-            .await
-            .map_err(|e| network("mDNS", e))?;
-    }
-    let started = Instant::now();
-    let mut buf = vec![0u8; 4096];
     let mut found: Vec<mdns::SonosAdvert> = Vec::new();
-    loop {
-        let left = wait.saturating_sub(started.elapsed());
-        if left.is_zero() {
-            break;
-        }
-        match timeout(wall_now(), left, socket.recv_from(&mut buf)).await {
-            Ok(Ok((n, _from))) => {
-                if let Ok(msg) = mdns::parse_message(&buf[..n]) {
-                    for advert in mdns::sonos_adverts(&msg) {
-                        if !found.iter().any(|f| f.instance == advert.instance) {
-                            found.push(advert);
-                        }
-                    }
+    multicast_query(target, &mdns::query(), wait, &mut |datagram| {
+        if let Ok(msg) = mdns::parse_message(datagram) {
+            for advert in mdns::sonos_adverts(&msg) {
+                if !found.iter().any(|f| f.instance == advert.instance) {
+                    found.push(advert);
                 }
             }
-            Ok(Err(e)) => return Err(network("mDNS", e)),
-            Err(_elapsed) => break,
         }
-    }
+    })
+    .await?;
     Ok(found)
 }
 
@@ -1448,4 +1555,114 @@ fn discovery_listens_for_ssdp_and_mdns_at_once() {
     assert!(took >= wait && took < wait * 7 / 4, "{took:?}");
     answering_ssdp.join().expect("ssdp responder thread");
     answering_mdns.join().expect("mdns responder thread");
+}
+
+#[test]
+fn lan_ipv4s_keep_real_lan_addresses_only() {
+    let addrs: Vec<IpAddr> = vec![
+        "198.51.100.7".parse().unwrap(),      // speaker VLAN
+        "192.0.2.24".parse().unwrap(),        // main LAN
+        "127.0.0.1".parse().unwrap(),         // loopback: no players here
+        "169.254.1.1".parse().unwrap(),       // link-local: unroutable to players
+        "0.0.0.0".parse().unwrap(),           // unspecified
+        "198.51.100.7".parse().unwrap(),      // duplicate interfaces collapse
+        "fd7a:115c:a1e0::1".parse().unwrap(), // the players speak v4 here
+    ];
+    let kept = lan_ipv4s_from(Ok(addrs));
+    assert_eq!(
+        kept,
+        vec![Ipv4Addr::new(192, 0, 2, 24), Ipv4Addr::new(198, 51, 100, 7)]
+    );
+}
+
+#[test]
+fn lan_ipv4s_survive_a_failed_scan() {
+    // A host whose getifaddrs fails still gets discovery's wildcard
+    // fallback, never an error that ends the survey.
+    assert!(lan_ipv4s_from(Err(std::io::Error::other("down"))).is_empty());
+}
+
+#[test]
+fn a_query_socket_pins_egress_to_one_interface() {
+    // The pin must accept at least this host's LAN addresses and the
+    // wildcard; a refusal here is what silently single-homed discovery
+    // looked like.
+    query_socket(None).expect("wildcard query socket");
+    for ip in lan_ipv4s() {
+        query_socket(Some(ip)).unwrap_or_else(|e| panic!("pin {ip}: {e}"));
+    }
+}
+
+#[test]
+fn all_waits_for_every_future() {
+    let rt = RuntimeBuilder::current_thread()
+        .with_reactor(create_reactor().expect("reactor"))
+        .build()
+        .expect("runtime");
+    rt.block_on(async {
+        let seen = all(vec![
+            collect_replies(
+                query_socket(None).expect("socket"),
+                Instant::now(),
+                Duration::from_millis(1),
+            ),
+            collect_replies(
+                query_socket(None).expect("socket"),
+                Instant::now(),
+                Duration::from_millis(1),
+            ),
+            collect_replies(
+                query_socket(None).expect("socket"),
+                Instant::now(),
+                Duration::from_millis(1),
+            ),
+        ])
+        .await;
+        assert_eq!(seen.len(), 3);
+        for replies in seen {
+            replies.expect("empty survey is fine");
+        }
+    });
+}
+
+#[test]
+fn a_multicast_query_reaches_a_listener_on_the_same_host() {
+    // One responder, one survey: the query leaves every interface and the
+    // loopback-bound listener answers them all; the survey merges the
+    // replies into one find per answering socket path.
+    let listener = std::net::UdpSocket::bind("127.0.0.1:0").expect("listener bind");
+    let target = listener.local_addr().expect("listener addr");
+    let heard = Arc::new(std::sync::Mutex::new(0usize));
+    let heard_thread = Arc::clone(&heard);
+    let answering = thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        listener
+            .set_read_timeout(Some(Duration::from_secs(4)))
+            .expect("timeout");
+        while let Ok((n, from)) = listener.recv_from(&mut buf) {
+            *heard_thread.lock().expect("heard") += 1;
+            let _ = n;
+            listener.send_to(b"reply", from).expect("reply");
+        }
+    });
+    let rt = RuntimeBuilder::current_thread()
+        .with_reactor(create_reactor().expect("reactor"))
+        .build()
+        .expect("runtime");
+    let got = rt.block_on(async {
+        let mut datagrams = Vec::new();
+        multicast_query(target, b"query", Duration::from_millis(300), &mut |d| {
+            datagrams.push(d.to_vec());
+        })
+        .await
+        .expect("query");
+        datagrams
+    });
+    answering.join().expect("responder thread");
+    let heard = *heard.lock().expect("heard");
+    assert!(heard >= 1, "the listener heard no query at all");
+    assert!(
+        !got.is_empty() && got.iter().all(|d| d == b"reply"),
+        "every reply is the responder's: {got:?}"
+    );
 }
