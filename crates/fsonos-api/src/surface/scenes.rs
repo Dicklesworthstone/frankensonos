@@ -24,6 +24,7 @@ use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::time::Duration;
 
 use super::Surface;
 use crate::dj::{DjSpeakers, DjSteer, SteerConstraints};
@@ -94,6 +95,15 @@ pub struct SceneApplyDto {
     /// Volumes the house policy lowered or left alone (`VOLUME_CLAMPED`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
+}
+
+/// `POST /scenes/{name}/apply` body (`apply_scene`): with `fade_secs`, the
+/// scene's volumes ramp there over that long (1-60 s) instead of at once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SceneApplyRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fade_secs: Option<u32>,
 }
 
 /// A step of applying a scene that failed.
@@ -443,6 +453,30 @@ impl Surface {
     /// needs, volumes within the house policy, logged with the before-state
     /// so `undo` restores the house.
     pub fn apply_scene(&self, client: &Client, name: &str) -> Result<SceneApplyDto, Failure> {
+        self.apply_scene_fading(client, name, None)
+    }
+
+    /// [`Self::apply_scene`], its volumes ramping over `req.fade_secs` when
+    /// given (1-60 s; the call answers once the fade is done).
+    pub fn apply_scene_with(
+        &self,
+        client: &Client,
+        name: &str,
+        req: &SceneApplyRequest,
+    ) -> Result<SceneApplyDto, Failure> {
+        let fade = req.fade_secs.map(super::schedules::call_fade).transpose()?;
+        self.apply_scene_fading(client, name, fade)
+    }
+
+    /// [`Self::apply_scene`], fading its volumes over `fade` with the
+    /// daemon's fader (so a volume change meanwhile ends the fade where it
+    /// is).
+    pub(super) fn apply_scene_fading(
+        &self,
+        client: &Client,
+        name: &str,
+        fade: Option<Duration>,
+    ) -> Result<SceneApplyDto, Failure> {
         let tool = "apply_scene";
         self.authorize_logged(client, tool)?;
         let scene = self.scene_store(|store| scenes::load(store, name))?;
@@ -482,15 +516,18 @@ impl Surface {
             surface: self,
             households: &households,
         };
-        let report = scenes::apply(
-            &*self.transport,
-            &households,
-            &plan,
-            &ApplyOptions {
-                fade: None,
-                hooks: &hooks,
-            },
-        );
+        let report = self.with_fader(|fader| {
+            scenes::apply(
+                &*self.transport,
+                &households,
+                &plan,
+                &ApplyOptions {
+                    fade: fade.map(|over| (fader, over)),
+                    hooks: &hooks,
+                },
+            )
+        });
+        let faded = fade.filter(|_| report.faded > 0);
         let regrouped = report
             .done
             .iter()
@@ -499,7 +536,10 @@ impl Surface {
         if regrouped {
             self.invalidate();
         }
-        let applied = applied(&scene.name, &households, report, notes);
+        let mut applied = applied(&scene.name, &households, report, notes);
+        if let Some(over) = faded {
+            let _ = write!(applied.done, " (volumes faded over {}s)", over.as_secs());
+        }
         let decision = if applied.notes.is_empty() {
             "allow".to_string()
         } else {

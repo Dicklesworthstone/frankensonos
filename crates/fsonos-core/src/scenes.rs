@@ -12,8 +12,9 @@
 //!    fewest ordered ops that get there (none when the house already
 //!    matches): regroup, then volumes and mutes, then sources, then play or
 //!    pause. It is pure;
-//! 3. [`apply`] runs the ops, fading volumes when asked, and carries on past
-//!    an op that fails.
+//! 3. [`apply`] runs the ops and carries on past one that fails. Asked to
+//!    fade, it leaves the volumes for last and fades them together, and a
+//!    room whose sound starts with the scene fades in from silence.
 //!
 //! Rooms are named, so a scene survives regrouping and new addresses; a room
 //! that is gone (or renamed) is skipped with a note. Rooms in different
@@ -180,6 +181,8 @@ pub struct SceneReport {
     pub done: Vec<SceneOp>,
     pub failed: Vec<(SceneOp, String)>,
     pub notes: Vec<String>,
+    /// How many rooms a fade carried to their level.
+    pub faded: usize,
 }
 
 impl SceneReport {
@@ -440,7 +443,9 @@ fn plan_sources(
     }
 }
 
-/// Run `plan`, carrying on past an op that fails.
+/// Run `plan`, carrying on past an op that fails. With a fade, the volumes
+/// go last and together, each room to its own level over the one fade, and a
+/// room whose sound starts with the scene fades in from silence.
 pub fn apply<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -452,49 +457,165 @@ pub fn apply<T: Transport + ?Sized>(
         ..SceneReport::default()
     };
     let mut favorites: HashMap<usize, Vec<Favorite>> = HashMap::new();
-    let mut ops = plan.ops.iter().peekable();
-    while let Some(op) = ops.next() {
-        // Faded volumes go together: every room heading for one level at once.
-        if let (SceneOp::Volume { .. }, Some((fader, over))) = (op, options.fade) {
-            let mut batch = vec![op];
-            while let Some(next) = ops.next_if(|o| matches!(o, SceneOp::Volume { .. })) {
-                batch.push(next);
+    // The rooms silenced to fade in, once the regrouping is done.
+    let mut ins: Option<Vec<(PlayerId, u8)>> = None;
+    for op in &plan.ops {
+        if let Some((fader, _)) = options.fade {
+            let regroups = matches!(op, SceneOp::Leave { .. } | SceneOp::Join { .. });
+            if !regroups && ins.is_none() {
+                ins = Some(silence_starting(t, households, plan, fader));
             }
-            fade_volumes(t, households, &batch, fader, over, &mut report);
-            continue;
+            if matches!(op, SceneOp::Volume { .. }) {
+                continue;
+            }
         }
         match run(t, households, op, options, &mut favorites) {
             Ok(()) => report.done.push(op.clone()),
             Err(e) => report.failed.push((op.clone(), e)),
         }
     }
+    if let Some(fade) = options.fade {
+        let ins = ins.unwrap_or_default();
+        fade_volumes(t, households, plan, &ins, fade, &mut report);
+    }
     report
 }
 
+/// Before a faded scene's sources start: silence the rooms whose sound
+/// starts with it, so they fade in rather than start at their full level.
+/// Those are the rooms of a group the plan starts (a Play, or a source for a
+/// group that isn't playing; one that plays keeps sounding while its source
+/// or the DJ's steering changes) and the rooms it unmutes. Each is returned
+/// with the level to fade in to: the plan's, or the one it had.
+fn silence_starting<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    plan: &ScenePlan,
+    fader: &Fader,
+) -> Vec<(PlayerId, u8)> {
+    let rooms = || households.iter().flat_map(|h| &h.rooms);
+    let mut starts: Vec<&PlayerId> = Vec::new();
+    for op in &plan.ops {
+        match op {
+            SceneOp::Play { coordinator } => starts.push(coordinator),
+            SceneOp::Favorite { coordinator, .. }
+            | SceneOp::Uri { coordinator, .. }
+            | SceneOp::Dj { coordinator, .. } => {
+                let idle = control::playback(t, households, coordinator)
+                    .is_ok_and(|now| now.transport.state != TransportState::Playing);
+                if idle {
+                    starts.push(coordinator);
+                }
+            }
+            _ => {}
+        }
+    }
+    // The room that leads `room` once the plan has regrouped.
+    let leader = |room: &Room| -> PlayerId {
+        let moved = plan.ops.iter().rev().find_map(|op| match op {
+            SceneOp::Join {
+                player,
+                coordinator,
+                ..
+            } if *player == room.primary => Some(coordinator.clone()),
+            SceneOp::Leave { player, .. } if *player == room.primary => Some(player.clone()),
+            _ => None,
+        });
+        let lead = moved.unwrap_or_else(|| room.coordinator.clone());
+        rooms()
+            .find(|r| r.players.contains(&lead))
+            .map_or_else(|| lead.clone(), |r| r.primary.clone())
+    };
+    let wanted = |player: &PlayerId| {
+        plan.ops.iter().find_map(|op| match op {
+            SceneOp::Volume {
+                player: p, level, ..
+            } if p == player => Some(*level),
+            _ => None,
+        })
+    };
+    let unmuted = |player: &PlayerId| {
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, SceneOp::Mute { player: p, mute: false, .. } if p == player))
+    };
+    let mut ins = Vec::new();
+    for room in rooms() {
+        if !starts.contains(&&leader(room)) && !unmuted(&room.primary) {
+            continue;
+        }
+        let level =
+            wanted(&room.primary).or_else(|| control::volume(t, households, &room.primary).ok());
+        let Some(to) = level else {
+            continue;
+        };
+        if to > 0 && fader.set_volume(t, households, &room.primary, 0).is_ok() {
+            ins.push((room.primary.clone(), to));
+        }
+    }
+    ins
+}
+
+/// A faded scene's volumes: every room the plan sets and `ins` (the rooms
+/// silenced to fade in), all together, each to its own level. If the fade
+/// can't run (a player that doesn't answer), each level is set at once
+/// instead, so no room is left part-way.
 fn fade_volumes<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
-    batch: &[&SceneOp],
-    fader: &Fader,
-    over: Duration,
+    plan: &ScenePlan,
+    ins: &[(PlayerId, u8)],
+    (fader, over): (&Fader, Duration),
     report: &mut SceneReport,
 ) {
-    let mut by_level: BTreeMap<u8, Vec<(&SceneOp, PlayerId)>> = BTreeMap::new();
-    for op in batch {
-        if let SceneOp::Volume { player, level, .. } = op {
-            by_level
-                .entry(*level)
-                .or_default()
-                .push((op, player.clone()));
+    let ops: Vec<&SceneOp> = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, SceneOp::Volume { .. }))
+        .collect();
+    let mut targets: Vec<(PlayerId, u8)> = ops
+        .iter()
+        .filter_map(|op| match op {
+            SceneOp::Volume { player, level, .. } => Some((player.clone(), *level)),
+            _ => None,
+        })
+        .collect();
+    // A room silenced to fade in that the plan sets no volume for goes back
+    // to the level it had.
+    for (player, to) in ins {
+        if !targets.iter().any(|(p, _)| p == player) {
+            targets.push((player.clone(), *to));
         }
     }
-    for (level, ops) in by_level {
-        let players: Vec<PlayerId> = ops.iter().map(|(_, p)| p.clone()).collect();
-        let result = fader.fade_group(t, households, &players, level, over);
-        for (op, _) in ops {
-            match &result {
-                Ok(_) => report.done.push(op.clone()),
-                Err(e) => report.failed.push((op.clone(), e.to_string())),
+    if targets.is_empty() {
+        return;
+    }
+    match fader.fade_each(t, households, &targets, over) {
+        Ok(left) => {
+            report.faded = targets.len().saturating_sub(left.len());
+            report.done.extend(ops.into_iter().cloned());
+            for player in &left {
+                let room = households
+                    .iter()
+                    .flat_map(|h| &h.rooms)
+                    .find(|r| r.players.contains(player))
+                    .map_or(player.0.as_str(), |r| r.name.as_str());
+                report.notes.push(format!(
+                    "{room}'s fade stopped where its volume was changed meanwhile"
+                ));
+            }
+        }
+        Err(_) => {
+            for (player, to) in &targets {
+                let set = control::set_volume(t, households, player, *to);
+                let op = ops
+                    .iter()
+                    .find(|op| matches!(op, SceneOp::Volume { player: p, .. } if p == player));
+                match (op, set) {
+                    (Some(op), Ok(_)) => report.done.push(SceneOp::clone(op)),
+                    (Some(op), Err(e)) => report.failed.push((SceneOp::clone(op), e.to_string())),
+                    (None, _) => {}
+                }
             }
         }
     }

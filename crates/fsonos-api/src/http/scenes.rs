@@ -7,11 +7,10 @@
 
 use fastapi::core::RouteEntry;
 use fastapi::{Method, PathParams, Request};
-use serde_json::{Map, Value};
 
 use super::{Ctx, Op, answer, body_or_default, percent_decode};
 use crate::failure::Failure;
-use crate::surface::scenes::{SceneApplyDto, SceneDeletedDto, SceneDto};
+use crate::surface::scenes::{SceneApplyDto, SceneApplyRequest, SceneDeletedDto, SceneDto};
 
 const SCENES: &str = "scenes";
 
@@ -88,13 +87,15 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "Put the house in a saved scene: only the steps it needs, undoable",
             ),
             |s, c, req| {
-                // No fields yet: an empty body or `{}`.
-                let applied = body_or_default::<Map<String, Value>>(req, Map::new())
-                    .and_then(|_| path_name(req))
-                    .and_then(|name| s.apply_scene(c, &name));
+                // An empty body or `{}` applies at once.
+                let applied = body_or_default(req, SceneApplyRequest::default()).and_then(|r| {
+                    let name = path_name(req)?;
+                    s.apply_scene_with(c, &name, &r)
+                });
                 answer(applied)
             },
         )
+        .request_schema::<SceneApplyRequest>(false)
         .response_schema::<SceneApplyDto>(200, "What was done"),
         cx.route(
             &Op::delete("/scenes/{name}", "delete_scene", SCENES, "Forget a scene"),

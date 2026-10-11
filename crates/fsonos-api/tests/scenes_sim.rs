@@ -8,6 +8,7 @@ use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
 use fsonos_api::plan::{
     DjAction, TransportAction, plan_group, plan_play, plan_transport, plan_ungroup, plan_volume,
 };
+use fsonos_api::surface::scenes::SceneApplyRequest;
 use fsonos_api::surface::{Surface, Survey};
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, NoteCode, OutcomeDto, PlayRequest, VolumeRequest, ZoneRequest,
@@ -21,7 +22,7 @@ use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_sim::{SimHandle, SimHousehold};
 use fsonos_types::{PlayerId, TransportState};
 use std::collections::BTreeMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const STREAM: &str = "x-rincon-mp3radio://stream.example.invalid/evening.mp3";
 
@@ -85,6 +86,33 @@ fn volume(s: &Surface, client: &Client, zone: &str, level: i64) {
 
 fn zone(name: &str) -> ZoneRequest {
     ZoneRequest { zone: name.into() }
+}
+
+#[test]
+fn a_scene_can_fade_its_volumes_in() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let s = surface(&sim, MemStore::default());
+    let cli = Client::Cli;
+    volume(&s, &cli, "Kitchen", 40);
+    s.save_scene(&cli, "Quiet").unwrap();
+    volume(&s, &cli, "Kitchen", 10);
+
+    let fade = |secs| SceneApplyRequest {
+        fade_secs: Some(secs),
+    };
+    let too_long = s.apply_scene_with(&cli, "Quiet", &fade(61)).unwrap_err();
+    assert_eq!(too_long.code, ErrorCode::InvalidArgument, "{too_long:?}");
+    assert_eq!(kitchen(&sim).0, 10, "a refused fade changes nothing");
+
+    let started = Instant::now();
+    let applied = s.apply_scene_with(&cli, "Quiet", &fade(2)).unwrap();
+    assert!(
+        started.elapsed() >= Duration::from_millis(1500),
+        "it ramped rather than jumped: {:?}",
+        started.elapsed()
+    );
+    assert!(applied.done.contains("faded over 2s"), "{}", applied.done);
+    assert_eq!(kitchen(&sim).0, 40, "the scene's volume, reached");
 }
 
 #[test]

@@ -148,6 +148,57 @@ impl Fader {
         self.stepped(t, households, players, to, over, self.interval)
     }
 
+    /// Fade each player to its own level, all in step over `over`, each from
+    /// its own current level. A player that gets a newer intent drops out
+    /// and keeps it while the others carry on; those players are returned.
+    pub fn fade_each<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        targets: &[(PlayerId, u8)],
+        over: Duration,
+    ) -> Result<Vec<PlayerId>, CoreError> {
+        let mut lanes = Vec::with_capacity(targets.len());
+        for (player, to) in targets {
+            let host = ip(households, player)?;
+            let from = soap::get_volume(t, host)?;
+            lanes.push((
+                player,
+                host,
+                self.supersede(player),
+                from,
+                plan_steps(from, *to, over, self.interval),
+            ));
+        }
+        let ticks = lanes.first().map_or(0, |l| l.4.len());
+        let mut left: Vec<PlayerId> = Vec::new();
+        for tick in 0..ticks {
+            if left.len() == lanes.len() {
+                break;
+            }
+            if tick > 0 {
+                std::thread::sleep(self.interval);
+            }
+            for (player, host, intent, from, steps) in &lanes {
+                if left.contains(player) {
+                    continue;
+                }
+                if self.current(player) != *intent {
+                    left.push((*player).clone());
+                    continue;
+                }
+                let Some(&level) = steps.get(tick) else {
+                    continue;
+                };
+                let before = if tick == 0 { *from } else { steps[tick - 1] };
+                if level != before || tick == 0 {
+                    soap::set_volume(t, *host, level)?;
+                }
+            }
+        }
+        Ok(left)
+    }
+
     fn stepped<T: Transport + ?Sized>(
         &self,
         t: &T,

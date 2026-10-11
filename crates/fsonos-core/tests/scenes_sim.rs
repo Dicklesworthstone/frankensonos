@@ -281,3 +281,92 @@ fn volumes_fade_the_dj_is_asked_and_failures_are_reported() {
     let err = scenes::plan_apply(&across, &h, &[]).unwrap_err();
     assert!(matches!(err, SceneError::CrossHousehold { .. }), "{err}");
 }
+
+fn desired(args: &[(String, String)]) -> Option<u8> {
+    args.iter()
+        .find(|(name, _)| name == "DesiredVolume")
+        .and_then(|(_, level)| level.parse().ok())
+}
+
+#[test]
+fn a_faded_scene_fades_its_rooms_together_and_fades_in_what_starts() {
+    let sim = sim();
+    let lan = sim.lan();
+    let h = houses(&sim, &lan);
+    // The Den plays at 10; the Kitchen is idle, already at the scene's 30.
+    play_favorite(&lan, &h, "Den", "Sim Radio");
+    control::set_volume(&lan, &h, &id(&h, "Den"), 10).unwrap();
+    control::set_volume(&lan, &h, &id(&h, "Kitchen"), 30).unwrap();
+    let group = |room: &str, source| SceneGroup {
+        coordinator: room.into(),
+        members: Vec::new(),
+        source,
+        playing: true,
+    };
+    let scene = Scene {
+        name: "Morning".into(),
+        groups: vec![
+            group(
+                "Kitchen",
+                SceneSource::Favorite {
+                    name: "Sim Radio".into(),
+                    uri: None,
+                },
+            ),
+            group("Den", SceneSource::Keep),
+        ],
+        volumes: [("Kitchen", 30), ("Den", 40)]
+            .iter()
+            .map(|(r, v)| ((*r).to_string(), *v))
+            .collect(),
+        mutes: BTreeMap::new(),
+    };
+    let fader = Fader::with_timing(Duration::from_millis(5), Duration::from_millis(5));
+    let dj = Dj::default();
+    let options = ApplyOptions {
+        fade: Some((&fader, Duration::from_millis(50))),
+        hooks: &dj,
+    };
+    let before = sim.soap_log().len();
+    let (ops, report) = apply(&lan, &h, &scene, &options);
+    assert!(report.is_complete(), "{report:#?}");
+    assert!(
+        !ops.iter()
+            .any(|op| matches!(op, SceneOp::Volume { room, .. } if room == "Kitchen")),
+        "the Kitchen is at its level already: {ops:?}"
+    );
+    assert_eq!(
+        report.faded, 2,
+        "the Den up and the Kitchen in: {report:#?}"
+    );
+
+    let log = sim.soap_log().split_off(before);
+    // Where in the log each SetVolume a room got is, and its level.
+    let levels = |room: &str| -> Vec<(usize, u8)> {
+        log.iter()
+            .enumerate()
+            .filter(|(_, e)| e.room == room && e.action == "SetVolume")
+            .filter_map(|(i, e)| Some((i, desired(&e.args)?)))
+            .collect()
+    };
+    let (kitchen, den) = (levels("Kitchen"), levels("Den"));
+    let started = log
+        .iter()
+        .position(|e| e.room == "Kitchen" && e.action == "SetAVTransportURI")
+        .expect("the favorite was started");
+    // The Kitchen starts with the scene: silenced, started, then faded in.
+    assert_eq!(kitchen.first().map(|l| l.1), Some(0), "{kitchen:?}");
+    assert_eq!(kitchen.last().map(|l| l.1), Some(30), "{kitchen:?}");
+    assert!(
+        kitchen[0].0 < started && started < kitchen[kitchen.len() - 1].0,
+        "silence, the source, then the fade: {kitchen:?} around {started}"
+    );
+    // The Den was playing: it fades from where it is, never through silence.
+    assert!(den.iter().all(|l| l.1 >= 10), "{den:?}");
+    assert_eq!(den.last().map(|l| l.1), Some(40), "{den:?}");
+    // One fade for both rooms: their steps interleave.
+    assert!(
+        den[0].0 < kitchen[kitchen.len() - 1].0 && kitchen[1].0 < den[den.len() - 1].0,
+        "{kitchen:?} {den:?}"
+    );
+}

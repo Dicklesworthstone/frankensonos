@@ -11,7 +11,7 @@
 use clap::{Args, Subcommand};
 use fsonos_api::Failure;
 use fsonos_api::surface::Surface;
-use fsonos_api::surface::scenes::{SceneApplyDto, SceneDto, SceneGroupDto};
+use fsonos_api::surface::scenes::{SceneApplyDto, SceneApplyRequest, SceneDto, SceneGroupDto};
 use fsonos_core::policy::Client;
 use std::fmt::Write as _;
 
@@ -31,7 +31,13 @@ enum SceneAction {
     Save { name: String },
     /// Put the house in a scene: only the steps it needs are sent;
     /// `fsonos undo` puts it back. Exits 1 if a step failed.
-    Apply { name: String },
+    Apply {
+        name: String,
+        /// Ramp the volumes to the scene's over this long instead of at once
+        /// (`10`, `10s` or `1m`; at most 60 s).
+        #[arg(long, value_parser = crate::parse_fade)]
+        fade: Option<u32>,
+    },
     /// Every saved scene.
     List,
     /// A scene's groups, what each plays, and each room's volume.
@@ -63,15 +69,13 @@ pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
                 format!("saved scene {}", show_text(scene))
             })
         }
-        SceneAction::Apply { name } => {
+        SceneAction::Apply { name, fade } => {
+            let req = SceneApplyRequest { fade_secs: *fade };
             // A DJ the scene starts keeps the group's queue going only in
             // the daemon.
             let applied: SceneApplyDto = match Daemon::find(global, global.daemon)? {
-                Some(daemon) => daemon.post(
-                    &format!("/scenes/{}/apply", pct(name)),
-                    &serde_json::json!({}),
-                )?,
-                None => s()?.apply_scene(&cli, name)?,
+                Some(daemon) => daemon.post(&format!("/scenes/{}/apply", pct(name)), &req)?,
+                None => s()?.apply_scene_with(&cli, name, &req)?,
             };
             crate::emit(global.json, &applied, apply_text)?;
             if applied.complete {

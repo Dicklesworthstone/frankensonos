@@ -3,7 +3,7 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::scenes::{SceneApplyDto, SceneDto};
+use fsonos_api::surface::scenes::{SceneApplyDto, SceneApplyRequest, SceneDto};
 use serde::Serialize;
 
 use super::{Backend, respond, segment, with_backend};
@@ -85,15 +85,19 @@ impl Backend {
     }
 
     /// The `apply_scene` tool.
-    pub fn apply_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
+    pub fn apply_scene(
+        &self,
+        name: &str,
+        req: &SceneApplyRequest,
+    ) -> McpResult<FinalCallToolResult> {
         // A scene that starts the DJ needs the daemon's DJ to keep it going.
         let path = format!("/scenes/{}/apply", segment(name));
-        let body = serde_json::json!({});
+        let body = serde_json::to_value(req).unwrap_or_default();
         if let Some(answer) = self.on_daemon("POST", &path, Some(&body), apply_text) {
             return answer;
         }
         respond(|| {
-            let applied = self.surface.apply_scene(&self.client, name)?;
+            let applied = self.surface.apply_scene_with(&self.client, name, req)?;
             Ok((apply_text(&applied), applied))
         })
     }
@@ -131,11 +135,15 @@ fn save_scene(_ctx: &McpContext, name: String) -> McpResult<CompleteResult<Final
 }
 
 #[tool(
-    description = "Put the house in the saved scene `name` (case ignored; list_scenes names them). Minimal: only the steps the house needs are sent (regroup, then volumes and mutes, then what plays, then play or pause), so applying a scene the house already matches changes nothing. Volumes stay within your caps. Undoable: undo_last restores the zones it changed. Rooms no longer in the house are skipped; a step that fails is reported and the rest still run.",
+    description = "Put the house in the saved scene `name` (case ignored; list_scenes names them). Minimal: only the steps the house needs are sent (regroup, then volumes and mutes, then what plays, then play or pause), so applying a scene the house already matches changes nothing. Volumes stay within your caps. Undoable: undo_last restores the zones it changed. Rooms no longer in the house are skipped; a step that fails is reported and the rest still run. With `fade_secs` (1-60) the volumes ramp to the scene's over that long instead of jumping; the call answers when the fade is done.",
     annotations(idempotent)
 )]
-fn apply_scene(_ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.apply_scene(&name))
+fn apply_scene(
+    _ctx: &McpContext,
+    name: String,
+    fade_secs: Option<u32>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(move |b| b.apply_scene(&name, &SceneApplyRequest { fade_secs }))
 }
 
 #[tool(
@@ -250,7 +258,7 @@ mod tests {
     #[test]
     fn scene_failures_are_tool_errors_with_codes() {
         let b = backend(Client::McpStdio, &[evening()]);
-        let unknown = error_text(b.apply_scene("Morning"));
+        let unknown = error_text(b.apply_scene("Morning", &SceneApplyRequest::default()));
         assert!(
             unknown.starts_with("UNKNOWN_SCENE: ") && unknown.contains("Did you mean: Evening"),
             "{unknown}"
@@ -258,7 +266,10 @@ mod tests {
         // An empty house: nothing to save or apply to.
         let empty = error_text(b.save_scene("Now"));
         assert!(empty.starts_with("NOT_READY: "), "{empty}");
-        let denied = error_text(backend(Client::Unknown, &[evening()]).apply_scene("Evening"));
+        let denied = error_text(
+            backend(Client::Unknown, &[evening()])
+                .apply_scene("Evening", &SceneApplyRequest::default()),
+        );
         assert!(denied.starts_with("POLICY_DENIED: "), "{denied}");
     }
 

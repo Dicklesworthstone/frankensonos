@@ -132,8 +132,14 @@ pub struct FadePauseRequest {
     pub fade_secs: u32,
 }
 
+/// The house policy's fade for scheduled changes, when it has one.
+fn policy_fade(surface: &Surface) -> Option<Duration> {
+    let secs = surface.policy().defaults.fade_secs;
+    (secs > 0).then(|| Duration::from_secs(u64::from(secs)))
+}
+
 /// `fade_secs` as a call's fade, or why it is out of range.
-fn call_fade(fade_secs: u32) -> Result<Duration, Failure> {
+pub(super) fn call_fade(fade_secs: u32) -> Result<Duration, Failure> {
     if fade_secs == 0 || fade_secs > MAX_CALL_FADE_SECS {
         return Err(Failure::invalid(format!(
             "fade_secs must be 1 to {MAX_CALL_FADE_SECS}, got {fade_secs}"
@@ -732,6 +738,16 @@ impl Surface {
     pub fn with_clock(mut self, clock: Box<dyn Clock>) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// Run `f` with the daemon's fader, so a volume change from anyone ends
+    /// what it fades where it is; outside the daemon, with a fader of its
+    /// own.
+    pub(super) fn with_fader<R>(&self, f: impl FnOnce(&Fader) -> R) -> R {
+        match &self.sleep {
+            Some(sleep) => f(&sleep.fader),
+            None => f(&Fader::default()),
+        }
     }
 
     /// Keep sleep timers here (the daemon's surface), so they fade out; a
@@ -1411,17 +1427,19 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
                 })
                 .map(|o| o.done)
         }
-        ScheduleAction::ApplyScene { name } => surface.apply_scene(&client, name).map(|applied| {
-            if applied.complete {
-                return applied.done;
-            }
-            let failed: Vec<String> = applied
-                .failed
-                .iter()
-                .map(|f| format!("{}: {}", f.step, f.error))
-                .collect();
-            format!("{} (failed: {})", applied.done, failed.join("; "))
-        }),
+        ScheduleAction::ApplyScene { name } => surface
+            .apply_scene_fading(&client, name, policy_fade(surface))
+            .map(|applied| {
+                if applied.complete {
+                    return applied.done;
+                }
+                let failed: Vec<String> = applied
+                    .failed
+                    .iter()
+                    .map(|f| format!("{}: {}", f.step, f.error))
+                    .collect();
+                format!("{} (failed: {})", applied.done, failed.join("; "))
+            }),
     }
 }
 
