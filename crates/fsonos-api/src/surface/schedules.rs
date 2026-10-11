@@ -498,6 +498,13 @@ impl Sleep {
             fader: Fader::default(),
         }
     }
+
+    /// A volume or mute change on `coordinator`'s group: if a sleep fade is in
+    /// flight there, end it where it is (the new level stands and the group is
+    /// not paused). Returns whether a fade was superseded.
+    pub fn volume_changed(&self, coordinator: &PlayerId) -> bool {
+        self.timers.interrupt(&self.fader, coordinator)
+    }
 }
 
 /// A group, as a sleep timer addresses it.

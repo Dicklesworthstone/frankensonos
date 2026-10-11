@@ -204,6 +204,33 @@ fn extending_or_cancelling_during_the_fade_keeps_the_music_at_its_level() {
 }
 
 #[test]
+fn interrupt_ends_a_fade_in_flight_without_putting_volumes_back() {
+    // The product volume path (control::set_volume) supersedes the fade through
+    // `interrupt`, which sets no volume of its own (unlike `Fader::set_volume`):
+    // the fade stops, the group plays on at its faded level, and the timer is over.
+    let (_sim, lan, h, kitchen) = playing_kitchen();
+    let fader = fader();
+    let timers = SleepTimers::with_fade(Duration::from_secs(2));
+    let pause = Duration::from_millis(300);
+    timers
+        .start(&lan, &h, &fader, &kitchen, Duration::from_mins(1), t0())
+        .unwrap();
+    assert_eq!(timers.due(t0() + mins(1)).len(), 1);
+    let (outcome, superseded) = std::thread::scope(|s| {
+        let run = s.spawn(|| timers.run(&lan, &h, &fader, &kitchen));
+        std::thread::sleep(pause);
+        let superseded = timers.interrupt(&fader, &kitchen);
+        (run.join().unwrap().unwrap(), superseded)
+    });
+    assert!(superseded, "a fade was in flight to supersede");
+    assert_eq!(outcome, SleepOutcome::Interrupted);
+    assert_eq!(state(&lan, &h).0, TransportState::Playing);
+    assert_eq!(timers.get(&kitchen), None);
+    // With no fade in flight, interrupt does nothing.
+    assert!(!timers.interrupt(&fader, &kitchen));
+}
+
+#[test]
 fn the_players_own_timer_pauses_when_the_daemon_never_fades() {
     let (sim, lan, h, kitchen) = playing_kitchen();
     // A stream, which (unlike the queue) plays on for the whole quarter hour.

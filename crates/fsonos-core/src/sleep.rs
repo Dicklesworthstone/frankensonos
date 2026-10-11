@@ -224,6 +224,22 @@ impl SleepTimers {
         Ok(true)
     }
 
+    /// A volume change from outside during a fade: supersede the group's fade
+    /// so its timer ends where it is ([`SleepOutcome::Interrupted`]) — no
+    /// re-arm (the generation is untouched, so [`Self::run`] does not put the
+    /// volumes back), and no pause. Does nothing if no fade is in flight.
+    /// Returns whether one was superseded.
+    pub fn interrupt(&self, fader: &Fader, coordinator: &PlayerId) -> bool {
+        let armed = self.lock();
+        match armed.get(coordinator) {
+            Some(a) if a.timer.fading => {
+                Self::stop_fade(a, fader);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// `coordinator`'s timer, if it has one.
     #[must_use]
     pub fn get(&self, coordinator: &PlayerId) -> Option<SleepTimer> {

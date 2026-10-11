@@ -463,6 +463,15 @@ impl Surface {
         let aliases = self.aliases();
         let rooms = room_view(&households, aliases.as_ref(), client);
         let command = plan(&*self.transport, &rooms).map_err(|f| self.explain(f))?;
+        // A volume or mute change ends a sleep fade in flight on the group, so
+        // the fade does not override the new level (the timer ends where it is).
+        if let Some(sleep) = &self.sleep
+            && matches!(command, Command::Volume { .. } | Command::Mute { .. })
+        {
+            for coordinator in affected(&households, &command) {
+                sleep.volume_changed(&coordinator);
+            }
+        }
         let regroups = matches!(
             command,
             Command::Join { .. }
@@ -553,7 +562,7 @@ impl Surface {
                 "undo needs the action log, which this surface does not keep",
             ));
         };
-        self.guard(client).authorize("undo", false)?;
+        self.guard(client).authorize("undo_last", false)?;
         // Plan the restore against the speakers as they are now.
         self.invalidate();
         let households = self.households()?;
@@ -1217,6 +1226,27 @@ mod tests {
         let denied = s
             .control(&Client::Unknown, "pause", |_| unreachable!())
             .unwrap_err();
+        assert_eq!(denied.code, ErrorCode::PolicyDenied);
+    }
+
+    #[test]
+    fn undo_is_governed_by_the_undo_last_policy_key() {
+        // Before the fix, undo authorized under "undo", so a deny of the tool's
+        // real name (undo_last) did not stop it; now it does.
+        let policy =
+            Policy::from_toml("[clients.\"mcp-stdio\"]\ndeny = [\"undo_last\"]\n").unwrap();
+        let survey: Survey = Box::new(|_| Ok(households()));
+        let s = Surface::new(
+            Box::new(super::testing::Canned {
+                out_args: "",
+                sent: Arc::new(Mutex::new(Vec::new())),
+            }),
+            survey,
+            policy,
+            Box::new(fsonos_core::clock::SystemClock),
+        )
+        .with_action_log(Box::new(fsonos_core::store::MemStore::default()), "test");
+        let denied = s.undo(&Client::McpStdio, false).unwrap_err();
         assert_eq!(denied.code, ErrorCode::PolicyDenied);
     }
 
