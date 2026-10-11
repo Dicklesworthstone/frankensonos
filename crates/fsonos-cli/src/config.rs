@@ -62,7 +62,7 @@ pub struct GlobalArgs {
 
     /// Data directory for the store database, the Spotify token cache, and
     /// `policy.toml` [default: the OS per-user data directory, under
-    /// `fsonos`].
+    /// `fsonos`; with --routes, `data` beside the routes file].
     #[arg(long, env = "FSONOS_DATA_DIR", global = true)]
     pub data_dir: Option<PathBuf>,
 }
@@ -435,9 +435,15 @@ pub fn default_data_dir(
 
 impl GlobalArgs {
     /// The configured data directory, or the per-user default for this OS.
+    /// A command confined to a simulator (`--routes`) keeps its own, `data`
+    /// beside the routes file, so nothing it saves (a schedule, a scene, an
+    /// action to undo) reaches the real house's store.
     #[must_use]
     pub fn data_dir(&self) -> Option<PathBuf> {
         self.data_dir.clone().or_else(|| {
+            if let Some(routes) = &self.routes {
+                return Some(routes.parent().unwrap_or(Path::new(".")).join("data"));
+            }
             let home = std::env::var_os("HOME").map(PathBuf::from);
             let xdg = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from);
             default_data_dir(cfg!(target_os = "macos"), home.as_deref(), xdg.as_deref())
@@ -626,6 +632,31 @@ mod tests {
             .unwrap_err();
         assert_eq!(missing.exit_code(), 2);
         assert!(missing.detail.contains("cannot read seed file"));
+    }
+
+    #[test]
+    fn a_simulator_command_keeps_its_own_data_directory() {
+        let routes = std::env::temp_dir()
+            .join("fsonos-sim-dd")
+            .join("routes.toml");
+        let routes = routes.to_str().unwrap();
+        let confined = GlobalHarness::try_parse_from(["fsonos", "--routes", routes])
+            .unwrap()
+            .global;
+        assert_eq!(
+            confined.data_dir(),
+            Some(std::env::temp_dir().join("fsonos-sim-dd").join("data"))
+        );
+        let named = GlobalHarness::try_parse_from([
+            "fsonos",
+            "--routes",
+            routes,
+            "--data-dir",
+            "/srv/fsonos",
+        ])
+        .unwrap()
+        .global;
+        assert_eq!(named.data_dir(), Some(PathBuf::from("/srv/fsonos")));
     }
 
     #[test]

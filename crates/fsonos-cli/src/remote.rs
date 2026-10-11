@@ -8,10 +8,12 @@
 //! that file (or `FSONOS_HTTP_ADDR` when set) and checks it with
 //! `GET /health` within [`PROBE`]. With no file, or no answer, it runs
 //! directly, so the CLI never waits on a daemon that is not there.
-//! `--daemon` requires the daemon; `--direct` never asks it. The DJ's reads
-//! (`fsonos dj status|why|moods`, see `crate::dj_cmd`), its feedback and
-//! preferences (`fsonos dj like|dislike|prefs`) and `fsonos scene apply`
-//! find it the same way.
+//! `--daemon` requires the daemon; `--direct` never asks it. A command
+//! confined to a simulator (`--routes`) asks only a daemon running under the
+//! same routes file, and one without it never asks a simulator's daemon.
+//! The DJ's reads (`fsonos dj status|why|moods`, see `crate::dj_cmd`), its
+//! feedback and preferences (`fsonos dj like|dislike|prefs`) and
+//! `fsonos scene apply` find it the same way.
 //!
 //! Through the daemon a command sends the same request body the HTTP API
 //! documents and prints the same DTO the direct path prints, so `--json`
@@ -34,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::config::GlobalArgs;
@@ -64,6 +66,10 @@ pub struct DaemonFile {
     /// The CLI's token (see the module docs).
     pub cli_token: String,
     pub pid: u32,
+    /// The routes file it runs under (a simulator's, see `fsonos sim`), if
+    /// any: a command asks it only when it runs under the same file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routes: Option<PathBuf>,
 }
 
 /// Write `daemon.json` (owner-only), replacing any earlier one whole.
@@ -126,7 +132,32 @@ impl Daemon {
                 "no daemon is known: `fsonos serve` writes daemon.json when it starts",
             );
         };
-        let token = file.filter(|f| f.http == addr).map(|f| f.cli_token);
+        let vouched = file.filter(|f| f.http == addr);
+        // A routes file confines a command to the simulator it names: such a
+        // command asks only a daemon running under the same file, and one
+        // without it never asks a simulator's daemon.
+        let daemon_routes = vouched.as_ref().and_then(|f| f.routes.as_deref());
+        if !same_routes(daemon_routes, global.routes.as_deref()) {
+            if !require {
+                return Ok(None);
+            }
+            let under = |r: Option<&Path>| {
+                r.map_or_else(
+                    || "no routes file".to_string(),
+                    |r| format!("routes file {}", r.display()),
+                )
+            };
+            return Err(Failure::new(
+                ErrorCode::NotReady,
+                format!(
+                    "the daemon at {addr} runs under {}, this command under {}",
+                    under(daemon_routes),
+                    under(global.routes.as_deref())
+                ),
+            )
+            .with_hint("Start fsonos serve with the same --routes, or drop --daemon."));
+        }
+        let token = vouched.map(|f| f.cli_token);
         if token.is_none() && !require {
             // Without the token its answers would be a local process's, not
             // the CLI's: run directly so the policy reads the same.
@@ -278,6 +309,22 @@ impl Daemon {
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw)?;
         parse_response(&raw)
+    }
+}
+
+/// A routes file as daemon.json records it: canonical, so the same file
+/// named another way matches.
+pub fn canonical(routes: &Path) -> PathBuf {
+    std::fs::canonicalize(routes).unwrap_or_else(|_| routes.to_path_buf())
+}
+
+/// Whether a daemon under routes file `daemon` and a command under
+/// `command` are confined alike: both to the same file, or neither.
+fn same_routes(daemon: Option<&Path>, command: Option<&Path>) -> bool {
+    match (daemon, command) {
+        (None, None) => true,
+        (Some(d), Some(c)) => canonical(d) == canonical(c),
+        _ => false,
     }
 }
 
@@ -781,6 +828,7 @@ mod tests {
             http: "127.0.0.1:8099".parse().unwrap(),
             cli_token: "0123456789abcdef0123456789abcdef".into(),
             pid: 42,
+            routes: None,
         };
         write_daemon_file(&dir, &file).unwrap();
         assert_eq!(read_daemon_file(&dir), Some(file));
@@ -817,5 +865,80 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(daemon.healthy().is_err());
         assert!(started.elapsed() < PROBE * 4, "{:?}", started.elapsed());
+    }
+
+    /// A daemon that answers `GET /health` (and nothing else), for `n`
+    /// connections.
+    fn healthy_daemon(n: usize) -> SocketAddr {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(n) {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let body = r#"{"status":"ok"}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        addr
+    }
+
+    #[test]
+    fn a_simulator_command_asks_only_a_daemon_under_the_same_routes_file() {
+        use clap::Parser;
+        let dir = std::env::temp_dir().join(format!("fsonos-confined-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let routes = dir.join("routes.toml");
+        std::fs::write(&routes, "[routes]\n").unwrap();
+        let (dir_s, routes_s) = (dir.to_str().unwrap(), routes.to_str().unwrap());
+        let global = |args: &[&str]| {
+            let mut all = vec!["fsonos", "--data-dir", dir_s];
+            all.extend_from_slice(args);
+            all.push("zones");
+            crate::Cli::try_parse_from(all).unwrap().global
+        };
+        let daemon_file = |http: SocketAddr, routes: Option<&Path>| {
+            let file = DaemonFile {
+                http,
+                cli_token: "0123456789abcdef0123456789abcdef".into(),
+                pid: 42,
+                routes: routes.map(Path::to_path_buf),
+            };
+            write_daemon_file(&dir, &file).unwrap();
+        };
+
+        // The real house's daemon (no routes file).
+        daemon_file(healthy_daemon(1), None);
+        assert!(
+            Daemon::find(&global(&[]), false).unwrap().is_some(),
+            "a plain command asks it"
+        );
+        assert!(
+            Daemon::find(&global(&["--routes", routes_s]), false)
+                .unwrap()
+                .is_none(),
+            "a simulator command runs directly instead"
+        );
+        let refused = Daemon::find(&global(&["--routes", routes_s, "--daemon"]), true).unwrap_err();
+        assert!(
+            refused.detail.contains("runs under no routes file"),
+            "{}",
+            refused.detail
+        );
+
+        // A daemon of the simulator's own: only its commands ask it.
+        daemon_file(healthy_daemon(1), Some(&routes));
+        assert!(
+            Daemon::find(&global(&["--routes", routes_s]), false)
+                .unwrap()
+                .is_some()
+        );
+        assert!(Daemon::find(&global(&[]), false).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

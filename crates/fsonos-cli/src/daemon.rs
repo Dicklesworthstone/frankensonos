@@ -292,6 +292,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             http: loopback,
             cli_token: cli_token.clone(),
             pid: std::process::id(),
+            routes: global.routes.as_deref().map(crate::remote::canonical),
         };
         if let Err(e) = crate::remote::write_daemon_file(&data_dir, &file) {
             tracing::warn!("the CLI will not find this daemon: {e}");
