@@ -452,6 +452,63 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
     let json = global.json;
     let done = |o: &OutcomeDto| format!("{}\n", o.done);
     match command {
+        Command::Discover
+        | Command::Zones
+        | Command::Status { .. }
+        | Command::Rooms { alias: None }
+        | Command::Favorites { .. }
+        | Command::Queue { .. }
+        | Command::History { .. }
+        | Command::Log { .. } => read(&daemon, global, command)?,
+        Command::Undo { mine } => {
+            let undone: UndoDto = daemon.post("/undo", &serde_json::json!({ "own_only": mine }))?;
+            emit(json, &undone, |u: &UndoDto| format!("{}\n", u.summary))?;
+        }
+        Command::Play {
+            zone,
+            search: Some(query),
+            pick,
+            ..
+        } => crate::play_search(global, zone.clone(), query.clone(), *pick, &daemon)?,
+        Command::Sleep(args) => sleep(&daemon, json, args)?,
+        Command::Say(args) => {
+            let announced = daemon.announce(&args.request())?;
+            emit(json, &announced, announce_cmd::text)?;
+        }
+        Command::Chime(args) => {
+            let announced = daemon.announce(&args.request())?;
+            emit(json, &announced, announce_cmd::text)?;
+        }
+        Command::Announce(args) => {
+            let announced = daemon.announce(&args.request()?)?;
+            emit(json, &announced, announce_cmd::text)?;
+        }
+        Command::Play {
+            zone,
+            favorite: Some(favorite),
+            ..
+        } => {
+            let req = PlayFavoriteRequest {
+                zone: zone.clone(),
+                favorite: favorite.clone(),
+            };
+            let outcome: OutcomeDto = daemon.post("/play/favorite", &req)?;
+            emit(json, &outcome, done)?;
+        }
+        command => {
+            let (path, body) = control_request(&daemon, command)?;
+            let outcome: OutcomeDto = daemon.post(path, &body)?;
+            emit(json, &outcome, done)?;
+        }
+    }
+    Ok(true)
+}
+
+/// The house's reads through the daemon: the players, zones and rooms, a
+/// room's state, favorites, queue and history, and the action log.
+fn read(daemon: &Daemon, global: &GlobalArgs, command: &Command) -> anyhow::Result<()> {
+    let json = global.json;
+    match command {
         Command::Discover => {
             let players: Vec<PlayerDto> = daemon.get("/players")?;
             remember_rooms(global, players.iter().map(|p| p.room.clone()));
@@ -517,48 +574,9 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             let actions: Vec<ActionDto> = daemon.get(&query)?;
             emit(json, &actions, |a| direct::actions_text(a))?;
         }
-        Command::Undo { mine } => {
-            let undone: UndoDto = daemon.post("/undo", &serde_json::json!({ "own_only": mine }))?;
-            emit(json, &undone, |u: &UndoDto| format!("{}\n", u.summary))?;
-        }
-        Command::Play {
-            zone,
-            search: Some(query),
-            pick,
-            ..
-        } => crate::play_search(global, zone.clone(), query.clone(), *pick, &daemon)?,
-        Command::Sleep(args) => sleep(&daemon, json, args)?,
-        Command::Say(args) => {
-            let announced = daemon.announce(&args.request())?;
-            emit(json, &announced, announce_cmd::text)?;
-        }
-        Command::Chime(args) => {
-            let announced = daemon.announce(&args.request())?;
-            emit(json, &announced, announce_cmd::text)?;
-        }
-        Command::Announce(args) => {
-            let announced = daemon.announce(&args.request()?)?;
-            emit(json, &announced, announce_cmd::text)?;
-        }
-        Command::Play {
-            zone,
-            favorite: Some(favorite),
-            ..
-        } => {
-            let req = PlayFavoriteRequest {
-                zone: zone.clone(),
-                favorite: favorite.clone(),
-            };
-            let outcome: OutcomeDto = daemon.post("/play/favorite", &req)?;
-            emit(json, &outcome, done)?;
-        }
-        command => {
-            let (path, body) = control_request(&daemon, command)?;
-            let outcome: OutcomeDto = daemon.post(path, &body)?;
-            emit(json, &outcome, done)?;
-        }
+        _ => unreachable!("not a read through the daemon"),
     }
-    Ok(true)
+    Ok(())
 }
 
 /// What a command with a route loses run directly: a DJ started from here

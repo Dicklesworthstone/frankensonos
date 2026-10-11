@@ -402,21 +402,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let state = Direct::survey(global)?.status(&zone)?;
             emit(global.json, &state, direct::status_text)
         }
-        Command::Rooms { alias: None } => {
-            let rooms = Direct::survey(global)?.rooms()?;
-            emit(global.json, &rooms, |r| direct::rooms_text(r))
-        }
-        Command::Rooms {
-            alias: Some(RoomsCommand::Alias { action }),
-        } => alias_command(global, &action),
-        Command::Rooms {
-            alias:
-                Some(RoomsCommand::Default {
-                    room,
-                    client,
-                    clear,
-                }),
-        } => default_room_command(global, room.as_deref(), client.as_deref(), clear),
+        Command::Rooms { alias } => rooms(global, alias),
         Command::Favorites { zone } => {
             let favorites = Direct::survey(global)?.favorites(&zone)?;
             emit(global.json, &favorites, |f| direct::favorites_text(f))
@@ -476,23 +462,42 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Say(args) => announce_cmd::run_and_emit(global, &args.request()),
         Command::Chime(args) => announce_cmd::run_and_emit(global, &args.request()),
         Command::Announce(args) => announce_cmd::run_and_emit(global, &args.request()?),
-        control => {
-            let direct = Direct::survey(global)?;
-            let tool = tool_name(&control);
-            let outcome = if takes_set(&control) {
-                direct.run_set(tool, |households| plan_set_for(&control, households))?
-            } else {
-                direct.run(tool, |households| plan_for(&control, households))?
-            };
-            emit(global.json, &outcome, |o: &OutcomeDto| {
-                format!(
-                    "{}
-",
-                    o.done
-                )
-            })
-        }
+        control => run_control(global, &control),
     }
+}
+
+/// `fsonos rooms`: list them, or change an alias or the default room.
+fn rooms(global: &config::GlobalArgs, alias: Option<RoomsCommand>) -> anyhow::Result<()> {
+    match alias {
+        None => {
+            let rooms = Direct::survey(global)?.rooms()?;
+            emit(global.json, &rooms, |r| direct::rooms_text(r))
+        }
+        Some(RoomsCommand::Alias { action }) => alias_command(global, &action),
+        Some(RoomsCommand::Default {
+            room,
+            client,
+            clear,
+        }) => default_room_command(global, room.as_deref(), client.as_deref(), clear),
+    }
+}
+
+/// A control command, carried out directly under the house policy.
+fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result<()> {
+    let direct = Direct::survey(global)?;
+    let tool = tool_name(control);
+    let outcome = if takes_set(control) {
+        direct.run_set(tool, |households| plan_set_for(control, households))?
+    } else {
+        direct.run(tool, |households| plan_for(control, households))?
+    };
+    emit(global.json, &outcome, |o: &OutcomeDto| {
+        format!(
+            "{}
+",
+            o.done
+        )
+    })
 }
 
 /// Where `fsonos play --search` searches and plays: directly ([`Direct`]),
