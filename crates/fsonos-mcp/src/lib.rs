@@ -85,6 +85,8 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::dj_prefs::DjPrefer)
         .tool(tools::dj_sync::DjSyncStatus)
         .tool(tools::dj_sync::DjSync)
+        .tool(tools::schedules::FadeVolume)
+        .tool(tools::schedules::FadeAndPause)
         .tool(tools::schedules::SetSleepTimer)
         .tool(tools::schedules::ListSleepTimers)
         .tool(tools::schedules::ListSchedules)

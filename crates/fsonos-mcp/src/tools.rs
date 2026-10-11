@@ -1272,6 +1272,31 @@ mod tests {
     }
 
     #[test]
+    fn fade_volume_ramps_in_steps() {
+        let (b, sent, _) = backend("<CurrentVolume>10</CurrentVolume>", Client::McpStdio);
+        let r = b
+            .fade_volume(&fsonos_api::surface::schedules::FadeVolumeRequest {
+                zone: "Kitchen".into(),
+                volume: 30,
+                fade_secs: 1,
+            })
+            .unwrap();
+        assert!(!r.is_error, "{}", text(&r));
+        assert!(
+            text(&r).starts_with("ramped Kitchen's volume to 30"),
+            "{}",
+            text(&r)
+        );
+        let sets = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|a| *a == "SetVolume")
+            .count();
+        assert!(sets > 1, "a ramp, not a jump: {sets}");
+    }
+
+    #[test]
     fn set_tools_reach_every_room_the_zone_names() {
         let (b, sent, _) = backend("", Client::McpStdio);
         // Den and Kitchen share a group: pausing everywhere pauses it once.

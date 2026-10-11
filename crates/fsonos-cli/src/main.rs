@@ -58,6 +58,7 @@ use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand, ValueEnum};
 use fsonos_api::plan::{self, TransportAction};
 use fsonos_api::surface::queue::QueueDto;
+use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, HitDto, MoveRequest, MuteRequest, OutcomeDto, PartyRequest,
     PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
@@ -175,7 +176,13 @@ enum Command {
         title: Option<String>,
     },
     /// Pause a room's group.
-    Pause { zone: String },
+    Pause {
+        zone: String,
+        /// Fade the group out over this long first, then pause and put its
+        /// volumes back (`10`, `10s` or `1m`; at most 60 s).
+        #[arg(long, value_parser = parse_fade)]
+        fade: Option<u32>,
+    },
     /// Resume a room's group.
     Resume { zone: String },
     /// Skip to the next track in a room's group.
@@ -191,6 +198,10 @@ enum Command {
         /// Apply to the room's whole group.
         #[arg(long)]
         group: bool,
+        /// Ramp each room to the level over this long rather than at once
+        /// (`10`, `10s` or `1m`; at most 60 s).
+        #[arg(long, value_parser = parse_fade)]
+        fade: Option<u32>,
     },
     /// Mute or unmute a room.
     Mute {
@@ -486,10 +497,24 @@ fn rooms(global: &config::GlobalArgs, alias: Option<RoomsCommand>) -> anyhow::Re
 fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result<()> {
     let direct = Direct::survey(global)?;
     let tool = tool_name(control);
-    let outcome = if takes_set(control) {
-        direct.run_set(tool, |households| plan_set_for(control, households))?
-    } else {
-        direct.run(tool, |households| plan_for(control, households))?
+    let outcome = match control {
+        Command::Volume {
+            zone,
+            level,
+            group,
+            fade: Some(secs),
+        } => direct.fade_volume(&fade_volume_request(zone, level, *group, *secs)?)?,
+        Command::Pause {
+            zone,
+            fade: Some(secs),
+        } => direct.fade_out(&FadePauseRequest {
+            zone: zone.clone(),
+            fade_secs: *secs,
+        })?,
+        _ if takes_set(control) => {
+            direct.run_set(tool, |households| plan_set_for(control, households))?
+        }
+        _ => direct.run(tool, |households| plan_for(control, households))?,
     };
     emit(global.json, &outcome, |o: &OutcomeDto| {
         format!(
@@ -816,7 +841,7 @@ fn plan_set_for<'a>(
     let households = households.into();
     let zone = |zone: &String| ZoneRequest { zone: zone.clone() };
     match command {
-        Command::Pause { zone: z } => {
+        Command::Pause { zone: z, .. } => {
             plan::plan_transport_set(households, &zone(z), TransportAction::Pause)
         }
         Command::Resume { zone: z } => {
@@ -828,9 +853,9 @@ fn plan_set_for<'a>(
         Command::Previous { zone: z } => {
             plan::plan_transport_set(households, &zone(z), TransportAction::Previous)
         }
-        Command::Volume { zone, level, group } => {
-            plan::plan_volume_set(households, &volume_request(zone, level, *group)?)
-        }
+        Command::Volume {
+            zone, level, group, ..
+        } => plan::plan_volume_set(households, &volume_request(zone, level, *group)?),
         Command::Mute { zone, state } => plan::plan_mute_set(
             households,
             &MuteRequest {
@@ -886,6 +911,49 @@ fn seconds_ago(age: &str) -> Result<i64, Failure> {
 
 /// `30` sets the volume; `+5` / `-5` change it. Ranges are checked when the
 /// request is planned.
+/// A `--fade` length in seconds: `10`, `10s` or `1m`.
+fn parse_fade(text: &str) -> Result<u32, String> {
+    let lower = text.trim().to_ascii_lowercase();
+    let (digits, scale) = match lower.strip_suffix('m') {
+        Some(minutes) => (minutes, 60),
+        None => (lower.strip_suffix('s').unwrap_or(&lower), 1),
+    };
+    digits
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .and_then(|n| n.checked_mul(scale))
+        .filter(|n| *n > 0)
+        .ok_or_else(|| format!("{text:?} is not a fade length like 10, 10s or 1m"))
+}
+
+/// The ramp `volume --fade` asks for: each room `zone` names to the absolute
+/// `level` over `fade_secs`.
+fn fade_volume_request(
+    zone: &str,
+    level: &str,
+    group: bool,
+    fade_secs: u32,
+) -> Result<FadeVolumeRequest, Failure> {
+    if group {
+        return Err(
+            Failure::invalid("--fade ramps each room's own volume, not --group's")
+                .with_hint("Leave out --group: `all` or an alias ramps several rooms."),
+        );
+    }
+    let volume = volume_request(zone, level, false)?.volume.ok_or_else(|| {
+        Failure::invalid(format!(
+            "--fade needs a level to ramp to (0-100), not {level:?}"
+        ))
+        .with_hint("e.g. fsonos volume Kitchen 20 --fade 10s")
+    })?;
+    Ok(FadeVolumeRequest {
+        zone: zone.to_string(),
+        volume,
+        fade_secs,
+    })
+}
+
 fn volume_request(zone: &str, level: &str, group: bool) -> Result<VolumeRequest, Failure> {
     let level = level.trim();
     let number = |digits: &str| {
@@ -1015,6 +1083,32 @@ mod tests {
         let bad = volume_request("Den", "loud", false).unwrap_err();
         assert_eq!(bad.exit_code(), 2);
         assert!(bad.detail.contains("\"loud\" is not a number"));
+    }
+
+    #[test]
+    fn fades_parse_as_seconds_and_need_a_level() {
+        assert_eq!(parse_fade("10"), Ok(10));
+        assert_eq!(parse_fade("10s"), Ok(10));
+        assert_eq!(parse_fade(" 1m "), Ok(60));
+        for bad in ["", "0", "x", "10h", "-5"] {
+            assert!(parse_fade(bad).is_err(), "{bad:?}");
+        }
+        let Command::Volume { fade, .. } = parse(&["volume", "Kitchen", "30", "--fade", "10s"])
+        else {
+            panic!("expected volume")
+        };
+        assert_eq!(fade, Some(10));
+        let Command::Pause { fade, .. } = parse(&["pause", "Den", "--fade", "1m"]) else {
+            panic!("expected pause")
+        };
+        assert_eq!(fade, Some(60));
+        let ramp = fade_volume_request("all", "20", false, 5).unwrap();
+        assert_eq!(
+            (ramp.zone.as_str(), ramp.volume, ramp.fade_secs),
+            ("all", 20, 5)
+        );
+        assert!(fade_volume_request("Kitchen", "+5", false, 5).is_err());
+        assert!(fade_volume_request("Kitchen", "20", true, 5).is_err());
     }
 
     #[test]

@@ -20,6 +20,7 @@
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /volume` | [`crate::VolumeRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /mute` | [`crate::MuteRequest`] | [`crate::OutcomeDto`] |
+//! | `POST /volume/fade`, `/pause/fade` | `FadeVolumeRequest`, `FadePauseRequest` | [`crate::OutcomeDto`]: when the fade is done |
 //! | `POST /group` | [`crate::GroupRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /dj/start` | [`crate::DjStartRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /scenes` | | `[SceneDto]` ([`crate::surface::scenes`]) |
