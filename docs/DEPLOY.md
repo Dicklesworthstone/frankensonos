@@ -150,7 +150,9 @@ The job sets `KeepAlive` to restart on any exit, at most once every 10 s
 (`ExitTimeOut`) so the daemon can cancel its event subscriptions cleanly.
 A DJ that was playing keeps playing across a restart: serve keeps its queues
 in `dj-feeds.json` in the data directory and feeds them on, unless the queue
-was cleared or replaced meanwhile.
+was cleared or replaced meanwhile. Sleep timers carry over the same way, in
+`sleep-timers.json`: each still fades out and pauses on time, unless its
+speaker's own timer was cancelled meanwhile (from the Sonos app, say).
 
 ### Alternative: a LaunchAgent
 

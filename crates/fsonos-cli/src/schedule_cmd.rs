@@ -18,7 +18,7 @@ use fsonos_api::surface::schedules::{
 };
 use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::policy::Client;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::config::GlobalArgs;
@@ -269,11 +269,12 @@ impl SchedulerArgs {
         }
     }
 
-    /// The daemon's sleep timers.
+    /// The daemon's sleep timers, kept in `data_dir` across a restart.
     #[must_use]
-    pub fn sleep(&self) -> Sleep {
+    pub fn sleep(&self, data_dir: &Path) -> Sleep {
         self.sleep_fade
             .map_or_else(Sleep::default, Sleep::with_fade)
+            .saved_in(data_dir.join(fsonos_api::surface::schedules::SLEEP_FILE))
     }
 }
 

@@ -63,6 +63,18 @@ pub fn data_dir(global: &GlobalArgs) -> Result<PathBuf, Failure> {
     })
 }
 
+/// Take up the sleep timers of the daemon's last run, where the speakers
+/// still keep their own (off the main thread: it surveys).
+fn take_up_sleep_timers(surface: &Arc<Surface>) {
+    let surface = Arc::clone(surface);
+    thread::spawn(move || {
+        let adopted = surface.adopt_sleep_timers();
+        if adopted > 0 {
+            tracing::info!("took up {adopted} sleep timer(s) from before the restart");
+        }
+    });
+}
+
 /// The house policy from `policy.toml` in `data_dir` (defaults when absent).
 pub fn policy(data_dir: &Path) -> Result<Policy, Failure> {
     Policy::load(data_dir).map_err(|e| {
@@ -267,7 +279,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     let (surface, live) = live_surface(global, args.events_port, house, library.clone())?;
     let surface = surface
         .with_clock(scheduler.clock())
-        .with_sleep(scheduler.sleep());
+        .with_sleep(scheduler.sleep(&data_dir));
     // The owner's Spotify sign-in comes back to this daemon's own port.
     let surface = spotify_auth::install(surface, args, &data_dir);
     let surface = Arc::new(
@@ -370,6 +382,7 @@ fn start_scheduler(
     surface: &Arc<Surface>,
     stop: &Arc<AtomicBool>,
 ) -> anyhow::Result<thread::JoinHandle<()>> {
+    take_up_sleep_timers(surface);
     Arc::new(Scheduler::new(surface))
         .start(Arc::clone(stop))
         .context("start the scheduler")

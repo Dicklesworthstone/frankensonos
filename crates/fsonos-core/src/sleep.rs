@@ -8,7 +8,8 @@
 //! out, pause it, put every room's volume back (so the next play is not
 //! silent), and clear the backstop. Cancelling or extending a timer that is
 //! fading stops the fade and puts the volumes back; a volume change from
-//! anyone else during the fade ends the timer where it is.
+//! anyone else during the fade ends the timer where it is. A daemon that
+//! restarts takes its saved timers up again with [`SleepTimers::adopt`].
 
 use crate::fade::{FadeOutcome, Fader};
 use crate::snapshot::member_rooms;
@@ -17,6 +18,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use fsonos_proto::Transport;
 use fsonos_proto::control as soap;
 use fsonos_types::PlayerId;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Mutex, PoisonError};
@@ -30,13 +32,14 @@ pub const FADE: Duration = Duration::from_mins(2);
 pub const BACKSTOP: Duration = Duration::from_mins(5);
 
 /// An armed sleep timer.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SleepTimer {
     pub coordinator: PlayerId,
     /// The room it was set on, for messages.
     pub room: String,
     pub ends: DateTime<Utc>,
     /// The fade has started.
+    #[serde(default)]
     pub fading: bool,
 }
 
@@ -240,6 +243,30 @@ impl SleepTimers {
         }
     }
 
+    /// Arm `timer` as it was saved, leaving the player's own timer (its
+    /// backstop, still running) as it is: how a restarted daemon takes up
+    /// its timers. A group that already has a timer keeps it. Whether it was
+    /// armed.
+    pub fn adopt(&self, timer: SleepTimer) -> bool {
+        let generation = self.generation();
+        let mut armed = self.lock();
+        if armed.contains_key(&timer.coordinator) {
+            return false;
+        }
+        armed.insert(
+            timer.coordinator.clone(),
+            Armed {
+                timer: SleepTimer {
+                    fading: false,
+                    ..timer
+                },
+                generation,
+                fading_rooms: Vec::new(),
+            },
+        );
+        true
+    }
+
     /// `coordinator`'s timer, if it has one.
     #[must_use]
     pub fn get(&self, coordinator: &PlayerId) -> Option<SleepTimer> {
@@ -374,5 +401,31 @@ mod tests {
             "only once"
         );
         assert_eq!(timers.due(t0 + TimeDelta::hours(2)).len(), 1, "B, late");
+    }
+
+    #[test]
+    fn an_adopted_timer_is_armed_afresh_and_never_replaces_one() {
+        let timers = SleepTimers::with_fade(Duration::from_mins(2));
+        let ends = DateTime::parse_from_rfc3339("2026-10-07T22:45:00Z")
+            .unwrap()
+            .to_utc();
+        let saved = SleepTimer {
+            coordinator: PlayerId("RINCON_A".into()),
+            room: "Den".into(),
+            ends,
+            fading: true,
+        };
+        let json = serde_json::to_string(&saved).unwrap();
+        assert_eq!(serde_json::from_str::<SleepTimer>(&json).unwrap(), saved);
+        assert!(timers.adopt(saved.clone()));
+        let armed = timers.get(&saved.coordinator).unwrap();
+        assert!(!armed.fading, "its fade starts again when it comes due");
+        assert_eq!(armed.ends, ends);
+        let later = SleepTimer {
+            ends: ends + TimeDelta::hours(1),
+            ..saved.clone()
+        };
+        assert!(!timers.adopt(later), "the timer already armed stands");
+        assert_eq!(timers.get(&saved.coordinator).unwrap().ends, ends);
     }
 }

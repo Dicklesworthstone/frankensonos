@@ -24,13 +24,14 @@ use fsonos_core::schedule::{
     self as core_schedule, DEFAULT_GRACE, Schedule, ScheduleAction, ScheduleError, ScheduleSpec,
     Tick,
 };
-use fsonos_core::sleep::{FADE, SleepOutcome, SleepTimers};
+use fsonos_core::sleep::{FADE, SleepOutcome, SleepTimer, SleepTimers};
 use fsonos_core::{CoreError, HouseholdState};
 use fsonos_proto::{ProtoError, control as soap};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Write as _};
 use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -515,12 +516,24 @@ pub fn client_of(key: &str) -> Client {
     }
 }
 
+/// The file in the data directory that keeps the daemon's sleep timers
+/// across a restart.
+pub const SLEEP_FILE: &str = "sleep-timers.json";
+
 /// The daemon's sleep timers and the fader that fades them out. Give one to
 /// the daemon's surface ([`Surface::with_sleep`]); its [`Scheduler`] runs
-/// them.
+/// them. With a file ([`Sleep::saved_in`]) they are written there whenever
+/// one changes, and a restarted daemon takes them up again
+/// ([`Surface::adopt_sleep_timers`]).
 pub struct Sleep {
     timers: SleepTimers,
     fader: Fader,
+    saved: Option<PathBuf>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedTimers {
+    timers: Vec<SleepTimer>,
 }
 
 impl Default for Sleep {
@@ -536,7 +549,56 @@ impl Sleep {
         Self {
             timers: SleepTimers::with_fade(fade),
             fader: Fader::default(),
+            saved: None,
         }
+    }
+
+    /// Keep the timers in `path` (the data directory's [`SLEEP_FILE`]).
+    #[must_use]
+    pub fn saved_in(mut self, path: PathBuf) -> Self {
+        self.saved = Some(path);
+        self
+    }
+
+    /// Write every armed timer to the file, whole (a crash mid-write leaves
+    /// the old one). A file that can't be written never fails a timer.
+    fn save(&self) {
+        let Some(path) = &self.saved else {
+            return;
+        };
+        let saved = SavedTimers {
+            timers: self.timers.all(),
+        };
+        let partial = path.with_extension("json.partial");
+        let written = serde_json::to_string_pretty(&saved)
+            .map_err(std::io::Error::other)
+            .and_then(|text| std::fs::write(&partial, text))
+            .and_then(|()| std::fs::rename(&partial, path));
+        if let Err(e) = written {
+            tracing::warn!("sleep timers not saved to {}: {e}", path.display());
+        }
+    }
+
+    /// The timers the file holds; none when it is missing or unreadable.
+    fn saved_timers(&self) -> Vec<SleepTimer> {
+        let Some(path) = &self.saved else {
+            return Vec::new();
+        };
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(e) => {
+                tracing::warn!("saved sleep timers unreadable: {e}");
+                return Vec::new();
+            }
+        };
+        serde_json::from_str::<SavedTimers>(&text).map_or_else(
+            |e| {
+                tracing::warn!("saved sleep timers malformed: {e}");
+                Vec::new()
+            },
+            |saved| saved.timers,
+        )
     }
 
     /// A volume or mute change on `coordinator`'s group: every fade in flight
@@ -754,9 +816,65 @@ impl Surface {
         if let Err(f) = &result {
             self.notice(f);
         }
+        if let Some(sleep) = &self.sleep {
+            sleep.save();
+        }
         let intent = format!("set_sleep_timer: {}'s group {change}", zone.room);
         self.log_write(client, intent, &result, |d| d.done.clone());
         result
+    }
+
+    /// Take up the sleep timers a previous run of the daemon saved: each one
+    /// whose group still has the player's own timer running (its backstop)
+    /// is armed again, to fade out when it comes due, even if that is now. A
+    /// timer whose player dropped its own meanwhile (cancelled from the
+    /// Sonos app, a reboot) stays gone. How many were taken up.
+    pub fn adopt_sleep_timers(&self) -> usize {
+        let Some(sleep) = &self.sleep else {
+            return 0;
+        };
+        let saved = sleep.saved_timers();
+        if saved.is_empty() {
+            return 0;
+        }
+        let households = match self.households() {
+            Ok(households) => households,
+            Err(f) => {
+                tracing::warn!("saved sleep timers not taken up: {}", f.detail);
+                return 0;
+            }
+        };
+        let mut adopted = 0;
+        for timer in saved {
+            let Some(zone) = Zone::of(&households, &timer.coordinator) else {
+                tracing::info!(
+                    "sleep timer of {}'s group dropped: no such group now",
+                    timer.room
+                );
+                continue;
+            };
+            match speaker_timer(&*self.transport, &zone) {
+                Ok(Some(_)) => {
+                    if sleep.timers.adopt(SleepTimer {
+                        room: zone.room.clone(),
+                        ..timer
+                    }) {
+                        adopted += 1;
+                    }
+                }
+                Ok(None) => tracing::info!(
+                    "sleep timer of {}'s group dropped: the speaker's own timer is gone",
+                    zone.room
+                ),
+                Err(f) => tracing::warn!(
+                    "sleep timer of {}'s group not taken up: {}",
+                    zone.room,
+                    f.detail
+                ),
+            }
+        }
+        sleep.save();
+        adopted
     }
 
     fn sleep_in_daemon(
@@ -1384,6 +1502,7 @@ impl Scheduler {
                         ),
                         Err(e) => tracing::warn!("sleep timer in {}'s group: {e}", timer.room),
                     }
+                    sleep.save();
                 });
                 Ran::Fading { zone }
             })
@@ -1503,6 +1622,7 @@ impl Scheduler {
                     }
                 }
             }
+            sleep.save();
         }
         if !self.wait(timeout) {
             tracing::warn!("scheduled runs still going at shutdown");
@@ -1834,6 +1954,49 @@ mod tests {
                 .iter()
                 .all(|a| a.action.intent.starts_with("set_sleep_timer: Patio"))
         );
+    }
+
+    #[test]
+    fn the_daemons_timers_come_back_after_a_restart_unless_the_speaker_dropped_its_own() {
+        let dir = std::env::temp_dir().join(format!("fsonos-sleep-saved-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(SLEEP_FILE);
+        let _ = std::fs::remove_file(&path);
+        let daemon = |out_args: &'static str| {
+            let houses = households();
+            let survey: Survey = Box::new(move |_| Ok(houses.clone()));
+            let clock = FakeClock::new(DateTime::parse_from_rfc3339(T0).unwrap());
+            let canned = Canned {
+                out_args,
+                sent: Arc::new(Mutex::new(Vec::new())),
+            };
+            Surface::new(Box::new(canned), survey, Policy::default(), Box::new(clock))
+                .with_sleep(Sleep::default().saved_in(path.clone()))
+        };
+        // The speaker's own timer (the backstop) runs on in both lives.
+        let running = "<RemainingSleepTimerDuration>0:50:00</RemainingSleepTimerDuration>";
+        let first = daemon(running);
+        let set = first
+            .set_sleep_timer(&Client::Cli, &sleep_req(Some("45m"), false, false))
+            .unwrap();
+        assert!(set.fades, "{set:?}");
+        drop(first);
+
+        let second = daemon(running);
+        assert_eq!(second.adopt_sleep_timers(), 1);
+        let listed = second.sleep_timers(&Client::Cli, Some("Patio")).unwrap();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert!(listed[0].fades, "the daemon's timer, fading: {listed:?}");
+        assert_eq!(listed[0].ends, set.ends, "it ends when it did");
+
+        // Cancelled on the speaker meanwhile: it stays cancelled.
+        let third = daemon("<RemainingSleepTimerDuration></RemainingSleepTimerDuration>");
+        assert_eq!(third.adopt_sleep_timers(), 0);
+        assert!(third.sleep_timers(&Client::Cli, None).unwrap().is_empty());
+        let file = std::fs::read_to_string(&path).unwrap();
+        let kept: SavedTimers = serde_json::from_str(&file).unwrap();
+        assert!(kept.timers.is_empty(), "the file forgets it: {file}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
