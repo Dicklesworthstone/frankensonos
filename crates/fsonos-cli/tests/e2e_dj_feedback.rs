@@ -2,14 +2,17 @@
 //! households, with `fsonos serve` on a clock the test moves
 //! (`--clock-file`) in step with the sim's own:
 //!
-//! * likes from the CLI (`fsonos dj like`) and an agent (MCP `dj_feedback`),
-//!   and a dislike over HTTP (`POST /dj/feedback`, no room: the group the DJ
-//!   plays in), each recorded about the work playing;
+//! * likes from the CLI (`fsonos dj like`, which asks the daemon: with a
+//!   room, and without one, the group its DJ plays in) and an agent (MCP
+//!   `dj_feedback`), and a dislike over HTTP (`POST /dj/feedback`, no room),
+//!   each recorded about the work playing;
 //! * an early skip: `POST /dj/skip` ten seconds into a work;
 //! * `fsonos dj why` shows the feedback factor in the next pick (a skip plays
 //!   the work already waiting, picked before the feedback; the one queued
 //!   behind it weighs it);
-//! * a full listen: that work heard to the end of its last movement.
+//! * a full listen: that work heard to the end of its last movement;
+//! * a like from the CLI reaches the daemon's DJ, not one of its own: the
+//!   pick it makes as the work playing ends weighs it.
 
 mod e2e;
 
@@ -128,8 +131,8 @@ fn signals(rows: &[Feedback]) -> Vec<i64> {
     rows.iter().map(|f| f.signal).collect()
 }
 
-/// In order: the rows' times come from different clocks (the CLI's and an
-/// agent's real time, the daemon's test clock).
+/// In order: the rows' times come from different clocks (an agent's real
+/// time, the daemon's test clock).
 fn sorted(mut signals: Vec<i64>) -> Vec<i64> {
     signals.sort_unstable();
     signals
@@ -204,8 +207,8 @@ fn likes_dislikes_skips_and_full_listens_are_recorded_and_steer_the_dj() {
 
     explicit_feedback(&mut s, &api);
 
-    // The CLI and the agent stamp their likes with the real time: the
-    // daemon's clock moves on past them before it picks again.
+    // The agent (its own process) stamps its like with the real time: the
+    // daemon's clock moves on past it before it picks again.
     let t1 = now_plus(1);
     set_clock(&clock, t1);
     let (status, _) = post(&api, "/dj/skip", &json!({ "zone": ROOM }));
@@ -290,8 +293,8 @@ fn likes_dislikes_skips_and_full_listens_are_recorded_and_steer_the_dj() {
     s.finish();
 }
 
-/// A like from the CLI and one from an agent, then a dislike over HTTP
-/// without a room: three rows about the work playing.
+/// Two likes from the CLI (one without a room) and one from an agent, then
+/// a dislike over HTTP without a room: four rows about the work playing.
 fn explicit_feedback(s: &mut Scenario, api: &str) {
     let run = s.cli("cli-like", &["dj", "like", ROOM]);
     s.check(
@@ -305,8 +308,8 @@ fn explicit_feedback(s: &mut Scenario, api: &str) {
     s.check(
         "cli-like-nowhere",
         "cli",
-        "without a room, the CLI on its own (no DJ running in it) asks for one",
-        run.code == Some(2) && run.stderr.contains("name the room"),
+        "without a room, the CLI's like is about the group the daemon's DJ plays in",
+        run.code == Some(0) && run.stdout.starts_with("noted that you like "),
         format!("{run:?}"),
     );
 
@@ -338,12 +341,100 @@ fn explicit_feedback(s: &mut Scenario, api: &str) {
     s.check(
         "recorded",
         "store",
-        "three rows about one work, its composer and its performer: +3, +3, -3",
-        sorted(signals(&rows)) == [-3, 3, 3]
+        "four rows about one work, its composer and its performer: +3, +3, +3, -3",
+        sorted(signals(&rows)) == [-3, 3, 3, 3]
             && rows.iter().all(|r| r.work_key == rows[0].work_key)
             && rows
                 .iter()
                 .all(|r| r.performer.as_deref() == Some("sim ensemble")),
         format!("{rows:?}"),
     );
+}
+
+/// A like from the CLI with serve's DJ playing is the daemon's to weigh, not
+/// a DJ's of the CLI's own: the pick the daemon's DJ makes as the work
+/// playing ends (before that full listen reloads its feedback from the
+/// store) weighs it.
+#[test]
+fn a_like_from_the_cli_moves_the_daemons_next_pick() {
+    let mut s = Scenario::start("dj_feedback_cli");
+    s.sim(SimHousehold::standard());
+    seed(&mut s);
+    let clock = s.dir().join("clock");
+    let t0 = now_plus(0);
+    set_clock(&clock, t0);
+    let (mut daemon, api) = serve_with_the_dj(&mut s, &clock);
+    let before = dj_status(&api);
+    s.check(
+        "unweighed",
+        "http",
+        "the works the DJ queued as it started weigh no feedback",
+        !picks(&before).is_empty() && !picks(&before).iter().any(|w| weighs_feedback(w)),
+        &before,
+    );
+
+    let run = s.cli("cli-like", &["dj", "like", ROOM]);
+    s.check(
+        "cli-like",
+        "cli",
+        "fsonos dj like records a like of the work playing",
+        run.code == Some(0) && run.stdout.starts_with("noted that you like "),
+        format!("{run:?}"),
+    );
+
+    // The work playing is heard to its end: the DJ queues one more.
+    let sim = s.sim_handle().expect("the sim");
+    let mut at = t0;
+    for _ in 0..2 {
+        let (track, length) = on_now(&s);
+        at += TimeDelta::seconds(i64::from(length) + 2);
+        set_clock(&clock, at);
+        sim.advance(Duration::from_secs(u64::from(length) + 2));
+        eventually(Duration::from_secs(10), || on_now(&s).0 == track + 1);
+    }
+    let mut after = Value::Null;
+    let weighed = eventually(Duration::from_secs(10), || {
+        after = dj_status(&api);
+        picks(&after).iter().any(|w| weighs_feedback(w))
+    });
+    s.check(
+        "next-pick",
+        "http",
+        "the daemon's DJ's next pick, made as that work ended, weighs the CLI's like",
+        weighed,
+        format!("{after}; rows {:?}", feedback(&s)),
+    );
+
+    let code = daemon.interrupt(Duration::from_secs(10));
+    s.check(
+        "exit",
+        "daemon",
+        "SIGINT stops serve cleanly",
+        code == Some(0),
+        format!("{code:?}"),
+    );
+    s.finish();
+}
+
+/// The Living Room's DJ as serve reports it.
+fn dj_status(api: &str) -> Value {
+    http(api, "GET", "/zones/Living%20Room/dj", &[], "")
+        .ok()
+        .and_then(|(_, _, b)| serde_json::from_str(&b).ok())
+        .unwrap_or(Value::Null)
+}
+
+/// The DJ's work playing and the works it queued.
+fn picks(status: &Value) -> Vec<&Value> {
+    std::iter::once(&status["now"])
+        .chain(status["next"].as_array().into_iter().flatten())
+        .filter(|w| w.is_object())
+        .collect()
+}
+
+/// Whether the owner's feedback moved a pick's odds.
+fn weighs_feedback(work: &Value) -> bool {
+    work["reason"]["factors"]
+        .as_array()
+        .is_some_and(|f| f.iter().any(|f| f["factor"] == "feedback"))
 }

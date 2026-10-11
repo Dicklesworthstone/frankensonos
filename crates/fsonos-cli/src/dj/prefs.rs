@@ -1,9 +1,9 @@
 //! The owner's standing preferences for the DJ: `preferences.toml` beside
 //! `moods.toml`, read with fsonos-spotify's `Preferences` and laid on the
 //! DJ's pool on each start and skip, and right after a change made through
-//! this DJ (so a change through the daemon's API applies from its next
-//! pick; one made by another process, from the daemon's next start or
-//! skip).
+//! this DJ (so a change through the daemon's API, `fsonos dj prefs` with
+//! the daemon up included, applies from its next pick; one made by another
+//! process, from the daemon's next start or skip).
 
 use clap::Subcommand;
 use fsonos_api::surface::dj_prefs::{DjPreferRequest, PrefChange, PreferencesDto, PreferredDto};
@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use super::State;
 use crate::config::GlobalArgs;
+use crate::remote::Daemon;
 
 /// `fsonos dj prefs …`.
 #[derive(Debug, Clone, Subcommand)]
@@ -133,32 +134,46 @@ pub(super) fn change(
 }
 
 /// `fsonos dj prefs show|set|unset`, through the same surface the daemon's
-/// API uses. The file is shared, so a running daemon's DJ follows a change
-/// from its next start or skip.
+/// API uses: through the daemon when one answers, so its DJ follows a
+/// change from its next pick, else right here (the file is shared, so a
+/// running daemon's DJ then follows it from its next start or skip).
 pub fn run(global: &GlobalArgs, action: &PrefsAction) -> anyhow::Result<()> {
-    let dir = crate::daemon::data_dir(global)?;
-    let surface = crate::daemon::surface(global, crate::daemon::policy(&dir)?)?;
-    let surface = crate::daemon::with_action_log(surface, &dir, "cli");
     let req = |key: &String, value: Option<&String>, unset: bool| DjPreferRequest {
         key: key.clone(),
         value: value.cloned(),
         unset,
     };
-    let preferred = match action {
-        PrefsAction::Show => {
-            let shown = surface.dj_preferences(&Client::Cli)?;
-            return crate::emit(global.json, &shown, PreferencesDto::text);
-        }
-        PrefsAction::Set { key, value } => {
-            surface.dj_prefer(&Client::Cli, &req(key, Some(value), false))?
-        }
-        PrefsAction::Unset { key, value } => {
-            surface.dj_prefer(&Client::Cli, &req(key, value.as_ref(), true))?
-        }
+    let change = match action {
+        PrefsAction::Show => None,
+        PrefsAction::Set { key, value } => Some(req(key, Some(value), false)),
+        PrefsAction::Unset { key, value } => Some(req(key, value.as_ref(), true)),
     };
-    crate::emit(global.json, &preferred, |p: &PreferredDto| {
-        format!("{}\n", p.done)
-    })
+    let text = |p: &PreferredDto| format!("{}\n", p.done);
+    if let Some(daemon) = Daemon::find(global, global.daemon)? {
+        return match &change {
+            None => {
+                let shown: PreferencesDto = daemon.get("/dj/preferences")?;
+                crate::emit(global.json, &shown, PreferencesDto::text)
+            }
+            Some(change) => {
+                let preferred: PreferredDto = daemon.post("/dj/preferences", change)?;
+                crate::emit(global.json, &preferred, text)
+            }
+        };
+    }
+    let dir = crate::daemon::data_dir(global)?;
+    let surface = crate::daemon::surface(global, crate::daemon::policy(&dir)?)?;
+    let surface = crate::daemon::with_action_log(surface, &dir, "cli");
+    match &change {
+        None => {
+            let shown = surface.dj_preferences(&Client::Cli)?;
+            crate::emit(global.json, &shown, PreferencesDto::text)
+        }
+        Some(change) => {
+            let preferred = surface.dj_prefer(&Client::Cli, change)?;
+            crate::emit(global.json, &preferred, text)
+        }
+    }
 }
 
 #[cfg(test)]

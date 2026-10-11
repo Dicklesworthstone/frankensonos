@@ -6,10 +6,10 @@
 //! the daemon when one answers (found the way every command finds it, see
 //! `crate::remote`; `--daemon` requires it, `--direct` skips it), through the
 //! same HTTP API an agent uses, and so do the reads (`dj status`, `dj why`,
-//! `dj moods`). With no daemon a start plays the works it queues and no
-//! more, and the reads show the steering (kept in the data directory) but no
-//! running DJ. Steering is stored, so a steer from here reaches the daemon's
-//! next pick.
+//! `dj moods`), like and dislike, and `dj prefs`. With no daemon a start
+//! plays the works it queues and no more, and the reads show the steering
+//! (kept in the data directory) but no running DJ. Steering is stored, so a
+//! steer from here reaches the daemon's next pick.
 
 use clap::{ArgAction, Subcommand};
 use fsonos_api::dj::{DjMoodsDto, DjStatusDto, SteerConstraints};

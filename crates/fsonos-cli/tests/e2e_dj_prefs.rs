@@ -1,17 +1,20 @@
 //! The owner's standing DJ preferences on every surface, against the virtual
 //! households. The CLI sets and refuses them in preferences.toml. A daemon
 //! started after a ban never picks the banned composer's works. HTTP and
-//! MCP over HTTP read and change the same file.
+//! MCP over HTTP read and change the same file. With serve's DJ playing, a
+//! preference set from the CLI goes through the daemon, and the DJ's next
+//! pick follows it.
 
 mod e2e;
 
 use e2e::{Daemon, Scenario, http};
 use fsonos_core::store::SqliteStore;
+use fsonos_proto::control::get_position_info;
 use fsonos_sim::SimHousehold;
 use fsonos_spotify::cache::apply_library_read;
 use fsonos_spotify::library::{LibraryItem, Origin};
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// `key=value` out of a daemon line.
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -312,4 +315,108 @@ fn check_cli(s: &mut Scenario) {
         run.code == Some(0) && run.stdout.contains("nothing to remove"),
         format!("{}{}", run.stdout, run.stderr),
     );
+}
+
+/// A preference set from the CLI with serve's DJ playing is the daemon's DJ's
+/// from its next pick, not from its next start or skip: the pick it makes
+/// as the work playing ends follows it.
+#[test]
+fn a_preference_from_the_cli_shapes_the_daemons_next_pick() {
+    let mut s = Scenario::start("dj-prefs-daemon");
+    s.sim(SimHousehold::standard());
+    seed(&mut s);
+    let (mut daemon, api, _) = serve(&mut s);
+    let (code, started) = call(
+        &api,
+        "POST",
+        "/dj/start",
+        Some(&json!({ "zone": "Living Room" })),
+    );
+    let (_, before) = call(&api, "GET", "/zones/Living%20Room/dj", None);
+    s.check(
+        "start",
+        "http",
+        "the DJ plays, no pick of it favored by a preference",
+        code == 200
+            && !picks(&before).is_empty()
+            && !picks(&before).iter().any(|w| weighs(w, "preference")),
+        format!("{started}\n{before}"),
+    );
+
+    let run = s.cli(
+        "cli-favor",
+        &["dj", "prefs", "set", "favor.artists", "Sim Ensemble"],
+    );
+    s.check(
+        "cli-favor",
+        "cli",
+        "fsonos dj prefs set favors the ensemble from the DJ's next pick",
+        run.code == Some(0) && run.stdout.contains("next pick"),
+        format!("{run:?}"),
+    );
+
+    // The work playing is heard to its end: the DJ queues one more.
+    let sim = s.sim_handle().expect("the sim");
+    for _ in 0..2 {
+        let (track, length) = on_now(&s);
+        sim.advance(Duration::from_secs(u64::from(length) + 2));
+        eventually(Duration::from_secs(10), || on_now(&s).0 == track + 1);
+    }
+    let mut after = Value::Null;
+    let favored = eventually(Duration::from_secs(10), || {
+        after = call(&api, "GET", "/zones/Living%20Room/dj", None).1;
+        picks(&after).iter().any(|w| weighs(w, "preference"))
+    });
+    s.check(
+        "next-pick",
+        "http",
+        "the daemon's DJ's next pick, made as that work ended, is favored by the preference",
+        favored,
+        &after,
+    );
+
+    let code = daemon.interrupt(Duration::from_secs(10));
+    s.check(
+        "exit",
+        "daemon",
+        "SIGINT stops serve cleanly",
+        code == Some(0),
+        format!("{code:?}"),
+    );
+    s.finish();
+}
+
+/// Poll `probe` until it holds or `within` passes.
+fn eventually(within: Duration, mut probe: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + within;
+    loop {
+        if probe() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// The Living Room's queue position and the length of its track.
+fn on_now(s: &Scenario) -> (u32, u32) {
+    get_position_info(&s.lan(), s.ip("Living Room"))
+        .map_or((0, 300), |p| (p.track, p.duration_secs.unwrap_or(300)))
+}
+
+/// The DJ's work playing and the works it queued.
+fn picks(status: &Value) -> Vec<&Value> {
+    std::iter::once(&status["now"])
+        .chain(status["next"].as_array().into_iter().flatten())
+        .filter(|w| w.is_object())
+        .collect()
+}
+
+/// Whether `factor` moved a pick's odds.
+fn weighs(work: &Value, factor: &str) -> bool {
+    work["reason"]["factors"]
+        .as_array()
+        .is_some_and(|f| f.iter().any(|f| f["factor"] == factor))
 }

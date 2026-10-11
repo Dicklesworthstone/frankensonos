@@ -1,7 +1,11 @@
 //! `fsonos scene save|apply|list|show|rm`: the house's named states, through
 //! the same surface calls as `/scenes` and the scene tools, as the house
 //! policy's `cli` client. Listing, showing and removing read only the store
-//! in the data directory; saving and applying survey the LAN first.
+//! in the data directory; saving surveys the LAN first. Applying goes
+//! through the daemon when one answers (found as every command finds it,
+//! see `crate::remote`), so a DJ the scene starts is the daemon's, which
+//! keeps the group's queue going; else it surveys and applies right here,
+//! and that DJ plays the works it queues and no more.
 
 use clap::{Args, Subcommand};
 use fsonos_api::Failure;
@@ -11,6 +15,7 @@ use fsonos_core::policy::Client;
 use std::fmt::Write as _;
 
 use crate::config::GlobalArgs;
+use crate::remote::{Daemon, pct};
 
 #[derive(Args)]
 pub struct SceneArgs {
@@ -44,17 +49,25 @@ fn surface(global: &GlobalArgs) -> Result<Surface, Failure> {
 }
 
 pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
-    let s = surface(global)?;
+    let s = || surface(global);
     let cli = Client::Cli;
     match &args.action {
         SceneAction::Save { name } => {
-            let scene = s.save_scene(&cli, name)?;
+            let scene = s()?.save_scene(&cli, name)?;
             crate::emit(global.json, &scene, |scene| {
                 format!("saved scene {}", show_text(scene))
             })
         }
         SceneAction::Apply { name } => {
-            let applied = s.apply_scene(&cli, name)?;
+            // A DJ the scene starts keeps the group's queue going only in
+            // the daemon.
+            let applied: SceneApplyDto = match Daemon::find(global, global.daemon)? {
+                Some(daemon) => daemon.post(
+                    &format!("/scenes/{}/apply", pct(name)),
+                    &serde_json::json!({}),
+                )?,
+                None => s()?.apply_scene(&cli, name)?,
+            };
             crate::emit(global.json, &applied, apply_text)?;
             if applied.complete {
                 Ok(())
@@ -67,15 +80,15 @@ pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
             }
         }
         SceneAction::List => {
-            let scenes = s.scenes(&cli)?;
+            let scenes = s()?.scenes(&cli)?;
             crate::emit(global.json, &scenes, |scenes| list_text(scenes))
         }
         SceneAction::Show { name } => {
-            let scene = s.scene(&cli, name)?;
+            let scene = s()?.scene(&cli, name)?;
             crate::emit(global.json, &scene, show_text)
         }
         SceneAction::Rm { name } => {
-            let deleted = s.delete_scene(&cli, name)?;
+            let deleted = s()?.delete_scene(&cli, name)?;
             crate::emit(global.json, &deleted, |d| format!("{}\n", d.done))
         }
     }

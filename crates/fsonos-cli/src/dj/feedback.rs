@@ -25,6 +25,7 @@ use std::path::PathBuf;
 use super::{State, room};
 use crate::config::GlobalArgs;
 use crate::dj_view::store_failure;
+use crate::remote::Daemon;
 
 /// How far short of its length a movement may end and still count as heard
 /// to the end (events arrive a moment late).
@@ -194,19 +195,24 @@ pub(super) fn explicit(
 }
 
 /// `fsonos dj like|dislike [room]`, through the same surface as the HTTP API
-/// and the MCP tools (as the policy's `cli` client).
+/// and the MCP tools (as the policy's `cli` client): through the daemon when
+/// one answers, so its DJ weighs the feedback from its next pick (and knows
+/// the group it plays in), else right here.
 pub fn run(global: &GlobalArgs, zone: Option<&str>, feedback: DjFeedback) -> anyhow::Result<()> {
-    let dir = crate::daemon::data_dir(global)?;
-    let surface = crate::daemon::surface(global, crate::daemon::policy(&dir)?)?;
-    let surface = crate::daemon::with_action_log(surface, &dir, "cli");
     let req = DjFeedbackRequest {
         zone: zone.map(str::to_string),
         signal: feedback.as_str().to_string(),
     };
+    let text = |g: &DjFeedbackDto| format!("{}\n", g.done);
+    if let Some(daemon) = Daemon::find(global, global.daemon)? {
+        let given: DjFeedbackDto = daemon.post("/dj/feedback", &req)?;
+        return crate::emit(global.json, &given, text);
+    }
+    let dir = crate::daemon::data_dir(global)?;
+    let surface = crate::daemon::surface(global, crate::daemon::policy(&dir)?)?;
+    let surface = crate::daemon::with_action_log(surface, &dir, "cli");
     let given = surface.dj_feedback(&Client::Cli, &req)?;
-    crate::emit(global.json, &given, |g: &DjFeedbackDto| {
-        format!("{}\n", g.done)
-    })
+    crate::emit(global.json, &given, text)
 }
 
 #[cfg(test)]

@@ -3,7 +3,9 @@
 //! `POST /dj/start` queues whole works and plays them (confirmed in the
 //! sim), the live model's playback records the DJ's track in the history,
 //! `POST /dj/skip` moves to another work, and `POST /dj/stop` stops. Then
-//! `fsonos dj start|skip|stop` do the same through the daemon.
+//! `fsonos dj start|skip|stop` do the same through the daemon, and
+//! `fsonos scene apply` of a scene saved with the DJ playing starts the
+//! daemon's DJ.
 
 mod e2e;
 
@@ -159,6 +161,7 @@ fn the_dj_queues_whole_works_and_skips_and_stops() {
 
     check_skip_and_stop(&mut s, &api, &first);
     check_the_cli_through_the_daemon(&mut s, &api);
+    check_a_dj_scene_through_the_daemon(&mut s, &api);
 
     let code = daemon.interrupt(Duration::from_secs(10));
     s.check(
@@ -256,6 +259,45 @@ fn check_the_cli_through_the_daemon(s: &mut Scenario, api: &str) {
         "fsonos dj stop stops the daemon's DJ and the group",
         stop.code == Some(0) && state == Some(TransportState::Stopped) && !after_stop,
         format!("{stop:?}; {state:?}; daemon running: {after_stop}"),
+    );
+}
+
+/// `fsonos scene apply` reaches the daemon: a scene saved with the DJ
+/// playing, applied from the CLI once the DJ stopped, starts the daemon's
+/// DJ again (where a CLI-run DJ would end with the process).
+fn check_a_dj_scene_through_the_daemon(s: &mut Scenario, api: &str) {
+    let running = || {
+        http(api, "GET", "/zones/Living%20Room/dj", &[], "")
+            .ok()
+            .and_then(|(_, _, b)| serde_json::from_str::<Value>(&b).ok())
+            .is_some_and(|st| st["running"] == true)
+    };
+    let zone = json!({ "zone": "Living Room" });
+    let (started, _) = post(api, "/dj/start", &zone);
+    let (saved, scene) = http(api, "PUT", "/scenes/concert", &[], "")
+        .map_or((0, Value::Null), |(code, _, b)| {
+            (code, serde_json::from_str(&b).unwrap_or(Value::Null))
+        });
+    let with_the_dj = scene["groups"]
+        .as_array()
+        .is_some_and(|g| g.iter().any(|g| g["source"]["kind"] == "dj"));
+    let (stopped, _) = post(api, "/dj/stop", &zone);
+    s.check(
+        "scene-save",
+        "http",
+        "a scene saved with the DJ playing has the DJ in it",
+        started == 200 && saved == 200 && with_the_dj && stopped == 200 && !running(),
+        &scene,
+    );
+
+    let apply = s.cli("cli-scene-apply", &["scene", "apply", "concert"]);
+    let after = running();
+    s.check(
+        "cli-scene-apply",
+        "cli",
+        "fsonos scene apply starts the daemon's DJ, as the scene has it",
+        apply.code == Some(0) && after,
+        format!("{apply:?}; daemon running: {after}"),
     );
 }
 

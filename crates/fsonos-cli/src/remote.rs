@@ -9,15 +9,17 @@
 //! `GET /health` within [`PROBE`]. With no file, or no answer, it runs
 //! directly, so the CLI never waits on a daemon that is not there.
 //! `--daemon` requires the daemon; `--direct` never asks it. The DJ's reads
-//! (`fsonos dj status|why|moods`, see `crate::dj_cmd`) find it the same way.
+//! (`fsonos dj status|why|moods`, see `crate::dj_cmd`), its feedback and
+//! preferences (`fsonos dj like|dislike|prefs`) and `fsonos scene apply`
+//! find it the same way.
 //!
 //! Through the daemon a command sends the same request body the HTTP API
 //! documents and prints the same DTO the direct path prints, so `--json`
 //! output is the same either way; `fsonos sleep` through the daemon gets
 //! its fade, `fsonos play --search` searches the daemon's library and
 //! favorites, and `fsonos dj start|skip|stop|steer` reach the DJ that keeps
-//! the group's queue going. Commands with no route here (doctor, scenes,
-//! schedules, ...) run directly.
+//! the group's queue going. Commands with no route here (doctor, schedules,
+//! the other scene commands, ...) run directly.
 
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
