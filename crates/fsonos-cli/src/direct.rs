@@ -369,8 +369,15 @@ pub fn status_text(state: &ZoneStateDto) -> String {
             let _ = write!(out, " (queue #{n})");
         }
     }
-    if let Some(volume) = state.volume {
-        let _ = write!(out, "\n  volume {volume}");
+    match (state.volume, state.mute) {
+        (Some(volume), Some(true)) => {
+            let _ = write!(out, "\n  volume {volume} (muted)");
+        }
+        (Some(volume), _) => {
+            let _ = write!(out, "\n  volume {volume}");
+        }
+        (None, Some(true)) => out.push_str("\n  muted"),
+        (None, _) => {}
     }
     out.push('\n');
     out

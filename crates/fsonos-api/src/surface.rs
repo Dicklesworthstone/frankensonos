@@ -1174,7 +1174,7 @@ impl Surface {
     }
 
     /// What `zone` is doing right now (`get_zone_state`): its group, the
-    /// group's transport and track, and the room's own volume.
+    /// group's transport and track, and the room's own volume and mute.
     pub fn zone_state(&self, client: &Client, zone: &str) -> Result<ZoneStateDto, Failure> {
         self.guard(client).authorize("get_zone_state", true)?;
         let households = self.households()?;
@@ -1203,10 +1203,14 @@ impl Surface {
         let volume = heard(&target.player.id)
             .and_then(|room| room.volume)
             .or_else(|| control::volume(&*self.transport, &households, &target.player.id).ok());
+        let mute = heard(&target.player.id)
+            .and_then(|room| room.mute)
+            .or_else(|| fsonos_proto::control::get_mute(&*self.transport, target.player.ip).ok());
         Ok(ZoneStateDto {
             zone: zone_for_target(&households, &target, |_| state),
             transport_state: crate::zones::transport_state_name(state).to_string(),
             volume,
+            mute,
             track,
         })
     }
@@ -1632,6 +1636,17 @@ mod tests {
         assert!(zones.iter().all(|z| z.transport_state == "paused"));
         let den = s.zone(&Client::Unknown, "Kitchen@S1").unwrap();
         assert_eq!(den.coordinator_room, "Den");
+    }
+
+    #[test]
+    fn a_zones_state_says_whether_the_room_is_muted() {
+        let (s, _) = surface(
+            "<CurrentTransportState>PLAYING</CurrentTransportState>\
+             <CurrentVolume>12</CurrentVolume><CurrentMute>1</CurrentMute>",
+            households(),
+        );
+        let state = s.zone_state(&Client::Unknown, "Patio").unwrap();
+        assert_eq!((state.volume, state.mute), (Some(12), Some(true)));
     }
 
     #[test]

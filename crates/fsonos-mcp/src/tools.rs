@@ -215,9 +215,12 @@ impl Backend {
                         .map_or_else(|| title.clone(), |c| format!("{title} by {c}"))
                 },
             );
-            let volume = state
+            let mut volume = state
                 .volume
                 .map_or_else(String::new, |v| format!(", volume {v}"));
+            if state.mute == Some(true) {
+                volume.push_str(", muted");
+            }
             let text = format!(
                 "{} [{}]: {} ({on}){volume}",
                 state.zone.members.join(" + "),

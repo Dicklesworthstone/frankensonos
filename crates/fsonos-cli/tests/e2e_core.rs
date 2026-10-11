@@ -301,10 +301,11 @@ fn favorites_play_and_the_queue_moves() {
     s.check(
         "status",
         "cli",
-        "status shows playing from queue position 2",
+        "status shows playing from queue position 2, unmuted",
         run.ok()
             && status["transport_state"] == "playing"
-            && status["track"]["queue_position"] == 2,
+            && status["track"]["queue_position"] == 2
+            && status["mute"] == false,
         &run.stdout,
     );
 
