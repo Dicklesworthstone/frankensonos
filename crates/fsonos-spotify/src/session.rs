@@ -59,6 +59,15 @@ impl fmt::Debug for PendingAuthorization {
     }
 }
 
+/// What [`Session::check_grant`] found: the grant works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrantCheck {
+    /// The access token had to be refreshed (and was re-cached) first.
+    pub refreshed: bool,
+    /// Seconds the access token is good for now.
+    pub expires_in_secs: i64,
+}
+
 /// The owner's Spotify session.
 pub struct Session {
     config: SpotifyConfig,
@@ -223,6 +232,26 @@ impl Session {
         }
     }
 
+    /// Whether the owner's grant still works, read-only: one liked track is
+    /// read with the cached token, refreshed first when it is about to
+    /// expire (or on a 401), so a revoked or lapsed sign-in shows before a
+    /// library sync needs it. A rate limit comes back at once, unwaited.
+    pub async fn check_grant(&mut self, cx: &Cx) -> Result<GrantCheck, SpotifyError> {
+        let before = self
+            .token
+            .as_ref()
+            .ok_or_else(not_authorized)?
+            .access_token
+            .clone();
+        let url = format!("{}/me/tracks?limit=1", self.endpoints.api);
+        self.get_waiting(cx, &url, 0).await?;
+        let token = self.token.as_ref().ok_or_else(not_authorized)?;
+        Ok(GrantCheck {
+            refreshed: token.access_token != before,
+            expires_in_secs: token.expires_at - unix_now(),
+        })
+    }
+
     /// Read the owner's whole library: every saved album's tracks and every
     /// liked track (read-only).
     pub async fn read_library(&mut self, cx: &Cx) -> Result<Vec<LibraryItem>, SpotifyError> {
@@ -385,6 +414,85 @@ mod tests {
             .filter(|l| l.contains("/v1/me/tracks"))
             .count();
         assert_eq!(track_gets, 2, "429 then success: {:?}", fake.log);
+        std::fs::remove_dir_all(&data_dir).unwrap();
+    }
+
+    #[test]
+    fn a_grant_check_reads_one_track_refreshing_a_stale_token_and_sees_a_revoked_grant() {
+        let spotify = FakeSpotify::start();
+        let data_dir = scratch_dir("grant-check");
+        let cache = TokenCache::in_data_dir(&data_dir);
+        {
+            let mut fake = spotify.state.lock().unwrap();
+            "access-1".clone_into(&mut fake.access);
+            "refresh-1".clone_into(&mut fake.refresh);
+        }
+        let token = |access: &str, expires_at: i64| CachedToken {
+            access_token: access.into(),
+            refresh_token: "refresh-1".into(),
+            expires_at,
+            scope: SCOPE.into(),
+        };
+        let endpoints = spotify.endpoints();
+        let state = Arc::clone(&spotify.state);
+
+        runtime().block_on(async move {
+            let cx = Cx::current().expect("ambient Cx");
+            let open = |cache: &TokenCache| {
+                Session::open(config(), cache.clone(), Client::default_for_runtime(&cx))
+                    .unwrap()
+                    .with_endpoints(endpoints.clone())
+            };
+
+            // Not signed in: nothing to check, and nothing is sent.
+            let err = open(&cache).check_grant(&cx).await.unwrap_err();
+            assert!(matches!(err, SpotifyError::Auth(_)), "{err}");
+
+            // A fresh token is used as it is.
+            cache.store(&token("access-1", unix_now() + 3600)).unwrap();
+            let fresh = open(&cache).check_grant(&cx).await.unwrap();
+            assert!(
+                !fresh.refreshed && fresh.expires_in_secs > 3500,
+                "{fresh:?}"
+            );
+
+            // One about to expire is refreshed first, and the rotated pair
+            // re-cached for serve's next sync.
+            cache.store(&token("access-1", unix_now() + 10)).unwrap();
+            let due = open(&cache).check_grant(&cx).await.unwrap();
+            assert!(due.refreshed && due.expires_in_secs > 3500, "{due:?}");
+            let cached = cache.load().unwrap().unwrap();
+            assert_eq!(
+                (cached.access_token.as_str(), cached.refresh_token.as_str()),
+                ("access-r1", "refresh-r1")
+            );
+
+            // The owner revoked the app: the 401's refresh is refused.
+            "revoked".clone_into(&mut state.lock().unwrap().access);
+            "someone-else".clone_into(&mut state.lock().unwrap().refresh);
+            let err = open(&cache).check_grant(&cx).await.unwrap_err();
+            assert!(err.to_string().contains("invalid_grant"), "{err}");
+
+            // A rate limit comes back at once rather than being waited out.
+            {
+                let mut fake = state.lock().unwrap();
+                "access-r9".clone_into(&mut fake.access);
+                fake.rate_limit_tracks_once = true;
+            }
+            cache.store(&token("access-r9", unix_now() + 3600)).unwrap();
+            let err = open(&cache).check_grant(&cx).await.unwrap_err();
+            assert!(
+                matches!(err, SpotifyError::Api { status: 429, .. }),
+                "{err}"
+            );
+        });
+
+        let fake = spotify.stop();
+        let reads: Vec<&String> = fake.log.iter().filter(|l| l.contains("/v1/")).collect();
+        assert!(
+            reads.iter().all(|l| l.ends_with("/v1/me/tracks?limit=1")),
+            "only one-track reads: {reads:?}"
+        );
         std::fs::remove_dir_all(&data_dir).unwrap();
     }
 

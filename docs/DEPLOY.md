@@ -330,7 +330,9 @@ the read-only taste scopes `user-follow-read`, `user-top-read`,
 scopes the DJ uses your library alone and `fsonos doctor` warns) and caches
 the refresh token under `FSONOS_DATA_DIR`, never in the repo. Set
 `FSONOS_SPOTIFY_CLIENT_ID` first (your own app from the Spotify developer
-dashboard; for PKCE the client id is not a secret).
+dashboard; for PKCE the client id is not a secret). `fsonos doctor` checks
+that the sign-in still works (`dj.sign_in` reads one liked track, refreshing
+the token as serve would) and says when to sign in again.
 
 Under the hood the OAuth redirect URI is loopback,
 `http://127.0.0.1:8099/auth/spotify/callback`. Register exactly that URI for

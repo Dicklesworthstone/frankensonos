@@ -12,6 +12,8 @@
 //!   which version;
 //! * `dj.taste`: whether the cached Spotify grant carries the taste
 //!   scopes, so the DJ learns beyond the owner's saved library;
+//! * `dj.sign_in` ([`sign_in`]): whether that grant still works (one liked
+//!   track read, refreshing the token as serve would);
 //! * `speech.backend`: which local speech executable announcements select;
 //! * `tailscale.*` ([`tailscale`]): whether the daemon is reachable over the
 //!   tailnet, with the connect URLs, or why not.
@@ -36,6 +38,7 @@ use std::time::Duration;
 use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::direct::Direct;
 
+pub mod sign_in;
 pub mod tailscale;
 
 /// `fsonos doctor` arguments.
@@ -279,6 +282,7 @@ pub fn register(runner: &mut Runner, serve: &ServeArgs, data_dir: &Path) {
     runner.register(TasteScopesCheck {
         data_dir: data_dir.to_path_buf(),
     });
+    runner.register(sign_in::SignInCheck::new(serve, data_dir));
     runner.register(SpeechBackendCheck {
         data_dir: data_dir.to_path_buf(),
     });
