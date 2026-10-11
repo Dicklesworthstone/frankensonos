@@ -609,9 +609,11 @@ fn a_household_without_spotify_favorites_keeps_its_queue() {
 
 /// Serves the S1 favorites with `sn=1` on the first browse and `sn=7` after
 /// (Spotify was relinked), and refuses a container enqueue that carries
-/// `sn=1` with UPnP 800 (every one, when `persistent`).
+/// `sn=1` with UPnP 800 (every one, when `persistent`). With `at_play` the
+/// enqueue goes through and the Play after it is refused instead.
 struct ContainerDrift {
     persistent: bool,
+    at_play: bool,
     browses: std::cell::Cell<usize>,
     actions: RefCell<Vec<String>>,
     adds: RefCell<Vec<String>>,
@@ -621,10 +623,24 @@ impl ContainerDrift {
     fn new(persistent: bool) -> Self {
         Self {
             persistent,
+            at_play: false,
             browses: std::cell::Cell::new(0),
             actions: RefCell::default(),
             adds: RefCell::default(),
         }
+    }
+
+    fn refusing_at_play(persistent: bool) -> Self {
+        Self {
+            at_play: true,
+            ..Self::new(persistent)
+        }
+    }
+
+    /// The renderer refuses what carries the stale `sn=1` (anything, when
+    /// `persistent`).
+    fn refuses(&self, body: &str) -> bool {
+        self.persistent || body.contains("sn=1<")
     }
 }
 
@@ -655,13 +671,26 @@ impl Transport for ContainerDrift {
             }
             "AddURIToQueue" => {
                 self.adds.borrow_mut().push(body.to_string());
-                if self.persistent || body.contains("sn=1<") {
+                if !self.at_play && self.refuses(body) {
                     return Err(ProtoError::SoapFault {
                         code: 800,
                         reason: "refused".to_string(),
                     });
                 }
                 "<FirstTrackNumberEnqueued>1</FirstTrackNumberEnqueued>"
+            }
+            "Play"
+                if self.at_play
+                    && self
+                        .adds
+                        .borrow()
+                        .last()
+                        .is_some_and(|added| self.refuses(added)) =>
+            {
+                return Err(ProtoError::SoapFault {
+                    code: 800,
+                    reason: "refused".to_string(),
+                });
             }
             _ => "",
         };
@@ -725,4 +754,33 @@ fn the_coordinator_now_comes_from_the_players_own_topology() {
         fsonos_core::moving::coordinator_now(&Topology, &h, &PlayerId("RINCON_NOWHERE".into())),
         Err(CoreError::UnknownPlayer(_))
     ));
+}
+
+#[test]
+fn a_container_refused_at_play_relearns_once_too() {
+    let h = house();
+    let play = |t: &ContainerDrift| {
+        control::play_spotify_container(
+            t,
+            &h,
+            &pid(2),
+            SpotifyContainer::Album,
+            "spotify:album:0FixtureSpotify0000201",
+            "Symphonies",
+        )
+    };
+    let plays = |t: &ContainerDrift| t.actions.borrow().iter().filter(|a| *a == "Play").count();
+
+    // The enqueue goes through; the Play after it is refused (800 can come
+    // "at/after SetAVTransportURI"): relearn once, enqueue and play again.
+    let t = ContainerDrift::refusing_at_play(false);
+    play(&t).unwrap();
+    assert_eq!(t.browses.get(), 2, "one relearn");
+    assert!(t.adds.borrow()[1].contains("sn=7<"));
+    assert_eq!(plays(&t), 2, "the refused Play, then the one that plays");
+
+    let t = ContainerDrift::refusing_at_play(true);
+    let err = play(&t).unwrap_err();
+    assert!(matches!(err, CoreError::RenderParamsStale), "{err}");
+    assert_eq!(t.adds.borrow().len(), 2, "the retry never loops");
 }

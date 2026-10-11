@@ -176,7 +176,9 @@ pub fn play_spotify_track<T: Transport + ?Sized>(
 /// from its first track: the speaker expands the container into its tracks
 /// as it is enqueued. Rendered with the household's own Spotify account and
 /// container prefix (learned from its favorites), self-healing one round of
-/// parameter drift as [`play_spotify_track`] does.
+/// parameter drift as [`play_spotify_track`] does, whether the renderer
+/// refuses the enqueue or the play that follows it (docs/PROTOCOL.md: 800
+/// "at/after SetAVTransportURI").
 pub fn play_spotify_container<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -195,20 +197,20 @@ pub fn play_spotify_container<T: Transport + ?Sized>(
             spotify_container_didl(spotify_uri, title, kind, &prefix, &params),
         ))
     };
-    let enqueue = |(uri, didl): &(String, String)| -> Result<u32, CoreError> {
+    let render = |(uri, didl): &(String, String)| -> Result<(), CoreError> {
         soap::remove_all_tracks_from_queue(t, host)?;
-        Ok(soap::add_uri_to_queue(t, host, uri, didl, false)?)
+        let first = soap::add_uri_to_queue(t, host, uri, didl, false)?;
+        play_queue_from(t, households, coordinator, first)
     };
-    let first = match enqueue(&source()?) {
-        Ok(first) => first,
-        Err(e) if is_render_800(&e) => match enqueue(&source()?) {
-            Ok(first) => first,
-            Err(e) if is_render_800(&e) => return Err(CoreError::RenderParamsStale),
-            Err(e) => return Err(e),
+    match render(&source()?) {
+        Ok(()) => Ok(()),
+        Err(e) if is_render_800(&e) => match render(&source()?) {
+            Ok(()) => Ok(()),
+            Err(e) if is_render_800(&e) => Err(CoreError::RenderParamsStale),
+            Err(e) => Err(e),
         },
-        Err(e) => return Err(e),
-    };
-    play_queue_from(t, households, coordinator, first)
+        Err(e) => Err(e),
+    }
 }
 
 /// Append Spotify tracks (`(spotify:track URI, title)`) to the queue of the
