@@ -10,6 +10,7 @@
 use clap::Subcommand;
 use fsonos_api::Failure;
 use fsonos_api::surface::house_policy::PolicyDto;
+use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::policy::{Client, FILE_NAME, Policy, PolicyError};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -45,7 +46,7 @@ pub fn run(global: &GlobalArgs, action: &PolicyAction) -> anyhow::Result<()> {
         PolicyAction::Show => {
             let data_dir = crate::daemon::data_dir(global)?;
             let policy = crate::daemon::policy(&data_dir)?;
-            let shown = PolicyDto::of(&policy, &Client::Cli);
+            let shown = PolicyDto::of(&policy, &Client::Cli, SystemClock.now());
             crate::emit(global.json, &shown, PolicyDto::text)
         }
         PolicyAction::Check { file } => {

@@ -3,6 +3,7 @@
 //! and per-client rules from core's `Policy::view`, and who the caller is
 //! under it.
 
+use chrono::{DateTime, FixedOffset};
 use fsonos_core::policy::{Client, Policy, PolicyView};
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -18,17 +19,20 @@ pub struct PolicyDto {
     pub you: String,
     /// Whether the volume caps apply to the caller.
     pub you_are_capped: bool,
+    /// Whether quiet hours are in effect right now, by the house's clock.
+    pub quiet_hours_now: bool,
     #[serde(flatten)]
     pub policy: PolicyView,
 }
 
 impl PolicyDto {
-    /// `policy` as `client` is subject to it.
+    /// `policy` as `client` is subject to it at `now`.
     #[must_use]
-    pub fn of(policy: &Policy, client: &Client) -> Self {
+    pub fn of(policy: &Policy, client: &Client, now: DateTime<FixedOffset>) -> Self {
         Self {
             you: client.key().to_owned(),
             you_are_capped: policy.is_capped(client),
+            quiet_hours_now: policy.quiet_hours_active(now),
             policy: policy.view(),
         }
     }
@@ -45,8 +49,15 @@ impl PolicyDto {
             Some(q) => {
                 let _ = writeln!(
                     text,
-                    "Quiet hours: {}–{}, rooms up to {}.",
-                    q.start, q.end, q.max_volume
+                    "Quiet hours: {}–{}, rooms up to {}. {}",
+                    q.start,
+                    q.end,
+                    q.max_volume,
+                    if self.quiet_hours_now {
+                        "In effect now."
+                    } else {
+                        "Not in effect now."
+                    }
                 );
             }
             None => text.push_str("Quiet hours: none.\n"),
@@ -103,7 +114,7 @@ impl Surface {
     /// The effective house policy and the caller under it (`get_policy`).
     pub fn policy_view(&self, client: &Client) -> Result<PolicyDto, Failure> {
         self.guard(client).authorize("get_policy", true)?;
-        Ok(PolicyDto::of(&self.policy(), client))
+        Ok(PolicyDto::of(&self.policy(), client, self.clock.now()))
     }
 }
 
@@ -130,32 +141,45 @@ deny = ["dj_start"]
 capped = true
 "#;
 
+    /// 2026-10-11 at `hour`:00, UTC.
+    fn at(hour: u32) -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339(&format!("2026-10-11T{hour:02}:00:00+00:00")).unwrap()
+    }
+
     #[test]
     fn the_policy_reads_as_lines_and_names_the_caller() {
         let policy = Policy::from_toml(POLICY).unwrap();
-        let shown = PolicyDto::of(&policy, &Client::Cli);
+        let shown = PolicyDto::of(&policy, &Client::Cli, at(12));
         assert_eq!(shown.you, "cli");
         assert!(!shown.you_are_capped, "the CLI is uncapped by default");
         assert_eq!(
             shown.text(),
             "Defaults: rooms up to 60, steps of at most 15, scheduled volume ramps of 0 s.\n\
-             Quiet hours: 22:00–07:00, rooms up to 25.\n\
+             Quiet hours: 22:00–07:00, rooms up to 25. Not in effect now.\n\
              Room Ada’s Studio: up to 40.\n\
              Client agent@example.com: only list_zones, set_volume; never dj_start; capped.\n\
              You (cli): uncapped.\n"
         );
-        let agent = PolicyDto::of(&policy, &Client::Tailnet("agent@example.com".into()));
+        let agent = PolicyDto::of(
+            &policy,
+            &Client::Tailnet("agent@example.com".into()),
+            at(23),
+        );
         assert!(agent.you_are_capped);
+        assert!(agent.quiet_hours_now && !shown.quiet_hours_now);
+        assert!(agent.text().contains("rooms up to 25. In effect now."));
         let json = serde_json::to_value(&agent).unwrap();
         assert_eq!(json["you"], "agent@example.com");
         assert_eq!(json["defaults"]["max_volume"], 60);
         assert_eq!(json["rooms"][0]["max_volume"], 40);
         assert_eq!(json["clients"][0]["deny"], serde_json::json!(["dj_start"]));
+        assert_eq!(json["quiet_hours_now"], true);
     }
 
     #[test]
     fn the_defaults_have_no_quiet_hours() {
-        let shown = PolicyDto::of(&Policy::default(), &Client::Unknown);
+        let shown = PolicyDto::of(&Policy::default(), &Client::Unknown, at(23));
+        assert!(!shown.quiet_hours_now);
         assert!(shown.text().contains("Quiet hours: none."));
         assert!(
             shown
