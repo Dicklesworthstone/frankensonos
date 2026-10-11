@@ -5,7 +5,9 @@
 //! composer and performer, or a song's artist, featured artist and album; the
 //! [`FeedbackModel`] decays them (half-life 30 days) into weight multipliers
 //! the DJ applies, each clamped to [0.25, 2.0], so taste drifts toward the
-//! owner's without manual curation and nothing dominates. Two dislikes of a
+//! owner's without manual curation and nothing dominates. A signal also
+//! nudges the genres it carries, more gently: a work nobody gave feedback
+//! about (nor its artist, performer or album) leans with its genres. Two dislikes of a
 //! work within 180 days of each other keep it out for 180 days after the
 //! second — nothing is banned for good.
 //!
@@ -36,6 +38,8 @@ const MIN_PM: u64 = 250;
 const MAX_PM: u64 = 2000;
 /// Decayed score that doubles (or halves) a weight.
 const SCORE_PER_DOUBLING: f64 = 6.0;
+/// How much of a genre's score a work in it takes: genres are broad.
+const GENRE_SHARE: f64 = 0.5;
 
 /// One kind of feedback, with its strength.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -94,12 +98,16 @@ pub struct FeedbackSignal {
     /// A song's album ([`Work::album_key`]).
     #[serde(default)]
     pub album_key: Option<String>,
+    /// The genres it carries ([`Work::genres`]).
+    #[serde(default)]
+    pub genres: Vec<String>,
     pub signal: Signal,
 }
 
 impl FeedbackSignal {
     /// A signal about a whole work, carrying a classical work's composer and
-    /// lead performer, or a song's artist, first featured artist and album.
+    /// lead performer, or a song's artist, first featured artist and album,
+    /// and its genres.
     #[must_use]
     pub fn about(work: &Work, signal: Signal, at: i64) -> Self {
         let who = Some(work.composer_key().to_owned());
@@ -111,6 +119,7 @@ impl FeedbackSignal {
             performer: performers(work).into_iter().next(),
             artist_key: who.filter(|_| !classical),
             album_key: (!classical && !work.album_key.is_empty()).then(|| work.album_key.clone()),
+            genres: work.genres().into_iter().map(str::to_owned).collect(),
             signal,
         }
     }
@@ -125,6 +134,7 @@ impl FeedbackSignal {
             performer: self.performer.clone(),
             artist_key: self.artist_key.clone(),
             album_key: self.album_key.clone(),
+            genres: self.genres.clone(),
             signal: self.signal.value(),
         }
     }
@@ -140,6 +150,7 @@ impl FeedbackSignal {
             performer: row.performer.clone(),
             artist_key: row.artist_key.clone(),
             album_key: row.album_key.clone(),
+            genres: row.genres.clone(),
             signal: Signal::from_value(row.signal)?,
         })
     }
@@ -220,8 +231,8 @@ pub fn performers(work: &Work) -> Vec<String> {
 
 /// Feedback decayed to one moment: weight multipliers per work, composer or
 /// artist (one namespace: a song cached before artist keys keyed its artist
-/// as the composer), performer and album, and the works two dislikes keep
-/// out.
+/// as the composer), performer, album and genre, and the works two dislikes
+/// keep out.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FeedbackModel {
     /// The moment it was decayed to (unix seconds).
@@ -230,6 +241,8 @@ pub struct FeedbackModel {
     composers: HashMap<String, f64>,
     performers: HashMap<String, f64>,
     albums: HashMap<String, f64>,
+    /// Each signal's score spread over the genres it carries.
+    genres: HashMap<String, f64>,
     /// Work key → until when (unix seconds) it is excluded.
     excluded: HashMap<String, i64>,
 }
@@ -266,6 +279,11 @@ impl FeedbackModel {
             add(&mut model.composers, &s.artist_key);
             add(&mut model.performers, &s.performer);
             add(&mut model.albums, &s.album_key);
+            #[allow(clippy::cast_precision_loss)] // a handful of tags
+            let share = score / s.genres.len().max(1) as f64;
+            for genre in &s.genres {
+                *model.genres.entry(genre.clone()).or_default() += share;
+            }
             if s.signal == Signal::Dislike
                 && let Some(work) = &s.work_key
             {
@@ -297,22 +315,40 @@ impl FeedbackModel {
 
     /// The weight multiplier for `work`, per-mille: the product of its work,
     /// composer or artist, performer and album multipliers, each — and the
-    /// product — clamped to [250, 2000].
+    /// product — clamped to [250, 2000]. A work none of those keys reach
+    /// takes [`GENRE_SHARE`] of its genres' mean score instead.
     #[must_use]
     pub fn multiplier_pm(&self, work: &Work) -> u64 {
-        let mut pm = 1000u64;
-        let mut apply = |score: Option<&f64>| {
-            if let Some(&score) = score {
-                pm = pm * score_pm(score) / 1000;
-            }
-        };
-        apply(self.works.get(&work.work_key));
-        apply(self.composers.get(work.composer_key()));
+        let mut scores: Vec<f64> = Vec::new();
+        scores.extend(self.works.get(&work.work_key));
+        scores.extend(self.composers.get(work.composer_key()));
         for performer in performers(work) {
-            apply(self.performers.get(&performer));
+            scores.extend(self.performers.get(&performer));
         }
-        apply(self.albums.get(&work.album_key));
-        pm.clamp(MIN_PM, MAX_PM)
+        scores.extend(self.albums.get(&work.album_key));
+        if scores.is_empty() {
+            scores.extend(self.genre_score(work));
+        }
+        scores
+            .into_iter()
+            .fold(1000u64, |pm, score| pm * score_pm(score) / 1000)
+            .clamp(MIN_PM, MAX_PM)
+    }
+
+    /// [`GENRE_SHARE`] of the mean score of `work`'s genres, when any of
+    /// them has one.
+    fn genre_score(&self, work: &Work) -> Option<f64> {
+        let genres = work.genres();
+        let scored: Vec<f64> = genres
+            .iter()
+            .filter_map(|g| self.genres.get(*g).copied())
+            .collect();
+        if scored.is_empty() {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss)] // a handful of tags
+        let mean = scored.iter().sum::<f64>() / genres.len() as f64;
+        Some(mean * GENRE_SHARE)
     }
 
     #[must_use]
@@ -321,6 +357,7 @@ impl FeedbackModel {
             && self.composers.is_empty()
             && self.performers.is_empty()
             && self.albums.is_empty()
+            && self.genres.is_empty()
     }
 }
 
@@ -355,6 +392,7 @@ mod tests {
             performer: None,
             artist_key: None,
             album_key: None,
+            genres: Vec::new(),
             signal,
         }
     }
@@ -396,6 +434,47 @@ mod tests {
             1000,
             "someone else's"
         );
+    }
+
+    #[test]
+    fn a_genre_nudges_only_what_finer_feedback_does_not_reach() {
+        let pool = works_of(&crate::test_shelf::song_items());
+        let song = |title: &str| pool.works().iter().find(|w| w.title == title).unwrap();
+        let liked = FeedbackSignal::about(song("Glasshouse"), Signal::Like, MIDNIGHT);
+        assert_eq!(liked.genres, ["pop"], "a signal carries its work's genres");
+
+        // A like of something jazz: +3 on jazz, half of it for a jazz song
+        // nobody gave feedback about.
+        let jazz = FeedbackSignal {
+            genres: vec!["jazz".into()],
+            ..signal(None, None, Signal::Like, MIDNIGHT)
+        };
+        let model = FeedbackModel::from_signals(std::slice::from_ref(&jazz), MIDNIGHT);
+        assert!(!model.is_empty());
+        assert_eq!(model.multiplier_pm(song("Blue Hours")), 1189, "2^(1.5/6)");
+        assert_eq!(
+            model.multiplier_pm(song("Harbor Lights")),
+            1000,
+            "indie pop isn't jazz"
+        );
+        // A signal's score is spread over its genres.
+        let spread = FeedbackSignal {
+            genres: vec!["jazz".into(), "cool jazz".into()],
+            ..jazz.clone()
+        };
+        assert_eq!(
+            FeedbackModel::from_signals(&[spread], MIDNIGHT).multiplier_pm(song("Blue Hours")),
+            1091,
+            "2^(0.75/6)"
+        );
+
+        // Feedback about the song itself (its work, artist or album) governs
+        // it alone: the genre doesn't stack on it.
+        let disliked = FeedbackSignal::about(song("Blue Hours"), Signal::Dislike, MIDNIGHT);
+        let alone = FeedbackModel::from_signals(std::slice::from_ref(&disliked), MIDNIGHT);
+        let both = FeedbackModel::from_signals(&[jazz, disliked], MIDNIGHT);
+        assert_eq!(alone.multiplier_pm(song("Blue Hours")), 352);
+        assert_eq!(both.multiplier_pm(song("Blue Hours")), 352);
     }
 
     #[test]

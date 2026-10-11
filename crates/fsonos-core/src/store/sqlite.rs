@@ -165,6 +165,13 @@ const MIGRATIONS: &[Migration] = &[
         CREATE TABLE spotify_heard (source_uri TEXT PRIMARY KEY, played_at INTEGER NOT NULL);
     ",
     },
+    Migration {
+        version: 12,
+        name: "the genres a piece of feedback carries, so the DJ nudges them (plan §12.9)",
+        sql: "
+        ALTER TABLE feedback ADD COLUMN genres TEXT;
+    ",
+    },
 ];
 
 /// How `spotify_library.genres` and `artist_genres.genres` join tags.
@@ -712,8 +719,8 @@ impl Store for SqliteStore {
     fn record_feedback(&mut self, feedback: &Feedback) -> Result<(), StoreError> {
         self.execute(
             "INSERT INTO feedback \
-             (at, work_key, composer_key, performer, signal, artist_key, album_key) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (at, work_key, composer_key, performer, signal, artist_key, album_key, genres) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             &[
                 feedback.at.into(),
                 opt_value(feedback.work_key.as_deref()),
@@ -722,6 +729,9 @@ impl Store for SqliteStore {
                 feedback.signal.into(),
                 opt_value(feedback.artist_key.as_deref()),
                 opt_value(feedback.album_key.as_deref()),
+                opt_value(
+                    (!feedback.genres.is_empty()).then(|| feedback.genres.join(GENRE_SEPARATOR)),
+                ),
             ],
         )
     }
@@ -734,31 +744,31 @@ impl Store for SqliteStore {
         // The column names are fixed here, never caller text.
         let (sql, key) = match key {
             FeedbackKey::Work(k) => (
-                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key, genres \
                  FROM feedback \
                  WHERE work_key = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
                 k,
             ),
             FeedbackKey::Composer(k) => (
-                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key, genres \
                  FROM feedback \
                  WHERE composer_key = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
                 k,
             ),
             FeedbackKey::Performer(k) => (
-                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key, genres \
                  FROM feedback \
                  WHERE performer = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
                 k,
             ),
             FeedbackKey::Artist(k) => (
-                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key, genres \
                  FROM feedback \
                  WHERE artist_key = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
                 k,
             ),
             FeedbackKey::Album(k) => (
-                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+                "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key, genres \
                  FROM feedback \
                  WHERE album_key = ?1 AND at >= ?2 AND at < ?3 ORDER BY at, id",
                 k,
@@ -772,7 +782,7 @@ impl Store for SqliteStore {
 
     fn feedback_between(&self, window: Range<i64>) -> Result<Vec<Feedback>, StoreError> {
         self.query(
-            "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key \
+            "SELECT at, work_key, composer_key, performer, signal, artist_key, album_key, genres \
                  FROM feedback \
              WHERE at >= ?1 AND at < ?2 ORDER BY at, id",
             &[window.start.into(), window.end.into()],
@@ -1208,6 +1218,7 @@ fn feedback_row(r: &Row) -> Result<Feedback, StoreError> {
         signal: int(r, 4)?,
         artist_key: opt_text(r, 5)?,
         album_key: opt_text(r, 6)?,
+        genres: split_genres(opt_text(r, 7)?),
     })
 }
 
@@ -1244,7 +1255,7 @@ mod tests {
         let store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1285,7 +1296,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1342,7 +1353,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 2, "no row lost");

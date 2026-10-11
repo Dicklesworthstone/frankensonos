@@ -369,12 +369,13 @@ fn feedback(s: &mut dyn Store) {
         0
     );
 
-    // A song's feedback keys its artist and album.
+    // A song's feedback keys its artist and album, and carries its genres.
     let song = Feedback {
         at: 250,
         work_key: Some("nina marsh quartet|blue hours".into()),
         artist_key: Some("nina marsh quartet".into()),
         album_key: Some("spotify:album:blue".into()),
+        genres: vec!["jazz".into(), "cool jazz".into()],
         signal: 3,
         ..Feedback::default()
     };
@@ -773,7 +774,7 @@ fn sqlite_in_memory_conforms() {
     suite(&mut s);
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     );
     s.close().unwrap();
 }
@@ -791,7 +792,7 @@ fn sqlite_file_survives_close_and_reopen() {
     let s = SqliteStore::open(&path).unwrap();
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     );
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);

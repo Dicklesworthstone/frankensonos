@@ -217,6 +217,8 @@ pub struct Feedback {
     pub artist_key: Option<String>,
     /// The album it was heard from.
     pub album_key: Option<String>,
+    /// The genres it carries (its tracks' tags).
+    pub genres: Vec<String>,
     /// Positive for liked, negative for disliked; the magnitude is strength.
     pub signal: i64,
 }
