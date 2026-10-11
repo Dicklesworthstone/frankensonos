@@ -276,6 +276,18 @@ fn check_the_cli_through_the_daemon(s: &mut Scenario, api: &str) {
         format!("{queue:?}"),
     );
 
+    let history = s.cli(
+        "cli-history",
+        &["--daemon", "history", "Living Room", "--limit", "5"],
+    );
+    s.check(
+        "cli-history",
+        "cli",
+        "fsonos history lists the DJ's plays under the Living Room",
+        history.code == Some(0) && history.stdout.contains("Living Room: spotify:track:simdj"),
+        format!("{history:?}"),
+    );
+
     let stop = s.cli("cli-stop", &["--daemon", "dj", "stop", "Living Room"]);
     let state = get_transport_info(&s.lan(), s.ip("Living Room"))
         .map(|t| t.state)

@@ -29,7 +29,7 @@ use fsonos_api::surface::queue::QueueDto;
 use fsonos_api::surface::schedules::SleepTimerDto;
 use fsonos_api::{
     ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, MoveRequest,
-    MuteRequest, OutcomeDto, PartyRequest, PlayFavoriteRequest, PlayRequest, RoomDto,
+    MuteRequest, OutcomeDto, PartyRequest, PlayDto, PlayFavoriteRequest, PlayRequest, RoomDto,
     SearchRequest, UndoDto, ZoneDto, ZoneRequest, ZoneStateDto,
 };
 use serde::de::DeserializeOwned;
@@ -418,6 +418,7 @@ fn routable(command: &Command) -> bool {
             | Command::Rooms { alias: None }
             | Command::Favorites { .. }
             | Command::Queue { .. }
+            | Command::History { .. }
             | Command::Log { .. }
             | Command::Undo { .. }
             | Command::Play { .. }
@@ -492,6 +493,14 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
                 pct(zone)
             ))?;
             emit(json, &queue, QueueDto::text)?;
+        }
+        Command::History { zone, limit } => {
+            let mut path = format!("/history?limit={limit}");
+            if let Some(zone) = zone {
+                let _ = write!(path, "&zone={}", pct(zone));
+            }
+            let plays: Vec<PlayDto> = daemon.get(&path)?;
+            emit(json, &plays, |p| direct::history_text(p))?;
         }
         Command::Log {
             client,
@@ -569,11 +578,16 @@ fn warn_direct(command: &Command) {
 /// `fsonos sleep` through the daemon: set, extend or cancel its fading
 /// timer, or show the group's.
 fn sleep(daemon: &Daemon, json: bool, args: &schedule_cmd::SleepArgs) -> anyhow::Result<()> {
-    match schedule_cmd::sleep_request(args) {
+    match schedule_cmd::sleep_request(args)? {
         None => {
-            let timers: Vec<SleepTimerDto> =
-                daemon.get(&format!("/sleep?zone={}", pct(&args.zone)))?;
-            emit(json, &timers, |t| schedule_cmd::timers_text(&args.zone, t))
+            let path = args.zone.as_deref().map_or_else(
+                || "/sleep".to_owned(),
+                |z| format!("/sleep?zone={}", pct(z)),
+            );
+            let timers: Vec<SleepTimerDto> = daemon.get(&path)?;
+            emit(json, &timers, |t| {
+                schedule_cmd::timers_text(args.zone.as_deref(), t)
+            })
         }
         Some(req) => {
             let timer: SleepTimerDto = daemon.post("/sleep", &req)?;

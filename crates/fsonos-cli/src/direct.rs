@@ -6,11 +6,11 @@ use fsonos_api::surface::players::{PlayerDto, player_views};
 use fsonos_api::surface::queue::QueueDto;
 use fsonos_api::{
     ActionDto, ActionsQuery, Command, DjMoodsDto, DjStatusDto, ErrorCode, Failure, FavoriteDto,
-    HitDto, OutcomeDto, PlayFavoriteRequest, RoomDto, SearchRequest, Surface, UndoDto, ZoneDto,
-    ZoneStateDto,
+    HitDto, OutcomeDto, PlayDto, PlayFavoriteRequest, RoomDto, SearchRequest, Surface, UndoDto,
+    ZoneDto, ZoneStateDto,
 };
 use fsonos_core::HouseholdState;
-use fsonos_core::clock::SystemClock;
+use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::inventory::{self, Survey};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{SqliteStore, Store as _};
@@ -162,6 +162,12 @@ impl Direct {
         self.surface.zone_state(&Client::Cli, zone)
     }
 
+    /// What played lately, newest first (`recent_plays`); `zone` narrows it
+    /// to that room's group.
+    pub fn history(&self, zone: Option<&str>, limit: usize) -> Result<Vec<PlayDto>, Failure> {
+        self.surface.recent_plays(&Client::Cli, zone, limit)
+    }
+
     /// A page of the queue `zone`'s group plays from.
     pub fn queue(&self, zone: &str, offset: u32, limit: u32) -> Result<QueueDto, Failure> {
         self.households()?;
@@ -311,6 +317,28 @@ pub fn actions_text(actions: &[ActionDto]) -> String {
 
 /// `fsonos status` as text.
 #[must_use]
+/// A line per play, newest first: when (local time), the room, what.
+pub fn history_text(plays: &[PlayDto]) -> String {
+    if plays.is_empty() {
+        return "no plays recorded\n".to_owned();
+    }
+    let offset = *SystemClock.now().offset();
+    let mut text = String::new();
+    for play in plays {
+        let when = chrono::DateTime::from_timestamp(play.played_at, 0).map_or_else(
+            || play.played_at.to_string(),
+            |t| {
+                t.with_timezone(&offset)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            },
+        );
+        let room = play.room.as_deref().unwrap_or("a room no longer seen");
+        let _ = writeln!(text, "{when}  {room}: {}", play.source_uri);
+    }
+    text
+}
+
 pub fn status_text(state: &ZoneStateDto) -> String {
     let mut out = format!(
         "{} [{}]: {}",
@@ -369,6 +397,35 @@ pub fn favorites_text(favorites: &[FavoriteDto]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_reads_a_line_per_play_newest_first() {
+        assert_eq!(history_text(&[]), "no plays recorded\n");
+        let text = history_text(&[
+            PlayDto {
+                room: Some("Kitchen".into()),
+                source_uri: "spotify:track:0SimHistory000000001".into(),
+                played_at: 1_791_403_200,
+            },
+            PlayDto {
+                room: None,
+                source_uri: "x-rincon-mp3radio://stream.example.invalid/a.mp3".into(),
+                played_at: 1_791_399_600,
+            },
+        ]);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].starts_with("2026-10-0"), "{text}");
+        assert!(
+            lines[0].ends_with("  Kitchen: spotify:track:0SimHistory000000001"),
+            "{text}"
+        );
+        assert!(
+            lines[1].ends_with(": x-rincon-mp3radio://stream.example.invalid/a.mp3")
+                && lines[1].contains("a room no longer seen"),
+            "{text}"
+        );
+    }
 
     fn zone(members: &[&str], state: &str, degraded: &[&str]) -> ZoneDto {
         ZoneDto {

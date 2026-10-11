@@ -91,6 +91,15 @@ enum Command {
     Status { zone: String },
     /// List the Sonos favorites of a room's household, numbered.
     Favorites { zone: String },
+    /// What played lately, newest first: when, the room whose group played
+    /// it, and what.
+    History {
+        /// Only this room's group.
+        zone: Option<String>,
+        /// At most this many (1-200).
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=200))]
+        limit: u32,
+    },
     /// The queue a room's group plays from: its tracks, and which one plays.
     Queue {
         zone: String,
@@ -401,6 +410,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let queue = Direct::survey(global)?.queue(&zone, offset, limit)?;
             emit(global.json, &queue, QueueDto::text)
         }
+        Command::History { zone, limit } => {
+            let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+            let plays = Direct::survey(global)?.history(zone.as_deref(), limit)?;
+            emit(global.json, &plays, |p| direct::history_text(p))
+        }
         Command::Log {
             client,
             since,
@@ -678,6 +692,7 @@ fn plan_for<'a>(
         | Command::Status { .. }
         | Command::Favorites { .. }
         | Command::Queue { .. }
+        | Command::History { .. }
         | Command::Log { .. }
         | Command::Undo { .. }
         | Command::Policy { .. }

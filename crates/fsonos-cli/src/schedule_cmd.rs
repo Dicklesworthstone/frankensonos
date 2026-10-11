@@ -23,11 +23,12 @@ use std::time::Duration;
 
 use crate::config::GlobalArgs;
 
-/// `fsonos sleep <room> [duration] [--extend <duration>] [--cancel]`.
+/// `fsonos sleep [<room> [duration] [--extend <duration>] [--cancel]]`.
 #[derive(Args)]
 pub struct SleepArgs {
     /// Room name: its group pauses (`Room@S1` / `Room@S2` picks a household).
-    pub zone: String,
+    /// Without one, every timer that runs is listed.
+    pub zone: Option<String>,
     /// How long until it pauses: 45m, 1h30m, 90s, or minutes (45). Without
     /// one (and without --extend or --cancel), show the timer.
     pub duration: Option<String>,
@@ -80,10 +81,12 @@ fn surface(global: &GlobalArgs) -> Result<Surface, Failure> {
 /// `fsonos sleep`, directly.
 pub fn sleep(global: &GlobalArgs, args: &SleepArgs) -> anyhow::Result<()> {
     let surface = surface(global)?;
-    match sleep_request(args) {
+    match sleep_request(args)? {
         None => {
-            let timers = surface.sleep_timers(&Client::Cli, Some(&args.zone))?;
-            crate::emit(global.json, &timers, |t| timers_text(&args.zone, t))
+            let timers = surface.sleep_timers(&Client::Cli, args.zone.as_deref())?;
+            crate::emit(global.json, &timers, |t| {
+                timers_text(args.zone.as_deref(), t)
+            })
         }
         Some(req) => {
             let timer = surface.set_sleep_timer(&Client::Cli, &req)?;
@@ -93,28 +96,41 @@ pub fn sleep(global: &GlobalArgs, args: &SleepArgs) -> anyhow::Result<()> {
 }
 
 /// What `fsonos sleep` asks for: a timer set, extended or cancelled; `None`
-/// to show the timer.
-pub fn sleep_request(args: &SleepArgs) -> Option<SleepRequest> {
+/// to show the timers. A change names its room.
+pub fn sleep_request(args: &SleepArgs) -> Result<Option<SleepRequest>, Failure> {
     let (duration, extend) = match (&args.duration, &args.extend) {
         (_, Some(by)) => (Some(by.clone()), true),
         (Some(after), None) => (Some(after.clone()), false),
-        (None, None) if !args.cancel => return None,
+        (None, None) if !args.cancel => return Ok(None),
         (None, None) => (None, false),
     };
-    Some(SleepRequest {
-        zone: args.zone.clone(),
+    let zone = args.zone.clone().ok_or_else(|| {
+        Failure::invalid("name the room whose sleep timer to change")
+            .with_hint("fsonos sleep Bedroom 45m; fsonos sleep alone lists the timers.")
+    })?;
+    Ok(Some(SleepRequest {
+        zone,
         duration,
         extend,
         cancel: args.cancel,
-    })
+    }))
 }
 
-/// The timer `zone`'s group runs, or that it runs none.
-pub fn timers_text(zone: &str, timers: &[SleepTimerDto]) -> String {
-    match timers.first() {
-        Some(timer) => format!("{}\n", timer.done),
-        None => format!("no sleep timer runs in {zone}'s group\n"),
+/// The timer `zone`'s group runs, or every timer that runs; or that none
+/// does.
+pub fn timers_text(zone: Option<&str>, timers: &[SleepTimerDto]) -> String {
+    if timers.is_empty() {
+        return match zone {
+            Some(zone) => format!("no sleep timer runs in {zone}'s group\n"),
+            None => "no sleep timers run\n".to_owned(),
+        };
     }
+    let mut text = String::new();
+    for timer in timers {
+        text.push_str(&timer.done);
+        text.push('\n');
+    }
+    text
 }
 
 /// What a set, extended or cancelled timer did.
@@ -278,6 +294,28 @@ impl Clock for FileClock {
 mod tests {
     use super::*;
     use fsonos_api::ErrorCode;
+
+    #[test]
+    fn sleep_without_a_room_lists_and_a_change_names_one() {
+        let args = |zone: Option<&str>, duration: Option<&str>, cancel: bool| SleepArgs {
+            zone: zone.map(String::from),
+            duration: duration.map(String::from),
+            extend: None,
+            cancel,
+        };
+        assert!(sleep_request(&args(None, None, false)).unwrap().is_none());
+        let err = sleep_request(&args(None, None, true)).unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidArgument, "{err:?}");
+        let set = sleep_request(&args(Some("Bedroom"), Some("45m"), false))
+            .unwrap()
+            .unwrap();
+        assert_eq!(set.zone, "Bedroom");
+        assert_eq!(timers_text(None, &[]), "no sleep timers run\n");
+        assert_eq!(
+            timers_text(Some("Bedroom"), &[]),
+            "no sleep timer runs in Bedroom's group\n"
+        );
+    }
 
     fn add(when: &str, words: &str) -> Result<ScheduleRequest, Failure> {
         let words: Vec<String> = words.split(' ').map(String::from).collect();
