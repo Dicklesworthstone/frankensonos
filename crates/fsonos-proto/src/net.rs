@@ -9,12 +9,13 @@
 //! worker's thread they may call in from anywhere, including from inside
 //! another asupersync runtime such as the MCP server's, without nesting
 //! `block_on`. A household is a handful of players, so serial requests are
-//! plenty.
+//! plenty. A discovery is one request: its SSDP and mDNS searches listen
+//! side by side, so a survey waits once for both.
 
 use crate::gena::{self, Notify, Subscription};
 use crate::mdns;
 use crate::ssdp::{self, Advert};
-use crate::{HttpBody, MAX_BODY_BYTES, ProtoError, Transport};
+use crate::{Discovered, HttpBody, MAX_BODY_BYTES, ProtoError, Transport};
 use asupersync::Cx;
 use asupersync::http::Client;
 use asupersync::http::h1::server::HostPolicy;
@@ -27,6 +28,7 @@ use asupersync::time::{timeout, wall_now};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
+use std::task::Poll;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -66,6 +68,14 @@ enum Job {
         target: SocketAddr,
         wait: Duration,
         reply: mpsc::Sender<Result<Vec<mdns::SonosAdvert>, ProtoError>>,
+    },
+    /// Both searches at once (see [`Transport::discover`]).
+    Discover {
+        ssdp_target: SocketAddr,
+        mdns_target: SocketAddr,
+        mx_secs: u8,
+        wait: Duration,
+        reply: mpsc::Sender<Result<Discovered, ProtoError>>,
     },
     Route {
         toward: SocketAddr,
@@ -411,6 +421,21 @@ impl Transport for Lan {
             reply,
         })
     }
+
+    fn discover(&self, mx_secs: u8, wait: Duration) -> Discovered {
+        let (ssdp_target, mdns_target) = (self.ssdp_target, self.mdns_target);
+        self.submit(|reply| Job::Discover {
+            ssdp_target,
+            mdns_target,
+            mx_secs,
+            wait,
+            reply,
+        })
+        .unwrap_or_else(|e| Discovered {
+            ssdp: Err(network("SSDP", &e)),
+            mdns: Err(e),
+        })
+    }
 }
 
 async fn run(job: Job) {
@@ -439,6 +464,20 @@ async fn run(job: Job) {
             reply,
         } => {
             let _ = reply.send(mdns_search(target, wait).await);
+        }
+        Job::Discover {
+            ssdp_target,
+            mdns_target,
+            mx_secs,
+            wait,
+            reply,
+        } => {
+            let (ssdp, mdns) = both(
+                search(ssdp_target, mx_secs, wait),
+                mdns_search(mdns_target, wait),
+            )
+            .await;
+            let _ = reply.send(Ok(Discovered { ssdp, mdns }));
         }
         Job::Route { toward, reply } => {
             let _ = reply.send(route(toward).await);
@@ -582,6 +621,34 @@ async fn mdns_search(
         }
     }
     Ok(found)
+}
+
+/// Both futures' outputs, the two polled side by side in this one task:
+/// each wakes it when its socket or timer is ready.
+async fn both<A: Future, B: Future>(a: A, b: B) -> (A::Output, B::Output) {
+    let mut a = std::pin::pin!(a);
+    let mut b = std::pin::pin!(b);
+    let (mut first, mut second) = (None, None);
+    std::future::poll_fn(move |cx| {
+        if first.is_none()
+            && let Poll::Ready(out) = a.as_mut().poll(cx)
+        {
+            first = Some(out);
+        }
+        if second.is_none()
+            && let Poll::Ready(out) = b.as_mut().poll(cx)
+        {
+            second = Some(out);
+        }
+        match (first.take(), second.take()) {
+            (Some(x), Some(y)) => Poll::Ready((x, y)),
+            pending => {
+                (first, second) = pending;
+                Poll::Pending
+            }
+        }
+    })
+    .await
 }
 
 fn network(target: impl Into<String>, detail: impl std::fmt::Display) -> ProtoError {
@@ -1327,4 +1394,58 @@ fn mdns_target_sends_the_query_and_parses_the_fixture_reply_s1() {
     assert!(advert.instance.starts_with("Sonos-"), "{advert:?}");
     assert!(advert.uuid.is_some(), "parsed from the instance name");
     answering.join().expect("responder thread");
+}
+
+#[test]
+fn discovery_listens_for_ssdp_and_mdns_at_once() {
+    let fixture = include_bytes!("../tests/fixtures/mdns_response_s2.bin");
+    let ssdp_side = std::net::UdpSocket::bind("127.0.0.1:0").expect("ssdp responder");
+    let mdns_side = std::net::UdpSocket::bind("127.0.0.1:0").expect("mdns responder");
+    let (ssdp_target, mdns_target) = (
+        ssdp_side.local_addr().expect("addr"),
+        mdns_side.local_addr().expect("addr"),
+    );
+    for s in [&ssdp_side, &mdns_side] {
+        s.set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
+    }
+    // Each answers both copies of its query; the client dedupes them.
+    let answering_ssdp = thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        for _ in 0..2 {
+            let Ok((_, from)) = ssdp_side.recv_from(&mut buf) else {
+                return;
+            };
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nLOCATION: http://192.0.2.77:1400/xml/device_description.xml\r\n\
+             ST: {}\r\n\r\n",
+                ssdp::SONOS_ST
+            );
+            ssdp_side.send_to(reply.as_bytes(), from).expect("reply");
+        }
+    });
+    let answering_mdns = thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        for _ in 0..2 {
+            let Ok((_, from)) = mdns_side.recv_from(&mut buf) else {
+                return;
+            };
+            mdns_side.send_to(fixture, from).expect("reply");
+        }
+    });
+    let lan = Lan::start()
+        .expect("lan")
+        .with_ssdp_target(ssdp_target)
+        .with_mdns_target(mdns_target);
+    let wait = Duration::from_secs(1);
+    let started = Instant::now();
+    let found = lan.discover(1, wait);
+    let took = started.elapsed();
+    assert_eq!(found.ssdp.expect("ssdp").len(), 1);
+    assert_eq!(found.mdns.expect("mdns").len(), 1);
+    // Each search listens for the whole `wait`: one after the other would
+    // take two.
+    assert!(took >= wait && took < wait * 7 / 4, "{took:?}");
+    answering_ssdp.join().expect("ssdp responder thread");
+    answering_mdns.join().expect("mdns responder thread");
 }

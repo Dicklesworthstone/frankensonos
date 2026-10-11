@@ -62,6 +62,14 @@ pub struct HttpBody {
     pub body: Vec<u8>,
 }
 
+/// What both discovery channels found in one search window (see
+/// [`Transport::discover`]).
+#[derive(Debug)]
+pub struct Discovered {
+    pub ssdp: Result<Vec<ssdp::Advert>, ProtoError>,
+    pub mdns: Result<Vec<mdns::SonosAdvert>, ProtoError>,
+}
+
 /// Minimal network transport the protocol layer needs. [`net::Lan`] is the
 /// real implementation; pure in-memory impls back the unit and golden tests,
 /// which only need [`Transport::soap_post`].
@@ -102,6 +110,18 @@ pub trait Transport {
     fn mdns_search(&self, _wait: Duration) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
         Err(ProtoError::NotWired("mdns_search"))
     }
+
+    /// Both discovery channels, [`Self::ssdp_search`] and
+    /// [`Self::mdns_search`], each for `wait`: one after the other, unless
+    /// the transport listens on both at once ([`net::Lan`] does, so a
+    /// survey waits once). A wrapper that forwards both searches but not
+    /// this one still finds on both channels, through its own searches.
+    fn discover(&self, mx_secs: u8, wait: Duration) -> Discovered {
+        Discovered {
+            ssdp: self.ssdp_search(mx_secs, wait),
+            mdns: self.mdns_search(wait),
+        }
+    }
 }
 
 /// A shared transport is a transport: one [`net::Lan`] can serve the
@@ -131,6 +151,10 @@ impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
 
     fn mdns_search(&self, wait: Duration) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
         (**self).mdns_search(wait)
+    }
+
+    fn discover(&self, mx_secs: u8, wait: Duration) -> Discovered {
+        (**self).discover(mx_secs, wait)
     }
 }
 
@@ -203,5 +227,40 @@ mod tests {
         // mDNS what SSDP missed.
         let seen = shared.mdns_search(Duration::ZERO).unwrap();
         assert_eq!(seen[0].household.as_deref(), Some("Sonos_example"));
+    }
+
+    /// Listens on both channels at once (as `net::Lan` does), and says
+    /// so by what it finds.
+    struct AtOnce;
+    impl Transport for AtOnce {
+        fn soap_post(
+            &self,
+            _host: std::net::IpAddr,
+            _control_path: &str,
+            _soap_action: &str,
+            _body: &str,
+        ) -> Result<String, ProtoError> {
+            Err(ProtoError::NotWired("soap_post"))
+        }
+
+        fn discover(&self, _mx_secs: u8, _wait: Duration) -> Discovered {
+            Discovered {
+                ssdp: Ok(Vec::new()),
+                mdns: Err(ProtoError::NotWired("at once")),
+            }
+        }
+    }
+
+    #[test]
+    fn discovery_runs_both_channels_and_a_shared_transport_keeps_its_own() {
+        // By default, each channel through the transport's own search.
+        let found = Everything.discover(1, Duration::ZERO);
+        assert_eq!(found.ssdp.unwrap().len(), 1);
+        assert_eq!(found.mdns.unwrap().len(), 1);
+
+        let shared: Arc<dyn Transport + Send + Sync> = Arc::new(AtOnce);
+        let found = shared.discover(1, Duration::ZERO);
+        assert!(found.ssdp.is_ok_and(|s| s.is_empty()));
+        assert!(matches!(found.mdns, Err(ProtoError::NotWired("at once"))));
     }
 }

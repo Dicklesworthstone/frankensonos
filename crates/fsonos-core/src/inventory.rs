@@ -8,7 +8,7 @@
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::description::{DeviceDescription, parse_device_description};
 use fsonos_proto::topology::{VanishedDevice, get_zone_group_state, host_of_location};
-use fsonos_proto::{Transport, ssdp};
+use fsonos_proto::{Discovered, Transport, ssdp};
 use fsonos_types::{Generation, HouseholdId, Player, PlayerId};
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -47,7 +47,10 @@ pub fn survey<T: Transport + ?Sized>(
 ) -> Result<Survey, CoreError> {
     let mut out = Survey::default();
     let mut found: Vec<(IpAddr, Option<String>)> = Vec::new();
-    let ssdp_error = match t.ssdp_search(1, wait) {
+    // Both channels within one `wait` where the transport listens on both
+    // at once (see `Transport::discover`).
+    let Discovered { ssdp, mdns } = t.discover(1, wait);
+    let ssdp_error = match ssdp {
         Ok(adverts) => {
             for advert in adverts {
                 if let Some(ip) = host_of_location(&advert.location)
@@ -65,7 +68,7 @@ pub fn survey<T: Transport + ?Sized>(
     // addresses SSDP missed and refines household hints (the S2 TXT carries
     // `hhid=`, which SSDP's USN only implies). A failure here never fails
     // the survey — with multicast blocked both channels fall back to seeds.
-    if let Ok(adverts) = t.mdns_search(wait) {
+    if let Ok(adverts) = mdns {
         for advert in adverts {
             let Some(addr) = advert.addr else { continue };
             let ip = IpAddr::V4(addr);

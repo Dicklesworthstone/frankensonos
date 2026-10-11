@@ -24,7 +24,7 @@ use fsonos_proto::mdns::SonosAdvert;
 use fsonos_proto::net::{EventSink, Lan, MediaFiles};
 use fsonos_proto::ssdp::Advert;
 use fsonos_proto::topology::{VanishedDevice, host_of_location};
-use fsonos_proto::{HttpBody, ProtoError, Transport};
+use fsonos_proto::{Discovered, HttpBody, ProtoError, Transport};
 use fsonos_types::PlayerId;
 use fsonos_types::text::normalize;
 use std::collections::HashMap;
@@ -300,6 +300,27 @@ struct Engine {
     stop: Arc<AtomicBool>,
 }
 
+/// A player that answered discovery, by SSDP or else by mDNS (on a LAN
+/// that drops SSDP multicast mDNS may be all that answers).
+fn answering(found: &Discovered) -> Result<IpAddr, String> {
+    found
+        .ssdp
+        .iter()
+        .flatten()
+        .find_map(|a| host_of_location(&a.location))
+        .or_else(|| {
+            found
+                .mdns
+                .iter()
+                .flatten()
+                .find_map(|a| a.addr.map(IpAddr::V4))
+        })
+        .ok_or_else(|| match &found.ssdp {
+            Err(e) => format!("no player to listen toward: {e}"),
+            Ok(_) => "no player answered discovery, and no seeds are configured".to_string(),
+        })
+}
+
 /// The longest the loop waits for a NOTIFY before looking at its schedule.
 const TICK: Duration = Duration::from_millis(200);
 
@@ -359,6 +380,10 @@ impl Transport for Via<'_> {
 
     fn mdns_search(&self, wait: Duration) -> Result<Vec<SonosAdvert>, ProtoError> {
         self.transport.mdns_search(wait)
+    }
+
+    fn discover(&self, mx_secs: u8, wait: Duration) -> Discovered {
+        self.transport.discover(mx_secs, wait)
     }
 }
 
@@ -599,7 +624,7 @@ impl Engine {
 
     /// Listen for events on the address this host uses to reach the
     /// players: toward a known player, else a seed, else whoever answers
-    /// an M-SEARCH.
+    /// discovery (SSDP or mDNS).
     fn open_sink(&self, households: &[HouseholdState]) -> Result<EventSink, String> {
         let known = households
             .iter()
@@ -609,13 +634,7 @@ impl Engine {
             .or_else(|| self.config.seeds.first().copied());
         let toward = match known {
             Some(ip) => ip,
-            None => self
-                .transport
-                .ssdp_search(1, DISCOVERY_WAIT)
-                .map_err(|e| format!("no player to listen toward: {e}"))?
-                .iter()
-                .find_map(|a| host_of_location(&a.location))
-                .ok_or("no player answered M-SEARCH, and no seeds are configured")?,
+            None => answering(&self.transport.discover(1, DISCOVERY_WAIT))?,
         };
         let local = self
             .lan
@@ -723,6 +742,75 @@ mod tests {
                 addr: Some(std::net::Ipv4Addr::new(192, 0, 2, 10)),
             }])
         }
+    }
+
+    /// Listens on both discovery channels at once, and says so by what it
+    /// finds.
+    struct AtOnce;
+
+    impl Transport for AtOnce {
+        fn soap_post(
+            &self,
+            _host: IpAddr,
+            _control_path: &str,
+            _soap_action: &str,
+            _body: &str,
+        ) -> Result<String, ProtoError> {
+            Err(ProtoError::NotWired("soap_post"))
+        }
+
+        fn discover(&self, _mx_secs: u8, _wait: Duration) -> Discovered {
+            Discovered {
+                ssdp: Err(ProtoError::NotWired("at once")),
+                mdns: Ok(Vec::new()),
+            }
+        }
+    }
+
+    #[test]
+    fn events_are_heard_toward_a_player_mdns_found_when_ssdp_found_none() {
+        let advert = |addr| SonosAdvert {
+            instance: "RINCON_000000000000001400@Living Room".into(),
+            uuid: None,
+            household: None,
+            boot_seq: None,
+            location: None,
+            port: Some(1443),
+            addr,
+        };
+        let only_mdns = Discovered {
+            ssdp: Err(ProtoError::NotWired("ssdp_search")),
+            mdns: Ok(vec![advert(Some(std::net::Ipv4Addr::new(192, 0, 2, 10)))]),
+        };
+        assert_eq!(answering(&only_mdns), Ok("192.0.2.10".parse().unwrap()));
+        let both = Discovered {
+            ssdp: Ok(vec![Advert {
+                location: "http://192.0.2.20:1400/xml/device_description.xml".into(),
+                st: fsonos_proto::ssdp::SONOS_ST.into(),
+                usn: None,
+                household: None,
+                boot_seq: None,
+            }]),
+            mdns: Ok(vec![advert(Some(std::net::Ipv4Addr::new(192, 0, 2, 10)))]),
+        };
+        assert_eq!(answering(&both), Ok("192.0.2.20".parse().unwrap()));
+        let none = Discovered {
+            ssdp: Ok(Vec::new()),
+            mdns: Ok(vec![advert(None)]),
+        };
+        assert!(answering(&none).unwrap_err().contains("no seeds"));
+    }
+
+    #[test]
+    fn the_live_model_discovers_as_its_transport_does() {
+        let lan = Lan::start().expect("lan");
+        let via = Via {
+            transport: &AtOnce,
+            lan: &lan,
+        };
+        let found = via.discover(1, Duration::ZERO);
+        assert!(matches!(found.ssdp, Err(ProtoError::NotWired("at once"))));
+        assert!(found.mdns.is_ok_and(|m| m.is_empty()));
     }
 
     #[test]
