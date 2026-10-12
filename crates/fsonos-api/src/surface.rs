@@ -781,7 +781,13 @@ impl Surface {
         // Plan the restore against the speakers as they are now.
         self.invalidate();
         let households = self.households()?;
-        let vet = |op: &RestoreOp| vet_restore(&guard, &*self.transport, &households, op);
+        let vet = |op: &RestoreOp| {
+            let vetted = vet_restore(&guard, &*self.transport, &households, op);
+            if let Ok(RestoreOp::SetVolume { player, .. }) = &vetted {
+                self.volumes_changing(&households, std::slice::from_ref(player));
+            }
+            vetted
+        };
         let mut store = log
             .store
             .lock()

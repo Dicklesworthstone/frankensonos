@@ -686,6 +686,21 @@ impl Sleep {
     }
 }
 
+/// The coordinators of the groups `players` play in, each once.
+fn groups_of(households: &[HouseholdState], players: &[PlayerId]) -> Vec<PlayerId> {
+    let mut groups: Vec<PlayerId> = Vec::new();
+    for player in players {
+        let group = households
+            .iter()
+            .find_map(|h| h.coordinator_of(player))
+            .unwrap_or(player);
+        if !groups.contains(group) {
+            groups.push(group.clone());
+        }
+    }
+    groups
+}
+
 /// A group, as a sleep timer addresses it.
 struct Zone {
     coordinator: PlayerId,
@@ -816,6 +831,68 @@ impl Surface {
             Some(sleep) => f(&sleep.fader),
             None => f(&Fader::default()),
         }
+    }
+
+    /// Volumes are about to be set on `players` other than by a fade (a scene,
+    /// an announcement, an undo): every fade in flight on their groups ends
+    /// where it is, so it does not overwrite them a step later. A sleep timer
+    /// that is fading there ends too, as for any volume change.
+    pub(super) fn volumes_changing(&self, households: &[HouseholdState], players: &[PlayerId]) {
+        let Some(sleep) = &self.sleep else {
+            return;
+        };
+        for group in groups_of(households, players) {
+            sleep.volume_changed(households, &group);
+        }
+    }
+
+    /// [`Self::volumes_changing`] for an announcement, which puts the music
+    /// back when it is done: answers the groups whose sleep timer was fading,
+    /// for [`Self::sleep_again`] once the music is back.
+    pub(super) fn announcing(
+        &self,
+        households: &[HouseholdState],
+        players: &[PlayerId],
+    ) -> Vec<PlayerId> {
+        let Some(sleep) = &self.sleep else {
+            return Vec::new();
+        };
+        let mut sleeping = Vec::new();
+        for group in groups_of(households, players) {
+            if sleep.timers.get(&group).is_some_and(|t| t.fading) {
+                sleeping.push(group.clone());
+            }
+            sleep.volume_changed(households, &group);
+        }
+        sleeping
+    }
+
+    /// After an announcement ended their sleep timers' fades (see
+    /// [`Self::announcing`]): each of `groups` sleeps again, fading over the
+    /// usual time from the level the music came back at, then pausing.
+    pub(super) fn sleep_again(&self, households: &[HouseholdState], groups: &[PlayerId]) {
+        let Some(sleep) = &self.sleep else {
+            return;
+        };
+        if groups.is_empty() {
+            return;
+        }
+        let now = self.clock.now().to_utc();
+        let t = &*self.transport;
+        let mut set: Vec<&PlayerId> = Vec::new();
+        for group in groups {
+            if set.contains(&group) {
+                continue;
+            }
+            set.push(group);
+            if let Err(e) = sleep
+                .timers
+                .start(t, households, &sleep.fader, group, FADE, now)
+            {
+                tracing::warn!("sleep timer in {}'s group not set again: {e}", group.0);
+            }
+        }
+        sleep.save();
     }
 
     /// After a move (`moved`: it succeeded), the group's sleep timer follows
@@ -1813,6 +1890,51 @@ mod tests {
     use fsonos_core::store::MemStore;
 
     const MIN: fn(u64) -> Duration = Duration::from_mins;
+
+    #[test]
+    fn an_announcement_ends_a_sleep_fade_and_the_music_sleeps_again_after() {
+        let houses = households();
+        let patio = houses
+            .iter()
+            .flat_map(|h| &h.rooms)
+            .find(|r| r.name == "Patio")
+            .unwrap()
+            .coordinator
+            .clone();
+        let survey: Survey = {
+            let houses = houses.clone();
+            Box::new(move |_| Ok(houses.clone()))
+        };
+        let s = Surface::new(
+            Box::new(Canned {
+                out_args: "",
+                sent: Arc::new(Mutex::new(Vec::new())),
+            }),
+            survey,
+            Policy::default(),
+            Box::new(fsonos_core::clock::SystemClock),
+        )
+        .with_sleep(Sleep::default());
+        let sleep = s.sleep.as_ref().unwrap();
+        let now = Utc::now();
+        sleep
+            .timers
+            .start(&*s.transport, &houses, &sleep.fader, &patio, MIN(10), now)
+            .unwrap();
+        assert_eq!(sleep.timers.due(now + TimeDelta::minutes(10)).len(), 1);
+        // An announcement comes to the Patio while its timer fades: the fade
+        // ends where it is, and the group is named to sleep again.
+        let sleeping = s.announcing(&houses, &[patio.clone(), patio.clone()]);
+        assert_eq!(sleeping, std::slice::from_ref(&patio));
+        // Once the music is back it sleeps again, a fade's length from now.
+        s.sleep_again(&houses, &sleeping);
+        let timer = sleep.timers.get(&patio).expect("a timer again");
+        assert!(!timer.fading);
+        let again = Utc::now();
+        assert!(timer.ends > now + TimeDelta::minutes(1), "{timer:?}");
+        assert!(timer.ends <= again + delta(FADE), "{timer:?}");
+        assert_eq!(sleep.timers.due(again + delta(FADE)).len(), 1);
+    }
 
     #[test]
     fn a_volume_change_ends_a_ramp_in_flight_where_it_is() {

@@ -12,7 +12,6 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use fastapi::{JsonSchema, fastapi_openapi};
-use fsonos_core::HouseholdState;
 use fsonos_core::announce::clip::{
     Chime, ClipError, ClipSource, MAX_WAV_BYTES, MediaStore, wav_info,
 };
@@ -21,6 +20,7 @@ use fsonos_core::announce::{
 };
 use fsonos_core::policy::Client;
 use fsonos_core::rooms::{ControlTarget, ResolveContext, resolve_targets};
+use fsonos_core::{HouseholdState, Room};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -268,11 +268,29 @@ impl Surface {
         };
         let policy = self.policy();
         let now = self.clock.now();
-        let cap = |room: &str| policy.max_volume(room, client, now);
-        let report = with
+        // The announcer asks each room's cap once its household's turn has
+        // come, just before it sets the levels: the moment to end the fades
+        // there. A sleep timer that was fading sleeps again once the music is
+        // back (see `announcing`).
+        let sleeping = std::sync::Mutex::new(Vec::new());
+        let cap = |room: &Room| {
+            for target in targets.iter().filter(|t| t.room.primary == room.primary) {
+                let ended = self.announcing(&households, std::slice::from_ref(&target.player.id));
+                sleeping
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend(ended);
+            }
+            policy.max_volume(&room.name, client, now)
+        };
+        let announced = with
             .announcer
-            .announce(&*self.transport, &targets, &clip, volume, &cap)
-            .map_err(|e| Failure::invalid(e.to_string()))?;
+            .announce(&*self.transport, &targets, &clip, volume, &cap);
+        let sleeping = sleeping
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.sleep_again(&households, &sleeping);
+        let report = announced.map_err(|e| Failure::invalid(e.to_string()))?;
 
         let dto = AnnounceDto::from_report(&households, &report);
         let clamped: Vec<String> = dto

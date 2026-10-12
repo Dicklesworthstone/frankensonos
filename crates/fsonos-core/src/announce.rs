@@ -298,7 +298,7 @@ impl Announcer {
     }
 
     /// Play `clip` in the `targets` rooms at `volume` (each room capped at
-    /// `cap(room name)`), then put everything back. Blocks until done,
+    /// `cap(room)`), then put everything back. Blocks until done,
     /// including any wait for an earlier announcement in the same household.
     pub fn announce<T: Transport + Sync + ?Sized>(
         &self,
@@ -306,7 +306,7 @@ impl Announcer {
         targets: &[ControlTarget<'_>],
         clip: &Clip,
         volume: u8,
-        cap: &(dyn Fn(&str) -> u8 + Sync),
+        cap: &(dyn Fn(&Room) -> u8 + Sync),
     ) -> Result<AnnounceReport, AnnounceError> {
         let mut by_household: Vec<(&HouseholdState, Vec<&Room>)> = Vec::new();
         for target in targets {
@@ -351,14 +351,14 @@ impl Announcer {
         rooms: &[&Room],
         clip: &Clip,
         volume: u8,
-        cap: &(dyn Fn(&str) -> u8 + Sync),
+        cap: &(dyn Fn(&Room) -> u8 + Sync),
     ) -> HouseholdAnnouncement {
         let mut report = HouseholdAnnouncement {
             lead: rooms[0].primary.clone(),
             rooms: rooms.iter().map(|r| r.name.clone()).collect(),
             levels: rooms
                 .iter()
-                .map(|r| (r.name.clone(), volume.min(cap(&r.name))))
+                .map(|r| (r.name.clone(), volume.min(cap(r))))
                 .collect(),
             outcome: Err(String::new()),
             restored: Vec::new(),

@@ -15,6 +15,7 @@
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::HouseholdState;
 use fsonos_core::actions;
+use fsonos_core::fade::Fader;
 use fsonos_core::favorites;
 use fsonos_core::policy::Client;
 use fsonos_core::rooms::suggest_rooms;
@@ -697,6 +698,27 @@ impl Surface {
         self.apply_scene_fading(client, name, fade)
     }
 
+    /// The daemon's fader for applying `plan`, once every fade in flight on
+    /// the rooms whose volume it sets has ended (`volumes_changing`), so none
+    /// overwrites the scene's levels a step later.
+    fn fader_for<R>(
+        &self,
+        households: &[HouseholdState],
+        plan: &ScenePlan,
+        f: impl FnOnce(&Fader) -> R,
+    ) -> R {
+        let set: Vec<PlayerId> = plan
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                SceneOp::Volume { player, .. } => Some(player.clone()),
+                _ => None,
+            })
+            .collect();
+        self.volumes_changing(households, &set);
+        self.with_fader(f)
+    }
+
     /// [`Self::apply_scene`], fading its volumes over `fade` with the
     /// daemon's fader (so a volume change meanwhile ends the fade where it
     /// is).
@@ -760,7 +782,7 @@ impl Surface {
             surface: self,
             households: &households,
         };
-        let report = self.with_fader(|fader| {
+        let report = self.fader_for(&households, &plan, |fader| {
             scenes::apply(
                 &*self.transport,
                 &households,

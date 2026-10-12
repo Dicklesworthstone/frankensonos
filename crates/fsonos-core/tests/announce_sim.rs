@@ -3,7 +3,7 @@
 //! put back as it was.
 
 use fsonos_core::announce::{Announcer, Clip, Ending};
-use fsonos_core::{HouseholdState, control, resolve_room};
+use fsonos_core::{HouseholdState, Room, control, resolve_room};
 use fsonos_proto::ProtoError;
 use fsonos_proto::Transport;
 use fsonos_proto::control as soap;
@@ -51,7 +51,7 @@ fn clip(name: &str, secs: u64) -> Clip {
     }
 }
 
-fn no_cap(_: &str) -> u8 {
+fn no_cap(_: &Room) -> u8 {
     100
 }
 
@@ -161,7 +161,7 @@ fn an_announcement_plays_in_its_rooms_and_everything_is_put_back() {
         resolve_room(&h, "Den").unwrap(),
     ];
     let chime = clip("chime", 2);
-    let cap = |room: &str| if room == "Den" { 30 } else { 100 };
+    let cap = |room: &Room| if room.name == "Den" { 30 } else { 100 };
     let report =
         with_clock_running(&sim, || fast().announce(&lan, &targets, &chime, 35, &cap)).unwrap();
     let house = &report.households[0];
