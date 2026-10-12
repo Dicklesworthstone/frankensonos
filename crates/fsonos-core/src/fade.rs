@@ -11,7 +11,8 @@
 //! of them ([`Fader::supersede`], or a volume set through
 //! [`Fader::set_volume`]) stops the fade before its next step; a device-side
 //! ramp is stopped the only way a player allows, by sending SetVolume. The
-//! daemon cancels a fade on Cx cancellation by superseding it.
+//! daemon cancels a fade on Cx cancellation by superseding it. A stopping
+//! daemon finishes its fades at once ([`Fader::finish_all`]).
 
 use crate::snapshot::member_rooms;
 use crate::{CoreError, HouseholdState};
@@ -21,7 +22,8 @@ use fsonos_types::PlayerId;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 /// Time between the steps of a fade.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
@@ -71,6 +73,19 @@ pub struct Fader {
     no_device_ramp: Mutex<HashSet<PlayerId>>,
     interval: Duration,
     device_step: Duration,
+    /// Set once the daemon stops: every fade takes its last step at once.
+    finishing: AtomicBool,
+    /// Fades in flight, each with its pause and restore.
+    running: AtomicUsize,
+}
+
+/// One fade in flight, for [`Fader::finish_all`] to wait for.
+struct Running<'a>(&'a AtomicUsize);
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl Default for Fader {
@@ -89,7 +104,31 @@ impl Fader {
             no_device_ramp: Mutex::new(HashSet::new()),
             interval,
             device_step,
+            finishing: AtomicBool::new(false),
+            running: AtomicUsize::new(0),
         }
+    }
+
+    /// Finish every fade in flight at once, and any started from now on: each
+    /// sets its last step now, so a fade-out pauses its group and puts the
+    /// volumes back, and a ramp reaches its level. For a stopping daemon,
+    /// which would otherwise strand its fades part-way. Whether they all
+    /// ended within `timeout`.
+    pub fn finish_all(&self, timeout: Duration) -> bool {
+        self.finishing.store(true, Ordering::Release);
+        let deadline = Instant::now() + timeout;
+        while self.running.load(Ordering::Acquire) > 0 {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        true
+    }
+
+    fn running(&self) -> Running<'_> {
+        self.running.fetch_add(1, Ordering::AcqRel);
+        Running(&self.running)
     }
 
     /// Start a new volume intent on `player`: any fade in flight on it stops
@@ -158,6 +197,7 @@ impl Fader {
         targets: &[(PlayerId, u8)],
         over: Duration,
     ) -> Result<Vec<PlayerId>, CoreError> {
+        let _running = self.running();
         let mut lanes = Vec::with_capacity(targets.len());
         for (player, to) in targets {
             let host = ip(households, player)?;
@@ -179,6 +219,8 @@ impl Fader {
             if tick > 0 {
                 std::thread::sleep(self.interval);
             }
+            let finish = self.finishing.load(Ordering::Acquire);
+            let tick = if finish { ticks - 1 } else { tick };
             for (player, host, intent, from, steps) in &lanes {
                 if left.contains(player) {
                     continue;
@@ -191,9 +233,12 @@ impl Fader {
                     continue;
                 };
                 let before = if tick == 0 { *from } else { steps[tick - 1] };
-                if level != before || tick == 0 {
+                if level != before || tick == 0 || finish {
                     soap::set_volume(t, *host, level)?;
                 }
+            }
+            if finish {
+                break;
             }
         }
         Ok(left)
@@ -208,6 +253,7 @@ impl Fader {
         over: Duration,
         interval: Duration,
     ) -> Result<FadeOutcome, CoreError> {
+        let _running = self.running();
         let mut lanes = Vec::with_capacity(players.len());
         for p in players {
             let host = ip(households, p)?;
@@ -226,18 +272,23 @@ impl Fader {
             if tick > 0 {
                 std::thread::sleep(interval);
             }
+            let finish = self.finishing.load(Ordering::Acquire);
+            let tick = if finish { ticks - 1 } else { tick };
             for (i, (player, host, intent, from, steps)) in lanes.iter().enumerate() {
                 if self.current(player) != *intent {
                     return Ok(FadeOutcome::Superseded { at: first_level });
                 }
                 let level = steps[tick];
                 let before = if tick == 0 { *from } else { steps[tick - 1] };
-                if level != before || tick == 0 {
+                if level != before || tick == 0 || finish {
                     soap::set_volume(t, *host, level)?;
                 }
                 if i == 0 {
                     first_level = level;
                 }
+            }
+            if finish {
+                break;
             }
         }
         Ok(FadeOutcome::Reached)
@@ -292,6 +343,7 @@ impl Fader {
         coordinator: &PlayerId,
         over: Duration,
     ) -> Result<FadeOutcome, CoreError> {
+        let _running = self.running();
         let household = households
             .iter()
             .find(|h| h.player(coordinator).is_some())

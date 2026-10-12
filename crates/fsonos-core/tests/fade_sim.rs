@@ -180,3 +180,83 @@ fn fade_out_then_pause_puts_the_volumes_back() {
         .unwrap();
     assert!(last_zero < pause, "silence first, then pause");
 }
+
+/// Kitchen (with Office joined) playing, Kitchen at 30, Office at 40.
+fn playing_group(sim: &SimHandle, lan: &SimLan) -> (Vec<HouseholdState>, PlayerId) {
+    let h = houses(sim, lan);
+    let kitchen = resolve_room(&h, "Kitchen").unwrap();
+    let office = resolve_room(&h, "Office").unwrap();
+    assert!(grouping::group(lan, &h, &kitchen, &[office]).is_complete());
+    let h = houses(sim, lan);
+    let coord = id(&h, "Kitchen");
+    control::play_uri(
+        lan,
+        &h,
+        &coord,
+        "x-rincon-mp3radio://stream.example.invalid/a.mp3",
+        "",
+    )
+    .unwrap();
+    control::set_volume(lan, &h, &coord, 30).unwrap();
+    control::set_volume(lan, &h, &id(&h, "Office"), 40).unwrap();
+    (h, coord)
+}
+
+/// Wait until `room` has had a fade step below `level`.
+fn wait_for_a_step(sim: &SimHandle, room: &str, level: u8) {
+    for _ in 0..200 {
+        if set_volumes(sim, room).iter().any(|v| *v < level) {
+            return;
+        }
+        std::thread::sleep(MS(10));
+    }
+    panic!("{room}'s fade never started");
+}
+
+#[test]
+fn a_stopping_daemon_finishes_a_fade_out_at_once_and_puts_the_volumes_back() {
+    let sim = sim();
+    let lan = sim.lan();
+    let (h, coord) = playing_group(&sim, &lan);
+    let fader = Fader::with_timing(MS(50), MS(50));
+    std::thread::scope(|s| {
+        // A minute-long fade-out, stopped by the daemon a few steps in.
+        let fading = s.spawn(|| fader.fade_out_and_pause(&lan, &h, &coord, MS(60_000)));
+        wait_for_a_step(&sim, "Kitchen", 30);
+        let stopping = std::time::Instant::now();
+        assert!(fader.finish_all(MS(5000)), "the fade ended in time");
+        assert!(stopping.elapsed() < MS(3000), "at once, not a minute later");
+        assert_eq!(fading.join().unwrap().unwrap(), FadeOutcome::Reached);
+    });
+    assert_eq!(
+        control::playback(&lan, &h, &coord).unwrap().transport.state,
+        TransportState::Paused
+    );
+    assert_eq!(control::volume(&lan, &h, &coord).unwrap(), 30);
+    assert_eq!(control::volume(&lan, &h, &id(&h, "Office")).unwrap(), 40);
+}
+
+#[test]
+fn a_stopping_daemon_takes_a_ramp_to_its_level_at_once() {
+    let sim = sim();
+    let lan = sim.lan();
+    let h = houses(&sim, &lan);
+    let kitchen = id(&h, "Kitchen");
+    control::set_volume(&lan, &h, &kitchen, 60).unwrap();
+    let fader = Fader::with_timing(MS(50), MS(50));
+    std::thread::scope(|s| {
+        let ramping = s.spawn(|| fader.fade(&lan, &h, &kitchen, 10, MS(60_000)));
+        wait_for_a_step(&sim, "Kitchen", 60);
+        assert!(fader.finish_all(MS(5000)));
+        assert_eq!(ramping.join().unwrap().unwrap(), FadeOutcome::Reached);
+    });
+    assert_eq!(control::volume(&lan, &h, &kitchen).unwrap(), 10);
+    // A fade asked for after the daemon began stopping finishes at once too.
+    let started = std::time::Instant::now();
+    assert_eq!(
+        fader.fade(&lan, &h, &kitchen, 25, MS(60_000)).unwrap(),
+        FadeOutcome::Reached
+    );
+    assert!(started.elapsed() < MS(3000));
+    assert_eq!(control::volume(&lan, &h, &kitchen).unwrap(), 25);
+}

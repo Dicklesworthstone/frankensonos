@@ -1611,9 +1611,11 @@ impl Scheduler {
         }
     }
 
-    /// Stop gracefully: a fade in flight stops and puts its group's volumes
-    /// back (the speaker's own timer still pauses the group a little later),
-    /// and the runs started are waited for, up to `timeout`.
+    /// Stop gracefully: a sleep fade in flight stops and puts its group's
+    /// volumes back (the speaker's own timer still pauses the group a little
+    /// later); every other fade, scheduled or asked for, finishes at once (a
+    /// fade-out pauses its group and puts the volumes back); and the runs
+    /// started are waited for, up to `timeout` each.
     pub fn shut_down(&self, timeout: Duration) {
         if let Some(sleep) = &self.surface.sleep {
             let fading: Vec<_> = sleep
@@ -1641,6 +1643,9 @@ impl Scheduler {
                 }
             }
             sleep.save();
+            if !sleep.fader.finish_all(timeout) {
+                tracing::warn!("fades still going at shutdown");
+            }
         }
         if !self.wait(timeout) {
             tracing::warn!("scheduled runs still going at shutdown");
