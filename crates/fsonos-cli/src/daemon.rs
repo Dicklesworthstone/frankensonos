@@ -287,8 +287,10 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         }
     }
     let (data_dir, _lock) = unshared_data_dir(global)?;
-    let checks = args.clone();
-    let doctor_data_dir = data_dir.clone();
+    // GET /doctor and the MCP doctor run what `fsonos doctor` runs: the
+    // store, the LAN (discovery, each player, a GENA round trip) and the
+    // aliases, then serve's own checks.
+    let checks = crate::doctor::checks(global, args.clone())?;
     let (house, library) = (policy(&data_dir)?, LibrarySync::for_serve(args, &data_dir));
     let (surface, live) = live_surface(global, args.events_port, house, library.clone())?;
     let surface = surface
@@ -296,11 +298,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         .with_sleep(scheduler.sleep(&data_dir));
     // The owner's Spotify sign-in comes back to this daemon's own port.
     let surface = spotify_auth::install(surface, args, &data_dir);
-    let surface = Arc::new(
-        with_action_log(surface, &data_dir, "serve").with_doctor_checks(Box::new(move |runner| {
-            crate::doctor::register(runner, &checks, &doctor_data_dir);
-        })),
-    );
+    let surface = Arc::new(with_action_log(surface, &data_dir, "serve").with_doctor_checks(checks));
     // The live model's playback keeps each DJ queue topped up.
     fsonos_api::surface::follow(&surface);
 

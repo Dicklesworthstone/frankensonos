@@ -248,11 +248,19 @@ fn check_http_reads(s: &mut Scenario, api: &str) {
     s.check(
         "doctor",
         "http",
-        "GET /doctor returns the report with the daemon's own checks",
+        "GET /doctor returns the report with the daemon's own checks, the store's, the LAN's and the aliases'",
         report["schema"] == 1
-            && report["checks"]
-                .as_array()
-                .is_some_and(|c| c.iter().any(|x| x["id"] == "daemon.bind")),
+            && report["checks"].as_array().is_some_and(|c| {
+                [
+                    "daemon.bind",
+                    "store.open",
+                    "lan.players",
+                    "lan.gena_roundtrip",
+                    "rooms.aliases",
+                ]
+                .iter()
+                .all(|id| c.iter().any(|x| x["id"] == *id))
+            }),
         format!("{doctor:?}"),
     );
     let openapi = http(api, "GET", "/openapi.json", &[], "");

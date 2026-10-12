@@ -312,12 +312,11 @@ pub fn only(report: Report, prefix: Option<&str>) -> Report {
 pub fn lan_checks(
     global: &GlobalArgs,
 ) -> Result<impl Fn(&mut Runner) + Send + Sync + 'static, Failure> {
-    let network = global.network()?;
-    let probe = Arc::new(
-        LanProbe::new(Arc::clone(&network.lan), global.seed_addrs()?).with_ssdp_wait(global.wait()),
-    );
+    let lan = global.network()?.lan;
+    let (seeds, wait) = (global.seed_addrs()?, global.wait());
     let data_dir = crate::daemon::data_dir(global)?;
     Ok(move |runner: &mut Runner| {
+        let probe = Arc::new(LanProbe::new(Arc::clone(&lan), seeds.clone()).with_ssdp_wait(wait));
         fsonos_core::doctor::lan::register(runner, data_dir.clone(), &probe);
         let aliases = data_dir.join(fsonos_api::surface::ALIASES_FILE);
         fsonos_core::doctor::rooms::register(runner, aliases, &probe);
