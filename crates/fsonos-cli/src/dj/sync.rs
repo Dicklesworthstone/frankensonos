@@ -7,7 +7,9 @@
 //! lacks the newer columns), and checks again every [`CHECK`]: a day after
 //! a success, or at the next check after a failure (a rate limit resumes
 //! where it stopped). Signed out, it waits quietly; `fsonos doctor` says so.
-//! `fsonos dj sync` (`POST /dj/sync`, the `dj_sync` tool) asks for one now.
+//! `fsonos dj sync` (`POST /dj/sync`, the `dj_sync` tool) asks for one now;
+//! `fsonos dj sync --status` (`GET /dj/sync`, `dj_sync_status`) only says
+//! where they stand.
 //!
 //! A refresh opens its own connection to the store, so the DJ and the
 //! other surfaces never wait on its Spotify reads, and the DJ rebuilds its
@@ -205,8 +207,7 @@ impl LibrarySync {
     /// The last successful refresh, from [`STAMP`].
     #[must_use]
     pub fn last(&self) -> Option<SyncedDto> {
-        let text = std::fs::read_to_string(self.data_dir.join(STAMP)).ok()?;
-        serde_json::from_str(&text).ok()
+        last_synced(&self.data_dir)
     }
 
     /// Whether a refresh is due at `now` (Unix seconds): never made, or
@@ -259,6 +260,12 @@ fn now() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
+/// The last successful refresh `data_dir`'s [`STAMP`] holds.
+fn last_synced(data_dir: &Path) -> Option<SyncedDto> {
+    let text = std::fs::read_to_string(data_dir.join(STAMP)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 fn write_stamp(data_dir: &Path, synced: &SyncedDto) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(synced).map_err(std::io::Error::other)?;
     let tmp = data_dir.join(format!("{STAMP}.tmp"));
@@ -290,6 +297,10 @@ fn failure(err: SpotifyError) -> Failure {
 /// `fsonos dj sync`.
 #[derive(Args, Debug, Clone)]
 pub struct SyncArgs {
+    /// Only say where the library refresh stands (when the last one finished
+    /// and what it found, whether one runs now); start none.
+    #[arg(long, conflicts_with = "no_wait")]
+    pub status: bool,
     /// Return once the refresh has started, rather than when it is done.
     #[arg(long)]
     pub no_wait: bool,
@@ -311,6 +322,16 @@ const POLL: Duration = Duration::from_secs(2);
 /// `fsonos dj sync`: through the daemon when one answers (it refreshes in
 /// the background; this waits unless `--no-wait`), else right here.
 pub fn run(global: &GlobalArgs, args: &SyncArgs) -> anyhow::Result<()> {
+    if args.status {
+        let state: LibrarySyncDto = match Daemon::find(global, global.daemon)? {
+            Some(daemon) => daemon.get("/dj/sync")?,
+            // Without a daemon nothing refreshes in the background.
+            None => {
+                LibrarySyncDto::new(false, last_synced(&crate::daemon::data_dir(global)?), None)
+            }
+        };
+        return crate::emit(global.json, &state, |s| format!("{}\n", s.done));
+    }
     if let Some(daemon) = Daemon::find(global, global.daemon)? {
         let mut state: LibrarySyncDto = daemon.post("/dj/sync", &serde_json::json!({}))?;
         while state.running && !args.no_wait {
