@@ -49,6 +49,8 @@ pub struct DjConstraints {
     pub exclude_genres: Vec<String>,
     /// Only these periods (classical works).
     pub periods: Vec<Period>,
+    /// Never these periods (classical works; a song has none).
+    pub exclude_periods: Vec<Period>,
     /// What stands in for [`Self::periods`] on a song, which has no period:
     /// at least one of these in its title, album, artists or genres. A
     /// mood's way to say "Baroque, or gospel and folk"; classical works
@@ -57,6 +59,8 @@ pub struct DjConstraints {
     /// Only works released in these decades, each named by its first year
     /// (`1960` for the sixties).
     pub decades: Vec<u16>,
+    /// Never works released in these decades.
+    pub exclude_decades: Vec<u16>,
     /// At least one of these in the work's title, movements, album or
     /// artists. Categories expand: "piano" also finds nocturnes, "vocal"
     /// finds opera, song and choral works (see [`keyword_matches`]).
@@ -71,6 +75,13 @@ pub struct DjConstraints {
     pub allow_long_works: bool,
     /// Unix seconds after which these constraints lapse.
     pub expires_at: Option<i64>,
+}
+
+/// `a`, then what `b` adds to it.
+fn union_of<T: Clone + PartialEq>(a: &[T], b: &[T]) -> Vec<T> {
+    let mut all = a.to_vec();
+    all.extend(b.iter().filter(|x| !a.contains(x)).cloned());
+    all
 }
 
 /// Energy points per step of [`DjConstraints::energy_bias`].
@@ -114,11 +125,13 @@ impl DjConstraints {
             } else {
                 over.song_keywords.clone()
             },
+            exclude_periods: union_of(&self.exclude_periods, &over.exclude_periods),
             decades: if over.decades.is_empty() {
                 self.decades.clone()
             } else {
                 over.decades.clone()
             },
+            exclude_decades: union_of(&self.exclude_decades, &over.exclude_decades),
             include_keywords: union(&self.include_keywords, &over.include_keywords),
             exclude_keywords: union(&self.exclude_keywords, &over.exclude_keywords),
             min_work_minutes: over.min_work_minutes.or(self.min_work_minutes),
@@ -151,7 +164,12 @@ impl DjConstraints {
                 "min_work_minutes {min} exceeds max_work_minutes {max}"
             ));
         }
-        if let Some(decade) = self.decades.iter().find(|&&d| d % 10 != 0) {
+        if let Some(decade) = self
+            .decades
+            .iter()
+            .chain(&self.exclude_decades)
+            .find(|&&d| d % 10 != 0)
+        {
             return Err(format!(
                 "decade {decade} is not a decade's first year (say {})",
                 decade - decade % 10
@@ -177,8 +195,12 @@ impl DjConstraints {
             Relaxation::Keywords => {
                 !self.include_keywords.is_empty() || !self.exclude_keywords.is_empty()
             }
-            Relaxation::Periods => !self.periods.is_empty() || !self.song_keywords.is_empty(),
-            Relaxation::Decades => !self.decades.is_empty(),
+            Relaxation::Periods => {
+                !self.periods.is_empty()
+                    || !self.song_keywords.is_empty()
+                    || !self.exclude_periods.is_empty()
+            }
+            Relaxation::Decades => !self.decades.is_empty() || !self.exclude_decades.is_empty(),
             Relaxation::Genres => {
                 !self.include_genres.is_empty() || !self.exclude_genres.is_empty()
             }
@@ -355,7 +377,17 @@ pub fn admits(
             return false;
         }
     }
-    if on(Relaxation::Periods) && !in_period(work, haystack, c) {
+    if on(Relaxation::Periods)
+        && (!in_period(work, haystack, c)
+            || (work.is_classical() && c.exclude_periods.contains(&work.period)))
+    {
+        return false;
+    }
+    if on(Relaxation::Decades)
+        && work
+            .year()
+            .is_some_and(|year| c.exclude_decades.contains(&(year - year % 10)))
+    {
         return false;
     }
     if on(Relaxation::Decades)
@@ -1612,6 +1644,57 @@ mod tests {
         assert_eq!(merged.include_genres, ["jazz", "soul"]);
         assert_eq!(merged.exclude_genres, ["pop"]);
         assert_eq!(merged.decades, [1960]);
+    }
+
+    #[test]
+    fn decades_and_periods_can_be_left_out() {
+        let pool = works_of(&crate::test_shelf::mixed_items());
+        let all = pool.works();
+        let hays: Vec<String> = all.iter().map(haystack).collect();
+        let relax = |c: DjConstraints| admit(all, &hays, &c, 5);
+
+        // No fifties or sixties: the two jazz albums' seven works go.
+        let (admitted, relaxed) = relax(DjConstraints {
+            exclude_decades: vec![1950, 1960],
+            ..DjConstraints::default()
+        });
+        assert!(relaxed.is_empty());
+        assert_eq!(admitted.len(), all.len() - 7);
+        assert!(
+            admitted
+                .iter()
+                .all(|&w| !all[w].year().is_some_and(|y| (1950..1970).contains(&y)))
+        );
+
+        // No Romantic works: Chopin's go, every song stays.
+        let romantic = all
+            .iter()
+            .filter(|w| w.is_classical() && w.period == Period::Romantic)
+            .count();
+        assert!(romantic > 0);
+        let (admitted, relaxed) = relax(DjConstraints {
+            exclude_periods: vec![Period::Romantic],
+            ..DjConstraints::default()
+        });
+        assert!(relaxed.is_empty());
+        assert_eq!(admitted.len(), all.len() - romantic);
+
+        let err = DjConstraints {
+            exclude_decades: vec![1985],
+            ..DjConstraints::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert!(err.contains("say 1980"), "{err}");
+        let merged = DjConstraints {
+            exclude_decades: vec![1980],
+            ..DjConstraints::default()
+        }
+        .merged(&DjConstraints {
+            exclude_decades: vec![1990, 1980],
+            ..DjConstraints::default()
+        });
+        assert_eq!(merged.exclude_decades, [1980, 1990], "they add up");
     }
 
     #[test]

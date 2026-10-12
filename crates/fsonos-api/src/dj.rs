@@ -198,10 +198,16 @@ pub struct SteerConstraints {
     /// impressionist, modern, contemporary.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub periods: Vec<String>,
+    /// Never these periods (classical works).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude_periods: Vec<String>,
     /// Only works released in these decades, each named by its first year
     /// (1960 for the sixties).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub decades: Vec<u16>,
+    /// Never works released in these decades ("no 80s tonight": 1980).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude_decades: Vec<u16>,
     /// At least one of these in the work's title, movements, album or
     /// artists. Categories expand (piano, chamber, orchestral, choral,
     /// opera, song, vocal); other words match whole words.
@@ -477,8 +483,17 @@ pub fn describe_steer(mood: Option<&str>, c: &SteerConstraints, for_secs: Option
     list(&c.include_genres, |l| format!("{l} only"));
     list(&c.exclude_genres, |l| format!("no {l}"));
     list(&c.periods, |l| format!("{} works", l.replace('_', "-")));
+    list(&c.exclude_periods, |l| {
+        format!("no {} works", l.replace('_', "-"))
+    });
     let decades: Vec<String> = c.decades.iter().map(|d| format!("the {d}s")).collect();
     list(&decades, |l| format!("from {l}"));
+    let not_decades: Vec<String> = c
+        .exclude_decades
+        .iter()
+        .map(|d| format!("the {d}s"))
+        .collect();
+    list(&not_decades, |l| format!("nothing from {l}"));
     list(&c.include_keywords, |l| format!("with {l}"));
     list(&c.exclude_keywords, |l| format!("without {l}"));
     match (c.min_work_minutes, c.max_work_minutes) {

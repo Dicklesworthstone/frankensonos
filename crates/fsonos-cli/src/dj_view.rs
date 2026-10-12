@@ -63,7 +63,13 @@ pub fn from_dj(c: &DjConstraints) -> SteerConstraints {
             .iter()
             .filter_map(|p| serde_json::to_value(p).ok()?.as_str().map(str::to_owned))
             .collect(),
+        exclude_periods: c
+            .exclude_periods
+            .iter()
+            .filter_map(|p| serde_json::to_value(p).ok()?.as_str().map(str::to_owned))
+            .collect(),
         decades: c.decades.clone(),
+        exclude_decades: c.exclude_decades.clone(),
         include_keywords: c.include_keywords.clone(),
         exclude_keywords: c.exclude_keywords.clone(),
         min_work_minutes: c.min_work_minutes,

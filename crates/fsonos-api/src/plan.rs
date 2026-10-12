@@ -100,7 +100,7 @@ pub enum Command {
     /// then, with `start`, start the DJ there.
     DjSteer {
         coordinator: PlayerId,
-        steer: DjSteer,
+        steer: Box<DjSteer>,
         start: bool,
     },
     /// Already in the requested state; nothing to send.
@@ -613,7 +613,7 @@ pub fn plan_dj_start<'a>(
     Ok(match steer {
         Some(steer) => Command::DjSteer {
             coordinator,
-            steer,
+            steer: Box::new(steer),
             start: true,
         },
         None => Command::Dj {
@@ -632,7 +632,7 @@ pub fn plan_dj_steer<'a>(
     let (zone, steer) = (req.zone()?, req.steer()?);
     Ok(Command::DjSteer {
         coordinator: resolve(rooms, zone)?.coordinator.id.clone(),
-        steer,
+        steer: Box::new(steer),
         start: false,
     })
 }
@@ -769,7 +769,7 @@ mod tests {
         );
         let steer = |start| Command::DjSteer {
             coordinator: c(),
-            steer: DjSteer::Clear,
+            steer: Box::new(DjSteer::Clear),
             start,
         };
         assert!(steer(false).repeat_safe());
@@ -803,11 +803,11 @@ mod tests {
             plan_dj_steer(&houses, &req).unwrap(),
             Command::DjSteer {
                 coordinator: id("RINCON_DEN"),
-                steer: DjSteer::Set {
+                steer: Box::new(DjSteer::Set {
                     mood: Some("focus".into()),
                     constraints: crate::dj::SteerConstraints::default(),
                     for_secs: None,
-                },
+                }),
                 start: false,
             }
         );

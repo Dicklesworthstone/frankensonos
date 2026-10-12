@@ -407,13 +407,23 @@ fn checked(c: &SteerConstraints) -> Result<SteerConstraints, Failure> {
             "min_work_minutes {min} exceeds max_work_minutes {max}"
         )));
     }
-    if c.decades.len() > MAX_STEER_LIST {
-        return Err(Failure::invalid(format!(
-            "decades has {} entries; the limit is {MAX_STEER_LIST}",
-            c.decades.len()
-        )));
+    for (field, decades) in [
+        ("decades", &c.decades),
+        ("exclude_decades", &c.exclude_decades),
+    ] {
+        if decades.len() > MAX_STEER_LIST {
+            return Err(Failure::invalid(format!(
+                "{field} has {} entries; the limit is {MAX_STEER_LIST}",
+                decades.len()
+            )));
+        }
     }
-    if let Some(decade) = c.decades.iter().find(|&&d| d < 1000 || d % 10 != 0) {
+    if let Some(decade) = c
+        .decades
+        .iter()
+        .chain(&c.exclude_decades)
+        .find(|&&d| d < 1000 || d % 10 != 0)
+    {
         return Err(Failure::invalid(format!(
             "decade {decade} is not a decade's first year: say 1960 for the sixties"
         )));
@@ -427,6 +437,7 @@ fn checked(c: &SteerConstraints) -> Result<SteerConstraints, Failure> {
         include_genres: steer_list("include_genres", &c.include_genres, str::to_owned)?,
         exclude_genres: steer_list("exclude_genres", &c.exclude_genres, str::to_owned)?,
         periods: steer_list("periods", &c.periods, period)?,
+        exclude_periods: steer_list("exclude_periods", &c.exclude_periods, period)?,
         include_keywords: steer_list("include_keywords", &c.include_keywords, str::to_owned)?,
         exclude_keywords: steer_list("exclude_keywords", &c.exclude_keywords, str::to_owned)?,
         ..c.clone()

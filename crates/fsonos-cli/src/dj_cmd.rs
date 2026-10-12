@@ -107,10 +107,16 @@ pub struct SteerArgs {
     /// romantic, late_romantic, impressionist, modern, contemporary.
     #[arg(long = "period")]
     periods: Vec<String>,
+    /// Never this period (repeat for more).
+    #[arg(long = "not-period")]
+    exclude_periods: Vec<String>,
     /// Only works released in this decade (repeat for more): 1960s, 60s or
     /// 1960.
     #[arg(long = "decade", value_name = "DECADE", value_parser = parse_decade)]
     decades: Vec<u16>,
+    /// Nothing released in this decade (repeat for more): 1980s, 80s or 1980.
+    #[arg(long = "not-decade", value_name = "DECADE", value_parser = parse_decade)]
+    exclude_decades: Vec<u16>,
     /// A keyword the work must have: piano, chamber, orchestral, choral,
     /// opera, song, vocal (each finds its forms), or any whole word.
     #[arg(long = "with", value_name = "KEYWORD")]
@@ -158,7 +164,9 @@ impl SteerArgs {
                 include_genres: self.include_genres.clone(),
                 exclude_genres: self.exclude_genres.clone(),
                 periods: self.periods.clone(),
+                exclude_periods: self.exclude_periods.clone(),
                 decades: self.decades.clone(),
+                exclude_decades: self.exclude_decades.clone(),
                 include_keywords: self.include_keywords.clone(),
                 exclude_keywords: self.exclude_keywords.clone(),
                 min_work_minutes: self.min_work_minutes,
@@ -534,6 +542,16 @@ mod tests {
         assert_eq!(req.constraints.include_genres, ["jazz"]);
         assert_eq!(req.constraints.exclude_genres, ["pop"]);
         assert_eq!(req.constraints.decades, [1960, 1970]);
+        let not = steer_of(&[
+            "steer",
+            "Den",
+            "--not-decade",
+            "80s",
+            "--not-period",
+            "baroque",
+        ]);
+        assert_eq!(not.constraints.exclude_decades, [1980]);
+        assert_eq!(not.constraints.exclude_periods, ["baroque"]);
         for bad in ["1965", "baroque", "sixties"] {
             assert!(
                 Cli::try_parse_from(["dj", "steer", "Den", "--decade", bad]).is_err(),
