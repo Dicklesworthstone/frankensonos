@@ -1051,6 +1051,8 @@ impl fsonos_mcp::tools::Daemon for StdioDaemon {
         Some(match method {
             "GET" => daemon.get(path),
             "PUT" => daemon.put(path),
+            // An announcement answers once it has played and the music is back.
+            "POST" if path == "/announce" => daemon.announce_json(body.unwrap_or(&empty)),
             _ => daemon.post(path, body.unwrap_or(&empty)),
         })
     }

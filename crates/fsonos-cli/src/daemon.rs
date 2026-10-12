@@ -239,21 +239,25 @@ pub fn listener_client(addr: SocketAddr) -> Client {
     }
 }
 
-/// The data directory, refusing to start while another daemon serves it:
-/// two would share its store, and the second would take over daemon.json
-/// while the first still holds the event port, so the CLI would talk to a
-/// daemon whose model is stale.
-fn unshared_data_dir(global: &GlobalArgs) -> anyhow::Result<PathBuf> {
+/// The data directory and its daemon lock, held for as long as the daemon
+/// runs: a second daemon there would share its store and take over
+/// daemon.json while this one still holds the event port, so the CLI would
+/// talk to a daemon whose model is stale.
+fn unshared_data_dir(global: &GlobalArgs) -> anyhow::Result<(PathBuf, std::fs::File)> {
     let data_dir = data_dir(global)?;
-    if let Some(other) = crate::remote::running_daemon(&data_dir) {
-        anyhow::bail!(
-            "fsonos serve already runs for this data directory (pid {}, http://{}): stop it \
-             first, or give this one its own --data-dir and --events-port",
-            other.pid,
-            other.http
-        );
+    let lock = crate::remote::lock_data_dir(&data_dir)
+        .with_context(|| format!("lock the data directory {}", data_dir.display()))?;
+    match lock {
+        crate::remote::DirLock::Held(lock) => Ok((data_dir, lock)),
+        crate::remote::DirLock::Busy(other) => anyhow::bail!(
+            "fsonos serve already runs for this data directory{}: stop it first, or give \
+             this one its own --data-dir and --events-port",
+            other.map_or_else(String::new, |f| format!(
+                " (pid {}, http://{})",
+                f.pid, f.http
+            ))
+        ),
     }
-    Ok(data_dir)
 }
 
 /// Vet the configuration, start both servers, report readiness, and run
@@ -272,7 +276,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             }
         }
     }
-    let data_dir = unshared_data_dir(global)?;
+    let (data_dir, _lock) = unshared_data_dir(global)?;
     let checks = args.clone();
     let doctor_data_dir = data_dir.clone();
     let (house, library) = (policy(&data_dir)?, LibrarySync::for_serve(args, &data_dir));
