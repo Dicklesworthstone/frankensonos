@@ -63,6 +63,7 @@ pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
         .tool(tools::RecentActions)
         .tool(tools::UndoLast)
         .tool(tools::GetPolicy)
+        .tool(tools::Events)
         .tool(tools::Doctor)
         .tool(tools::Play)
         .tool(tools::Pause)

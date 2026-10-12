@@ -65,6 +65,7 @@ use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::future::ready;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::dj::{DjMoodsDto, DjStatusDto};
 use crate::failure::{ErrorCode, Failure};
@@ -289,15 +290,9 @@ fn reads(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/events",
                 "events",
                 DAEMON,
-                "The house's changes as server-sent events (text/event-stream)",
+                "The house's changes as server-sent events (text/event-stream); with `?wait=<secs>` (at most 60), the events after `since` as one JSON answer, waiting up to that long for one",
             ),
-            |s, c, req| match s
-                .events(c)
-                .and_then(|bus| Ok((events_query(req, &bus)?, bus)))
-            {
-                Ok((q, bus)) => crate::events::response(bus, q.since.unwrap_or_default()),
-                Err(failure) => failure.http_response(),
-            },
+            |s, c, req| events_route(s, c, req),
         )
         .query_schema::<EventsQuery>(false),
         cx.route(
@@ -832,6 +827,30 @@ fn whole_number(req: &Request, name: &str) -> Result<Option<usize>, Failure> {
 struct EventsQuery {
     /// The last event id the client has seen.
     since: Option<u64>,
+    /// Answer once, as JSON, waiting up to this many seconds (at most 60)
+    /// for an event, instead of streaming.
+    wait: Option<u64>,
+}
+
+/// `GET /events`: the server-sent events, or with `?wait=<secs>` one JSON
+/// answer (a long poll; see [`Surface::events_after`]).
+fn events_route(s: &Surface, c: &Client, req: &Request) -> Response {
+    match s
+        .events(c)
+        .and_then(|bus| Ok((events_query(req, &bus)?, bus)))
+    {
+        Ok((
+            EventsQuery {
+                since,
+                wait: Some(wait),
+            },
+            bus,
+        )) => {
+            crate::events::poll_response(bus, since.unwrap_or_default(), Duration::from_secs(wait))
+        }
+        Ok((q, bus)) => crate::events::response(bus, q.since.unwrap_or_default()),
+        Err(failure) => failure.http_response(),
+    }
 }
 
 fn events_query(req: &Request, bus: &crate::events::EventBus) -> Result<EventsQuery, Failure> {
@@ -847,7 +866,11 @@ fn events_query(req: &Request, bus: &crate::events::EventBus) -> Result<EventsQu
             ))
         })?,
     };
-    Ok(EventsQuery { since: Some(since) })
+    let wait = whole_number(req, "wait")?.map(|n| u64::try_from(n).unwrap_or(u64::MAX));
+    Ok(EventsQuery {
+        since: Some(since),
+        wait,
+    })
 }
 
 /// `GET /actions`' optional `client`, `since` and `limit`.

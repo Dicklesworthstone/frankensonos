@@ -22,13 +22,18 @@
 //! [`HEARTBEAT`], so proxies and clients can tell a quiet house from a dead
 //! connection.
 //!
+//! A client that can't read a stream (an agent's tool call, say) asks
+//! `GET /events?wait=<secs>` instead, or calls the `events` tool
+//! ([`Surface::events_after`]): one JSON answer with the events after `since`,
+//! waiting up to `wait` seconds (at most [`MAX_WAIT`]) for one.
+//!
 //! The frames are written here: `fastapi_core::sse` exists in fastapi_rust's
 //! source at the pinned revision but is not compiled into the crate (no
 //! `mod sse`), so the stream goes out through the public streaming body
 //! ([`fastapi::ResponseBody::stream`]) instead.
 
 use asupersync::stream::Stream;
-use fastapi::{Response, ResponseBody};
+use fastapi::{JsonSchema, Response, ResponseBody, fastapi_openapi};
 use fsonos_core::HouseholdState;
 use fsonos_core::live::{Live, LiveEvent};
 use fsonos_core::reconcile::Health;
@@ -40,13 +45,119 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
+use crate::failure::Failure;
+use crate::surface::Surface;
 use crate::zones::transport_state_name;
+use fsonos_core::policy::Client;
+use serde::{Deserialize, Serialize};
 
 /// How many events the bus keeps for clients that reconnect.
 pub const RING: usize = 1024;
 
 /// How often a quiet stream sends a heartbeat comment.
 pub const HEARTBEAT: Duration = Duration::from_secs(15);
+
+/// The longest a long poll (`GET /events?wait=`, the `events` tool) waits.
+pub const MAX_WAIT: Duration = Duration::from_mins(1);
+
+/// One event, as a long poll answers it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EventDto {
+    /// Increasing from 1: pass the newest you have as `since`.
+    pub id: u64,
+    /// What happened: `zone.state`, `topology.changed`, `player.health`,
+    /// `action.logged` or `dj.status` (see the event stream's table).
+    pub event: String,
+    /// The details: for `zone.state`, only what changed.
+    pub data: Value,
+}
+
+/// The house's changes after `since`, in one answer (`GET /events?wait=`,
+/// the `events` tool).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EventsDto {
+    /// Oldest first.
+    pub events: Vec<EventDto>,
+    /// The newest event id: pass it as `since` next time.
+    pub last_id: u64,
+    /// Set when events after `since` are gone (too many happened): the
+    /// oldest one kept. Read the state afresh (`list_zones`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset: Option<u64>,
+}
+
+impl Surface {
+    /// The house's changes after `since` (`events`, read-only; from now when
+    /// `None`), waiting up to `wait` (at most [`MAX_WAIT`]) for one.
+    ///
+    /// # Errors
+    /// `POLICY_DENIED`, or `NOT_IMPLEMENTED` off the daemon's live model.
+    /// Blocks the calling thread for the wait: a server answers with
+    /// [`poll_response`] instead.
+    pub fn events_after(
+        &self,
+        client: &Client,
+        since: Option<u64>,
+        wait: Duration,
+    ) -> Result<EventsDto, Failure> {
+        let bus = self.events(client)?;
+        let since = since.unwrap_or_else(|| bus.last_id());
+        Ok(poll(&bus, since, wait))
+    }
+}
+
+/// The events after `since`, waiting up to `wait` (at most [`MAX_WAIT`]).
+fn poll(bus: &EventBus, since: u64, wait: Duration) -> EventsDto {
+    let (since, events, reset) = match bus.wait_after(since, wait.min(MAX_WAIT)) {
+        Ok(events) => (since, events, None),
+        Err(oldest) => {
+            let since = oldest.saturating_sub(1);
+            (since, bus.after(since).unwrap_or_default(), Some(oldest))
+        }
+    };
+    EventsDto {
+        last_id: events.last().map_or(since, |e| e.id),
+        events: events
+            .into_iter()
+            .map(|e| EventDto {
+                id: e.id,
+                event: e.kind.to_owned(),
+                data: e.data,
+            })
+            .collect(),
+        reset,
+    }
+}
+
+/// `GET /events?wait=`: the [`EventsDto`] after `since`, as one JSON body
+/// that a thread of its own waits for, so the listener serves other
+/// requests meanwhile.
+#[must_use]
+pub fn poll_response(bus: Arc<EventBus>, since: u64, wait: Duration) -> Response {
+    let shared = Arc::new(Mutex::new(Shared::default()));
+    let feed = Arc::clone(&shared);
+    let spawned = std::thread::Builder::new()
+        .name("fsonos-events-poll".into())
+        .spawn(move || {
+            let body = serde_json::to_vec(&poll(&bus, since, wait)).unwrap_or_default();
+            let mut s = feed.lock().unwrap_or_else(PoisonError::into_inner);
+            s.queue.push_back(body);
+            s.finished = true;
+            if let Some(waker) = s.waker.take() {
+                waker.wake();
+            }
+        });
+    if spawned.is_err() {
+        shared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .finished = true;
+    }
+    Response::ok()
+        .header("content-type", b"application/json".to_vec())
+        .header("cache-control", b"no-cache".to_vec())
+        .body(ResponseBody::stream(EventStream { shared }))
+}
 
 /// One event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +226,8 @@ impl Ring {
     /// some event after `after` has already been dropped.
     fn after(&self, after: u64) -> Result<Vec<Event>, u64> {
         let oldest = self.events.front().map_or(self.last + 1, |e| e.id);
-        if after + 1 < oldest {
+        // Past the newest too: an id from before the daemon restarted.
+        if after + 1 < oldest || after > self.last {
             return Err(oldest);
         }
         Ok(self
@@ -380,6 +492,18 @@ mod tests {
         let missed = bus.after(1).unwrap();
         assert_eq!(missed.iter().map(|e| e.id).collect::<Vec<_>>(), [2, 3]);
         assert_eq!(bus.after(3), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn an_id_from_before_a_restart_is_a_gap() {
+        let bus = EventBus::new();
+        assert_eq!(bus.after(5000), Err(1), "nothing yet: start over from 1");
+        publish(&bus, 3);
+        assert_eq!(bus.after(5000), Err(1));
+        let answer = poll(&bus, 5000, Duration::ZERO);
+        assert_eq!(answer.reset, Some(1));
+        assert_eq!(answer.events.len(), 3);
+        assert_eq!(answer.last_id, 3);
     }
 
     #[test]

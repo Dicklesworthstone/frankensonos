@@ -196,7 +196,7 @@ running `serve`):
 ```text
 reads      list_zones · list_rooms · list_players · get_zone · get_zone_state · list_favorites
            search_library · get_queue · recent_plays · recent_actions · get_policy · doctor
-           dj_status · dj_moods · echo
+           dj_status · dj_moods · events · echo
            list_scenes · get_scene · list_sleep_timers · list_schedules · get_eq
 control    play · play_favorite · add_to_queue · pause · resume · next · previous · set_volume · mute
            group · ungroup · move_playback · group_all · set_eq · announce · undo_last
@@ -207,6 +207,11 @@ house      save_scene · apply_scene · delete_scene · set_sleep_timer · add_s
            pause_schedule · resume_schedule · remove_schedule
 resources  sonos://zones · sonos://zones/{room} · sonos://dj
 ```
+
+`events` is how an agent keeps up with the house: call it once for the newest
+event id, then again with `since` and `wait_secs` to hear what changes (a
+track, a volume, a regroup, a player going offline, a logged action, the
+DJ's picks) as it happens.
 
 Every HTTP route that an MCP tool mirrors has that tool's name as its operation
 id, so an agent gets the same answer, and the same error code, either way. The API

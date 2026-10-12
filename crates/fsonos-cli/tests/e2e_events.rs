@@ -191,6 +191,7 @@ fn events_stream_the_house_and_resume() {
         check_cli(&mut s, first_id, ids);
     }
     check_action_logged(&mut s, &api);
+    check_long_poll(&mut s, &api, first_id);
 
     let code = daemon.interrupt(Duration::from_secs(10));
     s.check(
@@ -297,5 +298,51 @@ fn check_action_logged(s: &mut Scenario, api: &str) {
         "POST /volume shows up as action.logged",
         set.as_ref().is_ok_and(|(code, _, _)| *code == 200) && logged.is_some(),
         format!("{set:?}; {logged:?}"),
+    );
+}
+
+/// `GET /events?wait=` answers once, as JSON: what came after `since`.
+fn check_long_poll(s: &mut Scenario, api: &str, first_id: u64) {
+    let polled = http(
+        api,
+        "GET",
+        &format!("/events?wait=2&since={first_id}"),
+        &[],
+        "",
+    );
+    let answer = polled
+        .as_ref()
+        .ok()
+        .and_then(|(_, _, body)| serde_json::from_str::<serde_json::Value>(body).ok())
+        .unwrap_or_default();
+    let ids: Vec<u64> = answer["events"]
+        .as_array()
+        .map(|events| events.iter().filter_map(|e| e["id"].as_u64()).collect())
+        .unwrap_or_default();
+    s.check(
+        "long-poll",
+        "http",
+        "GET /events?wait=2&since=<id> answers JSON with the events after it",
+        polled.as_ref().is_ok_and(|(code, _, _)| *code == 200)
+            && ids.first().is_some_and(|id| *id == first_id + 1)
+            && answer["last_id"].as_u64() == ids.last().copied(),
+        format!("{polled:?}"),
+    );
+    // A poll that waits holds no one else up: the listener answers others.
+    let waiting = {
+        let api = api.to_string();
+        std::thread::spawn(move || http(&api, "GET", "/events?wait=5", &[], ""))
+    };
+    std::thread::sleep(Duration::from_millis(300));
+    let asked = Instant::now();
+    let health = http(api, "GET", "/health", &[], "");
+    let took = asked.elapsed();
+    let waited = waiting.join().ok();
+    s.check(
+        "long-poll-concurrent",
+        "http",
+        "while a long poll waits, GET /health answers within 2 s",
+        health.as_ref().is_ok_and(|(code, _, _)| *code == 200) && took < Duration::from_secs(2),
+        format!("health {health:?} after {took:?}; poll {waited:?}"),
     );
 }
