@@ -21,12 +21,14 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-/// How long a player that left its group may take to show alone: real ones
-/// settle within about a second, but one that just finished an announcement
-/// can take well over 3 s (fleet-verified 2026-10-12: a real S1 group lead's
-/// restore 402'd spuriously at 3 s while the topology ended up correct; the
-/// sim, which settles instantly, never reproduces it).
-const LEAVE_WAIT: Duration = Duration::from_secs(10);
+/// How long a player that left its group may take to show alone (real ones
+/// do within about a second). Not a settle-time knob: a fleet-verified
+/// 2026-10-12 case (announce restore on a stereo-pair fleet) showed the
+/// player's own ZoneGroupState read-back staying stale far past 10 s while
+/// the leave had in fact happened (the 402 on this verb means "leaving
+/// anyway", docs/PROTOCOL.md §6); waiting longer only adds latency to the
+/// false-failure report. See bead frankensonos-p9f for the real fix.
+const LEAVE_WAIT: Duration = Duration::from_secs(3);
 const LEAVE_POLL: Duration = Duration::from_millis(100);
 
 /// The player `id`, in whichever household knows it.
