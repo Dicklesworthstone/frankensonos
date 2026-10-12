@@ -1345,21 +1345,12 @@ impl Surface {
                 }
                 notes.extend(noted);
             }
-            let mut levels: Vec<u8> = lanes.iter().map(|(_, to)| *to).collect();
-            levels.sort_unstable();
-            levels.dedup();
-            let mut overridden = false;
-            for to in levels {
-                let players: Vec<PlayerId> = lanes
-                    .iter()
-                    .filter(|(_, l)| *l == to)
-                    .map(|(p, _)| p.clone())
-                    .collect();
-                let outcome = fader
-                    .fade_group(&*self.transport, &households, &players, to, over)
-                    .map_err(Failure::from)?;
-                overridden |= matches!(outcome, FadeOutcome::Superseded { .. });
-            }
+            // Every room to its own level in one fade; a room whose volume
+            // is changed meanwhile drops out and keeps it.
+            let left = fader
+                .fade_each(&*self.transport, &households, &lanes, over)
+                .map_err(Failure::from)?;
+            let overridden = !left.is_empty();
             let mut done = format!("ramped {room}'s volume to {level} over {}", span(over));
             if overridden {
                 done.push_str(" (a room's volume was changed meanwhile and stays as set)");
