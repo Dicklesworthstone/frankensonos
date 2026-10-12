@@ -37,6 +37,43 @@ impl ZoneRequest {
     }
 }
 
+/// `POST /seek` body (the `seek` tool): move within the track the group a
+/// room plays in is on. Give exactly one of `to_secs` and `by_secs`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SeekRequest {
+    pub zone: String,
+    /// Seconds from the track's start; 0 starts it over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_secs: Option<u32>,
+    /// Seconds from where it is now: 30 skips ahead, -15 goes back (kept
+    /// within the track).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by_secs: Option<i64>,
+}
+
+impl SeekRequest {
+    /// The trimmed zone name, or why it is unusable.
+    pub fn zone(&self) -> Result<&str, Failure> {
+        zone_name("zone", &self.zone)
+    }
+
+    /// Where to go, or why the request says nothing usable.
+    pub fn to(&self) -> Result<fsonos_core::control::Seek, Failure> {
+        use fsonos_core::control::Seek;
+        match (self.to_secs, self.by_secs) {
+            (Some(at), None) => Ok(Seek::At(at)),
+            (None, Some(by)) => Ok(Seek::By(by)),
+            (Some(_), Some(_)) => Err(Failure::invalid(
+                "give either `to_secs` (from the track's start) or `by_secs` (from now), not both",
+            )),
+            (None, None) => Err(Failure::invalid(
+                "give `to_secs` (seconds from the track's start) or `by_secs` (seconds from now; negative goes back)",
+            )),
+        }
+    }
+}
+
 /// `POST /play` body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

@@ -9,8 +9,8 @@
 //! * A command whose player did not answer is retried at the player's new
 //!   address, when a fresh survey shows it moved, but only if it is
 //!   [`Command::repeat_safe`]: the first request may have run with only its
-//!   reply lost, so a step (next, previous, a relative volume) or an append
-//!   is never sent twice.
+//!   reply lost, so a step (next, previous, a relative volume or seek) or an
+//!   append is never sent twice.
 //!
 //! Either recovery adds a [`NoteCode::Healed`] note to the outcome.
 

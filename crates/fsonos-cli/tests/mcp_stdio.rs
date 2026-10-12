@@ -147,6 +147,7 @@ fn control_tools_are_advertised_with_their_arguments() {
         "resume",
         "next",
         "previous",
+        "seek",
         "set_volume",
         "mute",
         "group",

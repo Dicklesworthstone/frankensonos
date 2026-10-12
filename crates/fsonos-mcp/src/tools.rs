@@ -761,6 +761,29 @@ fn previous(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCa
 }
 
 #[tool(
+    description = "Move within the track the group a room plays in is on. Give exactly one of `to_secs` (seconds from its start; 0 starts it over) or `by_secs` (seconds from where it is now: 30 skips ahead, -15 goes back; kept within the track). A radio stream has no position to move in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household) or one of your aliases."
+)]
+fn seek(
+    _ctx: &McpContext,
+    zone: String,
+    to_secs: Option<u32>,
+    by_secs: Option<i64>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(|b| {
+        b.control("seek", |h| {
+            plan::plan_seek(
+                h,
+                &fsonos_api::SeekRequest {
+                    zone,
+                    to_secs,
+                    by_secs,
+                },
+            )
+        })
+    })
+}
+
+#[tool(
     description = "Change a room's volume: give exactly one of `volume` (0-100, absolute) or `delta` (-100..100, relative; e.g. +5 for 'a bit louder'). With `group` true the change applies to the room's whole group. The house policy may lower a loud request; the reply then says so. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
 fn set_volume(

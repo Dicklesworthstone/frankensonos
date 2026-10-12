@@ -530,6 +530,7 @@ fn routable(command: &Command) -> bool {
             | Command::Resume { .. }
             | Command::Next { .. }
             | Command::Previous { .. }
+            | Command::Seek { .. }
             | Command::Volume { .. }
             | Command::Mute { .. }
             | Command::Group { .. }
@@ -827,6 +828,10 @@ fn control_request(
         Command::Resume { zone: z } => ("/resume", zone(z)?),
         Command::Next { zone: z } => ("/next", zone(z)?),
         Command::Previous { zone: z } => ("/previous", zone(z)?),
+        Command::Seek { zone, position } => (
+            "/seek",
+            value(serde_json::to_value(crate::seek_request(zone, position)?))?,
+        ),
         Command::Ungroup { zone: z } => ("/ungroup", zone(z)?),
         Command::Volume {
             zone, level, group, ..

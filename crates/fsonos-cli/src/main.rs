@@ -15,6 +15,7 @@
 //!   setup      a guided first run on the doctor's checks (--yes for scripts)
 //!   play       play a source URI, or `--favorite <name>`, in a room's group
 //!   pause / resume / next / previous   transport for a room's group
+//!   seek       move within the track a room's group is on (1:30, +30, -15)
 //!   volume     set (0-100) or change (+N / -N) a room's or group's volume
 //!   mute       mute or unmute a room
 //!   group / ungroup   move a room into another's group, or out of its own
@@ -221,6 +222,14 @@ enum Command {
     Next { zone: String },
     /// Go back a track in a room's group.
     Previous { zone: String },
+    /// Move within the track a room's group is on.
+    Seek {
+        zone: String,
+        /// `1:30` or `90` from the track's start (`0` starts it over);
+        /// `+30` / `-15` seconds from where it is now.
+        #[arg(allow_hyphen_values = true)]
+        position: String,
+    },
     /// Set a room's volume (0-100) or change it (+N / -N).
     Volume {
         zone: String,
@@ -876,6 +885,9 @@ fn plan_for<'a>(
                 to: to.clone(),
             },
         ),
+        Command::Seek { zone, position } => {
+            plan::plan_seek(households, &seek_request(zone, position)?)
+        }
         Command::Move { zone, to, copy } => plan::plan_move(
             households,
             &MoveRequest {
@@ -984,6 +996,7 @@ fn tool_name(command: &Command) -> &'static str {
         Command::Resume { .. } => "resume",
         Command::Next { .. } => "next",
         Command::Previous { .. } => "previous",
+        Command::Seek { .. } => "seek",
         Command::Volume { .. } => "set_volume",
         Command::Mute { .. } => "mute",
         Command::Group { .. } => "group",
@@ -1068,6 +1081,50 @@ fn fade_volume_request(
         zone: zone.to_string(),
         volume,
         fade_secs,
+    })
+}
+
+/// The seek `seek <zone> <to>` asks for: `1:30`, `1:02:03` or `90` from the
+/// track's start, `+30` / `-15` (seconds; `s` optional) from where it is.
+fn seek_request(zone: &str, to: &str) -> Result<fsonos_api::SeekRequest, Failure> {
+    let to = to.trim();
+    let bad = || {
+        Failure::invalid(format!(
+            "{to:?} is not a place in a track like 1:30, 90, +30 or -15"
+        ))
+        .with_hint("e.g. fsonos seek Kitchen 0 (starts it over), fsonos seek Kitchen +30")
+    };
+    // Digits only, up to h:mm:ss, minutes and seconds under 60.
+    let secs = |text: &str| -> Option<u32> {
+        let parts: Vec<&str> = text.strip_suffix('s').unwrap_or(text).split(':').collect();
+        if parts.len() > 3
+            || parts
+                .iter()
+                .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return None;
+        }
+        let mut total: u32 = 0;
+        for (i, part) in parts.iter().enumerate() {
+            let n: u32 = part.parse().ok()?;
+            if i > 0 && n >= 60 {
+                return None;
+            }
+            total = total.checked_mul(60)?.checked_add(n)?;
+        }
+        Some(total)
+    };
+    let (to_secs, by_secs) = if let Some(ahead) = to.strip_prefix('+') {
+        (None, Some(i64::from(secs(ahead).ok_or_else(bad)?)))
+    } else if let Some(back) = to.strip_prefix('-') {
+        (None, Some(-i64::from(secs(back).ok_or_else(bad)?)))
+    } else {
+        (Some(secs(to).ok_or_else(bad)?), None)
+    };
+    Ok(fsonos_api::SeekRequest {
+        zone: zone.to_string(),
+        to_secs,
+        by_secs,
     })
 }
 
@@ -1249,6 +1306,32 @@ mod tests {
             panic!("expected volume")
         };
         assert_eq!((level.as_str(), group), ("-5", false));
+    }
+
+    #[test]
+    fn seek_takes_a_time_or_a_signed_offset() {
+        // A step back is a value, not a flag.
+        let Command::Seek { zone, position } = parse(&["seek", "Kitchen", "-1:30"]) else {
+            panic!("expected seek")
+        };
+        assert_eq!((zone.as_str(), position.as_str()), ("Kitchen", "-1:30"));
+        let at = |to: &str| {
+            seek_request("Kitchen", to)
+                .map(|r| (r.to_secs, r.by_secs))
+                .map_err(|f| f.detail)
+        };
+        assert_eq!(at("1:30"), Ok((Some(90), None)));
+        assert_eq!(at("90"), Ok((Some(90), None)));
+        assert_eq!(at("0"), Ok((Some(0), None)));
+        assert_eq!(at("1:02:03"), Ok((Some(3723), None)));
+        assert_eq!(at("+30"), Ok((None, Some(30))));
+        assert_eq!(at("-15s"), Ok((None, Some(-15))));
+        assert_eq!(at("-1:00"), Ok((None, Some(-60))));
+        for bad in [
+            "", "soon", "1:", "+", "1::2", "1:75", "++30", "1:+30", "1:2:3:4",
+        ] {
+            assert!(at(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

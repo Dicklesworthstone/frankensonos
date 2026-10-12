@@ -105,6 +105,44 @@ pub fn previous<T: Transport + ?Sized>(
     Ok(soap::previous(t, addr(households, coordinator)?)?)
 }
 
+/// Where [`seek`] goes in the current track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seek {
+    /// This many seconds from the track's start.
+    At(u32),
+    /// This many seconds from where it is now; negative goes back.
+    By(i64),
+}
+
+/// Move the group `coordinator` leads to `to` in its current track. A
+/// relative move reads the position first and stays within the track.
+/// Returns where it went, in seconds from the start.
+pub fn seek<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    to: Seek,
+) -> Result<u32, CoreError> {
+    let host = addr(households, coordinator)?;
+    let secs = match to {
+        Seek::At(secs) => secs,
+        Seek::By(by) => {
+            let now = soap::get_position_info(t, host)?;
+            let at = i64::from(now.position_secs.unwrap_or(0))
+                .saturating_add(by)
+                .max(0);
+            // The last second of the track at the most: its end is the next.
+            let last = now
+                .duration_secs
+                .filter(|d| *d > 0)
+                .map(|d| i64::from(d - 1));
+            u32::try_from(last.map_or(at, |last| at.min(last))).unwrap_or(u32::MAX)
+        }
+    };
+    soap::seek_position(t, host, secs)?;
+    Ok(secs)
+}
+
 /// Point the group `coordinator` leads at a renderer-ready `uri` (with its
 /// DIDL-Lite `metadata`, possibly empty) and start it.
 pub fn play_uri<T: Transport + ?Sized>(

@@ -70,6 +70,7 @@ pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
         .tool(tools::Resume)
         .tool(tools::Next)
         .tool(tools::Previous)
+        .tool(tools::Seek)
         .tool(tools::SetVolume)
         .tool(tools::MuteTool)
         .tool(tools::GetEq)

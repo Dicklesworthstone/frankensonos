@@ -325,6 +325,10 @@ fn refused(action: TransportAction, failure: Failure, room: &str) -> Failure {
             format!("{room}'s group has nothing to resume"),
             "Play something first: play, play_favorite, or a library search (search_library).",
         ),
+        (TransportAction::Seek(_), Some(701 | 711)) => (
+            format!("{room}'s group can't move there in what it plays"),
+            "Seek moves within a track (one from the queue, or a single track): a radio stream has no position, and a point past the end is not in the track.",
+        ),
         (TransportAction::Next | TransportAction::Previous, Some(701 | 711)) => (
             format!(
                 "{room}'s group has no {} track to go to",
@@ -351,25 +355,39 @@ fn run_transport<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
     action: TransportAction,
-) -> Result<&'static str, Failure> {
+) -> Result<String, Failure> {
     Ok(match action {
         TransportAction::Pause => {
             control::pause(transport, households, coordinator)?;
-            "paused"
+            "paused".into()
         }
         TransportAction::Resume => {
             control::resume(transport, households, coordinator)?;
-            "resumed"
+            "resumed".into()
         }
         TransportAction::Next => {
             control::next(transport, households, coordinator)?;
-            "skipped to the next track in"
+            "skipped to the next track in".into()
         }
         TransportAction::Previous => {
             control::previous(transport, households, coordinator)?;
-            "went back a track in"
+            "went back a track in".into()
+        }
+        TransportAction::Seek(to) => {
+            let at = control::seek(transport, households, coordinator, to)?;
+            format!("moved to {} in", track_time(at))
         }
     })
+}
+
+/// `secs` as a place in a track: `1:30`, `1:02:03`.
+fn track_time(secs: u32) -> String {
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
 }
 
 /// Apply a volume change; returns the resulting level.
@@ -489,6 +507,34 @@ mod tests {
             assert_eq!(t.actions(), [soap]);
             assert_eq!(out, OutcomeDto::sent(verb.to_string()));
         }
+    }
+
+    #[test]
+    fn a_seek_moves_within_the_track() {
+        use fsonos_core::control::Seek;
+        let houses = households();
+        let seek = |to| Command::Transport {
+            coordinator: id("RINCON_DEN"),
+            action: TransportAction::Seek(to),
+        };
+        let t = Canned::ok("");
+        let out = execute(&t, &houses, &seek(Seek::At(90))).unwrap();
+        assert_eq!(t.actions(), ["Seek"]);
+        assert_eq!(out, OutcomeDto::sent("moved to 1:30 in Den's group".into()));
+        // From where it is (1:00 of 3:00), and never past the last second.
+        let at = "<RelTime>0:01:00</RelTime><TrackDuration>0:03:00</TrackDuration>";
+        for (by, verb) in [
+            (30, "moved to 1:30"),
+            (-90, "moved to 0:00"),
+            (500, "moved to 2:59"),
+        ] {
+            let t = Canned::ok(at);
+            let out = execute(&t, &houses, &seek(Seek::By(by))).unwrap();
+            assert_eq!(t.actions(), ["GetPositionInfo", "Seek"]);
+            assert_eq!(out, OutcomeDto::sent(format!("{verb} in Den's group")));
+        }
+        assert!(seek(Seek::At(5)).repeat_safe());
+        assert!(!seek(Seek::By(5)).repeat_safe());
     }
 
     #[test]
@@ -727,6 +773,14 @@ mod tests {
             "{err}"
         );
         assert!(err.hint.contains("queue"), "{err}");
+        // A seek a stream can't take, or one past the end.
+        let seek = TransportAction::Seek(fsonos_core::control::Seek::At(30));
+        let err = refusing(nothing, seek);
+        assert!(
+            err.detail.starts_with("Den's group can't move there"),
+            "{err}"
+        );
+        assert!(err.hint.contains("radio stream"), "{err}");
         // Anything else keeps the speaker's own words.
         let err = refusing(no_queue, TransportAction::Resume);
         assert!(err.detail.starts_with("soap fault 711"), "{err}");

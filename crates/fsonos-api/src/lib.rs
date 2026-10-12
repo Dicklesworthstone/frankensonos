@@ -59,7 +59,8 @@ pub use plan::Command;
 pub use reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto};
 pub use request::{
     DjStartRequest, DjSteerRequest, GroupRequest, MoveRequest, MuteRequest, PartyRequest,
-    PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeChange, VolumeRequest, ZoneRequest,
+    PlayFavoriteRequest, PlayRequest, SearchRequest, SeekRequest, VolumeChange, VolumeRequest,
+    ZoneRequest,
 };
 pub use surface::Surface;
 pub use web::WebPolicy;

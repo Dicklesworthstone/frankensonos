@@ -20,6 +20,7 @@
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
 //! | `POST /queue` | [`crate::surface::queue::QueueAddRequest`] | [`crate::surface::queue::QueueAddedDto`] |
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
+//! | `POST /seek` | [`crate::SeekRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /volume` | [`crate::VolumeRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /mute` | [`crate::MuteRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /volume/fade`, `/pause/fade` | `FadeVolumeRequest`, `FadePauseRequest` | [`crate::OutcomeDto`]: when the fade is done (a ramp with no fade: once each speaker has started) |
@@ -491,6 +492,15 @@ fn controls(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "Move a room into another room's group",
             ),
             |h, r: &GroupRequest| plan_group(h, r),
+        ),
+        cx.control(
+            Op::post(
+                "/seek",
+                "seek",
+                CONTROL,
+                "Move within the track a zone is on",
+            ),
+            |h, r: &crate::request::SeekRequest| plan::plan_seek(h, r),
         ),
         cx.control_set(
             Op::post(

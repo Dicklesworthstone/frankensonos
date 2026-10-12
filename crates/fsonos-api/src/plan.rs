@@ -7,6 +7,7 @@
 //! joining targets the coordinator of the destination group. A request that is
 //! already satisfied plans to [`Command::Nothing`] so retries are harmless.
 
+use fsonos_core::control::Seek;
 use fsonos_core::favorites::{self, Favorite};
 use fsonos_core::rooms::{Aliases, ResolveContext, resolve_one, resolve_targets};
 use fsonos_core::{ControlTarget, HouseholdState, Room};
@@ -20,13 +21,15 @@ use crate::request::{
     PlayFavoriteRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest,
 };
 
-/// Pause, resume or skip on a group.
+/// Pause, resume, skip or seek on a group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportAction {
     Pause,
     Resume,
     Next,
     Previous,
+    /// Move within the current track.
+    Seek(Seek),
 }
 
 /// DJ controls for a group.
@@ -123,7 +126,12 @@ impl Command {
             | Self::Leave { .. }
             | Self::Party { .. } => true,
             Self::Transport { action, .. } => {
-                matches!(action, TransportAction::Pause | TransportAction::Resume)
+                matches!(
+                    action,
+                    TransportAction::Pause
+                        | TransportAction::Resume
+                        | TransportAction::Seek(Seek::At(_))
+                )
             }
             Self::Volume { change, .. } => matches!(change, VolumeChange::Set(_)),
             // Steering sets the stored session; starting queues more works.
@@ -289,6 +297,20 @@ pub fn plan_transport<'a>(
     Ok(Command::Transport {
         coordinator: target.coordinator.id.clone(),
         action,
+    })
+}
+
+/// `POST /seek` / the `seek` tool: within the track the group `req.zone`
+/// plays in is on.
+pub fn plan_seek<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &crate::request::SeekRequest,
+) -> Result<Command, Failure> {
+    let to = req.to()?;
+    let target = resolve(rooms, req.zone()?)?;
+    Ok(Command::Transport {
+        coordinator: target.coordinator.id.clone(),
+        action: TransportAction::Seek(to),
     })
 }
 
