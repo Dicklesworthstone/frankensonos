@@ -231,8 +231,9 @@ enum Command {
         #[arg(long)]
         group: bool,
         /// Ramp each room to the level over this long rather than at once
-        /// (`10`, `10s` or `1m`; at most 60 s).
-        #[arg(long, value_parser = parse_fade)]
+        /// (`10`, `10s` or `1m`; at most 60 s), or `auto` to let each speaker
+        /// ramp itself at its own pace (about 0.8 s a step).
+        #[arg(long, value_parser = parse_ramp)]
         fade: Option<u32>,
     },
     /// Mute or unmute a room.
@@ -1034,6 +1035,15 @@ fn parse_fade(text: &str) -> Result<u32, String> {
         .ok_or_else(|| format!("{text:?} is not a fade length like 10, 10s or 1m"))
 }
 
+/// A `volume --fade`: a length as [`parse_fade`] reads it, or `auto` (0):
+/// each speaker ramps itself at its own pace.
+fn parse_ramp(text: &str) -> Result<u32, String> {
+    if text.trim().eq_ignore_ascii_case("auto") {
+        return Ok(0);
+    }
+    parse_fade(text)
+}
+
 /// The ramp `volume --fade` asks for: each room `zone` names to the absolute
 /// `level` over `fade_secs`.
 fn fade_volume_request(
@@ -1213,6 +1223,13 @@ mod tests {
             panic!("expected volume")
         };
         assert_eq!(fade, Some(10));
+        // `auto`: each speaker ramps itself; a pause has no such fade.
+        let Command::Volume { fade, .. } = parse(&["volume", "Kitchen", "30", "--fade", "auto"])
+        else {
+            panic!("expected volume")
+        };
+        assert_eq!(fade, Some(0));
+        assert!(parse_fade("auto").is_err());
         let Command::Pause { fade, .. } = parse(&["pause", "Den", "--fade", "1m"]) else {
             panic!("expected pause")
         };

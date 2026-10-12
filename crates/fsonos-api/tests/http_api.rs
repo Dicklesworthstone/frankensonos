@@ -337,9 +337,22 @@ fn fades_ramp_volume_and_fade_out_before_pausing() {
         "{:?}",
         api.actions()
     );
+    // No fade: each speaker ramps itself, and the call answers at once.
+    let api = Api::start(
+        "<CurrentVolume>10</CurrentVolume><RampTime>20</RampTime>",
+        &Client::LoopbackHttp,
+    );
+    let (status, out) = api.post("/volume/fade", &json!({ "zone": "Kitchen", "volume": 30 }));
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(
+        out["done"],
+        "ramping Kitchen's volume to 30 at each speaker's own pace (about 20s)"
+    );
+    let actions = api.actions();
+    assert!(actions.iter().any(|a| a == "RampToVolume"), "{actions:?}");
+    assert!(!actions.iter().any(|a| a == "SetVolume"), "{actions:?}");
     // Out-of-range fades and a missing level are refused.
     for bad in [
-        json!({ "zone": "Kitchen", "volume": 30, "fade_secs": 0 }),
         json!({ "zone": "Kitchen", "volume": 30, "fade_secs": 61 }),
         json!({ "zone": "Kitchen", "volume": 130, "fade_secs": 5 }),
     ] {

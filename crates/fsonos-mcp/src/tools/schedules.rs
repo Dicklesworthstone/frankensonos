@@ -126,18 +126,18 @@ impl Backend {
 }
 
 #[tool(
-    description = "Ramp the volume over time: every room `zone` names (a room, one of your aliases, or `all`/`everywhere`) goes to `volume` (0-100) over `seconds` (1-60), each room kept within your caps; answers when the ramp is done, and undo_last puts the volumes back. A manual change to a room meanwhile wins there. For a long fade out at bedtime, use set_sleep_timer."
+    description = "Ramp the volume over time: every room `zone` names (a room, one of your aliases, or `all`/`everywhere`) goes to `volume` (0-100) over `seconds` (1-60), each room kept within your caps; answers when the ramp is done, and undo_last puts the volumes back. Leave `seconds` out to let each speaker ramp itself at its own pace (about 0.8 s a step); that answers once each speaker has started (one that can't ramp itself is stepped there first). A manual change to a room meanwhile wins there. For a long fade out at bedtime, use set_sleep_timer."
 )]
 fn fade_volume(
     _ctx: &McpContext,
     zone: String,
     volume: i64,
-    seconds: u32,
+    seconds: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let req = FadeVolumeRequest {
         zone,
         volume,
-        fade_secs: seconds,
+        fade_secs: seconds.unwrap_or(0),
     };
     with_backend(move |b| b.fade_volume(&req))
 }

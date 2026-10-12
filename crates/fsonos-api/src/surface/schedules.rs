@@ -18,7 +18,7 @@
 use chrono::{DateTime, FixedOffset, Local, TimeDelta, TimeZone, Utc};
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::clock::Clock;
-use fsonos_core::fade::{FadeOutcome, Fader};
+use fsonos_core::fade::{FadeOutcome, Fader, RampOutcome};
 use fsonos_core::policy::Client;
 use fsonos_core::schedule::{
     self as core_schedule, DEFAULT_GRACE, Schedule, ScheduleAction, ScheduleError, ScheduleSpec,
@@ -26,7 +26,7 @@ use fsonos_core::schedule::{
 };
 use fsonos_core::sleep::{BACKSTOP, FADE, SleepOutcome, SleepTimer, SleepTimers};
 use fsonos_core::{CoreError, HouseholdState};
-use fsonos_proto::{ProtoError, control as soap};
+use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::fmt::{self, Write as _};
@@ -111,14 +111,19 @@ pub fn span(d: Duration) -> String {
 pub const MAX_CALL_FADE_SECS: u32 = 60;
 
 /// `POST /volume/fade` / the `fade_volume` tool: ramp every room `zone` names
-/// (a room, an alias, or `all` / `everywhere`) to `volume` over `fade_secs`.
+/// (a room, an alias, or `all` / `everywhere`) to `volume` over `fade_secs`,
+/// or at each speaker's own pace when `fade_secs` is 0 or left out.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FadeVolumeRequest {
     pub zone: String,
     /// The level to ramp to, 0-100.
     pub volume: i64,
-    /// How long the ramp takes, 1-60 seconds.
+    /// How long the ramp takes, 1-60 seconds; 0 (or left out) lets each
+    /// speaker ramp itself at its own pace, about 0.8 s a step, and the call
+    /// answers once each has started (one that can't ramp itself is stepped
+    /// there first).
+    #[serde(default)]
     pub fade_secs: u32,
 }
 
@@ -149,6 +154,56 @@ pub(super) fn call_fade(fade_secs: u32) -> Result<Duration, Failure> {
         ));
     }
     Ok(Duration::from_secs(u64::from(fade_secs)))
+}
+
+/// Let every room in `lanes` ramp itself to its level at its own pace
+/// (RampToVolume), all at once; a room that refuses it is stepped there at
+/// that pace instead. Answers the rooms whose volume was changed meanwhile
+/// (stepped ones only) and the longest ramp a speaker reported, in seconds.
+fn ramp_each<T: Transport + Sync + ?Sized>(
+    fader: &Fader,
+    t: &T,
+    households: &[HouseholdState],
+    lanes: &[(PlayerId, u8)],
+) -> Result<(Vec<PlayerId>, u32), CoreError> {
+    let outcomes: Vec<Result<RampOutcome, CoreError>> = thread::scope(|s| {
+        let ramps: Vec<_> = lanes
+            .iter()
+            .map(|(player, to)| {
+                s.spawn(move || fader.ramp_at_device_speed(t, households, player, *to))
+            })
+            .collect();
+        ramps
+            .into_iter()
+            .map(|ramp| ramp.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+    let (mut left, mut longest) = (Vec::new(), 0);
+    for ((player, _), outcome) in lanes.iter().zip(outcomes) {
+        match outcome? {
+            RampOutcome::Device { secs } => longest = longest.max(secs),
+            RampOutcome::Stepped(FadeOutcome::Reached) => {}
+            RampOutcome::Stepped(FadeOutcome::Superseded { .. }) => left.push(player.clone()),
+        }
+    }
+    Ok((left, longest))
+}
+
+/// How a ramp goes: "over 10s", or "at each speaker's own pace".
+fn pace_of(over: Option<Duration>) -> String {
+    over.map_or_else(
+        || "at each speaker's own pace".to_string(),
+        |over| format!("over {}", span(over)),
+    )
+}
+
+/// " (about 20s)" for the longest ramp a speaker reported; nothing when
+/// none did.
+fn about(secs: u32) -> String {
+    if secs == 0 {
+        return String::new();
+    }
+    format!(" (about {})", span(Duration::from_secs(u64::from(secs))))
 }
 
 /// `POST /sleep` body (the `set_sleep_timer` tool): pause the group a room
@@ -1280,10 +1335,11 @@ impl Surface {
         result
     }
 
-    /// Ramp every room `room` names to `level` over `over`: a scheduled
-    /// volume change under the house policy's `fade_secs`. Each room's target
-    /// is bounded as an immediate change would be (room cap, quiet hours, step
-    /// limit); rooms bound for the same level ramp together, and a manual
+    /// Ramp every room `room` names to `level` over `over`, or at each
+    /// speaker's own pace when `over` is `None` (a scheduled volume change
+    /// under the house policy's `fade_secs`, or the `fade_volume` tool). Each
+    /// room's target is bounded as an immediate change would be (room cap,
+    /// quiet hours, step limit); every room ramps at once, and a manual
     /// change to a room meanwhile wins there. Logged with its before-state, so
     /// undo puts the volumes back.
     fn fade_volume(
@@ -1292,7 +1348,7 @@ impl Surface {
         tool: &str,
         room: &str,
         level: u8,
-        over: Duration,
+        over: Option<Duration>,
     ) -> Result<OutcomeDto, Failure> {
         self.authorize_write(client, tool)?;
         let guard = self.guard(client);
@@ -1332,6 +1388,7 @@ impl Surface {
             .into_iter()
             .map(|command| guard.bound(&*self.transport, &households, command))
             .collect::<Result<Vec<_>, Failure>>();
+        let pace = pace_of(over);
         let ramped = bounded.and_then(|bounded| {
             let (mut lanes, mut notes) = (Vec::new(), Vec::new());
             for (command, noted) in bounded {
@@ -1347,11 +1404,23 @@ impl Surface {
             }
             // Every room to its own level in one fade; a room whose volume
             // is changed meanwhile drops out and keeps it.
-            let left = fader
-                .fade_each(&*self.transport, &households, &lanes, over)
-                .map_err(Failure::from)?;
+            let (left, mut done) = if let Some(over) = over {
+                (
+                    fader
+                        .fade_each(&*self.transport, &households, &lanes, over)
+                        .map_err(Failure::from)?,
+                    format!("ramped {room}'s volume to {level} {pace}"),
+                )
+            } else {
+                let (left, secs) = ramp_each(fader, &*self.transport, &households, &lanes)
+                    .map_err(Failure::from)?;
+                let about = about(secs);
+                (
+                    left,
+                    format!("ramping {room}'s volume to {level} {pace}{about}"),
+                )
+            };
             let overridden = !left.is_empty();
-            let mut done = format!("ramped {room}'s volume to {level} over {}", span(over));
             if overridden {
                 done.push_str(" (a room's volume was changed meanwhile and stays as set)");
             }
@@ -1364,7 +1433,7 @@ impl Surface {
         });
         let before = fsonos_core::actions::before_state_with(&snaps, &[]);
         let (decision, text, before) = super::log_entry(&ramped, before, missed.len());
-        let intent = format!("set_volume: {room} to {level} over {}", span(over));
+        let intent = format!("set_volume: {room} to {level} {pace}");
         self.record(client, intent, decision, text, before);
         ramped
     }
@@ -1413,13 +1482,18 @@ impl Surface {
 
     /// Ramp every room `req` names to its volume over its fade (the
     /// `fade_volume` tool): each room bounded as an immediate change would be,
-    /// logged as one undoable action. The call answers when the ramp is done.
+    /// logged as one undoable action. The call answers when the ramp is done,
+    /// or with no fade once each speaker has started ramping itself (one that
+    /// can't is stepped there first).
     pub fn fade_volume_to(
         &self,
         client: &Client,
         req: &FadeVolumeRequest,
     ) -> Result<OutcomeDto, Failure> {
-        let over = call_fade(req.fade_secs)?;
+        let over = match req.fade_secs {
+            0 => None,
+            secs => Some(call_fade(secs)?),
+        };
         let level = u8::try_from(req.volume)
             .ok()
             .filter(|v| *v <= 100)
@@ -1467,7 +1541,7 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
         ScheduleAction::Volume { room, level } if surface.policy().defaults.fade_secs > 0 => {
             let over = Duration::from_secs(u64::from(surface.policy().defaults.fade_secs));
             surface
-                .fade_volume(&client, "set_volume", room, *level, over)
+                .fade_volume(&client, "set_volume", room, *level, Some(over))
                 .map(|o| o.done)
         }
         ScheduleAction::Volume { room, level } => {

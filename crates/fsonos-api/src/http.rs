@@ -22,7 +22,7 @@
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /volume` | [`crate::VolumeRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /mute` | [`crate::MuteRequest`] | [`crate::OutcomeDto`] |
-//! | `POST /volume/fade`, `/pause/fade` | `FadeVolumeRequest`, `FadePauseRequest` | [`crate::OutcomeDto`]: when the fade is done |
+//! | `POST /volume/fade`, `/pause/fade` | `FadeVolumeRequest`, `FadePauseRequest` | [`crate::OutcomeDto`]: when the fade is done (a ramp with no fade: once each speaker has started) |
 //! | `POST /eq` | [`crate::surface::eq::EqRequest`] | [`crate::surface::eq::EqSetDto`] |
 //! | `POST /group` | [`crate::GroupRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /dj/start` | [`crate::DjStartRequest`] | [`crate::OutcomeDto`] |
