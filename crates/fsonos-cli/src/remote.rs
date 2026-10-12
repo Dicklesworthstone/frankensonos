@@ -13,7 +13,8 @@
 //! same routes file, and one without it never asks a simulator's daemon.
 //! The DJ's reads (`fsonos dj status|why|moods`, see `crate::dj_cmd`), its
 //! feedback and preferences (`fsonos dj like|dislike|prefs`) and
-//! `fsonos scene apply` find it the same way.
+//! `fsonos scene apply` find it the same way; `fsonos events` streams
+//! from it ([`Daemon::open_stream`]) and has no direct mode.
 //!
 //! Through the daemon a command sends the same request body the HTTP API
 //! documents and prints the same DTO the direct path prints, so `--json`
@@ -35,7 +36,7 @@ use fsonos_api::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -287,19 +288,44 @@ impl Daemon {
                 )
             });
         }
-        Err(match serde_json::from_str::<ApiError>(&text) {
-            Ok(api) => {
-                let mut failure = Failure::new(api.code, api.detail)
-                    .with_hint(api.hint)
-                    .with_suggestions(api.suggestions);
-                failure.upnp_code = api.upnp_code;
-                failure
+        Err(refused(method, path, status, &text))
+    }
+
+    /// `GET path` held open, as server-sent events are: the body as it
+    /// arrives once the daemon answered 200, and whether it comes chunked.
+    /// A read waits at most `quiet`.
+    pub fn open_stream(
+        &self,
+        path: &str,
+        quiet: Duration,
+    ) -> Result<(BufReader<TcpStream>, bool), Failure> {
+        let lost = |e: io::Error| {
+            Failure::new(
+                ErrorCode::NotReady,
+                format!("the daemon at {} did not answer GET {path}: {e}", self.addr),
+            )
+            .with_hint("Check that fsonos serve runs.")
+        };
+        let mut stream = TcpStream::connect_timeout(&self.addr, PROBE).map_err(lost)?;
+        stream.set_read_timeout(Some(quiet)).map_err(lost)?;
+        stream.set_write_timeout(Some(CALL)).map_err(lost)?;
+        let request = self.request("GET", path, "", "text/event-stream");
+        stream.write_all(request.as_bytes()).map_err(lost)?;
+        let mut reader = BufReader::new(stream);
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            if reader.read_until(b'\n', &mut head).map_err(lost)? == 0 {
+                return Err(lost(io::ErrorKind::UnexpectedEof.into()));
             }
-            Err(_) => Failure::new(
-                ErrorCode::Internal,
-                format!("the daemon answered {method} {path} with {status}: {text}"),
-            ),
-        })
+        }
+        let (status, chunked) = parse_head(&String::from_utf8_lossy(&head))
+            .ok_or_else(|| lost(io::ErrorKind::InvalidData.into()))?;
+        if status != 200 {
+            reader.read_to_end(&mut head).map_err(lost)?;
+            let (status, text) = parse_response(&head).map_err(lost)?;
+            return Err(refused("GET", path, status, &text));
+        }
+        Ok((reader, chunked))
     }
 
     /// One HTTP/1.1 exchange over a fresh loopback connection: the status
@@ -314,9 +340,18 @@ impl Daemon {
         let mut stream = TcpStream::connect_timeout(&self.addr, timeout.min(PROBE))?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
-        let body = body.unwrap_or_default();
+        let request = self.request(method, path, body.unwrap_or_default(), "application/json");
+        stream.write_all(request.as_bytes())?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw)?;
+        parse_response(&raw)
+    }
+
+    /// The HTTP/1.1 request: its head, as the CLI (or the stdio MCP
+    /// server), then `body`.
+    fn request(&self, method: &str, path: &str, body: &str, accept: &str) -> String {
         let mut request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept: application/json\r\nContent-Length: {}\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nAccept: {accept}\r\nContent-Length: {}\r\n",
             self.addr,
             body.len()
         );
@@ -335,10 +370,25 @@ impl Daemon {
         }
         request.push_str("\r\n");
         request.push_str(body);
-        stream.write_all(request.as_bytes())?;
-        let mut raw = Vec::new();
-        stream.read_to_end(&mut raw)?;
-        parse_response(&raw)
+        request
+    }
+}
+
+/// The daemon's refusal of `method path` (`status`, body `text`) as the
+/// failure it reported.
+fn refused(method: &str, path: &str, status: u16, text: &str) -> Failure {
+    match serde_json::from_str::<ApiError>(text) {
+        Ok(api) => {
+            let mut failure = Failure::new(api.code, api.detail)
+                .with_hint(api.hint)
+                .with_suggestions(api.suggestions);
+            failure.upnp_code = api.upnp_code;
+            failure
+        }
+        Err(_) => Failure::new(
+            ErrorCode::Internal,
+            format!("the daemon answered {method} {path} with {status}: {text}"),
+        ),
     }
 }
 
@@ -369,6 +419,22 @@ fn refuse(require: bool, why: &str) -> Result<Option<Daemon>, Failure> {
     }
 }
 
+/// A response head's status, and whether its body comes chunked.
+fn parse_head(head: &str) -> Option<(u16, bool)> {
+    let mut lines = head.lines();
+    let status = lines
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse().ok())?;
+    let chunked = lines.any(|l| {
+        l.split_once(':').is_some_and(|(k, v)| {
+            k.trim().eq_ignore_ascii_case("transfer-encoding")
+                && v.trim().eq_ignore_ascii_case("chunked")
+        })
+    });
+    Some((status, chunked))
+}
+
 /// Status and body of a raw HTTP/1.1 response (`Content-Length` or chunked).
 fn parse_response(raw: &[u8]) -> io::Result<(u16, String)> {
     let bad = |why: &str| io::Error::new(io::ErrorKind::InvalidData, why.to_string());
@@ -378,18 +444,7 @@ fn parse_response(raw: &[u8]) -> io::Result<(u16, String)> {
         .ok_or_else(|| bad("no end of headers"))?;
     let head = String::from_utf8_lossy(&raw[..split]);
     let mut rest = &raw[split + 4..];
-    let mut lines = head.lines();
-    let status = lines
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|c| c.parse().ok())
-        .ok_or_else(|| bad("no status line"))?;
-    let chunked = lines.any(|l| {
-        l.split_once(':').is_some_and(|(k, v)| {
-            k.trim().eq_ignore_ascii_case("transfer-encoding")
-                && v.trim().eq_ignore_ascii_case("chunked")
-        })
-    });
+    let (status, chunked) = parse_head(&head).ok_or_else(|| bad("no status line"))?;
     if !chunked {
         return Ok((status, String::from_utf8_lossy(rest).into_owned()));
     }

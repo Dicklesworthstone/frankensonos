@@ -42,6 +42,7 @@ mod dj_cmd;
 mod dj_view;
 mod doctor;
 mod eq_cmd;
+mod events_cmd;
 mod known_players;
 mod policy_cmd;
 mod remote;
@@ -136,6 +137,10 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
+    /// The house's changes as they happen, through the daemon: a room's
+    /// volume or play state, a player going offline, each logged action,
+    /// the DJ's picks. `--json` prints an object per line.
+    Events(events_cmd::EventsArgs),
     /// Undo the newest action: restore the volumes, grouping and what was
     /// playing in the zones it changed.
     Undo {
@@ -403,6 +408,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Serve { args, scheduler } => daemon::run(global, &args, &scheduler),
         Command::Sleep(args) => schedule_cmd::sleep(global, &args),
         Command::Eq(args) => eq_cmd::run(global, &args),
+        Command::Events(args) => events_cmd::run(global, &args),
         Command::Schedule { action } => schedule_cmd::schedule(global, &action),
         Command::Mcp => run_mcp_stdio(global),
         Command::Tailscale(args) => tailscale_cmd::run(global, &args),
@@ -831,6 +837,7 @@ fn plan_for<'a>(
         | Command::Eq(_)
         | Command::History { .. }
         | Command::Log { .. }
+        | Command::Events(_)
         | Command::Undo { .. }
         | Command::Policy { .. }
         | Command::Serve { .. }

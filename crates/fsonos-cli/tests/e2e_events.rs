@@ -1,7 +1,7 @@
 //! `GET /events` end to end: a change made on a virtual player directly
 //! arrives as a `zone.state` event within a second, a client that
-//! reconnects with `Last-Event-ID` gets what it missed, and a command shows
-//! up as `action.logged`.
+//! reconnects with `Last-Event-ID` gets what it missed, `fsonos events`
+//! prints the same changes, and a command shows up as `action.logged`.
 
 mod e2e;
 
@@ -186,7 +186,10 @@ fn events_stream_the_house_and_resume() {
     let first_id = first.and_then(|e| e.id).unwrap_or(0);
 
     drop(events);
-    check_resume(&mut s, &api, first_id);
+    let replayed = check_resume(&mut s, &api, first_id);
+    if let Some(ids) = replayed {
+        check_cli(&mut s, first_id, ids);
+    }
     check_action_logged(&mut s, &api);
 
     let code = daemon.interrupt(Duration::from_secs(10));
@@ -201,8 +204,8 @@ fn events_stream_the_house_and_resume() {
 }
 
 /// Disconnected, the client misses two changes; resuming after `first_id`
-/// replays them, in order.
-fn check_resume(s: &mut Scenario, api: &str, first_id: u64) {
+/// replays them, in order: their ids.
+fn check_resume(s: &mut Scenario, api: &str, first_id: u64) -> Option<(u64, u64)> {
     let (kitchen, lan) = (s.ip("Kitchen"), s.lan());
     let _ = set_volume(&lan, kitchen, 42);
     let _ = set_volume(&lan, kitchen, 43);
@@ -219,6 +222,53 @@ fn check_resume(s: &mut Scenario, api: &str, first_id: u64) {
         "reconnecting with Last-Event-ID replays the missed changes, in order",
         replayed.is_some_and(|(a, b)| first_id < a && a < b),
         format!("after {first_id}: {replayed:?}"),
+    );
+    replayed.filter(|&(a, b)| first_id < a && a < b)
+}
+
+/// `fsonos events --since` replays the same changes through the daemon:
+/// with `--json` every event after `first_id` up to the second, an object
+/// per line, then stops (`--count`); without, the first in words.
+fn check_cli(s: &mut Scenario, first_id: u64, (a, b): (u64, u64)) {
+    let (since, count) = (first_id.to_string(), (b - first_id).to_string());
+    let run = s.cli(
+        "events-json",
+        &["--json", "events", "--since", &since, "--count", &count],
+    );
+    let lines: Vec<Value> = run
+        .stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let ids: Vec<u64> = lines.iter().filter_map(|e| e["id"].as_u64()).collect();
+    let volume_of = |id: u64| {
+        lines
+            .iter()
+            .find(|e| e["id"] == json!(id) && e["event"] == "zone.state")
+            .filter(|e| e["data"]["room"] == "Kitchen")
+            .and_then(|e| e["data"]["volume"].as_u64())
+    };
+    s.check(
+        "cli-events-json",
+        "cli",
+        "fsonos --json events --since replays the missed changes, an event per line, and --count stops it",
+        run.code == Some(0)
+            && ids == (first_id + 1..=b).collect::<Vec<_>>()
+            && volume_of(a) == Some(42)
+            && volume_of(b) == Some(43),
+        format!("ids {ids:?}, want {}..={b}; {run:?}", first_id + 1),
+    );
+    let since = (a - 1).to_string();
+    let text = s.cli(
+        "events-text",
+        &["events", "--since", &since, "--count", "1"],
+    );
+    s.check(
+        "cli-events-text",
+        "cli",
+        "fsonos events says the change in words: the room and what changed",
+        text.code == Some(0) && text.stdout.contains(" Kitchen: volume 42"),
+        format!("{text:?}"),
     );
 }
 
