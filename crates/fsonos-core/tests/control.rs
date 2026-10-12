@@ -823,3 +823,51 @@ fn a_container_refused_at_play_relearns_once_too() {
     assert!(matches!(err, CoreError::RenderParamsStale), "{err}");
     assert_eq!(t.adds.borrow().len(), 2, "the retry never loops");
 }
+
+const ZGS_S1_STUDY_LEFT: &str = include_str!("fixtures/zgs_s1_study_left.xml");
+
+/// Serves the study's own reads stale (it is still grouped) and every other
+/// player fresh (the study left, and leads a group of its own) — what the
+/// fleet does to a player that just announced (bead frankensonos-p9f). The
+/// leave verb itself is answered with the benign 402.
+struct StaleSelf {
+    study: IpAddr,
+}
+
+impl Transport for StaleSelf {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        _: &str,
+        action: &str,
+        _: &str,
+    ) -> Result<String, ProtoError> {
+        if action.ends_with("#SetAVTransportURI\"") {
+            return Err(ProtoError::SoapFault {
+                code: 402,
+                reason: "asked to leave its group, the player is still in it".into(),
+            });
+        }
+        assert!(action.ends_with("#GetZoneGroupState\""), "{action}");
+        Ok(if host == self.study {
+            ZGS_S1.to_string()
+        } else {
+            ZGS_S1_STUDY_LEFT.to_string()
+        })
+    }
+}
+
+#[test]
+fn a_stale_own_read_back_is_confirmed_by_a_witness_player() {
+    let h = house();
+    let t = StaleSelf {
+        study: ip("192.0.2.12"),
+    };
+    let started = std::time::Instant::now();
+    control::leave(&t, &h, &pid(5)).expect("the witness read confirms the leave");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "confirmed on the first poll, not after the wait: {:?}",
+        started.elapsed()
+    );
+}

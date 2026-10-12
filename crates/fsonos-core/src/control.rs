@@ -554,6 +554,12 @@ pub fn join<T: Transport + ?Sized>(
 /// the request with UPnP 402 and leave anyway (docs/PROTOCOL.md §6), so
 /// then the topology is read back until `member` leads a group of its own;
 /// still grouped after [`LEAVE_WAIT`], the player's 402 stands.
+///
+/// The read-back is cross-checked against another player of the household:
+/// a player that just acted (an announcement, a regroup) can serve its own
+/// `ZoneGroupState` stale for far longer than [`LEAVE_WAIT`] — fleet
+/// verified 2026-10-12, bead frankensonos-p9f — while the rest of the
+/// household already shows the leave.
 pub fn leave<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -563,14 +569,27 @@ pub fn leave<T: Transport + ?Sized>(
     if soap::leave_group(t, host, member)? == soap::Leaving::Done {
         return Ok(());
     }
+    let witness = households
+        .iter()
+        .flat_map(|h| &h.players)
+        .find(|p| &p.id != member)
+        .map(|p| p.ip);
+    let leads_own = |groups: &[fsonos_proto::topology::ZoneGroupInfo]| {
+        groups.iter().any(|g| {
+            g.coordinator == *member && g.members.iter().all(|m| m.uuid == *member || m.invisible)
+        })
+    };
     let started = Instant::now();
     loop {
         // Alone: it leads its group, with nobody visible but itself (a
         // stereo pair's other half and a sub are invisible members).
-        let alone = get_zone_group_state(t, host)?.groups.iter().any(|g| {
-            g.coordinator == *member && g.members.iter().all(|m| m.uuid == *member || m.invisible)
-        });
-        if alone {
+        if leads_own(&get_zone_group_state(t, host)?.groups) {
+            return Ok(());
+        }
+        // Its own read may be stale; a witness player's is not.
+        if let Some(other) = witness
+            && leads_own(&get_zone_group_state(t, other)?.groups)
+        {
             return Ok(());
         }
         let left = LEAVE_WAIT.saturating_sub(started.elapsed());
