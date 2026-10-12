@@ -191,6 +191,8 @@ pub struct QueueFeed {
     /// How long the feed believes the queue is; an event reporting another
     /// length means the queue changed under it.
     queue_len: Option<u32>,
+    /// Why the last trim failed, until it is taken.
+    trim_error: Option<String>,
 }
 
 /// What a running feed knows of its queue, to carry it across a restart
@@ -225,6 +227,7 @@ impl QueueFeed {
             playing: None,
             recorded: None,
             queue_len: None,
+            trim_error: None,
         }
     }
 
@@ -259,7 +262,14 @@ impl QueueFeed {
             playing: snapshot.playing,
             recorded: snapshot.recorded,
             queue_len: None,
+            trim_error: None,
         }
+    }
+
+    /// Why the last trim of the queue failed, if it did, once: the feed
+    /// tops up anyway and tries the trim again on the next track.
+    pub fn take_trim_error(&mut self) -> Option<String> {
+        self.trim_error.take()
     }
 
     /// The coordinator it feeds.
@@ -394,7 +404,11 @@ impl QueueFeed {
                 store.record_play(&self.zone, &uri, plan.now)?;
                 self.recorded = Some((position, uri));
             }
-            self.trim(at)?;
+            // A trim the player refuses waits for the next track: the
+            // queue still gets topped up.
+            if let Err(e) = self.trim(at) {
+                self.trim_error = Some(e.to_string());
+            }
         }
         self.top_up(at, plan, &*store)
     }
@@ -1422,6 +1436,41 @@ mod tests {
             current.track_at(at).map(str::to_owned),
             queue.get(at as usize - 1).cloned(),
             "the feed's model of the queue still matches it"
+        );
+    }
+
+    #[test]
+    fn a_trim_the_player_refuses_never_stops_the_top_ups() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = works_of(&shelf_items(1));
+        let mut store = MemStore::default();
+        let config = DjConfig {
+            trim_queue_at: 8,
+            keep_played: 1,
+            ..DjConfig::default()
+        };
+        let mut feed = QueueFeed::new(&rig.coordinator, config, 7);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        // The player refuses every removal, so the queue only grows.
+        rig.sim
+            .upnp_fault(ROOM, "RemoveTrackRangeFromQueue", 801)
+            .unwrap();
+        let mut refused = 0;
+        for _ in 0..20 {
+            rig.next();
+            rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+            refused += usize::from(feed.take_trim_error().is_some());
+        }
+        assert!(refused > 0, "the trim was tried, and refused");
+        assert!(
+            plays(&store).len() >= 19,
+            "the DJ played on: {}",
+            plays(&store).len()
         );
     }
 

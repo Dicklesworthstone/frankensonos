@@ -590,6 +590,9 @@ impl DjEngine for SpotifyDj {
                 tracing::warn!(error = %e, "the DJ could not top up; retrying on the next change");
             }
         }
+        if let Some(error) = feed.take_trim_error() {
+            tracing::warn!(%error, "the DJ could not trim the queue; retrying on the next track");
+        }
         // An early skip or a full listen, as the movement heard ends.
         if feedback::implicit(
             listening.entry(at.coordinator.clone()).or_default(),
