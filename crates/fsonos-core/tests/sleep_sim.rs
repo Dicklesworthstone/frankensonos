@@ -8,6 +8,7 @@ use fsonos_core::sleep::{SleepOutcome, SleepTimers};
 use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_proto::control as soap;
 use fsonos_proto::topology::get_zone_group_state;
+use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
@@ -120,6 +121,103 @@ fn a_sleep_timer_fades_pauses_and_puts_the_volumes_back() {
         timers.run(&lan, &h, &fader, &kitchen).unwrap(),
         SleepOutcome::Gone
     );
+}
+
+/// The simulator's LAN, except that `action` sent to `host` fails as if the
+/// player had dropped off the network.
+struct Failing<'a> {
+    lan: &'a SimLan,
+    action: &'static str,
+    host: IpAddr,
+}
+
+impl Transport for Failing<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        control_path: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if host == self.host
+            && soap_action
+                .trim_matches('"')
+                .ends_with(&format!("#{}", self.action))
+        {
+            return Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: "unreachable".into(),
+            });
+        }
+        self.lan.soap_post(host, control_path, soap_action, body)
+    }
+}
+
+#[test]
+fn a_fade_that_fails_puts_the_volumes_back_and_lets_go_of_the_timer() {
+    let (_sim, lan, h, kitchen) = playing_kitchen();
+    let fader = fader();
+    let timers = SleepTimers::with_fade(Duration::from_millis(200));
+    timers
+        .start(&lan, &h, &fader, &kitchen, Duration::from_mins(10), t0())
+        .unwrap();
+    assert_eq!(timers.due(t0() + mins(10)).len(), 1);
+    // The Office drops off mid-fade: its volume can no longer be set.
+    let failing = Failing {
+        lan: &lan,
+        action: "SetVolume",
+        host: ip(&h, "Office"),
+    };
+    assert!(timers.run(&failing, &h, &fader, &kitchen).is_err());
+    assert_eq!(timers.get(&kitchen), None, "not left fading");
+    // The Kitchen is back at its level, and the player's own timer is still
+    // set to pause the group.
+    assert_eq!(state(&lan, &h), (TransportState::Playing, 30, 20));
+    assert!(
+        soap::get_remaining_sleep_timer(&lan, ip(&h, "Kitchen"))
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn a_pause_that_fails_still_puts_the_volumes_back() {
+    let (_sim, lan, h, kitchen) = playing_kitchen();
+    let fader = fader();
+    let timers = SleepTimers::with_fade(Duration::from_millis(200));
+    timers
+        .start(&lan, &h, &fader, &kitchen, Duration::from_mins(10), t0())
+        .unwrap();
+    assert_eq!(timers.due(t0() + mins(10)).len(), 1);
+    let failing = Failing {
+        lan: &lan,
+        action: "Pause",
+        host: ip(&h, "Kitchen"),
+    };
+    assert!(timers.run(&failing, &h, &fader, &kitchen).is_err());
+    assert_eq!(timers.get(&kitchen), None, "not left fading");
+    // Not silent for its next play: the levels are back, and the player's own
+    // timer pauses the group.
+    assert_eq!(state(&lan, &h), (TransportState::Playing, 30, 20));
+    assert!(
+        soap::get_remaining_sleep_timer(&lan, ip(&h, "Kitchen"))
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn a_timer_whose_group_is_gone_is_let_go() {
+    let (_sim, lan, h, kitchen) = playing_kitchen();
+    let fader = fader();
+    let timers = SleepTimers::with_fade(Duration::from_millis(200));
+    timers
+        .start(&lan, &h, &fader, &kitchen, Duration::from_mins(10), t0())
+        .unwrap();
+    assert_eq!(timers.due(t0() + mins(10)).len(), 1);
+    // The house can't be read just now: the run fails and lets the timer go.
+    assert!(timers.run(&lan, &[], &fader, &kitchen).is_err());
+    assert_eq!(timers.get(&kitchen), None, "not left fading");
 }
 
 #[test]

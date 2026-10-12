@@ -301,14 +301,24 @@ impl Fader {
             .iter()
             .map(|m| Ok((m.clone(), soap::get_volume(t, ip(households, m)?)?)))
             .collect::<Result<Vec<_>, CoreError>>()?;
-        let outcome = self.fade_group(t, households, &members, 0, over)?;
+        // Whatever fails, the volumes go back: a group is never left silent
+        // for its next play.
+        let put_back = || crate::sleep::put_back(t, households, &before);
+        let outcome = match self.fade_group(t, households, &members, 0, over) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                let _ = put_back();
+                return Err(e);
+            }
+        };
         if outcome != FadeOutcome::Reached {
             return Ok(outcome);
         }
-        crate::control::pause(t, households, coordinator)?;
-        for (player, level) in before {
-            soap::set_volume(t, ip(households, &player)?, level)?;
+        if let Err(e) = crate::control::pause(t, households, coordinator) {
+            let _ = put_back();
+            return Err(e);
         }
+        put_back()?;
         Ok(FadeOutcome::Reached)
     }
 }

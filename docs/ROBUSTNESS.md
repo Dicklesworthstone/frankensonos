@@ -26,6 +26,7 @@ us and is re-learned, never assumed.
 | Coordinator moved (reboot, pair role swap) | Coordinator resolved per-command from *fresh* topology; on UPnP 800 after a grouping verb, refresh ZoneGroupTopology and retry once **only if the coordinator actually moved** — 800 also means "bad Spotify desc", never blindly reclassified | `b-self-healing-7ts` |
 | Player rebooted mid-conversation | `X-RINCON-BOOTSEQ` change or a failed GENA renew (412) → resubscribe + full state re-fetch | `b-self-healing-7ts` |
 | Pause refused (UPnP 701): the group isn't playing, or a stream can't pause | Read the transport state back: already paused or stopped is done (a set's pause goes on), still playing stops instead; the fade-out and sleep paths share it, so their volumes are always put back | core `control::pause_at` |
+| A player drops off mid-fade (a sleep timer, a fade-out before pausing) | Every room's volume goes back, best effort, whatever step failed, so no group is left silent for its next play; a failed sleep timer is dropped, not left fading, and the player's own timer (set past the end) still pauses the group | core `sleep::run`, `fade::fade_out_and_pause` |
 | Non-idempotent op retried into a duplicate | `AddURIToQueue` and friends are never blind-retried; state is checked first | `b-self-healing-7ts` |
 
 ## 3. Rendering never rots

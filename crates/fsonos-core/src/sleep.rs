@@ -309,7 +309,7 @@ impl SleepTimers {
         let household = households
             .iter()
             .find(|h| h.player(coordinator).is_some())
-            .ok_or_else(|| CoreError::UnknownPlayer(coordinator.0.clone()))?;
+            .ok_or_else(|| self.lost(coordinator))?;
         let rooms = member_rooms(household, coordinator);
         let generation = {
             let mut armed = self.lock();
@@ -321,11 +321,29 @@ impl SleepTimers {
                 _ => return Ok(SleepOutcome::Gone),
             }
         };
-        let before = rooms
+        let before = match rooms
             .iter()
             .map(|r| Ok((r.clone(), soap::get_volume(t, ip(households, r)?)?)))
-            .collect::<Result<Vec<_>, CoreError>>()?;
-        let outcome = fader.fade_group(t, households, &rooms, 0, self.fade)?;
+            .collect::<Result<Vec<_>, CoreError>>()
+        {
+            Ok(before) => before,
+            Err(e) => {
+                self.forget(coordinator, generation);
+                return Err(e);
+            }
+        };
+        // Whatever fails, the volumes go back (every room, the first failure
+        // reported): a group is never left silent for its next play. The
+        // player's own timer, set past the end, pauses it if the daemon can't.
+        let restore = || put_back(t, households, &before);
+        let outcome = match fader.fade_group(t, households, &rooms, 0, self.fade) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                let _ = restore();
+                self.forget(coordinator, generation);
+                return Err(e);
+            }
+        };
         let current = {
             let mut armed = self.lock();
             let current = armed.get(coordinator).map(|a| a.generation);
@@ -334,27 +352,71 @@ impl SleepTimers {
             }
             current
         };
-        let put_back = || -> Result<(), CoreError> {
-            for (room, level) in &before {
-                soap::set_volume(t, ip(households, room)?, *level)?;
-            }
-            Ok(())
-        };
         if current != Some(generation) {
-            put_back()?;
+            restore()?;
             return Ok(SleepOutcome::Cancelled);
         }
         let host = ip(households, coordinator)?;
-        soap::configure_sleep_timer(t, host, None)?;
         match outcome {
             FadeOutcome::Reached => {
-                crate::control::pause_at(t, host)?;
-                put_back()?;
+                // Paused first, the levels back after; the player's own timer
+                // is cleared only once the pause has held.
+                if let Err(e) = crate::control::pause_at(t, host) {
+                    let _ = restore();
+                    return Err(e);
+                }
+                let restored = restore();
+                soap::configure_sleep_timer(t, host, None)?;
+                restored?;
                 Ok(SleepOutcome::Paused)
             }
-            FadeOutcome::Superseded { .. } => Ok(SleepOutcome::Interrupted),
+            FadeOutcome::Superseded { .. } => {
+                soap::configure_sleep_timer(t, host, None)?;
+                Ok(SleepOutcome::Interrupted)
+            }
         }
     }
+
+    /// `coordinator` is nowhere in the house: let go of a timer a run took
+    /// up, which would otherwise stay fading for good (the player's own
+    /// timer, if it is still there, pauses the group).
+    fn lost(&self, coordinator: &PlayerId) -> CoreError {
+        let mut armed = self.lock();
+        if armed.get(coordinator).is_some_and(|a| a.timer.fading) {
+            armed.remove(coordinator);
+        }
+        CoreError::UnknownPlayer(coordinator.0.clone())
+    }
+
+    /// Drop `coordinator`'s timer if it is still the one a run took up as
+    /// `generation`: a run that failed must not leave it fading for good.
+    fn forget(&self, coordinator: &PlayerId, generation: u64) {
+        let mut armed = self.lock();
+        if armed
+            .get(coordinator)
+            .is_some_and(|a| a.generation == generation)
+        {
+            armed.remove(coordinator);
+        }
+    }
+}
+
+/// Put each room back to its level in `before`: every room, even after one
+/// fails, and the first failure reported.
+pub(crate) fn put_back<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    before: &[(PlayerId, u8)],
+) -> Result<(), CoreError> {
+    let mut first = Ok(());
+    for (room, level) in before {
+        let done = ip(households, room)
+            .and_then(|host| soap::set_volume(t, host, *level).map_err(CoreError::from));
+        if first.is_ok() {
+            first = done;
+        }
+    }
+    first
 }
 
 #[cfg(test)]
