@@ -240,6 +240,9 @@ impl Backend {
             if state.mute == Some(true) {
                 volume.push_str(", muted");
             }
+            if let Some(group) = state.group_volume {
+                let _ = write!(volume, ", group volume {group}");
+            }
             let text = format!(
                 "{} [{}]: {} ({on}){volume}",
                 state.zone.members.join(" + "),
@@ -652,7 +655,7 @@ fn list_zones(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult
 }
 
 #[tool(
-    description = "What a room is doing right now: its group, whether that group is playing, paused or stopped, the current track or station (title, artist, position), and the room's volume. Call this before changing anything relative ('a bit louder', 'what's playing?'). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
+    description = "What a room is doing right now: its group, whether that group is playing, paused or stopped, the current track or station (title, artist, position), and the room's volume (and the whole group's, when it plays with others). Call this before changing anything relative ('a bit louder', 'what's playing?'). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
     annotations(read_only, idempotent)
 )]
 fn get_zone_state(

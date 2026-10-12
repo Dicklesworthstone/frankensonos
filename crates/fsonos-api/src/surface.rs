@@ -1257,7 +1257,8 @@ impl Surface {
     }
 
     /// What `zone` is doing right now (`get_zone_state`): its group, the
-    /// group's transport and track, and the room's own volume and mute.
+    /// group's transport and track, the room's own volume and mute, and the
+    /// group's volume when the room plays with others.
     pub fn zone_state(&self, client: &Client, zone: &str) -> Result<ZoneStateDto, Failure> {
         self.guard(client).authorize("get_zone_state", true)?;
         let households = self.households()?;
@@ -1289,11 +1290,25 @@ impl Surface {
         let mute = heard(&target.player.id)
             .and_then(|room| room.mute)
             .or_else(|| fsonos_proto::control::get_mute(&*self.transport, target.player.ip).ok());
+        let zone = zone_for_target(&households, &target, |_| state);
+        // The group's level, when the room plays with others: from its
+        // events when it has reported one, else asked.
+        let group_volume = if zone.members.len() > 1 {
+            heard(&target.coordinator.id)
+                .and_then(|group| group.group_volume)
+                .or_else(|| {
+                    fsonos_proto::control::get_group_volume(&*self.transport, target.coordinator.ip)
+                        .ok()
+                })
+        } else {
+            None
+        };
         Ok(ZoneStateDto {
-            zone: zone_for_target(&households, &target, |_| state),
+            zone,
             transport_state: crate::zones::transport_state_name(state).to_string(),
             volume,
             mute,
+            group_volume,
             track,
         })
     }
@@ -1877,6 +1892,21 @@ mod tests {
         );
         let state = s.zone_state(&Client::Unknown, "Patio").unwrap();
         assert_eq!((state.volume, state.mute), (Some(12), Some(true)));
+    }
+
+    #[test]
+    fn a_grouped_rooms_state_has_its_groups_volume() {
+        let (s, sent) = surface(
+            "<CurrentTransportState>PLAYING</CurrentTransportState>\
+             <CurrentVolume>12</CurrentVolume>",
+            households(),
+        );
+        // Kitchen@S1 plays in Den's group.
+        let grouped = s.zone_state(&Client::Unknown, "Kitchen@S1").unwrap();
+        assert_eq!(grouped.group_volume, Some(12), "{grouped:?}");
+        assert!(sent.lock().unwrap().iter().any(|a| a == "GetGroupVolume"));
+        let alone = s.zone_state(&Client::Unknown, "Patio").unwrap();
+        assert_eq!(alone.group_volume, None, "{alone:?}");
     }
 
     #[test]

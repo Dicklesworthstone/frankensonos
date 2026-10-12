@@ -405,6 +405,9 @@ pub fn status_text(state: &ZoneStateDto) -> String {
         (None, Some(true)) => out.push_str("\n  muted"),
         (None, _) => {}
     }
+    if let Some(group) = state.group_volume {
+        let _ = write!(out, "\n  group volume {group}");
+    }
     out.push('\n');
     out
 }
