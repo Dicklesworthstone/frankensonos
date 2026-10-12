@@ -9,7 +9,7 @@
 
 use fsonos_core::favorites::{self, Favorite};
 use fsonos_core::rooms::{Aliases, ResolveContext, resolve_one, resolve_targets};
-use fsonos_core::{ControlTarget, HouseholdState};
+use fsonos_core::{ControlTarget, HouseholdState, Room};
 use fsonos_types::PlayerId;
 
 use crate::dj::DjSteer;
@@ -465,6 +465,50 @@ pub fn plan_ungroup<'a>(
     Ok(Command::Leave {
         member: target.player.id.clone(),
     })
+}
+
+/// Set-aware [`plan_ungroup`]: every room the argument names leaves its
+/// group. Members leave first; a room that leads its group leaves only when
+/// the group keeps a room outside the set (otherwise it is alone once they
+/// have left), so `ungroup everywhere` breaks every group up and each
+/// leading room plays on.
+pub fn plan_ungroup_set<'a>(
+    rooms: impl Into<Rooms<'a>>,
+    req: &ZoneRequest,
+) -> Result<Vec<Command>, Failure> {
+    let rooms = rooms.into();
+    let targets = resolve_set(&rooms, req.zone()?)?;
+    let named = |room: &Room| targets.iter().any(|t| t.room.primary == room.primary);
+    let (mut members, mut leads) = (Vec::new(), Vec::new());
+    for target in &targets {
+        let room = target.room;
+        let mut others = target
+            .household
+            .rooms
+            .iter()
+            .filter(|r| r.coordinator == room.coordinator && r.primary != room.primary)
+            .peekable();
+        if others.peek().is_none() {
+            continue;
+        }
+        let leave = Command::Leave {
+            member: target.player.id.clone(),
+        };
+        if !room.is_group_coordinator() {
+            members.push(leave);
+        } else if !others.all(named) {
+            leads.push(leave);
+        }
+    }
+    members.append(&mut leads);
+    if members.is_empty() {
+        let reason = match targets.as_slice() {
+            [one] => format!("{} already plays on its own", one.room.name),
+            _ => "each of those rooms already plays on its own".to_string(),
+        };
+        return Ok(vec![Command::Nothing { reason }]);
+    }
+    Ok(members)
 }
 
 /// `POST /move` / the `move_playback` tool. Rooms in different households
@@ -941,6 +985,27 @@ mod tests {
             plan_ungroup(&houses, &zone("Patio")).unwrap(),
             Command::Nothing { reason } if reason.contains("on its own")
         ));
+    }
+
+    #[test]
+    fn a_set_ungroups_members_first_and_keeps_each_leader_playing() {
+        let houses = households();
+        let ungroup = |arg: &str| plan_ungroup_set(&houses, &zone(arg)).unwrap();
+        let leave = |pid: &str| Command::Leave { member: id(pid) };
+        // Everywhere: Kitchen@S1 leaves Den's group; Den plays on, alone.
+        assert_eq!(ungroup("everywhere"), [leave("RINCON_KIT1")]);
+        // Den alone leaves, so Kitchen@S1 keeps the group (and the music).
+        assert_eq!(ungroup("Den"), [leave("RINCON_DEN")]);
+        assert_eq!(ungroup("Kitchen@S1"), [leave("RINCON_KIT1")]);
+        for (arg, reason) in [
+            ("Patio", "Patio already plays on its own"),
+            ("all@S2", "each of those rooms already plays on its own"),
+        ] {
+            assert!(
+                matches!(&ungroup(arg)[..], [Command::Nothing { reason: r }] if r == reason),
+                "{arg}"
+            );
+        }
     }
 
     #[test]

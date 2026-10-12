@@ -215,9 +215,12 @@ impl Backend {
                         .map_or_else(|| title.clone(), |c| format!("{title} by {c}"))
                 },
             );
-            let volume = state
+            let mut volume = state
                 .volume
                 .map_or_else(String::new, |v| format!(", volume {v}"));
+            if state.mute == Some(true) {
+                volume.push_str(", muted");
+            }
             let text = format!(
                 "{} [{}]: {} ({on}){volume}",
                 state.zone.members.join(" + "),
@@ -809,11 +812,15 @@ fn group(
 }
 
 #[tool(
-    description = "Take a room out of its group so it plays on its own. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
+    description = "Take a room out of its group so it plays on its own. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to break every group up (each group's leading room plays on).",
     annotations(idempotent)
 )]
 fn ungroup(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| b.control("ungroup", |h| plan::plan_ungroup(h, &ZoneRequest { zone })))
+    with_backend(|b| {
+        b.control_set("ungroup", |h| {
+            plan::plan_ungroup_set(h, &ZoneRequest { zone })
+        })
+    })
 }
 
 #[tool(
@@ -1119,6 +1126,48 @@ mod tests {
     }
 
     #[test]
+    fn the_djs_library_feedback_and_preferences_go_to_a_running_daemon() {
+        let (b, sent, _) = backend("", Client::McpStdio);
+        let daemon = fake(Some(serde_json::json!({
+            "done": "a library refresh started",
+            "running": true
+        })));
+        let b = b.with_daemon(Arc::clone(&daemon) as Arc<dyn Daemon>);
+        let r = b.dj_sync().unwrap();
+        assert_eq!(text(&r), "a library refresh started");
+        let r = b.dj_sync_status().unwrap();
+        assert!(!r.is_error, "{}", text(&r));
+        let feedback = fake(Some(serde_json::json!({
+            "zone": "Den",
+            "work": "Symphony No. 5",
+            "composer": "Ludwig van Beethoven",
+            "signal": "like",
+            "done": "noted: more like Symphony No. 5"
+        })));
+        let (b, _, _) = backend("", Client::McpStdio);
+        let b = b.with_daemon(Arc::clone(&feedback) as Arc<dyn Daemon>);
+        let req = fsonos_api::surface::dj_feedback::DjFeedbackRequest {
+            zone: Some("Den".into()),
+            signal: "like".into(),
+        };
+        assert_eq!(
+            text(&b.dj_feedback(&req).unwrap()),
+            "noted: more like Symphony No. 5"
+        );
+        assert!(sent.lock().unwrap().is_empty(), "nothing sent from here");
+        let paths = |d: &FakeDaemon| {
+            d.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(m, p, _)| format!("{m} {p}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(paths(&daemon), ["POST /dj/sync", "GET /dj/sync"]);
+        assert_eq!(paths(&feedback), ["POST /dj/feedback"]);
+    }
+
+    #[test]
     fn without_a_daemon_running_the_tools_act_here() {
         let (b, sent, _) = backend(
             "<RemainingSleepTimerDuration></RemainingSleepTimerDuration>",
@@ -1227,6 +1276,31 @@ mod tests {
         })
         .unwrap();
         assert_eq!(surveys.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fade_volume_ramps_in_steps() {
+        let (b, sent, _) = backend("<CurrentVolume>10</CurrentVolume>", Client::McpStdio);
+        let r = b
+            .fade_volume(&fsonos_api::surface::schedules::FadeVolumeRequest {
+                zone: "Kitchen".into(),
+                volume: 30,
+                fade_secs: 1,
+            })
+            .unwrap();
+        assert!(!r.is_error, "{}", text(&r));
+        assert!(
+            text(&r).starts_with("ramped Kitchen's volume to 30"),
+            "{}",
+            text(&r)
+        );
+        let sets = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|a| *a == "SetVolume")
+            .count();
+        assert!(sets > 1, "a ramp, not a jump: {sets}");
     }
 
     #[test]

@@ -299,6 +299,11 @@ fn control_routes_accept_a_set_of_rooms() {
     assert_eq!(status, 200, "{out}");
     assert_eq!(out["done"], "paused Living Room's group");
     assert_eq!(api.actions(), ["Pause"]);
+    // Ungrouping everywhere takes the member out; Living Room plays on.
+    let api = Api::start("", &Client::LoopbackHttp);
+    let (status, out) = api.post("/ungroup", &json!({ "zone": "everywhere" }));
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["done"], "Kitchen plays on its own");
     // Muting all reaches each room's own player.
     let api = Api::start("", &Client::LoopbackHttp);
     let (status, out) = api.post("/mute", &json!({ "zone": "all", "mute": true }));
@@ -309,6 +314,39 @@ fn control_routes_accept_a_set_of_rooms() {
         2,
         "{actions:?}"
     );
+}
+
+#[test]
+fn fades_ramp_volume_and_fade_out_before_pausing() {
+    // A ramp sends the level in steps, not one jump.
+    let api = Api::start("<CurrentVolume>10</CurrentVolume>", &Client::LoopbackHttp);
+    let (status, out) = api.post(
+        "/volume/fade",
+        &json!({ "zone": "Kitchen", "volume": 30, "fade_secs": 1 }),
+    );
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["done"], "ramped Kitchen's volume to 30 over 1s");
+    let sets = api.actions().iter().filter(|a| *a == "SetVolume").count();
+    assert!(sets > 1, "a ramp, not a jump: {sets}");
+    // A fade out pauses the group after the fade.
+    let api = Api::start("<CurrentVolume>10</CurrentVolume>", &Client::LoopbackHttp);
+    let (status, out) = api.post("/pause/fade", &json!({ "zone": "Kitchen", "fade_secs": 1 }));
+    assert_eq!(status, 200, "{out}");
+    assert!(
+        api.actions().iter().any(|a| a == "Pause"),
+        "{:?}",
+        api.actions()
+    );
+    // Out-of-range fades and a missing level are refused.
+    for bad in [
+        json!({ "zone": "Kitchen", "volume": 30, "fade_secs": 0 }),
+        json!({ "zone": "Kitchen", "volume": 30, "fade_secs": 61 }),
+        json!({ "zone": "Kitchen", "volume": 130, "fade_secs": 5 }),
+    ] {
+        let (status, err) = api.post("/volume/fade", &bad);
+        assert_eq!(status, 422, "{bad}: {err}");
+        assert_eq!(err["code"], "INVALID_ARGUMENT", "{bad}");
+    }
 }
 
 #[test]

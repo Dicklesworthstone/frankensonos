@@ -101,6 +101,30 @@ fn a_room_in_a_group_plays_through_its_coordinator() {
 }
 
 #[test]
+fn pausing_a_group_that_is_not_playing_leaves_it_as_it_is() {
+    let sim = sim();
+    let lan = sim.lan();
+    let houses = snapshot(&sim, &lan);
+    let coordinator = &resolve_room(&houses, "Living Room").unwrap().coordinator.id;
+    let state = || {
+        control::playback(&lan, &houses, coordinator)
+            .unwrap()
+            .transport
+            .state
+    };
+    let stream = "x-rincon-mp3radio://example.invalid/stream";
+    control::play_uri(&lan, &houses, coordinator, stream, "").unwrap();
+    control::pause(&lan, &houses, coordinator).unwrap();
+    // The player refuses a second Pause (701); the group stays paused, not
+    // stopped.
+    control::pause(&lan, &houses, coordinator).unwrap();
+    assert_eq!(state(), TransportState::Paused);
+    control::stop(&lan, &houses, coordinator).unwrap();
+    control::pause(&lan, &houses, coordinator).unwrap();
+    assert_eq!(state(), TransportState::Stopped);
+}
+
+#[test]
 fn queued_tracks_play_continuously_in_each_household() {
     let sim = sim();
     let lan = sim.lan();

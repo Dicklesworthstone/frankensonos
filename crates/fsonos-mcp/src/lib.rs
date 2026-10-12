@@ -1,9 +1,9 @@
 //! FrankenSonos MCP server.
 //!
 //! Exposes the house audio to AI agents (Claude, Grok, Meta Muse, OpenAI "dots"
-//! — anything speaking MCP) as a small set of well-described tools:
-//! `list_zones`, `play`, `pause`, `resume`, `next`, `set_volume`, `group`,
-//! `ungroup`, `dj_start`, `dj_skip`. Served over stdio and streamable HTTP via
+//! — anything speaking MCP) as well-described tools for reading the house,
+//! playback, volume, grouping, the DJ, scenes, schedules and announcements
+//! (the README's "For agents" lists them). Served over stdio and streamable HTTP via
 //! `fastmcp_rust`. [`server`] builds the server; [`tools`] holds the tools and
 //! the [`tools::Backend`] of speakers they act on, installed once per process
 //! with [`tools::install`]; [`resources`] serves the zones as documents. The tools take the HTTP API's request bodies
@@ -85,6 +85,8 @@ pub fn server() -> fastmcp::auto::Server {
         .tool(tools::dj_prefs::DjPrefer)
         .tool(tools::dj_sync::DjSyncStatus)
         .tool(tools::dj_sync::DjSync)
+        .tool(tools::schedules::FadeVolume)
+        .tool(tools::schedules::FadeAndPause)
         .tool(tools::schedules::SetSleepTimer)
         .tool(tools::schedules::ListSleepTimers)
         .tool(tools::schedules::ListSchedules)

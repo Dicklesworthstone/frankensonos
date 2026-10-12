@@ -4,6 +4,7 @@
 
 use fsonos_api::surface::players::{PlayerDto, player_views};
 use fsonos_api::surface::queue::QueueDto;
+use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
 use fsonos_api::{
     ActionDto, ActionsQuery, Command, DjMoodsDto, DjStatusDto, ErrorCode, Failure, FavoriteDto,
     HitDto, OutcomeDto, PlayDto, PlayFavoriteRequest, RoomDto, SearchRequest, Surface, UndoDto,
@@ -123,6 +124,18 @@ impl Direct {
     ) -> Result<OutcomeDto, Failure> {
         self.households()?;
         self.surface.control(&Client::Cli, tool, plan)
+    }
+
+    /// Ramp rooms to a volume over a fade (`volume --fade`), as the CLI.
+    pub fn fade_volume(&self, req: &FadeVolumeRequest) -> Result<OutcomeDto, Failure> {
+        self.households()?;
+        self.surface.fade_volume_to(&Client::Cli, req)
+    }
+
+    /// Fade a room's group out and pause it (`pause --fade`), as the CLI.
+    pub fn fade_out(&self, req: &FadePauseRequest) -> Result<OutcomeDto, Failure> {
+        self.households()?;
+        self.surface.fade_out(&Client::Cli, req)
     }
 
     /// [`Self::run`] for the commands that accept a set of rooms (`all`,
@@ -356,8 +369,15 @@ pub fn status_text(state: &ZoneStateDto) -> String {
             let _ = write!(out, " (queue #{n})");
         }
     }
-    if let Some(volume) = state.volume {
-        let _ = write!(out, "\n  volume {volume}");
+    match (state.volume, state.mute) {
+        (Some(volume), Some(true)) => {
+            let _ = write!(out, "\n  volume {volume} (muted)");
+        }
+        (Some(volume), _) => {
+            let _ = write!(out, "\n  volume {volume}");
+        }
+        (None, Some(true)) => out.push_str("\n  muted"),
+        (None, _) => {}
     }
     out.push('\n');
     out

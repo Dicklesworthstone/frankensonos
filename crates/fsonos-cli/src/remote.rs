@@ -26,7 +26,7 @@
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
 use fsonos_api::surface::queue::QueueDto;
-use fsonos_api::surface::schedules::SleepTimerDto;
+use fsonos_api::surface::schedules::{FadePauseRequest, SleepTimerDto};
 use fsonos_api::{
     ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, MoveRequest,
     MuteRequest, OutcomeDto, PartyRequest, PlayDto, PlayFavoriteRequest, PlayRequest, RoomDto,
@@ -642,6 +642,35 @@ fn remember_rooms(global: &GlobalArgs, rooms: impl IntoIterator<Item = String>) 
     }
 }
 
+/// The route and body of a `--fade` pause or volume, which have routes of
+/// their own; `None` for anything else.
+fn fade_request(command: &Command) -> Result<Option<(&'static str, serde_json::Value)>, Failure> {
+    let (path, body) = match command {
+        Command::Pause {
+            zone,
+            fade: Some(secs),
+        } => (
+            "/pause/fade",
+            serde_json::to_value(FadePauseRequest {
+                zone: zone.clone(),
+                fade_secs: *secs,
+            }),
+        ),
+        Command::Volume {
+            zone,
+            level,
+            group,
+            fade: Some(secs),
+        } => (
+            "/volume/fade",
+            serde_json::to_value(crate::fade_volume_request(zone, level, *group, *secs)?),
+        ),
+        _ => return Ok(None),
+    };
+    let body = body.map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))?;
+    Ok(Some((path, body)))
+}
+
 /// The route and body a control subcommand sends, as `plan_for` plans it
 /// directly.
 fn control_request(
@@ -652,6 +681,9 @@ fn control_request(
         v.map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))
     };
     let zone = |zone: &String| value(serde_json::to_value(ZoneRequest { zone: zone.clone() }));
+    if let Some(fade) = fade_request(command)? {
+        return Ok(fade);
+    }
     Ok(match command {
         Command::Play {
             zone,
@@ -672,12 +704,14 @@ fn control_request(
                 }))?,
             )
         }
-        Command::Pause { zone: z } => ("/pause", zone(z)?),
+        Command::Pause { zone: z, .. } => ("/pause", zone(z)?),
         Command::Resume { zone: z } => ("/resume", zone(z)?),
         Command::Next { zone: z } => ("/next", zone(z)?),
         Command::Previous { zone: z } => ("/previous", zone(z)?),
         Command::Ungroup { zone: z } => ("/ungroup", zone(z)?),
-        Command::Volume { zone, level, group } => (
+        Command::Volume {
+            zone, level, group, ..
+        } => (
             "/volume",
             value(serde_json::to_value(crate::volume_request(
                 zone, level, *group,

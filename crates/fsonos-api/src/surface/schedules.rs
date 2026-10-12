@@ -105,6 +105,45 @@ pub fn span(d: Duration) -> String {
     out
 }
 
+/// The longest fade a call waits for: an interactive fade answers once it is
+/// done (a longer fade out at bedtime is a sleep timer's job).
+pub const MAX_CALL_FADE_SECS: u32 = 60;
+
+/// `POST /volume/fade` / the `fade_volume` tool: ramp every room `zone` names
+/// (a room, an alias, or `all` / `everywhere`) to `volume` over `fade_secs`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FadeVolumeRequest {
+    pub zone: String,
+    /// The level to ramp to, 0-100.
+    pub volume: i64,
+    /// How long the ramp takes, 1-60 seconds.
+    pub fade_secs: u32,
+}
+
+/// `POST /pause/fade` / the `fade_and_pause` tool: fade the group a room
+/// plays in out over `fade_secs`, pause it, and put its volumes back.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FadePauseRequest {
+    pub zone: String,
+    /// How long the fade takes, 1-60 seconds.
+    pub fade_secs: u32,
+}
+
+/// `fade_secs` as a call's fade, or why it is out of range.
+fn call_fade(fade_secs: u32) -> Result<Duration, Failure> {
+    if fade_secs == 0 || fade_secs > MAX_CALL_FADE_SECS {
+        return Err(Failure::invalid(format!(
+            "fade_secs must be 1 to {MAX_CALL_FADE_SECS}, got {fade_secs}"
+        ))
+        .with_hint(
+            "For a longer fade out, set a sleep timer (it fades over its last two minutes).",
+        ));
+    }
+    Ok(Duration::from_secs(u64::from(fade_secs)))
+}
+
 /// `POST /sleep` body (the `set_sleep_timer` tool): pause the group a room
 /// plays in after `duration`, push its timer `duration` later (`extend`),
 /// or cancel it.
@@ -500,10 +539,21 @@ impl Sleep {
         }
     }
 
-    /// A volume or mute change on `coordinator`'s group: if a sleep fade is in
-    /// flight there, end it where it is (the new level stands and the group is
-    /// not paused). Returns whether a fade was superseded.
-    pub fn volume_changed(&self, coordinator: &PlayerId) -> bool {
+    /// A volume or mute change on `coordinator`'s group: every fade in flight
+    /// on its rooms ends where it is (a sleep timer's, a schedule's, or one
+    /// asked for with `--fade`), so the new level stands and the group is not
+    /// paused. Returns whether a sleep fade was superseded.
+    pub fn volume_changed(&self, households: &[HouseholdState], coordinator: &PlayerId) -> bool {
+        self.fader.supersede(coordinator);
+        for household in households {
+            for room in household
+                .rooms
+                .iter()
+                .filter(|r| r.coordinator == *coordinator)
+            {
+                self.fader.supersede(&room.primary);
+            }
+        }
         self.timers.interrupt(&self.fader, coordinator)
     }
 }
@@ -1050,7 +1100,7 @@ impl Surface {
         room: &str,
         level: u8,
         over: Duration,
-    ) -> Result<String, Failure> {
+    ) -> Result<OutcomeDto, Failure> {
         self.authorize_write(client, "set_volume")?;
         let guard = self.guard(client);
         let households = self.households()?;
@@ -1132,7 +1182,7 @@ impl Surface {
         let (decision, text, before) = super::log_entry(&ramped, before, missed.len());
         let intent = format!("set_volume: {room} to {level} over {}", span(over));
         self.record(client, intent, decision, text, before);
-        ramped.map(|outcome| outcome.done)
+        ramped
     }
 
     /// Fade the group `room` plays in out over `over` and pause it, putting
@@ -1142,7 +1192,7 @@ impl Surface {
         client: &Client,
         room: &str,
         over: Duration,
-    ) -> Result<String, Failure> {
+    ) -> Result<OutcomeDto, Failure> {
         self.authorize_write(client, "pause")?;
         let (households, zone) = self.zone_of(client, room)?;
         let own;
@@ -1155,22 +1205,50 @@ impl Surface {
         let result = fader
             .fade_out_and_pause(&*self.transport, &households, &zone.coordinator, over)
             .map_err(Failure::from)
-            .map(|outcome| match outcome {
-                FadeOutcome::Reached => {
-                    format!(
+            .map(|outcome| OutcomeDto {
+                done: match outcome {
+                    FadeOutcome::Reached => format!(
                         "faded {}'s group out over {} and paused it",
                         zone.room,
                         span(over)
-                    )
-                }
-                FadeOutcome::Superseded { .. } => format!(
-                    "stopped fading {}'s group: its volume was changed meanwhile",
-                    zone.room
-                ),
+                    ),
+                    FadeOutcome::Superseded { .. } => format!(
+                        "stopped fading {}'s group: its volume was changed meanwhile",
+                        zone.room
+                    ),
+                },
+                changed: true,
+                volume: None,
+                notes: Vec::new(),
             });
         let intent = format!("pause: {}'s group after a {} fade", zone.room, span(over));
-        self.log_write(client, intent, &result, Clone::clone);
+        self.log_write(client, intent, &result, |o| o.done.clone());
         result
+    }
+
+    /// Ramp every room `req` names to its volume over its fade (the
+    /// `fade_volume` tool): each room bounded as an immediate change would be,
+    /// logged as one undoable action. The call answers when the ramp is done.
+    pub fn fade_volume_to(
+        &self,
+        client: &Client,
+        req: &FadeVolumeRequest,
+    ) -> Result<OutcomeDto, Failure> {
+        let over = call_fade(req.fade_secs)?;
+        let level = u8::try_from(req.volume)
+            .ok()
+            .filter(|v| *v <= 100)
+            .ok_or_else(|| {
+                Failure::invalid(format!("volume must be 0 to 100, got {}", req.volume))
+            })?;
+        self.fade_volume(client, &req.zone, level, over)
+    }
+
+    /// Fade the group a room plays in out over its fade, pause it, and put its
+    /// volumes back (the `fade_and_pause` tool). The call answers when done.
+    pub fn fade_out(&self, client: &Client, req: &FadePauseRequest) -> Result<OutcomeDto, Failure> {
+        let over = call_fade(req.fade_secs)?;
+        self.fade_and_pause(client, &req.zone, over)
     }
 }
 
@@ -1193,12 +1271,14 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
                 plan::plan_transport_set(rooms, &zone(room), TransportAction::Pause)
             })
             .map(|o| o.done),
-        ScheduleAction::Pause { room, fade_secs } => {
-            surface.fade_and_pause(&client, room, Duration::from_secs(u64::from(*fade_secs)))
-        }
+        ScheduleAction::Pause { room, fade_secs } => surface
+            .fade_and_pause(&client, room, Duration::from_secs(u64::from(*fade_secs)))
+            .map(|o| o.done),
         ScheduleAction::Volume { room, level } if surface.policy().defaults.fade_secs > 0 => {
             let over = Duration::from_secs(u64::from(surface.policy().defaults.fade_secs));
-            surface.fade_volume(&client, room, *level, over)
+            surface
+                .fade_volume(&client, room, *level, over)
+                .map(|o| o.done)
         }
         ScheduleAction::Volume { room, level } => {
             let req = VolumeRequest {
@@ -1460,6 +1540,62 @@ mod tests {
     use fsonos_core::store::MemStore;
 
     const MIN: fn(u64) -> Duration = Duration::from_mins;
+
+    #[test]
+    fn a_volume_change_ends_a_ramp_in_flight_where_it_is() {
+        let houses = households();
+        let survey: Survey = Box::new(move |_| Ok(houses.clone()));
+        let s = Arc::new(
+            Surface::new(
+                Box::new(Canned {
+                    out_args: "<CurrentVolume>10</CurrentVolume>",
+                    sent: Arc::new(Mutex::new(Vec::new())),
+                }),
+                survey,
+                Policy::default(),
+                Box::new(fsonos_core::clock::SystemClock),
+            )
+            .with_sleep(Sleep::default()),
+        );
+        let started = Instant::now();
+        let ramp = {
+            let s = Arc::clone(&s);
+            thread::spawn(move || {
+                s.fade_volume_to(
+                    &Client::Cli,
+                    &FadeVolumeRequest {
+                        zone: "Patio".into(),
+                        volume: 40,
+                        fade_secs: 3,
+                    },
+                )
+            })
+        };
+        thread::sleep(Duration::from_millis(400));
+        s.control_set(&Client::Cli, "set_volume", |h| {
+            plan::plan_volume_set(
+                h,
+                &VolumeRequest {
+                    zone: "Patio".into(),
+                    volume: Some(25),
+                    delta: None,
+                    group: false,
+                },
+            )
+        })
+        .unwrap();
+        let ramped = ramp.join().unwrap().unwrap();
+        assert!(
+            ramped.done.contains("was changed meanwhile"),
+            "{}",
+            ramped.done
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "the ramp stopped early: {:?}",
+            started.elapsed()
+        );
+    }
 
     #[test]
     fn durations_read_as_people_type_them() {

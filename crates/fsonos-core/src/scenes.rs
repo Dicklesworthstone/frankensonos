@@ -545,10 +545,8 @@ fn run<T: Transport + ?Sized>(
         } => control::play_uri(t, households, coordinator, uri, metadata).map_err(s),
         SceneOp::Dj { coordinator, mood } => options.hooks.start_dj(coordinator, mood.as_deref()),
         SceneOp::Play { coordinator } => control::resume(t, households, coordinator).map_err(s),
-        // A stream may not pause; then it stops.
-        SceneOp::Pause { coordinator } => control::pause(t, households, coordinator)
-            .or_else(|_| control::stop(t, households, coordinator))
-            .map_err(s),
+        // A stream that cannot pause stops (control::pause_at).
+        SceneOp::Pause { coordinator } => control::pause(t, households, coordinator).map_err(s),
     }
 }
 

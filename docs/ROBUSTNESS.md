@@ -25,6 +25,7 @@ us and is re-learned, never assumed.
 |---|---|---|
 | Coordinator moved (reboot, pair role swap) | Coordinator resolved per-command from *fresh* topology; on UPnP 800 after a grouping verb, refresh ZoneGroupTopology and retry once **only if the coordinator actually moved** — 800 also means "bad Spotify desc", never blindly reclassified | `b-self-healing-7ts` |
 | Player rebooted mid-conversation | `X-RINCON-BOOTSEQ` change or a failed GENA renew (412) → resubscribe + full state re-fetch | `b-self-healing-7ts` |
+| Pause refused (UPnP 701): the group isn't playing, or a stream can't pause | Read the transport state back: already paused or stopped is done (a set's pause goes on), still playing stops instead; the fade-out and sleep paths share it, so their volumes are always put back | core `control::pause_at` |
 | Non-idempotent op retried into a duplicate | `AddURIToQueue` and friends are never blind-retried; state is checked first | `b-self-healing-7ts` |
 
 ## 3. Rendering never rots
@@ -52,7 +53,7 @@ us and is re-learned, never assumed.
 |---|---|---|
 | Destructive-ish op (ungroup, queue clear) regrets | Zone snapshot before mutation + persisted action log + undo | `b-snapshot-dpa`, `b-action-log-undo-jti` |
 | "Did it actually work?" | Every SOAP answer is checked: a UPnP fault is a coded failure (with its `upnp_code`), never a silent success; a player that moved, or a coordinator that changed under a command, is found again and the command retried once (noted `HEALED`); scene apply and undo report each step that failed | api `heal`, `b-self-healing-7ts`, scenes, undo |
-| Whole-container cleanup is 491 calls of fragile | `RemoveTrackRangeFromQueue` — one atomic call (verified live, both generations) | PROTOCOL.md §4 |
+| Whole-container cleanup would be 491 fragile calls | `RemoveTrackRangeFromQueue` removes a range in one atomic call (verified live, both generations); nothing trims a container yet, so no code sends it | PROTOCOL.md §4 |
 | Volume/group abuse by a buggy client | House policy: volume caps, step limits, quiet hours, client allowlists | `b-policy-23m` |
 
 ## 6. The daemon is supervised and honest

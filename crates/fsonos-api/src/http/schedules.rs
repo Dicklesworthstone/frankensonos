@@ -7,14 +7,18 @@
 //! | `GET /schedules` | | `[ScheduleDto]` |
 //! | `POST /schedules` | [`ScheduleRequest`] | [`ScheduleDto`] |
 //! | `POST /schedules/remove`, `/pause`, `/resume` | [`ScheduleIdRequest`] | [`ScheduleDto`] |
+//! | `POST /volume/fade` | [`FadeVolumeRequest`] | [`crate::OutcomeDto`] |
+//! | `POST /pause/fade` | [`FadePauseRequest`] | [`crate::OutcomeDto`] |
 
 use fastapi::core::RouteEntry;
 use fastapi::{JsonSchema, Request, fastapi_openapi};
 
-use super::{Ctx, Op, answer, body, query_param};
+use super::{CONTROL, Ctx, Op, answer, body, query_param};
+use crate::execute::OutcomeDto;
 use crate::failure::Failure;
 use crate::surface::schedules::{
-    ScheduleDto, ScheduleIdRequest, ScheduleRequest, SleepRequest, SleepTimerDto,
+    FadePauseRequest, FadeVolumeRequest, ScheduleDto, ScheduleIdRequest, ScheduleRequest,
+    SleepRequest, SleepTimerDto,
 };
 
 const SCHEDULES: &str = "schedules";
@@ -97,7 +101,38 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             .response_schema::<ScheduleDto>(200, "The schedule"),
         );
     }
+    routes.extend(fade_routes(cx));
     routes
+}
+
+/// The fades on demand: `POST /volume/fade`, `POST /pause/fade`.
+fn fade_routes(cx: &Ctx<'_>) -> [RouteEntry; 2] {
+    [
+        cx.route(
+            &Op::post(
+                "/volume/fade",
+                "fade_volume",
+                CONTROL,
+                "Ramp a room, an alias or everywhere to a volume over up to 60 s",
+            ),
+            |s, c, req| {
+                answer(body::<FadeVolumeRequest>(req).and_then(|r| s.fade_volume_to(c, &r)))
+            },
+        )
+        .request_schema::<FadeVolumeRequest>(true)
+        .response_schema::<OutcomeDto>(200, "What was done"),
+        cx.route(
+            &Op::post(
+                "/pause/fade",
+                "fade_and_pause",
+                CONTROL,
+                "Fade a room's group out over up to 60 s, pause it, and put its volumes back",
+            ),
+            |s, c, req| answer(body::<FadePauseRequest>(req).and_then(|r| s.fade_out(c, &r))),
+        )
+        .request_schema::<FadePauseRequest>(true)
+        .response_schema::<OutcomeDto>(200, "What was done"),
+    ]
 }
 
 /// `GET /sleep?zone=<room>`.

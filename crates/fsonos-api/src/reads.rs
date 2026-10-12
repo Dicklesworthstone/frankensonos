@@ -19,6 +19,9 @@ pub struct ZoneStateDto {
     /// The room's own volume (0–100), when its player answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
+    /// Whether the room is muted, when its player answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mute: Option<bool>,
     /// What the group is on, when anything is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track: Option<TrackDto>,

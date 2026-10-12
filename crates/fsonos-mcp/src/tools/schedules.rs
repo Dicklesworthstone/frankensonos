@@ -5,10 +5,12 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::schedules::{ScheduleDto, ScheduleRequest, SleepRequest, SleepTimerDto};
+use fsonos_api::surface::schedules::{
+    FadePauseRequest, FadeVolumeRequest, ScheduleDto, ScheduleRequest, SleepRequest, SleepTimerDto,
+};
 use serde::Serialize;
 
-use super::{Backend, from_daemon, respond, segment, with_backend};
+use super::{Backend, from_daemon, respond, said, segment, with_backend};
 
 /// `list_sleep_timers` structured content.
 #[derive(Serialize)]
@@ -35,6 +37,16 @@ fn timers_text(timers: &[SleepTimerDto]) -> String {
 }
 
 impl Backend {
+    /// The `fade_volume` tool.
+    pub fn fade_volume(&self, req: &FadeVolumeRequest) -> McpResult<FinalCallToolResult> {
+        respond(|| Ok(said(self.surface.fade_volume_to(&self.client, req)?)))
+    }
+
+    /// The `fade_and_pause` tool.
+    pub fn fade_and_pause(&self, req: &FadePauseRequest) -> McpResult<FinalCallToolResult> {
+        respond(|| Ok(said(self.surface.fade_out(&self.client, req)?)))
+    }
+
     /// The `set_sleep_timer` tool.
     pub fn set_sleep_timer(&self, req: &SleepRequest) -> McpResult<FinalCallToolResult> {
         // The daemon's timers fade out; the speaker's own do not.
@@ -111,6 +123,38 @@ impl Backend {
             Ok((format!("removed {}", removed.line()), removed))
         })
     }
+}
+
+#[tool(
+    description = "Ramp the volume over time: every room `zone` names (a room, one of your aliases, or `all`/`everywhere`) goes to `volume` (0-100) over `seconds` (1-60), each room kept within your caps; answers when the ramp is done, and undo_last puts the volumes back. A manual change to a room meanwhile wins there. For a long fade out at bedtime, use set_sleep_timer."
+)]
+fn fade_volume(
+    _ctx: &McpContext,
+    zone: String,
+    volume: i64,
+    seconds: u32,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let req = FadeVolumeRequest {
+        zone,
+        volume,
+        fade_secs: seconds,
+    };
+    with_backend(move |b| b.fade_volume(&req))
+}
+
+#[tool(
+    description = "Fade the group a room plays in out over `seconds` (1-60), pause it, and put its volumes back, so the next play starts at the old level; answers when done. `zone` is a room name (Room@S1 / Room@S2 picks a household; aliases work)."
+)]
+fn fade_and_pause(
+    _ctx: &McpContext,
+    zone: String,
+    seconds: u32,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let req = FadePauseRequest {
+        zone,
+        fade_secs: seconds,
+    };
+    with_backend(move |b| b.fade_and_pause(&req))
 }
 
 #[tool(

@@ -296,11 +296,14 @@ pub enum NoteCode {
     /// The speakers had changed under the request (a player at a new
     /// address, a new group coordinator) and it was retried once there.
     Healed,
+    /// A room or group of a set could not do it (a speaker that did not
+    /// answer, or refused: nothing to resume, say); the rest went ahead.
+    Skipped,
 }
 
 impl NoteCode {
     /// Every note code, in documentation order.
-    pub const ALL: [Self; 2] = [Self::VolumeClamped, Self::Healed];
+    pub const ALL: [Self; 3] = [Self::VolumeClamped, Self::Healed, Self::Skipped];
 
     /// The wire name, e.g. `VOLUME_CLAMPED`.
     #[must_use]
@@ -308,6 +311,7 @@ impl NoteCode {
         match self {
             Self::VolumeClamped => "VOLUME_CLAMPED",
             Self::Healed => "HEALED",
+            Self::Skipped => "SKIPPED",
         }
     }
 }

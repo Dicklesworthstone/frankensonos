@@ -66,3 +66,4 @@ A successful response can carry notes about how the request was carried out.
 |---|---|
 | `VOLUME_CLAMPED` | The requested volume exceeded the house policy and was lowered. |
 | `HEALED` | The speakers had changed under the request (a player at a new address, or a new group coordinator) and it was retried once there. Only commands that are safe to repeat are retried at a new address. |
+| `SKIPPED` | A room or group of a set (`everywhere`, `all`, a multi-room alias) could not do it: its speaker did not answer, or refused (nothing to resume, say). The rest went ahead; the call fails only when none could. |

@@ -27,6 +27,7 @@ use fsonos_core::{HouseholdState, control, moving};
 use fsonos_core::{favorites, search};
 use fsonos_proto::Transport;
 use fsonos_types::{PlayerId, TransportState};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
@@ -36,7 +37,7 @@ use crate::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto};
 use crate::events::EventBus;
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
-use crate::guard::Guard;
+use crate::guard::{Guard, Note};
 use crate::plan::{Command, DjAction, Rooms, plan_play_favorite, resolve};
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto};
 use crate::request::{PlayFavoriteRequest, SearchRequest};
@@ -92,6 +93,9 @@ pub struct Surface {
     live: Option<Weak<Live>>,
     /// The event stream, fed by the live model and the action log.
     events: Option<Arc<EventBus>>,
+    /// The DJ status last published per coordinator (`dj.status`), so an
+    /// event goes out only when it changed.
+    dj_seen: Mutex<HashMap<PlayerId, DjStatusDto>>,
     /// Until when reads survey directly (set by a regroup).
     settle_until: Mutex<Option<Instant>>,
     /// Clips and where the players fetch them (see [`announce`]).
@@ -171,6 +175,7 @@ impl Surface {
             aliases_file: None,
             live: None,
             events: None,
+            dj_seen: Mutex::new(HashMap::new()),
             settle_until: Mutex::new(None),
             announcements: None,
             sleep: None,
@@ -266,8 +271,36 @@ impl Surface {
         self
     }
 
+    /// Publish the DJ's status in the group `at.coordinator` leads as a
+    /// `dj.status` event (what it plays, what it picked next and why, its
+    /// steering), when it changed since the last one. Only a surface with
+    /// an event stream does anything.
+    fn publish_dj(
+        &self,
+        dj: &dyn DjEngine,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        queue_position: Option<u32>,
+    ) {
+        let Some(bus) = &self.events else {
+            return;
+        };
+        let Ok(status) = dj.status(at, store, queue_position, &*self.clock) else {
+            return;
+        };
+        let mut seen = self.dj_seen.lock().unwrap_or_else(PoisonError::into_inner);
+        if seen.get(at.coordinator) == Some(&status) {
+            return;
+        }
+        if let Ok(serde_json::Value::Object(mut data)) = serde_json::to_value(&status) {
+            data.insert("player".into(), at.coordinator.0.clone().into());
+            bus.publish("dj.status", data.into());
+        }
+        seen.insert(at.coordinator.clone(), status);
+    }
+
     /// Fold `player`'s latest playback into the DJ's feed, if it feeds that
-    /// coordinator (see [`follow`]).
+    /// coordinator (see [`follow`]), and publish what changed.
     fn dj_playback(&self, player: &PlayerId) {
         let (Some(dj), Some(live)) = (&self.dj, self.live()) else {
             return;
@@ -286,6 +319,7 @@ impl Surface {
         };
         let fed = self.with_store(|store| {
             dj.on_playback(at, store, &playback, &*self.clock);
+            self.publish_dj(&**dj, at, store, playback.queue_position);
             Ok(())
         });
         if let Ok(None) = fed {
@@ -473,7 +507,14 @@ impl Surface {
                 coordinator,
             };
             return self
-                .with_store(|store| Ok(run_dj(&**dj, at, store, command, &*self.clock)))?
+                .with_store(|store| {
+                    let done = run_dj(&**dj, at, store, command, &*self.clock);
+                    let queue_position = self
+                        .live()
+                        .and_then(|live| live.player(coordinator)?.queue_position);
+                    self.publish_dj(&**dj, at, store, queue_position);
+                    Ok(done)
+                })?
                 .unwrap_or_else(|| Err(no_dj_store()));
         }
         crate::heal::execute_healing(&*self.transport, households, guard, command, || {
@@ -535,7 +576,7 @@ impl Surface {
             && matches!(command, Command::Volume { .. } | Command::Mute { .. })
         {
             for coordinator in affected(&households, &command) {
-                sleep.volume_changed(&coordinator);
+                sleep.volume_changed(&households, &coordinator);
             }
         }
         let regroups = matches!(
@@ -610,7 +651,7 @@ impl Surface {
             for command in &commands {
                 if matches!(command, Command::Volume { .. } | Command::Mute { .. }) {
                     for coordinator in affected(&households, command) {
-                        sleep.volume_changed(&coordinator);
+                        sleep.volume_changed(&households, &coordinator);
                     }
                 }
             }
@@ -659,9 +700,12 @@ impl Surface {
         result
     }
 
-    /// Run each command of a set, stopping at the first hard error, and fold
-    /// the outcomes into one: the sentences joined, the notes merged, and
-    /// `changed` true if any room changed.
+    /// Run each command of a set and fold the outcomes into one: the
+    /// sentences joined, the notes merged, and `changed` true if any room
+    /// changed. A room or group whose speaker fails ([`speaker_side`]) is
+    /// noted as SKIPPED and the rest go ahead, so one offline or idle group
+    /// does not stop `pause everywhere`; the call fails when none went
+    /// ahead, or at the first failure of any other kind.
     fn execute_set(
         &self,
         households: &[HouseholdState],
@@ -674,8 +718,25 @@ impl Surface {
             volume: None,
             notes: Vec::new(),
         };
+        let (mut skipped, mut went) = (None, false);
         for command in commands {
-            let outcome = self.execute_following(households, guard, command)?;
+            let outcome = match self.execute_following(households, guard, command) {
+                Ok(outcome) => outcome,
+                Err(failure) if commands.len() > 1 && speaker_side(&failure) => {
+                    let room = command
+                        .addressed()
+                        .and_then(|id| households.iter().find_map(|h| h.player(id)))
+                        .map_or("a room", |p| p.room_name.as_str());
+                    combined.notes.push(Note {
+                        code: NoteCode::Skipped,
+                        detail: format!("{room} skipped: {}", failure.detail),
+                    });
+                    skipped.get_or_insert(failure);
+                    continue;
+                }
+                Err(failure) => return Err(failure),
+            };
+            went = true;
             if !combined.done.is_empty() && !outcome.done.is_empty() {
                 combined.done.push_str("; ");
             }
@@ -684,7 +745,10 @@ impl Surface {
             combined.volume = combined.volume.or(outcome.volume);
             combined.notes.extend(outcome.notes);
         }
-        Ok(combined)
+        match skipped {
+            Some(failure) if !went => Err(failure),
+            _ => Ok(combined),
+        }
     }
 
     /// Undo the newest undoable action — only `client`'s own when
@@ -1110,7 +1174,7 @@ impl Surface {
     }
 
     /// What `zone` is doing right now (`get_zone_state`): its group, the
-    /// group's transport and track, and the room's own volume.
+    /// group's transport and track, and the room's own volume and mute.
     pub fn zone_state(&self, client: &Client, zone: &str) -> Result<ZoneStateDto, Failure> {
         self.guard(client).authorize("get_zone_state", true)?;
         let households = self.households()?;
@@ -1139,10 +1203,14 @@ impl Surface {
         let volume = heard(&target.player.id)
             .and_then(|room| room.volume)
             .or_else(|| control::volume(&*self.transport, &households, &target.player.id).ok());
+        let mute = heard(&target.player.id)
+            .and_then(|room| room.mute)
+            .or_else(|| fsonos_proto::control::get_mute(&*self.transport, target.player.ip).ok());
         Ok(ZoneStateDto {
             zone: zone_for_target(&households, &target, |_| state),
             transport_state: crate::zones::transport_state_name(state).to_string(),
             volume,
+            mute,
             track,
         })
     }
@@ -1226,6 +1294,15 @@ fn run_dj(
             format!("not a DJ command: {command:?}"),
         )),
     }
+}
+
+/// A failure at one speaker (it did not answer, or answered with a fault),
+/// which a set notes and steps past rather than stopping for.
+fn speaker_side(failure: &Failure) -> bool {
+    matches!(
+        failure.code,
+        ErrorCode::PlayerUnreachable | ErrorCode::UpnpFault | ErrorCode::NotCoordinator
+    )
 }
 
 fn no_dj_store() -> Failure {
@@ -1410,6 +1487,85 @@ mod tests {
         assert_eq!(denied.code, ErrorCode::PolicyDenied);
     }
 
+    /// Refuses the `refuse`d action with UPnP 701: every time, or only its
+    /// `nth` (0-based) time.
+    struct Refusing {
+        refuse: &'static str,
+        nth: Option<usize>,
+        seen: Mutex<usize>,
+    }
+
+    impl Transport for Refusing {
+        fn soap_post(
+            &self,
+            _: std::net::IpAddr,
+            _: &str,
+            action: &str,
+            _: &str,
+        ) -> Result<String, fsonos_proto::ProtoError> {
+            let action = action
+                .trim_matches('"')
+                .rsplit('#')
+                .next()
+                .unwrap_or_default();
+            if action == self.refuse {
+                let mut seen = self.seen.lock().unwrap();
+                let this = *seen;
+                *seen += 1;
+                if self.nth.is_none_or(|n| n == this) {
+                    return Err(fsonos_proto::ProtoError::SoapFault {
+                        code: 701,
+                        reason: "Transition not available".into(),
+                    });
+                }
+            }
+            Ok(format!(
+                "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+                 <u:{action}Response xmlns:u=\"urn:x\"></u:{action}Response></s:Body></s:Envelope>"
+            ))
+        }
+    }
+
+    #[test]
+    fn a_set_steps_past_a_group_that_fails_and_notes_it() {
+        let resume_everywhere = |nth: Option<usize>| {
+            let survey: Survey = Box::new(|_| Ok(households()));
+            let s = Surface::new(
+                Box::new(Refusing {
+                    refuse: "Play",
+                    nth,
+                    seen: Mutex::new(0),
+                }),
+                survey,
+                Policy::default(),
+                Box::new(fsonos_core::clock::SystemClock),
+            );
+            s.control_set(&Client::Cli, "resume", |h| {
+                crate::plan::plan_transport_set(
+                    h,
+                    &ZoneRequest {
+                        zone: "everywhere".into(),
+                    },
+                    TransportAction::Resume,
+                )
+            })
+        };
+        // One group of four has nothing to resume: the other three resume,
+        // and the one is noted.
+        let out = resume_everywhere(Some(1)).unwrap();
+        assert_eq!(out.done.matches("resumed").count(), 3, "{}", out.done);
+        let skipped: Vec<&Note> = out
+            .notes
+            .iter()
+            .filter(|n| n.code == NoteCode::Skipped)
+            .collect();
+        assert_eq!(skipped.len(), 1, "{:?}", out.notes);
+        assert!(skipped[0].detail.contains("skipped: "), "{:?}", skipped[0]);
+        // None can: the call fails with the speaker's own fault.
+        let err = resume_everywhere(None).unwrap_err();
+        assert_eq!((err.code, err.upnp_code), (ErrorCode::UpnpFault, Some(701)));
+    }
+
     #[test]
     fn undo_is_governed_by_the_undo_last_policy_key() {
         // Before the fix, undo authorized under "undo", so a deny of the tool's
@@ -1480,6 +1636,17 @@ mod tests {
         assert!(zones.iter().all(|z| z.transport_state == "paused"));
         let den = s.zone(&Client::Unknown, "Kitchen@S1").unwrap();
         assert_eq!(den.coordinator_room, "Den");
+    }
+
+    #[test]
+    fn a_zones_state_says_whether_the_room_is_muted() {
+        let (s, _) = surface(
+            "<CurrentTransportState>PLAYING</CurrentTransportState>\
+             <CurrentVolume>12</CurrentVolume><CurrentMute>1</CurrentMute>",
+            households(),
+        );
+        let state = s.zone_state(&Client::Unknown, "Patio").unwrap();
+        assert_eq!((state.volume, state.mute), (Some(12), Some(true)));
     }
 
     #[test]

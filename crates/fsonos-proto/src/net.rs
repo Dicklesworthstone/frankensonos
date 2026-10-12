@@ -1560,21 +1560,18 @@ fn discovery_listens_for_ssdp_and_mdns_at_once() {
 #[test]
 fn lan_ipv4s_keep_real_lan_addresses_only() {
     let addrs: Vec<IpAddr> = vec![
-        "192.168.4.165".parse().unwrap(),     // speaker VLAN
-        "192.168.1.240".parse().unwrap(),     // main LAN
+        "198.51.100.7".parse().unwrap(),      // speaker VLAN
+        "192.0.2.24".parse().unwrap(),        // main LAN
         "127.0.0.1".parse().unwrap(),         // loopback: no players here
-        "169.254.182.82".parse().unwrap(),    // link-local: unroutable to players
+        "169.254.1.1".parse().unwrap(),       // link-local: unroutable to players
         "0.0.0.0".parse().unwrap(),           // unspecified
-        "192.168.4.165".parse().unwrap(),     // duplicate interfaces collapse
+        "198.51.100.7".parse().unwrap(),      // duplicate interfaces collapse
         "fd7a:115c:a1e0::1".parse().unwrap(), // the players speak v4 here
     ];
     let kept = lan_ipv4s_from(Ok(addrs));
     assert_eq!(
         kept,
-        vec![
-            Ipv4Addr::new(192, 168, 1, 240),
-            Ipv4Addr::new(192, 168, 4, 165),
-        ]
+        vec![Ipv4Addr::new(192, 0, 2, 24), Ipv4Addr::new(198, 51, 100, 7)]
     );
 }
 
