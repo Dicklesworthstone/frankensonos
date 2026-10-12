@@ -43,10 +43,12 @@ pub enum DjAction {
     /// Stop the DJ.
     Stop { zone: String },
     /// You like the work playing: the DJ favors it, its composer and its
-    /// performer. Without a room, the group the DJ plays in.
+    /// performer (a song's artist and album). Without a room, the group the
+    /// DJ plays in.
     Like { zone: Option<String> },
     /// You dislike the work playing: the DJ plays it, its composer and its
-    /// performer less (a second dislike keeps the work out for 180 days).
+    /// performer (a song's artist and album) less; a second dislike keeps the
+    /// work out for 180 days.
     Dislike { zone: Option<String> },
     /// Steer the DJ in a room's group from its next piece, running or not:
     /// a mood, constraints, how long; or --clear for the time-of-day program.

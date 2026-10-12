@@ -176,13 +176,18 @@ pub(super) fn explicit(
     // From the DJ's next pick on.
     state.feedback = FeedbackModel::load(&StoreFeedback(&*store), now).ok();
     let name = format!("{}: {}", work.composer, work.title);
+    // What the signal also reaches: a classical work's composer and
+    // performer, a song's artist and album (`FeedbackSignal::about`).
+    let also = if work.is_classical() {
+        "its composer and its performer"
+    } else {
+        "its artist and its album"
+    };
     let done = match feedback {
-        DjFeedback::Like => {
-            format!("noted that you like {name}: the DJ favors it, its composer and its performer")
-        }
+        DjFeedback::Like => format!("noted that you like {name}: the DJ favors it, {also}"),
         DjFeedback::Dislike => format!(
-            "noted that you dislike {name}: the DJ plays it, its composer and its performer \
-             less (a second dislike keeps the work out for 180 days)"
+            "noted that you dislike {name}: the DJ plays it, {also} less (a second dislike \
+             keeps the work out for 180 days)"
         ),
     };
     Ok(DjFeedbackDto {

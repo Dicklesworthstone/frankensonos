@@ -13,7 +13,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/dj/feedback",
                 "dj_feedback",
                 DJ,
-                "Like or dislike the work playing (its composer and performer too), so the DJ plays them more or less",
+                "Like or dislike the work playing (its composer and performer too, or a song's artist and album), so the DJ plays them more or less",
             ),
             |s, c, req| answer(body::<DjFeedbackRequest>(req).and_then(|r| s.dj_feedback(c, &r))),
         )
