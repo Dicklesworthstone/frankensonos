@@ -3732,6 +3732,12 @@ pub struct HttpServerConfig {
     pub tool_input_max_bytes: HashMap<String, usize>,
     /// Maximum requests buffered for one live HTTP session.
     pub request_capacity: usize,
+    /// The `Host` names the listener answers for: lowercase, no port, IPv6
+    /// literals in brackets, and `*.suffix` for any name under `suffix`.
+    /// A request naming any other host (or none, or two) is refused with 403
+    /// before anything else runs, which defeats DNS rebinding. Empty (the
+    /// default) answers any host.
+    pub allowed_hosts: Vec<String>,
     /// GET path for the exact MCP 2024-11-05 SSE stream.
     #[cfg(any(feature = "legacy-2024-11-05", test))]
     pub legacy_sse_path: String,
@@ -3801,6 +3807,7 @@ impl Default for HttpServerConfig {
             },
             tool_input_max_bytes: HashMap::new(),
             request_capacity: 64,
+            allowed_hosts: Vec::new(),
             #[cfg(any(feature = "legacy-2024-11-05", test))]
             legacy_sse_path: "/sse".to_string(),
             #[cfg(any(feature = "legacy-2024-11-05", test))]
@@ -9640,6 +9647,51 @@ fn h1_request_to_transport(
     Ok(transport)
 }
 
+/// Whether the request's one `Host` header names this listener (see
+/// [`HttpServerConfig::allowed_hosts`]; an empty list admits any).
+fn h1_host_allowed(request: &asupersync::http::h1::Request, allowed: &[String]) -> bool {
+    if allowed.is_empty() {
+        return true;
+    }
+    let mut hosts = request
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("host"));
+    let (Some((_, value)), None) = (hosts.next(), hosts.next()) else {
+        return false;
+    };
+    let Some(host) = authority_host(value.trim()) else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    !host.is_empty()
+        && allowed
+            .iter()
+            .any(|pattern| match pattern.strip_prefix("*.") {
+                Some(suffix) => host
+                    .strip_suffix(suffix)
+                    .and_then(|name| name.strip_suffix('.'))
+                    .is_some_and(|name| !name.is_empty()),
+                None => host == *pattern,
+            })
+}
+
+/// The host in `authority` (`name`, `name:port`, `[v6]` or `[v6]:port`),
+/// IPv6 kept in brackets; `None` when it is malformed.
+fn authority_host(authority: &str) -> Option<&str> {
+    let split = if authority.starts_with('[') {
+        authority.find(']')? + 1
+    } else {
+        authority.find(':').unwrap_or(authority.len())
+    };
+    let (host, rest) = authority.split_at(split);
+    let port_ok = rest.is_empty()
+        || rest
+            .strip_prefix(':')
+            .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
+    (port_ok && !host.is_empty()).then_some(host)
+}
+
 /// Captures exactly one native `Authorization` field before the H1 request is
 /// decoded into the transport representation.  The raw H1 field sequence is
 /// the only ingress that can represent duplicate case variants, so reject it
@@ -11824,6 +11876,16 @@ async fn serve_http_connection(
         .await;
         return;
     }
+    if !h1_host_allowed(&request, &endpoint.server.http_config.allowed_hosts) {
+        let _ = send_h1_response(
+            cx,
+            &listener_shutdown,
+            &mut framed,
+            HttpResponse::new(HttpStatus::FORBIDDEN),
+        )
+        .await;
+        return;
+    }
     if serve_oauth_h1_request(cx, &listener_shutdown, &mut framed, &endpoint, &request).await {
         return;
     }
@@ -12212,6 +12274,16 @@ async fn serve_modern_http_connection(
             &listener_shutdown,
             &mut framed,
             HttpResponse::bad_request(),
+        )
+        .await;
+        return;
+    }
+    if !h1_host_allowed(&request, &endpoint.server.http_config.allowed_hosts) {
+        let _ = send_h1_response(
+            cx,
+            &listener_shutdown,
+            &mut framed,
+            HttpResponse::new(HttpStatus::FORBIDDEN),
         )
         .await;
         return;

@@ -47,7 +47,7 @@ Six rules hold the design together:
    (default 8097) at the Mac's address facing the speakers.
 5. **Browsers can't drive it.** A web page open on the Mac or a tailnet
    device could otherwise reach the unauthenticated API. So each listener
-   admits only its own Host names (loopback, its address, the tailnet's
+   (the API and MCP) admits only its own Host names (loopback, its address, the tailnet's
    MagicDNS name and addresses), defeating DNS rebinding. A request with a
    foreign `Origin` gets 403, and every control request must be
    `Content-Type: application/json` (415 otherwise), which closes the

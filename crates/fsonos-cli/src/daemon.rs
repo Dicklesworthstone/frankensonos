@@ -317,7 +317,9 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             &serve,
         )
     })?;
-    let mcp = start_all("MCP server", &mcp_plan, |addr| start_mcp(&surface, addr))?;
+    let mcp = start_all("MCP server", &mcp_plan, |addr| {
+        start_mcp(&surface, addr, &names)
+    })?;
     // One value per key: the e2e harness and scripts parse this line.
     eprintln!(
         "fsonos serve: ready http=http://{} mcp=http://{}/mcp data={}",
@@ -365,7 +367,15 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     if ticking.join().is_err() {
         tracing::warn!("the scheduler stopped with a panic");
     }
-    for (server, addr) in &http {
+    stop_http(&http);
+    // The surfaces hold the model weakly: this ends every subscription.
+    drop(live);
+    Ok(())
+}
+
+/// Shut the HTTP API listeners down.
+fn stop_http(http: &[(Arc<TcpServer>, SocketAddr)]) {
+    for (server, addr) in http {
         server.shutdown();
         // Wake the accept loop so it sees the shutdown. Briefly: a host may
         // not reach its own tailnet IPv6 address (Tailscale on macOS), and
@@ -375,9 +385,6 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             Duration::from_millis(250),
         ));
     }
-    // The surfaces hold the model weakly: this ends every subscription.
-    drop(live);
-    Ok(())
 }
 
 /// Run the sleep timers and the stored schedules on `surface`: a tick a
@@ -545,8 +552,14 @@ fn start_http(
 }
 
 /// Bind the MCP server (streamable HTTP) on its own thread; returns the bound
-/// address once it listens.
-fn start_mcp(surface: &Arc<Surface>, addr: SocketAddr) -> anyhow::Result<SocketAddr> {
+/// address once it listens. Like the HTTP API, it admits only its own Host
+/// names (DNS-rebinding defense).
+fn start_mcp(
+    surface: &Arc<Surface>,
+    addr: SocketAddr,
+    names: &[String],
+) -> anyhow::Result<SocketAddr> {
+    let hosts = WebPolicy::for_listener(addr, names).hosts().to_vec();
     let backend = fsonos_mcp::tools::Backend::shared(Arc::clone(surface), listener_client(addr));
     if !fsonos_mcp::tools::install(backend) {
         anyhow::bail!("the MCP backend is already installed");
@@ -559,7 +572,7 @@ fn start_mcp(surface: &Arc<Surface>, addr: SocketAddr) -> anyhow::Result<SocketA
             let result = crate::runtime().and_then(|rt| {
                 rt.block_on(async move {
                     let cx = asupersync::Cx::current().context("ambient Cx")?;
-                    let bound = fsonos_mcp::server()
+                    let bound = fsonos_mcp::server_answering(hosts)
                         .bind_http(&cx, addr.to_string())
                         .await
                         .map_err(|e| anyhow::anyhow!("bind the MCP server on {addr}: {e}"))?;

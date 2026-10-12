@@ -33,7 +33,17 @@ async fn echo(ctx: &McpContext, text: String) -> McpResult<String> {
 /// its client opened with.
 #[must_use]
 pub fn server() -> fastmcp::auto::Server {
+    server_answering(Vec::new())
+}
+
+/// [`server`], whose HTTP listener answers only requests whose `Host` is one
+/// of `hosts` (`fsonos_api::WebPolicy::hosts`): a web page that rebinds its
+/// own DNS name onto the listener's address is refused (403) before any tool
+/// runs. Empty answers any host.
+#[must_use]
+pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
     let mut http = fastmcp::HttpServerConfig::new();
+    http.allowed_hosts = hosts;
     http.handler_config.max_body_size = fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES;
     http.tool_input_max_bytes.insert(
         "announce".into(),

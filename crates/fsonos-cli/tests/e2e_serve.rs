@@ -5,7 +5,7 @@
 
 mod e2e;
 
-use e2e::{Scenario, http};
+use e2e::{Scenario, http, http_waiting};
 use fsonos_proto::control::get_transport_info;
 use fsonos_sim::SimHousehold;
 use fsonos_types::TransportState;
@@ -375,5 +375,52 @@ fn check_browser_safety(s: &mut Scenario, api: &str, mcp: &str) {
             .as_ref()
             .is_ok_and(|(code, _, body)| (400..500).contains(code) && !body.contains("\"result\"")),
         format!("{mcp_foreign:?}"),
+    );
+    check_mcp_rebinding(s, mcp);
+}
+
+/// A page that rebinds its own name onto the MCP listener sends that name as
+/// the Host, without an Origin on a same-origin GET. Both eras refuse it
+/// before anything runs: the legacy SSE stream (which would hand out a
+/// session for `/messages`) and a streamable-HTTP tool call.
+fn check_mcp_rebinding(s: &mut Scenario, mcp: &str) {
+    let host = [("Host", "rebound.example")];
+    let sse = http_waiting(mcp, "GET", "/sse", &host, "", Duration::from_secs(5));
+    s.check(
+        "mcp-foreign-host-sse",
+        "mcp-http",
+        "the legacy SSE stream refuses a foreign Host (403, no session)",
+        sse.as_ref()
+            .is_ok_and(|(code, _, body)| *code == 403 && !body.contains("session_id")),
+        format!("{sse:?}"),
+    );
+    let call = http(
+        mcp,
+        "POST",
+        "/mcp",
+        &[
+            ("Host", "rebound.example"),
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json"),
+            ("MCP-Protocol-Version", "2026-07-28"),
+            ("Mcp-Method", "tools/call"),
+            ("Mcp-Name", "list_zones"),
+        ],
+        &json!({
+            "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+            "params": {"name": "list_zones", "arguments": {}, "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }}
+        })
+        .to_string(),
+    );
+    s.check(
+        "mcp-foreign-host-call",
+        "mcp-http",
+        "a tool call under a foreign Host is refused (403, no result)",
+        call.as_ref()
+            .is_ok_and(|(code, _, body)| *code == 403 && !body.contains("\"result\"")),
+        format!("{call:?}"),
     );
 }

@@ -84,6 +84,20 @@ is unchanged. FrankenSonos uses the address to name tailnet callers with
 Tailscale's WhoIs (`fsonos_api::Identity::with_tailnet`). Routing, limits and
 the Host checks are unchanged.
 
+## Host allowlist for the MCP listener
+
+FastMCP's HTTP listeners check a present `Origin` on streamable-HTTP POSTs,
+but not the `Host`, and the 2024-11-05 `/sse` and `/messages` endpoints check
+neither. A web page that rebinds its own DNS name onto the daemon's address is
+same-origin with the listener, so it could open `/sse`, read its session, and
+post tool calls to `/messages`. The local patch adds
+`HttpServerConfig::allowed_hosts` (empty by default, which keeps upstream
+behavior). When it is set, each connection's request must carry exactly one
+`Host` naming one of the listed hosts (exact, or `*.suffix`; any port). Any
+other request gets 403 before OAuth, session or tool handling, on both the
+dual-era and the modern-only connection paths. FrankenSonos passes the HTTP
+API's Host names (`fsonos_api::WebPolicy::hosts`).
+
 ## Regression coverage
 
 `crates/fsonos-cli/tests/e2e_announce.rs` sends a WAV with two MiB of metadata
@@ -96,6 +110,12 @@ The same scenario confirms that a large `echo` request still hits the default
 limit, and malformed or over-limit WAV bytes are rejected after decoding without
 an extra playback. Focused protocol regressions exercise configured boundaries,
 unchanged defaults, exact raw/source equality, and retained structural checks.
+
+`crates/fsonos-cli/tests/e2e_serve.rs` (`check_mcp_rebinding`) sends the
+legacy SSE request and a streamable-HTTP tool call under a foreign `Host` and
+passes only on 403 without a session or a result. The same scenario, and
+`e2e_behind_serve.rs` (a `*.ts.net` Host from Tailscale Serve), confirm that
+the listener's own names still reach the tools.
 
 `crates/fsonos-api/tests/http_api.rs`
 (`a_tailnet_caller_is_named_by_the_tailnet`) serves the API over a real socket
