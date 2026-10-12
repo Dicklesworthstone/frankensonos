@@ -93,7 +93,8 @@ impl Work {
     }
 
     /// The genre it is balanced under: "classical" for a classical work,
-    /// else its first tag (none for an untagged song).
+    /// else the family of its first tag ("album rock" and "classic rock" are
+    /// both rock, see [`genre_family`]); none for an untagged song.
     #[must_use]
     pub fn genre(&self) -> Option<&str> {
         if self.is_classical() {
@@ -102,7 +103,7 @@ impl Work {
         self.movements
             .first()
             .and_then(|m| m.genres.first())
-            .map(String::as_str)
+            .map(|tag| genre_family(tag))
     }
 
     /// How strongly the owner's other taste signals favor it, per mille:
@@ -267,6 +268,73 @@ fn roman(s: &str) -> Option<u32> {
         })
         .sum();
     u32::try_from(total).ok().filter(|&n| n > 0)
+}
+
+/// The broad genre families, each with the words that put a tag in it,
+/// most specific first: "pop punk" is punk, "pop rock" is rock, "indie pop"
+/// is pop.
+const FAMILIES: &[(&str, &[&str])] = &[
+    ("hip hop", &["hip hop", "rap", "trap", "drill", "grime"]),
+    ("soul", &["r&b", "soul", "funk", "motown", "neo soul"]),
+    ("jazz", &["jazz", "bebop", "swing", "bossa nova"]),
+    ("blues", &["blues"]),
+    ("metal", &["metal", "metalcore"]),
+    ("punk", &["punk", "emo", "hardcore"]),
+    ("rock", &["rock", "grunge", "shoegaze"]),
+    (
+        "folk",
+        &["folk", "singer-songwriter", "americana", "bluegrass"],
+    ),
+    ("country", &["country"]),
+    (
+        "electronic",
+        &[
+            "house",
+            "techno",
+            "trance",
+            "edm",
+            "electronic",
+            "electronica",
+            "electro",
+            "dubstep",
+            "drum and bass",
+            "ambient",
+            "idm",
+            "synthwave",
+        ],
+    ),
+    ("reggae", &["reggae", "dancehall", "ska", "dub"]),
+    (
+        "latin",
+        &["latin", "reggaeton", "salsa", "bachata", "cumbia", "samba"],
+    ),
+    (
+        "classical",
+        &["classical", "baroque", "opera", "orchestra", "orchestral"],
+    ),
+    ("soundtrack", &["soundtrack", "score"]),
+    ("gospel", &["gospel", "christian", "worship"]),
+    ("pop", &["pop", "k-pop", "synthpop", "dance"]),
+];
+
+/// The family a genre tag belongs to (see [`FAMILIES`]), by its whole words
+/// ("east coast hip hop" is hip hop, "trapeze" is nothing); a tag no family
+/// names is its own.
+#[must_use]
+pub fn genre_family(tag: &str) -> &str {
+    let lower = tag.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| c.is_whitespace() || c == '-')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let says = |phrase: &str| {
+        let parts: Vec<&str> = phrase.split([' ', '-']).collect();
+        words.windows(parts.len()).any(|w| w == parts.as_slice())
+    };
+    FAMILIES
+        .iter()
+        .find(|(_, cues)| cues.iter().any(|c| says(c)))
+        .map_or(tag, |(family, _)| *family)
 }
 
 #[cfg(test)]
@@ -795,5 +863,29 @@ mod tests {
         assert_eq!(movement_number("Libiamo ne' lieti calici"), None);
         assert_eq!(movement_number("0. Prelude"), None);
         assert_eq!(movement_number(""), None);
+    }
+
+    #[test]
+    fn genre_tags_fall_into_broad_families_by_whole_words() {
+        for (tag, family) in [
+            ("album rock", "rock"),
+            ("classic rock", "rock"),
+            ("pop punk", "punk"),
+            ("pop rock", "rock"),
+            ("indie pop", "pop"),
+            ("K-Pop", "pop"),
+            ("east coast hip hop", "hip hop"),
+            ("gangster rap", "hip hop"),
+            ("neo soul", "soul"),
+            ("deep house", "electronic"),
+            ("drum and bass", "electronic"),
+            ("dubstep", "electronic"),
+            ("roots reggae", "reggae"),
+            ("bebop", "jazz"),
+            ("chillhop", "chillhop"),
+            ("trapeze", "trapeze"),
+        ] {
+            assert_eq!(genre_family(tag), family, "{tag}");
+        }
     }
 }

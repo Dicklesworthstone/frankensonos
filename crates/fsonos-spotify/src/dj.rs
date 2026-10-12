@@ -1249,17 +1249,10 @@ mod tests {
                 *plain.entry(genre).or_default() += n;
             }
         }
-        // Every genre of the library plays.
+        // Every genre family of the library plays (its indie pop is pop).
         assert_eq!(
             plain.keys().map(String::as_str).collect::<Vec<_>>(),
-            [
-                "classical",
-                "hip hop",
-                "indie pop",
-                "jazz",
-                "pop",
-                "soundtrack"
-            ]
+            ["classical", "hip hop", "jazz", "pop", "soundtrack"]
         );
         // Taste weights steer the spread: favoring jazz raises its share, and
         // the reason says so. The lift is moderate by design: the artist
