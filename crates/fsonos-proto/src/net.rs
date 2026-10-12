@@ -630,8 +630,9 @@ async fn collect_replies(
         }
         match timeout(wall_now(), left, socket.recv_from(&mut buf)).await {
             Ok(Ok((n, _from))) => datagrams.push(buf[..n].to_vec()),
-            Ok(Err(e)) => return Err(network("multicast query", e)),
-            Err(_elapsed) => return Ok(datagrams),
+            // A socket whose link dropped mid-survey contributes what it
+            // collected; the other interfaces' halves decide the survey.
+            Ok(Err(_)) | Err(_) => return Ok(datagrams),
         }
     }
 }
@@ -688,13 +689,22 @@ async fn multicast_query(
         // socket still reaches hosts where the multicast route is right.
         sockets.push(query_socket(None)?);
     }
+    let mut sent = 0;
     for socket in &mut sockets {
         for _ in 0..2 {
-            socket
-                .send_to(message, target)
-                .await
-                .map_err(|e| network("multicast query", e))?;
+            // Best effort per interface: a tunnel whose route vanished, a
+            // link that dropped mid-survey — the others still ask. Only a
+            // survey that reached no interface at all is an error.
+            if socket.send_to(message, target).await.is_ok() {
+                sent += 1;
+            }
         }
+    }
+    if sent == 0 {
+        return Err(network(
+            "multicast query",
+            "no interface accepted the query",
+        ));
     }
     let started = Instant::now();
     let collections: Vec<_> = sockets

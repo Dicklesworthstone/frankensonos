@@ -569,10 +569,24 @@ pub fn leave<T: Transport + ?Sized>(
     if soap::leave_group(t, host, member)? == soap::Leaving::Done {
         return Ok(());
     }
-    let witness = households
+    let household = households
         .iter()
-        .flat_map(|h| &h.players)
-        .find(|p| &p.id != member)
+        .find(|h| h.player(member).is_some())
+        .unwrap_or_else(|| households.first().expect("addr() found the household"));
+    let same_room = |id: &PlayerId| {
+        household
+            .rooms
+            .iter()
+            .any(|r| r.players.contains(id) && r.players.contains(member))
+    };
+    // A witness in another room of the same household: a player of the
+    // member's own room (a stereo pair's other half) shares its view, and a
+    // player of another household never lists this one's groups at all.
+    let witness = household
+        .players
+        .iter()
+        .find(|p| &p.id != member && !same_room(&p.id))
+        .or_else(|| household.players.iter().find(|p| &p.id != member))
         .map(|p| p.ip);
     let leads_own = |groups: &[fsonos_proto::topology::ZoneGroupInfo]| {
         groups.iter().any(|g| {
@@ -586,9 +600,12 @@ pub fn leave<T: Transport + ?Sized>(
         if leads_own(&get_zone_group_state(t, host)?.groups) {
             return Ok(());
         }
-        // Its own read may be stale; a witness player's is not.
+        // Its own read may be stale; a witness player's is not. The witness
+        // is best effort: if it cannot be read, the member's own view still
+        // decides (a dead witness must not fail a leave that happened).
         if let Some(other) = witness
-            && leads_own(&get_zone_group_state(t, other)?.groups)
+            && let Ok(groups) = get_zone_group_state(t, other)
+            && leads_own(&groups.groups)
         {
             return Ok(());
         }
