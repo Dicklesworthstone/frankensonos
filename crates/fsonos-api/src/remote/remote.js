@@ -344,6 +344,8 @@ async function refreshDj(parts) {
   try {
     const status = await call('djStatus', { params: { room: parts.name } });
     parts.djRunning = Boolean(status.running);
+    // A rebuilt card shows the mood the running DJ plays, not "Any mood".
+    if (parts.djRunning) parts.mood.value = (status.steering && status.steering.mood) || '';
   } catch (error) {
     if (error.code === 'NOT_IMPLEMENTED') {
       house.dj = false;
@@ -493,6 +495,7 @@ function listen() {
     const entry = parts && parts.sliders.get(change.room);
     if (onlyLevel && entry && typeof change.volume === 'number') {
       setVolume(entry, change.volume);
+      if (typeof change.mute === 'boolean') setMute(entry, change.mute);
       return;
     }
     soon(zoneKey(zone), () => refreshZone(zone));
