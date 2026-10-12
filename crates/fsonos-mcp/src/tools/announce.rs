@@ -2,13 +2,22 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::announce::AnnounceRequest;
+use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 
 use super::{Backend, respond, with_backend};
 
 impl Backend {
-    /// The `announce` tool.
+    /// The `announce` tool: on the daemon when one runs (its media listener
+    /// serves the clip to the players), else here.
     pub fn announce(&self, req: &AnnounceRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).ok();
+        if let Some(answer) =
+            self.on_daemon("POST", "/announce", body.as_ref(), |a: &AnnounceDto| {
+                a.done.clone()
+            })
+        {
+            return answer;
+        }
         respond(|| {
             let announced = self.surface.announce(&self.client, req)?;
             Ok((announced.done.clone(), announced))

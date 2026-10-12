@@ -1125,6 +1125,85 @@ mod tests {
         );
     }
 
+    /// A daemon answering by path: the first `(prefix, answer)` whose prefix
+    /// starts `METHOD path`, recording each call.
+    struct Routed {
+        answers: Vec<(&'static str, serde_json::Value)>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl Daemon for Routed {
+        fn call(
+            &self,
+            method: &str,
+            path: &str,
+            _: Option<&serde_json::Value>,
+        ) -> Option<Result<serde_json::Value, Failure>> {
+            let call = format!("{method} {path}");
+            let answer = self
+                .answers
+                .iter()
+                .find(|(prefix, _)| call.starts_with(prefix))
+                .map(|(_, a)| Ok(a.clone()));
+            self.calls.lock().unwrap().push(call);
+            answer
+        }
+    }
+
+    #[test]
+    fn announcements_scene_saves_and_the_dj_document_go_to_a_running_daemon() {
+        let steering = serde_json::json!({ "source": "none" });
+        let daemon = Arc::new(Routed {
+            answers: vec![
+                (
+                    "POST /announce",
+                    serde_json::json!({ "done": "announced in Den", "clean": true, "households": [] }),
+                ),
+                (
+                    "PUT /scenes/Evening",
+                    serde_json::json!({
+                        "name": "Evening", "saved": 0, "groups": [], "volumes": {}, "mutes": {}
+                    }),
+                ),
+                (
+                    "GET /dj/moods",
+                    serde_json::json!({ "moods": [], "programs": [], "now": steering }),
+                ),
+                (
+                    "GET /zones/",
+                    serde_json::json!({ "zone": "Den", "running": true, "steering": steering }),
+                ),
+            ],
+            calls: Mutex::new(Vec::new()),
+        });
+        let (b, _, _) = backend("", Client::McpStdio);
+        let b = b.with_daemon(Arc::clone(&daemon) as Arc<dyn Daemon>);
+        let req = fsonos_api::surface::announce::AnnounceRequest {
+            chime: Some("bell".into()),
+            ..Default::default()
+        };
+        assert_eq!(text(&b.announce(&req).unwrap()), "announced in Den");
+        let saved = b.save_scene("Evening").unwrap();
+        assert!(
+            text(&saved).starts_with("Saved Evening"),
+            "{}",
+            text(&saved)
+        );
+        let document: serde_json::Value = serde_json::from_str(&b.dj_document().unwrap()).unwrap();
+        let zones = document["zones"].as_array().unwrap();
+        assert!(!zones.is_empty() && zones.iter().all(|z| z["running"] == true));
+        let calls = daemon.calls.lock().unwrap().clone();
+        assert_eq!(
+            calls[..3],
+            ["POST /announce", "PUT /scenes/Evening", "GET /dj/moods"]
+        );
+        assert!(
+            calls[3..]
+                .iter()
+                .all(|c| c.starts_with("GET /zones/") && c.ends_with("/dj"))
+        );
+    }
+
     #[test]
     fn the_djs_library_feedback_and_preferences_go_to_a_running_daemon() {
         let (b, sent, _) = backend("", Client::McpStdio);

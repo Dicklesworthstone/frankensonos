@@ -188,7 +188,8 @@ Spotify sign-in) is in [`docs/DEPLOY.md`](docs/DEPLOY.md).
 ## For agents
 
 `fsonos serve` exposes the house as MCP tools (also `fsonos mcp` over stdio for
-a local agent, which hands the DJ, scenes and sleep timers to a running `serve`):
+a local agent, which hands the DJ, scenes, sleep timers and announcements to a
+running `serve`):
 
 ```text
 reads      list_zones · list_rooms · list_players · get_zone · get_zone_state · list_favorites

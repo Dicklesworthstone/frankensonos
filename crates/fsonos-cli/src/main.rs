@@ -1003,10 +1003,10 @@ impl fsonos_mcp::tools::Daemon for StdioDaemon {
             .flatten()?
             .for_stdio_mcp();
         let empty = serde_json::json!({});
-        Some(if method == "GET" {
-            daemon.get(path)
-        } else {
-            daemon.post(path, body.unwrap_or(&empty))
+        Some(match method {
+            "GET" => daemon.get(path),
+            "PUT" => daemon.put(path),
+            _ => daemon.post(path, body.unwrap_or(&empty)),
         })
     }
 }

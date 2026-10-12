@@ -69,8 +69,15 @@ impl Backend {
         })
     }
 
-    /// The `save_scene` tool.
+    /// The `save_scene` tool: on the daemon when one runs, whose DJ is the
+    /// one a group plays (saved as the DJ, not as what it has), else here.
     pub fn save_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
+        let path = format!("/scenes/{}", segment(name));
+        if let Some(answer) = self.on_daemon("PUT", &path, None, |scene: &SceneDto| {
+            format!("Saved {}", scene_line(scene))
+        }) {
+            return answer;
+        }
         respond(|| {
             let scene = self.surface.save_scene(&self.client, name)?;
             Ok((format!("Saved {}", scene_line(&scene)), scene))
