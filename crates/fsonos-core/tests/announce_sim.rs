@@ -4,6 +4,8 @@
 
 use fsonos_core::announce::{Announcer, Clip, Ending};
 use fsonos_core::{HouseholdState, control, resolve_room};
+use fsonos_proto::ProtoError;
+use fsonos_proto::Transport;
 use fsonos_proto::control as soap;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec, SoapLogEntry};
@@ -373,4 +375,92 @@ fn announcements_take_turns_per_household_and_households_run_side_by_side() {
     let (state, track, _, _) = playing(&lan, &h, "Kitchen");
     assert_eq!((state, track), (TransportState::Playing, 2));
     assert_ne!(playing(&lan, &h, "Bedroom").0, TransportState::Playing);
+}
+
+/// Delegates everything to the inner `Lan`, but refuses the first
+/// queue-source restore (`SetAVTransportURI` of an `x-rincon-queue:` URI)
+/// with the transient 402 a player mid-teardown serves after a clip (bead
+/// frankensonos-p9f), then lets it through.
+struct TransientSetUriRefusal<'a> {
+    inner: &'a SimLan,
+    refused: std::sync::atomic::AtomicBool,
+}
+
+impl Transport for TransientSetUriRefusal<'_> {
+    fn soap_post(
+        &self,
+        host: std::net::IpAddr,
+        control_path: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if soap_action.contains("#SetAVTransportURI")
+            && body.contains("<CurrentURI>x-rincon-queue:")
+            && !self.refused.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(ProtoError::SoapFault {
+                code: 402,
+                reason: "transient teardown refusal".into(),
+            });
+        }
+        self.inner.soap_post(host, control_path, soap_action, body)
+    }
+
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        self.inner.http_get(url)
+    }
+
+    fn http_get_bytes(&self, url: &str) -> Result<fsonos_proto::HttpBody, ProtoError> {
+        self.inner.http_get_bytes(url)
+    }
+
+    fn ssdp_search(
+        &self,
+        mx_secs: u8,
+        wait: std::time::Duration,
+    ) -> Result<Vec<fsonos_proto::ssdp::Advert>, ProtoError> {
+        self.inner.ssdp_search(mx_secs, wait)
+    }
+
+    fn mdns_search(
+        &self,
+        wait: std::time::Duration,
+    ) -> Result<Vec<fsonos_proto::mdns::SonosAdvert>, ProtoError> {
+        self.inner.mdns_search(wait)
+    }
+
+    fn discover(&self, mx_secs: u8, wait: std::time::Duration) -> fsonos_proto::Discovered {
+        self.inner.discover(mx_secs, wait)
+    }
+}
+
+#[test]
+fn a_transient_402_on_the_source_restore_is_retried_once() {
+    let sim = sim();
+    let lan = sim.lan();
+    play_queue(&sim, &lan, "Kitchen");
+    let h = houses(&sim, &lan);
+    control::join(&lan, &h, &id(&h, "Office"), &id(&h, "Kitchen")).unwrap();
+    let h = houses(&sim, &lan);
+    let office = [resolve_room(&h, "Office").unwrap()];
+
+    let flaky = TransientSetUriRefusal {
+        inner: &lan,
+        refused: std::sync::atomic::AtomicBool::new(false),
+    };
+    let report = with_clock_running(&sim, || {
+        fast().announce(&flaky, &office, &clip("office", 2), 35, &no_cap)
+    })
+    .unwrap();
+
+    let house = &report.households[0];
+    assert_eq!(house.outcome, Ok(Ending::Finished), "{report:#?}");
+    assert!(
+        house.restore_failed.is_empty(),
+        "the transient refusal is retried, not reported: {report:#?}"
+    );
+    // And the house really is back: the Kitchen still leads the queue.
+    let h = houses(&sim, &lan);
+    let (state, track, _, _) = playing(&lan, &h, "Kitchen");
+    assert_eq!((state, track), (TransportState::Playing, 2));
 }

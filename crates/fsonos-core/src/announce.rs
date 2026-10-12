@@ -34,6 +34,7 @@ pub mod speech;
 use crate::control;
 use crate::snapshot::{self, Aspect, RestoreReport, ZoneSnapshot};
 use crate::{ControlTarget, CoreError, HouseholdState, Room};
+use fsonos_proto::ProtoError;
 use fsonos_proto::Transport;
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::xml_escape;
@@ -55,6 +56,11 @@ const START_GRACE: Duration = Duration::from_secs(2);
 
 /// How often the transport state is checked while the clip plays.
 const POLL: Duration = Duration::from_millis(250);
+
+/// How long to let a just-finished clip's teardown settle before the one
+/// retry of the source restore (a player mid-teardown refuses
+/// `SetAVTransportURI` with a transient 402).
+const CLIP_SETTLE: Duration = Duration::from_millis(750);
 
 /// A clip the players can fetch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -467,8 +473,22 @@ fn put_back<T: Transport + ?Sized>(
         } else {
             &[Aspect::Group, Aspect::Volume, Aspect::Mute]
         };
-        let result = refreshed(t, household)
-            .and_then(|now| snapshot::restore_only(t, std::slice::from_ref(&now), snap, aspects));
+        let restore = |t: &T| {
+            refreshed(t, household).and_then(|now| {
+                snapshot::restore_only(t, std::slice::from_ref(&now), snap, aspects)
+            })
+        };
+        // A player that just finished announcing can answer the source
+        // restore's SetAVTransportURI with a transient 402 (fleet-verified
+        // 2026-10-12, bead frankensonos-p9f): the clip's teardown is still
+        // in flight. One retry after a beat; a second refusal stands.
+        let result = match restore(t) {
+            Err(CoreError::Proto(ProtoError::SoapFault { code: 402, .. })) => {
+                std::thread::sleep(CLIP_SETTLE);
+                restore(t)
+            }
+            result => result,
+        };
         match result {
             Ok(r) => report.restored.push((snap.coordinator.clone(), r)),
             Err(e) => report
