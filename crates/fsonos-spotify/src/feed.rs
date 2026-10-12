@@ -203,6 +203,12 @@ pub struct QueueFeed {
     queue_len: Option<u32>,
     /// Why the last trim failed, until it is taken.
     trim_error: Option<String>,
+    /// The queue's end when it ran dry, until the feed plays on past it
+    /// ([`Self::dry`]).
+    dry_end: Option<u32>,
+    /// Whether `playing` is where the feed itself jumped (a start, a skip,
+    /// playing on past a dry queue), with no event saying so since.
+    jumped: bool,
 }
 
 /// What a running feed knows of its queue, to carry it across a restart
@@ -238,6 +244,8 @@ impl QueueFeed {
             recorded: None,
             queue_len: None,
             trim_error: None,
+            dry_end: None,
+            jumped: false,
         }
     }
 
@@ -273,6 +281,8 @@ impl QueueFeed {
             recorded: snapshot.recorded,
             queue_len: None,
             trim_error: None,
+            dry_end: None,
+            jumped: false,
         }
     }
 
@@ -348,6 +358,7 @@ impl QueueFeed {
             .expect("a queued work has a queued movement");
         mode::start(at, first)?;
         self.playing = Some(first);
+        self.jumped = true;
         Ok(&self.queued)
     }
 
@@ -370,6 +381,9 @@ impl QueueFeed {
         }
         if !mode::maintain(self, at, playback)? {
             return Ok(0);
+        }
+        if let Some(end) = self.dry(playback) {
+            return self.play_on_past_the_end(at, plan, store, end);
         }
         let mut position = playback.queue_position.filter(|&p| p > 0);
         let uri = playback
@@ -401,6 +415,7 @@ impl QueueFeed {
         }
         if let Some(position) = position {
             self.playing = Some(position);
+            self.jumped = false;
             // Works wholly behind the playing position are played now; the
             // feed keeps where they are until it trims them off.
             let (played, ahead): (Vec<QueuedWork>, Vec<QueuedWork>) =
@@ -424,6 +439,78 @@ impl QueueFeed {
             }
         }
         self.top_up(at, plan, &*store)
+    }
+
+    /// Whether the queue ran out under the feed: the group was last seen on
+    /// the queue's final track and has stopped back on its first, a Spotify
+    /// track, with the queue as it was (Sonos stops a finished queue there).
+    /// An owner's Stop keeps the group on its track; a cleared or extended
+    /// queue changes its length; a station started isn't on the queue.
+    fn ran_dry(&self, playback: &PlayerPlayback) -> bool {
+        let (Some(playing), Some(length)) = (self.playing, self.queue_len) else {
+            return false;
+        };
+        let on_the_queue = playback
+            .track_uri
+            .as_deref()
+            .and_then(spotify_uri_from_renderer_uri)
+            .is_some();
+        playback.transport == Some(fsonos_types::TransportState::Stopped)
+            && playing == length
+            && !self.jumped
+            && length > 1
+            && playback.queue_position == Some(1)
+            && playback.queue_length == Some(length)
+            && on_the_queue
+    }
+
+    /// The queue's end if it ran out under the feed and the feed has yet to
+    /// play on past it: seen now ([`Self::ran_dry`]), or before and the
+    /// group still stopped with the queue as the feed left it, so a try that
+    /// failed part-way (a top-up cut short, a play refused) is tried again.
+    fn dry(&mut self, playback: &PlayerPlayback) -> Option<u32> {
+        let stopped = playback.transport == Some(fsonos_types::TransportState::Stopped);
+        let kept = playback.queue_length.is_some() && playback.queue_length == self.queue_len;
+        if !(stopped && kept) {
+            self.dry_end = None;
+        }
+        if self.dry_end.is_none() && self.ran_dry(playback) {
+            self.dry_end = self.queue_len;
+        }
+        self.dry_end
+    }
+
+    /// Everything up to `end`, the queue's end when it ran dry, has played:
+    /// let those works go as played, top up past it and play from the first
+    /// track past it. Returns how many works it queued.
+    fn play_on_past_the_end<T: Transport + ?Sized, S: Store + ?Sized>(
+        &mut self,
+        at: &Speakers<'_, T>,
+        plan: Planning<'_>,
+        store: &mut S,
+        end: u32,
+    ) -> Result<usize, FeedError> {
+        let (played, ahead): (Vec<QueuedWork>, Vec<QueuedWork>) = std::mem::take(&mut self.queued)
+            .into_iter()
+            .partition(|w| w.is_whole() && w.last().is_none_or(|last| last <= end));
+        self.queued = ahead;
+        self.played
+            .extend(played.into_iter().filter(|w| w.last().is_some()));
+        let queued = self.top_up(at, plan, &*store)?;
+        // From the first track past the old end: the rest of a work cut
+        // short before, or the new work.
+        if self
+            .queued
+            .iter()
+            .any(|w| w.last().is_some_and(|last| last > end))
+        {
+            let next = end + 1;
+            control::play_queue_from(at.transport, at.households, at.coordinator, next)?;
+            self.playing = Some(next);
+            self.jumped = true;
+            self.dry_end = None;
+        }
+        Ok(queued)
     }
 
     /// Skip the rest of the current work (or the owner's item playing): play
@@ -462,6 +549,7 @@ impl QueueFeed {
             .expect("a queued work has a queued movement");
         mode::start(at, first)?;
         self.playing = Some(first);
+        self.jumped = true;
         Ok(&self.queued[next])
     }
 
@@ -499,6 +587,8 @@ impl QueueFeed {
         self.playing = None;
         self.recorded = None;
         self.queue_len = None;
+        self.dry_end = None;
+        self.jumped = false;
     }
 
     /// Whether the playing (position, track) matches the feed's model of the
@@ -1438,6 +1528,81 @@ mod tests {
             matches!(err, FeedError::Core(CoreError::RenderParamsStale)),
             "{err}"
         );
+    }
+
+    #[test]
+    fn a_queue_that_ran_dry_plays_on_once_a_top_up_works() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = works_of(&shelf_items(1));
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        // Every top-up is refused: the queue plays out to its last track.
+        rig.sim.upnp_fault(ROOM, "AddURIToQueue", 800).unwrap();
+        let end = u32::try_from(rig.queue().len()).unwrap();
+        while rig.position() < end {
+            rig.next();
+            let _ = rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store);
+        }
+        // The last track ends: Sonos stops, back on the queue's first track.
+        rig.sim.advance(Duration::from_secs(3600));
+        rig.sim.clear_faults(ROOM).unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let playback = control::playback(&lan, &rig.houses, &rig.coordinator).unwrap();
+        assert_eq!(
+            playback.transport.state,
+            fsonos_types::TransportState::Playing,
+            "the DJ plays on"
+        );
+        assert_eq!(rig.position(), end + 1, "from the first new work");
+        assert!(rig.queue().len() > usize::try_from(end).unwrap());
+        assert!(feed.is_active());
+    }
+
+    #[test]
+    fn a_dry_queue_plays_on_after_a_try_that_failed_part_way() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = works_of(&shelf_items(1));
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.sim.upnp_fault(ROOM, "AddURIToQueue", 800).unwrap();
+        let end = u32::try_from(rig.queue().len()).unwrap();
+        while rig.position() < end {
+            rig.next();
+            let _ = rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store);
+        }
+        // The last track (3 minutes) ends; a longer jump would let the
+        // rig's event subscription (10 minutes) lapse before the retry.
+        rig.sim.advance(Duration::from_secs(200));
+        rig.sim.clear_faults(ROOM).unwrap();
+        // The top-up works this time, but the player refuses to play.
+        rig.sim.upnp_fault(ROOM, "Play", 800).unwrap();
+        let _ = rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store);
+        assert!(
+            rig.queue().len() > usize::try_from(end).unwrap(),
+            "topped up"
+        );
+        rig.sim.clear_faults(ROOM).unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let playback = control::playback(&lan, &rig.houses, &rig.coordinator).unwrap();
+        assert_eq!(
+            playback.transport.state,
+            fsonos_types::TransportState::Playing,
+            "the DJ plays on at the next event"
+        );
+        assert_eq!(rig.position(), end + 1, "from the first new work");
+        assert!(feed.is_active());
     }
 
     #[test]
