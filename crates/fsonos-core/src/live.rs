@@ -667,7 +667,18 @@ impl Engine {
             SocketAddr::new(local, self.config.callback_port),
             self.config.media.clone(),
         )
-        .map_err(|e| format!("cannot listen for events on {local}: {e}"))
+        .map_err(|e| {
+            let (port, e) = (self.config.callback_port, e.to_string());
+            if e.contains("in use") {
+                format!(
+                    "cannot listen for events on {local}:{port}: {e}; another program holds \
+                     that port (a second fsonos serve on this host?): stop it, or start this \
+                     one with another --events-port"
+                )
+            } else {
+                format!("cannot listen for events on {local}: {e}")
+            }
+        })
     }
 
     fn publish(&self, m: &Model, mut events: Vec<LiveEvent>) {

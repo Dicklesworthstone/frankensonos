@@ -94,6 +94,43 @@ fn search_through_daemon(s: &mut Scenario, no_seeds: &str) {
     );
 }
 
+/// The data directory's daemon.json as text (empty when there is none).
+fn daemon_file(s: &Scenario) -> String {
+    std::fs::read_to_string(s.dir().join("data").join("daemon.json")).unwrap_or_default()
+}
+
+/// `serve` leaves daemon.json for the CLI, and a second daemon for the same
+/// data directory refuses to start: it would take that file over while the
+/// first still holds the event port.
+fn check_the_daemon_file(s: &mut Scenario, daemon: &e2e::Daemon, live: bool) {
+    let file = daemon_file(s);
+    s.check(
+        "daemon-file",
+        "daemon",
+        "serve is live and wrote daemon.json with its loopback address and a CLI token",
+        live && json(&file)["http"]
+            .as_str()
+            .is_some_and(|a| a.starts_with("127.0.0.1:"))
+            && json(&file)["cli_token"]
+                .as_str()
+                .is_some_and(|t| t.len() == 32),
+        daemon.seen.join("\n"),
+    );
+    let mut second = s.spawn("serve-twice", &["serve", "--http", "127.0.0.1:0"]);
+    let refused = second.wait_line(
+        "already runs for this data directory",
+        Duration::from_secs(10),
+    );
+    let still = daemon_file(s);
+    s.check(
+        "serve-twice",
+        "daemon",
+        "a second serve on the same data directory refuses, and daemon.json stays the first's",
+        refused.is_some() && still == file,
+        second.seen.join("\n"),
+    );
+}
+
 #[test]
 fn commands_go_through_a_running_daemon_with_the_same_answers() {
     let mut s = Scenario::start("daemon-client");
@@ -114,21 +151,7 @@ fn commands_go_through_a_running_daemon_with_the_same_answers() {
 
     let mut daemon = s.spawn("serve", &["serve", "--http", "127.0.0.1:0"]);
     let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
-    let file =
-        std::fs::read_to_string(s.dir().join("data").join("daemon.json")).unwrap_or_default();
-    s.check(
-        "daemon-file",
-        "daemon",
-        "serve is live and wrote daemon.json with its loopback address and a CLI token",
-        live.is_some()
-            && json(&file)["http"]
-                .as_str()
-                .is_some_and(|a| a.starts_with("127.0.0.1:"))
-            && json(&file)["cli_token"]
-                .as_str()
-                .is_some_and(|t| t.len() == 32),
-        daemon.seen.join("\n"),
-    );
+    check_the_daemon_file(&mut s, &daemon, live.is_some());
 
     let zones = s.cli(
         "zones-daemon",

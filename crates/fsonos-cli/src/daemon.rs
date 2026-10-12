@@ -227,6 +227,23 @@ pub fn listener_client(addr: SocketAddr) -> Client {
     }
 }
 
+/// The data directory, refusing to start while another daemon serves it:
+/// two would share its store, and the second would take over daemon.json
+/// while the first still holds the event port, so the CLI would talk to a
+/// daemon whose model is stale.
+fn unshared_data_dir(global: &GlobalArgs) -> anyhow::Result<PathBuf> {
+    let data_dir = data_dir(global)?;
+    if let Some(other) = crate::remote::running_daemon(&data_dir) {
+        anyhow::bail!(
+            "fsonos serve already runs for this data directory (pid {}, http://{}): stop it \
+             first, or give this one its own --data-dir and --events-port",
+            other.pid,
+            other.http
+        );
+    }
+    Ok(data_dir)
+}
+
 /// Vet the configuration, start both servers, report readiness, and run
 /// until SIGINT / SIGTERM.
 pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> anyhow::Result<()> {
@@ -243,7 +260,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             }
         }
     }
-    let data_dir = data_dir(global)?;
+    let data_dir = unshared_data_dir(global)?;
     let checks = args.clone();
     let doctor_data_dir = data_dir.clone();
     let (house, library) = (policy(&data_dir)?, LibrarySync::for_serve(args, &data_dir));

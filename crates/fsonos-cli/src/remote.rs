@@ -91,6 +91,19 @@ pub fn write_daemon_file(dir: &Path, file: &DaemonFile) -> io::Result<()> {
     std::fs::rename(&partial, &path)
 }
 
+/// Another `fsonos serve` that already runs for the data directory `dir`:
+/// its `daemon.json`, if a process other than this one wrote it and its API
+/// still answers. A file a dead daemon left behind is not one.
+pub fn running_daemon(dir: &Path) -> Option<DaemonFile> {
+    let file = read_daemon_file(dir).filter(|f| f.pid != std::process::id())?;
+    let daemon = Daemon {
+        addr: file.http,
+        token: Some(file.cli_token.clone()),
+        claim: None,
+    };
+    daemon.healthy().is_ok().then_some(file)
+}
+
 /// Remove `daemon.json` if it is the one `pid` wrote.
 pub fn remove_daemon_file(dir: &Path, pid: u32) {
     if read_daemon_file(dir).is_some_and(|f| f.pid == pid) {
@@ -970,6 +983,32 @@ mod tests {
             }
         });
         addr
+    }
+
+    #[test]
+    fn only_a_live_daemon_of_another_process_counts_as_running() {
+        let dir = std::env::temp_dir().join(format!("fsonos-running-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |http: SocketAddr, pid: u32| DaemonFile {
+            http,
+            cli_token: "0123456789abcdef0123456789abcdef".into(),
+            pid,
+            routes: None,
+        };
+        assert_eq!(running_daemon(&dir), None, "no daemon.json");
+        // Another process's daemon that answers: it runs.
+        let other = file(healthy_daemon(1), std::process::id() + 1);
+        write_daemon_file(&dir, &other).unwrap();
+        assert_eq!(running_daemon(&dir), Some(other));
+        // This process's own file, and a dead daemon's, do not.
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead = free.local_addr().unwrap();
+        drop(free);
+        write_daemon_file(&dir, &file(dead, std::process::id())).unwrap();
+        assert_eq!(running_daemon(&dir), None, "its own file");
+        write_daemon_file(&dir, &file(dead, std::process::id() + 1)).unwrap();
+        assert_eq!(running_daemon(&dir), None, "nothing answers");
+        let _ = std::fs::remove_file(dir.join(DAEMON_FILE));
     }
 
     #[test]
