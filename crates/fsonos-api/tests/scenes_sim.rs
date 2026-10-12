@@ -280,6 +280,28 @@ fn apply_puts_the_saved_house_back_and_undo_restores_what_it_changed() {
 }
 
 #[test]
+fn a_scene_never_sets_a_volume_its_writer_may_not() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let s = surface(&sim, MemStore::default());
+    let cli = Client::Cli;
+    volume(&s, &cli, "Kitchen", 40);
+    let loud: SceneDefinition =
+        serde_json::from_value(serde_json::json!({"volumes": {"Kitchen": 90}})).unwrap();
+    // Saved by a capped agent, applied by the CLI (or a schedule made from it).
+    s.save_scene_from(&agent(), "Loud", &loud).unwrap();
+    let applied = s.apply_scene(&cli, "Loud").unwrap();
+    let level = kitchen(&sim).0;
+    assert!(
+        level > 40 && level <= 70,
+        "within the agent's cap: {level}, {applied:?}"
+    );
+    // The CLI's own scene is the CLI's to set.
+    s.save_scene_from(&cli, "Loud", &loud).unwrap();
+    s.apply_scene(&cli, "Loud").unwrap();
+    assert_eq!(kitchen(&sim).0, 90);
+}
+
+#[test]
 fn an_agent_applies_a_scene_within_its_volume_cap() {
     let sim = SimHousehold::standard().spawn().unwrap();
     let s = surface(&sim, MemStore::default());
@@ -334,6 +356,7 @@ fn scene_failures_carry_their_codes() {
         }],
         volumes: BTreeMap::new(),
         mutes: BTreeMap::new(),
+        writer: None,
     };
     scenes::save(&mut store, &across, 0).unwrap();
     let s = surface(&sim, store);

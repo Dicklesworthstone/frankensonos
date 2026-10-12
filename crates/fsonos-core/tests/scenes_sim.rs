@@ -234,6 +234,7 @@ fn volumes_fade_the_dj_is_asked_and_failures_are_reported() {
             .map(|(r, v)| ((*r).to_string(), *v))
             .collect(),
         mutes: BTreeMap::new(),
+        writer: None,
     };
     let fader = Fader::with_timing(Duration::from_millis(5), Duration::from_millis(5));
     let dj = Dj::default();
@@ -318,6 +319,7 @@ fn a_faded_scene_fades_its_rooms_together_and_fades_in_what_starts() {
             .map(|(r, v)| ((*r).to_string(), *v))
             .collect(),
         mutes: BTreeMap::new(),
+        writer: None,
     };
     let fader = Fader::with_timing(Duration::from_millis(5), Duration::from_millis(5));
     let dj = Dj::default();

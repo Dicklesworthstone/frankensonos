@@ -242,6 +242,7 @@ mod tests {
             }],
             volumes: BTreeMap::from([("Kitchen".into(), 30)]),
             mutes: BTreeMap::new(),
+            writer: None,
         }
     }
 

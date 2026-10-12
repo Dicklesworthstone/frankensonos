@@ -2336,6 +2336,7 @@ mod tests {
             }],
             volumes: std::collections::BTreeMap::new(),
             mutes: std::collections::BTreeMap::new(),
+            writer: None,
         };
         s.with_store(|st| {
             fsonos_core::scenes::save(st, &dinner, 0)

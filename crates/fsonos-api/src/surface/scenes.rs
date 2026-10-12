@@ -200,6 +200,7 @@ impl SceneDefinition {
             groups,
             volumes,
             mutes,
+            writer: None,
         };
         scenes::check(&scene, households).map_err(scene_failure)?;
         Ok(scene)
@@ -622,6 +623,11 @@ impl Surface {
 
     /// Keep `scene`, replacing one of the same name in any case, and log it.
     fn store_scene(&self, client: &Client, tool: &str, scene: &Scene) -> Result<SceneDto, Failure> {
+        // Who saved it bounds its volumes when anyone applies it.
+        let scene = &Scene {
+            writer: Some(client.key().to_string()),
+            ..scene.clone()
+        };
         let now = self.now();
         let replaced = self.scene_store(|store| {
             let replaced = store.scenes()?.iter().find_map(|s| {
@@ -708,7 +714,22 @@ impl Surface {
         let (snaps, missed) =
             actions::capture_zones(&*self.transport, &households, &zones, self.now());
         let plan = scenes::plan_apply(&scene, &households, &snaps).map_err(scene_failure)?;
-        let (plan, notes) = self.bound_volumes(client, &households, plan);
+        let (plan, mut notes) = self.bound_volumes(client, &households, plan);
+        // And for whoever saved it: a capped client's scene stays within its
+        // caps when the CLI, or a schedule made from it, applies it.
+        let writer = scene
+            .writer
+            .as_deref()
+            .map(super::schedules::client_of)
+            .filter(|writer| writer != client);
+        let plan = match writer {
+            Some(writer) => {
+                let (plan, more) = self.bound_volumes(&writer, &households, plan);
+                notes.extend(more);
+                plan
+            }
+            None => plan,
+        };
         if plan.ops.is_empty() {
             return Ok(SceneApplyDto {
                 scene: scene.name.clone(),

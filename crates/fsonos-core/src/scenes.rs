@@ -49,6 +49,11 @@ pub struct Scene {
     /// Room name → mute.
     #[serde(default)]
     pub mutes: BTreeMap<String, bool>,
+    /// Who saved it, by policy key (`cli`, a tailnet login, ...): applying
+    /// it never sets a volume higher than that client may. `None` in a
+    /// scene saved before writers were kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer: Option<String>,
 }
 
 /// One group of a scene (a room on its own is a group without members).
@@ -708,6 +713,7 @@ pub fn capture<T: Transport + ?Sized>(
         groups: Vec::new(),
         volumes: BTreeMap::new(),
         mutes: BTreeMap::new(),
+        writer: None,
     };
     for household in households {
         // Favorites are only a nicer name for a URI: carry on without them.
@@ -932,6 +938,7 @@ mod tests {
                 .iter()
                 .map(|(r, m)| ((*r).to_string(), *m))
                 .collect(),
+            writer: None,
         }
     }
 
@@ -1037,6 +1044,7 @@ mod tests {
             groups: vec![group("B", &["C"], SceneSource::Keep, false)],
             volumes: BTreeMap::new(),
             mutes: BTreeMap::new(),
+            writer: None,
         };
         let snaps = [snap(
             "A",
