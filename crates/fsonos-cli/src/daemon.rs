@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::dj::sync::LibrarySync;
@@ -64,10 +64,20 @@ pub fn data_dir(global: &GlobalArgs) -> Result<PathBuf, Failure> {
 }
 
 /// Take up the sleep timers of the daemon's last run, where the speakers
-/// still keep their own (off the main thread: it surveys).
+/// still keep their own, once the house is known: until the live model's
+/// first survey finds it every group looks gone, and the timers would be
+/// dropped. Off the main thread.
 fn take_up_sleep_timers(surface: &Arc<Surface>) {
     let surface = Arc::clone(surface);
     thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline
+            && !surface
+                .households()
+                .is_ok_and(|houses| houses.iter().any(|h| !h.rooms.is_empty()))
+        {
+            thread::sleep(Duration::from_millis(500));
+        }
         let adopted = surface.adopt_sleep_timers();
         if adopted > 0 {
             tracing::info!("took up {adopted} sleep timer(s) from before the restart");
