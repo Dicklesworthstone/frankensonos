@@ -111,7 +111,8 @@ pub fn execute<T: Transport + ?Sized>(
             coordinator,
             action,
         } => {
-            let verb = run_transport(transport, households, coordinator, *action)?;
+            let verb = run_transport(transport, households, coordinator, *action)
+                .map_err(|f| refused(*action, f, &room(coordinator)))?;
             OutcomeDto::sent(format!("{verb} {}'s group", room(coordinator)))
         }
         Command::Volume {
@@ -313,6 +314,35 @@ fn spotify_failure(e: CoreError) -> Failure {
         ),
         e => e.into(),
     }
+}
+
+/// A transport verb the speaker refused, said plainly with what to do (the
+/// code and `upnp_code` stay): a resume with nothing loaded, or a skip with
+/// no queue to step through. Other failures pass through.
+fn refused(action: TransportAction, failure: Failure, room: &str) -> Failure {
+    let (plain, hint) = match (action, failure.upnp_code) {
+        (TransportAction::Resume, Some(701)) => (
+            format!("{room}'s group has nothing to resume"),
+            "Play something first: play, play_favorite, or a library search (search_library).",
+        ),
+        (TransportAction::Next | TransportAction::Previous, Some(701 | 711)) => (
+            format!(
+                "{room}'s group has no {} track to go to",
+                if action == TransportAction::Next {
+                    "next"
+                } else {
+                    "previous"
+                }
+            ),
+            "Next and previous step through the group's queue; a stream or a single track has none.",
+        ),
+        _ => return failure,
+    };
+    Failure {
+        detail: format!("{plain} (the speaker answered {})", failure.detail),
+        ..failure
+    }
+    .with_hint(hint)
 }
 
 /// Send a transport action; returns the verb for the summary.
@@ -660,6 +690,46 @@ mod tests {
             ErrorCode::NotImplemented
         );
         assert_eq!(t.actions(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_refused_resume_or_skip_says_why_and_what_to_do() {
+        let refusing = |fail: fn() -> ProtoError, action| {
+            let t = Canned {
+                fail: Some(fail),
+                ..Canned::ok("")
+            };
+            let cmd = Command::Transport {
+                coordinator: id("RINCON_DEN"),
+                action,
+            };
+            execute(&t, &households(), &cmd).unwrap_err()
+        };
+        let nothing = || ProtoError::SoapFault {
+            code: 701,
+            reason: "Transition not available".into(),
+        };
+        let no_queue = || ProtoError::SoapFault {
+            code: 711,
+            reason: "Illegal seek target".into(),
+        };
+        let err = refusing(nothing, TransportAction::Resume);
+        assert_eq!((err.code, err.upnp_code), (ErrorCode::UpnpFault, Some(701)));
+        assert!(
+            err.detail.starts_with("Den's group has nothing to resume"),
+            "{err}"
+        );
+        assert!(err.hint.contains("Play something first"), "{err}");
+        let err = refusing(no_queue, TransportAction::Next);
+        assert_eq!(err.upnp_code, Some(711));
+        assert!(
+            err.detail.starts_with("Den's group has no next track"),
+            "{err}"
+        );
+        assert!(err.hint.contains("queue"), "{err}");
+        // Anything else keeps the speaker's own words.
+        let err = refusing(no_queue, TransportAction::Resume);
+        assert!(err.detail.starts_with("soap fault 711"), "{err}");
     }
 
     #[test]
