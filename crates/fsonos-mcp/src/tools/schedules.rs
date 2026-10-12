@@ -10,7 +10,9 @@ use fsonos_api::surface::schedules::{
 };
 use serde::Serialize;
 
-use super::{Backend, from_daemon, respond, said, segment, with_backend, with_backend_off_thread};
+use super::{
+    Backend, from_daemon, respond, said, segment, sentence, with_backend, with_backend_off_thread,
+};
 
 /// `list_sleep_timers` structured content.
 #[derive(Serialize)]
@@ -37,13 +39,22 @@ fn timers_text(timers: &[SleepTimerDto]) -> String {
 }
 
 impl Backend {
-    /// The `fade_volume` tool.
+    /// The `fade_volume` tool: on the daemon when one runs, so the fade
+    /// gives way to (and ends) its other fades of those rooms, else here.
     pub fn fade_volume(&self, req: &FadeVolumeRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).ok();
+        if let Some(answer) = self.on_daemon("POST", "/volume/fade", body.as_ref(), sentence) {
+            return answer;
+        }
         respond(|| Ok(said(self.surface.fade_volume_to(&self.client, req)?)))
     }
 
-    /// The `fade_and_pause` tool.
+    /// The `fade_and_pause` tool, on the daemon when one runs.
     pub fn fade_and_pause(&self, req: &FadePauseRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).ok();
+        if let Some(answer) = self.on_daemon("POST", "/pause/fade", body.as_ref(), sentence) {
+            return answer;
+        }
         respond(|| Ok(said(self.surface.fade_out(&self.client, req)?)))
     }
 

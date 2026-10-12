@@ -1188,7 +1188,8 @@ impl fsonos_mcp::tools::Daemon for StdioDaemon {
 
 /// Serve the MCP tools over stdio, acting on this LAN's speakers as the
 /// `mcp-stdio` client of the house policy. While `fsonos serve` runs, the
-/// DJ, scene-apply and sleep-timer tools act through it (see [`StdioDaemon`]).
+/// DJ, scene-apply, sleep-timer, move and fade tools act through it (see
+/// [`StdioDaemon`]).
 /// Its `doctor` runs what `fsonos doctor` runs, for the daemon settings in
 /// the environment.
 fn run_mcp_stdio(global: &config::GlobalArgs) -> anyhow::Result<()> {

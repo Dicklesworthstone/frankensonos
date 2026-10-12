@@ -65,9 +65,10 @@ pub struct Backend {
 }
 
 /// A running daemon that the stdio server hands the tools needing its running
-/// state to: the DJ (which keeps its queues fed), scenes that start it, and
-/// sleep timers (which fade). The calls reach the daemon as the stdio
-/// client, so the house policy reads the same.
+/// state to: the DJ (which keeps its queues fed), scenes that start it, sleep
+/// timers (which fade), moves (its DJ and sleep timer follow the music) and
+/// fades on demand (which give way to its other fades). The calls reach the
+/// daemon as the stdio client, so the house policy reads the same.
 pub trait Daemon: Send + Sync {
     /// `method path`, with `body` as JSON, on the daemon if one runs now: its
     /// answer, or its failure. `None` when none runs, and the tool acts on the
@@ -106,8 +107,9 @@ impl Backend {
         }
     }
 
-    /// Hand the DJ, scene-apply and sleep-timer tools to `daemon` whenever it
-    /// runs (the stdio server, `fsonos mcp`, alongside `fsonos serve`).
+    /// Hand the DJ, scene-apply, sleep-timer, move and fade tools to `daemon`
+    /// whenever it runs (the stdio server, `fsonos mcp`, alongside `fsonos
+    /// serve`).
     #[must_use]
     pub fn with_daemon(mut self, daemon: Arc<dyn Daemon>) -> Self {
         self.daemon = Some(daemon);
@@ -161,6 +163,14 @@ impl Backend {
         let body = serde_json::to_value(&req).ok();
         path.and_then(|path| self.on_daemon("POST", path, body.as_ref(), sentence))
             .unwrap_or_else(|| self.control(tool, |h| plan::plan_dj(h, &req, action)))
+    }
+
+    /// The `move_playback` tool: on the daemon when one runs, so its DJ and
+    /// sleep timer follow the music (as `fsonos move` does), else here.
+    pub fn move_playback(&self, req: &MoveRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).ok();
+        self.on_daemon("POST", "/move", body.as_ref(), sentence)
+            .unwrap_or_else(|| self.control("move_playback", |h| plan::plan_move(h, req)))
     }
 
     /// Run a control tool: authorize `tool`, plan, execute under the policy.
@@ -889,7 +899,7 @@ async fn move_playback(
         to,
         copy: copy.unwrap_or(false),
     };
-    with_backend_off_thread(move |b| b.control("move_playback", |h| plan::plan_move(h, &req))).await
+    with_backend_off_thread(move |b| b.move_playback(&req)).await
 }
 
 #[tool(
@@ -1185,6 +1195,52 @@ mod tests {
             daemon.calls.lock().unwrap()[0].1,
             "/sleep?zone=Living%20Room"
         );
+    }
+
+    #[test]
+    fn moves_and_fades_go_to_a_running_daemon() {
+        let daemon = fake(Some(serde_json::json!({
+            "done": "moved the music from Kitchen to Den (handed the group over)",
+            "changed": true
+        })));
+        let (b, sent, _) = backend("<CurrentVolume>10</CurrentVolume>", Client::McpStdio);
+        let b = b.with_daemon(Arc::clone(&daemon) as Arc<dyn Daemon>);
+        let moved = b.move_playback(&MoveRequest {
+            zone: "Kitchen".into(),
+            to: "Den".into(),
+            copy: false,
+        });
+        assert_eq!(
+            text(&moved.unwrap()),
+            "moved the music from Kitchen to Den (handed the group over)"
+        );
+        let faded = b.fade_volume(&fsonos_api::surface::schedules::FadeVolumeRequest {
+            zone: "Kitchen".into(),
+            volume: 30,
+            fade_secs: 5,
+        });
+        assert!(!faded.unwrap().is_error);
+        let paused = b.fade_and_pause(&fsonos_api::surface::schedules::FadePauseRequest {
+            zone: "Den".into(),
+            fade_secs: 5,
+        });
+        assert!(!paused.unwrap().is_error);
+        assert!(sent.lock().unwrap().is_empty(), "nothing sent from here");
+        let calls = daemon.calls.lock().unwrap().clone();
+        let routes: Vec<(&str, &str)> = calls
+            .iter()
+            .map(|(method, path, _)| (method.as_str(), path.as_str()))
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                ("POST", "/move"),
+                ("POST", "/volume/fade"),
+                ("POST", "/pause/fade")
+            ]
+        );
+        assert_eq!(calls[0].2.as_ref().unwrap()["to"], "Den");
+        assert_eq!(calls[1].2.as_ref().unwrap()["volume"], 30);
     }
 
     /// A daemon answering by path: the first `(prefix, answer)` whose prefix

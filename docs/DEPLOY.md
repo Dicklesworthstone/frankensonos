@@ -315,15 +315,17 @@ same URL, typically as
 Plain HTTP clients use the API directly, e.g.
 `curl https://<mac>.<tailnet>.ts.net/zones`.
 
-Over stdio, `fsonos mcp` hands the tools that need the daemon's running state
-to `fsonos serve` whenever it runs: `dj_start`, `dj_steer`, `dj_skip`,
-`dj_stop`, `dj_status`, `apply_scene` and the sleep-timer tools act on serve's
-DJ (which keeps its queues fed) and serve's fading timers. They reach serve as
-the `mcp-stdio` client, so `[clients."mcp-stdio"]` in `policy.toml` applies
-either way. Without a running serve (or with `--direct`), `fsonos mcp` does them
-itself: the DJ queues its first works but nothing tops the queue up, and a
-sleep timer is the speaker's own, without a fade. Reads and one-shot controls
-answer the same either way.
+Over stdio, `fsonos mcp` hands the tools that need the daemon's running state to
+`fsonos serve` whenever it runs: `dj_start`, `dj_steer`, `dj_skip`, `dj_stop`,
+`dj_status`, `apply_scene` and the sleep-timer tools act on serve's DJ (which
+keeps its queues fed) and serve's fading timers; `move_playback` goes to serve
+so its DJ and sleep timer follow the music, and `fade_volume` and
+`fade_and_pause` so a fade ends serve's other fades of those rooms. They reach
+serve as the `mcp-stdio` client, so `[clients."mcp-stdio"]` in `policy.toml`
+applies either way. Without a running serve (or with `--direct`), `fsonos mcp`
+does them itself: the DJ queues its first works but nothing tops the queue up,
+and a sleep timer is the speaker's own, without a fade. Reads and the other
+controls answer the same either way.
 
 ### Spotify sign-in (one time, for the DJ)
 
