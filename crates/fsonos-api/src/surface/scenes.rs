@@ -67,7 +67,8 @@ pub struct SceneGroupDto {
 }
 
 /// What a scene group plays: `keep` (whatever the group has, its queue
-/// say), a `favorite` (by `name`), a `uri`, or the `dj` (in `mood`, if any).
+/// say), a `favorite` (by `name`), a `uri` (a stream, or a Spotify track,
+/// album or playlist), or the `dj` (in `mood`, if any).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SceneSourceDto {
     pub kind: String,
@@ -223,11 +224,13 @@ fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
         }
         "uri" => {
             let uri = normalize_source_uri(dto.uri.as_deref().ok_or_else(|| needs("uri"))?)?;
-            if uri.starts_with("spotify:") {
+            let playable = uri.starts_with("spotify:track:")
+                || fsonos_proto::didl::SpotifyContainer::of(&uri).is_some();
+            if uri.starts_with("spotify:") && !playable {
                 return Err(Failure::invalid(format!(
-                    "a scene plays {uri} only through a favorite of it or the DJ"
+                    "a scene plays a Spotify track, album or playlist, not {uri}"
                 ))
-                .with_hint("Add it to My Sonos and name the favorite, or use the dj source."));
+                .with_hint("Name one of its tracks, albums or playlists, or use the dj source."));
             }
             Ok(SceneSource::Uri {
                 uri,

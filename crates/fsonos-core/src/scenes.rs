@@ -86,7 +86,9 @@ pub enum SceneSource {
         #[serde(default)]
         uri: Option<String>,
     },
-    /// A URI with its DIDL-Lite metadata.
+    /// A URI with its DIDL-Lite metadata, or a Spotify track, album or
+    /// playlist (`spotify:<kind>:<id>`), played through the household's own
+    /// Spotify account.
     Uri {
         uri: String,
         #[serde(default)]
@@ -427,7 +429,13 @@ fn plan_sources(
                     name: name.clone(),
                 }),
             SceneSource::Uri { uri, metadata } => {
-                (on_now != Some(uri.as_str())).then(|| SceneOp::Uri {
+                // A Spotify track renders as x-sonos-spotify: the same track.
+                let same = on_now == Some(uri.as_str())
+                    || on_now
+                        .and_then(fsonos_proto::didl::spotify_uri_from_renderer_uri)
+                        .as_deref()
+                        == Some(uri.as_str());
+                (!same).then(|| SceneOp::Uri {
                     coordinator: coordinator.clone(),
                     uri: uri.clone(),
                     metadata: metadata.clone(),
@@ -639,6 +647,25 @@ fn fade_volumes<T: Transport + ?Sized>(
     }
 }
 
+/// Start `uri` on the group `coordinator` leads: a Spotify track, album
+/// or playlist through the household's own Spotify account (as `play`
+/// does), anything else as the renderer URI it is.
+fn play_source<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    uri: &str,
+    metadata: &str,
+) -> Result<(), CoreError> {
+    if uri.starts_with("spotify:track:") {
+        return control::play_spotify_track(t, households, coordinator, uri, uri);
+    }
+    if let Some(kind) = fsonos_proto::didl::SpotifyContainer::of(uri) {
+        return control::play_spotify_container(t, households, coordinator, kind, uri, uri);
+    }
+    control::play_uri(t, households, coordinator, uri, metadata)
+}
+
 fn run<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -681,7 +708,7 @@ fn run<T: Transport + ?Sized>(
             coordinator,
             uri,
             metadata,
-        } => control::play_uri(t, households, coordinator, uri, metadata).map_err(s),
+        } => play_source(t, households, coordinator, uri, metadata).map_err(s),
         SceneOp::Dj { coordinator, mood } => options.hooks.start_dj(coordinator, mood.as_deref()),
         SceneOp::Play { coordinator } => control::resume(t, households, coordinator).map_err(s),
         // A stream that cannot pause stops (control::pause_at).

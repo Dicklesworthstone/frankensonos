@@ -133,7 +133,7 @@ fn a_scene_written_out_is_checked_saved_and_applied() {
         ),
         (
             serde_json::json!({"groups": [{"coordinator": "Kitchen",
-                "source": {"kind": "uri", "uri": "spotify:track:0SimQueueTrack00000001"}}]}),
+                "source": {"kind": "uri", "uri": "spotify:artist:0SimArtist0000000000001"}}]}),
             ErrorCode::InvalidArgument,
         ),
         (
@@ -156,6 +156,30 @@ fn a_scene_written_out_is_checked_saved_and_applied() {
         assert_eq!(err.code, code, "{bad}: {err:?}");
     }
     assert!(s.scene(&cli, "Bad").is_err(), "nothing refused was saved");
+}
+
+#[test]
+fn a_scene_can_play_a_spotify_link() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let s = surface(&sim, MemStore::default());
+    let morning: SceneDefinition = serde_json::from_value(serde_json::json!({
+        "groups": [{"coordinator": "Kitchen",
+            "source": {"kind": "uri", "uri": "spotify:track:0SimQueueTrack00000001"}}]
+    }))
+    .unwrap();
+    s.save_scene_from(&Client::Cli, "Morning", &morning)
+        .unwrap();
+    let applied = s.apply_scene(&Client::Cli, "Morning").unwrap();
+    assert!(applied.complete, "{applied:?}");
+    let (_, _, state, uri) = kitchen(&sim);
+    assert_eq!(state, TransportState::Playing, "{applied:?}");
+    assert!(
+        uri.starts_with("x-sonos-spotify:spotify%3atrack%3a0SimQueueTrack00000001"),
+        "{uri}"
+    );
+    // Applied again, the track is already on: nothing to send.
+    let again = s.apply_scene(&Client::Cli, "Morning").unwrap();
+    assert!(again.steps.is_empty(), "{again:?}");
 }
 
 #[test]
