@@ -589,8 +589,28 @@ impl QueueFeed {
             })
         });
         let place = |i: usize| u32::try_from(i + 1).unwrap_or(u32::MAX);
+        let played_works = self.played.len();
         let mut cursor = 0;
-        for work in self.played.iter_mut().chain(self.queued.iter_mut()) {
+        for (w, work) in self
+            .played
+            .iter_mut()
+            .chain(self.queued.iter_mut())
+            .enumerate()
+        {
+            // A played work only ever moves up the queue (tracks taken off
+            // ahead of it), never down: the same tracks further on are the
+            // owner's own copy, and a played work placed there would have the
+            // next trim take the owner's tracks off. One that isn't at or
+            // before where it was is gone.
+            let played = w < played_works;
+            let by = |old: Option<u32>| {
+                if played {
+                    old.map_or(0, |p| usize::try_from(p).unwrap_or(usize::MAX))
+                } else {
+                    usize::MAX
+                }
+            };
+            let latest = by(work.first());
             let added: Vec<String> = work
                 .movements
                 .iter()
@@ -598,9 +618,10 @@ impl QueueFeed {
                 .map(|m| m.uri.clone())
                 .collect();
             let run = (cursor..queue.len()).find(|&start| {
-                added.iter().enumerate().all(|(k, uri)| {
-                    queue.get(start + k).and_then(Option::as_deref) == Some(uri.as_str())
-                })
+                start < latest
+                    && added.iter().enumerate().all(|(k, uri)| {
+                        queue.get(start + k).and_then(Option::as_deref) == Some(uri.as_str())
+                    })
             });
             if let Some(start) = run {
                 for (k, m) in work.movements.iter_mut().filter(|m| m.added).enumerate() {
@@ -612,9 +633,13 @@ impl QueueFeed {
             // Not back to back any more (a movement removed, an item
             // inserted mid-work): each where it is next found.
             for m in work.movements.iter_mut().filter(|m| m.added) {
-                let found = queue[cursor..]
-                    .iter()
-                    .position(|q| q.as_deref() == Some(m.uri.as_str()))
+                let end = by(m.position).min(queue.len());
+                let found = queue
+                    .get(cursor..end)
+                    .and_then(|rest| {
+                        rest.iter()
+                            .position(|q| q.as_deref() == Some(m.uri.as_str()))
+                    })
                     .map(|i| cursor + i);
                 m.position = found.map(place);
                 if let Some(i) = found {
@@ -1334,6 +1359,70 @@ mod tests {
         assert_eq!(placed(&queue, 3, Some("b")), Some(2), "not a later copy");
         assert_eq!(placed(&queue, 2, Some("z")), None, "nowhere: out of date");
         assert_eq!(placed(&queue, 1, None), None, "a Spotify track is there");
+    }
+
+    #[test]
+    fn a_played_work_the_owner_took_off_never_claims_their_later_copy() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = works_of(&shelf_items(1));
+        let mut store = MemStore::default();
+        let config = DjConfig {
+            trim_queue_at: 8,
+            keep_played: 1,
+            ..DjConfig::default()
+        };
+        let mut feed = QueueFeed::new(&rig.coordinator, config, 7);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        // The owner queues the DJ's first work again, at the end...
+        let again: Vec<String> = feed
+            .queued
+            .first()
+            .expect("the DJ queued a work")
+            .tracks()
+            .iter()
+            .map(|t| (*t).to_owned())
+            .collect();
+        for uri in &again {
+            rig.owner_adds(uri, false);
+        }
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        // ...plays on past the DJ's, and takes the DJ's off themselves.
+        for _ in 0..again.len() {
+            rig.next();
+            rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+        }
+        for position in (1..=again.len()).rev() {
+            rig.owner_removes(u32::try_from(position).unwrap());
+        }
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+
+        for _ in 0..30 {
+            rig.next();
+            rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+        }
+        rig.nudge();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let queue = rig.queue();
+        assert!(
+            queue.windows(again.len()).any(|w| w == again.as_slice()),
+            "the owner's copy stays: {again:?} in {queue:?}"
+        );
+        let current = feed.current().expect("on a DJ work");
+        let at = rig.position();
+        assert_eq!(
+            current.track_at(at).map(str::to_owned),
+            queue.get(at as usize - 1).cloned(),
+            "the feed's model of the queue still matches it"
+        );
     }
 
     #[test]
