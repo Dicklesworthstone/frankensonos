@@ -46,6 +46,7 @@ pub struct Lan {
     timeout: Duration,
     routes: Vec<(IpAddr, SocketAddr)>,
     ssdp_target: SocketAddr,
+    ssdp_target_set: bool,
     mdns_target: SocketAddr,
     mdns_target_set: bool,
 }
@@ -143,6 +144,7 @@ impl Lan {
                 timeout,
                 routes: Vec::new(),
                 ssdp_target: SocketAddr::from(([239, 255, 255, 250], 1900)),
+                ssdp_target_set: false,
                 mdns_target: mdns::MDNS_ADDR.parse().expect("literal group"),
                 mdns_target_set: false,
             }),
@@ -167,6 +169,7 @@ impl Lan {
     #[must_use]
     pub fn with_ssdp_target(mut self, target: SocketAddr) -> Self {
         self.ssdp_target = target;
+        self.ssdp_target_set = true;
         self
     }
 
@@ -407,6 +410,12 @@ impl Transport for Lan {
     }
 
     fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<Advert>, ProtoError> {
+        // The same confinement as `mdns_search`: a routed Lan without an
+        // explicit SSDP target must not multicast the real group either —
+        // routes mean nothing outside them is contacted, on either channel.
+        if !self.routes.is_empty() && !self.ssdp_target_set {
+            return Ok(Vec::new());
+        }
         let target = self.ssdp_target;
         self.submit(|reply| Job::Search {
             target,
@@ -434,18 +443,28 @@ impl Transport for Lan {
     }
 
     fn discover(&self, mx_secs: u8, wait: Duration) -> Discovered {
-        // The same confinement as `mdns_search`: a routed Lan discovers by
-        // its SSDP target only — the mDNS half is not sent at all, so
-        // nothing outside the routes is contacted.
-        let mdns_target = if self.routes.is_empty() || self.mdns_target_set {
-            self.mdns_target
-        } else {
+        // Both halves confined the same way: a routed Lan discovers only
+        // through the targets it was given, so nothing outside its routes
+        // is contacted on either channel. With one target given, only that
+        // half runs; with both (or with no routes at all) the halves listen
+        // side by side for a single wait.
+        let confined_ssdp = !self.routes.is_empty() && !self.ssdp_target_set;
+        let confined_mdns = !self.routes.is_empty() && !self.mdns_target_set;
+        if confined_ssdp || confined_mdns {
             return Discovered {
-                ssdp: self.ssdp_search(mx_secs, wait),
-                mdns: Ok(Vec::new()),
+                ssdp: if confined_ssdp {
+                    Ok(Vec::new())
+                } else {
+                    self.ssdp_search(mx_secs, wait)
+                },
+                mdns: if confined_mdns {
+                    Ok(Vec::new())
+                } else {
+                    self.mdns_search(wait)
+                },
             };
-        };
-        let ssdp_target = self.ssdp_target;
+        }
+        let (ssdp_target, mdns_target) = (self.ssdp_target, self.mdns_target);
         self.submit(|reply| Job::Discover {
             ssdp_target,
             mdns_target,
@@ -1700,11 +1719,11 @@ fn a_multicast_query_reaches_a_listener_on_the_same_host() {
 }
 
 #[test]
-fn routes_confine_mdns_to_nothing_without_an_explicit_target() {
-    // A routed Lan (the sim harness) must not query the real mDNS group:
-    // once multi-interface multicast worked, real players started answering
-    // and leaking into routed tests. Confined mDNS is empty, instantly —
-    // no packet is sent at all.
+fn routes_confine_both_discovery_channels_without_explicit_targets() {
+    // A routed Lan (the sim harness) must not query the real mDNS or SSDP
+    // groups: once multi-interface multicast worked, real players started
+    // answering and leaking into routed tests. Confined discovery is empty,
+    // instantly — no packet is sent at all, on either channel.
     let player: IpAddr = "192.0.2.10".parse().unwrap();
     let sink = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let lan = Lan::start()
@@ -1715,13 +1734,18 @@ fn routes_confine_mdns_to_nothing_without_an_explicit_target() {
         .mdns_search(Duration::from_secs(5))
         .expect("confined mDNS");
     assert!(found.is_empty());
+    let adverts = lan
+        .ssdp_search(1, Duration::from_secs(5))
+        .expect("confined ssdp");
+    assert!(adverts.is_empty());
+    let both = lan.discover(1, Duration::from_secs(5));
+    assert!(both.mdns.expect("confined half").is_empty());
+    assert!(both.ssdp.expect("confined ssdp half").is_empty());
     assert!(
         started.elapsed() < Duration::from_secs(2),
         "a confined search returns at once, not after the window: {:?}",
         started.elapsed()
     );
-    let both = lan.discover(1, Duration::from_secs(1));
-    assert!(both.mdns.expect("confined half").is_empty());
 }
 
 #[test]
