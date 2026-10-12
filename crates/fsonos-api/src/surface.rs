@@ -60,6 +60,7 @@ pub mod spotify_auth;
 pub mod announce;
 mod playback_caps;
 pub mod players;
+mod shared_store;
 
 pub mod art;
 
@@ -302,10 +303,12 @@ impl Surface {
         let Some(bus) = &self.events else {
             return;
         };
+        // One publisher at a time, from status to seen: a status computed
+        // before a stop must not go out after it.
+        let mut seen = self.dj_seen.lock().unwrap_or_else(PoisonError::into_inner);
         let Ok(status) = dj.status(at, store, queue_position, &*self.clock) else {
             return;
         };
-        let mut seen = self.dj_seen.lock().unwrap_or_else(PoisonError::into_inner);
         if seen.get(at.coordinator) == Some(&status) {
             return;
         }
@@ -334,7 +337,7 @@ impl Surface {
             households: &households,
             coordinator: player,
         };
-        let fed = self.with_store(|store| {
+        let fed = self.with_dj_store(|store| {
             dj.on_playback(at, store, &playback, &*self.clock);
             self.publish_dj(&**dj, at, store, playback.queue_position);
             Ok(())
@@ -614,7 +617,7 @@ impl Surface {
                 coordinator,
             };
             return self
-                .with_store(|store| {
+                .with_dj_store(|store| {
                     let done = run_dj(&**dj, at, store, command, &*self.clock);
                     let queue_position = self
                         .live()
@@ -1085,6 +1088,7 @@ impl Surface {
     }
 
     /// Run `f` on the store, if the surface keeps one (with its action log).
+    /// Never a DJ engine call: those go through [`Self::with_dj_store`].
     fn with_store<R>(
         &self,
         f: impl FnOnce(&mut dyn Store) -> Result<R, StoreError>,
@@ -1120,7 +1124,14 @@ impl Surface {
             return;
         };
         let at = self.now();
-        if let Err(e) = self.with_store(|s| s.record_play(&coordinator.0, &uri, at)) {
+        // The heard history may have written this play from its event first.
+        let recorded = self.with_store(|s| {
+            if shared_store::recorded_just_now(&*s, &coordinator.0, &uri, at)? {
+                return Ok(());
+            }
+            s.record_play(&coordinator.0, &uri, at)
+        });
+        if let Err(e) = recorded {
             tracing::warn!("play not recorded ({uri}): {}", e.detail);
         }
     }
@@ -1277,7 +1288,7 @@ impl Surface {
             households: &households,
             coordinator,
         };
-        self.with_store(|store| Ok(dj.status(at, store, queue_position, &*self.clock)))?
+        self.with_dj_store(|store| Ok(dj.status(at, store, queue_position, &*self.clock)))?
             .unwrap_or_else(|| Err(no_dj_store()))
     }
 
@@ -1289,7 +1300,7 @@ impl Surface {
         let dj = self.dj_engine()?;
         let Some(zone) = zone else {
             return self
-                .with_store(|store| Ok(dj.moods(None, store, &*self.clock)))?
+                .with_dj_store(|store| Ok(dj.moods(None, store, &*self.clock)))?
                 .unwrap_or_else(|| Err(no_dj_store()));
         };
         let households = self.households()?;
@@ -1301,7 +1312,7 @@ impl Surface {
             households: &households,
             coordinator: &target.coordinator.id,
         };
-        self.with_store(|store| Ok(dj.moods(Some(at), store, &*self.clock)))?
+        self.with_dj_store(|store| Ok(dj.moods(Some(at), store, &*self.clock)))?
             .unwrap_or_else(|| Err(no_dj_store()))
     }
 

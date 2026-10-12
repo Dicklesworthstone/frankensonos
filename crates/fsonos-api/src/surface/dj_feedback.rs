@@ -114,7 +114,7 @@ impl Surface {
             coordinator: &coordinator,
         };
         let result = self
-            .with_store(|store| Ok(dj.feedback(at, store, signal, &*self.clock)))?
+            .with_dj_store(|store| Ok(dj.feedback(at, store, signal, &*self.clock)))?
             .unwrap_or_else(|| Err(no_dj_store()));
         if let Err(f) = &result {
             self.notice(f);

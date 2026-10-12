@@ -46,7 +46,7 @@ fn handle(surface: &Weak<Surface>, event: Option<&LiveEvent>) -> bool {
     // A spontaneous election can transfer the queue without a move command.
     // Reconcile ownership before filtering targets by the feeds they own.
     if let Some(dj) = &surface.dj
-        && let Err(error) = surface.with_store(|store| {
+        && let Err(error) = surface.with_dj_store(|store| {
             dj.on_topology(&*surface.transport, &snapshot, store);
             Ok(())
         })

@@ -448,7 +448,7 @@ impl SceneHooks for SceneDj<'_> {
             households: self.households,
             coordinator,
         };
-        let started = s.with_store(|store| {
+        let started = s.with_dj_store(|store| {
             if let Some(mood) = mood {
                 let steer = DjSteer::Set {
                     mood: Some(mood.to_lowercase()),
@@ -608,7 +608,7 @@ impl Surface {
         let Some(dj) = self.dj.as_deref() else {
             return Ok(mood.to_string());
         };
-        let known = self.with_store(|store| Ok(dj.moods(None, store, &*self.clock)))?;
+        let known = self.with_dj_store(|store| Ok(dj.moods(None, store, &*self.clock)))?;
         let Some(Ok(known)) = known else {
             return Ok(mood.to_string());
         };
