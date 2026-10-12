@@ -1289,11 +1289,12 @@ impl Surface {
     fn fade_volume(
         &self,
         client: &Client,
+        tool: &str,
         room: &str,
         level: u8,
         over: Duration,
     ) -> Result<OutcomeDto, Failure> {
-        self.authorize_write(client, "set_volume")?;
+        self.authorize_write(client, tool)?;
         let guard = self.guard(client);
         let households = self.households()?;
         let aliases = self.aliases();
@@ -1382,10 +1383,11 @@ impl Surface {
     fn fade_and_pause(
         &self,
         client: &Client,
+        tool: &str,
         room: &str,
         over: Duration,
     ) -> Result<OutcomeDto, Failure> {
-        self.authorize_write(client, "pause")?;
+        self.authorize_write(client, tool)?;
         let (households, zone) = self.zone_of(client, room)?;
         let own;
         let fader = if let Some(sleep) = &self.sleep {
@@ -1433,14 +1435,14 @@ impl Surface {
             .ok_or_else(|| {
                 Failure::invalid(format!("volume must be 0 to 100, got {}", req.volume))
             })?;
-        self.fade_volume(client, &req.zone, level, over)
+        self.fade_volume(client, "fade_volume", &req.zone, level, over)
     }
 
     /// Fade the group a room plays in out over its fade, pause it, and put its
     /// volumes back (the `fade_and_pause` tool). The call answers when done.
     pub fn fade_out(&self, client: &Client, req: &FadePauseRequest) -> Result<OutcomeDto, Failure> {
         let over = call_fade(req.fade_secs)?;
-        self.fade_and_pause(client, &req.zone, over)
+        self.fade_and_pause(client, "fade_and_pause", &req.zone, over)
     }
 }
 
@@ -1464,12 +1466,17 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
             })
             .map(|o| o.done),
         ScheduleAction::Pause { room, fade_secs } => surface
-            .fade_and_pause(&client, room, Duration::from_secs(u64::from(*fade_secs)))
+            .fade_and_pause(
+                &client,
+                "pause",
+                room,
+                Duration::from_secs(u64::from(*fade_secs)),
+            )
             .map(|o| o.done),
         ScheduleAction::Volume { room, level } if surface.policy().defaults.fade_secs > 0 => {
             let over = Duration::from_secs(u64::from(surface.policy().defaults.fade_secs));
             surface
-                .fade_volume(&client, room, *level, over)
+                .fade_volume(&client, "set_volume", room, *level, over)
                 .map(|o| o.done)
         }
         ScheduleAction::Volume { room, level } => {
@@ -2035,6 +2042,36 @@ mod tests {
                 .iter()
                 .all(|a| a.action.intent.starts_with("set_sleep_timer: Patio"))
         );
+    }
+
+    #[test]
+    fn a_fade_is_authorized_as_the_tool_it_is() {
+        let houses = households();
+        let survey: Survey = Box::new(move |_| Ok(houses.clone()));
+        let policy = Policy::from_toml(
+            "[clients.\"tag:agent\"]\ndeny = [\"fade_volume\", \"fade_and_pause\"]\n",
+        )
+        .unwrap();
+        let canned = Canned {
+            out_args: "",
+            sent: Arc::new(Mutex::new(Vec::new())),
+        };
+        let clock = FakeClock::new(DateTime::parse_from_rfc3339(T0).unwrap());
+        let s = Surface::new(Box::new(canned), survey, policy, Box::new(clock));
+        let agent = Client::Tailnet("tag:agent".into());
+        let ramp = FadeVolumeRequest {
+            zone: "Patio".into(),
+            volume: 10,
+            fade_secs: 2,
+        };
+        let denied = s.fade_volume_to(&agent, &ramp).unwrap_err();
+        assert_eq!(denied.code, ErrorCode::PolicyDenied, "{denied:?}");
+        let out = FadePauseRequest {
+            zone: "Patio".into(),
+            fade_secs: 2,
+        };
+        let denied = s.fade_out(&agent, &out).unwrap_err();
+        assert_eq!(denied.code, ErrorCode::PolicyDenied, "{denied:?}");
     }
 
     #[test]
