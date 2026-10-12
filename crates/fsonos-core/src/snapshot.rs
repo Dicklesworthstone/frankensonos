@@ -397,6 +397,19 @@ pub fn restore_only<T: Transport + ?Sized>(
     snap: &ZoneSnapshot,
     aspects: &[Aspect],
 ) -> Result<RestoreReport, CoreError> {
+    restore_vetted(t, households, snap, aspects, &|op| Ok(op.clone()))
+}
+
+/// [`restore_only`] with each step passed through `vet` first: it runs as
+/// `vet` returns it (a lower volume, say), or not at all with the reason
+/// `vet` gives, reported like a step that failed.
+pub fn restore_vetted<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    snap: &ZoneSnapshot,
+    aspects: &[Aspect],
+    vet: &dyn Fn(&RestoreOp) -> Result<RestoreOp, String>,
+) -> Result<RestoreReport, CoreError> {
     let Some(household) = households
         .iter()
         .find(|h| h.player(&snap.coordinator).is_some())
@@ -417,7 +430,16 @@ pub fn restore_only<T: Transport + ?Sized>(
     skipped.retain(|(a, _)| aspects.contains(a));
     let mut restored: Vec<Aspect> = Vec::new();
     let mut failed: Vec<Aspect> = skipped.iter().map(|(a, _)| *a).collect();
-    for (aspect, op) in ops.into_iter().filter(|(a, _)| aspects.contains(a)) {
+    for (aspect, planned) in ops.into_iter().filter(|(a, _)| aspects.contains(a)) {
+        let op = match vet(&planned) {
+            Ok(op) => op,
+            Err(why) => {
+                restored.retain(|a| *a != aspect);
+                failed.push(aspect);
+                skipped.push((aspect, format!("{planned:?}: {why}")));
+                continue;
+            }
+        };
         match run(t, household, host, &snap.coordinator, &op) {
             Ok(()) => {
                 if !restored.contains(&aspect) && !failed.contains(&aspect) {

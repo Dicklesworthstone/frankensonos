@@ -22,6 +22,7 @@ use fsonos_core::doctor::{self, Report, Runner};
 use fsonos_core::live::{Live, LiveEvent};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::rooms::Aliases;
+use fsonos_core::snapshot::RestoreOp;
 use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store, StoreError};
 use fsonos_core::{HouseholdState, control, moving};
 use fsonos_core::{favorites, search};
@@ -762,15 +763,30 @@ impl Surface {
                 "undo needs the action log, which this surface does not keep",
             ));
         };
-        self.guard(client).authorize("undo_last", false)?;
+        let guard = self.guard(client);
+        if let Err(denied) = guard.authorize("undo_last", false) {
+            let detail = denied.detail.clone();
+            self.record(
+                client,
+                "undo_last".into(),
+                format!("deny: {detail}"),
+                detail,
+                None,
+            );
+            return Err(denied);
+        }
+        // Only the CLI undoes someone else's action: every other caller
+        // undoes its own newest (README, "the caller's own newest").
+        let own_only = own_only || *client != Client::Cli;
         // Plan the restore against the speakers as they are now.
         self.invalidate();
         let households = self.households()?;
+        let vet = |op: &RestoreOp| vet_restore(&guard, &*self.transport, &households, op);
         let mut store = log
             .store
             .lock()
             .map_err(|_| Failure::new(ErrorCode::Internal, "action log poisoned"))?;
-        let report = actions::undo_last(
+        let report = actions::undo_last_vetted(
             &*self.transport,
             &households,
             &mut **store,
@@ -778,6 +794,7 @@ impl Surface {
             client,
             &log.surface,
             self.now(),
+            &vet,
         );
         self.invalidate();
         Ok(report?)
@@ -1305,6 +1322,59 @@ fn speaker_side(failure: &Failure) -> bool {
         failure.code,
         ErrorCode::PlayerUnreachable | ErrorCode::UpnpFault | ErrorCode::NotCoordinator
     )
+}
+
+/// What an undo by `guard`'s caller may put back of `op`: each step is
+/// authorized as the tool it stands for, and a volume is bounded by the
+/// caller's cap and quiet hours as if it asked for that level now, so an
+/// undo is never a way round the house policy.
+fn vet_restore(
+    guard: &Guard<'_>,
+    transport: &dyn Transport,
+    households: &[HouseholdState],
+    op: &RestoreOp,
+) -> Result<RestoreOp, String> {
+    let tool = match op {
+        RestoreOp::SetVolume { .. } => "set_volume",
+        RestoreOp::SetMute { .. } => "mute",
+        RestoreOp::Join { .. } => "group",
+        RestoreOp::Leave { .. } => "ungroup",
+        RestoreOp::Stop => "pause",
+        RestoreOp::Play | RestoreOp::PlayQueue => "resume",
+        RestoreOp::SetUri { .. } | RestoreOp::SeekTrack(_) | RestoreOp::SeekPosition(_) => "play",
+    };
+    guard.authorize(tool, false).map_err(|f| f.detail)?;
+    let RestoreOp::SetVolume { player, level } = op else {
+        return Ok(op.clone());
+    };
+    // Bounded as the room the player is in now: it may no longer lead it (a
+    // pair's other half, say), and a cap applies by room.
+    let room = households
+        .iter()
+        .flat_map(|h| &h.rooms)
+        .find(|r| r.players.contains(player))
+        .ok_or_else(|| format!("{} plays in no room now", player.0))?;
+    let asked = Command::Volume {
+        target: room.primary.clone(),
+        scope: crate::plan::VolumeScope::Room,
+        change: crate::request::VolumeChange::Set(*level),
+    };
+    match guard
+        .bound(transport, households, asked)
+        .map_err(|f| f.detail)?
+    {
+        (
+            Command::Volume {
+                change: crate::request::VolumeChange::Set(level),
+                ..
+            },
+            _,
+        ) => Ok(RestoreOp::SetVolume {
+            player: player.clone(),
+            level,
+        }),
+        _ => Ok(op.clone()),
+    }
 }
 
 fn no_dj_store() -> Failure {

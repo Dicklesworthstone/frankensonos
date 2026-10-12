@@ -119,6 +119,34 @@ fn clamped_volume_is_logged_with_its_note_and_undone() {
 }
 
 #[test]
+fn an_agent_undoes_only_its_own_action_and_only_up_to_its_cap() {
+    let sim = sim();
+    let lan = sim.lan();
+    let houses = now(&sim);
+    let kitchen = id(&houses, "Kitchen");
+    control::set_volume(&lan, &houses, &kitchen, 90).unwrap();
+    let s = surface(&sim);
+    let set = |client: &Client, level: i64| {
+        s.control(client, "set_volume", |h| {
+            plan_volume(h, &volume_req("Kitchen", level))
+        })
+        .unwrap()
+    };
+    // The agent turns the Kitchen down from 90; then the owner sets 60.
+    set(&agent(), 10);
+    set(&Client::Cli, 60);
+    // Asking for anyone's newest, the agent still undoes only its own, and
+    // the 90 before it comes back only as far as its cap (70), not past it.
+    let report = s
+        .undo(&agent(), false)
+        .unwrap()
+        .expect("the agent's own action");
+    assert!(report.intent.starts_with("set_volume"), "{report:?}");
+    assert_eq!(control::volume(&lan, &houses, &kitchen).unwrap(), 70);
+    sim.shutdown();
+}
+
+#[test]
 fn undo_restores_the_uri_and_the_group() {
     let sim = sim();
     let lan = sim.lan();

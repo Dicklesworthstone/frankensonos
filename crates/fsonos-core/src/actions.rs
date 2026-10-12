@@ -220,13 +220,7 @@ pub struct UndoReport {
     pub summary: String,
 }
 
-/// Undo the newest undoable action — only `only`'s when given — on behalf of
-/// `by` through `surface`: restore the zones it touched and the DJ sessions
-/// it changed, log the undo, and report. `Ok(None)` when there is nothing to
-/// undo.
-///
-/// The zones go back to exactly the state captured before that action, even
-/// if later actions changed them since; undoing again steps further back.
+/// [`undo_last_vetted`] putting back every step as it was.
 pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -235,6 +229,30 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
     by: &Client,
     surface: &str,
     at: i64,
+) -> Result<Option<UndoReport>, CoreError> {
+    undo_last_vetted(t, households, store, only, by, surface, at, &|op| {
+        Ok(op.clone())
+    })
+}
+
+/// Undo the newest undoable action — only `only`'s when given — on behalf of
+/// `by` through `surface`: restore the zones it touched and the DJ sessions
+/// it changed, log the undo, and report. `Ok(None)` when there is nothing to
+/// undo.
+///
+/// The zones go back to exactly the state captured before that action, even
+/// if later actions changed them since; undoing again steps further back.
+/// Each zone step passes through `vet` first ([`snapshot::restore_vetted`]).
+#[allow(clippy::too_many_arguments)] // undo_last's arguments, and the vet
+pub fn undo_last_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    store: &mut S,
+    only: Option<&Client>,
+    by: &Client,
+    surface: &str,
+    at: i64,
+    vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> Result<Option<UndoReport>, CoreError> {
     let Some(target) = store
         .last_undoable_action(only.map(Client::key))
@@ -261,7 +279,7 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
     let mut zones = Vec::new();
     let mut failures = Vec::new();
     for snap in &before.zones {
-        match snapshot::restore(t, households, snap) {
+        match snapshot::restore_vetted(t, households, snap, &snapshot::Aspect::ALL, vet) {
             Ok(report) => zones.push((snap.coordinator.clone(), report)),
             Err(e) => failures.push((snap.coordinator.clone(), e.to_string())),
         }
