@@ -96,6 +96,9 @@ pub struct Taste {
     pub heard: Option<Vec<(String, i64)>>,
     track_pm: HashMap<String, u32>,
     artist_pm: HashMap<String, u32>,
+    /// The genres the names of the owner's playlists state ("Late Night
+    /// Jazz") for the tracks on them, by track URI.
+    named: HashMap<String, Vec<String>>,
 }
 
 impl Taste {
@@ -107,6 +110,17 @@ impl Taste {
     fn artist(&mut self, artist: &Artist, pm: u32) {
         if let Some(id) = &artist.id {
             lift(&mut self.artist_pm, id, pm);
+        }
+    }
+
+    /// Give each of `items` still without a genre the ones the names of the
+    /// owner's playlists it is on state. An item with tags keeps them: its
+    /// artist's own say more than a playlist's name ("House Party").
+    pub fn name_genres(&self, items: &mut [LibraryItem]) {
+        for item in items.iter_mut().filter(|i| i.genres.is_empty()) {
+            if let Some(named) = self.named.get(&item.source_uri) {
+                item.genres.clone_from(named);
+            }
         }
     }
 
@@ -218,7 +232,7 @@ pub async fn read_taste<S: Store + ?Sized>(
         }
     }
     if playlists {
-        let (tracks, listed) = reader.playlist_tracks().await;
+        let (tracks, listed) = reader.playlist_tracks(&mut taste.named).await;
         taste.playlists = listed;
         for item in tracks {
             taste.track(item, PLAYLIST_PM);
@@ -321,8 +335,12 @@ impl Reader<'_> {
 
     /// The tracks of the owner's own and collaborative playlists (others'
     /// playlists' items aren't readable since February 2026), and every
-    /// playlist in their list when the whole list was read.
-    async fn playlist_tracks(&mut self) -> (Vec<LibraryItem>, Option<Vec<(String, String)>>) {
+    /// playlist in their list when the whole list was read. `named` gets
+    /// the genres each playlist's name states, for its tracks.
+    async fn playlist_tracks(
+        &mut self,
+        named: &mut HashMap<String, Vec<String>>,
+    ) -> (Vec<LibraryItem>, Option<Vec<(String, String)>>) {
         let Some(me) = self
             .get::<Me>(&self.session.endpoints().me(), "the user")
             .await
@@ -349,8 +367,19 @@ impl Reader<'_> {
             let entries: Vec<PlaylistItem> =
                 self.page(&url, "playlist items", MAX_PLAYLIST_PAGES).await;
             self.read.playlists += 1;
+            // "Late Night Jazz": the owner's own name for these tracks.
+            let stated = crate::genre_guess::from_name(&list.name);
             for entry in &entries {
                 if let Some(item) = entry.library_item(Origin::Taste) {
+                    if !stated.is_empty() {
+                        let genres: &mut Vec<String> =
+                            named.entry(item.source_uri.clone()).or_default();
+                        for genre in &stated {
+                            if !genres.contains(genre) {
+                                genres.push(genre.clone());
+                            }
+                        }
+                    }
                     self.read.playlist_tracks += 1;
                     tracks.push(item);
                 }
@@ -515,6 +544,28 @@ mod tests {
         assert_eq!(items[items.len() - 2].taste_pm, Some(ARTIST_PM));
         assert_eq!(items[items.len() - 1].taste_pm, None);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_playlists_name_tags_only_a_track_without_tags() {
+        let item = |uri: &str, genres: &[&str]| LibraryItem {
+            source_uri: uri.into(),
+            genres: genres.iter().map(|g| (*g).to_owned()).collect(),
+            ..LibraryItem::default()
+        };
+        let mut taste = Taste::default();
+        for uri in ["spotify:track:a", "spotify:track:b"] {
+            taste.named.insert(uri.into(), vec!["house".into()]);
+        }
+        let mut items = [
+            item("spotify:track:a", &["folk"]),
+            item("spotify:track:b", &[]),
+            item("spotify:track:c", &[]),
+        ];
+        taste.name_genres(&mut items);
+        assert_eq!(items[0].genres, ["folk"], "the artist's tags stand");
+        assert_eq!(items[1].genres, ["house"]);
+        assert!(items[2].genres.is_empty(), "on no playlist that names one");
     }
 
     #[test]

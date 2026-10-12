@@ -63,6 +63,7 @@ pub mod expand;
 mod fake_spotify;
 pub mod feed;
 pub mod feedback;
+pub mod genre_guess;
 pub mod genres;
 pub mod library;
 pub mod prefs;

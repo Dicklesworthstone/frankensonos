@@ -48,7 +48,8 @@ pub struct LibrarySync {
 
 /// Read the owner's whole library from Spotify, add and weigh what their
 /// other taste signals name ([`read_taste`], as far as the grant allows),
-/// tag it all with its artists' genres ([`tag_genres`]), and write it to the
+/// tag it all with its artists' genres ([`tag_genres`], guessed where they
+/// have none: [`crate::genre_guess`]), and write it to the
 /// store. The taste and genre reads are best effort (a halted read resumes
 /// next sync); nothing is written unless the library read completes.
 pub async fn sync_library<S: Store + ?Sized>(
@@ -90,6 +91,10 @@ pub async fn sync_library<S: Store + ?Sized>(
     }
     taste.weigh(&mut items);
     tag_genres(session, cx, store, &mut items, now).await;
+    // Songs whose artists carry no tags get the best guess there is: what
+    // the owner's playlists call them first.
+    taste.name_genres(&mut items);
+    crate::genre_guess::fill(&mut items);
     let report = apply_library_read(store, &items)?;
     // Read and cache the album track lists that complete partly-held works
     // (a liked Adagietto), so the DJ plays them whole from the cache. Best
