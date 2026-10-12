@@ -989,7 +989,7 @@ impl Surface {
 
     /// [`Self::execute`], recording a play, and with the DJ held across a
     /// move ([`Self::dj_hold`]) and then following the music
-    /// ([`Self::dj_follows`]).
+    /// ([`Self::dj_follows`]), as the sleep timer does.
     fn execute_following(
         &self,
         households: &[HouseholdState],
@@ -1002,6 +1002,7 @@ impl Surface {
             self.remember_play(command);
         }
         self.dj_follows(households, command, held, result.is_ok());
+        self.sleep_follows(households, command, result.is_ok());
         result
     }
 

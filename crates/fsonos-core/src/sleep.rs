@@ -10,6 +10,10 @@
 //! fading stops the fade and puts the volumes back; a volume change from
 //! anyone else during the fade ends the timer where it is. A daemon that
 //! restarts takes its saved timers up again with [`SleepTimers::adopt`].
+//!
+//! A timer follows the music: a move re-keys it to the coordinator the music
+//! plays under now ([`SleepTimers::rekey`]), and a room whose group joined
+//! another one since has only its own music stopped, by leaving that group.
 
 use crate::fade::{FadeOutcome, Fader};
 use crate::snapshot::member_rooms;
@@ -30,6 +34,10 @@ pub const FADE: Duration = Duration::from_mins(2);
 /// How long after the daemon's timer the player's own one pauses, should
 /// the daemon not be running then.
 pub const BACKSTOP: Duration = Duration::from_mins(5);
+
+/// After a move stops a fade, how long its run has to put the volumes back
+/// before the timer fades again in the new group.
+pub const REKEY_SETTLE: Duration = Duration::from_secs(2);
 
 /// An armed sleep timer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,14 +165,9 @@ impl SleepTimers {
     ) -> Result<SleepTimer, CoreError> {
         let ends = now + delta(after);
         Self::backstop(t, households, coordinator, ends, now)?;
-        let room = households
-            .iter()
-            .flat_map(|h| &h.rooms)
-            .find(|r| r.players.contains(coordinator))
-            .map_or_else(|| coordinator.0.clone(), |r| r.name.clone());
         let timer = SleepTimer {
             coordinator: coordinator.clone(),
-            room,
+            room: room_name(households, coordinator),
             ends,
             fading: false,
         };
@@ -224,6 +227,58 @@ impl SleepTimers {
         };
         Self::stop_fade(&old, fader);
         soap::configure_sleep_timer(t, ip(households, coordinator)?, None)?;
+        Ok(true)
+    }
+
+    /// The music `old` led plays under `new` now (a move): its timer follows
+    /// it there, with the player's own timer, replacing any `new` had. A fade
+    /// in flight stops (its run puts the volumes back) and starts again in
+    /// the new group. Whether `old` had a timer.
+    pub fn rekey<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        fader: &Fader,
+        old: &PlayerId,
+        new: &PlayerId,
+        now: DateTime<Utc>,
+    ) -> Result<bool, CoreError> {
+        if old == new {
+            return Ok(false);
+        }
+        // A fade in flight starts over in the new group, once the run the
+        // move stopped has put the volumes back.
+        let ends = match self.lock().get(old) {
+            Some(a) if a.timer.fading => a.timer.ends.max(now + delta(self.fade + REKEY_SETTLE)),
+            Some(a) => a.timer.ends,
+            None => return Ok(false),
+        };
+        // The new group's own timer first: if it can't be set, the timer
+        // stays where it was.
+        Self::backstop(t, households, new, ends, now)?;
+        let generation = self.generation();
+        {
+            let mut armed = self.lock();
+            let Some(mut entry) = armed.remove(old) else {
+                // Cancelled meanwhile: the new group's own timer as it was.
+                let had = armed.get(new).map(|a| a.timer.ends);
+                drop(armed);
+                own_timer(t, households, new, had, now);
+                return Ok(false);
+            };
+            Self::stop_fade(&entry, fader);
+            entry.timer.coordinator = new.clone();
+            entry.timer.room = room_name(households, new);
+            entry.timer.ends = ends;
+            entry.timer.fading = false;
+            entry.generation = generation;
+            entry.fading_rooms.clear();
+            if let Some(replaced) = armed.insert(new.clone(), entry) {
+                Self::stop_fade(&replaced, fader);
+            }
+        }
+        // The room the music left must not pause later on its own timer.
+        own_timer(t, households, old, None, now);
         Ok(true)
     }
 
@@ -298,7 +353,10 @@ impl SleepTimers {
     }
 
     /// Fade the group `coordinator` leads out over the fade time, pause it,
-    /// and put its rooms' volumes back. Blocks for the fade.
+    /// and put its rooms' volumes back. Blocks for the fade. When
+    /// `coordinator`'s room has joined another group since, only that room
+    /// stops: it fades, leaves the group (which plays on), and gets its
+    /// volume back.
     pub fn run<T: Transport + ?Sized>(
         &self,
         t: &T,
@@ -311,6 +369,9 @@ impl SleepTimers {
             .find(|h| h.player(coordinator).is_some())
             .ok_or_else(|| self.lost(coordinator))?;
         let rooms = member_rooms(household, coordinator);
+        let joined = household
+            .coordinator_of(coordinator)
+            .is_some_and(|lead| lead != coordinator);
         let generation = {
             let mut armed = self.lock();
             match armed.get_mut(coordinator) {
@@ -361,7 +422,12 @@ impl SleepTimers {
             FadeOutcome::Reached => {
                 // Paused first, the levels back after; the player's own timer
                 // is cleared only once the pause has held.
-                if let Err(e) = crate::control::pause_at(t, host) {
+                let stopped = if joined {
+                    crate::control::leave(t, households, coordinator)
+                } else {
+                    crate::control::pause_at(t, host)
+                };
+                if let Err(e) = stopped {
                     let _ = restore();
                     return Err(e);
                 }
@@ -371,7 +437,9 @@ impl SleepTimers {
                 Ok(SleepOutcome::Paused)
             }
             FadeOutcome::Superseded { .. } => {
-                soap::configure_sleep_timer(t, host, None)?;
+                if !joined {
+                    soap::configure_sleep_timer(t, host, None)?;
+                }
                 Ok(SleepOutcome::Interrupted)
             }
         }
@@ -399,6 +467,31 @@ impl SleepTimers {
             armed.remove(coordinator);
         }
     }
+}
+
+/// Point `player`'s own timer `BACKSTOP` past `ends`, or clear it (`None`),
+/// best effort: the daemon's timer is what pauses the group.
+fn own_timer<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    player: &PlayerId,
+    ends: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) {
+    let _ = match ends {
+        Some(ends) => SleepTimers::backstop(t, households, player, ends, now),
+        None => ip(households, player)
+            .and_then(|host| soap::configure_sleep_timer(t, host, None).map_err(CoreError::from)),
+    };
+}
+
+/// The name of the room `player` is in, for messages.
+fn room_name(households: &[HouseholdState], player: &PlayerId) -> String {
+    households
+        .iter()
+        .flat_map(|h| &h.rooms)
+        .find(|r| r.players.contains(player))
+        .map_or_else(|| player.0.clone(), |r| r.name.clone())
 }
 
 /// Put each room back to its level in `before`: every room, even after one

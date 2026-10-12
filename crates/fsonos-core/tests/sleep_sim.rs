@@ -353,3 +353,161 @@ fn the_players_own_timer_pauses_when_the_daemon_never_fades() {
         None
     );
 }
+
+/// Kitchen and Office each on their own, the Kitchen playing a queue at 30,
+/// the Office a stream at 20.
+fn two_groups() -> (SimHandle, SimLan, Vec<HouseholdState>, PlayerId, PlayerId) {
+    let sim = SimHousehold::builder()
+        .s1([
+            SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
+            SimPlayerSpec::new("Office", SimModel::Play5Gen1),
+        ])
+        .spawn()
+        .unwrap();
+    let lan = sim.lan();
+    let h = houses(&sim, &lan);
+    let kitchen = resolve_room(&h, "Kitchen").unwrap().player.id.clone();
+    let office = resolve_room(&h, "Office").unwrap().player.id.clone();
+    control::queue_spotify_tracks(
+        &lan,
+        &h,
+        &kitchen,
+        &[("spotify:track:0SimSleepB00000000001", "Nocturne")],
+    )
+    .unwrap()
+    .unwrap();
+    control::play_queue_from(&lan, &h, &kitchen, 1).unwrap();
+    control::play_uri(
+        &lan,
+        &h,
+        &office,
+        "x-rincon-mp3radio://stream.example.invalid/office.mp3",
+        "",
+    )
+    .unwrap();
+    control::set_volume(&lan, &h, &kitchen, 30).unwrap();
+    control::set_volume(&lan, &h, &office, 20).unwrap();
+    (sim, lan, h, kitchen, office)
+}
+
+#[test]
+fn a_timer_follows_the_music_to_its_new_coordinator() {
+    let (_sim, lan, h, kitchen, office) = two_groups();
+    let fader = fader();
+    let timers = SleepTimers::with_fade(Duration::from_millis(200));
+    timers
+        .start(&lan, &h, &fader, &kitchen, Duration::from_mins(45), t0())
+        .unwrap();
+    // The music moved from the Kitchen to the Office.
+    assert!(
+        timers
+            .rekey(&lan, &h, &fader, &kitchen, &office, t0() + mins(5))
+            .unwrap()
+    );
+    assert_eq!(timers.get(&kitchen), None);
+    let moved = timers.get(&office).expect("the Office's timer now");
+    assert_eq!(
+        (moved.room.as_str(), moved.ends),
+        ("Office", t0() + mins(45))
+    );
+    // The player's own timer moved too: the Kitchen will not pause later.
+    assert!(
+        soap::get_remaining_sleep_timer(&lan, ip(&h, "Office"))
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        soap::get_remaining_sleep_timer(&lan, ip(&h, "Kitchen")).unwrap(),
+        None
+    );
+    // Nothing to move from a group without a timer.
+    assert!(
+        !timers
+            .rekey(&lan, &h, &fader, &kitchen, &office, t0())
+            .unwrap()
+    );
+}
+
+#[test]
+fn a_timer_stays_put_when_the_new_group_cannot_take_it() {
+    let (_sim, lan, h, kitchen, office) = two_groups();
+    let fader = fader();
+    let timers = SleepTimers::with_fade(Duration::from_millis(200));
+    timers
+        .start(&lan, &h, &fader, &kitchen, Duration::from_mins(45), t0())
+        .unwrap();
+    let failing = Failing {
+        lan: &lan,
+        action: "ConfigureSleepTimer",
+        host: ip(&h, "Office"),
+    };
+    assert!(
+        timers
+            .rekey(&failing, &h, &fader, &kitchen, &office, t0())
+            .is_err()
+    );
+    assert!(timers.get(&kitchen).is_some());
+    assert_eq!(timers.get(&office), None);
+    assert!(
+        soap::get_remaining_sleep_timer(&lan, ip(&h, "Kitchen"))
+            .unwrap()
+            .is_some(),
+        "the Kitchen still pauses on its own"
+    );
+}
+
+#[test]
+fn a_fade_a_move_stopped_starts_over_in_the_new_group_a_moment_later() {
+    let (_sim, lan, h, kitchen, office) = two_groups();
+    let fader = fader();
+    let timers = SleepTimers::with_fade(Duration::from_millis(200));
+    timers
+        .start(&lan, &h, &fader, &kitchen, Duration::from_mins(10), t0())
+        .unwrap();
+    let end = t0() + mins(10);
+    assert_eq!(timers.due(end).len(), 1, "fading");
+    assert!(
+        timers
+            .rekey(&lan, &h, &fader, &kitchen, &office, end)
+            .unwrap()
+    );
+    // Not due at once: the stopped run puts the volumes back first.
+    assert!(timers.due(end).is_empty());
+    assert_eq!(timers.due(end + TimeDelta::seconds(3)).len(), 1);
+}
+
+#[test]
+fn a_room_whose_group_joined_another_stops_alone() {
+    let (sim, lan, h, kitchen, office) = two_groups();
+    let fader = fader();
+    let timers = SleepTimers::with_fade(Duration::from_millis(200));
+    timers
+        .start(&lan, &h, &fader, &kitchen, Duration::from_mins(10), t0())
+        .unwrap();
+    // The Kitchen has since joined the Office's group.
+    control::join(&lan, &h, &kitchen, &office).unwrap();
+    let h = houses(&sim, &lan);
+    assert_eq!(timers.due(t0() + mins(10)).len(), 1);
+    assert_eq!(
+        timers.run(&lan, &h, &fader, &kitchen).unwrap(),
+        SleepOutcome::Paused
+    );
+    // The Kitchen left the group, its level back; the Office plays on,
+    // never turned down.
+    let groups = get_zone_group_state(&lan, ip(&h, "Office")).unwrap().groups;
+    assert!(
+        groups
+            .iter()
+            .any(|g| g.coordinator == kitchen && g.members.iter().all(|m| m.uuid == kitchen)),
+        "{groups:?}"
+    );
+    assert_eq!(
+        soap::get_transport_info(&lan, ip(&h, "Office"))
+            .unwrap()
+            .state,
+        TransportState::Playing
+    );
+    assert_eq!(soap::get_volume(&lan, ip(&h, "Kitchen")).unwrap(), 30);
+    assert_eq!(soap::get_volume(&lan, ip(&h, "Office")).unwrap(), 20);
+    assert_eq!(timers.get(&kitchen), None);
+}

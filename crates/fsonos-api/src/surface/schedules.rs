@@ -750,6 +750,44 @@ impl Surface {
         }
     }
 
+    /// After a move (`moved`: it succeeded), the group's sleep timer follows
+    /// the music to the coordinator it plays under now, as the DJ does.
+    /// `before` is the speakers as they were. A copy leaves it where it is.
+    pub(super) fn sleep_follows(
+        &self,
+        before: &[HouseholdState],
+        command: &plan::Command,
+        moved: bool,
+    ) {
+        let (
+            Some(sleep),
+            true,
+            plan::Command::Move {
+                from,
+                to,
+                copy: false,
+            },
+        ) = (&self.sleep, moved, command)
+        else {
+            return;
+        };
+        let Some(old) = before.iter().find_map(|h| h.coordinator_of(from)) else {
+            return;
+        };
+        if sleep.timers.get(old).is_none() {
+            return;
+        }
+        let t = &*self.transport;
+        let followed = fsonos_core::moving::coordinator_now(t, before, to).and_then(|new| {
+            let now = self.clock.now().to_utc();
+            sleep.timers.rekey(t, before, &sleep.fader, old, &new, now)
+        });
+        match followed {
+            Ok(_) => sleep.save(),
+            Err(e) => tracing::warn!("the sleep timer stays with {}: {e}", old.0),
+        }
+    }
+
     /// Keep sleep timers here (the daemon's surface), so they fade out; a
     /// [`Scheduler`] over this surface runs them.
     #[must_use]
