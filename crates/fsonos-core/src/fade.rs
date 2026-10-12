@@ -184,7 +184,30 @@ impl Fader {
         to: u8,
         over: Duration,
     ) -> Result<FadeOutcome, CoreError> {
-        self.stepped(t, households, players, to, over, self.interval)
+        let claimed = self.claim(players);
+        self.stepped(t, households, &claimed, to, over, self.interval)
+    }
+
+    /// Start a volume intent on each of `players` now, for a fade that
+    /// begins a little later ([`Self::fade_group_claimed`]): a newer intent
+    /// in between (a cancel, say) stops it before its first step.
+    pub fn claim(&self, players: &[PlayerId]) -> Vec<(PlayerId, u64)> {
+        players
+            .iter()
+            .map(|p| (p.clone(), self.supersede(p)))
+            .collect()
+    }
+
+    /// [`Self::fade_group`] under the intents [`Self::claim`] took.
+    pub fn fade_group_claimed<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        claimed: &[(PlayerId, u64)],
+        to: u8,
+        over: Duration,
+    ) -> Result<FadeOutcome, CoreError> {
+        self.stepped(t, households, claimed, to, over, self.interval)
     }
 
     /// Fade each player to its own level, all in step over `over`, each from
@@ -248,23 +271,17 @@ impl Fader {
         &self,
         t: &T,
         households: &[HouseholdState],
-        players: &[PlayerId],
+        claimed: &[(PlayerId, u64)],
         to: u8,
         over: Duration,
         interval: Duration,
     ) -> Result<FadeOutcome, CoreError> {
         let _running = self.running();
-        let mut lanes = Vec::with_capacity(players.len());
-        for p in players {
+        let mut lanes = Vec::with_capacity(claimed.len());
+        for (p, intent) in claimed {
             let host = ip(households, p)?;
             let from = soap::get_volume(t, host)?;
-            lanes.push((
-                p,
-                host,
-                self.supersede(p),
-                from,
-                plan_steps(from, to, over, interval),
-            ));
+            lanes.push((p, host, *intent, from, plan_steps(from, to, over, interval)));
         }
         let ticks = lanes.first().map_or(0, |l| l.4.len());
         let mut first_level = lanes.first().map_or(to, |l| l.3);
@@ -322,14 +339,8 @@ impl Fader {
         }
         let from = soap::get_volume(t, host)?;
         let over = self.device_step * u32::from(from.abs_diff(to));
-        let stepped = self.stepped(
-            t,
-            households,
-            std::slice::from_ref(player),
-            to,
-            over,
-            self.device_step,
-        )?;
+        let claimed = self.claim(std::slice::from_ref(player));
+        let stepped = self.stepped(t, households, &claimed, to, over, self.device_step)?;
         Ok(RampOutcome::Stepped(stepped))
     }
 

@@ -12,6 +12,8 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 fn houses(sim: &SimHandle, lan: &SimLan) -> Vec<HouseholdState> {
@@ -510,4 +512,80 @@ fn a_room_whose_group_joined_another_stops_alone() {
     assert_eq!(soap::get_volume(&lan, ip(&h, "Kitchen")).unwrap(), 30);
     assert_eq!(soap::get_volume(&lan, ip(&h, "Office")).unwrap(), 20);
     assert_eq!(timers.get(&kitchen), None);
+}
+
+/// The simulator's LAN, except that the first GetVolume waits until the test
+/// opens the gate: it holds a sleep run just after it took up its timer.
+struct Gated<'a> {
+    lan: &'a SimLan,
+    reached: AtomicBool,
+    open: (Mutex<bool>, Condvar),
+}
+
+impl Gated<'_> {
+    fn open(&self) {
+        *self.open.0.lock().unwrap() = true;
+        self.open.1.notify_all();
+    }
+}
+
+impl Transport for Gated<'_> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        control_path: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if soap_action.trim_matches('"').ends_with("#GetVolume")
+            && !self.reached.swap(true, Ordering::AcqRel)
+        {
+            let mut open = self.open.0.lock().unwrap();
+            while !*open {
+                open = self.open.1.wait(open).unwrap();
+            }
+        }
+        self.lan.soap_post(host, control_path, soap_action, body)
+    }
+}
+
+#[test]
+fn a_cancel_just_as_the_fade_begins_stops_it_before_any_step() {
+    let (sim, lan, h, kitchen) = playing_kitchen();
+    let fader = fader();
+    let timers = SleepTimers::with_fade(Duration::from_millis(200));
+    timers
+        .start(&lan, &h, &fader, &kitchen, Duration::from_mins(10), t0())
+        .unwrap();
+    assert_eq!(timers.due(t0() + mins(10)).len(), 1);
+    let gated = Gated {
+        lan: &lan,
+        reached: AtomicBool::new(false),
+        open: (Mutex::new(false), Condvar::new()),
+    };
+    let steps_before = sim.soap_log().len();
+    let outcome = std::thread::scope(|s| {
+        let run = s.spawn(|| timers.run(&gated, &h, &fader, &kitchen));
+        // The run has taken the timer up and not yet stepped: cancel now.
+        while !gated.reached.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(timers.cancel(&lan, &h, &fader, &kitchen).unwrap());
+        gated.open();
+        run.join().unwrap().unwrap()
+    });
+    assert_eq!(outcome, SleepOutcome::Cancelled);
+    // Not one step down: the only volumes set are the levels put back.
+    let set: Vec<String> = sim.soap_log()[steps_before..]
+        .iter()
+        .filter(|e| e.action == "SetVolume")
+        .filter_map(|e| {
+            e.args
+                .iter()
+                .find(|(k, _)| k == "DesiredVolume")
+                .map(|(_, v)| v.clone())
+        })
+        .collect();
+    assert!(set.iter().all(|v| v == "30" || v == "20"), "{set:?}");
+    assert_eq!(state(&lan, &h), (TransportState::Playing, 30, 20));
 }

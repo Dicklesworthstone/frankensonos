@@ -372,12 +372,14 @@ impl SleepTimers {
         let joined = household
             .coordinator_of(coordinator)
             .is_some_and(|lead| lead != coordinator);
-        let generation = {
+        let (generation, claimed) = {
             let mut armed = self.lock();
             match armed.get_mut(coordinator) {
                 Some(a) if a.timer.fading => {
                     a.fading_rooms.clone_from(&rooms);
-                    a.generation
+                    // The fade's intents, taken under the lock a cancel or an
+                    // extend stops it under: one in between stops it too.
+                    (a.generation, fader.claim(&rooms))
                 }
                 _ => return Ok(SleepOutcome::Gone),
             }
@@ -397,7 +399,7 @@ impl SleepTimers {
         // reported): a group is never left silent for its next play. The
         // player's own timer, set past the end, pauses it if the daemon can't.
         let restore = || put_back(t, households, &before);
-        let outcome = match fader.fade_group(t, households, &rooms, 0, self.fade) {
+        let outcome = match fader.fade_group_claimed(t, households, &claimed, 0, self.fade) {
             Ok(outcome) => outcome,
             Err(e) => {
                 let _ = restore();
