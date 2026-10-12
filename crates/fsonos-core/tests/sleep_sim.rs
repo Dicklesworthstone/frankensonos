@@ -589,3 +589,38 @@ fn a_cancel_just_as_the_fade_begins_stops_it_before_any_step() {
     assert!(set.iter().all(|v| v == "30" || v == "20"), "{set:?}");
     assert_eq!(state(&lan, &h), (TransportState::Playing, 30, 20));
 }
+
+#[test]
+fn a_volume_change_before_the_run_gets_going_ends_the_timer() {
+    let (sim, lan, h, kitchen) = playing_kitchen();
+    let fader = fader();
+    let timers = SleepTimers::with_fade(Duration::from_millis(200));
+    timers
+        .start(&lan, &h, &fader, &kitchen, Duration::from_mins(10), t0())
+        .unwrap();
+    assert_eq!(timers.due(t0() + mins(10)).len(), 1);
+    // Someone sets a volume after the timer came due, before its run has
+    // taken up its rooms (it was still reading the house).
+    assert!(timers.interrupt(&fader, &kitchen));
+    let from = sim.soap_log().len();
+    assert_eq!(
+        timers.run(&lan, &h, &fader, &kitchen).unwrap(),
+        SleepOutcome::Interrupted
+    );
+    assert_eq!(timers.get(&kitchen), None);
+    // No fade, no pause: the music plays on at its level, and the player's
+    // own timer is cleared too.
+    let sent: Vec<String> = sim.soap_log()[from..]
+        .iter()
+        .map(|e| e.action.clone())
+        .collect();
+    assert!(
+        !sent.iter().any(|a| a == "SetVolume" || a == "Pause"),
+        "{sent:?}"
+    );
+    assert_eq!(state(&lan, &h), (TransportState::Playing, 30, 20));
+    assert_eq!(
+        soap::get_remaining_sleep_timer(&lan, ip(&h, "Kitchen")).unwrap(),
+        None
+    );
+}

@@ -72,6 +72,9 @@ struct Armed {
     generation: u64,
     /// The rooms a running fade is turning down.
     fading_rooms: Vec<PlayerId>,
+    /// A volume change came after the timer was due but before its run took
+    /// up its rooms: the run ends the timer instead of fading.
+    interrupted: bool,
 }
 
 /// Every group's sleep timer. Share one per daemon.
@@ -178,6 +181,7 @@ impl SleepTimers {
                 timer: timer.clone(),
                 generation,
                 fading_rooms: Vec::new(),
+                interrupted: false,
             },
         ) {
             Self::stop_fade(&old, fader);
@@ -282,15 +286,19 @@ impl SleepTimers {
         Ok(true)
     }
 
-    /// A volume change from outside during a fade: supersede the group's fade
-    /// so its timer ends where it is ([`SleepOutcome::Interrupted`]) — no
-    /// re-arm (the generation is untouched, so [`Self::run`] does not put the
-    /// volumes back), and no pause. Does nothing if no fade is in flight.
-    /// Returns whether one was superseded.
+    /// A volume change from outside once the timer is due: supersede the
+    /// group's fade so its timer ends where it is ([`SleepOutcome::Interrupted`])
+    /// — no re-arm (the generation is untouched, so [`Self::run`] does not put
+    /// the volumes back), and no pause. Before the run has taken up its rooms
+    /// the timer is marked, and the run ends it there. Does nothing for a
+    /// timer that is not due. Returns whether the timer was due.
     pub fn interrupt(&self, fader: &Fader, coordinator: &PlayerId) -> bool {
-        let armed = self.lock();
-        match armed.get(coordinator) {
+        let mut armed = self.lock();
+        match armed.get_mut(coordinator) {
             Some(a) if a.timer.fading => {
+                // Before the run has taken up its rooms there is no fade to
+                // stop yet: the run ends the timer when it gets there.
+                a.interrupted |= a.fading_rooms.is_empty();
                 Self::stop_fade(a, fader);
                 true
             }
@@ -317,6 +325,7 @@ impl SleepTimers {
                 },
                 generation,
                 fading_rooms: Vec::new(),
+                interrupted: false,
             },
         );
         true
@@ -345,6 +354,7 @@ impl SleepTimers {
             .filter(|a| !a.timer.fading && now >= a.timer.ends - delta(self.fade))
             .map(|a| {
                 a.timer.fading = true;
+                a.interrupted = false;
                 a.timer.clone()
             })
             .collect();
@@ -374,15 +384,23 @@ impl SleepTimers {
             .is_some_and(|lead| lead != coordinator);
         let (generation, claimed) = {
             let mut armed = self.lock();
-            match armed.get_mut(coordinator) {
-                Some(a) if a.timer.fading => {
-                    a.fading_rooms.clone_from(&rooms);
-                    // The fade's intents, taken under the lock a cancel or an
-                    // extend stops it under: one in between stops it too.
-                    (a.generation, fader.claim(&rooms))
+            let Some(a) = armed.get_mut(coordinator).filter(|a| a.timer.fading) else {
+                return Ok(SleepOutcome::Gone);
+            };
+            if a.interrupted {
+                // Someone set a volume before this run got going: the timer
+                // ends where it is, as it would during the fade.
+                armed.remove(coordinator);
+                drop(armed);
+                if !joined {
+                    soap::configure_sleep_timer(t, ip(households, coordinator)?, None)?;
                 }
-                _ => return Ok(SleepOutcome::Gone),
+                return Ok(SleepOutcome::Interrupted);
             }
+            a.fading_rooms.clone_from(&rooms);
+            // The fade's intents, taken under the lock a cancel or an extend
+            // stops it under: one in between stops it too.
+            (a.generation, fader.claim(&rooms))
         };
         let before = match rooms
             .iter()
@@ -536,6 +554,7 @@ mod tests {
                     },
                     generation: 0,
                     fading_rooms: Vec::new(),
+                    interrupted: false,
                 },
             );
         };
