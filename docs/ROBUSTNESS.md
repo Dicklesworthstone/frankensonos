@@ -65,6 +65,15 @@ us and is re-learned, never assumed.
 | Something's wrong and you can't tell | `fsonos doctor` / `GET /doctor` / MCP doctor: store, SSDP, seeds, players, households, GENA round-trip, Spotify linkage, Tailscale | `b-doctor-*`, `d-doctor-surface-15q` |
 | Opaque failures | Stable error codes + hints + suggestions on CLI/HTTP/MCP; no silent fallbacks | `d-error-codes-tc4` |
 
+## 7. The host and the network fail too (fleet-verified 2026-10-11/12)
+
+| Failure | What was observed on the owner's fleet | Mechanism |
+|---|---|---|
+| Speaker VLAN outage | The whole speaker VLAN went dark for ~40 minutes (gateway unreachable, all devices silent, both households); the daemon answered `NOT_READY` naming the survey failure and recovered on its own when the VLAN returned | A discovery failure is a reported state, not a crash; the live model keeps resurveying (`no player answered discovery` + hint) |
+| Two daemons on one host | The GENA callback port (8097) is fixed per host: a second daemon logs `Address already in use` and retries (~78 s), and its model looks stale until it binds and resubscribes | One daemon per host; when running a test daemon, stop the first — the port is baked into every subscription URL |
+| Multicast egress on a multi-homed host | `fsonos discover` found nobody while the speakers answered HTTP: the kernel routes multicast by one route (en0) while the players lived on the en1 VLAN | Every LAN interface now gets its own query socket (`IP_MULTICAST_IF`, commit `6e83b3c`); an interface-enumeration failure falls back to the old wildcard socket |
+| SSE clients through all of the above | A 15 s heartbeat keeps a quiet stream distinguishable from a dead connection, and reconnect replay (`Last-Event-ID` / `?since=N`) never skips an id the client has not seen | The event bus keeps a 1024-event ring; `since` means "I have seen up to and including this id" |
+
 ## What is deliberately NOT done
 
 - **On-speaker Tailscale / custom firmware**: would *reduce* reliability
