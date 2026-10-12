@@ -680,9 +680,12 @@ the house to agents they can bound and reverse. The guardrails live in
   terminal), `mcp-stdio` (a local agent), `loopback-http` (a local process), or
   a tailnet principal. The daemon binds the tailnet directly by default
   (`ts-autobind`), so a tailnet peer is identified by Tailscale WhoIs on its
-  address (`ts-identity`), which can't be forged; this needs the peer address
-  to reach the handlers, which the pinned fastapi and fastmcp don't pass yet.
-  Behind Tailscale Serve, the `Tailscale-User-Login` header names the user, but
+  address (`ts-identity`), which can't be forged. The HTTP API's handlers get
+  the peer address from a vendored fastapi-http patch (`vendor/README.md`); a
+  process on the daemon host calling the host's own tailnet address is
+  `loopback-http`, never the owner WhoIs would name. The MCP listener names no
+  tailnet caller: on loopback (the default, reached from the tailnet through
+  Serve) its callers are `loopback-http`. Behind Tailscale Serve, the `Tailscale-User-Login` header names the user, but
   Serve omits it for tagged devices, so Serve gets its own upstream port and a
   header-less request there is `unknown`. An unresolved identity never fails a
   request. Caps apply to every identity except `cli`; `unknown` gets read-only
