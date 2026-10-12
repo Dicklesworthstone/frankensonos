@@ -167,6 +167,14 @@ pub struct DjConfig {
     /// (`crate::expand`); a work that can't be completed still plays what
     /// the library has, at `incomplete_pm`.
     pub expand_partial_works: bool,
+    /// The queue may hold this many tracks before the DJ takes its
+    /// long-played works off it: players hold about 1,000, a DJ left on for
+    /// days would fill them, and every re-read of the queue slows as it
+    /// grows.
+    pub trim_queue_at: u32,
+    /// How many tracks behind the one playing stay on the queue when it is
+    /// trimmed (for going back).
+    pub keep_played: u32,
 }
 
 impl Default for DjConfig {
@@ -185,6 +193,8 @@ impl Default for DjConfig {
             allow_long_works: false,
             min_steered_works: 5,
             expand_partial_works: true,
+            trim_queue_at: 400,
+            keep_played: 50,
         }
     }
 }

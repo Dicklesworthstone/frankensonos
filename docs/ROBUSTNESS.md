@@ -53,7 +53,7 @@ us and is re-learned, never assumed.
 |---|---|---|
 | Destructive-ish op (ungroup, queue clear) regrets | Zone snapshot before mutation + persisted action log + undo | `b-snapshot-dpa`, `b-action-log-undo-jti` |
 | "Did it actually work?" | Every SOAP answer is checked: a UPnP fault is a coded failure (with its `upnp_code`), never a silent success; a player that moved, or a coordinator that changed under a command, is found again and the command retried once (noted `HEALED`); scene apply and undo report each step that failed | api `heal`, `b-self-healing-7ts`, scenes, undo |
-| Whole-container cleanup would be 491 fragile calls | `RemoveTrackRangeFromQueue` removes a range in one atomic call (verified live, both generations); undoing an add to the queue sends it, once it has read the tracks back where they were added; nothing trims a container yet | PROTOCOL.md §4 |
+| Whole-container cleanup would be 491 fragile calls | `RemoveTrackRangeFromQueue` removes a range in one atomic call (verified live, both generations); undoing an add to the queue sends it, once it has read the tracks back where they were added, and so does the DJ, taking its long-played works off a queue grown past `trim_queue_at`; nothing trims a container yet | PROTOCOL.md §4 |
 | Volume/group abuse by a buggy client | House policy: volume caps, step limits, quiet hours, client allowlists | `b-policy-23m` |
 
 ## 6. The daemon is supervised and honest

@@ -96,6 +96,7 @@ mod tests {
             }],
             playing: Some(1),
             recorded: Some((1, "spotify:track:simsaved10000000000000".into())),
+            played: Vec::new(),
         }
     }
 

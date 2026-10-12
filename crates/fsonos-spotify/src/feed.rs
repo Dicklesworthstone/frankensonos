@@ -18,7 +18,9 @@
 //! event; a work that only partly made it onto the queue is completed in
 //! place, right after its first movements, so it still plays whole.
 //! [`QueueFeed::skip`] re-reads the queue and skips the rest of the current
-//! work; [`QueueFeed::stop`] stops.
+//! work; [`QueueFeed::stop`] stops. Played works stay where they are until
+//! the queue grows past [`DjConfig::trim_queue_at`]; then the long-played
+//! ones come off it, so a DJ left on for days never fills the queue.
 //!
 //! A running feed outlives its process as a [`FeedSnapshot`]: the daemon
 //! saves one per feed and, restarted, [`QueueFeed::restore`]s them. A
@@ -35,8 +37,8 @@ use std::net::IpAddr;
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::{Store, StoreError};
 use fsonos_core::{CoreError, HouseholdState, control};
-use fsonos_proto::content::{QUEUE, browse_all};
-use fsonos_proto::control::get_position_info;
+use fsonos_proto::content::{BrowseFlag, QUEUE, browse, browse_all};
+use fsonos_proto::control::{get_position_info, remove_track_range_from_queue};
 use fsonos_proto::didl::{
     SpotifyRenderParams, spotify_queue_uri, spotify_track_didl, spotify_uri_from_renderer_uri,
 };
@@ -178,6 +180,9 @@ pub struct QueueFeed {
     active: bool,
     /// The DJ's works from the current one on, in queue order.
     queued: Vec<QueuedWork>,
+    /// The DJ's works already played and still on the queue, in queue
+    /// order, until they are trimmed off it.
+    played: Vec<QueuedWork>,
     /// The queue position last seen playing (or jumped to).
     playing: Option<u32>,
     /// The last play recorded: (position, URI), so repeated events for one
@@ -199,6 +204,10 @@ pub struct FeedSnapshot {
     pub queued: Vec<QueuedWork>,
     pub playing: Option<u32>,
     pub recorded: Option<(u32, String)>,
+    /// Works already played and still on the queue (none in a feed saved
+    /// before the DJ trimmed its queue).
+    #[serde(default)]
+    pub played: Vec<QueuedWork>,
 }
 
 impl QueueFeed {
@@ -212,6 +221,7 @@ impl QueueFeed {
             lookahead: 1,
             active: false,
             queued: Vec::new(),
+            played: Vec::new(),
             playing: None,
             recorded: None,
             queue_len: None,
@@ -228,6 +238,7 @@ impl QueueFeed {
             queued: self.queued.clone(),
             playing: self.playing,
             recorded: self.recorded.clone(),
+            played: self.played.clone(),
         })
     }
 
@@ -244,6 +255,7 @@ impl QueueFeed {
             lookahead: snapshot.lookahead,
             active: true,
             queued: snapshot.queued,
+            played: snapshot.played,
             playing: snapshot.playing,
             recorded: snapshot.recorded,
             queue_len: None,
@@ -336,7 +348,7 @@ impl QueueFeed {
         if !self.active {
             return Ok(0);
         }
-        let position = playback.queue_position.filter(|&p| p > 0);
+        let mut position = playback.queue_position.filter(|&p| p > 0);
         let uri = playback
             .track_uri
             .as_deref()
@@ -350,19 +362,31 @@ impl QueueFeed {
                 .is_some_and(|n| self.queue_len != Some(n));
         if moved || resized {
             let had = !self.queued.is_empty();
-            self.resync(at)?;
+            let queue = self.resync(at)?;
             if had && self.queued.is_empty() {
                 // None of the DJ's works is on the queue any more: the owner
                 // cleared or replaced it, and the DJ steps aside.
                 self.release();
                 return Ok(0);
             }
+            // An event from before a change to the queue gives a position
+            // its track is no longer at: the feed's own trim renumbers the
+            // queue while events are on their way. Taken at its word, it
+            // would count unplayed works as played. The track it names is
+            // the one playing, so its position is where the queue has it.
+            position = position.and_then(|p| placed(&queue, p, uri.as_deref()));
         }
         if let Some(position) = position {
             self.playing = Some(position);
-            // Works wholly behind the playing position are history now.
-            self.queued
-                .retain(|w| w.last().is_some_and(|last| last >= position) || !w.is_whole());
+            // Works wholly behind the playing position are played now; the
+            // feed keeps where they are until it trims them off.
+            let (played, ahead): (Vec<QueuedWork>, Vec<QueuedWork>) =
+                std::mem::take(&mut self.queued)
+                    .into_iter()
+                    .partition(|w| w.is_whole() && w.last().is_none_or(|last| last < position));
+            self.queued = ahead;
+            self.played
+                .extend(played.into_iter().filter(|w| w.last().is_some()));
             if let Some(uri) =
                 uri.filter(|u| self.current().and_then(|w| w.track_at(position)) == Some(u))
                 && self.recorded.as_ref() != Some(&(position, uri.clone()))
@@ -370,8 +394,97 @@ impl QueueFeed {
                 store.record_play(&self.zone, &uri, plan.now)?;
                 self.recorded = Some((position, uri));
             }
+            self.trim(at)?;
         }
         self.top_up(at, plan, &*store)
+    }
+
+    /// Once the queue holds more than [`DjConfig::trim_queue_at`] tracks,
+    /// take off it each played work that ended more than
+    /// [`DjConfig::keep_played`] tracks before the one playing: back to
+    /// front, and only a work still whole and in order where the feed
+    /// believes it is (read back first), so the owner's own items stay.
+    fn trim<T: Transport + ?Sized>(&mut self, at: &Speakers<'_, T>) -> Result<(), FeedError> {
+        let (Some(playing), Some(length)) = (self.playing, self.queue_len) else {
+            return Ok(());
+        };
+        if length <= self.config.trim_queue_at {
+            return Ok(());
+        }
+        let before = playing.saturating_sub(self.config.keep_played);
+        let host = host_of(at)?;
+        let mut removed = 0;
+        // The works taken off are forgotten: one kept here would claim a
+        // later copy of its tracks (the owner's own) at the resync, and the
+        // next trim would take that off too.
+        let mut gone = vec![false; self.played.len()];
+        let mut outcome = Ok(());
+        for (i, work) in self.played.iter().enumerate().rev() {
+            match Self::trim_work(at, host, work, before) {
+                Ok(0) => {}
+                Ok(count) => {
+                    gone[i] = true;
+                    removed += count;
+                }
+                Err(e) => {
+                    outcome = Err(e);
+                    break;
+                }
+            }
+        }
+        if removed > 0 {
+            let mut gone = gone.into_iter();
+            self.played.retain(|_| !gone.next().unwrap_or(false));
+            self.playing = Some(playing.saturating_sub(removed));
+            self.resync(at)?;
+        }
+        outcome
+    }
+
+    /// Take `work` off the queue if it ended before position `before` and
+    /// is still there whole and in order (read back first). Returns how many
+    /// tracks came off.
+    fn trim_work<T: Transport + ?Sized>(
+        at: &Speakers<'_, T>,
+        host: IpAddr,
+        work: &QueuedWork,
+        before: u32,
+    ) -> Result<u32, FeedError> {
+        let (Some(first), Some(last)) = (work.first(), work.last()) else {
+            return Ok(0);
+        };
+        let count = last - first + 1;
+        let tracks = work.tracks();
+        if last >= before || usize::try_from(count).ok() != Some(tracks.len()) {
+            return Ok(0);
+        }
+        let there = browse(
+            at.transport,
+            host,
+            QUEUE,
+            BrowseFlag::DirectChildren,
+            first - 1,
+            count,
+        )?;
+        let found: Vec<Option<String>> = there
+            .objects
+            .iter()
+            .map(|o| {
+                o.res
+                    .as_ref()
+                    .and_then(|r| spotify_uri_from_renderer_uri(&r.uri))
+            })
+            .collect();
+        if found
+            .iter()
+            .map(Option::as_deref)
+            .ne(tracks.iter().map(|t| Some(*t)))
+        {
+            return Ok(0);
+        }
+        // UpdateID 0: the queue as it is, just read back.
+        remove_track_range_from_queue(at.transport, host, 0, first, count)?;
+        Ok(count)
     }
 
     /// Skip the rest of the current work (or the owner's item playing): play
@@ -425,6 +538,7 @@ impl QueueFeed {
     fn release(&mut self) {
         self.active = false;
         self.queued.clear();
+        self.played.clear();
         self.playing = None;
         self.recorded = None;
         self.queue_len = None;
@@ -451,8 +565,12 @@ impl QueueFeed {
     /// back where they still are, so a copy of a movement the owner queued
     /// ahead can't capture it; a movement no longer there (removed by the
     /// owner) loses its position, and a work with nothing left on the queue
-    /// is dropped. The recorded play moves with its track.
-    fn resync<T: Transport + ?Sized>(&mut self, at: &Speakers<'_, T>) -> Result<(), FeedError> {
+    /// is dropped. The recorded play moves with its track. Returns the queue
+    /// as read: each item's Spotify track, if it is one.
+    fn resync<T: Transport + ?Sized>(
+        &mut self,
+        at: &Speakers<'_, T>,
+    ) -> Result<Vec<Option<String>>, FeedError> {
         let host = host_of(at)?;
         let queue: Vec<Option<String>> = browse_all(at.transport, host, QUEUE)?
             .iter()
@@ -472,7 +590,7 @@ impl QueueFeed {
         });
         let place = |i: usize| u32::try_from(i + 1).unwrap_or(u32::MAX);
         let mut cursor = 0;
-        for work in &mut self.queued {
+        for work in self.played.iter_mut().chain(self.queued.iter_mut()) {
             let added: Vec<String> = work
                 .movements
                 .iter()
@@ -509,8 +627,9 @@ impl QueueFeed {
             self.recorded = moved.position.map(|p| (p, moved.uri.clone()));
         }
         self.queued.retain(|w| w.first().is_some());
+        self.played.retain(|w| w.first().is_some());
         self.queue_len = Some(u32::try_from(queue.len()).unwrap_or(u32::MAX));
-        Ok(())
+        Ok(queue)
     }
 
     /// Keep `lookahead` works queued beyond the playing position, finishing a
@@ -726,6 +845,23 @@ fn render_params<T: Transport + ?Sized>(
 ) -> Result<SpotifyRenderParams, FeedError> {
     control::spotify_params(at.transport, at.households, at.coordinator)?
         .ok_or(FeedError::NoRenderParams)
+}
+
+/// Where the track an event names is in `queue` (as just read): at the
+/// event's own position `p` when it is there, else the nearest place before
+/// `p` that holds it (tracks taken off ahead of it moved it up), else
+/// nowhere, and the event is out of date. `uri` is `None` for an item that
+/// isn't a Spotify track.
+fn placed(queue: &[Option<String>], p: u32, uri: Option<&str>) -> Option<u32> {
+    let at = usize::try_from(p).ok()?.checked_sub(1)?;
+    if queue.get(at).map(Option::as_deref) == Some(uri) {
+        return Some(p);
+    }
+    let uri = uri?;
+    queue[..at.min(queue.len())]
+        .iter()
+        .rposition(|q| q.as_deref() == Some(uri))
+        .and_then(|i| u32::try_from(i + 1).ok())
 }
 
 fn host_of<T: Transport + ?Sized>(at: &Speakers<'_, T>) -> Result<IpAddr, FeedError> {
@@ -1070,6 +1206,134 @@ mod tests {
             assert_eq!(run, whole, "work at queue position {}", i + 1);
             i += whole.len();
         }
+    }
+
+    #[test]
+    fn long_played_works_come_off_a_growing_queue_but_the_owners_items_stay() {
+        const OWNERS: &str = "spotify:track:0OwnersOwnTrack0000001";
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = works_of(&shelf_items(1));
+        let mut store = MemStore::default();
+        let config = DjConfig {
+            trim_queue_at: 8,
+            keep_played: 1,
+            ..DjConfig::default()
+        };
+        let mut feed = QueueFeed::new(&rig.coordinator, config, 7);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        // The owner's own track, at the end of the queue: it is played soon
+        // too, but never the DJ's to take off.
+        rig.owner_adds(OWNERS, false);
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+
+        let mut steps = 0;
+        while steps < 30 {
+            rig.next();
+            rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+            steps += 1;
+        }
+        // Fresh events for the track playing, so the feed is up to date.
+        rig.nudge();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let queue = rig.queue();
+        assert!(
+            plays(&store).len() >= 29,
+            "the DJ played on: {}",
+            plays(&store).len()
+        );
+        assert!(
+            queue.len() < 25,
+            "30 tracks played, but the queue holds only {}: {queue:?}",
+            queue.len()
+        );
+        assert_eq!(queue[0], OWNERS, "the owner's item stays, now first");
+        let current = feed.current().expect("on a DJ work");
+        let at = rig.position();
+        assert_eq!(
+            current.track_at(at).map(str::to_owned),
+            queue.get(at as usize - 1).cloned(),
+            "the feed's model of the queue still matches it"
+        );
+        assert_whole_works(&rig, &pool, current.first().unwrap() as usize);
+    }
+
+    #[test]
+    fn a_trimmed_work_never_claims_a_later_copy_of_its_tracks() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = works_of(&shelf_items(1));
+        let mut store = MemStore::default();
+        let config = DjConfig {
+            trim_queue_at: 8,
+            keep_played: 1,
+            ..DjConfig::default()
+        };
+        let mut feed = QueueFeed::new(&rig.coordinator, config, 7);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        // The owner queues the DJ's first work again, at the end: theirs.
+        let again: Vec<String> = feed
+            .queued
+            .first()
+            .expect("the DJ queued a work")
+            .tracks()
+            .iter()
+            .map(|t| (*t).to_owned())
+            .collect();
+        for uri in &again {
+            rig.owner_adds(uri, false);
+        }
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+
+        for _ in 0..30 {
+            rig.next();
+            rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+                .unwrap();
+        }
+        // Fresh events for the track playing, so the feed is up to date.
+        rig.nudge();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let queue = rig.queue();
+        assert!(
+            queue.windows(again.len()).any(|w| w == again.as_slice()),
+            "the owner's copy of a work the DJ trimmed stays: {again:?} in {queue:?}"
+        );
+        assert!(
+            queue.len() < 25 + again.len(),
+            "the DJ's own played works still come off: {queue:?}"
+        );
+        let current = feed.current().expect("on a DJ work");
+        let at = rig.position();
+        assert_eq!(
+            current.track_at(at).map(str::to_owned),
+            queue.get(at as usize - 1).cloned(),
+            "the feed's model of the queue still matches it"
+        );
+    }
+
+    #[test]
+    fn an_event_from_before_a_trim_is_placed_where_its_track_is_now() {
+        let queue: Vec<Option<String>> = ["a", "b", "c", "b"]
+            .iter()
+            .map(|u| Some((*u).to_owned()))
+            .collect();
+        assert_eq!(placed(&queue, 2, Some("b")), Some(2), "where it says");
+        assert_eq!(placed(&queue, 4, Some("c")), Some(3), "moved up by a trim");
+        assert_eq!(placed(&queue, 6, Some("b")), Some(4), "the nearest before");
+        assert_eq!(placed(&queue, 3, Some("b")), Some(2), "not a later copy");
+        assert_eq!(placed(&queue, 2, Some("z")), None, "nowhere: out of date");
+        assert_eq!(placed(&queue, 1, None), None, "a Spotify track is there");
     }
 
     #[test]
