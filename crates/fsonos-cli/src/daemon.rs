@@ -502,7 +502,14 @@ fn start_http(
         identity
     } else {
         let whois = fsonos_tailscale::WhoIs::default();
-        identity.with_tailnet(move |peer| whois.resolve(peer).map(|id| id.principal()))
+        // A process on this host reaching its tailnet address is local.
+        let own = names
+            .iter()
+            .filter_map(|n| n.parse().ok())
+            .chain([addr.ip()]);
+        identity
+            .with_tailnet(move |peer| whois.resolve(peer).map(|id| id.principal()))
+            .with_own_addresses(own)
     };
     let (surface, names, serve) = (Arc::clone(surface), names.to_vec(), serve.clone());
     let mut config = ServerConfig::new(addr.to_string())

@@ -28,7 +28,11 @@
 //! is named by the tailnet itself: [`Identity::with_tailnet`] asks a namer
 //! (the daemon's is Tailscale's WhoIs) who has the request's peer address,
 //! and the answer (a login, `tag:<name>`, or a node name) is that caller's
-//! [`Client::Tailnet`]. A peer the tailnet can't name stays `unknown`.
+//! [`Client::Tailnet`]. A peer the tailnet can't name stays `unknown`. A
+//! caller from one of the daemon host's own addresses
+//! ([`Identity::with_own_addresses`]) is a process on that host, which the
+//! tailnet would name as the host's owner: it is `loopback-http`, as it is
+//! when it comes over loopback.
 
 use fastapi::Request;
 use fastapi::core::middleware::RemoteAddr;
@@ -60,6 +64,7 @@ pub struct Identity {
     serve_headers: bool,
     cli_token: Option<String>,
     tailnet: Option<TailnetNamer>,
+    own: Vec<IpAddr>,
 }
 
 // By hand, so the CLI token never reaches a log.
@@ -70,6 +75,7 @@ impl std::fmt::Debug for Identity {
             .field("serve_headers", &self.serve_headers)
             .field("cli_token", &self.cli_token.as_ref().map(|_| "<set>"))
             .field("tailnet", &self.tailnet.is_some())
+            .field("own", &self.own)
             .finish()
     }
 }
@@ -80,6 +86,7 @@ impl PartialEq for Identity {
         self.listener == other.listener
             && self.serve_headers == other.serve_headers
             && self.cli_token == other.cli_token
+            && self.own == other.own
             && match (&self.tailnet, &other.tailnet) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
                 (a, b) => a.is_none() && b.is_none(),
@@ -98,6 +105,7 @@ impl Identity {
             serve_headers: false,
             cli_token: None,
             tailnet: None,
+            own: Vec::new(),
         }
     }
 
@@ -110,6 +118,7 @@ impl Identity {
             serve_headers: true,
             cli_token: None,
             tailnet: None,
+            own: Vec::new(),
         }
     }
 
@@ -132,9 +141,23 @@ impl Identity {
         self
     }
 
+    /// On an `unknown` listener, name a caller from one of `addrs` (the
+    /// daemon host's own addresses) `loopback-http`; see the module docs.
+    #[must_use]
+    pub fn with_own_addresses(mut self, addrs: impl IntoIterator<Item = IpAddr>) -> Self {
+        self.own = addrs.into_iter().collect();
+        self
+    }
+
     /// The caller of `req`.
     #[must_use]
     pub fn of(&self, req: &Request) -> Client {
+        if self.listener == Client::Unknown
+            && let Some(RemoteAddr(peer)) = req.get_extension::<RemoteAddr>()
+            && self.own.contains(peer)
+        {
+            return Client::LoopbackHttp;
+        }
         if self.listener == Client::Unknown
             && let Some(namer) = &self.tailnet
             && let Some(RemoteAddr(peer)) = req.get_extension::<RemoteAddr>()
@@ -258,6 +281,36 @@ mod tests {
                 .with_tailnet(namer)
                 .of(&from("100.64.0.7")),
             Client::LoopbackHttp
+        );
+    }
+
+    #[test]
+    fn a_caller_from_the_hosts_own_address_is_a_local_process_not_its_owner() {
+        let from = |ip: &str| {
+            let mut req = request(None);
+            req.insert_extension(RemoteAddr(ip.parse().unwrap()));
+            req
+        };
+        // The tailnet names the host's own address as its owner.
+        let namer = |peer: IpAddr| match peer.to_string().as_str() {
+            "100.64.0.5" | "fd7a:115c:a1e0::5" | "100.64.0.7" => {
+                Some("owner@example.com".to_owned())
+            }
+            _ => None,
+        };
+        let own: [IpAddr; 2] = [
+            "100.64.0.5".parse().unwrap(),
+            "fd7a:115c:a1e0::5".parse().unwrap(),
+        ];
+        let tailnet = Identity::fixed(Client::Unknown)
+            .with_tailnet(namer)
+            .with_own_addresses(own);
+        assert_eq!(tailnet.of(&from("100.64.0.5")), Client::LoopbackHttp);
+        assert_eq!(tailnet.of(&from("fd7a:115c:a1e0::5")), Client::LoopbackHttp);
+        // The owner's other devices are still the owner.
+        assert_eq!(
+            tailnet.of(&from("100.64.0.7")),
+            Client::Tailnet("owner@example.com".into())
         );
     }
 

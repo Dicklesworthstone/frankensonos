@@ -250,7 +250,9 @@ plain HTTP inside WireGuard. Two things to know:
   every tool by default, still volume-capped; a `[clients."<login>"]` or
   `[clients."tag:<name>"]` table in `policy.toml` narrows that. A caller
   Tailscale can't name is `unknown`, which the default policy keeps
-  read-only. Serve traffic arrives on loopback and has full control.
+  read-only. A process on the Mac itself that calls the Mac's own tailnet
+  address is `loopback-http`, as over loopback, never the owner's login.
+  Serve traffic arrives on loopback and has full control.
 - The tailnet addresses are read once, at startup. If the daemon starts
   before Tailscale is up, it listens on loopback only and logs why; restart it
   (`launchctl kickstart -k`) once Tailscale is up. Serve avoids this.
