@@ -5,16 +5,22 @@
 
 use std::process::{Command, Output};
 
-const SETTINGS: [&str; 6] = [
+const SETTINGS: [&str; 7] = [
     "FSONOS_HTTP_ADDR",
     "FSONOS_MCP_HTTP_ADDR",
     "FSONOS_DATA_DIR",
     "FSONOS_SEEDS",
     "FSONOS_SPOTIFY_CLIENT_ID",
     "FSONOS_SPOTIFY_REDIRECT_URI",
+    "FSONOS_TAILSCALE_SERVE",
 ];
 
 fn fsonos(args: &[&str]) -> Output {
+    fsonos_with(args, &[])
+}
+
+/// `fsonos args` with `env` set as well.
+fn fsonos_with(args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_fsonos"));
     for var in SETTINGS {
         cmd.env_remove(var);
@@ -24,6 +30,7 @@ fn fsonos(args: &[&str]) -> Output {
         std::env::temp_dir().join("fsonos-exit-codes"),
     )
     .env("RUST_LOG", "warn")
+    .envs(env.iter().copied())
     .args(args)
     .output()
     .expect("run fsonos")
@@ -42,6 +49,23 @@ fn unsafe_bind_is_an_invalid_argument() {
         stderr.contains("hint:") && stderr.contains("--allow-unsafe-bind"),
         "stderr: {stderr}"
     );
+}
+
+/// The README's `FSONOS_TAILSCALE_SERVE=1` reads as on rather than failing
+/// as an invalid value: the bind guard is what answers next.
+#[test]
+fn tailscale_serve_reads_1_yes_and_true_from_the_environment() {
+    for value in ["1", "yes", "true", "0"] {
+        let out = fsonos_with(
+            &["serve", "--http", "0.0.0.0:8099"],
+            &[("FSONOS_TAILSCALE_SERVE", value)],
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("HTTP API would bind every interface"),
+            "FSONOS_TAILSCALE_SERVE={value}: {stderr}"
+        );
+    }
 }
 
 #[test]

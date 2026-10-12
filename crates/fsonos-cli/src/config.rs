@@ -221,7 +221,12 @@ pub struct ServeArgs {
     /// Put Tailscale Serve in front of the daemon when it starts, as
     /// `fsonos tailscale setup` does: HTTPS on 443 (the API) and 8443 (MCP).
     /// Never Funnel. A refusal or failure is logged; the daemon serves on.
-    #[arg(long, env = "FSONOS_TAILSCALE_SERVE")]
+    /// The variable takes true/false, 1/0, yes/no or on/off.
+    #[arg(
+        long,
+        env = "FSONOS_TAILSCALE_SERVE",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
     pub tailscale_serve: bool,
 
     /// Spotify app client id (PKCE: identifies the app, not a secret).
