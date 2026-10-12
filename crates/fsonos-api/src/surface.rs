@@ -23,7 +23,7 @@ use fsonos_core::live::{Live, LiveEvent};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::rooms::Aliases;
 use fsonos_core::snapshot::RestoreOp;
-use fsonos_core::store::{Action, ActionFilter, LoggedAction, Store, StoreError};
+use fsonos_core::store::{Action, ActionFilter, LoggedAction, PlayRecord, Store, StoreError};
 use fsonos_core::{HouseholdState, control, moving};
 use fsonos_core::{favorites, search};
 use fsonos_proto::Transport;
@@ -109,9 +109,9 @@ pub struct Surface {
     /// The DJ status last published per coordinator (`dj.status`), so an
     /// event goes out only when it changed.
     dj_seen: Mutex<HashMap<PlayerId, DjStatusDto>>,
-    /// The track each coordinator was last heard playing (until it stops),
-    /// so the history records a play once ([`Self::record_heard`]).
-    heard: Mutex<HashMap<PlayerId, String>>,
+    /// What the live model heard each coordinator play
+    /// ([`Self::record_heard`]).
+    heard: Mutex<Heard>,
     /// Until when reads survey directly (set by a regroup).
     settle_until: Mutex<Option<Instant>>,
     /// Clips and where the players fetch them (see [`announce`]).
@@ -193,7 +193,7 @@ impl Surface {
             live: None,
             events: None,
             dj_seen: Mutex::new(HashMap::new()),
-            heard: Mutex::new(HashMap::new()),
+            heard: Mutex::new(Heard::default()),
             settle_until: Mutex::new(None),
             announcements: None,
             sleep: None,
@@ -352,38 +352,41 @@ impl Surface {
     /// once it plays, as a `spotify:` URI when it is Spotify. A pause and
     /// resume, or a station's next song title, is the same play; a stop ends
     /// it. A group member (its coordinator's `x-rincon:` stream) and TV
-    /// audio record nothing, and the play the DJ or a command recorded just
-    /// now is this one.
+    /// audio record nothing: what the room played ended. Music that moved
+    /// here from another room is the play it was there, the play recorded
+    /// just now in any room (by the DJ or a command) is this one, and so is
+    /// a room's last play when this is the first the daemon hears of it (it
+    /// was playing before the daemon started).
     fn record_heard(&self, player: &PlayerId) {
         let Some(playback) = self.live().and_then(|live| live.player(player)) else {
             return;
         };
         let mut heard = self.heard.lock().unwrap_or_else(PoisonError::into_inner);
-        if playback.transport == Some(TransportState::Stopped) {
-            heard.remove(player);
+        let raw = playback.track_uri.as_deref().filter(|u| !u.is_empty());
+        let no_music = |u: &str| u.starts_with("x-rincon:") || u.starts_with("x-sonos-htastream:");
+        if playback.transport == Some(TransportState::Stopped) || raw.is_some_and(no_music) {
+            heard.plays(player, None);
             return;
         }
-        let Some(raw) = playback
-            .track_uri
-            .as_deref()
-            .filter(|_| playback.transport == Some(TransportState::Playing))
-            .filter(|u| !u.is_empty() && !u.starts_with("x-rincon:"))
-            .filter(|u| !u.starts_with("x-sonos-htastream:"))
-        else {
+        let Some(raw) = raw.filter(|_| playback.transport == Some(TransportState::Playing)) else {
             return;
         };
         let uri = played_uri(raw);
-        if heard.get(player) == Some(&uri) {
+        let Some(first) = heard.plays(player, Some(uri.clone())) else {
+            return;
+        };
+        let moved = heard.elsewhere(player, &uri);
+        drop(heard);
+        if moved {
             return;
         }
-        heard.insert(player.clone(), uri.clone());
-        drop(heard);
         let at = self.now();
         let recorded = self.with_store(|s| {
-            let last = s.recent_plays(Some(player.0.as_str()), 1)?;
-            if last.last().is_some_and(|p| {
-                played_uri(&p.source_uri) == uri && at - p.played_at < JUST_RECORDED
-            }) {
+            let same = |p: &PlayRecord| played_uri(&p.source_uri) == uri;
+            let left = first && s.recent_plays(Some(player.0.as_str()), 1)?.iter().any(same);
+            let just = (s.recent_plays(None, RECENT_PLAYS)?.iter())
+                .any(|p| same(p) && at - p.played_at < JUST_RECORDED);
+            if left || just {
                 return Ok(());
             }
             s.record_play(&player.0, &uri, at)
@@ -1416,6 +1419,52 @@ fn room_view<'a>(
 /// How long ago a play the DJ or a command recorded still counts as the
 /// one the live model then hears, in seconds.
 const JUST_RECORDED: i64 = 120;
+
+/// How many of the house's latest plays a play heard is checked against.
+const RECENT_PLAYS: usize = 16;
+
+/// How long after a room stops playing something another room that plays
+/// it is still the same play, moved there.
+const MOVED_WITHIN: Duration = Duration::from_secs(120);
+
+/// What the live model heard each coordinator play, so the history records
+/// a play once ([`Surface::record_heard`]).
+#[derive(Default)]
+struct Heard {
+    /// The track each coordinator was last heard playing, `None` once it
+    /// played none; one missing was not heard since the daemon started.
+    now: HashMap<PlayerId, Option<String>>,
+    /// Tracks a coordinator stopped being heard playing, and when.
+    ended: Vec<(PlayerId, String, Instant)>,
+}
+
+impl Heard {
+    /// `player` plays `uri` now (`None`: no music of its own), and what it
+    /// played before ended there. `None` when it played `uri` already;
+    /// else whether this is the first the daemon hears of it.
+    fn plays(&mut self, player: &PlayerId, uri: Option<String>) -> Option<bool> {
+        let before = self.now.get(player);
+        if before.is_some_and(|b| *b == uri) {
+            return None;
+        }
+        let first = before.is_none();
+        if let Some(Some(was)) = self.now.insert(player.clone(), uri) {
+            self.ended.push((player.clone(), was, Instant::now()));
+        }
+        self.ended.retain(|(.., at)| at.elapsed() < MOVED_WITHIN);
+        Some(first)
+    }
+
+    /// Whether another coordinator plays `uri`, or did until just now: the
+    /// music moved to `player`.
+    fn elsewhere(&self, player: &PlayerId, uri: &str) -> bool {
+        self.now
+            .iter()
+            .any(|(p, u)| p != player && u.as_deref() == Some(uri))
+            || (self.ended.iter())
+                .any(|(p, u, at)| p != player && u == uri && at.elapsed() < MOVED_WITHIN)
+    }
+}
 
 /// `uri` as the history keeps it: a Spotify track, album or playlist as its
 /// `spotify:` URI (a renderer's `x-sonos-spotify:` form, a favorite's
