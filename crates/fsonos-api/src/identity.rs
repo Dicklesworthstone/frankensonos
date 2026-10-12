@@ -194,9 +194,20 @@ impl Identity {
     }
 }
 
-/// A name a caller can go by: not empty, bounded, no control characters.
+/// The keys the daemon's own clients go by ([`Client::key`]): a tailnet
+/// name that took one would get that client's rules, and a schedule it
+/// made would run as that client.
+const RESERVED: [&str; 4] = ["cli", "mcp-stdio", "loopback-http", "unknown"];
+
+/// A name a caller can go by: not empty, bounded, no control characters,
+/// and none of [`RESERVED`].
 fn plausible(name: &str) -> bool {
-    !name.is_empty() && name.len() <= MAX_LOGIN && !name.chars().any(char::is_control)
+    !name.is_empty()
+        && name.len() <= MAX_LOGIN
+        && !name.chars().any(char::is_control)
+        && !RESERVED
+            .iter()
+            .any(|key| key.eq_ignore_ascii_case(name.trim()))
 }
 
 /// `a == b`, taking the same time wherever they first differ.
@@ -228,6 +239,14 @@ mod tests {
         assert_eq!(serve.of(&request(None)), Client::LoopbackHttp);
         assert_eq!(serve.of(&request(Some("  "))), Client::LoopbackHttp);
         assert_eq!(serve.of(&request(Some("a\u{7}b"))), Client::LoopbackHttp);
+        // A daemon client's own key is no tailnet name.
+        for reserved in ["cli", "CLI", "mcp-stdio", "loopback-http", "unknown"] {
+            assert_eq!(
+                serve.of(&request(Some(reserved))),
+                Client::LoopbackHttp,
+                "{reserved}"
+            );
+        }
         // Not configured for Serve: the header means nothing.
         let plain = Identity::fixed(Client::LoopbackHttp);
         assert_eq!(
