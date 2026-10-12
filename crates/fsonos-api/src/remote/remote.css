@@ -104,7 +104,9 @@ button:focus-visible, select:focus-visible, input:focus-visible {
   outline-offset: 2px;
 }
 
-.volume { display: grid; grid-template-columns: minmax(80px, 30%) 1fr 3ch; gap: 8px; align-items: center; }
+.volume { display: grid; grid-template-columns: minmax(80px, 30%) 1fr 3ch auto; gap: 8px; align-items: center; }
+.volume .mute { padding: 4px 8px; font-size: 0.85rem; }
+.volume .mute[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .volume label { overflow-wrap: anywhere; font-size: 0.95rem; }
 .volume output { text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
 input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 32px; }

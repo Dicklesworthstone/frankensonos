@@ -19,6 +19,7 @@ const ROUTES = {
   next: ['POST', '/next'],
   previous: ['POST', '/previous'],
   volume: ['POST', '/volume'],
+  mute: ['POST', '/mute'],
   playFavorite: ['POST', '/play/favorite'],
   djStart: ['POST', '/dj/start'],
   djStop: ['POST', '/dj/stop'],
@@ -242,7 +243,15 @@ function slider(parts, room, household) {
   const id = `vol-${tag(`${household}/${room}`)}`;
   const input = el('input', { id, type: 'range', min: 0, max: 100, step: 1, value: 0, disabled: true });
   const shown = el('output', { for: id, text: '–' });
-  const entry = { input, shown, room: roomName(room, household), until: 0, timer: 0 };
+  const mute = el('button', { type: 'button', class: 'mute', text: 'Mute', 'aria-pressed': 'false', 'aria-label': `Mute ${room}` });
+  const entry = { input, shown, mute, muted: false, room: roomName(room, household), until: 0, timer: 0 };
+  mute.addEventListener('click', () => {
+    const want = !entry.muted;
+    setMute(entry, want);
+    call('mute', { body: { zone: entry.room, mute: want } })
+      .then(noted)
+      .catch((error) => { setMute(entry, !want); failed(error); });
+  });
   input.addEventListener('input', () => {
     shown.textContent = input.value;
     entry.until = Date.now() + 1500;
@@ -257,7 +266,14 @@ function slider(parts, room, household) {
     }, 250);
   });
   parts.sliders.set(room, entry);
-  return el('div', { class: 'volume' }, el('label', { for: id, text: room }), input, shown);
+  return el('div', { class: 'volume' }, el('label', { for: id, text: room }), input, shown, mute);
+}
+
+/** Show whether a room is muted. */
+function setMute(entry, muted) {
+  entry.muted = muted;
+  entry.mute.textContent = muted ? 'Unmute' : 'Mute';
+  entry.mute.setAttribute('aria-pressed', String(muted));
 }
 
 /** Show a room's volume, unless its slider is in hand. */
@@ -303,6 +319,7 @@ async function refreshZone(zone) {
   }
   const coordinator = parts.sliders.get(zone.coordinator_room);
   if (coordinator && typeof state.volume === 'number') setVolume(coordinator, state.volume);
+  if (coordinator && typeof state.mute === 'boolean') setMute(coordinator, state.mute);
   await Promise.all(zone.members
     .filter((room) => room !== zone.coordinator_room)
     .map((room) => refreshVolume(parts.sliders.get(room)).catch(() => {})));
@@ -312,6 +329,7 @@ async function refreshZone(zone) {
 async function refreshVolume(entry) {
   const state = await call('state', { params: { room: entry.room } });
   if (typeof state.volume === 'number') setVolume(entry, state.volume);
+  if (typeof state.mute === 'boolean') setMute(entry, state.mute);
 }
 
 async function refreshDj(parts) {
@@ -487,7 +505,22 @@ function listen() {
   }
 }
 
+/** The header's "Pause everywhere": every group of every household at once. */
+function pauseEverywhere() {
+  const button = $('pause-all');
+  button.disabled = true;
+  call('pause', { body: { zone: 'everywhere' } })
+    .then(noted)
+    .then((outcome) => { if (outcome && !(outcome.notes || []).length) toast(outcome.done); })
+    .catch(failed)
+    .finally(() => {
+      button.disabled = false;
+      loadZones().catch(() => {});
+    });
+}
+
 async function start() {
+  $('pause-all').addEventListener('click', pauseEverywhere);
   try {
     await loadZones();
   } catch (error) {

@@ -329,7 +329,8 @@ the house policy with quiet hours, the action log and undo, `doctor` and
 `setup`, the simulator, and the CLI, HTTP API and MCP server, on loopback and
 your tailnet. The CLI goes through a running daemon when there is one, with
 room-name completions for zsh, bash and fish, and the daemon serves a web
-remote (rooms, now playing with album art, volume, the DJ and scenes) to any
+remote (rooms, now playing with album art, volume and mute, pause everywhere,
+the DJ and scenes) to any
 device on your tailnet. The daemon keeps the DJ's library fresh on its own,
 and `fsonos dj sync` refreshes it on demand.
 
