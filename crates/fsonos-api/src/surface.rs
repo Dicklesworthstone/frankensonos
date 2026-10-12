@@ -73,6 +73,10 @@ pub const REFRESH: Duration = Duration::from_secs(30);
 /// model, whose topology events may not have arrived yet.
 pub const SETTLE: Duration = Duration::from_secs(3);
 
+/// How long a doctor report answers callers that could not be identified
+/// before one of them runs the checks again (see [`Surface::doctor`]).
+pub const DOCTOR_REUSE: Duration = Duration::from_secs(30);
+
 /// See the module docs.
 pub struct Surface {
     transport: Arc<dyn Transport + Send + Sync>,
@@ -85,6 +89,8 @@ pub struct Surface {
     clock: Box<dyn Clock>,
     log: Option<ActionLog>,
     doctor_checks: Option<DoctorChecks>,
+    /// The last doctor report and when it was made.
+    doctor_last: Mutex<Option<(Instant, Report)>>,
     /// Runs the DJ (`dj_start` / `dj_skip` / `dj_stop`); without one they
     /// answer NOT_IMPLEMENTED.
     dj: Option<Box<dyn DjEngine>>,
@@ -173,6 +179,7 @@ impl Surface {
             clock,
             log: None,
             doctor_checks: None,
+            doctor_last: Mutex::new(None),
             dj: None,
             aliases_file: None,
             live: None,
@@ -339,8 +346,36 @@ impl Surface {
     /// Run the doctor (`doctor`, read-only): the surface's own checks, then
     /// the core's Spotify linkage checks for each household. It runs even
     /// when nothing answers, which is what it is for.
+    ///
+    /// The LAN checks search the network, read every player and subscribe to
+    /// their events, so a caller that could not be identified gets the last
+    /// report while it is younger than [`DOCTOR_REUSE`], and such callers run
+    /// the checks one at a time. Everyone else gets a fresh run.
     pub fn doctor(&self, client: &Client) -> Result<Report, Failure> {
         self.guard(client).authorize("doctor", true)?;
+        if *client != Client::Unknown {
+            let report = self.run_doctor()?;
+            // Never wait for an unidentified caller's run to keep this one.
+            if let Ok(mut last) = self.doctor_last.try_lock() {
+                *last = Some((Instant::now(), report.clone()));
+            }
+            return Ok(report);
+        }
+        let mut last = self
+            .doctor_last
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((at, report)) = &*last
+            && at.elapsed() < DOCTOR_REUSE
+        {
+            return Ok(report.clone());
+        }
+        let report = self.run_doctor()?;
+        *last = Some((Instant::now(), report.clone()));
+        Ok(report)
+    }
+
+    fn run_doctor(&self) -> Result<Report, Failure> {
         let households = self.households().unwrap_or_default();
         let mut runner = Runner::new();
         if let Some(checks) = &self.doctor_checks {
@@ -1563,6 +1598,31 @@ mod tests {
             .control(&Client::Unknown, "pause", |_| unreachable!())
             .unwrap_err();
         assert_eq!(denied.code, ErrorCode::PolicyDenied);
+    }
+
+    #[test]
+    fn an_unidentified_caller_reuses_a_recent_doctor_report() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&runs);
+        let (s, _) = surface("", households());
+        let s = s.with_doctor_checks(Box::new(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }));
+        let ran = || runs.load(Ordering::SeqCst);
+        s.doctor(&Client::Unknown).unwrap();
+        s.doctor(&Client::Unknown).unwrap();
+        assert_eq!(ran(), 1, "the second call reused the first report");
+        s.doctor(&Client::LoopbackHttp).unwrap();
+        s.doctor(&Client::McpStdio).unwrap();
+        assert_eq!(ran(), 3, "an identified caller always runs the checks");
+        s.doctor(&Client::Unknown).unwrap();
+        assert_eq!(ran(), 3, "and its report answers the next unknown one");
+        if let Some((at, _)) = &mut *s.doctor_last.lock().unwrap() {
+            *at = Instant::now().checked_sub(DOCTOR_REUSE).unwrap();
+        }
+        s.doctor(&Client::Unknown).unwrap();
+        assert_eq!(ran(), 4, "an old report is made again");
     }
 
     /// Refuses the `refuse`d action with UPnP 701: every time, or only its

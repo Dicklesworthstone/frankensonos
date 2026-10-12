@@ -67,7 +67,7 @@ us and is re-learned, never assumed.
 |---|---|---|
 | Daemon crash | launchd `KeepAlive` (the interim Python bridge already runs this way, dual-household, params-learned) | DEPLOY.md |
 | Exposed control surface | Bind guard: loopback or tailnet only, never a public interface; Tailscale fronts the daemon, speakers stay LAN-only (and stay stock — see PROTOCOL.md §12) | README, `ts-*` epic |
-| Something's wrong and you can't tell | `fsonos doctor` / `GET /doctor` / MCP doctor: store, SSDP, seeds, players, households, GENA round-trip, Spotify linkage, Tailscale | `b-doctor-*`, `d-doctor-surface-15q` |
+| Something's wrong and you can't tell | `fsonos doctor` / `GET /doctor` / MCP doctor: store, SSDP, seeds, players, households, GENA round-trip, Spotify linkage, Tailscale. A caller the daemon cannot identify gets the last report while it is under 30 s old, so it cannot make the daemon probe the LAN in a loop | `b-doctor-*`, `d-doctor-surface-15q`, `doctor-lan-rate-phc` |
 | Opaque failures | Stable error codes + hints + suggestions on CLI/HTTP/MCP; no silent fallbacks | `d-error-codes-tc4` |
 
 ## 7. The host and the network fail too (fleet-verified 2026-10-11/12)
