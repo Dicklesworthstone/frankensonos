@@ -339,6 +339,10 @@ A selection; each commit message has the details.
 - HTTP connections are served concurrently, so an open event stream never
   holds up other callers.
   [`d52e4f3`](https://github.com/Dicklesworthstone/frankensonos/commit/d52e4f3)
+- Discovery's SSDP `M-SEARCH` and mDNS query leave every LAN interface, not
+  only the one the kernel's multicast route picks, so a multi-homed host
+  (speaker VLAN + main LAN + tailnet) finds players on all of them.
+  [`6e83b3c`](https://github.com/Dicklesworthstone/frankensonos/commit/6e83b3c)
 - IPv6 listeners answer their own address, and loopback listeners answer
   Tailscale Serve's `ts.net` Host.
   [`11ccf17`](https://github.com/Dicklesworthstone/frankensonos/commit/11ccf17),
