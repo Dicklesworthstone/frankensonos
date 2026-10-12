@@ -24,7 +24,7 @@ use fsonos_core::schedule::{
     self as core_schedule, DEFAULT_GRACE, Schedule, ScheduleAction, ScheduleError, ScheduleSpec,
     Tick,
 };
-use fsonos_core::sleep::{FADE, SleepOutcome, SleepTimer, SleepTimers};
+use fsonos_core::sleep::{BACKSTOP, FADE, SleepOutcome, SleepTimer, SleepTimers};
 use fsonos_core::{CoreError, HouseholdState};
 use fsonos_proto::{ProtoError, control as soap};
 use fsonos_types::PlayerId;
@@ -535,6 +535,9 @@ pub struct Sleep {
     timers: SleepTimers,
     fader: Fader,
     saved: Option<PathBuf>,
+    /// Held while the file is written, so two saves never share the
+    /// partial file.
+    writing: Mutex<()>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -556,6 +559,7 @@ impl Sleep {
             timers: SleepTimers::with_fade(fade),
             fader: Fader::default(),
             saved: None,
+            writing: Mutex::new(()),
         }
     }
 
@@ -572,6 +576,7 @@ impl Sleep {
         let Some(path) = &self.saved else {
             return;
         };
+        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
         let saved = SavedTimers {
             timers: self.timers.all(),
         };
@@ -673,6 +678,14 @@ fn speaker_timer(
     Ok(soap::get_remaining_sleep_timer(t, zone.ip)
         .map_err(proto)?
         .map(|s| Duration::from_secs(u64::from(s))))
+}
+
+/// Whether the speaker's own timer, with `left` to go at `now`, is the
+/// backstop the daemon set for `timer` (its end plus [`BACKSTOP`], give or
+/// take a minute) rather than one set on the speaker meanwhile.
+fn is_backstop(timer: &SleepTimer, left: Duration, now: DateTime<Utc>) -> bool {
+    let expected = timer.ends + delta(BACKSTOP) - now;
+    (delta(left) - expected).abs() <= TimeDelta::minutes(1)
 }
 
 /// The answer to a cancel: whether there was a timer to cancel.
@@ -879,10 +892,12 @@ impl Surface {
     }
 
     /// Take up the sleep timers a previous run of the daemon saved: each one
-    /// whose group still has the player's own timer running (its backstop)
+    /// whose group still has the player's own timer running as its backstop
     /// is armed again, to fade out when it comes due, even if that is now. A
     /// timer whose player dropped its own meanwhile (cancelled from the
-    /// Sonos app, a reboot) stays gone. How many were taken up.
+    /// Sonos app, a reboot) stays gone, and so does one whose player runs a
+    /// timer set on it meanwhile: that one is the owner's, left alone. How
+    /// many were taken up.
     pub fn adopt_sleep_timers(&self) -> usize {
         let Some(sleep) = &self.sleep else {
             return 0;
@@ -898,6 +913,7 @@ impl Surface {
                 return 0;
             }
         };
+        let now = self.clock.now().to_utc();
         let mut adopted = 0;
         for timer in saved {
             let Some(zone) = Zone::of(&households, &timer.coordinator) else {
@@ -908,7 +924,7 @@ impl Surface {
                 continue;
             };
             match speaker_timer(&*self.transport, &zone) {
-                Ok(Some(_)) => {
+                Ok(Some(left)) if is_backstop(&timer, left, now) => {
                     if sleep.timers.adopt(SleepTimer {
                         room: zone.room.clone(),
                         ..timer
@@ -916,6 +932,10 @@ impl Surface {
                         adopted += 1;
                     }
                 }
+                Ok(Some(_)) => tracing::info!(
+                    "sleep timer of {}'s group dropped: the speaker runs a timer set on it meanwhile",
+                    zone.room
+                ),
                 Ok(None) => tracing::info!(
                     "sleep timer of {}'s group dropped: the speaker's own timer is gone",
                     zone.room
@@ -2057,6 +2077,18 @@ mod tests {
         let file = std::fs::read_to_string(&path).unwrap();
         let kept: SavedTimers = serde_json::from_str(&file).unwrap();
         assert!(kept.timers.is_empty(), "the file forgets it: {file}");
+
+        // A 90-minute timer the owner set on the speaker meanwhile is theirs:
+        // the daemon's saved one is not taken up over it.
+        let again = daemon(running);
+        again
+            .set_sleep_timer(&Client::Cli, &sleep_req(Some("45m"), false, false))
+            .unwrap();
+        drop(again);
+        let owners = daemon("<RemainingSleepTimerDuration>1:30:00</RemainingSleepTimerDuration>");
+        assert_eq!(owners.adopt_sleep_timers(), 0);
+        let listed = owners.sleep_timers(&Client::Cli, None).unwrap();
+        assert!(listed.iter().all(|t| !t.fades), "{listed:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
