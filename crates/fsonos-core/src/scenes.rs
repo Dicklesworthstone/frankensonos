@@ -61,9 +61,10 @@ pub struct SceneGroup {
     pub members: Vec<String>,
     #[serde(default)]
     pub source: SceneSource,
-    /// Playing, or else paused (or stopped).
-    #[serde(default)]
-    pub playing: bool,
+    /// Playing, or else paused (or stopped); `None` leaves the group's
+    /// playback as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playing: Option<bool>,
 }
 
 /// What a scene group plays.
@@ -435,10 +436,11 @@ fn plan_sources(
         let starts = source.is_some();
         let playing = !starts && now.is_some_and(|s| s.transport_state == TransportState::Playing);
         plan.ops.extend(source);
-        if g.playing && !starts && !playing {
-            plan.ops.push(SceneOp::Play { coordinator });
-        } else if !g.playing && (starts || playing) {
-            plan.ops.push(SceneOp::Pause { coordinator });
+        match g.playing {
+            Some(true) if !starts && !playing => plan.ops.push(SceneOp::Play { coordinator }),
+            Some(false) if starts || playing => plan.ops.push(SceneOp::Pause { coordinator }),
+            // As asked already, or (`None`) left as it is.
+            _ => {}
         }
     }
 }
@@ -614,7 +616,18 @@ fn fade_volumes<T: Transport + ?Sized>(
                 match (op, set) {
                     (Some(op), Ok(_)) => report.done.push(SceneOp::clone(op)),
                     (Some(op), Err(e)) => report.failed.push((SceneOp::clone(op), e.to_string())),
-                    (None, _) => {}
+                    // A room silenced to fade in, still silent: say so.
+                    (None, Err(e)) => {
+                        let room = households
+                            .iter()
+                            .flat_map(|h| &h.rooms)
+                            .find(|r| r.players.contains(player))
+                            .map_or(player.0.as_str(), |r| r.name.as_str());
+                        report.notes.push(format!(
+                            "{room} was silenced for the fade and couldn't be put back: {e}"
+                        ));
+                    }
+                    (None, Ok(_)) => {}
                 }
             }
         }
@@ -749,7 +762,7 @@ pub fn capture<T: Transport + ?Sized>(
                     .map(|r| r.name.clone())
                     .collect(),
                 source,
-                playing: snap.transport_state == TransportState::Playing,
+                playing: Some(snap.transport_state == TransportState::Playing),
             });
         }
     }
@@ -857,7 +870,7 @@ mod tests {
             coordinator: lead.into(),
             members: members.iter().map(|m| (*m).into()).collect(),
             source,
-            playing,
+            playing: Some(playing),
         }
     }
 
@@ -1119,6 +1132,27 @@ mod tests {
         let minimal: Scene =
             serde_json::from_str(r#"{"name":"Quiet","groups":[{"coordinator":"Den"}]}"#).unwrap();
         assert_eq!(minimal.groups[0].source, SceneSource::Keep);
-        assert!(!minimal.groups[0].playing);
+        assert_eq!(minimal.groups[0].playing, None, "left as it is");
+    }
+
+    #[test]
+    fn a_kept_group_that_says_nothing_of_playing_is_left_as_it_is() {
+        // C plays now; the scene keeps what C has and says nothing of playing.
+        let h = house(&[&[&["A", "B"], &["C"]]]);
+        let mut snaps = evening_snaps();
+        snaps[1].transport_state = TransportState::Playing;
+        let mut scene = evening();
+        scene.groups[1].playing = None;
+        let plan = plan_apply(&scene, &h, &snaps).unwrap();
+        assert_eq!(plan, ScenePlan::default(), "C is not paused");
+        // Saying paused, it pauses.
+        scene.groups[1].playing = Some(false);
+        let plan = plan_apply(&scene, &h, &snaps).unwrap();
+        assert_eq!(
+            plan.ops,
+            [SceneOp::Pause {
+                coordinator: pid("C")
+            }]
+        );
     }
 }

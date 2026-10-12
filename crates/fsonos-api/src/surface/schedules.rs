@@ -2304,7 +2304,7 @@ mod tests {
                 coordinator: "Patio".into(),
                 members: Vec::new(),
                 source: fsonos_core::scenes::SceneSource::default(),
-                playing: false,
+                playing: Some(false),
             }],
             volumes: std::collections::BTreeMap::new(),
             mutes: std::collections::BTreeMap::new(),

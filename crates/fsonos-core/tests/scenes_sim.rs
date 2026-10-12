@@ -106,7 +106,7 @@ fn a_saved_scene_brings_the_house_back_in_both_generations() {
         .find(|g| g.coordinator == "Kitchen")
         .unwrap();
     assert_eq!(kitchen.members, ["Office"]);
-    assert!(kitchen.playing);
+    assert_eq!(kitchen.playing, Some(true));
     assert!(
         matches!(&kitchen.source, SceneSource::Favorite { name, uri: Some(_) } if name == "Sim Radio"),
         "{scene:#?}"
@@ -122,7 +122,8 @@ fn a_saved_scene_brings_the_house_back_in_both_generations() {
         .iter()
         .find(|g| g.coordinator == "Den")
         .unwrap();
-    assert_eq!((&den.source, den.playing), (&SceneSource::Keep, false));
+    assert_eq!(den.source, SceneSource::Keep);
+    assert_eq!(den.playing, Some(false));
     // Where the DJ plays, the scene has the DJ, whatever the group is on.
     let djs = [PlayingDj {
         coordinator: id(&h, "Den"),
@@ -136,11 +137,8 @@ fn a_saved_scene_brings_the_house_back_in_both_generations() {
             mood: Some("calm".into())
         })
     );
-    assert_eq!(
-        scene.groups.len(),
-        4,
-        "Kitchen+Office, Den, Living Room, Bedroom"
-    );
+    // Kitchen+Office, Den, Living Room, Bedroom.
+    assert_eq!(scene.groups.len(), 4);
     assert_eq!((scene.volumes["Den"], scene.mutes["Den"]), (12, true));
 
     let mut store = MemStore::default();
@@ -219,7 +217,7 @@ fn volumes_fade_the_dj_is_asked_and_failures_are_reported() {
                 source: SceneSource::Dj {
                     mood: Some("calm".into()),
                 },
-                playing: true,
+                playing: Some(true),
             },
             SceneGroup {
                 coordinator: "Kitchen".into(),
@@ -228,7 +226,7 @@ fn volumes_fade_the_dj_is_asked_and_failures_are_reported() {
                     name: "No Such Station".into(),
                     uri: None,
                 },
-                playing: true,
+                playing: Some(true),
             },
         ],
         volumes: [("Den", 40), ("Office", 40), ("Kitchen", 5)]
@@ -276,7 +274,7 @@ fn volumes_fade_the_dj_is_asked_and_failures_are_reported() {
         coordinator: "Kitchen".into(),
         members: vec!["Living Room".into()],
         source: SceneSource::Keep,
-        playing: false,
+        playing: Some(false),
     }];
     let err = scenes::plan_apply(&across, &h, &[]).unwrap_err();
     assert!(matches!(err, SceneError::CrossHousehold { .. }), "{err}");
@@ -301,7 +299,7 @@ fn a_faded_scene_fades_its_rooms_together_and_fades_in_what_starts() {
         coordinator: room.into(),
         members: Vec::new(),
         source,
-        playing: true,
+        playing: Some(true),
     };
     let scene = Scene {
         name: "Morning".into(),

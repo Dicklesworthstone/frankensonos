@@ -59,8 +59,10 @@ pub struct SceneGroupDto {
     /// The other rooms in it.
     pub members: Vec<String>,
     pub source: SceneSourceDto,
-    /// Playing, or else paused or stopped.
-    pub playing: bool,
+    /// Playing, or else paused or stopped; absent, the group's playback is
+    /// left as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playing: Option<bool>,
 }
 
 /// What a scene group plays: `keep` (whatever the group has, its queue
@@ -134,8 +136,8 @@ pub struct SceneGroupDefinition {
     /// the DJ), or the `dj` (`mood`, optional).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SceneSourceDto>,
-    /// Playing, or else paused; by default it plays when it has a source
-    /// other than `keep`.
+    /// Playing, or else paused. By default a group with a source other than
+    /// `keep` plays, and a `keep` group's playback is left as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub playing: Option<bool>,
 }
@@ -174,7 +176,9 @@ impl SceneDefinition {
                     .iter()
                     .map(|m| room(m))
                     .collect::<Result<_, _>>()?,
-                playing: g.playing.unwrap_or(!matches!(source, SceneSource::Keep)),
+                playing: g
+                    .playing
+                    .or((!matches!(source, SceneSource::Keep)).then_some(true)),
                 source,
             });
         }

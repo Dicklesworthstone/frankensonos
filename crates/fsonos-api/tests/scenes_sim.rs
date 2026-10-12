@@ -109,7 +109,11 @@ fn a_scene_written_out_is_checked_saved_and_applied() {
     let lead = &saved.groups[0];
     assert_eq!(lead.coordinator, "Kitchen", "named as the house names it");
     assert_eq!(lead.members, ["Office"]);
-    assert!(lead.playing, "a group with a source plays by default");
+    assert_eq!(
+        lead.playing,
+        Some(true),
+        "a group with a source plays by default"
+    );
     assert_eq!(saved.volumes.get("Office"), Some(&18));
 
     let applied = s.apply_scene(&cli, "dinner").unwrap();
@@ -211,7 +215,7 @@ fn apply_puts_the_saved_house_back_and_undo_restores_what_it_changed() {
         (lead.source.kind.as_str(), lead.source.uri.as_deref()),
         ("uri", Some(STREAM))
     );
-    assert!(lead.playing);
+    assert_eq!(lead.playing, Some(true));
     assert_eq!(saved.volumes.get("Kitchen"), Some(&30));
     assert_eq!(
         saved.groups.len(),
@@ -326,7 +330,7 @@ fn scene_failures_carry_their_codes() {
             coordinator: "Kitchen".into(),
             members: vec!["Living Room".into()],
             source: SceneSource::Keep,
-            playing: false,
+            playing: Some(false),
         }],
         volumes: BTreeMap::new(),
         mutes: BTreeMap::new(),

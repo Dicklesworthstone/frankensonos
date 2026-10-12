@@ -160,7 +160,11 @@ fn group_text(g: &SceneGroupDto) -> String {
             .map_or_else(|| "the DJ".to_string(), |m| format!("the DJ ({m})")),
         _ => "what it has".to_string(),
     };
-    let state = if g.playing { "playing" } else { "paused" };
+    let state = match g.playing {
+        Some(true) => "playing",
+        Some(false) => "paused",
+        None => "playing or not as it is",
+    };
     format!("{rooms}: {what}, {state}")
 }
 
@@ -238,13 +242,13 @@ mod tests {
                         mood: Some("calm".into()),
                         ..source("dj")
                     },
-                    playing: true,
+                    playing: Some(true),
                 },
                 SceneGroupDto {
                     coordinator: "Bedroom".into(),
                     members: Vec::new(),
                     source: source("keep"),
-                    playing: false,
+                    playing: Some(false),
                 },
             ],
             volumes: BTreeMap::from([("Kitchen".into(), 30), ("Office".into(), 25)]),
