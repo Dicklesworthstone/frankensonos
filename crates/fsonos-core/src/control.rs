@@ -20,9 +20,12 @@ use fsonos_types::{Player, PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-/// How long a player that left its group may take to show alone (real ones
-/// do within about a second).
-const LEAVE_WAIT: Duration = Duration::from_secs(3);
+/// How long a player that left its group may take to show alone: real ones
+/// settle within about a second, but one that just finished an announcement
+/// can take well over 3 s (fleet-verified 2026-10-12: a real S1 group lead's
+/// restore 402'd spuriously at 3 s while the topology ended up correct; the
+/// sim, which settles instantly, never reproduces it).
+const LEAVE_WAIT: Duration = Duration::from_secs(10);
 const LEAVE_POLL: Duration = Duration::from_millis(100);
 
 /// The player `id`, in whichever household knows it.
