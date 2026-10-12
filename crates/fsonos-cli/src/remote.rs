@@ -899,6 +899,15 @@ fn control_request(
 mod tests {
     use super::*;
 
+    /// A directory of this test's own: the pid alone recurs across runs on a
+    /// worker (and across jobs in other pid namespaces sharing its temp dir).
+    fn scratch_dir(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        std::env::temp_dir().join(format!("fsonos-{name}-{}-{nanos}", std::process::id()))
+    }
+
     #[test]
     fn every_announcement_command_has_a_daemon_route() {
         use clap::Parser;
@@ -1030,7 +1039,7 @@ mod tests {
 
     #[test]
     fn the_daemon_file_round_trips_owner_only_and_is_removed_only_by_its_writer() {
-        let dir = std::env::temp_dir().join(format!("fsonos-daemon-file-{}", std::process::id()));
+        let dir = scratch_dir("daemon-file");
         std::fs::create_dir_all(&dir).unwrap();
         let file = DaemonFile {
             http: "127.0.0.1:8099".parse().unwrap(),
@@ -1098,7 +1107,7 @@ mod tests {
 
     #[test]
     fn the_data_directory_lock_admits_one_daemon() {
-        let dir = std::env::temp_dir().join(format!("fsonos-lock-{}", std::process::id()));
+        let dir = scratch_dir("lock");
         let DirLock::Held(held) = lock_data_dir(&dir).unwrap() else {
             panic!("the first take holds the lock");
         };
@@ -1119,13 +1128,13 @@ mod tests {
         // daemon.json says.
         drop(held);
         assert!(matches!(lock_data_dir(&dir).unwrap(), DirLock::Held(_)));
-        let _ = std::fs::remove_file(dir.join(DAEMON_FILE));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_simulator_command_asks_only_a_daemon_under_the_same_routes_file() {
         use clap::Parser;
-        let dir = std::env::temp_dir().join(format!("fsonos-confined-{}", std::process::id()));
+        let dir = scratch_dir("confined");
         std::fs::create_dir_all(&dir).unwrap();
         let routes = dir.join("routes.toml");
         std::fs::write(&routes, "[routes]\n").unwrap();
