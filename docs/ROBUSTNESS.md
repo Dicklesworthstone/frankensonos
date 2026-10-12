@@ -41,6 +41,7 @@ us and is re-learned, never assumed.
 | Learned params go stale anyway → UPnP 800 | On render 800: re-learn from favorites, retry once, then report `RENDER_PARAMS_STALE` with a remedy. The DJ learns them before every enqueue, so an 800 from a coordinator that still leads its group reports `RENDER_PARAMS_STALE` at once | `re-render-800-retry` (new) |
 | Wrong `desc` (the original UPnP-800 killer) | Template pins `SA_RINCON<svc>` from the learned descriptor; doctor checks linkage per household | `b-doctor-render-checks-aok` |
 | Single track ends → transport STOPPED | The DJ uses the queue flow (append → point → seek → play → next), never bare single-shot `SetAVTransportURI` for continuous listening | PROTOCOL.md §4, `c-dj-*` |
+| The DJ's top-up fails while its last work plays (a refused render, a network blip) → the queue runs out and stops back on track 1 | The feed knows that stop: back on track 1, the queue's length unchanged, the last track having played. It tops up past the end and plays from the first new work; an owner's Stop or a pause is left alone | `dj-dry-queue-restart-c1dg` |
 
 ## 4. State stays live without polling storms
 
