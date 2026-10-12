@@ -515,7 +515,8 @@ fn routable(command: &Command) -> bool {
     matches!(
         command,
         Command::Discover
-            | Command::Zones
+            | Command::Zones { .. }
+            | Command::Search { .. }
             | Command::Status { .. }
             | Command::Rooms { alias: None }
             | Command::Favorites { .. }
@@ -555,8 +556,13 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
     let json = global.json;
     let done = |o: &OutcomeDto| format!("{}\n", o.done);
     match command {
+        Command::Search { query, zone, limit } => crate::search(
+            global,
+            &crate::search_request(query, zone.as_deref(), *limit),
+            &daemon,
+        )?,
         Command::Discover
-        | Command::Zones
+        | Command::Zones { .. }
         | Command::Status { .. }
         | Command::Rooms { alias: None }
         | Command::Favorites { .. }
@@ -630,7 +636,11 @@ fn read(daemon: &Daemon, global: &GlobalArgs, command: &Command) -> anyhow::Resu
             };
             emit(json, &found, direct::discover_text)?;
         }
-        Command::Zones => {
+        Command::Zones { zone: Some(room) } => {
+            let zone: ZoneDto = daemon.get(&format!("/zones/{}", pct(room)))?;
+            emit(json, &zone, |z| direct::zones_text(std::slice::from_ref(z)))?;
+        }
+        Command::Zones { zone: None } => {
             let zones: Vec<ZoneDto> = daemon.get("/zones")?;
             remember_rooms(global, zones.iter().flat_map(|z| z.members.iter().cloned()));
             emit(json, &zones, |z| direct::zones_text(z))?;

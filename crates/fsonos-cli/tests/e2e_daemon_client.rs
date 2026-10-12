@@ -50,6 +50,21 @@ fn same_discover(s: &mut Scenario, no_seeds: &str) {
 /// `fsonos play --search` through the daemon (it needs no seeds): a bare
 /// --pick lists the daemon's matches, and the search plays the best.
 fn search_through_daemon(s: &mut Scenario, no_seeds: &str) {
+    let found = s.cli(
+        "search-cmd-daemon",
+        &[
+            "--daemon", "--seeds", no_seeds, "search", "sim", "radio", "--zone", "Kitchen",
+        ],
+    );
+    s.check(
+        "search",
+        "cli",
+        "fsonos search lists the daemon's matches, numbered, best first",
+        found.ok()
+            && found.stdout.starts_with("1. Sim Radio")
+            && found.stdout.contains("[favorite]"),
+        format!("{}\n{}", found.stdout, found.stderr),
+    );
     let pick = s.cli(
         "search-pick-daemon",
         &[
@@ -138,6 +153,7 @@ fn commands_go_through_a_running_daemon_with_the_same_answers() {
 
     // Directly first: no daemon has run in this data directory.
     let zones_direct = s.cli("zones-direct", &["--json", "zones"]);
+    let room_direct = s.cli("zone-direct", &["--json", "zones", "Kitchen"]);
     let status_direct = s.cli("status-direct", &["--json", "status", "Kitchen"]);
     let no_seeds = s.dir().join("no-such-seeds.toml").display().to_string();
     let blind = s.cli("blind-direct", &["--seeds", &no_seeds, "--json", "zones"]);
@@ -166,6 +182,19 @@ fn commands_go_through_a_running_daemon_with_the_same_answers() {
             "{} ms through the daemon, {} ms directly\n{}\n{}",
             zones.duration_ms, zones_direct.duration_ms, zones.stdout, zones.stderr
         ),
+    );
+    let zone = s.cli(
+        "zone-daemon",
+        &["--seeds", &no_seeds, "--json", "zones", "Kitchen"],
+    );
+    s.check(
+        "zone",
+        "cli",
+        "zones Kitchen answers through the daemon with the same JSON as directly: one zone",
+        zone.ok()
+            && json(&zone.stdout) == json(&room_direct.stdout)
+            && json(&zone.stdout).is_object(),
+        format!("{}\n{}\n{}", zone.stdout, zone.stderr, room_direct.stderr),
     );
     let status = s.cli(
         "status-daemon",

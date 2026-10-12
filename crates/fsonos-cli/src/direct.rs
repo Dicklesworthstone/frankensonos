@@ -170,6 +170,12 @@ impl Direct {
         self.surface.zones(&Client::Cli)
     }
 
+    /// The zone `room` plays in.
+    pub fn zone(&self, room: &str) -> Result<ZoneDto, Failure> {
+        self.households()?;
+        self.surface.zone(&Client::Cli, room)
+    }
+
     /// What `zone` is doing right now.
     pub fn status(&self, zone: &str) -> Result<ZoneStateDto, Failure> {
         self.households()?;

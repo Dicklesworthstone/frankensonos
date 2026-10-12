@@ -88,8 +88,22 @@ struct Cli {
 enum Command {
     /// List the Sonos players on the LAN.
     Discover,
-    /// Show the zone groups and what each is doing.
-    Zones,
+    /// Show the zone groups and what each is doing; with a room, the zone
+    /// it plays in.
+    Zones { zone: Option<String> },
+    /// Search the library (your tracks, saved albums and playlists) and,
+    /// with --zone, a room's favorites: the best matches, best first.
+    Search {
+        /// What to look for: title words, a composer or performer, "bwv 988".
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// A room: its household's Sonos favorites are searched too.
+        #[arg(long)]
+        zone: Option<String>,
+        /// At most this many (1-50).
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=50))]
+        limit: u32,
+    },
     /// What a room is doing: its group, the track or station, its volume.
     Status { zone: String },
     /// List the Sonos favorites of a room's household, numbered.
@@ -425,10 +439,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             emit(global.json, &found, direct::discover_text)
         }
-        Command::Zones => {
-            let zones = Direct::survey(global)?.zones()?;
-            emit(global.json, &zones, |z| direct::zones_text(z))
-        }
+        Command::Zones { zone } => zones(global, zone.as_deref()),
+        Command::Search { query, zone, limit } => search(
+            global,
+            &search_request(&query, zone.as_deref(), limit),
+            &Direct::survey(global)?,
+        ),
         Command::Status { zone } => {
             let state = Direct::survey(global)?.status(&zone)?;
             emit(global.json, &state, direct::status_text)
@@ -494,6 +510,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Chime(args) => announce_cmd::run_and_emit(global, &args.request()),
         Command::Announce(args) => announce_cmd::run_and_emit(global, &args.request()?),
         control => run_control(global, &control),
+    }
+}
+
+/// `fsonos zones`: every zone, or the one `room` plays in.
+fn zones(global: &config::GlobalArgs, room: Option<&str>) -> anyhow::Result<()> {
+    let house = Direct::survey(global)?;
+    match room {
+        None => emit(global.json, &house.zones()?, |z| direct::zones_text(z)),
+        Some(room) => emit(global.json, &house.zone(room)?, |z| {
+            direct::zones_text(std::slice::from_ref(z))
+        }),
     }
 }
 
@@ -590,6 +617,50 @@ impl SearchAndPlay for Direct {
     }
 }
 
+/// What `fsonos search` asks for.
+fn search_request(query: &[String], zone: Option<&str>, limit: u32) -> SearchRequest {
+    SearchRequest {
+        query: query.join(" "),
+        zone: zone.map(str::to_owned),
+        limit: usize::try_from(limit).ok(),
+    }
+}
+
+/// `fsonos search`: the best matches, numbered, best first.
+fn search(
+    global: &config::GlobalArgs,
+    req: &SearchRequest,
+    via: &dyn SearchAndPlay,
+) -> anyhow::Result<()> {
+    let hits = via.search(req)?;
+    if hits.is_empty() {
+        let favorites = req
+            .zone
+            .as_ref()
+            .map_or_else(String::new, |zone| format!(" or {zone}'s favorites"));
+        return Err(Failure::new(
+            ErrorCode::NoMatch,
+            format!("nothing in the library{favorites} matches {:?}", req.query),
+        )
+        .into());
+    }
+    emit(global.json, &hits, |hits: &Vec<HitDto>| hits_text(hits))
+}
+
+/// Search hits a line each, numbered: title, who, and what kind.
+fn hits_text(hits: &[HitDto]) -> String {
+    hits.iter()
+        .enumerate()
+        .fold(String::new(), |mut out, (i, h)| {
+            let _ = write!(out, "{}. {}", i + 1, h.title);
+            if let Some(by) = &h.subtitle {
+                let _ = write!(out, " ({by})");
+            }
+            let _ = writeln!(out, " [{}]", h.kind);
+            out
+        })
+}
+
 /// `fsonos play <room> --search <query> [--pick [N]]`: play the best match
 /// (or the Nth), or with a bare `--pick` list the matches.
 fn play_search(
@@ -616,18 +687,7 @@ fn play_search(
         .into());
     }
     if pick == Some(0) {
-        return emit(global.json, &hits, |hits: &Vec<HitDto>| {
-            hits.iter()
-                .enumerate()
-                .fold(String::new(), |mut out, (i, h)| {
-                    let _ = write!(out, "{}. {}", i + 1, h.title);
-                    if let Some(by) = &h.subtitle {
-                        let _ = write!(out, " ({by})");
-                    }
-                    let _ = writeln!(out, " [{}]", h.kind);
-                    out
-                })
-        });
+        return emit(global.json, &hits, |hits: &Vec<HitDto>| hits_text(hits));
     }
     let n = pick.unwrap_or(1);
     let hit = hits.get(n - 1).ok_or_else(|| {
@@ -829,7 +889,8 @@ fn plan_for<'a>(
         ),
         Command::Dj { action } => action.plan(&households),
         Command::Discover
-        | Command::Zones
+        | Command::Zones { .. }
+        | Command::Search { .. }
         | Command::Doctor(_)
         | Command::Status { .. }
         | Command::Favorites { .. }
@@ -1229,6 +1290,24 @@ mod tests {
             plan(&["play", "Den", "x-rincon-mp3radio://stream.example.org/a.mp3", "--title", "Radio"]),
             Planned::Play { title: Some(t), .. } if t == "Radio"
         ));
+    }
+
+    #[test]
+    fn search_takes_its_words_and_a_limit() {
+        let cli = Cli::try_parse_from(["fsonos", "search", "bwv", "988", "--limit", "3"]).unwrap();
+        let Command::Search { query, zone, limit } = cli.command else {
+            panic!("not a search");
+        };
+        let req = search_request(&query, zone.as_deref(), limit);
+        assert_eq!(
+            (req.query.as_str(), req.zone, req.limit),
+            ("bwv 988", None, Some(3))
+        );
+        assert!(
+            Cli::try_parse_from(["fsonos", "search"]).is_err(),
+            "words needed"
+        );
+        assert!(Cli::try_parse_from(["fsonos", "search", "x", "--limit", "51"]).is_err());
     }
 
     #[test]
