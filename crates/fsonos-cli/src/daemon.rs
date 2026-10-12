@@ -526,7 +526,7 @@ fn start_http(
         .name("fsonos-http".into())
         .spawn(move || {
             let ready_tx = bound_tx.clone();
-            let result = crate::runtime().and_then(|rt| {
+            let result = listener_runtime().and_then(|rt| {
                 rt.block_on(async move {
                     let cx = asupersync::Cx::current().context("ambient Cx")?;
                     let listener = asupersync::net::TcpListener::bind(addr)
@@ -558,6 +558,22 @@ fn start_http(
     Ok((server, bound))
 }
 
+/// How many threads each listener serves on.
+const LISTENER_WORKERS: usize = 4;
+
+/// The runtime a listener serves on. Its route handlers run as they are
+/// called, so a call that takes long (an announcement that plays, a fade, a
+/// DJ start that asks Spotify) holds one worker while the others answer
+/// everyone else; on one thread it would hold the whole listener.
+fn listener_runtime() -> anyhow::Result<asupersync::runtime::Runtime> {
+    asupersync::runtime::RuntimeBuilder::multi_thread()
+        .worker_threads(LISTENER_WORKERS)
+        .with_reactor(asupersync::runtime::reactor::create_reactor().context("create I/O reactor")?)
+        .blocking_threads(0, 16)
+        .build()
+        .context("build the listener runtime")
+}
+
 /// Bind the MCP server (streamable HTTP) on its own thread; returns the bound
 /// address once it listens. Like the HTTP API, it admits only its own Host
 /// names (DNS-rebinding defense).
@@ -576,7 +592,7 @@ fn start_mcp(
         .name("fsonos-mcp".into())
         .spawn(move || {
             let ready_tx = bound_tx.clone();
-            let result = crate::runtime().and_then(|rt| {
+            let result = listener_runtime().and_then(|rt| {
                 rt.block_on(async move {
                     let cx = asupersync::Cx::current().context("ambient Cx")?;
                     let bound = fsonos_mcp::server_answering(hosts)
