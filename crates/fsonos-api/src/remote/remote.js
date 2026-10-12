@@ -24,6 +24,7 @@ const ROUTES = {
   djStart: ['POST', '/dj/start'],
   djStop: ['POST', '/dj/stop'],
   djSkip: ['POST', '/dj/skip'],
+  djSteer: ['POST', '/dj/steer'],
   djFeedback: ['POST', '/dj/feedback'],
   applyScene: ['POST', '/scenes/{name}/apply'],
 };
@@ -205,6 +206,12 @@ function card(zone) {
     if (favorite) act(parts, call('playFavorite', { body: { zone: name, favorite } }));
   });
   parts.skip.addEventListener('click', () => act(parts, call('djSkip', { body: { zone: name } })));
+  // A running DJ takes a new mood from its next pick; a stopped one starts in it.
+  parts.mood.addEventListener('change', () => {
+    if (!parts.djRunning) return;
+    const body = parts.mood.value ? { zone: name, mood: parts.mood.value } : { zone: name, clear: true };
+    call('djSteer', { body }).then((outcome) => toast(outcome.done)).catch(failed);
+  });
   for (const [button, signal] of [[parts.like, 'like'], [parts.dislike, 'dislike']]) {
     button.addEventListener('click', () => {
       call('djFeedback', { body: { zone: name, signal } })
