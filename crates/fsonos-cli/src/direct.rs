@@ -373,7 +373,12 @@ pub fn history_text(plays: &[PlayDto]) -> String {
             },
         );
         let room = play.room.as_deref().unwrap_or("a room no longer seen");
-        let _ = writeln!(text, "{when}  {room}: {}", play.source_uri);
+        let what = match (&play.title, &play.artist) {
+            (Some(title), Some(artist)) => format!("{title} — {artist}"),
+            (Some(title), None) => title.clone(),
+            _ => play.source_uri.clone(),
+        };
+        let _ = writeln!(text, "{when}  {room}: {what}");
     }
     text
 }
@@ -454,11 +459,15 @@ mod tests {
             PlayDto {
                 room: Some("Kitchen".into()),
                 source_uri: "spotify:track:0SimHistory000000001".into(),
+                title: Some("Aria".into()),
+                artist: Some("Glenn Gould".into()),
                 played_at: 1_791_403_200,
             },
             PlayDto {
                 room: None,
                 source_uri: "x-rincon-mp3radio://stream.example.invalid/a.mp3".into(),
+                title: None,
+                artist: None,
                 played_at: 1_791_399_600,
             },
         ]);
@@ -466,7 +475,7 @@ mod tests {
         assert_eq!(lines.len(), 2, "{text}");
         assert!(lines[0].starts_with("2026-10-0"), "{text}");
         assert!(
-            lines[0].ends_with("  Kitchen: spotify:track:0SimHistory000000001"),
+            lines[0].ends_with("  Kitchen: Aria — Glenn Gould"),
             "{text}"
         );
         assert!(

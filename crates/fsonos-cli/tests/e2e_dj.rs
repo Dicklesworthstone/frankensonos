@@ -283,8 +283,12 @@ fn check_the_cli_through_the_daemon(s: &mut Scenario, api: &str) {
     s.check(
         "cli-history",
         "cli",
-        "fsonos history lists the DJ's plays under the Living Room",
-        history.code == Some(0) && history.stdout.contains("Living Room: spotify:track:simdj"),
+        "fsonos history names the DJ's plays under the Living Room",
+        history.code == Some(0)
+            && history.stdout.lines().any(|l| {
+                l.contains("Living Room: ")
+                    && (l.contains(": I. Allegro con brio") || l.contains(": II. Andante"))
+            }),
         format!("{history:?}"),
     );
 

@@ -335,7 +335,14 @@ impl Backend {
                     .iter()
                     .map(|p| {
                         let room = p.room.as_deref().unwrap_or("a room no longer seen");
-                        format!("{} in {room} at {}", p.source_uri, p.played_at)
+                        let what = match (&p.title, &p.artist) {
+                            (Some(title), Some(artist)) => {
+                                format!("{title} by {artist} ({})", p.source_uri)
+                            }
+                            (Some(title), None) => format!("{title} ({})", p.source_uri),
+                            _ => p.source_uri.clone(),
+                        };
+                        format!("{what} in {room} at {}", p.played_at)
                     })
                     .collect::<Vec<_>>()
                     .join("\n")

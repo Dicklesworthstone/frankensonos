@@ -55,7 +55,7 @@ fn library() -> MemStore {
             entry(
                 "Goldberg Variations, BWV 988: Aria",
                 "Glenn Gould",
-                "aria0000000000000000a",
+                "aria00000000000000000a",
             ),
             entry(
                 "Symphony No. 9: Largo",
@@ -85,7 +85,7 @@ fn the_library_and_a_households_favorites_rank_together() {
     assert_eq!(hits[0].kind, "track");
     assert_eq!(
         hits[0].source_uri.as_deref(),
-        Some("spotify:track:aria0000000000000000a")
+        Some("spotify:track:aria00000000000000000a")
     );
     // Favorites need a room: they belong to its household.
     assert!(
@@ -115,6 +115,38 @@ fn the_library_and_a_households_favorites_rank_together() {
             .code,
         ErrorCode::InvalidArgument
     );
+}
+
+#[test]
+fn a_library_play_is_named_in_the_history() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let surface = surface(&sim, library());
+    for source_uri in ["spotify:track:aria00000000000000000a", STREAM] {
+        let req = PlayRequest {
+            zone: "Living Room".into(),
+            source_uri: source_uri.into(),
+            title: None,
+        };
+        surface
+            .control(&Client::Cli, "play", |h| plan_play(h, &req))
+            .unwrap();
+    }
+    let plays = surface.recent_plays(&Client::Cli, None, 20).unwrap();
+    assert_eq!(plays.len(), 2, "{plays:?}");
+    // Newest first: the stream has no name; the saved track has its own.
+    assert_eq!(
+        (plays[0].title.as_deref(), plays[0].artist.as_deref()),
+        (None, None)
+    );
+    assert_eq!(
+        (plays[1].title.as_deref(), plays[1].artist.as_deref()),
+        (
+            Some("Goldberg Variations, BWV 988: Aria"),
+            Some("Glenn Gould")
+        ),
+        "{plays:?}"
+    );
+    sim.shutdown();
 }
 
 #[test]

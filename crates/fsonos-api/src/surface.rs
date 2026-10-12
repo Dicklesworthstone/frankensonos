@@ -1013,15 +1013,23 @@ impl Surface {
         let plays = self
             .with_store(|s| s.recent_plays(key.as_deref(), limit))?
             .unwrap_or_default();
+        let names = self
+            .with_store(|s| crate::reads::play_names(&*s, &plays))?
+            .unwrap_or_default();
         Ok(plays
             .iter()
             .rev()
-            .map(|p| PlayDto {
-                room: control::locate(&households, &PlayerId(p.zone.clone()))
-                    .ok()
-                    .map(|player| player.room_name.clone()),
-                source_uri: p.source_uri.clone(),
-                played_at: p.played_at,
+            .map(|p| {
+                let (title, artist) = names.get(&p.source_uri).cloned().unwrap_or_default();
+                PlayDto {
+                    room: control::locate(&households, &PlayerId(p.zone.clone()))
+                        .ok()
+                        .map(|player| player.room_name.clone()),
+                    source_uri: p.source_uri.clone(),
+                    title,
+                    artist,
+                    played_at: p.played_at,
+                }
             })
             .collect())
     }

@@ -168,8 +168,53 @@ pub struct PlayDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<String>,
     pub source_uri: String,
+    /// What it was, when the library the DJ reads knows it: the track's
+    /// title, or the album's or playlist's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Its artist (an album's artists), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
     /// Unix seconds.
     pub played_at: i64,
+}
+
+/// A title and an artist, each when known.
+pub(crate) type Named = (Option<String>, Option<String>);
+
+/// What each of `plays` was, by its URI, from what the store holds for the
+/// DJ: a library track's title and artist, an album's name and album
+/// artists, a playlist's name. URIs it doesn't know (streams, favorites)
+/// are left out.
+pub(crate) fn play_names(
+    store: &dyn fsonos_core::store::Store,
+    plays: &[fsonos_core::store::PlayRecord],
+) -> Result<std::collections::HashMap<String, Named>, fsonos_core::store::StoreError> {
+    let wanted: std::collections::HashSet<&str> =
+        plays.iter().map(|p| p.source_uri.as_str()).collect();
+    let mut names = std::collections::HashMap::new();
+    if wanted.is_empty() {
+        return Ok(names);
+    }
+    for entry in store.library()? {
+        if wanted.contains(entry.track.source_uri.as_str()) {
+            names.insert(
+                entry.track.source_uri.clone(),
+                (Some(entry.track.title.clone()), entry.track.artist.clone()),
+            );
+        }
+        if let Some(album) = entry.album_uri.as_deref().filter(|a| wanted.contains(a)) {
+            names
+                .entry(album.to_string())
+                .or_insert_with(|| (entry.track.album.clone(), entry.album_artists.clone()));
+        }
+    }
+    for (uri, name) in store.playlists()? {
+        if wanted.contains(uri.as_str()) {
+            names.entry(uri).or_insert((Some(name), None));
+        }
+    }
+    Ok(names)
 }
 
 #[cfg(test)]
