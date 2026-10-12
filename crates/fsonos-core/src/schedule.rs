@@ -19,7 +19,7 @@
 use crate::store::{Store, StoreError, StoredSchedule};
 use chrono::{
     DateTime, Datelike, FixedOffset, MappedLocalTime, NaiveDateTime, NaiveTime, TimeDelta,
-    TimeZone, Utc, Weekday,
+    TimeZone, Timelike, Utc, Weekday,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -163,6 +163,12 @@ fn parse_delay(s: &str) -> Option<TimeDelta> {
     (number.is_empty() && total > TimeDelta::zero()).then_some(total)
 }
 
+/// `at` to the second, as a run is recorded: a fraction past it would
+/// leave a one-shot due again after it fired.
+fn whole_second(at: DateTime<FixedOffset>) -> DateTime<FixedOffset> {
+    at.with_nanosecond(0).unwrap_or(at)
+}
+
 impl ScheduleSpec {
     /// What a person or agent typed, at `now`: a relative time is fixed
     /// here, and a one-shot time that has passed is refused.
@@ -172,7 +178,7 @@ impl ScheduleSpec {
             .strip_prefix("in ")
             .and_then(|d| parse_delay(&d.replace(' ', "")))
         {
-            return Ok(Self::Once(now + delay));
+            return Ok(Self::Once(whole_second(now + delay)));
         }
         let spec = Self::from_canonical(&s)
             .map_err(|_| ScheduleError::Unrecognized(input.trim().to_string()))?;
@@ -191,7 +197,7 @@ impl ScheduleSpec {
             .or_else(|| s.strip_prefix("at "))
             .unwrap_or(s);
         if let Ok(at) = DateTime::parse_from_rfc3339(&bare.to_uppercase()) {
-            return Ok(Self::Once(at));
+            return Ok(Self::Once(whole_second(at)));
         }
         let corrupt = || ScheduleError::Corrupt(s.to_string());
         let (days, time) = s.rsplit_once(' ').ok_or_else(corrupt)?;
@@ -433,6 +439,32 @@ pub fn claim<S: Store + ?Sized>(store: &mut S, id: i64, tick: Tick) -> Result<bo
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+
+    #[test]
+    fn a_one_shot_falls_on_a_whole_second_and_fires_once() {
+        let now = DateTime::parse_from_rfc3339("2026-10-12T21:00:00.250+02:00").unwrap();
+        let created = now.with_timezone(&Utc);
+        let grace = Duration::from_secs(600);
+        // Typed as a delay, sent by an agent as toISOString() gives it, and
+        // stored before one-shots were cut to the second.
+        for spec in [
+            ScheduleSpec::parse("in 45m", now).unwrap(),
+            ScheduleSpec::parse("2026-10-12T21:45:00.500+02:00", now).unwrap(),
+            ScheduleSpec::from_canonical("once 2026-10-12T21:45:00.500+02:00").unwrap(),
+        ] {
+            let ScheduleSpec::Once(at) = spec else {
+                panic!("{spec:?}");
+            };
+            assert_eq!(at.timestamp_subsec_nanos(), 0, "{at}");
+            let fired = at.with_timezone(&Utc);
+            assert!(tick(&spec, created, None, fired, &Utc, grace).is_some());
+            // Recorded to the second, as the store keeps it: never due again.
+            let recorded = DateTime::from_timestamp(fired.timestamp(), 0).unwrap();
+            let later = fired + TimeDelta::seconds(5);
+            let again = tick(&spec, created, Some(recorded), later, &Utc, grace);
+            assert!(again.is_none(), "{spec}: {again:?}");
+        }
+    }
 
     /// A zone with US-style DST in 2026: UTC−5, and UTC−4 from 2026-03-08
     /// 02:00 (clocks jump to 03:00) to 2026-11-01 02:00 (back to 01:00).
