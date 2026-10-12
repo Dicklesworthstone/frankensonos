@@ -5,11 +5,8 @@
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult, ResultMeta};
 use fsonos_api::events::{EventDto, EventsDto, MAX_WAIT};
+use fsonos_api::off_thread::off_thread;
 use fsonos_api::{ErrorCode, Failure};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use super::{Backend, backend, from_daemon, respond};
@@ -60,54 +57,6 @@ impl Backend {
     }
 }
 
-/// What a thread of its own came back with.
-struct Slot<T> {
-    value: Option<T>,
-    waker: Option<Waker>,
-    done: bool,
-}
-
-/// `work`'s answer, awaited: the thread waits, not the server's runtime,
-/// which serves every other call meanwhile. `None` if no thread started.
-struct OffThread<T>(Arc<Mutex<Slot<T>>>);
-
-fn off_thread<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> OffThread<T> {
-    let slot = Arc::new(Mutex::new(Slot {
-        value: None,
-        waker: None,
-        done: false,
-    }));
-    let feed = Arc::clone(&slot);
-    let spawned = std::thread::Builder::new()
-        .name("fsonos-mcp-events".into())
-        .spawn(move || {
-            let value = work();
-            let mut s = feed.lock().unwrap_or_else(PoisonError::into_inner);
-            s.value = Some(value);
-            s.done = true;
-            if let Some(waker) = s.waker.take() {
-                waker.wake();
-            }
-        });
-    if spawned.is_err() {
-        slot.lock().unwrap_or_else(PoisonError::into_inner).done = true;
-    }
-    OffThread(slot)
-}
-
-impl<T> Future for OffThread<T> {
-    type Output = Option<T>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<T>> {
-        let mut s = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if s.done {
-            return Poll::Ready(s.value.take());
-        }
-        s.waker = Some(cx.waker().clone());
-        Poll::Pending
-    }
-}
-
 #[tool(
     description = "What changed in the house since an event id: playback and track changes, volume and mute, regroups, players going offline, logged actions (who did what), and the DJ's picks. Call it without `since` to get the newest event id, then with `since` (the last_id you got) and `wait_secs` (0-60, default 0) to wait for the next changes; each answer has a new last_id. A `reset` means events were missed: read list_zones afresh. Needs the daemon (`fsonos serve`).",
     annotations(read_only)
@@ -119,14 +68,15 @@ async fn events(
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let b = backend().map_err(|f| tool_error(&f))?;
     let wait_secs = wait_secs.unwrap_or(0).min(MAX_WAIT.as_secs());
-    let answer = off_thread(move || b.events_answer(since, wait_secs))
-        .await
-        .unwrap_or_else(|| {
+    let answer = match off_thread(move || b.events_answer(since, wait_secs)) {
+        Ok(waiting) => waiting.await.unwrap_or_else(|| {
             Err(Failure::new(
                 ErrorCode::Internal,
                 "no thread to wait for events on",
             ))
-        });
+        }),
+        Err(busy) => Err(busy),
+    };
     Ok(CompleteResult::new(
         Backend::events_said(answer)?,
         ResultMeta::empty(),
@@ -198,40 +148,6 @@ mod tests {
         let answer = r.structured_content.unwrap();
         assert_eq!(answer["last_id"], 8);
         assert_eq!(answer["events"][0]["event"], "zone.state");
-    }
-
-    #[test]
-    fn a_wait_happens_on_a_thread_of_its_own() {
-        let started = std::time::Instant::now();
-        let waiting = off_thread(|| {
-            std::thread::sleep(Duration::from_millis(100));
-            7
-        });
-        assert!(
-            started.elapsed() < Duration::from_millis(50),
-            "not waited for here"
-        );
-        let answer = block_on(waiting);
-        assert_eq!(answer, Some(7));
-    }
-
-    /// Drive `f` to completion on this thread (a test has no runtime).
-    fn block_on<F: Future>(f: F) -> F::Output {
-        struct Wake(std::thread::Thread);
-        impl std::task::Wake for Wake {
-            fn wake(self: Arc<Self>) {
-                self.0.unpark();
-            }
-        }
-        let waker = Waker::from(Arc::new(Wake(std::thread::current())));
-        let mut cx = Context::from_waker(&waker);
-        let mut f = std::pin::pin!(f);
-        loop {
-            if let Poll::Ready(out) = f.as_mut().poll(&mut cx) {
-                return out;
-            }
-            std::thread::park();
-        }
     }
 
     #[test]

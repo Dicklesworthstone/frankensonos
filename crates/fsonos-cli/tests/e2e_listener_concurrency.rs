@@ -1,13 +1,47 @@
-//! A call that takes long holds no one else up: while a fade asked for runs
-//! on the daemon (it answers when the fade ends), other requests on the same
-//! listener are answered at once.
+//! Calls that take long hold no one else up: while more fades run on the
+//! daemon than its listeners have workers (each answers when its fade ends),
+//! other requests on both listeners are answered at once.
 
 mod e2e;
 
 use e2e::{Scenario, http, http_waiting};
-use fsonos_sim::SimHousehold;
+use fsonos_sim::{SimBuilder, SimHousehold, SimModel, SimPlayerSpec};
 use serde_json::json;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+/// An MCP `tools/call` over streamable HTTP, as an agent sends it.
+fn mcp_call(
+    mcp: &str,
+    tool: &str,
+    arguments: &serde_json::Value,
+) -> std::io::Result<e2e::HttpAnswer> {
+    let call = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": tool,
+            "arguments": arguments,
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
+        }
+    });
+    http_waiting(
+        mcp,
+        "POST",
+        "/mcp",
+        &[
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json"),
+            ("MCP-Protocol-Version", "2026-07-28"),
+            ("Mcp-Method", "tools/call"),
+            ("Mcp-Name", tool),
+        ],
+        &call.to_string(),
+        Duration::from_secs(30),
+    )
+}
 
 /// `key=value` out of the ready line.
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -15,10 +49,55 @@ fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|word| word.strip_prefix(key)?.strip_prefix('='))
 }
 
+/// The rooms faded over HTTP (S1) and over MCP (S2): one fade each, so none
+/// supersedes another.
+const HTTP_ROOMS: [&str; 5] = ["Kitchen", "Office", "Den", "Study", "Hall"];
+const MCP_ROOMS: [&str; 5] = ["Living Room", "Bedroom", "Patio", "Garage", "Loft"];
+
+/// A house with a room for each fade.
+fn ten_rooms() -> SimBuilder {
+    let play5 = |name| SimPlayerSpec::new(name, SimModel::Play5Gen1);
+    let one = |name| SimPlayerSpec::new(name, SimModel::One);
+    SimHousehold::builder()
+        .s1(HTTP_ROOMS.map(play5))
+        .s2(MCP_ROOMS.map(one))
+}
+
+/// Five 6 s fades over HTTP and five over MCP, each answering when it ends:
+/// more long calls at once than either listener has workers.
+fn start_fades(api: &str, mcp: &str) -> Vec<JoinHandle<std::io::Result<e2e::HttpAnswer>>> {
+    HTTP_ROOMS
+        .iter()
+        .map(|room| {
+            let (api, room) = (api.to_string(), (*room).to_string());
+            std::thread::spawn(move || {
+                http_waiting(
+                    &api,
+                    "POST",
+                    "/volume/fade",
+                    &[("Content-Type", "application/json")],
+                    &json!({ "zone": room, "volume": 5, "fade_secs": 6 }).to_string(),
+                    Duration::from_secs(30),
+                )
+            })
+        })
+        .chain(MCP_ROOMS.iter().map(|room| {
+            let (mcp, room) = (mcp.to_string(), (*room).to_string());
+            std::thread::spawn(move || {
+                mcp_call(
+                    &mcp,
+                    "fade_volume",
+                    &json!({ "zone": room, "volume": 6, "seconds": 6 }),
+                )
+            })
+        }))
+        .collect()
+}
+
 #[test]
 fn a_long_call_holds_no_other_request_up() {
     let mut s = Scenario::start("listener-concurrency");
-    s.sim(SimHousehold::standard());
+    s.sim(ten_rooms());
     let mut daemon = s.spawn(
         "serve",
         &[
@@ -45,41 +124,41 @@ fn a_long_call_holds_no_other_request_up() {
         daemon.seen.join("\n"),
     );
 
-    let fading = {
-        let api = api.clone();
-        std::thread::spawn(move || {
-            http_waiting(
-                &api,
-                "POST",
-                "/volume/fade",
-                &[("Content-Type", "application/json")],
-                &json!({ "zone": "Kitchen", "volume": 5, "fade_secs": 6 }).to_string(),
-                Duration::from_secs(30),
-            )
-        })
-    };
-    std::thread::sleep(Duration::from_millis(500));
+    let mcp = field(&ready, "mcp")
+        .and_then(|u| u.strip_prefix("http://"))
+        .and_then(|u| u.strip_suffix("/mcp"))
+        .unwrap_or("")
+        .to_string();
+    let fades = start_fades(&api, &mcp);
+    std::thread::sleep(Duration::from_millis(800));
     let asked = Instant::now();
     let health = http(&api, "GET", "/health", &[], "");
     let zones = http(&api, "GET", "/zones", &[], "");
+    let listed = mcp_call(&mcp, "list_zones", &json!({}));
     let took = asked.elapsed();
+    // An MCP tool's failure is a 200 too: it must carry a result, not an error.
     let ok = |answer: &std::io::Result<e2e::HttpAnswer>| {
-        answer.as_ref().is_ok_and(|(code, _, _)| *code == 200)
+        answer.as_ref().is_ok_and(|(code, _, body)| {
+            *code == 200 && !body.contains("\"isError\":true") && !body.contains("\"error\"")
+        })
     };
     s.check(
         "no-stall",
         "http",
-        "while a 6 s fade runs, GET /health and GET /zones answer within 2 s",
-        ok(&health) && ok(&zones) && took < Duration::from_secs(2),
-        format!("after {took:?}: health {health:?}; zones {zones:?}"),
+        "while ten 6 s fades run, GET /health, GET /zones and an MCP list_zones answer within 2 s",
+        ok(&health) && ok(&zones) && ok(&listed) && took < Duration::from_secs(2),
+        format!("after {took:?}: health {health:?}; zones {zones:?}; mcp {listed:?}"),
     );
-    let faded = fading.join().ok();
+    let done: Vec<bool> = fades
+        .into_iter()
+        .map(|f| f.join().is_ok_and(|answer| ok(&answer)))
+        .collect();
     s.check(
-        "fade-done",
+        "fades-done",
         "http",
-        "the fade itself still answers 200 when it ends",
-        faded.as_ref().is_some_and(ok),
-        format!("{faded:?}"),
+        "every fade still answers 200 when it ends",
+        done.iter().all(|d| *d),
+        format!("{done:?}"),
     );
 
     let code = daemon.interrupt(Duration::from_secs(10));

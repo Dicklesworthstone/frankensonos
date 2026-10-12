@@ -6,7 +6,7 @@ use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::scenes::{SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDto};
 use serde::{Deserialize as _, Serialize};
 
-use super::{Backend, respond, segment, with_backend};
+use super::{Backend, respond, segment, with_backend, with_backend_off_thread};
 
 /// `list_scenes` structured content (MCP wants an object).
 #[derive(Serialize)]
@@ -163,12 +163,12 @@ fn save_scene(
     description = "Put the house in the saved scene `name` (case ignored; list_scenes names them). Minimal: only the steps the house needs are sent (regroup, then volumes and mutes, then what plays, then play or pause), so applying a scene the house already matches changes nothing. Volumes stay within your caps. Undoable: undo_last restores the zones it changed. Rooms no longer in the house are skipped; a step that fails is reported and the rest still run. With `fade_secs` (1-60) the volumes ramp to the scene's over that long instead of jumping; the call answers when the fade is done.",
     annotations(idempotent)
 )]
-fn apply_scene(
+async fn apply_scene(
     _ctx: &McpContext,
     name: String,
     fade_secs: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.apply_scene(&name, &SceneApplyRequest { fade_secs }))
+    with_backend_off_thread(move |b| b.apply_scene(&name, &SceneApplyRequest { fade_secs })).await
 }
 
 #[tool(

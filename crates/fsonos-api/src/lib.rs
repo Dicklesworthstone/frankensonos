@@ -37,6 +37,7 @@ pub mod http;
 pub mod identity;
 pub mod live;
 pub mod log;
+pub mod off_thread;
 pub mod plan;
 pub mod reads;
 pub mod request;

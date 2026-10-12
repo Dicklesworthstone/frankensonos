@@ -558,6 +558,26 @@ fn with_backend(
     Ok(CompleteResult::new(run(backend)?, ResultMeta::empty()))
 }
 
+/// [`with_backend`] for a tool that can take long (an announcement that
+/// plays, a fade, the DJ asking Spotify, the doctor probing the LAN): the
+/// work runs on a thread of its own, so the server answers every other call
+/// meanwhile (`fsonos_api::off_thread`).
+async fn with_backend_off_thread(
+    run: impl FnOnce(&Backend) -> McpResult<FinalCallToolResult> + Send + 'static,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let backend = backend().map_err(|f| tool_error(&f))?;
+    let done = fsonos_api::off_thread::off_thread(move || run(backend))
+        .map_err(|busy| tool_error(&busy))?
+        .await
+        .ok_or_else(|| {
+            tool_error(&Failure::new(
+                ErrorCode::Internal,
+                "the call stopped before it answered",
+            ))
+        })??;
+    Ok(CompleteResult::new(done, ResultMeta::empty()))
+}
+
 #[tool(
     description = "Search the owner's saved Spotify library for music, and with `zone` also that room's household Sonos favorites. `query` is title words, a composer or performer, an album or playlist name, or a catalog number ('goldberg gould', 'bwv 988', 'dvorak 9', 'op 67'); case, accents and small typos are forgiven. Results come best first: play a track, a saved album or one of the owner's playlists with `play` (zone, source_uri; an album or playlist replaces the queue) or a favorite with `play_favorite` (zone, favorite). `limit` 1-50, default 10.",
     annotations(read_only, idempotent)
@@ -666,8 +686,8 @@ fn play_favorite(
     description = "Diagnose the setup: can the daemon reach the speakers, is Spotify linked in each household, are the listeners bound safely. Each check says pass, warn or fail, what was seen, and what to do about it. Read-only; nothing changes.",
     annotations(read_only, idempotent)
 )]
-fn doctor(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(Backend::doctor)
+async fn doctor(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(Backend::doctor).await
 }
 
 #[tool(
@@ -691,8 +711,8 @@ fn recent_actions(
 #[tool(
     description = "Undo your own most recent action: restore the volumes, grouping and what was playing in the zones it changed. The reply says what could not be restored."
 )]
-fn undo_last(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(Backend::undo_last)
+async fn undo_last(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(Backend::undo_last).await
 }
 
 #[tool(
@@ -858,7 +878,7 @@ fn ungroup(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCal
 #[tool(
     description = "Move the music a room plays to another room, as if it followed you: in one household the group is handed over (or regrouped) without a gap; between households (S1 and S2 never group) set `copy` true to replay the same track, at the same position, there and stop it here. `zone` is the room the music is in, `to` the room it goes to (names case-insensitive; Room@S1 / Room@S2 picks a household; aliases work)."
 )]
-fn move_playback(
+async fn move_playback(
     _ctx: &McpContext,
     zone: String,
     to: String,
@@ -869,34 +889,34 @@ fn move_playback(
         to,
         copy: copy.unwrap_or(false),
     };
-    with_backend(|b| b.control("move_playback", |h| plan::plan_move(h, &req)))
+    with_backend_off_thread(move |b| b.control("move_playback", |h| plan::plan_move(h, &req))).await
 }
 
 #[tool(
     description = "Party mode: group every room of a household into one zone. Give `zone` (the room whose group the others join), or `household` (S1, S2: the group playing now leads, else the first room); with a single household, neither.",
     annotations(idempotent)
 )]
-fn group_all(
+async fn group_all(
     _ctx: &McpContext,
     zone: Option<String>,
     household: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let req = PartyRequest { zone, household };
-    with_backend(|b| b.control("group_all", |h| plan::plan_party(h, &req)))
+    with_backend_off_thread(move |b| b.control("group_all", |h| plan::plan_party(h, &req))).await
 }
 
-fn dj(
+async fn dj(
     zone: String,
-    tool: &str,
+    tool: &'static str,
     action: DjAction,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| b.dj_action(tool, zone, action))
+    with_backend_off_thread(move |b| b.dj_action(tool, zone, action)).await
 }
 
 #[tool(
     description = "Start the DJ in the group a room plays in: it plays from the owner's own library, in any genre, to their taste (songs one at a time, classical works whole, every movement in order) and keeps the queue topped up. `zone` is a room name. Optional `mood` starts it steered (dj_moods lists the moods), for `for_minutes` (omit: until cleared)."
 )]
-fn dj_start(
+async fn dj_start(
     _ctx: &McpContext,
     zone: String,
     mood: Option<String>,
@@ -907,14 +927,14 @@ fn dj_start(
         mood,
         for_secs: for_minutes.map(|m| u64::from(m) * 60),
     };
-    with_backend(|b| b.dj_start(&req))
+    with_backend_off_thread(move |b| b.dj_start(&req)).await
 }
 
 #[tool(
     description = "Steer the DJ in the group a room plays in. Turn the owner's words into these fields; the daemon never parses language. `mood`: a preset (dj_moods lists them: focus, dinner, sunday-morning, bright, calm, and the owner's own). `include_artists` / `exclude_artists`: any credited artist (\"Miles Davis\", \"The Beatles\"; a classical work's performers count, \"Yo-Yo Ma\"). `include_genres` / `exclude_genres`: the genre tags the library read gave (\"jazz\" finds \"cool jazz\"; every classical work is \"classical\"). `include_composers` / `exclude_composers`: classical composers (\"Bach\", \"J.S. Bach\", \"Saint-Saëns\"). `periods`, for classical works only (a song has none): medieval, renaissance, baroque, classical, romantic, late_romantic, impressionist, modern, contemporary. `decades`: release decades, each by its first year (1960 for the sixties). `exclude_decades` / `exclude_periods`: never these ('no 80s tonight' is exclude_decades [1980]; 'no baroque' is exclude_periods [\"baroque\"]). `include_keywords` / `exclude_keywords`: piano, chamber, orchestral, choral, opera, song and vocal find their forms; other words match whole words. `min_minutes` / `max_minutes`: work length. `energy_bias`: -2 (much calmer) to 2 (much brighter). `allow_long`: let operas and Passions in. `for_minutes`: how long, then the time-of-day program returns (omit: until cleared). Examples: 'play some Miles Davis' is include_artists [\"Miles Davis\"]; 'no Beatles today' is exclude_artists [\"The Beatles\"]; 'something calmer for an hour' is energy_bias -1, for_minutes 60; 'no opera' is exclude_keywords [\"opera\"]; 'just piano' is include_keywords [\"piano\"]; 'dinner music' is mood \"dinner\"; 'Bach for the next two hours' is include_composers [\"Bach\"], for_minutes 120; 'jazz from the sixties' is include_genres [\"jazz\"], decades [1960]; 'no classical for now' is exclude_genres [\"classical\"]. A steer replaces the group's previous steering and applies from the DJ's next piece, whether or not it is running. `clear` true, alone, goes back to the time-of-day program. undo_last puts the previous steering back."
 )]
 #[allow(clippy::too_many_arguments)] // one optional argument per steering field, as agents call it
-fn dj_steer(
+async fn dj_steer(
     _ctx: &McpContext,
     zone: String,
     mood: Option<String>,
@@ -961,7 +981,7 @@ fn dj_steer(
         for_secs: for_minutes.map(|m| u64::from(m) * 60),
         clear: clear.unwrap_or(false),
     };
-    with_backend(|b| b.dj_steer(&req))
+    with_backend_off_thread(move |b| b.dj_steer(&req)).await
 }
 
 #[tool(
@@ -986,13 +1006,19 @@ fn dj_moods(
 #[tool(
     description = "Skip the DJ's current piece in the group a room plays in. `zone` is a room name."
 )]
-fn dj_skip(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    dj(zone, "dj_skip", DjAction::Skip)
+async fn dj_skip(
+    _ctx: &McpContext,
+    zone: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    dj(zone, "dj_skip", DjAction::Skip).await
 }
 
 #[tool(description = "Stop the DJ in the group a room plays in. `zone` is a room name.")]
-fn dj_stop(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    dj(zone, "dj_stop", DjAction::Stop)
+async fn dj_stop(
+    _ctx: &McpContext,
+    zone: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    dj(zone, "dj_stop", DjAction::Stop).await
 }
 
 #[cfg(test)]

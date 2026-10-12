@@ -522,6 +522,7 @@ fn start_http(
     let (surface, names, serve) = (Arc::clone(surface), names.to_vec(), serve.clone());
     let mut config = ServerConfig::new(addr.to_string())
         .with_allowed_hosts(hosts)
+        .with_max_connections(MAX_HTTP_CONNECTIONS)
         .with_request_timeout_secs(fsonos_api::surface::announce::ANNOUNCE_TIMEOUT_SECS);
     // The request parser also counts HTTP headers; the app enforces the
     // smaller body limit before deserializing a WAV upload.
@@ -566,13 +567,18 @@ fn start_http(
     Ok((server, bound))
 }
 
+/// The most connections the HTTP API holds open at once: an event stream or
+/// a long poll keeps a thread of its own for as long as it is open, so a
+/// caller opening them without end could exhaust the host otherwise.
+const MAX_HTTP_CONNECTIONS: usize = 256;
+
 /// How many threads each listener serves on.
 const LISTENER_WORKERS: usize = 4;
 
-/// The runtime a listener serves on. Its route handlers run as they are
-/// called, so a call that takes long (an announcement that plays, a fade, a
-/// DJ start that asks Spotify) holds one worker while the others answer
-/// everyone else; on one thread it would hold the whole listener.
+/// The runtime a listener serves on. Its workers only move bytes: each HTTP
+/// route, and each MCP tool that can take long, runs on a thread of its own
+/// (`fsonos_api::off_thread`), so a long call (an announcement that plays, a
+/// fade, a DJ start that asks Spotify) holds none of them.
 fn listener_runtime() -> anyhow::Result<asupersync::runtime::Runtime> {
     asupersync::runtime::RuntimeBuilder::multi_thread()
         .worker_threads(LISTENER_WORKERS)

@@ -296,15 +296,16 @@ fn reads(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             |s, c, req| events_route(s, c, req),
         )
         .query_schema::<EventsQuery>(false),
-        cx.route(
-            &Op::get(
-                "/health",
-                "health",
-                DAEMON,
-                "Whether the daemon is up, and its version",
-            ),
-            |_, _, _| health(),
+        // Inline and without naming the caller (no tailnet lookup): the
+        // probe the CLI tells a running daemon by, answered even when busy.
+        Op::get(
+            "/health",
+            "health",
+            DAEMON,
+            "Whether the daemon is up, and its version",
         )
+        .inline()
+        .entry(cx.web, Box::new(|_| health()))
         .response_schema::<HealthDto>(200, "The daemon answers"),
         cx.route(
             &Op::get(
@@ -610,6 +611,10 @@ struct Op {
     id: &'static str,
     tag: &'static str,
     summary: &'static str,
+    /// Answered on the worker that took it rather than on a thread of its
+    /// own: only for a call that cannot take long, so it is answered even
+    /// when every off-thread place is taken (`/health`).
+    inline: bool,
 }
 
 impl Op {
@@ -625,6 +630,15 @@ impl Op {
             id,
             tag,
             summary,
+            inline: false,
+        }
+    }
+
+    /// Mark the route inline (see the `inline` field).
+    const fn inline(self) -> Self {
+        Self {
+            inline: true,
+            ..self
         }
     }
 
@@ -649,12 +663,28 @@ impl Op {
             .operation_id(self.id)
             .summary(self.summary)
             .tag(self.tag);
+        let (handle, inline) = (Arc::new(handle), self.inline);
         let entry = RouteEntry::from_route(route, move |_, req| {
-            let response = match web.admit(req, write) {
-                Ok(()) => handle(req),
-                Err(refused) => refused.http_response(),
-            };
-            Box::pin(ready(response)) as BoxFuture<'_, Response>
+            if let Err(refused) = web.admit(req, write) {
+                return Box::pin(ready(refused.http_response())) as BoxFuture<'_, Response>;
+            }
+            if inline {
+                return Box::pin(ready(handle(req))) as BoxFuture<'_, Response>;
+            }
+            // The work runs on a thread of its own (see `crate::off_thread`):
+            // a call that takes long holds none of the listener's workers.
+            let stand_in = Request::new(req.method(), req.path().to_owned());
+            let mut owned = std::mem::replace(req, stand_in);
+            let handle = Arc::clone(&handle);
+            match crate::off_thread::off_thread(move || handle(&mut owned)) {
+                Ok(working) => Box::pin(async move {
+                    working.await.unwrap_or_else(|| {
+                        Failure::new(ErrorCode::Internal, "the call stopped before it answered")
+                            .http_response()
+                    })
+                }) as BoxFuture<'_, Response>,
+                Err(busy) => Box::pin(ready(busy.http_response())) as BoxFuture<'_, Response>,
+            }
         });
         error_answers(entry, write)
     }
