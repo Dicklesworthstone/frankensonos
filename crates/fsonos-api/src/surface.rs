@@ -19,7 +19,7 @@
 use fsonos_core::actions::{self, UndoReport};
 use fsonos_core::clock::Clock;
 use fsonos_core::doctor::{self, Report, Runner};
-use fsonos_core::live::Live;
+use fsonos_core::live::{Live, LiveEvent};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::rooms::Aliases;
 use fsonos_core::snapshot::RestoreOp;
@@ -108,6 +108,9 @@ pub struct Surface {
     /// The DJ status last published per coordinator (`dj.status`), so an
     /// event goes out only when it changed.
     dj_seen: Mutex<HashMap<PlayerId, DjStatusDto>>,
+    /// The track each coordinator was last heard playing (until it stops),
+    /// so the history records a play once ([`Self::record_heard`]).
+    heard: Mutex<HashMap<PlayerId, String>>,
     /// Until when reads survey directly (set by a regroup).
     settle_until: Mutex<Option<Instant>>,
     /// Clips and where the players fetch them (see [`announce`]).
@@ -189,6 +192,7 @@ impl Surface {
             live: None,
             events: None,
             dj_seen: Mutex::new(HashMap::new()),
+            heard: Mutex::new(HashMap::new()),
             settle_until: Mutex::new(None),
             announcements: None,
             sleep: None,
@@ -337,6 +341,52 @@ impl Surface {
         });
         if let Ok(None) = fed {
             tracing::warn!("the DJ needs the daemon's store to record and top up");
+        }
+    }
+
+    /// Record what `player` plays now, as the live model hears it, so plays
+    /// started in the Sonos app are history too: a coordinator's new track
+    /// once it plays, as a `spotify:` URI when it is Spotify. A pause and
+    /// resume, or a station's next song title, is the same play; a stop ends
+    /// it. A group member (its coordinator's `x-rincon:` stream) and TV
+    /// audio record nothing, and the play the DJ or a command recorded just
+    /// now is this one.
+    fn record_heard(&self, player: &PlayerId) {
+        let Some(playback) = self.live().and_then(|live| live.player(player)) else {
+            return;
+        };
+        let mut heard = self.heard.lock().unwrap_or_else(PoisonError::into_inner);
+        if playback.transport == Some(TransportState::Stopped) {
+            heard.remove(player);
+            return;
+        }
+        let Some(raw) = playback
+            .track_uri
+            .as_deref()
+            .filter(|_| playback.transport == Some(TransportState::Playing))
+            .filter(|u| !u.is_empty() && !u.starts_with("x-rincon:"))
+            .filter(|u| !u.starts_with("x-sonos-htastream:"))
+        else {
+            return;
+        };
+        let uri = played_uri(raw);
+        if heard.get(player) == Some(&uri) {
+            return;
+        }
+        heard.insert(player.clone(), uri.clone());
+        drop(heard);
+        let at = self.now();
+        let recorded = self.with_store(|s| {
+            let last = s.recent_plays(Some(player.0.as_str()), 1)?;
+            if last.last().is_some_and(|p| {
+                played_uri(&p.source_uri) == uri && at - p.played_at < JUST_RECORDED
+            }) {
+                return Ok(());
+            }
+            s.record_play(&player.0, &uri, at)
+        });
+        if let Err(f) = recorded {
+            tracing::warn!("a play heard was not recorded ({uri}): {}", f.detail);
         }
     }
 
@@ -1066,9 +1116,11 @@ impl Surface {
             } => (coordinator, favorite.uri.as_deref()),
             _ => return,
         };
-        let Some(uri) = uri else { return };
+        let Some(uri) = uri.map(played_uri) else {
+            return;
+        };
         let at = self.now();
-        if let Err(e) = self.with_store(|s| s.record_play(&coordinator.0, uri, at)) {
+        if let Err(e) = self.with_store(|s| s.record_play(&coordinator.0, &uri, at)) {
             tracing::warn!("play not recorded ({uri}): {}", e.detail);
         }
     }
@@ -1350,12 +1402,51 @@ fn room_view<'a>(
     }
 }
 
+/// How long ago a play the DJ or a command recorded still counts as the
+/// one the live model then hears, in seconds.
+const JUST_RECORDED: i64 = 120;
+
+/// `uri` as the history keeps it: a Spotify track, album or playlist as its
+/// `spotify:` URI (a renderer's `x-sonos-spotify:` form, a favorite's
+/// container), anything else as it is.
+fn played_uri(uri: &str) -> String {
+    fsonos_proto::didl::spotify_uri_from_renderer_uri(uri).unwrap_or_else(|| uri.to_string())
+}
+
 /// Keep the DJ fed from live playback events and periodic cached-state
-/// maintenance on a thread of its own. Restored feeds are visited at once;
-/// quiet queues retry without needing a new event. Ends with the live model
-/// or surface. Does nothing without a live model or a DJ.
+/// maintenance, and the history whole, each on a thread of its own.
+/// Restored feeds are visited at once; quiet queues retry without needing a
+/// new event. Ends with the live model or surface. The DJ's follower needs
+/// a DJ; the history needs only a live model.
 pub fn follow(surface: &Arc<Surface>) {
     dj_follow::follow(surface);
+    follow_heard(surface);
+}
+
+/// Record each coordinator's new track as played ([`Surface::record_heard`])
+/// from the live model's playback changes, on a thread of its own, whether
+/// or not there's a DJ. Ends with the live model or the surface.
+fn follow_heard(surface: &Arc<Surface>) {
+    let Some(live) = surface.live() else {
+        return;
+    };
+    let changes = live.subscribe();
+    let surface = Arc::downgrade(surface);
+    if let Err(error) = std::thread::Builder::new()
+        .name("fsonos-heard".into())
+        .spawn(move || {
+            while let Ok(change) = changes.recv() {
+                let Some(surface) = surface.upgrade() else {
+                    return;
+                };
+                if let LiveEvent::Playback { player, .. } = change {
+                    surface.record_heard(&player);
+                }
+            }
+        })
+    {
+        tracing::error!(%error, "could not start the history follower");
+    }
 }
 
 /// Carry a DJ command out with `dj`: a steer, and then with `start` a start.
