@@ -3,7 +3,9 @@
 //! RampToVolume takes no duration (the player picks the speed; only
 //! `SLEEP_TIMER_RAMP_TYPE` ramps linearly from the current level, at about
 //! 1.25 steps a second), so a fade with a duration is a stepped SetVolume,
-//! one step every [`DEFAULT_INTERVAL`]. A device-speed ramp uses
+//! at most one step every [`DEFAULT_INTERVAL`]. Slow replies consume the
+//! fade budget: obsolete steps are skipped instead of extending the fade.
+//! A device-speed ramp uses
 //! RampToVolume and, on a player that refuses it (UPnP 401/402), falls back
 //! to stepping at the device's rate; the refusal is remembered per player.
 //!
@@ -24,6 +26,9 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+mod timing;
+use timing::Timing;
 
 /// Time between the steps of a fade.
 pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(250);
@@ -56,7 +61,7 @@ pub fn plan_steps(from: u8, to: u8, over: Duration, interval: Duration) -> Vec<u
     let ticks = if interval.is_zero() {
         1
     } else {
-        over.as_millis().div_ceil(interval.as_millis()).max(1)
+        over.as_nanos().div_ceil(interval.as_nanos()).max(1)
     };
     let n = i64::try_from(ticks).unwrap_or(i64::MAX);
     let (from, to) = (i64::from(from), i64::from(to));
@@ -185,7 +190,7 @@ impl Fader {
         over: Duration,
     ) -> Result<FadeOutcome, CoreError> {
         let claimed = self.claim(players);
-        self.stepped(t, households, &claimed, to, over, self.interval)
+        self.stepped(t, households, &claimed, to, Timing::new(over, self.interval))
     }
 
     /// Start a volume intent on each of `players` now, for a fade that
@@ -207,7 +212,26 @@ impl Fader {
         to: u8,
         over: Duration,
     ) -> Result<FadeOutcome, CoreError> {
-        self.stepped(t, households, claimed, to, over, self.interval)
+        self.stepped(t, households, claimed, to, Timing::new(over, self.interval))
+    }
+
+    /// Fade under previously claimed intents, finishing at a fixed monotonic
+    /// deadline. State reads and slow speaker replies consume this budget too.
+    pub fn fade_group_claimed_until<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        claimed: &[(PlayerId, u64)],
+        to: u8,
+        deadline: Instant,
+    ) -> Result<FadeOutcome, CoreError> {
+        self.stepped(
+            t,
+            households,
+            claimed,
+            to,
+            Timing::until(deadline, self.interval),
+        )
     }
 
     /// Fade each player to its own level, all in step over `over`, each from
@@ -221,30 +245,22 @@ impl Fader {
         over: Duration,
     ) -> Result<Vec<PlayerId>, CoreError> {
         let _running = self.running();
+        let timing = Timing::new(over, self.interval);
+        // Claim before any state read: a newer intent during a slow read wins.
+        let claimed: Vec<_> = targets
+            .iter()
+            .map(|(player, _)| self.supersede(player))
+            .collect();
         let mut lanes = Vec::with_capacity(targets.len());
-        for (player, to) in targets {
+        for ((player, to), intent) in targets.iter().zip(claimed) {
             let host = ip(households, player)?;
             let from = soap::get_volume(t, host)?;
-            lanes.push((
-                player,
-                host,
-                self.supersede(player),
-                from,
-                plan_steps(from, *to, over, self.interval),
-            ));
+            lanes.push((player, host, intent, from, *to, from));
         }
-        let ticks = lanes.first().map_or(0, |l| l.4.len());
         let mut left: Vec<PlayerId> = Vec::new();
-        for tick in 0..ticks {
-            if left.len() == lanes.len() {
-                break;
-            }
-            if tick > 0 {
-                std::thread::sleep(self.interval);
-            }
-            let finish = self.finishing.load(Ordering::Acquire);
-            let tick = if finish { ticks - 1 } else { tick };
-            for (player, host, intent, from, steps) in &lanes {
+        while left.len() < lanes.len() {
+            let mut complete = true;
+            for (player, host, intent, from, to, last) in &mut lanes {
                 if left.contains(player) {
                     continue;
                 }
@@ -252,17 +268,18 @@ impl Fader {
                     left.push((*player).clone());
                     continue;
                 }
-                let Some(&level) = steps.get(tick) else {
-                    continue;
-                };
-                let before = if tick == 0 { *from } else { steps[tick - 1] };
-                if level != before || tick == 0 || finish {
+                let frame = timing.frame(Instant::now(), self.finishing.load(Ordering::Acquire));
+                let level = frame.level(*from, *to);
+                if level != *last || frame.complete {
                     soap::set_volume(t, *host, level)?;
+                    *last = level;
                 }
+                complete &= frame.complete;
             }
-            if finish {
+            if complete {
                 break;
             }
+            timing.wait();
         }
         Ok(left)
     }
@@ -273,40 +290,37 @@ impl Fader {
         households: &[HouseholdState],
         claimed: &[(PlayerId, u64)],
         to: u8,
-        over: Duration,
-        interval: Duration,
+        timing: Timing,
     ) -> Result<FadeOutcome, CoreError> {
         let _running = self.running();
         let mut lanes = Vec::with_capacity(claimed.len());
         for (p, intent) in claimed {
             let host = ip(households, p)?;
             let from = soap::get_volume(t, host)?;
-            lanes.push((p, host, *intent, from, plan_steps(from, to, over, interval)));
+            lanes.push((p, host, *intent, from, from));
         }
-        let ticks = lanes.first().map_or(0, |l| l.4.len());
         let mut first_level = lanes.first().map_or(to, |l| l.3);
-        for tick in 0..ticks {
-            if tick > 0 {
-                std::thread::sleep(interval);
-            }
-            let finish = self.finishing.load(Ordering::Acquire);
-            let tick = if finish { ticks - 1 } else { tick };
-            for (i, (player, host, intent, from, steps)) in lanes.iter().enumerate() {
+        loop {
+            let mut complete = true;
+            for (i, (player, host, intent, from, last)) in lanes.iter_mut().enumerate() {
                 if self.current(player) != *intent {
                     return Ok(FadeOutcome::Superseded { at: first_level });
                 }
-                let level = steps[tick];
-                let before = if tick == 0 { *from } else { steps[tick - 1] };
-                if level != before || tick == 0 || finish {
+                let frame = timing.frame(Instant::now(), self.finishing.load(Ordering::Acquire));
+                let level = frame.level(*from, to);
+                if level != *last || frame.complete {
                     soap::set_volume(t, *host, level)?;
+                    *last = level;
                 }
                 if i == 0 {
                     first_level = level;
                 }
+                complete &= frame.complete;
             }
-            if finish {
+            if complete {
                 break;
             }
+            timing.wait();
         }
         Ok(FadeOutcome::Reached)
     }
@@ -340,7 +354,13 @@ impl Fader {
         let from = soap::get_volume(t, host)?;
         let over = self.device_step * u32::from(from.abs_diff(to));
         let claimed = self.claim(std::slice::from_ref(player));
-        let stepped = self.stepped(t, households, &claimed, to, over, self.device_step)?;
+        let stepped = self.stepped(
+            t,
+            households,
+            &claimed,
+            to,
+            Timing::new(over, self.device_step),
+        )?;
         Ok(RampOutcome::Stepped(stepped))
     }
 
@@ -360,6 +380,8 @@ impl Fader {
             .find(|h| h.player(coordinator).is_some())
             .ok_or_else(|| CoreError::UnknownPlayer(coordinator.0.clone()))?;
         let members = member_rooms(household, coordinator);
+        let timing = Timing::new(over, self.interval);
+        let claimed = self.claim(&members);
         let before = members
             .iter()
             .map(|m| Ok((m.clone(), soap::get_volume(t, ip(households, m)?)?)))
@@ -367,7 +389,7 @@ impl Fader {
         // Whatever fails, the volumes go back: a group is never left silent
         // for its next play.
         let put_back = || crate::sleep::put_back(t, households, &before);
-        let outcome = match self.fade_group(t, households, &members, 0, over) {
+        let outcome = match self.stepped(t, households, &claimed, 0, timing) {
             Ok(outcome) => outcome,
             Err(e) => {
                 let _ = put_back();
