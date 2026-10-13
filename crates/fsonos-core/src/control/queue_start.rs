@@ -5,12 +5,13 @@
 //! than resetting the source or seeking again. Definite SOAP refusals retain
 //! their original meaning (including render-parameter recovery upstream).
 
+use super::source_start::wait_for_playing;
 use fsonos_proto::content::{QUEUE, browse_range_snapshot};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
-use fsonos_types::{PlayerId, TransportState};
+use fsonos_types::PlayerId;
 use std::net::IpAddr;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -91,8 +92,8 @@ fn confirmed<T: Transport + ?Sized>(
     if stage == Stage::Source {
         return Ok(true);
     }
-    // A stale track number alone is insufficient. It must name the same
-    // media as a complete one-item queue read, at an unchanged revision.
+    // Retain this original revision through every transitioning observation.
+    // Replacing it on each pass could accept an owner's newly edited queue.
     let before = browse_range_snapshot(transport, host, QUEUE, position - 1, 1)?;
     let [item] = before.objects.as_slice() else {
         return Ok(false);
@@ -100,17 +101,23 @@ fn confirmed<T: Transport + ?Sized>(
     let Some(resource) = &item.res else {
         return Ok(false);
     };
-    let current = soap::get_position_info(transport, host)?;
-    if current.track != position || !same_track(&current.uri, &resource.uri) {
-        return Ok(false);
+    let unchanged = || {
+        let current = soap::get_position_info(transport, host)?;
+        if current.track != position || !same_track(&current.uri, &resource.uri) {
+            return Ok(false);
+        }
+        let after = browse_range_snapshot(transport, host, QUEUE, position - 1, 1)?;
+        if before != after || soap::get_media_info(transport, host)?.uri != own_queue {
+            return Ok(false);
+        }
+        let topology = get_zone_group_state(transport, host)?;
+        Ok(topology.groups.iter().any(|group| group.coordinator == *coordinator))
+    };
+    if stage == Stage::Play {
+        wait_for_playing(transport, host, unchanged)
+    } else {
+        unchanged()
     }
-    if stage == Stage::Play
-        && soap::get_transport_info(transport, host)?.state != TransportState::Playing
-    {
-        return Ok(false);
-    }
-    let after = browse_range_snapshot(transport, host, QUEUE, position - 1, 1)?;
-    Ok(before == after && soap::get_media_info(transport, host)?.uri == own_queue)
 }
 
 fn same_track(actual: &str, expected: &str) -> bool {
