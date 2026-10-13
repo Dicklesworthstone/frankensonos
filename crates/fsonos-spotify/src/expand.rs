@@ -24,12 +24,14 @@ use fsonos_core::store::{AlbumTrack, Store, StoreError};
 use fsonos_types::Track;
 
 use crate::SpotifyError;
-use crate::classical::{ClassicalTrack, estimate_energy, normalize, split_title};
+use crate::classical::{ClassicalTrack, estimate_energy, split_title};
 use crate::client::{SimplifiedTrack, renderable, secs};
 use crate::dj::DjConfig;
 use crate::library::{Origin, Page};
 use crate::session::Session;
-use crate::works::{Work, build, movement_number};
+use crate::works::{Work, build};
+
+mod recording;
 
 /// How long an album whose track list was missing or unplayable is left
 /// alone before it is read again, in seconds (a week).
@@ -322,7 +324,7 @@ fn album_track(t: &SimplifiedTrack) -> Option<AlbumTrack> {
 #[must_use]
 pub fn expand_work(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
     let template = work.movements.first()?;
-    let added: Vec<ClassicalTrack> = recording(work, album)
+    let added: Vec<ClassicalTrack> = recording::select(work, album)?
         .into_iter()
         .filter(|t| !holds(work, t))
         .map(|t| filled_in(template, t))
@@ -347,40 +349,6 @@ fn holds(work: &Work, t: &AlbumTrack) -> bool {
         m.track.source_uri == t.source_uri
             || (m.disc_number, m.track_number) == (Some(t.disc_number), Some(t.track_number))
     })
-}
-
-/// The album tracks of `work`'s recording. The tracks titled as the work
-/// split into recordings wherever the movement numbering starts over or a
-/// movement repeats; with more than one, the recordings holding the work's
-/// own movements are kept.
-fn recording<'a>(work: &Work, album: &'a [AlbumTrack]) -> Vec<&'a AlbumTrack> {
-    let title = normalize(&work.title);
-    let mut runs: Vec<Vec<&AlbumTrack>> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut last: Option<u32> = None;
-    for t in album {
-        let parts = split_title(&t.title);
-        if normalize(parts.work) != title {
-            continue;
-        }
-        let movement = normalize(parts.movement.unwrap_or(&t.title));
-        let number = parts.movement.and_then(movement_number);
-        let restarts = matches!((last, number), (Some(prev), Some(n)) if n <= prev);
-        if runs.is_empty() || restarts || seen.contains(&movement) {
-            runs.push(Vec::new());
-            seen.clear();
-            last = None;
-        }
-        if let Some(run) = runs.last_mut() {
-            run.push(t);
-        }
-        seen.insert(movement);
-        last = number.or(last);
-    }
-    if runs.len() > 1 {
-        runs.retain(|run| run.iter().any(|t| holds(work, t)));
-    }
-    runs.concat()
 }
 
 /// A missing movement, shaped like the work's held one: same composer,
@@ -422,6 +390,7 @@ fn filled_in(template: &ClassicalTrack, t: &AlbumTrack) -> ClassicalTrack {
 #[cfg(test)]
 mod tests {
     mod paging;
+    mod recordings;
 
     use std::path::PathBuf;
     use std::sync::Arc;
