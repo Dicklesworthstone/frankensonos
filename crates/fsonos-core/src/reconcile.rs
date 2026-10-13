@@ -21,6 +21,8 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+mod initial;
+
 /// How a player is doing, from the outcome of the calls made to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Health {
@@ -370,7 +372,7 @@ impl Reconciler {
         } else {
             Vec::new()
         };
-        let changes = events::apply(&mut self.households, playback, &player, service, n, now)
+        let changes = initial::apply(&mut self.households, playback, &player, service, n, now)
             .inspect_err(|_| {
                 // An unreadable event loses state just as a missing one does.
                 // Keep its SEQ unconsumed: a corrected retry on the old SID
