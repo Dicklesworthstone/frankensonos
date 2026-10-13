@@ -117,24 +117,24 @@ virtual house.
 ### Live computer audio (experimental)
 
 On the computer connected to the speaker LAN, install FFmpeg with the
-\`libmp3lame\` encoder and a PipeWire/PulseAudio-compatible audio server.
-Use \`pactl list short sources\` to find your output device's **monitor**
+`libmp3lame` encoder and a PipeWire/PulseAudio-compatible audio server.
+Use `pactl list short sources` to find your output device's **monitor**
 source, then:
 
-\`\`\`bash
+```bash
 fsonos stream Kitchen --input <output-source>.monitor
 # The default is --format pulse --input @DEFAULT_MONITOR@.
 # Use a dedicated PipeWire/PulseAudio virtual sink to stream only selected apps.
 # Ctrl-C ends the capture and restores the previous music if the room still plays this stream.
-\`\`\`
+```
 
 For macOS with a configured loopback/virtual audio device, choose
-\`--format avfoundation --input :<device-index>\` (check
-\`ffmpeg -f avfoundation -list_devices true -i ""\`). The encoder starts locally;
+`--format avfoundation --input :<device-index>` (check
+`ffmpeg -f avfoundation -list_devices true -i ""`). The encoder starts locally;
 the Sonos player fetches MP3 from a randomly named, read-only endpoint bound
 only on the LAN interface used to reach that player. There is no public
-audio service or cloud relay. \`--daemon-url\` is not supported for live capture:
-the computer running \`stream\` must reach the players and be reachable by them.
+audio service or cloud relay. `--daemon-url` is not supported for live capture:
+the computer running `stream` must reach the players and be reachable by them.
 
 **Video lip-sync is not implemented:** Sonos normally buffers HTTP-radio
 playback by seconds; the precise delay also drifts. This command is for live

@@ -33,7 +33,6 @@
 //!   sim        run a virtual Sonos house on loopback (feature `sim`)
 
 mod announce_cmd;
-mod streaming;
 mod completions;
 mod config;
 mod confine;
@@ -55,6 +54,7 @@ mod setup_cmd;
 mod setup_spotify;
 #[cfg(feature = "sim")]
 mod sim;
+mod streaming;
 mod tailscale_cmd;
 
 use anyhow::Context as _;

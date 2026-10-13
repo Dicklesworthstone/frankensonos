@@ -774,7 +774,12 @@ async fn mdns_search(
             && msg.is_response
         {
             let remaining = MAX_RECORDS.saturating_sub(records.len());
-            records.extend(msg.records.into_iter().filter(|r| r.ttl > 0).take(remaining));
+            records.extend(
+                msg.records
+                    .into_iter()
+                    .filter(|r| r.ttl > 0)
+                    .take(remaining),
+            );
         }
     })
     .await?;

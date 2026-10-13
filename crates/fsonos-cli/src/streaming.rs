@@ -14,7 +14,7 @@ use clap::Args;
 use fsonos_api::PlayRequest;
 use fsonos_core::snapshot::{self, ZoneSnapshot};
 use std::io::{self, BufRead as _, BufReader, Read, Write as _};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::process::{Child, Command as Process, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -99,8 +99,9 @@ fn serve(
                 peer.set_write_timeout(Some(Duration::from_secs(5)))?;
                 let mut first = String::new();
                 let parsed = BufReader::new((&mut peer).take(2048)).read_line(&mut first);
-                if parsed.is_err() || first.trim_end() != format!("GET {path} HTTP/1.1")
-                    && first.trim_end() != format!("GET {path} HTTP/1.0")
+                if parsed.is_err()
+                    || first.trim_end() != format!("GET {path} HTTP/1.1")
+                        && first.trim_end() != format!("GET {path} HTTP/1.0")
                 {
                     let _ = peer.write_all(
                         b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -171,7 +172,10 @@ fn restore_if_still_streaming(
     let network = global.network()?;
     let report = snapshot::restore(&*network.transport, direct.households()?, snapshot)?;
     if !report.skipped.is_empty() {
-        eprintln!("fsonos stream: some prior state could not be restored: {:?}", report.skipped);
+        eprintln!(
+            "fsonos stream: some prior state could not be restored: {:?}",
+            report.skipped
+        );
     }
     Ok(())
 }
@@ -192,7 +196,10 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
         &*network.transport,
         direct.households()?,
         &coordinator.id,
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs().try_into()?,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_secs()
+            .try_into()?,
     )
     .context("snapshot the group's music and volumes before streaming")?;
 
@@ -203,7 +210,10 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     let path = format!("/stream/{id}.mp3");
     let source = format!("x-rincon-mp3radio://{}{path}", listener.local_addr()?);
     let mut encoder = launch_encoder(args)?;
-    let stdout = encoder.stdout.take().context("FFmpeg did not open stdout")?;
+    let stdout = encoder
+        .stdout
+        .take()
+        .context("FFmpeg did not open stdout")?;
     let stop = Arc::new(AtomicBool::new(false));
     let started = Arc::clone(&stop);
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
@@ -226,7 +236,10 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     let was_started = play.is_ok();
     let result = match play {
         Ok(_) => {
-            eprintln!("fsonos stream: {} listening; press Ctrl-C to stop", args.room);
+            eprintln!(
+                "fsonos stream: {} listening; press Ctrl-C to stop",
+                args.room
+            );
             stream_finished(&mut encoder, &server, &stop)
         }
         Err(e) => Err(e.into()),
@@ -237,7 +250,9 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     // terminate it so the HTTP thread can leave io::copy and join.
     let _ = encoder.kill();
     let _ = encoder.wait();
-    let server_result = server.join().map_err(|_| anyhow::anyhow!("MP3 listener panicked"))?;
+    let server_result = server
+        .join()
+        .map_err(|_| anyhow::anyhow!("MP3 listener panicked"))?;
     if was_started
         && let Err(e) = restore_if_still_streaming(global, &args.room, &source, &previous)
     {
@@ -251,6 +266,7 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    use std::net::TcpStream;
 
     #[test]
     fn encoder_is_a_local_argument_array_without_a_shell() {
@@ -262,7 +278,10 @@ mod tests {
             ffmpeg: "ffmpeg".into(),
         };
         let command = encoder_args(&args);
-        assert_eq!(command.windows(2).find(|v| v[0] == "-i"), Some(&command[6..8]));
+        assert_eq!(
+            command.windows(2).find(|v| v[0] == "-i"),
+            Some(&command[6..8])
+        );
         assert!(command.contains(&"sink.monitor".to_string()));
         assert!(command.contains(&"256k".to_string()));
         assert_eq!(command.last().unwrap(), "pipe:1");
@@ -284,7 +303,9 @@ mod tests {
         });
         fn fetch(address: SocketAddr, path: &str) -> String {
             let mut socket = TcpStream::connect(address).unwrap();
-            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
             write!(
                 socket,
                 "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
