@@ -174,17 +174,35 @@ impl Playback {
         Ok(changes)
     }
 
-    /// Record a `GetPositionInfo` read of `player` made at `now`.
+    /// Record a `GetPositionInfo` read of `player` made at `now`. Identity
+    /// and timing belong to the same sample: a new URI or queue slot cannot
+    /// inherit the old track's clock, duration or metadata. Same-track reads
+    /// retain optional details the player omitted (GENA may know more).
     pub fn apply_position(&mut self, player: &PlayerId, info: &PositionInfo, now: Instant) {
         let state = self.players.entry(player.clone()).or_default();
+        let uri = match info.uri.trim() {
+            "" | "NOT_IMPLEMENTED" => None,
+            uri => Some(uri.to_string()),
+        };
+        let slot = (info.track > 0).then_some(info.track);
+        let previous_slot = state.queue_position.filter(|&n| n > 0);
+        let changed = state.track_uri != uri
+            || (previous_slot.is_some() && previous_slot != slot);
+        if changed || uri.is_none() {
+            state.position = None;
+            state.duration_secs = None;
+            state.now_playing = None;
+        }
+        state.track_uri = uri;
+        state.queue_position = slot;
+        if state.track_uri.is_none() {
+            return;
+        }
         if let Some(secs) = info.position_secs {
             state.position = Some((secs, now));
         }
         if info.duration_secs.is_some() {
             state.duration_secs = info.duration_secs;
-        }
-        if info.track > 0 {
-            state.queue_position = Some(info.track);
         }
         if let Some(md) = &info.metadata {
             state.now_playing = Some(NowPlaying::from_didl(md));
@@ -465,5 +483,154 @@ mod tests {
                 .position_at(now + Duration::from_secs(2)),
             Some(92)
         );
+    }
+
+    fn position(uri: &str, track: u32, secs: Option<u32>) -> PositionInfo {
+        PositionInfo {
+            track,
+            duration_secs: None,
+            position_secs: secs,
+            uri: uri.into(),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn a_restart_read_supplies_identity_before_the_initial_event() {
+        let now = Instant::now();
+        let mut playback = Playback::default();
+        let mut read = position("test:current", 4, Some(90));
+        read.duration_secs = Some(240);
+        playback.apply_position(&player(), &read, now);
+        let state = playback.of(&player()).unwrap();
+        assert_eq!(state.track_uri.as_deref(), Some("test:current"));
+        assert_eq!(state.queue_position, Some(4));
+        let changes = playback
+            .apply(
+                &player(),
+                EventSource::AvTransport,
+                &notify(
+                    "<TransportState val=\"PLAYING\"/><CurrentTrack val=\"4\"/>\
+                     <CurrentTrackURI val=\"test:current\"/>",
+                ),
+                now,
+            )
+            .unwrap();
+        assert_eq!(changes.track, None, "the read already identified this track");
+        let state = playback.of(&player()).unwrap();
+        assert_eq!(state.duration_secs, Some(240));
+        assert_eq!(state.position_at(now + Duration::from_secs(2)), Some(92));
+    }
+
+    #[test]
+    fn a_position_read_replaces_the_old_identity_and_timing_together() {
+        let now = Instant::now();
+        let mut playback = playing(now);
+        let at = now + Duration::from_secs(10);
+        let mut read = position("test:new-track", 7, Some(12));
+        read.duration_secs = Some(60);
+        playback.apply_position(&player(), &read, at);
+        let state = playback.of(&player()).unwrap();
+        assert_eq!(state.track_uri.as_deref(), Some("test:new-track"));
+        assert_eq!(state.queue_position, Some(7));
+        assert_eq!(state.duration_secs, Some(60));
+        assert_eq!(state.position_at(at + Duration::from_secs(1)), Some(13));
+        assert_eq!(state.now_playing, None);
+        assert_eq!(state.volume, Some(17));
+        assert_eq!(state.queue_length, Some(10));
+        // A matching event is not a new transition and cannot reset the clock.
+        let changes = playback
+            .apply(
+                &player(),
+                EventSource::AvTransport,
+                &notify("<CurrentTrackURI val=\"test:new-track\"/><CurrentTrack val=\"7\"/>"),
+                at + Duration::from_secs(1),
+            )
+            .unwrap();
+        assert_eq!(changes.track, None);
+        assert_eq!(playback.of(&player()).unwrap().position_at(at), Some(12));
+    }
+
+    #[test]
+    fn a_new_track_without_timing_does_not_inherit_the_previous_clock() {
+        let now = Instant::now();
+        for read in [
+            position("test:new-track", 1, None),
+            position("test:old-track", 2, None),
+        ] {
+            let mut playback = playing(now);
+            playback.apply_position(&player(), &read, now + Duration::from_secs(10));
+            let state = playback.of(&player()).unwrap();
+            assert_eq!(state.track_uri.as_deref(), Some(read.uri.as_str()));
+            assert_eq!(state.queue_position, Some(read.track));
+            assert_eq!(state.position_at(now + Duration::from_secs(20)), None);
+            assert_eq!(state.duration_secs, None);
+            assert_eq!(state.now_playing, None);
+        }
+    }
+
+    #[test]
+    fn an_empty_position_read_clears_stale_media_even_with_zero_timing() {
+        let now = Instant::now();
+        for uri in ["", "   ", "NOT_IMPLEMENTED"] {
+            let mut playback = playing(now);
+            let mut read = position(uri, 0, Some(0));
+            read.duration_secs = Some(0);
+            playback.apply_position(&player(), &read, now);
+            let state = playback.of(&player()).unwrap();
+            assert_eq!(state.track_uri, None);
+            assert_eq!(state.queue_position, None);
+            assert_eq!(state.position_at(now + Duration::from_secs(20)), None);
+            assert_eq!(state.duration_secs, None);
+            assert_eq!(state.now_playing, None);
+            assert_eq!(state.volume, Some(17));
+        }
+    }
+
+    #[test]
+    fn a_same_track_seek_preserves_optional_gena_details() {
+        let now = Instant::now();
+        let mut playback = playing(now);
+        let metadata = playback.of(&player()).unwrap().now_playing.clone();
+        let at = now + Duration::from_secs(10);
+        playback.apply_position(&player(), &position("test:old-track", 1, Some(5)), at);
+        let state = playback.of(&player()).unwrap();
+        assert_eq!(state.position_at(at + Duration::from_secs(2)), Some(7));
+        assert_eq!(state.duration_secs, Some(200));
+        assert_eq!(state.now_playing, metadata);
+        // An omitted sample for the same track keeps interpolation running.
+        playback.apply_position(&player(), &position("test:old-track", 1, None), at);
+        assert_eq!(
+            playback.of(&player()).unwrap().position_at(at + Duration::from_secs(3)),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn a_non_queue_read_clears_an_old_slot_and_retains_a_stream_clock() {
+        let now = Instant::now();
+        let mut playback = playing(now);
+        let mut read = position("test:stream", 0, Some(20));
+        read.duration_secs = Some(0);
+        playback.apply_position(&player(), &read, now);
+        let state = playback.of(&player()).unwrap();
+        assert_eq!(state.queue_position, None);
+        assert_eq!(state.track_uri.as_deref(), Some("test:stream"));
+        assert_eq!(state.now_playing, None);
+        assert_eq!(state.position_at(now + Duration::from_secs(2)), Some(22));
+        // GENA may report the explicit non-queue slot 0. A subsequent read
+        // must not mistake that for another track transition.
+        playback
+            .apply(
+                &player(),
+                EventSource::AvTransport,
+                &notify("<CurrentTrack val=\"0\"/>"),
+                now,
+            )
+            .unwrap();
+        playback.apply_position(&player(), &position("test:stream", 0, None), now);
+        let state = playback.of(&player()).unwrap();
+        assert_eq!(state.duration_secs, Some(0));
+        assert_eq!(state.position_at(now + Duration::from_secs(2)), Some(22));
     }
 }
