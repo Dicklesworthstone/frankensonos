@@ -124,7 +124,8 @@ impl Playback {
     }
 
     /// Fold one NOTIFY from `player`'s `source` subscription into the state,
-    /// observed at `now`. Returns what changed.
+    /// observed at `now`. Returns what changed. A malformed event leaves
+    /// the previous state intact, including whether the player was known.
     pub fn apply(
         &mut self,
         player: &PlayerId,
@@ -132,12 +133,14 @@ impl Playback {
         notify: &Notify,
         now: Instant,
     ) -> Result<Changes, ProtoError> {
-        let state = self.players.entry(player.clone()).or_default();
+        // Parse and fold into a candidate so a late DIDL error cannot publish
+        // half an event without the corresponding Changes.
+        let mut state = self.players.get(player).cloned().unwrap_or_default();
         let mut changes = Changes::default();
         match source {
             EventSource::AvTransport => {
                 if let Some(lc) = notify.last_change()? {
-                    apply_av_transport(state, &lc, now, &mut changes)?;
+                    apply_av_transport(&mut state, &lc, now, &mut changes)?;
                 }
             }
             EventSource::RenderingControl => {
@@ -167,6 +170,7 @@ impl Playback {
                 }
             }
         }
+        self.players.insert(player.clone(), state);
         Ok(changes)
     }
 
@@ -229,7 +233,13 @@ fn apply_av_transport(
         let first_observation = state.track_uri.is_none();
         state.track_uri = to;
         if !first_observation {
-            state.position = Some((0, now));
+            state.position = state.track_uri.as_ref().map(|_| (0, now));
+            state.now_playing = None;
+            // A URI change can leave the queue for a stream. A supplied
+            // CurrentTrack below replaces this; otherwise the slot is unknown.
+            if uri_moved {
+                state.queue_position = None;
+            }
         }
         state.duration_secs = None;
     }
@@ -255,4 +265,205 @@ fn apply_av_transport(
             .map(NowPlaying::from_didl);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn player() -> PlayerId {
+        PlayerId("test-player".into())
+    }
+
+    fn notify(body: &str) -> Notify {
+        Notify {
+            sid: "uuid:test-playback".into(),
+            seq: 0,
+            path: "/AVTransport".into(),
+            properties: vec![(
+                "LastChange".into(),
+                format!("<Event><InstanceID val=\"0\">{body}</InstanceID></Event>"),
+            )],
+        }
+    }
+
+    fn playing(now: Instant) -> Playback {
+        let mut playback = Playback::default();
+        playback.players.insert(
+            player(),
+            PlayerPlayback {
+                transport: Some(TransportState::Playing),
+                track_uri: Some("test:old-track".into()),
+                now_playing: Some(NowPlaying {
+                    title: "Old title".into(),
+                    art_uri: Some("/old-art".into()),
+                    ..NowPlaying::default()
+                }),
+                duration_secs: Some(200),
+                queue_position: Some(1),
+                queue_length: Some(10),
+                play_mode: Some("NORMAL".into()),
+                volume: Some(17),
+                position: Some((30, now)),
+                ..PlayerPlayback::default()
+            },
+        );
+        playback
+    }
+
+    #[test]
+    fn malformed_initial_event_does_not_introduce_a_player() {
+        let mut playback = Playback::default();
+        for body in [
+            "<TransportState val=\"PLAYING\"/><CurrentTrackMetaData val=\"not-xml\"/>",
+            "<TransportState",
+        ] {
+            assert!(
+                playback
+                    .apply(
+                        &player(),
+                        EventSource::AvTransport,
+                        &notify(body),
+                        Instant::now(),
+                    )
+                    .is_err()
+            );
+            assert!(playback.of(&player()).is_none());
+        }
+    }
+
+    #[test]
+    fn malformed_metadata_rolls_back_the_entire_event() {
+        let now = Instant::now();
+        let mut playback = playing(now);
+        let before = playback.of(&player()).unwrap().clone();
+        let body = "<TransportState val=\"PAUSED_PLAYBACK\"/>\
+                    <CurrentTrackURI val=\"test:new-track\"/><CurrentTrack val=\"2\"/>\
+                    <CurrentTrackDuration val=\"0:04:00\"/><NumberOfTracks val=\"22\"/>\
+                    <CurrentPlayMode val=\"SHUFFLE\"/>\
+                    <CurrentTrackMetaData val=\"not-xml\"/>";
+        let at = now + Duration::from_secs(10);
+        assert!(
+            playback
+                .apply(&player(), EventSource::AvTransport, &notify(body), at)
+                .is_err()
+        );
+        assert_eq!(playback.of(&player()), Some(&before));
+        // A valid replacement must still report every change: none was
+        // silently applied by the rejected event.
+        let valid = body.replace("not-xml", "");
+        let changes = playback
+            .apply(&player(), EventSource::AvTransport, &notify(&valid), at)
+            .unwrap();
+        assert_eq!(
+            changes.transport,
+            Some((Some(TransportState::Playing), TransportState::Paused))
+        );
+        assert_eq!(
+            changes.track,
+            Some((Some("test:old-track".into()), Some("test:new-track".into())))
+        );
+        assert_eq!(changes.queue_length, Some(22));
+    }
+
+    #[test]
+    fn a_new_uri_without_metadata_cannot_keep_the_old_tracks_details() {
+        let now = Instant::now();
+        let mut playback = playing(now);
+        let at = now + Duration::from_secs(10);
+        let changes = playback
+            .apply(
+                &player(),
+                EventSource::AvTransport,
+                &notify("<CurrentTrackURI val=\"test:new-track\"/>"),
+                at,
+            )
+            .unwrap();
+        assert!(changes.track.is_some());
+        let state = playback.of(&player()).unwrap();
+        assert_eq!(state.track_uri.as_deref(), Some("test:new-track"));
+        assert_eq!(state.now_playing, None);
+        assert_eq!(state.duration_secs, None);
+        assert_eq!(state.queue_position, None);
+        assert_eq!(state.position_at(at + Duration::from_secs(2)), Some(2));
+        assert_eq!(state.volume, Some(17));
+        assert_eq!(state.queue_length, Some(10));
+    }
+
+    #[test]
+    fn a_transport_only_delta_keeps_the_current_tracks_details() {
+        let now = Instant::now();
+        let mut playback = playing(now);
+        let before = playback.of(&player()).unwrap().clone();
+        let changes = playback
+            .apply(
+                &player(),
+                EventSource::AvTransport,
+                &notify("<TransportState val=\"PAUSED_PLAYBACK\"/>"),
+                now + Duration::from_secs(10),
+            )
+            .unwrap();
+        let state = playback.of(&player()).unwrap();
+        assert_eq!(changes.track, None);
+        assert_eq!(state.now_playing, before.now_playing);
+        assert_eq!(state.duration_secs, before.duration_secs);
+        assert_eq!(state.queue_position, before.queue_position);
+        assert_eq!(state.position_at(now + Duration::from_secs(50)), Some(40));
+    }
+
+    #[test]
+    fn clearing_the_track_also_clears_its_clock_and_metadata() {
+        let now = Instant::now();
+        let mut playback = playing(now);
+        let changes = playback
+            .apply(
+                &player(),
+                EventSource::AvTransport,
+                &notify("<CurrentTrackURI val=\"\"/><TransportState val=\"STOPPED\"/>"),
+                now + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert_eq!(changes.track, Some((Some("test:old-track".into()), None)));
+        let state = playback.of(&player()).unwrap();
+        assert_eq!(state.now_playing, None);
+        assert_eq!(state.position_at(now + Duration::from_secs(50)), None);
+        assert_eq!(state.queue_position, None);
+    }
+
+    #[test]
+    fn an_initial_event_preserves_the_restart_position_sample() {
+        let now = Instant::now();
+        let mut playback = Playback::default();
+        playback.apply_position(
+            &player(),
+            &PositionInfo {
+                track: 1,
+                duration_secs: Some(200),
+                position_secs: Some(90),
+                uri: "test:old-track".into(),
+                metadata: None,
+            },
+            now,
+        );
+        playback
+            .apply(
+                &player(),
+                EventSource::AvTransport,
+                &notify(
+                    "<TransportState val=\"PLAYING\"/><CurrentTrack val=\"1\"/>\
+                     <CurrentTrackURI val=\"test:old-track\"/>\
+                     <CurrentTrackDuration val=\"0:03:20\"/>",
+                ),
+                now,
+            )
+            .unwrap();
+        assert_eq!(
+            playback
+                .of(&player())
+                .unwrap()
+                .position_at(now + Duration::from_secs(2)),
+            Some(92)
+        );
+    }
 }
