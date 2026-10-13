@@ -10,7 +10,7 @@ use std::collections::{HashSet, VecDeque};
 const PAGE_BUDGET: usize = 20_000;
 const ITEM_BUDGET: usize = 1_000_000;
 
-fn invalid(detail: &str) -> SpotifyError {
+pub(super) fn invalid(detail: &str) -> SpotifyError {
     SpotifyError::Decode(detail.into())
 }
 
@@ -20,11 +20,11 @@ fn fits(current: usize, added: usize, limit: usize) -> bool {
         .is_some_and(|total| total <= limit)
 }
 
-fn path(url: &str) -> &str {
+pub(super) fn path(url: &str) -> &str {
     url.split('?').next().unwrap_or(url)
 }
 
-fn offset(url: &str) -> Result<u32, SpotifyError> {
+pub(super) fn offset(url: &str) -> Result<u32, SpotifyError> {
     if url.contains('#') {
         return Err(invalid("library paging links must not contain fragments"));
     }
@@ -44,9 +44,9 @@ fn offset(url: &str) -> Result<u32, SpotifyError> {
 
 fn check_route(endpoints: &Endpoints, fetch: &Fetch) -> Result<(), SpotifyError> {
     let expected = match fetch {
-        Fetch::SavedAlbums(_) => endpoints.saved_albums(0),
-        Fetch::SavedTracks(_) => endpoints.saved_tracks(0),
-        Fetch::AlbumTracks(_, album, _) => endpoints.album_tracks(&album.id, 0),
+        Fetch::SavedAlbums(_, _) => endpoints.saved_albums(0),
+        Fetch::SavedTracks(_, _) => endpoints.saved_tracks(0),
+        Fetch::AlbumTracks(_, album, _, _) => endpoints.album_tracks(&album.id, 0),
     };
     if !endpoints.is_api_url(fetch.url()) || path(fetch.url()) != path(&expected) {
         return Err(invalid("library paging link changed its collection"));
@@ -175,9 +175,9 @@ mod tests {
             assert!(read.items.is_empty());
         }
         let mut read = tracks_read();
-        read.ingest(&liked(1, Some(Endpoints::default().saved_tracks(5))))
+        read.ingest(&liked(1, Some(Endpoints::default().saved_tracks(1))))
             .unwrap();
-        let backwards = Endpoints::default().saved_tracks(2);
+        let backwards = Endpoints::default().saved_tracks(0);
         assert!(read.ingest(&liked(2, Some(backwards))).is_err());
         assert_eq!(read.items.len(), 1);
     }

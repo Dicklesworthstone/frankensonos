@@ -30,6 +30,23 @@ pub(crate) fn runtime() -> Runtime {
         .expect("runtime")
 }
 
+/// The parser fixture is an excerpt of a larger library. For complete-read
+/// tests, keep all its musical metadata but make paging describe the retained
+/// entries rather than the omitted albums and tracks.
+pub(crate) fn library_albums_page() -> Vec<u8> {
+    let mut page: serde_json::Value =
+        serde_json::from_slice(include_bytes!("../tests/fixtures/saved_albums_page.json"))
+            .unwrap();
+    page["total"] = 2.into();
+    page["next"] = "https://api.spotify.com/v1/me/albums?offset=2&limit=50&market=from_token".into();
+    let album = &mut page["items"][1]["album"];
+    album["total_tracks"] = 3.into();
+    album["tracks"]["total"] = 3.into();
+    album["tracks"]["next"] =
+        "https://api.spotify.com/v1/albums/FakeAlbum0000000000002/tracks?offset=2&limit=50".into();
+    serde_json::to_vec(&page).unwrap()
+}
+
 /// What the fake Spotify has seen and will accept.
 #[derive(Default)]
 pub(crate) struct Fake {
@@ -41,6 +58,8 @@ pub(crate) struct Fake {
     pub(crate) rate_limit_tracks_once: bool,
     /// Serve this liked-tracks page instead of the fixture.
     pub(crate) liked_tracks: Option<String>,
+    /// Exact request targets to override for library paging regressions.
+    pub(crate) library_pages: HashMap<String, String>,
     /// Answer this many album-tracks requests (any album) with a 429.
     pub(crate) rate_limit_albums: u32,
     /// `GET /v1/artists/{id}`: each artist's genres (an id not here is a
@@ -122,18 +141,21 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
             .replace("https://api.spotify.com/v1", &fake.base)
     };
     let uri = req.uri.as_str();
+    if let Some(page) = fake.library_pages.get(uri) {
+        return json(200, rewrite(page.as_bytes()));
+    }
     if let Some(response) = taste(&fake, uri) {
         return response;
     }
     if uri.starts_with("/v1/me/albums") && uri.contains("offset=0") {
         json(
             200,
-            rewrite(include_bytes!("../tests/fixtures/saved_albums_page.json")),
+            rewrite(&library_albums_page()),
         )
     } else if uri.starts_with("/v1/me/albums") {
         json(
             200,
-            r#"{"items":[],"next":null,"offset":50,"limit":50,"total":51}"#,
+            r#"{"items":[],"next":null,"offset":2,"limit":50,"total":2}"#,
         )
     } else if uri.starts_with("/v1/me/tracks") {
         if fake.rate_limit_tracks_once {
@@ -322,7 +344,7 @@ fn album_tracks(uri: &str, rewrite: impl Fn(&[u8]) -> String) -> Response {
                 "id":"FakeTrack0000000000008","is_playable":true,
                 "name":"Nocturnes, Op. 48: No. 1 in C Minor",
                 "uri":"spotify:track:FakeTrack0000000000008"}],
-                "next":null,"offset":50,"limit":50,"total":60}"#,
+                "next":null,"offset":2,"limit":50,"total":3}"#,
         )
     } else if uri.starts_with("/v1/albums/FakeAlbum0000000000003/tracks") {
         // The Suite bergamasque whose Clair de lune the owner liked.

@@ -11,11 +11,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use fsonos_types::Track;
 use serde::{Deserialize, Serialize};
 
+use self::coverage::Page;
 use crate::SpotifyError;
 use crate::classical::normalize;
-use crate::client::{Album, Endpoints, Paging, SavedAlbum, SavedTrack, SimplifiedTrack};
+use crate::client::{Album, Endpoints, SavedAlbum, SavedTrack, SimplifiedTrack};
 
 mod albums;
+mod coverage;
 mod intake;
 
 /// How a track entered the owner's library.
@@ -235,8 +237,10 @@ pub const ARTIST_SEPARATOR: &str = "; ";
 /// [`Self::next_url`] with the bearer token, feed each 2xx body to
 /// [`Self::ingest`], repeat until `next_url` is `None`, then take
 /// [`Self::into_items`]. It pages saved albums and liked tracks, recovers
-/// absent or incomplete embedded album tracks, and only follows links that
-/// point at the Web API (and never the same one twice).
+/// absent or incomplete embedded album tracks, and recovers missing paging
+/// links when known totals require more entries. Continuations must cover
+/// contiguous raw positions on the same Web API collection; a changed total
+/// fails the read instead of retiring music from an incomplete snapshot.
 #[derive(Debug)]
 pub struct LibraryRead {
     endpoints: Endpoints,
@@ -248,17 +252,18 @@ pub struct LibraryRead {
 
 #[derive(Debug, Clone)]
 enum Fetch {
-    SavedAlbums(String),
-    SavedTracks(String),
+    // Carry known totals with the request so failed pages cannot advance them.
+    SavedAlbums(String, Option<u32>),
+    SavedTracks(String, Option<u32>),
     /// Later pages of one album's tracks, with the album (and when it was
-    /// saved) as context.
-    AlbumTracks(String, Box<Album>, Option<i64>),
+    /// saved) and its advertised total as context.
+    AlbumTracks(String, Box<Album>, Option<i64>, Option<u32>),
 }
 
 impl Fetch {
     fn url(&self) -> &str {
         match self {
-            Self::SavedAlbums(url) | Self::SavedTracks(url) | Self::AlbumTracks(url, ..) => url,
+            Self::SavedAlbums(url, _) | Self::SavedTracks(url, _) | Self::AlbumTracks(url, ..) => url,
         }
     }
 }
@@ -280,8 +285,8 @@ impl LibraryRead {
             items: Vec::new(),
             pages: 0,
         };
-        read.queue(Fetch::SavedAlbums(endpoints.saved_albums(0)));
-        read.queue(Fetch::SavedTracks(endpoints.saved_tracks(0)));
+        read.queue(Fetch::SavedAlbums(endpoints.saved_albums(0), None));
+        read.queue(Fetch::SavedTracks(endpoints.saved_tracks(0), None));
         read
     }
 
@@ -301,27 +306,39 @@ impl LibraryRead {
     /// Decode one page into a private staging reader.
     fn ingest_page(&mut self, fetch: Fetch, body: &[u8]) -> Result<(), SpotifyError> {
         match fetch {
-            Fetch::SavedAlbums(_) => {
-                let page = Paging::<SavedAlbum>::parse(body)?;
+            Fetch::SavedAlbums(url, total) => {
+                let page = Page::<SavedAlbum>::read(body, &url, &self.endpoints, total, |next| {
+                    self.endpoints.saved_albums(next)
+                })?;
                 for saved in page.items {
                     self.saved_album(saved)?;
                 }
-                self.follow(page.next, Fetch::SavedAlbums)
+                self.follow(page.next, |url| Fetch::SavedAlbums(url, page.coverage.total))
             }
-            Fetch::SavedTracks(_) => {
-                let page = Paging::<SavedTrack>::parse(body)?;
+            Fetch::SavedTracks(url, total) => {
+                let page = Page::<SavedTrack>::read(body, &url, &self.endpoints, total, |next| {
+                    self.endpoints.saved_tracks(next)
+                })?;
                 self.items
                     .extend(page.items.iter().filter_map(SavedTrack::library_item));
-                self.follow(page.next, Fetch::SavedTracks)
+                self.follow(page.next, |url| Fetch::SavedTracks(url, page.coverage.total))
             }
-            Fetch::AlbumTracks(_, album, added_at) => {
-                let page = Paging::<SimplifiedTrack>::parse(body)?;
+            Fetch::AlbumTracks(url, album, added_at, total) => {
+                let page = Page::<SimplifiedTrack>::read(
+                    body,
+                    &url,
+                    &self.endpoints,
+                    total,
+                    |next| self.endpoints.album_tracks(&album.id, next),
+                )?;
                 self.items.extend(page.items.iter().filter_map(|t| {
                     let mut item = album.library_item(t)?;
                     item.added_at = added_at;
                     Some(item)
                 }));
-                self.follow(page.next, |url| Fetch::AlbumTracks(url, album, added_at))
+                self.follow(page.next, |url| {
+                    Fetch::AlbumTracks(url, album, added_at, page.coverage.total)
+                })
             }
         }
     }
@@ -438,9 +455,9 @@ mod tests {
     }
 
     const ALBUMS_PAGE_2: &str =
-        "https://api.spotify.com/v1/me/albums?offset=50&limit=50&market=from_token";
+        "https://api.spotify.com/v1/me/albums?offset=2&limit=50&market=from_token";
     const CHOPIN_REST: &str =
-        "https://api.spotify.com/v1/albums/FakeAlbum0000000000002/tracks?offset=50&limit=50";
+        "https://api.spotify.com/v1/albums/FakeAlbum0000000000002/tracks?offset=2&limit=50";
 
     fn chopin_rest_page(next: Option<&str>) -> String {
         serde_json::json!({
@@ -452,20 +469,19 @@ mod tests {
                 "name": "Nocturnes, Op. 48: No. 1 in C Minor",
                 "uri": "spotify:track:FakeTrack0000000000008"
             }],
-            "next": next, "offset": 50, "limit": 50, "total": 60
+            "next": next, "offset": 2, "limit": 50, "total": 3
         })
         .to_string()
     }
 
     #[test]
     fn library_read_pages_everything() {
-        let albums_last = r#"{"items": [], "next": null, "offset": 50, "limit": 50, "total": 51}"#;
+        let albums_last = r#"{"items": [], "next": null, "offset": 2, "limit": 50, "total": 2}"#;
         let chopin_rest = chopin_rest_page(None);
+        let albums = crate::fake_spotify::library_albums_page();
         let body = |url: &str| -> &[u8] {
             match url {
-                u if u == Endpoints::default().saved_albums(0) => {
-                    include_bytes!("../tests/fixtures/saved_albums_page.json")
-                }
+                u if u == Endpoints::default().saved_albums(0) => albums.as_slice(),
                 u if u == Endpoints::default().saved_tracks(0) => {
                     include_bytes!("../tests/fixtures/saved_tracks_page.json")
                 }
@@ -520,7 +536,7 @@ mod tests {
         assert!(err.contains("off the Web API"), "{err}");
 
         let mut read = LibraryRead::default();
-        read.ingest(include_bytes!("../tests/fixtures/saved_albums_page.json"))
+        read.ingest(&crate::fake_spotify::library_albums_page())
             .unwrap();
         read.ingest(include_bytes!("../tests/fixtures/saved_tracks_page.json"))
             .unwrap();
