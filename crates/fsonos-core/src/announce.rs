@@ -21,7 +21,9 @@
 //!
 //! The players learn the clip's end from their transport state, polled over
 //! SOAP. [`clip`] makes and stores the clips; the daemon serves them
-//! read-only at `/media/<id>.wav` on its GENA listener.
+//! read-only at `/media/<id>.wav` on its GENA listener. A newer source,
+//! pause, or group change prevents restoring an obsolete snapshot; changed
+//! room levels are preserved and reported instead of overwritten.
 //!
 //! Known limit: when a target room leads a group whose other rooms are not
 //! announced to, those rooms play on during the announcement and are put
@@ -30,6 +32,7 @@
 pub mod clip;
 mod recovery;
 pub mod speech;
+mod watch;
 
 use recovery::Effects;
 
@@ -40,20 +43,16 @@ use fsonos_proto::Transport;
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::xml_escape;
 use fsonos_proto::topology::get_zone_group_state;
-use fsonos_types::{PlayerId, TransportState};
+use fsonos_types::PlayerId;
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::sync::{Condvar, Mutex, PoisonError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The level rooms announce at unless asked otherwise (before policy caps).
 pub const DEFAULT_VOLUME: u8 = 35;
 
 /// How long past the clip's length to wait for the player to stop.
 pub const STOP_GRACE: Duration = Duration::from_secs(5);
-
-/// A player still STOPPED this long after Play never started the clip.
-const START_GRACE: Duration = Duration::from_secs(2);
 
 /// How often the transport state is checked while the clip plays.
 const POLL: Duration = Duration::from_millis(250);
@@ -402,7 +401,7 @@ impl Announcer {
             }
         }
         let (outcome, effects) = self.play(t, hs, &plan, rooms, &report.levels, clip);
-        report.outcome = outcome.map_err(|e| e.to_string());
+        report.outcome = outcome;
         recovery::put_back(t, household, &plan, &snaps, &effects, &mut report);
         report
     }
@@ -416,13 +415,13 @@ impl Announcer {
         rooms: &[&Room],
         levels: &[(String, u8)],
         clip: &Clip,
-    ) -> (Result<Ending, CoreError>, Effects) {
+    ) -> (Result<Ending, String>, Effects) {
         let mut effects = Effects::default();
-        let outcome = (|| {
+        let prepared: Result<(), CoreError> = (|| {
             // A join can start audio immediately. Bound all levels before
             // regrouping, and never unmute a room at its old, possibly loud level.
             for (room, (_, level)) in rooms.iter().zip(levels) {
-                effects.volumes.push(room.primary.clone());
+                effects.volumes.push((room.primary.clone(), *level));
                 control::set_volume(t, hs, &room.primary, *level)?;
             }
             if plan.lead_leaves {
@@ -439,46 +438,28 @@ impl Announcer {
                 effects.mutes.push(room.primary.clone());
                 control::set_mute(t, hs, &room.primary, false)?;
             }
-            effects.sources.push(plan.lead.clone());
-            control::play_uri(t, hs, &plan.lead, &clip.url, &clip.didl())?;
             let host = control::locate(hs, &plan.lead)?.ip;
-            let ending = wait_for_end(t, host, clip.duration + self.stop_grace, self.poll)?;
-            if ending == Ending::Deadline {
-                soap::stop(t, host)?;
-            }
-            Ok(ending)
+            effects.before_clip = Some(soap::get_media_info(t, host)?.uri);
+            effects.sources.push(plan.lead.clone());
+            effects.clip = Some(clip.url.clone());
+            control::play_uri(t, hs, &plan.lead, &clip.url, &clip.didl())?;
+            Ok(())
         })();
+        let outcome = prepared.map_err(|e| e.to_string()).and_then(|()| {
+            let result = watch::wait(
+                t,
+                &hs[0],
+                plan,
+                clip,
+                clip.duration + self.stop_grace,
+                self.poll,
+            );
+            if let Err(why) = &result {
+                effects.preserve = Some(why.clone());
+            }
+            result
+        });
         (outcome, effects)
-    }
-}
-
-/// Wait until the player at `host` has played the clip and stopped, or
-/// `deadline` has passed.
-fn wait_for_end<T: Transport + ?Sized>(
-    t: &T,
-    host: IpAddr,
-    deadline: Duration,
-    poll: Duration,
-) -> Result<Ending, CoreError> {
-    let started = Instant::now();
-    let mut began = false;
-    loop {
-        match soap::get_transport_info(t, host)?.state {
-            TransportState::Playing | TransportState::Transitioning => began = true,
-            // Stopped (or paused by someone) after playing: done.
-            TransportState::Stopped | TransportState::Paused if began => {
-                return Ok(Ending::Finished);
-            }
-            TransportState::Stopped if started.elapsed() >= START_GRACE => {
-                return Ok(Ending::NeverStarted);
-            }
-            _ => {}
-        }
-        let left = deadline.saturating_sub(started.elapsed());
-        if left.is_zero() {
-            return Ok(Ending::Deadline);
-        }
-        std::thread::sleep(poll.min(left));
     }
 }
 
