@@ -43,12 +43,13 @@ pub fn is_unreachable(e: &CoreError) -> bool {
 
 /// Run `op` against `player`. If the player does not answer, survey again
 /// (SSDP plus `seeds`), and if it now answers at a different address,
-/// replace `households` with the new model and retry `op` once. Otherwise
-/// the original error stands.
+/// refresh only that player's household and retry `op` once. A partial
+/// survey cannot erase the other households. Otherwise the original error
+/// stands.
 pub fn readdressing<T, R>(
     t: &T,
     seeds: &[IpAddr],
-    households: &mut Vec<HouseholdState>,
+    households: &mut [HouseholdState],
     player: &PlayerId,
     op: impl Fn(&[HouseholdState]) -> Result<R, CoreError>,
 ) -> Result<(R, Recovery), CoreError>
@@ -61,20 +62,33 @@ where
         Err(e) if is_unreachable(&e) => e,
         Err(e) => return Err(e),
     };
+    let Some(index) = households.iter().position(|h| h.player(player).is_some()) else {
+        return Err(err);
+    };
     let Ok(from) = control::locate(households, player).map(|p| p.ip) else {
         return Err(err);
     };
     let Ok(fresh) = survey(t, seeds, RESOLVE_WAIT) else {
         return Err(err);
     };
-    let to = fresh
+    let refreshed = fresh
         .households
-        .iter()
-        .find_map(|h| h.player(player))
+        .into_iter()
+        .find(|h| h.player(player).is_some());
+    let to = refreshed
+        .as_ref()
+        .and_then(|h| h.player(player))
         .map(|p| p.ip);
-    match to {
-        Some(to) if to != from => {
-            *households = fresh.households;
+    match (refreshed, to) {
+        (Some(mut refreshed), Some(to)) if to != from => {
+            // A command recovery is not an authoritative whole-LAN survey.
+            // Another household may have missed multicast or be offline;
+            // neither is grounds for forgetting it here. Keep its state,
+            // and retain the target's identity if discovery omitted the hint.
+            if refreshed.id.is_none() {
+                refreshed.id.clone_from(&households[index].id);
+            }
+            households[index] = refreshed;
             let retried = op(households);
             tracing::info!(
                 player = player.0.as_str(),
