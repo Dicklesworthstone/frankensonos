@@ -92,9 +92,7 @@ mod tests {
     }
 
     fn rendering() -> Vec<(String, String)> {
-        last_change(
-            "<Volume channel=\"Master\" val=\"17\"/><Mute channel=\"Master\" val=\"1\"/>",
-        )
+        last_change("<Volume channel=\"Master\" val=\"17\"/><Mute channel=\"Master\" val=\"1\"/>")
     }
 
     #[test]
@@ -145,11 +143,7 @@ mod tests {
     #[test]
     fn group_initials_need_valid_levels_and_topology_needs_its_document() {
         let service = Service::GroupRenderingControl;
-        for (volume, muted, valid) in [
-            ("17", "1", true),
-            ("101", "1", false),
-            ("17", "?", false),
-        ] {
+        for (volume, muted, valid) in [("17", "1", true), ("101", "1", false), ("17", "?", false)] {
             let event = notify(
                 service,
                 0,
@@ -170,18 +164,13 @@ mod tests {
 
     #[test]
     fn captured_initial_notifications_keep_their_existing_contract() {
-        let avt_s1 = include_str!(
-            "../../../fsonos-proto/tests/fixtures/gena_notify_avt_initial_s1.xml"
-        );
-        let avt_s2 = include_str!(
-            "../../../fsonos-proto/tests/fixtures/gena_notify_avt_initial_s2.xml"
-        );
-        let rendering = include_str!(
-            "../../../fsonos-proto/tests/fixtures/gena_notify_rcs_initial_s1.xml"
-        );
-        let topology = include_str!(
-            "../../../fsonos-proto/tests/fixtures/gena_notify_zgt_s1.xml"
-        );
+        let avt_s1 =
+            include_str!("../../../fsonos-proto/tests/fixtures/gena_notify_avt_initial_s1.xml");
+        let avt_s2 =
+            include_str!("../../../fsonos-proto/tests/fixtures/gena_notify_avt_initial_s2.xml");
+        let rendering =
+            include_str!("../../../fsonos-proto/tests/fixtures/gena_notify_rcs_initial_s1.xml");
+        let topology = include_str!("../../../fsonos-proto/tests/fixtures/gena_notify_zgt_s1.xml");
         for (service, body) in [
             (Service::AvTransport, avt_s1),
             (Service::AvTransport, avt_s2),
@@ -325,7 +314,12 @@ mod tests {
                             .is_err()
                     );
                     assert!(rec.subscriptions.route(&event).is_none());
-                    assert!(playback.of(&player).and_then(|state| state.volume).is_none());
+                    assert!(
+                        playback
+                            .of(&player)
+                            .and_then(|state| state.volume)
+                            .is_none()
+                    );
                     rejected = true;
                     continue;
                 }
@@ -348,6 +342,34 @@ mod tests {
             assert_eq!(subscriptions, 5, "only the incomplete service was replaced");
             rec.subscriptions.unsubscribe_all(&lan);
             sim.shutdown();
+        }
+    }
+
+    #[test]
+    fn another_instances_initial_or_delta_cannot_change_current_playback() {
+        let now = Instant::now();
+        let player = PlayerId("instance-test-player".into());
+        for service in [Service::AvTransport, Service::RenderingControl] {
+            let values = if service == Service::AvTransport {
+                transport()
+            } else {
+                rendering()
+            };
+            let good = notify(service, 0, values);
+            let mut playback = Playback::default();
+            apply(&mut [], &mut playback, &player, service, &good, now).unwrap();
+            let before = playback.of(&player).unwrap().clone();
+            let mut other = good;
+            other.properties[0].1 = other.properties[0].1.replace(
+                "InstanceID val=\"0\"",
+                "InstanceID val=\"7\"",
+            );
+            assert!(apply(&mut [], &mut playback, &player, service, &other, now).is_err());
+            assert_eq!(playback.of(&player), Some(&before));
+            other.seq = 1;
+            let changes = apply(&mut [], &mut playback, &player, service, &other, now).unwrap();
+            assert!(changes.is_empty());
+            assert_eq!(playback.of(&player), Some(&before));
         }
     }
 }

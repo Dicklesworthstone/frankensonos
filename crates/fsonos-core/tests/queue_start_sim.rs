@@ -75,7 +75,11 @@ impl Transport for Replies {
         action: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
-        let name = action.trim_matches('"').rsplit('#').next().unwrap_or(action);
+        let name = action
+            .trim_matches('"')
+            .rsplit('#')
+            .next()
+            .unwrap_or(action);
         self.calls.borrow_mut().push(name.into());
         if self.failed.get() && matches!(self.fault, Fault::Unreadable) {
             return Err(Self::lost(host));
@@ -174,7 +178,10 @@ fn a_request_that_did_not_land_never_advances_to_a_later_stage() {
         let (sim, houses, id, host) = fixture(2);
         let replies = Replies::new(&sim, Fault::Before, Some(stage));
         let error = control::play_queue_from(&replies, &houses, &id, 2).unwrap_err();
-        assert!(matches!(error, CoreError::Proto(ProtoError::Network { .. })));
+        assert!(matches!(
+            error,
+            CoreError::Proto(ProtoError::Network { .. })
+        ));
         assert_eq!(replies.writes(), WRITES[..=index]);
         assert_eq!(queue(&sim, host), TRACKS);
         assert_ne!(
@@ -193,7 +200,11 @@ fn definite_refusals_keep_their_error_without_recovery_or_retry() {
         error,
         CoreError::Proto(ProtoError::SoapFault { code: 501, .. })
     ));
-    assert_eq!(*replies.calls.borrow(), WRITES, "no recovery reads for a refusal");
+    assert_eq!(
+        *replies.calls.borrow(),
+        WRITES,
+        "no recovery reads for a refusal"
+    );
 }
 
 #[test]
@@ -201,7 +212,11 @@ fn failed_readback_keeps_the_original_error_and_sends_no_play() {
     let (sim, houses, id, host) = fixture(2);
     let replies = Replies::new(&sim, Fault::Unreadable, Some("Seek"));
     let error = control::play_queue_from(&replies, &houses, &id, 2).unwrap_err();
-    assert!(error.to_string().contains("injected lost queue-start reply"));
+    assert!(
+        error
+            .to_string()
+            .contains("injected lost queue-start reply")
+    );
     assert_eq!(replies.writes(), WRITES[..2]);
     assert_eq!(soap::get_position_info(&sim.lan(), host).unwrap().track, 2);
     assert_ne!(
@@ -229,8 +244,15 @@ fn a_matching_track_number_with_different_media_is_not_confirmation() {
     let (sim, houses, id, host) = fixture(2);
     let replies = Replies::new(&sim, Fault::StalePosition, Some("Play"));
     assert!(control::play_queue_from(&replies, &houses, &id, 2).is_err());
-    assert_eq!(replies.writes(), WRITES, "no replay or rollback on mismatch");
-    assert_eq!(soap::get_position_info(&sim.lan(), host).unwrap().uri, TRACKS[1]);
+    assert_eq!(
+        replies.writes(),
+        WRITES,
+        "no replay or rollback on mismatch"
+    );
+    assert_eq!(
+        soap::get_position_info(&sim.lan(), host).unwrap().uri,
+        TRACKS[1]
+    );
 }
 
 #[test]

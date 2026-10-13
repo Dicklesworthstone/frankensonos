@@ -316,7 +316,12 @@ pub fn play_queue_from<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
 ) -> Result<(), CoreError> {
-    Ok(queue_start::play(t, addr(households, coordinator)?, coordinator, position)?)
+    Ok(queue_start::play(
+        t,
+        addr(households, coordinator)?,
+        coordinator,
+        position,
+    )?)
 }
 
 /// Tracks [`enqueue_spotify`] added to a group's queue.

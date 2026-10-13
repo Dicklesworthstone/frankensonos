@@ -46,8 +46,10 @@ pub(super) fn play<T: Transport + ?Sized>(
             Stage::Play => soap::play(transport, host),
         };
         if let Err(error) = result {
-            if matches!(&error, ProtoError::Network { .. } | ProtoError::Malformed(_))
-                && confirmed(transport, host, coordinator, position, stage).unwrap_or(false)
+            if matches!(
+                &error,
+                ProtoError::Network { .. } | ProtoError::Malformed(_)
+            ) && confirmed(transport, host, coordinator, position, stage).unwrap_or(false)
             {
                 tracing::warn!(
                     action = stage.name(),

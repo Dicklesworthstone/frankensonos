@@ -130,14 +130,16 @@ pub struct EventValue {
 }
 
 /// A parsed `LastChange` document: the variables that changed (all of them in
-/// the initial event).
+/// the initial event) for instance/queue zero. Events for other instances
+/// have no values here, rather than being mistaken for the active renderer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LastChange {
     pub values: Vec<EventValue>,
 }
 
 /// Parse a `LastChange` document (already entity-decoded once from the
-/// property set).
+/// property set). Select instance/queue zero regardless of document order;
+/// absent or ambiguous identifiers are malformed, not an implicit zero.
 pub fn parse_last_change(doc_text: &str) -> Result<LastChange, ProtoError> {
     let doc = xml::parse(doc_text)?;
     let event = doc.root_element();
@@ -149,10 +151,31 @@ pub fn parse_last_change(doc_text: &str) -> Result<LastChange, ProtoError> {
     }
     // AVTransport/RenderingControl nest under <InstanceID val="0">; Queue
     // events use <QueueID val="0"> instead (verified live, S1 57.23).
-    let instance = event
-        .children()
-        .find(|n| n.is_element() && matches!(n.tag_name().name(), "InstanceID" | "QueueID"))
-        .ok_or_else(|| ProtoError::Malformed("LastChange has no InstanceID/QueueID".into()))?;
+    let mut instance = None;
+    let mut has_container = false;
+    for node in event.children().filter(|node| {
+        node.is_element() && matches!(node.tag_name().name(), "InstanceID" | "QueueID")
+    }) {
+        has_container = true;
+        let id = node
+            .attribute("val")
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .ok_or_else(|| ProtoError::Malformed("LastChange has an invalid instance ID".into()))?;
+        if id == 0 && instance.replace(node).is_some() {
+            return Err(ProtoError::Malformed(
+                "LastChange has more than one instance/queue zero".into(),
+            ));
+        }
+    }
+    if !has_container {
+        return Err(ProtoError::Malformed(
+            "LastChange has no InstanceID/QueueID".into(),
+        ));
+    }
+    let Some(instance) = instance else {
+        // Another instance's delta is valid but cannot update our instance.
+        return Ok(LastChange { values: Vec::new() });
+    };
     Ok(LastChange {
         values: instance
             .children()
@@ -349,5 +372,76 @@ mod tests {
         )
         .unwrap();
         assert_eq!(lc.get("UpdateID"), Some("8"));
+    }
+
+    #[test]
+    fn instance_zero_is_selected_regardless_of_container_order() {
+        for tag in ["InstanceID", "QueueID"] {
+            for zero_first in [false, true] {
+                let zero = format!("<{tag} val=\"0\"><UpdateID val=\"8\"/></{tag}>");
+                let other = format!("<{tag} val=\"7\"><UpdateID val=\"99\"/></{tag}>");
+                let body = if zero_first {
+                    format!("<Event>{zero}{other}</Event>")
+                } else {
+                    format!("<Event>{other}{zero}</Event>")
+                };
+                let change = parse_last_change(&body).unwrap();
+                assert_eq!(change.get("UpdateID"), Some("8"));
+                assert_eq!(change.values.len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn other_instances_are_ignored_without_parsing_their_track_metadata() {
+        for tag in ["InstanceID", "QueueID"] {
+            let body = format!(
+                "<Event><{tag} val=\"7\"><TransportState val=\"PLAYING\"/>\
+                 <CurrentTrackURI val=\"test:other\"/>\
+                 <CurrentTrackMetaData val=\"not-xml\"/></{tag}></Event>"
+            );
+            let change = parse_last_change(&body).unwrap();
+            assert!(change.values.is_empty());
+            assert!(change.transport_state().is_none());
+            assert!(change.current_track_uri().is_none());
+            assert!(change.current_track_metadata().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn invalid_instance_identifiers_are_not_treated_as_zero() {
+        for tag in ["InstanceID", "QueueID"] {
+            let invalid = ["", "val=\"\"", "val=\"?\"", "val=\"-1\"", "val=\"4294967296\""];
+            for attribute in invalid {
+                let body = format!("<Event><{tag} {attribute}/></Event>");
+                assert!(parse_last_change(&body).is_err());
+                let mixed = format!("<Event><{tag} val=\"0\"/><{tag} {attribute}/></Event>");
+                assert!(parse_last_change(&mixed).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_zero_instances_are_rejected_instead_of_partially_applied() {
+        for second in ["InstanceID", "QueueID"] {
+            let body = format!(
+                "<Event><InstanceID val=\"0\"><Volume val=\"17\"/></InstanceID>\
+                 <{second} val=\"00\"><Volume val=\"99\"/></{second}></Event>"
+            );
+            assert!(parse_last_change(&body).is_err());
+        }
+    }
+
+    #[test]
+    fn master_channel_and_element_text_are_read_only_from_instance_zero() {
+        let change = parse_last_change(
+            "<Event><InstanceID val=\"7\"><Volume channel=\"Master\" val=\"99\"/>\
+             <Mute channel=\"Master\" val=\"1\"/></InstanceID><InstanceID val=\"0\">\
+             <Volume channel=\"LF\" val=\"100\"/><Volume channel=\"Master\">17</Volume>\
+             <Mute channel=\"Master\">0</Mute></InstanceID></Event>",
+        )
+        .unwrap();
+        assert_eq!(change.volume(), Some(17));
+        assert_eq!(change.mute(), Some(false));
     }
 }
