@@ -17,14 +17,10 @@
 //! target, as the surfaces do (a DJ feeding the queue moves its feed too).
 
 use crate::rooms::ControlTarget;
-use crate::snapshot::{self, SnapshotSource, ZoneSnapshot};
+use crate::snapshot;
 use crate::store::{Store, StoreError};
 use crate::{CoreError, HouseholdState, control, grouping, resolve_room};
-use fsonos_proto::content;
 use fsonos_proto::control as soap;
-use fsonos_proto::didl::{
-    DidlObject, parse_didl, spotify_queue_uri, spotify_track_didl, spotify_uri_from_renderer_uri,
-};
 use fsonos_proto::soap::{AV_TRANSPORT, args_xml, call};
 use fsonos_proto::topology::{ZoneGroupState, get_zone_group_state};
 use fsonos_proto::{ProtoError, Transport};
@@ -32,6 +28,7 @@ use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+mod replay;
 mod session;
 
 /// Why a move cannot go ahead as asked.
@@ -74,7 +71,7 @@ pub enum MoveStep {
 /// How a move was carried out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveMethod {
-    /// Nothing to do: the source and target are the same room.
+    /// Nothing to do: the source and target are the same, or nothing is loaded.
     Nothing,
     /// The target joined and the source left; the coordinator stayed.
     Regrouped,
@@ -259,9 +256,9 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
     target: &PlayerId,
 ) -> Result<(), MoveError> {
     let snap = snapshot::capture(t, households, coordinator, 0)?;
-    let queue = queue_of(t, households, &snap)?;
+    let prepared = replay::Prepared::new(t, households, &snap, target)?;
     control::leave(t, households, target)?;
-    replay_on(t, households, &snap, &queue, target)?;
+    prepared.apply(t, ip(households, target)?, target)?;
     for member in snap
         .members
         .iter()
@@ -275,123 +272,33 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
 
 /// Copy the music `from` plays onto `to`'s group (any household: Spotify
 /// items are re-rendered with the target household's parameters), at the
-/// same track and position, then stop `from`.
+/// same track and position, then stop `from`. Preparation is read-only:
+/// missing resources or render parameters never clear the destination queue.
 pub fn copy_playback<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     from: &ControlTarget<'_>,
     to: &ControlTarget<'_>,
 ) -> Result<MoveReport, MoveError> {
-    let snap = snapshot::capture(t, households, &from.coordinator.id, 0)?;
-    let queue = queue_of(t, households, &snap)?;
-    replay_on(t, households, &snap, &queue, &to.coordinator.id)?;
-    soap::stop(t, from.coordinator.ip)?;
-    Ok(MoveReport {
-        method: MoveMethod::Copied,
+    let mut report = MoveReport {
+        method: MoveMethod::Nothing,
         old_coordinator: from.coordinator.id.clone(),
-        new_coordinator: to.coordinator.id.clone(),
-    })
-}
-
-/// The queue's items, for a queue source.
-fn queue_of<T: Transport + ?Sized>(
-    t: &T,
-    households: &[HouseholdState],
-    snap: &ZoneSnapshot,
-) -> Result<Vec<DidlObject>, CoreError> {
-    match snap.source {
-        SnapshotSource::Queue { .. } => Ok(content::browse_all(
-            t,
-            ip(households, &snap.coordinator)?,
-            content::QUEUE,
-        )?),
-        _ => Ok(Vec::new()),
-    }
-}
-
-/// Play `snap`'s source on `target` (which must lead its own group): its
-/// URI, or `queue` as the target's new queue, at the same track and
-/// position; playing only if it was playing.
-fn replay_on<T: Transport + ?Sized>(
-    t: &T,
-    households: &[HouseholdState],
-    snap: &ZoneSnapshot,
-    queue: &[DidlObject],
-    target: &PlayerId,
-) -> Result<(), MoveError> {
-    let host = ip(households, target)?;
-    let params = || {
-        control::spotify_params(t, households, target)?
-            .ok_or_else(|| MoveError::NoRenderParams(target.0.clone()))
+        new_coordinator: from.coordinator.id.clone(),
     };
-    let (track, position) = match &snap.source {
-        SnapshotSource::Nothing => return Ok(()),
-        SnapshotSource::Uri {
-            uri,
-            metadata,
-            position_secs,
-        } => {
-            if let Some(spotify) = spotify_uri_from_renderer_uri(uri) {
-                let title = title_of(metadata);
-                let p = params()?;
-                soap::set_av_transport_uri(
-                    t,
-                    host,
-                    &fsonos_proto::didl::spotify_track_uri(&spotify, &p),
-                    &spotify_track_didl(&spotify, &title, &p),
-                )?;
-            } else {
-                soap::set_av_transport_uri(t, host, uri, metadata)?;
-            }
-            (0, position_secs.unwrap_or(0))
-        }
-        SnapshotSource::Queue {
-            track,
-            position_secs,
-            ..
-        } => {
-            soap::remove_all_tracks_from_queue(t, host)?;
-            let mut learned = None;
-            for item in queue {
-                let Some(res) = &item.res else { continue };
-                if let Some(spotify) = spotify_uri_from_renderer_uri(&res.uri) {
-                    if learned.is_none() {
-                        learned = Some(params()?);
-                    }
-                    let p = learned.as_ref().expect("learned above");
-                    soap::add_uri_to_queue(
-                        t,
-                        host,
-                        &spotify_queue_uri(&spotify),
-                        &spotify_track_didl(&spotify, &item.title, p),
-                        false,
-                    )?;
-                } else {
-                    soap::add_uri_to_queue(t, host, &res.uri, "", false)?;
-                }
-            }
-            soap::play_from_queue(t, host, target)?;
-            (*track, *position_secs)
-        }
-    };
-    if track > 0 {
-        soap::seek_track(t, host, track)?;
+    // Aliases and two rooms in one group can resolve to the very same queue.
+    if from.coordinator.id == to.coordinator.id {
+        return Ok(report);
     }
-    if position > 0 {
-        soap::seek_position(t, host, position)?;
+    let snap = snapshot::capture(t, households, &from.coordinator.id, 0)?;
+    let prepared = replay::Prepared::new(t, households, &snap, &to.coordinator.id)?;
+    if prepared.is_empty() {
+        return Ok(report);
     }
-    if snap.transport_state == TransportState::Playing {
-        soap::play(t, host)?;
-    }
-    Ok(())
-}
-
-fn title_of(metadata: &str) -> String {
-    parse_didl(metadata)
-        .ok()
-        .and_then(|objects| objects.into_iter().next())
-        .map(|o| o.title)
-        .unwrap_or_default()
+    prepared.apply(t, to.coordinator.ip, &to.coordinator.id)?;
+    soap::stop(t, from.coordinator.ip)?;
+    report.method = MoveMethod::Copied;
+    report.new_coordinator.clone_from(&to.coordinator.id);
+    Ok(report)
 }
 
 /// Whole-house mode: group every room of `household` under `lead`, or (when
