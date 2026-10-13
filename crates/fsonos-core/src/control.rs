@@ -9,7 +9,7 @@
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::ProtoError;
 use fsonos_proto::Transport;
-use fsonos_proto::content::{self, BrowseFlag, QUEUE};
+use fsonos_proto::content::{self, QUEUE};
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
 use fsonos_proto::didl::{
     SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_container_didl,
@@ -381,6 +381,14 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
         other => other?,
     };
     let uris = queue_uris(t, host, added.first, added.count)?;
+    if usize::try_from(added.count).ok() != Some(uris.len()) {
+        // The mutation already happened. Retry reads only, never enqueue
+        // again to repair a missing or changed read-back.
+        return Err(ProtoError::Malformed(
+            "the enqueued range changed before it could be read back completely".into(),
+        )
+        .into());
+    }
     Ok(Queued {
         first: added.first,
         uris,
@@ -390,8 +398,8 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
 
 /// Take tracks [`enqueue_spotify`] added (`uris`, from queue position
 /// `first`) off the queue of the group `coordinator` leads again.
-/// `Ok(false)`, with nothing removed, when the queue no longer holds them
-/// there.
+/// `Ok(false)`, with nothing removed, when a consistent read no longer
+/// finds them there. The read and removal are separate device operations.
 pub fn unqueue<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -402,8 +410,12 @@ pub fn unqueue<T: Transport + ?Sized>(
     if uris.is_empty() {
         return Ok(true);
     }
+    if uris.iter().any(|uri| uri.trim().is_empty()) {
+        return Err(ProtoError::Malformed("queued track identity is empty".into()).into());
+    }
     let host = addr(households, coordinator)?;
-    let count = u32::try_from(uris.len()).unwrap_or(u32::MAX);
+    let count = u32::try_from(uris.len())
+        .map_err(|_| ProtoError::Malformed("queued range exceeds u32 tracks".into()))?;
     if queue_uris(t, host, first, count)? != uris {
         return Ok(false);
     }
@@ -415,35 +427,29 @@ pub fn unqueue<T: Transport + ?Sized>(
 }
 
 /// The URIs of up to `count` queue tracks from position `first` (1-based)
-/// of the coordinator at `host`.
+/// of the coordinator at `host`, all from one observed container revision.
 fn queue_uris<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
     first: u32,
     count: u32,
 ) -> Result<Vec<String>, CoreError> {
-    let mut uris = Vec::new();
-    let mut got = 0;
-    while got < count {
-        let page = content::browse(
-            t,
-            host,
-            QUEUE,
-            BrowseFlag::DirectChildren,
-            first.saturating_sub(1).saturating_add(got),
-            (count - got).min(100),
-        )?;
-        if page.objects.is_empty() {
-            break;
-        }
-        uris.extend(
-            page.objects
-                .into_iter()
-                .map(|o| o.res.map_or_else(String::new, |r| r.uri)),
-        );
-        got = u32::try_from(uris.len()).unwrap_or(u32::MAX);
+    if count == 0 {
+        return Ok(Vec::new());
     }
-    Ok(uris)
+    let offset = first
+        .checked_sub(1)
+        .ok_or_else(|| ProtoError::Malformed("queue positions start at one".into()))?;
+    let snapshot = content::browse_range_snapshot(t, host, QUEUE, offset, count)?;
+    snapshot
+        .objects
+        .into_iter()
+        .map(|object| {
+            object.res.map(|resource| resource.uri).ok_or_else(|| {
+                CoreError::Proto(ProtoError::Malformed("queued track has no URI".into()))
+            })
+        })
+        .collect()
 }
 
 /// Set one room's volume (on the room's own player); returns the new level.

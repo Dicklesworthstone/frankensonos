@@ -52,8 +52,8 @@ pub struct BrowsePage {
     pub update_id: u32,
 }
 
-/// Every child of a container at one observed revision. All pages agreed on
-/// both UpdateID and TotalMatches; no partial walk is returned as a snapshot.
+/// A requested set of container children at one observed revision. All pages
+/// agreed on UpdateID and TotalMatches; stalled walks never become snapshots.
 /// The container can change again after the last response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowseSnapshot {
@@ -117,6 +117,34 @@ pub fn browse_snapshot<T: Transport + ?Sized>(
     host: IpAddr,
     object_id: &str,
 ) -> Result<BrowseSnapshot, ProtoError> {
+    read_children(transport, host, object_id, 0, None)
+}
+
+/// Read up to `count` children starting at zero-based `offset`, across as
+/// many pages as needed. Every returned object belongs to the same observed
+/// revision. A concurrent edit restarts at `offset`, not at the next page.
+/// A range beyond the container's end is empty; zero counts and overflowing
+/// index ranges are rejected before making a request.
+pub fn browse_range_snapshot<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    object_id: &str,
+    offset: u32,
+    count: u32,
+) -> Result<BrowseSnapshot, ProtoError> {
+    if count == 0 || count > MAX_BROWSE_OBJECTS || offset.checked_add(count).is_none() {
+        return Err(ProtoError::Malformed("invalid browse range".into()));
+    }
+    read_children(transport, host, object_id, offset, Some(count))
+}
+
+fn read_children<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    object_id: &str,
+    offset: u32,
+    count: Option<u32>,
+) -> Result<BrowseSnapshot, ProtoError> {
     let mut requests = 0;
     for _ in 0..SNAPSHOT_ATTEMPTS {
         let mut objects = Vec::new();
@@ -128,15 +156,19 @@ pub fn browse_snapshot<T: Transport + ?Sized>(
                 )));
             }
             requests += 1;
-            let start = u32::try_from(objects.len())
+            let consumed = u32::try_from(objects.len())
                 .map_err(|_| ProtoError::Malformed("container exceeds u32 objects".into()))?;
+            let start = offset
+                .checked_add(consumed)
+                .ok_or_else(|| ProtoError::Malformed("browse position overflow".into()))?;
+            let requested = count.map_or(PAGE_SIZE, |n| (n - consumed).min(PAGE_SIZE));
             let page = browse(
                 transport,
                 host,
                 object_id,
                 BrowseFlag::DirectChildren,
                 start,
-                PAGE_SIZE,
+                requested,
             )?;
             let signature = (page.update_id, page.total_matches);
             if revision.is_some_and(|previous| previous != signature) {
@@ -150,21 +182,20 @@ pub fn browse_snapshot<T: Transport + ?Sized>(
             }
             let got = u32::try_from(page.objects.len())
                 .map_err(|_| ProtoError::Malformed("browse page exceeds u32 objects".into()))?;
-            let end = start
-                .checked_add(got)
-                .ok_or_else(|| ProtoError::Malformed("browse position overflow".into()))?;
-            if got != page.number_returned || got > PAGE_SIZE || end > page.total_matches {
+            let available = page.total_matches.saturating_sub(start);
+            if got != page.number_returned || got > requested || got > available {
                 return Err(ProtoError::Malformed(format!(
                     "browse of {object_id} returned inconsistent paging counters"
                 )));
             }
-            if got == 0 && end < page.total_matches {
+            if got == 0 && available > 0 {
                 return Err(ProtoError::Malformed(format!(
                     "browse of {object_id} made no progress before TotalMatches"
                 )));
             }
             objects.extend(page.objects);
-            if end == page.total_matches {
+            let end = consumed + got;
+            if end == page.total_matches.saturating_sub(offset) || count == Some(end) {
                 return Ok(BrowseSnapshot {
                     objects,
                     update_id: page.update_id,
@@ -221,12 +252,14 @@ mod tests {
 
     struct Scripted {
         pages: RefCell<VecDeque<(u32, String)>>,
+        counts: RefCell<Vec<u32>>,
     }
 
     impl Scripted {
         fn new(pages: Vec<(u32, String)>) -> Self {
             Self {
                 pages: RefCell::new(pages.into()),
+                counts: RefCell::new(Vec::new()),
             }
         }
 
@@ -246,7 +279,17 @@ mod tests {
             assert!(action.ends_with("#Browse\""));
             let (start, response) = self.pages.borrow_mut().pop_front().expect("bounded walk");
             assert!(body.contains(&format!("<StartingIndex>{start}</StartingIndex>")));
-            assert!(body.contains("<RequestedCount>100</RequestedCount>"));
+            let count: u32 = body
+                .split("<RequestedCount>")
+                .nth(1)
+                .unwrap()
+                .split('<')
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!((1..=PAGE_SIZE).contains(&count));
+            self.counts.borrow_mut().push(count);
             Ok(response)
         }
     }
@@ -374,20 +417,14 @@ mod tests {
             assert!(browse_all(&transport, host(), QUEUE).is_err());
             transport.complete();
         }
-        let transport = Scripted::new(vec![
-            (0, page(&["one"], 2, 7)),
-            (1, page(&[], 2, 7)),
-        ]);
+        let transport = Scripted::new(vec![(0, page(&["one"], 2, 7)), (1, page(&[], 2, 7))]);
         assert!(browse_all(&transport, host(), QUEUE).is_err());
         transport.complete();
     }
 
     #[test]
     fn malformed_later_pages_propagate_without_publishing_a_prefix() {
-        let transport = Scripted::new(vec![
-            (0, page(&["one"], 2, 7)),
-            (1, "<not-xml".into()),
-        ]);
+        let transport = Scripted::new(vec![(0, page(&["one"], 2, 7)), (1, "<not-xml".into())]);
         assert!(browse_all(&transport, host(), QUEUE).is_err());
         transport.complete();
     }
@@ -401,6 +438,58 @@ mod tests {
         let transport = Scripted::new(pages);
         let error = browse_snapshot(&transport, host(), QUEUE).unwrap_err();
         assert!(error.to_string().contains("page limit"));
+        transport.complete();
+    }
+
+    #[test]
+    fn a_range_reads_only_its_requested_window_across_short_pages() {
+        let transport = Scripted::new(vec![
+            (5, page(&["six", "seven"], 20, 9)),
+            (7, page(&["eight"], 20, 9)),
+        ]);
+        let snapshot = browse_range_snapshot(&transport, host(), QUEUE, 5, 3).unwrap();
+        assert_eq!(titles(&snapshot), ["six", "seven", "eight"]);
+        assert_eq!(*transport.counts.borrow(), [3, 1]);
+        transport.complete();
+    }
+
+    #[test]
+    fn a_changed_range_restarts_at_its_original_offset() {
+        let transport = Scripted::new(vec![
+            (5, page(&["old-six", "old-seven"], 20, 9)),
+            (7, page(&["eight"], 20, 10)),
+            (5, page(&["six", "seven", "eight"], 20, 10)),
+        ]);
+        let snapshot = browse_range_snapshot(&transport, host(), QUEUE, 5, 3).unwrap();
+        assert_eq!(titles(&snapshot), ["six", "seven", "eight"]);
+        assert_eq!(snapshot.update_id, 10);
+        assert_eq!(*transport.counts.borrow(), [3, 1, 3]);
+        transport.complete();
+    }
+
+    #[test]
+    fn ranges_can_end_at_or_beyond_the_container_end() {
+        for (offset, names) in [(1, vec!["two"]), (2, vec![]), (10, vec![])] {
+            let transport = Scripted::new(vec![(offset, page(&names, 2, 7))]);
+            let snapshot = browse_range_snapshot(&transport, host(), QUEUE, offset, 5).unwrap();
+            assert_eq!(titles(&snapshot), names);
+            transport.complete();
+        }
+    }
+
+    #[test]
+    fn range_bounds_are_checked_before_network_io() {
+        let transport = Scripted::new(Vec::new());
+        for (offset, count) in [(0, 0), (u32::MAX, 1), (0, MAX_BROWSE_OBJECTS + 1)] {
+            assert!(browse_range_snapshot(&transport, host(), QUEUE, offset, count).is_err());
+        }
+        transport.complete();
+    }
+
+    #[test]
+    fn a_range_never_accepts_more_items_than_requested() {
+        let transport = Scripted::new(vec![(5, page(&["six", "seven"], 20, 7))]);
+        assert!(browse_range_snapshot(&transport, host(), QUEUE, 5, 1).is_err());
         transport.complete();
     }
 }
