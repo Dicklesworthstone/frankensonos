@@ -1249,7 +1249,20 @@ mod tests {
         // Once the holder is gone, the next daemon takes it, whatever
         // daemon.json says.
         drop(held);
-        assert!(matches!(lock_data_dir(&dir).unwrap(), DirLock::Held(_)));
+        // A child another test forks in this window shares the lock's file
+        // description until it execs, so the lock can outlive the drop for
+        // a moment: try again briefly, as a restarting daemon would.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let retaken = loop {
+            match lock_data_dir(&dir).unwrap() {
+                DirLock::Held(_) => break true,
+                DirLock::Busy(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                DirLock::Busy(_) => break false,
+            }
+        };
+        assert!(retaken, "once the holder is gone, the next daemon takes it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
