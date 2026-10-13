@@ -302,7 +302,9 @@ mod tests {
             assert_eq!(state.pool.preferences(), &preferences);
             assert_eq!(state.moods, presets);
             assert!(!state.planned);
-            let due = state.plan_retry_at.expect("the rebuild must remain pending");
+            let due = state
+                .plan_retry_at
+                .expect("the rebuild must remain pending");
             assert!(!state.reload_due(due - Duration::from_secs(1)));
             assert!(state.reload_due(due));
 
