@@ -589,7 +589,10 @@ mod tests {
         let subscriber = TestSubscriber::default();
         let mut subs = Subscriptions::default();
         let now = Instant::now();
-        assert_eq!(subs.sync(&subscriber, &[want()], callback, now).subscribed, 1);
+        assert_eq!(
+            subs.sync(&subscriber, &[want()], callback, now).subscribed,
+            1
+        );
         assert!(!subs.missed(&notify("uuid:events-test", 0)));
         assert!(!subs.missed(&notify("uuid:events-test", 1)));
         let report = subs.renew_due(&subscriber, callback, now + Duration::from_secs(150));
@@ -792,7 +795,11 @@ mod tests {
         assert_eq!(recovered.resubscribed, 1);
         assert_eq!(recovered.answered, vec![want().player]);
         assert_eq!(subscriber.calls.get(), 4);
-        assert_eq!(subscriber.renewals.get(), 0, "renewing cannot restore state");
+        assert_eq!(
+            subscriber.renewals.get(),
+            0,
+            "renewing cannot restore state"
+        );
         assert!(subs.route(&notify("uuid:retry-1", 5)).is_none());
         assert!(!subs.missed(&notify("uuid:retry-4", 0)));
         assert_eq!(
@@ -915,7 +922,8 @@ mod tests {
         let subscriber = TestSubscriber::default();
         let now = Instant::now();
         let mut rec = crate::reconcile::Reconciler::new(RETRY, RETRY, now);
-        rec.subscriptions.sync(&subscriber, &[want()], callback, now);
+        rec.subscriptions
+            .sync(&subscriber, &[want()], callback, now);
         let mut playback = Playback::default();
         let first = playback_notify(0, "PLAYING", "test:track-a");
         let next = playback_notify(1, "PAUSED_PLAYBACK", "test:track-b");
