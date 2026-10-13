@@ -139,6 +139,12 @@ fn a_reboot_in_a_topology_event_resubscribes_and_refreshes_within_5_s() {
         let Some(n) = sink.recv_timeout(Duration::from_millis(200)) else {
             continue;
         };
+        // Routed before on_notify takes the event in: a consumed event no
+        // longer routes (a replay is rejected).
+        let to_victim = r
+            .subscriptions
+            .route(&n)
+            .is_some_and(|(p, _)| *p == victim_id);
         let Some(report) = r
             .on_notify(&lan, &mut playback, &n, callback, Instant::now())
             .unwrap()
@@ -153,10 +159,7 @@ fn a_reboot_in_a_topology_event_resubscribes_and_refreshes_within_5_s() {
             );
             rebooted = report.rebooted;
             resubscribed = report.events.resubscribed;
-        } else if !rebooted.is_empty()
-            && n.seq == 0
-            && r.subscriptions.route(&n).map(|(p, _)| p) == Some(&victim_id)
-        {
+        } else if !rebooted.is_empty() && n.seq == 0 && to_victim {
             fresh += 1;
         }
     }
