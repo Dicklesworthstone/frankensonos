@@ -278,7 +278,7 @@ mod tests {
         );
         let r = renew_headers("uuid:RINCON_X_sub1", 600);
         assert_eq!(r[0], ("SID".into(), "uuid:RINCON_X_sub1".into()));
-        assert!(!r.iter().any(|(k, _)| k == "CALLBACK" || k == "NT"));
+        assert!(!r.iter().any(|(k, _)| k == "NT" || k == "CALLBACK"));
     }
 
     #[test]
@@ -411,7 +411,13 @@ mod tests {
     #[test]
     fn invalid_instance_identifiers_are_not_treated_as_zero() {
         for tag in ["InstanceID", "QueueID"] {
-            let invalid = ["", "val=\"\"", "val=\"?\"", "val=\"-1\"", "val=\"4294967296\""];
+            let invalid = [
+                "",
+                "val=\"\"",
+                "val=\"?\"",
+                "val=\"-1\"",
+                "val=\"4294967296\"",
+            ];
             for attribute in invalid {
                 let body = format!("<Event><{tag} {attribute}/></Event>");
                 assert!(parse_last_change(&body).is_err());

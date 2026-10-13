@@ -359,11 +359,17 @@ mod tests {
             let mut playback = Playback::default();
             apply(&mut [], &mut playback, &player, service, &good, now).unwrap();
             let before = playback.of(&player).unwrap().clone();
-            let mut other = good;
-            other.properties[0].1 = other.properties[0].1.replace(
-                "InstanceID val=\"0\"",
-                "InstanceID val=\"7\"",
-            );
+            // Conflicting values would visibly alter state if instance seven
+            // were accidentally applied. Repeating the current values would
+            // not test that the delta is actually isolated.
+            let changed = if service == Service::AvTransport {
+                "<TransportState val=\"PLAYING\"/><CurrentTrackURI val=\"test:other\"/>"
+            } else {
+                "<Volume channel=\"Master\" val=\"55\"/><Mute channel=\"Master\" val=\"0\"/>"
+            };
+            let mut other = notify(service, 0, last_change(changed));
+            let body = &mut other.properties[0].1;
+            *body = body.replacen("val=\"0\"", "val=\"7\"", 1);
             assert!(apply(&mut [], &mut playback, &player, service, &other, now).is_err());
             assert_eq!(playback.of(&player), Some(&before));
             other.seq = 1;
@@ -371,5 +377,48 @@ mod tests {
             assert!(changes.is_empty());
             assert_eq!(playback.of(&player), Some(&before));
         }
+    }
+
+    #[test]
+    fn ambiguous_instance_deltas_preserve_state_and_accept_a_corrected_sequence() {
+        let now = Instant::now();
+        let service = Service::RenderingControl;
+        let player = PlayerId("duplicate-instance-player".into());
+        let subscriber = SubscriberProbe::default();
+        let mut rec = Reconciler::new(RETRY, RETRY, now);
+        let want = Want {
+            player: player.clone(),
+            host: std::net::Ipv4Addr::LOCALHOST.into(),
+            service,
+        };
+        rec.subscriptions.sync(&subscriber, &[want], callback, now);
+        let mut playback = Playback::default();
+        let good = notify(service, 0, rendering());
+        rec.on_notify(&subscriber, &mut playback, &good, callback, now)
+            .unwrap();
+        let before = playback.of(&player).unwrap().clone();
+        let changed = "<Volume channel=\"Master\" val=\"55\"/>";
+        let mut ambiguous = notify(service, 1, last_change(changed));
+        let body = &mut ambiguous.properties[0].1;
+        let duplicate = "<InstanceID val=\"0\"/></Event>";
+        *body = body.replace("</Event>", duplicate);
+        subscriber.refuse.set(true);
+        assert!(
+            rec.on_notify(&subscriber, &mut playback, &ambiguous, callback, now)
+                .is_err()
+        );
+        assert_eq!(playback.of(&player), Some(&before));
+        assert!(rec.subscriptions.route(&ambiguous).is_some());
+        assert_eq!(rec.subscriptions.next_due(), Some(now + RETRY));
+        let corrected = notify(service, 1, last_change(changed));
+        let report = rec
+            .on_notify(&subscriber, &mut playback, &corrected, callback, now)
+            .unwrap()
+            .unwrap();
+        assert!(!report.changes.is_empty());
+        assert_eq!(playback.of(&player).unwrap().volume, Some(55));
+        assert_eq!(playback.of(&player).unwrap().mute, Some(true));
+        assert!(rec.subscriptions.route(&ambiguous).is_none());
+        assert_eq!(subscriber.calls.get(), 2, "no extra retry");
     }
 }
