@@ -340,6 +340,10 @@ fn failure(err: FeedError) -> Failure {
         ),
         FeedError::NoRenderParams => Failure::new(ErrorCode::RenderParamsMissing, detail),
         FeedError::Inactive => Failure::new(ErrorCode::NoDjSession, detail),
+        FeedError::UncertainEnqueue(_) => Failure::new(ErrorCode::Internal, detail).with_hint(
+            "Inspect the speaker's queue before starting the DJ again. The add was not \
+             replayed, and existing playback was left alone.",
+        ),
         FeedError::Core(e) => Failure::from(e),
         FeedError::Proto(e) => Failure::from(CoreError::from(e)),
         FeedError::Store(e) => Failure::new(ErrorCode::Internal, e.to_string()),
@@ -670,6 +674,7 @@ impl DjEngine for SpotifyDj {
         let Some(feed) = feeds.get_mut(at.coordinator) else {
             return;
         };
+        let mut observe_listening = true;
         match feed.on_playback(
             &speakers(at),
             plan(pool, feedback.as_ref(), &cx),
@@ -681,6 +686,12 @@ impl DjEngine for SpotifyDj {
                 if queued > 0 {
                     tracing::info!(queued, "the DJ topped up the queue");
                 }
+            }
+            Err(FeedError::UncertainEnqueue(detail)) => {
+                // Relinquishing a queue is not a listener skipping the music.
+                // Do not learn negative feedback or schedule another add.
+                observe_listening = false;
+                tracing::error!(%detail, "DJ feeding stopped after an indeterminate enqueue");
             }
             Err(e) => {
                 let retry = retry::Retry::failed(
@@ -700,14 +711,16 @@ impl DjEngine for SpotifyDj {
             tracing::warn!(%error, "the DJ could not trim the queue; retrying on the next track");
         }
         // An early skip or a full listen, as the movement heard ends.
-        if feedback::implicit(
-            listening.entry(at.coordinator.clone()).or_default(),
-            feed,
-            pool,
-            store,
-            playback,
-            cx.now,
-        ) {
+        if observe_listening
+            && feedback::implicit(
+                listening.entry(at.coordinator.clone()).or_default(),
+                feed,
+                pool,
+                store,
+                playback,
+                cx.now,
+            )
+        {
             // From the DJ's next pick on.
             *feedback = FeedbackModel::load(&StoreFeedback(&*store), cx.now).ok();
         }

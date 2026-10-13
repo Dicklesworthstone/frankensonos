@@ -14,9 +14,11 @@
 //! against its model of the queue — re-reading the queue when the owner has
 //! inserted, removed or replaced items, and stepping aside when none of the
 //! DJ's works is left on it — records each new DJ track once, and tops up. A
-//! top-up that fails (a network error, a fault) is retried on the next
-//! event; a work that only partly made it onto the queue is completed in
-//! place, right after its first movements, so it still plays whole.
+//! rejected top-up is retried after reconciling the queue; a work that only
+//! partly made it onto the queue is completed in place. A lost enqueue reply
+//! is accepted only when read-back confirms exactly the intended insertion.
+//! An indeterminate write relinquishes automatic feeding, without stopping
+//! the music: replaying that write could duplicate a movement.
 //! [`QueueFeed::skip`] re-reads the queue and skips the rest of the current
 //! work; [`QueueFeed::stop`] stops. Played works stay where they are until
 //! the queue grows past [`DjConfig::trim_queue_at`]; then the long-played
@@ -50,6 +52,8 @@ use serde::{Deserialize, Serialize};
 use crate::dj::{DjConfig, PickContext, PickReason, PlayRecord, Rng, WorkPool, pick_next};
 use crate::feedback::FeedbackModel;
 use crate::steer::Steer;
+
+mod enqueue;
 
 /// How far apart a play recorded here and the owner's Spotify history's
 /// record of it can be (Spotify notes a play when it ends; a movement can
@@ -91,6 +95,10 @@ pub enum FeedError {
          start it again"
     )]
     Inactive,
+    /// The add may have succeeded, but read-back could not establish its
+    /// outcome. Automatic feeding stops without changing existing playback.
+    #[error("the enqueue outcome is uncertain; automatic feeding has stopped: {0}")]
+    UncertainEnqueue(String),
     #[error(transparent)]
     Core(#[from] CoreError),
     #[error(transparent)]
@@ -548,6 +556,24 @@ impl QueueFeed {
         Ok(())
     }
 
+    /// A rejected or failed request is reconciled against fresh queue state
+    /// before the next attempt. An indeterminate write must never be replayed
+    /// automatically; relinquished feeds are omitted from subsequent snapshots.
+    fn add_result(
+        &mut self,
+        result: Result<(u32, Option<u32>), FeedError>,
+    ) -> Result<(u32, Option<u32>), FeedError> {
+        if result.is_err() {
+            self.queue_len = None;
+        }
+        if matches!(&result, Err(FeedError::UncertainEnqueue(_))) {
+            // This only relinquishes management: do not Stop, clear, or undo
+            // anything on the speaker when the write's outcome is unknown.
+            self.release();
+        }
+        result
+    }
+
     /// Forget the queue and stop feeding it.
     fn release(&mut self) {
         self.active = false;
@@ -716,14 +742,15 @@ impl QueueFeed {
         let host = host_of(at)?;
         while let Some(m) = self.queued[index].movements.iter().position(|m| !m.added) {
             let desired = self.queued[index].last().map_or(0, |last| last + 1);
-            let (position, len) = add_movement(
+            let result = add_movement(
                 at.transport,
                 host,
                 &params,
                 &self.queued[index].movements[m],
                 desired,
             )
-            .map_err(|e| render_refused(at, e))?;
+            .map_err(|e| render_refused(at, e));
+            let (position, len) = self.add_result(result)?;
             // Inserted ahead of something (rather than appended): that
             // something moved down one.
             let before = len.map(|len| len.saturating_sub(1)).or(self.queue_len);
@@ -810,7 +837,7 @@ impl QueueFeed {
                     .map(|m| PlayRecord::at(m.uri.clone(), plan.now)),
             );
             let added = self.append(at.transport, host, &params, &mut work);
-            if work.first().is_some() {
+            if self.active && work.first().is_some() {
                 self.queued.push(work);
             }
             added.map_err(|e| render_refused(at, e))?;
@@ -828,7 +855,8 @@ impl QueueFeed {
         work: &mut QueuedWork,
     ) -> Result<(), FeedError> {
         for m in work.movements.iter_mut().filter(|m| !m.added) {
-            let (position, len) = add_movement(t, host, params, m, 0)?;
+            let result = add_movement(t, host, params, m, 0);
+            let (position, len) = self.add_result(result)?;
             m.position = Some(position);
             m.added = true;
             self.queue_len = len.or(Some(position));
@@ -936,26 +964,41 @@ fn add_movement<T: Transport + ?Sized>(
     m: &Movement,
     desired: u32,
 ) -> Result<(u32, Option<u32>), FeedError> {
-    let response = soap::call(
-        t,
-        host,
-        &AV_TRANSPORT,
-        "AddURIToQueue",
-        &soap::args_xml(&[
-            ("InstanceID", "0"),
-            ("EnqueuedURI", &spotify_queue_uri(&m.uri)),
-            (
-                "EnqueuedURIMetaData",
-                &spotify_track_didl(&m.uri, &m.title, params),
-            ),
-            ("DesiredFirstTrackNumberEnqueued", &desired.to_string()),
-            ("EnqueueAsNext", "0"),
-        ]),
-    )?;
-    let len = response
-        .get("NewQueueLength")
-        .and_then(|n| n.trim().parse().ok());
-    Ok((response.require_u32("FirstTrackNumberEnqueued")?, len))
+    enqueue::confirmed(t, host, &m.uri, desired, || {
+        let response = soap::call(
+            t,
+            host,
+            &AV_TRANSPORT,
+            "AddURIToQueue",
+            &soap::args_xml(&[
+                ("InstanceID", "0"),
+                ("EnqueuedURI", &spotify_queue_uri(&m.uri)),
+                (
+                    "EnqueuedURIMetaData",
+                    &spotify_track_didl(&m.uri, &m.title, params),
+                ),
+                ("DesiredFirstTrackNumberEnqueued", &desired.to_string()),
+                ("EnqueueAsNext", "0"),
+            ]),
+        )?;
+        let position = response.require_u32("FirstTrackNumberEnqueued")?;
+        let count = response.require_u32("NumTracksAdded")?;
+        let len = response
+            .get("NewQueueLength")
+            .map(|n| {
+                n.trim().parse::<u32>().map_err(|_| {
+                    ProtoError::Malformed("non-numeric NewQueueLength in enqueue reply".into())
+                })
+            })
+            .transpose()?;
+        if position == 0 || count != 1 || len.is_some_and(|n| n < position) {
+            return Err(ProtoError::Malformed(
+                "inconsistent counters in single-movement enqueue reply".into(),
+            )
+            .into());
+        }
+        Ok((position, len))
+    })
 }
 
 #[cfg(test)]
@@ -1024,9 +1067,9 @@ mod tests {
             {
                 self.adds.set(self.adds.get() + 1);
                 if self.fail_add.get() == Some(self.adds.get()) {
-                    return Err(ProtoError::Network {
-                        target: format!("{host}"),
-                        detail: "connection reset (injected)".into(),
+                    return Err(ProtoError::SoapFault {
+                        code: 501,
+                        reason: "enqueue rejected (injected)".into(),
                     });
                 }
             }
