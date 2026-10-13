@@ -51,6 +51,8 @@ pub mod dj_sync;
 pub mod eq;
 pub mod house_policy;
 pub mod queue;
+#[cfg(test)]
+mod relocation_tests;
 pub mod scenes;
 pub mod schedules;
 pub mod spotify_auth;
@@ -1077,8 +1079,11 @@ impl Surface {
         if result.is_ok() {
             self.remember_play(command);
         }
-        self.dj_follows(households, command, held, result.is_ok());
-        self.sleep_follows(households, command, result.is_ok());
+        // A successful no-op did not transfer any music. Release the hold,
+        // but keep DJ steering, feeds and timers on their original groups.
+        let moved = result.as_ref().is_ok_and(|outcome| outcome.changed);
+        self.dj_follows(households, command, held, moved);
+        self.sleep_follows(households, command, moved);
         result
     }
 
@@ -1448,6 +1453,9 @@ fn log_entry(
                     .collect::<Vec<_>>()
             };
             let clamps = noted(NoteCode::VolumeClamped);
+            // A read-only no-op must not become an undo that can overwrite
+            // later playback. Policy volume changes still keep their snapshot.
+            let before = before.filter(|_| outcome.changed || !clamps.is_empty());
             let decision = if clamps.is_empty() {
                 "allow".to_string()
             } else {

@@ -199,7 +199,15 @@ fn move_music<T: Transport + ?Sized>(
     }
     .map_err(move_failure)?;
     let how = match moved.method {
-        MoveMethod::Nothing => "nothing to move",
+        MoveMethod::Nothing => {
+            return Ok(OutcomeDto {
+                changed: false,
+                ..OutcomeDto::sent(format!(
+                    "nothing to move from {} to {}; playback is unchanged",
+                    source.room.name, dest.room.name
+                ))
+            });
+        }
         MoveMethod::Regrouped => "regrouped",
         MoveMethod::Delegated => "handed the group over",
         MoveMethod::Copied => "replayed there",
