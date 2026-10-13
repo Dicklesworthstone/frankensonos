@@ -620,7 +620,7 @@ pub fn leave<T: Transport + ?Sized>(
     // A witness in another room of the same household: a player of the
     // member's own room (a stereo pair's other half) shares its view, and a
     // player of another household never lists this one's groups at all.
-    let witness = household
+    let mut witness = household
         .players
         .iter()
         .find(|p| &p.id != member && !same_room(&p.id))
@@ -639,13 +639,16 @@ pub fn leave<T: Transport + ?Sized>(
             return Ok(());
         }
         // Its own read may be stale; a witness player's is not. The witness
-        // is best effort: if it cannot be read, the member's own view still
-        // decides (a dead witness must not fail a leave that happened).
-        if let Some(other) = witness
-            && let Ok(groups) = get_zone_group_state(t, other)
-            && leads_own(&groups.groups)
-        {
-            return Ok(());
+        // is best effort — one try: a player that cannot be read is not
+        // asked again this leave (each dead read would stall the single LAN
+        // worker a whole SOAP timeout, p9f's review note), and the member's
+        // own view still decides.
+        if let Some(other) = witness {
+            match get_zone_group_state(t, other) {
+                Ok(groups) if leads_own(&groups.groups) => return Ok(()),
+                Ok(_) => {}
+                Err(_) => witness = None,
+            }
         }
         let left = LEAVE_WAIT.saturating_sub(started.elapsed());
         if left.is_zero() {
