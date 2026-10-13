@@ -124,7 +124,7 @@ pub struct Refresh {
 }
 
 impl Refresh {
-    /// Survey every `interval`; after failures, retry sooner at first and
+    /// Survey every `interval`, after failures retry sooner at first and
     /// back off (doubling from a quarter of the interval) up to
     /// `max_backoff`. The first survey is due right away.
     #[must_use]
@@ -344,7 +344,9 @@ impl Reconciler {
     /// event that shows a player rebooted (its `BootSeq` rose) also replaces
     /// that player's subscriptions at once, instead of when their renewals
     /// fail; the fresh subscriptions' initial NOTIFYs bring its state back.
-    /// Returns `None` for a NOTIFY no subscription owns.
+    /// Returns `None` for an unknown SID or a replay. Invalid events do not
+    /// advance the sequence cursor and request a fresh full-state event;
+    /// failed recovery uses the subscription engine's bounded retry.
     pub fn on_notify<S: Subscriber + ?Sized>(
         &mut self,
         lan: &S,
@@ -357,8 +359,6 @@ impl Reconciler {
         else {
             return Ok(None);
         };
-        self.health.ok(&player, now);
-        let missed = self.subscriptions.missed(n);
         // A topology event rebuilds its household's players: note who was
         // there, so a player it drops is marked rather than just forgotten
         // (the next survey would not miss what the model no longer has).
@@ -370,8 +370,18 @@ impl Reconciler {
         } else {
             Vec::new()
         };
+        let changes = events::apply(&mut self.households, playback, &player, service, n, now)
+            .inspect_err(|_| {
+                // An unreadable event loses state just as a missing one does.
+                // Keep its SEQ unconsumed: a corrected retry on the old SID
+                // remains usable if the fresh subscription cannot be made.
+                let recovery = self.subscriptions.refresh(lan, &n.sid, &callback_url, now);
+                self.health.record(&recovery, now);
+            })?;
+        self.health.ok(&player, now);
+        let missed = self.subscriptions.missed(n);
         let mut report = NotifyReport {
-            changes: events::apply(&mut self.households, playback, &player, service, n, now)?,
+            changes,
             ..NotifyReport::default()
         };
         if missed {
@@ -445,5 +455,221 @@ impl Reconciler {
             report.events.failed.extend(r.failed);
         }
         Ok(Some(report))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::{RETRY, Want};
+    use fsonos_proto::gena::Subscription;
+    use std::cell::Cell;
+
+    #[derive(Default)]
+    struct TestSubscriber {
+        attempts: Cell<u32>,
+        fail: Cell<bool>,
+    }
+
+    impl Subscriber for TestSubscriber {
+        fn subscribe(&self, _: &Want, _: &str) -> Result<Subscription, ProtoError> {
+            self.attempts.set(self.attempts.get() + 1);
+            if self.fail.get() {
+                return Err(ProtoError::Network {
+                    target: "test-player".into(),
+                    detail: "subscription unavailable".into(),
+                });
+            }
+            Ok(Subscription {
+                sid: format!("uuid:reconcile-{}", self.attempts.get()),
+                timeout_secs: 300,
+            })
+        }
+
+        fn renew(&self, _: &Want, sid: &str) -> Result<Subscription, ProtoError> {
+            Ok(Subscription {
+                sid: sid.into(),
+                timeout_secs: 300,
+            })
+        }
+
+        fn unsubscribe(&self, _: &Want, _: &str) -> Result<(), ProtoError> {
+            Ok(())
+        }
+    }
+
+    fn player() -> PlayerId {
+        PlayerId("test-player".into())
+    }
+
+    fn callback(service: Service) -> String {
+        format!("http://127.0.0.1:3400/{}", service.tag())
+    }
+
+    fn start(s: &TestSubscriber, service: Service, now: Instant) -> Reconciler {
+        let mut rec = Reconciler::new(RETRY, RETRY, now);
+        let want = Want {
+            player: player(),
+            host: std::net::Ipv4Addr::LOCALHOST.into(),
+            service,
+        };
+        assert_eq!(rec.subscriptions.sync(s, &[want], callback, now).subscribed, 1);
+        rec
+    }
+
+    fn avt(sid: &str, seq: u32, body: &str) -> Notify {
+        Notify {
+            sid: sid.into(),
+            seq,
+            path: "/AVTransport".into(),
+            properties: vec![(
+                "LastChange".into(),
+                format!("<Event><InstanceID val=\"0\">{body}</InstanceID></Event>"),
+            )],
+        }
+    }
+
+    const PLAYING: &str =
+        "<TransportState val=\"PLAYING\"/><CurrentTrackURI val=\"test:old-track\"/>";
+    const PAUSED: &str =
+        "<TransportState val=\"PAUSED_PLAYBACK\"/><CurrentTrackURI val=\"test:new-track\"/>";
+    const MALFORMED: &str = "<TransportState val=\"STOPPED\"/>\
+                             <CurrentTrackURI val=\"test:bad-track\"/>\
+                             <CurrentTrackMetaData val=\"not-xml\"/>";
+
+    #[test]
+    fn malformed_event_requests_full_state_without_changing_playback() {
+        let now = Instant::now();
+        let s = TestSubscriber::default();
+        let mut rec = start(&s, Service::AvTransport, now);
+        let mut playback = Playback::default();
+        let initial = avt("uuid:reconcile-1", 0, PLAYING);
+        rec.on_notify(&s, &mut playback, &initial, callback, now)
+            .unwrap();
+        let before = playback.of(&player()).unwrap().clone();
+        let malformed = avt("uuid:reconcile-1", 1, MALFORMED);
+        assert!(
+            rec.on_notify(&s, &mut playback, &malformed, callback, now)
+                .is_err()
+        );
+        assert_eq!(playback.of(&player()), Some(&before));
+        assert_eq!(s.attempts.get(), 2, "fresh full state was requested");
+        assert!(rec.subscriptions.route(&malformed).is_none());
+        let replacement = avt("uuid:reconcile-2", 0, PAUSED);
+        let report = rec
+            .on_notify(&s, &mut playback, &replacement, callback, now)
+            .unwrap()
+            .unwrap();
+        assert!(report.changes.transport.is_some());
+        assert_eq!(
+            playback.of(&player()).unwrap().track_uri.as_deref(),
+            Some("test:new-track")
+        );
+    }
+
+    #[test]
+    fn failed_recovery_keeps_a_corrected_same_sequence_event_usable() {
+        let now = Instant::now();
+        let s = TestSubscriber::default();
+        let mut rec = start(&s, Service::AvTransport, now);
+        let mut playback = Playback::default();
+        let initial = avt("uuid:reconcile-1", 0, PLAYING);
+        rec.on_notify(&s, &mut playback, &initial, callback, now)
+            .unwrap();
+        s.fail.set(true);
+        let bad_at = now + Duration::from_secs(1);
+        let malformed = avt("uuid:reconcile-1", 1, MALFORMED);
+        assert!(
+            rec.on_notify(&s, &mut playback, &malformed, callback, bad_at)
+                .is_err()
+        );
+        assert_eq!(rec.health.of(&player()).unwrap().last_ok, Some(now));
+        assert_eq!(rec.subscriptions.next_due(), Some(bad_at + RETRY));
+        let corrected = avt("uuid:reconcile-1", 1, PAUSED);
+        assert!(rec.subscriptions.route(&corrected).is_some());
+        let report = rec
+            .on_notify(&s, &mut playback, &corrected, callback, bad_at)
+            .unwrap()
+            .unwrap();
+        assert!(report.changes.transport.is_some());
+        assert!(report.changes.track.is_some());
+        assert_eq!(s.attempts.get(), 2, "no unnecessary second recovery call");
+        assert!(
+            rec.on_notify(&s, &mut playback, &corrected, callback, bad_at)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn malformed_initial_events_retry_with_backoff_for_each_xml_service() {
+        for service in [
+            Service::AvTransport,
+            Service::RenderingControl,
+            Service::ZoneGroupTopology,
+        ] {
+            let now = Instant::now();
+            let s = TestSubscriber::default();
+            let mut rec = start(&s, service, now);
+            let mut playback = Playback::default();
+            s.fail.set(true);
+            let property = if service == Service::ZoneGroupTopology {
+                "ZoneGroupState"
+            } else {
+                "LastChange"
+            };
+            let bad = Notify {
+                sid: "uuid:reconcile-1".into(),
+                seq: 0,
+                path: format!("/{}", service.tag()),
+                properties: vec![(property.into(), "not-xml".into())],
+            };
+            for second in 0..30 {
+                assert!(
+                    rec.on_notify(
+                        &s,
+                        &mut playback,
+                        &bad,
+                        callback,
+                        now + Duration::from_secs(second),
+                    )
+                    .is_err()
+                );
+                assert_eq!(s.attempts.get(), 2, "backoff for {service:?}");
+                assert_eq!(rec.subscriptions.next_due(), Some(now + RETRY));
+                assert!(playback.of(&player()).is_none());
+            }
+            s.fail.set(false);
+            let recovered = rec.subscriptions.renew_due(&s, callback, now + RETRY);
+            assert_eq!(recovered.resubscribed, 1);
+            assert_eq!(s.attempts.get(), 3);
+            assert!(rec.subscriptions.route(&bad).is_none());
+        }
+    }
+
+    #[test]
+    fn valid_forward_gaps_still_recover_but_malformed_replays_do_not() {
+        let now = Instant::now();
+        let s = TestSubscriber::default();
+        let mut rec = start(&s, Service::AvTransport, now);
+        let mut playback = Playback::default();
+        let initial = avt("uuid:reconcile-1", 0, PLAYING);
+        rec.on_notify(&s, &mut playback, &initial, callback, now)
+            .unwrap();
+        let replay = avt("uuid:reconcile-1", 0, MALFORMED);
+        assert!(
+            rec.on_notify(&s, &mut playback, &replay, callback, now)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(s.attempts.get(), 1);
+        let gap = avt("uuid:reconcile-1", 3, PAUSED);
+        let report = rec
+            .on_notify(&s, &mut playback, &gap, callback, now)
+            .unwrap()
+            .unwrap();
+        assert!(report.changes.track.is_some());
+        assert_eq!(report.events.resubscribed, 1);
+        assert_eq!(s.attempts.get(), 2);
     }
 }
