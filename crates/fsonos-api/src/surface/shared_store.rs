@@ -37,8 +37,9 @@ pub(super) fn recorded_just_now(
         .is_some_and(|p| p.source_uri == uri && (at - p.played_at).abs() < super::JUST_RECORDED))
 }
 
-/// The store behind a mutex, locked for each call.
-struct SharedStore<'a>(&'a Mutex<Box<dyn Store + Send>>);
+/// The store behind a mutex, locked for each call (an undo's restore uses it
+/// too, see [`Surface::undo`]).
+pub(super) struct SharedStore<'a>(pub(super) &'a Mutex<Box<dyn Store + Send>>);
 
 impl SharedStore<'_> {
     fn lock(&self) -> MutexGuard<'_, Box<dyn Store + Send>> {

@@ -168,6 +168,9 @@ impl PolicyFile {
 struct ActionLog {
     store: Mutex<Box<dyn Store + Send>>,
     surface: String,
+    /// Held for a whole undo, so two never put the same action back; the
+    /// store itself is locked only per call (see [`Surface::undo`]).
+    undoing: Mutex<()>,
 }
 
 impl Surface {
@@ -459,6 +462,7 @@ impl Surface {
         self.log = Some(ActionLog {
             store: Mutex::new(store),
             surface: surface.to_string(),
+            undoing: Mutex::new(()),
         });
         self
     }
@@ -899,14 +903,14 @@ impl Surface {
             }
             vetted
         };
-        let mut store = log
-            .store
-            .lock()
-            .map_err(|_| Failure::new(ErrorCode::Internal, "action log poisoned"))?;
+        // One undo at a time, but the store is locked only for each read or
+        // write: the restore talks to the speakers, and every other call's
+        // log entry must not wait on it.
+        let _undoing = log.undoing.lock().unwrap_or_else(PoisonError::into_inner);
         let report = actions::undo_last_vetted(
             &*self.transport,
             &households,
-            &mut **store,
+            &mut shared_store::SharedStore(&log.store),
             own_only.then_some(client),
             client,
             &log.surface,
