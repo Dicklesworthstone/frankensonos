@@ -305,7 +305,8 @@ mod tests {
             let due = state
                 .plan_retry_at
                 .expect("the rebuild must remain pending");
-            assert!(!state.reload_due(due - Duration::from_secs(1)));
+            let before = due.checked_sub(Duration::from_secs(1)).unwrap();
+            assert!(!state.reload_due(before));
             assert!(state.reload_due(due));
 
             if broken == PREFERENCES_FILE {

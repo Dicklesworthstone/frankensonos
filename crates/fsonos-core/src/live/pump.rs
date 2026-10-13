@@ -111,7 +111,8 @@ mod tests {
         house.apply_topology(&get_zone_group_state(&*lan, host).unwrap());
         // Represent a survey whose network work took longer than the initial
         // deadline. No test sleeps through that interval.
-        let started = Instant::now() - INITIAL_STATE_WAIT - Duration::from_secs(1);
+        let late = INITIAL_STATE_WAIT + Duration::from_secs(1);
+        let started = Instant::now().checked_sub(late).unwrap();
         let mut rec = Reconciler::new(Duration::from_secs(300), Duration::from_secs(300), started);
         rec.households.push(house);
         rec.schedule.succeeded(Instant::now());

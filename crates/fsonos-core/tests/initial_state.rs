@@ -108,7 +108,8 @@ fn a_quiet_subscription_is_replaced_without_waiting_for_a_delta_or_lease() {
         for attempt in 1..=3 {
             let due = now + INITIAL_STATE_WAIT * attempt;
             assert_eq!(subs.next_due(), Some(due));
-            let early = subs.renew_due(&s, callback, due - Duration::from_millis(1));
+            let before = due.checked_sub(Duration::from_millis(1)).unwrap();
+            let early = subs.renew_due(&s, callback, before);
             assert_eq!(early, Report::default());
             let recovered = subs.renew_due(&s, callback, due);
             assert_eq!(recovered.resubscribed, 1);
@@ -245,9 +246,10 @@ fn a_subscription_that_initially_failed_gets_a_full_window_after_it_succeeds() {
     s.refuse.set(false);
     assert_eq!(subs.renew_due(&s, callback, now + RETRY).subscribed, 1);
     assert_eq!(subs.next_due(), Some(now + RETRY + INITIAL_STATE_WAIT));
-    let early = now + RETRY + INITIAL_STATE_WAIT - Duration::from_millis(1);
+    let due = now + RETRY + INITIAL_STATE_WAIT;
+    let early = due.checked_sub(Duration::from_millis(1)).unwrap();
     assert_eq!(subs.renew_due(&s, callback, early), Report::default());
-    let recovered = subs.renew_due(&s, callback, now + RETRY + INITIAL_STATE_WAIT);
+    let recovered = subs.renew_due(&s, callback, due);
     assert_eq!(recovered.resubscribed, 1);
 }
 
