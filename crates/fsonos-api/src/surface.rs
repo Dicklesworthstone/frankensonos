@@ -55,6 +55,7 @@ pub mod schedules;
 pub mod spotify_auth;
 
 pub mod announce;
+mod playback_caps;
 pub mod players;
 
 pub mod art;
@@ -527,9 +528,25 @@ impl Surface {
         }
     }
 
-    /// Carry `command` out, retrying once where the speakers changed under
-    /// it ([`crate::heal`]).
+    /// Carry `command` out: the rooms it starts music in held to the caller's
+    /// caps first ([`Self::lower_before_playing`]), then the command, retried
+    /// once where the speakers changed under it ([`crate::heal`]).
     fn execute(
+        &self,
+        households: &[HouseholdState],
+        guard: &Guard<'_>,
+        command: &Command,
+    ) -> Result<OutcomeDto, Failure> {
+        let mut notes = self.lower_before_playing(households, guard, command)?;
+        let mut outcome = self.carry_out(households, guard, command)?;
+        notes.append(&mut outcome.notes);
+        outcome.notes = notes;
+        Ok(outcome)
+    }
+
+    /// [`Self::execute`] once the music it starts is within the caps: the DJ,
+    /// or the command itself, healed when the speakers changed under it.
+    fn carry_out(
         &self,
         households: &[HouseholdState],
         guard: &Guard<'_>,
@@ -1598,6 +1615,47 @@ mod tests {
             .control(&Client::Unknown, "pause", |_| unreachable!())
             .unwrap_err();
         assert_eq!(denied.code, ErrorCode::PolicyDenied);
+    }
+
+    #[test]
+    fn music_a_capped_caller_starts_plays_within_its_caps() {
+        // Every room reads 80; the default cap is 70.
+        let resume = |client: &Client| {
+            let (s, sent) = surface("<CurrentVolume>80</CurrentVolume>", households());
+            let out = s
+                .control(client, "resume", |h| {
+                    plan_transport(
+                        h,
+                        &ZoneRequest {
+                            zone: "kitchen@s1".into(),
+                        },
+                        TransportAction::Resume,
+                    )
+                })
+                .unwrap();
+            let sent = sent.lock().unwrap().clone();
+            (out, sent)
+        };
+        // An agent resumes Den's group: Kitchen and Den come down to 70 first.
+        let (out, sent) = resume(&Client::McpStdio);
+        let lowered = sent.iter().filter(|a| *a == "SetVolume").count();
+        assert_eq!(lowered, 2, "{sent:?}");
+        assert_eq!(sent.last().map(String::as_str), Some("Play"), "{sent:?}");
+        let clamped: Vec<&Note> = out
+            .notes
+            .iter()
+            .filter(|n| n.code == NoteCode::VolumeClamped)
+            .collect();
+        assert_eq!(clamped.len(), 2, "{:?}", out.notes);
+        assert!(
+            clamped[0].detail.contains("lowered from 80 to 70"),
+            "{:?}",
+            clamped[0]
+        );
+        // The CLI runs uncapped: nothing is read or lowered.
+        let (out, sent) = resume(&Client::Cli);
+        assert_eq!(sent, ["Play"]);
+        assert!(out.notes.is_empty(), "{:?}", out.notes);
     }
 
     #[test]

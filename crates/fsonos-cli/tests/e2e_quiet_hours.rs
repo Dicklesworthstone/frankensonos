@@ -1,7 +1,8 @@
 //! Quiet hours on the shared surface, against fsonos-sim, with the house
 //! clock injected. At 23:30 an agent's volume 60 is held to the quiet-hours
 //! cap; the result is noted, logged as a clamp, and confirmed by the sim's
-//! volume. The CLI, which the policy leaves uncapped, is not held. At 08:00
+//! volume. The CLI, which the policy leaves uncapped, is not held; music the
+//! agent starts in the room the CLI left loud plays at the quiet cap. At 08:00
 //! the agent's same request goes through. The clock is a `FakeClock` handed
 //! to the `Surface` here, in test code: no release build can be given one.
 
@@ -9,9 +10,9 @@ mod e2e;
 
 use chrono::{DateTime, FixedOffset};
 use e2e::Scenario;
-use fsonos_api::plan::plan_volume;
+use fsonos_api::plan::{plan_play, plan_volume};
 use fsonos_api::surface::{Surface, Survey};
-use fsonos_api::{NoteCode, VolumeRequest};
+use fsonos_api::{NoteCode, PlayRequest, VolumeRequest};
 use fsonos_core::clock::{Clock, FakeClock};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{ActionFilter, MemStore};
@@ -45,6 +46,28 @@ fn office_to(level: i64) -> VolumeRequest {
         delta: None,
         group: false,
     }
+}
+
+/// At night, an agent playing a stream in Office, which the CLI left at 60,
+/// brings it down to the quiet-hours 25 first.
+fn night_play(s: &mut Scenario, surface: &Surface, agent: &Client, level: &dyn Fn() -> Option<u8>) {
+    let req = PlayRequest {
+        zone: "Office".into(),
+        source_uri: "x-rincon-mp3radio://stream.example.org/night.mp3".into(),
+        title: None,
+    };
+    let played = surface.control(agent, "play", |h| plan_play(h, &req));
+    s.check(
+        "night-play",
+        "surface",
+        "at 23:30 an agent's play in Office, left at 60, brings it down to the quiet 25 first",
+        played.as_ref().is_ok_and(|o| {
+            o.notes.iter().any(|n| {
+                n.code == NoteCode::VolumeClamped && n.detail.contains("lowered from 60 to 25")
+            })
+        }) && level() == Some(25),
+        format!("{played:?}; sim volume {:?}", level()),
+    );
 }
 
 #[test]
@@ -118,6 +141,7 @@ fn quiet_hours_hold_agents_down_at_night_and_not_by_day() {
             && level() == Some(60),
         format!("{cli:?}; sim volume {:?}", level()),
     );
+    night_play(&mut s, &surface, &agent, &level);
 
     let _ = control::set_volume(&lan, &houses, &office, 20);
     clock.set(at("2026-10-08T08:00:00-04:00"));

@@ -49,8 +49,10 @@ can drive:
   hours, per-client tool allowlists), an action log of who did what, and undo.
   The volume caps and quiet hours bind the agent surfaces; the local CLI is
   trusted and runs uncapped by default (set `[clients.cli] capped = true` to
-  cap it too). Hand the house to an agent without it playing volume 80 at
-  2 a.m.
+  cap it too). The caps hold for music an agent starts as well as for the
+  volumes it sets: a play, a resume or a DJ start first brings a room left
+  loud down to its cap. Hand the house to an agent without it playing volume
+  80 at 2 a.m.
 - **A DJ that plays what you like.** It plays from your own Spotify likes and
   saves, in whatever genres they span (pop, jazz, hip-hop, soundtracks,
   classical), puts your own steering ahead of anything it infers, follows mood

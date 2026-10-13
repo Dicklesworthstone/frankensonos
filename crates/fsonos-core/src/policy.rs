@@ -397,11 +397,19 @@ impl Policy {
     /// no step limit here.
     #[must_use]
     pub fn max_volume(&self, room: &str, client: &Client, now: DateTime<FixedOffset>) -> u8 {
-        if self.is_capped(client) {
-            self.cap(room, now).0
-        } else {
-            100
-        }
+        self.cap_for(room, client, now).map_or(100, |(cap, _)| cap)
+    }
+
+    /// The level `client` is held to in `room` at `now` (its room cap, or the
+    /// quiet-hours cap when lower), and why; `None` when `client` is uncapped.
+    #[must_use]
+    pub fn cap_for(
+        &self,
+        room: &str,
+        client: &Client,
+        now: DateTime<FixedOffset>,
+    ) -> Option<(u8, String)> {
+        self.is_capped(client).then(|| self.cap(room, now))
     }
 
     /// Is `now` inside quiet hours?

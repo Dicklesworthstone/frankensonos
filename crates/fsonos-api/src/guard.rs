@@ -5,21 +5,23 @@
 //! [`Guard::authorize`] for the tool, then [`Guard::bound`] for the planned
 //! command. A clamped volume still happens, at the allowed level, and the
 //! response carries a [`Note`] saying so (`VOLUME_CLAMPED`); a denial is a
-//! `POLICY_DENIED` failure.
+//! `POLICY_DENIED` failure. Music a capped caller starts is held to the same
+//! caps ([`Guard::playback_caps`]): the rooms it will sound in are lowered to
+//! them first.
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::clock::Clock;
 use fsonos_core::policy::{
     Client, Decision, Policy, RoomLevel, ToolCall, VolumeChange as PolicyChange, VolumeIntent,
 };
-use fsonos_core::{HouseholdState, control};
+use fsonos_core::{HouseholdState, Room, control};
 use fsonos_proto::Transport;
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::failure::{ErrorCode, Failure, NoteCode};
-use crate::plan::{Command, VolumeScope};
+use crate::plan::{Command, DjAction, TransportAction, VolumeScope};
 use crate::request::VolumeChange;
 
 /// A note on a successful response: how the request was carried out.
@@ -104,6 +106,62 @@ impl Guard<'_> {
             }
             Decision::Deny { reason } => Err(denied(reason)),
         }
+    }
+}
+
+impl Guard<'_> {
+    /// Each room `command` starts music in, with the level a capped caller is
+    /// held to there now and why: every room of the group a play, a resume or
+    /// a DJ start sounds in, the room that joins a group, the rooms the music
+    /// moves to, a whole household for a party. Empty for an uncapped caller.
+    #[must_use]
+    pub fn playback_caps<'h>(
+        &self,
+        households: &'h [HouseholdState],
+        command: &Command,
+    ) -> Vec<(&'h Room, u8, String)> {
+        let now = self.clock.now();
+        sounding_rooms(households, command)
+            .into_iter()
+            .filter_map(|room| {
+                let (cap, why) = self.policy.cap_for(&room.name, self.client, now)?;
+                Some((room, cap, why))
+            })
+            .collect()
+    }
+}
+
+/// The rooms `command` starts music in (see [`Guard::playback_caps`]).
+fn sounding_rooms<'h>(households: &'h [HouseholdState], command: &Command) -> Vec<&'h Room> {
+    let rooms = || households.iter().flat_map(|h| h.rooms.iter());
+    let group = |coordinator: &PlayerId| -> Vec<&'h Room> {
+        rooms().filter(|r| r.coordinator == *coordinator).collect()
+    };
+    match command {
+        Command::Play { coordinator, .. }
+        | Command::PlayFavorite { coordinator, .. }
+        | Command::Transport {
+            coordinator,
+            action: TransportAction::Resume,
+        }
+        | Command::Dj {
+            coordinator,
+            action: DjAction::Start,
+        }
+        | Command::DjSteer {
+            coordinator,
+            start: true,
+            ..
+        } => group(coordinator),
+        Command::Join { member, .. } => rooms().filter(|r| r.players.contains(member)).collect(),
+        Command::Move { to, .. } => rooms()
+            .find(|r| r.players.contains(to))
+            .map_or_else(Vec::new, |r| group(&r.coordinator)),
+        Command::Party { member, .. } => households
+            .iter()
+            .find(|h| h.player(member).is_some())
+            .map_or_else(Vec::new, |h| h.rooms.iter().collect()),
+        _ => Vec::new(),
     }
 }
 
