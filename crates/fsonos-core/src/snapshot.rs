@@ -378,8 +378,9 @@ fn plan_transport(snap: &ZoneSnapshot, source_restored: bool, plan: &mut Restore
     }
 }
 
-/// Put `snap` back. Runs every planned operation, carrying on past one that
-/// fails; the report says which aspects came back and which did not.
+/// Put `snap` back. Independent room levels are restored even after failures.
+/// A failed group, source or seek blocks dependent playback operations; the
+/// report distinguishes restored aspects from failed or blocked ones.
 pub fn restore<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -430,12 +431,31 @@ pub fn restore_vetted<T: Transport + ?Sized>(
     skipped.retain(|(a, _)| aspects.contains(a));
     let mut restored: Vec<Aspect> = Vec::new();
     let mut failed: Vec<Aspect> = skipped.iter().map(|(a, _)| *a).collect();
+    // Planning proves only that a restore is possible, not that its writes
+    // succeeded. Track execution failures separately from missing rooms so
+    // a vanished member does not prevent restoring the surviving group.
+    let mut blocked = None;
     for (aspect, planned) in ops.into_iter().filter(|(a, _)| aspects.contains(a)) {
+        let prerequisite = match aspect {
+            Aspect::Source => blocked.filter(|a| *a == Aspect::Group),
+            Aspect::Position | Aspect::Transport => blocked,
+            _ => None,
+        };
+        if let Some(prerequisite) = prerequisite {
+            failed.push(aspect);
+            restored.retain(|a| *a != aspect);
+            skipped.push((
+                aspect,
+                format!("{planned:?}: not attempted because {prerequisite:?} restoration failed"),
+            ));
+            continue;
+        }
         let op = match vet(&planned) {
             Ok(op) => op,
             Err(why) => {
                 restored.retain(|a| *a != aspect);
                 failed.push(aspect);
+                block_dependents(&mut blocked, aspect);
                 skipped.push((aspect, format!("{planned:?}: {why}")));
                 continue;
             }
@@ -449,11 +469,19 @@ pub fn restore_vetted<T: Transport + ?Sized>(
             Err(e) => {
                 restored.retain(|a| *a != aspect);
                 failed.push(aspect);
+                block_dependents(&mut blocked, aspect);
                 skipped.push((aspect, format!("{op:?}: {e}")));
             }
         }
     }
     Ok(RestoreReport { restored, skipped })
+}
+
+/// Keep the first broken prerequisite for useful downstream diagnostics.
+fn block_dependents(blocked: &mut Option<Aspect>, failed: Aspect) {
+    if blocked.is_none() && matches!(failed, Aspect::Group | Aspect::Source | Aspect::Position) {
+        *blocked = Some(failed);
+    }
 }
 
 fn run<T: Transport + ?Sized>(
