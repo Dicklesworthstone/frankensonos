@@ -35,6 +35,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
+mod pump;
+
 /// How [`Live`] runs.
 #[derive(Clone)]
 pub struct LiveConfig {
@@ -457,13 +459,7 @@ impl Engine {
                 std::thread::sleep(TICK);
                 continue;
             }
-            if m.rec.subscriptions.next_due().is_some_and(|due| due <= now) {
-                self.renew(&mut m, now);
-                self.publish(&m, Vec::new());
-            }
-            if let Some(pushed) = self.next_event(&mut m) {
-                self.publish(&m, pushed);
-            }
+            pump::turn(&self, &mut m);
         }
         self.release(&mut m);
         self.publish(&m, Vec::new());
@@ -602,14 +598,14 @@ impl Engine {
 
     /// Wait (briefly) for one NOTIFY and fold it in. `None` when none came;
     /// otherwise the playback change it made, if any.
-    fn next_event(&self, m: &mut Model) -> Option<Vec<LiveEvent>> {
+    fn next_event(&self, m: &mut Model, max_wait: Duration) -> Option<Vec<LiveEvent>> {
         let s = m.sink.as_ref()?;
         let wait = m
             .rec
             .schedule
             .next_at()
             .saturating_duration_since(Instant::now())
-            .min(TICK);
+            .min(max_wait);
         let n = match s.recv_or_closed(wait) {
             Ok(n) => n?,
             Err(e) => {
