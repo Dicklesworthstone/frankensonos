@@ -288,9 +288,7 @@ mod tests {
                 assert_eq!(pool_from_store(&store).unwrap().len(), 1);
             }
             spotify.state.lock().unwrap().liked_tracks = None;
-            let report = sync_library(&mut session, &cx, &mut store)
-                .await
-                .unwrap();
+            let report = sync_library(&mut session, &cx, &mut store).await.unwrap();
             assert_eq!(report.retired, 1);
             assert_eq!(pool_from_store(&store).unwrap().len(), 6);
         });
