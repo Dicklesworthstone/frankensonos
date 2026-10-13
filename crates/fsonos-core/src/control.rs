@@ -22,6 +22,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 mod queue_start;
+mod source_start;
 
 /// How long a player that left its group may take to show alone (real ones
 /// do within about a second). Not a settle-time knob: a fleet-verified
@@ -146,7 +147,8 @@ pub fn seek<T: Transport + ?Sized>(
 }
 
 /// Point the group `coordinator` leads at a renderer-ready `uri` (with its
-/// DIDL-Lite `metadata`, possibly empty) and start it.
+/// DIDL-Lite `metadata`, possibly empty) and start it. Each stage is sent
+/// once; an ambiguous reply advances only when read-back confirms its effect.
 pub fn play_uri<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -155,8 +157,7 @@ pub fn play_uri<T: Transport + ?Sized>(
     metadata: &str,
 ) -> Result<(), CoreError> {
     let host = addr(households, coordinator)?;
-    soap::set_av_transport_uri(t, host, uri, metadata)?;
-    Ok(soap::play(t, host)?)
+    Ok(source_start::play(t, host, coordinator, uri, metadata)?)
 }
 
 /// The household's Spotify render parameters, learned from its own
