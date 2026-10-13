@@ -233,6 +233,14 @@ fn a_survey_catches_a_reboot_the_events_missed() {
     assert_eq!(second.events.subscribed, office_wants, "subscribed afresh");
     assert_eq!(r.subscriptions.len(), all);
 
+    // The survey already proved recovery without events. A subsequent lease
+    // renewal assumes their initial state has arrived; otherwise the silent
+    // stream watchdog correctly asks for a fresh subscription instead.
+    let mut playback = Playback::default();
+    while let Some(n) = sink.recv_timeout(Duration::from_millis(500)) {
+        r.on_notify(&lan, &mut playback, &n, callback, Instant::now())
+            .unwrap();
+    }
     // No stale SID is left: renewing everything succeeds without the 412
     // fallback.
     let later = Instant::now() + Duration::from_secs(u64::from(events::TIMEOUT_SECS));
