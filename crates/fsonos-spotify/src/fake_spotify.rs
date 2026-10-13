@@ -184,7 +184,8 @@ fn taste(fake: &Fake, uri: &str) -> Option<Response> {
         return Some(json(500, r#"{"error":{"status":500,"message":"down"}}"#));
     }
     let page = |items: serde_json::Value| {
-        serde_json::json!({ "items": items, "next": null, "offset": 0, "limit": 50, "total": 1 })
+        let total = items.as_array().map_or(0, Vec::len);
+        serde_json::json!({ "items": items, "next": null, "offset": 0, "limit": 50, "total": total })
             .to_string()
     };
     Some(if uri == "/v1/me" {

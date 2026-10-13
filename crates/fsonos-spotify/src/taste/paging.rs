@@ -3,8 +3,12 @@
 
 use super::{MAX_PAGES, Reader};
 use crate::SpotifyError;
-use crate::client::{Artist, Endpoints, FollowedArtists, Paging, parse_query};
+use crate::client::{Artist, Endpoints, FollowedArtists, parse_query};
 use std::collections::HashSet;
+
+mod coverage;
+
+use coverage::{Coverage, Page};
 
 struct Chain {
     path: String,
@@ -86,8 +90,8 @@ impl Reader<'_> {
         Some(url)
     }
 
-    fn exhausted(&mut self, next: &Option<String>, what: &str) {
-        if next.is_some() {
+    fn exhausted(&mut self, has_next: bool, what: &str) {
+        if has_next {
             self.read.failed.push((
                 what.to_owned(),
                 "taste page budget reached before the collection ended".into(),
@@ -105,19 +109,24 @@ impl Reader<'_> {
         pages: usize,
     ) -> Vec<T> {
         let mut items = Vec::new();
+        let mut coverage = Coverage::default();
         let mut chain = Chain::new(url, Progress::Offset(0));
         let mut next = Some(url.to_owned());
         for _ in 0..pages {
             let Some(url) = next.take() else {
                 break;
             };
-            let Some(page) = self.get::<Paging<T>>(&url, what).await else {
+            let Some(page) = self.get::<Page<T>>(&url, what).await else {
                 break;
             };
+            if let Err(error) = coverage.accept(&page) {
+                self.read.failed.push((what.to_owned(), error.to_string()));
+                break;
+            }
             items.extend(page.items);
             next = self.continuation(&mut chain, page.next, what);
         }
-        self.exhausted(&next, what);
+        self.exhausted(next.is_some(), what);
         items
     }
 
@@ -136,7 +145,7 @@ impl Reader<'_> {
             artists.extend(page.artists.items);
             next = self.continuation(&mut chain, page.artists.next, "followed artists");
         }
-        self.exhausted(&next, "followed artists");
+        self.exhausted(next.is_some(), "followed artists");
         artists
     }
 }

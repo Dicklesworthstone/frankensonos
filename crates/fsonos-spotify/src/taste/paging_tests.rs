@@ -165,11 +165,7 @@ impl Server {
     }
 
     fn set(&self, route: &str, body: Value) {
-        self.state
-            .lock()
-            .unwrap()
-            .pages
-            .insert(route.into(), body);
+        self.state.lock().unwrap().pages.insert(route.into(), body);
     }
 
     fn session(&self, cx: &Cx, scope: &str) -> Session {
@@ -179,7 +175,7 @@ impl Server {
                 access_token: "test-access".into(),
                 refresh_token: "test-refresh".into(),
                 expires_at: i64::MAX / 2,
-                scope: scope.into(),
+                scope: format!("user-library-read {scope}"),
             })
             .unwrap();
         Session::open(config(), cache, Client::default_for_runtime(cx))
@@ -212,7 +208,7 @@ impl Drop for Server {
 }
 
 fn page(items: Vec<Value>, offset: u32, next: Option<String>) -> Value {
-    json!({ "total": items.len(), "items": items, "offset": offset, "next": next })
+    json!({ "items": items, "offset": offset, "next": next })
 }
 
 fn playlist(n: usize, owned: bool) -> Value {
@@ -408,4 +404,116 @@ fn playlist_item_and_playlist_count_budgets_report_incomplete_taste() {
             assert_eq!(server.calls("/v1/playlists/").len(), expected);
         });
     }
+}
+
+#[test]
+fn malformed_directory_coverage_preserves_cache_until_a_complete_retry() {
+    let server = Server::new();
+    let previous = vec![("spotify:playlist:Previous".into(), "Previous list".into())];
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = server.session(&cx, PLAYLIST_SCOPE);
+        let mut store = MemStore::default();
+        let item = LibraryItem {
+            source_uri: "spotify:track:Previous".into(),
+            title: "Previous song".into(),
+            artists: vec!["Test performer".into()],
+            origin: Origin::Taste,
+            ..LibraryItem::default()
+        };
+        apply_library_read(&mut store, &[item]).unwrap();
+        store.save_playlists(&previous).unwrap();
+        let before = store.library().unwrap();
+        for body in [
+            json!({ "items": [playlist(0, false)], "offset": 0, "total": 2, "next": null }),
+            json!({ "items": [playlist(0, false)], "offset": 1, "total": 2, "next": null }),
+            json!({ "items": [playlist(0, false)], "offset": 0, "total": 0, "next": null }),
+            json!({ "items": [playlist(0, false)], "offset": 0, "total": 3,
+                "next": format!("{API}/me/playlists?offset=2") }),
+        ] {
+            server.set("/v1/me/playlists", body);
+            let result = sync_library(&mut session, &cx, &mut store).await.unwrap();
+            assert_eq!(result.retired, 0);
+            assert_eq!(store.library().unwrap(), before);
+            assert_eq!(store.playlists().unwrap(), previous);
+        }
+        server.set(
+            "/v1/me/playlists",
+            json!({
+                "items": [playlist(0, false)], "offset": 0, "total": 1, "next": null
+            }),
+        );
+        let complete = sync_library(&mut session, &cx, &mut store).await.unwrap();
+        assert_eq!(complete.retired, 1);
+        assert_eq!(store.playlists().unwrap().len(), 1);
+        assert_eq!(store.playlists().unwrap()[0].0, "spotify:playlist:TestList0");
+    });
+    assert_eq!(
+        server.calls("/v1/me/playlists").len(), 5,
+        "invalid links were never fetched"
+    );
+}
+
+#[test]
+fn playlist_coverage_counts_unavailable_entries_and_episodes_before_filtering() {
+    let server = Server::new();
+    server.set("/v1/me/playlists", page(vec![playlist(0, true)], 0, None));
+    let mut unavailable = track(0);
+    unavailable["is_playable"] = false.into();
+    server.set(
+        "/v1/playlists/TestList0/items",
+        json!({
+            "items": [
+                { "item": null },
+                { "item": { "type": "episode" } },
+                { "item": unavailable }
+            ],
+            "offset": 0, "total": 4,
+            "next": format!("{API}/playlists/TestList0/items?offset=3")
+        }),
+    );
+    server.set(
+        "/v1/playlists/TestList0/items?offset=3",
+        json!({
+            "items": [{ "item": track(1) }], "offset": 3, "total": 4, "next": null
+        }),
+    );
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = server.session(&cx, PLAYLIST_SCOPE);
+        let (taste, read) = read_taste(&mut session, &cx, &mut MemStore::default(), 1).await;
+        assert!(!read.incomplete(), "{read:?}");
+        assert_eq!(read.playlist_tracks, 1);
+        assert_eq!(taste.tracks[0].source_uri, "spotify:track:TestTrack1");
+    });
+    assert_eq!(server.calls("/v1/playlists/").len(), 2);
+}
+
+#[test]
+fn a_changed_directory_total_keeps_earlier_pages_but_cannot_replace_cached_names() {
+    let server = Server::new();
+    server.set(
+        "/v1/me/playlists",
+        json!({
+            "items": [playlist(0, false)], "offset": 0, "total": 2,
+            "next": format!("{API}/me/playlists?offset=1")
+        }),
+    );
+    server.set(
+        "/v1/me/playlists?offset=1",
+        json!({
+            "items": [playlist(1, false)], "offset": 1, "total": 3,
+            "next": format!("{API}/me/playlists?offset=2")
+        }),
+    );
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = server.session(&cx, PLAYLIST_SCOPE);
+        let (taste, read) = read_taste(&mut session, &cx, &mut MemStore::default(), 1).await;
+        assert!(read.incomplete());
+        assert_eq!(taste.playlists, None);
+        assert_eq!(read.failed.len(), 1);
+        assert!(read.failed[0].1.contains("changed total"));
+    });
+    assert_eq!(server.calls("/v1/me/playlists").len(), 2);
 }
