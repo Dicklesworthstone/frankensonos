@@ -97,7 +97,12 @@ fn a_sleep_timer_fades_pauses_and_puts_the_volumes_back() {
         Some(15 * 60)
     );
     assert!(timers.due(t0() + mins(9)).is_empty());
-    assert_eq!(timers.due(t0() + mins(10)).len(), 1);
+    assert_eq!(
+        timers
+            .due(t0() + mins(10) - TimeDelta::milliseconds(200))
+            .len(),
+        1
+    );
     let log_from = sim.soap_log().len();
     assert_eq!(
         timers.run(&lan, &h, &fader, &kitchen).unwrap(),
@@ -241,7 +246,10 @@ fn extending_or_cancelling_during_the_fade_keeps_the_music_at_its_level() {
         Some(30 * 60)
     );
     assert!(timers.due(t0() + mins(24)).is_empty());
-    assert_eq!(timers.due(t0() + mins(25)).len(), 1);
+    assert_eq!(
+        timers.due(t0() + mins(25) - TimeDelta::seconds(2)).len(),
+        1
+    );
 
     // Extended during the fade: the fade stops and the levels come back.
     let outcome = std::thread::scope(|s| {
@@ -269,7 +277,10 @@ fn extending_or_cancelling_during_the_fade_keeps_the_music_at_its_level() {
     );
 
     // Cancelled during the fade: the same, and no timer left anywhere.
-    assert_eq!(timers.due(t0() + mins(30)).len(), 1);
+    assert_eq!(
+        timers.due(t0() + mins(30) - TimeDelta::seconds(2)).len(),
+        1
+    );
     let outcome = std::thread::scope(|s| {
         let run = s.spawn(|| timers.run(&lan, &h, &fader, &kitchen));
         std::thread::sleep(pause);
@@ -290,7 +301,10 @@ fn extending_or_cancelling_during_the_fade_keeps_the_music_at_its_level() {
     timers
         .start(&lan, &h, &fader, &kitchen, Duration::from_mins(1), t0())
         .unwrap();
-    assert_eq!(timers.due(t0() + mins(1)).len(), 1);
+    assert_eq!(
+        timers.due(t0() + mins(1) - TimeDelta::seconds(2)).len(),
+        1
+    );
     let outcome = std::thread::scope(|s| {
         let run = s.spawn(|| timers.run(&lan, &h, &fader, &kitchen));
         std::thread::sleep(pause);
@@ -315,7 +329,10 @@ fn interrupt_ends_a_fade_in_flight_without_putting_volumes_back() {
     timers
         .start(&lan, &h, &fader, &kitchen, Duration::from_mins(1), t0())
         .unwrap();
-    assert_eq!(timers.due(t0() + mins(1)).len(), 1);
+    assert_eq!(
+        timers.due(t0() + mins(1) - TimeDelta::seconds(2)).len(),
+        1
+    );
     let (outcome, superseded) = std::thread::scope(|s| {
         let run = s.spawn(|| timers.run(&lan, &h, &fader, &kitchen));
         std::thread::sleep(pause);

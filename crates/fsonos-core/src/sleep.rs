@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long before the end the fade starts.
 pub const FADE: Duration = Duration::from_mins(2);
@@ -72,6 +72,8 @@ struct Armed {
     generation: u64,
     /// The rooms a running fade is turning down.
     fading_rooms: Vec<PlayerId>,
+    /// Fixed when due: dispatch and state reads consume the remaining fade time.
+    fade_deadline: Option<Instant>,
     /// A volume change came after the timer was due but before its run took
     /// up its rooms: the run ends the timer instead of fading.
     interrupted: bool,
@@ -181,6 +183,7 @@ impl SleepTimers {
                 timer: timer.clone(),
                 generation,
                 fading_rooms: Vec::new(),
+                fade_deadline: None,
                 interrupted: false,
             },
         ) {
@@ -211,6 +214,7 @@ impl SleepTimers {
             entry.timer.fading = false;
             entry.generation = generation;
             entry.fading_rooms.clear();
+            entry.fade_deadline = None;
             entry.timer.clone()
         };
         Self::backstop(t, households, coordinator, timer.ends, now)?;
@@ -277,6 +281,7 @@ impl SleepTimers {
             entry.timer.fading = false;
             entry.generation = generation;
             entry.fading_rooms.clear();
+            entry.fade_deadline = None;
             if let Some(replaced) = armed.insert(new.clone(), entry) {
                 Self::stop_fade(&replaced, fader);
             }
@@ -325,6 +330,7 @@ impl SleepTimers {
                 },
                 generation,
                 fading_rooms: Vec::new(),
+                fade_deadline: None,
                 interrupted: false,
             },
         );
@@ -346,8 +352,10 @@ impl SleepTimers {
     }
 
     /// The timers whose fade should start at `now`; each is returned once
-    /// (it is marked as fading). Run [`Self::run`] for each.
+    /// (it is marked as fading). Run [`Self::run`] for each. Short or late
+    /// timers get only the time remaining, never a fresh full-length fade.
     pub fn due(&self, now: DateTime<Utc>) -> Vec<SleepTimer> {
+        let monotonic_now = Instant::now();
         let mut due: Vec<SleepTimer> = self
             .lock()
             .values_mut()
@@ -355,6 +363,12 @@ impl SleepTimers {
             .map(|a| {
                 a.timer.fading = true;
                 a.interrupted = false;
+                let remaining = (a.timer.ends - now).to_std().unwrap_or_default();
+                a.fade_deadline = Some(
+                    monotonic_now
+                        .checked_add(remaining.min(self.fade))
+                        .unwrap_or(monotonic_now),
+                );
                 a.timer.clone()
             })
             .collect();
@@ -362,8 +376,9 @@ impl SleepTimers {
         due
     }
 
-    /// Fade the group `coordinator` leads out over the fade time, pause it,
-    /// and put its rooms' volumes back. Blocks for the fade. When
+    /// Fade the group `coordinator` leads out within its remaining time,
+    /// pause it, and put its rooms' volumes back. An overdue timer has no
+    /// intentional fade delay. Blocks for the fade and device I/O. When
     /// `coordinator`'s room has joined another group since, only that room
     /// stops: it fades, leaves the group (which plays on), and gets its
     /// volume back.
@@ -382,7 +397,7 @@ impl SleepTimers {
         let joined = household
             .coordinator_of(coordinator)
             .is_some_and(|lead| lead != coordinator);
-        let (generation, claimed) = {
+        let (generation, deadline, claimed) = {
             let mut armed = self.lock();
             let Some(a) = armed.get_mut(coordinator).filter(|a| a.timer.fading) else {
                 return Ok(SleepOutcome::Gone);
@@ -400,7 +415,7 @@ impl SleepTimers {
             a.fading_rooms.clone_from(&rooms);
             // The fade's intents, taken under the lock a cancel or an extend
             // stops it under: one in between stops it too.
-            (a.generation, fader.claim(&rooms))
+            (a.generation, a.fade_deadline, fader.claim(&rooms))
         };
         let before = match rooms
             .iter()
@@ -417,7 +432,8 @@ impl SleepTimers {
         // reported): a group is never left silent for its next play. The
         // player's own timer, set past the end, pauses it if the daemon can't.
         let restore = || put_back(t, households, &before);
-        let outcome = match fader.fade_group_claimed(t, households, &claimed, 0, self.fade) {
+        let deadline = deadline.unwrap_or_else(Instant::now);
+        let outcome = match fader.fade_group_claimed_until(t, households, &claimed, 0, deadline) {
             Ok(outcome) => outcome,
             Err(e) => {
                 let _ = restore();
@@ -554,6 +570,7 @@ mod tests {
                     },
                     generation: 0,
                     fading_rooms: Vec::new(),
+                    fade_deadline: None,
                     interrupted: false,
                 },
             );
@@ -605,3 +622,7 @@ mod tests {
         assert_eq!(timers.get(&saved.coordinator).unwrap().ends, ends);
     }
 }
+
+#[cfg(test)]
+#[path = "sleep/deadline_tests.rs"]
+mod deadline_tests;
