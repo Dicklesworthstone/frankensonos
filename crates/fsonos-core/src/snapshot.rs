@@ -20,6 +20,8 @@ use fsonos_proto::{Transport, control as soap};
 use fsonos_types::{HouseholdId, PlayerId, TransportState};
 use std::net::IpAddr;
 
+mod source;
+
 /// One member room's own levels (addressed through the room's primary).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemberLevel {
@@ -460,7 +462,7 @@ pub fn restore_vetted<T: Transport + ?Sized>(
                 continue;
             }
         };
-        match run(t, household, host, &snap.coordinator, &op) {
+        match source::restore(t, household, host, snap, &op, vet) {
             Ok(()) => {
                 if !restored.contains(&aspect) && !failed.contains(&aspect) {
                     restored.push(aspect);

@@ -253,3 +253,6 @@ fn a_normal_restore_still_resumes_the_saved_track_and_position() {
         rig.levels_restored();
     }
 }
+
+#[path = "snapshot_failures_sim/source_recovery.rs"]
+mod source_recovery;
