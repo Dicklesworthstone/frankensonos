@@ -333,10 +333,14 @@ Run `fsonos setup` once on the Mac: it walks you through linking your own
 Spotify account (Authorization Code + PKCE, requesting `user-library-read` plus
 the read-only taste scopes `user-follow-read`, `user-top-read`,
 `user-read-recently-played` and `playlist-read-private`; without the taste
-scopes the DJ uses your library alone and `fsonos doctor` warns) and caches
-the refresh token under `FSONOS_DATA_DIR`, never in the repo. Set
+scopes the DJ uses your library alone and `fsonos doctor` warns) and caches the
+refresh token under `FSONOS_DATA_DIR`, never in the repo. Set
 `FSONOS_SPOTIFY_CLIENT_ID` first (your own app from the Spotify developer
-dashboard; for PKCE the client id is not a secret). `fsonos doctor` checks
+dashboard; for PKCE the client id is not a secret), and set it for the daemon
+too: uncomment `FSONOS_SPOTIFY_CLIENT_ID` in the filled-in plist's
+`EnvironmentVariables` and restart the job. Without it serve never refreshes
+the DJ's library, and while it runs `fsonos dj sync` and the `dj_sync` tool
+answer `NOT_IMPLEMENTED`; serve logs this at startup. `fsonos doctor` checks
 that the sign-in still works (`dj.sign_in` reads one liked track, refreshing
 the token as serve would) and says when to sign in again.
 

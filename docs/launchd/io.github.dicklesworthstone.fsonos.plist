@@ -39,6 +39,17 @@
 		<string>__HOME__/Library/Application Support/fsonos</string>
 		<key>RUST_LOG</key>
 		<string>info</string>
+		<!-- For the DJ, uncomment and put your Spotify app's client id here
+		     (docs/DEPLOY.md section 5). Without it serve never refreshes the
+		     DJ's library and has no Spotify sign-in.
+		<key>FSONOS_SPOTIFY_CLIENT_ID</key>
+		<string>your-spotify-app-client-id</string>
+		-->
+		<!-- Uncomment to put Tailscale Serve in front of the daemon when it
+		     starts (docs/DEPLOY.md, "Recommended: Tailscale Serve").
+		<key>FSONOS_TAILSCALE_SERVE</key>
+		<string>true</string>
+		-->
 	</dict>
 
 	<key>WorkingDirectory</key>

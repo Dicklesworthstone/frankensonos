@@ -80,10 +80,16 @@ impl LibrarySync {
         })
     }
 
-    /// The daemon's: when `serve` names a Spotify app.
+    /// The daemon's: when `serve` names a Spotify app (it says so when not).
     #[must_use]
     pub fn for_serve(serve: &ServeArgs, data_dir: &Path) -> Option<Arc<Self>> {
-        let client_id = serve.spotify_client_id.clone()?;
+        let Some(client_id) = serve.spotify_client_id.clone() else {
+            tracing::info!(
+                "the DJ's library is not refreshed: no Spotify app client id \
+                 (FSONOS_SPOTIFY_CLIENT_ID)"
+            );
+            return None;
+        };
         let config = SpotifyConfig {
             client_id,
             redirect_uri: serve.spotify_redirect_uri.clone(),
