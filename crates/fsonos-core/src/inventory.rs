@@ -100,6 +100,14 @@ pub fn survey<T: Transport + ?Sized>(
         }
     }
 
+    Ok(read_players(t, found, out))
+}
+
+fn read_players<T: Transport + ?Sized>(
+    t: &T,
+    found: Vec<(IpAddr, Option<String>)>,
+    mut out: Survey,
+) -> Survey {
     let mut described: Vec<(IpAddr, DeviceDescription, Option<String>)> = Vec::new();
     for (ip, household) in found {
         let url = ssdp::description_url(ip);
@@ -151,12 +159,116 @@ pub fn survey<T: Transport + ?Sized>(
         state.players.sort_by(|a, b| a.room_name.cmp(&b.room_name));
         out.households.push(state);
     }
-    out.households.sort_by_key(|h| match h.generation() {
+    sort_households(&mut out.households);
+    out
+}
+
+/// Survey a running model without mistaking a missed multicast reply for
+/// a missing household. Only households absent from the fresh topology are
+/// probed at their remembered addresses, once, without another discovery
+/// window. A topology that does answer remains authoritative: its missing
+/// members are not resurrected from the old model.
+pub fn survey_known<T: Transport + ?Sized>(
+    t: &T,
+    seeds: &[IpAddr],
+    known: &[HouseholdState],
+    wait: Duration,
+) -> Result<Survey, CoreError> {
+    let mut first = survey(t, seeds, wait);
+    if let Ok(found) = &mut first {
+        retain_household_ids(&mut found.households, known);
+    }
+    let mut attempted: HashSet<IpAddr> = seeds.iter().copied().collect();
+    if let Ok(found) = &first {
+        attempted.extend(
+            found
+                .households
+                .iter()
+                .flat_map(|h| h.players.iter().map(|p| p.ip)),
+        );
+        attempted.extend(
+            found
+                .unreachable
+                .iter()
+                .filter_map(|(addr, _)| addr.parse::<IpAddr>().ok()),
+        );
+    }
+    let mut fallback = Vec::new();
+    for household in known {
+        if first
+            .as_ref()
+            .is_ok_and(|found| found.households.iter().any(|h| same_household(h, household)))
+        {
+            continue;
+        }
+        for player in &household.players {
+            if attempted.insert(player.ip) {
+                fallback.push((player.ip, None));
+            }
+        }
+    }
+    if fallback.is_empty() {
+        return first;
+    }
+    let extra = read_players(t, fallback, Survey::default());
+    let mut out = match first {
+        Ok(found) => found,
+        Err(error) if extra.households.is_empty() => return Err(error),
+        Err(error) => Survey {
+            ssdp_error: Some(error.to_string()),
+            ..Survey::default()
+        },
+    };
+    for mut fresh in extra.households {
+        if let Some(existing) = out.households.iter_mut().find(|h| same_household(h, &fresh)) {
+            if fresh.id.is_none() {
+                fresh.id.clone_from(&existing.id);
+            }
+            *existing = fresh;
+        } else {
+            out.households.push(fresh);
+        }
+    }
+    retain_household_ids(&mut out.households, known);
+    out.unreachable.extend(extra.unreachable);
+    for (player, seq) in extra.boot_seqs {
+        if let Some((_, old)) = out.boot_seqs.iter_mut().find(|(id, _)| *id == player) {
+            *old = seq;
+        } else {
+            out.boot_seqs.push((player, seq));
+        }
+    }
+    for vanished in extra.vanished {
+        out.vanished.retain(|old| old.uuid != vanished.uuid);
+        out.vanished.push(vanished);
+    }
+    out.vanished
+        .retain(|v| out.households.iter().all(|h| h.player(&v.uuid).is_none()));
+    sort_households(&mut out.households);
+    Ok(out)
+}
+
+fn same_household(a: &HouseholdState, b: &HouseholdState) -> bool {
+    a.id.as_ref().is_some_and(|id| b.id.as_ref() == Some(id))
+        || a.players.iter().any(|p| b.player(&p.id).is_some())
+}
+
+fn retain_household_ids(fresh: &mut [HouseholdState], known: &[HouseholdState]) {
+    for household in fresh {
+        if household.id.is_none()
+            && let Some(previous) = known.iter().find(|h| same_household(h, household))
+        {
+            household.id.clone_from(&previous.id);
+        }
+    }
+}
+
+fn sort_households(households: &mut [HouseholdState]) {
+    households.sort_by_key(|h| match h.generation() {
         Some(Generation::S1) => 0,
         Some(Generation::S2) => 1,
         None => 2,
     });
-    Ok(out)
 }
 
 /// [`survey`], and when that finds no players, again with the

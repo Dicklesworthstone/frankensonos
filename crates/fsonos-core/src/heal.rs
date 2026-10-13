@@ -7,7 +7,7 @@
 //! volume, mute, URI, grouping): a retried `AddURIToQueue` could enqueue
 //! twice, so queue appends are never retried blindly.
 
-use crate::inventory::survey;
+use crate::inventory::survey_known;
 use crate::{CoreError, HouseholdState, control};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
@@ -68,7 +68,12 @@ where
     let Ok(from) = control::locate(households, player).map(|p| p.ip) else {
         return Err(err);
     };
-    let Ok(fresh) = survey(t, seeds, RESOLVE_WAIT) else {
+    let Ok(fresh) = survey_known(
+        t,
+        seeds,
+        std::slice::from_ref(&households[index]),
+        RESOLVE_WAIT,
+    ) else {
         return Err(err);
     };
     let refreshed = fresh

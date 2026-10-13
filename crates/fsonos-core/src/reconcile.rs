@@ -242,8 +242,8 @@ impl Reconciler {
         }
     }
 
-    /// One reconcile step: survey (SSDP plus `seeds`), replace the household
-    /// model, record health, and sync the subscriptions with the new model.
+    /// One reconcile step: discover, probe known addresses for households
+    /// discovery missed, replace the model, record health, and sync GENA.
     /// A failed or empty survey keeps the old model, backs the schedule off,
     /// and returns the error.
     pub fn refresh<L: Transport + Subscriber + ?Sized>(
@@ -253,7 +253,8 @@ impl Reconciler {
         callback_url: impl Fn(Service) -> String,
         now: Instant,
     ) -> Result<RefreshReport, CoreError> {
-        let survey = match inventory::survey(lan, seeds, DISCOVERY_WAIT) {
+        let surveyed = inventory::survey_known(lan, seeds, &self.households, DISCOVERY_WAIT);
+        let survey = match surveyed {
             Ok(s) if !s.households.is_empty() => s,
             Ok(_) => {
                 let retry = self.schedule.failed(now);
