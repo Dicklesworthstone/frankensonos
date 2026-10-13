@@ -345,6 +345,21 @@ fn scenes_schedules_and_the_policy_are_the_daemons_from_elsewhere() {
         removed.ok() && json(&after.stdout).as_array().is_some_and(Vec::is_empty),
         format!("{removed:?}\n{after:?}"),
     );
+    // Capped as loopback-http, Kitchen goes up one step at most: the daemon
+    // notes it, and the CLI prints the note.
+    let clamped = elsewhere(
+        &mut s,
+        &http,
+        "volume-elsewhere",
+        &["volume", "Kitchen", "90"],
+    );
+    s.check(
+        "notes",
+        "cli",
+        "a control through the daemon prints its notes (the volume the policy lowered)",
+        clamped.ok() && clamped.stdout.contains("\nnote: "),
+        format!("{clamped:?}"),
+    );
     let policy = elsewhere(
         &mut s,
         &http,

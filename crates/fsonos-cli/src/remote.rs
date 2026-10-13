@@ -561,7 +561,8 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         return Ok(false);
     };
     let json = global.json;
-    let done = |o: &OutcomeDto| format!("{}\n", o.done);
+    // Its notes too: a clamped volume, a room skipped, a command healed.
+    let done = crate::outcome_text;
     match command {
         Command::Search { query, zone, limit } => crate::search(
             global,

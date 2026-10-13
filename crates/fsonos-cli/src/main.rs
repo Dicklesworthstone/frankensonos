@@ -512,9 +512,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => {
             let req = PlayFavoriteRequest { zone, favorite };
             let outcome = Direct::survey(global)?.play_favorite(&req)?;
-            emit(global.json, &outcome, |o: &OutcomeDto| {
-                format!("{}\n", o.done)
-            })
+            emit(global.json, &outcome, outcome_text)
         }
         Command::Say(args) => announce_cmd::run_and_emit(global, &args.request()),
         Command::Chime(args) => announce_cmd::run_and_emit(global, &args.request()),
@@ -576,13 +574,18 @@ fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result
         }
         _ => direct.run(tool, |households| plan_for(control, households))?,
     };
-    emit(global.json, &outcome, |o: &OutcomeDto| {
-        let mut text = format!("{}\n", o.done);
-        for note in &o.notes {
-            let _ = writeln!(text, "note: {}", note.detail);
-        }
-        text
-    })
+    emit(global.json, &outcome, outcome_text)
+}
+
+/// A control's outcome as the CLI prints it, directly or through the daemon:
+/// what was done, then a line per note (a clamped volume, a room skipped, a
+/// command healed).
+fn outcome_text(outcome: &OutcomeDto) -> String {
+    let mut text = format!("{}\n", outcome.done);
+    for note in &outcome.notes {
+        let _ = writeln!(text, "note: {}", note.detail);
+    }
+    text
 }
 
 /// `fsonos play <room> <link> --next|--queue`: what to add to the queue.
@@ -1215,6 +1218,23 @@ fn run_mcp_stdio(global: &config::GlobalArgs) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_outcome_prints_what_was_done_then_its_notes() {
+        let outcome = OutcomeDto {
+            done: "Kitchen joined the party".into(),
+            changed: true,
+            volume: None,
+            notes: vec![fsonos_api::Note {
+                code: fsonos_api::NoteCode::Skipped,
+                detail: "Office skipped: the speaker refused".into(),
+            }],
+        };
+        assert_eq!(
+            outcome_text(&outcome),
+            "Kitchen joined the party\nnote: Office skipped: the speaker refused\n"
+        );
+    }
     use fsonos_api::plan::VolumeScope;
     use fsonos_api::{Command as Planned, VolumeChange};
     use fsonos_core::HouseholdState;
