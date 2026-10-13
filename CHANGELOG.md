@@ -30,6 +30,7 @@ live-hardware behavior beyond the owner-run checks named there, is claimed.
 | 8. A DJ for every genre | Oct 8, evening | The DJ plays the owner's whole library in any genre, with classical works still whole, and steers by artist |
 | 9. Albums, playlists and fades | Oct 9, evening | Spotify albums and playlists play on every surface, and library search finds saved albums and playlists by name; `fsonos sleep` fades through a running daemon |
 | 10. The whole house, live | Oct 10–12 | Direct tailnet callers named by Tailscale WhoIs; house-wide verbs (`fsonos pause everywhere`); the queue, tone, mute and history on every surface; fades on demand and hand-written scenes; `fsonos events`; a DJ that survives restarts, trims its queue and hears more of your listening; more doctor checks; discovery on every interface and other fixes found on real players |
+| 11. Promises kept | Oct 12 | Seek; `fsonos zones` and `fsonos search`; an `events` tool for agents; the CLI from another tailnet machine; a scene that plays a Spotify link; a history of what the house played, not only what fsonos started; the house policy on every way music starts; long calls that never stall the daemon; sleep timers, fades and the DJ that hold up through moves, regroups, restarts and refusals |
 
 There is no released version yet. `0.1.0` comes with real-hardware CI and
 prebuilt binaries (see [Status and verification](#status-and-verification)).
@@ -356,6 +357,40 @@ library, in whatever genres it spans.
   It is kept live by `GET /events`, needs no build step and loads nothing from
   any CDN. It works by keyboard, at phone width and in dark mode.
   [`f82b7df`](https://github.com/Dicklesworthstone/frankensonos/commit/f82b7df)
+- **Seek.** `fsonos seek Kitchen 1:30` (or `+30`, `-15`) moves within the
+  track a room's group is on (`POST /seek`, the `seek` tool).
+  [`49a594a`](https://github.com/Dicklesworthstone/frankensonos/commit/49a594a)
+- **More reads on the CLI.** `fsonos zones <room>` prints the zone a room
+  plays in, and `fsonos search <words>` lists the library's best matches (and
+  a room's favorites, with `--zone`), as HTTP and MCP already had them.
+  [`8a12050`](https://github.com/Dicklesworthstone/frankensonos/commit/8a12050)
+- **An agent can keep up with the house.** The `events` tool waits for the
+  house's next changes (`GET /events?wait=<secs>` answers once, as JSON).
+  [`34614f8`](https://github.com/Dicklesworthstone/frankensonos/commit/34614f8)
+- **The CLI from another tailnet machine.** `--daemon-url
+  https://<mac>.<tailnet>.ts.net` sends the CLI to the daemon behind Tailscale
+  Serve. Scenes, schedules and `policy show` reach the daemon too, and a
+  command's notes (a clamped volume, a room a set skipped) print through it.
+  [`4133bcd`](https://github.com/Dicklesworthstone/frankensonos/commit/4133bcd),
+  [`408952c`](https://github.com/Dicklesworthstone/frankensonos/commit/408952c),
+  [`db3189d`](https://github.com/Dicklesworthstone/frankensonos/commit/db3189d)
+- **A ramp at the speakers' own pace.** `fade_volume` with no fade has each
+  speaker ramp itself (`RampToVolume`), each bounded as an immediate change
+  would be.
+  [`43178a9`](https://github.com/Dicklesworthstone/frankensonos/commit/43178a9)
+- **What the house played.** The history records what the live model
+  hears, so music started in the Sonos app counts as well, once (music that
+  moves to another room, or plays on across a daemon restart, is the same
+  play), and it names what played: `fsonos history` shows "Title — Artist".
+  A grouped room's zone state carries its group's volume.
+  [`b4c716b`](https://github.com/Dicklesworthstone/frankensonos/commit/b4c716b),
+  [`98d994b`](https://github.com/Dicklesworthstone/frankensonos/commit/98d994b),
+  [`ccf5639`](https://github.com/Dicklesworthstone/frankensonos/commit/ccf5639),
+  [`e4cf10e`](https://github.com/Dicklesworthstone/frankensonos/commit/e4cf10e)
+- **A scene can play a Spotify link.** A scene group's `uri` source may be
+  a Spotify track, album or playlist, played through the household's own
+  account.
+  [`6e18b31`](https://github.com/Dicklesworthstone/frankensonos/commit/6e18b31)
 
 #### Tailscale (central to the product)
 
@@ -471,6 +506,67 @@ A selection; each commit message has the details.
 - One daemon per data directory: a second `fsonos serve` refuses to start
   while the first still answers, and a taken event port says so.
   [`202aca7`](https://github.com/Dicklesworthstone/frankensonos/commit/202aca7)
+- A long call (an announcement, a fade, a DJ start waiting on Spotify, the
+  doctor probing the LAN) no longer stalls the daemon's other requests: each
+  runs on a thread of its own, and a DJ command or an undo holds the store
+  only for each read or write. The DJ still waits for an undo to put things
+  back.
+  [`ff48be0`](https://github.com/Dicklesworthstone/frankensonos/commit/ff48be0),
+  [`d499366`](https://github.com/Dicklesworthstone/frankensonos/commit/d499366),
+  [`558bcba`](https://github.com/Dicklesworthstone/frankensonos/commit/558bcba),
+  [`f2216e8`](https://github.com/Dicklesworthstone/frankensonos/commit/f2216e8),
+  [`179c8ba`](https://github.com/Dicklesworthstone/frankensonos/commit/179c8ba)
+- Sleep timers follow the music through a move or a regroup. After a
+  restart the daemon takes up only its own timers, once it knows the house.
+  A player that drops off mid-fade gets its volume back, and a cancel, an
+  extend or a volume change just as a fade begins ends it.
+  [`f98bb10`](https://github.com/Dicklesworthstone/frankensonos/commit/f98bb10),
+  [`3507a62`](https://github.com/Dicklesworthstone/frankensonos/commit/3507a62),
+  [`a2afb6e`](https://github.com/Dicklesworthstone/frankensonos/commit/a2afb6e),
+  [`dd08a84`](https://github.com/Dicklesworthstone/frankensonos/commit/dd08a84),
+  [`1f664d9`](https://github.com/Dicklesworthstone/frankensonos/commit/1f664d9),
+  [`4ff10be`](https://github.com/Dicklesworthstone/frankensonos/commit/4ff10be)
+- A stopping daemon finishes its fades instead of stranding them. A ramp
+  fades every room in one fade, and a scene, an announcement or an undo ends a
+  fade before it sets a volume.
+  [`6a05e31`](https://github.com/Dicklesworthstone/frankensonos/commit/6a05e31),
+  [`4615d18`](https://github.com/Dicklesworthstone/frankensonos/commit/4615d18),
+  [`a01c70d`](https://github.com/Dicklesworthstone/frankensonos/commit/a01c70d)
+- Found on real players: routes confine both halves of discovery, and one
+  bad interface or player no longer breaks discovery or a leave. A leave is
+  read back from a second player too (asked once, if it is unreachable), and
+  an announcement's restore retries a transient 402 once.
+  [`eb2a674`](https://github.com/Dicklesworthstone/frankensonos/commit/eb2a674),
+  [`8b693d0`](https://github.com/Dicklesworthstone/frankensonos/commit/8b693d0),
+  [`11d8ef9`](https://github.com/Dicklesworthstone/frankensonos/commit/11d8ef9),
+  [`41f7602`](https://github.com/Dicklesworthstone/frankensonos/commit/41f7602),
+  [`22d2b9e`](https://github.com/Dicklesworthstone/frankensonos/commit/22d2b9e),
+  [`191bf05`](https://github.com/Dicklesworthstone/frankensonos/commit/191bf05)
+- The DJ never claims the owner's later copy of a work it played, and
+  keeps topping up when a trim is refused. A scheduled or scene mood lasts
+  until the time-of-day program changes, and a render the player refuses
+  answers `RENDER_PARAMS_STALE`.
+  [`8ad75aa`](https://github.com/Dicklesworthstone/frankensonos/commit/8ad75aa),
+  [`4802399`](https://github.com/Dicklesworthstone/frankensonos/commit/4802399),
+  [`e9e7738`](https://github.com/Dicklesworthstone/frankensonos/commit/e9e7738),
+  [`835ce42`](https://github.com/Dicklesworthstone/frankensonos/commit/835ce42)
+- A party no room could join fails, a group command refused by its old and
+  new coordinator answers `NOT_COORDINATOR`, a scene group that keeps what it
+  has leaves its playback alone, and a one-shot schedule fires once.
+  [`e5b5d75`](https://github.com/Dicklesworthstone/frankensonos/commit/e5b5d75),
+  [`f8704d2`](https://github.com/Dicklesworthstone/frankensonos/commit/f8704d2),
+  [`9cebe26`](https://github.com/Dicklesworthstone/frankensonos/commit/9cebe26),
+  [`ed7a35a`](https://github.com/Dicklesworthstone/frankensonos/commit/ed7a35a)
+- The daemon: one per data directory, by a lock. Its doctor runs the
+  store, LAN and alias checks, `FSONOS_TAILSCALE_SERVE=1` starts it, and the
+  launchd job carries the Spotify client id the DJ needs. Over stdio, moves
+  and fades go to it, and the web remote's mute follows its event stream.
+  [`ec921ad`](https://github.com/Dicklesworthstone/frankensonos/commit/ec921ad),
+  [`a7b4f85`](https://github.com/Dicklesworthstone/frankensonos/commit/a7b4f85),
+  [`d9a0679`](https://github.com/Dicklesworthstone/frankensonos/commit/d9a0679),
+  [`7b9d714`](https://github.com/Dicklesworthstone/frankensonos/commit/7b9d714),
+  [`118b13c`](https://github.com/Dicklesworthstone/frankensonos/commit/118b13c),
+  [`af5b714`](https://github.com/Dicklesworthstone/frankensonos/commit/af5b714)
 
 ### Security and privacy
 
@@ -498,6 +594,24 @@ A selection; each commit message has the details.
     the caller names a room, never a URL.
   [`b6b72a4`](https://github.com/Dicklesworthstone/frankensonos/commit/b6b72a4),
   [`f82b7df`](https://github.com/Dicklesworthstone/frankensonos/commit/f82b7df)
+- **The house policy holds however music starts.** Music an agent starts
+  (a play, a resume, a DJ start, a join, a move, a party, or a scene or
+  schedule it made) is held to the caps and quiet hours. A scene never sets a
+  volume its writer may not. Undo goes through the policy, and only the CLI
+  undoes others' actions. A fade on demand is authorized as the tool it is.
+  [`86e9492`](https://github.com/Dicklesworthstone/frankensonos/commit/86e9492),
+  [`f7945e3`](https://github.com/Dicklesworthstone/frankensonos/commit/f7945e3),
+  [`a48454f`](https://github.com/Dicklesworthstone/frankensonos/commit/a48454f),
+  [`231ab00`](https://github.com/Dicklesworthstone/frankensonos/commit/231ab00)
+- **No borrowed identities.** The MCP listener admits only its own Host
+  names, closing DNS rebinding there too. A process on the daemon's host is
+  local, not the owner, on the tailnet, and a tailnet or Serve name never
+  takes one of the daemon's own clients' keys. An unidentified caller can't
+  make the doctor probe the LAN in a loop.
+  [`37add3c`](https://github.com/Dicklesworthstone/frankensonos/commit/37add3c),
+  [`f3803ed`](https://github.com/Dicklesworthstone/frankensonos/commit/f3803ed),
+  [`b919d2a`](https://github.com/Dicklesworthstone/frankensonos/commit/b919d2a),
+  [`268b764`](https://github.com/Dicklesworthstone/frankensonos/commit/268b764)
 
 ## Status and verification
 
