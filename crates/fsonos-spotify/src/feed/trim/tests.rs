@@ -144,6 +144,10 @@ enum Fault {
     ConcurrentEdit,
     BeforeDelete,
     LostAndUnreadable,
+    LostReply,
+    MalformedReply,
+    EditedAfterRemoval,
+    WrongRemoval,
     Preflight,
     ZeroRevision,
 }
@@ -211,7 +215,31 @@ impl Transport for Replies {
                 false,
             )?;
         }
+        if matches!(fault, Fault::WrongRemoval) {
+            // An unrelated edit of the same length is not this operation's
+            // result: this one removes the owner's prefix and one movement.
+            let snapshot = read(&self.inner, host).unwrap();
+            soap::remove_track_range_from_queue(&self.inner, host, snapshot.revision, 1, 2)?;
+            return Err(Self::lost(host));
+        }
         let response = self.inner.soap_post(host, path, action, body)?;
+        if matches!(fault, Fault::EditedAfterRemoval) {
+            soap::enqueue_uri(
+                &self.inner,
+                host,
+                "x-file-cifs://example.invalid/new-owner.flac",
+                "",
+                1,
+                false,
+            )?;
+            return Err(Self::lost(host));
+        }
+        if matches!(fault, Fault::LostReply) {
+            return Err(Self::lost(host));
+        }
+        if matches!(fault, Fault::MalformedReply) {
+            return Ok("<broken-removal-response>".into());
+        }
         if matches!(fault, Fault::LostAndUnreadable) {
             self.unreadable.set(true);
             return Err(Self::lost(host));
@@ -383,4 +411,199 @@ fn only_complete_contiguous_nonzero_ranges_are_removable() {
     assert_eq!(range(&partial, 10), None);
     assert_eq!(range(&work(u32::MAX, &[uri(1), uri(2)]), u32::MAX), None);
     assert_eq!(range(&work(1, &[]), 10), None);
+}
+
+fn queue(revision: u32, uris: &[&str]) -> Queue {
+    Queue {
+        revision,
+        uris: uris.iter().map(|uri| (*uri).into()).collect(),
+    }
+}
+
+#[test]
+fn exact_removals_preserve_every_other_uri_and_require_a_changed_revision() {
+    let before = queue(7, &["owner", "a", "b", "a", "b", "playing"]);
+    let after = queue(8, &["owner", "a", "b", "playing"]);
+    assert!(removed_range(&before, &after, 1, 2));
+    assert!(!removed_range(
+        &before,
+        &queue(7, &["owner", "a", "b", "playing"]),
+        1,
+        2,
+    ));
+    assert!(removed_range(&queue(7, &["a", "b"]), &queue(8, &[]), 0, 2));
+    assert!(removed_range(
+        &queue(u32::MAX, &["a", "b"]),
+        &queue(0, &["b"]),
+        0,
+        1,
+    ));
+}
+
+#[test]
+fn wrong_removals_or_changed_neighbors_cannot_confirm_a_lost_reply() {
+    let before = queue(7, &["owner", "a", "b", "next"]);
+    for after in [
+        queue(8, &["b", "next"]),
+        queue(8, &["owner", "a"]),
+        queue(8, &["changed-owner", "next"]),
+        queue(8, &["next", "owner"]),
+        queue(8, &["owner", "a", "b", "next"]),
+        queue(8, &["owner"]),
+    ] {
+        assert!(!removed_range(&before, &after, 1, 2));
+    }
+    // Do not collapse renderer/account parameters while comparing neighbors.
+    assert!(!removed_range(
+        &queue(7, &["x-sonos-spotify:track?sn=1", "a"]),
+        &queue(8, &["x-sonos-spotify:track?sn=2"]),
+        1,
+        1,
+    ));
+    for (start, count) in [(0, 0), (5, 1), (usize::MAX, 1), (1, usize::MAX)] {
+        assert!(!removed_range(&before, &queue(8, &[]), start, count));
+    }
+}
+
+#[test]
+fn lost_or_malformed_removal_replies_complete_without_replaying_the_delete() {
+    for generation in [1, 2] {
+        for fault in [Fault::LostReply, Fault::MalformedReply] {
+            let f = Fixture::new(generation, 2);
+            let replies = Replies::new(&f.sim, fault);
+            let mut feed = f.feed();
+            feed.trim(&f.speakers(&replies)).unwrap();
+            assert_eq!(replies.removes.get(), 1);
+            assert_eq!(f.queue(), f.after_trim());
+            assert_eq!(feed.playing, Some(4));
+            assert_eq!(feed.recorded, Some((4, uri(3))));
+            assert!(feed.played.is_empty());
+            assert!(feed.is_active());
+            let saved = serde_json::to_string(&feed.snapshot().unwrap()).unwrap();
+            let mut restored =
+                QueueFeed::restore(serde_json::from_str(&saved).unwrap(), config(), 8);
+            restored.resync(&f.speakers(&replies)).unwrap();
+            restored.trim(&f.speakers(&replies)).unwrap();
+            assert_eq!(replies.removes.get(), 1);
+            assert_eq!(
+                f.queue(),
+                f.after_trim(),
+                "the owner's copy stays after restart"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_unrelated_edit_after_a_lost_reply_cannot_retain_old_cleanup_claims() {
+    for generation in [1, 2] {
+        for fault in [Fault::EditedAfterRemoval, Fault::WrongRemoval] {
+            let f = Fixture::new(generation, 2);
+            let replies = Replies::new(&f.sim, fault);
+            let mut feed = f.feed();
+            assert!(feed.trim(&f.speakers(&replies)).is_err());
+            assert_eq!(
+                feed.playing,
+                None,
+                "do not invent a position after an uncertain edit"
+            );
+            assert!(feed.played.is_empty());
+            let left = f.queue();
+            feed.resync(&f.speakers(&replies)).unwrap();
+            feed.playing = Some(
+                soap::get_position_info(&f.sim.lan(), f.host)
+                    .unwrap()
+                    .track,
+            );
+            feed.trim(&f.speakers(&replies)).unwrap();
+            assert_eq!(replies.removes.get(), 1);
+            assert_eq!(f.queue(), left);
+        }
+    }
+}
+
+#[test]
+fn a_confirmed_lost_reply_allows_other_old_works_to_be_retired_once() {
+    for generation in [1, 2] {
+        let f = Fixture::new(generation, 2);
+        let replies = Replies::new(&f.sim, Fault::LostReply);
+        let mut feed = f.feed();
+        feed.played = vec![work(2, &[uri(1)]), work(3, &[uri(2)])];
+        feed.trim(&f.speakers(&replies)).unwrap();
+        assert_eq!(
+            replies.removes.get(),
+            2,
+            "one removal per work, not a replay"
+        );
+        assert_eq!(f.queue(), f.after_trim());
+        assert_eq!(feed.playing, Some(4));
+        assert!(feed.played.is_empty());
+    }
+}
+
+#[test]
+fn playback_keeps_feeding_and_recording_once_after_a_confirmed_lost_trim_reply() {
+    use crate::test_shelf::{MIDNIGHT, song_items, works_of};
+    use fsonos_core::playback::PlayerPlayback;
+    use fsonos_core::store::Store;
+
+    for generation in [1, 2] {
+        let f = Fixture::new(generation, 2);
+        let replies = Replies::new(&f.sim, Fault::LostReply);
+        let mut feed = f.feed();
+        let mut store = MemStore::default();
+        store
+            .record_play(&f.coordinator.0, &uri(3), MIDNIGHT)
+            .unwrap();
+        let pool = works_of(&song_items());
+        let plan = Planning {
+            pool: &pool,
+            steer: None,
+            feedback: None,
+            now: MIDNIGHT,
+            local_hour: Some(20),
+        };
+        let state = || {
+            let position = soap::get_position_info(&f.sim.lan(), f.host).unwrap();
+            let mut state = PlayerPlayback::default();
+            state.transport = Some(TransportState::Playing);
+            state.track_uri = Some(position.uri);
+            state.queue_position = Some(position.track);
+            state.queue_length = Some(u32::try_from(f.queue().len()).unwrap());
+            state
+        };
+        let old_event = state();
+        assert_eq!(
+            feed.on_playback(&f.speakers(&replies), plan, &mut store, &old_event)
+                .unwrap(),
+            0
+        );
+        assert!(feed.take_trim_error().is_none());
+        // The old event can still be buffered after the queue renumbered.
+        assert_eq!(
+            feed.on_playback(&f.speakers(&replies), plan, &mut store, &old_event)
+                .unwrap(),
+            0
+        );
+        assert_eq!(store.recent_plays(None, 20).unwrap().len(), 1);
+        soap::next(&f.sim.lan(), f.host).unwrap();
+        assert_eq!(
+            feed.on_playback(&f.speakers(&replies), plan, &mut store, &state())
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.recent_plays(None, 20).unwrap().len(), 2);
+        assert_eq!(replies.removes.get(), 1);
+        assert!(feed.is_active());
+        let queue = f.queue();
+        assert_eq!(&queue[..3], &[uri(999), uri(1), uri(2)]);
+        let current = soap::get_position_info(&f.sim.lan(), f.host)
+            .unwrap()
+            .track;
+        assert!(
+            feed.queued()
+                .iter()
+                .any(|work| work.first().is_some_and(|at| at > current))
+        );
+    }
 }

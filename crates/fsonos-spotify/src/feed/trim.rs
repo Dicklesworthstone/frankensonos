@@ -1,8 +1,9 @@
 //! Retire played works without treating a queue position as permanent identity.
 //!
-//! Each removal is revision-addressed and sent once. An ambiguous reply
-//! relinquishes old cleanup claims before resync, so a later identical copy
-//! belonging to the owner cannot be adopted and removed instead.
+//! Each removal is revision-addressed and sent once. A lost reply succeeds
+//! only when coherent read-back shows exactly the intended removal. Otherwise
+//! old cleanup claims are relinquished before resync, so a later identical
+//! copy belonging to the owner cannot be adopted and removed instead.
 
 use super::{FeedError, QueueFeed, QueuedWork, Speakers, host_of};
 use fsonos_proto::content::{QUEUE, browse_snapshot};
@@ -34,6 +35,20 @@ fn read<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<Queue, FeedError> 
         revision: snapshot.update_id,
         uris,
     })
+}
+
+/// A changed revision and exactly the intended removal, with every other
+/// URI still in order. Length or the target's absence alone is not proof.
+fn removed_range(before: &Queue, after: &Queue, start: usize, count: usize) -> bool {
+    let Some(end) = start.checked_add(count) else {
+        return false;
+    };
+    count > 0
+        && end <= before.uris.len()
+        && before.revision != after.revision
+        && before.uris.len().checked_sub(count) == Some(after.uris.len())
+        && before.uris[..start] == after.uris[..start]
+        && before.uris[end..] == after.uris[start..]
 }
 
 fn same_track(actual: &str, expected: &str) -> bool {
@@ -116,7 +131,18 @@ fn remove_work<T: Transport + ?Sized>(
     match soap::remove_track_range_from_queue(at.transport, host, queue.revision, first, count) {
         Ok(()) => Ok(Removal::Removed(count)),
         Err(error @ ProtoError::SoapFault { .. }) => Err(error.into()),
-        Err(error) => Ok(Removal::Uncertain(error)),
+        Err(error) => {
+            // A missing response is not permission to repeat a positional
+            // delete. Read once more through the bounded snapshot reader.
+            if let Ok(after) = read(at.transport, host)
+                && removed_range(&queue, &after, start, work.movements.len())
+            {
+                tracing::warn!(cause = %error, "queue trim confirmed; removal not replayed");
+                Ok(Removal::Removed(count))
+            } else {
+                Ok(Removal::Uncertain(error))
+            }
+        }
     }
 }
 
