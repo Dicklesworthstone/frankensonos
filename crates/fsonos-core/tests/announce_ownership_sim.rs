@@ -230,7 +230,9 @@ fn run(s2: bool, change: Change) {
         }
         Change::RestoreFailure => {
             assert!(
-                after.iter().all(|e| e.action != "Play" && e.action != "Seek"),
+                after
+                    .iter()
+                    .all(|e| e.action != "Play" && e.action != "Seek"),
                 "{after:?}"
             );
             assert_eq!(

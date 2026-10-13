@@ -44,9 +44,7 @@ pub(super) fn check_group(
         .filter(|r| r.coordinator == plan.lead)
         .map(|r| &r.primary)
         .collect();
-    if expected.iter().all(|p| actual.contains(&p))
-        && actual.iter().all(|p| expected.contains(p))
-    {
+    if expected.iter().all(|p| actual.contains(&p)) && actual.iter().all(|p| expected.contains(p)) {
         Ok(())
     } else {
         Err("announcement grouping changed; newer playback and grouping were left alone".into())
@@ -97,7 +95,10 @@ pub(super) fn put_back<T: Transport + ?Sized>(
                 // its levels/grouping without seeking or restarting that source.
                 return Ok(false);
             }
-            Err("announcement source changed before restoration; newer playback was left alone".into())
+            Err(
+                "announcement source changed before restoration; newer playback was left alone"
+                    .into(),
+            )
         })();
         match owned {
             Ok(true) => {}
@@ -147,18 +148,13 @@ pub(super) fn put_back<T: Transport + ?Sized>(
         }
         let mut changed = snap.clone();
         changed.levels.retain(|l| {
-            effects.volumes.iter().any(|(p, _)| p == &l.player)
-                || effects.mutes.contains(&l.player)
+            effects.volumes.iter().any(|(p, _)| p == &l.player) || effects.mutes.contains(&l.player)
         });
         let restore = || {
             let now = refreshed(t, household)?;
-            snapshot::restore_vetted(
-                t,
-                std::slice::from_ref(&now),
-                &changed,
-                &aspects,
-                &|op| vet(t, &now, &changed, &effects, op),
-            )
+            snapshot::restore_vetted(t, std::slice::from_ref(&now), &changed, &aspects, &|op| {
+                vet(t, &now, &changed, &effects, op)
+            })
         };
         // Preserve the bounded retry for a player still tearing down its clip.
         let result = match restore() {
@@ -217,7 +213,9 @@ fn vet<T: Transport + ?Sized>(
                 .map_err(|e| e.to_string())?
                 .uri;
             if current != expected {
-                return Err("source was not restored; refusing to seek or play another source".into());
+                return Err(
+                    "source was not restored; refusing to seek or play another source".into(),
+                );
             }
         }
         _ => {}

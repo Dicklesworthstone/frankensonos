@@ -211,7 +211,9 @@ fn lost_and_malformed_source_and_play_replies_complete_in_both_generations() {
                 assert_eq!(media.uri, uri);
                 assert_eq!(media.uri_metadata, metadata);
                 assert_eq!(
-                    soap::get_transport_info(&f.sim.lan(), f.host).unwrap().state,
+                    soap::get_transport_info(&f.sim.lan(), f.host)
+                        .unwrap()
+                        .state,
                     TransportState::Playing
                 );
                 f.assert_queue_preserved();
@@ -275,7 +277,9 @@ fn owner_source_changes_before_or_during_readback_are_not_overwritten() {
                 let media = soap::get_media_info(&f.sim.lan(), f.host).unwrap();
                 assert_eq!(media.uri, OTHER);
                 assert_eq!(
-                    soap::get_transport_info(&f.sim.lan(), f.host).unwrap().state,
+                    soap::get_transport_info(&f.sim.lan(), f.host)
+                        .unwrap()
+                        .state,
                     TransportState::Playing
                 );
                 f.assert_queue_preserved();
@@ -317,7 +321,9 @@ fn an_owner_pause_after_a_lost_play_reply_is_not_reported_as_playing() {
     assert!(f.start(&replies, NEW, "").is_err());
     assert_eq!(replies.writes(), WRITES);
     assert_eq!(
-        soap::get_transport_info(&f.sim.lan(), f.host).unwrap().state,
+        soap::get_transport_info(&f.sim.lan(), f.host)
+            .unwrap()
+            .state,
         TransportState::Paused
     );
 }
