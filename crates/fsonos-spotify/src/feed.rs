@@ -36,7 +36,7 @@ use std::net::IpAddr;
 
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::{Store, StoreError};
-use fsonos_core::{CoreError, HouseholdState, control};
+use fsonos_core::{CoreError, HouseholdState, control, moving};
 use fsonos_proto::content::{BrowseFlag, QUEUE, browse, browse_all};
 use fsonos_proto::control::{get_position_info, remove_track_range_from_queue};
 use fsonos_proto::didl::{
@@ -722,7 +722,8 @@ impl QueueFeed {
                 &params,
                 &self.queued[index].movements[m],
                 desired,
-            )?;
+            )
+            .map_err(|e| render_refused(at, e))?;
             // Inserted ahead of something (rather than appended): that
             // something moved down one.
             let before = len.map(|len| len.saturating_sub(1)).or(self.queue_len);
@@ -812,7 +813,7 @@ impl QueueFeed {
             if work.first().is_some() {
                 self.queued.push(work);
             }
-            added?;
+            added.map_err(|e| render_refused(at, e))?;
         }
         Ok(())
     }
@@ -901,6 +902,24 @@ fn placed(queue: &[Option<String>], p: u32, uri: Option<&str>) -> Option<u32> {
         .iter()
         .rposition(|q| q.as_deref() == Some(uri))
         .and_then(|i| u32::try_from(i + 1).ok())
+}
+
+/// A coordinator that refuses a DJ enqueue with UPnP 800 while it still
+/// leads its group refuses the render params themselves, which were just
+/// learned from the household's favorites: they went stale
+/// (`RENDER_PARAMS_STALE`, whose remedy is to re-link Spotify). One whose
+/// group has moved on refuses whatever it is sent, and its 800 stands.
+fn render_refused<T: Transport + ?Sized>(at: &Speakers<'_, T>, err: FeedError) -> FeedError {
+    if !matches!(
+        err,
+        FeedError::Proto(ProtoError::SoapFault { code: 800, .. })
+    ) {
+        return err;
+    }
+    match moving::coordinator_now(at.transport, at.households, at.coordinator) {
+        Ok(now) if now == *at.coordinator => FeedError::Core(CoreError::RenderParamsStale),
+        _ => err,
+    }
 }
 
 fn host_of<T: Transport + ?Sized>(at: &Speakers<'_, T>) -> Result<IpAddr, FeedError> {
@@ -1436,6 +1455,23 @@ mod tests {
             current.track_at(at).map(str::to_owned),
             queue.get(at as usize - 1).cloned(),
             "the feed's model of the queue still matches it"
+        );
+    }
+
+    #[test]
+    fn a_render_its_coordinator_refuses_reads_as_stale_params() {
+        let rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = works_of(&shelf_items(1));
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        rig.sim.upnp_fault(ROOM, "AddURIToQueue", 800).unwrap();
+        let err = feed
+            .start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap_err();
+        assert!(
+            matches!(err, FeedError::Core(CoreError::RenderParamsStale)),
+            "{err}"
         );
     }
 

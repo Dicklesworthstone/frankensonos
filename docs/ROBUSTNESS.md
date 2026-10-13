@@ -38,7 +38,7 @@ us and is re-learned, never assumed.
 | Failure | Mechanism | Lives in |
 |---|---|---|
 | Spotify relinked → `sid`/`flags`/`sn` drift | Render params are **learned from the household's own favorites at runtime**, never hardcoded (verified live on both households) | `a-didl-params-ffn`, PROTOCOL.md §4 |
-| Learned params go stale anyway → UPnP 800 | On render 800: re-learn from favorites, retry once, then report `RENDER_PARAMS_STALE` with a remedy | `re-render-800-retry` (new) |
+| Learned params go stale anyway → UPnP 800 | On render 800: re-learn from favorites, retry once, then report `RENDER_PARAMS_STALE` with a remedy. The DJ learns them before every enqueue, so an 800 from a coordinator that still leads its group reports `RENDER_PARAMS_STALE` at once | `re-render-800-retry` (new) |
 | Wrong `desc` (the original UPnP-800 killer) | Template pins `SA_RINCON<svc>` from the learned descriptor; doctor checks linkage per household | `b-doctor-render-checks-aok` |
 | Single track ends → transport STOPPED | The DJ uses the queue flow (append → point → seek → play → next), never bare single-shot `SetAVTransportURI` for continuous listening | PROTOCOL.md §4, `c-dj-*` |
 
