@@ -19,9 +19,9 @@
 //! A grant without the taste scopes reads none of this and fails nothing:
 //! the DJ's taste is the library alone, and [`TasteRead::missing_scopes`]
 //! says what a new sign-in would add (the doctor warns). A run that stops
-//! early (rate limited past the waits, a server error, signed out) keeps
-//! what it read; the sync then keeps the taste-only tracks it cached
-//! before, rather than retiring what it didn't get to read.
+//! early (rate limited past the waits, a server error, signed out, or a read
+//! budget reached) keeps what it read; the sync then keeps the taste-only
+//! tracks it cached before, rather than retiring what it didn't get to read.
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,12 +30,14 @@ use fsonos_core::store::Store;
 
 use crate::SpotifyError;
 use crate::client::{
-    Artist, CursorPage, FollowedArtists, FullTrack, Me, Paging, PlayHistory, PlaylistItem,
-    SimplifiedPlaylist, TASTE_SCOPES, decode, unix_seconds,
+    Artist, CursorPage, FullTrack, Me, PlayHistory, PlaylistItem, SimplifiedPlaylist,
+    TASTE_SCOPES, decode, unix_seconds,
 };
 use crate::expand::halts;
 use crate::library::{LibraryItem, Origin};
 use crate::session::Session;
+
+mod paging;
 
 /// A top track's weight (per mille).
 pub const TOP_TRACK_PM: u32 = 1300;
@@ -66,15 +68,15 @@ pub struct TasteRead {
     /// The owner's own (or collaborative) playlists read, and their tracks.
     pub playlists: usize,
     pub playlist_tracks: usize,
-    /// Reads that failed, and why (the others still count).
+    /// Reads that failed or reached a budget before completion, and why.
     pub failed: Vec<(String, String)>,
     /// Why the run stopped early, if it did.
     pub halted: Option<String>,
 }
 
 impl TasteRead {
-    /// Whether some granted signal went unread (a failure or a halt): the
-    /// sync then keeps the taste-only tracks it cached before.
+    /// Whether some granted signal went unread (a failure, budget or halt):
+    /// the sync then keeps the taste-only tracks it cached before.
     #[must_use]
     pub fn incomplete(&self) -> bool {
         self.halted.is_some() || !self.failed.is_empty()
@@ -293,46 +295,6 @@ impl Reader<'_> {
         }
     }
 
-    /// Every item of an offset-paged list, following `next` for at most
-    /// `pages` pages.
-    async fn page<T: serde::de::DeserializeOwned>(
-        &mut self,
-        url: &str,
-        what: &str,
-        pages: usize,
-    ) -> Vec<T> {
-        let mut items = Vec::new();
-        let mut next = Some(url.to_owned());
-        for _ in 0..pages {
-            let Some(url) = next.take() else {
-                break;
-            };
-            let Some(page) = self.get::<Paging<T>>(&url, what).await else {
-                break;
-            };
-            items.extend(page.items);
-            next = page.next;
-        }
-        items
-    }
-
-    /// The followed artists, following the cursor (bounded).
-    async fn followed(&mut self) -> Vec<Artist> {
-        let mut artists = Vec::new();
-        let mut next = Some(self.session.endpoints().followed_artists());
-        for _ in 0..MAX_PAGES {
-            let Some(url) = next.take() else {
-                break;
-            };
-            let Some(page) = self.get::<FollowedArtists>(&url, "followed artists").await else {
-                break;
-            };
-            artists.extend(page.artists.items);
-            next = page.artists.next;
-        }
-        artists
-    }
-
     /// The tracks of the owner's own and collaborative playlists (others'
     /// playlists' items aren't readable since February 2026), and every
     /// playlist in their list when the whole list was read. `named` gets
@@ -358,11 +320,8 @@ impl Reader<'_> {
                 .collect()
         });
         let mut tracks = Vec::new();
-        for list in lists
-            .iter()
-            .filter(|l| l.readable_by(&me.id))
-            .take(MAX_PLAYLISTS)
-        {
+        let mut readable = lists.iter().filter(|l| l.readable_by(&me.id));
+        for list in readable.by_ref().take(MAX_PLAYLISTS) {
             let url = self.session.endpoints().playlist_items(&list.id, 0);
             let entries: Vec<PlaylistItem> =
                 self.page(&url, "playlist items", MAX_PLAYLIST_PAGES).await;
@@ -384,6 +343,12 @@ impl Reader<'_> {
                     tracks.push(item);
                 }
             }
+        }
+        if readable.next().is_some() {
+            self.read.failed.push((
+                "playlist items".into(),
+                "taste playlist budget reached before every readable playlist was visited".into(),
+            ));
         }
         (tracks, listed)
     }
