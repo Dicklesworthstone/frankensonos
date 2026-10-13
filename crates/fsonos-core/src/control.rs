@@ -325,6 +325,24 @@ pub fn play_queue_from<T: Transport + ?Sized>(
     )?)
 }
 
+/// Start the queue in insertion order, with shuffle and repeat disabled.
+/// Select the queue before setting its mode: some players reject SetPlayMode
+/// while a stream or another source is active. A failed mode change prevents
+/// the following seek and Play; it is never mistaken for a lost Play reply.
+pub fn play_queue_from_in_order<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    position: u32,
+) -> Result<(), CoreError> {
+    Ok(queue_start::play_in_order(
+        t,
+        addr(households, coordinator)?,
+        coordinator,
+        position,
+    )?)
+}
+
 /// Tracks [`enqueue_spotify`] added to a group's queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Queued {

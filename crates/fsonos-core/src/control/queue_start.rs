@@ -1,6 +1,7 @@
 //! Finish an explicit queue start when a stage's reply, not its effect, was
 //! lost. Source selection, track selection and Play are each sent once.
-//! Successful replies keep the usual three-call path. Ambiguous failures
+//! Ordinary starts keep the three-call path; ordered starts set NORMAL after
+//! selecting the queue and before seeking or playing. Ambiguous failures
 //! permit read-back only; a confirmed stage advances to the next one rather
 //! than resetting the source or seeking again. Definite SOAP refusals retain
 //! their original meaning (including render-parameter recovery upstream).
@@ -17,6 +18,7 @@ use std::net::IpAddr;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
     Source,
+    Mode,
     Track,
     Play,
 }
@@ -25,6 +27,7 @@ impl Stage {
     fn name(self) -> &'static str {
         match self {
             Self::Source => "SetAVTransportURI",
+            Self::Mode => "SetPlayMode",
             Self::Track => "Seek",
             Self::Play => "Play",
         }
@@ -37,16 +40,45 @@ pub(super) fn play<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
 ) -> Result<(), ProtoError> {
+    start(transport, host, coordinator, position, false)
+}
+
+pub(super) fn play_in_order<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+    position: u32,
+) -> Result<(), ProtoError> {
+    start(transport, host, coordinator, position, true)
+}
+
+fn start<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+    position: u32,
+    in_order: bool,
+) -> Result<(), ProtoError> {
     if position == 0 {
         return Err(ProtoError::Malformed("queue positions start at one".into()));
     }
-    for stage in [Stage::Source, Stage::Track, Stage::Play] {
+    for stage in [Stage::Source, Stage::Mode, Stage::Track, Stage::Play] {
+        if stage == Stage::Mode && !in_order {
+            continue;
+        }
         let result = match stage {
             Stage::Source => soap::play_from_queue(transport, host, coordinator),
+            Stage::Mode => soap::set_normal_play_mode(transport, host),
             Stage::Track => soap::seek_track(transport, host, position),
             Stage::Play => soap::play(transport, host),
         };
         if let Err(error) = result {
+            // Source/position/Playing prove nothing about a mode change.
+            // A failed mode reply must not authorize Seek or Play, and no
+            // earlier stage is replayed to try the mode again.
+            if stage == Stage::Mode {
+                return Err(error);
+            }
             if matches!(
                 &error,
                 ProtoError::Network { .. } | ProtoError::Malformed(_)
