@@ -62,7 +62,7 @@ mod tests {
     use fsonos_proto::control::{set_mute, set_volume};
     use fsonos_proto::net::{EventSink, Lan};
     use fsonos_proto::topology::get_zone_group_state;
-    use fsonos_sim::{GenaEvent, SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+    use fsonos_sim::{GenaEvent, NotifyDrop, SimHandle, SimHousehold, SimModel, SimPlayerSpec};
     use fsonos_types::{PlayerId, TransportState};
     use std::net::SocketAddr;
     use std::sync::atomic::AtomicBool;
@@ -91,7 +91,7 @@ mod tests {
         }
     }
 
-    fn buffered(generation: u8) -> (SimHandle, Engine, Model, PlayerId) {
+    fn buffered(generation: u8, drop_initial: bool) -> (SimHandle, Engine, Model, PlayerId) {
         let builder = SimHousehold::builder();
         let sim = match generation {
             1 => builder.s1([SimPlayerSpec::new("Room", SimModel::Play5Gen1)]),
@@ -112,11 +112,7 @@ mod tests {
         // Represent a survey whose network work took longer than the initial
         // deadline. No test sleeps through that interval.
         let started = Instant::now() - INITIAL_STATE_WAIT - Duration::from_secs(1);
-        let mut rec = Reconciler::new(
-            Duration::from_secs(300),
-            Duration::from_secs(300),
-            started,
-        );
+        let mut rec = Reconciler::new(Duration::from_secs(300), Duration::from_secs(300), started);
         rec.households.push(house);
         rec.schedule.succeeded(Instant::now());
         let wants = wanted(&rec.households);
@@ -125,28 +121,30 @@ mod tests {
         let local = lan.local_address_toward(host).unwrap();
         let sink = EventSink::start(SocketAddr::new(local, 0)).unwrap();
         let callback = |service: Service| sink.callback_url(service.tag());
+        if drop_initial {
+            sim.drop_notifies("Room", Some(NotifyDrop::Next(4))).unwrap();
+        }
         let report = rec.subscriptions.sync(&*lan, &wants, callback, started);
         assert_eq!(report.subscribed, wants.len());
         assert!(report.failed.is_empty());
-        // Delivery acknowledgements prove the HTTP listener has enqueued
-        // every initial event, but the live worker has not consumed any.
+        // Wait for the complete initial burst to be delivered or dropped.
+        // The live worker has not consumed anything from the listener yet.
         let until = Instant::now() + Duration::from_secs(5);
         loop {
-            let delivered = sim
+            let completed = sim
                 .gena_log()
                 .iter()
-                .filter(|e| {
-                    matches!(
-                        e.event,
-                        GenaEvent::Delivered {
-                            seq: 0,
-                            status: 200,
-                            ..
-                        }
-                    )
+                .filter(|e| match e.event {
+                    GenaEvent::Dropped { seq: 0, .. } => drop_initial,
+                    GenaEvent::Delivered {
+                        seq: 0,
+                        status: 200,
+                        ..
+                    } => !drop_initial,
+                    _ => false,
                 })
                 .count();
-            if delivered == wants.len() {
+            if completed == wants.len() {
                 break;
             }
             assert!(Instant::now() < until, "initial delivery did not complete");
@@ -175,7 +173,7 @@ mod tests {
     #[test]
     fn buffered_initials_are_applied_before_expired_watchdogs_on_both_generations() {
         for generation in [1, 2] {
-            let (sim, engine, mut model, id) = buffered(generation);
+            let (sim, engine, mut model, id) = buffered(generation, false);
             assert!(model.rec.subscriptions.next_due().unwrap() < Instant::now());
             let calls = sim.soap_log().len();
             turn(&engine, &mut model);
@@ -201,7 +199,7 @@ mod tests {
 
     #[test]
     fn shutdown_requested_before_a_turn_neither_consumes_nor_resubscribes() {
-        let (sim, engine, mut model, id) = buffered(2);
+        let (sim, engine, mut model, id) = buffered(2, false);
         engine.stop.store(true, Ordering::Release);
         let before = sim.gena_log().len();
         turn(&engine, &mut model);
@@ -209,5 +207,37 @@ mod tests {
         assert_eq!(sim.gena_log().len(), before);
         engine.release(&mut model);
         sim.shutdown();
+    }
+
+    #[test]
+    fn genuine_silence_still_triggers_live_worker_recovery_on_both_generations() {
+        for generation in [1, 2] {
+            let (sim, engine, mut model, id) = buffered(generation, true);
+            let calls = sim.soap_log().len();
+            let until = Instant::now() + Duration::from_secs(5);
+            while model
+                .rec
+                .subscriptions
+                .next_due()
+                .is_some_and(|due| due <= Instant::now() + INITIAL_STATE_WAIT)
+            {
+                assert!(Instant::now() < until, "live worker did not recover state");
+                turn(&engine, &mut model);
+            }
+            let state = model.playback.of(&id).unwrap();
+            assert_eq!(state.transport, Some(TransportState::Stopped));
+            assert_eq!(state.volume, Some(23));
+            assert_eq!(state.mute, Some(true));
+            assert!(state.group_volume.is_some());
+            let subscribed = sim
+                .gena_log()
+                .iter()
+                .filter(|e| matches!(e.event, GenaEvent::Subscribed { .. }))
+                .count();
+            assert_eq!(subscribed, 8, "each silent service replaced once");
+            assert_eq!(sim.soap_log().len(), calls);
+            engine.release(&mut model);
+            sim.shutdown();
+        }
     }
 }
