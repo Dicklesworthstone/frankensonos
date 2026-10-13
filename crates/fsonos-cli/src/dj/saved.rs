@@ -10,11 +10,14 @@ use fsonos_spotify::feed::{FeedSnapshot, QueueFeed};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The file's name inside the data directory.
 pub const FEEDS_FILE: &str = "dj-feeds.json";
+
+static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize, Deserialize)]
 struct Saved {
@@ -69,11 +72,67 @@ pub(super) fn encode(feeds: &HashMap<PlayerId, QueueFeed>, tracker: &Tracker) ->
     serde_json::to_string_pretty(&Saved { feeds, groups }).unwrap_or_default()
 }
 
-/// Replace `path` with `text` whole: a crash mid-write leaves the old file.
+/// Replace `path` with a complete, durable revision. Each writer owns a
+/// private staging file in the same directory: overlapping CLI/daemon writes
+/// cannot truncate or rename one another's temporary file. The last rename
+/// wins, but it always publishes one whole revision, never a mixture.
+///
+/// Sync the contents before publishing, then the directory entry on Unix.
+/// An error after rename means publication succeeded but durability could not
+/// be acknowledged; callers must retain their pending save and retry.
 pub(crate) fn write(path: &Path, text: &str) -> std::io::Result<()> {
-    let partial = path.with_extension("json.partial");
-    std::fs::write(&partial, text)?;
-    std::fs::rename(&partial, path)
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(ErrorKind::InvalidInput, "saved state needs a file name")
+    })?;
+    for _ in 0..128 {
+        let mut temporary = std::ffi::OsString::from(".");
+        temporary.push(name);
+        temporary.push(format!(
+            ".{}.{}.partial",
+            std::process::id(),
+            NEXT_WRITE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let partial = parent.join(temporary);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // These files contain household identities and listening state.
+            options.mode(0o600);
+        }
+        let mut file = match options.open(&partial) {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let flushed = file
+            .write_all(text.as_bytes())
+            .and_then(|()| file.sync_all());
+        // Close before rename, including on platforms that deny renaming an
+        // open file. A failed write never replaces the last good revision.
+        drop(file);
+        let result = flushed.and_then(|()| {
+            std::fs::rename(&partial, path)?;
+            #[cfg(unix)]
+            std::fs::File::open(parent)?.sync_all()?;
+            Ok(())
+        });
+        if result.is_err() {
+            // Only our create_new-owned staging file is eligible for cleanup.
+            // A stale staging file from another process is never touched.
+            let _ = std::fs::remove_file(&partial);
+        }
+        return result;
+    }
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        "could not allocate a private saved-state staging file",
+    ))
 }
 
 #[cfg(test)]
@@ -206,5 +265,89 @@ mod tests {
         assert_eq!(old[&id].snapshot(), Some(snapshot(&id.0)));
         assert!(unknown.snapshot(&old).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fsonos-durable-{label}-{}-{}",
+            std::process::id(),
+            NEXT_WRITE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn concurrent_saves_publish_whole_revisions_without_shared_staging() {
+        let dir = scratch("concurrent");
+        let path = dir.join(FEEDS_FILE);
+        let barrier = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            for writer in 0..16 {
+                let path = &path;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    let text = serde_json::json!({
+                        "writer": writer,
+                        "payload": writer.to_string().repeat(8192)
+                    })
+                    .to_string();
+                    barrier.wait();
+                    write(path, &text).unwrap();
+                });
+            }
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let writer = saved["writer"].as_u64().unwrap();
+        assert!(writer < 16);
+        assert_eq!(saved["payload"], writer.to_string().repeat(8192));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn abandoned_legacy_staging_is_neither_reused_nor_deleted() {
+        let dir = scratch("abandoned");
+        let path = dir.join(FEEDS_FILE);
+        let legacy = path.with_extension("json.partial");
+        std::fs::write(&legacy, "another writer's unfinished revision").unwrap();
+        write(&path, "old complete revision").unwrap();
+        write(&path, "new complete revision").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new complete revision");
+        assert_eq!(
+            std::fs::read_to_string(&legacy).unwrap(),
+            "another writer's unfinished revision"
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_publication_cleans_only_its_own_staging_file() {
+        let dir = scratch("failure");
+        let path = dir.join(FEEDS_FILE);
+        std::fs::create_dir(&path).unwrap();
+        let previous = path.join("previous");
+        std::fs::write(&previous, "keep this").unwrap();
+        assert!(write(&path, "replacement").is_err());
+        assert_eq!(std::fs::read_to_string(previous).unwrap(), "keep this");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_household_state_is_private_on_creation_and_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch("private");
+        let path = dir.join(FEEDS_FILE);
+        write(&path, "first").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write(&path, "second").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
