@@ -122,7 +122,8 @@ mod tests {
         let sink = EventSink::start(SocketAddr::new(local, 0)).unwrap();
         let callback = |service: Service| sink.callback_url(service.tag());
         if drop_initial {
-            sim.drop_notifies("Room", Some(NotifyDrop::Next(4))).unwrap();
+            sim.drop_notifies("Room", Some(NotifyDrop::Next(4)))
+                .unwrap();
         }
         let report = rec.subscriptions.sync(&*lan, &wants, callback, started);
         assert_eq!(report.subscribed, wants.len());
