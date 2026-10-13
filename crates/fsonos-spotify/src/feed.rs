@@ -447,7 +447,7 @@ impl QueueFeed {
     /// An owner's Stop keeps the group on its track; a cleared or extended
     /// queue changes its length; a station started isn't on the queue.
     fn ran_dry(&self, playback: &PlayerPlayback) -> bool {
-        let (Some(playing), Some(length)) = (self.playing, self.queue_len) else {
+        let (Some(playing), Some(length)) = (self.playing, self.left_at()) else {
             return false;
         };
         let on_the_queue = playback
@@ -470,14 +470,25 @@ impl QueueFeed {
     /// failed part-way (a top-up cut short, a play refused) is tried again.
     fn dry(&mut self, playback: &PlayerPlayback) -> Option<u32> {
         let stopped = playback.transport == Some(fsonos_types::TransportState::Stopped);
-        let kept = playback.queue_length.is_some() && playback.queue_length == self.queue_len;
+        let kept = playback.queue_length.is_some() && playback.queue_length == self.left_at();
         if !(stopped && kept) {
             self.dry_end = None;
         }
         if self.dry_end.is_none() && self.ran_dry(playback) {
-            self.dry_end = self.queue_len;
+            self.dry_end = self.left_at();
         }
         self.dry_end
+    }
+
+    /// Where the queue ends as the feed left it: its length when the feed
+    /// knows it, or else (a failed add forgets it) the last track the feed
+    /// put there.
+    fn left_at(&self) -> Option<u32> {
+        self.queue_len.or_else(|| {
+            (self.queued.iter().chain(&self.played))
+                .filter_map(QueuedWork::last)
+                .max()
+        })
     }
 
     /// Everything up to `end`, the queue's end when it ran dry, has played:
@@ -505,7 +516,7 @@ impl QueueFeed {
             .any(|w| w.last().is_some_and(|last| last > end))
         {
             let next = end + 1;
-            control::play_queue_from(at.transport, at.households, at.coordinator, next)?;
+            mode::start(at, next)?;
             self.playing = Some(next);
             self.jumped = true;
             self.dry_end = None;
