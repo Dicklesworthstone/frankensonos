@@ -502,6 +502,22 @@ impl DjEngine for SpotifyDj {
         Ok(dj_view::moods_of(&state.moods, now))
     }
 
+    fn until_program_changes(&self, clock: &dyn Clock) -> Option<u64> {
+        let mut state = self.state();
+        state.reload_moods(self.moods_file.as_ref()).ok()?;
+        let now = clock.now();
+        let minutes = state
+            .moods
+            .minutes_until_program_changes(now.weekday(), now.time())?;
+        // Counted from the minute's start; never under the minute a mood
+        // must last.
+        Some(
+            (u64::from(minutes) * 60)
+                .saturating_sub(u64::from(now.second()))
+                .max(60),
+        )
+    }
+
     fn feeds(&self, coordinator: &PlayerId) -> bool {
         self.state
             .lock()

@@ -114,6 +114,15 @@ pub trait DjEngine: Send + Sync {
         clock: &dyn Clock,
     );
 
+    /// Seconds from `clock`'s now until the time-of-day program picks
+    /// another mood: how long a mood that a schedule or a scene starts the
+    /// DJ in lasts, so the program takes over again. `None` (the default):
+    /// it lasts until cleared.
+    fn until_program_changes(&self, clock: &dyn Clock) -> Option<u64> {
+        let _ = clock;
+        None
+    }
+
     /// Record the owner's like or dislike of the work playing in the
     /// group `at.coordinator` leads (its composer and performer too).
     fn feedback(

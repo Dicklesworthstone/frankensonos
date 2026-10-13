@@ -296,6 +296,19 @@ fn seed(s: &mut Scenario) {
     );
 }
 
+/// The mood a schedule starts the DJ in lasts until the time-of-day program
+/// takes over again, not until someone clears it.
+fn check_mood_expires(s: &mut Scenario, api: &str) {
+    let (_, dj) = call(api, "GET", "/zones/Living%20Room/dj", None);
+    s.check(
+        "mood-expires",
+        "http",
+        "the scheduled mood lasts until the program changes, not until cleared",
+        dj["steering"]["source"] == "session" && dj["steering"]["expires_in_secs"].is_u64(),
+        &dj,
+    );
+}
+
 /// The DJ's track in the Living Room, if it plays one.
 fn dj_playing(s: &Scenario) -> bool {
     let uri = get_position_info(&s.lan(), s.ip(ROOM))
@@ -394,6 +407,7 @@ fn a_daily_dj_start_fires_once_a_day_as_the_client_that_added_it() {
         logged,
         format!("{} dj_start actions by cli", cli_dj_starts(&api)),
     );
+    check_mood_expires(&mut s, &api);
 
     let (status, _) = call(&api, "POST", "/dj/stop", Some(&json!({ "zone": ROOM })));
     let stays = throughout(Duration::from_secs(3), || {

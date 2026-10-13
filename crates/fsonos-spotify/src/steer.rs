@@ -984,17 +984,45 @@ impl Moods {
     /// program that covers it), if any.
     #[must_use]
     pub fn program_at(&self, day: Weekday, time: NaiveTime) -> Option<&str> {
-        let minute = u16::try_from(time.hour() * 60 + time.minute()).unwrap_or(0);
+        self.program_at_minute(day, minute_of(time))
+    }
+
+    fn program_at_minute(&self, day: Weekday, minute: u16) -> Option<&str> {
         self.programs
             .iter()
             .find(|p| p.covers(day, minute))
             .map(|p| p.mood.as_str())
     }
 
+    /// Whole minutes from a local day and time until the programs pick
+    /// another mood (or none), looking a week ahead; `None` when they never
+    /// change. A mood a schedule or a scene starts the DJ in lasts until
+    /// then, so the program takes over again.
+    #[must_use]
+    pub fn minutes_until_program_changes(&self, day: Weekday, time: NaiveTime) -> Option<u32> {
+        let now = self.program_at(day, time);
+        let (mut day, mut minute) = (day, minute_of(time));
+        for passed in 1..=7 * 24 * 60 {
+            minute += 1;
+            if minute == 24 * 60 {
+                (day, minute) = (day.succ(), 0);
+            }
+            if self.program_at_minute(day, minute) != now {
+                return Some(passed);
+            }
+        }
+        None
+    }
+
     #[must_use]
     pub fn programs(&self) -> &[Program] {
         &self.programs
     }
+}
+
+/// Minutes after midnight.
+fn minute_of(time: NaiveTime) -> u16 {
+    u16::try_from(time.hour() * 60 + time.minute()).unwrap_or(0)
 }
 
 /// A zone's DJ session as the store keeps it: an optional mood, explicit
@@ -1926,6 +1954,32 @@ periods = ["baroque", "late_romantic"]
         for (day, time, want) in cases {
             assert_eq!(moods.program_at(day, time), want, "{day} {time}");
         }
+    }
+
+    #[test]
+    fn a_program_change_is_found_a_week_ahead() {
+        let moods = Moods::builtin();
+        let cases = [
+            // Weekday mornings are bright until 11:00…
+            (Weekday::Mon, at(7, 30), Some(210)),
+            // …then no program until dinner at 18:00…
+            (Weekday::Mon, at(11, 30), Some(390)),
+            // …and calm from 21:00 to the next morning's program at 06:00.
+            (Weekday::Sat, at(22, 0), Some(480)),
+        ];
+        for (day, time, want) in cases {
+            assert_eq!(
+                moods.minutes_until_program_changes(day, time),
+                want,
+                "{day} {time}"
+            );
+        }
+        let none = Moods::parse("programs = []\n", "moods.toml").unwrap();
+        assert_eq!(
+            none.minutes_until_program_changes(Weekday::Mon, at(7, 0)),
+            None,
+            "no programs: nothing changes"
+        );
     }
 
     #[test]

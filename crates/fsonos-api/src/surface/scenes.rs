@@ -450,7 +450,8 @@ impl SceneHooks for SceneDj<'_> {
                 let steer = DjSteer::Set {
                     mood: Some(mood.to_lowercase()),
                     constraints: SteerConstraints::default(),
-                    for_secs: None,
+                    // Until the time-of-day program takes over again.
+                    for_secs: s.mood_lasts(),
                 };
                 if let Err(refused) = dj.steer(at, store, &steer, &*s.clock) {
                     return Ok(Err(refused));

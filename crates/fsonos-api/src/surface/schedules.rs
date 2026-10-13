@@ -804,16 +804,24 @@ fn schedule_failure(e: &ScheduleError) -> Failure {
     }
 }
 
-/// The `dj_start` request a scheduled DJ start makes.
-fn dj_start(room: &str, mood: Option<&str>) -> DjStartRequest {
+/// The `dj_start` request a scheduled DJ start makes; its mood lasts
+/// `for_secs` (see [`Surface::mood_lasts`]).
+fn dj_start(room: &str, mood: Option<&str>, for_secs: Option<u64>) -> DjStartRequest {
     DjStartRequest {
         zone: room.to_string(),
         mood: mood.map(str::to_string),
-        for_secs: None,
+        for_secs: mood.and(for_secs),
     }
 }
 
 impl Surface {
+    /// How long a mood that a schedule or a scene starts the DJ in lasts:
+    /// until the time-of-day program picks another (the DJ says when), so a
+    /// 07:30 "bright" does not outlast the morning. `None`: until cleared.
+    pub(super) fn mood_lasts(&self) -> Option<u64> {
+        self.dj.as_ref()?.until_program_changes(&*self.clock)
+    }
+
     /// Tell the time by `clock`: when schedules and sleep timers are due,
     /// and every other time the surface reads (`fsonos serve --clock-file`
     /// lets a test move it).
@@ -1345,7 +1353,7 @@ impl Surface {
 
     /// `mood` is one of the DJ's moods (built in, or in moods.toml).
     fn check_mood(&self, client: &Client, room: &str, mood: &str) -> Result<(), Failure> {
-        dj_start(room, Some(mood)).steer()?;
+        dj_start(room, Some(mood), None).steer()?;
         let moods = self.dj_moods(client, None)?.moods;
         if moods.iter().any(|m| m.name.eq_ignore_ascii_case(mood)) {
             return Ok(());
@@ -1595,7 +1603,7 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
     let zone = |room: &str| ZoneRequest { zone: room.into() };
     match &schedule.action {
         ScheduleAction::DjStart { room, mood } => {
-            let req = dj_start(room, mood.as_deref());
+            let req = dj_start(room, mood.as_deref(), surface.mood_lasts());
             surface
                 .control(&client, "dj_start", |rooms| {
                     plan::plan_dj_start(rooms, &req)
