@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use fsonos_types::Track;
 use serde::{Deserialize, Serialize};
 
-use self::coverage::Page;
+pub(crate) use self::coverage::Page;
 use crate::SpotifyError;
 use crate::classical::normalize;
 use crate::client::{Album, Endpoints, SavedAlbum, SavedTrack, SimplifiedTrack};

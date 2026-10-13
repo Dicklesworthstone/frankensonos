@@ -25,15 +25,19 @@ use fsonos_types::Track;
 
 use crate::SpotifyError;
 use crate::classical::{ClassicalTrack, estimate_energy, normalize, split_title};
-use crate::client::{Paging, SimplifiedTrack, renderable, secs};
+use crate::client::{SimplifiedTrack, renderable, secs};
 use crate::dj::DjConfig;
-use crate::library::Origin;
+use crate::library::{Origin, Page};
 use crate::session::Session;
 use crate::works::{Work, build, movement_number};
 
 /// How long an album whose track list was missing or unplayable is left
 /// alone before it is read again, in seconds (a week).
 pub const MISS_RETRY_SECS: i64 = 7 * 86_400;
+
+// Album reads must remain finite even when a server invents new page URLs.
+const MAX_ALBUM_PAGES: usize = 2_000;
+const MAX_ALBUM_ENTRIES: usize = 100_000;
 
 /// What [`complete_works`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -212,6 +216,13 @@ async fn album_list<S: Store + ?Sized>(
             report.halted = Some(e.to_string());
             None
         }
+        Err(e @ SpotifyError::Decode(_)) => {
+            // A truncated or contradictory page is not evidence that this
+            // album is unavailable. Keep it uncached and retry next sync,
+            // rather than hiding its missing movements for a week.
+            report.fail(album_uri, e);
+            None
+        }
         Err(e) => {
             report.fail(album_uri, e);
             misses.record(album_uri, now);
@@ -252,8 +263,10 @@ pub fn complete_from_cache<S: Store + ?Sized>(
 }
 
 /// An album's whole track list from the Web API, every page, in album
-/// order. Tracks Sonos can't render (unplayable in the owner's market) are
-/// left out.
+/// order. A known total survives later pages that omit it, and a missing
+/// continuation is recovered from the next raw position. Nothing is returned
+/// for caching until every page validates. Tracks Sonos can't render are left
+/// out only after their raw positions have counted toward coverage.
 pub async fn fetch_album_tracks(
     session: &mut Session,
     cx: &Cx,
@@ -261,14 +274,30 @@ pub async fn fetch_album_tracks(
 ) -> Result<Vec<AlbumTrack>, SpotifyError> {
     let id = album_id(album_uri)
         .ok_or_else(|| SpotifyError::Decode(format!("not a Spotify album URI: {album_uri}")))?;
-    let mut next = Some(session.endpoints().album_tracks(id, 0));
+    let endpoints = session.endpoints().clone();
+    let mut next = Some(endpoints.album_tracks(id, 0));
     let mut requested = HashSet::new();
+    let mut total = None;
+    let mut entries = 0usize;
     let mut tracks = Vec::new();
     while let Some(url) = next.take() {
+        if requested.len() >= MAX_ALBUM_PAGES {
+            return Err(SpotifyError::Decode(
+                "album read exceeded its page budget".into(),
+            ));
+        }
         if !requested.insert(url.clone()) {
             return Err(SpotifyError::Decode(format!("paging loop at {url}")));
         }
-        let page = Paging::<SimplifiedTrack>::parse(&session.get_brief(cx, &url).await?)?;
+        let body = session.get_brief(cx, &url).await?;
+        let page = Page::<SimplifiedTrack>::read(&body, &url, &endpoints, total, |offset| {
+            endpoints.album_tracks(id, offset)
+        })?;
+        entries = entries
+            .checked_add(page.items.len())
+            .filter(|&count| count <= MAX_ALBUM_ENTRIES)
+            .ok_or_else(|| SpotifyError::Decode("album read exceeded its entry budget".into()))?;
+        total = page.coverage.total;
         tracks.extend(page.items.iter().filter_map(album_track));
         next = page.next;
     }
@@ -392,6 +421,8 @@ fn filled_in(template: &ClassicalTrack, t: &AlbumTrack) -> ClassicalTrack {
 
 #[cfg(test)]
 mod tests {
+    mod paging;
+
     use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -401,7 +432,7 @@ mod tests {
 
     use super::*;
     use crate::classical::CandidatePool;
-    use crate::client::{CachedToken, SCOPE, TokenCache};
+    use crate::client::{CachedToken, Paging, SCOPE, TokenCache};
     use crate::fake_spotify::{FakeSpotify, config, runtime, scratch_dir};
     use crate::library::LibraryItem;
     use crate::works::{Completeness, group_works, movement_number};

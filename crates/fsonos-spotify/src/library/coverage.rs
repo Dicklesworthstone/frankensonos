@@ -12,24 +12,24 @@ use crate::client::Endpoints;
 /// Unlike the general API paging DTO, retain absent counts as unknown, not
 /// zero. Coverage counts raw entries, including unavailable tracks.
 #[derive(Deserialize)]
-pub(super) struct Page<T> {
-    pub(super) items: Vec<T>,
+pub(crate) struct Page<T> {
+    pub(crate) items: Vec<T>,
     #[serde(default)]
-    pub(super) next: Option<String>,
+    pub(crate) next: Option<String>,
     #[serde(flatten)]
-    pub(super) coverage: Coverage,
+    pub(crate) coverage: Coverage,
 }
 
 #[derive(Deserialize)]
-pub(super) struct Coverage {
+pub(crate) struct Coverage {
     #[serde(default)]
-    pub(super) offset: Option<u32>,
+    pub(crate) offset: Option<u32>,
     #[serde(default)]
-    pub(super) total: Option<u32>,
+    pub(crate) total: Option<u32>,
 }
 
 impl<T: DeserializeOwned> Page<T> {
-    pub(super) fn read(
+    pub(crate) fn read(
         body: &[u8],
         current: &str,
         endpoints: &Endpoints,
@@ -54,7 +54,7 @@ impl Coverage {
     /// Later pages may omit a total, but cannot erase or contradict one
     /// already advertised for this collection. A changing library is retried
     /// as a new read rather than published as a complete partial snapshot.
-    pub(super) fn inherit(&mut self, expected: Option<u32>) -> Result<(), SpotifyError> {
+    pub(crate) fn inherit(&mut self, expected: Option<u32>) -> Result<(), SpotifyError> {
         if let (Some(expected), Some(reported)) = (expected, self.total)
             && expected != reported
         {
@@ -66,7 +66,7 @@ impl Coverage {
         Ok(())
     }
 
-    pub(super) fn next(
+    pub(crate) fn next(
         &self,
         raw_count: usize,
         current: &str,
