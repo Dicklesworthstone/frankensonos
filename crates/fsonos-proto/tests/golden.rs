@@ -87,6 +87,16 @@ fn starting_index(call: &Call) -> u32 {
     call.body[start..start + end].parse().unwrap()
 }
 
+/// Make independent captures stand for pages of one synthetic revision.
+/// The original fixture bytes and their parser assertions stay unchanged.
+fn at_revision(body: &str, revision: u32) -> String {
+    let previous = content::parse_browse_response(body).unwrap().update_id;
+    body.replace(
+        &format!("<UpdateID>{previous}</UpdateID>"),
+        &format!("<UpdateID>{revision}</UpdateID>"),
+    )
+}
+
 #[test]
 fn s1_topology_pairs_groups_and_bridges() {
     let state = zgs(ZGS_S1);
@@ -389,10 +399,10 @@ fn browse_through_transport_and_paging() {
     );
     drop(calls);
 
-    // 3 of 10 returned, then a page with no objects that still claims 10
-    // matches (the queue shrank mid-walk): browse_all asks for the next page
-    // and then stops instead of looping forever.
-    let stale_empty = QUEUE_EMPTY.replace(
+    // A stalled page that still claims ten matches at the same revision is
+    // not a complete queue. Reject it rather than publish the first three.
+    let revision = content::parse_browse_response(QUEUE_S1).unwrap().update_id;
+    let stale_empty = at_revision(QUEUE_EMPTY, revision).replace(
         "<TotalMatches>0</TotalMatches>",
         "<TotalMatches>10</TotalMatches>",
     );
@@ -406,18 +416,20 @@ fn browse_through_transport_and_paging() {
             stale_empty.clone()
         }
     });
-    let all = content::browse_all(&t, host(), content::QUEUE).unwrap();
-    assert_eq!(all.len(), 3);
+    assert!(matches!(
+        content::browse_all(&t, host(), content::QUEUE),
+        Err(ProtoError::Malformed(detail)) if detail.contains("no progress")
+    ));
     let starts: Vec<_> = t.calls.borrow().iter().map(starting_index).collect();
     assert_eq!(starts, [0, 3]);
 
-    // Pages are concatenated in order until TotalMatches is reached.
+    // Captures from different players model pages of one synthetic revision.
     let t = Replay::new(|call| match starting_index(call) {
         0 => QUEUE_S1.replace(
             "<TotalMatches>10</TotalMatches>",
             "<TotalMatches>6</TotalMatches>",
         ),
-        3 => QUEUE_S2.replace(
+        3 => at_revision(QUEUE_S2, revision).replace(
             "<TotalMatches>8</TotalMatches>",
             "<TotalMatches>6</TotalMatches>",
         ),
@@ -445,6 +457,36 @@ fn browse_through_transport_and_paging() {
             .body
             .contains("<RequestedCount>3</RequestedCount>")
     );
+}
+
+#[test]
+fn a_captured_queue_that_shrinks_is_read_again_without_its_old_prefix() {
+    let revision = content::parse_browse_response(QUEUE_S1).unwrap().update_id;
+    let empty = at_revision(QUEUE_EMPTY, revision.wrapping_add(1));
+    let requests = Cell::new(0);
+    let t = Replay::new(|call| {
+        let request = requests.get();
+        requests.set(request + 1);
+        match request {
+            0 => {
+                assert_eq!(starting_index(call), 0);
+                QUEUE_S1.to_string()
+            }
+            1 => {
+                assert_eq!(starting_index(call), 3);
+                empty.clone()
+            }
+            2 => {
+                assert_eq!(starting_index(call), 0);
+                empty.clone()
+            }
+            _ => panic!("browse_all did not finish after a stable empty response"),
+        }
+    });
+    let snapshot = content::browse_snapshot(&t, host(), content::QUEUE).unwrap();
+    assert!(snapshot.objects.is_empty());
+    assert_eq!(snapshot.update_id, revision.wrapping_add(1));
+    assert_eq!(requests.get(), 3);
 }
 
 #[test]
