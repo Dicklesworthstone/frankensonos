@@ -44,11 +44,13 @@ use fsonos_types::PlayerId;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Instant;
 
 use crate::dj_view::{self, steer_failure, store_failure};
 
 pub(crate) mod feedback;
 pub(crate) mod prefs;
+mod retry;
 pub(crate) mod saved;
 pub(crate) mod sync;
 
@@ -149,6 +151,8 @@ impl SpotifyDj {
 #[derive(Default)]
 struct State {
     feeds: HashMap<PlayerId, QueueFeed>,
+    /// Failed automatic top-ups, bounded independently for each group.
+    refill_retries: HashMap<PlayerId, retry::Retry>,
     /// What the DJ plans from, as of the last start or skip.
     pool: WorkPool,
     feedback: Option<FeedbackModel>,
@@ -428,12 +432,15 @@ impl SpotifyDj {
                 Ok(sent(format!("skipped to {}", describe(work))))
             }
             DjAction::Stop => {
-                let mut feed = state
+                let feed = state
                     .feeds
-                    .remove(at.coordinator)
-                    .filter(QueueFeed::is_active)
+                    .get_mut(at.coordinator)
+                    .filter(|feed| feed.is_active())
                     .ok_or_else(|| no_session(&room))?;
+                // A failed stop must remain controllable and recoverable,
+                // including in the saved feeds after a daemon restart.
                 feed.stop(&speakers).map_err(failure)?;
+                state.feeds.remove(at.coordinator);
                 state.listening.remove(at.coordinator);
                 Ok(sent(format!("the DJ stopped in {room}'s group")))
             }
@@ -450,6 +457,8 @@ impl DjEngine for SpotifyDj {
         clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
         let mut state = self.state();
+        // Explicit commands are never held behind automatic retry backoff.
+        state.refill_retries.remove(at.coordinator);
         let done = self.carry_out(&mut state, at, store, action, clock);
         // Even a failed start can leave a feed running, part-queued.
         self.save(&mut state);
@@ -465,7 +474,11 @@ impl DjEngine for SpotifyDj {
     ) -> Result<OutcomeDto, Failure> {
         let mut state = self.state();
         state.reload_moods(self.moods_file.as_ref())?;
-        steer(&state, at, store, steer_by, clock)
+        let done = steer(&state, at, store, steer_by, clock);
+        if done.is_ok() {
+            state.refill_retries.remove(at.coordinator);
+        }
+        done
     }
 
     fn status(
@@ -534,6 +547,8 @@ impl DjEngine for SpotifyDj {
 
     fn moved(&self, from: &PlayerId, to: &PlayerId) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.refill_retries.remove(from);
+        state.refill_retries.remove(to);
         let State {
             feeds,
             listening,
@@ -568,6 +583,16 @@ impl DjEngine for SpotifyDj {
         // A library refresh landed (plan from what it found from here), or
         // feeds taken up after a restart plan for the first time.
         let fresh = self.library.as_ref().is_some_and(|l| l.take_fresh());
+        if fresh {
+            state.refill_retries.clear();
+        }
+        if state
+            .refill_retries
+            .get(at.coordinator)
+            .is_some_and(|retry| !retry.ready(playback, Instant::now()))
+        {
+            return;
+        }
         if (fresh || !state.planned)
             && let Err(f) = state.reload(store, self.moods_file.as_ref(), clock.now().timestamp())
         {
@@ -586,6 +611,7 @@ impl DjEngine for SpotifyDj {
             });
         let State {
             feeds,
+            refill_retries,
             pool,
             feedback,
             listening,
@@ -600,10 +626,24 @@ impl DjEngine for SpotifyDj {
             store,
             playback,
         ) {
-            Ok(0) => {}
-            Ok(queued) => tracing::info!(queued, "the DJ topped up the queue"),
+            Ok(queued) => {
+                refill_retries.remove(at.coordinator);
+                if queued > 0 {
+                    tracing::info!(queued, "the DJ topped up the queue");
+                }
+            }
             Err(e) => {
-                tracing::warn!(error = %e, "the DJ could not top up; retrying on the next change");
+                let retry = retry::Retry::failed(
+                    refill_retries.get(at.coordinator),
+                    playback,
+                    Instant::now(),
+                );
+                tracing::warn!(
+                    error = %e,
+                    retry_in_s = retry.delay().as_secs(),
+                    "the DJ could not top up; retrying with backoff"
+                );
+                refill_retries.insert(at.coordinator.clone(), retry);
             }
         }
         if let Some(error) = feed.take_trim_error() {
@@ -624,6 +664,7 @@ impl DjEngine for SpotifyDj {
         if !feed.is_active() {
             // The owner cleared or replaced the queue: the DJ steps aside.
             feeds.remove(at.coordinator);
+            refill_retries.remove(at.coordinator);
             listening.remove(at.coordinator);
         }
         self.save(&mut state);
@@ -651,7 +692,12 @@ impl DjEngine for SpotifyDj {
     }
 
     fn prefer(&self, change: &PrefChange) -> Result<PreferredDto, Failure> {
-        prefs::change(&mut self.state(), self.moods_file.as_ref(), change)
+        let mut state = self.state();
+        let done = prefs::change(&mut state, self.moods_file.as_ref(), change);
+        if done.is_ok() {
+            state.refill_retries.clear();
+        }
+        done
     }
 
     fn sync_library(&self) -> Result<LibrarySyncDto, Failure> {
