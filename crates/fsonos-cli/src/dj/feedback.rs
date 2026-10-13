@@ -16,20 +16,17 @@ use fsonos_core::store::{Store, StoreError};
 use fsonos_spotify::dj::WorkPool;
 use fsonos_spotify::feed::QueueFeed;
 use fsonos_spotify::feedback::{
-    EARLY_SKIP_SECS, FeedbackModel, FeedbackSignal, Signal, StoreFeedback, listen_signal,
+    EARLY_SKIP_SECS, FeedbackModel, FeedbackSignal, Signal, StoreFeedback,
 };
 use fsonos_spotify::works::Work;
 use fsonos_types::TransportState;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use super::{State, room};
 use crate::config::GlobalArgs;
 use crate::dj_view::store_failure;
 use crate::remote::Daemon;
-
-/// How far short of its length a movement may end and still count as heard
-/// to the end (events arrive a moment late).
-const END_SLACK_SECS: i64 = 5;
 
 /// The `spotify:track:<id>` a speaker's track URI plays, if it plays one.
 #[must_use]
@@ -59,43 +56,68 @@ pub struct Movement {
 /// One group's listening, for the signals playback gives on its own.
 #[derive(Debug, Default)]
 pub struct Listening {
-    /// The movement playing, and when it started (unix seconds).
-    current: Option<(Movement, i64)>,
+    /// The movement and accumulated seconds observed in Playing state.
+    current: Option<(Movement, u64)>,
+    observed_at: Option<i64>,
+    advancing: bool,
+    /// Production observations use elapsed monotonic time, not the wall clock
+    /// used to timestamp durable feedback.
+    epoch: Option<Instant>,
 }
 
 impl Listening {
-    /// Fold the group's playback at `now` (unix seconds): `playing` is the
-    /// DJ's movement now playing under `transport` (`None`: nothing of the
-    /// DJ's). When the movement heard until now ended with a signal, the
-    /// work it belongs to and that signal.
+    fn observe(
+        &mut self,
+        transport: Option<TransportState>,
+        playing: Option<Movement>,
+    ) -> Option<(String, Signal)> {
+        let elapsed = self.epoch.get_or_insert_with(Instant::now).elapsed().as_secs();
+        self.on_change(i64::try_from(elapsed).unwrap_or(i64::MAX), transport, playing)
+    }
+
+    /// Fold playback at `now`, seconds on a monotonic observation clock.
+    /// Paused, transitioning and unknown intervals do not count as listening.
+    /// A terminal change returns the ended movement's work and its signal.
     pub fn on_change(
         &mut self,
         now: i64,
         transport: Option<TransportState>,
         playing: Option<Movement>,
     ) -> Option<(String, Signal)> {
-        // A pause holds the movement; a transition settles in a moment.
+        if self.observed_at.is_some_and(|at| now < at) {
+            return None;
+        }
+        let elapsed = self.observed_at.replace(now).map_or(0, |at| now.abs_diff(at));
+        if self.advancing
+            && let Some((_, heard)) = &mut self.current
+        {
+            *heard = heard.saturating_add(elapsed);
+        }
+        self.advancing = transport == Some(TransportState::Playing);
         let playing = match transport {
             Some(TransportState::Playing) => playing,
             Some(TransportState::Stopped) => None,
             _ => return None,
         };
-        if let (Some((heard, _)), Some(next)) = (&self.current, &playing)
+        if let (Some((heard, _)), Some(next)) = (&mut self.current, &playing)
             && heard.position == next.position
             && heard.work_key == next.work_key
         {
+            // Initial events can lack the duration; a later same-track event
+            // may supply it without restarting the listening interval.
+            heard.duration_secs = next.duration_secs.or(heard.duration_secs);
             return None;
         }
-        let (movement, started) = std::mem::replace(&mut self.current, playing.map(|m| (m, now)))?;
-        let heard = now - started;
-        let skipped = movement.duration_secs.map_or(heard < EARLY_SKIP_SECS, |d| {
-            heard + END_SLACK_SECS < i64::from(d)
-        });
-        match listen_signal(started, now, movement.duration_secs, skipped)? {
-            // A whole work heard: its last movement ended.
-            Signal::FullListen if !movement.last => None,
-            signal => Some((movement.work_key, signal)),
+        let (movement, heard) = std::mem::replace(&mut self.current, playing.map(|m| (m, 0)))?;
+        let duration = movement.duration_secs.filter(|&seconds| seconds > 0);
+        let most = duration.is_some_and(|d| heard.saturating_mul(10) >= u64::from(d) * 9);
+        if most {
+            return movement.last.then_some((movement.work_key, Signal::FullListen));
         }
+        // A missing/zero duration cannot prove completion. Short known tracks
+        // heard in full were handled above, before the early-skip threshold.
+        (heard < EARLY_SKIP_SECS.unsigned_abs())
+            .then_some((movement.work_key, Signal::EarlySkip))
     }
 }
 
@@ -123,7 +145,7 @@ pub(super) fn implicit(
             duration_secs: playback.duration_secs,
         })
     });
-    let Some((key, signal)) = listening.on_change(now, playback.transport, playing) else {
+    let Some((key, signal)) = listening.observe(playback.transport, playing) else {
         return false;
     };
     let Some(work) = pool.works().iter().find(|w| w.work_key == key) else {
@@ -222,6 +244,8 @@ pub fn run(global: &GlobalArgs, zone: Option<&str>, feedback: DjFeedback) -> any
 
 #[cfg(test)]
 mod tests {
+    mod listening;
+
     use super::*;
 
     const PLAYING: Option<TransportState> = Some(TransportState::Playing);
@@ -296,11 +320,15 @@ mod tests {
             None
         );
         assert_eq!(
-            l.on_change(362, PLAYING, Some(movement(3, "b", false))),
+            l.on_change(250, PLAYING, Some(movement(2, "a", true))),
+            None
+        );
+        assert_eq!(
+            l.on_change(412, PLAYING, Some(movement(3, "b", false))),
             Some(("a".into(), Signal::FullListen))
         );
         // The queue runs out: the last movement ended on its own.
-        assert_eq!(l.on_change(542, Some(TransportState::Stopped), None), None);
+        assert_eq!(l.on_change(592, Some(TransportState::Stopped), None), None);
         let mut end = Listening::default();
         end.on_change(0, PLAYING, Some(movement(5, "c", true)));
         assert_eq!(
@@ -320,7 +348,7 @@ mod tests {
         // Something that isn't the DJ's plays: nothing to note.
         assert_eq!(l.on_change(20, PLAYING, None), None);
         assert_eq!(l.on_change(25, PLAYING, None), None);
-        // Without a known length, a minute in is not a skip.
+        // Without a known length, a minute in proves neither a skip nor completion.
         let mut unknown = Listening::default();
         unknown.on_change(
             0,
@@ -332,7 +360,7 @@ mod tests {
         );
         assert_eq!(
             unknown.on_change(60, PLAYING, Some(movement(2, "e", false))),
-            Some(("d".into(), Signal::FullListen))
+            None
         );
     }
 }
