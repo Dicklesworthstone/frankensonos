@@ -15,13 +15,15 @@ use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_spotify::feed::{FeedSnapshot, QueueFeed};
 use fsonos_types::{HouseholdId, PlayerId};
-use std::collections::{HashMap, HashSet};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 const RETRY: Duration = Duration::from_secs(30);
 
-#[derive(Clone)]
-struct Origin {
+/// Durable evidence of where a feed ran, not authority to adopt a queue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Origin {
     household: Option<HouseholdId>,
     members: Vec<PlayerId>,
 }
@@ -38,16 +40,57 @@ impl Tracker {
     pub(super) fn remember(&mut self, households: &[HouseholdState], from: &PlayerId) {
         for household in households {
             if let Some(group) = household.groups.iter().find(|g| g.coordinator == *from) {
+                let mut members = group.members.clone();
+                members.push(from.clone());
+                members.sort_by(|a, b| a.0.cmp(&b.0));
+                members.dedup();
                 self.origins.insert(
                     from.clone(),
                     Origin {
                         household: household.id.clone(),
-                        members: group.members.clone(),
+                        members,
                     },
                 );
                 self.attempts.remove(from);
                 return;
             }
+        }
+    }
+
+    /// Persist only evidence attached to a running feed, in stable order.
+    pub(super) fn snapshot(
+        &self,
+        feeds: &HashMap<PlayerId, QueueFeed>,
+    ) -> BTreeMap<String, Origin> {
+        self.origins
+            .iter()
+            .filter(|(id, _)| feeds.get(*id).is_some_and(QueueFeed::is_active))
+            .map(|(id, origin)| (id.0.clone(), origin.clone()))
+            .collect()
+    }
+
+    /// Old files have no evidence; stale or unrelated records are ignored.
+    /// Deadlines belong to this process and always start afresh on restart.
+    pub(super) fn restore(
+        groups: BTreeMap<String, Origin>,
+        feeds: &HashMap<PlayerId, QueueFeed>,
+    ) -> Self {
+        let mut origins = HashMap::new();
+        for (zone, mut origin) in groups {
+            let id = PlayerId(zone);
+            if !feeds.get(&id).is_some_and(QueueFeed::is_active)
+                || !origin.members.contains(&id)
+                || origin.members.iter().any(|member| member.0.is_empty())
+            {
+                continue;
+            }
+            origin.members.sort_by(|a, b| a.0.cmp(&b.0));
+            origin.members.dedup();
+            origins.insert(id, origin);
+        }
+        Self {
+            origins,
+            attempts: HashMap::new(),
         }
     }
 
@@ -72,8 +115,8 @@ impl Tracker {
             for group in &household.groups {
                 let related = match origin {
                     Some(origin) => origin.members.contains(&group.coordinator),
-                    // A restored feed has no previous live topology yet.
-                    // Only its own current group's coordinator is eligible.
+                    // Legacy files have no previous live topology yet.
+                    // Only the source's own current group is eligible.
                     None => group.members.contains(from),
                 };
                 if related {
@@ -141,7 +184,6 @@ impl SpotifyDj {
                     .map(|to| (from, to))
             })
             .collect();
-        let mut changed = false;
         for (from, to) in &candidates {
             if state.held.contains(from)
                 || state.held.contains(to)
@@ -197,11 +239,11 @@ impl SpotifyDj {
             state.handover.attempts.remove(from);
             state.handover.remember(&snapshot.households, to);
             tracing::info!(from = %from.0, to = %to.0, "DJ followed the inherited queue");
-            changed = true;
         }
-        if changed {
-            self.save(&mut state);
-        }
+        // Group membership can change without any playback event. Persist it
+        // with the feeds, and retry a failed write on the next maintenance
+        // pass. save skips disk I/O when the encoded state is unchanged.
+        self.save(&mut state);
     }
 }
 
@@ -260,7 +302,10 @@ fn matches_queue(
         let Some(position) = movement.position.filter(|_| movement.added) else {
             continue;
         };
-        let Some(index) = position.checked_sub(1).and_then(|p| usize::try_from(p).ok()) else {
+        let Some(index) = position
+            .checked_sub(1)
+            .and_then(|p| usize::try_from(p).ok())
+        else {
             return false;
         };
         if !positions.insert(position)
@@ -279,13 +324,14 @@ mod tests {
     use fsonos_api::dj::DjEngine;
     use fsonos_core::playback::EventSource;
     use fsonos_core::store::MemStore;
-    use fsonos_proto::control as control;
+    use fsonos_proto::control;
     use fsonos_proto::didl::{spotify_queue_uri, spotify_track_didl};
     use fsonos_proto::gena::Notify;
     use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
     use fsonos_spotify::dj::{DjConfig, PickReason};
     use fsonos_spotify::feed::{Movement, QueuedWork};
     use fsonos_spotify::steer::{DjConstraints, DjSession};
+    use fsonos_types::ZoneGroup;
 
     const TRACKS: [&str; 2] = [
         "spotify:track:0000000000000000000001",
@@ -326,9 +372,8 @@ mod tests {
     fn snapshot(sim: &SimHandle) -> Snapshot {
         let mut household = HouseholdState::default();
         let lan = sim.lan();
-        household.apply_topology(
-            &get_zone_group_state(&lan, sim.player("Office").unwrap().ip).unwrap(),
-        );
+        household
+            .apply_topology(&get_zone_group_state(&lan, sim.player("Office").unwrap().ip).unwrap());
         let mut snapshot = Snapshot {
             households: vec![household],
             ..Snapshot::default()
@@ -347,20 +392,31 @@ mod tests {
         for group in &snapshot.households[0].groups {
             snapshot
                 .playback
-                .apply(&group.coordinator, EventSource::AvTransport, &event, Instant::now())
+                .apply(
+                    &group.coordinator,
+                    EventSource::AvTransport,
+                    &event,
+                    Instant::now(),
+                )
                 .unwrap();
         }
         snapshot
     }
 
-    fn fixture() -> (SimHandle, SpotifyDj, MemStore, PlayerId, PlayerId) {
-        let sim = SimHousehold::builder()
-            .s2([
+    fn fixture(generation: u8) -> (SimHandle, SpotifyDj, MemStore, PlayerId, PlayerId) {
+        let builder = SimHousehold::builder();
+        let builder = if generation == 1 {
+            builder.s1([
+                SimPlayerSpec::new("Den", SimModel::Play5Gen1),
+                SimPlayerSpec::new("Office", SimModel::Play5Gen1),
+            ])
+        } else {
+            builder.s2([
                 SimPlayerSpec::new("Den", SimModel::One),
                 SimPlayerSpec::new("Office", SimModel::One),
             ])
-            .spawn()
-            .unwrap();
+        };
+        let sim = builder.spawn().unwrap();
         let lan = sim.lan();
         let from = PlayerId(sim.player("Den").unwrap().uuid.clone());
         let to = PlayerId(sim.player("Office").unwrap().uuid.clone());
@@ -394,40 +450,48 @@ mod tests {
             constraints: DjConstraints::default(),
             expires_at: Some(10_000),
         };
-        store.save_dj_session(&steering.to_store().unwrap()).unwrap();
+        store
+            .save_dj_session(&steering.to_store().unwrap())
+            .unwrap();
         dj.on_topology(&lan, &before, &mut store);
         (sim, dj, store, from, to)
     }
 
     #[test]
     fn reelection_moves_the_feed_steering_and_history_without_speaker_writes() {
-        let (sim, dj, mut store, from, to) = fixture();
-        sim.reelect_coordinator("Den").unwrap();
-        let after = snapshot(&sim);
-        let before = sim.soap_log().len();
-        dj.on_topology(&sim.lan(), &after, &mut store);
-        assert!(!dj.feeds(&from));
-        assert!(dj.feeds(&to));
-        let adopted = dj.state().feeds[&to].snapshot().unwrap();
-        assert_eq!(adopted.earlier, vec![from.0.clone()]);
-        assert_eq!(adopted.queued, saved(&from).queued);
-        assert_eq!(adopted.recorded, saved(&from).recorded);
-        assert!(store.dj_session(&from.0).unwrap().is_none());
-        assert!(store.dj_session(&to.0).unwrap().is_some());
-        assert!(sim.soap_log()[before..].iter().all(|entry| {
-            matches!(
-                entry.action.as_str(),
-                "Browse" | "GetPositionInfo" | "GetMediaInfo" | "GetZoneGroupState"
-            )
-        }));
-        let reads = sim.soap_log().len();
-        dj.on_topology(&sim.lan(), &after, &mut store);
-        assert_eq!(sim.soap_log().len(), reads, "settled ownership needs no reads");
+        for generation in [1, 2] {
+            let (sim, dj, mut store, from, to) = fixture(generation);
+            sim.reelect_coordinator("Den").unwrap();
+            let after = snapshot(&sim);
+            let before = sim.soap_log().len();
+            dj.on_topology(&sim.lan(), &after, &mut store);
+            assert!(!dj.feeds(&from));
+            assert!(dj.feeds(&to));
+            let adopted = dj.state().feeds[&to].snapshot().unwrap();
+            assert_eq!(adopted.earlier, vec![from.0.clone()]);
+            assert_eq!(adopted.queued, saved(&from).queued);
+            assert_eq!(adopted.recorded, saved(&from).recorded);
+            assert!(store.dj_session(&from.0).unwrap().is_none());
+            assert!(store.dj_session(&to.0).unwrap().is_some());
+            assert!(sim.soap_log()[before..].iter().all(|entry| {
+                matches!(
+                    entry.action.as_str(),
+                    "Browse" | "GetPositionInfo" | "GetMediaInfo" | "GetZoneGroupState"
+                )
+            }));
+            let reads = sim.soap_log().len();
+            dj.on_topology(&sim.lan(), &after, &mut store);
+            assert_eq!(
+                sim.soap_log().len(),
+                reads,
+                "settled ownership needs no reads"
+            );
+        }
     }
 
     #[test]
-    fn vanished_source_can_follow_its_remembered_group_but_not_a_replaced_queue() {
-        let (sim, dj, mut store, from, to) = fixture();
+    fn vanished_source_does_not_adopt_a_replaced_queue() {
+        let (sim, dj, mut store, from, to) = fixture(2);
         sim.reelect_coordinator("Den").unwrap();
         sim.set_offline("Den", true).unwrap();
         let after = snapshot(&sim);
@@ -442,7 +506,7 @@ mod tests {
 
     #[test]
     fn held_moves_and_existing_destination_feeds_are_never_overwritten() {
-        let (sim, dj, mut store, from, to) = fixture();
+        let (sim, dj, mut store, from, to) = fixture(2);
         sim.reelect_coordinator("Den").unwrap();
         let after = snapshot(&sim);
         dj.moving(&from);
@@ -461,7 +525,7 @@ mod tests {
 
     #[test]
     fn failed_successor_reads_retry_without_losing_the_source_feed() {
-        let (sim, dj, mut store, from, to) = fixture();
+        let (sim, dj, mut store, from, to) = fixture(2);
         sim.reelect_coordinator("Den").unwrap();
         let after = snapshot(&sim);
         let now = Instant::now();
@@ -493,5 +557,71 @@ mod tests {
         let mut empty = expected;
         empty.queued.clear();
         assert!(!matches_queue(&empty, &shifted, 2, TRACKS[0]));
+    }
+
+    #[test]
+    fn restart_recovers_after_the_original_coordinator_has_disappeared() {
+        for generation in [1, 2] {
+            let (sim, mut dj, mut store, from, to) = fixture(generation);
+            let dir = std::env::temp_dir().join(format!(
+                "fsonos-handover-restart-{}-{generation}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(crate::dj::saved::FEEDS_FILE);
+            dj.feeds_file = Some(path.clone());
+            // Persist the group before the daemon stops. No playback change
+            // is needed for a topology-only membership update to be saved.
+            dj.on_topology(&sim.lan(), &snapshot(&sim), &mut store);
+            assert!(path.exists());
+            drop(dj);
+            sim.reelect_coordinator("Den").unwrap();
+            sim.set_offline("Den", true).unwrap();
+            let after = snapshot(&sim);
+            assert!(after.households.iter().all(|h| h.player(&from).is_none()));
+            let restarted = SpotifyDj::new(None).with_saved_feeds(Some(path.clone()));
+            assert!(restarted.feeds(&from));
+            restarted.on_topology(&sim.lan(), &after, &mut store);
+            assert!(!restarted.feeds(&from));
+            assert!(restarted.feeds(&to));
+            assert!(store.dj_session(&to.0).unwrap().is_some());
+            drop(restarted);
+            let again = SpotifyDj::new(None).with_saved_feeds(Some(path));
+            assert!(!again.feeds(&from));
+            assert!(again.feeds(&to), "the adopted feed was saved");
+            drop(again);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn legacy_missing_origin_and_ambiguous_splits_never_guess_a_successor() {
+        let (sim, dj, mut store, from, to) = fixture(2);
+        sim.reelect_coordinator("Den").unwrap();
+        sim.set_offline("Den", true).unwrap();
+        let mut after = snapshot(&sim);
+        let (origins, feeds) = {
+            let state = dj.state();
+            (state.handover.snapshot(&state.feeds), state.feeds.clone())
+        };
+        dj.state().handover = Tracker::default();
+        let reads = sim.soap_log().len();
+        dj.on_topology(&sim.lan(), &after, &mut store);
+        assert_eq!(sim.soap_log().len(), reads);
+        assert!(dj.feeds(&from) && !dj.feeds(&to));
+
+        let mut tracker = Tracker::restore(origins, &feeds);
+        let other = PlayerId("test-split-successor".into());
+        tracker
+            .origins
+            .get_mut(&from)
+            .unwrap()
+            .members
+            .push(other.clone());
+        after.households[0].groups.push(ZoneGroup {
+            coordinator: other.clone(),
+            members: vec![other],
+        });
+        assert!(tracker.replacement(&after, &from).is_none());
     }
 }

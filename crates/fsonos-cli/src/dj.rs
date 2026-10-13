@@ -89,7 +89,7 @@ impl SpotifyDj {
     }
 
     /// Keep the running feeds in `path` across restarts ([`saved`]),
-    /// taking up the ones it holds now.
+    /// taking up the feeds and their last known groups from one file revision.
     #[must_use]
     pub fn with_saved_feeds(mut self, path: Option<PathBuf>) -> Self {
         if let Some(path) = &path {
@@ -97,8 +97,10 @@ impl SpotifyDj {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
             let mut state = self.state();
-            state.feeds = saved::load(path, seed);
-            state.saved = saved::encode(&state.feeds);
+            let (feeds, handover) = saved::load(path, seed);
+            state.feeds = feeds;
+            state.handover = handover;
+            state.saved = saved::encode(&state.feeds, &state.handover);
             if !state.feeds.is_empty() {
                 tracing::info!(
                     feeds = state.feeds.len(),
@@ -134,12 +136,12 @@ impl SpotifyDj {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Save the running feeds, if they changed since last saved.
+    /// Save running feeds and their group evidence, if either changed.
     fn save(&self, state: &mut State) {
         let Some(path) = &self.feeds_file else {
             return;
         };
-        let text = saved::encode(&state.feeds);
+        let text = saved::encode(&state.feeds, &state.handover);
         if text == state.saved {
             return;
         }
