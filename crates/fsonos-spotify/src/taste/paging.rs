@@ -13,6 +13,8 @@ use coverage::{Coverage, Page};
 struct Chain {
     path: String,
     progress: Progress,
+    // Cursor pagination must not silently switch the followed resource type.
+    resource_type: Option<String>,
 }
 
 enum Progress {
@@ -43,6 +45,11 @@ impl Chain {
     fn new(url: &str, progress: Progress) -> Self {
         Self {
             path: path(url).to_owned(),
+            resource_type: if matches!(progress, Progress::Cursor(_)) {
+                parameter(url, "type").ok()
+            } else {
+                None
+            },
             progress,
         }
     }
@@ -64,6 +71,11 @@ impl Chain {
                 *previous = next;
             }
             Progress::Cursor(seen) => {
+                if self.resource_type.as_deref() != parameter(url, "type").ok().as_deref() {
+                    return Err(SpotifyError::Decode(
+                        "taste cursor changed the followed resource type".into(),
+                    ));
+                }
                 if !seen.insert(parameter(url, "after")?) {
                     return Err(SpotifyError::Decode(
                         "taste paging repeated a cursor".into(),
@@ -153,3 +165,20 @@ impl Reader<'_> {
 #[cfg(test)]
 #[path = "paging_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod cursor_identity_tests {
+    use super::*;
+
+    #[test]
+    fn followed_cursor_cannot_switch_resource_type() {
+        let endpoints = Endpoints::default();
+        let first = endpoints.followed_artists();
+        let mut chain = Chain::new(&first, Progress::Cursor(HashSet::new()));
+        let base = path(&first);
+        assert!(chain.follow(&endpoints, &format!("{base}?type=user&after=one")).is_err());
+        assert!(chain.follow(&endpoints, &format!("{base}?after=one")).is_err());
+        assert!(chain.follow(&endpoints, &format!("{base}?type=artist&after=one")).is_ok());
+        assert!(chain.follow(&endpoints, &format!("{base}?type=artist&after=one")).is_err());
+    }
+}
