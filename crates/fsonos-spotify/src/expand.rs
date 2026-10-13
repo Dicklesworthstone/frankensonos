@@ -29,7 +29,7 @@ use crate::client::{SimplifiedTrack, renderable, secs};
 use crate::dj::DjConfig;
 use crate::library::{Origin, Page};
 use crate::session::Session;
-use crate::works::{Work, build};
+use crate::works::Work;
 
 mod recording;
 
@@ -44,7 +44,7 @@ const MAX_ALBUM_ENTRIES: usize = 100_000;
 /// What [`complete_works`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Expansion {
-    /// Works given movements from their album's track list.
+    /// Works completed or enriched from their album's track list.
     pub completed: usize,
     /// Album lists read from the Web API (the others came from the cache).
     pub fetched: usize,
@@ -318,37 +318,12 @@ fn album_track(t: &SimplifiedTrack) -> Option<AlbumTrack> {
     })
 }
 
-/// `work` completed from its album's track list: every album track of the
-/// same recording of the work joins it, in disc/track order. `None` when the
-/// album adds nothing.
+/// Reconstruct one recording in album order, preserving held tracks and their
+/// preferences. A complete album can also confirm an all-liked work or recover
+/// missing positions and durations. `None` means no change or uncertain identity.
 #[must_use]
 pub fn expand_work(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
-    let template = work.movements.first()?;
-    let added: Vec<ClassicalTrack> = recording::select(work, album)?
-        .into_iter()
-        .filter(|t| !holds(work, t))
-        .map(|t| filled_in(template, t))
-        .collect();
-    if added.is_empty() {
-        return None;
-    }
-    let mut movements: Vec<&ClassicalTrack> = work.movements.iter().chain(&added).collect();
-    movements.sort_by_key(|m| {
-        (
-            m.disc_number.unwrap_or(1),
-            m.track_number.unwrap_or(u32::MAX),
-        )
-    });
-    Some(build(&movements))
-}
-
-/// Whether `work` already holds album track `t`: the same track, or a
-/// movement at the same disc and track position (a relinked copy).
-fn holds(work: &Work, t: &AlbumTrack) -> bool {
-    work.movements.iter().any(|m| {
-        m.track.source_uri == t.source_uri
-            || (m.disc_number, m.track_number) == (Some(t.disc_number), Some(t.track_number))
-    })
+    recording::expand(work, album)
 }
 
 /// A missing movement, shaped like the work's held one: same composer,

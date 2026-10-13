@@ -7,11 +7,59 @@ use std::collections::HashSet;
 use fsonos_core::store::AlbumTrack;
 
 use crate::classical::{ClassicalTrack, normalize, split_title};
-use crate::works::{Work, movement_number};
+use crate::works::{Completeness, Work, build, movement_number};
+
+/// Rebuild from the album's positions rather than appending the missing
+/// tracks to held movements whose coordinates may be absent or stale.
+pub(super) fn expand(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
+    let template = work.movements.first()?;
+    let tracks = select(work, album)?;
+    let mut positions = HashSet::new();
+    for track in &tracks {
+        if track.disc_number == 0
+            || track.track_number == 0
+            || !positions.insert((track.disc_number, track.track_number))
+        {
+            return None;
+        }
+    }
+    let mut originals: Vec<Option<&ClassicalTrack>> = vec![None; tracks.len()];
+    for held in &work.movements {
+        let matched = anchor(held, &tracks)?;
+        let index = tracks.iter().position(|track| std::ptr::eq(*track, matched))?;
+        if originals[index].replace(held).is_some() {
+            // Two held aliases for one slot cannot silently discard either
+            // track's URI, explicit flag or preference metadata.
+            return None;
+        }
+    }
+    let movements: Vec<ClassicalTrack> = tracks
+        .iter()
+        .zip(originals)
+        .map(|(track, original)| match original {
+            Some(held) => {
+                let mut restored = held.clone();
+                restored.disc_number = Some(track.disc_number);
+                restored.track_number = Some(track.track_number);
+                restored.track.duration_secs = restored.track.duration_secs.or(track.duration_secs);
+                restored
+            }
+            None => super::filled_in(template, track),
+        })
+        .collect();
+    let ordered: Vec<&ClassicalTrack> = movements.iter().collect();
+    let mut full = build(&ordered);
+    if full.completeness == Completeness::Unknown {
+        // All-liked recordings can be confirmed without inventing an album
+        // save. A visible numbering gap still remains Partial.
+        full.completeness = Completeness::Complete;
+    }
+    (full != *work).then_some(full)
+}
 
 /// Every held movement must identify the same recording. Keep the original
 /// work unchanged when its identity is missing, ambiguous or contradictory.
-pub(super) fn select<'a>(work: &Work, album: &'a [AlbumTrack]) -> Option<Vec<&'a AlbumTrack>> {
+fn select<'a>(work: &Work, album: &'a [AlbumTrack]) -> Option<Vec<&'a AlbumTrack>> {
     let title = normalize(&work.title);
     let mut ordered: Vec<&AlbumTrack> = album.iter().collect();
     ordered.sort_by_key(|t| (t.disc_number, t.track_number));
