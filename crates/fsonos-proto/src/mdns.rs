@@ -241,21 +241,38 @@ pub struct SonosAdvert {
     pub addr: Option<Ipv4Addr>,
 }
 
-/// Extract Sonos player advertisements from a parsed message: every PTR to a
-/// `_sonos._tcp` instance, enriched by the SRV/TXT/A records for the same
-/// instance (typically in the additional section).
+/// Extract Sonos player advertisements from one response. For a discovery
+/// window whose replies span multiple datagrams, use
+/// [`sonos_adverts_from_records`] after collecting their resource records.
 #[must_use]
 pub fn sonos_adverts(msg: &DnsMessage) -> Vec<SonosAdvert> {
+    if !msg.is_response {
+        return Vec::new();
+    }
+    sonos_adverts_from_records(&msg.records)
+}
+
+/// Resolve the PTR, SRV, TXT and A records collected during a discovery
+/// window. DNS-SD is not obliged to send those records in one datagram, or
+/// in any particular order. A PTR-only response can therefore be completed
+/// by SRV/TXT/A records from subsequent responses. TTL-zero goodbyes must not
+/// resurrect a player that is going away.
+#[must_use]
+pub fn sonos_adverts_from_records(records: &[Record]) -> Vec<SonosAdvert> {
     let mut out: Vec<SonosAdvert> = Vec::new();
-    for rec in &msg.records {
+    for rec in records {
         let RecordData::Ptr(instance) = &rec.data else {
             continue;
         };
-        if !rec.name.eq_ignore_ascii_case("_sonos._tcp.local") {
+        if rec.ttl == 0 || !rec.name.eq_ignore_ascii_case(SONOS_SERVICE) {
+            continue;
+        }
+        let bare = strip_service_domain(instance);
+        if out.iter().any(|ad| ad.instance.eq_ignore_ascii_case(bare)) {
             continue;
         }
         let mut advert = SonosAdvert {
-            instance: strip_service_domain(instance).to_string(),
+            instance: bare.to_string(),
             uuid: None,
             household: None,
             boot_seq: None,
@@ -263,34 +280,47 @@ pub fn sonos_adverts(msg: &DnsMessage) -> Vec<SonosAdvert> {
             port: None,
             addr: None,
         };
-        // The instance's own records are keyed by the full FQDN: SRV on the
-        // instance name, TXT on the instance name, A on the SRV target.
-        let mut target_host: Option<&str> = None;
-        for r in &msg.records {
+
+        // mDNS additional records can precede the PTR, or arrive in another
+        // packet. Locate the SRV target first, then its A record, without
+        // relying on the order in which either appeared on the wire.
+        let target = records.iter().rev().find_map(|r| {
+            if r.ttl == 0 || !r.name.eq_ignore_ascii_case(instance) {
+                return None;
+            }
             match &r.data {
-                RecordData::Srv { port, target } if r.name == *instance => {
-                    advert.port = Some(*port);
-                    target_host = Some(target);
+                RecordData::Srv { port, target } => Some((*port, target.as_str())),
+                _ => None,
+            }
+        });
+        if let Some((port, target)) = target {
+            advert.port = Some(port);
+            advert.addr = records.iter().rev().find_map(|r| {
+                if r.ttl == 0 || !r.name.eq_ignore_ascii_case(target) {
+                    return None;
                 }
-                RecordData::Txt(txts) if r.name == *instance => {
-                    for t in txts {
-                        if let Some((k, v)) = t.split_once('=') {
-                            match k {
-                                "uuid" => advert.uuid = Some(v.to_string()),
-                                "hhid" => advert.household = Some(v.to_string()),
-                                "bootseq" => advert.boot_seq = v.parse().ok(),
-                                "location" => advert.location = Some(v.to_string()),
-                                _ => {}
-                            }
+                match &r.data {
+                    RecordData::A(addr) => Some(*addr),
+                    _ => None,
+                }
+            });
+        }
+        for r in records {
+            if r.ttl == 0 || !r.name.eq_ignore_ascii_case(instance) {
+                continue;
+            }
+            if let RecordData::Txt(txts) = &r.data {
+                for t in txts {
+                    if let Some((key, value)) = t.split_once('=') {
+                        match key.to_ascii_lowercase().as_str() {
+                            "uuid" => advert.uuid = Some(value.to_string()),
+                            "hhid" => advert.household = Some(value.to_string()),
+                            "bootseq" => advert.boot_seq = value.parse().ok(),
+                            "location" => advert.location = Some(value.to_string()),
+                            _ => {}
                         }
                     }
                 }
-                RecordData::A(addr)
-                    if target_host.is_some_and(|h| r.name.eq_ignore_ascii_case(h)) =>
-                {
-                    advert.addr = Some(*addr);
-                }
-                _ => {}
             }
         }
         if advert.uuid.is_none() {
@@ -467,6 +497,61 @@ mod tests {
             Some("RINCON_000E58A0000101400".into())
         );
         assert_eq!(uuid_from_instance("something-else"), None);
+    }
+
+    #[test]
+    fn records_in_separate_packets_and_in_any_order_complete_the_player() {
+        let wire = build_response(
+            "RINCON_000E58A0000101400@Kitchen",
+            &["uuid=RINCON_000E58A0000101400", "hhid=TEST_HOUSE"],
+            1443,
+            [192, 0, 2, 22],
+        );
+        let response = parse_message(&wire).unwrap();
+        // The A and TXT replies arrive first; a PTR without SRV/TXT/A
+        // cannot yet supply an address for inventory's description fetch.
+        let first = DnsMessage {
+            records: vec![response.records[3].clone(), response.records[2].clone()],
+            ..response.clone()
+        };
+        let second = DnsMessage {
+            records: vec![response.records[0].clone(), response.records[1].clone()],
+            ..response.clone()
+        };
+        assert!(sonos_adverts(&first).is_empty());
+        assert_eq!(sonos_adverts(&second)[0].addr, None);
+        let records: Vec<Record> = first
+            .records
+            .iter()
+            .chain(&second.records)
+            .cloned()
+            .collect();
+        let adverts = sonos_adverts_from_records(&records);
+        assert_eq!(adverts.len(), 1);
+        assert_eq!(adverts[0].addr, Some(Ipv4Addr::new(192, 0, 2, 22)));
+        assert_eq!(adverts[0].household.as_deref(), Some("TEST_HOUSE"));
+        assert_eq!(adverts[0].port, Some(1443));
+    }
+
+    #[test]
+    fn dns_names_are_case_insensitive_and_goodbyes_are_ignored() {
+        let wire = build_response(
+            "Sonos-000E58A00001._sonos._tcp.local",
+            &["vers=1"],
+            1443,
+            [192, 0, 2, 11],
+        );
+        let mut response = parse_message(&wire).unwrap();
+        response.records[0].name.make_ascii_uppercase();
+        response.records[1].name.make_ascii_uppercase();
+        response.records[3].name.make_ascii_uppercase();
+        let adverts = sonos_adverts(&response);
+        assert_eq!(adverts[0].addr, Some(Ipv4Addr::new(192, 0, 2, 11)));
+        response.records[0].ttl = 0;
+        assert!(sonos_adverts(&response).is_empty());
+        response.records[0].ttl = 4500;
+        response.is_response = false;
+        assert!(sonos_adverts(&response).is_empty());
     }
 
     #[test]

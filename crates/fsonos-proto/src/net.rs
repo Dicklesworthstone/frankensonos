@@ -759,26 +759,26 @@ async fn search(
     Ok(found)
 }
 
-/// Send the mDNS query for `_sonos._tcp.local` out of every LAN interface
-/// and collect Sonos advertisements from the replies that arrive within
-/// `wait`, deduplicated by instance name. Parse failures are skipped, not
-/// errors: anything else on the group must not break discovery.
+/// Send the mDNS query for `_sonos._tcp.local` out of every LAN interface.
+/// DNS-SD allows PTR, SRV, TXT and A replies in different packets: collect
+/// records for the whole window before resolving players. Malformed packets,
+/// unsolicited queries and TTL-zero goodbyes cannot add players.
 async fn mdns_search(
     target: SocketAddr,
     wait: Duration,
 ) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
-    let mut found: Vec<mdns::SonosAdvert> = Vec::new();
+    const MAX_RECORDS: usize = 2048;
+    let mut records: Vec<mdns::Record> = Vec::new();
     multicast_query(target, &mdns::query(), wait, &mut |datagram| {
-        if let Ok(msg) = mdns::parse_message(datagram) {
-            for advert in mdns::sonos_adverts(&msg) {
-                if !found.iter().any(|f| f.instance == advert.instance) {
-                    found.push(advert);
-                }
-            }
+        if let Ok(msg) = mdns::parse_message(datagram)
+            && msg.is_response
+        {
+            let remaining = MAX_RECORDS.saturating_sub(records.len());
+            records.extend(msg.records.into_iter().filter(|r| r.ttl > 0).take(remaining));
         }
     })
     .await?;
-    Ok(found)
+    Ok(mdns::sonos_adverts_from_records(&records))
 }
 
 /// Both futures' outputs, the two polled side by side in this one task:
