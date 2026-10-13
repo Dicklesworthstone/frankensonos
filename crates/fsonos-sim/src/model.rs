@@ -132,6 +132,8 @@ pub(crate) struct Transport {
     pub sleep_generation: u32,
     /// The current URI's media was fetched (or is being fetched).
     pub fetched: bool,
+    /// Sonos AVTransport play mode (NORMAL unless explicitly changed).
+    pub play_mode: String,
 }
 
 impl Transport {
@@ -150,6 +152,7 @@ impl Transport {
             sleep_at: None,
             sleep_generation: 0,
             fetched: false,
+            play_mode: "NORMAL".into(),
         }
     }
 
@@ -689,6 +692,7 @@ impl State {
         let now = self.clock.now_ms();
         match action {
             "SetAVTransportURI"
+            | "SetPlayMode"
             | "AddURIToQueue"
             | "RemoveTrackFromQueue"
             | "RemoveAllTracksFromQueue"
@@ -718,6 +722,15 @@ impl State {
         now: u64,
     ) -> Result<Out, Fault> {
         match action {
+            "SetPlayMode" => {
+                self.require_coordinator(p)?;
+                let mode = args.get("NewPlayMode")?;
+                if !matches!(mode, "NORMAL" | "REPEAT_ALL" | "REPEAT_ONE" | "SHUFFLE" | "SHUFFLE_NOREPEAT") {
+                    return Err(INVALID_ARGS);
+                }
+                self.players[p].transport.play_mode = mode.to_string();
+                Ok(Vec::new())
+            }
             "SetAVTransportURI" => {
                 // The hidden half of a pair follows its primary.
                 self.require_not_secondary(p)?;
