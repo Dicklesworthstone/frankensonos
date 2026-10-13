@@ -12,8 +12,7 @@ speakers stay on the LAN and are never fronted.
 > quiet hours, and `fsonos doctor` — all verified end to end against the
 > built-in simulator. The behaviour here is simulator-verified; there is no
 > real-hardware CI yet, and the live Tailscale Serve round trip is opt-in
-> because it records the MagicDNS name in public CT logs (§5). Items marked
-> *(planned)* do not exist yet.
+> because it records the MagicDNS name in public CT logs (§5).
 
 ## 1. Shape of the deployment
 
