@@ -5,10 +5,9 @@
 //! source, track and position, volumes, mute, and whether it was playing.
 //! Per household:
 //!
-//! 1. snapshot each zone a target room plays in;
-//! 2. group the target rooms under one of them, so the clip plays in sync;
-//! 3. set each room to the announcement level, capped per room by the
-//!    caller (house policy), and unmute it;
+//! 1. refresh topology after taking the household turn, then snapshot;
+//! 2. cap every target room before grouping or unmuting can make it audible;
+//! 3. group the targets under one of them and unmute at those levels;
 //! 4. play the clip, and wait for the player to stop by itself, at most the
 //!    clip's length plus [`STOP_GRACE`];
 //! 5. take the rooms out of the temporary group and restore the snapshots,
@@ -29,12 +28,14 @@
 //! back to the snapshot (rewound) afterwards.
 
 pub mod clip;
+mod recovery;
 pub mod speech;
 
+use recovery::Effects;
+
 use crate::control;
-use crate::snapshot::{self, Aspect, RestoreReport, ZoneSnapshot};
+use crate::snapshot::{self, RestoreReport};
 use crate::{ControlTarget, CoreError, HouseholdState, Room};
-use fsonos_proto::ProtoError;
 use fsonos_proto::Transport;
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::xml_escape;
@@ -56,11 +57,6 @@ const START_GRACE: Duration = Duration::from_secs(2);
 
 /// How often the transport state is checked while the clip plays.
 const POLL: Duration = Duration::from_millis(250);
-
-/// How long to let a just-finished clip's teardown settle before the one
-/// retry of the source restore (a player mid-teardown refuses
-/// `SetAVTransportURI` with a transient 402).
-const CLIP_SETTLE: Duration = Duration::from_millis(750);
 
 /// A clip the players can fetch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,14 +352,37 @@ impl Announcer {
         let mut report = HouseholdAnnouncement {
             lead: rooms[0].primary.clone(),
             rooms: rooms.iter().map(|r| r.name.clone()).collect(),
-            levels: rooms
-                .iter()
-                .map(|r| (r.name.clone(), volume.min(cap(r))))
-                .collect(),
+            levels: Vec::new(),
             outcome: Err(String::new()),
             restored: Vec::new(),
             restore_failed: Vec::new(),
         };
+        // Targets may have waited behind another announcement or speech
+        // synthesis. Keep their identities, never their old group layout.
+        let fresh = match refreshed(t, household) {
+            Ok(fresh) => fresh,
+            Err(e) => {
+                report.outcome = Err(format!(
+                    "could not refresh topology, so nothing was played: {e}"
+                ));
+                return report;
+            }
+        };
+        let selected: Option<Vec<&Room>> = rooms
+            .iter()
+            .map(|old| fresh.rooms.iter().find(|r| r.primary == old.primary))
+            .collect();
+        let Some(selected) = selected else {
+            report.outcome =
+                Err("a target room changed or disappeared; nothing was played".into());
+            return report;
+        };
+        let (household, rooms) = (&fresh, selected.as_slice());
+        report.rooms = rooms.iter().map(|r| r.name.clone()).collect();
+        report.levels = rooms
+            .iter()
+            .map(|r| (r.name.clone(), volume.min(cap(r))))
+            .collect();
         let Some(plan) = plan_group(household, rooms) else {
             report.outcome = Err("no rooms to announce to".into());
             return report;
@@ -383,14 +402,13 @@ impl Announcer {
                 }
             }
         }
-        report.outcome = self
-            .play(t, hs, &plan, rooms, &report.levels, clip)
-            .map_err(|e| e.to_string());
-        put_back(t, household, rooms, &plan, &snaps, &mut report);
+        let (outcome, effects) = self.play(t, hs, &plan, rooms, &report.levels, clip);
+        report.outcome = outcome.map_err(|e| e.to_string());
+        recovery::put_back(t, household, &plan, &snaps, &effects, &mut report);
         report
     }
 
-    /// Steps 2–4: group, set levels, play, and wait for the end.
+    /// Steps 2–4. Record attempted writes too: a lost reply may have applied.
     fn play<T: Transport + ?Sized>(
         &self,
         t: &T,
@@ -399,24 +417,39 @@ impl Announcer {
         rooms: &[&Room],
         levels: &[(String, u8)],
         clip: &Clip,
-    ) -> Result<Ending, CoreError> {
-        if plan.lead_leaves {
-            control::leave(t, hs, &plan.lead)?;
-        }
-        for room in &plan.joins {
-            control::join(t, hs, room, &plan.lead)?;
-        }
-        for (room, (_, level)) in rooms.iter().zip(levels) {
-            control::set_mute(t, hs, &room.primary, false)?;
-            control::set_volume(t, hs, &room.primary, *level)?;
-        }
-        control::play_uri(t, hs, &plan.lead, &clip.url, &clip.didl())?;
-        let host = control::locate(hs, &plan.lead)?.ip;
-        let ending = wait_for_end(t, host, clip.duration + self.stop_grace, self.poll)?;
-        if ending == Ending::Deadline {
-            soap::stop(t, host)?;
-        }
-        Ok(ending)
+    ) -> (Result<Ending, CoreError>, Effects) {
+        let mut effects = Effects::default();
+        let outcome = (|| {
+            // A join can start audio immediately. Bound all levels before
+            // regrouping, and never unmute a room at its old, possibly loud level.
+            for (room, (_, level)) in rooms.iter().zip(levels) {
+                effects.volumes.push(room.primary.clone());
+                control::set_volume(t, hs, &room.primary, *level)?;
+            }
+            if plan.lead_leaves {
+                effects.groups.push(plan.lead.clone());
+                effects.sources.push(plan.lead.clone());
+                control::leave(t, hs, &plan.lead)?;
+            }
+            for room in &plan.joins {
+                effects.groups.push(room.clone());
+                effects.sources.push(room.clone());
+                control::join(t, hs, room, &plan.lead)?;
+            }
+            for room in rooms {
+                effects.mutes.push(room.primary.clone());
+                control::set_mute(t, hs, &room.primary, false)?;
+            }
+            effects.sources.push(plan.lead.clone());
+            control::play_uri(t, hs, &plan.lead, &clip.url, &clip.didl())?;
+            let host = control::locate(hs, &plan.lead)?.ip;
+            let ending = wait_for_end(t, host, clip.duration + self.stop_grace, self.poll)?;
+            if ending == Ending::Deadline {
+                soap::stop(t, host)?;
+            }
+            Ok(ending)
+        })();
+        (outcome, effects)
     }
 }
 
@@ -447,54 +480,6 @@ fn wait_for_end<T: Transport + ?Sized>(
             return Ok(Ending::Deadline);
         }
         std::thread::sleep(poll.min(left));
-    }
-}
-
-/// Step 5: rooms leave the temporary group, then each zone is restored
-/// against the topology as it is by then.
-fn put_back<T: Transport + ?Sized>(
-    t: &T,
-    household: &HouseholdState,
-    rooms: &[&Room],
-    plan: &GroupPlan,
-    snaps: &[ZoneSnapshot],
-    report: &mut HouseholdAnnouncement,
-) {
-    let hs = std::slice::from_ref(household);
-    for room in &plan.joins {
-        if let Err(e) = control::leave(t, hs, room) {
-            report.restore_failed.push((room.clone(), e.to_string()));
-        }
-    }
-    for snap in snaps {
-        let announced_to = rooms.iter().any(|r| r.players.contains(&snap.coordinator));
-        let aspects: &[Aspect] = if announced_to {
-            &Aspect::ALL
-        } else {
-            &[Aspect::Group, Aspect::Volume, Aspect::Mute]
-        };
-        let restore = |t: &T| {
-            refreshed(t, household).and_then(|now| {
-                snapshot::restore_only(t, std::slice::from_ref(&now), snap, aspects)
-            })
-        };
-        // A player that just finished announcing can answer the source
-        // restore's SetAVTransportURI with a transient 402 (fleet-verified
-        // 2026-10-12, bead frankensonos-p9f): the clip's teardown is still
-        // in flight. One retry after a beat; a second refusal stands.
-        let result = match restore(t) {
-            Err(CoreError::Proto(ProtoError::SoapFault { code: 402, .. })) => {
-                std::thread::sleep(CLIP_SETTLE);
-                restore(t)
-            }
-            result => result,
-        };
-        match result {
-            Ok(r) => report.restored.push((snap.coordinator.clone(), r)),
-            Err(e) => report
-                .restore_failed
-                .push((snap.coordinator.clone(), e.to_string())),
-        }
     }
 }
 
