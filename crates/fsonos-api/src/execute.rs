@@ -6,15 +6,15 @@
 //! actions, so the CLI, the HTTP API and the MCP tools report alike.
 
 use fastapi::{JsonSchema, fastapi_openapi};
+use fsonos_core::grouping;
 use fsonos_core::moving::{self, MoveMethod};
 use fsonos_core::{CoreError, HouseholdState, control, resolve_room};
 use fsonos_proto::Transport;
 use fsonos_proto::didl::SpotifyContainer;
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
-use std::fmt::Write as _;
 
-use crate::failure::{ErrorCode, Failure};
+use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::{Command, DjAction, TransportAction, VolumeScope};
 use crate::request::VolumeChange;
@@ -55,8 +55,11 @@ pub fn execute_guarded<T: Transport + ?Sized>(
     guard: &Guard<'_>,
     command: Command,
 ) -> Result<OutcomeDto, Failure> {
-    let (command, notes) = guard.bound(transport, households, command)?;
+    let (command, mut notes) = guard.bound(transport, households, command)?;
     let mut outcome = execute(transport, households, &command)?;
+    // The guard's notes first, then the command's own (a party's skipped
+    // rooms, say).
+    notes.append(&mut outcome.notes);
     outcome.notes = notes;
     Ok(outcome)
 }
@@ -207,7 +210,9 @@ fn move_music<T: Transport + ?Sized>(
     )))
 }
 
-/// Group every room of `member`'s household under `lead`'s group.
+/// Group every room of `member`'s household under `lead`'s group. A room
+/// that could not join is noted (`SKIPPED`); the call fails, with the first
+/// room's error, only when no room is in the party but the lead.
 fn party<T: Transport + ?Sized>(
     transport: &T,
     households: &[HouseholdState],
@@ -220,18 +225,33 @@ fn party<T: Transport + ?Sized>(
         .ok_or_else(|| CoreError::UnknownPlayer(member.0.clone()))?;
     let lead = lead.map(|l| resolve_room(households, &l.0)).transpose()?;
     let outcome = moving::party(transport, households, household, lead.as_ref())?;
-    let mut done = format!("{} joined the party", rooms_list(&outcome.moved));
-    if !outcome.failed.is_empty() {
-        let failed: Vec<String> = outcome
-            .failed
+    let joined = !outcome.moved.is_empty()
+        || outcome
+            .skipped
             .iter()
-            .map(|(room, why)| format!("{room} ({why})"))
-            .collect();
-        let _ = write!(done, "; failed: {}", failed.join(", "));
+            .any(|(_, why)| *why == grouping::Skipped::AlreadyGrouped);
+    let failed: Vec<(String, Failure)> = outcome
+        .failed
+        .into_iter()
+        .map(|(room, why)| (room, Failure::from(why)))
+        .collect();
+    if !joined && let Some((room, first)) = failed.first() {
+        return Err(Failure {
+            detail: format!("no room joined the party: {room}: {}", first.detail),
+            ..first.clone()
+        });
     }
+    let notes = failed
+        .iter()
+        .map(|(room, why)| Note {
+            code: NoteCode::Skipped,
+            detail: format!("{room} skipped: {}", why.detail),
+        })
+        .collect();
     Ok(OutcomeDto {
         changed: !outcome.moved.is_empty(),
-        ..OutcomeDto::sent(done)
+        notes,
+        ..OutcomeDto::sent(format!("{} joined the party", rooms_list(&outcome.moved)))
     })
 }
 
@@ -608,7 +628,6 @@ mod tests {
 
     #[test]
     fn guarded_volume_is_clamped_for_agents_and_says_so() {
-        use crate::failure::NoteCode;
         use fsonos_core::clock::SystemClock;
         use fsonos_core::policy::{Client, Policy};
 

@@ -3,7 +3,7 @@
 //! ZoneGroupTopology read shows the result. The households: S1 with a Den
 //! stereo pair, a Kitchen and an Office; S2 with a Living Room.
 
-use fsonos_core::grouping::{self, GroupingOutcome, Skipped};
+use fsonos_core::grouping::{self, Skipped};
 use fsonos_core::{HouseholdState, resolve_room};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
@@ -77,18 +77,16 @@ fn group_and_ungroup_rooms_through_the_simulator() {
         .map(|q| resolve_room(&houses, q).unwrap())
         .collect();
     let out = grouping::group(&lan, &houses, &target, &rooms);
+    assert_eq!(out.moved, names(&["Den", "Office"]));
     assert_eq!(
-        out,
-        GroupingOutcome {
-            moved: names(&["Den", "Office"]),
-            skipped: vec![
-                ("Living Room".into(), Skipped::OtherHousehold),
-                ("Kitchen".into(), Skipped::Target),
-                ("Den".into(), Skipped::Duplicate),
-            ],
-            failed: Vec::new(),
-        }
+        out.skipped,
+        [
+            ("Living Room".into(), Skipped::OtherHousehold),
+            ("Kitchen".into(), Skipped::Target),
+            ("Den".into(), Skipped::Duplicate),
+        ]
     );
+    assert!(out.failed.is_empty(), "{:?}", out.failed);
     assert!(out.is_complete());
 
     // The join went to the pair's visible primary only, and nothing reached

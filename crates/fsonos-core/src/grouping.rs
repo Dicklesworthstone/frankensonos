@@ -10,7 +10,7 @@
 //! room's outcome; refresh the topology afterwards.
 
 use crate::rooms::ControlTarget;
-use crate::{HouseholdState, control};
+use crate::{CoreError, HouseholdState, control};
 use fsonos_proto::Transport;
 
 /// Why a room was left as it was.
@@ -29,14 +29,14 @@ pub enum Skipped {
 }
 
 /// What a grouping verb did, room by room.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct GroupingOutcome {
     /// Rooms the speakers accepted the change for.
     pub moved: Vec<String>,
     /// Rooms left as they were, and why.
     pub skipped: Vec<(String, Skipped)>,
     /// Rooms whose command failed, with the error.
-    pub failed: Vec<(String, String)>,
+    pub failed: Vec<(String, CoreError)>,
 }
 
 impl GroupingOutcome {
@@ -74,7 +74,7 @@ pub fn group<T: Transport + ?Sized>(
             Some(why) => out.skipped.push((name, why)),
             None => match control::join(t, households, &r.room.primary, &target.room.coordinator) {
                 Ok(()) => out.moved.push(name),
-                Err(e) => out.failed.push((name, e.to_string())),
+                Err(e) => out.failed.push((name, e)),
             },
         }
     }
@@ -104,7 +104,7 @@ pub fn ungroup<T: Transport + ?Sized>(
         }
         match control::leave(t, households, &r.room.primary) {
             Ok(()) => out.moved.push(name),
-            Err(e) => out.failed.push((name, e.to_string())),
+            Err(e) => out.failed.push((name, e)),
         }
     }
     out

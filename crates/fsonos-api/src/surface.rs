@@ -1665,6 +1665,47 @@ mod tests {
     }
 
     #[test]
+    fn a_party_fails_only_when_no_room_could_join() {
+        let party = |zone: &str| {
+            let survey: Survey = Box::new(|_| Ok(households()));
+            let s = Surface::new(
+                Box::new(Refusing {
+                    refuse: "SetAVTransportURI",
+                    nth: None,
+                    seen: Mutex::new(0),
+                }),
+                survey,
+                Policy::default(),
+                Box::new(fsonos_core::clock::SystemClock),
+            );
+            let req = crate::request::PartyRequest {
+                zone: Some(zone.into()),
+                household: None,
+            };
+            s.control(&Client::Cli, "group_all", |h| {
+                crate::plan::plan_party(h, &req)
+            })
+        };
+        // Patio leads S2 and its one other room refuses to join: no party.
+        let err = party("Patio").unwrap_err();
+        assert_eq!((err.code, err.upnp_code), (ErrorCode::UpnpFault, Some(701)));
+        assert!(
+            err.detail.starts_with("no room joined the party: Kitchen"),
+            "{err:?}"
+        );
+        // Den leads S1, where Kitchen is in its group already: the studio that
+        // refuses is noted, and the call answers.
+        let out = party("Den").unwrap();
+        assert_eq!(out.notes.len(), 1, "{:?}", out.notes);
+        assert_eq!(out.notes[0].code, NoteCode::Skipped);
+        assert!(
+            out.notes[0].detail.contains("Studio skipped: "),
+            "{:?}",
+            out.notes
+        );
+    }
+
+    #[test]
     fn a_set_steps_past_a_group_that_fails_and_notes_it() {
         let resume_everywhere = |nth: Option<usize>| {
             let survey: Survey = Box::new(|_| Ok(households()));
