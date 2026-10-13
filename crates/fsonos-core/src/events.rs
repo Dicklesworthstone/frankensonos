@@ -136,6 +136,8 @@ struct Active {
     want: Want,
     sid: String,
     renew_at: Instant,
+    /// A failed replacement must retry SUBSCRIBE, not renew a stale stream.
+    refresh_pending: bool,
     /// The last accepted SEQ; event keys wrap from u32::MAX to 1, not 0.
     last_seq: Option<u32>,
 }
@@ -145,7 +147,7 @@ struct Active {
 pub struct Report {
     pub subscribed: usize,
     pub renewed: usize,
-    /// Renewals that failed and were replaced by a fresh subscription.
+    /// Subscriptions replaced after renewal failure, lost events, or reboot.
     pub resubscribed: usize,
     pub dropped: usize,
     /// Calls that failed outright: (player, service, error).
@@ -182,6 +184,8 @@ impl Subscriptions {
     /// Make the active set match `wanted`: subscribe what is missing and
     /// unsubscribe what is no longer wanted (a player left, a group's
     /// coordinator changed). `callback_url` gives the sink URL per service.
+    /// An unchanged failed subscription keeps its retry deadline, even when
+    /// topology events arrive faster than the backoff.
     pub fn sync<S: Subscriber + ?Sized>(
         &mut self,
         s: &S,
@@ -201,7 +205,9 @@ impl Subscriptions {
         self.active = keep;
         self.pending.retain(|(w, _)| wanted.contains(w));
         for want in wanted {
-            if self.active.iter().any(|a| a.want == *want) {
+            if self.active.iter().any(|a| a.want == *want)
+                || self.pending.iter().any(|(w, at)| w == want && *at > now)
+            {
                 continue;
             }
             self.pending.retain(|(w, _)| w != want);
@@ -224,6 +230,7 @@ impl Subscriptions {
 
     /// Renew every subscription that is due at `now`. A failed renewal (a
     /// rebooted player answers 412) is replaced by a fresh subscription.
+    /// Failed replacements retry here too, without needing another NOTIFY.
     pub fn renew_due<S: Subscriber + ?Sized>(
         &mut self,
         s: &S,
@@ -233,6 +240,10 @@ impl Subscriptions {
         let mut report = Report::default();
         for a in &mut self.active {
             if a.renew_at > now {
+                continue;
+            }
+            if a.refresh_pending {
+                refresh_active(s, a, &callback_url, now, &mut report);
                 continue;
             }
             match s.renew(&a.want, &a.sid) {
@@ -267,7 +278,7 @@ impl Subscriptions {
                             outcome = %e,
                             "renewal failed and so did a fresh subscription; retrying in 30 s"
                         );
-                        // Try again on the next pass.
+                        a.refresh_pending = true;
                         a.renew_at = now + RETRY;
                         report
                             .failed
@@ -299,7 +310,7 @@ impl Subscriptions {
         report
     }
 
-    /// When the next renewal is due, for the daemon's timer.
+    /// When the next renewal or recovery retry is due, for the daemon's timer.
     #[must_use]
     pub fn next_due(&self) -> Option<Instant> {
         self.active
@@ -340,7 +351,8 @@ impl Subscriptions {
     /// Replace subscription `sid` with a fresh one, whose initial NOTIFY
     /// carries the whole state again (after [`Subscriptions::missed`]). The
     /// old one is unsubscribed once the new one stands: the player still
-    /// has it. A refused SUBSCRIBE keeps the old one.
+    /// has it. A refused SUBSCRIBE keeps the old one and schedules a fresh
+    /// attempt after [`RETRY`]; further gaps do not bypass that backoff.
     pub fn refresh<S: Subscriber + ?Sized>(
         &mut self,
         s: &S,
@@ -352,20 +364,10 @@ impl Subscriptions {
         let Some(a) = self.active.iter_mut().find(|a| a.sid == sid) else {
             return report;
         };
-        match s.subscribe(&a.want, &callback_url(a.want.service)) {
-            Ok(sub) => {
-                let fresh = active(a.want.clone(), sub, now);
-                let old = std::mem::replace(a, fresh);
-                let _ = s.unsubscribe(&old.want, &old.sid);
-                report.resubscribed += 1;
-                report.answered.push(a.want.player.clone());
-            }
-            Err(e) => {
-                report
-                    .failed
-                    .push((a.want.player.clone(), a.want.service, e.to_string()));
-            }
+        if a.refresh_pending && a.renew_at > now {
+            return report;
         }
+        refresh_active(s, a, &callback_url, now, &mut report);
         report
     }
 
@@ -400,7 +402,8 @@ impl Subscriptions {
 
     /// Replace every subscription to `player` with a fresh one (after a
     /// reboot). The old SIDs are dropped without UNSUBSCRIBE: the player has
-    /// already forgotten them.
+    /// already forgotten them. Failed replacements become pending, never
+    /// routable under a SID belonging to the previous boot.
     pub fn resubscribe<S: Subscriber + ?Sized>(
         &mut self,
         s: &S,
@@ -409,18 +412,23 @@ impl Subscriptions {
         now: Instant,
     ) -> Report {
         let mut report = Report::default();
-        for a in self.active.iter_mut().filter(|a| a.want.player == *player) {
-            match s.subscribe(&a.want, &callback_url(a.want.service)) {
+        let (replace, keep): (Vec<Active>, Vec<Active>) = std::mem::take(&mut self.active)
+            .into_iter()
+            .partition(|a| a.want.player == *player);
+        self.active = keep;
+        for old in replace {
+            self.pending.retain(|(w, _)| *w != old.want);
+            match s.subscribe(&old.want, &callback_url(old.want.service)) {
                 Ok(sub) => {
-                    *a = active(a.want.clone(), sub, now);
+                    report.answered.push(old.want.player.clone());
+                    self.active.push(active(old.want, sub, now));
                     report.resubscribed += 1;
-                    report.answered.push(a.want.player.clone());
                 }
                 Err(e) => {
-                    a.renew_at = now;
                     report
                         .failed
-                        .push((a.want.player.clone(), a.want.service, e.to_string()));
+                        .push((old.want.player.clone(), old.want.service, e.to_string()));
+                    self.pending.push((old.want, now + RETRY));
                 }
             }
         }
@@ -432,6 +440,33 @@ impl Subscriptions {
         self.pending.clear();
         for a in self.active.drain(..) {
             let _ = s.unsubscribe(&a.want, &a.sid);
+        }
+    }
+}
+
+fn refresh_active<S: Subscriber + ?Sized>(
+    s: &S,
+    a: &mut Active,
+    callback_url: &impl Fn(Service) -> String,
+    now: Instant,
+    report: &mut Report,
+) {
+    match s.subscribe(&a.want, &callback_url(a.want.service)) {
+        Ok(sub) => {
+            let fresh = active(a.want.clone(), sub, now);
+            let old = std::mem::replace(a, fresh);
+            if old.sid != a.sid {
+                let _ = s.unsubscribe(&old.want, &old.sid);
+            }
+            report.resubscribed += 1;
+            report.answered.push(a.want.player.clone());
+        }
+        Err(e) => {
+            a.refresh_pending = true;
+            a.renew_at = now + RETRY;
+            report
+                .failed
+                .push((a.want.player.clone(), a.want.service, e.to_string()));
         }
     }
 }
@@ -463,6 +498,7 @@ fn active(want: Want, sub: Subscription, now: Instant) -> Active {
         want,
         sid: sub.sid,
         renew_at: now + half,
+        refresh_pending: false,
         last_seq: None,
     }
 }
@@ -498,6 +534,7 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
 
     #[derive(Default)]
     struct TestSubscriber {
@@ -623,6 +660,190 @@ mod tests {
             (Some(1), u32::MAX, None),
         ] {
             assert_eq!(sequence_gap(last, seq), expected, "{last:?} -> {seq}");
+        }
+    }
+
+    #[derive(Default)]
+    struct RetrySubscriber {
+        calls: Cell<usize>,
+        failures: Cell<usize>,
+        renewals: Cell<usize>,
+        unsubscribed: RefCell<Vec<String>>,
+    }
+
+    impl Subscriber for RetrySubscriber {
+        fn subscribe(&self, _: &Want, _: &str) -> Result<Subscription, ProtoError> {
+            self.calls.set(self.calls.get() + 1);
+            if self.failures.get() > 0 {
+                self.failures.set(self.failures.get() - 1);
+                return Err(ProtoError::Network {
+                    target: "test-player".into(),
+                    detail: "SUBSCRIBE: HTTP 503".into(),
+                });
+            }
+            Ok(Subscription {
+                sid: format!("uuid:retry-{}", self.calls.get()),
+                timeout_secs: 300,
+            })
+        }
+
+        fn renew(&self, _: &Want, sid: &str) -> Result<Subscription, ProtoError> {
+            self.renewals.set(self.renewals.get() + 1);
+            Ok(Subscription {
+                sid: sid.into(),
+                timeout_secs: 300,
+            })
+        }
+
+        fn unsubscribe(&self, _: &Want, sid: &str) -> Result<(), ProtoError> {
+            self.unsubscribed.borrow_mut().push(sid.into());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn sync_honors_backoff_and_deduplicates_failed_wants() {
+        let subscriber = RetrySubscriber::default();
+        subscriber.failures.set(1);
+        let mut subs = Subscriptions::default();
+        let now = Instant::now();
+        let wants = [want(), want()];
+        let first = subs.sync(&subscriber, &wants, callback, now);
+        assert_eq!(first.failed.len(), 1);
+        assert_eq!(subscriber.calls.get(), 1);
+        assert_eq!(subs.next_due(), Some(now + RETRY));
+        for second in 1..30 {
+            let report = subs.sync(
+                &subscriber,
+                &wants,
+                callback,
+                now + Duration::from_secs(second),
+            );
+            assert_eq!(report, Report::default());
+        }
+        assert_eq!(subscriber.calls.get(), 1);
+        let due = subs.sync(&subscriber, &wants, callback, now + RETRY);
+        assert_eq!(due.subscribed, 1);
+        assert_eq!(subscriber.calls.get(), 2);
+        assert_eq!(subs.len(), 1);
+        assert_eq!(
+            subs.renew_due(&subscriber, callback, now + RETRY),
+            Report::default()
+        );
+    }
+
+    #[test]
+    fn changed_address_retries_immediately_and_cancels_old_pending_want() {
+        let subscriber = RetrySubscriber::default();
+        subscriber.failures.set(1);
+        let mut subs = Subscriptions::default();
+        let now = Instant::now();
+        subs.sync(&subscriber, &[want()], callback, now);
+        let moved = Want {
+            host: std::net::Ipv4Addr::new(192, 0, 2, 10).into(),
+            ..want()
+        };
+        let report = subs.sync(
+            &subscriber,
+            &[moved],
+            callback,
+            now + Duration::from_secs(1),
+        );
+        assert_eq!(report.subscribed, 1);
+        assert_eq!(subscriber.calls.get(), 2);
+        assert_eq!(
+            subs.renew_due(&subscriber, callback, now + RETRY),
+            Report::default()
+        );
+        assert_eq!(subs.len(), 1);
+        assert!(subs.pending.is_empty());
+    }
+
+    #[test]
+    fn failed_gap_refresh_retries_until_full_state_can_be_requested() {
+        let subscriber = RetrySubscriber::default();
+        let mut subs = Subscriptions::default();
+        let now = Instant::now();
+        subs.sync(&subscriber, &[want()], callback, now);
+        assert!(!subs.missed(&notify("uuid:retry-1", 0)));
+        assert!(subs.missed(&notify("uuid:retry-1", 3)));
+        subscriber.failures.set(2);
+        let gap_at = now + Duration::from_secs(10);
+        let failed = subs.refresh(&subscriber, "uuid:retry-1", callback, gap_at);
+        assert_eq!(failed.failed.len(), 1);
+        assert_eq!(subs.next_due(), Some(gap_at + RETRY));
+        assert!(subs.route(&notify("uuid:retry-1", 4)).is_some());
+        let early = gap_at + Duration::from_secs(1);
+        assert_eq!(
+            subs.refresh(&subscriber, "uuid:retry-1", callback, early),
+            Report::default()
+        );
+        assert_eq!(
+            subs.renew_due(&subscriber, callback, early),
+            Report::default()
+        );
+        assert_eq!(subscriber.calls.get(), 2);
+        let failed_again = subs.renew_due(&subscriber, callback, gap_at + RETRY);
+        assert_eq!(failed_again.failed.len(), 1);
+        assert_eq!(subs.next_due(), Some(gap_at + RETRY * 2));
+        let recovered = subs.renew_due(&subscriber, callback, gap_at + RETRY * 2);
+        assert_eq!(recovered.resubscribed, 1);
+        assert_eq!(recovered.answered, vec![want().player]);
+        assert_eq!(subscriber.calls.get(), 4);
+        assert_eq!(subscriber.renewals.get(), 0, "renewing cannot restore state");
+        assert!(subs.route(&notify("uuid:retry-1", 5)).is_none());
+        assert!(!subs.missed(&notify("uuid:retry-4", 0)));
+        assert_eq!(
+            subscriber.unsubscribed.borrow().as_slice(),
+            ["uuid:retry-1"]
+        );
+    }
+
+    #[test]
+    fn failed_reboot_replacement_drops_the_old_sid_and_uses_backoff() {
+        let subscriber = RetrySubscriber::default();
+        let mut subs = Subscriptions::default();
+        let now = Instant::now();
+        subs.sync(&subscriber, &[want()], callback, now);
+        subscriber.failures.set(1);
+        let failed = subs.resubscribe(&subscriber, &want().player, callback, now);
+        assert_eq!(failed.failed.len(), 1);
+        assert!(subs.is_empty());
+        assert!(subs.route(&notify("uuid:retry-1", 1)).is_none());
+        assert_eq!(subs.next_due(), Some(now + RETRY));
+        assert_eq!(
+            subs.sync(&subscriber, &[want()], callback, now),
+            Report::default()
+        );
+        assert_eq!(subscriber.calls.get(), 2);
+        let recovered = subs.renew_due(&subscriber, callback, now + RETRY);
+        assert_eq!(recovered.subscribed, 1);
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subscriber.renewals.get(), 0);
+        assert!(subscriber.unsubscribed.borrow().is_empty());
+        assert!(subs.route(&notify("uuid:retry-3", 0)).is_some());
+    }
+
+    #[test]
+    fn shutdown_or_forgetting_cancels_failed_refresh_retries() {
+        for shutdown in [false, true] {
+            let subscriber = RetrySubscriber::default();
+            let mut subs = Subscriptions::default();
+            let now = Instant::now();
+            subs.sync(&subscriber, &[want()], callback, now);
+            subscriber.failures.set(1);
+            subs.refresh(&subscriber, "uuid:retry-1", callback, now);
+            if shutdown {
+                subs.unsubscribe_all(&subscriber);
+            } else {
+                assert_eq!(subs.forget(&want().player), 1);
+            }
+            assert_eq!(subs.next_due(), None);
+            assert_eq!(
+                subs.renew_due(&subscriber, callback, now + RETRY),
+                Report::default()
+            );
+            assert_eq!(subscriber.calls.get(), 2);
         }
     }
 }
