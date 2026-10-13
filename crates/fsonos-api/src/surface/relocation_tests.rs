@@ -77,13 +77,7 @@ impl DjEngine for Probe {
         }
     }
 
-    fn on_playback(
-        &self,
-        _: DjSpeakers<'_>,
-        _: &mut dyn Store,
-        _: &PlayerPlayback,
-        _: &dyn Clock,
-    ) {
+    fn on_playback(&self, _: DjSpeakers<'_>, _: &mut dyn Store, _: &PlayerPlayback, _: &dyn Clock) {
         unreachable!("this surface has no live model")
     }
 }
@@ -296,7 +290,11 @@ fn unchanged_results_have_no_undo_but_clamps_and_failures_keep_it() {
         notes: Vec::new(),
     };
     let before = Some("snapshot".into());
-    assert!(log_entry(&Ok(outcome.clone()), before.clone(), 0).2.is_none());
+    assert!(
+        log_entry(&Ok(outcome.clone()), before.clone(), 0)
+            .2
+            .is_none()
+    );
     outcome.notes.push(Note {
         code: NoteCode::VolumeClamped,
         detail: "lowered a room before the command".into(),

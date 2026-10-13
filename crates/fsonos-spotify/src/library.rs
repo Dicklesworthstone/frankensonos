@@ -16,6 +16,7 @@ use crate::classical::normalize;
 use crate::client::{Album, Endpoints, Paging, SavedAlbum, SavedTrack, SimplifiedTrack};
 
 mod albums;
+mod intake;
 
 /// How a track entered the owner's library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -245,7 +246,7 @@ pub struct LibraryRead {
     pages: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Fetch {
     SavedAlbums(String),
     SavedTracks(String),
@@ -290,13 +291,15 @@ impl LibraryRead {
         self.pending.front().map(Fetch::url)
     }
 
-    /// Feed the body of a successful response to [`Self::next_url`].
+    /// Feed the body of a successful response to [`Self::next_url`]. A failed
+    /// page leaves its request and all previously accepted items unchanged,
+    /// so a corrected response can be ingested without skipping any music.
     pub fn ingest(&mut self, body: &[u8]) -> Result<(), SpotifyError> {
-        let fetch = self
-            .pending
-            .pop_front()
-            .ok_or_else(|| SpotifyError::Decode("library read already complete".into()))?;
-        self.pages += 1;
+        self.ingest_atomic(body)
+    }
+
+    /// Decode one page into a private staging reader.
+    fn ingest_page(&mut self, fetch: Fetch, body: &[u8]) -> Result<(), SpotifyError> {
         match fetch {
             Fetch::SavedAlbums(_) => {
                 let page = Paging::<SavedAlbum>::parse(body)?;

@@ -11,9 +11,8 @@ impl LibraryRead {
         let reload = saved.album.tracks.as_ref().is_none_or(|page| {
             page.offset != 0
                 || (page.next.is_none()
-                    && u32::try_from(page.items.len()).is_ok_and(|count| {
-                        count < page.total.max(saved.album.total_tracks)
-                    }))
+                    && u32::try_from(page.items.len())
+                        .is_ok_and(|count| count < page.total.max(saved.album.total_tracks)))
         });
         let next = if reload {
             // Missing tracks are not an empty album. Re-read from zero rather
@@ -21,7 +20,11 @@ impl LibraryRead {
             Some(self.endpoints.album_tracks(&saved.album.id, 0))
         } else {
             self.items.extend(saved.library_items());
-            saved.album.tracks.as_ref().and_then(|page| page.next.clone())
+            saved
+                .album
+                .tracks
+                .as_ref()
+                .and_then(|page| page.next.clone())
         };
         if let Some(url) = next {
             let album = Box::new(crate::client::Album {
