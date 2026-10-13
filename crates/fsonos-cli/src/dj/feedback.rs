@@ -1,7 +1,7 @@
 //! The owner's feedback to the DJ (see `fsonos_api::surface::dj_feedback`):
 //! likes and dislikes of the work playing, and the signals playback gives on
 //! its own. A movement left within 30 s of starting is an early skip; a work
-//! heard to the end of its last movement is a full listen. fsonos-spotify's
+//! heard in order through every movement earns a full listen. fsonos-spotify's
 //! feedback model weighs them all into the DJ's picks (the work, its composer
 //! and its performer), decaying over weeks.
 
@@ -28,18 +28,20 @@ use crate::config::GlobalArgs;
 use crate::dj_view::store_failure;
 use crate::remote::Daemon;
 
+mod attribution;
+
 /// The `spotify:track:<id>` a speaker's track URI plays, if it plays one.
 #[must_use]
 pub fn source_of(track_uri: &str) -> Option<String> {
-    let lower = track_uri.to_ascii_lowercase();
-    let start = ["spotify%3atrack%3a", "spotify:track:"]
-        .iter()
-        .find_map(|marker| lower.find(marker).map(|i| i + marker.len()))?;
-    let id: String = track_uri[start..]
-        .chars()
-        .take_while(char::is_ascii_alphanumeric)
-        .collect();
-    (!id.is_empty()).then(|| format!("spotify:track:{id}"))
+    let path = track_uri
+        .strip_prefix("x-sonos-spotify:")
+        .unwrap_or(track_uri)
+        .split('?')
+        .next()?;
+    let decoded = path.replace("%3a", ":").replace("%3A", ":");
+    let id = decoded.strip_prefix("spotify:track:")?;
+    (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+        .then(|| format!("spotify:track:{id}"))
 }
 
 /// A movement of one of the DJ's works, as it starts playing.
@@ -51,6 +53,29 @@ pub struct Movement {
     /// It is the work's last movement.
     pub last: bool,
     pub duration_secs: Option<u32>,
+    /// Exact ordered track identities distinguish recordings of one work.
+    pub recording: Vec<String>,
+    pub index: usize,
+    /// An early skip requires observing this track near its start.
+    pub started: bool,
+    /// Attribution captured before a library reload can remove/change it.
+    pub evidence: FeedbackSignal,
+}
+
+impl Movement {
+    fn same_recording(&self, other: &Self) -> bool {
+        self.work_key == other.work_key && self.recording == other.recording
+    }
+
+    fn same_track(&self, other: &Self) -> bool {
+        self.same_recording(other) && self.index == other.index
+    }
+
+    fn mostly_heard(&self, heard: u64) -> bool {
+        self.duration_secs
+            .filter(|&seconds| seconds > 0)
+            .is_some_and(|d| heard.saturating_mul(10) >= u64::from(d) * 9)
+    }
 }
 
 /// One group's listening, for the signals playback gives on its own.
@@ -58,6 +83,9 @@ pub struct Movement {
 pub struct Listening {
     /// The movement and accumulated seconds observed in Playing state.
     current: Option<(Movement, u64)>,
+    /// All earlier movements of this recording were observed in order.
+    prefix_complete: bool,
+    finished: Option<FeedbackSignal>,
     observed_at: Option<i64>,
     advancing: bool,
     /// Production observations use elapsed monotonic time, not the wall clock
@@ -66,6 +94,16 @@ pub struct Listening {
 }
 
 impl Listening {
+    /// Lost ownership or unreadable identity is not a listener's preference.
+    fn interrupt(&mut self) {
+        self.advancing = false;
+        self.prefix_complete = false;
+        self.finished = None;
+        if let Some((movement, _)) = &mut self.current {
+            movement.started = false;
+        }
+    }
+
     fn observe(
         &mut self,
         transport: Option<TransportState>,
@@ -84,6 +122,7 @@ impl Listening {
         transport: Option<TransportState>,
         playing: Option<Movement>,
     ) -> Option<(String, Signal)> {
+        self.finished = None;
         if self.observed_at.is_some_and(|at| now < at) {
             return None;
         }
@@ -100,24 +139,50 @@ impl Listening {
             _ => return None,
         };
         if let (Some((heard, _)), Some(next)) = (&mut self.current, &playing)
-            && heard.position == next.position
-            && heard.work_key == next.work_key
+            && heard.same_track(next)
         {
-            // Initial events can lack the duration; a later same-track event
-            // may supply it without restarting the listening interval.
-            heard.duration_secs = next.duration_secs.or(heard.duration_secs);
+            if heard.position != next.position {
+                // A trim, queue edit or replay may reuse the same URI at a
+                // different slot. Do not manufacture an early skip, and do
+                // not infer a complete traversal across this discontinuity.
+                self.interrupt();
+                let mut next = next.clone();
+                next.started = false;
+                self.current = Some((next, 0));
+            } else {
+                heard.duration_secs = next.duration_secs.or(heard.duration_secs);
+            }
             return None;
         }
-        let (movement, heard) = std::mem::replace(&mut self.current, playing.map(|m| (m, 0)))?;
-        let duration = movement.duration_secs.filter(|&seconds| seconds > 0);
-        let most = duration.is_some_and(|d| heard.saturating_mul(10) >= u64::from(d) * 9);
-        if most {
-            return movement.last.then_some((movement.work_key, Signal::FullListen));
-        }
-        // A missing/zero duration cannot prove completion. Short known tracks
-        // heard in full were handled above, before the early-skip threshold.
-        (heard < EARLY_SKIP_SECS.unsigned_abs())
-            .then_some((movement.work_key, Signal::EarlySkip))
+        self.finish(playing)
+    }
+
+    fn finish(&mut self, playing: Option<Movement>) -> Option<(String, Signal)> {
+        let previous = self.current.take();
+        let prefix = self.prefix_complete;
+        self.prefix_complete = playing.as_ref().is_some_and(|next| {
+            next.index == 0
+                || previous.as_ref().is_some_and(|(old, heard)| {
+                    prefix
+                        && old.mostly_heard(*heard)
+                        && old.same_recording(next)
+                        && old.index.checked_add(1) == Some(next.index)
+                })
+        });
+        self.current = playing.map(|movement| (movement, 0));
+        let (movement, heard) = previous?;
+        let most = movement.mostly_heard(heard);
+        let signal = if most && movement.last && prefix {
+            Signal::FullListen
+        } else if !most && movement.started && heard < EARLY_SKIP_SECS.unsigned_abs() {
+            Signal::EarlySkip
+        } else {
+            return None;
+        };
+        let mut evidence = movement.evidence;
+        evidence.signal = signal;
+        self.finished = Some(evidence);
+        Some((movement.work_key, signal))
     }
 }
 
@@ -136,24 +201,40 @@ pub(super) fn implicit(
     playback: &PlayerPlayback,
     now: i64,
 ) -> bool {
-    let playing = playback.queue_position.and_then(|position| {
-        let work = feed.queued().iter().find(|w| w.contains(position))?;
-        Some(Movement {
-            position,
-            work_key: work.work_key.clone(),
-            last: work.movements.last().and_then(|m| m.position) == Some(position),
-            duration_secs: playback.duration_secs,
-        })
-    });
-    let Some((key, signal)) = listening.observe(playback.transport, playing) else {
+    if !feed.is_active() {
+        listening.interrupt();
+        return false;
+    }
+    let playing = attribution::movement(
+        feed.queued(),
+        pool,
+        playback,
+        listening.current.as_ref().map(|(movement, _)| movement),
+    );
+    if playback.transport == Some(TransportState::Playing) && playing.is_none() {
+        listening.interrupt();
+        return false;
+    }
+    if playback.transport == Some(TransportState::Stopped)
+        && let Some(uri) = playback.track_uri.as_deref().filter(|uri| !uri.is_empty())
+        && let Some((previous, _)) = &listening.current
+        && source_of(uri).as_ref() != previous.recording.get(previous.index)
+    {
+        listening.interrupt();
+        return false;
+    }
+    let _ = listening.observe(playback.transport, playing);
+    let Some(mut evidence) = listening.finished.take() else {
         return false;
     };
-    let Some(work) = pool.works().iter().find(|w| w.work_key == key) else {
-        return false;
-    };
-    match record(store, work, signal, now) {
+    evidence.at = now;
+    match store.record_feedback(&evidence.to_store()) {
         Ok(()) => {
-            tracing::info!(work = %work.title, ?signal, "the DJ noted how a work was heard");
+            tracing::info!(
+                work = ?evidence.work_key,
+                signal = ?evidence.signal,
+                "the DJ noted how a recording was heard"
+            );
             true
         }
         Err(e) => {
@@ -244,6 +325,7 @@ pub fn run(global: &GlobalArgs, zone: Option<&str>, feedback: DjFeedback) -> any
 
 #[cfg(test)]
 mod tests {
+    mod attribution;
     mod listening;
 
     use super::*;
@@ -256,6 +338,19 @@ mod tests {
             work_key: work.into(),
             last,
             duration_secs: Some(180),
+            recording: vec![format!("spotify:track:{work}{position}")],
+            index: 0,
+            started: true,
+            evidence: FeedbackSignal {
+                at: 0,
+                work_key: Some(work.into()),
+                composer_key: None,
+                performer: None,
+                artist_key: None,
+                album_key: None,
+                genres: Vec::new(),
+                signal: Signal::FullListen,
+            },
         }
     }
 
