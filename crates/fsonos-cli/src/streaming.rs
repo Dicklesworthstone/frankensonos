@@ -86,7 +86,7 @@ fn launch_encoder(args: &StreamArgs) -> anyhow::Result<Child> {
 /// bitstream; a reconnecting player can start at the next MP3 frame. The
 /// listener never hosts the control API or accepts writes.
 fn serve(
-    listener: TcpListener,
+    listener: &TcpListener,
     path: &str,
     mut audio: impl Read,
     stop: &AtomicBool,
@@ -221,7 +221,7 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     }
     let server = thread::Builder::new()
         .name("fsonos-live-mp3".into())
-        .spawn(move || serve(listener, &path, stdout, &started))?;
+        .spawn(move || serve(&listener, &path, stdout, &started))?;
 
     let play = direct.run("play", |rooms| {
         fsonos_api::plan::plan_play(
@@ -289,18 +289,6 @@ mod tests {
 
     #[test]
     fn stream_serves_only_its_unguessable_path() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopping = Arc::clone(&stop);
-        let handle = thread::spawn(move || {
-            serve(
-                listener,
-                "/stream/example.mp3",
-                Cursor::new(b"mp3-frames".to_vec()),
-                &stopping,
-            )
-        });
         fn fetch(address: SocketAddr, path: &str) -> String {
             let mut socket = TcpStream::connect(address).unwrap();
             socket
@@ -315,6 +303,18 @@ mod tests {
             socket.read_to_string(&mut response).unwrap();
             response
         }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+        let handle = thread::spawn(move || {
+            serve(
+                &listener,
+                "/stream/example.mp3",
+                Cursor::new(b"mp3-frames".to_vec()),
+                &stopping,
+            )
+        });
         assert!(fetch(address, "/stream/guess.mp3").starts_with("HTTP/1.1 404"));
         let correct = fetch(address, "/stream/example.mp3");
         assert!(correct.starts_with("HTTP/1.1 200"));
