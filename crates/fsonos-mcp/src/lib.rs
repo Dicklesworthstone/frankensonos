@@ -117,10 +117,19 @@ pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
 
 /// The tool error for `failure`: the `CODE: detail. Hint: ...` text an agent
 /// reads (see `docs/ERRORS.md`). Both protocol eras deliver it as a tool
-/// result with `isError` set; the code travels in the text.
+/// result with `isError` set; under 2026-07-28 its structured content is the
+/// error body HTTP answers (code, detail, hint, suggestions, retryable), the
+/// error's data here.
 #[must_use]
 pub fn tool_error(failure: &Failure) -> McpError {
-    McpError::tool_error(failure.tool_text())
+    match serde_json::to_value(failure.body()) {
+        Ok(body) => McpError::with_data(
+            fastmcp::McpErrorCode::ToolExecutionError,
+            failure.tool_text(),
+            body,
+        ),
+        Err(_) => McpError::tool_error(failure.tool_text()),
+    }
 }
 
 #[cfg(test)]
@@ -195,6 +204,14 @@ mod tests {
             "UNKNOWN_ROOM: unknown room \"Kichen\". Hint: Use a suggested room, or list rooms \
              with list_zones (GET /zones). Did you mean: Kitchen@S1?"
         );
+        // The body HTTP answers, for the 2026-07-28 structured content.
+        assert_eq!(
+            err.data,
+            Some(serde_json::to_value(failure.body()).unwrap()),
+            "{err:?}"
+        );
+        assert_eq!(err.data.as_ref().unwrap()["code"], "UNKNOWN_ROOM");
+        assert_eq!(err.data.as_ref().unwrap()["retryable"], false);
     }
 
     #[test]

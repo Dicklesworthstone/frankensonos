@@ -98,6 +98,19 @@ other request gets 403 before OAuth, session or tool handling, on both the
 dual-era and the modern-only connection paths. FrankenSonos passes the HTTP
 API's Host names (`fsonos_api::WebPolicy::hosts`).
 
+## Coded tool errors as structured content
+
+Under protocol 2026-07-28, a tool's handler error became an `isError` result
+whose only content was the error's text. Its structured content came solely
+from the tool's static error mapping, which exists only for tools that declare
+an `outputSchema`. So the code, hint and suggestions a FrankenSonos failure
+carries could reach an agent only as text. The local patch keeps that mapping
+where a tool has one; otherwise the result's structured content is the error's
+`data`, when that is a JSON object. FrankenSonos sets it to the body the HTTP
+API answers (`fsonos_mcp::tool_error`). Terminal framework errors, the
+2024-11-05 result (text only, as for successes) and every tool with an
+`outputSchema` are unchanged.
+
 ## Regression coverage
 
 `crates/fsonos-cli/tests/e2e_announce.rs` sends a WAV with two MiB of metadata
@@ -116,6 +129,10 @@ legacy SSE request and a streamable-HTTP tool call under a foreign `Host` and
 passes only on 403 without a session or a result. The same scenario, and
 `e2e_behind_serve.rs` (a `*.ts.net` Host from Tailscale Serve), confirm that
 the listener's own names still reach the tools.
+
+`crates/fsonos-cli/tests/e2e_mcp_errors.rs` calls a tool that refuses over the
+2026-07-28 MCP listener and passes only when its structured content equals the
+HTTP API's body for the same request.
 
 `crates/fsonos-api/tests/http_api.rs`
 (`a_tailnet_caller_is_named_by_the_tailnet`) serves the API over a real socket

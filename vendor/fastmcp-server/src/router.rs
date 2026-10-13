@@ -5557,10 +5557,14 @@ impl Router {
                 Ok(result)
             }
             Outcome::Err(error) => {
-                let error = sanitize_handler_error(request_ctx.cx(), "tool", error);
+                let mut error = sanitize_handler_error(request_ctx.cx(), "tool", error);
                 if is_framework_terminal_final_tool_error(&error) {
                     return Err(error);
                 }
+                // A tool without its own error mapping (no outputSchema) answers
+                // with the error's data object as structured content, so a
+                // client can read a coded failure without parsing its text.
+                let data = error.data.take().filter(serde_json::Value::is_object);
                 let mut result =
                     crate::handler::promote_legacy_tool_content(vec![Content::Text {
                         text: error.message,
@@ -5570,7 +5574,8 @@ impl Router {
                     .schemas
                     .errors
                     .as_ref()
-                    .map(|errors| errors.handler.clone());
+                    .map(|errors| errors.handler.clone())
+                    .or(data);
                 Ok(FinalToolOutcome::Complete(result))
             }
             Outcome::Cancelled(_) => Err(McpError::request_cancelled()),
