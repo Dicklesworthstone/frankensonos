@@ -8,7 +8,10 @@
 //! that file (or `FSONOS_HTTP_ADDR` when set) and checks it with
 //! `GET /health` within [`PROBE`]. With no file, or no answer, it runs
 //! directly, so the CLI never waits on a daemon that is not there.
-//! `--daemon` requires the daemon; `--direct` never asks it. A command
+//! `--daemon` requires the daemon; `--direct` never asks it. From another
+//! machine, `--daemon-url` (`FSONOS_DAEMON_URL`) names the daemon by URL,
+//! Tailscale Serve's HTTPS one included: every command goes there, as the
+//! caller the daemon sees (a tailnet login behind Serve). A command
 //! confined to a simulator (`--routes`) asks only a daemon running under the
 //! same routes file, and one without it never asks a simulator's daemon.
 //! The DJ's reads (`fsonos dj status|why|moods`, see `crate::dj_cmd`), its
@@ -36,6 +39,7 @@ use fsonos_api::{
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -55,6 +59,10 @@ pub const PROBE: Duration = Duration::from_millis(150);
 
 /// How long a command through the daemon may take.
 const CALL: Duration = Duration::from_secs(120);
+
+/// How long a daemon named by URL may take to answer its probe: a TLS
+/// handshake across the tailnet, not a loopback connect.
+const URL_PROBE: Duration = Duration::from_secs(10);
 
 /// Synthesis and playback can each take minutes; allow the daemon's
 /// twenty-minute request deadline to report its outcome first.
@@ -134,10 +142,27 @@ fn read_daemon_file(dir: &Path) -> Option<DaemonFile> {
     serde_json::from_str(&std::fs::read_to_string(dir.join(DAEMON_FILE)).ok()?).ok()
 }
 
+/// Where a daemon answers: its loopback socket (from daemon.json or
+/// `FSONOS_HTTP_ADDR`), or a URL (`--daemon-url`).
+#[derive(Debug, Clone)]
+enum Endpoint {
+    Socket(SocketAddr),
+    Url(String),
+}
+
+impl fmt::Display for Endpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Socket(addr) => write!(f, "{addr}"),
+            Self::Url(url) => f.write_str(url),
+        }
+    }
+}
+
 /// A running daemon that answered the probe.
 #[derive(Debug, Clone)]
 pub struct Daemon {
-    addr: SocketAddr,
+    addr: Endpoint,
     token: Option<String>,
     /// The local client the calls come from when not the CLI
     /// ([`Daemon::for_stdio_mcp`]).
@@ -151,6 +176,9 @@ impl Daemon {
     pub fn find(global: &GlobalArgs, require: bool) -> Result<Option<Self>, Failure> {
         if global.direct {
             return Ok(None);
+        }
+        if let Some(url) = &global.daemon_url {
+            return Self::at_url(url).map(Some);
         }
         let file = global.data_dir().as_deref().and_then(read_daemon_file);
         // `FSONOS_HTTP_ADDR` is also serve's bind address: a wildcard or port 0
@@ -197,7 +225,7 @@ impl Daemon {
             return Ok(None);
         }
         let daemon = Self {
-            addr,
+            addr: Endpoint::Socket(addr),
             token,
             claim: None,
         };
@@ -205,6 +233,34 @@ impl Daemon {
             Ok(()) => Ok(Some(daemon)),
             Err(why) => refuse(require, &format!("no daemon answered at {addr}: {why}")),
         }
+    }
+
+    /// The daemon at `url` (`--daemon-url`), which must answer: a remote
+    /// caller never runs directly against the LAN it is not on.
+    fn at_url(url: &str) -> Result<Self, Failure> {
+        let url = url.trim().trim_end_matches('/');
+        if !(url.starts_with("https://") || url.starts_with("http://")) {
+            return Err(Failure::invalid(format!(
+                "--daemon-url wants an http:// or https:// URL, got {url:?}"
+            ))
+            .with_hint("e.g. https://<mac>.<tailnet>.ts.net behind Tailscale Serve."));
+        }
+        let daemon = Self {
+            addr: Endpoint::Url(url.to_owned()),
+            token: None,
+            claim: None,
+        };
+        daemon.healthy().map_err(|why| {
+            Failure::new(
+                ErrorCode::NotReady,
+                format!("no daemon answered at {url}: {why}"),
+            )
+            .with_hint(
+                "Check the URL, that fsonos serve runs there, and that this machine is on \
+                 the tailnet.",
+            )
+        })?;
+        Ok(daemon)
     }
 
     /// Call as the stdio MCP server (`fsonos mcp`) rather than the CLI, so
@@ -335,7 +391,17 @@ impl Daemon {
             )
             .with_hint("Check that fsonos serve runs.")
         };
-        let mut stream = TcpStream::connect_timeout(&self.addr, PROBE).map_err(lost)?;
+        let Endpoint::Socket(addr) = &self.addr else {
+            return Err(Failure::new(
+                ErrorCode::NotImplemented,
+                format!(
+                    "the event stream comes only from a daemon on this machine, not {}",
+                    self.addr
+                ),
+            )
+            .with_hint("Run fsonos events on the daemon's host, or read GET /events there."));
+        };
+        let mut stream = TcpStream::connect_timeout(addr, PROBE).map_err(lost)?;
         stream.set_read_timeout(Some(quiet)).map_err(lost)?;
         stream.set_write_timeout(Some(CALL)).map_err(lost)?;
         let request = self.request("GET", path, "", "text/event-stream");
@@ -357,8 +423,8 @@ impl Daemon {
         Ok((reader, chunked))
     }
 
-    /// One HTTP/1.1 exchange over a fresh loopback connection: the status
-    /// and the body.
+    /// One HTTP/1.1 exchange over a fresh loopback connection (or through
+    /// the HTTP client, to a daemon named by URL): the status and the body.
     fn exchange(
         &self,
         method: &str,
@@ -366,7 +432,13 @@ impl Daemon {
         body: Option<&str>,
         timeout: Duration,
     ) -> io::Result<(u16, String)> {
-        let mut stream = TcpStream::connect_timeout(&self.addr, timeout.min(PROBE))?;
+        let addr = match &self.addr {
+            Endpoint::Socket(addr) => addr,
+            Endpoint::Url(url) => {
+                return exchange_url(url, method, path, body, timeout.max(URL_PROBE));
+            }
+        };
+        let mut stream = TcpStream::connect_timeout(addr, timeout.min(PROBE))?;
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
         let request = self.request(method, path, body.unwrap_or_default(), "application/json");
@@ -401,6 +473,49 @@ impl Daemon {
         request.push_str(body);
         request
     }
+}
+
+/// One request to the daemon at `url` through asupersync's HTTP client (TLS
+/// for https, as Tailscale Serve answers): the status and the body.
+fn exchange_url(
+    url: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    timeout: Duration,
+) -> io::Result<(u16, String)> {
+    let (target, method, body) = (
+        format!("{url}{path}"),
+        method.to_owned(),
+        body.map(str::to_owned),
+    );
+    let runtime = crate::runtime().map_err(|e| io::Error::other(e.to_string()))?;
+    runtime.block_on(async move {
+        let cx = asupersync::Cx::current().ok_or_else(|| io::Error::other("no ambient Cx"))?;
+        let client = asupersync::http::Client::default_for_runtime(&cx);
+        let request = match method.as_str() {
+            "POST" => client.post(target),
+            "PUT" => client.put(target),
+            "DELETE" => client.delete(target),
+            _ => client.get(target),
+        };
+        let mut request = request
+            .header("Accept", "application/json")
+            .timeout(timeout);
+        if let Some(body) = body {
+            request = request
+                .header("Content-Type", "application/json")
+                .body(body);
+        }
+        let response = request
+            .send(&cx)
+            .await
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        Ok((
+            response.status,
+            String::from_utf8_lossy(&response.body).into_owned(),
+        ))
+    })
 }
 
 /// The daemon's refusal of `method path` (`status`, body `text`) as the
@@ -931,7 +1046,7 @@ mod tests {
     fn a_lost_announcement_response_never_suggests_replaying_it() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let daemon = Daemon {
-            addr: listener.local_addr().unwrap(),
+            addr: Endpoint::Socket(listener.local_addr().unwrap()),
             token: None,
             claim: None,
         };
@@ -999,7 +1114,7 @@ mod tests {
         let bind = || std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let listener = bind();
         let with_token = Daemon {
-            addr: listener.local_addr().unwrap(),
+            addr: Endpoint::Socket(listener.local_addr().unwrap()),
             token: Some("secret".into()),
             claim: None,
         }
@@ -1012,7 +1127,7 @@ mod tests {
         // Without the token there is nothing to claim with.
         let listener = bind();
         let without = Daemon {
-            addr: listener.local_addr().unwrap(),
+            addr: Endpoint::Socket(listener.local_addr().unwrap()),
             token: None,
             claim: None,
         }
@@ -1082,7 +1197,7 @@ mod tests {
         let addr = free.local_addr().unwrap();
         drop(free);
         let daemon = Daemon {
-            addr,
+            addr: Endpoint::Socket(addr),
             token: None,
             claim: None,
         };

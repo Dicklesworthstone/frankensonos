@@ -376,6 +376,58 @@ fn scenes_schedules_and_the_policy_are_the_daemons_from_elsewhere() {
     s.finish();
 }
 
+/// From another machine by URL (`--daemon-url`, as Tailscale Serve's
+/// `https://<mac>.<tailnet>.ts.net` would be): commands answer from that
+/// daemon, with no daemon.json, routes or seeds of their own.
+#[test]
+fn a_daemon_url_reaches_the_daemon_from_elsewhere() {
+    let mut s = Scenario::start("daemon-client-url");
+    s.sim(SimHousehold::standard());
+    let mut daemon = s.spawn("serve", &["serve", "--http", "127.0.0.1:0"]);
+    let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
+    let http = json(&daemon_file(&s))["http"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let dir = s.dir().join("elsewhere");
+    std::fs::create_dir_all(&dir).expect("create the other machine's data directory");
+    let dir = dir.display().to_string();
+    let env = [("FSONOS_DATA_DIR", dir.as_str())];
+    let unset = ["FSONOS_ROUTES", "FSONOS_SEEDS"];
+    let url = format!("http://{http}/");
+    let zones = s.cli_env(
+        "zones-by-url",
+        &["--daemon-url", &url, "--json", "zones"],
+        &env,
+        &unset,
+    );
+    s.check(
+        "by-url",
+        "cli",
+        "zones by the daemon's URL answers with the daemon's house",
+        live.is_some()
+            && zones.ok()
+            && json(&zones.stdout)
+                .as_array()
+                .is_some_and(|z| !z.is_empty()),
+        format!("{zones:?}"),
+    );
+    let bad = s.cli_env(
+        "bad-url",
+        &["--daemon-url", "ftp://nowhere", "zones"],
+        &env,
+        &unset,
+    );
+    s.check(
+        "bad-url",
+        "cli",
+        "a URL that is not http(s) is an invalid argument (exit 2)",
+        bad.code == Some(2) && bad.stderr.contains("INVALID_ARGUMENT"),
+        format!("{bad:?}"),
+    );
+    s.finish();
+}
+
 #[test]
 fn daemon_and_direct_say_what_they_mean() {
     let mut s = Scenario::start("daemon-client-flags");

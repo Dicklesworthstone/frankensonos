@@ -314,6 +314,13 @@ same URL, typically as
 Plain HTTP clients use the API directly, e.g.
 `curl https://<mac>.<tailnet>.ts.net/zones`.
 
+The `fsonos` CLI on another tailnet machine sends every command to the Mac's
+daemon by its URL: `fsonos --daemon-url https://<mac>.<tailnet>.ts.net zones`,
+or `export FSONOS_DAEMON_URL=https://<mac>.<tailnet>.ts.net` once. It answers
+as that machine's tailnet login under the house policy, never surveys the LAN
+it is on, and fails rather than runs directly when the daemon does not answer.
+`fsonos events` streams only on the daemon's own host.
+
 Over stdio, `fsonos mcp` hands the tools that need the daemon's running state to
 `fsonos serve` whenever it runs: `dj_start`, `dj_steer`, `dj_skip`, `dj_stop`,
 `dj_status`, `apply_scene` and the sleep-timer tools act on serve's DJ (which

@@ -60,6 +60,12 @@ pub struct GlobalArgs {
     #[arg(long, global = true, conflicts_with = "direct")]
     pub daemon: bool,
 
+    /// The daemon to send commands to from another machine on the tailnet:
+    /// its URL, e.g. `https://<mac>.<tailnet>.ts.net` behind Tailscale Serve
+    /// or `http://<tailnet address>:8099`. Implies --daemon.
+    #[arg(long, env = "FSONOS_DAEMON_URL", value_name = "URL", global = true)]
+    pub daemon_url: Option<String>,
+
     /// Data directory for the store database, the Spotify token cache, and
     /// `policy.toml` [default: the OS per-user data directory, under
     /// `fsonos`; with --routes, `data` beside the routes file].

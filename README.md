@@ -41,7 +41,9 @@ can drive:
 - **From anywhere on your tailnet.** `fsonos serve` serves its HTTP API on
   loopback and your Tailscale addresses (MCP on loopback), and `fsonos tailscale
   setup` puts HTTPS in front of both with Tailscale Serve. Your phone in another city, an agent on a cloud VM,
-  a laptop at work: if it is on your tailnet, it runs your house. Nothing is
+  a laptop at work: if it is on your tailnet, it runs your house (the CLI
+  there too: `FSONOS_DAEMON_URL=https://<mac>.<tailnet>.ts.net fsonos pause
+  Kitchen`). Nothing is
   exposed to the public internet, Funnel is never used, and the speakers never
   leave your LAN.
 - **Built for agents, with guardrails.** Every surface (CLI, HTTP, MCP) goes
