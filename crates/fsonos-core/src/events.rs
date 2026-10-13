@@ -320,13 +320,15 @@ impl Subscriptions {
             .min()
     }
 
-    /// The player and service a NOTIFY belongs to; `None` for an unknown SID
-    /// (a subscription already dropped, or a stray).
+    /// The player and service for a forward NOTIFY; `None` for an unknown
+    /// SID or a duplicate/older event. Routing does not consume the event:
+    /// call [`Self::missed`] after routing to advance its sequence cursor.
+    /// Reject replays here, before they can roll back playback or topology.
     #[must_use]
     pub fn route(&self, n: &Notify) -> Option<(&PlayerId, Service)> {
         self.active
             .iter()
-            .find(|a| a.sid == n.sid)
+            .find(|a| a.sid == n.sid && sequence_gap(a.last_seq, n.seq).is_some())
             .map(|a| (&a.want.player, a.want.service))
     }
 
@@ -845,5 +847,102 @@ mod tests {
             );
             assert_eq!(subscriber.calls.get(), 2);
         }
+    }
+
+    #[test]
+    fn routing_rejects_replays_for_every_service_without_consuming_events() {
+        for service in [
+            Service::AvTransport,
+            Service::RenderingControl,
+            Service::GroupRenderingControl,
+            Service::ZoneGroupTopology,
+        ] {
+            let subscriber = TestSubscriber::default();
+            let mut subs = Subscriptions::default();
+            let target = Want { service, ..want() };
+            subs.sync(&subscriber, &[target], callback, Instant::now());
+            for seq in 0..=2 {
+                let n = notify("uuid:events-test", seq);
+                assert!(subs.route(&n).is_some());
+                assert!(subs.route(&n).is_some(), "routing must not consume SEQ");
+                assert!(!subs.missed(&n));
+                assert!(subs.route(&n).is_none(), "duplicate {service:?}: {seq}");
+            }
+            assert!(subs.route(&notify("uuid:events-test", 0)).is_none());
+            assert!(subs.route(&notify("uuid:events-test", 1)).is_none());
+            assert!(subs.route(&notify("uuid:unknown", 3)).is_none());
+            // A forward gap must still reach the reconciler for recovery.
+            let gap = notify("uuid:events-test", 4);
+            assert!(subs.route(&gap).is_some());
+            assert!(subs.missed(&gap));
+            assert!(subs.route(&notify("uuid:events-test", 3)).is_none());
+        }
+    }
+
+    #[test]
+    fn routing_rejects_delayed_pre_wrap_events_but_accepts_a_new_sid() {
+        let subscriber = TestSubscriber {
+            renewal_sid: Some("uuid:replacement"),
+        };
+        let mut subs = Subscriptions::default();
+        let now = Instant::now();
+        subs.sync(&subscriber, &[want()], callback, now);
+        assert!(subs.missed(&notify("uuid:events-test", u32::MAX)));
+        let wrapped = notify("uuid:events-test", 1);
+        assert!(subs.route(&wrapped).is_some());
+        assert!(!subs.missed(&wrapped));
+        assert!(subs.route(&notify("uuid:events-test", u32::MAX)).is_none());
+        assert!(subs.route(&notify("uuid:events-test", 0)).is_none());
+        subs.renew_due(&subscriber, callback, now + Duration::from_secs(150));
+        assert!(subs.route(&notify("uuid:events-test", 2)).is_none());
+        assert!(subs.route(&notify("uuid:replacement", 0)).is_some());
+    }
+
+    fn playback_notify(seq: u32, transport: &str, track: &str) -> Notify {
+        let mut n = notify("uuid:events-test", seq);
+        n.properties.push((
+            "LastChange".into(),
+            format!(
+                "<Event><InstanceID val=\"0\"><TransportState val=\"{transport}\"/>\
+                 <CurrentTrackURI val=\"{track}\"/></InstanceID></Event>"
+            ),
+        ));
+        n
+    }
+
+    #[test]
+    fn reconciler_does_not_roll_back_playback_or_health_on_replayed_events() {
+        let subscriber = TestSubscriber::default();
+        let now = Instant::now();
+        let mut rec = crate::reconcile::Reconciler::new(RETRY, RETRY, now);
+        rec.subscriptions.sync(&subscriber, &[want()], callback, now);
+        let mut playback = Playback::default();
+        let first = playback_notify(0, "PLAYING", "test:track-a");
+        let next = playback_notify(1, "PAUSED_PLAYBACK", "test:track-b");
+        for n in [&first, &next] {
+            let at = now + Duration::from_secs(u64::from(n.seq));
+            assert!(
+                rec.on_notify(&subscriber, &mut playback, n, callback, at)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        let state = playback.of(&want().player).unwrap().clone();
+        let health = rec.health.of(&want().player).unwrap().clone();
+        for stale in [&first, &next] {
+            assert!(
+                rec.on_notify(&subscriber, &mut playback, stale, callback, now + RETRY)
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(playback.of(&want().player), Some(&state));
+            assert_eq!(rec.health.of(&want().player), Some(&health));
+        }
+        let forward = playback_notify(2, "PLAYING", "test:track-b");
+        let report = rec
+            .on_notify(&subscriber, &mut playback, &forward, callback, now + RETRY)
+            .unwrap()
+            .unwrap();
+        assert!(report.changes.transport.is_some());
     }
 }
