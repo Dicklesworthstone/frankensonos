@@ -44,7 +44,7 @@ use fsonos_types::PlayerId;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::dj_view::{self, steer_failure, store_failure};
 
@@ -56,6 +56,9 @@ pub(crate) mod sync;
 
 /// The moods file's name inside the data directory.
 pub const MOODS_FILE: &str = "moods.toml";
+
+/// Failed plan reads retry separately from speaker refill failures.
+const PLAN_RETRY: Duration = Duration::from_secs(30);
 
 /// See the module docs.
 pub struct SpotifyDj {
@@ -153,7 +156,7 @@ struct State {
     feeds: HashMap<PlayerId, QueueFeed>,
     /// Failed automatic top-ups, bounded independently for each group.
     refill_retries: HashMap<PlayerId, retry::Retry>,
-    /// What the DJ plans from, as of the last start or skip.
+    /// What the DJ plans from, as of the last successful rebuild.
     pool: WorkPool,
     feedback: Option<FeedbackModel>,
     moods: Moods,
@@ -162,8 +165,11 @@ struct State {
     /// Groups the music is moving away from: their playback is not acted on
     /// until the move settles (`DjEngine::moving`).
     held: HashSet<PlayerId>,
-    /// The pool has been built (feeds taken up after a restart have none).
+    /// The current library and preferences were rebuilt successfully.
+    /// False keeps a failed refresh pending while the last good plan plays.
     planned: bool,
+    /// When a failed plan rebuild can retry, independent of speaker backoff.
+    plan_retry_at: Option<Instant>,
     /// The feeds as last saved.
     saved: String,
 }
@@ -176,24 +182,52 @@ struct Context {
 }
 
 impl State {
-    /// Rebuild the pool, the feedback model and the moods.
+    /// Rebuild the pool, feedback and moods without losing the last good
+    /// preferences if any read or validation fails.
     fn reload(
         &mut self,
         store: &dyn Store,
         moods_file: Option<&PathBuf>,
         now: i64,
     ) -> Result<(), Failure> {
-        // The daemon's DJ plays from works, with partly-held works completed
-        // from the album track lists a sync cached (no network here).
-        self.pool = works_from_store(store)
-            .map_err(|e| Failure::new(ErrorCode::Internal, format!("the DJ's pool: {e}")))?;
-        // Feedback only weights the picks; without it the DJ still plays.
-        self.feedback = FeedbackModel::load(&StoreFeedback(store), now).ok();
-        self.reload_moods(moods_file)?;
-        // The owner's standing preferences shape every pick from here.
-        prefs::apply(self, moods_file)?;
-        self.planned = true;
-        Ok(())
+        let candidate = (|| -> Result<Self, Failure> {
+            // Complete partly-held works from cached album tracks, then
+            // validate the owner's constraints before publishing the pool.
+            let mut next = Self {
+                pool: works_from_store(store).map_err(|e| {
+                    Failure::new(ErrorCode::Internal, format!("the DJ's pool: {e}"))
+                })?,
+                // Feedback only weights the picks; without it the DJ still plays.
+                feedback: FeedbackModel::load(&StoreFeedback(store), now).ok(),
+                moods: self.moods.clone(),
+                ..Self::default()
+            };
+            next.reload_moods(moods_file)?;
+            prefs::apply(&mut next, moods_file)?;
+            Ok(next)
+        })();
+        match candidate {
+            Ok(next) => {
+                self.pool = next.pool;
+                self.feedback = next.feedback;
+                self.moods = next.moods;
+                self.planned = true;
+                self.plan_retry_at = None;
+                self.refill_retries.clear();
+                Ok(())
+            }
+            Err(error) => {
+                // A consumed library-sync notification must not lose this
+                // rebuild: maintenance retries it after the owner repairs it.
+                self.planned = false;
+                self.plan_retry_at = Some(Instant::now() + PLAN_RETRY);
+                Err(error)
+            }
+        }
+    }
+
+    fn reload_due(&self, now: Instant) -> bool {
+        !self.planned && self.plan_retry_at.is_none_or(|due| now >= due)
     }
 
     /// Re-read the moods and programs (the built-ins without a file).
@@ -580,11 +614,17 @@ impl DjEngine for SpotifyDj {
         if !state.feeds.contains_key(at.coordinator) || state.held.contains(at.coordinator) {
             return;
         }
-        // A library refresh landed (plan from what it found from here), or
-        // feeds taken up after a restart plan for the first time.
+        // Keep a failed rebuild pending even after consuming the library's
+        // freshness notification. A repaired plan can unblock a failed feed.
         let fresh = self.library.as_ref().is_some_and(|l| l.take_fresh());
         if fresh {
-            state.refill_retries.clear();
+            state.planned = false;
+            state.plan_retry_at = None;
+        }
+        if state.reload_due(Instant::now())
+            && let Err(f) = state.reload(store, self.moods_file.as_ref(), clock.now().timestamp())
+        {
+            tracing::warn!(detail = %f.detail, "the DJ retains its last validated plan; rebuild pending");
         }
         if state
             .refill_retries
@@ -592,11 +632,6 @@ impl DjEngine for SpotifyDj {
             .is_some_and(|retry| !retry.ready(playback, Instant::now()))
         {
             return;
-        }
-        if (fresh || !state.planned)
-            && let Err(f) = state.reload(store, self.moods_file.as_ref(), clock.now().timestamp())
-        {
-            tracing::warn!(detail = %f.detail, "the DJ plans from the pool it had");
         }
         // A session that names a mood no longer defined still plays, unsteered.
         let cx = state
@@ -696,6 +731,7 @@ impl DjEngine for SpotifyDj {
         let done = prefs::change(&mut state, self.moods_file.as_ref(), change);
         if done.is_ok() {
             state.refill_retries.clear();
+            state.plan_retry_at = None;
         }
         done
     }

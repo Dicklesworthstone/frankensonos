@@ -179,7 +179,9 @@ pub fn run(global: &GlobalArgs, action: &PrefsAction) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fsonos_core::store::MemStore;
     use fsonos_spotify::steer::Moods;
+    use std::time::{Duration, Instant};
 
     /// A state with the built-in moods, and a fresh data directory (its
     /// moods.toml absent, so the built-ins).
@@ -278,5 +280,88 @@ mod tests {
         assert_eq!(err.code, ErrorCode::InvalidArgument, "{}", err.detail);
         assert!(!moods_file.with_file_name(PREFERENCES_FILE).exists());
         assert!(matches!(show(&mut state, None), Err(f) if f.code == ErrorCode::NotImplemented));
+    }
+
+    #[test]
+    fn failed_plan_rebuild_keeps_bans_and_retries_after_configuration_is_repaired() {
+        for broken in [PREFERENCES_FILE, "moods.toml"] {
+            let (mut state, moods_file) = fresh(broken);
+            let moods = Some(&moods_file);
+            let store = MemStore::default();
+            assert!(state.reload_due(Instant::now()));
+            change(&mut state, moods, &set("ban.artists", "Blocked Artist")).unwrap();
+            state.reload(&store, moods, 100).unwrap();
+            let preferences = state.pool.preferences().clone();
+            let presets = state.moods.clone();
+            assert!(state.planned);
+            assert!(!state.reload_due(Instant::now()));
+
+            let path = moods_file.with_file_name(broken);
+            std::fs::write(&path, "not = [valid").unwrap();
+            assert!(state.reload(&store, moods, 101).is_err());
+            assert_eq!(state.pool.preferences(), &preferences);
+            assert_eq!(state.moods, presets);
+            assert!(!state.planned);
+            let due = state.plan_retry_at.expect("the rebuild must remain pending");
+            assert!(!state.reload_due(due - Duration::from_secs(1)));
+            assert!(state.reload_due(due));
+
+            if broken == PREFERENCES_FILE {
+                preferences.save(&path).unwrap();
+            } else {
+                std::fs::write(&path, "").unwrap();
+            }
+            state.reload(&store, moods, 102).unwrap();
+            assert_eq!(state.pool.preferences(), &preferences);
+            assert_eq!(state.moods, presets);
+            assert!(state.planned);
+            assert_eq!(state.plan_retry_at, None);
+            assert!(!state.reload_due(due));
+        }
+    }
+
+    #[test]
+    fn invalid_preferences_do_not_partially_publish_new_moods_on_first_reload() {
+        let (mut state, moods_file) = fresh("first-reload");
+        let before = state.moods.clone();
+        std::fs::write(
+            &moods_file,
+            "[moods.fixture]\ninclude_genres = [\"jazz\"]\n",
+        )
+        .unwrap();
+        assert_ne!(Moods::load(&moods_file).unwrap(), before);
+        std::fs::write(
+            moods_file.with_file_name(PREFERENCES_FILE),
+            "explicit = \"not a boolean\"\n",
+        )
+        .unwrap();
+        let store = MemStore::default();
+        assert!(state.reload(&store, Some(&moods_file), 100).is_err());
+        assert_eq!(state.moods, before);
+        assert_eq!(state.pool.preferences(), &Preferences::default());
+        assert!(!state.planned);
+        assert!(state.plan_retry_at.is_some());
+    }
+
+    #[test]
+    fn successful_plan_rebuild_keeps_runtime_session_bookkeeping() {
+        use fsonos_spotify::dj::DjConfig;
+        use fsonos_spotify::feed::QueueFeed;
+        use fsonos_types::PlayerId;
+
+        let (mut state, moods_file) = fresh("runtime-state");
+        let id = PlayerId("test-plan-player".into());
+        let feed = QueueFeed::new(&id, DjConfig::default(), 1);
+        state.feeds.insert(id.clone(), feed);
+        state.held.insert(id.clone());
+        state.listening.entry(id.clone()).or_default();
+        state.saved = "saved-feed-sentinel".into();
+        let store = MemStore::default();
+        state.reload(&store, Some(&moods_file), 100).unwrap();
+        assert!(state.feeds.contains_key(&id));
+        assert!(state.held.contains(&id));
+        assert!(state.listening.contains_key(&id));
+        assert_eq!(state.saved, "saved-feed-sentinel");
+        assert!(state.planned);
     }
 }
