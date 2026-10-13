@@ -105,7 +105,11 @@ fn repeated_initial_loss_recovers_all_services_without_a_delta_or_poll() {
             })
             .count();
         assert_eq!(dropped, 8);
-        assert_eq!(sim.soap_log().len(), calls, "recovery must not poll or play");
+        assert_eq!(
+            sim.soap_log().len(),
+            calls,
+            "recovery must not poll or play"
+        );
         let quiet = rec
             .subscriptions
             .renew_due(&lan, callback, due + INITIAL_STATE_WAIT);
@@ -134,7 +138,12 @@ fn a_lost_replacement_initial_repairs_stale_state_without_another_change() {
         let id = want.player.clone();
         let sink = listener(&lan, host);
         let callback = |service: Service| sink.callback_url(service.tag());
-        assert_eq!(rec.subscriptions.sync(&lan, &[want], callback, now).subscribed, 1);
+        assert_eq!(
+            rec.subscriptions
+                .sync(&lan, &[want], callback, now)
+                .subscribed,
+            1
+        );
         let mut playback = Playback::default();
         let original = receive(&sink);
         rec.on_notify(&lan, &mut playback, &original, callback, now)
@@ -157,6 +166,8 @@ fn a_lost_replacement_initial_repairs_stale_state_without_another_change() {
             .unwrap();
         assert_eq!(report.events.resubscribed, 1);
         assert!(sink.recv_timeout(Duration::from_millis(50)).is_none());
+        assert_eq!(playback.of(&id).unwrap().volume, Some(17));
+        assert_eq!(playback.of(&id).unwrap().mute, Some(true));
         let calls = sim.soap_log().len();
         let due = now + INITIAL_STATE_WAIT;
         assert_eq!(rec.subscriptions.next_due(), Some(due));
