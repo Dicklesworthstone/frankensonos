@@ -143,7 +143,11 @@ mod tests {
         let back = &read[&PlayerId(kitchen.into())];
         assert!(back.is_active());
         assert_eq!(back.snapshot(), Some(snapshot(kitchen)), "whole");
-        assert_eq!(encode(&read, &tracker), text, "read back, it saves the same");
+        assert_eq!(
+            encode(&read, &tracker),
+            text,
+            "read back, it saves the same"
+        );
 
         // A stopped feed isn't saved.
         let mut stopped = read;

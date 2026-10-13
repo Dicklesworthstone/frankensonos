@@ -32,6 +32,8 @@ use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+mod session;
+
 /// Why a move cannot go ahead as asked.
 #[derive(Debug, thiserror::Error)]
 pub enum MoveError {
@@ -424,19 +426,16 @@ pub fn party<T: Transport + ?Sized>(
 }
 
 /// Move the DJ session (if any) from the old coordinator to the new one.
-/// Returns whether there was one.
+/// Returns whether there was one. The destination is saved before the source
+/// is deleted: a failed write preserves the source, and a failed cleanup
+/// leaves both copies so the operation can be retried without losing steering.
+/// Re-keying to the same coordinator performs no writes.
 pub fn rekey_dj_session(
     store: &mut dyn Store,
     old: &PlayerId,
     new: &PlayerId,
 ) -> Result<bool, StoreError> {
-    let Some(mut session) = store.dj_session(&old.0)? else {
-        return Ok(false);
-    };
-    store.delete_dj_session(&old.0)?;
-    session.coordinator.clone_from(&new.0);
-    store.save_dj_session(&session)?;
-    Ok(true)
+    session::rekey(store, old, new)
 }
 
 /// The coordinator of the group `player` is in now, as the player's own

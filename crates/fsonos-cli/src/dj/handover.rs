@@ -7,7 +7,7 @@ use fsonos_core::HouseholdState;
 use fsonos_core::live::Snapshot;
 use fsonos_core::moving;
 use fsonos_core::reconcile::Health;
-use fsonos_core::store::{Store, StoreError};
+use fsonos_core::store::Store;
 use fsonos_proto::content::{BrowseFlag, QUEUE, browse, browse_snapshot};
 use fsonos_proto::control::{get_media_info, get_position_info};
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
@@ -215,13 +215,10 @@ impl SpotifyDj {
             }
             // Save steering first. A store failure keeps the original feed
             // and its retry intact; no speaker has been changed by this pass.
-            let steering = (|| -> Result<(), StoreError> {
-                if !moving::rekey_dj_session(store, from, to)? {
-                    store.delete_dj_session(&to.0)?;
-                }
-                Ok(())
-            })();
-            if let Err(error) = steering {
+            // An absent source may mean steering was already moved before a
+            // crash left dj-feeds.json behind. Never erase the target's copy
+            // during automatic recovery; it may also be the owner's preset.
+            if let Err(error) = moving::rekey_dj_session(store, from, to) {
                 tracing::warn!(from = %from.0, to = %to.0, %error, "DJ handover steering not saved");
                 continue;
             }
@@ -623,5 +620,23 @@ mod tests {
             members: vec![other],
         });
         assert!(tracker.replacement(&after, &from).is_none());
+    }
+
+    #[test]
+    fn interrupted_handover_keeps_the_steering_already_saved_on_the_successor() {
+        let (sim, dj, mut store, from, to) = fixture(2);
+        sim.reelect_coordinator("Den").unwrap();
+        let after = snapshot(&sim);
+        // Simulate a crash after the session database was updated, before
+        // dj-feeds.json recorded the new coordinator. The restored feed is
+        // still keyed by from, while its steering is already keyed by to.
+        assert!(moving::rekey_dj_session(&mut store, &from, &to).unwrap());
+        let expected = store.dj_session(&to.0).unwrap().unwrap();
+        assert!(dj.feeds(&from));
+        dj.on_topology(&sim.lan(), &after, &mut store);
+        assert!(!dj.feeds(&from));
+        assert!(dj.feeds(&to));
+        assert_eq!(store.dj_session(&to.0).unwrap(), Some(expected));
+        assert!(store.dj_session(&from.0).unwrap().is_none());
     }
 }
