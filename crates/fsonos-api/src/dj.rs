@@ -103,6 +103,20 @@ pub trait DjEngine: Send + Sync {
         let _ = (from, to);
     }
 
+    /// Reconcile feed ownership before processing playback, including after
+    /// a spontaneous coordinator re-election. The engine must prove that a
+    /// replacement inherited its queue before moving a feed or its steering.
+    /// Called on live events and maintenance; unchanged topology should not
+    /// cause network reads. The default leaves ownership unchanged.
+    fn on_topology(
+        &self,
+        transport: &dyn Transport,
+        snapshot: &fsonos_core::live::Snapshot,
+        store: &mut dyn Store,
+    ) {
+        let _ = (transport, snapshot, store);
+    }
+
     /// Fold `playback`, the coordinator's latest state, into its feed: record
     /// what plays and top the queue up. Failures are the engine's to log; the
     /// next playback change retries.

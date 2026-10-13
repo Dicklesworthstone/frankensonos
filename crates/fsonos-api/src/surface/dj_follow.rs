@@ -39,6 +39,16 @@ fn handle(surface: &Weak<Surface>, event: Option<LiveEvent>) -> bool {
     // implied ownership or a direct household survey.
     let snapshot = live.snapshot();
     drop(live);
+    // A spontaneous election can transfer the queue without a move command.
+    // Reconcile ownership before filtering targets by the feeds they own.
+    if let Some(dj) = &surface.dj
+        && let Err(error) = surface.with_store(|store| {
+            dj.on_topology(&*surface.transport, &snapshot, store);
+            Ok(())
+        })
+    {
+        tracing::warn!(detail = %error.detail, "DJ topology reconciliation could not access the store");
+    }
     let feeds = |id: &PlayerId| surface.dj.as_ref().is_some_and(|dj| dj.feeds(id));
     for player in targets(&snapshot, event.as_ref(), feeds) {
         // This rechecks ownership: a concurrent stop or move must not restart
@@ -329,11 +339,13 @@ mod simulator_tests {
     use fsonos_proto::net::Lan;
     use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
     use fsonos_types::PlayerId;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Sender};
 
     struct Probe {
         active: PlayerId,
         seen: Sender<Option<u8>>,
+        topology_seen: AtomicBool,
     }
 
     impl DjEngine for Probe {
@@ -377,7 +389,21 @@ mod simulator_tests {
         }
 
         fn feeds(&self, coordinator: &PlayerId) -> bool {
+            assert!(
+                self.topology_seen.load(Ordering::SeqCst),
+                "ownership must reconcile before selecting feed targets"
+            );
             *coordinator == self.active
+        }
+
+        fn on_topology(
+            &self,
+            _: &dyn fsonos_proto::Transport,
+            snapshot: &Snapshot,
+            _: &mut dyn Store,
+        ) {
+            assert!(!snapshot.households.is_empty());
+            self.topology_seen.store(true, Ordering::SeqCst);
         }
 
         fn on_playback(
@@ -440,7 +466,11 @@ mod simulator_tests {
             Box::new(SystemClock),
         )
         .with_live(live)
-        .with_dj(Box::new(Probe { active, seen }))
+        .with_dj(Box::new(Probe {
+            active,
+            seen,
+            topology_seen: AtomicBool::new(false),
+        }))
         .with_action_log(Box::new(MemStore::default()), "test");
         (Arc::new(surface), received)
     }

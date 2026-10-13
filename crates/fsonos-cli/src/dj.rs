@@ -49,6 +49,7 @@ use std::time::{Duration, Instant};
 use crate::dj_view::{self, steer_failure, store_failure};
 
 pub(crate) mod feedback;
+mod handover;
 pub(crate) mod prefs;
 mod retry;
 pub(crate) mod saved;
@@ -154,6 +155,8 @@ impl SpotifyDj {
 #[derive(Default)]
 struct State {
     feeds: HashMap<PlayerId, QueueFeed>,
+    /// The groups whose queues the feeds owned before a coordinator changed.
+    handover: handover::Tracker,
     /// Failed automatic top-ups, bounded independently for each group.
     refill_retries: HashMap<PlayerId, retry::Retry>,
     /// What the DJ plans from, as of the last successful rebuild.
@@ -494,6 +497,7 @@ impl DjEngine for SpotifyDj {
         // Explicit commands are never held behind automatic retry backoff.
         state.refill_retries.remove(at.coordinator);
         let done = self.carry_out(&mut state, at, store, action, clock);
+        state.handover.remember(at.households, at.coordinator);
         // Even a failed start can leave a feed running, part-queued.
         self.save(&mut state);
         done
@@ -601,6 +605,15 @@ impl DjEngine for SpotifyDj {
             listening.insert(to.clone(), heard);
         }
         self.save(&mut state);
+    }
+
+    fn on_topology(
+        &self,
+        transport: &dyn fsonos_proto::Transport,
+        snapshot: &fsonos_core::live::Snapshot,
+        store: &mut dyn Store,
+    ) {
+        self.reconcile_topology(transport, snapshot, store);
     }
 
     fn on_playback(
