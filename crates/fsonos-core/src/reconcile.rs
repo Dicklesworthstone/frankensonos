@@ -513,7 +513,10 @@ mod tests {
             host: std::net::Ipv4Addr::LOCALHOST.into(),
             service,
         };
-        assert_eq!(rec.subscriptions.sync(s, &[want], callback, now).subscribed, 1);
+        assert_eq!(
+            rec.subscriptions.sync(s, &[want], callback, now).subscribed,
+            1
+        );
         rec
     }
 
