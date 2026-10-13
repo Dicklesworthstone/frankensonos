@@ -102,6 +102,8 @@ pub struct Changes {
     /// The queue's length changed (tracks added or removed, perhaps from
     /// another app), even with the same track playing.
     pub queue_length: Option<u32>,
+    /// The AVTransport play mode changed (NORMAL, shuffle, repeat, ...).
+    pub play_mode: Option<String>,
 }
 
 impl Changes {
@@ -272,8 +274,11 @@ fn apply_av_transport(
         }
         state.queue_length = Some(n);
     }
-    if let Some(mode) = lc.get("CurrentPlayMode") {
+    if let Some(mode) = lc.get("CurrentPlayMode")
+        && state.play_mode.as_deref() != Some(mode)
+    {
         state.play_mode = Some(mode.to_string());
+        changes.play_mode = Some(mode.to_string());
     }
     if lc.get("CurrentTrackMetaData").is_some() {
         state.now_playing = lc
@@ -638,4 +643,23 @@ mod tests {
         assert_eq!(state.duration_secs, Some(0));
         assert_eq!(state.position_at(now + Duration::from_secs(2)), Some(22));
     }
+    #[test]
+    fn play_mode_only_events_are_visible_to_live_consumers() {
+        let now = Instant::now();
+        let mut playback = Playback::default();
+        let normal = notify("<CurrentPlayMode val=\"NORMAL\"/>");
+        let changes = playback
+            .apply(&player(), EventSource::AvTransport, &normal, now)
+            .unwrap();
+        assert_eq!(changes.play_mode.as_deref(), Some("NORMAL"));
+        assert!(!changes.is_empty());
+
+        let shuffle = notify("<CurrentPlayMode val=\"SHUFFLE_NOREPEAT\"/>");
+        let changes = playback
+            .apply(&player(), EventSource::AvTransport, &shuffle, now)
+            .unwrap();
+        assert_eq!(changes.play_mode.as_deref(), Some("SHUFFLE_NOREPEAT"));
+        assert_eq!(playback.of(&player()).unwrap().play_mode.as_deref(), Some("SHUFFLE_NOREPEAT"));
+    }
+
 }

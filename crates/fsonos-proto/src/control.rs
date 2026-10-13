@@ -722,6 +722,17 @@ mod tests {
     }
 
     #[test]
+    fn normal_play_mode_uses_avtransport_instance_zero() {
+        let t = Canned::new("");
+        set_normal_play_mode(&t, host()).unwrap();
+        let (path, action, body) = t.last();
+        assert_eq!(path, "/MediaRenderer/AVTransport/Control");
+        assert!(action.ends_with("#SetPlayMode\\\""), "{action}");
+        assert!(body.contains("<InstanceID>0</InstanceID>"), "{body}");
+        assert!(body.contains("<NewPlayMode>NORMAL</NewPlayMode>"), "{body}");
+    }
+
+    #[test]
     fn tone_levels_are_read_in_range_and_set_clamped() {
         assert_eq!(
             get_bass(&Canned::new("<CurrentBass>-3</CurrentBass>"), host()).unwrap(),

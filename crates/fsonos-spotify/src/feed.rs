@@ -40,7 +40,7 @@ use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::{Store, StoreError};
 use fsonos_core::{CoreError, HouseholdState, control, moving};
 use fsonos_proto::content::{QUEUE, browse_all};
-use fsonos_proto::control::get_position_info;
+use fsonos_proto::control::{get_position_info, set_normal_play_mode};
 use fsonos_proto::didl::{
     SpotifyRenderParams, spotify_queue_uri, spotify_track_didl, spotify_uri_from_renderer_uri,
 };
@@ -337,6 +337,10 @@ impl QueueFeed {
             self.release();
             self.active = true;
         }
+        // Whole works rely on queue order. An owner may have left shuffle or
+        // repeat enabled before starting the DJ; normalize it before adding
+        // or starting any work.
+        set_normal_play_mode(at.transport, host_of(at)?)?;
         self.finish_partial(at)?;
         let want = 1 + self.lookahead();
         if self.queued.len() < want {
@@ -366,6 +370,17 @@ impl QueueFeed {
     ) -> Result<usize, FeedError> {
         if !self.active {
             return Ok(0);
+        }
+        // A mode-only AVTransport event reaches us through Changes::play_mode.
+        // Reassert deterministic order if another controller enables shuffle
+        // or repeat while this feed owns the queue. SetPlayMode is idempotent,
+        // so a lost reply is safe for the existing retry path to repeat.
+        if playback
+            .play_mode
+            .as_deref()
+            .is_some_and(|mode| mode.trim() != "NORMAL")
+        {
+            set_normal_play_mode(at.transport, host_of(at)?)?;
         }
         let mut position = playback.queue_position.filter(|&p| p > 0);
         let uri = playback
