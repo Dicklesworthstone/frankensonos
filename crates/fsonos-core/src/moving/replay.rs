@@ -15,6 +15,9 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::fmt::Write as _;
 use std::net::IpAddr;
+use std::time::Instant;
+
+mod verify;
 
 struct Item {
     uri: String,
@@ -99,10 +102,49 @@ impl Prepared {
                 }
             }
         };
-        Ok(Self {
+        let mut prepared = Self {
             source,
             transport: snap.transport_state,
-        })
+        };
+        prepared.confirm_source(t, households, snap)?;
+        Ok(prepared)
+    }
+
+    fn confirm_source<T: Transport + ?Sized>(
+        &mut self,
+        t: &T,
+        households: &[HouseholdState],
+        snap: &ZoneSnapshot,
+    ) -> Result<(), MoveError> {
+        if !self.is_empty() {
+            let host = ip(households, &snap.coordinator)?;
+            let revision = match snap.source {
+                SnapshotSource::Queue { update_id, .. } => Some(update_id),
+                _ => None,
+            };
+            let position = verify::source(t, host, &snap.coordinator, &self.source, revision)?;
+            self.transport = soap::get_transport_info(t, host)?.state;
+            if !matches!(
+                self.transport,
+                TransportState::Playing | TransportState::Paused | TransportState::Stopped
+            ) {
+                return Err(invalid(
+                    "the source is still changing transport state; retry the move",
+                ));
+            }
+            // Queue reads and render discovery take time. Use the latest
+            // position of the same verified track, not the older snapshot.
+            match &mut self.source {
+                Source::Queue { position: at, .. } => {
+                    *at = position.position_secs.unwrap_or(*at);
+                }
+                Source::Uri { position: at, .. } if at.is_some() => {
+                    *at = position.position_secs.or(*at);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -115,6 +157,14 @@ impl Prepared {
         host: IpAddr,
         target: &PlayerId,
     ) -> Result<(), MoveError> {
+        if self.is_empty() {
+            return Ok(());
+        }
+        // A paused source must never start an audible Play/Pause round trip.
+        // Stop before loading, then leave it ready to resume at its position.
+        soap::stop(t, host)?;
+        verify::transport(t, host, TransportState::Stopped)?;
+        let mut revision = None;
         let (track, position) = match &self.source {
             Source::Nothing => return Ok(()),
             Source::Uri { item, position } => {
@@ -127,9 +177,16 @@ impl Prepared {
                 position,
             } => {
                 soap::remove_all_tracks_from_queue(t, host)?;
-                for item in items {
-                    soap::add_uri_to_queue(t, host, &item.uri, &item.metadata, false)?;
+                verify::empty_queue(t, host)?;
+                for (index, item) in items.iter().enumerate() {
+                    let added = soap::enqueue_uri(t, host, &item.uri, &item.metadata, 0, false)?;
+                    if added.count != 1 || usize::try_from(added.first).ok() != Some(index + 1) {
+                        return Err(invalid(
+                            "the destination inserted a track at an unexpected position",
+                        ));
+                    }
                 }
+                revision = Some(verify::queue(t, host, items)?);
                 soap::play_from_queue(t, host, target)?;
                 (*track, *position)
             }
@@ -140,10 +197,15 @@ impl Prepared {
         if position > 0 {
             soap::seek_position(t, host, position)?;
         }
-        if self.transport == TransportState::Playing {
+        let started = Instant::now();
+        let state = if self.transport == TransportState::Playing {
             soap::play(t, host)?;
-        }
-        Ok(())
+            TransportState::Playing
+        } else {
+            TransportState::Stopped
+        };
+        verify::transport(t, host, state)?;
+        verify::playback(t, host, target, self, revision, started.elapsed())
     }
 }
 
@@ -504,5 +566,153 @@ mod simulator_tests {
                 .1;
             assert_eq!(parse_didl(metadata).unwrap(), [original]);
         }
+    }
+
+    #[test]
+    fn ignored_destination_commands_never_stop_the_source() {
+        for (from_room, to_room) in [("Kitchen", "Den"), ("Den", "Kitchen")] {
+            for action in ["RemoveAllTracksFromQueue", "Seek", "Play"] {
+                let sim = fixture();
+                seed_spotify(&sim, from_room);
+                if action == "RemoveAllTracksFromQueue" {
+                    seed_spotify(&sim, to_room);
+                }
+                let lan = sim.lan();
+                let households = houses(&sim);
+                let from = resolve_room(&households, from_room).unwrap();
+                let to = resolve_room(&households, to_room).unwrap();
+                sim.ignore_action(to_room, action).unwrap();
+                let calls = sim.soap_log().len();
+                assert!(
+                    copy_playback(&lan, &households, &from, &to).is_err(),
+                    "{action}"
+                );
+                let log = sim.soap_log();
+                assert!(
+                    log[calls..]
+                        .iter()
+                        .all(|entry| entry.room != from_room || entry.action != "Stop"),
+                    "{action}: the original music must not be stopped"
+                );
+                if action == "RemoveAllTracksFromQueue" {
+                    assert!(
+                        log[calls..]
+                            .iter()
+                            .all(|entry| entry.action != "AddURIToQueue")
+                    );
+                }
+                assert_eq!(
+                    soap::get_transport_info(&lan, from.coordinator.ip)
+                        .unwrap()
+                        .state,
+                    TransportState::Playing,
+                    "{action}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn paused_sources_are_loaded_silently_at_the_selected_position() {
+        for (from_room, to_room) in [("Kitchen", "Den"), ("Den", "Kitchen")] {
+            let sim = fixture();
+            seed_spotify(&sim, from_room);
+            let lan = sim.lan();
+            let households = houses(&sim);
+            let from = resolve_room(&households, from_room).unwrap();
+            let to = resolve_room(&households, to_room).unwrap();
+            soap::pause(&lan, from.coordinator.ip).unwrap();
+            let calls = sim.soap_log().len();
+            copy_playback(&lan, &households, &from, &to).unwrap();
+            assert!(
+                sim.soap_log()[calls..]
+                    .iter()
+                    .all(|entry| entry.action != "Play")
+            );
+            let playback = control::playback(&lan, &households, &to.coordinator.id).unwrap();
+            assert_eq!(playback.transport.state, TransportState::Stopped);
+            assert_eq!(playback.position.track, 2);
+            assert_eq!(playback.position.position_secs, Some(40));
+            soap::play(&lan, to.coordinator.ip).unwrap();
+            assert_eq!(
+                soap::get_position_info(&lan, to.coordinator.ip)
+                    .unwrap()
+                    .track,
+                2
+            );
+        }
+    }
+
+    #[test]
+    fn destination_readback_failure_never_reports_a_successful_move() {
+        let sim = fixture();
+        seed_spotify(&sim, "Kitchen");
+        let lan = sim.lan();
+        let households = houses(&sim);
+        let from = resolve_room(&households, "Kitchen").unwrap();
+        let to = resolve_room(&households, "Den").unwrap();
+        sim.upnp_fault("Den", "GetPositionInfo", 701).unwrap();
+        let calls = sim.soap_log().len();
+        assert!(copy_playback(&lan, &households, &from, &to).is_err());
+        assert!(
+            sim.soap_log()[calls..]
+                .iter()
+                .all(|entry| entry.room != "Kitchen" || entry.action != "Stop")
+        );
+        assert_eq!(
+            soap::get_transport_info(&lan, from.coordinator.ip)
+                .unwrap()
+                .state,
+            TransportState::Playing
+        );
+    }
+
+    #[test]
+    fn a_source_track_changed_during_preparation_is_not_replayed() {
+        let sim = fixture();
+        seed_spotify(&sim, "Kitchen");
+        let lan = sim.lan();
+        let households = houses(&sim);
+        let from = resolve_room(&households, "Kitchen").unwrap();
+        let to = resolve_room(&households, "Den").unwrap();
+        let snap = snapshot::capture(&lan, &households, &from.coordinator.id, 0).unwrap();
+        soap::seek_track(&lan, from.coordinator.ip, 1).unwrap();
+        let calls = sim.soap_log().len();
+        assert!(Prepared::new(&lan, &households, &snap, &to.coordinator.id).is_err());
+        read_only_since(&sim, calls);
+    }
+
+    #[test]
+    fn source_is_stopped_only_after_destination_readback_succeeds() {
+        let sim = fixture();
+        seed_spotify(&sim, "Kitchen");
+        let lan = sim.lan();
+        let households = houses(&sim);
+        let from = resolve_room(&households, "Kitchen").unwrap();
+        let to = resolve_room(&households, "Den").unwrap();
+        let calls = sim.soap_log().len();
+        copy_playback(&lan, &households, &from, &to).unwrap();
+        let log = sim.soap_log();
+        let operations = &log[calls..];
+        let stopped = operations
+            .iter()
+            .position(|entry| entry.room == "Kitchen" && entry.action == "Stop")
+            .unwrap();
+        let confirmed = operations
+            .iter()
+            .rposition(|entry| entry.room == "Den" && entry.action == "Browse")
+            .unwrap();
+        assert!(confirmed < stopped);
+        assert_eq!(
+            operations[confirmed]
+                .result
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|(key, _)| key == "TotalMatches")
+                .unwrap()
+                .1,
+            "2"
+        );
     }
 }

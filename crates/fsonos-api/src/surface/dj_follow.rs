@@ -21,13 +21,17 @@ pub(super) fn follow(surface: &Arc<Surface>) {
     let surface = Arc::downgrade(surface);
     if let Err(error) = std::thread::Builder::new()
         .name("fsonos-dj".into())
-        .spawn(move || drive(&changes, MAINTENANCE, |event| handle(&surface, event)))
+        .spawn(move || {
+            drive(&changes, MAINTENANCE, |event| {
+                handle(&surface, event.as_ref())
+            });
+        })
     {
         tracing::error!(%error, "could not start the DJ queue follower");
     }
 }
 
-fn handle(surface: &Weak<Surface>, event: Option<LiveEvent>) -> bool {
+fn handle(surface: &Weak<Surface>, event: Option<&LiveEvent>) -> bool {
     let Some(surface) = surface.upgrade() else {
         return false;
     };
@@ -50,7 +54,7 @@ fn handle(surface: &Weak<Surface>, event: Option<LiveEvent>) -> bool {
         tracing::warn!(detail = %error.detail, "DJ topology reconciliation could not access the store");
     }
     let feeds = |id: &PlayerId| surface.dj.as_ref().is_some_and(|dj| dj.feeds(id));
-    for player in targets(&snapshot, event.as_ref(), feeds) {
+    for player in targets(&snapshot, event, feeds) {
         // This rechecks ownership: a concurrent stop or move must not restart
         // a session that ended while the recovery pass was being planned.
         surface.dj_playback(&player);
@@ -64,11 +68,13 @@ fn targets(
     feeds: impl Fn(&PlayerId) -> bool,
 ) -> Vec<PlayerId> {
     let only = match event {
-        Some(LiveEvent::Playback { player, .. })
-        | Some(LiveEvent::Health {
-            player,
-            health: Health::Healthy,
-        }) => Some(player),
+        Some(
+            LiveEvent::Playback { player, .. }
+            | LiveEvent::Health {
+                player,
+                health: Health::Healthy,
+            },
+        ) => Some(player),
         Some(LiveEvent::Topology) | None => None,
         Some(LiveEvent::Health { .. }) => return Vec::new(),
     };
@@ -503,7 +509,7 @@ mod simulator_tests {
         let (_send, events) = mpsc::channel::<LiveEvent>();
         let worker = std::thread::spawn(move || {
             drive(&events, Duration::from_millis(10), |event| {
-                handle(&weak, event)
+                handle(&weak, event.as_ref())
             });
         });
         assert_eq!(
@@ -534,7 +540,7 @@ mod simulator_tests {
         let (sim, live, active) = household();
         let (surface, received) = surface(&sim, &live, active.clone());
         let weak = Arc::downgrade(&surface);
-        assert!(handle(&weak, Some(LiveEvent::Topology)));
+        assert!(handle(&weak, Some(&LiveEvent::Topology)));
         received.recv_timeout(Duration::from_secs(2)).unwrap();
         let office = PlayerId(sim.player("Office").unwrap().uuid.clone());
         fsonos_proto::control::join_group(&sim.lan(), sim.player("Den").unwrap().ip, &office)
@@ -552,7 +558,7 @@ mod simulator_tests {
             player: active,
             changes: Changes::default(),
         };
-        assert!(handle(&weak, Some(stale)));
+        assert!(handle(&weak, Some(&stale)));
         assert!(handle(&weak, None));
         assert!(matches!(
             received.try_recv(),

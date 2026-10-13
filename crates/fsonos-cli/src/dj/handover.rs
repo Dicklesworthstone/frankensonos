@@ -543,17 +543,20 @@ mod tests {
         let from = PlayerId("test-origin".into());
         let expected = saved(&from);
         let tracks: Vec<Option<String>> = TRACKS.iter().map(|uri| Some((*uri).into())).collect();
-        assert!(matches_queue(&expected, &tracks, 1, TRACKS[0]));
-        assert!(matches_queue(&expected, &tracks, 2, TRACKS[1]));
-        assert!(!matches_queue(&expected, &[], 1, TRACKS[0]));
-        assert!(!matches_queue(&expected, &tracks[..1], 1, TRACKS[0]));
-        assert!(!matches_queue(&expected, &tracks, 2, TRACKS[0]));
+        // PositionInfo carries renderer URIs, not the library's canonical ids.
+        let rendered = TRACKS.map(|uri| format!("x-sonos-spotify:{}", spotify_queue_uri(uri)));
+        assert!(matches_queue(&expected, &tracks, 1, &rendered[0]));
+        assert!(matches_queue(&expected, &tracks, 2, &rendered[1]));
+        assert!(!matches_queue(&expected, &[], 1, &rendered[0]));
+        assert!(!matches_queue(&expected, &tracks[..1], 1, &rendered[0]));
+        assert!(!matches_queue(&expected, &tracks, 2, &rendered[0]));
+        assert!(!matches_queue(&expected, &tracks, 1, TRACKS[0]));
         let mut shifted = vec![None];
         shifted.extend(tracks);
-        assert!(!matches_queue(&expected, &shifted, 2, TRACKS[0]));
+        assert!(!matches_queue(&expected, &shifted, 2, &rendered[0]));
         let mut empty = expected;
         empty.queued.clear();
-        assert!(!matches_queue(&empty, &shifted, 2, TRACKS[0]));
+        assert!(!matches_queue(&empty, &shifted, 2, &rendered[0]));
     }
 
     #[test]
