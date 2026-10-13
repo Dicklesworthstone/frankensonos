@@ -5,7 +5,8 @@
 //!   (UPnP 800) is retried on the new coordinator;
 //! * a command that is safe to repeat, sent to a player that moved to a new
 //!   address (a DHCP lease change), is retried there;
-//! * a command that is not safe to repeat (`next`) is not retried.
+//! * a command that is not safe to repeat (`next`) is not retried;
+//! * a group command the new coordinator refuses too answers NOT_COORDINATOR.
 //!
 //! The surface's cached survey is what makes each change "under" the
 //! command: it plans against the speakers as they were.
@@ -18,8 +19,10 @@ use fsonos_core::policy::{Client, Policy};
 use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_proto::control::{get_group_volume, get_mute};
 use fsonos_proto::topology::get_zone_group_state;
-use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_proto::{ProtoError, Transport, mdns, ssdp};
+use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 fn sim() -> SimHandle {
@@ -56,9 +59,8 @@ fn healed(notes: &[fsonos_api::Note]) -> Option<&str> {
         .map(|n| n.detail.as_str())
 }
 
-#[test]
-fn a_group_command_follows_a_new_coordinator() {
-    let sim = sim();
+/// Office joins Kitchen's group, which Kitchen leads; Kitchen's id.
+fn office_joins_kitchen(sim: &SimHandle) -> PlayerId {
     let lan = sim.lan();
     let houses = fsonos_core::inventory::survey(&lan, &[], Duration::from_millis(500))
         .unwrap()
@@ -75,6 +77,24 @@ fn a_group_command_follows_a_new_coordinator() {
         assert!(Instant::now() < deadline, "Office never joined Kitchen");
         std::thread::sleep(Duration::from_millis(50));
     }
+    kitchen
+}
+
+/// Office's group volume to 31.
+fn group_volume() -> VolumeRequest {
+    VolumeRequest {
+        zone: "Office".into(),
+        volume: Some(31),
+        delta: None,
+        group: true,
+    }
+}
+
+#[test]
+fn a_group_command_follows_a_new_coordinator() {
+    let sim = sim();
+    let lan = sim.lan();
+    let kitchen = office_joins_kitchen(&sim);
     // A surface that caches the grouped house (Kitchen leads); then the
     // group is handed over before the command goes out.
     let surface = surface(&sim);
@@ -85,12 +105,7 @@ fn a_group_command_follows_a_new_coordinator() {
     );
     sim.reelect_coordinator("Kitchen").unwrap();
 
-    let req = VolumeRequest {
-        zone: "Office".into(),
-        volume: Some(31),
-        delta: None,
-        group: true,
-    };
+    let req = group_volume();
     let out = surface
         .control(&Client::Cli, "set_volume", |h| plan_volume(h, &req))
         .unwrap();
@@ -98,6 +113,81 @@ fn a_group_command_follows_a_new_coordinator() {
     assert!(note.contains("coordinator"), "{note}");
     let office_ip = sim.player("Office").unwrap().ip;
     assert_eq!(get_group_volume(&lan, office_ip).unwrap(), 31);
+}
+
+/// The simulator's LAN, but every player refuses `action` with UPnP 800, as
+/// players would while their group's coordinator keeps moving.
+struct Refusing800 {
+    lan: SimLan,
+    action: &'static str,
+}
+
+impl Transport for Refusing800 {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        control_path: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if soap_action.trim_matches('"').ends_with(self.action) {
+            return Err(ProtoError::SoapFault {
+                code: 800,
+                reason: "not the coordinator".into(),
+            });
+        }
+        self.lan.soap_post(host, control_path, soap_action, body)
+    }
+
+    fn http_get(&self, url: &str) -> Result<String, ProtoError> {
+        self.lan.http_get(url)
+    }
+
+    fn ssdp_search(&self, mx_secs: u8, wait: Duration) -> Result<Vec<ssdp::Advert>, ProtoError> {
+        self.lan.ssdp_search(mx_secs, wait)
+    }
+
+    fn mdns_search(&self, wait: Duration) -> Result<Vec<mdns::SonosAdvert>, ProtoError> {
+        self.lan.mdns_search(wait)
+    }
+}
+
+#[test]
+fn a_group_command_the_new_coordinator_refuses_too_is_not_coordinator() {
+    let sim = sim();
+    let kitchen = office_joins_kitchen(&sim);
+    let survey: Survey = Box::new(|t| {
+        Ok(fsonos_core::inventory::survey(t, &[], Duration::from_millis(500))?.households)
+    });
+    let surface = Surface::new(
+        Box::new(Refusing800 {
+            lan: sim.lan(),
+            action: "#SetGroupVolume",
+        }),
+        survey,
+        Policy::default(),
+        Box::new(SystemClock),
+    );
+    let grouped = surface.households().unwrap();
+    assert_eq!(
+        resolve_room(&grouped, "Office").unwrap().coordinator.id,
+        kitchen
+    );
+    sim.reelect_coordinator("Kitchen").unwrap();
+
+    let req = group_volume();
+    let err = surface
+        .control(&Client::Cli, "set_volume", |h| plan_volume(h, &req))
+        .unwrap_err();
+    assert_eq!(
+        (err.code, err.upnp_code),
+        (ErrorCode::NotCoordinator, Some(800)),
+        "{err:?}"
+    );
+    assert!(
+        err.detail.contains("changed while the command ran"),
+        "{err:?}"
+    );
 }
 
 #[test]

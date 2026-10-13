@@ -5,7 +5,9 @@
 //!   coordinator when the topology shows the coordinator really moved
 //!   ([`heal::on_coordinator`]). 800 means the player refused, so nothing
 //!   ran and any group command may be retried. When the coordinator did
-//!   not move, the fault stands (a wrong Spotify item also gives 800).
+//!   not move, the fault stands (a wrong Spotify item also gives 800). When
+//!   the new coordinator refuses it with 800 too, the group changed again
+//!   under the command: it answers NOT_COORDINATOR, which a caller may retry.
 //! * A command whose player did not answer is retried at the player's new
 //!   address, when a fresh survey shows it moved, but only if it is
 //!   [`Command::repeat_safe`]: the first request may have run with only its
@@ -18,7 +20,7 @@ use fsonos_core::heal::{self, Recovery};
 use fsonos_core::{CoreError, HouseholdState, control};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 
 use crate::execute::{OutcomeDto, execute_guarded};
@@ -84,8 +86,9 @@ fn on_new_coordinator<T: Transport + ?Sized>(
     let Some(coordinator) = command.group_coordinator() else {
         return execute_guarded(transport, households, guard, command.clone());
     };
-    // The 800 that stood, kept as reported rather than re-derived.
-    let refused = RefCell::new(None);
+    // The 800 that stood, kept as reported rather than re-derived, and how
+    // many coordinators were tried.
+    let (refused, tried) = (RefCell::new(None), Cell::new(0));
     let mut hs = households.to_vec();
     let attempt = |hs: &[HouseholdState], to: &PlayerId| match execute_guarded(
         transport,
@@ -94,6 +97,7 @@ fn on_new_coordinator<T: Transport + ?Sized>(
         command.clone().on_coordinator(to),
     ) {
         Err(f) if f.upnp_code == Some(800) => {
+            tried.set(tried.get() + 1);
             let e = CoreError::Proto(ProtoError::SoapFault {
                 code: 800,
                 reason: f.detail.clone(),
@@ -113,7 +117,25 @@ fn on_new_coordinator<T: Transport + ?Sized>(
             ),
         )),
         Ok((result, _)) => result,
-        Err(e) => Err(refused.take().unwrap_or_else(|| Failure::from(e))),
+        Err(e) => Err(match refused.take() {
+            Some(refused) if tried.get() > 1 => Failure {
+                upnp_code: refused.upnp_code,
+                ..Failure::new(
+                    ErrorCode::NotCoordinator,
+                    format!(
+                        "{}'s group changed while the command ran: its new coordinator \
+                         refused it too ({})",
+                        room(&hs, coordinator),
+                        refused.detail
+                    ),
+                )
+                .with_hint(
+                    "Retry once the group settles; if it is refused again, the speakers \
+                     may not play what was asked.",
+                )
+            },
+            refused => refused.unwrap_or_else(|| Failure::from(e)),
+        }),
     }
 }
 
