@@ -15,6 +15,8 @@ use crate::SpotifyError;
 use crate::classical::normalize;
 use crate::client::{Album, Endpoints, Paging, SavedAlbum, SavedTrack, SimplifiedTrack};
 
+mod albums;
+
 /// How a track entered the owner's library.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 pub enum Origin {
@@ -231,9 +233,9 @@ pub const ARTIST_SEPARATOR: &str = "; ";
 /// A full read of the owner's library as a sans-I/O state machine: GET
 /// [`Self::next_url`] with the bearer token, feed each 2xx body to
 /// [`Self::ingest`], repeat until `next_url` is `None`, then take
-/// [`Self::into_items`]. It pages saved albums and liked tracks, fetches the
-/// rest of any album longer than its embedded 50 tracks, and only follows
-/// links that point at the Web API (and never the same one twice).
+/// [`Self::into_items`]. It pages saved albums and liked tracks, recovers
+/// absent or incomplete embedded album tracks, and only follows links that
+/// point at the Web API (and never the same one twice).
 #[derive(Debug)]
 pub struct LibraryRead {
     endpoints: Endpoints,
@@ -299,16 +301,7 @@ impl LibraryRead {
             Fetch::SavedAlbums(_) => {
                 let page = Paging::<SavedAlbum>::parse(body)?;
                 for saved in page.items {
-                    self.items.extend(saved.library_items());
-                    let added_at = saved.added_unix();
-                    let rest = saved.album.tracks.as_ref().and_then(|t| t.next.clone());
-                    if let Some(url) = rest {
-                        let album = Box::new(Album {
-                            tracks: None,
-                            ..saved.album
-                        });
-                        self.follow(Some(url), |url| Fetch::AlbumTracks(url, album, added_at))?;
-                    }
+                    self.saved_album(saved)?;
                 }
                 self.follow(page.next, Fetch::SavedAlbums)
             }
