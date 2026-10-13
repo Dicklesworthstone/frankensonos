@@ -373,8 +373,7 @@ impl Announcer {
             .map(|old| fresh.rooms.iter().find(|r| r.primary == old.primary))
             .collect();
         let Some(selected) = selected else {
-            report.outcome =
-                Err("a target room changed or disappeared; nothing was played".into());
+            report.outcome = Err("a target room changed or disappeared; nothing was played".into());
             return report;
         };
         let (household, rooms) = (&fresh, selected.as_slice());

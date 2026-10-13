@@ -46,19 +46,27 @@ pub(super) fn put_back<T: Transport + ?Sized>(
         if effects.sources.contains(&snap.coordinator) {
             aspects.extend([Aspect::Source, Aspect::Position, Aspect::Transport]);
         }
-        if snap.levels.iter().any(|l| effects.volumes.contains(&l.player)) {
+        if snap
+            .levels
+            .iter()
+            .any(|l| effects.volumes.contains(&l.player))
+        {
             aspects.push(Aspect::Volume);
         }
-        if snap.levels.iter().any(|l| effects.mutes.contains(&l.player)) {
+        if snap
+            .levels
+            .iter()
+            .any(|l| effects.mutes.contains(&l.player))
+        {
             aspects.push(Aspect::Mute);
         }
         if aspects.is_empty() {
             continue;
         }
         let mut changed = snap.clone();
-        changed.levels.retain(|l| {
-            effects.volumes.contains(&l.player) || effects.mutes.contains(&l.player)
-        });
+        changed
+            .levels
+            .retain(|l| effects.volumes.contains(&l.player) || effects.mutes.contains(&l.player));
         let restore = || {
             refreshed(t, household).and_then(|now| {
                 snapshot::restore_only(t, std::slice::from_ref(&now), &changed, &aspects)

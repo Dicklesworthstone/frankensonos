@@ -190,7 +190,13 @@ impl Fader {
         over: Duration,
     ) -> Result<FadeOutcome, CoreError> {
         let claimed = self.claim(players);
-        self.stepped(t, households, &claimed, to, Timing::new(over, self.interval))
+        self.stepped(
+            t,
+            households,
+            &claimed,
+            to,
+            Timing::new(over, self.interval),
+        )
     }
 
     /// Start a volume intent on each of `players` now, for a fade that

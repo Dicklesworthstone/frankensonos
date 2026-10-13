@@ -95,7 +95,14 @@ mod tests {
     #[test]
     fn elapsed_time_selects_the_step_without_replaying_missed_steps() {
         let timing = timing(1000, 250);
-        for (ms, level) in [(0, 20), (249, 20), (250, 35), (750, 65), (1000, 80), (2000, 80)] {
+        for (ms, level) in [
+            (0, 20),
+            (249, 20),
+            (250, 35),
+            (750, 65),
+            (1000, 80),
+            (2000, 80),
+        ] {
             let frame = timing.frame(timing.started + Duration::from_millis(ms), false);
             assert_eq!(frame.level(20, 80), level);
             assert_eq!(frame.complete, ms >= 1000);

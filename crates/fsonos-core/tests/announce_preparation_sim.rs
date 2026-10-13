@@ -10,7 +10,11 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 fn sim(s2: bool) -> SimHandle {
-    let model = if s2 { SimModel::One } else { SimModel::Play5Gen1 };
+    let model = if s2 {
+        SimModel::One
+    } else {
+        SimModel::Play5Gen1
+    };
     let players = [
         SimPlayerSpec::new("Alpha", model),
         SimPlayerSpec::new("Beta", model),
@@ -120,7 +124,9 @@ fn every_target_is_capped_before_any_regroup_or_unmute() {
             assert!(log[..audible].iter().any(|e| {
                 e.room == room
                     && e.action == "SetVolume"
-                    && e.args.iter().any(|(k, v)| k == "DesiredVolume" && v == "25")
+                    && e.args
+                        .iter()
+                        .any(|(k, v)| k == "DesiredVolume" && v == "25")
             }));
             let host = sim.player(room).unwrap().ip;
             assert_eq!(soap::get_volume(&lan, host).unwrap(), 95);
@@ -142,7 +148,10 @@ impl Transport for Failing<'_> {
         action: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
-        if action.trim_matches('"').ends_with(&format!("#{}", self.action)) {
+        if action
+            .trim_matches('"')
+            .ends_with(&format!("#{}", self.action))
+        {
             return Err(ProtoError::Network {
                 target: host.to_string(),
                 detail: "synthetic preparation failure".into(),
@@ -159,7 +168,10 @@ fn unreadable_topology_never_falls_back_to_writing_from_stale_groups() {
         let lan = sim.lan();
         let h = houses(&sim, &lan);
         let from = sim.soap_log().len();
-        let failing = Failing { lan: &lan, action: "GetZoneGroupState" };
+        let failing = Failing {
+            lan: &lan,
+            action: "GetZoneGroupState",
+        };
         let report = announcer()
             .announce(
                 &failing,
@@ -183,7 +195,10 @@ fn a_failed_volume_preparation_does_not_rewind_or_regroup_the_music() {
         let lan = sim.lan();
         let h = houses(&sim, &lan);
         let from = sim.soap_log().len();
-        let failing = Failing { lan: &lan, action: "SetVolume" };
+        let failing = Failing {
+            lan: &lan,
+            action: "SetVolume",
+        };
         let report = announcer()
             .announce(
                 &failing,
@@ -198,7 +213,9 @@ fn a_failed_volume_preparation_does_not_rewind_or_regroup_the_music() {
             .unwrap();
         assert!(report.households[0].outcome.is_err());
         assert!(
-            sim.soap_log()[from..].iter().all(|e| e.action.starts_with("Get")),
+            sim.soap_log()[from..]
+                .iter()
+                .all(|e| e.action.starts_with("Get")),
             "no transport, group or mute writes after a failed volume preparation"
         );
     }
