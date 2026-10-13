@@ -1,7 +1,9 @@
 //! Drive the DJ from live events, with bounded maintenance for quiet queues.
 
 use super::Surface;
-use fsonos_core::live::LiveEvent;
+use fsonos_core::live::{LiveEvent, Snapshot};
+use fsonos_core::reconcile::Health;
+use fsonos_types::PlayerId;
 use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Weak};
@@ -32,26 +34,58 @@ fn handle(surface: &Weak<Surface>, event: Option<LiveEvent>) -> bool {
     let Some(live) = surface.live() else {
         return false;
     };
-    match event {
-        Some(LiveEvent::Playback { player, .. }) => surface.dj_playback(&player),
-        Some(_) => {}
-        None => {
-            // A restored feed may have missed the initial events before
-            // follow started. Use the latest model, never a saved event or
-            // a direct household survey.
-            let households = live.households();
-            let mut seen = HashSet::new();
-            for coordinator in households
-                .iter()
-                .flat_map(|h| h.groups.iter().map(|g| &g.coordinator))
-            {
-                if seen.insert(coordinator.clone()) {
-                    surface.dj_playback(coordinator);
-                }
-            }
-        }
+    // An event queued before a regroup must not feed the former coordinator.
+    // Use one current topology/health/playback snapshot, never the old event's
+    // implied ownership or a direct household survey.
+    let snapshot = live.snapshot();
+    drop(live);
+    let feeds = |id: &PlayerId| surface.dj.as_ref().is_some_and(|dj| dj.feeds(id));
+    for player in targets(&snapshot, event.as_ref(), feeds) {
+        // This rechecks ownership: a concurrent stop or move must not restart
+        // a session that ended while the recovery pass was being planned.
+        surface.dj_playback(&player);
     }
     true
+}
+
+fn targets(
+    snapshot: &Snapshot,
+    event: Option<&LiveEvent>,
+    feeds: impl Fn(&PlayerId) -> bool,
+) -> Vec<PlayerId> {
+    let only = match event {
+        Some(LiveEvent::Playback { player, .. })
+        | Some(LiveEvent::Health {
+            player,
+            health: Health::Healthy,
+        }) => Some(player),
+        Some(LiveEvent::Topology) | None => None,
+        Some(LiveEvent::Health { .. }) => return Vec::new(),
+    };
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for household in &snapshot.households {
+        for group in &household.groups {
+            let player = &group.coordinator;
+            if only.is_some_and(|id| id != player)
+                || household.player(player).is_none()
+                || snapshot
+                    .health
+                    .of(player)
+                    .is_some_and(|h| h.health == Health::Offline)
+                || snapshot
+                    .playback
+                    .of(player)
+                    .is_none_or(|p| p.transport.is_none())
+                || !feeds(player)
+                || !seen.insert(player.clone())
+            {
+                continue;
+            }
+            out.push(player.clone());
+        }
+    }
+    out
 }
 
 /// `None` asks for maintenance; `Some` delivers an event. Returning false
@@ -86,6 +120,8 @@ fn drive<T>(events: &Receiver<T>, interval: Duration, mut handle: impl FnMut(Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fsonos_core::playback::{Changes, EventSource};
+    use fsonos_proto::gena::Notify;
     use std::sync::mpsc;
 
     #[test]
@@ -168,6 +204,106 @@ mod tests {
             event.is_none()
         });
         assert_eq!(delivered, [None, Some(1)]);
+    }
+
+    fn snapshot() -> (Snapshot, Vec<PlayerId>) {
+        let mut snapshot = Snapshot {
+            households: crate::zones::fixtures::households(),
+            ..Snapshot::default()
+        };
+        let coordinators: Vec<PlayerId> = snapshot
+            .households
+            .iter()
+            .flat_map(|h| h.groups.iter().map(|g| g.coordinator.clone()))
+            .collect();
+        let event = Notify {
+            sid: "uuid:test".into(),
+            seq: 0,
+            path: "/AVTransport".into(),
+            properties: vec![(
+                "LastChange".into(),
+                "<Event><InstanceID val=\"0\"><TransportState val=\"PAUSED_PLAYBACK\"/>\
+                 </InstanceID></Event>"
+                    .into(),
+            )],
+        };
+        for player in &coordinators {
+            snapshot
+                .playback
+                .apply(player, EventSource::AvTransport, &event, Instant::now())
+                .unwrap();
+        }
+        (snapshot, coordinators)
+    }
+
+    #[test]
+    fn maintenance_skips_offline_inactive_and_incomplete_state() {
+        let (mut snapshot, ids) = snapshot();
+        assert!(ids.len() >= 4);
+        snapshot.health.missing(&ids[0], "offline");
+        snapshot.playback.remove(&ids[1]);
+        // A RenderingControl event can precede the initial AVTransport state.
+        let rendering = Notify {
+            sid: "uuid:rendering".into(),
+            seq: 0,
+            path: "/RenderingControl".into(),
+            properties: vec![(
+                "LastChange".into(),
+                "<Event><InstanceID val=\"0\"><Volume channel=\"Master\" val=\"12\"/>\
+                 </InstanceID></Event>"
+                    .into(),
+            )],
+        };
+        snapshot
+            .playback
+            .apply(&ids[1], EventSource::RenderingControl, &rendering, Instant::now())
+            .unwrap();
+        assert_eq!(snapshot.playback.of(&ids[1]).unwrap().volume, Some(12));
+        snapshot.households.push(snapshot.households[0].clone());
+        assert_eq!(targets(&snapshot, None, |id| *id != ids[2]), ids[3..]);
+        assert!(targets(&snapshot, None, |_| false).is_empty());
+    }
+
+    #[test]
+    fn delayed_playback_cannot_target_a_former_or_unaddressable_coordinator() {
+        let (mut snapshot, ids) = snapshot();
+        let event = LiveEvent::Playback {
+            player: ids[0].clone(),
+            changes: Changes::default(),
+        };
+        assert_eq!(targets(&snapshot, Some(&event), |_| true), ids[..1]);
+        let before = snapshot.households.clone();
+        for household in &mut snapshot.households {
+            household.groups.retain(|g| g.coordinator != ids[0]);
+        }
+        assert!(targets(&snapshot, Some(&event), |_| true).is_empty());
+        snapshot.households = before;
+        for household in &mut snapshot.households {
+            household.players.retain(|p| p.id != ids[0]);
+        }
+        assert!(targets(&snapshot, Some(&event), |_| true).is_empty());
+    }
+
+    #[test]
+    fn topology_and_health_recovery_revisit_only_current_active_feeds() {
+        let (mut snapshot, ids) = snapshot();
+        let feeds = |id: &PlayerId| *id == ids[0];
+        assert_eq!(targets(&snapshot, Some(&LiveEvent::Topology), feeds), ids[..1]);
+        for health in [Health::Degraded, Health::Offline] {
+            let event = LiveEvent::Health {
+                player: ids[0].clone(),
+                health,
+            };
+            assert!(targets(&snapshot, Some(&event), feeds).is_empty());
+        }
+        let recovered = LiveEvent::Health {
+            player: ids[0].clone(),
+            health: Health::Healthy,
+        };
+        snapshot.health.missing(&ids[0], "newer than the event");
+        assert!(targets(&snapshot, Some(&recovered), feeds).is_empty());
+        snapshot.health.ok(&ids[0], Instant::now());
+        assert_eq!(targets(&snapshot, Some(&recovered), feeds), ids[..1]);
     }
 }
 
@@ -283,7 +419,11 @@ mod simulator_tests {
         (sim, live, id)
     }
 
-    fn surface(sim: &SimHandle, live: &Arc<Live>, active: PlayerId) -> (Arc<Surface>, Receiver<Option<u8>>) {
+    fn surface(
+        sim: &SimHandle,
+        live: &Arc<Live>,
+        active: PlayerId,
+    ) -> (Arc<Surface>, Receiver<Option<u8>>) {
         let (seen, received) = mpsc::channel();
         let surface = Surface::new(
             Box::new(sim.lan()),
@@ -343,6 +483,43 @@ mod simulator_tests {
         }
         drop(surface);
         worker.join().unwrap();
+        drop(live);
+        sim.shutdown();
+    }
+
+    #[test]
+    fn regrouped_player_is_not_fed_by_a_queued_event_or_timer() {
+        use fsonos_core::playback::Changes;
+
+        let (sim, live, active) = household();
+        let (surface, received) = surface(&sim, &live, active.clone());
+        let weak = Arc::downgrade(&surface);
+        assert!(handle(&weak, Some(LiveEvent::Topology)));
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        let office = PlayerId(sim.player("Office").unwrap().uuid.clone());
+        fsonos_proto::control::join_group(
+            &sim.lan(),
+            sim.player("Den").unwrap().ip,
+            &office,
+        )
+        .unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while live
+            .households()
+            .iter()
+            .any(|h| h.groups.iter().any(|g| g.coordinator == active))
+        {
+            assert!(Instant::now() < until, "regroup topology did not arrive");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let stale = LiveEvent::Playback {
+            player: active,
+            changes: Changes::default(),
+        };
+        assert!(handle(&weak, Some(stale)));
+        assert!(handle(&weak, None));
+        assert!(matches!(received.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        drop(surface);
         drop(live);
         sim.shutdown();
     }
