@@ -136,7 +136,7 @@ struct Active {
     want: Want,
     sid: String,
     renew_at: Instant,
-    /// The highest SEQ seen on it: a NOTIFY further on means some were lost.
+    /// The last accepted SEQ; event keys wrap from u32::MAX to 1, not 0.
     last_seq: Option<u32>,
 }
 
@@ -237,7 +237,10 @@ impl Subscriptions {
             }
             match s.renew(&a.want, &a.sid) {
                 Ok(sub) => {
+                    // Renewing the same SID extends its lifetime, not its event stream.
+                    let last_seq = if sub.sid == a.sid { a.last_seq } else { None };
                     *a = active(a.want.clone(), sub, now);
+                    a.last_seq = last_seq;
                     report.renewed += 1;
                     report.answered.push(a.want.player.clone());
                 }
@@ -321,18 +324,16 @@ impl Subscriptions {
     /// what changed, so a lost one leaves that state stale until replaced
     /// ([`Subscriptions::refresh`]). A subscription's first NOTIFY is no gap
     /// only when it is the initial one (SEQ 0): a later one first means the
-    /// full state was lost. One at or below the highest seen (a repeat) is
-    /// no gap.
+    /// full state was lost. Duplicate or older event keys are ignored;
+    /// ordering follows the GENA wrap from u32::MAX to 1 (0 is initial only).
     pub fn missed(&mut self, n: &Notify) -> bool {
         let Some(a) = self.active.iter_mut().find(|a| a.sid == n.sid) else {
             return false;
         };
-        let gap = a
-            .last_seq
-            .map_or(n.seq > 0, |last| n.seq > last.saturating_add(1));
-        if a.last_seq.is_none_or(|last| n.seq > last) {
-            a.last_seq = Some(n.seq);
-        }
+        let Some(gap) = sequence_gap(a.last_seq, n.seq) else {
+            return false;
+        };
+        a.last_seq = Some(n.seq);
         gap
     }
 
@@ -435,6 +436,27 @@ impl Subscriptions {
     }
 }
 
+/// `None` is a duplicate/old key; otherwise whether a forward event skipped keys.
+fn sequence_gap(last: Option<u32>, seq: u32) -> Option<bool> {
+    let Some(last) = last else {
+        return Some(seq != 0);
+    };
+    if seq == 0 || seq == last {
+        return None;
+    }
+    if last == 0 {
+        return Some(seq != 1);
+    }
+    // GENA cycles through 1..=u32::MAX. Compare within half that ring so
+    // delayed pre-wrap events cannot move the sequence backwards after wrap.
+    let distance = if seq > last {
+        seq - last
+    } else {
+        u32::MAX - last + seq
+    };
+    (distance <= u32::MAX / 2).then_some(distance > 1)
+}
+
 fn active(want: Want, sub: Subscription, now: Instant) -> Active {
     let half = Duration::from_secs(u64::from(sub.timeout_secs.max(2) / 2));
     Active {
@@ -471,4 +493,136 @@ pub fn apply(
         }
     };
     playback.apply(player, source, n, now)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct TestSubscriber {
+        renewal_sid: Option<&'static str>,
+    }
+
+    impl Subscriber for TestSubscriber {
+        fn subscribe(&self, _: &Want, _: &str) -> Result<Subscription, ProtoError> {
+            Ok(Subscription {
+                sid: "uuid:events-test".into(),
+                timeout_secs: 300,
+            })
+        }
+
+        fn renew(&self, _: &Want, sid: &str) -> Result<Subscription, ProtoError> {
+            Ok(Subscription {
+                sid: self.renewal_sid.unwrap_or(sid).into(),
+                timeout_secs: 300,
+            })
+        }
+
+        fn unsubscribe(&self, _: &Want, _: &str) -> Result<(), ProtoError> {
+            Ok(())
+        }
+    }
+
+    fn want() -> Want {
+        Want {
+            player: PlayerId("test-player".into()),
+            host: std::net::Ipv4Addr::LOCALHOST.into(),
+            service: Service::AvTransport,
+        }
+    }
+
+    fn callback(_: Service) -> String {
+        "http://127.0.0.1:3400/AVTransport".into()
+    }
+
+    fn notify(sid: &str, seq: u32) -> Notify {
+        Notify {
+            sid: sid.into(),
+            seq,
+            path: "/AVTransport".into(),
+            properties: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn renewal_preserves_sequence_and_still_detects_real_loss() {
+        let subscriber = TestSubscriber::default();
+        let mut subs = Subscriptions::default();
+        let now = Instant::now();
+        assert_eq!(subs.sync(&subscriber, &[want()], callback, now).subscribed, 1);
+        assert!(!subs.missed(&notify("uuid:events-test", 0)));
+        assert!(!subs.missed(&notify("uuid:events-test", 1)));
+        let report = subs.renew_due(&subscriber, callback, now + Duration::from_secs(150));
+        assert_eq!(report.renewed, 1);
+        assert!(!subs.missed(&notify("uuid:events-test", 2)));
+        assert!(subs.missed(&notify("uuid:events-test", 4)));
+    }
+
+    #[test]
+    fn changed_renewal_sid_starts_a_new_event_stream() {
+        let subscriber = TestSubscriber {
+            renewal_sid: Some("uuid:replacement"),
+        };
+        let mut subs = Subscriptions::default();
+        let now = Instant::now();
+        subs.sync(&subscriber, &[want()], callback, now);
+        assert!(subs.missed(&notify("uuid:events-test", 10)));
+        subs.renew_due(&subscriber, callback, now + Duration::from_secs(150));
+        assert!(subs.route(&notify("uuid:events-test", 11)).is_none());
+        assert!(!subs.missed(&notify("uuid:replacement", 0)));
+        assert!(!subs.missed(&notify("uuid:replacement", 1)));
+        assert!(subs.missed(&notify("uuid:replacement", 3)));
+    }
+
+    #[test]
+    fn missing_initial_state_is_detected_even_after_renewal() {
+        let subscriber = TestSubscriber::default();
+        let mut subs = Subscriptions::default();
+        let now = Instant::now();
+        subs.sync(&subscriber, &[want()], callback, now);
+        subs.renew_due(&subscriber, callback, now + Duration::from_secs(150));
+        assert!(subs.missed(&notify("uuid:events-test", 1)));
+    }
+
+    #[test]
+    fn wrap_skips_zero_and_keeps_detecting_gaps() {
+        let subscriber = TestSubscriber::default();
+        let mut subs = Subscriptions::default();
+        subs.sync(&subscriber, &[want()], callback, Instant::now());
+        for (seq, gap) in [
+            (u32::MAX - 1, true),
+            (u32::MAX, false),
+            (1, false),
+            (u32::MAX, false), // Delayed pre-wrap event.
+            (2, false),
+            (4, true),
+            (3, false), // Delayed event cannot rewind the cursor.
+            (0, false), // A repeated initial event is not a wrap.
+            (5, false),
+        ] {
+            assert_eq!(subs.missed(&notify("uuid:events-test", seq)), gap, "{seq}");
+        }
+    }
+
+    #[test]
+    fn sequence_order_covers_initial_duplicates_backwards_and_wrap_gaps() {
+        for (last, seq, expected) in [
+            (None, 0, Some(false)),
+            (None, 2, Some(true)),
+            (Some(0), 1, Some(false)),
+            (Some(0), 2, Some(true)),
+            (Some(10), 10, None),
+            (Some(10), 9, None),
+            (Some(10), 0, None),
+            (Some(10), 11, Some(false)),
+            (Some(10), 12, Some(true)),
+            (Some(u32::MAX), 1, Some(false)),
+            (Some(u32::MAX), 2, Some(true)),
+            (Some(u32::MAX - 1), 1, Some(true)),
+            (Some(1), u32::MAX, None),
+        ] {
+            assert_eq!(sequence_gap(last, seq), expected, "{last:?} -> {seq}");
+        }
+    }
 }
