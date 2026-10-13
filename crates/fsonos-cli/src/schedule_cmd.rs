@@ -6,15 +6,18 @@
 //! Through a running `fsonos serve` (see `crate::remote`) a sleep timer
 //! fades the group out (`POST /sleep`, the `set_sleep_timer` tool); on its
 //! own, or with `--direct`, the CLI sets the speaker's own timer, which
-//! pauses without a fade. Schedules go into the store in the data
-//! directory, where a running `fsonos serve` picks them up within a second.
+//! pauses without a fade. Schedules go to a running `fsonos serve` too,
+//! which runs them, so `--daemon` reaches its schedules from another machine;
+//! without one they go into the store in the data directory, where serve
+//! picks them up within a second once it runs.
 
 use chrono::{DateTime, FixedOffset};
 use clap::{Args, Subcommand};
 use fsonos_api::Failure;
 use fsonos_api::surface::Surface;
 use fsonos_api::surface::schedules::{
-    ScheduleDto, ScheduleRequest, Sleep, SleepRequest, SleepTimerDto, parse_duration,
+    ScheduleDto, ScheduleIdRequest, ScheduleRequest, Sleep, SleepRequest, SleepTimerDto,
+    parse_duration,
 };
 use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::policy::Client;
@@ -22,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::config::GlobalArgs;
+use crate::remote::Daemon;
 
 /// `fsonos sleep [<room> [duration] [--extend <duration>] [--cancel]]`.
 #[derive(Args)]
@@ -140,18 +144,24 @@ pub fn timer_text(timer: &SleepTimerDto) -> String {
 
 /// `fsonos schedule ...`.
 pub fn schedule(global: &GlobalArgs, command: &ScheduleCommand) -> anyhow::Result<()> {
-    let surface = surface(global)?;
+    let daemon = || Daemon::find(global, global.daemon);
     let line = |d: &ScheduleDto| format!("{}\n", d.line());
     match command {
         ScheduleCommand::Add { when, action } => {
             let req = schedule_request(when, action)?;
-            let added = surface.add_schedule(&Client::Cli, &req)?;
+            let added: ScheduleDto = match daemon()? {
+                Some(daemon) => daemon.post("/schedules", &req)?,
+                None => surface(global)?.add_schedule(&Client::Cli, &req)?,
+            };
             crate::emit(global.json, &added, |d: &ScheduleDto| {
                 format!("added {}\n", d.line())
             })
         }
         ScheduleCommand::List => {
-            let schedules = surface.schedules(&Client::Cli)?;
+            let schedules: Vec<ScheduleDto> = match daemon()? {
+                Some(daemon) => daemon.get("/schedules")?,
+                None => surface(global)?.schedules(&Client::Cli)?,
+            };
             crate::emit(global.json, &schedules, |all: &Vec<ScheduleDto>| {
                 if all.is_empty() {
                     "no schedules\n".to_string()
@@ -161,14 +171,25 @@ pub fn schedule(global: &GlobalArgs, command: &ScheduleCommand) -> anyhow::Resul
             })
         }
         ScheduleCommand::Rm { id } => {
-            let removed = surface.remove_schedule(&Client::Cli, *id)?;
+            let removed: ScheduleDto = match daemon()? {
+                Some(daemon) => daemon.post("/schedules/remove", &ScheduleIdRequest { id: *id })?,
+                None => surface(global)?.remove_schedule(&Client::Cli, *id)?,
+            };
             crate::emit(global.json, &removed, |d: &ScheduleDto| {
                 format!("removed {}\n", d.line())
             })
         }
         ScheduleCommand::Pause { id } | ScheduleCommand::Resume { id } => {
             let paused = matches!(command, ScheduleCommand::Pause { .. });
-            let schedule = surface.pause_schedule(&Client::Cli, *id, paused)?;
+            let path = if paused {
+                "/schedules/pause"
+            } else {
+                "/schedules/resume"
+            };
+            let schedule: ScheduleDto = match daemon()? {
+                Some(daemon) => daemon.post(path, &ScheduleIdRequest { id: *id })?,
+                None => surface(global)?.pause_schedule(&Client::Cli, *id, paused)?,
+            };
             crate::emit(global.json, &schedule, line)
         }
     }

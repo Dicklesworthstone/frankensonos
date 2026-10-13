@@ -5,14 +5,14 @@
 
 use chrono::{DateTime, FixedOffset};
 use fsonos_core::policy::{Client, Policy, PolicyView};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 use super::Surface;
 use crate::failure::Failure;
 
 /// The effective policy, and the caller under it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyDto {
     /// The caller, as the policy names it: `cli`, `mcp-stdio`,
     /// `loopback-http`, a tailnet login, or `unknown`.

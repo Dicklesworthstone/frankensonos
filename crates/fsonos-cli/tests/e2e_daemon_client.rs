@@ -7,7 +7,9 @@
 //!
 //! Through the daemon a command never reads the seeds: given a seeds file
 //! that does not exist, it still answers, which a direct run cannot. That
-//! holds for `play --search` too: the daemon searches and plays.
+//! holds for `play --search` too: the daemon searches and plays. From
+//! another machine (`--daemon` with the daemon's address), scenes, schedules
+//! and the policy are the daemon's.
 
 mod e2e;
 
@@ -256,6 +258,105 @@ fn commands_go_through_a_running_daemon_with_the_same_answers() {
                 .as_array()
                 .is_some_and(|z| !z.is_empty()),
         &after.stderr,
+    );
+    s.finish();
+}
+
+/// `fsonos --daemon <args>` as another machine runs it: a data directory of
+/// its own, the daemon's address in FSONOS_HTTP_ADDR, and no routes file (it
+/// asks only the daemon, never the speakers).
+fn elsewhere(s: &mut Scenario, http: &str, step: &str, args: &[&str]) -> e2e::Run {
+    let dir = s.dir().join("elsewhere");
+    std::fs::create_dir_all(&dir).expect("create the other machine's data directory");
+    let dir = dir.display().to_string();
+    let env = [
+        ("FSONOS_DATA_DIR", dir.as_str()),
+        ("FSONOS_HTTP_ADDR", http),
+    ];
+    let args: Vec<&str> = std::iter::once("--daemon")
+        .chain(args.iter().copied())
+        .collect();
+    s.cli_env(step, &args, &env, &["FSONOS_ROUTES", "FSONOS_SEEDS"])
+}
+
+/// Scenes, schedules and the policy from another machine are the daemon's,
+/// not that machine's empty store's.
+#[test]
+fn scenes_schedules_and_the_policy_are_the_daemons_from_elsewhere() {
+    let mut s = Scenario::start("daemon-client-elsewhere");
+    s.sim(SimHousehold::standard());
+    let mut daemon = s.spawn("serve", &["serve", "--http", "127.0.0.1:0"]);
+    let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
+    let http = json(&daemon_file(&s))["http"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let saved = s.cli("scene-save", &["scene", "save", "Evening"]);
+    let listed = elsewhere(
+        &mut s,
+        &http,
+        "scene-list-elsewhere",
+        &["--json", "scene", "list"],
+    );
+    let shown = elsewhere(
+        &mut s,
+        &http,
+        "scene-show-elsewhere",
+        &["scene", "show", "Evening"],
+    );
+    s.check(
+        "scenes",
+        "cli",
+        "scene list and show from elsewhere answer with the daemon's scene",
+        live.is_some() && saved.ok() && json(&listed.stdout)[0]["name"] == "Evening" && shown.ok(),
+        format!("{listed:?}\n{shown:?}"),
+    );
+    let added = elsewhere(
+        &mut s,
+        &http,
+        "schedule-add-elsewhere",
+        &["schedule", "add", "daily 22:00", "pause", "Kitchen"],
+    );
+    let here = s.cli(
+        "schedule-list-here",
+        &["--direct", "--json", "schedule", "list"],
+    );
+    s.check(
+        "schedules",
+        "cli",
+        "a schedule added from elsewhere is in the daemon's store",
+        added.ok()
+            && json(&here.stdout)
+                .as_array()
+                .is_some_and(|all| all.len() == 1),
+        format!("{added:?}\n{here:?}"),
+    );
+    let removed = elsewhere(
+        &mut s,
+        &http,
+        "scene-rm-elsewhere",
+        &["scene", "rm", "Evening"],
+    );
+    let after = s.cli("scene-list-here", &["--direct", "--json", "scene", "list"]);
+    s.check(
+        "scene-rm",
+        "cli",
+        "scene rm from elsewhere removes the daemon's scene",
+        removed.ok() && json(&after.stdout).as_array().is_some_and(Vec::is_empty),
+        format!("{removed:?}\n{after:?}"),
+    );
+    let policy = elsewhere(
+        &mut s,
+        &http,
+        "policy-elsewhere",
+        &["--json", "policy", "show"],
+    );
+    s.check(
+        "policy",
+        "cli",
+        "policy show from elsewhere is the daemon's, naming the caller as the daemon sees it",
+        json(&policy.stdout)["you"] == "loopback-http",
+        format!("{policy:?}"),
     );
     s.finish();
 }

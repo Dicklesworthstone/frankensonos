@@ -21,8 +21,9 @@
 //! output is the same either way; `fsonos sleep` through the daemon gets
 //! its fade, `fsonos play --search` searches the daemon's library and
 //! favorites, and `fsonos dj start|skip|stop|steer` reach the DJ that keeps
-//! the group's queue going. Commands with no route here (doctor, schedules,
-//! the other scene commands, ...) run directly.
+//! the group's queue going. Scenes, schedules and `fsonos policy show` read
+//! and change the daemon's, so they reach its store from another machine too.
+//! Commands with no route here (doctor, `policy check`, ...) run directly.
 
 use fsonos_api::surface::announce::{AnnounceDto, AnnounceRequest};
 use fsonos_api::surface::players::PlayerDto;
@@ -230,6 +231,11 @@ impl Daemon {
     /// `GET path`: the answer as `T`, or the daemon's failure.
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
         self.call("GET", path, None, CALL)
+    }
+
+    /// `DELETE path`: the answer as `T`, or the daemon's failure.
+    pub fn delete<T: DeserializeOwned>(&self, path: &str) -> Result<T, Failure> {
+        self.call("DELETE", path, None, CALL)
     }
 
     /// `PUT path` with no body: the answer as `T`, or the daemon's failure.

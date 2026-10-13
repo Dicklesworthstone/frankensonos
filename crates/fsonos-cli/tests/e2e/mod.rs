@@ -63,8 +63,9 @@ pub const ROUTES_REFUSAL: &str = "refused: outside the routes file";
 const INLINE: usize = 2000;
 
 /// The settings the harness controls; any ambient value is removed first.
-const SETTINGS: [&str; 15] = [
+const SETTINGS: [&str; 16] = [
     "FSONOS_ROUTES",
+    "FSONOS_TAILSCALE_SERVE",
     "FSONOS_EVENTS_PORT",
     "FSONOS_HTTP_ADDR",
     "FSONOS_MCP_HTTP_ADDR",
@@ -282,11 +283,24 @@ impl Scenario {
     /// [`Self::cli`] without the isolation variables named in `unset` (to
     /// run, say, with no seed file configured).
     pub fn cli_without(&mut self, step: &str, args: &[&str], unset: &[&str]) -> Run {
+        self.cli_env(step, args, &[], unset)
+    }
+
+    /// [`Self::cli_without`] with `env` set as well (to run as another
+    /// machine would, say: its own data directory, the daemon's address).
+    pub fn cli_env(
+        &mut self,
+        step: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+        unset: &[&str],
+    ) -> Run {
         let started = Instant::now();
         let mut cmd = self.command();
         for var in unset {
             cmd.env_remove(var);
         }
+        cmd.envs(env.iter().copied());
         let out = cmd.args(args).output().expect("run the fsonos binary");
         let run = Run {
             code: out.status.code(),

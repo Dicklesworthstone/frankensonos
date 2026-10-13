@@ -1,19 +1,20 @@
 //! `fsonos scene save|apply|list|show|rm`: the house's named states, through
 //! the same surface calls as `/scenes` and the scene tools, as the house
-//! policy's `cli` client. Listing, showing and removing read only the store
-//! in the data directory. Saving and applying go through the daemon when
-//! one answers (found as every command finds it, see `crate::remote`): a
-//! scene records the DJ where the daemon's DJ plays, and a DJ the scene
-//! starts is the daemon's, which keeps the group's queue going. Without a
-//! daemon they survey and act right here; no DJ plays to be saved, and one
-//! the scene starts plays the works it queues and no more.
+//! policy's `cli` client. Every one goes through the daemon when one answers
+//! (found as every command finds it, see `crate::remote`), so its scenes are
+//! the ones listed, shown and removed, from another machine too: a scene
+//! records the DJ where the daemon's DJ plays, and a DJ the scene starts is
+//! the daemon's, which keeps the group's queue going. Without a daemon they
+//! use the store in the data directory and survey and act right here; no DJ
+//! plays to be saved, and one the scene starts plays the works it queues and
+//! no more.
 
 use anyhow::Context as _;
 use clap::{Args, Subcommand};
 use fsonos_api::Failure;
 use fsonos_api::surface::Surface;
 use fsonos_api::surface::scenes::{
-    SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDto, SceneGroupDto,
+    SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDeletedDto, SceneDto, SceneGroupDto,
 };
 use fsonos_core::policy::Client;
 use std::fmt::Write as _;
@@ -130,15 +131,24 @@ pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
             }
         }
         SceneAction::List => {
-            let scenes = s()?.scenes(&cli)?;
+            let scenes: Vec<SceneDto> = match Daemon::find(global, global.daemon)? {
+                Some(daemon) => daemon.get("/scenes")?,
+                None => s()?.scenes(&cli)?,
+            };
             crate::emit(global.json, &scenes, |scenes| list_text(scenes))
         }
         SceneAction::Show { name } => {
-            let scene = s()?.scene(&cli, name)?;
+            let scene: SceneDto = match Daemon::find(global, global.daemon)? {
+                Some(daemon) => daemon.get(&format!("/scenes/{}", pct(name)))?,
+                None => s()?.scene(&cli, name)?,
+            };
             crate::emit(global.json, &scene, show_text)
         }
         SceneAction::Rm { name } => {
-            let deleted = s()?.delete_scene(&cli, name)?;
+            let deleted: SceneDeletedDto = match Daemon::find(global, global.daemon)? {
+                Some(daemon) => daemon.delete(&format!("/scenes/{}", pct(name)))?,
+                None => s()?.delete_scene(&cli, name)?,
+            };
             crate::emit(global.json, &deleted, |d| format!("{}\n", d.done))
         }
     }

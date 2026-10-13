@@ -136,7 +136,7 @@ pub enum Decision {
 }
 
 /// Limits that apply to every room unless the room overrides them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Limits {
     pub max_volume: u8,
     /// The largest single increase.
@@ -203,7 +203,7 @@ pub struct Policy {
 }
 
 /// The effective policy, for showing: see [`Policy::view`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyView {
     pub defaults: Limits,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -215,7 +215,7 @@ pub struct PolicyView {
 }
 
 /// Quiet hours in local wall-clock time, `HH:MM`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuietHoursView {
     pub start: String,
     pub end: String,
@@ -223,7 +223,7 @@ pub struct QuietHoursView {
 }
 
 /// A room's own limits; an absent one is the default's.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomView {
     pub room: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -234,7 +234,7 @@ pub struct RoomView {
 
 /// A client's own rules: `allow` (only these tools) when given, `deny`
 /// always, and whether volume caps apply when set.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientView {
     pub client: String,
     #[serde(skip_serializing_if = "Option::is_none")]

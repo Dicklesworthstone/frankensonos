@@ -1,9 +1,11 @@
 //! `fsonos policy show|check`: the house policy the CLI runs under, and
 //! whether a policy file can be used.
 //!
-//! `show` reads policy.toml in the data directory (the built-in defaults
-//! when there is none) and prints it as `get_policy` and `GET /policy` do,
-//! with the CLI as the caller. `check` validates policy.toml, or `--file`:
+//! `show` prints the running daemon's policy (`GET /policy`) when one
+//! answers, so from another machine `--daemon` shows the house's; otherwise
+//! it reads policy.toml in the data directory (the built-in defaults when
+//! there is none) and prints it as `get_policy` does, with the CLI as the
+//! caller. `check` validates policy.toml, or `--file`:
 //! it parses and its values are in range. A problem names its line and
 //! column and exits 2.
 
@@ -44,9 +46,13 @@ struct CheckDto {
 pub fn run(global: &GlobalArgs, action: &PolicyAction) -> anyhow::Result<()> {
     match action {
         PolicyAction::Show => {
-            let data_dir = crate::daemon::data_dir(global)?;
-            let policy = crate::daemon::policy(&data_dir)?;
-            let shown = PolicyDto::of(&policy, &Client::Cli, SystemClock.now());
+            let daemon = crate::remote::Daemon::find(global, global.daemon)?;
+            let shown: PolicyDto = if let Some(daemon) = daemon {
+                daemon.get("/policy")?
+            } else {
+                let policy = crate::daemon::policy(&crate::daemon::data_dir(global)?)?;
+                PolicyDto::of(&policy, &Client::Cli, SystemClock.now())
+            };
             crate::emit(global.json, &shown, PolicyDto::text)
         }
         PolicyAction::Check { file } => {
