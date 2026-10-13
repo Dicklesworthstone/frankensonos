@@ -6,7 +6,8 @@
 //!
 //! The engine takes its lock before any store call, so no engine method may
 //! run under [`Surface::with_store`]'s lock: every one goes through
-//! [`Surface::with_dj_store`].
+//! [`Surface::with_dj_store`]. That waits out an undo's restore, which the
+//! store no longer kept the DJ out of.
 
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback,
@@ -58,6 +59,7 @@ impl Surface {
         let Some(log) = &self.log else {
             return Ok(None);
         };
+        let _restoring = log.restoring.read().unwrap_or_else(PoisonError::into_inner);
         f(&mut SharedStore(&log.store))
             .map(Some)
             .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))

@@ -1,27 +1,36 @@
 //! An undo whose restore takes long (the speakers answer slowly) never holds
-//! up the daemon's other calls on the store, and two undos at once never put
-//! the same action back twice. Against `fsonos-sim` over real loopback
-//! sockets, with a transport that takes its time to set a volume.
+//! up the daemon's other calls on the store, two undos at once never put the
+//! same action back twice, and the DJ waits for the restore. Against
+//! `fsonos-sim` over real loopback sockets, with a transport that takes its
+//! time to set a volume.
 
 use fsonos_api::VolumeRequest;
-use fsonos_api::plan::plan_volume;
+use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
+use fsonos_api::plan::{DjAction, plan_volume};
 use fsonos_api::surface::{Surface, Survey};
-use fsonos_core::clock::SystemClock;
+use fsonos_api::{ErrorCode, Failure, OutcomeDto};
+use fsonos_core::clock::{Clock, SystemClock};
+use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::policy::{Client, Policy};
-use fsonos_core::store::{ActionFilter, MemStore};
+use fsonos_core::store::{ActionFilter, MemStore, Store};
 use fsonos_proto::{ProtoError, Transport, mdns, ssdp};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
+use fsonos_types::PlayerId;
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// What happened, in order.
+type Said = Arc<Mutex<Vec<&'static str>>>;
+
 /// The simulator's LAN, but once `slow` a volume set takes two seconds,
-/// and says when one has begun.
+/// says when one has begun, and notes when it is done.
 struct Sluggish {
     lan: SimLan,
     slow: Arc<AtomicBool>,
     setting: Arc<AtomicBool>,
+    said: Said,
 }
 
 impl Transport for Sluggish {
@@ -36,6 +45,9 @@ impl Transport for Sluggish {
         {
             self.setting.store(true, Ordering::SeqCst);
             std::thread::sleep(Duration::from_secs(2));
+            let set = self.lan.soap_post(host, control_path, soap_action, body);
+            self.said.lock().unwrap().push("volume set");
+            return set;
         }
         self.lan.soap_post(host, control_path, soap_action, body)
     }
@@ -56,6 +68,15 @@ impl Transport for Sluggish {
 /// A logged surface over the sim, and the switch that makes it slow, and the
 /// flag that says a slow volume set began.
 fn surface(sim: &SimHandle) -> (Arc<Surface>, Arc<AtomicBool>, Arc<AtomicBool>) {
+    surface_noting(sim, &Said::default(), None)
+}
+
+/// [`surface`], noting its slow volume sets in `said`, with `dj` if any.
+fn surface_noting(
+    sim: &SimHandle,
+    said: &Said,
+    dj: Option<Box<dyn DjEngine>>,
+) -> (Arc<Surface>, Arc<AtomicBool>, Arc<AtomicBool>) {
     let (slow, setting) = (
         Arc::new(AtomicBool::new(false)),
         Arc::new(AtomicBool::new(false)),
@@ -67,15 +88,71 @@ fn surface(sim: &SimHandle) -> (Arc<Surface>, Arc<AtomicBool>, Arc<AtomicBool>) 
         lan: sim.lan(),
         slow: Arc::clone(&slow),
         setting: Arc::clone(&setting),
+        said: Arc::clone(said),
     };
-    let s = Surface::new(
+    let mut s = Surface::new(
         Box::new(transport),
         survey,
         Policy::default(),
         Box::new(SystemClock),
     )
     .with_action_log(Box::new(MemStore::default()), "mcp");
+    if let Some(dj) = dj {
+        s = s.with_dj(dj);
+    }
     (Arc::new(s), slow, setting)
+}
+
+/// A DJ that only notes when it is asked for its moods.
+struct Asked(Said);
+
+impl DjEngine for Asked {
+    fn act(
+        &self,
+        _: DjSpeakers<'_>,
+        _: &mut dyn Store,
+        _: DjAction,
+        _: &dyn Clock,
+    ) -> Result<OutcomeDto, Failure> {
+        Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
+    }
+
+    fn steer(
+        &self,
+        _: DjSpeakers<'_>,
+        _: &mut dyn Store,
+        _: &DjSteer,
+        _: &dyn Clock,
+    ) -> Result<OutcomeDto, Failure> {
+        Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
+    }
+
+    fn status(
+        &self,
+        _: DjSpeakers<'_>,
+        _: &dyn Store,
+        _: Option<u32>,
+        _: &dyn Clock,
+    ) -> Result<DjStatusDto, Failure> {
+        Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
+    }
+
+    fn moods(
+        &self,
+        _: Option<DjSpeakers<'_>>,
+        _: &dyn Store,
+        _: &dyn Clock,
+    ) -> Result<DjMoodsDto, Failure> {
+        self.0.lock().unwrap().push("dj asked");
+        Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
+    }
+
+    fn feeds(&self, _: &PlayerId) -> bool {
+        false
+    }
+
+    fn on_playback(&self, _: DjSpeakers<'_>, _: &mut dyn Store, _: &PlayerPlayback, _: &dyn Clock) {
+    }
 }
 
 fn sim() -> SimHandle {
@@ -154,5 +231,33 @@ fn two_undos_at_once_put_back_two_actions() {
     assert_ne!(
         undone[0], undone[1],
         "the same action was put back twice: {undone:?}"
+    );
+}
+
+#[test]
+fn the_dj_waits_for_an_undo_to_put_things_back() {
+    let sim = sim();
+    let said = Said::default();
+    let (s, slow, setting) = surface_noting(&sim, &said, Some(Box::new(Asked(Arc::clone(&said)))));
+    set(&s, "Kitchen", 30);
+    slow.store(true, Ordering::SeqCst);
+    let undoing = {
+        let s = Arc::clone(&s);
+        std::thread::spawn(move || s.undo(&Client::Cli, false))
+    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !setting.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "the undo never set a volume");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // The restore is putting the volume back: a DJ call waits for it (as a
+    // top-up or a trim would, so neither shifts a queue under it).
+    let _ = s.dj_moods(&Client::Cli, None);
+    undoing.join().unwrap().unwrap().expect("an action to undo");
+    let said = said.lock().unwrap();
+    assert_eq!(
+        said.last(),
+        Some(&"dj asked"),
+        "the DJ ran mid-restore: {said:?}"
     );
 }

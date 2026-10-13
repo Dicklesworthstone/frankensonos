@@ -171,6 +171,10 @@ struct ActionLog {
     /// Held for a whole undo, so two never put the same action back; the
     /// store itself is locked only per call (see [`Surface::undo`]).
     undoing: Mutex<()>,
+    /// Shared by every DJ engine call, whole for an undo's restore: the
+    /// store no longer keeps the two apart, and a DJ top-up or trim must not
+    /// shift a queue the restore checks and then takes tracks out of.
+    restoring: RwLock<()>,
 }
 
 impl Surface {
@@ -463,6 +467,7 @@ impl Surface {
             store: Mutex::new(store),
             surface: surface.to_string(),
             undoing: Mutex::new(()),
+            restoring: RwLock::new(()),
         });
         self
     }
@@ -907,6 +912,10 @@ impl Surface {
         // write: the restore talks to the speakers, and every other call's
         // log entry must not wait on it.
         let _undoing = log.undoing.lock().unwrap_or_else(PoisonError::into_inner);
+        let _restoring = log
+            .restoring
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
         let report = actions::undo_last_vetted(
             &*self.transport,
             &households,
