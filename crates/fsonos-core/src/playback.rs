@@ -186,8 +186,7 @@ impl Playback {
         };
         let slot = (info.track > 0).then_some(info.track);
         let previous_slot = state.queue_position.filter(|&n| n > 0);
-        let changed = state.track_uri != uri
-            || (previous_slot.is_some() && previous_slot != slot);
+        let changed = state.track_uri != uri || (previous_slot.is_some() && previous_slot != slot);
         if changed || uri.is_none() {
             state.position = None;
             state.duration_secs = None;
@@ -516,7 +515,10 @@ mod tests {
                 now,
             )
             .unwrap();
-        assert_eq!(changes.track, None, "the read already identified this track");
+        assert_eq!(
+            changes.track, None,
+            "the read already identified this track"
+        );
         let state = playback.of(&player()).unwrap();
         assert_eq!(state.duration_secs, Some(240));
         assert_eq!(state.position_at(now + Duration::from_secs(2)), Some(92));
@@ -601,7 +603,10 @@ mod tests {
         // An omitted sample for the same track keeps interpolation running.
         playback.apply_position(&player(), &position("test:old-track", 1, None), at);
         assert_eq!(
-            playback.of(&player()).unwrap().position_at(at + Duration::from_secs(3)),
+            playback
+                .of(&player())
+                .unwrap()
+                .position_at(at + Duration::from_secs(3)),
             Some(8)
         );
     }

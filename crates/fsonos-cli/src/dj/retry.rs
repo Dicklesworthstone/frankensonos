@@ -127,11 +127,7 @@ mod tests {
             }
             assert!(retry.ready(&changed, now));
             let failed = Retry::failed(Some(&retry), &changed, now);
-            assert_eq!(
-                failed.delay(),
-                FIRST,
-                "new state starts a new retry series"
-            );
+            assert_eq!(failed.delay(), FIRST, "new state starts a new retry series");
         }
     }
 

@@ -256,7 +256,12 @@ mod tests {
         };
         snapshot
             .playback
-            .apply(&ids[1], EventSource::RenderingControl, &rendering, Instant::now())
+            .apply(
+                &ids[1],
+                EventSource::RenderingControl,
+                &rendering,
+                Instant::now(),
+            )
             .unwrap();
         assert_eq!(snapshot.playback.of(&ids[1]).unwrap().volume, Some(12));
         snapshot.households.push(snapshot.households[0].clone());
@@ -288,7 +293,10 @@ mod tests {
     fn topology_and_health_recovery_revisit_only_current_active_feeds() {
         let (mut snapshot, ids) = snapshot();
         let feeds = |id: &PlayerId| *id == ids[0];
-        assert_eq!(targets(&snapshot, Some(&LiveEvent::Topology), feeds), ids[..1]);
+        assert_eq!(
+            targets(&snapshot, Some(&LiveEvent::Topology), feeds),
+            ids[..1]
+        );
         for health in [Health::Degraded, Health::Offline] {
             let event = LiveEvent::Health {
                 player: ids[0].clone(),
@@ -464,7 +472,9 @@ mod simulator_tests {
         // the production handler, while Live receives real simulator GENA.
         let (_send, events) = mpsc::channel::<LiveEvent>();
         let worker = std::thread::spawn(move || {
-            drive(&events, Duration::from_millis(10), |event| handle(&weak, event));
+            drive(&events, Duration::from_millis(10), |event| {
+                handle(&weak, event)
+            });
         });
         assert_eq!(
             received.recv_timeout(Duration::from_secs(2)).unwrap(),
@@ -497,12 +507,8 @@ mod simulator_tests {
         assert!(handle(&weak, Some(LiveEvent::Topology)));
         received.recv_timeout(Duration::from_secs(2)).unwrap();
         let office = PlayerId(sim.player("Office").unwrap().uuid.clone());
-        fsonos_proto::control::join_group(
-            &sim.lan(),
-            sim.player("Den").unwrap().ip,
-            &office,
-        )
-        .unwrap();
+        fsonos_proto::control::join_group(&sim.lan(), sim.player("Den").unwrap().ip, &office)
+            .unwrap();
         let until = Instant::now() + Duration::from_secs(5);
         while live
             .households()
@@ -518,7 +524,10 @@ mod simulator_tests {
         };
         assert!(handle(&weak, Some(stale)));
         assert!(handle(&weak, None));
-        assert!(matches!(received.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            received.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
         drop(surface);
         drop(live);
         sim.shutdown();
