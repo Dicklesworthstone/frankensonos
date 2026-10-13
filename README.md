@@ -103,6 +103,7 @@ fsonos sleep Bedroom 45m                          # fade out, then pause
 fsonos schedule add "weekdays 07:30" dj start Kitchen --mood bright
 fsonos say "Dinner is ready" --rooms Kitchen,Office
 fsonos announce --file clip.wav --rooms Kitchen   # an existing 16-bit PCM WAV
+fsonos stream Kitchen --input alsa_output.example.monitor  # Linux desktop audio (Ctrl-C stops)
 fsonos undo                                       # put the newest action back
 fsonos serve                                      # the daemon: HTTP API on loopback + tailnet, MCP on loopback
 fsonos tailscale setup                            # HTTPS for the tailnet via Tailscale Serve (never Funnel)
@@ -112,6 +113,33 @@ fsonos doctor                                     # what is wrong, and how to fi
 No speakers handy? Run `fsonos sim` in one terminal; it prints the `--seeds` and
 `--routes` flags that point every other command (and `fsonos mcp`) at the
 virtual house.
+
+### Live computer audio (experimental)
+
+On the computer connected to the speaker LAN, install FFmpeg with the
+\`libmp3lame\` encoder and a PipeWire/PulseAudio-compatible audio server.
+Use \`pactl list short sources\` to find your output device's **monitor**
+source, then:
+
+\`\`\`bash
+fsonos stream Kitchen --input <output-source>.monitor
+# The default is --format pulse --input @DEFAULT_MONITOR@.
+# Use a dedicated PipeWire/PulseAudio virtual sink to stream only selected apps.
+# Ctrl-C ends the capture and restores the previous music if the room still plays this stream.
+\`\`\`
+
+For macOS with a configured loopback/virtual audio device, choose
+\`--format avfoundation --input :<device-index>\` (check
+\`ffmpeg -f avfoundation -list_devices true -i ""\`). The encoder starts locally;
+the Sonos player fetches MP3 from a randomly named, read-only endpoint bound
+only on the LAN interface used to reach that player. There is no public
+audio service or cloud relay. \`--daemon-url\` is not supported for live capture:
+the computer running \`stream\` must reach the players and be reachable by them.
+
+**Video lip-sync is not implemented:** Sonos normally buffers HTTP-radio
+playback by seconds; the precise delay also drifts. This command is for live
+listening rather than in-sync video audio. Automatic calibration and player
+delay correction remain tracked in issue #2.
 
 ### Offline speech and WAV announcements
 

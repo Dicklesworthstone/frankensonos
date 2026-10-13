@@ -33,6 +33,7 @@
 //!   sim        run a virtual Sonos house on loopback (feature `sim`)
 
 mod announce_cmd;
+mod streaming;
 mod completions;
 mod config;
 mod confine;
@@ -291,6 +292,8 @@ enum Command {
     /// The cached room names, one per line, for the completion scripts.
     #[command(name = "__complete-rooms", hide = true)]
     CompleteRooms,
+    /// Run a live computer-audio capture on this LAN host, until Ctrl-C.
+    Stream(streaming::StreamArgs),
     /// Run the long-lived daemon (HTTP API + MCP server + event sink).
     Serve {
         #[command(flatten)]
@@ -517,6 +520,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Say(args) => announce_cmd::run_and_emit(global, &args.request()),
         Command::Chime(args) => announce_cmd::run_and_emit(global, &args.request()),
         Command::Announce(args) => announce_cmd::run_and_emit(global, &args.request()?),
+        Command::Stream(args) => streaming::run(global, &args),
         control => run_control(global, &control),
     }
 }
@@ -927,6 +931,7 @@ fn plan_for<'a>(
         | Command::Say(_)
         | Command::Chime(_)
         | Command::Announce(_)
+        | Command::Stream(_)
         | Command::Completions { .. }
         | Command::CompleteRooms
         | Command::Mcp => {
