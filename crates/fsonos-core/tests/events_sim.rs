@@ -72,6 +72,7 @@ fn every_service_subscribes_reports_in_and_survives_a_reboot() {
             Instant::now(),
         )
         .unwrap();
+        assert!(!subs.missed(&n));
         routed += 1;
     }
     assert_eq!(

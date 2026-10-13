@@ -82,6 +82,21 @@ fn url(service: Service) -> String {
     format!("http://192.0.2.1:3400/{}", service.tag())
 }
 
+/// Renewal scenarios start with delivered initial state, not silent streams.
+fn accept_initials(subs: &mut Subscriptions, fake: &Fake) {
+    for number in 1..=fake.next.get() {
+        let n = Notify {
+            sid: format!("uuid:sub{number}"),
+            seq: 0,
+            path: "/".into(),
+            properties: Vec::new(),
+        };
+        if subs.route(&n).is_some() {
+            assert!(!subs.missed(&n));
+        }
+    }
+}
+
 #[test]
 fn every_household_gets_topology_once_and_each_service_where_it_belongs() {
     let houses = [household(ZGS_S1), household(ZGS_S2)];
@@ -154,6 +169,7 @@ fn renewals_happen_halfway_and_a_stale_sid_is_resubscribed() {
     let mut subs = Subscriptions::default();
     let t0 = Instant::now();
     subs.sync(&fake, &w, url, t0);
+    accept_initials(&mut subs, &fake);
     assert_eq!(subs.next_due(), Some(t0 + Duration::from_secs(150)));
 
     let early = subs.renew_due(&fake, url, t0 + Duration::from_secs(149));
@@ -166,6 +182,7 @@ fn renewals_happen_halfway_and_a_stale_sid_is_resubscribed() {
     assert_eq!(due.renewed, w.len() - 1);
     assert!(due.failed.is_empty());
     assert_eq!(subs.len(), w.len());
+    accept_initials(&mut subs, &fake);
     assert_eq!(subs.next_due(), Some(t0 + Duration::from_secs(300)));
 }
 
@@ -264,6 +281,7 @@ fn a_subscribe_that_failed_is_retried_on_its_own() {
     let report = subs.sync(&fake, &w, url, t0);
     assert_eq!(report.failed.len(), 1);
     assert_eq!(subs.len(), w.len() - 1);
+    accept_initials(&mut subs, &fake);
     assert!(
         subs.next_due().unwrap() <= t0 + events::RETRY,
         "the retry is scheduled"

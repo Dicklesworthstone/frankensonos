@@ -29,6 +29,10 @@ use std::time::{Duration, Instant};
 /// whatever the player grants.
 pub const TIMEOUT_SECS: u32 = 1800;
 
+/// A successful SUBSCRIBE must deliver its first state event within this
+/// window. Renewing a silent SID cannot recover a lost initial NOTIFY.
+pub const INITIAL_STATE_WAIT: Duration = Duration::from_secs(30);
+
 /// A service whose events the live state needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Service {
@@ -136,10 +140,23 @@ struct Active {
     want: Want,
     sid: String,
     renew_at: Instant,
+    /// Fixed for this SID, even when a short lease renews before it fires.
+    initial_deadline: Instant,
     /// A failed replacement must retry SUBSCRIBE, not renew a stale stream.
     refresh_pending: bool,
     /// The last accepted SEQ; event keys wrap from u32::MAX to 1, not 0.
     last_seq: Option<u32>,
+}
+
+impl Active {
+    fn next_due(&self) -> Instant {
+        if self.last_seq.is_none() && !self.refresh_pending {
+            self.renew_at.min(self.initial_deadline)
+        } else {
+            // An expired initial deadline must not defeat replacement backoff.
+            self.renew_at
+        }
+    }
 }
 
 /// What one [`Subscriptions`] pass did, for logs and health.
@@ -231,6 +248,8 @@ impl Subscriptions {
     /// Renew every subscription that is due at `now`. A failed renewal (a
     /// rebooted player answers 412) is replaced by a fresh subscription.
     /// Failed replacements retry here too, without needing another NOTIFY.
+    /// A stream that never reported state is replaced after
+    /// [`INITIAL_STATE_WAIT`], even if every renewal would succeed.
     pub fn renew_due<S: Subscriber + ?Sized>(
         &mut self,
         s: &S,
@@ -239,19 +258,34 @@ impl Subscriptions {
     ) -> Report {
         let mut report = Report::default();
         for a in &mut self.active {
-            if a.renew_at > now {
+            if a.next_due() > now {
                 continue;
             }
             if a.refresh_pending {
                 refresh_active(s, a, &callback_url, now, &mut report);
                 continue;
             }
+            if a.last_seq.is_none() && a.initial_deadline <= now {
+                tracing::warn!(
+                    player = a.want.player.0.as_str(),
+                    service = ?a.want.service,
+                    "subscription delivered no initial state; subscribing afresh"
+                );
+                refresh_active(s, a, &callback_url, now, &mut report);
+                continue;
+            }
             match s.renew(&a.want, &a.sid) {
                 Ok(sub) => {
-                    // Renewing the same SID extends its lifetime, not its event stream.
-                    let last_seq = if sub.sid == a.sid { a.last_seq } else { None };
+                    // Renewing the same SID extends its lifetime, not its event stream
+                    // or the deadline for its initial state to arrive.
+                    let same_sid = sub.sid == a.sid;
+                    let last_seq = a.last_seq;
+                    let initial_deadline = a.initial_deadline;
                     *a = active(a.want.clone(), sub, now);
-                    a.last_seq = last_seq;
+                    if same_sid {
+                        a.last_seq = last_seq;
+                        a.initial_deadline = initial_deadline;
+                    }
                     report.renewed += 1;
                     report.answered.push(a.want.player.clone());
                 }
@@ -310,12 +344,12 @@ impl Subscriptions {
         report
     }
 
-    /// When the next renewal or recovery retry is due, for the daemon's timer.
+    /// When the next renewal, initial-state check or recovery retry is due.
     #[must_use]
     pub fn next_due(&self) -> Option<Instant> {
         self.active
             .iter()
-            .map(|a| a.renew_at)
+            .map(Active::next_due)
             .chain(self.pending.iter().map(|(_, at)| *at))
             .min()
     }
@@ -500,6 +534,7 @@ fn active(want: Want, sub: Subscription, now: Instant) -> Active {
         want,
         sid: sub.sid,
         renew_at: now + half,
+        initial_deadline: now + INITIAL_STATE_WAIT,
         refresh_pending: false,
         last_seq: None,
     }
