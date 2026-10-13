@@ -39,8 +39,8 @@ use std::net::IpAddr;
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::{Store, StoreError};
 use fsonos_core::{CoreError, HouseholdState, control, moving};
-use fsonos_proto::content::{BrowseFlag, QUEUE, browse, browse_all};
-use fsonos_proto::control::{get_position_info, remove_track_range_from_queue};
+use fsonos_proto::content::{QUEUE, browse_all};
+use fsonos_proto::control::get_position_info;
 use fsonos_proto::didl::{
     SpotifyRenderParams, spotify_queue_uri, spotify_track_didl, spotify_uri_from_renderer_uri,
 };
@@ -54,6 +54,7 @@ use crate::feedback::FeedbackModel;
 use crate::steer::Steer;
 
 mod enqueue;
+mod trim;
 
 /// How far apart a play recorded here and the owner's Spotify history's
 /// record of it can be (Spotify notes a play when it ends; a movement can
@@ -421,94 +422,6 @@ impl QueueFeed {
         self.top_up(at, plan, &*store)
     }
 
-    /// Once the queue holds more than [`DjConfig::trim_queue_at`] tracks,
-    /// take off it each played work that ended more than
-    /// [`DjConfig::keep_played`] tracks before the one playing: back to
-    /// front, and only a work still whole and in order where the feed
-    /// believes it is (read back first), so the owner's own items stay.
-    fn trim<T: Transport + ?Sized>(&mut self, at: &Speakers<'_, T>) -> Result<(), FeedError> {
-        let (Some(playing), Some(length)) = (self.playing, self.queue_len) else {
-            return Ok(());
-        };
-        if length <= self.config.trim_queue_at {
-            return Ok(());
-        }
-        let before = playing.saturating_sub(self.config.keep_played);
-        let host = host_of(at)?;
-        let mut removed = 0;
-        // The works taken off are forgotten: one kept here would claim a
-        // later copy of its tracks (the owner's own) at the resync, and the
-        // next trim would take that off too.
-        let mut gone = vec![false; self.played.len()];
-        let mut outcome = Ok(());
-        for (i, work) in self.played.iter().enumerate().rev() {
-            match Self::trim_work(at, host, work, before) {
-                Ok(0) => {}
-                Ok(count) => {
-                    gone[i] = true;
-                    removed += count;
-                }
-                Err(e) => {
-                    outcome = Err(e);
-                    break;
-                }
-            }
-        }
-        if removed > 0 {
-            let mut gone = gone.into_iter();
-            self.played.retain(|_| !gone.next().unwrap_or(false));
-            self.playing = Some(playing.saturating_sub(removed));
-            self.resync(at)?;
-        }
-        outcome
-    }
-
-    /// Take `work` off the queue if it ended before position `before` and
-    /// is still there whole and in order (read back first). Returns how many
-    /// tracks came off.
-    fn trim_work<T: Transport + ?Sized>(
-        at: &Speakers<'_, T>,
-        host: IpAddr,
-        work: &QueuedWork,
-        before: u32,
-    ) -> Result<u32, FeedError> {
-        let (Some(first), Some(last)) = (work.first(), work.last()) else {
-            return Ok(0);
-        };
-        let count = last - first + 1;
-        let tracks = work.tracks();
-        if last >= before || usize::try_from(count).ok() != Some(tracks.len()) {
-            return Ok(0);
-        }
-        let there = browse(
-            at.transport,
-            host,
-            QUEUE,
-            BrowseFlag::DirectChildren,
-            first - 1,
-            count,
-        )?;
-        let found: Vec<Option<String>> = there
-            .objects
-            .iter()
-            .map(|o| {
-                o.res
-                    .as_ref()
-                    .and_then(|r| spotify_uri_from_renderer_uri(&r.uri))
-            })
-            .collect();
-        if found
-            .iter()
-            .map(Option::as_deref)
-            .ne(tracks.iter().map(|t| Some(*t)))
-        {
-            return Ok(0);
-        }
-        // UpdateID 0: the queue as it is, just read back.
-        remove_track_range_from_queue(at.transport, host, 0, first, count)?;
-        Ok(count)
-    }
-
     /// Skip the rest of the current work (or the owner's item playing): play
     /// the next DJ work from its first movement, queuing one if none waits.
     /// The queue and the playing position are read afresh first, so an
@@ -705,6 +618,11 @@ impl QueueFeed {
         plan: Planning<'_>,
         store: &S,
     ) -> Result<usize, FeedError> {
+        // A failed trim read-back leaves positions untrusted. The next
+        // playback event must reconcile before any partial work is completed.
+        if self.queue_len.is_none() {
+            return Ok(0);
+        }
         self.finish_partial(at)?;
         let playing = self.playing.unwrap_or(0);
         let ahead = self
