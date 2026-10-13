@@ -191,10 +191,7 @@ mod tests {
             queue(8, &["z", "b", "x"]),
             queue(7, &["a", "b", "x"]),
         ] {
-            assert_eq!(
-                observe(&before, &after, 2, "x"),
-                Observed::Indeterminate
-            );
+            assert_eq!(observe(&before, &after, 2, "x"), Observed::Indeterminate);
         }
     }
 
@@ -356,11 +353,7 @@ mod tests {
                     add_movement(&transport, host, &params, &movement(), 0).unwrap(),
                     (1, Some(1))
                 );
-                assert_eq!(
-                    transport.adds.get(),
-                    1,
-                    "the mutation must not be repeated"
-                );
+                assert_eq!(transport.adds.get(), 1, "the mutation must not be repeated");
                 assert_eq!(read(&sim.lan(), host).unwrap().uris, [TRACK]);
             }
         }
@@ -487,7 +480,11 @@ mod tests {
                     .unwrap(),
                 0
             );
-            assert_eq!(sim.soap_log().len(), before, "no automatic retry or rollback");
+            assert_eq!(
+                sim.soap_log().len(),
+                before,
+                "no automatic retry or rollback"
+            );
             assert_eq!(
                 control::get_transport_info(&lan, sim.player("Den").unwrap().ip)
                     .unwrap()

@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+mod queue_start;
+
 /// How long a player that left its group may take to show alone (real ones
 /// do within about a second). Not a settle-time knob: a fleet-verified
 /// 2026-10-12 case (announce restore on a stereo-pair fleet) showed the
@@ -305,17 +307,16 @@ pub fn queue_spotify_tracks<T: Transport + ?Sized>(
 }
 
 /// Make the group `coordinator` leads play its own queue from `position`
-/// (1-based), so playback continues through the queue.
+/// (1-based), so playback continues through the queue. Each stage is sent
+/// once. A lost or malformed reply advances only when read-back confirms
+/// its effect; no source reset, seek or Play is repeated during recovery.
 pub fn play_queue_from<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,
     position: u32,
 ) -> Result<(), CoreError> {
-    let host = addr(households, coordinator)?;
-    soap::play_from_queue(t, host, coordinator)?;
-    soap::seek_track(t, host, position)?;
-    Ok(soap::play(t, host)?)
+    Ok(queue_start::play(t, addr(households, coordinator)?, coordinator, position)?)
 }
 
 /// Tracks [`enqueue_spotify`] added to a group's queue.
