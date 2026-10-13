@@ -19,7 +19,7 @@
 use fsonos_core::actions::{self, UndoReport};
 use fsonos_core::clock::Clock;
 use fsonos_core::doctor::{self, Report, Runner};
-use fsonos_core::live::{Live, LiveEvent};
+use fsonos_core::live::Live;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::rooms::Aliases;
 use fsonos_core::snapshot::RestoreOp;
@@ -45,6 +45,7 @@ use crate::request::{PlayFavoriteRequest, SearchRequest};
 use crate::zones::{ZoneDto, zone_for_target, zone_views};
 
 pub mod dj_feedback;
+mod dj_follow;
 pub mod dj_prefs;
 pub mod dj_sync;
 pub mod eq;
@@ -1321,28 +1322,12 @@ fn room_view<'a>(
     }
 }
 
-/// Keep the DJ fed: fold each playback change the live model sees into the
-/// DJ's feed for that coordinator, on a thread of its own. Does nothing
-/// without a live model or a DJ. Ends with the live model.
+/// Keep the DJ fed from live playback events and periodic cached-state
+/// maintenance on a thread of its own. Restored feeds are visited at once;
+/// quiet queues retry without needing a new event. Ends with the live model
+/// or surface. Does nothing without a live model or a DJ.
 pub fn follow(surface: &Arc<Surface>) {
-    let (Some(live), true) = (surface.live(), surface.dj.is_some()) else {
-        return;
-    };
-    let changes = live.subscribe();
-    let surface = Arc::downgrade(surface);
-    let _ = std::thread::Builder::new()
-        .name("fsonos-dj".into())
-        .spawn(move || {
-            while let Ok(change) = changes.recv() {
-                let LiveEvent::Playback { player, .. } = change else {
-                    continue;
-                };
-                let Some(surface) = surface.upgrade() else {
-                    return;
-                };
-                surface.dj_playback(&player);
-            }
-        });
+    dj_follow::follow(surface);
 }
 
 /// Carry a DJ command out with `dj`: a steer, and then with `start` a start.
