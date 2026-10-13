@@ -12,6 +12,7 @@ use crate::{CoreError, HouseholdState, control};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -130,7 +131,10 @@ where
 /// Run a group command addressed to the coordinator of `member`'s group.
 /// UPnP fault 800 is generic (a wrong Spotify DIDL also causes it), so on
 /// 800 the household's topology is refreshed and the command retried once
-/// only if the coordinator really moved; otherwise the fault stands.
+/// only if the coordinator really moved; otherwise the fault stands. If the
+/// member cannot answer topology, try its household peers, never another
+/// household. Each address is read at most once; only a confirmed new
+/// coordinator receives a second command.
 pub fn on_coordinator<T, R>(
     t: &T,
     households: &mut [HouseholdState],
@@ -140,29 +144,41 @@ pub fn on_coordinator<T, R>(
 where
     T: Transport + ?Sized,
 {
-    let coordinator = |hs: &[HouseholdState]| {
-        hs.iter()
-            .find_map(|h| h.coordinator_of(member).cloned())
-            .ok_or_else(|| CoreError::UnknownPlayer(member.0.clone()))
-    };
-    let from = coordinator(households)?;
+    let from = households
+        .iter()
+        .find_map(|h| h.coordinator_of(member).cloned())
+        .ok_or_else(|| CoreError::UnknownPlayer(member.0.clone()))?;
     let err = match op(households, &from) {
         Ok(r) => return Ok((r, Recovery::None)),
         Err(e @ CoreError::Proto(ProtoError::SoapFault { code: 800, .. })) => e,
         Err(e) => return Err(e),
     };
-    // Refresh this household's topology from the member itself.
-    let Some(h) = households.iter_mut().find(|h| h.player(member).is_some()) else {
+    let Some(index) = households.iter().position(|h| h.player(member).is_some()) else {
         return Err(err);
     };
-    let Some(host) = h.player(member).map(|p| p.ip) else {
+    let current = &households[index];
+    let Some(host) = current.player(member).map(|p| p.ip) else {
         return Err(err);
     };
-    let Ok(zgs) = get_zone_group_state(t, host) else {
+    // Any peer can describe this household. A busy or unreachable member
+    // must not make its otherwise reachable group impossible to recover.
+    // Stop at the first successful topology, even if it is unchanged.
+    let mut tried = HashSet::new();
+    let zgs = std::iter::once(host)
+        .chain(current.players.iter().map(|p| p.ip))
+        .filter(|ip| tried.insert(*ip))
+        .find_map(|ip| get_zone_group_state(t, ip).ok());
+    let Some(zgs) = zgs else {
         return Err(err);
     };
-    h.apply_topology(&zgs);
-    let to = coordinator(households)?;
+    // Do not replace the original command's failure with UnknownPlayer if
+    // the member vanished during recovery, or publish an unusable model.
+    let mut refreshed = current.clone();
+    refreshed.apply_topology(&zgs);
+    let Some(to) = refreshed.coordinator_of(member).cloned() else {
+        return Err(err);
+    };
+    households[index] = refreshed;
     if to == from {
         tracing::debug!(
             member = member.0.as_str(),
