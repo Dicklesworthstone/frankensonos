@@ -35,6 +35,8 @@ const ANNOUNCEMENTS_SCRIPT: &str = include_str!("../remote/announcements.js");
 const ANNOUNCEMENTS_STYLE: &str = include_str!("../remote/announcements.css");
 const PREFERENCES_SCRIPT: &str = include_str!("../remote/dj-preferences.js");
 const PREFERENCES_STYLE: &str = include_str!("../remote/dj-preferences.css");
+const SESSION_SCRIPT: &str = include_str!("../remote/dj-session.js");
+const SESSION_STYLE: &str = include_str!("../remote/dj-session.css");
 const STYLE: &str = include_str!("../remote/remote.css");
 
 /// What the remote's documents may do: load only themselves, talk only to
@@ -67,7 +69,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}"
+                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}"
                     ),
                 )
             },
@@ -84,7 +86,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}"
                     ),
                 )
             },
@@ -276,6 +278,8 @@ mod tests {
             ("announcements.css", ANNOUNCEMENTS_STYLE),
             ("dj-preferences.js", PREFERENCES_SCRIPT),
             ("dj-preferences.css", PREFERENCES_STYLE),
+            ("dj-session.js", SESSION_SCRIPT),
+            ("dj-session.css", SESSION_STYLE),
         ] {
             let lower = text.to_ascii_lowercase();
             for secret in [

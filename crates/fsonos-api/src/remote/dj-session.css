@@ -1,0 +1,13 @@
+.dj-session { border: 1px solid var(--line); border-radius: .8rem; background: var(--card); }
+.dj-session > summary { padding: .8rem 1rem; font-weight: 650; cursor: pointer; }
+.dj-session-body { padding: 0 1rem 1rem; }
+.dj-session-body .row { flex-wrap: wrap; }
+.dj-session-body select { max-width: 100%; min-width: 0; }
+.dj-session-body p, .dj-session-body li, .dj-session-body strong { overflow-wrap: anywhere; }
+.dj-session-message { min-height: 1.5em; }
+.dj-session-work { border-top: 1px solid var(--line); padding: .3rem 0 .8rem; }
+.dj-session-work h4, .dj-session-observation h4 { margin: .7rem 0 .4rem; }
+.dj-session-work p { margin: .4rem 0; }
+.dj-session-observation details { margin: .6rem 0; }
+.dj-session-warning { padding: .7rem; border-left: .25rem solid currentColor; font-weight: 600; }
+.dj-session-observation ul { padding-left: 1.4rem; }
