@@ -186,7 +186,9 @@ impl Surface {
             return Err(Failure::invalid(
                 "the queue selection is stale or out of range; nothing was removed",
             )
-            .with_hint("Read the queue again and use the current positions and exact renderer URIs."));
+            .with_hint(
+                "Read the queue again and use the current positions and exact renderer URIs.",
+            ));
         }
         // UpdateID=0 is the protocol's wildcard, not a compare-and-swap.
         // Never turn an observed zero (including counter wrap) into an
@@ -210,7 +212,9 @@ impl Surface {
                 return Err(Failure::invalid(
                     "the queue revision changed since the selection; nothing was removed",
                 )
-                .with_hint("Read the current queue and select its current identities and revision."));
+                .with_hint(
+                    "Read the current queue and select its current identities and revision.",
+                ));
             }
         }
         self.queue_group_unchanged(host, &group)?;

@@ -27,7 +27,8 @@ pub fn reorder_tracks<T: Transport + ?Sized>(
         || first.checked_add(count - 1).is_none()
     {
         return Err(ProtoError::Malformed(
-            "queue moves require one-based positions, a nonempty range and a nonzero revision".into(),
+            "queue moves require one-based positions, a nonempty range and a nonzero revision"
+                .into(),
         ));
     }
     soap::call(

@@ -19,7 +19,9 @@ pub(super) fn restore<T: Transport + ?Sized>(
     }
     let current = get_play_mode(t, host)?;
     if soap::get_media_info(t, host)?.uri != queue {
-        return Err(ProtoError::Malformed("play mode source changed during its read".into()).into());
+        return Err(
+            ProtoError::Malformed("play mode source changed during its read".into()).into(),
+        );
     }
     if current == mode {
         return Ok(());

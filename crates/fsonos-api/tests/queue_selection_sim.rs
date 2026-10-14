@@ -142,15 +142,17 @@ fn duplicate_uri_at_the_same_position_does_not_make_an_old_revision_valid() {
     let s = surface(houses.clone(), sim.lan());
     let before = s.queue(&Client::Cli, ROOM, 0, 100).unwrap();
     let req = request(&before, 3);
-    let page =
-        content::browse(&sim.lan(), host, QUEUE, BrowseFlag::DirectChildren, 0, 1).unwrap();
+    let page = content::browse(&sim.lan(), host, QUEUE, BrowseFlag::DirectChildren, 0, 1).unwrap();
     soap::remove_track_range_from_queue(&sim.lan(), host, page.update_id, 1, 1).unwrap();
     control::queue_spotify_tracks(&sim.lan(), &houses, &id, &[(A, "Third A")])
         .unwrap()
         .expect("synthetic render parameters");
     let now = s.queue(&Client::Cli, ROOM, 0, 100).unwrap();
     assert_eq!(now.total, before.total);
-    assert_eq!(now.items[2].uri, req.expected_uri, "URI alone still matches");
+    assert_eq!(
+        now.items[2].uri, req.expected_uri,
+        "URI alone still matches"
+    );
     assert_ne!(now.revision, before.revision);
     control::set_volume(&sim.lan(), &houses, &id, 90).unwrap();
     let calls = sim.soap_log().len();
@@ -221,7 +223,9 @@ fn a_valid_token_does_not_skip_the_final_preparation_recheck() {
     topologies.store(0, Ordering::SeqCst);
     let calls = sim.soap_log().len();
     assert_eq!(
-        s.queue_play(&Client::Cli, &request(&view, 1)).unwrap_err().code,
+        s.queue_play(&Client::Cli, &request(&view, 1))
+            .unwrap_err()
+            .code,
         ErrorCode::NotReady
     );
     assert!(topologies.load(Ordering::SeqCst) >= 2);

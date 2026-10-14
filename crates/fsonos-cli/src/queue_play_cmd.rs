@@ -157,7 +157,12 @@ mod tests {
     fn blank_revisions_are_rejected_and_omitted_revisions_stay_optional() {
         assert!(
             Cli::try_parse_from([
-                "fsonos", "queue-play", "Room", "1", "--expected-revision", " ",
+                "fsonos",
+                "queue-play",
+                "Room",
+                "1",
+                "--expected-revision",
+                " ",
             ])
             .is_err()
         );

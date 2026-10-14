@@ -300,7 +300,11 @@ fn stale_or_invalid_selections_do_not_write_and_unknown_callers_do_not_read() {
     for req in invalid_requests() {
         assert!(surface.queue_remove(&Client::Cli, &req).is_err());
     }
-    assert_eq!(sim.soap_log().len(), before, "invalid requests made no reads");
+    assert_eq!(
+        sim.soap_log().len(),
+        before,
+        "invalid requests made no reads"
+    );
     for req in [request(2, &["a"]), request(4, &["d", "a"])] {
         let error = surface.queue_remove(&Client::Cli, &req).unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidArgument);
@@ -422,7 +426,10 @@ fn revision_tokens_bind_removal_to_the_queue_observed_by_the_client() {
     for s2 in [false, true] {
         let (sim, surface, attempts) = setup(s2, Fault::None);
         let mut req = request(2, &["b"]);
-        req.expected_revision = surface.queue(&Client::Cli, "Beta", 0, 100).unwrap().revision;
+        req.expected_revision = surface
+            .queue(&Client::Cli, "Beta", 0, 100)
+            .unwrap()
+            .revision;
         assert!(req.expected_revision.is_some());
         let mut stale = req.clone();
         stale.expected_revision = Some("another coordinator or revision".into());
@@ -440,7 +447,10 @@ fn equal_uris_after_an_intervening_edit_do_not_satisfy_a_stale_revision() {
     let (sim, surface, attempts) = setup(true, Fault::None);
     let host = sim.player("Alpha").unwrap().ip;
     let mut req = request(2, &["b"]);
-    req.expected_revision = surface.queue(&Client::Cli, "Beta", 0, 100).unwrap().revision;
+    req.expected_revision = surface
+        .queue(&Client::Cli, "Beta", 0, 100)
+        .unwrap()
+        .revision;
     let before = current(&sim);
     insert_other(&sim.lan(), host).unwrap();
     let updated = read(&sim.lan(), host).unwrap();
@@ -460,5 +470,10 @@ fn old_removal_requests_decode_without_a_revision() {
     }))
     .unwrap();
     assert_eq!(decoded, request(2, &["b"]));
-    assert!(serde_json::to_value(decoded).unwrap().get("expected_revision").is_none());
+    assert!(
+        serde_json::to_value(decoded)
+            .unwrap()
+            .get("expected_revision")
+            .is_none()
+    );
 }

@@ -30,7 +30,11 @@ fn setup(generation: u8) -> (SimHandle, Vec<HouseholdState>) {
     let households = fsonos_core::inventory::survey(&sim.lan(), &[host], Duration::ZERO)
         .unwrap()
         .households;
-    let id = resolve_room(&households, ROOM).unwrap().coordinator.id.clone();
+    let id = resolve_room(&households, ROOM)
+        .unwrap()
+        .coordinator
+        .id
+        .clone();
     control::queue_spotify_tracks(
         &sim.lan(),
         &households,

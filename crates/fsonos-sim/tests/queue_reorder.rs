@@ -62,8 +62,8 @@ fn range_moves_preserve_playback_and_can_append_on_s1_and_s2() {
             .iter()
             .map(|o| o.res.as_ref().unwrap().uri.clone())
             .collect();
-        let expected = ["a", "d", "e", "b", "c"]
-            .map(|n| format!("x-file-cifs://example.invalid/{n}.flac"));
+        let expected =
+            ["a", "d", "e", "b", "c"].map(|n| format!("x-file-cifs://example.invalid/{n}.flac"));
         assert_eq!(uris, expected);
         let now = soap::get_position_info(&lan, host).unwrap();
         assert_eq!(now.uri, position.uri);

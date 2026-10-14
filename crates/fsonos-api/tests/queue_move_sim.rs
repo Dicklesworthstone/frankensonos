@@ -141,11 +141,7 @@ impl Fixture {
             Box::new(SystemClock),
         )
         .with_action_log(Box::new(MemStore::default()), "http");
-        Self {
-            sim,
-            surface,
-            wire,
-        }
+        Self { sim, surface, wire }
     }
 
     fn request(&self, position: u32, count: usize, insert_before: u32) -> QueueMoveRequest {

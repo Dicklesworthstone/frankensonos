@@ -34,7 +34,9 @@ fn revision_checks_coordinator_and_counter_even_when_uri_and_size_match() {
     req.expected_revision = Some(snapshot::revision(&id, &page));
     assert_eq!(req.check(&id, &page).unwrap(), "Selected");
     assert_eq!(
-        req.check(&PlayerId("test:two".into()), &page).unwrap_err().code,
+        req.check(&PlayerId("test:two".into()), &page)
+            .unwrap_err()
+            .code,
         ErrorCode::NotReady
     );
     page.update_id += 1;
@@ -53,8 +55,7 @@ fn revision_does_not_disable_the_independent_renderer_identity_check() {
 
 #[test]
 fn old_json_requests_remain_valid_and_new_tokens_round_trip_without_normalization() {
-    let old: QueuePlayRequest =
-        serde_json::from_str(r#"{"zone":"Room","position":1}"#).unwrap();
+    let old: QueuePlayRequest = serde_json::from_str(r#"{"zone":"Room","position":1}"#).unwrap();
     assert!(old.expected_revision.is_none());
     assert!(old.expected_uri.is_none());
     assert!(old.validate().is_ok());

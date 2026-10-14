@@ -26,7 +26,7 @@ mod movement;
 pub use movement::{MOVE, QueueMoveRequest, QueueMovedDto};
 
 mod removal;
-pub use removal::{REMOVE, QueueRemoveRequest, QueueRemovedDto};
+pub use removal::{QueueRemoveRequest, QueueRemovedDto, REMOVE};
 
 /// The tool name the queue read is authorized as.
 pub const TOOL: &str = "get_queue";
@@ -159,8 +159,7 @@ impl Surface {
         }
         let (households, group) = self.queue_households(client, zone)?;
         let coordinator = control::locate(&households, &group.coordinator)?;
-        snapshot::read(&*self.transport, coordinator, offset, limit)
-            .inspect_err(|f| self.notice(f))
+        snapshot::read(&*self.transport, coordinator, offset, limit).inspect_err(|f| self.notice(f))
     }
 
     /// Add `req`'s Spotify track, album or playlist to the queue of

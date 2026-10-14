@@ -219,7 +219,9 @@ impl Surface {
         let mut recovered = false;
         if plan.changes_order {
             if after.page.update_id == 0 {
-                return Err(Failure::invalid("a queue move requires a nonzero native revision"));
+                return Err(Failure::invalid(
+                    "a queue move requires a nonzero native revision",
+                ));
             }
             self.queue_group_unchanged(player.ip, &group)?;
             let sent = reorder_tracks(
@@ -241,13 +243,17 @@ impl Surface {
                     return Err(Failure::from(CoreError::from(error))
                         .with_hint("Read the queue again before selecting a new move."));
                 }
-                return Err(uncertain("read-back did not confirm the complete expected order"));
+                return Err(uncertain(
+                    "read-back did not confirm the complete expected order",
+                ));
             }
             recovered = sent.is_err();
             // Indistinguishable duplicate entries cannot prove which copy was
             // moved after a lost reply. Acknowledged native success can.
             if recovered && after.uris == plan.uris {
-                return Err(uncertain("identical queue entries make the lost reply ambiguous"));
+                return Err(uncertain(
+                    "identical queue entries make the lost reply ambiguous",
+                ));
             }
             after = observed;
         }

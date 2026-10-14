@@ -39,12 +39,12 @@ fn apply(
     before: u32,
     revision: u32,
 ) -> Result<Out, Fault> {
-    let start = usize::try_from(first.checked_sub(1).ok_or(INVALID_ARGS)?)
-        .map_err(|_| INVALID_ARGS)?;
+    let start =
+        usize::try_from(first.checked_sub(1).ok_or(INVALID_ARGS)?).map_err(|_| INVALID_ARGS)?;
     let count = usize::try_from(count).map_err(|_| INVALID_ARGS)?;
     let end = start.checked_add(count).ok_or(INVALID_ARGS)?;
-    let destination = usize::try_from(before.checked_sub(1).ok_or(INVALID_ARGS)?)
-        .map_err(|_| INVALID_ARGS)?;
+    let destination =
+        usize::try_from(before.checked_sub(1).ok_or(INVALID_ARGS)?).map_err(|_| INVALID_ARGS)?;
     if count == 0
         || end > transport.queue.len()
         || destination > transport.queue.len()

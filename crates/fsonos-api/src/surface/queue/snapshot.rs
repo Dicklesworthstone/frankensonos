@@ -54,10 +54,7 @@ pub(super) fn page<T: Transport + ?Sized>(
 fn validate(page: &BrowsePage, offset: u32, count: u32) -> Result<(), Failure> {
     let got = u32::try_from(page.objects.len()).unwrap_or(u32::MAX);
     let available = page.total_matches.saturating_sub(offset);
-    if got != page.number_returned
-        || got > count
-        || got > available
-        || (got == 0 && available > 0)
+    if got != page.number_returned || got > count || got > available || (got == 0 && available > 0)
     {
         return Err(protocol(ProtoError::Malformed(
             "queue returned inconsistent paging counters".into(),
@@ -67,8 +64,7 @@ fn validate(page: &BrowsePage, offset: u32, count: u32) -> Result<(), Failure> {
 }
 
 fn same_track(expected: Option<&str>, actual: &str) -> bool {
-    let Some(expected) = expected.filter(|uri| !uri.is_empty() && *uri != "NOT_IMPLEMENTED")
-    else {
+    let Some(expected) = expected.filter(|uri| !uri.is_empty() && *uri != "NOT_IMPLEMENTED") else {
         return false;
     };
     if actual.is_empty() || actual == "NOT_IMPLEMENTED" {
@@ -99,9 +95,9 @@ pub(super) fn read<T: Transport + ?Sized>(
             let position = get_position_info(transport, host).map_err(protocol)?;
             if position.track > 0 && position.track <= before.total_matches {
                 let index = position.track - 1;
-                let within = index.checked_sub(offset).and_then(|i| {
-                    usize::try_from(i).ok().and_then(|i| before.objects.get(i))
-                });
+                let within = index
+                    .checked_sub(offset)
+                    .and_then(|i| usize::try_from(i).ok().and_then(|i| before.objects.get(i)));
                 // The playing item can be on a different page. Read that
                 // single slot rather than attributing an unverified TrackNr.
                 let other;
@@ -117,7 +113,8 @@ pub(super) fn read<T: Transport + ?Sized>(
                     other.objects.first()
                 };
                 if same_track(
-                    item.and_then(|item| item.res.as_ref()).map(|res| res.uri.as_str()),
+                    item.and_then(|item| item.res.as_ref())
+                        .map(|res| res.uri.as_str()),
                     &position.uri,
                 ) {
                     playing = Some(position.track);
@@ -174,7 +171,10 @@ mod tests {
         let a = PlayerId("test:coordinator:a".into());
         let b = PlayerId("test:coordinator:b".into());
         assert_ne!(revision(&a, &empty(2, 0)), revision(&b, &empty(2, 0)));
-        assert_ne!(revision(&a, &empty(2, 0)), revision(&a, &empty(2, u32::MAX)));
+        assert_ne!(
+            revision(&a, &empty(2, 0)),
+            revision(&a, &empty(2, u32::MAX))
+        );
         assert_ne!(revision(&a, &empty(2, 7)), revision(&a, &empty(3, 7)));
         assert_eq!(revision(&a, &empty(2, 0)), revision(&a, &empty(2, 0)));
     }

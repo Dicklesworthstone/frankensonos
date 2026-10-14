@@ -17,12 +17,11 @@ impl Backend {
         let body = serde_json::to_value(req).map_err(|error| {
             crate::tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
         })?;
-        if let Some(result) = self.on_daemon::<QueueMovedDto>(
-            "POST",
-            "/queue/move",
-            Some(&body),
-            |moved| moved.done.clone(),
-        ) {
+        if let Some(result) =
+            self.on_daemon::<QueueMovedDto>("POST", "/queue/move", Some(&body), |moved| {
+                moved.done.clone()
+            })
+        {
             return result;
         }
         respond(|| {
@@ -37,12 +36,11 @@ impl Backend {
         let body = serde_json::to_value(req).map_err(|error| {
             crate::tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
         })?;
-        if let Some(result) = self.on_daemon::<QueueRemovedDto>(
-            "POST",
-            "/queue/remove",
-            Some(&body),
-            |removed| removed.done.clone(),
-        ) {
+        if let Some(result) =
+            self.on_daemon::<QueueRemovedDto>("POST", "/queue/remove", Some(&body), |removed| {
+                removed.done.clone()
+            })
+        {
             return result;
         }
         respond(|| {

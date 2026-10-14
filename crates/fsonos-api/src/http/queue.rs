@@ -11,8 +11,8 @@ use fastapi::core::RouteEntry;
 use super::{CONTROL, Ctx, Op, answer, body};
 use crate::OutcomeDto;
 use crate::surface::queue::{
-    ADD, MOVE, PLAY, REMOVE, QueueAddRequest, QueueAddedDto, QueueMoveRequest, QueueMovedDto,
-    QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto,
+    ADD, MOVE, PLAY, QueueAddRequest, QueueAddedDto, QueueMoveRequest, QueueMovedDto,
+    QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, REMOVE,
 };
 
 /// Queue addition, playback and identity-checked removal routes.

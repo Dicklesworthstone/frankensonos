@@ -147,17 +147,10 @@ fn action_log_undo_restores_the_saved_queue_mode() {
         )
         .unwrap();
         f.disturb(PlayMode::Normal);
-        let report = actions::undo_last(
-            &f.lan,
-            &f.houses,
-            &mut store,
-            None,
-            &Client::Cli,
-            "test",
-            2,
-        )
-        .unwrap()
-        .unwrap();
+        let report =
+            actions::undo_last(&f.lan, &f.houses, &mut store, None, &Client::Cli, "test", 2)
+                .unwrap()
+                .unwrap();
         assert!(report.failures.is_empty(), "{report:?}");
         assert!(report.zones.iter().all(|(_, r)| r.skipped.is_empty()));
         f.assert_restored(PlayMode::ShuffleRepeatOne, true);
@@ -186,7 +179,12 @@ fn old_snapshots_leave_unknown_ordering_alone_instead_of_assuming_normal() {
     encoded.as_object_mut().unwrap().remove("play_mode");
     let old: ZoneSnapshot = serde_json::from_value(encoded).unwrap();
     assert_eq!(old.play_mode, None);
-    assert!(serde_json::to_value(&old).unwrap().get("play_mode").is_none());
+    assert!(
+        serde_json::to_value(&old)
+            .unwrap()
+            .get("play_mode")
+            .is_none()
+    );
     f.disturb(PlayMode::ShuffleNoRepeat);
     let start = f.sim.soap_log().len();
     let report = snapshot::restore(&f.lan, &f.houses, &old).unwrap();
@@ -198,7 +196,9 @@ fn old_snapshots_leave_unknown_ordering_alone_instead_of_assuming_normal() {
 #[test]
 fn unsupported_capture_does_not_invent_a_mode_or_break_other_restoration() {
     let f = Fixture::new(1);
-    f.sim.upnp_fault("Room", "GetTransportSettings", 401).unwrap();
+    f.sim
+        .upnp_fault("Room", "GetTransportSettings", 401)
+        .unwrap();
     let snap = snapshot::capture(&f.lan, &f.houses, &f.coordinator, 1).unwrap();
     assert_eq!(snap.play_mode, None);
     f.disturb(PlayMode::Shuffle);
