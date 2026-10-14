@@ -247,7 +247,7 @@ impl Transport for Changing<'_> {
         action: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
-        if action.ends_with("#GetMediaInfo") {
+        if action.trim_matches('"').ends_with("#GetMediaInfo") {
             if matches!(self.change, Interference::ReadFailure) {
                 return Err(ProtoError::Network {
                     target: host.to_string(),
