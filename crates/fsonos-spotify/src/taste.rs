@@ -14,7 +14,10 @@
 //! (`crate::genres`). The playlists in the owner's list (their own and the
 //! ones they follow) are kept by name, so a search can play one. What they
 //! played lately, on any device, is kept with when ([`Taste::heard`]): the
-//! DJ counts it as heard, so it doesn't come straight back.
+//! DJ counts it as heard, so it doesn't come straight back. A followed or
+//! top artist the owner never saved anything by brings a few of their top
+//! tracks into the pool (as taste tracks), so following an artist is
+//! enough for the DJ to play them.
 //!
 //! A grant without the taste scopes reads none of this and fails nothing:
 //! the DJ's taste is the library alone, and [`TasteRead::missing_scopes`]
@@ -30,8 +33,8 @@ use fsonos_core::store::Store;
 
 use crate::SpotifyError;
 use crate::client::{
-    Artist, CursorPage, FullTrack, Me, PlayHistory, PlaylistItem, SimplifiedPlaylist, TASTE_SCOPES,
-    decode, unix_seconds,
+    Artist, ArtistTopTracks, CursorPage, FullTrack, Me, PlayHistory, PlaylistItem,
+    SimplifiedPlaylist, TASTE_SCOPES, decode, unix_seconds,
 };
 use crate::expand::halts;
 use crate::library::{LibraryItem, Origin};
@@ -55,6 +58,10 @@ pub const MAX_TASTE_PM: u32 = 1800;
 const MAX_PAGES: usize = 20;
 const MAX_PLAYLISTS: usize = 25;
 const MAX_PLAYLIST_PAGES: usize = 4;
+/// Followed and top artists with nothing saved whose top tracks one sync
+/// reads, and how many of each one's tracks join the pool.
+const MAX_ARTIST_READS: usize = 50;
+const ARTIST_TOP_TRACKS: usize = 3;
 
 /// What one taste read did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -68,6 +75,11 @@ pub struct TasteRead {
     /// The owner's own (or collaborative) playlists read, and their tracks.
     pub playlists: usize,
     pub playlist_tracks: usize,
+    /// Top tracks of followed or top artists the owner saved nothing by.
+    pub artist_tracks: usize,
+    /// Why those top tracks couldn't be read, when they couldn't (an app
+    /// the endpoint is closed to, say). Optional: it leaves the read whole.
+    pub artist_tracks_unread: Option<String>,
     /// Reads that failed or reached a budget before completion, and why.
     pub failed: Vec<(String, String)>,
     /// Why the run stopped early, if it did.
@@ -96,6 +108,10 @@ pub struct Taste {
     /// when that read succeeded; `None` when it wasn't read, so the cached
     /// plays stay.
     pub heard: Option<Vec<(String, i64)>>,
+    /// The followed or top artists (lowercased names) whose top tracks this
+    /// read meant to bring and didn't: more of them than one sync reads, or
+    /// their read failed. The sync keeps what it cached for them before.
+    pub artists_unread: Vec<String>,
     track_pm: HashMap<String, u32>,
     artist_pm: HashMap<String, u32>,
     /// The genres the names of the owner's playlists state ("Late Night
@@ -153,12 +169,15 @@ fn lift(weights: &mut HashMap<String, u32>, key: &str, pm: u32) {
 }
 
 /// Read the owner's taste signals the grant allows. Artists' genres are
-/// cached in `store` (read at `now`). Never fails: a missing scope skips its
-/// signal, a failed read is reported and the rest carry on.
+/// cached in `store` (read at `now`). `saved` is the library as this sync
+/// read it: an artist it has music by needs no top tracks. Never fails: a
+/// missing scope skips its signal, a failed read is reported and the rest
+/// carry on.
 pub async fn read_taste<S: Store + ?Sized>(
     session: &mut Session,
     cx: &Cx,
     store: &mut S,
+    saved: &[LibraryItem],
     now: i64,
 ) -> (Taste, TasteRead) {
     let mut taste = Taste::default();
@@ -179,11 +198,14 @@ pub async fn read_taste<S: Store + ?Sized>(
         cx,
         read: &mut read,
     };
+    // The followed and top artists, for their top tracks below.
+    let mut artists: Vec<Artist> = Vec::new();
     if follow {
         for artist in reader.followed().await {
             remember_genres(store, &artist, now, reader.read);
             taste.artist(&artist, ARTIST_PM);
             reader.read.followed_artists += 1;
+            artists.push(artist);
         }
     }
     if top {
@@ -192,6 +214,7 @@ pub async fn read_taste<S: Store + ?Sized>(
             remember_genres(store, &artist, now, reader.read);
             taste.artist(&artist, ARTIST_PM);
             reader.read.top_artists += 1;
+            artists.push(artist);
         }
         let url = reader.session.endpoints().top("tracks");
         for track in reader
@@ -240,7 +263,59 @@ pub async fn read_taste<S: Store + ?Sized>(
             taste.track(item, PLAYLIST_PM);
         }
     }
+    let covered = covered_artists(saved, &taste.tracks);
+    // An artist followed and among the top artists is one artist.
+    let mut seen = HashSet::new();
+    let unsaved: Vec<&Artist> = artists
+        .iter()
+        .filter(|a| a.id.as_ref().is_some_and(|id| seen.insert(id.clone())))
+        .filter(|a| !covered.contains(&a.name.to_lowercase()))
+        .collect();
+    let (today, later) = todays_artists(unsaved, now);
+    let (tracks, done) = reader.artist_top_tracks(&today).await;
+    for item in tracks {
+        // Weighed as the artist's: `Taste::weigh` multiplies in ARTIST_PM.
+        taste.track(item, 1000);
+    }
+    taste.artists_unread = today[done.min(today.len())..]
+        .iter()
+        .chain(&later)
+        .map(|a| a.name.to_lowercase())
+        .collect();
     (taste, read)
+}
+
+/// The artists whose top tracks this sync reads, and the rest: at most
+/// [`MAX_ARTIST_READS`], a different stretch of them each day when there are
+/// more, so each gets its turn.
+fn todays_artists(mut unsaved: Vec<&Artist>, now: i64) -> (Vec<&Artist>, Vec<&Artist>) {
+    if unsaved.len() > MAX_ARTIST_READS {
+        let stretches = unsaved.len().div_ceil(MAX_ARTIST_READS);
+        let day = usize::try_from(now.div_euclid(86_400)).unwrap_or(0);
+        unsaved.rotate_left(day % stretches * MAX_ARTIST_READS);
+    }
+    let later = unsaved.split_off(unsaved.len().min(MAX_ARTIST_READS));
+    (unsaved, later)
+}
+
+/// The lead artists (lowercased names) the pool already has music by:
+/// `saved`, the library as this sync read it, and `tracks` (this read's top
+/// tracks, recent plays and playlist tracks). Tracks cached only as taste
+/// don't count, so an artist known only from their top tracks is read again
+/// rather than retired.
+fn covered_artists(saved: &[LibraryItem], tracks: &[LibraryItem]) -> HashSet<String> {
+    saved
+        .iter()
+        .chain(tracks)
+        .filter_map(|t| t.artists.first())
+        .map(|a| a.to_lowercase())
+        .collect()
+}
+
+/// Whether a failed artist top-tracks read is that endpoint's own trouble
+/// (closed to this app, or a server error) rather than the Web API's.
+fn endpoints_own(e: &SpotifyError) -> bool {
+    matches!(e, SpotifyError::Api { status, .. } if *status == 403 || *status >= 500)
 }
 
 /// Cache an artist's genres from a followed or top artist object, so the
@@ -293,6 +368,52 @@ impl Reader<'_> {
                 None
             }
         }
+    }
+
+    /// Up to [`ARTIST_TOP_TRACKS`] top tracks of each of `artists`. An
+    /// answer that isn't one (the endpoint closed to this app, a server
+    /// error) stops these reads and is noted apart, leaving the taste read
+    /// whole; a rate limit halts it as any read does. Returns the tracks,
+    /// and how many of `artists`, from the first on, were read.
+    async fn artist_top_tracks(&mut self, artists: &[&Artist]) -> (Vec<LibraryItem>, usize) {
+        let mut tracks = Vec::new();
+        let mut done = 0;
+        for artist in artists {
+            let Some(id) = artist.id.as_deref() else {
+                done += 1;
+                continue;
+            };
+            if self.read.halted.is_some() {
+                break;
+            }
+            let url = self.session.endpoints().artist_top_tracks(id);
+            let read = match self.session.get_brief(self.cx, &url).await {
+                Ok(body) => decode::<ArtistTopTracks>(&body, "artist top tracks"),
+                // What stops any read (rate limited, signed out, offline)
+                // halts this one; the endpoint's own trouble is noted apart.
+                Err(e) if halts(&e) && !endpoints_own(&e) => {
+                    self.read.halted = Some(format!("artist top tracks: {e}"));
+                    break;
+                }
+                Err(e) => Err(e),
+            };
+            match read {
+                Ok(top) => {
+                    for track in top.tracks.iter().take(ARTIST_TOP_TRACKS) {
+                        if let Some(item) = track.library_item(Origin::Taste, None) {
+                            self.read.artist_tracks += 1;
+                            tracks.push(item);
+                        }
+                    }
+                    done += 1;
+                }
+                Err(e) => {
+                    self.read.artist_tracks_unread = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        (tracks, done)
     }
 
     /// The tracks of the owner's own and collaborative playlists (others'
@@ -425,7 +546,7 @@ mod tests {
                 .unwrap()
                 .with_endpoints(endpoints);
             let mut store = MemStore::default();
-            let (taste, read) = read_taste(&mut session, &cx, &mut store, NOW).await;
+            let (taste, read) = read_taste(&mut session, &cx, &mut store, &[], NOW).await;
             (taste, read, store)
         });
         let fake = spotify.stop();
@@ -534,6 +655,151 @@ mod tests {
     }
 
     #[test]
+    fn a_followed_artist_with_nothing_saved_brings_their_top_tracks() {
+        let read_with = |name: &str, forbidden: bool| {
+            let (spotify, cache, dir) = signed_in(name, &requested_scope());
+            {
+                let mut fake = spotify.state.lock().unwrap();
+                fake.follow_unsaved = true;
+                fake.top_tracks_refused = forbidden.then_some(403);
+            }
+            let endpoints = spotify.endpoints();
+            let (taste, read) = runtime().block_on(async move {
+                let cx = Cx::current().expect("ambient Cx");
+                let http = Client::default_for_runtime(&cx);
+                let mut session = Session::open(config(), cache, http)
+                    .unwrap()
+                    .with_endpoints(endpoints);
+                read_taste(&mut session, &cx, &mut MemStore::default(), &[], NOW).await
+            });
+            let fake = spotify.stop();
+            let _ = std::fs::remove_dir_all(dir);
+            (taste, read, fake)
+        };
+
+        let (taste, read, fake) = read_with("taste-artist-top", false);
+        assert_eq!(read.artist_tracks, 3, "three of the four: {read:?}");
+        assert!(!read.incomplete(), "{read:?}");
+        // Followed and a top artist too, but one artist: asked once.
+        let asked = fake
+            .log
+            .iter()
+            .filter(|l| l.contains("FakeArtist000000000009/top-tracks"))
+            .count();
+        assert_eq!(asked, 1, "{:?}", fake.log);
+        assert!(taste.artists_unread.is_empty(), "{taste:?}");
+        let theirs: Vec<&LibraryItem> = taste
+            .tracks
+            .iter()
+            .filter(|t| t.artists.first().is_some_and(|a| a == "Lantern Coast"))
+            .collect();
+        assert_eq!(theirs.len(), 3);
+        assert!(theirs.iter().all(|t| t.origin == Origin::Taste));
+        // Nina Marsh Quartet has a top track in the pool already: not read.
+        assert!(
+            !fake
+                .log
+                .iter()
+                .any(|l| l.contains("FakeArtist000000000007/top-tracks")),
+            "{:?}",
+            fake.log
+        );
+
+        // Closed to the app: noted apart, and the read is still whole.
+        let (taste, read, _) = read_with("taste-artist-top-403", true);
+        assert_eq!(read.artist_tracks, 0);
+        assert!(read.artist_tracks_unread.is_some(), "{read:?}");
+        assert!(!read.incomplete(), "{read:?}");
+        assert!(
+            taste.artists_unread.iter().any(|a| a == "lantern coast"),
+            "the sync keeps what it cached for them: {taste:?}"
+        );
+        assert!(
+            !taste
+                .tracks
+                .iter()
+                .any(|t| t.artists.first().is_some_and(|a| a == "Lantern Coast"))
+        );
+    }
+
+    #[test]
+    fn more_artists_than_a_sync_reads_take_turns_by_day() {
+        let all: Vec<Artist> = (0..120)
+            .map(|n| Artist {
+                id: Some(format!("a{n}")),
+                name: format!("Artist {n}"),
+                genres: Vec::new(),
+            })
+            .collect();
+        let read_on = |day: i64| {
+            let (today, later) = todays_artists(all.iter().collect(), day * 86_400);
+            assert_eq!((today.len(), later.len()), (MAX_ARTIST_READS, 70));
+            today
+                .iter()
+                .filter_map(|a| a.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(read_on(0)[0], "a0");
+        assert_eq!(read_on(1)[0], "a50");
+        let third = read_on(2);
+        assert_eq!(
+            (third[0].as_str(), third[20].as_str()),
+            ("a100", "a0"),
+            "the last stretch wraps round"
+        );
+        assert_eq!(read_on(3)[0], "a0", "then from the start again");
+        // Few enough are all read, whatever the day.
+        let (today, later) = todays_artists(all.iter().take(3).collect(), 5 * 86_400);
+        assert_eq!((today.len(), later.len()), (3, 0));
+
+        // An artist the library has music by needs no top tracks.
+        let saved = [LibraryItem {
+            artists: vec!["Lantern Coast".into(), "A Guest".into()],
+            ..LibraryItem::default()
+        }];
+        let covered = covered_artists(&saved, &[]);
+        assert!(
+            covered.contains("lantern coast") && !covered.contains("a guest"),
+            "{covered:?}"
+        );
+    }
+
+    #[test]
+    fn cached_top_tracks_stay_when_the_artists_read_fails() {
+        let (spotify, cache, dir) = signed_in("taste-artist-kept", &requested_scope());
+        spotify.state.lock().unwrap().follow_unsaved = true;
+        let endpoints = spotify.endpoints();
+        let state = Arc::clone(&spotify.state);
+        let (first, second) = runtime().block_on(async move {
+            let cx = Cx::current().expect("ambient Cx");
+            let http = Client::default_for_runtime(&cx);
+            let mut session = Session::open(config(), cache, http)
+                .unwrap()
+                .with_endpoints(endpoints);
+            let mut store = MemStore::default();
+            // How many of Lantern Coast's top tracks the DJ's pool holds.
+            let theirs = |store: &MemStore| {
+                let pool = pool_from_store(store).unwrap();
+                (120..123)
+                    .filter(|n| {
+                        pool.get(&format!("spotify:track:FakeTrack{n:013}"))
+                            .is_some()
+                    })
+                    .count()
+            };
+            sync_library(&mut session, &cx, &mut store).await.unwrap();
+            let first = theirs(&store);
+            // The endpoint closes to the app: what it gave before stays.
+            state.lock().unwrap().top_tracks_refused = Some(403);
+            sync_library(&mut session, &cx, &mut store).await.unwrap();
+            (first, theirs(&store))
+        });
+        spotify.stop();
+        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!((first, second), (3, 3), "kept, not retired");
+    }
+
+    #[test]
     fn without_the_taste_scopes_the_library_is_the_taste() {
         let (spotify, cache, dir) = signed_in("taste-none", SCOPE);
         let endpoints = spotify.endpoints();
@@ -543,7 +809,7 @@ mod tests {
             let mut session = Session::open(config(), cache, http)
                 .unwrap()
                 .with_endpoints(endpoints);
-            read_taste(&mut session, &cx, &mut MemStore::default(), NOW).await
+            read_taste(&mut session, &cx, &mut MemStore::default(), &[], NOW).await
         });
         let fake = spotify.stop();
 

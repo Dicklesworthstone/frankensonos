@@ -41,8 +41,9 @@ controlling it on your own network is exactly what these protocols are for.
   - `user-read-recently-played`: recently played tracks.
 
   Reading those items includes their public catalog metadata, which needs no
-  further scope: album track lists (`GET /v1/albums/{id}/tracks`) and artist
-  genres (`GET /v1/artists/{id}`). No scope that changes the account or
+  further scope: album track lists (`GET /v1/albums/{id}/tracks`), artist
+  genres (`GET /v1/artists/{id}`), and artist top tracks
+  (`GET /v1/artists/{id}/top-tracks`). No scope that changes the account or
   controls playback is requested; Sonos plays Spotify itself.
 - The daemon, HTTP API, MCP server, CLI, DJ engine, local store, and the
   Tailscale deployment that fronts **the daemon** (never the speakers).

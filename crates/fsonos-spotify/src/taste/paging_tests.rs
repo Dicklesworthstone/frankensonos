@@ -289,7 +289,7 @@ fn looping_cursor_and_wrong_collection_keep_prefixes_without_fetching_the_bad_li
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
         let mut session = server.session(&cx, "user-follow-read user-top-read");
-        let (taste, read) = read_taste(&mut session, &cx, &mut MemStore::default(), 1).await;
+        let (taste, read) = read_taste(&mut session, &cx, &mut MemStore::default(), &[], 1).await;
         assert!(read.incomplete());
         assert_eq!(read.failed.len(), 2);
         assert_eq!(read.followed_artists, 1);
@@ -401,7 +401,8 @@ fn playlist_item_and_playlist_count_budgets_report_incomplete_taste() {
         runtime().block_on(async {
             let cx = Cx::current().unwrap();
             let mut session = server.session(&cx, PLAYLIST_SCOPE);
-            let (taste, read) = read_taste(&mut session, &cx, &mut MemStore::default(), 1).await;
+            let (taste, read) =
+                read_taste(&mut session, &cx, &mut MemStore::default(), &[], 1).await;
             assert!(read.incomplete());
             assert_eq!(
                 taste.playlists.as_ref().unwrap().len(),
@@ -498,7 +499,7 @@ fn playlist_coverage_counts_unavailable_entries_and_episodes_before_filtering() 
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
         let mut session = server.session(&cx, PLAYLIST_SCOPE);
-        let (taste, read) = read_taste(&mut session, &cx, &mut MemStore::default(), 1).await;
+        let (taste, read) = read_taste(&mut session, &cx, &mut MemStore::default(), &[], 1).await;
         assert!(!read.incomplete(), "{read:?}");
         assert_eq!(read.playlist_tracks, 1);
         assert_eq!(taste.tracks[0].source_uri, "spotify:track:TestTrack1");
@@ -526,7 +527,7 @@ fn a_changed_directory_total_keeps_earlier_pages_but_cannot_replace_cached_names
     runtime().block_on(async {
         let cx = Cx::current().unwrap();
         let mut session = server.session(&cx, PLAYLIST_SCOPE);
-        let (taste, read) = read_taste(&mut session, &cx, &mut MemStore::default(), 1).await;
+        let (taste, read) = read_taste(&mut session, &cx, &mut MemStore::default(), &[], 1).await;
         assert!(read.incomplete());
         assert_eq!(taste.playlists, None);
         assert_eq!(read.failed.len(), 1);

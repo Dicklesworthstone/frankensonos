@@ -72,6 +72,12 @@ pub(crate) struct Fake {
     /// Answer every taste request (followed, top, recent, playlists) with a
     /// 500.
     pub(crate) taste_down: bool,
+    /// Also follow an artist with nothing saved (`FakeArtist000000000009`,
+    /// "Lantern Coast"), whose top tracks are `FakeTrack0000000000120` on.
+    pub(crate) follow_unsaved: bool,
+    /// Answer artist top-tracks requests with this status instead (403:
+    /// closed to the app).
+    pub(crate) top_tracks_refused: Option<u16>,
     pub(crate) log: Vec<String>,
 }
 
@@ -175,6 +181,12 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
         fake.rate_limit_artists -= 1;
         let wait = fake.artist_retry_after.unwrap_or(1).to_string();
         json(429, "").with_header("Retry-After", &wait)
+    } else if let Some(id) = uri
+        .strip_prefix("/v1/artists/")
+        .and_then(|rest| rest.split_once("/top-tracks"))
+        .map(|(id, _)| id)
+    {
+        artist_top_tracks(&fake, id)
     } else if let Some(id) = uri.strip_prefix("/v1/artists/") {
         artist(&fake, id)
     } else {
@@ -210,23 +222,24 @@ fn taste(fake: &Fake, uri: &str) -> Option<Response> {
     Some(if uri == "/v1/me" {
         json(200, r#"{"id":"fake-owner","display_name":"Owner"}"#)
     } else if uri.starts_with("/v1/me/following") {
+        let followed = with_unsaved(
+            fake,
+            fake_artist("FakeArtist000000000007", "Nina Marsh Quartet", "cool jazz"),
+        );
         json(
             200,
             serde_json::json!({ "artists": {
-                "items": [fake_artist("FakeArtist000000000007", "Nina Marsh Quartet", "cool jazz")],
-                "next": null, "cursors": { "after": null }, "total": 1, "limit": 50,
+                "items": followed,
+                "next": null, "cursors": { "after": null }, "total": followed.len(), "limit": 50,
             }})
             .to_string(),
         )
     } else if uri.starts_with("/v1/me/top/artists") {
-        json(
-            200,
-            page(serde_json::json!([fake_artist(
-                "FakeArtist000000000003",
-                "Frédéric Chopin",
-                "romantic era"
-            )])),
-        )
+        let top = with_unsaved(
+            fake,
+            fake_artist("FakeArtist000000000003", "Frédéric Chopin", "romantic era"),
+        );
+        json(200, page(serde_json::json!(top)))
     } else if uri.starts_with("/v1/me/top/tracks") {
         json(
             200,
@@ -307,6 +320,37 @@ fn fake_track(n: u32, name: &str, artist: u32, artist_name: &str) -> serde_json:
         "track_number": 1,
         "is_playable": true,
     })
+}
+
+/// `first`, and the artist with nothing saved when the owner follows
+/// them: that artist is a top artist as well as a followed one.
+fn with_unsaved(fake: &Fake, first: serde_json::Value) -> Vec<serde_json::Value> {
+    let mut artists = vec![first];
+    if fake.follow_unsaved {
+        artists.push(fake_artist(
+            "FakeArtist000000000009",
+            "Lantern Coast",
+            "dream pop",
+        ));
+    }
+    artists
+}
+
+/// `GET /v1/artists/{id}/top-tracks`: four for the unsaved artist, none
+/// for the others.
+fn artist_top_tracks(fake: &Fake, id: &str) -> Response {
+    if let Some(status) = fake.top_tracks_refused {
+        let body = format!(r#"{{"error":{{"status":{status},"message":"Forbidden"}}}}"#);
+        return json(status, body);
+    }
+    let tracks: Vec<serde_json::Value> = if id == "FakeArtist000000000009" {
+        (120..124)
+            .map(|n| fake_track(n, &format!("Coastline {n}"), 9, "Lantern Coast"))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    json(200, serde_json::json!({ "tracks": tracks }).to_string())
 }
 
 /// `GET /v1/artists/{id}`: the genres the test gave the artist.

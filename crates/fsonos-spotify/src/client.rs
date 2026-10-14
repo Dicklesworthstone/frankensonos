@@ -546,6 +546,17 @@ impl Endpoints {
         format!("{}/artists/{}", self.api, percent_encode(artist_id))
     }
 
+    /// An artist's most played tracks in the owner's market
+    /// (`GET /artists/{id}/top-tracks`).
+    #[must_use]
+    pub fn artist_top_tracks(&self, artist_id: &str) -> String {
+        format!(
+            "{}/artists/{}/top-tracks?market=from_token",
+            self.api,
+            percent_encode(artist_id)
+        )
+    }
+
     /// The artists the owner follows (cursor paging: `next` carries on).
     #[must_use]
     pub fn followed_artists(&self) -> String {
@@ -813,6 +824,13 @@ pub struct SavedTrack {
     pub added_at: Option<String>,
     #[serde(default)]
     pub track: Option<FullTrack>,
+}
+
+/// `GET /artists/{id}/top-tracks`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ArtistTopTracks {
+    #[serde(default)]
+    pub tracks: Vec<FullTrack>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

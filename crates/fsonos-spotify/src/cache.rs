@@ -77,7 +77,7 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    let (taste, read) = read_taste(session, cx, store, now).await;
+    let (taste, read) = read_taste(session, cx, store, &items, now).await;
     if let Some(playlists) = &taste.playlists {
         store.save_playlists(playlists)?;
     }
@@ -102,6 +102,25 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
             cached
                 .iter()
                 .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
+                .map(from_entry),
+        );
+    } else if !taste.artists_unread.is_empty() {
+        // The artists this read didn't get to (more of them than one sync
+        // reads, or their read failed) keep the top tracks cached for them
+        // before, instead of having them retired.
+        let lead = |e: &LibraryEntry| {
+            e.track
+                .artist
+                .as_deref()
+                .and_then(|joined| split_artists(joined).into_iter().next())
+                .map(|name| name.to_lowercase())
+        };
+        let cached = store.library()?;
+        items.extend(
+            cached
+                .iter()
+                .filter(|e| e.origin == LibraryOrigin::Taste && e.is_candidate())
+                .filter(|e| lead(e).is_some_and(|name| taste.artists_unread.contains(&name)))
                 .map(from_entry),
         );
     }
