@@ -103,9 +103,7 @@ impl QueueMoveRequest {
         let mut uris = queue.to_vec();
         // Moving before any slot of the block (or just after it) does nothing.
         let changes_order = !(start..=end).contains(&destination);
-        let at = if !changes_order {
-            start
-        } else {
+        let at = if changes_order {
             let moved: Vec<_> = uris.drain(start..end).collect();
             let at = if destination < start {
                 destination
@@ -114,6 +112,8 @@ impl QueueMoveRequest {
             };
             uris.splice(at..at, moved);
             at
+        } else {
+            start
         };
         let position = u32::try_from(at + 1)
             .map_err(|_| Failure::invalid("resulting position is too large"))?;

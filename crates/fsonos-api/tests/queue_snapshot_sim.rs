@@ -118,7 +118,7 @@ impl Transport for Editing {
         if action.ends_with("#GetMediaInfo\"")
             && self
                 .edits
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                 .is_ok()
         {
             soap::enqueue_uri(&self.inner, host, "test:concurrent-track", "", 0, false)?;

@@ -53,6 +53,10 @@ pub struct SyncedDto {
     pub genre_artists_pending: usize,
 }
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes the field by reference"
+)]
 fn is_zero(value: &usize) -> bool {
     *value == 0
 }
