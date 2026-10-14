@@ -12,7 +12,8 @@ use fsonos_api::plan::{self, DjAction, TransportAction};
 use fsonos_api::{
     ActionDto, ActionsQuery, DjStartRequest, DjStatusDto, DjSteerRequest, ErrorCode, Failure,
     GroupRequest, MoveRequest, MuteRequest, OutcomeDto, PartyRequest, PlayFavoriteRequest,
-    PlayRequest, SearchPlayRequest, SearchRequest, SteerConstraints, Surface, UndoDto, VolumeRequest, ZoneRequest,
+    PlayRequest, SearchPlayRequest, SearchRequest, SteerConstraints, Surface, UndoDto,
+    VolumeRequest, ZoneRequest,
 };
 use fsonos_core::clock::Clock;
 use fsonos_core::policy::{Client, Policy};

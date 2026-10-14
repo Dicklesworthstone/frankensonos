@@ -253,7 +253,6 @@ impl SearchRequest {
     }
 }
 
-
 /// `POST /library/play` / `search_and_play`: search the owner's library
 /// and the target room's household favorites, then play one ranked result.
 /// This is intentionally a single request so agents do not have to translate

@@ -223,15 +223,25 @@ mod tests {
             )
             .unwrap();
             assert!(
-                rendered.starts_with("x-rincon-cpcontainer:10062a6cspotify%3aplaylist%3a0SimNewList?")
+                rendered
+                    .starts_with("x-rincon-cpcontainer:10062a6cspotify%3aplaylist%3a0SimNewList?")
             );
             assert_eq!(
-                parse_didl(&metadata).unwrap()[0].desc.as_ref().unwrap().value,
+                parse_didl(&metadata).unwrap()[0]
+                    .desc
+                    .as_ref()
+                    .unwrap()
+                    .value,
                 p.cdudn
             );
             assert!(
-                container(&[fav], SpotifyContainer::Album, "spotify:album:0SimAlbum", "Album")
-                    .is_none()
+                container(
+                    &[fav],
+                    SpotifyContainer::Album,
+                    "spotify:album:0SimAlbum",
+                    "Album"
+                )
+                .is_none()
             );
         }
     }
@@ -255,7 +265,11 @@ mod tests {
         .unwrap();
         assert!(uri.ends_with("&sn=9"));
         assert_eq!(
-            parse_didl(&metadata).unwrap()[0].desc.as_ref().unwrap().value,
+            parse_didl(&metadata).unwrap()[0]
+                .desc
+                .as_ref()
+                .unwrap()
+                .value,
             album_p.cdudn
         );
     }
@@ -265,8 +279,13 @@ mod tests {
         let a = album(&params(1), "aaaa206c", "sid=12&flags=8300&sn=1");
         let b = album(&params(2), "bbbb206c", "sid=12&flags=8301&sn=2");
         let render = |favorites: &[DidlObject]| {
-            container(favorites, SpotifyContainer::Album, "spotify:album:0SimNew", "New")
-                .unwrap()
+            container(
+                favorites,
+                SpotifyContainer::Album,
+                "spotify:album:0SimNew",
+                "New",
+            )
+            .unwrap()
         };
         let (uri, metadata) = render(&[a.clone(), b.clone(), b.clone()]);
         assert_eq!(
@@ -274,7 +293,11 @@ mod tests {
             "x-rincon-cpcontainer:bbbb206cspotify%3aalbum%3a0SimNew?sid=12&flags=8301&sn=2"
         );
         assert_eq!(
-            parse_didl(&metadata).unwrap()[0].desc.as_ref().unwrap().value,
+            parse_didl(&metadata).unwrap()[0]
+                .desc
+                .as_ref()
+                .unwrap()
+                .value,
             params(2).cdudn
         );
         assert!(render(&[a, b]).0.contains("aaaa206cspotify"));
@@ -293,8 +316,13 @@ mod tests {
         ] {
             let fav = album(&params(1), "1004206c", query);
             assert!(
-                container(&[fav], SpotifyContainer::Album, "spotify:album:0SimNew", "New")
-                    .is_none(),
+                container(
+                    &[fav],
+                    SpotifyContainer::Album,
+                    "spotify:album:0SimNew",
+                    "New"
+                )
+                .is_none(),
                 "{query}"
             );
         }
@@ -312,8 +340,13 @@ mod tests {
             let mut bad = good.clone();
             bad.res_md = bad.res_md.map(|md| md.replace(from, to));
             assert!(
-                container(&[bad], SpotifyContainer::Album, "spotify:album:0SimNew", "New")
-                    .is_none(),
+                container(
+                    &[bad],
+                    SpotifyContainer::Album,
+                    "spotify:album:0SimNew",
+                    "New"
+                )
+                .is_none(),
                 "{from}"
             );
         }
@@ -321,7 +354,13 @@ mod tests {
         let resource = bad.res.as_mut().unwrap();
         resource.uri = resource.uri.replace("x-rincon-cpcontainer:", "http:");
         assert!(
-            container(&[bad], SpotifyContainer::Album, "spotify:album:0SimNew", "New").is_none()
+            container(
+                &[bad],
+                SpotifyContainer::Album,
+                "spotify:album:0SimNew",
+                "New"
+            )
+            .is_none()
         );
     }
 

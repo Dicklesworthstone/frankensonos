@@ -38,7 +38,9 @@ impl Surface {
                     hits.len()
                 ),
             )
-            .with_hint("Search the library to inspect the current matches, or choose a smaller pick.")
+            .with_hint(
+                "Search the library to inspect the current matches, or choose a smaller pick.",
+            )
         })?;
 
         match (&hit.source_uri, &hit.favorite) {

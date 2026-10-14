@@ -60,8 +60,8 @@ pub mod spotify_auth;
 pub mod announce;
 mod playback_caps;
 pub mod players;
-mod shared_store;
 mod search_play;
+mod shared_store;
 
 pub mod art;
 
