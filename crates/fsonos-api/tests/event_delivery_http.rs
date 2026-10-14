@@ -79,7 +79,11 @@ impl Api {
                     .await
                     .unwrap();
                 addr_tx.send(listener.local_addr().unwrap()).unwrap();
-                let _ = serving.serve_on_app(&cx, listener, Arc::new(app)).await;
+                // Concurrent, as the daemon serves: a waiting poll or an open
+                // stream must not keep the next connection from being served.
+                let _ = serving
+                    .serve_on_app_concurrent(&cx, listener, Arc::new(app))
+                    .await;
             });
         });
         Self {
