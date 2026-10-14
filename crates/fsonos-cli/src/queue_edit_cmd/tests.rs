@@ -148,7 +148,14 @@ fn snapshot_and_explicit_selection_cannot_be_mixed() {
 
 #[test]
 fn explicit_ranges_are_bounded_before_any_daemon_lookup() {
-    let mut args = remove(&["Room", "1", "--expected-uri", "u", "--expected-revision", "r"]);
+    let mut args = remove(&[
+        "Room",
+        "1",
+        "--expected-uri",
+        "u",
+        "--expected-revision",
+        "r",
+    ]);
     args.selection.expected_uris = vec!["u".into(); 100];
     assert!(args.request().is_ok());
     args.selection.expected_uris.push("u".into());
@@ -225,7 +232,12 @@ fn snapshot_input_is_bounded_and_must_be_a_complete_queue_document() {
     }
     assert!(read_snapshot(&bytes[..bytes.len() - 1]).is_err());
     let oversized = std::io::repeat(b' ').take(MAX_SNAPSHOT_BYTES + 2);
-    assert!(read_snapshot(oversized).unwrap_err().detail.contains("1 MiB"));
+    assert!(
+        read_snapshot(oversized)
+            .unwrap_err()
+            .detail
+            .contains("1 MiB")
+    );
 }
 
 #[test]

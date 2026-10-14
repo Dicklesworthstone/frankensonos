@@ -142,10 +142,11 @@ fn snapshot_selection(
         .filter(|item| (position..=last).contains(&item.position))
         .collect();
     if selected.len() != usize::try_from(count).unwrap_or(usize::MAX) {
-        return Err(Failure::invalid(
-            "the snapshot does not contain the entire selected range",
-        )
-        .with_hint("Read queue --offset <position minus one> --limit <count> --json again."));
+        return Err(
+            Failure::invalid("the snapshot does not contain the entire selected range").with_hint(
+                "Read queue --offset <position minus one> --limit <count> --json again.",
+            ),
+        );
     }
     let uris = selected
         .iter()
@@ -208,7 +209,8 @@ impl QueueRemoveArgs {
 
 impl QueueMoveArgs {
     fn request(&self) -> Result<QueueMoveRequest, Failure> {
-        let (expected_uris, expected_revision) = self.selection.resolve(Some(self.insert_before))?;
+        let (expected_uris, expected_revision) =
+            self.selection.resolve(Some(self.insert_before))?;
         Ok(QueueMoveRequest {
             zone: self.selection.zone.clone(),
             position: self.selection.position,

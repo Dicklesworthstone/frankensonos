@@ -207,7 +207,10 @@ fn daemon_queue_edits_reach_the_same_shared_actions() {
             .is_some()
     );
     edits(&mut s, "--daemon", "Member@S2");
-    let log = s.cli("action-log", &["--daemon", "--json", "log", "--limit", "20"]);
+    let log = s.cli(
+        "action-log",
+        &["--daemon", "--json", "log", "--limit", "20"],
+    );
     s.check(
         "action-log",
         "cli",
