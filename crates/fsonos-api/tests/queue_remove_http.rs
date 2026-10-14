@@ -233,3 +233,125 @@ fn unidentified_http_clients_cannot_remove_queue_entries() {
     drop(api);
     sim.shutdown();
 }
+
+#[test]
+fn http_moves_preserve_queue_playback_and_reject_replaying_old_selections() {
+    for s2 in [false, true] {
+        let sim = sim(s2);
+        let player = sim.player("Room").unwrap();
+        let host = player.ip;
+        let source = format!("x-rincon-queue:{}#0", player.uuid);
+        soap::set_av_transport_uri(&sim.lan(), host, &source, "").unwrap();
+        soap::seek_track(&sim.lan(), host, 2).unwrap();
+        soap::play(&sim.lan(), host).unwrap();
+        sim.advance(Duration::from_secs(16));
+        let playing = soap::get_position_info(&sim.lan(), host).unwrap();
+        let api = Api::start(&sim, Client::LoopbackHttp);
+        let (status, before) = api.get("/zones/Room/queue");
+        assert_eq!(status, 200, "{before}");
+        let request = json!({
+            "zone": "Room", "position": 1, "insert_before": 4,
+            "expected_uris": [before["items"][0]["uri"]],
+            "expected_revision": before["revision"]
+        });
+        let send = || {
+            api.call(
+                "/queue/move",
+                Some(&request),
+                &[("Content-Type", "application/json")],
+            )
+        };
+        let (status, done) = send();
+        assert_eq!(status, 200, "{done}");
+        assert_eq!(done["position"], 3);
+        assert_eq!(done["changed"], true);
+        assert_eq!(done["recovered"], false);
+        assert_eq!(done["undoable"], false);
+        let (status, failure) = send();
+        assert_eq!(status, 422, "{failure}");
+        assert_eq!(failure["retryable"], false);
+        let (_, after) = api.get("/zones/Room/queue");
+        assert_eq!(after["revision"], done["revision"]);
+        assert_eq!(after["total"], 3);
+        for (now, old) in [(0, 1), (1, 2), (2, 0)] {
+            assert_eq!(after["items"][now]["uri"], before["items"][old]["uri"]);
+        }
+        let now = soap::get_position_info(&sim.lan(), host).unwrap();
+        assert_eq!(now.uri, playing.uri);
+        assert_eq!(now.position_secs, playing.position_secs);
+        assert_eq!(now.track, 1);
+        assert_eq!(
+            sim.soap_log()
+                .iter()
+                .filter(|entry| entry.action == "ReorderTracksInQueue")
+                .count(),
+            1
+        );
+        let (_, spec) = api.get("/openapi.json");
+        assert_eq!(
+            spec["paths"]["/queue/move"]["post"]["operationId"],
+            "move_in_queue"
+        );
+        drop(api);
+        sim.shutdown();
+    }
+}
+
+#[test]
+fn http_moves_require_json_trusted_origin_and_revision_before_speaker_io() {
+    let sim = sim(true);
+    let api = Api::start(&sim, Client::LoopbackHttp);
+    let request = json!({
+        "zone": "Room", "position": 1, "insert_before": 4,
+        "expected_uris": ["x-file-cifs://example.invalid/first.flac"],
+        "expected_revision": "opaque-observation"
+    });
+    let before = sim.soap_log().len();
+    let (status, _) = api.call(
+        "/queue/move",
+        Some(&request),
+        &[("Content-Type", "text/plain")],
+    );
+    assert_eq!(status, 415);
+    let (status, _) = api.call(
+        "/queue/move",
+        Some(&request),
+        &[
+            ("Content-Type", "application/json"),
+            ("Origin", "http://untrusted.example.invalid"),
+        ],
+    );
+    assert_eq!(status, 403);
+    let mut missing = request.clone();
+    missing.as_object_mut().unwrap().remove("expected_revision");
+    let (status, _) = api.call(
+        "/queue/move",
+        Some(&missing),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(status, 422);
+    assert_eq!(sim.soap_log().len(), before);
+    drop(api);
+    sim.shutdown();
+}
+
+#[test]
+fn unidentified_http_clients_cannot_rearrange_even_an_identified_queue() {
+    let sim = sim(true);
+    let api = Api::start(&sim, Client::Unknown);
+    let before = sim.soap_log().len();
+    let (status, failure) = api.call(
+        "/queue/move",
+        Some(&json!({
+            "zone": "Room", "position": 1, "insert_before": 4,
+            "expected_uris": ["x-file-cifs://example.invalid/first.flac"],
+            "expected_revision": "opaque-observation"
+        })),
+        &[("Content-Type", "application/json")],
+    );
+    assert_eq!(status, 403, "{failure}");
+    assert_eq!(failure["code"], "POLICY_DENIED");
+    assert_eq!(sim.soap_log().len(), before);
+    drop(api);
+    sim.shutdown();
+}

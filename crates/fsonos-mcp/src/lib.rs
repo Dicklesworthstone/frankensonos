@@ -73,6 +73,30 @@ fn remove_from_queue(
     Ok(CompleteResult::new(result, ResultMeta::empty()))
 }
 
+/// Rearrange an identified block without rebuilding the queue or playback.
+#[tool(
+    description = "Move consecutive queue entries without clearing, re-enqueueing or restarting playback. First read get_queue. Pass its revision as REQUIRED expected_revision, one-based position, and one to 100 exact consecutive renderer URIs in expected_uris. insert_before refers to a position in the ORIGINAL queue; total plus one appends. Destinations inside or just after the selected block are no-ops. Returns the block's new position and observed revision. Not undoable with undo_last. Never automatically retry a failed move or discard a revision; read the queue again after uncertainty."
+)]
+fn move_in_queue(
+    ctx: &McpContext,
+    zone: String,
+    position: u32,
+    insert_before: u32,
+    expected_uris: Vec<String>,
+    expected_revision: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    ctx.checkpoint()?;
+    let backend = tools::backend().map_err(|failure| tool_error(&failure))?;
+    let result = backend.move_in_queue(&fsonos_api::surface::queue::QueueMoveRequest {
+        zone,
+        position,
+        insert_before,
+        expected_uris,
+        expected_revision,
+    })?;
+    Ok(CompleteResult::new(result, ResultMeta::empty()))
+}
+
 /// Build the FrankenSonos MCP server. `auto` admission accepts both the
 /// 2024-11-05 and 2026-07-28 protocol eras, pinning each connection to the era
 /// its client opened with.
@@ -141,6 +165,7 @@ pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
         .tool(tools::AddToQueue)
         .tool(PlayQueue)
         .tool(RemoveFromQueue)
+        .tool(MoveInQueue)
         .tool(tools::Announce)
         .tool(tools::dj_feedback::DjFeedback)
         .tool(tools::dj_prefs::DjPreferences)

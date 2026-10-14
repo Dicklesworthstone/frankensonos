@@ -3,13 +3,34 @@
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::queue::{
-    QueueAddRequest, QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto,
+    QueueAddRequest, QueueMoveRequest, QueueMovedDto, QueuePlayRequest, QueueRemoveRequest,
+    QueueRemovedDto,
 };
 use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 
 use super::{Backend, respond, said, sentence, with_backend};
 
 impl Backend {
+    /// Send a move through the daemon once. A failure cannot authorize a
+    /// second local edit or dropping the required revision/identity checks.
+    pub fn move_in_queue(&self, req: &QueueMoveRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).map_err(|error| {
+            crate::tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
+        })?;
+        if let Some(result) = self.on_daemon::<QueueMovedDto>(
+            "POST",
+            "/queue/move",
+            Some(&body),
+            |moved| moved.done.clone(),
+        ) {
+            return result;
+        }
+        respond(|| {
+            let moved = self.surface.queue_move(&self.client, req)?;
+            Ok((moved.done.clone(), moved))
+        })
+    }
+
     /// Keep queue deletion on the daemon when present. A failed or malformed
     /// daemon response is terminal: it may have already removed the range.
     pub fn remove_from_queue(&self, req: &QueueRemoveRequest) -> McpResult<FinalCallToolResult> {
@@ -29,7 +50,6 @@ impl Backend {
             Ok((removed.done.clone(), removed))
         })
     }
-
 
     /// Prefer the running daemon so playback and undo share its action log.
     /// A daemon error is returned, never retried through a second control path.
@@ -257,4 +277,68 @@ mod tests {
         assert_eq!(reply.calls.lock().unwrap().len(), 1);
     }
 
+    fn movement() -> QueueMoveRequest {
+        QueueMoveRequest {
+            zone: "Room@S2".into(),
+            position: 3,
+            insert_before: 1,
+            expected_uris: vec![
+                "x-sonos-spotify:spotify%3Atrack%3AExactIdentity?sid=12&sn=2".into(),
+                "x-file-cifs://example.invalid/second.flac".into(),
+            ],
+            expected_revision: "opaque-coordinator-scoped-token".into(),
+        }
+    }
+
+    #[test]
+    fn moves_forward_the_exact_selection_and_return_the_confirmed_new_revision() {
+        let outcome = json!({
+            "done": "moved two queue entries", "zone": "Room", "position": 1,
+            "count": 2, "total": 8, "changed": true, "recovered": true,
+            "undoable": false, "revision": "new-opaque-token"
+        });
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(Ok(outcome.clone())),
+        });
+        let result = backend(&reply).move_in_queue(&movement()).unwrap();
+        assert!(!result.is_error);
+        assert_eq!(result.structured_content, Some(outcome));
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["POST", "/queue/move", movement()])]
+        );
+    }
+
+    #[test]
+    fn failed_or_malformed_daemon_moves_never_replay_or_drop_preconditions() {
+        let answers = [
+            Err(Failure::new(ErrorCode::PlayerUnreachable, "reply lost")),
+            Err(Failure::invalid("stale revision")),
+            Err(Failure::new(ErrorCode::UpnpFault, "uncertain move")),
+            Ok(json!({ "done": "missing confirmation fields" })),
+        ];
+        for answer in answers {
+            let reply = Arc::new(Reply {
+                calls: Mutex::default(),
+                answer: Some(answer),
+            });
+            assert!(backend(&reply).move_in_queue(&movement()).is_err());
+            assert_eq!(
+                *reply.calls.lock().unwrap(),
+                [json!(["POST", "/queue/move", movement()])]
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_queue_moves_check_identity_before_any_speaker_io() {
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: None,
+        });
+        let error = backend(&reply).move_in_queue(&movement()).unwrap_err();
+        assert!(error.message.contains("POLICY_DENIED"));
+        assert_eq!(reply.calls.lock().unwrap().len(), 1);
+    }
 }
