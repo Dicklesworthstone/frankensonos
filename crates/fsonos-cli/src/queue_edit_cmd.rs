@@ -9,7 +9,7 @@ use fsonos_api::surface::queue::{
 };
 use fsonos_core::policy::Client;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::GlobalArgs;
 use crate::remote::Daemon;
@@ -103,7 +103,18 @@ fn read_snapshot(input: impl Read) -> Result<QueueDto, Failure> {
         .map_err(|e| Failure::invalid(format!("invalid queue --json snapshot: {e}")))
 }
 
-fn snapshot_selection(
+pub(crate) fn load_snapshot(path: &Path) -> Result<QueueDto, Failure> {
+    if path == Path::new("-") {
+        read_snapshot(std::io::stdin().lock())
+    } else {
+        let file = std::fs::File::open(path).map_err(|e| {
+            Failure::invalid(format!("cannot open queue snapshot {}: {e}", path.display()))
+        })?;
+        read_snapshot(file)
+    }
+}
+
+pub(crate) fn snapshot_selection(
     page: &QueueDto,
     position: u32,
     count: u32,
@@ -163,17 +174,7 @@ fn snapshot_selection(
 impl QueueSelection {
     fn resolve(&self, insert_before: Option<u32>) -> Result<(Vec<String>, String), Failure> {
         if let Some(path) = &self.snapshot {
-            let page = if path == std::path::Path::new("-") {
-                read_snapshot(std::io::stdin().lock())?
-            } else {
-                let file = std::fs::File::open(path).map_err(|e| {
-                    Failure::invalid(format!(
-                        "cannot open queue snapshot {}: {e}",
-                        path.display()
-                    ))
-                })?;
-                read_snapshot(file)?
-            };
+            let page = load_snapshot(path)?;
             if insert_before.is_some_and(|at| u64::from(at) > u64::from(page.total) + 1) {
                 return Err(Failure::invalid(
                     "move destination exceeds the original queue length plus one",
@@ -245,6 +246,9 @@ pub fn move_entries(global: &GlobalArgs, args: &QueueMoveArgs) -> anyhow::Result
     };
     emit(global.json, &result, QueueMovedDto::text)
 }
+
+#[cfg(test)]
+pub(crate) mod fixture;
 
 #[cfg(test)]
 mod tests;

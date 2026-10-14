@@ -3,7 +3,9 @@
 `queue-remove` and `queue-move` use the same revision-checked actions as HTTP
 and MCP. Read the queue first. Neither command reconstructs it or silently
 selects replacement entries after a conflict. Both commands require the
-revision and exact renderer identities from one observation.
+revision and exact renderer identities from one observation. After an edit,
+read a fresh snapshot before another action; the old revision is intentionally
+stale. The examples below are alternatives, not a sequence of edits.
 
 ## Review a saved queue page
 
@@ -39,6 +41,26 @@ before probing a daemon or contacting speakers. The command's room argument
 remains the destination: the snapshot's display-only coordinator name never
 overrides it. The backend revision binds the actual coordinator and queue.
 
+## Play an entry from the same reviewed page
+
+`queue-play` accepts the same saved format and the same bounded stdin input:
+
+```sh
+fsonos queue-play 'Room@S2' 3 --snapshot queue.json
+```
+
+This selects position 3 only when BOTH its exact renderer URI and its queue
+revision still match. The CLI reads and validates the file before backend
+routing, using the same parser as removal and movement. The requested room
+remains authoritative, not the file's display name. A stale, partial, missing,
+unreadable or oversized snapshot is never converted into unguarded playback.
+Snapshot input conflicts with `--expected-uri` and `--expected-revision`.
+
+Without `--snapshot`, `queue-play ROOM POSITION` keeps its previous behavior:
+play the position that exists now. Its individual explicit guards remain
+optional for compatibility. Saved snapshots instead always bind both guards.
+Playback uses the existing snapshot-undo path and never removes queue entries.
+
 ## Explicit renderer identities
 
 Scripts can supply identities directly instead of reading a file:
@@ -72,6 +94,7 @@ daemon edits, stale snapshots, native no-ops and action logging. Run:
 
 ```sh
 cargo test -p fsonos-cli --bin fsonos queue_edit_cmd
+cargo test -p fsonos-cli --bin fsonos queue_play_cmd
 cargo test -p fsonos-cli --test e2e_queue_edit
 ```
 

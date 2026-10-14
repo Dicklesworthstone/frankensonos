@@ -242,7 +242,7 @@ fn snapshot_input_is_bounded_and_must_be_a_complete_queue_document() {
 
 #[test]
 fn file_selection_uses_the_callers_destination_and_the_saved_revision() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::queue_edit_cmd::fixture::Directory::new();
     let path = dir.path().join("queue.json");
     std::fs::write(&path, serde_json::to_vec(&page()).unwrap()).unwrap();
     let request = remove(&[
@@ -264,7 +264,7 @@ fn file_selection_uses_the_callers_destination_and_the_saved_revision() {
 
 #[test]
 fn move_snapshot_checks_destination_in_the_original_queue() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::queue_edit_cmd::fixture::Directory::new();
     let path = dir.path().join("queue.json");
     std::fs::write(&path, serde_json::to_vec(&page()).unwrap()).unwrap();
     for (destination, valid) in [("1", true), ("9", true), ("10", false)] {

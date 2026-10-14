@@ -8,7 +8,7 @@ use fsonos_proto::content::{QUEUE, browse_snapshot};
 use fsonos_proto::control as soap;
 use fsonos_sim::{SimHousehold, SimModel, SimPlayerSpec};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn setup(name: &str, s2: bool) -> Scenario {
@@ -68,6 +68,14 @@ fn snapshot(s: &mut Scenario, mode: &str, room: &str) -> (PathBuf, QueueDto) {
 
 fn edits(s: &mut Scenario, mode: &str, room: &str) {
     let (path, before) = snapshot(s, mode, room);
+    remove_range(s, mode, room, &path);
+    let (path, after) = snapshot(s, mode, room);
+    assert_ne!(before.revision, after.revision);
+    move_range(s, mode, room, &path);
+    play_snapshot(s, mode, room, &before);
+}
+
+fn remove_range(s: &mut Scenario, mode: &str, room: &str, path: &Path) {
     let removed = s.cli(
         "remove-range",
         &[
@@ -112,9 +120,9 @@ fn edits(s: &mut Scenario, mode: &str, room: &str) {
         !stale.ok() && current(s) == [uri("a"), uri("d"), uri("e")],
         &stale.stderr,
     );
+}
 
-    let (path, after) = snapshot(s, mode, room);
-    assert_ne!(before.revision, after.revision);
+fn move_range(s: &mut Scenario, mode: &str, room: &str, path: &Path) {
     let moved = s.cli(
         "move-range",
         &[
@@ -174,6 +182,51 @@ fn edits(s: &mut Scenario, mode: &str, room: &str) {
         "a native no-op returns the shared unchanged result",
         no_op.ok() && result["changed"] == false && result["revision"] == revision,
         format!("{} {}", no_op.stdout, no_op.stderr),
+    );
+}
+
+fn play_snapshot(s: &mut Scenario, mode: &str, room: &str, before: &QueueDto) {
+    let (latest, _) = snapshot(s, mode, room);
+    let played = s.cli(
+        "play-snapshot",
+        &[
+            mode,
+            "queue-play",
+            room,
+            "1",
+            "--snapshot",
+            latest.to_str().unwrap(),
+        ],
+    );
+    s.check(
+        "play-snapshot",
+        "cli",
+        "the same reviewed page selects playback without changing queue contents",
+        played.ok()
+            && soap::get_position_info(&s.lan(), s.ip("Lead")).unwrap().uri == uri("d")
+            && current(s) == [uri("d"), uri("e"), uri("a")],
+        format!("{} {}", played.stdout, played.stderr),
+    );
+    let old = s.dir().join("old-queue.json");
+    std::fs::write(&old, serde_json::to_vec(before).unwrap()).unwrap();
+    let refused = s.cli(
+        "stale-playback",
+        &[
+            mode,
+            "queue-play",
+            room,
+            "1",
+            "--snapshot",
+            old.to_str().unwrap(),
+        ],
+    );
+    s.check(
+        "stale-playback",
+        "cli",
+        "a stale playback snapshot cannot select a different queue entry",
+        !refused.ok()
+            && soap::get_position_info(&s.lan(), s.ip("Lead")).unwrap().uri == uri("d"),
+        &refused.stderr,
     );
 }
 
