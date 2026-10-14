@@ -130,7 +130,10 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     )
     .await;
     let _ = misses.save(store, now);
-    Ok(LibrarySyncDetailed { library: report, genres })
+    Ok(LibrarySyncDetailed {
+        library: report,
+        genres,
+    })
 }
 
 /// Write a *complete* library read to the store. Tracks the owner has since

@@ -95,9 +95,7 @@ impl SyncedDto {
         let pending = match self.genre_artists_pending {
             0 => String::new(),
             1 => ", 1 artist genre lookup pending; continuing at the next daemon check".to_owned(),
-            n => format!(
-                ", {n} artist genre lookups pending; continuing at the next daemon check"
-            ),
+            n => format!(", {n} artist genre lookups pending; continuing at the next daemon check"),
         };
         format!(
             "Library refreshed {when}: {} tracks, {} the DJ can play ({} classical){retired}{pending}.",

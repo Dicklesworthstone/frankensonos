@@ -155,11 +155,10 @@ impl LibrarySync {
     /// what it found. A second caller while one runs is told to wait.
     pub fn run(&self) -> Result<SyncedDto, Failure> {
         if !self.claim() {
-            return Err(Failure::new(
-                ErrorCode::NotReady,
-                "a library refresh is already running",
-            )
-            .with_hint("fsonos dj sync (GET /dj/sync) shows when it is done."));
+            return Err(
+                Failure::new(ErrorCode::NotReady, "a library refresh is already running")
+                    .with_hint("fsonos dj sync (GET /dj/sync) shows when it is done."),
+            );
         }
         self.run_claimed()
     }
@@ -239,9 +238,8 @@ impl LibrarySync {
     #[must_use]
     pub fn due(&self, now: i64) -> bool {
         let max = i64::try_from(MAX_AGE.as_secs()).unwrap_or(i64::MAX);
-        self.last().is_none_or(|last| {
-            last.genre_artists_pending > 0 || now.saturating_sub(last.at) >= max
-        })
+        self.last()
+            .is_none_or(|last| last.genre_artists_pending > 0 || now.saturating_sub(last.at) >= max)
     }
 
     /// Whether a refresh landed since the last call (the DJ then rebuilds
