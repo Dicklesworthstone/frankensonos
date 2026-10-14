@@ -32,13 +32,38 @@ function fixture(options = {}) {
 }
 async function ready(f) { assert.equal(await f.model.refresh(), true); assert.equal(await f.model.read('Room@S2'), true); }
 
+// The bundle may gain panels between existing dependencies. Check the actual
+// format-string entries, not adjacency or merely declared constants.
+function hasEmbeddedOrder(rust, first, second) {
+  const before = `{${first}}`, after = `{${second}}`;
+  return [...rust.matchAll(/&format!\(\s*"([^"]+)"/g)].some(([, body]) => {
+    const entries = body.split('\\n');
+    return entries.filter((entry) => entry === before).length === 1
+      && entries.filter((entry) => entry === after).length === 1
+      && entries.indexOf(before) < entries.indexOf(after);
+  });
+}
+
+test('embedded order permits intervening panels but rejects missing, duplicated or reordered dependencies', () => {
+  const source = (...names) => `&format!("${names.map((name) => `{${name}}`).join('\\n')}")`;
+  for (const kind of ['SCRIPT', 'STYLE']) {
+    const first = `TIMERS_${kind}`, second = `MODE_${kind}`;
+    assert.equal(hasEmbeddedOrder(source(first, second), first, second), true);
+    assert.equal(hasEmbeddedOrder(source(first, `SCHEDULES_${kind}`, second), first, second), true);
+    for (const invalid of [source(first), source(second), source(second, first), source(first, first, second),
+      source(first, second, second), source(first) + source(second), `const ${first} = 1; const ${second} = 2;`]) {
+      assert.equal(hasEmbeddedOrder(invalid, first, second), false, invalid);
+    }
+  }
+});
+
 test('six complete wire modes and route registration agree with the embedded assets', () => {
   assert.deepEqual(Object.keys(Mode.modes).sort(), ['NORMAL', 'REPEAT_ALL', 'REPEAT_ONE', 'SHUFFLE', 'SHUFFLE_NOREPEAT', 'SHUFFLE_REPEAT_ONE']);
   assert.deepEqual(Mode.routes, { modeRead: ['GET', '/zones/{room}/play-mode'], modeWrite: ['POST', '/play-mode'] });
   const rust = readFileSync(join(__dirname, '../crates/fsonos-api/src/http/remote.rs'), 'utf8');
   assert.ok(rust.includes('include_str!("../remote/play-mode.js")'));
-  assert.ok(rust.includes('{TIMERS_SCRIPT}\\n{MODE_SCRIPT}'));
-  assert.ok(rust.includes('{TIMERS_STYLE}\\n{MODE_STYLE}'));
+  assert.ok(hasEmbeddedOrder(rust, 'TIMERS_SCRIPT', 'MODE_SCRIPT'));
+  assert.ok(hasEmbeddedOrder(rust, 'TIMERS_STYLE', 'MODE_STYLE'));
   assert.ok(rust.includes('("play-mode.js", MODE_SCRIPT)'));
 });
 
@@ -191,6 +216,7 @@ test('malformed or overlapping groups are never offered as destinations', async 
   for (const value of [null, {}, [group('S2', 'Room', [])], [group(), group()],
     [group('S2', 'Room', ['Room', 'Other']), group('S2', 'Other')]]) {
     const f = fixture({ zonesRead: async () => value });
+    assert.equal(f.model.refresh instanceof Function, true);
     assert.equal(await f.model.refresh(), false); assert.deepEqual(f.model.state.groups, []);
     assert.equal(await f.model.read('Room@S2'), false);
   }
