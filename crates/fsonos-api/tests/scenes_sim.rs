@@ -365,6 +365,65 @@ fn an_agent_applies_a_scene_within_its_volume_cap() {
     sim.shutdown();
 }
 
+/// A scene that starts music holds the rooms it sounds in to the caller's
+/// caps, as a play does, even when it sets no volume: an agent cannot start
+/// a scene at 90 in a room someone left loud.
+#[test]
+fn a_scene_that_starts_music_lowers_loud_rooms_to_the_callers_cap_first() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let s = surface(&sim, MemStore::default());
+    let cli = Client::Cli;
+    let evening: SceneDefinition = serde_json::from_value(serde_json::json!({
+        "groups": [{"coordinator": "Kitchen", "members": ["Office"],
+            "source": {"kind": "uri", "uri": STREAM}}]
+    }))
+    .unwrap();
+    s.save_scene_from(&cli, "Evening", &evening).unwrap();
+    let office = || {
+        let houses = house(&sim);
+        control::volume(&sim.lan(), &houses, &id(&houses, "Office")).unwrap()
+    };
+    volume(&s, &cli, "Kitchen", 90);
+    volume(&s, &cli, "Office", 85);
+
+    let applied = s.apply_scene(&agent(), "Evening").unwrap();
+    assert!(applied.complete, "{applied:?}");
+    let (level, together, state, uri) = kitchen(&sim);
+    assert_eq!(
+        (level, together, state, uri.as_str(), office()),
+        (70, true, TransportState::Playing, STREAM, 70),
+        "{applied:?}"
+    );
+    let lowered: Vec<&str> = applied
+        .notes
+        .iter()
+        .filter(|n| n.code == NoteCode::VolumeClamped)
+        .map(|n| n.detail.as_str())
+        .collect();
+    assert!(
+        lowered
+            .iter()
+            .any(|d| d.starts_with("Kitchen lowered from 90 to 70 first"))
+            && lowered
+                .iter()
+                .any(|d| d.starts_with("Office lowered from 85 to 70 first")),
+        "{lowered:?}"
+    );
+
+    // The CLI runs uncapped: its apply starts the music at the level the
+    // room has.
+    s.control(&cli, "pause", |h| {
+        plan_transport(h, &zone("Kitchen"), TransportAction::Pause)
+    })
+    .unwrap();
+    volume(&s, &cli, "Kitchen", 90);
+    let applied = s.apply_scene(&cli, "Evening").unwrap();
+    let (level, _, state, _) = kitchen(&sim);
+    assert_eq!((level, state), (90, TransportState::Playing), "{applied:?}");
+    assert!(applied.notes.is_empty(), "{applied:?}");
+    sim.shutdown();
+}
+
 #[test]
 fn scene_failures_carry_their_codes() {
     let sim = SimHousehold::standard().spawn().unwrap();

@@ -740,22 +740,7 @@ impl Surface {
         let (snaps, missed) =
             actions::capture_zones(&*self.transport, &households, &zones, self.now());
         let plan = scenes::plan_apply(&scene, &households, &snaps).map_err(scene_failure)?;
-        let (plan, mut notes) = self.bound_volumes(client, &households, plan);
-        // And for whoever saved it: a capped client's scene stays within its
-        // caps when the CLI, or a schedule made from it, applies it.
-        let writer = scene
-            .writer
-            .as_deref()
-            .map(super::schedules::client_of)
-            .filter(|writer| writer != client);
-        let plan = match writer {
-            Some(writer) => {
-                let (plan, more) = self.bound_volumes(&writer, &households, plan);
-                notes.extend(more);
-                plan
-            }
-            None => plan,
-        };
+        let (plan, notes) = self.bound_scene(client, &scene, &households, plan)?;
         if plan.ops.is_empty() {
             return Ok(SceneApplyDto {
                 scene: scene.name.clone(),
@@ -848,6 +833,35 @@ impl Surface {
                     None,
                 );
             })
+    }
+
+    /// `plan` held to the house policy for `client` and for whoever saved
+    /// `scene` (a capped client's scene stays within its caps when the CLI,
+    /// or a schedule made from it, applies it): each of its volumes bounded
+    /// ([`Self::bound_volumes`]), then each room it starts music in that
+    /// stands above a cap now lowered to it first, as a play does
+    /// ([`Self::lower_scene_rooms`]).
+    fn bound_scene(
+        &self,
+        client: &Client,
+        scene: &Scene,
+        households: &[HouseholdState],
+        mut plan: ScenePlan,
+    ) -> Result<(ScenePlan, Vec<Note>), Failure> {
+        let writer = scene
+            .writer
+            .as_deref()
+            .map(super::schedules::client_of)
+            .filter(|writer| writer != client);
+        let clients: Vec<&Client> = std::iter::once(client).chain(writer.as_ref()).collect();
+        let mut notes = Vec::new();
+        for who in &clients {
+            let (bounded, more) = self.bound_volumes(who, households, plan);
+            plan = bounded;
+            notes.extend(more);
+        }
+        notes.extend(self.lower_scene_rooms(households, &plan, &clients)?);
+        Ok((plan, notes))
     }
 
     /// `plan` with each volume bounded by the house policy for `client`: a
