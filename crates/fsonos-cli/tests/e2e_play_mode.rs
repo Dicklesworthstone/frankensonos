@@ -157,10 +157,7 @@ fn daemon_modes_use_the_same_actions_and_log() {
             .is_some()
     );
     modes(&mut s, "--daemon", "Member@S2");
-    let log = s.cli(
-        "mode-log",
-        &["--daemon", "--json", "log", "--limit", "20"],
-    );
+    let log = s.cli("mode-log", &["--daemon", "--json", "log", "--limit", "20"]);
     s.check(
         "mode-log",
         "cli",

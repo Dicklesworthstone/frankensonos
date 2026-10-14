@@ -64,7 +64,13 @@ fn an_expected_mode_cannot_turn_a_read_into_an_unrequested_write() {
 #[test]
 fn unknown_and_inexact_mode_names_do_not_contact_any_backend() {
     for value in [
-        "", "normal", "shuffle", "SHUFFLE_NO_REPEAT", "OFF", "NOT_IMPLEMENTED", " NORMAL ",
+        "",
+        "normal",
+        "shuffle",
+        "SHUFFLE_NO_REPEAT",
+        "OFF",
+        "NOT_IMPLEMENTED",
+        " NORMAL ",
     ] {
         assert!(parsed(&["Room", value]).is_err());
         assert!(parsed(&["Room", "NORMAL", "--expected-mode", value]).is_err());
