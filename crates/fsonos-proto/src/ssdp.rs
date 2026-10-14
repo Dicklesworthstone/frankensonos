@@ -19,7 +19,7 @@ pub const SONOS_ST: &str = "urn:schemas-upnp-org:device:ZonePlayer:1";
 pub fn m_search(mx_secs: u8) -> String {
     format!(
         "M-SEARCH * HTTP/1.1\r\n\
-         HOST: 239.255.255.250:1900\r\n\
+         HOST: {SSDP_ADDR}\r\n\
          MAN: \"ssdp:discover\"\r\n\
          MX: {mx_secs}\r\n\
          ST: {SONOS_ST}\r\n\r\n"
@@ -44,8 +44,9 @@ pub struct Advert {
 #[must_use]
 pub fn description_url(ip: IpAddr) -> String {
     format!(
-        "http://{}/xml/device_description.xml",
-        SocketAddr::new(ip, 1400)
+        "http://{}{}",
+        SocketAddr::new(ip, 1400),
+        crate::description::DESCRIPTION_PATH
     )
 }
 

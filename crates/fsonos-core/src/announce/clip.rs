@@ -9,7 +9,8 @@
 //! which the players can already reach; [`MediaStore::path`] is the only
 //! lookup that serving needs.
 //!
-//! Remote clients may upload WAV bytes but cannot name files on the host.
+//! Remote clients may upload WAV bytes ([`read_wav`] with
+//! `AnnounceRequest::from_wav` on the CLI) but cannot name files on the host;
 //! [`MediaStore::import_wav`] reads a local file only on behalf of local code.
 
 use std::fmt;
