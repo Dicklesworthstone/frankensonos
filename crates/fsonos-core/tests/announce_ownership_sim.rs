@@ -1,12 +1,12 @@
 //! New owner actions during an announcement are not overwritten by cleanup.
 
-use fsonos_core::announce::{Announcer, Clip};
+use fsonos_core::announce::{Announcer, Clip, HouseholdAnnouncement};
 use fsonos_core::snapshot::Aspect;
 use fsonos_core::{HouseholdState, resolve_room};
 use fsonos_proto::control as soap;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
-use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
+use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec, SoapLogEntry};
 use fsonos_types::TransportState;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -207,52 +207,58 @@ fn run(s2: bool, change: Change) {
                 _ => {}
             }
         }
-        Change::Volume | Change::Mute => {
-            assert!(report.outcome.is_ok(), "{report:?}");
-            assert_eq!(soap::get_media_info(&lan, host).unwrap().uri, OLD);
-            assert_eq!(
-                soap::get_transport_info(&lan, host).unwrap().state,
-                TransportState::Playing
-            );
-            let aspect = if matches!(change, Change::Volume) {
-                assert_eq!(soap::get_volume(&lan, host).unwrap(), 55);
-                Aspect::Volume
-            } else {
-                assert!(soap::get_mute(&lan, host).unwrap());
-                Aspect::Mute
-            };
-            assert!(
-                report
-                    .restored
-                    .iter()
-                    .any(|(_, r)| r.skipped.iter().any(|(a, _)| *a == aspect))
-            );
-        }
-        Change::RestoreFailure => {
-            assert!(
-                after
-                    .iter()
-                    .all(|e| e.action != "Play" && e.action != "Seek"),
-                "{after:?}"
-            );
-            assert_eq!(
-                soap::get_transport_info(&lan, host).unwrap().state,
-                TransportState::Stopped
-            );
-            assert!(
-                report
-                    .restored
-                    .iter()
-                    .any(|(_, r)| r.skipped.iter().any(|(a, _)| *a == Aspect::Source))
-            );
-            assert!(
-                report
-                    .restored
-                    .iter()
-                    .any(|(_, r)| r.skipped.iter().any(|(a, _)| *a == Aspect::Transport))
-            );
-        }
+        Change::Volume | Change::Mute => setting_kept(change, report, &lan, host),
+        Change::RestoreFailure => restore_refused(report, after, &lan, host),
     }
+}
+
+/// The owner changed only a volume or mute: the music plays on and the
+/// announcement leaves that setting as the owner set it.
+fn setting_kept(change: Change, report: &HouseholdAnnouncement, lan: &SimLan, host: IpAddr) {
+    assert!(report.outcome.is_ok(), "{report:?}");
+    assert_eq!(soap::get_media_info(lan, host).unwrap().uri, OLD);
+    assert_eq!(
+        soap::get_transport_info(lan, host).unwrap().state,
+        TransportState::Playing
+    );
+    let aspect = if matches!(change, Change::Volume) {
+        assert_eq!(soap::get_volume(lan, host).unwrap(), 55);
+        Aspect::Volume
+    } else {
+        assert!(soap::get_mute(lan, host).unwrap());
+        Aspect::Mute
+    };
+    assert!(skipped(report, aspect));
+}
+
+/// The source restore was refused: nothing plays or seeks afterwards, and
+/// the source and transport are reported as not restored.
+fn restore_refused(
+    report: &HouseholdAnnouncement,
+    after: &[SoapLogEntry],
+    lan: &SimLan,
+    host: IpAddr,
+) {
+    assert!(
+        after
+            .iter()
+            .all(|e| e.action != "Play" && e.action != "Seek"),
+        "{after:?}"
+    );
+    assert_eq!(
+        soap::get_transport_info(lan, host).unwrap().state,
+        TransportState::Stopped
+    );
+    assert!(skipped(report, Aspect::Source));
+    assert!(skipped(report, Aspect::Transport));
+}
+
+/// Whether a restore in `report` skipped `aspect`.
+fn skipped(report: &HouseholdAnnouncement, aspect: Aspect) -> bool {
+    report
+        .restored
+        .iter()
+        .any(|(_, r)| r.skipped.iter().any(|(a, _)| *a == aspect))
 }
 
 #[test]

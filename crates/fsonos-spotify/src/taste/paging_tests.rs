@@ -216,7 +216,7 @@ impl Drop for Server {
 }
 
 fn page(items: Vec<Value>, offset: u32, next: Option<String>) -> Value {
-    json!({ "items": items, "offset": offset, "next": next })
+    json!({ "items": Value::from(items), "offset": offset, "next": Value::from(next) })
 }
 
 fn playlist(n: usize, owned: bool) -> Value {

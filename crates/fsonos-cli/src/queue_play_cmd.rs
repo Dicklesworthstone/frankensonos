@@ -46,14 +46,13 @@ impl QueuePlayArgs {
 
 pub fn run(global: &GlobalArgs, args: &QueuePlayArgs) -> anyhow::Result<()> {
     let request = args.request();
-    let outcome: OutcomeDto = match Daemon::find(global, global.daemon)? {
-        Some(daemon) => daemon.post("/queue/play", &request)?,
-        None => {
-            let dir = daemon::data_dir(global)?;
-            let surface = daemon::surface(global, daemon::policy(&dir)?)?;
-            let surface = daemon::with_action_log(surface, &dir, "cli");
-            surface.queue_play(&Client::Cli, &request)?
-        }
+    let outcome: OutcomeDto = if let Some(daemon) = Daemon::find(global, global.daemon)? {
+        daemon.post("/queue/play", &request)?
+    } else {
+        let dir = daemon::data_dir(global)?;
+        let surface = daemon::surface(global, daemon::policy(&dir)?)?;
+        let surface = daemon::with_action_log(surface, &dir, "cli");
+        surface.queue_play(&Client::Cli, &request)?
     };
     emit(global.json, &outcome, outcome_text)
 }

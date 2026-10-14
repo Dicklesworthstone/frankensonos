@@ -111,7 +111,7 @@ impl Fixture {
         let playing = 2 * self.count + 2;
         let mut feed = QueueFeed::new(&self.coordinator, config(), 7);
         feed.active = true;
-        feed.played = vec![work(2, &self.uris[1..1 + count])];
+        feed.played = vec![work(2, &self.uris[1..=count])];
         feed.queued = vec![
             work(playing, &[uri(self.count + 1)]),
             work(playing + 1, &[uri(self.count + 2)]),
@@ -133,7 +133,7 @@ impl Fixture {
 
     fn after_trim(&self) -> Vec<String> {
         let mut expected = self.uris.clone();
-        expected.drain(1..1 + usize::try_from(self.count).unwrap());
+        expected.drain(1..=usize::try_from(self.count).unwrap());
         expected
     }
 }

@@ -713,6 +713,26 @@ impl State {
         }
     }
 
+    /// `RemoveTrackFromQueue`: one track (`Q:0/<n>`) out of the queue.
+    fn remove_track(&mut self, p: usize, args: &Args<'_>) -> Result<Out, Fault> {
+        self.require_coordinator(p)?;
+        let n: usize = args
+            .get("ObjectID")?
+            .strip_prefix("Q:0/")
+            .and_then(|n| n.parse().ok())
+            .ok_or(INVALID_ARGS)?;
+        let t = &mut self.players[p].transport;
+        if n == 0 || n > t.queue.len() {
+            return Err(INVALID_ARGS);
+        }
+        t.queue.remove(n - 1);
+        if t.track > n || t.track > t.queue.len() {
+            t.track -= 1;
+        }
+        t.queue_update_id += 1;
+        Ok(Vec::new())
+    }
+
     /// What the transport plays from: its URI and its queue.
     fn av_sources(
         &mut self,
@@ -799,24 +819,7 @@ impl State {
                     ("NewQueueLength", t.queue.len().to_string()),
                 ])
             }
-            "RemoveTrackFromQueue" => {
-                self.require_coordinator(p)?;
-                let n: usize = args
-                    .get("ObjectID")?
-                    .strip_prefix("Q:0/")
-                    .and_then(|n| n.parse().ok())
-                    .ok_or(INVALID_ARGS)?;
-                let t = &mut self.players[p].transport;
-                if n == 0 || n > t.queue.len() {
-                    return Err(INVALID_ARGS);
-                }
-                t.queue.remove(n - 1);
-                if t.track > n || t.track > t.queue.len() {
-                    t.track -= 1;
-                }
-                t.queue_update_id += 1;
-                Ok(Vec::new())
-            }
+            "RemoveTrackFromQueue" => self.remove_track(p, args),
             "RemoveTrackRangeFromQueue" => self.remove_track_range(p, args),
             "RemoveAllTracksFromQueue" => {
                 self.require_coordinator(p)?;

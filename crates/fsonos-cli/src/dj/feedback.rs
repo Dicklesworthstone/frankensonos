@@ -152,7 +152,9 @@ impl Listening {
         if let (Some((heard, _)), Some(next)) = (&mut self.current, &playing)
             && heard.same_track(next)
         {
-            if heard.position != next.position {
+            if heard.position == next.position {
+                heard.duration_secs = next.duration_secs.or(heard.duration_secs);
+            } else {
                 // A trim, queue edit or replay may reuse the same URI at a
                 // different slot. Do not manufacture an early skip, and do
                 // not infer a complete traversal across this discontinuity.
@@ -160,8 +162,6 @@ impl Listening {
                 let mut next = next.clone();
                 next.started = false;
                 self.current = Some((next, 0));
-            } else {
-                heard.duration_secs = next.duration_secs.or(heard.duration_secs);
             }
             return None;
         }
