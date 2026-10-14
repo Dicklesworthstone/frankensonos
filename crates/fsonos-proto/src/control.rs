@@ -734,7 +734,7 @@ mod tests {
         set_normal_play_mode(&t, host()).unwrap();
         let (path, action, body) = t.last();
         assert_eq!(path, "/MediaRenderer/AVTransport/Control");
-        assert!(action.ends_with("#SetPlayMode\\\""), "{action}");
+        assert!(action.ends_with("#SetPlayMode\""), "{action}");
         assert!(body.contains("<InstanceID>0</InstanceID>"), "{body}");
         assert!(body.contains("<NewPlayMode>NORMAL</NewPlayMode>"), "{body}");
     }
