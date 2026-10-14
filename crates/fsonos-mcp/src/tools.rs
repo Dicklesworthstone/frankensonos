@@ -243,6 +243,9 @@ impl Backend {
             if let Some(group) = state.group_volume {
                 let _ = write!(volume, ", group volume {group}");
             }
+            if let Some(mode) = state.play_mode_text() {
+                let _ = write!(volume, ", {mode}");
+            }
             let text = format!(
                 "{} [{}]: {} ({on}){volume}",
                 state.zone.members.join(" + "),

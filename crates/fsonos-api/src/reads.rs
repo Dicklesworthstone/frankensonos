@@ -26,9 +26,31 @@ pub struct ZoneStateDto {
     /// and the group's coordinator answers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_volume: Option<u8>,
+    /// Whether the group shuffles its queue, when its coordinator says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shuffle: Option<bool>,
+    /// How the group repeats: `off`, `all` (the queue) or `one` (the
+    /// track), when its coordinator says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<String>,
     /// What the group is on, when anything is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track: Option<TrackDto>,
+}
+
+impl ZoneStateDto {
+    /// `shuffle`, `repeat all`, `shuffle, repeat one` and so on: how the
+    /// group plays its queue, when that isn't in order once through.
+    #[must_use]
+    pub fn play_mode_text(&self) -> Option<String> {
+        let shuffle = self.shuffle == Some(true);
+        match self.repeat.as_deref().filter(|r| *r != "off") {
+            None if shuffle => Some("shuffle".into()),
+            None => None,
+            Some(repeat) if shuffle => Some(format!("shuffle, repeat {repeat}")),
+            Some(repeat) => Some(format!("repeat {repeat}")),
+        }
+    }
 }
 
 /// The current track (or stream) of a group.

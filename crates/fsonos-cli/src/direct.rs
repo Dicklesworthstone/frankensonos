@@ -413,6 +413,9 @@ pub fn status_text(state: &ZoneStateDto) -> String {
     if let Some(group) = state.group_volume {
         let _ = write!(out, "\n  group volume {group}");
     }
+    if let Some(mode) = state.play_mode_text() {
+        let _ = write!(out, "\n  {mode}");
+    }
     out.push('\n');
     out
 }

@@ -9,7 +9,7 @@
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::rooms::{household_labels, normalize_room};
 use fsonos_core::{ControlTarget, HouseholdState, Room};
-use fsonos_types::{PlayerId, TransportState};
+use fsonos_types::{PlayMode, PlayerId, TransportState};
 use serde::{Deserialize, Serialize};
 
 use crate::failure::Failure;
@@ -41,6 +41,20 @@ pub fn transport_state_name(state: TransportState) -> &'static str {
         TransportState::Stopped => "stopped",
         TransportState::Transitioning => "transitioning",
         TransportState::Unknown => "unknown",
+    }
+}
+
+/// Whether `mode` shuffles the queue, and how it repeats: `off`, `all` (the
+/// queue) or `one` (the track).
+#[must_use]
+pub fn shuffle_and_repeat(mode: PlayMode) -> (bool, &'static str) {
+    match mode {
+        PlayMode::Normal => (false, "off"),
+        PlayMode::RepeatAll => (false, "all"),
+        PlayMode::RepeatOne => (false, "one"),
+        PlayMode::ShuffleNoRepeat => (true, "off"),
+        PlayMode::Shuffle => (true, "all"),
+        PlayMode::ShuffleRepeatOne => (true, "one"),
     }
 }
 
@@ -233,6 +247,19 @@ mod tests {
         } else {
             TransportState::Stopped
         }
+    }
+
+    #[test]
+    fn a_play_mode_reads_as_shuffle_and_repeat() {
+        assert_eq!(shuffle_and_repeat(PlayMode::Normal), (false, "off"));
+        assert_eq!(shuffle_and_repeat(PlayMode::RepeatAll), (false, "all"));
+        assert_eq!(shuffle_and_repeat(PlayMode::RepeatOne), (false, "one"));
+        assert_eq!(shuffle_and_repeat(PlayMode::ShuffleNoRepeat), (true, "off"));
+        assert_eq!(shuffle_and_repeat(PlayMode::Shuffle), (true, "all"));
+        assert_eq!(
+            shuffle_and_repeat(PlayMode::ShuffleRepeatOne),
+            (true, "one")
+        );
     }
 
     #[test]

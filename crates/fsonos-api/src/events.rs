@@ -318,6 +318,15 @@ impl EventBus {
                 if let Some(length) = changes.queue_length {
                     data.insert("queue_length".into(), json!(length));
                 }
+                if let Some((shuffle, repeat)) = changes
+                    .play_mode
+                    .as_deref()
+                    .and_then(fsonos_types::PlayMode::from_wire)
+                    .map(crate::zones::shuffle_and_repeat)
+                {
+                    data.insert("shuffle".into(), json!(shuffle));
+                    data.insert("repeat".into(), json!(repeat));
+                }
                 self.publish("zone.state", Value::Object(data));
             }
             LiveEvent::Topology => {
@@ -568,5 +577,21 @@ mod tests {
         assert_eq!(event.data["volume"], 30);
         assert!(event.data["room"].is_string(), "{}", event.data);
         assert!(event.data.get("transport").is_none());
+    }
+
+    #[test]
+    fn a_play_mode_change_says_shuffle_and_repeat() {
+        let bus = EventBus::new();
+        let households = crate::zones::fixtures::households();
+        let player = crate::zones::fixtures::id("RINCON_DEN");
+        let changes = fsonos_core::playback::Changes {
+            play_mode: Some("REPEAT_ALL".into()),
+            ..Default::default()
+        };
+        bus.publish_live(&LiveEvent::Playback { player, changes }, &households);
+        let event = &bus.after(0).unwrap()[0];
+        assert_eq!(event.data["shuffle"], json!(false), "{}", event.data);
+        assert_eq!(event.data["repeat"], "all", "{}", event.data);
+        assert!(event.data.get("volume").is_none());
     }
 }

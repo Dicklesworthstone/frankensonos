@@ -1390,12 +1390,27 @@ impl Surface {
         } else {
             None
         };
+        // Shuffle and repeat: from the group's events when it has reported
+        // its mode, else asked.
+        let mode = heard(&target.coordinator.id)
+            .and_then(|group| group.play_mode)
+            .and_then(|mode| fsonos_types::PlayMode::from_wire(&mode))
+            .or_else(|| {
+                fsonos_proto::play_mode::get_play_mode(&*self.transport, target.coordinator.ip).ok()
+            });
+        let (shuffle, repeat) = mode
+            .map(crate::zones::shuffle_and_repeat)
+            .map_or((None, None), |(shuffle, repeat)| {
+                (Some(shuffle), Some(repeat.to_string()))
+            });
         Ok(ZoneStateDto {
             zone,
             transport_state: crate::zones::transport_state_name(state).to_string(),
             volume,
             mute,
             group_volume,
+            shuffle,
+            repeat,
             track,
         })
     }
@@ -2079,6 +2094,38 @@ mod tests {
         assert!(sent.lock().unwrap().iter().any(|a| a == "GetGroupVolume"));
         let alone = s.zone_state(&Client::Unknown, "Patio").unwrap();
         assert_eq!(alone.group_volume, None, "{alone:?}");
+    }
+
+    #[test]
+    fn a_zones_state_says_whether_it_shuffles_or_repeats() {
+        let (s, sent) = surface(
+            "<CurrentTransportState>PLAYING</CurrentTransportState>\
+             <PlayMode>SHUFFLE_REPEAT_ONE</PlayMode>",
+            households(),
+        );
+        let state = s.zone_state(&Client::Unknown, "Patio").unwrap();
+        assert_eq!(
+            (state.shuffle, state.repeat.as_deref()),
+            (Some(true), Some("one"))
+        );
+        assert!(
+            sent.lock()
+                .unwrap()
+                .iter()
+                .any(|a| a == "GetTransportSettings")
+        );
+        assert_eq!(
+            state.play_mode_text().as_deref(),
+            Some("shuffle, repeat one")
+        );
+        // A player that doesn't say leaves both out.
+        let (s, _) = surface(
+            "<CurrentTransportState>PLAYING</CurrentTransportState>",
+            households(),
+        );
+        let state = s.zone_state(&Client::Unknown, "Patio").unwrap();
+        assert_eq!((state.shuffle, state.repeat.as_deref()), (None, None));
+        assert_eq!(state.play_mode_text(), None);
     }
 
     #[test]
