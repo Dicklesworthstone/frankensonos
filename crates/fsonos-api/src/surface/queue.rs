@@ -22,6 +22,9 @@ mod playback;
 mod snapshot;
 pub use playback::{PLAY, QueuePlayRequest};
 
+mod removal;
+pub use removal::{REMOVE, QueueRemoveRequest, QueueRemovedDto};
+
 /// The tool name the queue read is authorized as.
 pub const TOOL: &str = "get_queue";
 
