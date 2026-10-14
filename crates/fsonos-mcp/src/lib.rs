@@ -162,6 +162,7 @@ pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
         .tool(tools::DjStatus)
         .tool(tools::DjMoods)
         .tool(tools::SearchLibrary)
+        .tool(tools::SearchAndPlay)
         .tool(tools::RecentPlays)
         .tool(tools::GetQueue)
         .tool(tools::AddToQueue)

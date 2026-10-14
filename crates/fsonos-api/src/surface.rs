@@ -61,6 +61,7 @@ pub mod announce;
 mod playback_caps;
 pub mod players;
 mod shared_store;
+mod search_play;
 
 pub mod art;
 

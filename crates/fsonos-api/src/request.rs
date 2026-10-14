@@ -253,6 +253,47 @@ impl SearchRequest {
     }
 }
 
+
+/// `POST /library/play` / `search_and_play`: search the owner's library
+/// and the target room's household favorites, then play one ranked result.
+/// This is intentionally a single request so agents do not have to translate
+/// a search hit into a different playback API themselves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SearchPlayRequest {
+    /// The room whose group will play the result.
+    pub zone: String,
+    /// Words of a title, composer, performer, album, playlist or catalog number.
+    pub query: String,
+    /// Which ranked result to play, starting at one (default: the best match).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pick: Option<usize>,
+}
+
+impl SearchPlayRequest {
+    pub fn zone(&self) -> Result<&str, Failure> {
+        zone_name("zone", &self.zone)
+    }
+
+    pub fn query(&self) -> Result<&str, Failure> {
+        let query = self.query.trim();
+        if query.is_empty() {
+            return Err(Failure::invalid("`query` is empty; say what to look for"));
+        }
+        Ok(query)
+    }
+
+    pub fn pick(&self) -> Result<usize, Failure> {
+        match self.pick {
+            None => Ok(1),
+            Some(n) if (1..=MAX_SEARCH_RESULTS).contains(&n) => Ok(n),
+            Some(n) => Err(Failure::invalid(format!(
+                "pick must be 1 to {MAX_SEARCH_RESULTS}, got {n}"
+            ))),
+        }
+    }
+}
+
 /// `POST /move` body: move the music `zone` plays to `to`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

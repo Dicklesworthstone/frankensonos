@@ -13,6 +13,7 @@
 //! | `GET /zones/{room}/eq` | | [`crate::surface::eq::EqDto`]: the room's bass, treble and loudness |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
+//! | `POST /library/play` | [`crate::SearchPlayRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /doctor` | | the doctor report (`schema`, `exit_code`, `counts`, `checks`) |
 //! | `GET /actions?client=&since=&limit=` | | `[ActionDto]`, newest first |
 //! | `POST /undo` | [`crate::UndoRequest`] | [`crate::UndoDto`] |
@@ -79,7 +80,7 @@ use crate::plan::{
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, ZoneStateDto};
 use crate::request::{
     DjStartRequest, DjSteerRequest, GroupRequest, MoveRequest, MuteRequest, PartyRequest,
-    PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
+    PlayFavoriteRequest, PlayRequest, SearchPlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
 };
 use crate::surface::Surface;
 use crate::web::WebPolicy;
@@ -433,6 +434,19 @@ fn house(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .request_schema::<PlayFavoriteRequest>(true)
         .response_schema::<OutcomeDto>(200, "What was done"),
+        cx.route(
+            &Op::post(
+                "/library/play",
+                "search_and_play",
+                FAVORITES,
+                "Search the library and the room's favorites, then play one ranked result",
+            ),
+            |s, c, req| {
+                answer(body::<SearchPlayRequest>(req).and_then(|b| s.search_and_play(c, &b)))
+            },
+        )
+        .request_schema::<SearchPlayRequest>(true)
+        .response_schema::<OutcomeDto>(200, "The selected search result is playing"),
         cx.route(
             &Op::get(
                 "/actions",

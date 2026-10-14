@@ -12,7 +12,7 @@ use fsonos_api::plan::{self, DjAction, TransportAction};
 use fsonos_api::{
     ActionDto, ActionsQuery, DjStartRequest, DjStatusDto, DjSteerRequest, ErrorCode, Failure,
     GroupRequest, MoveRequest, MuteRequest, OutcomeDto, PartyRequest, PlayFavoriteRequest,
-    PlayRequest, SearchRequest, SteerConstraints, Surface, UndoDto, VolumeRequest, ZoneRequest,
+    PlayRequest, SearchPlayRequest, SearchRequest, SteerConstraints, Surface, UndoDto, VolumeRequest, ZoneRequest,
 };
 use fsonos_core::clock::Clock;
 use fsonos_core::policy::{Client, Policy};
@@ -327,6 +327,20 @@ impl Backend {
         })
     }
 
+    /// Search and play through the daemon when one runs, so the mutation uses
+    /// the daemon's library/store, policy, action log and live topology.
+    pub fn search_and_play(&self, req: &SearchPlayRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).map_err(|error| {
+            crate::tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
+        })?;
+        if let Some(result) =
+            self.on_daemon::<OutcomeDto>("POST", "/library/play", Some(&body), sentence)
+        {
+            return result;
+        }
+        respond(|| Ok(said(self.surface.search_and_play(&self.client, req)?)))
+    }
+
     /// The `recent_plays` tool.
     pub fn recent_plays(&self, zone: Option<&str>, limit: usize) -> McpResult<FinalCallToolResult> {
         respond(|| {
@@ -617,6 +631,23 @@ fn search_library(
         limit: limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
     };
     with_backend(move |b| b.search_library(&req))
+}
+
+#[tool(
+    description = "Search the owner's library plus the target room's household Sonos favorites and immediately play one ranked match. `pick` is one-based and defaults to 1; use search_library first when you want to inspect choices. The selected hit is played through the same guarded play/play_favorite path, so volume policy, action logging, undo, history and household-specific Spotify rendering still apply. Do not retry automatically after an uncertain playback error."
+)]
+fn search_and_play(
+    _ctx: &McpContext,
+    zone: String,
+    query: String,
+    pick: Option<u32>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let req = SearchPlayRequest {
+        zone,
+        query,
+        pick: pick.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+    };
+    with_backend(move |b| b.search_and_play(&req))
 }
 
 #[tool(
