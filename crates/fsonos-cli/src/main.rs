@@ -47,6 +47,7 @@ mod eq_cmd;
 mod events_cmd;
 mod known_players;
 mod policy_cmd;
+mod queue_edit_cmd;
 mod queue_play_cmd;
 mod remote;
 mod rooms_cmd;
@@ -134,6 +135,12 @@ enum Command {
     /// Play an existing queue position without adding or removing tracks.
     /// Use `queue <room>` to list positions first; `undo` restores playback.
     QueuePlay(queue_play_cmd::QueuePlayArgs),
+    /// Remove an identified consecutive range. Read queue --json first.
+    /// Requires its revision and renderer URIs, or --snapshot. Not undoable.
+    QueueRemove(queue_edit_cmd::QueueRemoveArgs),
+    /// Move an identified range before an ORIGINAL queue position.
+    /// Requires a revision-bound selection; never rebuilds the queue.
+    QueueMove(queue_edit_cmd::QueueMoveArgs),
     /// A room's tone: bass and treble (-10 to 10, 0 is flat) and loudness.
     /// `--bass`, `--treble` or `--loudness` change them, and `fsonos undo`
     /// puts them back.
@@ -441,6 +448,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Sleep(args) => schedule_cmd::sleep(global, &args),
         Command::Eq(args) => eq_cmd::run(global, &args),
         Command::QueuePlay(args) => queue_play_cmd::run(global, &args),
+        Command::QueueRemove(args) => queue_edit_cmd::remove(global, &args),
+        Command::QueueMove(args) => queue_edit_cmd::move_entries(global, &args),
         Command::Events(args) => events_cmd::run(global, &args),
         Command::Schedule { action } => schedule_cmd::schedule(global, &action),
         Command::Mcp => run_mcp_stdio(global),
@@ -922,6 +931,8 @@ fn plan_for<'a>(
         | Command::Favorites { .. }
         | Command::Queue { .. }
         | Command::QueuePlay(_)
+        | Command::QueueRemove(_)
+        | Command::QueueMove(_)
         | Command::Eq(_)
         | Command::History { .. }
         | Command::Log { .. }
