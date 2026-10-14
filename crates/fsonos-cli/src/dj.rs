@@ -51,6 +51,8 @@ use crate::dj_view::{self, steer_failure, store_failure};
 pub(crate) mod feedback;
 mod handover;
 pub(crate) mod prefs;
+#[cfg(test)]
+mod problem_tests;
 mod retry;
 pub(crate) mod saved;
 pub(crate) mod sync;
@@ -161,6 +163,9 @@ struct State {
     handover: handover::Tracker,
     /// Failed automatic top-ups, bounded independently for each group.
     refill_retries: HashMap<PlayerId, retry::Retry>,
+    /// What the DJ last ran into feeding each group, until it feeds it again
+    /// or is told to do something there: shown in the status.
+    problems: HashMap<PlayerId, String>,
     /// What the DJ plans from, as of the last successful rebuild.
     pool: WorkPool,
     feedback: Option<FeedbackModel>,
@@ -289,6 +294,70 @@ fn plan<'a>(
         now: cx.now,
         local_hour: Some(cx.local_hour),
     }
+}
+
+/// Act on what a feed made of playback in the group `at` leads: clear or
+/// set the retry backoff and what the DJ ran into (its status shows it).
+/// Answers whether the listening may still teach the DJ: not once it let
+/// the queue go over an add it couldn't confirm.
+fn settle(
+    result: Result<usize, FeedError>,
+    trim_error: Option<String>,
+    at: &PlayerId,
+    playback: &PlayerPlayback,
+    refill_retries: &mut HashMap<PlayerId, retry::Retry>,
+    problems: &mut HashMap<PlayerId, String>,
+) -> bool {
+    let mut observe_listening = true;
+    match result {
+        Ok(queued) => {
+            refill_retries.remove(at);
+            problems.remove(at);
+            if queued > 0 {
+                tracing::info!(queued, "the DJ topped up the queue");
+            }
+        }
+        Err(FeedError::UncertainEnqueue(detail)) => {
+            // Relinquishing a queue is not a listener skipping the music.
+            // Do not learn negative feedback or schedule another add.
+            observe_listening = false;
+            tracing::error!(%detail, "DJ feeding stopped after an indeterminate enqueue");
+            problems.insert(
+                at.clone(),
+                format!(
+                    "The DJ stopped feeding the queue: it couldn't confirm an add ({detail}), \
+                     so it left the queue as it is"
+                ),
+            );
+        }
+        Err(e) => {
+            let retry = retry::Retry::failed(refill_retries.get(at), playback, Instant::now());
+            tracing::warn!(
+                error = %e,
+                retry_in_s = retry.delay().as_secs(),
+                "the DJ could not top up; retrying with backoff"
+            );
+            problems.insert(
+                at.clone(),
+                format!(
+                    "The DJ couldn't top up the queue ({e}); it tries again in {} s",
+                    retry.delay().as_secs()
+                ),
+            );
+            refill_retries.insert(at.clone(), retry);
+        }
+    }
+    if let Some(error) = trim_error {
+        tracing::warn!(%error, "the DJ could not trim the queue; retrying on the next track");
+        problems.insert(
+            at.clone(),
+            format!(
+                "The DJ couldn't take played works off the queue ({error}); it tries again at \
+                 the next track"
+            ),
+        );
+    }
+    observe_listening
 }
 
 fn speakers<'a>(at: DjSpeakers<'a>) -> Speakers<'a, dyn fsonos_proto::Transport + 'a> {
@@ -502,6 +571,7 @@ impl DjEngine for SpotifyDj {
         let mut state = self.state();
         // Explicit commands are never held behind automatic retry backoff.
         state.refill_retries.remove(at.coordinator);
+        state.problems.remove(at.coordinator);
         let done = self.carry_out(&mut state, at, store, action, clock);
         state.handover.remember(at.households, at.coordinator);
         // Even a failed start can leave a feed running, part-queued.
@@ -541,6 +611,7 @@ impl DjEngine for SpotifyDj {
             &state.pool,
             queue_position,
             steering,
+            state.problems.get(at.coordinator).cloned(),
         ))
     }
 
@@ -597,6 +668,7 @@ impl DjEngine for SpotifyDj {
             feeds,
             listening,
             held,
+            problems,
             ..
         } = &mut *state;
         held.remove(from);
@@ -606,6 +678,9 @@ impl DjEngine for SpotifyDj {
         if let Some(mut feed) = feeds.remove(from) {
             feed.rekey(to);
             feeds.insert(to.clone(), feed);
+        }
+        if let Some(problem) = problems.remove(from) {
+            problems.insert(to.clone(), problem);
         }
         if let Some(heard) = listening.remove(from) {
             listening.insert(to.clone(), heard);
@@ -669,47 +744,27 @@ impl DjEngine for SpotifyDj {
             pool,
             feedback,
             listening,
+            problems,
             ..
         } = &mut *state;
         let Some(feed) = feeds.get_mut(at.coordinator) else {
             return;
         };
-        let mut observe_listening = true;
-        match feed.on_playback(
+        let result = feed.on_playback(
             &speakers(at),
             plan(pool, feedback.as_ref(), &cx),
             store,
             playback,
-        ) {
-            Ok(queued) => {
-                refill_retries.remove(at.coordinator);
-                if queued > 0 {
-                    tracing::info!(queued, "the DJ topped up the queue");
-                }
-            }
-            Err(FeedError::UncertainEnqueue(detail)) => {
-                // Relinquishing a queue is not a listener skipping the music.
-                // Do not learn negative feedback or schedule another add.
-                observe_listening = false;
-                tracing::error!(%detail, "DJ feeding stopped after an indeterminate enqueue");
-            }
-            Err(e) => {
-                let retry = retry::Retry::failed(
-                    refill_retries.get(at.coordinator),
-                    playback,
-                    Instant::now(),
-                );
-                tracing::warn!(
-                    error = %e,
-                    retry_in_s = retry.delay().as_secs(),
-                    "the DJ could not top up; retrying with backoff"
-                );
-                refill_retries.insert(at.coordinator.clone(), retry);
-            }
-        }
-        if let Some(error) = feed.take_trim_error() {
-            tracing::warn!(%error, "the DJ could not trim the queue; retrying on the next track");
-        }
+        );
+        let trim_error = feed.take_trim_error();
+        let observe_listening = settle(
+            result,
+            trim_error,
+            at.coordinator,
+            playback,
+            refill_retries,
+            problems,
+        );
         // An early skip or a full listen, as the movement heard ends.
         if observe_listening
             && feedback::implicit(
@@ -726,6 +781,9 @@ impl DjEngine for SpotifyDj {
         }
         if !feed.is_active() {
             // The owner cleared or replaced the queue: the DJ steps aside.
+            problems.entry(at.coordinator.clone()).or_insert_with(|| {
+                "The DJ stepped aside: the queue was cleared or replaced".to_owned()
+            });
             feeds.remove(at.coordinator);
             refill_retries.remove(at.coordinator);
             listening.remove(at.coordinator);

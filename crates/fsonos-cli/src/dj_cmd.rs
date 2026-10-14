@@ -679,6 +679,7 @@ mod tests {
             now: Some(work),
             next: Vec::new(),
             steering: steering(),
+            problem: None,
         };
         assert_eq!(
             why_text(&status).unwrap(),

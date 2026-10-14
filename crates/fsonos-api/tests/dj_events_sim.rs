@@ -106,6 +106,7 @@ impl DjEngine for Picking {
                 expires_at: None,
                 expires_in_secs: None,
             },
+            problem: None,
         })
     }
 

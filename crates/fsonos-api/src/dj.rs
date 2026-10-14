@@ -288,6 +288,11 @@ pub struct DjStatusDto {
     pub next: Vec<DjWorkDto>,
     /// How the DJ's next pick is steered.
     pub steering: DjSteeringDto,
+    /// What the DJ last ran into feeding the zone's queue, until it feeds it
+    /// again or is told to do something there: a top-up that failed (it
+    /// tries again), or why it stopped on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 /// One of the DJ's works: a song, or every movement of one classical
@@ -412,6 +417,9 @@ impl DjStatusDto {
             let _ = write!(text, " Next: {}.", next.join("; "));
         }
         let _ = write!(text, " Steering: {}.", self.steering.summary());
+        if let Some(problem) = &self.problem {
+            let _ = write!(text, " {problem}.");
+        }
         text
     }
 }

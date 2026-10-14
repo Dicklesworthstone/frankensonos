@@ -171,7 +171,8 @@ pub fn moods_of(moods: &Moods, now: DjSteeringDto) -> DjMoodsDto {
 }
 
 /// The DJ's status in `zone`, given its feed there (if it runs), the pool it
-/// picks from, and the group's queue position.
+/// picks from, the group's queue position, and what the DJ last ran into
+/// feeding it.
 #[must_use]
 pub fn status(
     zone: String,
@@ -179,6 +180,7 @@ pub fn status(
     pool: &WorkPool,
     queue_position: Option<u32>,
     steering: DjSteeringDto,
+    problem: Option<String>,
 ) -> DjStatusDto {
     let Some(feed) = feed.filter(|f| f.is_active()) else {
         return DjStatusDto {
@@ -187,6 +189,7 @@ pub fn status(
             now: None,
             next: Vec::new(),
             steering,
+            problem,
         };
     };
     let queued = feed.queued();
@@ -206,6 +209,7 @@ pub fn status(
             .map(|w| work(pool, w, None))
             .collect(),
         steering,
+        problem,
     }
 }
 
@@ -461,7 +465,14 @@ mod tests {
             expires_at: None,
             expires_in_secs: None,
         };
-        let shown = status("Den".into(), None, &WorkPool::default(), Some(3), steering);
+        let shown = status(
+            "Den".into(),
+            None,
+            &WorkPool::default(),
+            Some(3),
+            steering,
+            None,
+        );
         assert_eq!(
             shown.summary(),
             "The DJ isn't running in Den's group. Steering: none."
