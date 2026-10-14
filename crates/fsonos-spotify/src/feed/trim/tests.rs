@@ -372,7 +372,7 @@ fn failed_readback_defers_top_up_until_positions_can_be_reconciled() {
         local_hour: None,
     };
     assert_eq!(
-        feed.top_up(&f.speakers(&replies), plan, &MemStore::default())
+        feed.top_up(&f.speakers(&replies), plan, &mut MemStore::default())
             .unwrap(),
         0
     );

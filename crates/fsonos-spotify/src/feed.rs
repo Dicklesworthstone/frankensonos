@@ -348,10 +348,10 @@ impl QueueFeed {
             self.release();
             self.active = true;
         }
-        self.finish_partial(at)?;
+        self.finish_partial(at, store, plan.now)?;
         let want = 1 + self.lookahead();
         if self.queued.len() < want {
-            self.enqueue(at, plan, &*store, want - self.queued.len())?;
+            self.enqueue(at, plan, store, want - self.queued.len())?;
         }
         let first = self.queued[0]
             .first()
@@ -438,7 +438,7 @@ impl QueueFeed {
                 self.trim_error = Some(e.to_string());
             }
         }
-        self.top_up(at, plan, &*store)
+        self.top_up(at, plan, store)
     }
 
     /// Whether the queue ran out under the feed: the group was last seen on
@@ -512,7 +512,7 @@ impl QueueFeed {
         self.queued = ahead;
         self.played
             .extend(played.into_iter().filter(|w| w.last().is_some()));
-        let queued = self.top_up(at, plan, &*store)?;
+        let queued = self.top_up(at, plan, store)?;
         // From the first track past the old end: the rest of a work cut
         // short before, or the new work.
         if self
@@ -548,7 +548,7 @@ impl QueueFeed {
         if track > 0 {
             self.playing = Some(track);
         }
-        self.finish_partial(at)?;
+        self.finish_partial(at, store, plan.now)?;
         let playing = self.playing.unwrap_or(0);
         let waiting = self
             .queued
@@ -557,7 +557,7 @@ impl QueueFeed {
         let next = if let Some(next) = waiting {
             next
         } else {
-            self.enqueue(at, plan, &*store, 1)?;
+            self.enqueue(at, plan, store, 1)?;
             self.queued.len() - 1
         };
         let first = self.queued[next]
@@ -726,14 +726,14 @@ impl QueueFeed {
         &mut self,
         at: &Speakers<'_, T>,
         plan: Planning<'_>,
-        store: &S,
+        store: &mut S,
     ) -> Result<usize, FeedError> {
         // A failed trim read-back leaves positions untrusted. The next
         // playback event must reconcile before any partial work is completed.
         if self.queue_len.is_none() {
             return Ok(0);
         }
-        self.finish_partial(at)?;
+        self.finish_partial(at, store, plan.now)?;
         let playing = self.playing.unwrap_or(0);
         let ahead = self
             .queued
@@ -751,9 +751,11 @@ impl QueueFeed {
     /// Add the movements an earlier failure left unadded, right after the
     /// ones that made it — ahead of anything queued since — so the work
     /// plays whole and in order. A work already played past is let go.
-    fn finish_partial<T: Transport + ?Sized>(
+    fn finish_partial<T: Transport + ?Sized, S: Store + ?Sized>(
         &mut self,
         at: &Speakers<'_, T>,
+        store: &mut S,
+        now: i64,
     ) -> Result<(), FeedError> {
         let Some(index) = self.queued.iter().position(|w| !w.is_whole()) else {
             return Ok(());
@@ -766,7 +768,7 @@ impl QueueFeed {
             self.queued.remove(index);
             return Ok(());
         }
-        let params = render_params(at)?;
+        let params = render_params(at, store, now)?;
         let host = host_of(at)?;
         while let Some(m) = self.queued[index].movements.iter().position(|m| !m.added) {
             let desired = self.queued[index].last().map_or(0, |last| last + 1);
@@ -823,15 +825,15 @@ impl QueueFeed {
         &mut self,
         at: &Speakers<'_, T>,
         plan: Planning<'_>,
-        store: &S,
+        store: &mut S,
         count: usize,
     ) -> Result<(), FeedError> {
         if plan.pool.is_empty() {
             return Err(FeedError::EmptyPool);
         }
-        let params = render_params(at)?;
+        let params = render_params(at, store, plan.now)?;
         let host = host_of(at)?;
-        let mut history = self.history(store, plan.now)?;
+        let mut history = self.history(&*store, plan.now)?;
         for _ in 0..count {
             let ctx = PickContext {
                 history: &history,
@@ -935,12 +937,36 @@ impl QueueFeed {
     }
 }
 
-/// The household's Spotify render parameters, learned from its favorites.
-fn render_params<T: Transport + ?Sized>(
+/// The household's Spotify render parameters: learned from its favorites
+/// and cached in `store` for the household, or read from `store` if its
+/// favorites no longer hold a Spotify track.
+fn render_params<T: Transport + ?Sized, S: Store + ?Sized>(
     at: &Speakers<'_, T>,
+    store: &mut S,
+    now: i64,
 ) -> Result<SpotifyRenderParams, FeedError> {
-    control::spotify_params(at.transport, at.households, at.coordinator)?
-        .ok_or(FeedError::NoRenderParams)
+    let household = at
+        .households
+        .iter()
+        .find(|h| h.players.iter().any(|p| p.id == *at.coordinator))
+        .map(|h| {
+            h.id.as_ref()
+                .map(|id| id.0.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(at.coordinator.0.as_str())
+        });
+    if let Some(params) = control::spotify_params(at.transport, at.households, at.coordinator)? {
+        if let Some(hh) = household {
+            let _ = store.save_render_params(hh, &params, now);
+        }
+        return Ok(params);
+    }
+    if let Some(hh) = household
+        && let Some((params, _)) = store.render_params(hh)?
+    {
+        return Ok(params);
+    }
+    Err(FeedError::NoRenderParams)
 }
 
 /// Where the track an event names is in `queue` (as just read): at the
@@ -2420,17 +2446,28 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, FeedError::EmptyPool), "{err}");
 
-        // A household with no Spotify favorite to learn from.
+        // A household that never had a Spotify favorite to learn from.
         let bare = Flaky {
             no_favorites: true,
             ..Flaky::new(lan.clone())
         };
         let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 3);
         let err = feed
-            .start(&rig.speakers(&bare), plan(&pool, MIDNIGHT), &mut store)
+            .start(
+                &rig.speakers(&bare),
+                plan(&pool, MIDNIGHT),
+                &mut MemStore::default(),
+            )
             .unwrap_err();
         assert!(matches!(err, FeedError::NoRenderParams), "{err}");
         assert!(err.to_string().contains("Sonos favorites"));
         assert_eq!(rig.queue().len(), queue_len, "dead ends queue nothing");
+
+        // Once learned, the store's cached render parameters keep the DJ
+        // working even if the household's Spotify track favorite is removed.
+        let started = feed
+            .start(&rig.speakers(&bare), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        assert!(!started.is_empty());
     }
 }

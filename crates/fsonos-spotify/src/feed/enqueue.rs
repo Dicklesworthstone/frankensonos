@@ -467,7 +467,7 @@ mod tests {
             feed.start(&at, planning, &mut store).unwrap();
             let transport = Replies::new(&sim, fault);
             let speakers = speakers(&transport, &households, &coordinator);
-            let result = feed.enqueue(&speakers, planning, &store, 1);
+            let result = feed.enqueue(&speakers, planning, &mut store, 1);
             assert!(matches!(result, Err(FeedError::UncertainEnqueue(_))));
             assert!(!feed.is_active());
             assert!(
