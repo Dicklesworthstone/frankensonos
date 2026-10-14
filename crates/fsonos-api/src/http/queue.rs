@@ -15,9 +15,11 @@ use crate::surface::queue::{
     QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, REMOVE,
 };
 
+mod mode;
+
 /// Queue addition, playback and identity-checked removal routes.
 pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
-    vec![
+    let mut routes = vec![
         cx.route(
             &Op::post(
                 "/queue",
@@ -62,5 +64,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .request_schema::<QueueMoveRequest>(true)
         .response_schema::<QueueMovedDto>(200, "The queue order was confirmed"),
-    ]
+    ];
+    routes.extend(mode::routes(cx));
+    routes
 }

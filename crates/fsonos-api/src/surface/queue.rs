@@ -18,6 +18,9 @@ use crate::execute::spotify_failure;
 use crate::failure::Failure;
 use crate::request::PlayRequest;
 
+mod mode;
+pub use mode::{MODE_READ, MODE_WRITE, PlayModeDto, PlayModeRequest, PlayModeSetDto};
+
 mod playback;
 mod snapshot;
 pub use playback::{PLAY, QueuePlayRequest};
