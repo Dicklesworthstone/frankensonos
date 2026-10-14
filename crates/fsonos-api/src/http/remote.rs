@@ -21,6 +21,7 @@ use crate::failure::{ErrorCode, Failure};
 const REMOTE: &str = "remote";
 
 const PAGE: &str = include_str!("../remote/index.html");
+const QUEUE_SCRIPT: &str = include_str!("../remote/queue.js");
 const SCRIPT: &str = include_str!("../remote/remote.js");
 const STYLE: &str = include_str!("../remote/remote.css");
 
@@ -50,7 +51,12 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 REMOTE,
                 "The web remote's script",
             ),
-            |_, _, _| asset("text/javascript; charset=utf-8", SCRIPT),
+            |_, _, _| {
+                asset(
+                    "text/javascript; charset=utf-8",
+                    &format!("{QUEUE_SCRIPT}\n{SCRIPT}"),
+                )
+            },
         )
         .response_schema::<String>(200, "The script (text/javascript)"),
         cx.route(
@@ -109,7 +115,7 @@ fn hardened(response: Response) -> Response {
 }
 
 /// One embedded asset; browsers check for a newer one on each load.
-fn asset(content_type: &str, text: &'static str) -> Response {
+fn asset(content_type: &str, text: &str) -> Response {
     hardened(Response::ok())
         .header("content-type", content_type)
         .header("cache-control", "no-cache")
@@ -235,6 +241,7 @@ mod tests {
         for (name, text) in [
             ("index.html", PAGE),
             ("remote.js", SCRIPT),
+            ("queue.js", QUEUE_SCRIPT),
             ("remote.css", STYLE),
         ] {
             let lower = text.to_ascii_lowercase();

@@ -38,6 +38,7 @@ body {
 
 .top {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
@@ -131,3 +132,13 @@ input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 32px
 @media (prefers-reduced-motion: no-preference) {
   button { transition: background-color 0.15s; }
 }
+
+.queue { border-top: 1px solid var(--line); padding-top: 8px; }
+.queue summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
+.queue summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.queue-body { overflow-wrap: anywhere; }
+.queue-body p { font-size: 0.9rem; }
+.queue-items { max-height: 360px; overflow-y: auto; padding-left: 2.5em; }
+.queue-items li { padding: 8px 0; border-top: 1px solid var(--line); }
+.queue-items li > button { margin-top: 6px; }
+.queue-items [aria-current="true"]::marker { color: var(--accent); font-weight: 700; }

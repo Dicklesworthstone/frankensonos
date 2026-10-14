@@ -14,6 +14,8 @@ const ROUTES = {
   events: ['GET', '/events'],
   art: ['GET', '/art'],
   favorites: ['GET', '/favorites'],
+  queue: ['GET', '/zones/{room}/queue'],
+  queuePlay: ['POST', '/queue/play'],
   pause: ['POST', '/pause'],
   resume: ['POST', '/resume'],
   next: ['POST', '/next'],
@@ -145,6 +147,7 @@ async function loadZones() {
 
 function render() {
   const main = $('households');
+  for (const parts of house.cards.values()) parts.queue.dispose();
   main.replaceChildren();
   house.cards = new Map();
   if (!house.zones.length) {
@@ -234,6 +237,9 @@ function card(zone) {
   parts.djPlaying = el('div', { class: 'row', hidden: true }, parts.skip, parts.like, parts.dislike);
   fillMoods(parts.mood);
   fillFavorites(parts);
+  parts.queue = QueueRemote.panel({
+    zone: name, call, el, played: () => { refreshZone(zone).catch(() => {}); },
+  });
   house.cards.set(zoneKey(zone), parts);
   return el('article', { class: 'zone', 'aria-label': label },
     el('h3', { text: label }),
@@ -242,7 +248,8 @@ function card(zone) {
     parts.favorite,
     volumes,
     parts.djRow,
-    parts.djPlaying);
+    parts.djPlaying,
+    parts.queue.node);
 }
 
 /** A room's volume slider, sent once the hand rests (debounced). */
