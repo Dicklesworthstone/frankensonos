@@ -9,6 +9,80 @@ const AnnouncementRemote = (() => {
     ? `${error.message}${text(error.hint) ? ` ${error.hint}` : ''}` : 'The request failed.';
   const unicode = (value) => ![...value].some((c) => c.length === 1 && /[\uD800-\uDFFF]/.test(c));
 
+  const MAX_WAV_BYTES = 16 * 1024 * 1024;
+  const sampleRates = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000];
+
+  // Mirrors the daemon's complete RIFF walk for early feedback. The daemon
+  // remains authoritative and validates the uploaded bytes independently.
+  function wavInfo(bytes) {
+    const bad = (why) => { throw new Error(`Not a supported WAV: ${why}. Use mono/stereo 16-bit PCM, at most 16 MiB and five minutes.`); };
+    if (!(bytes instanceof Uint8Array) || bytes.length > MAX_WAV_BYTES) bad('invalid size');
+    const id = (at) => String.fromCharCode(...bytes.subarray(at, at + 4));
+    if (bytes.length < 12 || id(0) !== 'RIFF' || id(8) !== 'WAVE') bad('missing RIFF/WAVE header');
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const u16 = (at) => view.getUint16(at, true), u32 = (at) => view.getUint32(at, true);
+    if (u32(4) + 8 !== bytes.length) bad('file length mismatch');
+    let at = 12, format = null, data = null;
+    while (at + 8 <= bytes.length) {
+      const kind = id(at), length = u32(at + 4), body = at + 8, end = body + length;
+      if (end > bytes.length) bad('truncated chunk');
+      if (kind === 'fmt ') {
+        if (format || length < 16) bad('duplicate or short format');
+        const code = u16(body);
+        if (code === 65534) {
+          const guid = [1, 0, 0, 0, 0, 0, 16, 0, 128, 0, 0, 170, 0, 56, 155, 113];
+          if (length < 40 || u16(body + 16) < 22 || u16(body + 16) + 18 > length
+              || u16(body + 18) !== 16 || guid.some((b, i) => bytes[body + 24 + i] !== b)) bad('extensible format is not 16-bit PCM');
+        } else if (code !== 1) bad('not PCM');
+        const channels = u16(body + 2), rate = u32(body + 4), byteRate = u32(body + 8);
+        const align = u16(body + 12), bits = u16(body + 14);
+        if (![1, 2].includes(channels) || bits !== 16 || !sampleRates.includes(rate)) bad('unsupported channels, bits, or sample rate');
+        if (align !== channels * 2 || byteRate !== rate * align) bad('inconsistent PCM alignment or byte rate');
+        format = { channels, rate, byteRate, align };
+      } else if (kind === 'data') {
+        if (!format || data !== null || !length || length % format.align !== 0) bad('missing format, duplicate, empty, or unaligned audio');
+        data = length;
+      }
+      at = end + (length & 1);
+      if (at > bytes.length) bad('missing chunk padding');
+    }
+    if (at !== bytes.length || !format || data === null) bad('incomplete WAV');
+    if (data > format.byteRate * 300) bad('longer than five minutes');
+    return Object.freeze({ size: bytes.length, channels: format.channels, rate: format.rate,
+      seconds: data / format.byteRate });
+  }
+
+  function wavBase64(bytes) {
+    // Every non-final chunk has a multiple of three bytes: only the final
+    // chunk may have padding. Keep the argument list and temporary strings small.
+    const chunks = [];
+    for (let at = 0; at < bytes.length; at += 24576) {
+      chunks.push(btoa(String.fromCharCode(...bytes.subarray(at, at + 24576))));
+    }
+    return chunks.join('');
+  }
+
+  function readLocalFile(file) {
+    const reader = new FileReader();
+    let finish;
+    const promise = new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => finish(new Error('The local file read timed out. Choose the file again.')), 15000);
+      finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reader.onload = reader.onerror = reader.onabort = null;
+        if (error) { reader.abort(); reject(error); } else resolve(value);
+      };
+      reader.onload = () => finish(null, reader.result);
+      reader.onerror = () => finish(new Error('The selected file could not be read.'));
+      reader.onabort = () => finish(new Error('The local file read was cancelled.'));
+      try { reader.readAsArrayBuffer(file); } catch (error) { finish(error); }
+    });
+    return { promise, cancel: () => finish(new Error('The local file read was cancelled.')) };
+  }
+
   function roomsOf(value) {
     if (!Array.isArray(value) || value.length > 128) throw new Error('The group list is unreadable. Refresh rooms.');
     const seen = new Set(), rooms = [];
@@ -52,19 +126,69 @@ const AnnouncementRemote = (() => {
     return { done: value.done, clean: value.clean, households };
   }
 
-  function model({ call, changed = () => {}, completed = () => {} }) {
-    let disposed = false, epoch = 0;
+  function model({ call, changed = () => {}, completed = () => {}, readFile = readLocalFile }) {
+    let disposed = false, epoch = 0, reading = null;
     const state = { open: false, rooms: [], selected: new Set(), source: 'speech', words: '', voice: '',
       chime: 'bell', volume: '35', loading: false, writing: false, phase: '', needsRefresh: false,
-      pending: null, report: null, message: '' };
+      pending: null, report: null, message: '', wav: null, fileLoading: false };
     const publish = () => { if (!disposed) changed(state); };
-    const ready = () => !disposed && state.open && !state.loading && !state.writing && !state.needsRefresh;
+    const ready = () => !disposed && state.open && !state.loading && !state.writing && !state.fileLoading && !state.needsRefresh;
     const current = (version) => !disposed && state.open && epoch === version;
+
+    function stopFileRead() {
+      const previous = reading;
+      reading = null;
+      state.fileLoading = false;
+      if (previous) previous.cancel();
+    }
+
+    async function chooseWav(file) {
+      if (disposed || !state.open || state.loading || state.writing || state.needsRefresh || state.source !== 'wav') return false;
+      stopFileRead();
+      state.pending = null;
+      state.wav = null;
+      state.message = '';
+      let work;
+      try {
+        if (!file || !Number.isInteger(file.size) || file.size < 12 || file.size > MAX_WAV_BYTES) {
+          throw new Error('Choose a WAV file no larger than 16 MiB. Nothing has been uploaded.');
+        }
+        work = readFile(file);
+        reading = work;
+        state.fileLoading = true;
+        publish();
+        const buffer = await work.promise;
+        if (reading !== work || disposed || !state.open) return false;
+        const bytes = new Uint8Array(buffer);
+        if (bytes.length !== file.size) throw new Error('The selected file changed during reading. Choose it again.');
+        const info = wavInfo(bytes);
+        state.wav = Object.freeze({ ...info, name: typeof file.name === 'string' ? file.name : 'Selected WAV',
+          encoded: wavBase64(bytes) });
+        state.message = 'WAV checked locally. Review the rooms and clip before uploading.';
+        return true;
+      } catch (error) {
+        if (!disposed && (!work || reading === work)) state.message = problem(error);
+        return false;
+      } finally {
+        if (reading === work) { reading = null; state.fileLoading = false; }
+        publish();
+      }
+    }
+
+    function clearWav() {
+      if (disposed || state.writing) return false;
+      stopFileRead();
+      state.wav = null;
+      state.pending = null;
+      publish();
+      return true;
+    }
 
     async function refresh() {
       if (disposed) return false;
       state.open = true;
       if (state.writing) { publish(); return false; }
+      stopFileRead();
       const version = ++epoch;
       state.loading = true;
       state.pending = null;
@@ -88,7 +212,8 @@ const AnnouncementRemote = (() => {
 
     function field(name, value) {
       if (!ready() || typeof value !== 'string' || !['source', 'words', 'voice', 'chime', 'volume'].includes(name)) return false;
-      if (name === 'source' && !['speech', 'chime'].includes(value)) return false;
+      if (name === 'source' && !['speech', 'chime', 'wav'].includes(value)) return false;
+      if (name === 'source' && value !== state.source) clearWav();
       state[name] = value;
       state.pending = null;
       state.message = '';
@@ -111,6 +236,7 @@ const AnnouncementRemote = (() => {
       if (!rooms.length || rooms.length !== state.selected.size) throw new Error('Select at least one room explicitly.');
       if (!/^[0-9]{1,3}$/.test(state.volume) || Number(state.volume) > 100) throw new Error('Choose a whole-number volume from 0 to 100.');
       const body = { rooms: Object.freeze(rooms.map((r) => r.target)), volume: Number(state.volume) };
+      if (new TextEncoder().encode(JSON.stringify(body)).length > 15 * 1024) throw new Error('The selected room names exceed the request budget. Select fewer rooms.');
       let label;
       if (state.source === 'speech') {
         const words = state.words.trim(), voice = state.voice.trim();
@@ -122,7 +248,10 @@ const AnnouncementRemote = (() => {
       } else if (state.source === 'chime' && chimes.includes(state.chime)) {
         body.chime = state.chime;
         label = `${state.chime} chime`;
-      } else throw new Error('Choose speech or a supported chime.');
+      } else if (state.source === 'wav' && state.wav) {
+        body.wav_base64 = state.wav.encoded;
+        label = `${state.wav.name} — ${state.wav.seconds.toFixed(2)} seconds, ${state.wav.channels} channel(s), ${state.wav.rate} Hz, ${state.wav.size} bytes`;
+      } else throw new Error('Choose speech, a supported chime, or a valid WAV file.');
       return Object.freeze({ body: Object.freeze(body), rooms: Object.freeze(rooms), label });
     }
 
@@ -160,6 +289,7 @@ const AnnouncementRemote = (() => {
           throw new Error('A selected room or its group changed. Refresh rooms and review again; no announcement was sent.');
         }
         state.pending = null;
+        state.wav = null;
         state.phase = 'announcing';
         state.message = 'The daemon is preparing, playing, and restoring. Do not send the announcement again.';
         sent = true;
@@ -189,13 +319,15 @@ const AnnouncementRemote = (() => {
 
     function close() {
       state.open = false;
+      stopFileRead();
+      state.wav = null;
       ++epoch;
       state.loading = false;
       state.pending = null;
       publish();
     }
 
-    return { state, refresh, field, select, review, cancel, confirm, close,
+    return { state, refresh, field, select, review, cancel, confirm, close, chooseWav, clearWav,
       dispose() { disposed = true; close(); } };
   }
 
@@ -212,7 +344,8 @@ const AnnouncementRemote = (() => {
     const rooms = el('fieldset', { class: 'announcement-rooms' });
     const source = el('select', { 'aria-label': 'Announcement source',
       onchange: () => control.field('source', source.value) },
-      el('option', { value: 'speech', text: 'Speak text' }), el('option', { value: 'chime', text: 'Play a chime' }));
+      el('option', { value: 'speech', text: 'Speak text' }), el('option', { value: 'chime', text: 'Play a chime' }),
+      el('option', { value: 'wav', text: 'Upload a WAV clip' }));
     const words = el('textarea', { rows: 3, maxlength: 2000, 'aria-label': 'Words to speak',
       placeholder: 'Dinner is ready', oninput: () => control.field('words', words.value) });
     const voice = el('input', { type: 'text', maxlength: 256, 'aria-label': 'Speech voice',
@@ -223,19 +356,25 @@ const AnnouncementRemote = (() => {
     const chime = el('select', { 'aria-label': 'Chime', onchange: () => control.field('chime', chime.value) },
       ...chimes.map((name) => el('option', { value: name, text: name })));
     const chimeBox = el('label', {}, 'Chime', chime);
+    const file = el('input', { type: 'file', accept: '.wav,audio/wav,audio/x-wav', 'aria-label': 'WAV clip',
+      onchange: () => { if (file.files[0]) void control.chooseWav(file.files[0]); else control.clearWav(); } });
+    const fileInfo = el('p', { role: 'status' });
+    const clearFile = button('Remove selected WAV', () => control.clearWav());
+    const wavBox = el('div', {}, el('label', {}, 'WAV clip (16-bit PCM)', file), fileInfo, clearFile,
+      el('p', { text: 'Mono or stereo, supported 8–48 kHz rates, at most 16 MiB and five minutes. Choosing a file only reads it locally; Announce now uploads it to this daemon.' }));
     const volume = el('input', { type: 'number', min: 0, max: 100, step: 1, 'aria-label': 'Announcement volume',
       oninput: () => control.field('volume', volume.value) });
     const review = button('Review announcement', () => control.review());
     const consent = el('div');
     const report = el('div', { class: 'announcement-report' });
     body.append(el('p', { text: 'Choose the rooms explicitly. Speech is generated by the daemon’s local engine, not this browser.' }),
-      refresh, message, rooms, el('label', {}, 'Source', source), speech, chimeBox,
+      refresh, message, rooms, el('label', {}, 'Source', source), speech, chimeBox, wavBox,
       el('label', {}, 'Requested volume (house caps still apply)', volume), review, consent, report);
     let shownRooms = null, shownPending = null, shownReport = null;
     const selectors = new Map();
 
     function render(state) {
-      const busy = state.loading || state.writing;
+      const busy = state.loading || state.writing || state.fileLoading;
       body.setAttribute('aria-busy', String(busy));
       refresh.disabled = busy;
       message.textContent = state.loading ? 'Reading rooms…' : state.message;
@@ -259,6 +398,13 @@ const AnnouncementRemote = (() => {
       }
       speech.hidden = state.source !== 'speech';
       chimeBox.hidden = state.source !== 'chime';
+      wavBox.hidden = state.source !== 'wav';
+      file.disabled = disabled;
+      clearFile.disabled = state.writing || (!state.wav && !state.fileLoading);
+      if (!state.wav && !state.fileLoading) file.value = '';
+      fileInfo.textContent = state.fileLoading ? 'Reading and checking the selected WAV…' : state.wav
+        ? `${state.wav.name}: ${state.wav.seconds.toFixed(2)} seconds, ${state.wav.channels} channel(s), ${state.wav.rate} Hz. Not uploaded yet.`
+        : 'No validated WAV selected.';
       count.textContent = `${[...state.words.trim()].length} / 1,000 characters`;
       review.disabled = disabled || !state.selected.size;
       if (shownPending !== state.pending) {
@@ -300,7 +446,7 @@ const AnnouncementRemote = (() => {
     return { node, dispose: control.dispose };
   }
 
-  return { routes, model, panel };
+  return { routes, model, panel, wavInfo, MAX_WAV_BYTES };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = AnnouncementRemote;
