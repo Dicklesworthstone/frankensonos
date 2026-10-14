@@ -4,7 +4,10 @@
 //! pure data: no I/O, no async, no franken-stack dependencies. Keep them that
 //! way so they compile everywhere (including future wasm/embedded targets).
 
+mod play_mode;
 pub mod text;
+
+pub use play_mode::PlayMode;
 
 use serde::{Deserialize, Serialize};
 

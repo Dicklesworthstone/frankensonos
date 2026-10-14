@@ -15,6 +15,7 @@
 //! * [`description`] — UPnP device descriptions (model, room, S1/S2).
 //! * [`control`] — transport, queue, grouping, volume and mute actions, and
 //!   the reads that report playback state.
+//! * [`play_mode`] — read and set queue ordering and repeat settings.
 //! * [`net`] — the real LAN transport over asupersync.
 //!
 //! The I/O lives behind the [`Transport`] trait so pure encoding/decoding is
@@ -28,6 +29,7 @@ pub mod didl;
 pub mod gena;
 pub mod mdns;
 pub mod net;
+pub mod play_mode;
 pub mod soap;
 pub mod ssdp;
 pub mod topology;
