@@ -87,6 +87,14 @@ impl Prepared {
                 if queue.update_id != *update_id {
                     return Err(invalid("the source queue changed while preparing the move"));
                 }
+                if queue.objects.is_empty() {
+                    // A cleared queue stays the source (at track 0): there
+                    // is nothing to move, as with no source at all.
+                    return Ok(Self {
+                        source: Source::Nothing,
+                        transport: snap.transport_state,
+                    });
+                }
                 if track
                     .checked_sub(1)
                     .and_then(|p| usize::try_from(p).ok())
@@ -462,6 +470,29 @@ mod simulator_tests {
         let households = houses(&sim);
         let from = resolve_room(&households, "Kitchen").unwrap();
         let to = resolve_room(&households, "Den").unwrap();
+        let before = control::playback(&lan, &households, &to.coordinator.id).unwrap();
+        let calls = sim.soap_log().len();
+        let report = copy_playback(&lan, &households, &from, &to).unwrap();
+        assert_eq!(report.method, MoveMethod::Nothing);
+        assert_eq!(report.new_coordinator, from.coordinator.id);
+        read_only_since(&sim, calls);
+        assert_eq!(
+            control::playback(&lan, &households, &to.coordinator.id).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn copying_a_cleared_queue_does_not_interrupt_the_destination() {
+        let sim = fixture();
+        seed_spotify(&sim, "Kitchen");
+        seed_spotify(&sim, "Den");
+        let lan = sim.lan();
+        let households = houses(&sim);
+        let from = resolve_room(&households, "Kitchen").unwrap();
+        let to = resolve_room(&households, "Den").unwrap();
+        // The owner clears Kitchen's queue: its source is still the queue.
+        soap::remove_all_tracks_from_queue(&lan, from.coordinator.ip).unwrap();
         let before = control::playback(&lan, &households, &to.coordinator.id).unwrap();
         let calls = sim.soap_log().len();
         let report = copy_playback(&lan, &households, &from, &to).unwrap();
