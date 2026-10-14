@@ -29,6 +29,8 @@ const GROUPS_SCRIPT: &str = include_str!("../remote/groups.js");
 const GROUPS_STYLE: &str = include_str!("../remote/groups.css");
 const TIMERS_SCRIPT: &str = include_str!("../remote/timers.js");
 const TIMERS_STYLE: &str = include_str!("../remote/timers.css");
+const SCHEDULES_SCRIPT: &str = include_str!("../remote/schedules.js");
+const SCHEDULES_STYLE: &str = include_str!("../remote/schedules.css");
 const MODE_SCRIPT: &str = include_str!("../remote/play-mode.js");
 const MODE_STYLE: &str = include_str!("../remote/play-mode.css");
 const ANNOUNCEMENTS_SCRIPT: &str = include_str!("../remote/announcements.js");
@@ -69,7 +71,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}"
+                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}"
                     ),
                 )
             },
@@ -86,7 +88,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}"
                     ),
                 )
             },
@@ -272,6 +274,8 @@ mod tests {
             ("groups.css", GROUPS_STYLE),
             ("timers.js", TIMERS_SCRIPT),
             ("timers.css", TIMERS_STYLE),
+            ("schedules.js", SCHEDULES_SCRIPT),
+            ("schedules.css", SCHEDULES_STYLE),
             ("play-mode.js", MODE_SCRIPT),
             ("play-mode.css", MODE_STYLE),
             ("announcements.js", ANNOUNCEMENTS_SCRIPT),

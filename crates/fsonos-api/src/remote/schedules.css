@@ -1,0 +1,11 @@
+/* Routines share the remote's theme, including narrow phone layouts. */
+.schedules-body { padding-top: .75rem; display: grid; gap: .75rem; }
+.schedules-body p { margin: .35rem 0; overflow-wrap: anywhere; }
+.schedules-body h3 { margin: 0 0 .5rem; font-size: 1rem; }
+.schedule-card, .schedule-review { border: 1px solid var(--line); border-radius: .65rem; padding: .9rem; min-width: 0; }
+.schedule-review { border-width: 2px; }
+.schedules-body .row { flex-wrap: wrap; gap: .5rem; }
+.schedules-body button { min-height: 44px; white-space: normal; }
+.schedules-remote { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 12px; }
+.schedules-remote > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.schedules-remote > summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
