@@ -542,10 +542,12 @@ A selection; each commit message has the details.
   [`41f7602`](https://github.com/Dicklesworthstone/frankensonos/commit/41f7602),
   [`22d2b9e`](https://github.com/Dicklesworthstone/frankensonos/commit/22d2b9e),
   [`191bf05`](https://github.com/Dicklesworthstone/frankensonos/commit/191bf05)
-- The DJ never claims the owner's later copy of a work it played, and
-  keeps topping up when a trim is refused. A scheduled or scene mood lasts
-  until the time-of-day program changes, and a render the player refuses
-  answers `RENDER_PARAMS_STALE`.
+- The DJ plays on once it can top up a queue that ran dry, never claims
+  the owner's later copy of a work it played, and keeps topping up when a
+  trim is refused. A scheduled or scene mood lasts until the time-of-day
+  program changes, and a render the player refuses answers
+  `RENDER_PARAMS_STALE`.
+  [`872ab91`](https://github.com/Dicklesworthstone/frankensonos/commit/872ab91),
   [`8ad75aa`](https://github.com/Dicklesworthstone/frankensonos/commit/8ad75aa),
   [`4802399`](https://github.com/Dicklesworthstone/frankensonos/commit/4802399),
   [`e9e7738`](https://github.com/Dicklesworthstone/frankensonos/commit/e9e7738),
