@@ -1,8 +1,8 @@
 //! Keep mode reads and changes on the daemon when it is present, so they
 //! observe the running DJ and share the same playback snapshots and log.
 
-use fastmcp::prelude::*;
 use fastmcp::FinalCallToolResult;
+use fastmcp::prelude::*;
 use fsonos_api::surface::queue::{PlayModeDto, PlayModeRequest, PlayModeSetDto};
 use fsonos_api::{ErrorCode, Failure};
 use std::fmt::Write as _;
@@ -80,7 +80,12 @@ mod tests {
     }
 
     impl Daemon for Reply {
-        fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Option<Result<Value, Failure>> {
+        fn call(
+            &self,
+            method: &str,
+            path: &str,
+            body: Option<&Value>,
+        ) -> Option<Result<Value, Failure>> {
             self.calls.lock().unwrap().push(json!([method, path, body]));
             self.answer.clone()
         }
@@ -110,12 +115,20 @@ mod tests {
         let state = json!({
             "zone": "A/B & É", "mode": "NORMAL", "queue_active": true, "dj_active": true
         });
-        let reply = Arc::new(Reply { calls: Mutex::default(), answer: Some(Ok(state.clone())) });
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(Ok(state.clone())),
+        });
         let result = backend(&reply).get_play_mode("A/B & É").unwrap();
         assert_eq!(result.structured_content, Some(state));
-        assert_eq!(*reply.calls.lock().unwrap(), [json!([
-            "GET", "/zones/A%2FB%20%26%20%C3%89/play-mode", null
-        ])]);
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!([
+                "GET",
+                "/zones/A%2FB%20%26%20%C3%89/play-mode",
+                null
+            ])]
+        );
     }
 
     #[test]
@@ -125,11 +138,17 @@ mod tests {
             "state": { "zone": "Room", "mode": "SHUFFLE_NOREPEAT",
                        "queue_active": true, "dj_active": false }
         });
-        let reply = Arc::new(Reply { calls: Mutex::default(), answer: Some(Ok(result.clone())) });
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(Ok(result.clone())),
+        });
         let answer = backend(&reply).set_play_mode(&req()).unwrap();
         assert!(!answer.is_error);
         assert_eq!(answer.structured_content, Some(result));
-        assert_eq!(*reply.calls.lock().unwrap(), [json!(["POST", "/play-mode", req()])]);
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["POST", "/play-mode", req()])]
+        );
     }
 
     #[test]
@@ -141,15 +160,24 @@ mod tests {
             Err(Failure::new(ErrorCode::PolicyDenied, "not permitted")),
             Ok(json!({ "done": "missing confirmation" })),
         ] {
-            let reply = Arc::new(Reply { calls: Mutex::default(), answer: Some(result) });
+            let reply = Arc::new(Reply {
+                calls: Mutex::default(),
+                answer: Some(result),
+            });
             assert!(backend(&reply).set_play_mode(&req()).is_err());
-            assert_eq!(*reply.calls.lock().unwrap(), [json!(["POST", "/play-mode", req()])]);
+            assert_eq!(
+                *reply.calls.lock().unwrap(),
+                [json!(["POST", "/play-mode", req()])]
+            );
         }
     }
 
     #[test]
     fn absent_daemon_still_enforces_local_identity_before_io() {
-        let reply = Arc::new(Reply { calls: Mutex::default(), answer: None });
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: None,
+        });
         let error = backend(&reply).set_play_mode(&req()).unwrap_err();
         assert!(error.message.contains("POLICY_DENIED"));
         assert_eq!(reply.calls.lock().unwrap().len(), 1);
@@ -161,7 +189,10 @@ mod tests {
             Err(Failure::new(ErrorCode::NotReady, "still starting")),
             Ok(json!({ "mode": "NORMAL" })),
         ] {
-            let reply = Arc::new(Reply { calls: Mutex::default(), answer: Some(result) });
+            let reply = Arc::new(Reply {
+                calls: Mutex::default(),
+                answer: Some(result),
+            });
             assert!(backend(&reply).get_play_mode("Room").is_err());
             assert_eq!(reply.calls.lock().unwrap().len(), 1);
         }

@@ -87,12 +87,19 @@ impl Api {
                 request = request.header(*name, *value);
             }
             let response = request.send(&cx).await.unwrap();
-            (response.status, serde_json::from_slice(&response.body).unwrap())
+            (
+                response.status,
+                serde_json::from_slice(&response.body).unwrap(),
+            )
         })
     }
 
     fn set(&self, body: &Value) -> (u16, Value) {
-        self.call("/play-mode", Some(body), &[("Content-Type", "application/json")])
+        self.call(
+            "/play-mode",
+            Some(body),
+            &[("Content-Type", "application/json")],
+        )
     }
 }
 
@@ -107,16 +114,32 @@ impl Drop for Api {
 }
 
 fn sim(s2: bool) -> SimHandle {
-    let model = if s2 { SimModel::One } else { SimModel::Play5Gen1 };
+    let model = if s2 {
+        SimModel::One
+    } else {
+        SimModel::Play5Gen1
+    };
     let players = [SimPlayerSpec::new("Room", model)];
     let builder = SimHousehold::builder();
-    let sim = if s2 { builder.s2(players) } else { builder.s1(players) }.spawn().unwrap();
+    let sim = if s2 {
+        builder.s2(players)
+    } else {
+        builder.s1(players)
+    }
+    .spawn()
+    .unwrap();
     let room = sim.player("Room").unwrap();
     let lan = sim.lan();
     for name in ["first", "second"] {
         soap::enqueue_uri(
-            &lan, room.ip, &format!("x-file-cifs://example.invalid/{name}.flac"), "", 0, false,
-        ).unwrap();
+            &lan,
+            room.ip,
+            &format!("x-file-cifs://example.invalid/{name}.flac"),
+            "",
+            0,
+            false,
+        )
+        .unwrap();
     }
     soap::play_from_queue(&lan, room.ip, &PlayerId(room.uuid.clone())).unwrap();
     soap::play(&lan, room.ip).unwrap();
@@ -136,7 +159,8 @@ fn http_reads_changes_and_stale_preconditions_preserve_playback_on_both_generati
         assert_eq!(read["mode"], "NORMAL");
         assert_eq!(read["queue_active"], true);
         assert_eq!(read["dj_active"], false);
-        let request = json!({ "zone": "Room", "mode": "SHUFFLE_REPEAT_ONE", "expected_mode": "NORMAL" });
+        let request =
+            json!({ "zone": "Room", "mode": "SHUFFLE_REPEAT_ONE", "expected_mode": "NORMAL" });
         let (status, changed) = api.set(&request);
         assert_eq!(status, 200, "{changed}");
         assert_eq!(changed["state"]["mode"], "SHUFFLE_REPEAT_ONE");
@@ -145,11 +169,23 @@ fn http_reads_changes_and_stale_preconditions_preserve_playback_on_both_generati
         assert_eq!(status, 422, "{stale}");
         assert_eq!(stale["retryable"], false);
         assert_eq!(soap::get_position_info(&sim.lan(), host).unwrap(), position);
-        assert_eq!(sim.soap_log().iter().filter(|call| call.action == "SetPlayMode").count(), 1);
+        assert_eq!(
+            sim.soap_log()
+                .iter()
+                .filter(|call| call.action == "SetPlayMode")
+                .count(),
+            1
+        );
         let (status, spec) = api.call("/openapi.json", None, &[]);
         assert_eq!(status, 200);
-        assert_eq!(spec["paths"]["/zones/{room}/play-mode"]["get"]["operationId"], "get_play_mode");
-        assert_eq!(spec["paths"]["/play-mode"]["post"]["operationId"], "set_play_mode");
+        assert_eq!(
+            spec["paths"]["/zones/{room}/play-mode"]["get"]["operationId"],
+            "get_play_mode"
+        );
+        assert_eq!(
+            spec["paths"]["/play-mode"]["post"]["operationId"],
+            "set_play_mode"
+        );
         drop(api);
         sim.shutdown();
     }
@@ -161,10 +197,23 @@ fn mode_routes_inherit_json_origin_and_body_guards_before_speaker_io() {
     let api = Api::start(&sim, Client::LoopbackHttp);
     let count = sim.soap_log().len();
     let body = json!({ "zone": "Room", "mode": "SHUFFLE" });
-    assert_eq!(api.call("/play-mode", Some(&body), &[("Content-Type", "text/plain")]).0, 415);
-    assert_eq!(api.call("/play-mode", Some(&body), &[
-        ("Content-Type", "application/json"), ("Origin", "http://untrusted.example.invalid"),
-    ]).0, 403);
+    assert_eq!(
+        api.call("/play-mode", Some(&body), &[("Content-Type", "text/plain")])
+            .0,
+        415
+    );
+    assert_eq!(
+        api.call(
+            "/play-mode",
+            Some(&body),
+            &[
+                ("Content-Type", "application/json"),
+                ("Origin", "http://untrusted.example.invalid"),
+            ]
+        )
+        .0,
+        403
+    );
     for invalid in [
         json!({ "zone": "Room" }),
         json!({ "zone": "Room", "mode": "INVALID" }),

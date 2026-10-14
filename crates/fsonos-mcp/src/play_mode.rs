@@ -28,7 +28,11 @@ fn set_play_mode(
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
     let backend = tools::backend().map_err(|failure| tool_error(&failure))?;
-    let result = backend.set_play_mode(&PlayModeRequest { zone, mode, expected_mode })?;
+    let result = backend.set_play_mode(&PlayModeRequest {
+        zone,
+        mode,
+        expected_mode,
+    })?;
     Ok(CompleteResult::new(result, ResultMeta::empty()))
 }
 
