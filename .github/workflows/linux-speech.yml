@@ -16,6 +16,7 @@ on:
       - "scripts/test-remote-dj-preferences.cjs"
       - "scripts/test-remote-dj-session.cjs"
       - "scripts/test-remote-schedules.cjs"
+      - "scripts/test-remote-dj-steering.cjs"
       - "vendor/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -60,7 +61,7 @@ jobs:
       - name: Web announcement regressions
         run: node --test scripts/test-remote-announcements.cjs
       - name: Web DJ taste regressions
-        run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-remote-dj-session.cjs
+        run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-remote-dj-steering.cjs scripts/test-remote-dj-session.cjs
       - name: Web scheduled routine regressions
         run: node --test scripts/test-remote-schedules.cjs
       - name: Install the pinned Rust toolchain

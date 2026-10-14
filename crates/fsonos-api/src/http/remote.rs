@@ -39,6 +39,8 @@ const PREFERENCES_SCRIPT: &str = include_str!("../remote/dj-preferences.js");
 const PREFERENCES_STYLE: &str = include_str!("../remote/dj-preferences.css");
 const SESSION_SCRIPT: &str = include_str!("../remote/dj-session.js");
 const SESSION_STYLE: &str = include_str!("../remote/dj-session.css");
+const STEERING_SCRIPT: &str = include_str!("../remote/dj-steering.js");
+const STEERING_STYLE: &str = include_str!("../remote/dj-steering.css");
 const STYLE: &str = include_str!("../remote/remote.css");
 
 /// What the remote's documents may do: load only themselves, talk only to
@@ -71,7 +73,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}"
+                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}"
                     ),
                 )
             },
@@ -88,7 +90,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}"
                     ),
                 )
             },
@@ -284,6 +286,8 @@ mod tests {
             ("dj-preferences.css", PREFERENCES_STYLE),
             ("dj-session.js", SESSION_SCRIPT),
             ("dj-session.css", SESSION_STYLE),
+            ("dj-steering.js", STEERING_SCRIPT),
+            ("dj-steering.css", STEERING_STYLE),
         ] {
             let lower = text.to_ascii_lowercase();
             for secret in [
