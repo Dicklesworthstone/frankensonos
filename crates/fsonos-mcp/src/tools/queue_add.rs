@@ -10,6 +10,8 @@ use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 
 use super::{Backend, respond, said, sentence, with_backend};
 
+mod mode;
+
 impl Backend {
     /// Send a move through the daemon once. A failure cannot authorize a
     /// second local edit or dropping the required revision/identity checks.

@@ -10,6 +10,8 @@
 //! (`fsonos_api::request`) and share its validation, planning, execution and
 //! house policy, so both surfaces answer alike.
 
+mod play_mode;
+
 pub mod resources;
 pub mod tools;
 
@@ -166,6 +168,8 @@ pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
         .tool(PlayQueue)
         .tool(RemoveFromQueue)
         .tool(MoveInQueue)
+        .tool(play_mode::GetPlayMode)
+        .tool(play_mode::SetPlayMode)
         .tool(tools::Announce)
         .tool(tools::dj_feedback::DjFeedback)
         .tool(tools::dj_prefs::DjPreferences)
