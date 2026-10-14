@@ -52,21 +52,30 @@ async function call(name, { params, query, body } = {}) {
     init.body = JSON.stringify(body || {});
   }
   const where = path(name, params, query);
-  const answer = await fetch(where, init);
-  const text = await answer.text();
-  let data = null;
+  // A stuck read must not hold event recovery forever. Writes are never
+  // timed out into an automatic retry or dispatched through another path.
+  const controller = method === 'GET' ? new AbortController() : null;
+  const deadline = controller ? setTimeout(() => controller.abort(), 15000) : null;
+  if (controller) init.signal = controller.signal;
   try {
-    data = text ? JSON.parse(text) : null;
-  } catch (_) {
-    data = null;
+    const answer = await fetch(where, init);
+    const text = await answer.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (_) {
+      data = null;
+    }
+    if (!answer.ok) {
+      const error = new Error((data && data.detail) || `${method} ${where}: ${answer.status}`);
+      error.code = data && data.code;
+      error.hint = data && data.hint;
+      throw error;
+    }
+    return data;
+  } finally {
+    if (deadline !== null) clearTimeout(deadline);
   }
-  if (!answer.ok) {
-    const error = new Error((data && data.detail) || `${method} ${where}: ${answer.status}`);
-    error.code = data && data.code;
-    error.hint = data && data.hint;
-    throw error;
-  }
-  return data;
 }
 
 /** An element: `attrs` (text, class, on<event>, attributes) and children. */
@@ -125,8 +134,7 @@ const house = {
 
 /** How to name `room` of `household` to the API. */
 function roomName(room, household) {
-  const homes = house.homes.get(room);
-  return homes && homes.size > 1 ? `${room}@${household}` : room;
+  return `${room}@${household}`;
 }
 
 function zoneKey(zone) {
@@ -144,7 +152,10 @@ async function loadZones() {
     }
   }
   render();
-  await Promise.all(zones.map((zone) => refreshZone(zone).catch(() => {})));
+  const reads = await Promise.allSettled(zones.map((zone) => refreshZone(zone)));
+  if (reads.some((read) => read.status === 'rejected')) {
+    throw new Error('Some room state could not be read.');
+  }
 }
 
 function render() {
@@ -466,62 +477,195 @@ async function loadDoctor() {
   banner.hidden = false;
 }
 
-// Live updates: refresh what an event touches, a moment after it lands.
-const pending = new Map();
-function soon(key, work) {
-  clearTimeout(pending.get(key));
-  pending.set(key, setTimeout(() => { pending.delete(key); work().catch(() => {}); }, 300));
-}
+// Read-only event reconciliation. A burst has one fixed flush deadline, so
+// continuous notifications cannot postpone refresh forever. Only one batch
+// runs at a time; changes during it cause a later read, never another write.
+const LiveRemote = (() => {
+  const COALESCE = 300;
+  const FALLBACK = 10000;
+  const MAX_BACKOFF = 60000;
+  const MAX_PENDING = 64;
 
-function zoneOf(room) {
-  return house.zones.find((zone) => zone.members.includes(room));
-}
+  function model({ connect, reload, refresh, status = () => {},
+    schedule = setTimeout, cancel = clearTimeout }) {
+    let active = false, disposed = false, connected = false, busy = false;
+    let full = false, synced = false, failedRead = false, generation = 0;
+    let stream = null, flush = null, retry = null, backoff = FALLBACK;
+    const rooms = new Set();
+    const clear = () => {
+      if (flush !== null) cancel(flush);
+      if (retry !== null) cancel(retry);
+      flush = retry = null;
+    };
+    const report = () => status(!active ? 'Live updates paused'
+      : failedRead ? 'State refresh failed; retrying…'
+        : connected ? (synced ? 'Live' : 'Synchronizing…')
+          : 'Refreshing without live events');
+
+    function armRetry() {
+      if (!active || busy || retry !== null || (connected && !failedRead)) return;
+      retry = schedule(() => {
+        retry = null;
+        openFeed();
+        request();
+      }, backoff);
+    }
+
+    function queueFlush() {
+      if (!active || busy || flush !== null || (failedRead && retry !== null) || (!full && !rooms.size)) return;
+      flush = schedule(() => { flush = null; void run(); }, COALESCE);
+    }
+
+    function request(room = null) {
+      if (!active) return;
+      if (typeof room !== 'string' || !room.trim() || room.length > 512 || rooms.size >= MAX_PENDING) {
+        full = true;
+        rooms.clear();
+      } else if (!full) rooms.add(room);
+      queueFlush();
+    }
+
+    async function run() {
+      if (!active || busy) return;
+      const version = generation;
+      const all = full;
+      const batch = [...rooms];
+      full = false;
+      rooms.clear();
+      busy = true;
+      if (retry !== null) cancel(retry);
+      retry = null;
+      try {
+        if (all) await reload();
+        else for (const room of batch) {
+          if (!active || version !== generation) break;
+          await refresh(room);
+        }
+        if (active && version === generation) {
+          if (all) { synced = true; failedRead = false; }
+          backoff = FALLBACK;
+        }
+      } catch (_) {
+        if (active && version === generation) {
+          failedRead = true;
+          backoff = Math.min(MAX_BACKOFF, backoff * 2);
+        }
+      } finally {
+        busy = false;
+        if (active) {
+          report();
+          armRetry();
+          queueFlush();
+        }
+      }
+    }
+
+    function openFeed() {
+      if (!active || stream || !connect) return;
+      let feed;
+      try { feed = connect(); } catch (_) { return; }
+      if (!feed) return;
+      stream = feed;
+      const current = () => active && stream === feed;
+      feed.addEventListener('open', () => {
+        if (!current()) return;
+        connected = true;
+        synced = false;
+        ++generation;
+        backoff = FALLBACK;
+        if (retry !== null) cancel(retry);
+        retry = null;
+        // Includes initial subscription and reconnect: close the snapshot gap.
+        request();
+        report();
+      });
+      feed.addEventListener('error', () => {
+        if (!current()) return;
+        connected = false;
+        // Let a CONNECTING EventSource retain its own resume cursor. A CLOSED
+        // one will never reconnect itself; replace it only at the retry pace.
+        if (feed.readyState === 2) { feed.close(); stream = null; }
+        report();
+        armRetry();
+      });
+      for (const [kind, field] of [['zone.state', 'room'], ['dj.status', 'zone']]) {
+        feed.addEventListener(kind, (event) => {
+          if (!current()) return;
+          let change;
+          try { change = JSON.parse(event.data); } catch (_) { request(); return; }
+          request(change && !Array.isArray(change) ? change[field] : null);
+        });
+      }
+      for (const kind of ['topology.changed', 'player.health', 'events.reset']) {
+        feed.addEventListener(kind, () => { if (current()) request(); });
+      }
+    }
+
+    function suspend() {
+      active = false;
+      ++generation;
+      connected = synced = false;
+      full = false;
+      rooms.clear();
+      clear();
+      if (stream) stream.close();
+      stream = null;
+      report();
+    }
+
+    function resume() {
+      if (disposed || active) return;
+      active = true;
+      ++generation;
+      failedRead = false;
+      backoff = FALLBACK;
+      openFeed();
+      request();
+      report();
+    }
+
+    return { resume, suspend,
+      refresh() { if (active) { openFeed(); request(); } },
+      dispose() { disposed = true; suspend(); },
+    };
+  }
+
+  // Event room names are not household identities. Refresh every matching
+  // group using its qualified address; never paint an unqualified delta.
+  function affected(zones, room) {
+    return zones.filter((zone) => zone.members.includes(room));
+  }
+
+  return { model, affected, COALESCE, FALLBACK, MAX_BACKOFF, MAX_PENDING };
+})();
 
 function listen() {
-  const live = $('live');
-  if (!('EventSource' in window)) {
-    live.textContent = 'Refreshing every 10 s';
-    setInterval(() => loadZones().catch(() => {}), 10000);
-    return;
-  }
-  const stream = new EventSource(path('events'));
-  stream.addEventListener('open', () => { live.textContent = 'Live'; });
-  stream.addEventListener('error', () => { live.textContent = 'Reconnecting…'; });
-  stream.addEventListener('zone.state', (event) => {
-    let change = {};
-    try {
-      change = JSON.parse(event.data);
-    } catch (_) {
-      return;
-    }
-    const zone = zoneOf(change.room);
-    if (!zone) {
-      soon('all', loadZones);
-      return;
-    }
-    const onlyLevel = change.transport === undefined && change.track === undefined;
-    const parts = house.cards.get(zoneKey(zone));
-    const entry = parts && parts.sliders.get(change.room);
-    if (onlyLevel && entry && typeof change.volume === 'number') {
-      setVolume(entry, change.volume);
-      if (typeof change.mute === 'boolean') setMute(entry, change.mute);
-      return;
-    }
-    soon(zoneKey(zone), () => refreshZone(zone));
+  let catalogsLoaded = false;
+  const controller = LiveRemote.model({
+    connect: 'EventSource' in window ? () => new EventSource(path('events')) : null,
+    reload: async () => {
+      await loadZones();
+      if (!catalogsLoaded && house.zones.length) {
+        catalogsLoaded = true;
+        void loadMoods();
+        void loadFavorites();
+      }
+    },
+    refresh: async (room) => {
+      const zones = LiveRemote.affected(house.zones, room);
+      if (!zones.length) await loadZones();
+      else for (const zone of zones) await refreshZone(zone);
+    },
+    status: (text) => { $('live').textContent = text; },
   });
-  stream.addEventListener('dj.status', (event) => {
-    let change = {};
-    try {
-      change = JSON.parse(event.data);
-    } catch (_) {
-      return;
-    }
-    const zone = zoneOf(change.zone);
-    if (zone) soon(zoneKey(zone), () => refreshZone(zone));
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) controller.suspend(); else controller.resume();
   });
-  for (const kind of ['topology.changed', 'player.health', 'events.reset']) {
-    stream.addEventListener(kind, () => soon('all', loadZones));
-  }
+  window.addEventListener('online', () => controller.refresh());
+  window.addEventListener('pagehide', () => controller.suspend());
+  window.addEventListener('pageshow', () => { if (!document.hidden) controller.resume(); });
+  if (!document.hidden) controller.resume();
+  return controller;
 }
 
 /** The header's "Pause everywhere": every group of every household at once. */
@@ -538,18 +682,11 @@ function pauseEverywhere() {
     });
 }
 
-async function start() {
+function start() {
   $('pause-all').addEventListener('click', pauseEverywhere);
-  try {
-    await loadZones();
-  } catch (error) {
-    $('households').replaceChildren(el('p', { class: 'empty', text: error.message }));
-  }
   listen();
-  loadMoods();
-  loadFavorites();
-  loadScenes();
-  loadDoctor();
+  void loadScenes();
+  void loadDoctor();
 }
 
 start();
