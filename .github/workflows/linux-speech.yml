@@ -65,8 +65,11 @@ jobs:
         run: cargo fmt --all --check
       - name: Check every target
         id: check
+        # Keep compiler diagnostics available when an independent gate fails.
+        if: ${{ !cancelled() }}
         run: cargo check --locked --workspace --all-targets
       - name: Clippy
+        if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         run: cargo clippy --locked --workspace --all-targets --keep-going -- -D warnings
       - name: MCP tool input boundary regressions
         if: ${{ !cancelled() && steps.check.outcome == 'success' }}

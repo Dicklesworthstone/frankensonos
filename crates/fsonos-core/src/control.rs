@@ -12,8 +12,8 @@ use fsonos_proto::Transport;
 use fsonos_proto::content::{self, QUEUE};
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
 use fsonos_proto::didl::{
-    SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_container_didl,
-    spotify_container_uri, spotify_queue_uri, spotify_track_didl, spotify_track_uri,
+    SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_queue_uri,
+    spotify_track_didl, spotify_track_uri,
 };
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_types::{Player, PlayerId, TransportState};
@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 
 mod queue_start;
 mod source_start;
+mod spotify_source;
 
 /// How long a player that left its group may take to show alone (real ones
 /// do within about a second). Not a settle-time knob: a fleet-verified
@@ -240,7 +241,8 @@ pub fn play_spotify_track<T: Transport + ?Sized>(
 /// or playlist (`spotify:album:<id>`, `spotify:playlist:<id>`) and play it
 /// from its first track: the speaker expands the container into its tracks
 /// as it is enqueued. Rendered with the household's own Spotify account and
-/// container prefix (learned from its favorites), self-healing one round of
+/// container prefix (learned together from an album or playlist favorite;
+/// no track favorite is required for that kind), self-healing one round of
 /// parameter drift as [`play_spotify_track`] does, whether the renderer
 /// refuses the enqueue or the play that follows it (docs/PROTOCOL.md: 800
 /// "at/after SetAVTransportURI").
@@ -255,12 +257,8 @@ pub fn play_spotify_container<T: Transport + ?Sized>(
     let host = addr(households, coordinator)?;
     let source = || -> Result<(String, String), CoreError> {
         let favorites = content::browse_all(t, host, "FV:2")?;
-        let params = learn_spotify_params(&favorites).ok_or(CoreError::NoSpotifyFavorite)?;
-        let prefix = kind.prefix_in(&favorites);
-        Ok((
-            spotify_container_uri(spotify_uri, &prefix, &params),
-            spotify_container_didl(spotify_uri, title, kind, &prefix, &params),
-        ))
+        spotify_source::container(&favorites, kind, spotify_uri, title)
+            .ok_or(CoreError::NoSpotifyFavorite)
     };
     let render = |(uri, didl): &(String, String)| -> Result<(), CoreError> {
         soap::remove_all_tracks_from_queue(t, host)?;
@@ -380,20 +378,15 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
     let kind = SpotifyContainer::of(spotify_uri);
     let source = || -> Result<(String, String), CoreError> {
         let favorites = content::browse_all(t, host, "FV:2")?;
+        if let Some(kind) = kind {
+            return spotify_source::container(&favorites, kind, spotify_uri, title)
+                .ok_or(CoreError::NoSpotifyFavorite);
+        }
         let params = learn_spotify_params(&favorites).ok_or(CoreError::NoSpotifyFavorite)?;
-        Ok(match kind {
-            Some(kind) => {
-                let prefix = kind.prefix_in(&favorites);
-                (
-                    spotify_container_uri(spotify_uri, &prefix, &params),
-                    spotify_container_didl(spotify_uri, title, kind, &prefix, &params),
-                )
-            }
-            None => (
-                spotify_queue_uri(spotify_uri),
-                spotify_track_didl(spotify_uri, title, &params),
-            ),
-        })
+        Ok((
+            spotify_queue_uri(spotify_uri),
+            spotify_track_didl(spotify_uri, title, &params),
+        ))
     };
     let add = |(uri, didl): &(String, String)| -> Result<soap::Enqueued, CoreError> {
         Ok(soap::enqueue_uri(t, host, uri, didl, at, next)?)
