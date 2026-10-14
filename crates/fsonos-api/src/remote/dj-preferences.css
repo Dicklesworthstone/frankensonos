@@ -1,0 +1,16 @@
+.dj-taste-panel { margin-top: .75rem; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; max-width: 60rem; }
+.dj-taste-panel h2 { margin-top: 0; }
+.dj-taste-panel p { overflow-wrap: anywhere; }
+.dj-taste-defaults, .dj-taste-add { display: grid; gap: .5rem; margin: 1rem 0; max-width: 38rem; }
+.dj-taste input, .dj-taste select { min-width: 0; width: 100%; box-sizing: border-box; }
+.dj-taste input { font: inherit; min-height: 40px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--text); }
+.dj-taste-defaults input { max-width: 10rem; }
+.dj-taste-status:empty { display: none; }
+.dj-taste-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 1rem; }
+.dj-taste-lists h3 { margin-bottom: .5rem; }
+.dj-taste-items { margin: 0; padding: 0; list-style: none; }
+.dj-taste-items li { display: flex; align-items: center; justify-content: space-between; gap: .5rem; padding: .4rem 0; border-bottom: 1px solid var(--line); }
+.dj-taste-items span { min-width: 0; overflow-wrap: anywhere; }
+.dj-taste-items button { flex-shrink: 0; }
+.dj-taste-review { padding: .75rem; margin: 1rem 0; border: 2px solid currentColor; border-radius: .5rem; }
+.dj-taste-review:focus { outline-offset: .2rem; }
