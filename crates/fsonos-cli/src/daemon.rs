@@ -376,9 +376,31 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         tracing::warn!("the scheduler stopped with a panic");
     }
     stop_http(&http);
+    // Announcements in flight put the music back before the process ends.
+    drain_announcements(|| surface.announcements_pending(), ANNOUNCE_DRAIN);
     // The surfaces hold the model weakly: this ends every subscription.
     drop(live);
     Ok(())
+}
+
+/// How long a stopping daemon waits for announcements in flight to put the
+/// music back (a clip plays for at most five minutes; most take seconds).
+const ANNOUNCE_DRAIN: Duration = Duration::from_secs(60);
+
+/// Wait until no announcement is pending (`pending` says how many), at most
+/// `wait`. Answers whether they all finished.
+fn drain_announcements(pending: impl Fn() -> u64, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    loop {
+        if pending() == 0 {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            tracing::warn!("stopping with an announcement still in flight");
+            return false;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Shut the HTTP API listeners down.
@@ -637,6 +659,22 @@ fn start_mcp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn a_stopping_daemon_waits_for_announcements_but_not_forever() {
+        // Two in flight, done one after the other.
+        let checks = AtomicU64::new(0);
+        let finishing = || 2u64.saturating_sub(checks.fetch_add(1, Ordering::SeqCst));
+        assert!(drain_announcements(finishing, Duration::from_secs(5)));
+        assert_eq!(checks.load(Ordering::SeqCst), 3);
+        // One that never ends is given up on.
+        let started = Instant::now();
+        assert!(!drain_announcements(|| 1, Duration::from_millis(250)));
+        assert!(started.elapsed() >= Duration::from_millis(250));
+        // Nothing in flight: no wait.
+        assert!(drain_announcements(|| 0, Duration::ZERO));
+    }
 
     #[test]
     fn loopback_listeners_serve_local_callers() {

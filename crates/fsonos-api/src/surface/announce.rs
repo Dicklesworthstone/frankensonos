@@ -222,6 +222,15 @@ impl Surface {
         self
     }
 
+    /// How many announcements are playing or waiting their turn: a daemon
+    /// that is stopping lets them put the music back first.
+    #[must_use]
+    pub fn announcements_pending(&self) -> u64 {
+        self.announcements
+            .as_ref()
+            .map_or(0, |with| with.announcer.pending())
+    }
+
     /// Play the clip in the rooms `req` names (every room by default) for
     /// `client`, then put everything back. Blocks until done, including any
     /// wait for an earlier announcement in the same household.
