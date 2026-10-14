@@ -29,6 +29,8 @@ const GROUPS_SCRIPT: &str = include_str!("../remote/groups.js");
 const GROUPS_STYLE: &str = include_str!("../remote/groups.css");
 const TIMERS_SCRIPT: &str = include_str!("../remote/timers.js");
 const TIMERS_STYLE: &str = include_str!("../remote/timers.css");
+const MODE_SCRIPT: &str = include_str!("../remote/play-mode.js");
+const MODE_STYLE: &str = include_str!("../remote/play-mode.css");
 const STYLE: &str = include_str!("../remote/remote.css");
 
 /// What the remote's documents may do: load only themselves, talk only to
@@ -61,7 +63,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}"
+                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{MODE_SCRIPT}"
                     ),
                 )
             },
@@ -77,7 +79,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             |_, _, _| {
                 asset(
                     "text/css; charset=utf-8",
-                    &format!("{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}"),
+                    &format!("{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{MODE_STYLE}"),
                 )
             },
         )
@@ -262,6 +264,8 @@ mod tests {
             ("groups.css", GROUPS_STYLE),
             ("timers.js", TIMERS_SCRIPT),
             ("timers.css", TIMERS_STYLE),
+            ("play-mode.js", MODE_SCRIPT),
+            ("play-mode.css", MODE_STYLE),
         ] {
             let lower = text.to_ascii_lowercase();
             for secret in [

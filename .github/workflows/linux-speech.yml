@@ -6,6 +6,7 @@ on:
     paths:
       - "crates/**"
       - "scripts/test-remote-queue.cjs"
+      - "scripts/test-remote-play-mode.cjs"
       - "scripts/test-remote-library.cjs"
       - "scripts/test-remote-groups.cjs"
       - "scripts/test-remote-transfers.cjs"
@@ -43,7 +44,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes espeak-ng nodejs
       - name: Web queue client regressions
-        run: node --test scripts/test-remote-queue.cjs
+        run: node --test scripts/test-remote-queue.cjs scripts/test-remote-play-mode.cjs
       - name: Web library client regressions
         run: node --test scripts/test-remote-library.cjs
       - name: Web room grouping regressions

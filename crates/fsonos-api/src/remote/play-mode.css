@@ -1,0 +1,7 @@
+/* Playback order uses the existing remote palette and focus styles. */
+.play-mode { margin-top: 12px; }
+.play-mode summary { cursor: pointer; font-weight: 600; }
+.play-mode summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.play-mode label { display: block; margin: 12px 0; }
+.play-mode select { display: block; max-width: 100%; margin-top: 4px; }
+.play-mode p { overflow-wrap: anywhere; }
