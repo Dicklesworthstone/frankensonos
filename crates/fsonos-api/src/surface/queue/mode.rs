@@ -65,7 +65,9 @@ pub struct PlayModeRequest {
 impl PlayModeRequest {
     fn checked(&self) -> Result<(PlayMode, Option<PlayMode>), Failure> {
         if self.zone.trim().is_empty() {
-            return Err(Failure::invalid("give a room whose queue mode should change"));
+            return Err(Failure::invalid(
+                "give a room whose queue mode should change",
+            ));
         }
         Ok((
             mode(&self.mode)?,
@@ -118,8 +120,10 @@ fn uncertain(error: impl std::fmt::Display) -> Failure {
 
 fn dj_order(wanted: PlayMode, active: bool) -> Result<(), Failure> {
     if active && wanted != PlayMode::Normal {
-        return Err(Failure::invalid("the running DJ requires NORMAL queue order")
-            .with_hint("Stop the DJ in this group before choosing shuffle or repeat."));
+        return Err(
+            Failure::invalid("the running DJ requires NORMAL queue order")
+                .with_hint("Stop the DJ in this group before choosing shuffle or repeat."),
+        );
     }
     Ok(())
 }
@@ -172,15 +176,21 @@ impl Surface {
     }
 
     fn check_dj_mode(&self, coordinator: &PlayerId, wanted: PlayMode) -> Result<(), Failure> {
-        dj_order(wanted, self.dj.as_ref().is_some_and(|dj| dj.feeds(coordinator)))
+        dj_order(
+            wanted,
+            self.dj.as_ref().is_some_and(|dj| dj.feeds(coordinator)),
+        )
     }
 
     fn mode_context(&self, host: IpAddr, group: &ZoneGroupInfo) -> Result<(), Failure> {
         self.queue_group_unchanged(host, group)?;
         let media = get_media_info(&*self.transport, host).map_err(protocol)?;
         if media.uri != format!("x-rincon-queue:{}#0", group.coordinator.0) {
-            return Err(Failure::invalid("the group does not have its own queue selected")
-                .with_hint("Select the queue before changing shuffle/repeat; no source is started here."));
+            return Err(
+                Failure::invalid("the group does not have its own queue selected").with_hint(
+                    "Select the queue before changing shuffle/repeat; no source is started here.",
+                ),
+            );
         }
         Ok(())
     }
@@ -203,7 +213,11 @@ impl Surface {
         self.mode_context(host, &group)?;
         if before == wanted {
             return Ok(PlayModeSetDto {
-                done: format!("{}'s queue already uses {}", player.room_name, wanted.as_str()),
+                done: format!(
+                    "{}'s queue already uses {}",
+                    player.room_name,
+                    wanted.as_str()
+                ),
                 state: PlayModeDto {
                     zone: player.room_name.clone(),
                     mode: wanted.as_str().into(),
@@ -234,7 +248,10 @@ impl Surface {
         // A transient failure of the snapshot's optional settings read must
         // not discard the mode that our mandatory reads just agreed on.
         for snap in &mut snaps {
-            if matches!(&snap.source, fsonos_core::snapshot::SnapshotSource::Queue { .. }) {
+            if matches!(
+                &snap.source,
+                fsonos_core::snapshot::SnapshotSource::Queue { .. }
+            ) {
                 snap.play_mode = Some(before);
             }
         }
@@ -258,7 +275,11 @@ impl Surface {
             ""
         };
         Ok(PlayModeSetDto {
-            done: format!("{}'s queue uses {}{detail}", player.room_name, wanted.as_str()),
+            done: format!(
+                "{}'s queue uses {}{detail}",
+                player.room_name,
+                wanted.as_str()
+            ),
             state: PlayModeDto {
                 zone: player.room_name.clone(),
                 mode: wanted.as_str().into(),
@@ -292,9 +313,8 @@ mod tests {
 
     #[test]
     fn json_does_not_default_a_missing_mode_or_accept_unknown_preconditions() {
-        let req: PlayModeRequest = serde_json::from_str(
-            r#"{"zone":"Room","mode":"REPEAT_ONE"}"#,
-        ).unwrap();
+        let req: PlayModeRequest =
+            serde_json::from_str(r#"{"zone":"Room","mode":"REPEAT_ONE"}"#).unwrap();
         assert_eq!(req.checked().unwrap(), (PlayMode::RepeatOne, None));
         for input in [
             r#"{"zone":"Room"}"#,
@@ -302,7 +322,10 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<PlayModeRequest>(input).is_err());
         }
-        let blank = PlayModeRequest { zone: " ".into(), ..req };
+        let blank = PlayModeRequest {
+            zone: " ".into(),
+            ..req
+        };
         assert!(blank.checked().is_err());
     }
 
@@ -317,6 +340,10 @@ mod tests {
     #[test]
     fn unconfirmed_writes_are_not_retryable() {
         assert!(!uncertain("response lost").retryable());
-        assert!(uncertain("response lost").hint.contains("do not retry blindly"));
+        assert!(
+            uncertain("response lost")
+                .hint
+                .contains("do not retry blindly")
+        );
     }
 }

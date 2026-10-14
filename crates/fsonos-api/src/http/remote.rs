@@ -68,7 +68,12 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 REMOTE,
                 "The web remote's style",
             ),
-            |_, _, _| asset("text/css; charset=utf-8", &format!("{STYLE}\n{LIBRARY_STYLE}")),
+            |_, _, _| {
+                asset(
+                    "text/css; charset=utf-8",
+                    &format!("{STYLE}\n{LIBRARY_STYLE}"),
+                )
+            },
         )
         .response_schema::<String>(200, "The style sheet (text/css)"),
         cx.route(
