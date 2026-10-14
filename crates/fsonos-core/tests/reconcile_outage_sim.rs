@@ -55,15 +55,15 @@ impl Transport for FilteredLan {
 
 impl Subscriber for FilteredLan {
     fn subscribe(&self, want: &Want, callback: &str) -> Result<Subscription, ProtoError> {
-        self.inner.subscribe(want, callback)
+        Subscriber::subscribe(&self.inner, want, callback)
     }
 
     fn renew(&self, want: &Want, sid: &str) -> Result<Subscription, ProtoError> {
-        self.inner.renew(want, sid)
+        Subscriber::renew(&self.inner, want, sid)
     }
 
     fn unsubscribe(&self, want: &Want, sid: &str) -> Result<(), ProtoError> {
-        self.inner.unsubscribe(want, sid)
+        Subscriber::unsubscribe(&self.inner, want, sid)
     }
 }
 
