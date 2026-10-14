@@ -501,6 +501,11 @@ impl QueueFeed {
         store: &mut S,
         end: u32,
     ) -> Result<usize, FeedError> {
+        // A failed add forgets the queue's length, and a top-up waits for the
+        // queue to be read back first, as on_playback does for other events.
+        if self.queue_len.is_none() {
+            self.resync(at)?;
+        }
         let (played, ahead): (Vec<QueuedWork>, Vec<QueuedWork>) = std::mem::take(&mut self.queued)
             .into_iter()
             .partition(|w| w.is_whole() && w.last().is_none_or(|last| last <= end));
