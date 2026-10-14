@@ -8,8 +8,7 @@
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, QueuedBefore};
 use fsonos_core::policy::Client;
-use fsonos_core::{CoreError, control};
-use fsonos_proto::content::{self, BrowseFlag, QUEUE};
+use fsonos_core::control;
 use fsonos_proto::didl::SpotifyContainer;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -20,6 +19,7 @@ use crate::failure::Failure;
 use crate::request::PlayRequest;
 
 mod playback;
+mod snapshot;
 pub use playback::{PLAY, QueuePlayRequest};
 
 /// The tool name the queue read is authorized as.
@@ -38,6 +38,10 @@ pub struct QueueDto {
     pub zone: String,
     /// How many tracks the queue holds.
     pub total: u32,
+    /// Opaque coordinator/revision token shared by pages of this queue.
+    /// Compare for equality only; it is not a lock or a permanent identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
     /// The queue position (1-based) playing now, when the group plays from
     /// its queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,38 +152,8 @@ impl Surface {
         let target = resolve(room_view(&households, aliases.as_ref(), client), zone)
             .map_err(|f| self.explain(f))?;
         let coordinator = target.coordinator;
-        let page = content::browse(
-            &*self.transport,
-            coordinator.ip,
-            QUEUE,
-            BrowseFlag::DirectChildren,
-            offset,
-            limit.clamp(1, MAX_PAGE),
-        )
-        .map_err(|e| Failure::from(CoreError::from(e)))
-        .inspect_err(|f| self.notice(f))?;
-        // The position the group plays: 0 when it isn't playing its queue.
-        let playing = control::playback(&*self.transport, &households, &coordinator.id)
-            .map_err(Failure::from)
-            .inspect_err(|f| self.notice(f))?
-            .position
-            .track;
-        let items = (offset.saturating_add(1)..)
-            .zip(page.objects)
-            .map(|(position, o)| QueueItemDto {
-                position,
-                title: o.title,
-                creator: o.creator,
-                album: o.album,
-                uri: o.res.map(|r| r.uri),
-            })
-            .collect();
-        Ok(QueueDto {
-            zone: coordinator.room_name.clone(),
-            total: page.total_matches,
-            playing: (playing > 0 && playing <= page.total_matches).then_some(playing),
-            items,
-        })
+        snapshot::read(&*self.transport, coordinator, offset, limit.clamp(1, MAX_PAGE))
+            .inspect_err(|f| self.notice(f))
     }
 
     /// Add `req`'s Spotify track, album or playlist to the queue of
@@ -272,6 +246,7 @@ mod tests {
         let page = QueueDto {
             zone: "Kitchen".into(),
             total: 5,
+            revision: None,
             playing: Some(2),
             items: vec![item(1, "I. Allegro"), item(2, "II. Andante")],
         };
