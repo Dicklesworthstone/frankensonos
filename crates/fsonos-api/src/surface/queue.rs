@@ -19,6 +19,9 @@ use crate::execute::spotify_failure;
 use crate::failure::Failure;
 use crate::request::PlayRequest;
 
+mod playback;
+pub use playback::{PLAY, QueuePlayRequest};
+
 /// The tool name the queue read is authorized as.
 pub const TOOL: &str = "get_queue";
 
