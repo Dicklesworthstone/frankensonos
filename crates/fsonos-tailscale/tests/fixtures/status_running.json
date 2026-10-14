@@ -1,0 +1,39 @@
+{
+  "Version": "1.90.0-t0000000-g0000000",
+  "TUN": true,
+  "BackendState": "Running",
+  "HaveNodeKey": true,
+  "AuthURL": "",
+  "TailscaleIPs": ["100.101.102.103", "fd7a:115c:a1e0::6501:6667"],
+  "Self": {
+    "ID": "nEXAMPLE0001",
+    "PublicKey": "nodekey:0000000000000000000000000000000000000000000000000000000000000000",
+    "HostName": "sonos-host",
+    "DNSName": "sonos-host.example-tailnet.ts.net.",
+    "OS": "macOS",
+    "UserID": 1,
+    "TailscaleIPs": ["100.101.102.103", "fd7a:115c:a1e0::6501:6667"],
+    "Online": true
+  },
+  "Health": [],
+  "MagicDNSSuffix": "example-tailnet.ts.net",
+  "CurrentTailnet": {
+    "Name": "example.com",
+    "MagicDNSSuffix": "example-tailnet.ts.net",
+    "MagicDNSEnabled": true
+  },
+  "CertDomains": ["sonos-host.example-tailnet.ts.net"],
+  "Peer": {
+    "nodekey:1111111111111111111111111111111111111111111111111111111111111111": {
+      "ID": "nEXAMPLE0002",
+      "HostName": "phone",
+      "DNSName": "phone.example-tailnet.ts.net.",
+      "TailscaleIPs": ["100.90.80.70", "fd7a:115c:a1e0::5a50:4646"],
+      "Online": true
+    }
+  },
+  "User": {
+    "1": { "ID": 1, "LoginName": "owner@example.com", "DisplayName": "Owner" }
+  },
+  "ClientVersion": null
+}

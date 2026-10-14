@@ -1,0 +1,32 @@
+[package]
+name = "fastapi-http"
+description = "Zero-copy HTTP/1.1 parser for fastapi_rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/fastapi-http"
+readme = "../../README.md"
+keywords = ["http", "parser", "zero-copy", "fastapi", "server"]
+categories = ["network-programming", "web-programming::http-server", "asynchronous"]
+
+[dependencies]
+fastapi-core = { workspace = true }
+asupersync = { workspace = true }
+
+[features]
+default = []
+
+[dev-dependencies]
+# Standalone HTTP unit tests construct contexts without widening normal consumers.
+asupersync = { workspace = true, features = ["test-internals"] }
+criterion = { version = "0.8", features = ["html_reports"] }
+
+[[bench]]
+name = "http_parser"
+harness = false
+
+[lints]
+workspace = true

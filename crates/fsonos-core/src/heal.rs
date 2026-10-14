@@ -1,0 +1,204 @@
+//! Self-healing calls: a command that fails because a player moved to a new
+//! address, or because its group's coordinator changed under it, is retried
+//! once after the model catches up.
+//!
+//! Players are addressed by UUID; their address is an attribute the survey
+//! refreshes. Use these wrappers only for idempotent commands (transport,
+//! volume, mute, URI, grouping): a retried `AddURIToQueue` could enqueue
+//! twice, so queue appends are never retried blindly.
+
+use crate::inventory::survey_known;
+use crate::{CoreError, HouseholdState, control};
+use fsonos_proto::topology::get_zone_group_state;
+use fsonos_proto::{ProtoError, Transport};
+use fsonos_types::PlayerId;
+use std::collections::HashSet;
+use std::net::IpAddr;
+use std::time::Duration;
+
+/// How long a re-resolving survey may wait for SSDP replies.
+pub const RESOLVE_WAIT: Duration = Duration::from_secs(3);
+
+/// What a self-healing call had to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recovery {
+    /// It worked the first time.
+    None,
+    /// The player had moved; the call was retried at its new address.
+    Readdressed {
+        player: PlayerId,
+        from: IpAddr,
+        to: IpAddr,
+    },
+    /// The group's coordinator had changed; the call was retried on the new
+    /// one.
+    CoordinatorMoved { from: PlayerId, to: PlayerId },
+}
+
+/// Whether `e` means the player did not answer at all (as opposed to
+/// answering with a fault).
+#[must_use]
+pub fn is_unreachable(e: &CoreError) -> bool {
+    matches!(e, CoreError::Proto(ProtoError::Network { .. }))
+}
+
+/// Run `op` against `player`. If the player does not answer, survey again
+/// (SSDP plus `seeds`), and if it now answers at a different address,
+/// refresh only that player's household and retry `op` once. A partial
+/// survey cannot erase the other households. Otherwise the original error
+/// stands.
+pub fn readdressing<T, R>(
+    t: &T,
+    seeds: &[IpAddr],
+    households: &mut [HouseholdState],
+    player: &PlayerId,
+    op: impl Fn(&[HouseholdState]) -> Result<R, CoreError>,
+) -> Result<(R, Recovery), CoreError>
+where
+    T: Transport + ?Sized,
+{
+    let first = op(households);
+    let err = match first {
+        Ok(r) => return Ok((r, Recovery::None)),
+        Err(e) if is_unreachable(&e) => e,
+        Err(e) => return Err(e),
+    };
+    let Some(index) = households.iter().position(|h| h.player(player).is_some()) else {
+        return Err(err);
+    };
+    let Ok(from) = control::locate(households, player).map(|p| p.ip) else {
+        return Err(err);
+    };
+    let Ok(fresh) = survey_known(
+        t,
+        seeds,
+        std::slice::from_ref(&households[index]),
+        RESOLVE_WAIT,
+    ) else {
+        return Err(err);
+    };
+    let refreshed = fresh
+        .households
+        .into_iter()
+        .find(|h| h.player(player).is_some());
+    let to = refreshed
+        .as_ref()
+        .and_then(|h| h.player(player))
+        .map(|p| p.ip);
+    match (refreshed, to) {
+        (Some(mut refreshed), Some(to)) if to != from => {
+            // A command recovery is not an authoritative whole-LAN survey.
+            // Another household may have missed multicast or be offline;
+            // neither is grounds for forgetting it here. Keep its state,
+            // and retain the target's identity if discovery omitted the hint.
+            if refreshed.id.is_none() {
+                refreshed.id.clone_from(&households[index].id);
+            }
+            households[index] = refreshed;
+            let retried = op(households);
+            tracing::info!(
+                player = player.0.as_str(),
+                cause = %err,
+                action = "readdress",
+                %from,
+                %to,
+                outcome = %retried.as_ref().map_or_else(ToString::to_string, |_| "ok".into()),
+                "player moved; retried at its new address"
+            );
+            let r = retried?;
+            Ok((
+                r,
+                Recovery::Readdressed {
+                    player: player.clone(),
+                    from,
+                    to,
+                },
+            ))
+        }
+        _ => {
+            tracing::warn!(
+                player = player.0.as_str(),
+                cause = %err,
+                action = "resurvey",
+                outcome = "not found at a new address",
+                "player unreachable"
+            );
+            Err(err)
+        }
+    }
+}
+
+/// Run a group command addressed to the coordinator of `member`'s group.
+/// UPnP fault 800 is generic (a wrong Spotify DIDL also causes it), so on
+/// 800 the household's topology is refreshed and the command retried once
+/// only if the coordinator really moved; otherwise the fault stands. If the
+/// member cannot answer topology, try its household peers, never another
+/// household. Each address is read at most once; only a confirmed new
+/// coordinator receives a second command.
+pub fn on_coordinator<T, R>(
+    t: &T,
+    households: &mut [HouseholdState],
+    member: &PlayerId,
+    op: impl Fn(&[HouseholdState], &PlayerId) -> Result<R, CoreError>,
+) -> Result<(R, Recovery), CoreError>
+where
+    T: Transport + ?Sized,
+{
+    let from = households
+        .iter()
+        .find_map(|h| h.coordinator_of(member).cloned())
+        .ok_or_else(|| CoreError::UnknownPlayer(member.0.clone()))?;
+    let err = match op(households, &from) {
+        Ok(r) => return Ok((r, Recovery::None)),
+        Err(e @ CoreError::Proto(ProtoError::SoapFault { code: 800, .. })) => e,
+        Err(e) => return Err(e),
+    };
+    let Some(index) = households.iter().position(|h| h.player(member).is_some()) else {
+        return Err(err);
+    };
+    let current = &households[index];
+    let Some(host) = current.player(member).map(|p| p.ip) else {
+        return Err(err);
+    };
+    // Any peer can describe this household. A busy or unreachable member
+    // must not make its otherwise reachable group impossible to recover.
+    // Stop at the first successful topology, even if it is unchanged.
+    let mut tried = HashSet::new();
+    let zgs = std::iter::once(host)
+        .chain(current.players.iter().map(|p| p.ip))
+        .filter(|ip| tried.insert(*ip))
+        .find_map(|ip| get_zone_group_state(t, ip).ok());
+    let Some(zgs) = zgs else {
+        return Err(err);
+    };
+    // Do not replace the original command's failure with UnknownPlayer if
+    // the member vanished during recovery, or publish an unusable model.
+    let mut refreshed = current.clone();
+    refreshed.apply_topology(&zgs);
+    let Some(to) = refreshed.coordinator_of(member).cloned() else {
+        return Err(err);
+    };
+    households[index] = refreshed;
+    if to == from {
+        tracing::debug!(
+            member = member.0.as_str(),
+            cause = %err,
+            action = "refresh topology",
+            outcome = "coordinator unchanged; the fault stands",
+            "UPnP 800"
+        );
+        return Err(err);
+    }
+    let retried = op(households, &to);
+    tracing::info!(
+        member = member.0.as_str(),
+        cause = %err,
+        action = "retry on the new coordinator",
+        from = from.0.as_str(),
+        to = to.0.as_str(),
+        outcome = %retried.as_ref().map_or_else(ToString::to_string, |_| "ok".into()),
+        "coordinator moved"
+    );
+    let r = retried?;
+    Ok((r, Recovery::CoordinatorMoved { from, to }))
+}

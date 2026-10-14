@@ -1,0 +1,88 @@
+{
+  "href": "https://api.spotify.com/v1/albums/FakeAlbum0000000000009/tracks?offset=3&limit=3",
+  "items": [
+    {
+      "artists": [
+        {
+          "id": "FakeArtist000000000020",
+          "name": "Gustav Mahler",
+          "type": "artist",
+          "uri": "spotify:artist:FakeArtist000000000020"
+        },
+        {
+          "id": "FakeArtist000000000021",
+          "name": "Test Philharmonic",
+          "type": "artist",
+          "uri": "spotify:artist:FakeArtist000000000021"
+        }
+      ],
+      "disc_number": 1,
+      "duration_ms": 604000,
+      "explicit": false,
+      "id": "FakeMahlerTrack00000004",
+      "is_local": false,
+      "is_playable": true,
+      "name": "Symphony No. 5 in C-Sharp Minor: IV. Adagietto. Sehr langsam",
+      "track_number": 4,
+      "type": "track",
+      "uri": "spotify:track:FakeMahlerTrack00000004"
+    },
+    {
+      "artists": [
+        {
+          "id": "FakeArtist000000000020",
+          "name": "Gustav Mahler",
+          "type": "artist",
+          "uri": "spotify:artist:FakeArtist000000000020"
+        },
+        {
+          "id": "FakeArtist000000000021",
+          "name": "Test Philharmonic",
+          "type": "artist",
+          "uri": "spotify:artist:FakeArtist000000000021"
+        }
+      ],
+      "disc_number": 1,
+      "duration_ms": 605000,
+      "explicit": false,
+      "id": "FakeMahlerTrack00000005",
+      "is_local": false,
+      "is_playable": true,
+      "name": "Symphony No. 5 in C-Sharp Minor: V. Rondo-Finale. Allegro - Allegro giocoso",
+      "track_number": 5,
+      "type": "track",
+      "uri": "spotify:track:FakeMahlerTrack00000005"
+    },
+    {
+      "artists": [
+        {
+          "id": "FakeArtist000000000020",
+          "name": "Gustav Mahler",
+          "type": "artist",
+          "uri": "spotify:artist:FakeArtist000000000020"
+        },
+        {
+          "id": "FakeArtist000000000021",
+          "name": "Test Philharmonic",
+          "type": "artist",
+          "uri": "spotify:artist:FakeArtist000000000021"
+        }
+      ],
+      "disc_number": 1,
+      "duration_ms": 606000,
+      "explicit": false,
+      "id": "FakeMahlerTrack00000006",
+      "is_local": false,
+      "is_playable": true,
+      "name": "Rückert-Lieder: Ich bin der Welt abhanden gekommen",
+      "track_number": 6,
+      "type": "track",
+      "uri": "spotify:track:FakeMahlerTrack00000006"
+    }
+  ],
+  "limit": 3,
+  "next": null,
+  "offset": 3,
+  "previous": "https://api.spotify.com/v1/albums/FakeAlbum0000000000009/tracks?offset=0&limit=3",
+  "total": 6
+}

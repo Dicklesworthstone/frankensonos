@@ -1,0 +1,157 @@
+{
+  "href": "https://api.spotify.com/v1/me/albums?offset=0&limit=50&market=from_token",
+  "limit": 50,
+  "next": "https://api.spotify.com/v1/me/albums?offset=50&limit=50&market=from_token",
+  "offset": 0,
+  "previous": null,
+  "total": 51,
+  "items": [
+    {
+      "added_at": "2025-01-15T20:31:02Z",
+      "album": {
+        "album_type": "album",
+        "total_tracks": 3,
+        "available_markets": ["US"],
+        "external_urls": { "spotify": "https://open.spotify.com/album/FakeAlbum0000000000001" },
+        "href": "https://api.spotify.com/v1/albums/FakeAlbum0000000000001",
+        "id": "FakeAlbum0000000000001",
+        "images": [],
+        "name": "Bach: Goldberg Variations, BWV 988",
+        "release_date": "1982",
+        "release_date_precision": "year",
+        "type": "album",
+        "uri": "spotify:album:FakeAlbum0000000000001",
+        "artists": [
+          { "external_urls": {}, "href": "https://api.spotify.com/v1/artists/FakeArtist000000000001", "id": "FakeArtist000000000001", "name": "Johann Sebastian Bach", "type": "artist", "uri": "spotify:artist:FakeArtist000000000001" },
+          { "external_urls": {}, "href": "https://api.spotify.com/v1/artists/FakeArtist000000000002", "id": "FakeArtist000000000002", "name": "Test Pianist", "type": "artist", "uri": "spotify:artist:FakeArtist000000000002" }
+        ],
+        "tracks": {
+          "href": "https://api.spotify.com/v1/albums/FakeAlbum0000000000001/tracks?offset=0&limit=50",
+          "limit": 50,
+          "next": null,
+          "offset": 0,
+          "previous": null,
+          "total": 3,
+          "items": [
+            {
+              "artists": [
+                { "id": "FakeArtist000000000001", "name": "Johann Sebastian Bach", "type": "artist", "uri": "spotify:artist:FakeArtist000000000001" },
+                { "id": "FakeArtist000000000002", "name": "Test Pianist", "type": "artist", "uri": "spotify:artist:FakeArtist000000000002" }
+              ],
+              "available_markets": ["US"],
+              "disc_number": 1,
+              "duration_ms": 182500,
+              "explicit": false,
+              "external_urls": {},
+              "href": "https://api.spotify.com/v1/tracks/FakeTrack0000000000001",
+              "id": "FakeTrack0000000000001",
+              "is_playable": true,
+              "name": "Goldberg Variations, BWV 988: Aria",
+              "track_number": 1,
+              "type": "track",
+              "uri": "spotify:track:FakeTrack0000000000001",
+              "is_local": false
+            },
+            {
+              "artists": [
+                { "id": "FakeArtist000000000001", "name": "Johann Sebastian Bach", "type": "artist", "uri": "spotify:artist:FakeArtist000000000001" },
+                { "id": "FakeArtist000000000002", "name": "Test Pianist", "type": "artist", "uri": "spotify:artist:FakeArtist000000000002" }
+              ],
+              "disc_number": 1,
+              "duration_ms": 45000,
+              "explicit": false,
+              "id": "FakeTrack0000000000002",
+              "is_playable": true,
+              "name": "Goldberg Variations, BWV 988: Variatio 1 a 1 Clav.",
+              "track_number": 2,
+              "type": "track",
+              "uri": "spotify:track:FakeTrack0000000000002",
+              "is_local": false
+            },
+            {
+              "artists": [
+                { "id": "FakeArtist000000000001", "name": "Johann Sebastian Bach", "type": "artist", "uri": "spotify:artist:FakeArtist000000000001" },
+                { "id": "FakeArtist000000000002", "name": "Test Pianist", "type": "artist", "uri": "spotify:artist:FakeArtist000000000002" }
+              ],
+              "disc_number": 1,
+              "duration_ms": 51000,
+              "explicit": false,
+              "id": "FakeTrack0000000000003",
+              "is_playable": true,
+              "name": "Goldberg Variations, BWV 988: Variatio 2 a 1 Clav.",
+              "track_number": 3,
+              "type": "track",
+              "uri": "spotify:track:FakeTrack0000000000003",
+              "is_local": false
+            }
+          ]
+        },
+        "copyrights": [{ "text": "(P) 1982 Fake Classics", "type": "P" }],
+        "external_ids": { "upc": "000000000001" },
+        "genres": [],
+        "label": "Fake Classics",
+        "popularity": 61
+      }
+    },
+    {
+      "added_at": "2026-03-02T09:00:00Z",
+      "album": {
+        "album_type": "album",
+        "total_tracks": 60,
+        "external_urls": { "spotify": "https://open.spotify.com/album/FakeAlbum0000000000002" },
+        "href": "https://api.spotify.com/v1/albums/FakeAlbum0000000000002",
+        "id": "FakeAlbum0000000000002",
+        "images": [],
+        "name": "Chopin: Complete Nocturnes",
+        "release_date": "2019-05-10",
+        "release_date_precision": "day",
+        "type": "album",
+        "uri": "spotify:album:FakeAlbum0000000000002",
+        "artists": [
+          { "id": "FakeArtist000000000003", "name": "Frédéric Chopin", "type": "artist", "uri": "spotify:artist:FakeArtist000000000003" }
+        ],
+        "tracks": {
+          "href": "https://api.spotify.com/v1/albums/FakeAlbum0000000000002/tracks?offset=0&limit=50",
+          "limit": 50,
+          "next": "https://api.spotify.com/v1/albums/FakeAlbum0000000000002/tracks?offset=50&limit=50",
+          "offset": 0,
+          "previous": null,
+          "total": 60,
+          "items": [
+            {
+              "artists": [
+                { "id": "FakeArtist000000000003", "name": "Frédéric Chopin", "type": "artist", "uri": "spotify:artist:FakeArtist000000000003" }
+              ],
+              "disc_number": 1,
+              "duration_ms": 270000,
+              "explicit": false,
+              "id": "FakeTrack0000000000004",
+              "is_playable": true,
+              "name": "Nocturnes, Op. 9: No. 2 in E-Flat Major",
+              "track_number": 1,
+              "type": "track",
+              "uri": "spotify:track:FakeTrack0000000000004",
+              "is_local": false
+            },
+            {
+              "artists": [
+                { "id": "FakeArtist000000000003", "name": "Frédéric Chopin", "type": "artist", "uri": "spotify:artist:FakeArtist000000000003" }
+              ],
+              "disc_number": 1,
+              "duration_ms": 300000,
+              "explicit": false,
+              "id": "FakeTrack0000000000005",
+              "is_playable": false,
+              "name": "Nocturnes, Op. 15: No. 1 in F Major",
+              "track_number": 2,
+              "type": "track",
+              "uri": "spotify:track:FakeTrack0000000000005",
+              "is_local": false
+            }
+          ]
+        },
+        "genres": []
+      }
+    }
+  ]
+}

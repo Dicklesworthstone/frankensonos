@@ -1,0 +1,20 @@
+[package]
+name = "fsonos-tailscale"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tailscale presence for the FrankenSonos daemon host: tailnet status, addresses, and MagicDNS name."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+if-addrs = { workspace = true }
+
+[features]
+# Live smoke test against this host's real Tailscale. Off in CI.
+tailscale-live = []
+
+[lints]
+workspace = true

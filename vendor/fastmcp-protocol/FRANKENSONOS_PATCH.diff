@@ -1,0 +1,565 @@
+--- a/src/messages.rs
++++ b/src/messages.rs
+@@ -3689,6 +3689,35 @@
+         params: Option<&Value>,
+         raw_params: Option<&str>,
+     ) -> Result<Self, CoreDispatchError> {
++        Self::decode_with_raw_params_inner(era, method, params, raw_params, None)
++    }
++
++    /// Decodes a final tool request with an explicit raw-parameter byte budget.
++    ///
++    /// Only value strings beneath the root `arguments` member share the larger
++    /// budget. Object keys, other value strings, structural checks, metadata,
++    /// and equality with the admitted parameter value keep their existing rules.
++    /// Other methods retain the default decoder. Without a raw sidecar, callers
++    /// remain responsible for admission of the materialized parameter value.
++    pub fn decode_with_raw_params_and_argument_byte_limit(
++        era: ProtocolEra,
++        method: &str,
++        params: Option<&Value>,
++        raw_params: Option<&str>,
++        max_bytes: usize,
++    ) -> Result<Self, CoreDispatchError> {
++        let argument_byte_limit =
++            (era == ProtocolEra::Modern2026 && method == TOOLS_CALL).then_some(max_bytes);
++        Self::decode_with_raw_params_inner(era, method, params, raw_params, argument_byte_limit)
++    }
++
++    fn decode_with_raw_params_inner(
++        era: ProtocolEra,
++        method: &str,
++        params: Option<&Value>,
++        raw_params: Option<&str>,
++        argument_byte_limit: Option<usize>,
++    ) -> Result<Self, CoreDispatchError> {
+         let Some(raw_params) = raw_params else {
+             return Self::decode(era, method, params);
+         };
+@@ -3703,7 +3732,13 @@
+             PROMPTS_GET => PROMPTS_GET,
+             _ => unreachable!("the final MRTR raw-params guard selected a known method"),
+         };
+-        crate::result::parse_exact_json(raw_params).map_err(|_| {
++        let exact = match argument_byte_limit {
++            Some(max_bytes) => {
++                crate::result::parse_exact_json_with_argument_byte_limit(raw_params, max_bytes)
++            }
++            None => crate::result::parse_exact_json(raw_params),
++        };
++        exact.map_err(|_| {
+             CoreDispatchError::InvalidParams {
+                 era,
+                 method: method_literal,
+@@ -6344,6 +6379,98 @@
+     const PROGRESS_MARKER_KEY: &str = "progressTo\x6ben";
+     const MAX_TOKENS_KEY: &str = "maxTo\x6bens";
+ 
++    fn tool_params_with_large_argument(bytes: usize) -> Value {
++        serde_json::json!({
++            "_meta": {
++                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
++                "io.modelcontextprotocol/clientCapabilities": {}
++            },
++            "name": "announce",
++            "arguments": {"wav_base64": "a".repeat(bytes)}
++        })
++    }
++
++    #[test]
++    fn tool_input_limit_retains_source_equality_and_defaults() {
++        let params = tool_params_with_large_argument(crate::result::MAX_RESULT_ENCODED_BYTES + 1);
++        let raw = params.to_string();
++        let decode = |value: &Value, limit| {
++            CoreRequest::decode_with_raw_params_and_argument_byte_limit(
++                ProtocolEra::Modern2026,
++                TOOLS_CALL,
++                Some(value),
++                Some(&raw),
++                limit,
++            )
++        };
++        let CoreRequest::Final(FinalCoreRequest::ToolsCall(decoded)) =
++            decode(&params, raw.len()).unwrap()
++        else {
++            panic!("expected a final tool call");
++        };
++        assert_eq!(decoded.arguments.as_value(), params.get("arguments"));
++        assert!(decode(&params, raw.len() - 1).is_err());
++        assert!(
++            CoreRequest::decode_with_raw_params(
++                ProtocolEra::Modern2026,
++                TOOLS_CALL,
++                Some(&params),
++                Some(&raw)
++            )
++            .is_err()
++        );
++        let mut changed = params.clone();
++        changed["arguments"]["wav_base64"] = Value::String("different".into());
++        assert!(decode(&changed, raw.len()).is_err());
++    }
++
++    #[test]
++    fn tool_input_limit_keeps_duplicates_metadata_and_typed_shape() {
++        let params = tool_params_with_large_argument(crate::result::MAX_RESULT_STRING_BYTES + 1);
++        let raw = params.to_string();
++        let duplicate = raw.replacen(
++            "\"wav_base64\":",
++            "\"wav_base64\":\"duplicate\",\"\\u0077av_base64\":",
++            1,
++        );
++        assert!(
++            CoreRequest::decode_with_raw_params_and_argument_byte_limit(
++                ProtocolEra::Modern2026,
++                TOOLS_CALL,
++                Some(&params),
++                Some(&duplicate),
++                duplicate.len()
++            )
++            .is_err()
++        );
++        for field in ["_meta", "arguments"] {
++            let mut malformed = params.clone();
++            malformed[field] = Value::Null;
++            let raw = malformed.to_string();
++            assert!(
++                CoreRequest::decode_with_raw_params_and_argument_byte_limit(
++                    ProtocolEra::Modern2026,
++                    TOOLS_CALL,
++                    Some(&malformed),
++                    Some(&raw),
++                    raw.len()
++                )
++                .is_err()
++            );
++        }
++        // A tool override cannot widen the otherwise similarly shaped prompt API.
++        assert!(
++            CoreRequest::decode_with_raw_params_and_argument_byte_limit(
++                ProtocolEra::Modern2026,
++                PROMPTS_GET,
++                Some(&params),
++                Some(&raw),
++                raw.len()
++            )
++            .is_err()
++        );
++    }
++
+     // ========================================================================
+     // ProgressMarker Tests
+     // ========================================================================
+--- a/src/result.rs
++++ b/src/result.rs
+@@ -177,13 +177,31 @@
+ 
+ /// Parses one bounded exact JSON value.
+ pub fn parse_exact_json(input: &str) -> Result<ExactJsonValue, ResultDecodeError> {
+-    if input.len() > MAX_RESULT_ENCODED_BYTES {
++    parse_exact_json_with_limits(input, MAX_RESULT_ENCODED_BYTES, None)
++}
++
++/// Admits a tool request with a larger, explicitly bounded `arguments` value.
++/// Other value strings and every object key retain the result codec's bounds.
++pub(crate) fn parse_exact_json_with_argument_byte_limit(
++    input: &str,
++    max_bytes: usize,
++) -> Result<ExactJsonValue, ResultDecodeError> {
++    parse_exact_json_with_limits(input, max_bytes, Some(max_bytes))
++}
++
++fn parse_exact_json_with_limits(
++    input: &str,
++    max_encoded_bytes: usize,
++    argument_byte_limit: Option<usize>,
++) -> Result<ExactJsonValue, ResultDecodeError> {
++    if input.len() > max_encoded_bytes {
+         return Err(ResultDecodeError::new(
+             ResultDecodeErrorKind::BoundExceeded,
+             "$",
+         ));
+     }
+     let mut parser = ExactJsonParser::new(input);
++    parser.argument_byte_limit = argument_byte_limit;
+     parser.skip_whitespace();
+     let value = parser.value(0, "$")?;
+     parser.skip_whitespace();
+@@ -1799,11 +1817,18 @@
+ struct ExactJsonParser<'a> {
+     input: &'a str,
+     offset: usize,
++    argument_byte_limit: Option<usize>,
++    parsing_arguments: bool,
+ }
+ 
+ impl<'a> ExactJsonParser<'a> {
+     const fn new(input: &'a str) -> Self {
+-        Self { input, offset: 0 }
++        Self {
++            input,
++            offset: 0,
++            argument_byte_limit: None,
++            parsing_arguments: false,
++        }
+     }
+ 
+     fn skip_whitespace(&mut self) {
+@@ -1827,7 +1852,14 @@
+             Some(b'n') if self.consume(b"null") => Ok(ExactJsonValue::Null),
+             Some(b't') if self.consume(b"true") => Ok(ExactJsonValue::Bool(true)),
+             Some(b'f') if self.consume(b"false") => Ok(ExactJsonValue::Bool(false)),
+-            Some(b'"') => self.string(path).map(ExactJsonValue::String),
++            Some(b'"') => {
++                let max_bytes = if self.parsing_arguments {
++                    self.argument_byte_limit.unwrap_or(MAX_RESULT_STRING_BYTES)
++                } else {
++                    MAX_RESULT_STRING_BYTES
++                };
++                self.string(path, max_bytes).map(ExactJsonValue::String)
++            }
+             Some(b'[') => self.array(depth, path),
+             Some(b'{') => self.object(depth, path),
+             Some(b'-' | b'0'..=b'9') => self.number(path).map(ExactJsonValue::Number),
+@@ -1852,7 +1884,7 @@
+         }
+     }
+ 
+-    fn string(&mut self, path: &str) -> Result<String, ResultDecodeError> {
++    fn string(&mut self, path: &str, max_bytes: usize) -> Result<String, ResultDecodeError> {
+         self.offset += 1;
+         let mut value = String::new();
+         loop {
+@@ -1865,7 +1897,7 @@
+             match byte {
+                 b'"' => {
+                     self.offset += 1;
+-                    if value.len() > MAX_RESULT_STRING_BYTES {
++                    if value.len() > max_bytes {
+                         return Err(ResultDecodeError::new(
+                             ResultDecodeErrorKind::BoundExceeded,
+                             path,
+@@ -1912,7 +1944,7 @@
+                     self.offset += character.len_utf8();
+                 }
+             }
+-            if value.len() > MAX_RESULT_STRING_BYTES {
++            if value.len() > max_bytes {
+                 return Err(ResultDecodeError::new(
+                     ResultDecodeErrorKind::BoundExceeded,
+                     path,
+@@ -2085,7 +2117,7 @@
+                     path,
+                 ));
+             }
+-            let name = self.string(path)?;
++            let name = self.string(path, MAX_RESULT_STRING_BYTES)?;
+             if members
+                 .iter()
+                 .any(|member: &ExactJsonMember| member.name == name)
+@@ -2105,7 +2137,14 @@
+             self.offset += 1;
+             self.skip_whitespace();
+             let member_path = format!("{path}/{name}");
+-            let value = self.value(depth + 1, &member_path)?;
++            let previous_scope = self.parsing_arguments;
++            // Compare the decoded root key, never its formatted diagnostic
++            // path: a key containing '/' must not acquire argument authority.
++            self.parsing_arguments |=
++                depth == 0 && name == "arguments" && self.argument_byte_limit.is_some();
++            let value = self.value(depth + 1, &member_path);
++            self.parsing_arguments = previous_scope;
++            let value = value?;
+             members.push(ExactJsonMember { name, value });
+             self.skip_whitespace();
+             match self.byte() {
+@@ -2131,6 +2170,85 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++
++    #[test]
++    fn tool_input_limit_admits_large_strings_and_bounds_the_document() {
++        let value = "a".repeat(MAX_RESULT_ENCODED_BYTES + 1);
++        let raw = serde_json::json!({"arguments": {"nested": [{"wav_base64": value}]}})
++            .to_string();
++        assert!(parse_exact_json(&raw).is_err());
++        let admitted = parse_exact_json_with_argument_byte_limit(&raw, raw.len()).unwrap();
++        let ExactJsonValue::Object(root) = admitted else {
++            panic!("expected the complete parameter object");
++        };
++        assert!(root.get("arguments").is_some());
++        assert!(parse_exact_json_with_argument_byte_limit(&raw, raw.len() - 1).is_err());
++        assert!(parse_exact_json_with_argument_byte_limit(&raw, 0).is_err());
++
++        let escaped = format!(r#"{{"arg\u0075ments":{{"wav_base64":"{value}"}}}}"#);
++        assert!(parse_exact_json_with_argument_byte_limit(&escaped, escaped.len()).is_ok());
++    }
++
++    #[test]
++    fn tool_input_limit_keeps_keys_and_nonargument_strings_bounded() {
++        let large = "x".repeat(MAX_RESULT_STRING_BYTES + 1);
++        let cases = [
++            serde_json::json!({"name": large}),
++            serde_json::json!({"requestState": large}),
++            serde_json::json!({"_meta": {"custom": large}}),
++            serde_json::json!({"inputResponses": {"input": large}}),
++            serde_json::json!({"arguments/wav_base64": large}),
++            serde_json::json!({"other": {"arguments": {"wav_base64": large}}}),
++            serde_json::json!({"arguments": {(large.clone()): "small"}}),
++            serde_json::json!([{"arguments": {"wav_base64": large}}]),
++        ];
++        for value in cases {
++            let raw = value.to_string();
++            let error = parse_exact_json_with_argument_byte_limit(&raw, raw.len()).unwrap_err();
++            assert_eq!(error.kind(), ResultDecodeErrorKind::BoundExceeded);
++        }
++
++        // A following sibling must not inherit the argument parsing scope.
++        let sibling = format!(
++            r#"{{"arguments":{{"wav_base64":"{large}"}},"requestState":"{large}"}}"#
++        );
++        assert!(parse_exact_json_with_argument_byte_limit(&sibling, sibling.len()).is_err());
++    }
++
++    #[test]
++    fn tool_input_limit_preserves_exact_json_structural_guards() {
++        let too_deep = format!(
++            r#"{{"arguments":{{"nested":{}0{}}}}}"#,
++            "[".repeat(MAX_RESULT_DEPTH + 1),
++            "]".repeat(MAX_RESULT_DEPTH + 1)
++        );
++        let too_many = serde_json::json!({
++            "arguments": {"items": vec![Value::Null; MAX_RESULT_CONTAINER_MEMBERS + 1]}
++        })
++        .to_string();
++        let too_long_number = format!(
++            r#"{{"arguments":{{"number":{}}}}}"#,
++            "9".repeat(MAX_RESULT_NUMBER_BYTES + 1)
++        );
++        for raw in [
++            r#"{"arguments":{"wav":"a","\u0077av":"b"}}"#.to_owned(),
++            r#"{"arguments":{},"arguments":{}}"#.to_owned(),
++            r#"{"arguments":{}} {}"#.to_owned(),
++            r#"{"arguments":{"wav":"\uD800"}}"#.to_owned(),
++            too_deep,
++            too_many,
++            too_long_number,
++        ] {
++            let old = parse_exact_json(&raw).unwrap_err();
++            let configured =
++                parse_exact_json_with_argument_byte_limit(&raw, raw.len()).unwrap_err();
++            assert_eq!(configured.kind(), old.kind());
++        }
++
++        let exact = r#"{"arguments":{"number":1.2300e+400}}"#;
++        let configured = parse_exact_json_with_argument_byte_limit(exact, exact.len()).unwrap();
++        assert_eq!(configured, parse_exact_json(exact).unwrap());
++    }
+ 
+     #[test]
+     fn cache_ttl_retains_the_unbounded_wire_value_until_runtime_conversion() {
+--- a/src/schema.rs
++++ b/src/schema.rs
+@@ -768,6 +768,17 @@
+     /// Validates an instance using this admitted schema.
+     pub fn validate(&self, value: &Value) -> ValidationResult {
+         validate_admitted_final_schema(&self.schema, value)
++    }
++
++    /// Validates argument values with an explicit per-string byte limit.
++    /// Object keys, instance nodes, depth, work, and schema rules keep their
++    /// existing bounds. Callers also enforce their complete request byte limit.
++    pub fn validate_with_string_byte_limit(
++        &self,
++        value: &Value,
++        max_string_bytes: usize,
++    ) -> ValidationResult {
++        validate_with_schema_features(&self.schema, value, true, max_string_bytes)
+     }
+ }
+ 
+@@ -2222,24 +2233,42 @@
+ /// assert!(validate(&schema, &invalid).is_err());
+ /// ```
+ pub fn validate(schema: &Value, value: &Value) -> ValidationResult {
+-    validate_with_schema_features(schema, value, false)
++    validate_with_string_byte_limit(schema, value, MAX_SCHEMA_INSTANCE_STRING_BYTES)
++}
++
++/// Validates with an explicit value-string byte limit and the existing schema
++/// semantics. Object keys and all structural limits retain their defaults.
++pub fn validate_with_string_byte_limit(
++    schema: &Value,
++    value: &Value,
++    max_string_bytes: usize,
++) -> ValidationResult {
++    validate_with_schema_features(schema, value, false, max_string_bytes)
+ }
+ 
+ /// Validates an instance with the final-schema vocabulary accepted by
+ /// [`admit_final_schema`].
+ fn validate_admitted_final_schema(schema: &Value, value: &Value) -> ValidationResult {
+-    validate_with_schema_features(schema, value, true)
++    validate_with_schema_features(schema, value, true, MAX_SCHEMA_INSTANCE_STRING_BYTES)
+ }
+ 
+ fn validate_with_schema_features(
+     schema: &Value,
+     value: &Value,
+     enforce_unevaluated_properties: bool,
++    max_string_bytes: usize,
+ ) -> ValidationResult {
+     let mut errors = Vec::new();
+     let mut context = ValidationContext::new(schema, enforce_unevaluated_properties);
+     let mut instance_nodes = 0;
+-    if !validate_instance_bounds(value, "root", 0, &mut instance_nodes, &mut errors) {
++    if !validate_instance_bounds(
++        value,
++        "root",
++        0,
++        &mut instance_nodes,
++        &mut errors,
++        max_string_bytes,
++    ) {
+         return Err(errors);
+     }
+     if enforce_unevaluated_properties
+@@ -2300,9 +2329,19 @@
+ /// assert!(validate_strict(&schema, &valid).is_ok());
+ /// ```
+ pub fn validate_strict(schema: &Value, value: &Value) -> ValidationResult {
++    validate_strict_with_string_byte_limit(schema, value, MAX_SCHEMA_INSTANCE_STRING_BYTES)
++}
++
++/// Applies strict additional-property validation with an explicit value-string
++/// byte limit. Object keys and every structural bound retain their defaults.
++pub fn validate_strict_with_string_byte_limit(
++    schema: &Value,
++    value: &Value,
++    max_string_bytes: usize,
++) -> ValidationResult {
+     // Clone and modify the schema to enforce additionalProperties: false
+     let strict_schema = make_strict_schema(schema);
+-    validate(&strict_schema, value)
++    validate_with_string_byte_limit(&strict_schema, value, max_string_bytes)
+ }
+ 
+ /// Recursively adds `additionalProperties: false` to all object schemas.
+@@ -2494,6 +2533,7 @@
+     depth: usize,
+     node_count: &mut usize,
+     errors: &mut Vec<ValidationError>,
++    max_string_bytes: usize,
+ ) -> bool {
+     if depth >= MAX_SCHEMA_INSTANCE_DEPTH {
+         push_error(errors, path, "instance nesting limit exceeded");
+@@ -2507,7 +2547,7 @@
+ 
+     match value {
+         Value::String(string) => {
+-            if string.len() > MAX_SCHEMA_INSTANCE_STRING_BYTES {
++            if string.len() > max_string_bytes {
+                 push_error(errors, path, "instance string byte limit exceeded");
+                 return false;
+             }
+@@ -2520,6 +2560,7 @@
+                     depth + 1,
+                     node_count,
+                     errors,
++                    max_string_bytes,
+                 ) {
+                     return false;
+                 }
+@@ -2541,6 +2582,7 @@
+                     depth + 1,
+                     node_count,
+                     errors,
++                    max_string_bytes,
+                 ) {
+                     return false;
+                 }
+@@ -4952,6 +4994,83 @@
+ mod tests {
+     use super::*;
+     use serde_json::json;
++
++    #[test]
++    fn tool_input_limit_preserves_defaults_and_rejects_above_budget() {
++        let schema = json!({
++            "type": "object",
++            "properties": {"wav_base64": {"type": "string"}},
++            "required": ["wav_base64"]
++        });
++        let admitted = admit_final_schema(schema.clone()).unwrap();
++        let bytes = MAX_SCHEMA_INSTANCE_STRING_BYTES + 1;
++        let value = json!({"wav_base64": "a".repeat(bytes)});
++        assert!(validate(&schema, &value).is_err());
++        assert!(validate_strict(&schema, &value).is_err());
++        assert!(admitted.validate(&value).is_err());
++        assert!(validate_with_string_byte_limit(&schema, &value, bytes).is_ok());
++        assert!(validate_strict_with_string_byte_limit(&schema, &value, bytes).is_ok());
++        assert!(admitted.validate_with_string_byte_limit(&value, bytes).is_ok());
++        assert!(validate_with_string_byte_limit(&schema, &value, bytes - 1).is_err());
++        assert!(validate_strict_with_string_byte_limit(&schema, &value, bytes - 1).is_err());
++        assert!(admitted.validate_with_string_byte_limit(&value, bytes - 1).is_err());
++
++        let unicode = json!({"wav_base64": "é".repeat(bytes.div_ceil(2))});
++        assert!(admitted.validate_with_string_byte_limit(&unicode, bytes).is_err());
++    }
++
++    #[test]
++    fn tool_input_limit_keeps_keys_schema_and_strict_semantics() {
++        let schema = json!({
++            "type": "object",
++            "properties": {"wav_base64": {"type": "string"}},
++            "required": ["wav_base64"]
++        });
++        let budget = MAX_SCHEMA_INSTANCE_STRING_BYTES + 1;
++        let mut arguments = json!({"wav_base64": "a".repeat(budget)});
++        arguments["extra"] = Value::Bool(true);
++        assert!(validate_with_string_byte_limit(&schema, &arguments, budget).is_ok());
++        assert!(validate_strict_with_string_byte_limit(&schema, &arguments, budget).is_err());
++
++        let mut closed_schema = schema.clone();
++        closed_schema["unevaluatedProperties"] = Value::Bool(false);
++        assert!(
++            admit_final_schema(closed_schema)
++                .unwrap()
++                .validate_with_string_byte_limit(&arguments, budget)
++                .is_err()
++        );
++        assert!(
++            validate_with_string_byte_limit(&schema, &json!({"wav_base64": 7}), budget)
++                .is_err()
++        );
++        let long_key = json!({("a".repeat(budget)): "small"});
++        assert!(validate_with_string_byte_limit(&json!({}), &long_key, budget).is_err());
++
++        let length_schema = json!({"type": "string", "maxLength": 2});
++        assert!(validate_with_string_byte_limit(&length_schema, &json!("abc"), budget).is_err());
++    }
++
++    #[test]
++    fn tool_input_limit_keeps_instance_depth_and_node_bounds() {
++        let schema = admit_final_schema(json!({})).unwrap();
++        let mut nested = Value::Null;
++        for _ in 0..MAX_SCHEMA_INSTANCE_DEPTH {
++            nested = Value::Array(vec![nested]);
++        }
++        let too_many = Value::Array(vec![Value::Null; MAX_SCHEMA_INSTANCE_NODES]);
++        for value in [nested, too_many] {
++            let configured = schema
++                .validate_with_string_byte_limit(&value, 2 * MAX_SCHEMA_INSTANCE_STRING_BYTES)
++                .unwrap_err();
++            let default = schema.validate(&value).unwrap_err();
++            assert_eq!(configured.len(), default.len());
++            for (configured, default) in configured.iter().zip(&default) {
++                assert_eq!(configured.path, default.path);
++                assert_eq!(configured.message, default.message);
++            }
++        }
++    }
+ 
+     struct GeneratedText;
+ 

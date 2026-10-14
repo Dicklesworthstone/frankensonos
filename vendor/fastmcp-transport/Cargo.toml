@@ -1,0 +1,113 @@
+[package]
+name = "fastmcp-transport"
+version = "0.10.0"
+edition = "2024"
+license-file = "LICENSE"
+rust-version = "1.100"
+description = "Transport layer (stdio, SSE, WebSocket) for FastMCP"
+repository = "https://github.com/Dicklesworthstone/fastmcp_rust"
+homepage = "https://github.com/Dicklesworthstone/fastmcp_rust"
+readme = "UPSTREAM_README.md"
+documentation = "https://docs.rs/fastmcp-transport"
+keywords = ["mcp", "transport", "stdio", "sse", "websocket"]
+categories = ["network-programming"]
+
+[features]
+# Exact MCP 2024-11-05 adapters remain opt-in so an embedding that ships only
+# final transport surfaces does not retain the legacy SSE/HTTP route family.
+legacy-2024-11-05 = ["fastmcp-protocol/legacy-2024-11-05"]
+
+# Compatibility feature for workspace feature forwarding. WebSocket transport
+# is now public unconditionally; selecting this name no longer changes the
+# transport dependency graph or public API.
+websocket-experimental = []
+
+[dependencies]
+fastmcp-core = { version = "0.10.0", git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+fastmcp-protocol = { version = "0.10.0", git = "https://github.com/Dicklesworthstone/fastmcp_rust", rev = "03b5274544048babf6b358874310038a9ee4f76a" }
+# WebSocket transport uses asupersync's native TCP, RFC 6455, and Rustls
+# stream surfaces. `tls-webpki-roots` supplies an explicit public trust-root
+# path for `wss://`; callers can instead pass their own `TlsConnector`.
+asupersync = { version = "=0.5.0", features = ["tls", "tls-webpki-roots"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151", features = ["arbitrary_precision"] }
+# FND-01 TRANSPORT-NO-GETRANDOM: WebSocket masking uses fastmcp-core crypto.
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "=1.1.5", default-features = false, features = ["event", "fs", "std"] }
+
+[dev-dependencies]
+# Test-only context construction; transport production APIs receive `&Cx`.
+asupersync = { version = "=0.5.0", features = ["test-internals"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+# Admit the FND-01 bootstrap harness custom cfg only; all other unexpected_cfgs
+# remain fatal under -D warnings.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(fnd01_bootstrap)"] }
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Allow these during early development
+doc_markdown = "allow"
+missing_const_for_fn = "allow"
+doc_link_with_quotes = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+uninlined_format_args = "allow"
+unused_self = "allow"
+cast_precision_loss = "allow"
+format_push_string = "allow"
+needless_continue = "allow"
+map_unwrap_or = "allow"
+cast_possible_truncation = "allow"
+similar_names = "allow"
+must_use_candidate = "allow"
+cast_lossless = "allow"
+return_self_not_must_use = "allow"
+match_same_arms = "allow"
+collapsible_if = "allow"
+clone_on_copy = "allow"
+match_wildcard_for_single_variants = "allow"
+manual_assert = "allow"
+# `assert!(value.is_empty())` states the tested predicate directly. Rewriting
+# hundreds of tests to construct type-heavy empty comparison values adds noise.
+assert_is_empty = "allow"
+if_not_else = "allow"
+trivially_copy_pass_by_ref = "allow"
+struct_excessive_bools = "allow"
+should_implement_trait = "allow"
+vec_init_then_push = "allow"
+unreadable_literal = "allow"
+ref_option = "allow"
+manual_pattern_char_comparison = "allow"
+implicit_clone = "allow"
+decimal_bitwise_operands = "allow"
+cast_sign_loss = "allow"
+needless_pass_by_value = "allow"
+field_reassign_with_default = "allow"
+# Additional pedantic lints allowed for early development
+cast_possible_wrap = "allow"
+assigning_clones = "allow"
+derivable_impls = "allow"
+manual_div_ceil = "allow"
+manual_split_once = "allow"
+unchecked_time_subtraction = "allow"
+redundant_closure_for_method_calls = "allow"
+missing_fields_in_debug = "allow"
+manual_let_else = "allow"
+single_match_else = "allow"
+len_zero = "allow"
+needless_borrows_for_generic_args = "allow"
+io_other_error = "allow"
+mut_range_bound = "allow"
+ptr_arg = "allow"
+approx_constant = "allow"
+manual_string_new = "allow"
+redundant_else = "allow"
+unnecessary_unwrap = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+too_many_lines = "allow"
+items_after_statements = "allow"

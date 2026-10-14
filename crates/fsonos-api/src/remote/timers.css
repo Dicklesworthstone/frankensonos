@@ -1,0 +1,11 @@
+/* Timed playback controls share the remote's palette and focus treatment. */
+.automation { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 12px; }
+.automation > summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.automation summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.automation-body { min-width: 0; overflow-wrap: anywhere; }
+.automation-body label { display: block; margin: 12px 0; }
+.automation-body select, .automation-body input { display: block; width: 100%; max-width: 100%; min-width: 0; font: inherit; color: var(--text); background: var(--card); padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.automation-body p { font-size: 0.95rem; }
+.automation-review { margin: 12px 0; padding: 12px; background: var(--warn-bg); color: var(--warn-text); border-radius: 8px; }
+.automation-body li { margin: 12px 0; }
+.automation-body [hidden] { display: none; }

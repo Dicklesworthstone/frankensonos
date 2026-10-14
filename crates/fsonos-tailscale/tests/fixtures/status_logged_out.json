@@ -1,0 +1,22 @@
+{
+  "Version": "1.90.0-t0000000-g0000000",
+  "TUN": true,
+  "BackendState": "NeedsLogin",
+  "HaveNodeKey": false,
+  "AuthURL": "",
+  "TailscaleIPs": null,
+  "Self": {
+    "ID": "",
+    "HostName": "sonos-host",
+    "DNSName": "",
+    "OS": "macOS",
+    "TailscaleIPs": null,
+    "Online": false
+  },
+  "Health": ["You are logged out."],
+  "MagicDNSSuffix": "",
+  "CurrentTailnet": null,
+  "Peer": null,
+  "User": null,
+  "ClientVersion": null
+}

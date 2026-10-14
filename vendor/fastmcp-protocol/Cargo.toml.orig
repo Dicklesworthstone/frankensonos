@@ -1,0 +1,34 @@
+[package]
+name = "fastmcp-protocol"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+description = "MCP protocol types and JSON-RPC implementation"
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+documentation = "https://docs.rs/fastmcp-protocol"
+keywords = ["mcp", "json-rpc", "protocol", "schema", "serialization"]
+categories = ["network-programming", "api-bindings"]
+
+[features]
+default = []
+legacy-2024-11-05 = []
+tasks = []
+apps = []
+# Bounded compact-JWS verification primitives. Policy and key discovery stay
+# in their owning server/auth layers.
+jose = ["dep:ring", "dep:zeroize"]
+
+[dependencies]
+fastmcp-core.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+regex.workspace = true
+ring = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
+
+[lints]
+workspace = true
