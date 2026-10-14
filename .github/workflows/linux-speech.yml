@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "crates/**"
+      - "scripts/test-remote-queue.cjs"
       - "vendor/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -34,10 +35,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: Install the local speech engine
+      - name: Install the local test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes espeak-ng
+          sudo apt-get install --yes espeak-ng nodejs
+      - name: Web queue client regressions
+        run: node --test scripts/test-remote-queue.cjs
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy
       - name: Formatting

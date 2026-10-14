@@ -138,3 +138,164 @@ test('invalid offsets make no request, empty and short pages remain valid', asyn
   assert.equal(await short.load(), true);
   assert.equal(short.state.page.items.length, 5);
 });
+
+test('removal requires review and sends exactly the ordered selected range', async () => {
+  const calls = [];
+  const p = page(0, 10); p.items[2].uri = p.items[1].uri;
+  const c = QueueRemote.model({ zone: 'Room@S1', call: async (name, args) => {
+    calls.push([name, args]);
+    return name === 'queue' ? p : { done: 'Removed, not undoable', position: 2, count: 2, remaining: 8, undoable: false, recovered: true };
+  } });
+  await c.load();
+  c.select(3, true); c.select(2, true);
+  assert.equal(await c.remove(), false, 'selection alone is not consent');
+  assert.equal(c.reviewRemoval(), true);
+  assert.equal(calls.length, 1, 'review is read-only');
+  assert.equal(await c.play(1), false, 'no conflicting action during review');
+  assert.equal(await c.remove(), true);
+  assert.deepEqual(plain(calls[1]), ['queueRemove', { body: {
+    zone: 'Room@S1', position: 2, expected_uris: [p.items[1].uri, p.items[1].uri], expected_revision: p.revision,
+  } }]);
+  assert.equal(c.state.selected.size, 0);
+  assert.equal(c.state.pending, null);
+});
+
+test('a gap or an invalid selection cannot produce a deletion', async () => {
+  let calls = 0;
+  const c = QueueRemote.model({ zone: 'Room', call: async () => { calls++; return page(); } });
+  await c.load(); c.select(1, true); c.select(3, true);
+  assert.equal(c.removable(), null);
+  assert.equal(c.reviewRemoval(), false);
+  assert.equal(await c.remove(), false);
+  assert.equal(c.select(99, true), false);
+  assert.equal(calls, 1);
+});
+
+test('cancelled, edited and refreshed confirmations cannot remove anything', async () => {
+  const calls = [];
+  const c = QueueRemote.model({ zone: 'Room', call: async (name, args) => { calls.push(name); return page(args.query.offset); } });
+  await c.load(); c.select(1, true); c.reviewRemoval(); c.cancelRemoval();
+  assert.equal(await c.remove(), false);
+  c.reviewRemoval(); c.select(2, true);
+  assert.equal(c.state.pending, null);
+  assert.equal(await c.remove(), false);
+  c.reviewRemoval(); await c.load(25);
+  assert.equal(c.state.selected.size, 0);
+  assert.equal(c.state.pending, null);
+  assert.equal(await c.remove(), false);
+  assert.deepEqual(calls, ['queue', 'queue']);
+});
+
+test('a failed removal cannot be retried by a second click or confirmation', async () => {
+  const waiting = deferred(); const calls = [];
+  const c = QueueRemote.model({ zone: 'Room', call: async (name) => {
+    calls.push(name); return name === 'queue' ? page() : waiting.promise;
+  } });
+  await c.load(); c.select(1, true); c.reviewRemoval(); const removal = c.remove();
+  assert.equal(await c.remove(), false);
+  assert.equal(c.reviewRemoval(), false);
+  assert.equal(await c.load(), false);
+  waiting.reject(new Error('reply lost')); assert.equal(await removal, false);
+  assert.equal(await c.remove(), false);
+  assert.equal(c.state.page, null);
+  assert.match(c.state.message, /not repeated/);
+  assert.deepEqual(calls, ['queue', 'queueRemove']);
+});
+
+test('invalid removal success bodies are uncertain, never silently accepted', async () => {
+  const good = { done: 'Removed', position: 1, count: 1, remaining: 59, recovered: false, undoable: false };
+  for (const answer of [null, {}, { ...good, position: 2 }, { ...good, count: 2 },
+    { ...good, remaining: 100 }, { ...good, undoable: true }, { ...good, recovered: undefined }]) {
+    let writes = 0;
+    const c = QueueRemote.model({ zone: 'Room', call: async (name) => {
+      if (name === 'queue') return page(); writes++; return answer;
+    } });
+    await c.load(); c.select(1, true); c.reviewRemoval();
+    assert.equal(await c.remove(), false);
+    assert.equal(writes, 1);
+    assert.equal(c.state.page, null);
+  }
+});
+
+test('deleting a final page navigates back within the remaining queue', async () => {
+  const offsets = [];
+  const c = QueueRemote.model({ zone: 'Room', call: async (name, args) => {
+    if (name === 'queue') { offsets.push(args.query.offset); return page(args.query.offset, offsets.length === 1 ? 26 : 25); }
+    return { done: 'Removed', position: 26, count: 1, remaining: 25, undoable: false, recovered: false };
+  } });
+  await c.load(25); c.select(26, true); c.reviewRemoval();
+  assert.equal(await c.remove(), true);
+  assert.deepEqual(offsets, [25, 0]);
+  assert.equal(c.state.offset, 0);
+});
+
+test('disposing a reviewed card prevents writes and pending-write completion causes no new read', async () => {
+  let calls = 0;
+  const c = QueueRemote.model({ zone: 'Room', call: async () => { calls++; return page(); } });
+  await c.load(); c.select(1, true); c.reviewRemoval(); c.dispose();
+  assert.equal(await c.remove(), false); assert.equal(calls, 1);
+  const waiting = deferred(); const seen = [];
+  const d = QueueRemote.model({ zone: 'Room', call: async (name) => { seen.push(name); return name === 'queue' ? page() : waiting.promise; } });
+  await d.load(); d.select(1, true); d.reviewRemoval(); const removal = d.remove(); d.dispose();
+  waiting.resolve({ done: 'Removed', position: 1, count: 1, remaining: 59, undoable: false, recovered: false });
+  await removal; assert.deepEqual(seen, ['queue', 'queueRemove']);
+});
+
+test('missing revisions or missing identities keep removal read-only', async () => {
+  for (const p of [page(0, 2, null), { ...page(), items: [{ position: 1, title: 'Unknown', uri: null }] }]) {
+    let calls = 0;
+    const c = QueueRemote.model({ zone: 'Room', call: async () => { calls++; return p; } });
+    await c.load(); assert.equal(c.select(1, true), false); assert.equal(c.reviewRemoval(), false);
+    assert.equal(await c.remove(), false); assert.equal(calls, 1);
+  }
+});
+
+test('Spotify addition forwards the source and placement once and preserves the result', async () => {
+  for (const next of [false, true]) {
+    const calls = [];
+    const c = QueueRemote.model({ zone: 'Room@S2', call: async (name, args) => {
+      calls.push([name, args]);
+      return name === 'queue' ? page(0, 0) : { done: 'Queued album; not playing from queue', first: 1, count: 3, playing_queue: false };
+    } });
+    await c.load(); c.state.source = 'spotify:album:Example';
+    assert.equal(await c.add(' spotify:album:Example ', next), true);
+    assert.deepEqual(plain(calls[1]), ['queueAdd', { body: { zone: 'Room@S2', source_uri: 'spotify:album:Example', next } }]);
+    assert.equal(c.state.source, '');
+    assert.match(c.state.message, /not playing/);
+    assert.equal(calls.length, 3, 'never sends Play');
+  }
+});
+
+test('blank input and pending removal do not enqueue', async () => {
+  let calls = 0;
+  const c = QueueRemote.model({ zone: 'Room', call: async () => { calls++; return page(); } });
+  await c.load();
+  for (const source of ['', ' ', null, undefined]) assert.equal(await c.add(source), false);
+  c.select(1, true); c.reviewRemoval();
+  assert.equal(await c.add('spotify:track:Example'), false);
+  assert.equal(calls, 1);
+});
+
+test('an uncertain addition preserves the draft but requires a fresh read', async () => {
+  const waiting = deferred(); const calls = [];
+  const c = QueueRemote.model({ zone: 'Room', call: async (name) => {
+    calls.push(name); return name === 'queue' ? page() : waiting.promise;
+  } });
+  await c.load(); c.state.source = 'spotify:playlist:Example';
+  const writing = c.add(c.state.source);
+  assert.equal(await c.add(c.state.source), false);
+  waiting.reject(new Error('reply lost')); assert.equal(await writing, false);
+  assert.equal(c.state.source, 'spotify:playlist:Example');
+  assert.equal(await c.add(c.state.source), false);
+  assert.deepEqual(calls, ['queue', 'queueAdd']);
+});
+
+test('malformed enqueue acknowledgements do not authorize another write', async () => {
+  for (const result of [null, {}, { done: 'Queued', first: 0, count: 1, playing_queue: true },
+    { done: 'Queued', first: 1, count: -1, playing_queue: true }, { done: 'Queued', first: 1, count: 1 }]) {
+    const calls = [];
+    const c = QueueRemote.model({ zone: 'Room', call: async (name) => { calls.push(name); return name === 'queue' ? page() : result; } });
+    await c.load(); assert.equal(await c.add('spotify:track:Example'), false);
+    assert.equal(c.state.page, null); assert.deepEqual(calls, ['queue', 'queueAdd']);
+  }
+});
