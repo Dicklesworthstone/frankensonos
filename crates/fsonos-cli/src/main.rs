@@ -15,6 +15,7 @@
 //!   setup      a guided first run on the doctor's checks (--yes for scripts)
 //!   play       play a source URI, or `--favorite <name>`, in a room's group
 //!   pause / resume / next / previous   transport for a room's group
+//!   queue-play play an existing queue position without adding tracks
 //!   seek       move within the track a room's group is on (1:30, +30, -15)
 //!   volume     set (0-100) or change (+N / -N) a room's or group's volume
 //!   mute       mute or unmute a room
@@ -46,6 +47,7 @@ mod eq_cmd;
 mod events_cmd;
 mod known_players;
 mod policy_cmd;
+mod queue_play_cmd;
 mod remote;
 mod rooms_cmd;
 mod scene_cmd;
@@ -129,6 +131,9 @@ enum Command {
         #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]
         limit: u32,
     },
+    /// Play an existing queue position without adding or removing tracks.
+    /// Use `queue <room>` to list positions first; `undo` restores playback.
+    QueuePlay(queue_play_cmd::QueuePlayArgs),
     /// A room's tone: bass and treble (-10 to 10, 0 is flat) and loudness.
     /// `--bass`, `--treble` or `--loudness` change them, and `fsonos undo`
     /// puts them back.
@@ -435,6 +440,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Serve { args, scheduler } => daemon::run(global, &args, &scheduler),
         Command::Sleep(args) => schedule_cmd::sleep(global, &args),
         Command::Eq(args) => eq_cmd::run(global, &args),
+        Command::QueuePlay(args) => queue_play_cmd::run(global, &args),
         Command::Events(args) => events_cmd::run(global, &args),
         Command::Schedule { action } => schedule_cmd::schedule(global, &action),
         Command::Mcp => run_mcp_stdio(global),
@@ -915,6 +921,7 @@ fn plan_for<'a>(
         | Command::Status { .. }
         | Command::Favorites { .. }
         | Command::Queue { .. }
+        | Command::QueuePlay(_)
         | Command::Eq(_)
         | Command::History { .. }
         | Command::Log { .. }
