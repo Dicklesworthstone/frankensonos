@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+mod discovery;
 mod initial;
 
 /// How a player is doing, from the outcome of the calls made to it.
@@ -226,6 +227,8 @@ pub struct Reconciler {
     pub subscriptions: Subscriptions,
     pub health: HealthBoard,
     pub schedule: Refresh,
+    /// Last-known discovery hints, independent of the live room model.
+    discovery: discovery::Discovery,
 }
 
 impl Reconciler {
@@ -239,11 +242,13 @@ impl Reconciler {
             subscriptions: Subscriptions::default(),
             health: HealthBoard::default(),
             schedule: Refresh::new(interval, max_backoff, now),
+            discovery: discovery::Discovery::default(),
         }
     }
 
     /// One reconcile step: discover, probe known addresses for households
-    /// discovery missed, replace the model, record health, and sync GENA.
+    /// discovery missed (including households absent for several passes),
+    /// replace the live model, record health, and sync GENA.
     /// A failed or empty survey keeps the old model, backs the schedule off,
     /// and returns the error.
     pub fn refresh<L: Transport + Subscriber + ?Sized>(
@@ -253,7 +258,9 @@ impl Reconciler {
         callback_url: impl Fn(Service) -> String,
         now: Instant,
     ) -> Result<RefreshReport, CoreError> {
-        let surveyed = inventory::survey_known(lan, seeds, &self.households, DISCOVERY_WAIT);
+        self.discovery.observe(&self.households);
+        let surveyed =
+            inventory::survey_known(lan, seeds, self.discovery.households(), DISCOVERY_WAIT);
         let survey = match surveyed {
             Ok(s) if !s.households.is_empty() => s,
             Ok(_) => {
@@ -291,6 +298,7 @@ impl Reconciler {
             .flat_map(|h| h.players.iter().map(|p| (p.id.clone(), p.ip)))
             .collect();
         self.households = survey.households;
+        self.discovery.observe(&self.households);
         self.vanished = survey.vanished;
         let mut report = RefreshReport {
             households: self.households.len(),
@@ -366,6 +374,7 @@ impl Reconciler {
         // there, so a player it drops is marked rather than just forgotten
         // (the next survey would not miss what the model no longer has).
         let before: Vec<PlayerId> = if service == Service::ZoneGroupTopology {
+            self.discovery.observe(&self.households);
             self.households
                 .iter()
                 .flat_map(|h| h.players.iter().map(|p| p.id.clone()))
@@ -421,6 +430,7 @@ impl Reconciler {
             && let Some(doc) = n.property("ZoneGroupState")
         {
             let zgs = parse_zone_group_state(doc)?;
+            self.discovery.observe(&self.households);
             // This household's vanished players: drop those it lists again,
             // record (or refresh) those it now lists as vanished.
             self.vanished.retain(|v| {
