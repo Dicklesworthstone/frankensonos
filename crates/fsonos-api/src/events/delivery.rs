@@ -26,7 +26,10 @@ pub struct EventStream {
 
 impl EventStream {
     pub(super) fn open(bus: Arc<EventBus>, after: u64) -> Result<Self, Failure> {
-        let lease = bus.wake.reader().map_err(|error| super::unavailable(&error))?;
+        let lease = bus
+            .wake
+            .reader()
+            .map_err(|error| super::unavailable(&error))?;
         Ok(Self {
             subscription: Some(Subscription {
                 lease,

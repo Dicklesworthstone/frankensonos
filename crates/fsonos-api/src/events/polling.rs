@@ -18,11 +18,7 @@ pub(super) struct PollStream {
 }
 
 impl PollStream {
-    pub(super) fn open(
-        bus: Arc<EventBus>,
-        since: u64,
-        wait: Duration,
-    ) -> Result<Self, Failure> {
+    pub(super) fn open(bus: Arc<EventBus>, since: u64, wait: Duration) -> Result<Self, Failure> {
         let lease = bus.wake.reader().map_err(|error| unavailable(&error))?;
         Ok(Self {
             bus,
