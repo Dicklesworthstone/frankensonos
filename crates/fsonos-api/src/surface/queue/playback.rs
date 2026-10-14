@@ -6,13 +6,14 @@ use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions;
 use fsonos_core::policy::Client;
 use fsonos_core::{CoreError, HouseholdState, control};
-use fsonos_proto::content::{BrowseSnapshot, QUEUE, browse_range_snapshot};
+use fsonos_proto::content::BrowsePage;
 use fsonos_proto::topology::{ZoneGroupInfo, get_zone_group_state};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
 use super::super::{Surface, log_entry, resolve, room_view};
+use super::snapshot;
 use crate::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
@@ -30,6 +31,11 @@ pub struct QueuePlayRequest {
     /// position is rejected instead of playing a stale selection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_uri: Option<String>,
+    /// Opaque `revision` returned by `get_queue`. Reject queue edits or a
+    /// different coordinator even when the selected URI occurs more than once.
+    /// Pair with `expected_uri`; this is not a lock or a durable device epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<String>,
 }
 
 impl QueuePlayRequest {
@@ -48,10 +54,26 @@ impl QueuePlayRequest {
                 "expected_uri must be nonempty when supplied",
             ));
         }
+        if self
+            .expected_revision
+            .as_deref()
+            .is_some_and(|revision| revision.trim().is_empty() || revision.len() > 1024)
+        {
+            return Err(Failure::invalid(
+                "expected_revision must be nonempty and at most 1024 bytes",
+            ));
+        }
         Ok(())
     }
 
-    fn check(&self, page: &BrowseSnapshot) -> Result<String, Failure> {
+    fn check(&self, coordinator: &PlayerId, page: &BrowsePage) -> Result<String, Failure> {
+        if self
+            .expected_revision
+            .as_deref()
+            .is_some_and(|expected| expected != snapshot::revision(coordinator, page))
+        {
+            return Err(changed());
+        }
         let [item] = page.objects.as_slice() else {
             return Err(Failure::new(
                 ErrorCode::NoMatch,
@@ -81,7 +103,7 @@ fn changed() -> Failure {
         ErrorCode::NotReady,
         "the queue changed after the selection was made",
     )
-    .with_hint("Read the queue again, then select its current position and URI.")
+    .with_hint("Read the queue again and pass its current revision, position and URI.")
 }
 
 impl Surface {
@@ -109,12 +131,17 @@ impl Surface {
         let player = control::locate(&households, &coordinator)?;
         let zone = player.room_name.clone();
         let host = player.ip;
-        let read = || {
-            browse_range_snapshot(&*self.transport, host, QUEUE, req.position - 1, 1)
-                .map_err(|error| Failure::from(CoreError::from(error)))
-        };
+        let read = || snapshot::page(&*self.transport, host, req.position - 1, 1);
         let selected = read().inspect_err(|failure| self.notice(failure))?;
-        let title = req.check(&selected)?;
+        let title = req.check(&coordinator, &selected).inspect_err(|failure| {
+            self.record(
+                client,
+                format!("{PLAY}: {zone} position {}", req.position),
+                "deny: stale or unavailable selection".into(),
+                failure.detail.clone(),
+                None,
+            );
+        })?;
         let (snaps, missed) = if self.log.is_some() {
             actions::capture_zones(
                 &*self.transport,
@@ -245,3 +272,6 @@ impl Surface {
         Ok(notes)
     }
 }
+
+#[cfg(test)]
+mod tests;

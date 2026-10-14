@@ -22,6 +22,9 @@ pub struct QueuePlayArgs {
     /// Exact renderer URI from `fsonos queue --json`; reject a changed item.
     #[arg(long, value_name = "URI", value_parser = nonblank)]
     pub expected_uri: Option<String>,
+    /// Exact revision from `fsonos queue --json`; reject a changed queue.
+    #[arg(long, value_name = "REVISION", value_parser = nonblank)]
+    pub expected_revision: Option<String>,
 }
 
 fn nonblank(value: &str) -> Result<String, String> {
@@ -40,6 +43,7 @@ impl QueuePlayArgs {
             zone: self.zone.clone(),
             position: self.position,
             expected_uri: self.expected_uri.clone(),
+            expected_revision: self.expected_revision.clone(),
         }
     }
 }
@@ -93,6 +97,7 @@ mod tests {
                 zone: "Living Room@S2".into(),
                 position: 3,
                 expected_uri: Some(URI.into()),
+                expected_revision: None,
             }
         );
     }
@@ -122,5 +127,45 @@ mod tests {
         };
         assert_eq!(args.request().expected_uri, None);
         assert_eq!(args.request().position, 1);
+    }
+
+    #[test]
+    fn queue_revision_is_forwarded_exactly_with_the_selected_uri() {
+        let revision = "q1:9:test:room:4294967295:3";
+        let cli = Cli::try_parse_from([
+            "fsonos",
+            "queue-play",
+            "Room",
+            "3",
+            "--expected-uri",
+            URI,
+            "--expected-revision",
+            revision,
+            "--daemon",
+        ])
+        .unwrap();
+        let Command::QueuePlay(args) = cli.command else {
+            panic!("expected queue selection")
+        };
+        let body = serde_json::to_value(args.request()).unwrap();
+        assert_eq!(body["expected_revision"], revision);
+        assert_eq!(body["expected_uri"], URI);
+        assert_eq!(body["position"], 3);
+    }
+
+    #[test]
+    fn blank_revisions_are_rejected_and_omitted_revisions_stay_optional() {
+        assert!(
+            Cli::try_parse_from([
+                "fsonos", "queue-play", "Room", "1", "--expected-revision", " ",
+            ])
+            .is_err()
+        );
+        let cli = Cli::try_parse_from(["fsonos", "queue-play", "Room", "1"]).unwrap();
+        let Command::QueuePlay(args) = cli.command else {
+            panic!("expected queue selection")
+        };
+        let body = serde_json::to_value(args.request()).unwrap();
+        assert!(body.get("expected_revision").is_none());
     }
 }

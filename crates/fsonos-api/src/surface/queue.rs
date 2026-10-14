@@ -7,8 +7,8 @@
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, QueuedBefore};
-use fsonos_core::policy::Client;
 use fsonos_core::control;
+use fsonos_core::policy::Client;
 use fsonos_proto::didl::SpotifyContainer;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -150,12 +150,13 @@ impl Surface {
         limit: u32,
     ) -> Result<QueueDto, Failure> {
         self.guard(client).authorize(TOOL, true)?;
-        let households = self.households()?;
-        let aliases = self.aliases();
-        let target = resolve(room_view(&households, aliases.as_ref(), client), zone)
-            .map_err(|f| self.explain(f))?;
-        let coordinator = target.coordinator;
-        snapshot::read(&*self.transport, coordinator, offset, limit.clamp(1, MAX_PAGE))
+        let limit = limit.clamp(1, MAX_PAGE);
+        if offset.checked_add(limit).is_none() {
+            return Err(Failure::invalid("invalid queue page range"));
+        }
+        let (households, group) = self.queue_households(client, zone)?;
+        let coordinator = control::locate(&households, &group.coordinator)?;
+        snapshot::read(&*self.transport, coordinator, offset, limit)
             .inspect_err(|f| self.notice(f))
     }
 

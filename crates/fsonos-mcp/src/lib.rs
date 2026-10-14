@@ -31,13 +31,14 @@ async fn echo(ctx: &McpContext, text: String) -> McpResult<String> {
 
 /// Play a selected existing queue entry through the shared backend.
 #[tool(
-    description = "Play an existing entry in a room's group queue without adding or removing tracks. First read get_queue and pass its one-based position; optional expected_uri must be the exact renderer URI returned for that entry, so a changed selection is refused. Activates the queue even when a radio or another source is playing. Room caps and quiet hours apply, and undo_last restores previous playback. Preserves shuffle/repeat; do not automatically replay a failed request."
+    description = "Play an existing entry in a room's group queue without adding or removing tracks. First read get_queue and pass its one-based position; optional expected_uri must be the exact renderer URI returned for that entry, so a changed selection is refused. Also pass the queue's opaque revision as expected_revision to reject edits and coordinator changes even with duplicate track URIs. On a mismatch read the queue again; never silently discard these checks. Activates the queue even when a radio or another source is playing. Room caps and quiet hours apply, and undo_last restores previous playback. Preserves shuffle/repeat; do not automatically replay a failed request."
 )]
 fn play_queue(
     ctx: &McpContext,
     zone: String,
     position: u32,
     expected_uri: Option<String>,
+    expected_revision: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
     let backend = tools::backend().map_err(|failure| tool_error(&failure))?;
@@ -45,6 +46,7 @@ fn play_queue(
         zone,
         position,
         expected_uri,
+        expected_revision,
     })?;
     Ok(CompleteResult::new(result, ResultMeta::empty()))
 }

@@ -126,6 +126,7 @@ mod tests {
             zone: "Room@S2".into(),
             position: 3,
             expected_uri: Some("x-file-cifs://example.invalid/selected.flac".into()),
+            expected_revision: Some("q1:9:test:room:7:3".into()),
         }
     }
 
@@ -171,6 +172,19 @@ mod tests {
         let error = backend(&reply).play_queue(&request()).unwrap_err();
         assert!(error.message.contains("POLICY_DENIED"));
         assert_eq!(reply.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn stale_revision_is_not_retried_or_downgraded_to_uri_only() {
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(Err(Failure::new(ErrorCode::NotReady, "the queue changed"))),
+        });
+        let error = backend(&reply).play_queue(&request()).unwrap_err();
+        assert!(error.message.contains("NOT_READY"));
+        let calls = reply.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0][2]["expected_revision"], "q1:9:test:room:7:3");
     }
 
     fn removal() -> QueueRemoveRequest {
