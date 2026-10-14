@@ -11,8 +11,8 @@ use fastapi::core::RouteEntry;
 use super::{CONTROL, Ctx, Op, answer, body};
 use crate::OutcomeDto;
 use crate::surface::queue::{
-    ADD, PLAY, REMOVE, QueueAddRequest, QueueAddedDto, QueuePlayRequest, QueueRemoveRequest,
-    QueueRemovedDto,
+    ADD, MOVE, PLAY, REMOVE, QueueAddRequest, QueueAddedDto, QueueMoveRequest, QueueMovedDto,
+    QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto,
 };
 
 /// Queue addition, playback and identity-checked removal routes.
@@ -51,5 +51,16 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .request_schema::<QueueRemoveRequest>(true)
         .response_schema::<QueueRemovedDto>(200, "The selected entries were removed"),
+        cx.route(
+            &Op::post(
+                "/queue/move",
+                MOVE,
+                CONTROL,
+                "Move identified queue entries natively without restarting playback (not undoable)",
+            ),
+            |s, c, req| answer(body::<QueueMoveRequest>(req).and_then(|r| s.queue_move(c, &r))),
+        )
+        .request_schema::<QueueMoveRequest>(true)
+        .response_schema::<QueueMovedDto>(200, "The queue order was confirmed"),
     ]
 }

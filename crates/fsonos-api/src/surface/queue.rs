@@ -22,6 +22,9 @@ mod playback;
 mod snapshot;
 pub use playback::{PLAY, QueuePlayRequest};
 
+mod movement;
+pub use movement::{MOVE, QueueMoveRequest, QueueMovedDto};
+
 mod removal;
 pub use removal::{REMOVE, QueueRemoveRequest, QueueRemovedDto};
 
