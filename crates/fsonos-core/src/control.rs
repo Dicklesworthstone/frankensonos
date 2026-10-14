@@ -255,19 +255,23 @@ pub fn play_spotify_container<T: Transport + ?Sized>(
     title: &str,
 ) -> Result<(), CoreError> {
     let host = addr(households, coordinator)?;
-    let source = || -> Result<(String, String), CoreError> {
+    let source = |rejected: Option<&(String, String)>| -> Result<(String, String), CoreError> {
         let favorites = content::browse_all(t, host, "FV:2")?;
-        spotify_source::container(&favorites, kind, spotify_uri, title)
-            .ok_or(CoreError::NoSpotifyFavorite)
+        match rejected {
+            Some(old) => spotify_source::after_rejection(&favorites, kind, spotify_uri, title, old),
+            None => spotify_source::container(&favorites, kind, spotify_uri, title),
+        }
+        .ok_or(CoreError::NoSpotifyFavorite)
     };
     let render = |(uri, didl): &(String, String)| -> Result<(), CoreError> {
         soap::remove_all_tracks_from_queue(t, host)?;
         let first = soap::add_uri_to_queue(t, host, uri, didl, false)?;
         play_queue_from(t, households, coordinator, first)
     };
-    match render(&source()?) {
+    let initial = source(None)?;
+    match render(&initial) {
         Ok(()) => Ok(()),
-        Err(e) if is_render_800(&e) => match render(&source()?) {
+        Err(e) if is_render_800(&e) => match render(&source(Some(&initial))?) {
             Ok(()) => Ok(()),
             Err(e) if is_render_800(&e) => Err(CoreError::RenderParamsStale),
             Err(e) => Err(e),
@@ -376,11 +380,16 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
         0
     };
     let kind = SpotifyContainer::of(spotify_uri);
-    let source = || -> Result<(String, String), CoreError> {
+    let source = |rejected: Option<&(String, String)>| -> Result<(String, String), CoreError> {
         let favorites = content::browse_all(t, host, "FV:2")?;
         if let Some(kind) = kind {
-            return spotify_source::container(&favorites, kind, spotify_uri, title)
-                .ok_or(CoreError::NoSpotifyFavorite);
+            return match rejected {
+                Some(old) => {
+                    spotify_source::after_rejection(&favorites, kind, spotify_uri, title, old)
+                }
+                None => spotify_source::container(&favorites, kind, spotify_uri, title),
+            }
+            .ok_or(CoreError::NoSpotifyFavorite);
         }
         let params = learn_spotify_params(&favorites).ok_or(CoreError::NoSpotifyFavorite)?;
         Ok((
@@ -391,8 +400,9 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
     let add = |(uri, didl): &(String, String)| -> Result<soap::Enqueued, CoreError> {
         Ok(soap::enqueue_uri(t, host, uri, didl, at, next)?)
     };
-    let added = match add(&source()?) {
-        Err(e) if is_render_800(&e) => match add(&source()?) {
+    let initial = source(None)?;
+    let added = match add(&initial) {
+        Err(e) if is_render_800(&e) => match add(&source(Some(&initial))?) {
             Err(e) if is_render_800(&e) => return Err(CoreError::RenderParamsStale),
             other => other?,
         },

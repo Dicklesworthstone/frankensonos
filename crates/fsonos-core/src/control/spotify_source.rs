@@ -111,6 +111,48 @@ pub(super) fn container(
     source: &str,
     title: &str,
 ) -> Option<(String, String)> {
+    choose(favorites, kind, source, title, None)
+}
+
+/// A definite 800 permits one fresh learning pass. Prefer another complete
+/// observed template (or the established track fallback) over the rejected
+/// one. With no alternative, retain the existing one-retry behavior: an 800
+/// can also be transient. Ambiguous transport failures never call this path.
+pub(super) fn after_rejection(
+    favorites: &[DidlObject],
+    kind: SpotifyContainer,
+    source: &str,
+    title: &str,
+    rejected: &(String, String),
+) -> Option<(String, String)> {
+    choose(favorites, kind, source, title, Some(rejected))
+        .or_else(|| container(favorites, kind, source, title))
+}
+
+fn same_source(candidate: &(String, String), rejected: &(String, String)) -> bool {
+    if candidate.1 != rejected.1 {
+        return false;
+    }
+    let Some((path, query)) = candidate.0.split_once('?') else {
+        return candidate == rejected;
+    };
+    let Some((old_path, old_query)) = rejected.0.split_once('?') else {
+        return false;
+    };
+    let mut pairs: Vec<_> = query.split('&').collect();
+    let mut old_pairs: Vec<_> = old_query.split('&').collect();
+    pairs.sort_unstable();
+    old_pairs.sort_unstable();
+    path == old_path && pairs == old_pairs
+}
+
+fn choose(
+    favorites: &[DidlObject],
+    kind: SpotifyContainer,
+    source: &str,
+    title: &str,
+    rejected: Option<&(String, String)>,
+) -> Option<(String, String)> {
     let templates: Vec<_> = favorites
         .iter()
         .filter_map(|favorite| Template::from_favorite(favorite, kind))
@@ -118,6 +160,9 @@ pub(super) fn container(
     let mut best = None;
     let mut most = 0;
     for template in &templates {
+        if rejected.is_some_and(|old| same_source(&template.render(kind, source, title), old)) {
+            continue;
+        }
         let count = templates.iter().filter(|other| *other == template).count();
         if count > most {
             best = Some(template);
@@ -132,10 +177,15 @@ pub(super) fn container(
     // malformed or differently linked favorite. These are the existing
     // protocol defaults, not values inferred from another household.
     let prefix = kind.prefix_in(&[]);
-    Some((
+    let fallback = (
         spotify_container_uri(source, &prefix, &params),
         spotify_container_didl(source, title, kind, &prefix, &params),
-    ))
+    );
+    if rejected.is_some_and(|old| same_source(&fallback, old)) {
+        None
+    } else {
+        Some(fallback)
+    }
 }
 
 #[cfg(test)]
@@ -385,5 +435,66 @@ mod tests {
                 spotify_container_didl(source, "New", kind, &prefix, &p)
             );
         }
+    }
+
+    #[test]
+    fn retry_skips_a_rejected_tuple_even_when_stale_favorites_outvote_it() {
+        let stale = album(&params(1), "aaaa206c", "sid=12&flags=8300&sn=1");
+        let reordered = album(&params(1), "aaaa206c", "sn=1&flags=8300&sid=12");
+        let fresh = album(&params(2), "bbbb206c", "sid=12&flags=8300&sn=2");
+        let favorites = [stale.clone(), stale, reordered, fresh];
+        let source = "spotify:album:0SimNew";
+        let kind = SpotifyContainer::Album;
+        let initial = container(&favorites, kind, source, "New").unwrap();
+        assert!(initial.0.ends_with("&sn=1"));
+        let retry = after_rejection(&favorites, kind, source, "New", &initial).unwrap();
+        assert!(retry.0.starts_with("x-rincon-cpcontainer:bbbb206c"));
+        assert!(retry.0.ends_with("&sn=2"));
+        assert_eq!(
+            parse_didl(&retry.1).unwrap()[0]
+                .desc
+                .as_ref()
+                .unwrap()
+                .value,
+            params(2).cdudn
+        );
+    }
+
+    #[test]
+    fn a_rejected_native_template_can_fall_back_to_the_observed_track_account() {
+        let p = params(1);
+        let track = "spotify:track:0SimTrack";
+        let track_fav = favorite(
+            &spotify_track_uri(track, &p),
+            &spotify_track_didl(track, "Track", &p),
+        );
+        let stale = album(&params(9), "abcd206c", "sid=12&flags=8300&sn=9");
+        let favorites = [track_fav, stale];
+        let kind = SpotifyContainer::Album;
+        let source = "spotify:album:0SimNew";
+        let initial = container(&favorites, kind, source, "New").unwrap();
+        assert!(initial.0.ends_with("&sn=9"));
+        let retry = after_rejection(&favorites, kind, source, "New", &initial).unwrap();
+        let prefix = kind.prefix_in(&[]);
+        assert_eq!(retry.0, spotify_container_uri(source, &prefix, &p));
+        assert_eq!(
+            retry.1,
+            spotify_container_didl(source, "New", kind, &prefix, &p)
+        );
+    }
+
+    #[test]
+    fn retry_without_an_alternative_preserves_the_existing_transient_fault_behavior() {
+        let favorites = [album(&params(1), "1004206c", "sid=12&flags=8300&sn=1")];
+        let source = "spotify:album:0SimNew";
+        let kind = SpotifyContainer::Album;
+        let initial = container(&favorites, kind, source, "New").unwrap();
+        assert_eq!(
+            after_rejection(&favorites, kind, source, "New", &initial),
+            Some(initial.clone())
+        );
+        // An account removed between attempts must not be recovered from a
+        // cached rejected source: only the fresh favorites are authoritative.
+        assert!(after_rejection(&[], kind, source, "New", &initial).is_none());
     }
 }
