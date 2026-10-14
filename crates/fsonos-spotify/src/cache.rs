@@ -25,11 +25,11 @@ use fsonos_core::store::{LibraryEntry, LibraryOrigin, Store};
 use crate::SpotifyError;
 use crate::classical::{CandidatePool, ClassicalTrack};
 use crate::dj::{DjConfig, WorkPool};
-use crate::expand::{AlbumMisses, complete_from_cache, complete_works};
+use crate::expand::{AlbumMisses, Expansion, complete_from_cache, complete_works};
 use crate::genres::{GenreRead, tag_genres};
 use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, split_artists};
 use crate::session::Session;
-use crate::taste::read_taste;
+use crate::taste::{TasteRead, read_taste};
 use crate::works::group_works;
 
 /// What one sync did.
@@ -51,6 +51,9 @@ pub struct LibrarySync {
 pub struct LibrarySyncDetailed {
     pub library: LibrarySync,
     pub genres: GenreRead,
+    /// What the best-effort reads couldn't read this time, a sentence each
+    /// ([`sync_notes`]); empty when they read everything.
+    pub notes: Vec<String>,
 }
 
 /// Read the owner's whole library from Spotify, add and weigh what their
@@ -138,7 +141,7 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     // restarts; a store that can't say which just asks again.
     let works = group_works(pool_from_store(store)?.tracks());
     let mut misses = AlbumMisses::load(&*store, now).unwrap_or_default();
-    let _ = complete_works(
+    let (_, albums) = complete_works(
         session,
         cx,
         store,
@@ -149,9 +152,60 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     )
     .await;
     let _ = misses.save(store, now);
+    let notes = sync_notes(&read, &genres, &albums);
     Ok(LibrarySyncDetailed {
         library: report,
         genres,
+        notes,
+    })
+}
+
+/// What a sync's best-effort reads couldn't read, a sentence each: the
+/// taste signals the grant lacks or that failed, reads that stopped early,
+/// artists' genres left for the next sync, and artists or albums that
+/// couldn't be read. Empty when they read everything.
+fn sync_notes(taste: &TasteRead, genres: &GenreRead, albums: &Expansion) -> Vec<String> {
+    let mut notes = Vec::new();
+    if !taste.missing_scopes.is_empty() {
+        notes.push(format!(
+            "the Spotify grant lacks {}, so those taste signals weren't read",
+            taste.missing_scopes.join(", ")
+        ));
+    }
+    if !taste.failed.is_empty() {
+        let failed: Vec<String> = taste
+            .failed
+            .iter()
+            .map(|(what, why)| format!("{what} ({why})"))
+            .collect();
+        notes.push(format!("taste signals not read: {}", failed.join(", ")));
+    }
+    if let Some(why) = &taste.artist_tracks_unread {
+        notes.push(format!("artist top tracks not read ({why})"));
+    }
+    let stopped = |what: &str, why: Option<&String>| {
+        why.map(|why| format!("the {what} read stopped early ({why})"))
+    };
+    notes.extend(stopped("taste", taste.halted.as_ref()));
+    if genres.deferred > 0 {
+        notes.push(format!(
+            "{} artists' genres wait for the next sync",
+            genres.deferred
+        ));
+    }
+    notes.extend(unread("artist's genres", "artists' genres", &genres.failed));
+    notes.extend(stopped("genre", genres.halted.as_ref()));
+    notes.extend(unread("album", "albums", &albums.failed));
+    notes.extend(stopped("album", albums.halted.as_ref()));
+    notes
+}
+
+/// `n <things> couldn't be read`, with the first reason, when any couldn't.
+fn unread(one: &str, many: &str, failed: &[(String, String)]) -> Option<String> {
+    let (_, why) = failed.first()?;
+    Some(match failed.len() {
+        1 => format!("1 {one} couldn't be read ({why})"),
+        n => format!("{n} {many} couldn't be read (the first: {why})"),
     })
 }
 
@@ -276,6 +330,55 @@ mod tests {
     use crate::classical::analyze;
     use crate::client::{CachedToken, Paging, SCOPE, SavedAlbum, SavedTrack, TokenCache};
     use crate::fake_spotify::{FakeSpotify, config, runtime, scratch_dir};
+
+    #[test]
+    fn a_sync_says_what_it_could_not_read() {
+        let none = sync_notes(
+            &TasteRead::default(),
+            &GenreRead::default(),
+            &Expansion::default(),
+        );
+        assert!(none.is_empty(), "{none:?}");
+        let taste = TasteRead {
+            missing_scopes: vec!["user-top-read", "user-follow-read"],
+            failed: vec![("playlists".into(), "HTTP 500".into())],
+            ..TasteRead::default()
+        };
+        let genres = GenreRead {
+            deferred: 40,
+            halted: Some("rate limited".into()),
+            ..GenreRead::default()
+        };
+        let albums = Expansion {
+            failed: vec![
+                ("spotify:album:a".into(), "not found".into()),
+                ("spotify:album:b".into(), "timed out".into()),
+            ],
+            ..Expansion::default()
+        };
+        assert_eq!(
+            sync_notes(&taste, &genres, &albums),
+            [
+                "the Spotify grant lacks user-top-read, user-follow-read, so those taste signals weren't read",
+                "taste signals not read: playlists (HTTP 500)",
+                "40 artists' genres wait for the next sync",
+                "the genre read stopped early (rate limited)",
+                "2 albums couldn't be read (the first: not found)",
+            ]
+        );
+        let one = Expansion {
+            failed: vec![("spotify:album:a".into(), "not found".into())],
+            halted: Some("signed out".into()),
+            ..Expansion::default()
+        };
+        assert_eq!(
+            sync_notes(&TasteRead::default(), &GenreRead::default(), &one),
+            [
+                "1 album couldn't be read (not found)",
+                "the album read stopped early (signed out)",
+            ]
+        );
+    }
 
     fn fixture_items() -> Vec<LibraryItem> {
         let albums =

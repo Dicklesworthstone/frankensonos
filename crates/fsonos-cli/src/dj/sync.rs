@@ -216,6 +216,7 @@ impl LibrarySync {
             classical: synced.library.classical,
             retired: synced.library.retired,
             genre_artists_pending: pending,
+            notes: synced.notes,
         })
     }
 
@@ -419,6 +420,7 @@ mod tests {
             classical: 1,
             retired: 0,
             genre_artists_pending: 0,
+            notes: Vec::new(),
         }
     }
 

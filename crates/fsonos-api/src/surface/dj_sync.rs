@@ -10,6 +10,8 @@
 //! the DJ plays from what it found from its next pick. A start is logged.
 //! It is not undoable: the next sync reads the library afresh anyway.
 
+use std::fmt::Write as _;
+
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::policy::Client;
 use serde::{Deserialize, Serialize};
@@ -51,6 +53,12 @@ pub struct SyncedDto {
     /// next pass continue rather than repeat them.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub genre_artists_pending: usize,
+    /// What the refresh couldn't read this time, a sentence each: taste
+    /// signals the grant lacks, reads that failed or stopped early, artists
+    /// left for the next refresh. It reads them again then. Empty when it
+    /// read everything.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 #[allow(
@@ -101,10 +109,14 @@ impl SyncedDto {
             1 => ", 1 artist genre lookup pending; continuing at the next daemon check".to_owned(),
             n => format!(", {n} artist genre lookups pending; continuing at the next daemon check"),
         };
-        format!(
+        let mut text = format!(
             "Library refreshed {when}: {} tracks, {} the DJ can play ({} classical){retired}{pending}.",
             self.tracks, self.candidates, self.classical
-        )
+        );
+        if !self.notes.is_empty() {
+            let _ = write!(text, " Not everything was read: {}.", self.notes.join("; "));
+        }
+        text
     }
 }
 
@@ -141,6 +153,7 @@ mod tests {
             classical: 300,
             retired,
             genre_artists_pending: 0,
+            notes: Vec::new(),
         }
     }
 
@@ -170,5 +183,25 @@ mod tests {
                 .done
                 .contains("not been refreshed")
         );
+        let partial = SyncedDto {
+            notes: vec![
+                "the genre read stopped early (rate limited)".into(),
+                "2 albums couldn't be read (the first: not found)".into(),
+            ],
+            ..synced(0)
+        };
+        assert!(
+            partial.text().ends_with(
+                "(300 classical). Not everything was read: the genre read stopped early (rate limited); 2 albums couldn't be read (the first: not found)."
+            ),
+            "{}",
+            partial.text()
+        );
+        // A stamp from before notes reads with none.
+        let old: SyncedDto = serde_json::from_str(
+            r#"{"at":1790000000,"tracks":1,"candidates":1,"classical":0,"retired":0}"#,
+        )
+        .unwrap();
+        assert!(old.notes.is_empty());
     }
 }
