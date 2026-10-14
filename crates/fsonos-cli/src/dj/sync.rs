@@ -111,48 +111,61 @@ impl LibrarySync {
         LibrarySyncDto::new(running, self.last(), error)
     }
 
+    /// Claim the one refresh slot. Admission happens before a worker is
+    /// spawned, so concurrent callers cannot both schedule work.
+    fn claim(&self) -> bool {
+        let mut state = self.running();
+        if state.running {
+            return false;
+        }
+        state.running = true;
+        state.error = None;
+        true
+    }
+
     /// Start a refresh on a thread of its own, unless one is running;
     /// where it stands.
     pub fn start(self: &Arc<Self>) -> Result<LibrarySyncDto, Failure> {
         if !self.signed_in() {
             return Err(signed_out());
         }
-        if self.running().running {
+        if !self.claim() {
             return Ok(self.status());
         }
         let sync = Arc::clone(self);
-        thread::Builder::new()
+        if let Err(e) = thread::Builder::new()
             .name("fsonos-library-sync".into())
             .stack_size(STACK)
             .spawn(move || {
-                if let Err(f) = sync.run() {
+                if let Err(f) = sync.run_claimed() {
                     tracing::warn!("library refresh: {}", f.detail);
                 }
             })
-            .map_err(|e| Failure::new(ErrorCode::Internal, format!("start the refresh: {e}")))?;
-        // The thread marks itself running at once; say so even if it has
-        // not been scheduled yet.
-        let mut state = self.status();
-        if !state.running {
-            state = LibrarySyncDto::new(true, state.last, None);
+        {
+            let failure = Failure::new(ErrorCode::Internal, format!("start the refresh: {e}"));
+            let mut state = self.running();
+            state.running = false;
+            state.error = Some(failure.detail.clone());
+            return Err(failure);
         }
-        Ok(state)
+        Ok(self.status())
     }
 
     /// Refresh now, on this thread (which must not be in a runtime);
     /// what it found. A second caller while one runs is told to wait.
     pub fn run(&self) -> Result<SyncedDto, Failure> {
-        {
-            let mut state = self.running();
-            if state.running {
-                return Err(Failure::new(
-                    ErrorCode::NotReady,
-                    "a library refresh is already running",
-                )
-                .with_hint("fsonos dj sync (GET /dj/sync) shows when it is done."));
-            }
-            state.running = true;
+        if !self.claim() {
+            return Err(Failure::new(
+                ErrorCode::NotReady,
+                "a library refresh is already running",
+            )
+            .with_hint("fsonos dj sync (GET /dj/sync) shows when it is done."));
         }
+        self.run_claimed()
+    }
+
+    /// Perform a refresh whose slot was already claimed.
+    fn run_claimed(&self) -> Result<SyncedDto, Failure> {
         let result = self.read();
         let mut state = self.running();
         state.running = false;
@@ -460,6 +473,25 @@ mod tests {
         assert!(status.done.contains("failed"), "{}", status.done);
         assert!(!sync.take_fresh(), "nothing landed");
         assert_eq!(sync.last(), None);
+    }
+
+    #[test]
+    fn only_one_concurrent_caller_claims_the_refresh_slot() {
+        let sync = Arc::new(sync("claim"));
+        let start = Arc::new(std::sync::Barrier::new(16));
+        let claimed: usize = (0..16)
+            .map(|_| {
+                let sync = Arc::clone(&sync);
+                let start = Arc::clone(&start);
+                thread::spawn(move || {
+                    start.wait();
+                    usize::from(sync.claim())
+                })
+            })
+            .map(|worker| worker.join().unwrap())
+            .sum();
+        assert_eq!(claimed, 1);
+        assert!(sync.running().running);
     }
 
     #[test]
