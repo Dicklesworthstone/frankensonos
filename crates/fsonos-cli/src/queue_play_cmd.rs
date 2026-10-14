@@ -221,7 +221,9 @@ mod tests {
         let dir = crate::queue_edit_cmd::fixture::Directory::new();
         let path = dir.path().join("queue.json");
         std::fs::write(&path, page().to_string()).unwrap();
-        let request = from_snapshot(path.to_str().unwrap(), "12").request().unwrap();
+        let request = from_snapshot(path.to_str().unwrap(), "12")
+            .request()
+            .unwrap();
         assert_eq!(request.zone, "Member@S2");
         assert_eq!(request.position, 12);
         assert_eq!(request.expected_uri.as_deref(), Some(URI));
@@ -233,7 +235,11 @@ mod tests {
         let dir = crate::queue_edit_cmd::fixture::Directory::new();
         let path = dir.path().join("queue.json");
         std::fs::write(&path, page().to_string()).unwrap();
-        assert!(from_snapshot(path.to_str().unwrap(), "11").request().is_err());
+        assert!(
+            from_snapshot(path.to_str().unwrap(), "11")
+                .request()
+                .is_err()
+        );
         for field in ["uri", "revision"] {
             let mut invalid = page();
             if field == "uri" {
@@ -242,7 +248,11 @@ mod tests {
                 invalid[field] = serde_json::Value::Null;
             }
             std::fs::write(&path, invalid.to_string()).unwrap();
-            assert!(from_snapshot(path.to_str().unwrap(), "12").request().is_err());
+            assert!(
+                from_snapshot(path.to_str().unwrap(), "12")
+                    .request()
+                    .is_err()
+            );
         }
     }
 

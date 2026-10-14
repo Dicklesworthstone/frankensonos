@@ -108,7 +108,10 @@ pub(crate) fn load_snapshot(path: &Path) -> Result<QueueDto, Failure> {
         read_snapshot(std::io::stdin().lock())
     } else {
         let file = std::fs::File::open(path).map_err(|e| {
-            Failure::invalid(format!("cannot open queue snapshot {}: {e}", path.display()))
+            Failure::invalid(format!(
+                "cannot open queue snapshot {}: {e}",
+                path.display()
+            ))
         })?;
         read_snapshot(file)
     }

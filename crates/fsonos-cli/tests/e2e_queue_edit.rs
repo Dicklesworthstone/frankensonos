@@ -224,8 +224,7 @@ fn play_snapshot(s: &mut Scenario, mode: &str, room: &str, before: &QueueDto) {
         "stale-playback",
         "cli",
         "a stale playback snapshot cannot select a different queue entry",
-        !refused.ok()
-            && soap::get_position_info(&s.lan(), s.ip("Lead")).unwrap().uri == uri("d"),
+        !refused.ok() && soap::get_position_info(&s.lan(), s.ip("Lead")).unwrap().uri == uri("d"),
         &refused.stderr,
     );
 }
