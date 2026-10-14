@@ -74,18 +74,23 @@ fn continuations_cannot_switch_collection_or_leave_the_api() {
 fn opaque_cursors_are_compared_by_value_not_by_url_spelling() {
     let endpoints = Endpoints::default();
     let root = format!("{API}/me/following");
-    let mut chain = Chain::new(&root, Progress::Cursor(HashSet::new()));
+    // The chain follows artists, as the first page asked; every case below
+    // keeps that type so it fails on its cursor alone.
+    let mut chain = Chain::new(
+        &format!("{root}?type=artist"),
+        Progress::Cursor(HashSet::new()),
+    );
     for cursor in ["ArtistB", "ArtistA"] {
         chain
             .follow(&endpoints, &format!("{root}?type=artist&after={cursor}"))
             .unwrap();
     }
     for query in [
-        "after=ArtistB&limit=1",
-        "after=Artist%41",
-        "after=",
+        "type=artist&after=ArtistB&limit=1",
+        "type=artist&after=Artist%41",
+        "type=artist&after=",
         "type=artist",
-        "after=C&after=D",
+        "type=artist&after=C&after=D",
     ] {
         assert!(
             chain
