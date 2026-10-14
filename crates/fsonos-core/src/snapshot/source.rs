@@ -177,5 +177,20 @@ pub(super) fn restore<T: Transport + ?Sized>(
                 Err(error)
             }
         }
+    }?;
+    if matches!(op, RestoreOp::PlayQueue)
+        && let Some(mode) = snap.play_mode
+    {
+        // Ordering is part of restoring this queue source. Recheck the same
+        // source authorization before its setting, and do not resume unless
+        // both the setting and the original queue/group still agree.
+        if !vet(op).is_ok_and(|approved| approved == *op) {
+            return Err(unproven("queue restoration authorization changed"));
+        }
+        super::play_mode::restore(t, host, &snap.coordinator, mode)?;
+        if !target.confirmed(t, host, &snap.coordinator, &before.members)? {
+            return Err(unproven("the queue changed while restoring its play mode"));
+        }
     }
+    Ok(())
 }

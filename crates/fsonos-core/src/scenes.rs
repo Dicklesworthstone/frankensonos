@@ -927,6 +927,7 @@ mod tests {
                 .collect(),
             group_volume: None,
             transport_state: state,
+            play_mode: None,
             source,
             captured_at: 0,
         }

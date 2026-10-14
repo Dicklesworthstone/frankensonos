@@ -706,7 +706,7 @@ impl State {
             "ConfigureSleepTimer" | "GetRemainingSleepTimerDuration" => {
                 self.sleep_timer(p, action, args, now)
             }
-            "GetTransportInfo" | "GetPositionInfo" | "GetMediaInfo" => {
+            "GetTransportInfo" | "GetPositionInfo" | "GetMediaInfo" | "GetTransportSettings" => {
                 self.av_reads(p, action, now)
             }
             _ => Err(INVALID_ACTION),
@@ -733,6 +733,25 @@ impl State {
         Ok(Vec::new())
     }
 
+    /// Queue ordering and repeat are settings, not playback commands.
+    fn set_play_mode(&mut self, p: usize, args: &Args<'_>) -> Result<Out, Fault> {
+        self.require_coordinator(p)?;
+        let mode = args.get("NewPlayMode")?;
+        if !matches!(
+            mode,
+            "NORMAL"
+                | "REPEAT_ALL"
+                | "REPEAT_ONE"
+                | "SHUFFLE"
+                | "SHUFFLE_NOREPEAT"
+                | "SHUFFLE_REPEAT_ONE"
+        ) {
+            return Err(INVALID_ARGS);
+        }
+        self.players[p].transport.play_mode = mode.to_string();
+        Ok(Vec::new())
+    }
+
     /// What the transport plays from: its URI and its queue.
     fn av_sources(
         &mut self,
@@ -742,18 +761,7 @@ impl State {
         now: u64,
     ) -> Result<Out, Fault> {
         match action {
-            "SetPlayMode" => {
-                self.require_coordinator(p)?;
-                let mode = args.get("NewPlayMode")?;
-                if !matches!(
-                    mode,
-                    "NORMAL" | "REPEAT_ALL" | "REPEAT_ONE" | "SHUFFLE" | "SHUFFLE_NOREPEAT"
-                ) {
-                    return Err(INVALID_ARGS);
-                }
-                self.players[p].transport.play_mode = mode.to_string();
-                Ok(Vec::new())
-            }
+            "SetPlayMode" => self.set_play_mode(p, args),
             "SetAVTransportURI" => {
                 // The hidden half of a pair follows its primary.
                 self.require_not_secondary(p)?;
@@ -968,6 +976,13 @@ impl State {
     /// Transport reads; a group member answers with its coordinator's state.
     fn av_reads(&self, p: usize, action: &str, now: u64) -> Result<Out, Fault> {
         match action {
+            "GetTransportSettings" => {
+                let c = self.players[p].coordinator;
+                Ok(vec![
+                    ("PlayMode", self.players[c].transport.play_mode.clone()),
+                    ("RecQualityMode", "NOT_IMPLEMENTED".into()),
+                ])
+            }
             "GetTransportInfo" => {
                 let c = self.players[p].coordinator;
                 Ok(vec![

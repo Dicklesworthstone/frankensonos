@@ -461,6 +461,7 @@ mod tests {
             levels: Vec::new(),
             group_volume: Some(20),
             transport_state: TransportState::Playing,
+            play_mode: None,
             source: SnapshotSource::Uri {
                 uri: "x-rincon-mp3radio://example.invalid/stream".into(),
                 metadata: String::new(),

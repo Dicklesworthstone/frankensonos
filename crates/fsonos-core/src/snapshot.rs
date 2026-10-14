@@ -11,15 +11,17 @@
 //! never through SetGroupVolume (which scales members proportionally). The
 //! queue's contents are not captured, only its reference: if the queue changed
 //! since (its ContentDirectory `UpdateID` moved), the source and position are
-//! reported as not restorable rather than resuming something else. Play mode
-//! (shuffle / repeat) is not captured yet: there is no read for it.
+//! reported as not restorable rather than resuming something else. Queue play
+//! mode (shuffle / repeat), when readable, is restored with its source before
+//! seeking and resuming. Older snapshots and unsupported settings stay unknown.
 
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::content::{self, BrowseFlag};
 use fsonos_proto::{Transport, control as soap};
-use fsonos_types::{HouseholdId, PlayerId, TransportState};
+use fsonos_types::{HouseholdId, PlayMode, PlayerId, TransportState};
 use std::net::IpAddr;
 
+mod play_mode;
 mod source;
 
 /// One member room's own levels (addressed through the room's primary).
@@ -62,6 +64,9 @@ pub struct ZoneSnapshot {
     /// For reference only; restore never sets it (see the module docs).
     pub group_volume: Option<u8>,
     pub transport_state: TransportState,
+    /// Queue ordering/repeat, when known. Absent in older saved snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub play_mode: Option<PlayMode>,
     pub source: SnapshotSource,
     /// Unix seconds, stamped by the caller.
     pub captured_at: i64,
@@ -102,6 +107,7 @@ pub enum RestoreOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Aspect {
     Group,
+    /// The media source, including its captured queue ordering/repeat mode.
     Source,
     Position,
     Volume,
@@ -171,6 +177,11 @@ pub fn capture<T: Transport + ?Sized>(
             })
         })
         .collect::<Result<_, CoreError>>()?;
+    let play_mode = if matches!(source, SnapshotSource::Queue { .. }) {
+        fsonos_proto::play_mode::get_play_mode(t, host).ok()
+    } else {
+        None
+    };
     Ok(ZoneSnapshot {
         household: household.id.clone(),
         coordinator: coordinator.clone(),
@@ -178,6 +189,7 @@ pub fn capture<T: Transport + ?Sized>(
         levels,
         group_volume: soap::get_group_volume(t, host).ok(),
         transport_state: transport.state,
+        play_mode,
         source,
         captured_at,
     })
@@ -568,6 +580,7 @@ mod tests {
                 .collect(),
             group_volume: Some(30),
             transport_state: state,
+            play_mode: None,
             source,
             captured_at: 0,
         }

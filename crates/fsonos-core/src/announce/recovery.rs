@@ -147,6 +147,9 @@ pub(super) fn put_back<T: Transport + ?Sized>(
             continue;
         }
         let mut changed = snap.clone();
+        // The announcement never changed ordering. Keep the current setting,
+        // including a newer choice made by the owner while the clip played.
+        changed.play_mode = None;
         changed.levels.retain(|l| {
             effects.volumes.iter().any(|(p, _)| p == &l.player) || effects.mutes.contains(&l.player)
         });
