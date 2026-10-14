@@ -62,9 +62,10 @@
 	<true/>
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
-	<!-- Time between SIGTERM and SIGKILL: room to UNSUBSCRIBE GENA events. -->
+	<!-- Time between SIGTERM and SIGKILL: room for announcements in flight
+	     to put the music back (up to 60 s), then to UNSUBSCRIBE GENA events. -->
 	<key>ExitTimeOut</key>
-	<integer>20</integer>
+	<integer>90</integer>
 	<!-- Without a ProcessType, launchd throttles the job's CPU and I/O. -->
 	<key>ProcessType</key>
 	<string>Standard</string>

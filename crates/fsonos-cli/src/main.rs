@@ -406,13 +406,26 @@ enum Switch {
     Off,
 }
 
+/// The log filter: `RUST_LOG`, or `info`. The store's database logs every
+/// statement at `info` (and runtime notices at `warn`), which would bury the
+/// daemon's own log, so it is held to errors unless the filter names it.
+fn log_spec(rust_log: Option<String>) -> String {
+    let spec = rust_log.unwrap_or_else(|| "info".into());
+    if spec.contains("fsqlite") {
+        spec
+    } else {
+        format!("{spec},fsqlite=error")
+    }
+}
+
 /// Exit codes follow `docs/ERRORS.md`: a [`Failure`] exits with its code's
 /// number (2 usage, 3 not found, 4 unreachable, 5 policy), anything else 1.
 fn main() -> ExitCode {
     // Logs go to stderr: stdout carries the MCP stdio protocol.
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_new(log_spec(std::env::var("RUST_LOG").ok()))
+                .unwrap_or_else(|_| "info,fsqlite=error".into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -1453,6 +1466,22 @@ mod tests {
             plan(&["play", "Den", "x-rincon-mp3radio://stream.example.org/a.mp3", "--title", "Radio"]),
             Planned::Play { title: Some(t), .. } if t == "Radio"
         ));
+    }
+
+    #[test]
+    fn the_database_logs_only_errors_unless_asked() {
+        assert_eq!(log_spec(None), "info,fsqlite=error");
+        assert_eq!(log_spec(Some("debug".into())), "debug,fsqlite=error");
+        assert_eq!(
+            log_spec(Some("info,fsqlite=debug".into())),
+            "info,fsqlite=debug"
+        );
+        for spec in [log_spec(None), log_spec(Some(String::new()))] {
+            assert!(
+                tracing_subscriber::EnvFilter::try_new(&spec).is_ok(),
+                "{spec}"
+            );
+        }
     }
 
     #[test]

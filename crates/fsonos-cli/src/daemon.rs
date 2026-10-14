@@ -661,6 +661,27 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU64;
 
+    /// launchd sends SIGKILL `ExitTimeOut` seconds after SIGTERM. The job
+    /// template must leave the announcement drain, and the unsubscribes after
+    /// it, time to finish, or a restart cuts an announcement off before it
+    /// puts the music back.
+    #[test]
+    fn the_launchd_job_waits_out_a_stopping_daemon() {
+        let plist = include_str!("../../../docs/launchd/io.github.dicklesworthstone.fsonos.plist");
+        let secs: u64 = plist
+            .split("<key>ExitTimeOut</key>")
+            .nth(1)
+            .and_then(|rest| rest.split("<integer>").nth(1))
+            .and_then(|rest| rest.split("</integer>").next())
+            .and_then(|n| n.trim().parse().ok())
+            .expect("the template sets ExitTimeOut");
+        assert!(
+            secs >= ANNOUNCE_DRAIN.as_secs() + 20,
+            "ExitTimeOut {secs} s leaves no room after the {} s drain",
+            ANNOUNCE_DRAIN.as_secs()
+        );
+    }
+
     #[test]
     fn a_stopping_daemon_waits_for_announcements_but_not_forever() {
         // Two in flight, done one after the other.

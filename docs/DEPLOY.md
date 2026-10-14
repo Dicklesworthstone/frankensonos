@@ -72,7 +72,7 @@ variables. The environment form is what launchd uses.
 | Routes file | `FSONOS_ROUTES` | unset | Only for `fsonos sim`: maps the virtual players' advertised addresses to the loopback sockets that serve them, plus the simulator's SSDP target. `fsonos sim` writes it; real players need none. While it is set, `fsonos` reaches nothing the file does not name (other addresses and multicast are refused): it asks only a daemon running under the same file, and unless `FSONOS_DATA_DIR` says otherwise it keeps its data in `data` beside the file, never the real house's store. |
 | Spotify client id | `FSONOS_SPOTIFY_CLIENT_ID` | unset | Needed only for the DJ (see §5). |
 | Spotify redirect URI | `FSONOS_SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8099/auth/spotify/callback` | Must match the URI registered for your Spotify app. |
-| Log filter | `RUST_LOG` | `info` | `tracing` EnvFilter syntax. Logs go to stderr. |
+| Log filter | `RUST_LOG` | `info` | `tracing` EnvFilter syntax. Logs go to stderr. The embedded database's own logging (per-statement telemetry at `info`) is held to errors unless the filter names `fsqlite`. |
 
 **Bind guard**: `serve` refuses a wildcard
 (`0.0.0.0`, `::`) or public bind address for the API or MCP server unless you
@@ -168,8 +168,9 @@ tail -f ~/Library/Logs/fsonos/fsonos.log
 ```
 
 The job sets `KeepAlive` to restart on any exit, at most once every 10 s
-(`ThrottleInterval`). It also gets 20 s between SIGTERM and SIGKILL
-(`ExitTimeOut`) so the daemon can cancel its event subscriptions cleanly.
+(`ThrottleInterval`). It also gets 90 s between SIGTERM and SIGKILL
+(`ExitTimeOut`): announcements in flight put the music back (the daemon waits
+up to 60 s for them), then it cancels its event subscriptions cleanly.
 A DJ that was playing keeps playing across a restart: serve keeps its queues
 in `dj-feeds.json` in the data directory and feeds them on, unless the queue
 was cleared or replaced meanwhile. Sleep timers carry over the same way, in
