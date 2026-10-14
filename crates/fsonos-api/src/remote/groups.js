@@ -6,6 +6,7 @@ const GroupsRemote = (() => {
     groupsJoin: ['POST', '/group'],
     groupsLeave: ['POST', '/ungroup'],
     groupsParty: ['POST', '/party'],
+    groupsMove: ['POST', '/move'],
   };
   const text = (value) => typeof value === 'string' && value.trim() !== '';
   const key = (room, household) => `${room}@${household}`;
@@ -68,6 +69,20 @@ const GroupsRemote = (() => {
       body = { zone: from.target };
       title = `Separate ${from.room} from ${from.group.label}`;
       affected = [from.group];
+    } else if (kind === 'move' || kind === 'replay') {
+      if (!to) throw new Error('Choose the destination room.');
+      if (from.target === to.target) throw new Error('Choose a different destination room.');
+      if (kind === 'move' && from.group.household !== to.group.household) {
+        throw new Error('Different households cannot share a group. Use replay elsewhere instead.');
+      }
+      if (kind === 'replay' && from.group.signature === to.group.signature) {
+        throw new Error('These rooms already share the same playback.');
+      }
+      route = 'groupsMove';
+      body = { zone: from.target, to: to.target, copy: kind === 'replay' };
+      title = kind === 'move' ? `Move music from ${from.target} to ${to.target}`
+        : `Replay on ${to.group.label} and stop ${from.group.label}`;
+      affected = from.group.signature === to.group.signature ? [from.group] : [from.group, to.group];
     } else if (kind === 'party') {
       household = from.group.household;
       affected = groups.filter((group) => group.household === household);
@@ -78,12 +93,17 @@ const GroupsRemote = (() => {
     } else {
       throw new Error('Choose a supported group action.');
     }
-    return Object.freeze({ kind, route, body: Object.freeze(body), title, household,
+    const warning = kind === 'move'
+      ? 'The destination room joins the source music and the selected source room leaves. Other source-group rooms can keep playing. A device fallback may replay the music.'
+      : kind === 'replay'
+        ? 'This replaces the destination group’s current source or queue, then stops the source group. It does not keep both playing. Cross-household playback is not synchronized.'
+        : kind === 'leave'
+          ? 'Separating a room can interrupt its playback. The remaining group may elect a new coordinator.'
+          : 'Joining replaces the joining rooms\u2019 current audio with the destination group\u2019s music. Moving a coordinator may affect its remaining group.';
+    return Object.freeze({ kind, route, body: Object.freeze(body), title, household, warning,
+      sourceGroup: from.group, destinationGroup: to ? to.group : null,
       affected: Object.freeze(affected.map((group) => group.signature).sort()),
       labels: Object.freeze(affected.map((group) => group.label)),
-      warning: kind === 'leave'
-        ? 'Separating a room can interrupt its playback. The remaining group may elect a new coordinator.'
-        : 'Joining replaces the joining rooms\u2019 current audio with the destination group\u2019s music. Moving a coordinator may affect its remaining group.',
     });
   }
 
@@ -103,6 +123,29 @@ const GroupsRemote = (() => {
       throw new Error('The action returned an unreadable result.');
     }
     return [value.done, ...(value.notes || []).map((note) => note.detail)].join(' ');
+  }
+
+  function playbackOf(value, expected) {
+    if (!value || !['playing', 'paused', 'stopped'].includes(value.transport_state)
+        || groupsOf([value.zone])[0].signature !== expected.signature) {
+      throw new Error('Playback or group state is incomplete or changing. Refresh rooms.');
+    }
+    const track = value.track;
+    if (track !== undefined && track !== null
+        && (!text(track.uri) || track.uri === 'NOT_IMPLEMENTED'
+          || (track.queue_position != null && (!Number.isInteger(track.queue_position)
+            || track.queue_position < 1 || track.queue_position > 4294967295)))) {
+      throw new Error('The current playback identity is unreadable.');
+    }
+    // Elapsed position and cosmetic metadata naturally change while listening.
+    // Queue position distinguishes consecutive copies of the same track URI.
+    const uri = track ? track.uri : null;
+    return Object.freeze({
+      signature: JSON.stringify([expected.signature, value.transport_state, uri,
+        track && track.queue_position != null ? track.queue_position : null]),
+      uri, label: track ? (text(track.title) ? track.title : track.uri) : 'Nothing loaded',
+      transport: value.transport_state,
+    });
   }
 
   function model({ call, changed = () => {}, updated = () => {} }) {
@@ -154,7 +197,7 @@ const GroupsRemote = (() => {
     }
 
     function review(kind) {
-      if (!ready()) return false;
+      if (!ready() || !['join', 'leave', 'party'].includes(kind)) return false;
       state.pending = null;
       try {
         state.pending = proposal(state.groups, state.source, state.destination, kind);
@@ -162,6 +205,42 @@ const GroupsRemote = (() => {
       } catch (error) { state.message = errorText(error); }
       publish();
       return Boolean(state.pending);
+    }
+
+    async function transferState(pending) {
+      const [source, destination] = await Promise.all([
+        call('state', { params: { room: pending.body.zone } }),
+        call('state', { params: { room: pending.body.to } }),
+      ]);
+      const audio = [playbackOf(source, pending.sourceGroup),
+        playbackOf(destination, pending.destinationGroup)];
+      if (!audio[0].uri) throw new Error('The source group has no music loaded to move.');
+      if (!unchanged(groupsOf(await call('zones')), pending)) {
+        throw new Error('The affected groups changed while playback was being read.');
+      }
+      return Object.freeze(audio);
+    }
+
+    async function reviewTransfer(kind) {
+      if (!ready() || !['move', 'replay'].includes(kind)) return false;
+      const version = ++epoch;
+      state.pending = null;
+      state.loading = true;
+      state.message = 'Reading the music in both groups…';
+      publish();
+      try {
+        const pending = proposal(state.groups, state.source, state.destination, kind);
+        const audio = await transferState(pending);
+        if (!active(version)) return false;
+        state.pending = Object.freeze({ ...pending, audio });
+        state.message = '';
+        return true;
+      } catch (error) {
+        if (active(version)) state.message = `${errorText(error)} No playback change was sent.`;
+        return false;
+      } finally {
+        if (active(version)) { state.loading = false; publish(); }
+      }
     }
 
     function cancel() {
@@ -186,6 +265,13 @@ const GroupsRemote = (() => {
         const groups = groupsOf(await call('zones'));
         if (!active(version)) return false;
         if (!unchanged(groups, pending)) throw new Error('The affected groups changed. Review their current membership again.');
+        if (pending.audio) {
+          const audio = await transferState(pending);
+          if (!active(version)) return false;
+          if (!audio.every((value, i) => value.signature === pending.audio[i].signature)) {
+            throw new Error('The source or destination playback changed. Review the music again.');
+          }
+        }
         attempted = true;
         state.message = 'Applying the reviewed group action…';
         publish();
@@ -214,7 +300,7 @@ const GroupsRemote = (() => {
       state.loading = false;
       publish();
     }
-    return { state, refresh, choose, review, cancel, confirm, close,
+    return { state, refresh, choose, review, reviewTransfer, cancel, confirm, close,
       dispose() { close(); disposed = true; } };
   }
 
@@ -254,10 +340,17 @@ const GroupsRemote = (() => {
         button('Review join', () => control.review('join'), busy || !state.source || !state.destination),
         button('Review separation', () => control.review('leave'), busy || !state.source),
         button('Review whole household', () => control.review('party'), busy || !state.source)));
+      body.append(el('div', { class: 'row' },
+        button('Review music move', () => control.reviewTransfer('move'), busy || !state.source || !state.destination),
+        button('Review replay elsewhere', () => control.reviewTransfer('replay'), busy || !state.source || !state.destination)));
       if (state.pending) {
         const pending = state.pending;
         const review = el('section', { class: 'groups-review', 'aria-label': 'Review group change' },
           el('h3', { text: pending.title }), el('p', { text: pending.warning }));
+        if (pending.audio) {
+          review.append(el('p', { text: `Source: ${pending.audio[0].label} (${pending.audio[0].transport}).` }),
+            el('p', { text: `Destination: ${pending.audio[1].label} (${pending.audio[1].transport}).` }));
+        }
         const affected = el('ul');
         for (const label of pending.labels) affected.append(el('li', { text: label }));
         review.append(el('p', { text: 'Groups affected:' }), affected,
