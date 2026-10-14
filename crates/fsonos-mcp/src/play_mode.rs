@@ -10,6 +10,7 @@ use crate::{tool_error, tools};
     description = "Read the group's queue play mode, whether its own queue is selected, and whether the running DJ owns queue order. Modes are NORMAL, REPEAT_ALL, REPEAT_ONE, SHUFFLE (shuffle plus repeat all), SHUFFLE_NOREPEAT, and SHUFFLE_REPEAT_ONE. Unknown or unsupported settings return an error, never an assumed NORMAL. A group member resolves to its current coordinator.",
     annotations(read_only, idempotent)
 )]
+#[allow(clippy::needless_pass_by_value)] // the `#[tool]` macro deserializes owned arguments
 fn get_play_mode(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
     let backend = tools::backend().map_err(|failure| tool_error(&failure))?;
