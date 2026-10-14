@@ -37,6 +37,14 @@ pub enum Health {
 /// Failures in a row before a player counts as offline.
 pub const OFFLINE_AFTER: u32 = 3;
 
+/// The longest a model that knows no room at all waits to survey again
+/// after a failure. Without the house it has nothing to protect by backing
+/// off, and a daemon started while the network was down (or the speaker
+/// LAN briefly unreachable) would otherwise sit blind for up to its maximum
+/// backoff after the network came back (seen live, 2026-10-14: 78 s, 154 s,
+/// 315 s ...).
+pub const HOUSELESS_RETRY: Duration = Duration::from_secs(30);
+
 /// One player's health record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerHealth {
@@ -193,6 +201,13 @@ impl Refresh {
         self.next_at = now + delay;
         delay
     }
+
+    /// Bring the next survey forward to at most `cap` after `now`; the delay
+    /// until it. The backoff count is kept.
+    pub fn retry_within(&mut self, now: Instant, cap: Duration) -> Duration {
+        self.next_at = self.next_at.min(now + cap);
+        self.next_at.saturating_duration_since(now)
+    }
 }
 
 /// What one [`refresh`] did.
@@ -252,6 +267,17 @@ impl Reconciler {
         }
     }
 
+    /// Record a failed survey; the delay until the next one: the backoff,
+    /// or at most [`HOUSELESS_RETRY`] while the model knows no room.
+    fn retry(&mut self, now: Instant) -> Duration {
+        let retry = self.schedule.failed(now);
+        if self.households.iter().any(|h| !h.rooms.is_empty()) {
+            retry
+        } else {
+            self.schedule.retry_within(now, HOUSELESS_RETRY)
+        }
+    }
+
     /// One reconcile step: discover, probe known addresses for households
     /// discovery missed (including households absent for several passes),
     /// replace the live model, record health, and sync GENA.
@@ -270,7 +296,7 @@ impl Reconciler {
         let survey = match surveyed {
             Ok(s) if !s.households.is_empty() => s,
             Ok(_) => {
-                let retry = self.schedule.failed(now);
+                let retry = self.retry(now);
                 tracing::warn!(retry_in_s = retry.as_secs(), "survey found no players");
                 return Err(CoreError::Proto(ProtoError::Network {
                     target: "survey".into(),
@@ -278,7 +304,7 @@ impl Reconciler {
                 }));
             }
             Err(e) => {
-                let retry = self.schedule.failed(now);
+                let retry = self.retry(now);
                 tracing::warn!(retry_in_s = retry.as_secs(), error = %e, "survey failed");
                 return Err(e);
             }

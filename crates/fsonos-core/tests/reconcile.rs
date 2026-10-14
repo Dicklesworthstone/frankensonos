@@ -2,7 +2,7 @@
 //! schedule with its backoff.
 
 use fsonos_core::events::{Report, Service};
-use fsonos_core::reconcile::{Health, HealthBoard, OFFLINE_AFTER, Refresh};
+use fsonos_core::reconcile::{HOUSELESS_RETRY, Health, HealthBoard, OFFLINE_AFTER, Refresh};
 use fsonos_types::PlayerId;
 use std::time::{Duration, Instant};
 
@@ -87,6 +87,21 @@ fn surveys_run_on_the_interval_and_back_off_after_failures() {
     r.succeeded(t0);
     assert_eq!(r.next_at(), t0 + interval, "a success resets the backoff");
     assert_eq!(r.failed_with(t0, 0), Duration::from_secs(75));
+}
+
+#[test]
+fn a_retry_can_be_brought_forward_but_never_pushed_back() {
+    let t0 = Instant::now();
+    let mut r = Refresh::new(Duration::from_mins(5), Duration::from_mins(30), t0);
+    for _ in 0..6 {
+        r.failed_with(t0, 0);
+    }
+    assert_eq!(r.retry_within(t0, HOUSELESS_RETRY), HOUSELESS_RETRY);
+    assert!(r.due(t0 + HOUSELESS_RETRY));
+    // A shorter backoff stands.
+    let mut r = Refresh::new(Duration::from_mins(1), Duration::from_mins(30), t0);
+    assert_eq!(r.failed_with(t0, 0), Duration::from_secs(15));
+    assert_eq!(r.retry_within(t0, HOUSELESS_RETRY), Duration::from_secs(15));
 }
 
 #[test]

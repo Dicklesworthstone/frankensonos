@@ -2,7 +2,7 @@
 //! longer advertises. Discovery is controlled; all reads and GENA use sockets.
 
 use fsonos_core::events::{Service, Subscriber, Want};
-use fsonos_core::reconcile::{Health, Reconciler};
+use fsonos_core::reconcile::{HOUSELESS_RETRY, Health, Reconciler};
 use fsonos_core::{control, resolve_room};
 use fsonos_proto::gena::Subscription;
 use fsonos_proto::net::{EventSink, Lan};
@@ -191,4 +191,31 @@ fn complete_discovery_skips_remembered_offline_peers_after_an_outage() {
     assert_eq!(*lan.gets.borrow(), [kitchen, living]);
     assert!(resolve_room(&rec.households, "Office").is_err());
     rec.subscriptions.unsubscribe_all(&lan);
+}
+
+/// A daemon that has not found the house yet (the speaker LAN was down when
+/// it started, say) keeps looking every half minute instead of backing off
+/// toward half an hour, and finds the house on the first survey after it
+/// answers again.
+#[test]
+fn a_model_without_the_house_keeps_looking_every_half_minute() {
+    let (_sim, lan, sink) = fixture();
+    let now = Instant::now();
+    let mut rec = Reconciler::new(Duration::from_mins(5), Duration::from_mins(30), now);
+    let visible = lan.visible.replace(Vec::new());
+    let mut at = now;
+    for attempt in 0..6 {
+        let failed = rec.refresh(&lan, &[], |s: Service| sink.callback_url(s.tag()), at);
+        assert!(failed.is_err(), "attempt {attempt}: nothing answers");
+        let next = rec.schedule.next_at();
+        assert!(
+            next <= at + HOUSELESS_RETRY,
+            "attempt {attempt}: next survey in {:?}",
+            next - at
+        );
+        at = next;
+    }
+    *lan.visible.borrow_mut() = visible;
+    once(&mut rec, &lan, &sink, at);
+    assert_eq!(rec.households.len(), 2);
 }
