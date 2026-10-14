@@ -477,7 +477,9 @@ mod tests {
     fn only_one_concurrent_caller_claims_the_refresh_slot() {
         let sync = Arc::new(sync("claim"));
         let start = Arc::new(std::sync::Barrier::new(16));
-        let claimed: usize = (0..16)
+        // All 16 must be running before any is joined: the barrier waits
+        // for every one of them.
+        let workers: Vec<_> = (0..16)
             .map(|_| {
                 let sync = Arc::clone(&sync);
                 let start = Arc::clone(&start);
@@ -486,6 +488,9 @@ mod tests {
                     usize::from(sync.claim())
                 })
             })
+            .collect();
+        let claimed: usize = workers
+            .into_iter()
             .map(|worker| worker.join().unwrap())
             .sum();
         assert_eq!(claimed, 1);

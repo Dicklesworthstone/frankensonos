@@ -290,19 +290,26 @@ fn the_page_is_served_and_kept_to_itself() {
     }
 }
 
-/// The page's ROUTES table: `name: ['METHOD', '/path'],` lines.
+/// Every route-table entry in the page's scripts, `['METHOD', '/path']`:
+/// each module (queue, remote, library, groups, timers) keeps its own table,
+/// and a line may hold more than one entry.
 fn page_routes(script: &str) -> Vec<(String, String)> {
-    let start = script.find("const ROUTES = {").expect("a ROUTES table");
-    let end = start + script[start..].find("};").expect("its end");
-    script[start..end]
-        .lines()
-        .filter_map(|line| {
-            let (_, rest) = line.split_once("['")?;
-            let (method, rest) = rest.split_once("', '")?;
-            let (path, _) = rest.split_once("']")?;
-            Some((method.to_owned(), path.to_owned()))
-        })
-        .collect()
+    let mut routes = Vec::new();
+    let mut rest = script;
+    while let Some(at) = rest.find("['") {
+        rest = &rest[at + 2..];
+        let Some((method, after)) = rest.split_once("', '") else {
+            break;
+        };
+        let Some((path, _)) = after.split_once("']") else {
+            break;
+        };
+        let method_ok = !method.is_empty() && method.chars().all(|c| c.is_ascii_uppercase());
+        if method_ok && path.starts_with('/') && !path.contains('\n') {
+            routes.push((method.to_owned(), path.to_owned()));
+        }
+    }
+    routes
 }
 
 #[test]
@@ -324,10 +331,15 @@ fn every_route_the_page_calls_exists() {
     assert_eq!(script.matches("fetch(").count(), 1);
     assert_eq!(script.matches("new EventSource(").count(), 1);
     assert!(script.contains("new EventSource(path('events'))"));
-    let table_end = script.find("};").unwrap();
+    // Every path is a route-table entry's, and none is templated.
+    assert_eq!(
+        script.matches("'/").count(),
+        script.matches("', '/").count(),
+        "a path outside the route tables"
+    );
     assert!(
-        !script[table_end..].contains("'/") && !script[table_end..].contains("`/"),
-        "a path outside ROUTES"
+        !script.contains("`/"),
+        "a templated path outside the route tables"
     );
 }
 
