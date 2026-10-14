@@ -78,8 +78,8 @@ impl Coverage {
         if self.offset.is_some_and(|reported| reported != start) {
             return Err(invalid("library response offset differs from its request"));
         }
-        let count = u32::try_from(raw_count)
-            .map_err(|_| invalid("library page has too many entries"))?;
+        let count =
+            u32::try_from(raw_count).map_err(|_| invalid("library page has too many entries"))?;
         let end = start
             .checked_add(count)
             .ok_or_else(|| invalid("library paging offset overflow"))?;
@@ -208,23 +208,31 @@ mod tests {
 
     #[test]
     fn missing_saved_album_continuation_fetches_the_remaining_album() {
-        let album = |number: u32| json!({ "album": {
+        let album = |number: u32| {
+            json!({ "album": {
             "id": format!("CoverageAlbum{number}"),
             "uri": format!("spotify:album:CoverageAlbum{number}"),
             "name": format!("Album {number}"), "total_tracks": 1,
             "tracks": { "items": [track(number)["track"].clone()],
                 "offset": 0, "total": 1, "next": null }
-        } });
+        } })
+        };
         let mut read = LibraryRead::default();
-        ingest(&mut read, &json!({ "items": [album(1)], "offset": 0, "total": 2 }))
-            .unwrap();
+        ingest(
+            &mut read,
+            &json!({ "items": [album(1)], "offset": 0, "total": 2 }),
+        )
+        .unwrap();
         let liked = Endpoints::default().saved_tracks(0);
         assert_eq!(read.next_url(), Some(liked.as_str()));
         ingest(&mut read, &json!({ "items": [], "total": 0 })).unwrap();
         let next = Endpoints::default().saved_albums(1);
         assert_eq!(read.next_url(), Some(next.as_str()));
-        ingest(&mut read, &json!({ "items": [album(2)], "offset": 1, "total": 2 }))
-            .unwrap();
+        ingest(
+            &mut read,
+            &json!({ "items": [album(2)], "offset": 1, "total": 2 }),
+        )
+        .unwrap();
         assert!(read.next_url().is_none());
         let items = read.into_items();
         assert_eq!(items.len(), 2);
@@ -234,19 +242,25 @@ mod tests {
     #[test]
     fn album_hydration_recovers_missing_continuations() {
         let mut read = LibraryRead::default();
-        ingest(&mut read, &json!({ "items": [{ "album": {
+        ingest(
+            &mut read,
+            &json!({ "items": [{ "album": {
             "id": "CoverageAlbum", "uri": "spotify:album:CoverageAlbum",
             "name": "Complete Work", "total_tracks": 2
-        } }], "total": 1 }))
+        } }], "total": 1 }),
+        )
         .unwrap();
         ingest(&mut read, &json!({ "items": [], "total": 0 })).unwrap();
         for number in 1..=2 {
             let expected = Endpoints::default().album_tracks("CoverageAlbum", number - 1);
             assert_eq!(read.next_url(), Some(expected.as_str()));
-            ingest(&mut read, &json!({
-                "items": [track(number)["track"].clone()],
-                "offset": number - 1, "total": 2, "next": null
-            }))
+            ingest(
+                &mut read,
+                &json!({
+                    "items": [track(number)["track"].clone()],
+                    "offset": number - 1, "total": 2, "next": null
+                }),
+            )
             .unwrap();
         }
         assert!(read.next_url().is_none());
@@ -293,10 +307,15 @@ mod tests {
         let outstanding = read.next_url().unwrap().to_owned();
         let before = read.items.clone();
         for total in [2, 4] {
-            assert!(ingest(&mut read, &json!({
-                "items": [track(2)], "offset": 1, "total": total
-            }))
-            .is_err());
+            assert!(
+                ingest(
+                    &mut read,
+                    &json!({
+                        "items": [track(2)], "offset": 1, "total": total
+                    })
+                )
+                .is_err()
+            );
             assert_eq!(read.next_url(), Some(outstanding.as_str()));
             assert_eq!(read.items, before);
             assert_eq!(read.pages_read(), 2);
@@ -329,8 +348,11 @@ mod tests {
         let mut read = tracks_read();
         let second = Endpoints::default().saved_tracks(1);
         ingest(&mut read, &json!({ "items": [track(1)], "next": second })).unwrap();
-        ingest(&mut read, &json!({ "items": [track(2)], "offset": 1, "total": 3 }))
-            .unwrap();
+        ingest(
+            &mut read,
+            &json!({ "items": [track(2)], "offset": 1, "total": 3 }),
+        )
+        .unwrap();
         let last = Endpoints::default().saved_tracks(2);
         assert_eq!(read.next_url(), Some(last.as_str()));
         ingest(&mut read, &json!({ "items": [track(3)] })).unwrap();
@@ -361,9 +383,8 @@ mod tests {
             })
             .unwrap();
         let endpoints = spotify.endpoints();
-        let target = |url: &str| {
-            format!("/v1{}", url.strip_prefix(endpoints.api.as_str()).unwrap())
-        };
+        let target =
+            |url: &str| format!("/v1{}", url.strip_prefix(endpoints.api.as_str()).unwrap());
         let last = target(&endpoints.saved_tracks(2));
         {
             let mut fake = spotify.state.lock().unwrap();
@@ -423,12 +444,18 @@ mod tests {
             let pool = pool_from_store(&store).unwrap();
             assert_eq!(pool.len(), 3);
             for number in 1..=3 {
-                assert!(pool.get(&format!("spotify:track:Coverage{number}")).is_some());
+                assert!(
+                    pool.get(&format!("spotify:track:Coverage{number}"))
+                        .is_some()
+                );
             }
         });
         let fake = spotify.stop();
         assert_eq!(
-            fake.log.iter().filter(|line| line.ends_with(last.as_str())).count(),
+            fake.log
+                .iter()
+                .filter(|line| line.ends_with(last.as_str()))
+                .count(),
             3,
             "two incomplete reads and one complete retry reached the recovered last page"
         );

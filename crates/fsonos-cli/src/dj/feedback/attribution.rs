@@ -63,13 +63,15 @@ pub(super) fn movement(
     if candidates.next().is_some() {
         return None;
     }
-    let duration_secs = playback.duration_secs.filter(|&seconds| seconds > 0).or(
-        work.movements
+    let duration_secs = playback
+        .duration_secs
+        .filter(|&seconds| seconds > 0)
+        .or(work
+            .movements
             .get(index)?
             .track
             .duration_secs
-            .filter(|&seconds| seconds > 0),
-    );
+            .filter(|&seconds| seconds > 0));
     Some(Movement {
         position,
         work_key: work.work_key.clone(),

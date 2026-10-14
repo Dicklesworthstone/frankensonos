@@ -30,8 +30,8 @@ use fsonos_core::store::Store;
 
 use crate::SpotifyError;
 use crate::client::{
-    Artist, CursorPage, FullTrack, Me, PlayHistory, PlaylistItem, SimplifiedPlaylist,
-    TASTE_SCOPES, decode, unix_seconds,
+    Artist, CursorPage, FullTrack, Me, PlayHistory, PlaylistItem, SimplifiedPlaylist, TASTE_SCOPES,
+    decode, unix_seconds,
 };
 use crate::expand::halts;
 use crate::library::{LibraryItem, Origin};

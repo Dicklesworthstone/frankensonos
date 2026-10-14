@@ -87,7 +87,10 @@ fn capture_drains_without_listeners_and_retains_only_a_bounded_live_tail() {
     }
     let mut cursor = audio.subscribe().unwrap();
     assert_eq!(cursor, 299);
-    assert_eq!(audio.next(&mut cursor, &stop).unwrap().unwrap().as_ref(), frame(43));
+    assert_eq!(
+        audio.next(&mut cursor, &stop).unwrap().unwrap().as_ref(),
+        frame(43)
+    );
     assert!(audio.next(&mut cursor, &stop).unwrap().is_none());
     assert_eq!(
         audio.next(&mut 0, &stop).unwrap_err().kind(),
@@ -115,8 +118,14 @@ fn a_slow_reader_never_blocks_or_consumes_another_readers_audio() {
         audio.next(&mut second, &stop).unwrap()
     );
     audio.publish(frame(3)).unwrap();
-    assert_eq!(audio.next(&mut first, &stop).unwrap().unwrap().as_ref(), frame(3));
-    assert_eq!(audio.next(&mut second, &stop).unwrap().unwrap().as_ref(), frame(3));
+    assert_eq!(
+        audio.next(&mut first, &stop).unwrap().unwrap().as_ref(),
+        frame(3)
+    );
+    assert_eq!(
+        audio.next(&mut second, &stop).unwrap().unwrap().as_ref(),
+        frame(3)
+    );
 }
 
 #[test]
@@ -147,7 +156,10 @@ fn truncated_output_is_not_published_as_a_frame() {
     let stop = AtomicBool::new(false);
     let bytes = frame(1);
     assert_eq!(
-        audio.ingest(&bytes[..bytes.len() - 1], &stop).unwrap_err().kind(),
+        audio
+            .ingest(&bytes[..bytes.len() - 1], &stop)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::UnexpectedEof
     );
     assert!(audio.state.lock().unwrap().frames.is_empty());
@@ -167,8 +179,14 @@ fn input_failure_wakes_startup_instead_of_hanging() {
     let waiting = Arc::clone(&audio);
     let cancelled = Arc::clone(&stop);
     let waiter = thread::spawn(move || waiting.wait_ready(&cancelled, Duration::from_secs(2)));
-    assert_eq!(audio.ingest(Failed, &stop).unwrap_err().kind(), io::ErrorKind::BrokenPipe);
-    assert_eq!(waiter.join().unwrap().unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+    assert_eq!(
+        audio.ingest(Failed, &stop).unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(
+        waiter.join().unwrap().unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
 }
 
 struct Server {
@@ -272,14 +290,19 @@ fn a_reconnecting_reader_can_join_while_the_old_connection_is_still_open() {
 fn partial_http_requests_do_not_block_other_clients_or_shutdown() {
     let mut server = Server::start();
     let mut partial = TcpStream::connect(server.address).unwrap();
-    partial.write_all(b"GET /stream/test.mp3 HTTP/1.1\r\nHost:").unwrap();
+    partial
+        .write_all(b"GET /stream/test.mp3 HTTP/1.1\r\nHost:")
+        .unwrap();
     let mut healthy = server.connect("HEAD", "/stream/test.mp3");
     assert!(headers(&mut healthy).starts_with("HTTP/1.1 200 OK"));
     server.stop.store(true, Ordering::Release);
     let worker = server.worker.take().unwrap();
     let deadline = Instant::now() + Duration::from_secs(2);
     while !worker.is_finished() {
-        assert!(Instant::now() < deadline, "partial request held shutdown open");
+        assert!(
+            Instant::now() < deadline,
+            "partial request held shutdown open"
+        );
         thread::sleep(Duration::from_millis(10));
     }
     worker.join().unwrap().unwrap();
@@ -309,12 +332,7 @@ fn encoder(mode: &str, stdout: Stdio) -> Child {
     let (_, module) = module_path!().split_once("::").unwrap();
     let fixture = format!("{module}::encoder_fixture");
     Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--ignored",
-            "--exact",
-            &fixture,
-            "--nocapture",
-        ])
+        .args(["--ignored", "--exact", &fixture, "--nocapture"])
         .env("FSONOS_STREAM_TEST_ENCODER", mode)
         .stdin(Stdio::null())
         .stdout(stdout)
@@ -339,7 +357,10 @@ fn live_capture_starts_without_a_client_and_shutdown_reaps_and_joins() {
     stream.wait_ready(Duration::from_secs(3)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
     while stream.audio.state.lock().unwrap().next < 8 {
-        assert!(Instant::now() < deadline, "capture stalled without a client");
+        assert!(
+            Instant::now() < deadline,
+            "capture stalled without a client"
+        );
         thread::sleep(Duration::from_millis(10));
     }
     stream.shutdown().unwrap();
@@ -353,13 +374,19 @@ fn live_capture_starts_without_a_client_and_shutdown_reaps_and_joins() {
 fn silent_encoder_deadline_and_drop_unblock_a_pipe_read() {
     let mut stream = live("silent");
     assert_eq!(
-        stream.wait_ready(Duration::from_millis(30)).unwrap_err().kind(),
+        stream
+            .wait_ready(Duration::from_millis(30))
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::TimedOut
     );
     let closer = thread::spawn(move || drop(stream));
     let deadline = Instant::now() + Duration::from_secs(3);
     while !closer.is_finished() {
-        assert!(Instant::now() < deadline, "silent encoder held cleanup open");
+        assert!(
+            Instant::now() < deadline,
+            "silent encoder held cleanup open"
+        );
         thread::sleep(Duration::from_millis(10));
     }
     closer.join().unwrap();
@@ -389,7 +416,10 @@ fn setup_failure_after_launch_reaps_the_owned_encoder() {
         Arc::new(AtomicBool::new(false)),
     );
     assert!(result.is_err());
-    assert!(!process.exists(), "setup failure left the encoder alive or a zombie");
+    assert!(
+        !process.exists(),
+        "setup failure left the encoder alive or a zombie"
+    );
 }
 
 #[test]
@@ -398,13 +428,19 @@ fn cancellation_keeps_audio_available_until_playback_restoration_finishes() {
     stream.wait_ready(Duration::from_secs(3)).unwrap();
     stream.cancel.store(true, Ordering::Release);
     stream.wait_until_stopped().unwrap();
-    assert_eq!(stream.check().unwrap_err().kind(), io::ErrorKind::Interrupted);
+    assert_eq!(
+        stream.check().unwrap_err().kind(),
+        io::ErrorKind::Interrupted
+    );
     assert!(!stream.stop.load(Ordering::Acquire));
     assert!(stream.encoder.try_wait().unwrap().is_none());
     let before = stream.audio.state.lock().unwrap().next;
     let deadline = Instant::now() + Duration::from_secs(3);
     while stream.audio.state.lock().unwrap().next == before {
-        assert!(Instant::now() < deadline, "cancellation cut audio before cleanup");
+        assert!(
+            Instant::now() < deadline,
+            "cancellation cut audio before cleanup"
+        );
         thread::sleep(Duration::from_millis(10));
     }
     stream.shutdown().unwrap();

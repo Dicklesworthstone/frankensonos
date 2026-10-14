@@ -121,9 +121,8 @@ fn remove_work<T: Transport + ?Sized>(
         .and_then(|index| queue.uris.get(index));
     let own_queue = format!("x-rincon-queue:{}#0", at.coordinator.0);
     if range(work, position.track.saturating_sub(keep_played)).is_none()
-        || current.is_none_or(|uri| {
-            !same_track(uri, &position.uri) && !same_track(&position.uri, uri)
-        })
+        || current
+            .is_none_or(|uri| !same_track(uri, &position.uri) && !same_track(&position.uri, uri))
         || soap::get_media_info(at.transport, host)?.uri != own_queue
     {
         return Ok(Removal::Kept);
@@ -164,7 +163,13 @@ impl QueueFeed {
         let mut result = Ok(());
         let mut uncertain = false;
         for index in (0..self.played.len()).rev() {
-            match remove_work(at, host, &self.played[index], before, self.config.keep_played) {
+            match remove_work(
+                at,
+                host,
+                &self.played[index],
+                before,
+                self.config.keep_played,
+            ) {
                 Ok(Removal::Kept) => {}
                 Ok(Removal::Removed(count)) => {
                     // Forget ownership before the next fallible read or write.

@@ -33,7 +33,10 @@ impl Transport for DiscoveryTransport {
     }
 
     fn http_get(&self, url: &str) -> Result<String, ProtoError> {
-        self.gets.lock().unwrap().push(host_of_location(url).unwrap());
+        self.gets
+            .lock()
+            .unwrap()
+            .push(host_of_location(url).unwrap());
         self.lan.http_get(url)
     }
 
@@ -102,7 +105,10 @@ fn wait_for(live: &Live, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
         if predicate(&snapshot) {
             return snapshot;
         }
-        assert!(Instant::now() < until, "live model did not settle: {snapshot:?}");
+        assert!(
+            Instant::now() < until,
+            "live model did not settle: {snapshot:?}"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -121,9 +127,13 @@ fn start(transport: &Arc<DiscoveryTransport>, config: LiveConfig) -> Live {
 fn proves_event_updates(live: &Live, sim: &SimHandle, transport: &DiscoveryTransport) {
     let player = sim.player("Living Room").unwrap();
     let id = PlayerId(player.uuid.clone());
-    wait_for(live, |s| s.playback.of(&id).is_some_and(|p| p.volume.is_some()));
+    wait_for(live, |s| {
+        s.playback.of(&id).is_some_and(|p| p.volume.is_some())
+    });
     set_volume(&*transport.lan, player.ip, 27).unwrap();
-    wait_for(live, |s| s.playback.of(&id).is_some_and(|p| p.volume == Some(27)));
+    wait_for(live, |s| {
+        s.playback.of(&id).is_some_and(|p| p.volume == Some(27))
+    });
 }
 
 #[test]
@@ -183,7 +193,10 @@ fn startup_with_all_cached_players_offline_recovers_without_restart() {
     let live = start(&transport, config);
     let waiting = wait_for(&live, |s| s.last_error.is_some());
     assert!(waiting.households.is_empty());
-    assert!(waiting.callback.is_some(), "the listener bootstrapped from cache");
+    assert!(
+        waiting.callback.is_some(),
+        "the listener bootstrapped from cache"
+    );
     sim.set_offline("Living Room", false).unwrap();
     let snapshot = refresh(&live);
     assert_eq!(snapshot.households.len(), 1);

@@ -46,11 +46,7 @@ impl Target {
                 || media.uri_metadata.trim() == self.metadata.trim())
     }
 
-    fn queue_unchanged<T: Transport + ?Sized>(
-        &self,
-        t: &T,
-        host: IpAddr,
-    ) -> Result<(), CoreError> {
+    fn queue_unchanged<T: Transport + ?Sized>(&self, t: &T, host: IpAddr) -> Result<(), CoreError> {
         if let Some(expected) = self.revision
             && queue_update_id(t, host)? != expected
         {
@@ -160,7 +156,9 @@ pub(super) fn restore<T: Transport + ?Sized>(
             if target.confirmed(t, host, &snap.coordinator, &before.members)? {
                 Ok(())
             } else {
-                Err(unproven("the snapshot source was not confirmed after its write"))
+                Err(unproven(
+                    "the snapshot source was not confirmed after its write",
+                ))
             }
         }
         Err(error) => {

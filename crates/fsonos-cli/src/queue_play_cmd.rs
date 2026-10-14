@@ -106,10 +106,8 @@ mod tests {
         assert!(Cli::try_parse_from(["fsonos", "queue-play", "Room"]).is_err());
         assert!(Cli::try_parse_from(["fsonos", "queue-play", " ", "1"]).is_err());
         assert!(
-            Cli::try_parse_from([
-                "fsonos", "queue-play", "Room", "1", "--expected-uri", " ",
-            ])
-            .is_err()
+            Cli::try_parse_from(["fsonos", "queue-play", "Room", "1", "--expected-uri", " ",])
+                .is_err()
         );
     }
 
@@ -117,8 +115,8 @@ mod tests {
     fn listing_stays_read_only_and_direct_selection_needs_no_expected_uri() {
         let listed = Cli::try_parse_from(["fsonos", "queue", "Room", "--offset", "2"]).unwrap();
         assert!(matches!(listed.command, Command::Queue { offset: 2, .. }));
-        let selected = Cli::try_parse_from(["fsonos", "queue-play", "Room", "1", "--direct"])
-            .unwrap();
+        let selected =
+            Cli::try_parse_from(["fsonos", "queue-play", "Room", "1", "--direct"]).unwrap();
         assert!(selected.global.direct);
         let Command::QueuePlay(args) = selected.command else {
             panic!("expected queue selection")

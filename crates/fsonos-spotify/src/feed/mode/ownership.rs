@@ -12,7 +12,10 @@ use super::*;
 use crate::dj::{DjConfig, PickReason};
 use crate::feed::{FeedSnapshot, Movement, QueuedWork};
 
-const TRACKS: [&str; 2] = ["spotify:track:ModeOwnershipA", "spotify:track:ModeOwnershipB"];
+const TRACKS: [&str; 2] = [
+    "spotify:track:ModeOwnershipA",
+    "spotify:track:ModeOwnershipB",
+];
 const RADIO: &str = "x-rincon-mp3radio://example.invalid/other.mp3";
 
 struct RunningQueue {
@@ -104,7 +107,11 @@ impl RunningQueue {
     fn observation(&self, mode: &str) -> PlayerPlayback {
         let position = soap::get_position_info(&self.sim.lan(), self.host).unwrap();
         let mut state = PlayerPlayback::default();
-        state.transport = Some(soap::get_transport_info(&self.sim.lan(), self.host).unwrap().state);
+        state.transport = Some(
+            soap::get_transport_info(&self.sim.lan(), self.host)
+                .unwrap()
+                .state,
+        );
         state.track_uri = Some(position.uri);
         state.queue_position = Some(position.track);
         state.play_mode = Some(mode.into());
@@ -252,7 +259,9 @@ fn an_old_track_event_waits_for_current_identity_instead_of_changing_mode() {
         assert!(rig.repair(&mut feed, &current).unwrap());
         assert_eq!(rig.writes_since(marker), ["SetPlayMode"]);
         assert_eq!(
-            soap::get_position_info(&rig.sim.lan(), rig.host).unwrap().track,
+            soap::get_position_info(&rig.sim.lan(), rig.host)
+                .unwrap()
+                .track,
             2
         );
     }

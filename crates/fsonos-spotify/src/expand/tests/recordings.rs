@@ -72,7 +72,10 @@ fn a_liked_section_completes_every_section_of_the_same_recording() {
         assert_eq!(full.completeness, Completeness::Complete);
         assert_eq!(full.total_secs, 960);
         assert_eq!(
-            full.movements.iter().filter(|m| m.origin.is_liked()).count(),
+            full.movements
+                .iter()
+                .filter(|m| m.origin.is_liked())
+                .count(),
             1
         );
         assert!(expand_work(&full, &album).is_none());
@@ -107,7 +110,9 @@ fn multipart_alternate_takes_expand_independently_even_with_scrambled_input() {
 fn movements_from_different_takes_cannot_authorize_a_combined_recording() {
     let album = two_takes();
     // Both are sections of III, so grouping alone has no numeral restart.
-    let work = works_of(&[item(&album[2]), item(&album[12])]).pop().unwrap();
+    let work = works_of(&[item(&album[2]), item(&album[12])])
+        .pop()
+        .unwrap();
     assert_eq!(work.movements.len(), 2);
     assert!(expand_work(&work, &album).is_none());
     let mut store = MemStore::default();
@@ -156,7 +161,12 @@ fn cache_only_startup_restores_the_complete_multipart_recording() {
     let restored = complete_from_cache(&store, vec![work]).unwrap();
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].movements.len(), 8);
-    assert!(restored[0].movements.iter().all(|m| m.disc_number == Some(2)));
+    assert!(
+        restored[0]
+            .movements
+            .iter()
+            .all(|m| m.disc_number == Some(2))
+    );
     assert_eq!(restored[0].completeness, Completeness::Complete);
 }
 
@@ -229,7 +239,11 @@ fn an_all_liked_recording_is_confirmed_without_inventing_saves_or_expanded_track
         "all original metadata survives"
     );
     assert_eq!(full.completeness, Completeness::Complete);
-    assert!(full.movements.iter().all(|m| m.origin.is_liked() && !m.expanded));
+    assert!(
+        full.movements
+            .iter()
+            .all(|m| m.origin.is_liked() && !m.expanded)
+    );
     assert!(expand_work(&full, &album).is_none());
 }
 
@@ -252,7 +266,10 @@ fn cache_reconstruction_recovers_an_all_liked_work_with_unknown_coordinates() {
         .map(|m| m.track_number)
         .collect();
     assert_eq!(positions, (1..=8).map(Some).collect::<Vec<_>>());
-    assert_eq!(complete_from_cache(&store, restored.clone()).unwrap(), restored);
+    assert_eq!(
+        complete_from_cache(&store, restored.clone()).unwrap(),
+        restored
+    );
 }
 
 #[test]

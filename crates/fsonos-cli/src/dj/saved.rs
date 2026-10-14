@@ -314,7 +314,10 @@ mod tests {
         std::fs::write(&legacy, "another writer's unfinished revision").unwrap();
         write(&path, "old complete revision").unwrap();
         write(&path, "new complete revision").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new complete revision");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "new complete revision"
+        );
         assert_eq!(
             std::fs::read_to_string(&legacy).unwrap(),
             "another writer's unfinished revision"
@@ -344,10 +347,16 @@ mod tests {
         let dir = scratch("private");
         let path = dir.join(FEEDS_FILE);
         write(&path, "first").unwrap();
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         write(&path, "second").unwrap();
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

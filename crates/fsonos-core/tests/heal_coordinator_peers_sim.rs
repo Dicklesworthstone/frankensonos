@@ -168,7 +168,10 @@ fn a_member_vanishing_during_recovery_keeps_the_original_failure_and_model() {
     })
     .unwrap_err();
 
-    assert_eq!(error.to_string(), "soap fault 800: original command refused");
+    assert_eq!(
+        error.to_string(),
+        "soap fault 800: original command refused"
+    );
     assert_eq!(attempts.get(), 1);
     assert_eq!(houses, before);
     assert_eq!(observed.topology_reads.borrow().len(), 2);

@@ -85,13 +85,8 @@ impl Rig {
         .unwrap()
         .unwrap();
         control::play_queue_from(&self.lan, &self.houses, &self.before.coordinator, 2).unwrap();
-        self.before = snapshot::capture(
-            &self.lan,
-            &self.houses,
-            &self.before.coordinator,
-            2_000,
-        )
-        .unwrap();
+        self.before =
+            snapshot::capture(&self.lan, &self.houses, &self.before.coordinator, 2_000).unwrap();
     }
 
     fn readonly_since(&self, index: usize) {
@@ -114,7 +109,10 @@ fn source_identity_accepts_only_the_exact_radio_http_alias() {
     assert!(same_source(&http, STREAM));
     assert!(!same_source(STREAM, &http.replace("http://", "https://")));
     assert!(!same_source(STREAM, &format!("{http}?other=1")));
-    assert!(!same_source(STREAM, "192.0.2.250:3400/stream/synthetic.mp3"));
+    assert!(!same_source(
+        STREAM,
+        "192.0.2.250:3400/stream/synthetic.mp3"
+    ));
     assert!(!same_source(STREAM, NEW));
 }
 
@@ -148,7 +146,12 @@ fn restoration_preserves_new_member_volumes_and_mute_in_both_generations() {
         soap::set_mute(&rig.lan, member, true).unwrap();
         let report = restore(&rig.lan, &rig.houses, &rig.before, STREAM, true).unwrap();
         assert!(report.skipped.is_empty(), "{report:?}");
-        assert!(report.restored.iter().all(|aspect| PLAYBACK.contains(aspect)));
+        assert!(
+            report
+                .restored
+                .iter()
+                .all(|aspect| PLAYBACK.contains(aspect))
+        );
         assert_eq!(soap::get_media_info(&rig.lan, rig.host).unwrap().uri, OLD);
         assert_eq!(
             soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
@@ -182,7 +185,11 @@ fn newer_source_and_group_membership_are_not_rolled_back() {
             let rig = Rig::new(s2);
             rig.stream(true);
             if regroup {
-                let gamma = resolve_room(&rig.houses, "Gamma").unwrap().player.id.clone();
+                let gamma = resolve_room(&rig.houses, "Gamma")
+                    .unwrap()
+                    .player
+                    .id
+                    .clone();
                 soap::join_group(&rig.lan, rig.sim.player("Beta").unwrap().ip, &gamma).unwrap();
             } else {
                 soap::set_av_transport_uri(&rig.lan, rig.host, NEW, "").unwrap();
@@ -209,7 +216,12 @@ fn a_manual_pause_does_not_turn_into_an_automatic_resume() {
             soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
             TransportState::Playing
         );
-        assert!(report.skipped.iter().any(|(aspect, _)| *aspect == Aspect::Transport));
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|(aspect, _)| *aspect == Aspect::Transport)
+        );
     }
 }
 
@@ -260,7 +272,8 @@ impl Transport for Changing<'_> {
                     }
                     Interference::ReadFailure => unreachable!(),
                 }
-                self.after.store(self.rig.sim.soap_log().len(), Ordering::SeqCst);
+                self.after
+                    .store(self.rig.sim.soap_log().len(), Ordering::SeqCst);
             }
         }
         self.rig.lan.soap_post(host, path, action, body)

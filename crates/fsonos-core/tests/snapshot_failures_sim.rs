@@ -163,12 +163,8 @@ fn policy_rejection_has_the_same_dependency_semantics_as_a_device_failure() {
     for reject_position in [false, true] {
         let rig = Rig::new(true);
         let from = rig.sim.soap_log().len();
-        let report = snapshot::restore_vetted(
-            &rig.lan,
-            &rig.houses,
-            &rig.snapshot,
-            &Aspect::ALL,
-            &|op| {
+        let report =
+            snapshot::restore_vetted(&rig.lan, &rig.houses, &rig.snapshot, &Aspect::ALL, &|op| {
                 if matches!(op, RestoreOp::SeekTrack(_)) && reject_position
                     || matches!(op, RestoreOp::PlayQueue) && !reject_position
                 {
@@ -176,9 +172,8 @@ fn policy_rejection_has_the_same_dependency_semantics_as_a_device_failure() {
                 } else {
                     Ok(op.clone())
                 }
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         assert!(skipped(&report, Aspect::Transport));
         assert!(
             rig.sim.soap_log()[from..]
@@ -237,7 +232,10 @@ fn a_room_level_failure_does_not_block_other_levels_or_valid_playback() {
     assert_eq!(soap::get_volume(&rig.lan, rig.host).unwrap(), 5);
     assert_eq!(soap::get_volume(&rig.lan, rig.peer).unwrap(), 35);
     assert!(soap::get_mute(&rig.lan, rig.peer).unwrap());
-    assert_eq!(soap::get_position_info(&rig.lan, rig.host).unwrap().track, 2);
+    assert_eq!(
+        soap::get_position_info(&rig.lan, rig.host).unwrap().track,
+        2
+    );
 }
 
 #[test]

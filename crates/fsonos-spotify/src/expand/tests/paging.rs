@@ -4,17 +4,19 @@ use super::*;
 use serde_json::{Value, json};
 
 fn first_page() -> Value {
-    let mut page: Value =
-        serde_json::from_slice(include_bytes!("../../../tests/fixtures/album_tracks_page1.json"))
-            .unwrap();
+    let mut page: Value = serde_json::from_slice(include_bytes!(
+        "../../../tests/fixtures/album_tracks_page1.json"
+    ))
+    .unwrap();
     page["next"] = Value::Null;
     page
 }
 
 fn last_page() -> Value {
-    let mut page: Value =
-        serde_json::from_slice(include_bytes!("../../../tests/fixtures/album_tracks_page2.json"))
-            .unwrap();
+    let mut page: Value = serde_json::from_slice(include_bytes!(
+        "../../../tests/fixtures/album_tracks_page2.json"
+    ))
+    .unwrap();
     page.as_object_mut().unwrap().remove("total");
     page
 }
@@ -53,7 +55,10 @@ fn missing_album_links_recover_raw_positions_before_filtering_unavailable_tracks
                 .filter(|track| !unavailable || track.track_number != 2)
                 .map(|track| track.source_uri)
                 .collect();
-            let actual: Vec<_> = tracks.iter().map(|track| track.source_uri.clone()).collect();
+            let actual: Vec<_> = tracks
+                .iter()
+                .map(|track| track.source_uri.clone())
+                .collect();
             assert_eq!(actual, expected);
         }
     });
@@ -61,7 +66,10 @@ fn missing_album_links_recover_raw_positions_before_filtering_unavailable_tracks
     let fake = spotify.stop();
     assert_eq!(fake.log.len(), 4, "two pages per complete album read");
     assert_eq!(
-        fake.log.iter().filter(|line| line.ends_with(last.as_str())).count(),
+        fake.log
+            .iter()
+            .filter(|line| line.ends_with(last.as_str()))
+            .count(),
         2
     );
 }

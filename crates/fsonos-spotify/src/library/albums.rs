@@ -22,9 +22,8 @@ impl LibraryRead {
         let reload = saved.album.tracks.as_ref().is_none_or(|page| {
             page.offset != 0
                 || (page.next.is_none()
-                    && u32::try_from(page.items.len()).is_ok_and(|count| {
-                        coverage.total.is_some_and(|total| count < total)
-                    }))
+                    && u32::try_from(page.items.len())
+                        .is_ok_and(|count| coverage.total.is_some_and(|total| count < total)))
         });
         let first = self.endpoints.album_tracks(&saved.album.id, 0);
         let next = if reload {
@@ -228,7 +227,10 @@ mod tests {
             assert_eq!(read.pages_read(), 0);
             assert_eq!(read.pending.len(), 2);
             let right = Endpoints::default().album_tracks(ALBUM, 2);
-            ingest(&mut read, &saved(Some(page(&[1, 2], 0, Some(right.clone())))));
+            ingest(
+                &mut read,
+                &saved(Some(page(&[1, 2], 0, Some(right.clone())))),
+            );
             liked(&mut read);
             assert_eq!(read.next_url(), Some(right.as_str()));
             let mut tail = page(&[3], 2, None);

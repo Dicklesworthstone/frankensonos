@@ -129,7 +129,10 @@ mod tests {
     fn an_ambiguous_daemon_failure_never_falls_back_to_local_playback() {
         let reply = Arc::new(Reply {
             calls: Mutex::default(),
-            answer: Some(Err(Failure::new(ErrorCode::PlayerUnreachable, "reply was lost"))),
+            answer: Some(Err(Failure::new(
+                ErrorCode::PlayerUnreachable,
+                "reply was lost",
+            ))),
         });
         let error = backend(&reply).play_queue(&request()).unwrap_err();
         assert!(error.message.contains("PLAYER_UNREACHABLE"));

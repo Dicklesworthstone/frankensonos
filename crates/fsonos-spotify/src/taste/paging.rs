@@ -176,9 +176,25 @@ mod cursor_identity_tests {
         let first = endpoints.followed_artists();
         let mut chain = Chain::new(&first, Progress::Cursor(HashSet::new()));
         let base = path(&first);
-        assert!(chain.follow(&endpoints, &format!("{base}?type=user&after=one")).is_err());
-        assert!(chain.follow(&endpoints, &format!("{base}?after=one")).is_err());
-        assert!(chain.follow(&endpoints, &format!("{base}?type=artist&after=one")).is_ok());
-        assert!(chain.follow(&endpoints, &format!("{base}?type=artist&after=one")).is_err());
+        assert!(
+            chain
+                .follow(&endpoints, &format!("{base}?type=user&after=one"))
+                .is_err()
+        );
+        assert!(
+            chain
+                .follow(&endpoints, &format!("{base}?after=one"))
+                .is_err()
+        );
+        assert!(
+            chain
+                .follow(&endpoints, &format!("{base}?type=artist&after=one"))
+                .is_ok()
+        );
+        assert!(
+            chain
+                .follow(&endpoints, &format!("{base}?type=artist&after=one"))
+                .is_err()
+        );
     }
 }

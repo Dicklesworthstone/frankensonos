@@ -41,7 +41,11 @@ fn offsets_advance_independently_of_query_order_and_encoding() {
         "offset=x",
         "limit=50",
     ] {
-        assert!(chain.follow(&endpoints, &format!("{root}?{query}")).is_err());
+        assert!(
+            chain
+                .follow(&endpoints, &format!("{root}?{query}"))
+                .is_err()
+        );
     }
     chain
         .follow(&endpoints, &format!("{root}?offset=3"))
@@ -83,7 +87,11 @@ fn opaque_cursors_are_compared_by_value_not_by_url_spelling() {
         "type=artist",
         "after=C&after=D",
     ] {
-        assert!(chain.follow(&endpoints, &format!("{root}?{query}")).is_err());
+        assert!(
+            chain
+                .follow(&endpoints, &format!("{root}?{query}"))
+                .is_err()
+        );
     }
 }
 
@@ -446,10 +454,14 @@ fn malformed_directory_coverage_preserves_cache_until_a_complete_retry() {
         let complete = sync_library(&mut session, &cx, &mut store).await.unwrap();
         assert_eq!(complete.retired, 1);
         assert_eq!(store.playlists().unwrap().len(), 1);
-        assert_eq!(store.playlists().unwrap()[0].0, "spotify:playlist:TestList0");
+        assert_eq!(
+            store.playlists().unwrap()[0].0,
+            "spotify:playlist:TestList0"
+        );
     });
     assert_eq!(
-        server.calls("/v1/me/playlists").len(), 5,
+        server.calls("/v1/me/playlists").len(),
+        5,
         "invalid links were never fetched"
     );
 }

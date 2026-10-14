@@ -28,7 +28,9 @@ impl Coverage {
     /// coverage; a successful read must account for every advertised entry.
     pub(super) fn accept<T>(&mut self, page: &Page<T>) -> Result<(), SpotifyError> {
         if page.offset.is_some_and(|offset| offset != self.offset) {
-            return Err(invalid("taste response offset differs from the requested page"));
+            return Err(invalid(
+                "taste response offset differs from the requested page",
+            ));
         }
         if let (Some(before), Some(after)) = (self.total, page.total)
             && before != after
@@ -50,14 +52,20 @@ impl Coverage {
                     .parse::<u32>()
                     .map_err(|_| invalid("invalid taste paging offset"))?;
                 if count == 0 || next_offset != end {
-                    return Err(invalid("taste continuation skips or overlaps returned entries"));
+                    return Err(invalid(
+                        "taste continuation skips or overlaps returned entries",
+                    ));
                 }
                 if total == Some(end) {
-                    return Err(invalid("taste continuation exceeds the advertised collection"));
+                    return Err(invalid(
+                        "taste continuation exceeds the advertised collection",
+                    ));
                 }
             }
             None if total.is_some_and(|total| end < total) => {
-                return Err(invalid("taste collection ended before its advertised total"));
+                return Err(invalid(
+                    "taste collection ended before its advertised total",
+                ));
             }
             None => {}
         }
@@ -82,9 +90,8 @@ mod tests {
             items,
             offset,
             total,
-            next: next.map(|offset| {
-                format!("https://api.spotify.com/v1/me/tracks?offset={offset}")
-            }),
+            next: next
+                .map(|offset| format!("https://api.spotify.com/v1/me/tracks?offset={offset}")),
         }
     }
 

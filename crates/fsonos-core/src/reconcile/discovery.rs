@@ -16,10 +16,13 @@ impl Discovery {
 
     pub(super) fn observe(&mut self, fresh: &[HouseholdState]) {
         for house in fresh.iter().filter(|h| !h.players.is_empty()) {
-            let index = self.households.iter().position(|old| match (&old.id, &house.id) {
-                (Some(a), Some(b)) => a == b,
-                _ => house.players.iter().any(|p| old.player(&p.id).is_some()),
-            });
+            let index = self
+                .households
+                .iter()
+                .position(|old| match (&old.id, &house.id) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => house.players.iter().any(|p| old.player(&p.id).is_some()),
+                });
             let index = index.unwrap_or_else(|| {
                 self.households.push(HouseholdState::default());
                 self.households.len() - 1
@@ -28,7 +31,10 @@ impl Discovery {
             // address for a different UUID. Keep only the latest binding.
             for old in &mut self.households {
                 old.players.retain(|p| {
-                    !house.players.iter().any(|now| now.id == p.id || now.ip == p.ip)
+                    !house
+                        .players
+                        .iter()
+                        .any(|now| now.id == p.id || now.ip == p.ip)
                 });
             }
             let known = &mut self.households[index];

@@ -725,7 +725,10 @@ impl State {
             "SetPlayMode" => {
                 self.require_coordinator(p)?;
                 let mode = args.get("NewPlayMode")?;
-                if !matches!(mode, "NORMAL" | "REPEAT_ALL" | "REPEAT_ONE" | "SHUFFLE" | "SHUFFLE_NOREPEAT") {
+                if !matches!(
+                    mode,
+                    "NORMAL" | "REPEAT_ALL" | "REPEAT_ONE" | "SHUFFLE" | "SHUFFLE_NOREPEAT"
+                ) {
                     return Err(INVALID_ARGS);
                 }
                 self.players[p].transport.play_mode = mode.to_string();

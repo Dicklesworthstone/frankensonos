@@ -195,10 +195,12 @@ pub fn survey_known<T: Transport + ?Sized>(
     }
     let mut fallback = Vec::new();
     for household in known {
-        if first
-            .as_ref()
-            .is_ok_and(|found| found.households.iter().any(|h| same_household(h, household)))
-        {
+        if first.as_ref().is_ok_and(|found| {
+            found
+                .households
+                .iter()
+                .any(|h| same_household(h, household))
+        }) {
             continue;
         }
         for player in &household.players {
@@ -220,7 +222,11 @@ pub fn survey_known<T: Transport + ?Sized>(
         },
     };
     for mut fresh in extra.households {
-        if let Some(existing) = out.households.iter_mut().find(|h| same_household(h, &fresh)) {
+        if let Some(existing) = out
+            .households
+            .iter_mut()
+            .find(|h| same_household(h, &fresh))
+        {
             if fresh.id.is_none() {
                 fresh.id.clone_from(&existing.id);
             }

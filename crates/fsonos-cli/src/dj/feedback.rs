@@ -109,8 +109,16 @@ impl Listening {
         transport: Option<TransportState>,
         playing: Option<Movement>,
     ) -> Option<(String, Signal)> {
-        let elapsed = self.epoch.get_or_insert_with(Instant::now).elapsed().as_secs();
-        self.on_change(i64::try_from(elapsed).unwrap_or(i64::MAX), transport, playing)
+        let elapsed = self
+            .epoch
+            .get_or_insert_with(Instant::now)
+            .elapsed()
+            .as_secs();
+        self.on_change(
+            i64::try_from(elapsed).unwrap_or(i64::MAX),
+            transport,
+            playing,
+        )
     }
 
     /// Fold playback at `now`, seconds on a monotonic observation clock.
@@ -126,7 +134,10 @@ impl Listening {
         if self.observed_at.is_some_and(|at| now < at) {
             return None;
         }
-        let elapsed = self.observed_at.replace(now).map_or(0, |at| now.abs_diff(at));
+        let elapsed = self
+            .observed_at
+            .replace(now)
+            .map_or(0, |at| now.abs_diff(at));
         if self.advancing
             && let Some((_, heard)) = &mut self.current
         {

@@ -215,19 +215,13 @@ fn unapplied_or_unreadable_sources_never_authorize_following_writes() {
 fn policy_is_rechecked_before_a_transient_source_retry() {
     let rig = Rig::new(true);
     let t = Replies::new(&rig, Fault::Transient);
-    let report = snapshot::restore_vetted(
-        &t,
-        &rig.houses,
-        &rig.snapshot,
-        &Aspect::ALL,
-        &|op| {
-            if matches!(op, RestoreOp::PlayQueue) && t.installs.get() > 0 {
-                Err("source restore authorization was withdrawn".into())
-            } else {
-                Ok(op.clone())
-            }
-        },
-    )
+    let report = snapshot::restore_vetted(&t, &rig.houses, &rig.snapshot, &Aspect::ALL, &|op| {
+        if matches!(op, RestoreOp::PlayQueue) && t.installs.get() > 0 {
+            Err("source restore authorization was withdrawn".into())
+        } else {
+            Ok(op.clone())
+        }
+    })
     .unwrap();
     assert!(skipped(&report, Aspect::Source));
     assert_eq!(t.installs.get(), 1);
@@ -300,7 +294,10 @@ impl Transport for AnnouncementReply<'_> {
     ) -> Result<String, ProtoError> {
         if action.contains("#SetAVTransportURI")
             && body.contains("<CurrentURI>x-rincon-queue:")
-            && self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0
+            && self
+                .attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                == 0
         {
             return Err(Replies::refusal());
         }
@@ -333,7 +330,9 @@ fn the_production_announcer_recovers_its_actual_queue_source_restore() {
         // The frozen simulator clock forces deadline Stop. Then exercise the
         // real announcer's cleanup, including its call to restore_vetted.
         let announcer = Announcer::with_timing(Duration::from_millis(1), Duration::ZERO);
-        let report = announcer.announce(&t, &targets, &clip, 15, &|_| 100).unwrap();
+        let report = announcer
+            .announce(&t, &targets, &clip, 15, &|_| 100)
+            .unwrap();
         let house = &report.households[0];
         assert_eq!(house.outcome, Ok(Ending::Deadline));
         assert!(house.restore_failed.is_empty(), "{report:?}");

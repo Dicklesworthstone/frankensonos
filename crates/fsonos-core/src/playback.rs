@@ -659,7 +659,9 @@ mod tests {
             .apply(&player(), EventSource::AvTransport, &shuffle, now)
             .unwrap();
         assert_eq!(changes.play_mode.as_deref(), Some("SHUFFLE_NOREPEAT"));
-        assert_eq!(playback.of(&player()).unwrap().play_mode.as_deref(), Some("SHUFFLE_NOREPEAT"));
+        assert_eq!(
+            playback.of(&player()).unwrap().play_mode.as_deref(),
+            Some("SHUFFLE_NOREPEAT")
+        );
     }
-
 }

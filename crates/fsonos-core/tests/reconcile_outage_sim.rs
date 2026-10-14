@@ -97,7 +97,11 @@ fn once(rec: &mut Reconciler, lan: &FilteredLan, sink: &EventSink, now: Instant)
     let report = rec
         .refresh(lan, &[], |s: Service| sink.callback_url(s.tag()), now)
         .unwrap();
-    assert!(report.events.failed.is_empty(), "{:?}", report.events.failed);
+    assert!(
+        report.events.failed.is_empty(),
+        "{:?}",
+        report.events.failed
+    );
     let gets = lan.gets.borrow();
     assert_eq!(
         gets.len(),
@@ -132,7 +136,10 @@ fn a_silent_household_returns_after_multiple_offline_surveys() {
     assert_eq!(rec.households.len(), 2);
     assert_eq!(rec.health.of(&living).unwrap().health, Health::Healthy);
     assert_eq!(rec.subscriptions.len(), all);
-    assert_eq!(control::set_volume(&lan, &rec.households, &living, 23).unwrap(), 23);
+    assert_eq!(
+        control::set_volume(&lan, &rec.households, &living, 23).unwrap(),
+        23
+    );
     assert_eq!(control::volume(&lan, &rec.households, &living).unwrap(), 23);
     rec.subscriptions.unsubscribe_all(&lan);
 }
@@ -143,7 +150,11 @@ fn a_player_lost_before_its_last_peer_is_still_a_rediscovery_candidate() {
     let now = Instant::now();
     let mut rec = Reconciler::new(Duration::from_mins(5), Duration::from_mins(30), now);
     once(&mut rec, &lan, &sink, now);
-    let office = resolve_room(&rec.households, "Office").unwrap().player.id.clone();
+    let office = resolve_room(&rec.households, "Office")
+        .unwrap()
+        .player
+        .id
+        .clone();
     lan.visible.borrow_mut().clear();
     sim.set_offline("Office", true).unwrap();
     once(&mut rec, &lan, &sink, now + Duration::from_secs(1));
@@ -159,7 +170,10 @@ fn a_player_lost_before_its_last_peer_is_still_a_rediscovery_candidate() {
     assert_eq!(rec.households.len(), 2);
     assert!(resolve_room(&rec.households, "Kitchen").is_err());
     assert_eq!(rec.health.of(&office).unwrap().health, Health::Healthy);
-    assert_eq!(control::set_volume(&lan, &rec.households, &office, 19).unwrap(), 19);
+    assert_eq!(
+        control::set_volume(&lan, &rec.households, &office, 19).unwrap(),
+        19
+    );
     rec.subscriptions.unsubscribe_all(&lan);
 }
 

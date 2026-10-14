@@ -503,18 +503,13 @@ fn an_unrelated_edit_after_a_lost_reply_cannot_retain_old_cleanup_claims() {
             let mut feed = f.feed();
             assert!(feed.trim(&f.speakers(&replies)).is_err());
             assert_eq!(
-                feed.playing,
-                None,
+                feed.playing, None,
                 "do not invent a position after an uncertain edit"
             );
             assert!(feed.played.is_empty());
             let left = f.queue();
             feed.resync(&f.speakers(&replies)).unwrap();
-            feed.playing = Some(
-                soap::get_position_info(&f.sim.lan(), f.host)
-                    .unwrap()
-                    .track,
-            );
+            feed.playing = Some(soap::get_position_info(&f.sim.lan(), f.host).unwrap().track);
             feed.trim(&f.speakers(&replies)).unwrap();
             assert_eq!(replies.removes.get(), 1);
             assert_eq!(f.queue(), left);
@@ -597,9 +592,7 @@ fn playback_keeps_feeding_and_recording_once_after_a_confirmed_lost_trim_reply()
         assert!(feed.is_active());
         let queue = f.queue();
         assert_eq!(&queue[..3], &[uri(999), uri(1), uri(2)]);
-        let current = soap::get_position_info(&f.sim.lan(), f.host)
-            .unwrap()
-            .track;
+        let current = soap::get_position_info(&f.sim.lan(), f.host).unwrap().track;
         assert!(
             feed.queued()
                 .iter()

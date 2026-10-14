@@ -16,7 +16,10 @@ fn work(take: &str) -> Work {
         .map(|(index, title)| LibraryItem {
             source_uri: format!("spotify:track:{take}Track{index}"),
             title: format!("Cello Suite No. 1 in G Major, BWV 1007: {title}"),
-            artists: vec!["Johann Sebastian Bach".into(), format!("Test Ensemble {take}")],
+            artists: vec![
+                "Johann Sebastian Bach".into(),
+                format!("Test Ensemble {take}"),
+            ],
             album: Some(format!("Test Album {take}")),
             album_uri: Some(format!("spotify:album:{take}")),
             disc_number: Some(1),
@@ -217,11 +220,7 @@ fn unproven_durations_and_partial_works_do_not_earn_whole_work_credit() {
                 movement.duration_secs = None;
             }
             assert_eq!(
-                listening.on_change(
-                    i64::try_from(index).unwrap() * 180,
-                    PLAYING,
-                    Some(movement),
-                ),
+                listening.on_change(i64::try_from(index).unwrap() * 180, PLAYING, Some(movement),),
                 None
             );
         }
@@ -246,10 +245,7 @@ fn queue_position_changes_and_mid_track_observations_cannot_invent_early_skips()
     listening.on_change(20, PLAYING, Some(sample(&work, 0)));
     let mut shifted = sample(&work, 0);
     shifted.position = 50;
-    assert_eq!(
-        listening.on_change(30, PLAYING, Some(shifted)),
-        None
-    );
+    assert_eq!(listening.on_change(30, PLAYING, Some(shifted)), None);
     assert_eq!(
         listening.on_change(40, Some(TransportState::Stopped), None),
         None
@@ -287,13 +283,27 @@ fn completed_feedback_keeps_its_recording_metadata_through_reload_and_is_written
         // The recording that played was removed from the pool by a library refresh.
         let pool = WorkPool::from_works(vec![a]);
         let mut store = MemStore::default();
-        assert!(implicit(&mut listening, &feed, &pool, &mut store, &state, 1000));
+        assert!(implicit(
+            &mut listening,
+            &feed,
+            &pool,
+            &mut store,
+            &state,
+            1000
+        ));
         let rows = store.feedback_between(0..2000).unwrap();
         assert_eq!(
             rows,
             [FeedbackSignal::about(&b, Signal::FullListen, 1000).to_store()]
         );
-        assert!(!implicit(&mut listening, &feed, &pool, &mut store, &state, 1001));
+        assert!(!implicit(
+            &mut listening,
+            &feed,
+            &pool,
+            &mut store,
+            &state,
+            1001
+        ));
         assert_eq!(store.feedback_between(0..2000).unwrap(), rows);
     }
 }
@@ -318,7 +328,14 @@ fn loss_of_ownership_and_non_dj_playback_are_not_dislikes() {
         listening.on_change(0, PLAYING, Some(sample(&work, 0)));
         let mut store = MemStore::default();
         let pool = WorkPool::from_works(vec![work.clone()]);
-        assert!(!implicit(&mut listening, &feed, &pool, &mut store, &state, 10));
+        assert!(!implicit(
+            &mut listening,
+            &feed,
+            &pool,
+            &mut store,
+            &state,
+            10
+        ));
         assert!(store.feedback_between(0..100).unwrap().is_empty());
         assert_eq!(
             listening.on_change(20, Some(TransportState::Stopped), None),

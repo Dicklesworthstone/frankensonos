@@ -149,13 +149,9 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
         signal_hook::flag::register(signal, Arc::clone(&stop))?;
     }
-    let mut stream = broadcast::LiveStream::start(
-        launch_encoder(args)?,
-        listener,
-        path,
-        Arc::clone(&stop),
-    )
-    .context("start live capture and the MP3 listener")?;
+    let mut stream =
+        broadcast::LiveStream::start(launch_encoder(args)?, listener, path, Arc::clone(&stop))
+            .context("start live capture and the MP3 listener")?;
 
     let mut attempted = false;
     let play = stream
@@ -164,7 +160,9 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
         .and_then(|()| {
             recovery::verify_start(&*network.transport, direct.households()?, &previous)
                 .map_err(anyhow::Error::msg)?;
-            stream.check().context("confirm live capture before playback")?;
+            stream
+                .check()
+                .context("confirm live capture before playback")?;
             // Record intent before dispatch: an error can follow an applied URI.
             attempted = true;
             direct
@@ -183,7 +181,10 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     let was_started = play.is_ok();
     let result = match play {
         Ok(_) => {
-            eprintln!("fsonos stream: {} listening; press Ctrl-C to stop", args.room);
+            eprintln!(
+                "fsonos stream: {} listening; press Ctrl-C to stop",
+                args.room
+            );
             stream.wait_until_stopped().map_err(anyhow::Error::from)
         }
         Err(error) => Err(error),

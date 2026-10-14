@@ -110,7 +110,14 @@ pub fn set_av_transport_uri<T: Transport + ?Sized>(
 /// Force deterministic queue order. The DJ relies on the queue advancing in
 /// insertion order; an owner may have left shuffle or repeat enabled.
 pub fn set_normal_play_mode<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<(), ProtoError> {
-    call(t, host, &AV_TRANSPORT, "SetPlayMode", &[INSTANCE, ("NewPlayMode", "NORMAL")]).map(drop)
+    call(
+        t,
+        host,
+        &AV_TRANSPORT,
+        "SetPlayMode",
+        &[INSTANCE, ("NewPlayMode", "NORMAL")],
+    )
+    .map(drop)
 }
 
 /// Make the player render the queue of the group `coordinator` leads.

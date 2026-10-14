@@ -44,7 +44,9 @@ impl QueuePlayRequest {
             .as_deref()
             .is_some_and(|uri| uri.trim().is_empty())
         {
-            return Err(Failure::invalid("expected_uri must be nonempty when supplied"));
+            return Err(Failure::invalid(
+                "expected_uri must be nonempty when supplied",
+            ));
         }
         Ok(())
     }
@@ -85,7 +87,11 @@ fn changed() -> Failure {
 impl Surface {
     /// Activate `req`'s existing queue entry. Preserve queue contents and the
     /// owner's shuffle/repeat setting; playback and volume changes are undoable.
-    pub fn queue_play(&self, client: &Client, req: &QueuePlayRequest) -> Result<OutcomeDto, Failure> {
+    pub fn queue_play(
+        &self,
+        client: &Client,
+        req: &QueuePlayRequest,
+    ) -> Result<OutcomeDto, Failure> {
         let guard = self.guard(client);
         if let Err(denied) = guard.authorize(PLAY, false) {
             self.record(
@@ -190,11 +196,10 @@ impl Surface {
         let fresh = get_zone_group_state(&*self.transport, host)
             .map_err(|error| Failure::from(CoreError::from(error)))?;
         if !fresh.groups.contains(group) {
-            return Err(Failure::new(
-                ErrorCode::NotCoordinator,
-                "the room's group changed",
-            )
-            .with_hint("Read the room's current queue before selecting a position."));
+            return Err(
+                Failure::new(ErrorCode::NotCoordinator, "the room's group changed")
+                    .with_hint("Read the room's current queue before selecting a position."),
+            );
         }
         Ok(())
     }

@@ -263,7 +263,9 @@ enum Fetch {
 impl Fetch {
     fn url(&self) -> &str {
         match self {
-            Self::SavedAlbums(url, _) | Self::SavedTracks(url, _) | Self::AlbumTracks(url, ..) => url,
+            Self::SavedAlbums(url, _) | Self::SavedTracks(url, _) | Self::AlbumTracks(url, ..) => {
+                url
+            }
         }
     }
 }
@@ -313,7 +315,9 @@ impl LibraryRead {
                 for saved in page.items {
                     self.saved_album(saved)?;
                 }
-                self.follow(page.next, |url| Fetch::SavedAlbums(url, page.coverage.total))
+                self.follow(page.next, |url| {
+                    Fetch::SavedAlbums(url, page.coverage.total)
+                })
             }
             Fetch::SavedTracks(url, total) => {
                 let page = Page::<SavedTrack>::read(body, &url, &self.endpoints, total, |next| {
@@ -321,16 +325,15 @@ impl LibraryRead {
                 })?;
                 self.items
                     .extend(page.items.iter().filter_map(SavedTrack::library_item));
-                self.follow(page.next, |url| Fetch::SavedTracks(url, page.coverage.total))
+                self.follow(page.next, |url| {
+                    Fetch::SavedTracks(url, page.coverage.total)
+                })
             }
             Fetch::AlbumTracks(url, album, added_at, total) => {
-                let page = Page::<SimplifiedTrack>::read(
-                    body,
-                    &url,
-                    &self.endpoints,
-                    total,
-                    |next| self.endpoints.album_tracks(&album.id, next),
-                )?;
+                let page =
+                    Page::<SimplifiedTrack>::read(body, &url, &self.endpoints, total, |next| {
+                        self.endpoints.album_tracks(&album.id, next)
+                    })?;
                 self.items.extend(page.items.iter().filter_map(|t| {
                     let mut item = album.library_item(t)?;
                     item.added_at = added_at;

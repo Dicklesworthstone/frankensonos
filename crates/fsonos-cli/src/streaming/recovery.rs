@@ -36,7 +36,9 @@ fn check_group(now: &HouseholdState, before: &ZoneSnapshot) -> Result<(), String
     if now.id != before.household
         || now.coordinator_of(&before.coordinator) != Some(&before.coordinator)
     {
-        return Err("stream household or coordinator changed; newer grouping was left alone".into());
+        return Err(
+            "stream household or coordinator changed; newer grouping was left alone".into(),
+        );
     }
     let actual: Vec<_> = now
         .rooms
@@ -140,7 +142,9 @@ pub(super) fn restore<T: Transport + ?Sized>(
         .iter()
         .find(|household| household.player(&before.coordinator).is_some())
     else {
-        return Ok(preserve("stream coordinator disappeared; nothing was restored"));
+        return Ok(preserve(
+            "stream coordinator disappeared; nothing was restored",
+        ));
     };
     let now = match refreshed(transport, household, before) {
         Ok(now) => now,
@@ -152,7 +156,9 @@ pub(super) fn restore<T: Transport + ?Sized>(
         .ip;
     let current = soap::get_media_info(transport, host)?;
     if !same_source(temporary, &current.uri) {
-        return Ok(preserve("stream source changed; newer playback was left alone"));
+        return Ok(preserve(
+            "stream source changed; newer playback was left alone",
+        ));
     }
     let state = soap::get_transport_info(transport, host)?.state;
     let keep_silent = started && state != TransportState::Playing;

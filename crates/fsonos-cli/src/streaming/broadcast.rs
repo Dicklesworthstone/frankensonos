@@ -99,7 +99,10 @@ impl Audio {
         let mut state = self.state.lock().map_err(poisoned)?;
         loop {
             if stop.load(Ordering::Acquire) {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, "stream cancelled"));
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "stream cancelled",
+                ));
             }
             if state.ended {
                 return Err(io::Error::new(
@@ -148,7 +151,10 @@ impl Audio {
             if state.ended {
                 return Ok(None);
             }
-            (state, _) = self.changed.wait_timeout(state, IO_POLL).map_err(poisoned)?;
+            (state, _) = self
+                .changed
+                .wait_timeout(state, IO_POLL)
+                .map_err(poisoned)?;
         }
         Ok(None)
     }
@@ -214,14 +220,23 @@ fn request(peer: &mut TcpStream, stop: &AtomicBool) -> io::Result<Vec<u8>> {
     let mut chunk = [0; 512];
     loop {
         if stop.load(Ordering::Acquire) {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "stream cancelled"));
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "stream cancelled",
+            ));
         }
         if Instant::now() >= deadline {
-            return Err(io::Error::new(io::ErrorKind::TimedOut, "HTTP header deadline"));
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "HTTP header deadline",
+            ));
         }
         let available = (HEADER_LIMIT - bytes.len()).min(chunk.len());
         if available == 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "HTTP header limit"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP header limit",
+            ));
         }
         match peer.read(&mut chunk[..available]) {
             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
@@ -248,7 +263,10 @@ fn request(peer: &mut TcpStream, stop: &AtomicBool) -> io::Result<Vec<u8>> {
 fn serve_peer(mut peer: TcpStream, path: &str, audio: &Audio, stop: &AtomicBool) -> io::Result<()> {
     peer.set_write_timeout(Some(Duration::from_secs(1)))?;
     let header = request(&mut peer, stop)?;
-    let first = header.split(|byte| *byte == b'\n').next().unwrap_or_default();
+    let first = header
+        .split(|byte| *byte == b'\n')
+        .next()
+        .unwrap_or_default();
     let first = std::str::from_utf8(first).unwrap_or_default();
     let fields: Vec<_> = first.split_whitespace().collect();
     if fields.len() != 3
@@ -381,7 +399,10 @@ impl LiveStream {
 
     pub(super) fn check(&mut self) -> io::Result<()> {
         if self.cancel.load(Ordering::Acquire) {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "stream cancelled"));
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "stream cancelled",
+            ));
         }
         if self.stop.load(Ordering::Acquire) {
             return Err(io::Error::other("the live MP3 workers are stopping"));

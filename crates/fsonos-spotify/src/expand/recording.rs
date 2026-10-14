@@ -26,7 +26,9 @@ pub(super) fn expand(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
     let mut originals: Vec<Option<&ClassicalTrack>> = vec![None; tracks.len()];
     for held in &work.movements {
         let matched = anchor(held, &tracks)?;
-        let index = tracks.iter().position(|track| std::ptr::eq(*track, matched))?;
+        let index = tracks
+            .iter()
+            .position(|track| std::ptr::eq(*track, matched))?;
         if originals[index].replace(held).is_some() {
             // Two held aliases for one slot cannot silently discard either
             // track's URI, explicit flag or preference metadata.
@@ -112,7 +114,11 @@ fn anchor<'a>(held: &ClassicalTrack, tracks: &[&'a AlbumTrack]) -> Option<&'a Al
     }
     let disc = held.disc_number.filter(|&number| number > 0)?;
     let number = held.track_number.filter(|&number| number > 0)?;
-    let held_part = normalize(split_title(&held.track.title).movement.unwrap_or(&held.track.title));
+    let held_part = normalize(
+        split_title(&held.track.title)
+            .movement
+            .unwrap_or(&held.track.title),
+    );
     let mut positioned = tracks.iter().copied().filter(|track| {
         (track.disc_number, track.track_number) == (disc, number)
             && if first.is_some() {

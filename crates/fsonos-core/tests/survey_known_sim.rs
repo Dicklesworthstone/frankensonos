@@ -162,7 +162,11 @@ fn blocked_multicast_recovers_both_households_without_another_search() {
     assert_eq!(lan.searches.get(), 1);
     for player in sim.players() {
         assert_eq!(
-            lan.gets.borrow().iter().filter(|&&ip| ip == player.ip).count(),
+            lan.gets
+                .borrow()
+                .iter()
+                .filter(|&&ip| ip == player.ip)
+                .count(),
             1,
             "each remembered address is tried only once"
         );

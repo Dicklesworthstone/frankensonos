@@ -35,10 +35,10 @@ pub(crate) fn runtime() -> Runtime {
 /// entries rather than the omitted albums and tracks.
 pub(crate) fn library_albums_page() -> Vec<u8> {
     let mut page: serde_json::Value =
-        serde_json::from_slice(include_bytes!("../tests/fixtures/saved_albums_page.json"))
-            .unwrap();
+        serde_json::from_slice(include_bytes!("../tests/fixtures/saved_albums_page.json")).unwrap();
     page["total"] = 2.into();
-    page["next"] = "https://api.spotify.com/v1/me/albums?offset=2&limit=50&market=from_token".into();
+    page["next"] =
+        "https://api.spotify.com/v1/me/albums?offset=2&limit=50&market=from_token".into();
     let album = &mut page["items"][1]["album"];
     album["total_tracks"] = 3.into();
     album["tracks"]["total"] = 3.into();
@@ -148,10 +148,7 @@ fn respond(fake: &Mutex<Fake>, req: &Request) -> Response {
         return response;
     }
     if uri.starts_with("/v1/me/albums") && uri.contains("offset=0") {
-        json(
-            200,
-            rewrite(&library_albums_page()),
-        )
+        json(200, rewrite(&library_albums_page()))
     } else if uri.starts_with("/v1/me/albums") {
         json(
             200,
