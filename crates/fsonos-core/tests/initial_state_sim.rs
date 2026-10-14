@@ -68,18 +68,20 @@ fn repeated_initial_loss_recovers_all_services_without_a_delta_or_poll() {
         let calls = sim.soap_log().len();
         let mut playback = Playback::default();
         for attempt in 1..=2 {
-            let due = now + INITIAL_STATE_WAIT * attempt;
+            let due = now + INITIAL_STATE_WAIT * ((1 << attempt) - 1);
             assert_eq!(rec.subscriptions.next_due(), Some(due));
             let report = rec.subscriptions.renew_due(&lan, callback, due);
             assert_eq!(report.resubscribed, 4);
             assert_eq!(report.renewed, 0);
             assert!(report.failed.is_empty());
+            assert!(report.answered.is_empty());
+            assert_eq!(report.unanswered.len(), 4);
             if attempt == 1 {
                 assert!(sink.recv_timeout(Duration::from_millis(50)).is_none());
                 assert!(playback.of(&id).is_none());
             }
         }
-        let due = now + INITIAL_STATE_WAIT * 2;
+        let due = now + INITIAL_STATE_WAIT * 3;
         let mut services = HashSet::new();
         for _ in 0..4 {
             let initial = receive(&sink);

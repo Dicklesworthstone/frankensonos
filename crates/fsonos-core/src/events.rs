@@ -142,6 +142,8 @@ struct Active {
     renew_at: Instant,
     /// Fixed for this SID, even when a short lease renews before it fires.
     initial_deadline: Instant,
+    /// Consecutive subscriptions that delivered no initial `SEQ: 0` event.
+    initial_misses: u32,
     /// A failed replacement must retry SUBSCRIBE, not renew a stale stream.
     refresh_pending: bool,
     /// The last accepted SEQ; event keys wrap from u32::MAX to 1, not 0.
@@ -169,6 +171,8 @@ pub struct Report {
     pub dropped: usize,
     /// Calls that failed outright: (player, service, error).
     pub failed: Vec<(PlayerId, Service, String)>,
+    /// Subscriptions replaced because no initial `SEQ: 0` event arrived in time.
+    pub unanswered: Vec<(PlayerId, Service)>,
     /// Players that answered a SUBSCRIBE or renewal in this pass.
     pub answered: Vec<PlayerId>,
 }
@@ -271,7 +275,7 @@ impl Subscriptions {
                     service = ?a.want.service,
                     "subscription delivered no initial state; subscribing afresh"
                 );
-                refresh_active(s, a, &callback_url, now, &mut report);
+                refresh_unanswered(s, a, &callback_url, now, &mut report);
                 continue;
             }
             match s.renew(&a.want, &a.sid) {
@@ -281,10 +285,12 @@ impl Subscriptions {
                     let same_sid = sub.sid == a.sid;
                     let last_seq = a.last_seq;
                     let initial_deadline = a.initial_deadline;
+                    let initial_misses = a.initial_misses;
                     *a = active(a.want.clone(), sub, now);
                     if same_sid {
                         a.last_seq = last_seq;
                         a.initial_deadline = initial_deadline;
+                        a.initial_misses = initial_misses;
                     }
                     report.renewed += 1;
                     report.answered.push(a.want.player.clone());
@@ -381,6 +387,7 @@ impl Subscriptions {
             return false;
         };
         a.last_seq = Some(n.seq);
+        a.initial_misses = 0;
         gap
     }
 
@@ -480,6 +487,43 @@ impl Subscriptions {
     }
 }
 
+fn refresh_unanswered<S: Subscriber + ?Sized>(
+    s: &S,
+    a: &mut Active,
+    callback_url: &impl Fn(Service) -> String,
+    now: Instant,
+    report: &mut Report,
+) {
+    match s.subscribe(&a.want, &callback_url(a.want.service)) {
+        Ok(sub) => {
+            let misses = a.initial_misses.saturating_add(1);
+            let half = Duration::from_secs(u64::from(sub.timeout_secs.max(2) / 2));
+            let cap = half.max(INITIAL_STATE_WAIT);
+            let wait = INITIAL_STATE_WAIT
+                .saturating_mul(1u32 << misses.min(6))
+                .min(cap);
+            let mut fresh = active(a.want.clone(), sub, now);
+            fresh.initial_misses = misses;
+            fresh.initial_deadline = now + wait;
+            let old = std::mem::replace(a, fresh);
+            if old.sid != a.sid {
+                let _ = s.unsubscribe(&old.want, &old.sid);
+            }
+            report.resubscribed += 1;
+            report
+                .unanswered
+                .push((a.want.player.clone(), a.want.service));
+        }
+        Err(e) => {
+            a.refresh_pending = true;
+            a.renew_at = now + RETRY;
+            report
+                .failed
+                .push((a.want.player.clone(), a.want.service, e.to_string()));
+        }
+    }
+}
+
 fn refresh_active<S: Subscriber + ?Sized>(
     s: &S,
     a: &mut Active,
@@ -535,6 +579,7 @@ fn active(want: Want, sub: Subscription, now: Instant) -> Active {
         sid: sub.sid,
         renew_at: now + half,
         initial_deadline: now + INITIAL_STATE_WAIT,
+        initial_misses: 0,
         refresh_pending: false,
         last_seq: None,
     }
@@ -576,20 +621,21 @@ mod tests {
     #[derive(Default)]
     struct TestSubscriber {
         renewal_sid: Option<&'static str>,
+        timeout_secs: Option<u32>,
     }
 
     impl Subscriber for TestSubscriber {
         fn subscribe(&self, _: &Want, _: &str) -> Result<Subscription, ProtoError> {
             Ok(Subscription {
                 sid: "uuid:events-test".into(),
-                timeout_secs: 300,
+                timeout_secs: self.timeout_secs.unwrap_or(300),
             })
         }
 
         fn renew(&self, _: &Want, sid: &str) -> Result<Subscription, ProtoError> {
             Ok(Subscription {
                 sid: self.renewal_sid.unwrap_or(sid).into(),
-                timeout_secs: 300,
+                timeout_secs: self.timeout_secs.unwrap_or(300),
             })
         }
 
@@ -640,6 +686,7 @@ mod tests {
     fn changed_renewal_sid_starts_a_new_event_stream() {
         let subscriber = TestSubscriber {
             renewal_sid: Some("uuid:replacement"),
+            timeout_secs: None,
         };
         let mut subs = Subscriptions::default();
         let now = Instant::now();
@@ -654,11 +701,15 @@ mod tests {
 
     #[test]
     fn missing_initial_state_is_detected_even_after_renewal() {
-        let subscriber = TestSubscriber::default();
+        let subscriber = TestSubscriber {
+            renewal_sid: None,
+            timeout_secs: Some(20),
+        };
         let mut subs = Subscriptions::default();
         let now = Instant::now();
         subs.sync(&subscriber, &[want()], callback, now);
-        subs.renew_due(&subscriber, callback, now + Duration::from_secs(150));
+        let report = subs.renew_due(&subscriber, callback, now + Duration::from_secs(10));
+        assert_eq!(report.renewed, 1);
         assert!(subs.missed(&notify("uuid:events-test", 1)));
     }
 
@@ -925,6 +976,7 @@ mod tests {
     fn routing_rejects_delayed_pre_wrap_events_but_accepts_a_new_sid() {
         let subscriber = TestSubscriber {
             renewal_sid: Some("uuid:replacement"),
+            timeout_secs: None,
         };
         let mut subs = Subscriptions::default();
         let now = Instant::now();

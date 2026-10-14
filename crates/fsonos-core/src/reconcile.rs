@@ -109,6 +109,12 @@ impl HealthBoard {
         for player in &report.answered {
             self.ok(player, now);
         }
+        for (player, service) in &report.unanswered {
+            self.failed(
+                player,
+                format!("{service:?}: subscription delivered no initial state"),
+            );
+        }
         for (player, service, error) in &report.failed {
             self.failed(player, format!("{service:?}: {error}"));
         }

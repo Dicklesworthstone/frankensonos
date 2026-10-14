@@ -106,7 +106,7 @@ fn a_quiet_subscription_is_replaced_without_waiting_for_a_delta_or_lease() {
         let now = Instant::now();
         subs.sync(&s, &[want(service)], callback, now);
         for attempt in 1..=3 {
-            let due = now + INITIAL_STATE_WAIT * attempt;
+            let due = now + INITIAL_STATE_WAIT * ((1 << attempt) - 1);
             assert_eq!(subs.next_due(), Some(due));
             let before = due.checked_sub(Duration::from_millis(1)).unwrap();
             let early = subs.renew_due(&s, callback, before);
@@ -115,6 +115,8 @@ fn a_quiet_subscription_is_replaced_without_waiting_for_a_delta_or_lease() {
             assert_eq!(recovered.resubscribed, 1);
             assert_eq!(recovered.renewed, 0);
             assert!(recovered.failed.is_empty());
+            assert!(recovered.answered.is_empty());
+            assert_eq!(recovered.unanswered, vec![(want(service).player, service)]);
             assert_eq!(s.subscribes.get(), attempt + 1);
             let old = format!("uuid:test-{attempt}");
             assert!(subs.route(&initial(&old)).is_none());
@@ -285,4 +287,33 @@ fn forgetting_dropping_or_shutting_down_cancels_initial_state_recovery() {
         assert_eq!(after, Report::default());
         assert_eq!(s.subscribes.get(), 1);
     }
+}
+
+#[test]
+fn unanswered_initial_state_backs_off_and_degrades_health() {
+    use fsonos_core::reconcile::{Health, HealthBoard};
+
+    let s = Silent::new(1800);
+    let mut subs = Subscriptions::default();
+    let mut health = HealthBoard::default();
+    let start = Instant::now();
+    let target = want(Service::AvTransport);
+    let initial = subs.sync(&s, std::slice::from_ref(&target), callback, start);
+    health.record(&initial, start);
+    assert_eq!(health.of(&target.player).unwrap().health, Health::Healthy);
+
+    for step in 1..=20 {
+        let at = start + Duration::from_secs(step * 30);
+        let report = subs.renew_due(&s, callback, at);
+        health.record(&report, at);
+        if step == 1 {
+            assert_eq!(health.of(&target.player).unwrap().health, Health::Degraded);
+        }
+    }
+    assert!(
+        s.subscribes.get() <= 5,
+        "expected exponential backoff over 10 min, got {} SUBSCRIBEs",
+        s.subscribes.get()
+    );
+    assert_eq!(health.of(&target.player).unwrap().health, Health::Offline);
 }

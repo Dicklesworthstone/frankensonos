@@ -222,7 +222,7 @@ mod tests {
                 .rec
                 .subscriptions
                 .next_due()
-                .is_some_and(|due| due <= Instant::now() + INITIAL_STATE_WAIT)
+                .is_some_and(|due| due <= Instant::now() + INITIAL_STATE_WAIT * 2)
             {
                 assert!(Instant::now() < until, "live worker did not recover state");
                 turn(&engine, &mut model);
