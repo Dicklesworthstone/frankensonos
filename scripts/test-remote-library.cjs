@@ -220,3 +220,89 @@ test('action refresh failures do not turn acknowledged playback into an automati
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.filter((name) => name === 'libraryPlay').length, 1);
 });
+
+const recentRecords = [
+  { source_uri: track.source_uri, title: track.title, artist: track.subtitle, played_at: 1700000030 },
+  { source_uri: track.source_uri, title: track.title, artist: track.subtitle, played_at: 1700000000 },
+  { source_uri: album.source_uri, title: album.title, played_at: 1699990000 },
+];
+test('recent listening is group-scoped, lazy and independent of search words', async () => {
+  const f = fixture(async (name) => name === 'libraryHistory' ? recentRecords : undefined);
+  await f.control.refreshRooms(); f.control.target('Room@S1');
+  assert.equal(f.calls.length, 1);
+  assert.equal(await f.control.recent(), true);
+  assert.deepEqual(f.calls[1], ['libraryHistory', { query: { zone: 'Room@S1', limit: LIMIT } }]);
+  assert.equal(f.control.state.view, 'history');
+  assert.deepEqual(f.control.state.hits.map((hit) => hit.playedAt), recentRecords.map((r) => r.played_at));
+  assert.equal(f.control.state.hits.length, 3, 'repeated listens are not collapsed');
+});
+test('recent music replays the recorded URI or appends it without any fuzzy search', async () => {
+  for (const mode of ['play', 'append', 'next']) {
+    const f = fixture(async (name) => name === 'libraryHistory' ? recentRecords : undefined);
+    await f.control.refreshRooms(); f.control.target('Room@S2'); await f.control.recent();
+    f.control.choose(2, mode);
+    assert.equal(await f.control.confirm(), true);
+    assert.equal(f.calls.some(([name]) => name === 'librarySearch'), false);
+    assert.equal(f.writes()[0][1].body.source_uri, album.source_uri);
+    assert.equal(f.writes()[0][0], mode === 'play' ? 'libraryPlay' : 'libraryAdd');
+  }
+});
+test('recent history without cached names still has a playable Spotify identity', async () => {
+  const f = fixture(async (name) => name === 'libraryHistory'
+    ? [{ source_uri: playlist.source_uri, played_at: 1700000000 }] : undefined);
+  await f.control.refreshRooms(); f.control.target('Room@S2'); await f.control.recent();
+  assert.equal(f.control.state.hits[0].title, playlist.source_uri);
+  assert.equal(f.control.choose(0, 'next'), true);
+  assert.equal(await f.control.confirm(), true);
+});
+test('unsupported historical streams remain visible but are not replayed as guesses', async () => {
+  const f = fixture(async (name) => name === 'libraryHistory'
+    ? [{ source_uri: 'x-rincon-mp3radio://example.invalid/expired', title: 'Old temporary stream', played_at: 1700000000 }] : undefined);
+  await f.control.refreshRooms(); f.control.target('Room@S2'); await f.control.recent();
+  assert.equal(f.control.state.hits[0].title, 'Old temporary stream');
+  for (const mode of ['play', 'append', 'next']) assert.equal(f.control.choose(0, mode), false);
+  assert.equal(f.writes().length, 0);
+});
+test('history read failure is distinct from an empty successful history', async () => {
+  for (const value of [[], null, {}, [{ source_uri: 'spotify:track:Test', played_at: 'yesterday' }],
+    [{ source_uri: 'spotify:track:Test', played_at: 8640000000001 }], Array(LIMIT + 1).fill(recentRecords[0])]) {
+    const f = fixture(async (name) => name === 'libraryHistory' ? value : undefined);
+    await f.control.refreshRooms(); f.control.target('Room@S2');
+    assert.equal(await f.control.recent(), Array.isArray(value) && value.length === 0);
+    assert.equal(f.control.state.loaded, Array.isArray(value) && value.length === 0);
+    assert.equal(f.writes().length, 0);
+  }
+});
+test('changing between search and history invalidates previous review consent', async () => {
+  const f = fixture(async (name) => name === 'libraryHistory' ? recentRecords : undefined); await ready(f);
+  f.control.choose(0, 'play'); await f.control.recent();
+  assert.equal(await f.control.confirm(), false);
+  f.control.choose(0, 'play'); await f.control.search();
+  assert.equal(await f.control.confirm(), false);
+  assert.equal(f.writes().length, 0);
+});
+test('a late history reply cannot replace newer search results', async () => {
+  const gate = later();
+  const f = fixture(async (name) => name === 'libraryHistory' ? gate.promise : undefined); await ready(f);
+  const pending = f.control.recent();
+  f.control.query('another song'); await f.control.search(); gate.resolve(recentRecords);
+  assert.equal(await pending, false);
+  assert.equal(f.control.state.view, 'search');
+  assert.equal(f.control.state.hits[0].playedAt, undefined);
+});
+test('stale rendered result handlers cannot select a newer item in the same slot', async () => {
+  const f = fixture(async (name) => name === 'libraryHistory' ? recentRecords : undefined); await ready(f);
+  const stale = f.control.state.hits[0];
+  await f.control.recent();
+  assert.equal(f.control.choose(0, 'play', stale), false);
+  assert.equal(f.control.choose(0, 'play', f.control.state.hits[0]), true);
+});
+test('history cannot be read during a write or without a destination', async () => {
+  const gate = later();
+  const f = fixture(async (name) => name === 'libraryPlay' ? gate.promise : undefined);
+  await f.control.refreshRooms(); assert.equal(await f.control.recent(), false);
+  f.control.target('Room@S2'); f.control.query('artist'); await f.control.search();
+  f.control.choose(0, 'play'); const writing = f.control.confirm();
+  assert.equal(await f.control.recent(), false); gate.resolve(outcome); await writing;
+  assert.equal(f.calls.some(([name]) => name === 'libraryHistory'), false);
+});

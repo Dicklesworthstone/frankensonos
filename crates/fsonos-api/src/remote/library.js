@@ -6,6 +6,7 @@ const LibraryRemote = (() => {
   const MAX_QUERY = 512;
   const routes = {
     librarySearch: ['GET', '/library/search'],
+    libraryHistory: ['GET', '/history'],
     libraryPlay: ['POST', '/play'],
     libraryAdd: ['POST', '/queue'],
   };
@@ -32,6 +33,8 @@ const LibraryRemote = (() => {
     });
   }
 
+  const spotify = (uri) => typeof uri === 'string' && /^spotify:(track|album|playlist):[a-zA-Z0-9]+$/.exec(uri);
+
   function hitsOf(value) {
     if (!Array.isArray(value) || value.length > LIMIT) {
       throw new Error('The library response is unreadable. Search again.');
@@ -40,8 +43,7 @@ const LibraryRemote = (() => {
       if (!hit || typeof hit.title !== 'string' || typeof hit.kind !== 'string') {
         throw new Error('The library response is incomplete. Search again.');
       }
-      const match = typeof hit.source_uri === 'string'
-        && /^spotify:(track|album|playlist):[a-zA-Z0-9]+$/.exec(hit.source_uri);
+      const match = spotify(hit.source_uri);
       const source = match && match[1] === hit.kind ? hit.source_uri : null;
       const favorite = hit.kind === 'favorite' && typeof hit.favorite === 'string'
         && /^FV:2\/[0-9]+$/.test(hit.favorite) ? hit.favorite : null;
@@ -51,10 +53,29 @@ const LibraryRemote = (() => {
     });
   }
 
+  function historyOf(value) {
+    if (!Array.isArray(value) || value.length > LIMIT) {
+      throw new Error('The listening history is unreadable. Read it again.');
+    }
+    return value.map((record) => {
+      if (!record || !text(record.source_uri) || !Number.isSafeInteger(record.played_at)
+          || Math.abs(record.played_at) > 8640000000000) {
+        throw new Error('The listening history is incomplete. Read it again.');
+      }
+      const match = spotify(record.source_uri);
+      // Preserve each listen, including repeated URIs, in the server's order.
+      // Ephemeral streams and other unsupported sources are not replay guesses.
+      return Object.freeze({ kind: match ? match[1] : 'recorded source',
+        title: text(record.title) ? record.title : record.source_uri,
+        subtitle: typeof record.artist === 'string' ? record.artist : '',
+        source: match ? record.source_uri : null, favorite: null, playedAt: record.played_at });
+    });
+  }
+
   function model({ call, changed = () => {}, played = () => {} }) {
     let epoch = 0;
     let disposed = false;
-    const state = { open: false, zones: [], target: '', query: '', hits: [],
+    const state = { open: false, zones: [], target: '', query: '', hits: [], view: 'search',
       loaded: false, loading: false, writing: false, pending: null, message: '' };
     const publish = () => { if (!disposed) changed(state); };
     const destination = () => state.zones.find((zone) => zone.target === state.target);
@@ -108,17 +129,19 @@ const LibraryRemote = (() => {
       if (disposed || state.writing || typeof value !== 'string') return false;
       invalidate();
       state.query = value;
+      state.view = 'search';
       state.message = '';
       publish();
       return true;
     }
 
-    async function search() {
+    async function read(view) {
       if (disposed || !state.open || state.writing) return false;
       const zone = destination();
       const q = state.query.trim();
       invalidate();
-      if (!zone || !q || q.length > MAX_QUERY) {
+      state.view = view;
+      if (!zone || (view === 'search' && (!q || q.length > MAX_QUERY))) {
         state.message = !zone ? 'Choose the destination group first.'
           : `Enter 1 to ${MAX_QUERY} characters to search your library.`;
         publish();
@@ -129,7 +152,9 @@ const LibraryRemote = (() => {
       state.message = '';
       publish();
       try {
-        const hits = hitsOf(await call('librarySearch', { query: { q, zone: zone.target, limit: LIMIT } }));
+        const hits = view === 'history'
+          ? historyOf(await call('libraryHistory', { query: { zone: zone.target, limit: LIMIT } }))
+          : hitsOf(await call('librarySearch', { query: { q, zone: zone.target, limit: LIMIT } }));
         if (!current(version)) return false;
         state.hits = hits;
         state.loaded = true;
@@ -142,10 +167,13 @@ const LibraryRemote = (() => {
       }
     }
 
-    function choose(index, action) {
+    const search = () => read('search');
+    const recent = () => read('history');
+
+    function choose(index, action, expected = state.hits[index]) {
       const zone = destination();
       const hit = state.hits[index];
-      if (disposed || !state.open || state.loading || state.writing || !state.loaded || !zone || !hit
+      if (disposed || !state.open || state.loading || state.writing || !state.loaded || !zone || !hit || hit !== expected
           || !['play', 'append', 'next'].includes(action)
           || !(hit.source || (hit.favorite && action === 'play'))) return false;
       const body = hit.favorite ? { zone: zone.target, favorite: hit.favorite }
@@ -221,7 +249,7 @@ const LibraryRemote = (() => {
       }
     }
 
-    return { state, refreshRooms, target, query, search, choose, cancel, confirm,
+    return { state, refreshRooms, target, query, search, recent, choose, cancel, confirm,
       close() { state.open = false; invalidate(); publish(); },
       dispose() { disposed = true; invalidate(); } };
   }
@@ -238,6 +266,8 @@ const LibraryRemote = (() => {
       'aria-label': 'Search your music library', class: 'library-query' });
     const search = button('Search library', () => control.search());
     const rooms = button('Refresh rooms', () => control.refreshRooms());
+    const recent = button('Recently played', () => control.recent());
+    let reviewFocus = null;
     const status = el('p', { role: 'status', 'aria-live': 'polite' });
     const results = el('div', { class: 'library-results' });
     destination.addEventListener('change', () => control.target(destination.value));
@@ -247,7 +277,7 @@ const LibraryRemote = (() => {
     });
     body.append(el('p', { text: 'Search your cached Spotify library and the chosen household’s Sonos favorites.' }),
       el('label', {}, 'Play in', destination), el('div', { class: 'row' }, rooms),
-      input, el('div', { class: 'row' }, search), status, results);
+      input, el('div', { class: 'row' }, search, recent), status, results);
 
     function render(state) {
       const active = document.activeElement;
@@ -257,10 +287,13 @@ const LibraryRemote = (() => {
       for (const zone of state.zones) destination.append(el('option', { value: zone.target, text: zone.label }));
       destination.value = state.target;
       destination.disabled = state.writing || state.loading || !state.zones.length;
-      input.disabled = state.writing;
+      input.disabled = state.writing || (state.loading && !state.target);
       if (input.value !== state.query) input.value = state.query;
       search.disabled = state.writing || state.loading || !state.target || !state.query.trim();
       rooms.disabled = state.writing || state.loading;
+      recent.disabled = state.writing || state.loading || !state.target;
+      recent.setAttribute('aria-pressed', String(state.view === 'history'));
+      search.setAttribute('aria-pressed', String(state.view === 'search'));
       status.textContent = state.message || (state.loading ? 'Reading…' : '');
       results.replaceChildren();
       if (state.pending) {
@@ -272,29 +305,43 @@ const LibraryRemote = (() => {
         results.append(el('div', { class: 'library-review', role: 'group', 'aria-label': 'Review music action' },
           el('strong', { text: `${label}: ${pending.hit.title || 'Untitled'}` }),
           el('p', { text: `Destination: ${pending.zone.label}` }), el('p', { text: warning }),
+          pending.hit.playedAt !== undefined && pending.action === 'play'
+            ? el('p', { text: 'Replays this item from the beginning, not its old queue position.' }) : null,
           el('div', { class: 'row' }, button('Cancel', () => control.cancel()),
             button(`Confirm ${label.toLowerCase()}`, () => control.confirm()))));
       } else if (state.loaded) {
         const count = state.hits.length;
-        results.append(el('p', { text: count ? `${count} match(es)${count === LIMIT ? '; refine the search for more specific results' : ''}.`
-          : 'No matches. Try different words or sync your Spotify library on the daemon.' }));
+        const heading = state.view === 'history'
+          ? count ? `${count} recent recorded play(s) for this group. Times are shown in this browser's local time.`
+            : 'No recorded plays for this group yet.'
+          : count ? `${count} match(es)${count === LIMIT ? '; refine the search for more specific results' : ''}.`
+            : 'No matches. Try different words or sync your Spotify library on the daemon.';
+        results.append(el('p', { text: heading }));
         const list = el('ul', { class: 'library-hits' });
         state.hits.forEach((hit, index) => {
           const row = el('li', {}, el('div', { class: 'track' },
             el('strong', { text: hit.title || 'Untitled' }),
             el('div', { class: 'by', text: [hit.kind, hit.subtitle].filter(Boolean).join(' · ') })));
+          if (hit.playedAt !== undefined) {
+            const at = new Date(hit.playedAt * 1000);
+            row.append(el('time', { datetime: at.toISOString(), text: at.toLocaleString() }));
+          }
           const actions = el('div', { class: 'row' });
           const locked = state.loading || state.writing;
-          if (hit.source || hit.favorite) actions.append(button('Play now', () => control.choose(index, 'play'), locked, `play-${index}`));
-          if (hit.source) actions.append(button('Add to end', () => control.choose(index, 'append'), locked, `append-${index}`),
-            button('Queue next', () => control.choose(index, 'next'), locked, `next-${index}`));
+          const select = (action) => {
+            reviewFocus = `${action}-${index}`;
+            control.choose(index, action, hit);
+          };
+          if (hit.source || hit.favorite) actions.append(button('Play now', () => select('play'), locked, `play-${index}`));
+          if (hit.source) actions.append(button('Add to end', () => select('append'), locked, `append-${index}`),
+            button('Queue next', () => select('next'), locked, `next-${index}`));
           if (!hit.source && !hit.favorite) actions.append(el('span', { text: 'Read-only: unsupported item.' }));
           row.append(actions);
           list.append(row);
         });
         results.append(list);
       }
-      const key = state.pending ? 'Cancel' : focus;
+      const key = state.pending ? 'Cancel' : focus === 'Cancel' ? reviewFocus : focus;
       const selected = [...results.querySelectorAll('[data-library-focus]')]
         .find((element) => element.getAttribute('data-library-focus') === key);
       if (selected && !selected.disabled) selected.focus({ preventScroll: true });
