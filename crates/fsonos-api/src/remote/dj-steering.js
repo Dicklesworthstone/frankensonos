@@ -135,6 +135,8 @@ const DjSteeringRemote = (() => {
     if (!word(zone) || !object(draft)) fail('Choose a DJ group and steering.');
     if (draft.clear === true) return Object.freeze({ zone, clear: true });
     if (draft.clear !== undefined && draft.clear !== false) fail('Clear must be a boolean.');
+    if (draft.keep_expiry !== undefined && typeof draft.keep_expiry !== 'boolean') fail('Keep expiry must be a boolean.');
+    if (draft.keep_expiry && draft.minutes !== undefined && draft.minutes !== '') fail('Preserving a deadline takes no new duration.');
     const body = { zone };
     if (draft.mood !== undefined && draft.mood !== '') {
       if (!word(draft.mood) || !moods.includes(draft.mood)) fail('Choose a mood returned by this daemon.');
@@ -163,11 +165,11 @@ const DjSteeringRemote = (() => {
     const destination = () => state.zones.find((z) => z.target === state.target);
     const invalidate = () => { ++epoch; state.pending = null; state.status = null; state.ready = false; state.loading = false; };
 
-    async function load() {
+    async function load(preferred = null) {
       if (disposed) return false;
       state.open = true;
       if (state.busy) { publish(); return false; }
-      const old = destination(); invalidate(); const v = epoch;
+      const old = preferred || destination(); invalidate(); const v = epoch;
       state.loading = true; state.message = ''; publish();
       try {
         const [rawZones, rawMoods] = await Promise.all([call('djSteeringZones'), call('djSteeringMoods')]);
@@ -177,12 +179,21 @@ const DjSteeringRemote = (() => {
         state.target = old && zones.some((z) => z.signature === old.signature) ? old.target : '';
         state.loading = false;
         if (state.target) return await select(state.target);
-        state.message = zones.length ? 'Choose a group to read its DJ.' : 'No rooms discovered yet. Refresh after discovery.';
+        state.message = preferred ? 'The inspected group changed. Choose its current grouping before editing.'
+          : zones.length ? 'Choose a group to read its DJ.' : 'No rooms discovered yet. Refresh after discovery.';
         return true;
       } catch (error) {
         if (current(v)) { state.zones = []; state.target = ''; state.message = message(error); }
         return false;
       } finally { if (current(v)) { state.loading = false; publish(); } }
+    }
+
+    async function openFor(zone) {
+      if (disposed || state.busy || !zone || !word(zone.target) || !text(zone.signature)) return false;
+      const requested = { target: zone.target, signature: zone.signature };
+      if (!await load(requested)) return false;
+      return state.open && state.ready && state.target === requested.target
+        && destination()?.signature === requested.signature;
     }
 
     async function select(target) {
@@ -203,8 +214,14 @@ const DjSteeringRemote = (() => {
       if (disposed || !state.open || state.busy || !state.ready || state.loading) return null;
       state.pending = null;
       try {
-        state.pending = Object.freeze({ body: requestOf(state.target, draft, state.moods),
-          zone: destination(), signature: signatureOf(state.status.steering) });
+        const body = requestOf(state.target, draft, state.moods);
+        const preserve = !body.clear && draft.keep_expiry === true;
+        const steering = state.status.steering;
+        if (preserve && (steering.source !== 'session' || steering.expires_at === null
+            || !integer(steering.expires_in_secs, 60, 604800))) fail('This deadline cannot be preserved. Choose a new duration or return to the program.');
+        state.pending = Object.freeze({ body, keep_expiry: preserve,
+          deadline: preserve ? steering.expires_at : null,
+          zone: destination(), signature: signatureOf(steering) });
         state.message = '';
       } catch (error) { state.message = message(error); }
       publish(); return state.pending;
@@ -224,8 +241,16 @@ const DjSteeringRemote = (() => {
         if (signatureOf(before.steering) !== expected.signature) fail('The steering changed or expired; nothing was saved. Refresh and review again.');
         state.message = 'Saving steering…'; publish();
         if (!current(v)) return false;
+        let body = expected.body;
+        if (expected.keep_expiry) {
+          // The phone's clock may be wrong. Use the freshly reported daemon
+          // countdown rather than restarting the duration seen during review.
+          const remaining = before.steering.expires_in_secs;
+          if (!integer(remaining, 60, 604800)) fail('The deadline is too close to preserve. Refresh and choose a duration.');
+          body = Object.freeze({ ...body, for_secs: remaining });
+        }
         sent = true;
-        const answer = await call('djSteeringWrite', { body: expected.body });
+        const answer = await call('djSteeringWrite', { body });
         if (!answer || !text(answer.done) || typeof answer.changed !== 'boolean'
             || !Array.isArray(answer.notes ?? []) || !(answer.notes ?? []).every((n) => n && typeof n.code === 'string' && typeof n.detail === 'string')) {
           fail('The steering save response is unreadable.');
@@ -253,7 +278,7 @@ const DjSteeringRemote = (() => {
     function cancel() { if (!disposed && !state.busy) { state.pending = null; publish(); } }
     function close() { if (!disposed) { invalidate(); state.open = false; publish(); } }
     function dispose() { close(); disposed = true; ++epoch; }
-    return { state, load, select, review, confirm, cancel, close, dispose };
+    return { state, load, openFor, select, review, confirm, cancel, close, dispose };
   }
 
   let nextId = 0;
@@ -269,6 +294,10 @@ const DjSteeringRemote = (() => {
     const facts = el('div', { class: 'dj-direction-facts' });
     const mood = el('select', { id: `${id}-mood` });
     const minutes = el('input', { id: `${id}-minutes`, type: 'number', min: 1, max: 10080, step: 1, placeholder: 'Until cleared' });
+    const expiry = el('select', { id: `${id}-expiry` },
+      el('option', { value: 'keep', text: 'Keep current deadline' }),
+      el('option', { value: 'duration', text: 'New duration from saving' }),
+      el('option', { value: 'until', text: 'Until cleared' }));
     const energy = el('select', { id: `${id}-energy` }, ...[-2, -1, 0, 1, 2].map((v, i) =>
       el('option', { value: v, text: ['Much calmer', 'Calmer', 'No extra shift', 'Brighter', 'Much brighter'][i] })));
     const long = el('input', { id: `${id}-long`, type: 'checkbox' });
@@ -282,7 +311,7 @@ const DjSteeringRemote = (() => {
     }
     filterBox.append(el('p', { text: 'One entry per line, up to 32. Commas stay in names. Decades: 1960, 1970, etc., on separate lines. Periods: ' + periods.join(', ') + '.' }), filterGrid);
     const reviewBox = el('div', { class: 'dj-direction-review', hidden: true, tabindex: -1 });
-    const controls = [mood, minutes, energy, long, min, max, ...Object.values(filters)];
+    const controls = [mood, expiry, minutes, energy, long, min, max, ...Object.values(filters)];
     const review = button('Review steering', () => {
       try {
         const constraints = { energy_bias: Number(energy.value), allow_long_works: long.checked };
@@ -294,7 +323,9 @@ const DjSteeringRemote = (() => {
         for (const [key, input] of [['min_work_minutes', min], ['max_work_minutes', max]]) {
           if (input.value !== '') constraints[key] = /^\d+$/.test(input.value) ? Number(input.value) : fail('Work lengths need whole minutes.');
         }
-        editor.review({ mood: mood.value, minutes: minutes.value, constraints });
+        if (expiry.value === 'duration' && !minutes.value) fail('Enter the new duration in whole minutes.');
+        editor.review({ mood: mood.value, minutes: expiry.value === 'duration' ? minutes.value : '',
+          keep_expiry: expiry.value === 'keep', constraints });
       } catch (error) { editor.cancel(); status.textContent = message(error); }
     });
     const clear = button('Review return to program', () => editor.review({ clear: true }));
@@ -349,12 +380,15 @@ const DjSteeringRemote = (() => {
             mood.append(el('option', { value: s.mood, text: `${s.mood} (not listed; choose a mood)` }));
           }
           mood.value = s.source === 'session' ? s.mood || '' : '';
+          expiry.value = s.source === 'session' && s.expires_at !== null ? 'keep' : 'until';
+          expiry.options[0].disabled = s.source !== 'session' || s.expires_at === null;
           minutes.value = s.source === 'session' && s.expires_in_secs !== null ? String(Math.max(1, Math.ceil(s.expires_in_secs / 60))) : '';
           energy.value = String(c.energy_bias || 0); long.checked = c.allow_long_works || false;
           min.value = c.min_work_minutes ?? ''; max.value = c.max_work_minutes ?? '';
           for (const [key, input] of Object.entries(filters)) input.value = (c[key] || []).join('\n');
         }
       }
+      minutes.disabled = !state.ready || state.busy || state.loading || expiry.value !== 'duration';
       reviewBox.hidden = !state.pending;
       if (reviewed !== state.pending) {
         reviewed = state.pending; reviewBox.replaceChildren();
@@ -362,7 +396,7 @@ const DjSteeringRemote = (() => {
           const pending = reviewed, body = pending.body;
           reviewBox.append(el('h3', { text: pending.zone.label }),
             el('p', { text: body.clear ? 'Clear this group’s session and return to its time-of-day program.'
-              : `Replace this group’s session. Mood: ${body.mood || 'time-of-day'}. ${describe(body.constraints)}. Duration: ${body.for_secs ? `${body.for_secs / 60} minutes from saving` : 'until cleared'}.` }),
+              : `Replace this group’s session. Mood: ${body.mood || 'time-of-day'}. ${describe(body.constraints)}. Duration: ${pending.keep_expiry ? `keep deadline ${new Date(pending.deadline * 1000).toLocaleString()}` : body.for_secs ? `${body.for_secs / 60} minutes from saving` : 'until cleared'}.` }),
             el('p', { text: 'Applies from the next DJ pick, not to already queued works. Does not start, skip or restart playback. Standing preferences remain unchanged.' }),
             el('div', { class: 'row' }, button('Save this group’s steering', () => { void editor.confirm(pending); }), button('Cancel', () => editor.cancel())));
           reviewBox.focus({ preventScroll: true });
@@ -370,19 +404,24 @@ const DjSteeringRemote = (() => {
       }
     }
     target.addEventListener('change', () => { void editor.select(target.value); });
-    for (const input of [mood, minutes, energy, long, min, max, ...Object.values(filters)]) {
+    for (const input of [mood, expiry, minutes, energy, long, min, max, ...Object.values(filters)]) {
       input.addEventListener('input', () => editor.cancel()); input.addEventListener('change', () => editor.cancel());
     }
     const field = (name, input) => el('div', {}, el('label', { for: input.id, text: name }), input);
     box.append(el('h2', { text: 'Direct this group’s DJ' }),
       el('div', { class: 'row' }, refresh, button('Close', () => { editor.close(); toggle.focus(); })),
       field('DJ group', target), status, facts,
-      el('p', { text: 'Edit the session below. Saving replaces its mood, extra filters and expiry; a timed save starts a new duration. Clearing returns to the program. Use DJ taste for persistent preferences across all groups.' }),
-      el('div', { class: 'dj-direction-grid' }, field('Mood', mood), field('Duration in minutes (blank: until cleared)', minutes),
+      el('p', { text: 'Edit the session below. Saving replaces its mood and extra filters. Keep the existing deadline, choose a new duration, or keep the session until cleared. Clearing returns to the program. Use DJ taste for persistent preferences across all groups.' }),
+      el('div', { class: 'dj-direction-grid' }, field('Mood', mood), field('Expiry', expiry), field('New duration in minutes', minutes),
         field('Energy shift', energy), field('Allow long works', long), field('Minimum work minutes', min), field('Maximum work minutes', max)),
       filterBox, el('div', { class: 'row' }, review, clear), reviewBox);
     render(editor.state);
-    return { node: el('div', { class: 'dj-direction' }, toggle, box), model: editor, dispose: editor.dispose };
+    return { node: el('div', { class: 'dj-direction' }, toggle, box), model: editor,
+      openFor: async (zone) => {
+        const opened = await editor.openFor(zone);
+        if (editor.state.open) { target.focus(); box.scrollIntoView({ block: 'start' }); }
+        return opened;
+      }, dispose: editor.dispose };
   }
   return { routes, lists: Object.freeze(lists), zonesOf, constraintsOf, moodsOf, steeringOf, workOf, statusOf, requestOf, signatureOf, model, panel };
 })();
@@ -393,7 +432,18 @@ if (typeof document !== 'undefined' && typeof ROUTES !== 'undefined') {
   const directionMain = document.getElementById('households');
   if (directionMain) {
     const directionRoot = el('section', { class: 'scenes', 'aria-label': 'DJ direction and explanations' });
-    directionRoot.append(DjSteeringRemote.panel({ call, el }).node);
+    const directionPanel = DjSteeringRemote.panel({ el, call: async (name, args) => {
+      try { return await call(name, args); }
+      finally {
+        // A lost write answer is also a reason to re-observe, never to retry.
+        if (name === 'djSteeringWrite') document.dispatchEvent(new CustomEvent('fsonos:dj-changed', { detail: { zone: args.body.zone } }));
+      }
+    } });
+    directionRoot.append(directionPanel.node);
+    document.addEventListener('fsonos:dj-edit', (event) => {
+      event.preventDefault();
+      void directionPanel.openFor(event.detail);
+    });
     directionMain.before(directionRoot);
   }
 }

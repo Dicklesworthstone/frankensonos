@@ -148,17 +148,21 @@ const DjSessionRemote = (() => {
     return { state, refresh, select, close, dispose };
   }
 
-  function panel({ call, el }) {
+  function panel({ call, el, onedit = null }) {
     let control;
     const node = el('details', { class: 'dj-session' });
     const destination = el('select', { 'aria-label': 'DJ session group',
       onchange: () => control.select(destination.value) });
     const refresh = el('button', { type: 'button', text: 'Refresh DJ', onclick: () => control.refresh() });
+    const steerAction = el('button', { type: 'button', text: 'Steer this group', hidden: !onedit, onclick: () => {
+      const state = control.state, zone = state.zones.find((z) => z.target === state.target);
+      if (zone && state.open && state.status && !state.loading && !state.stale) onedit?.(zone);
+    } });
     const status = el('p', { class: 'dj-session-message', role: 'status', 'aria-live': 'polite' });
     const observation = el('div', { class: 'dj-session-observation' });
     const body = el('div', { class: 'dj-session-body' },
       el('p', { text: 'Inspect the DJ’s current and upcoming works, why they were chosen, and what steers the next pick. Refresh for a new observation.' }),
-      el('div', { class: 'row' }, destination, refresh), status, observation);
+      el('div', { class: 'row' }, destination, refresh, steerAction), status, observation);
     node.append(el('summary', { text: 'DJ session · now, next & why' }), body);
 
     function workNode(work, heading) {
@@ -190,6 +194,7 @@ const DjSessionRemote = (() => {
       destination.value = state.target;
       destination.disabled = state.loading || !state.zones.length;
       refresh.disabled = state.loading;
+      steerAction.disabled = state.loading || state.stale || !state.status;
       status.textContent = state.message || (state.loading ? 'Reading the DJ…' : '');
       observation.replaceChildren();
       if (!state.status) return;
@@ -217,7 +222,10 @@ const DjSessionRemote = (() => {
     control = model({ call, changed: render });
     node.addEventListener('toggle', () => { if (node.open) void control.refresh(); else control.close(); });
     render(control.state);
-    return { node, dispose: control.dispose };
+    return { node, dispose: control.dispose, observeChange: (target) => {
+      if (control.state.open && control.state.target === target) return control.refresh();
+      return Promise.resolve(false);
+    } };
   }
 
   return { model, panel, routes, zonesOf, statusOf, constraintsText };
@@ -226,7 +234,9 @@ const DjSessionRemote = (() => {
 if (typeof module !== 'undefined' && module.exports) module.exports = DjSessionRemote;
 else {
   Object.assign(ROUTES, DjSessionRemote.routes);
-  const sessionRoot = el('section', { class: 'scenes', 'aria-label': 'DJ session' },
-    DjSessionRemote.panel({ call, el }).node);
+  const sessionPanel = DjSessionRemote.panel({ call, el, onedit: (zone) =>
+    document.dispatchEvent(new CustomEvent('fsonos:dj-edit', { detail: { target: zone.target, signature: zone.signature }, cancelable: true })) });
+  document.addEventListener('fsonos:dj-changed', (event) => { void sessionPanel.observeChange(event.detail?.zone); });
+  const sessionRoot = el('section', { class: 'scenes', 'aria-label': 'DJ session' }, sessionPanel.node);
   document.getElementById('households')?.before(sessionRoot);
 }

@@ -148,3 +148,156 @@ test('real loopback HTTP reads use the shipped routes and preserve the complete 
   assert.deepEqual(seen, [['GET', '/zones'], ['GET', '/zones/Study%40S2/dj']]);
   assert.deepEqual(m.state.status, status());
 });
+
+const steering = require('../crates/fsonos-api/src/remote/dj-steering.js');
+const direction = (extra = {}) => {
+  const calls = [];
+  const m = steering.model({ ...extra, call: async (name, args) => {
+    calls.push([name, args]);
+    if (extra.call) return extra.call(name, args);
+    return name === 'djSteeringZones' ? zones() : name === 'djSteeringMoods' ? { moods: [{ name: 'focus' }] }
+      : name === 'djSteeringWrite' ? { done: 'Saved', changed: true, notes: [{ code: 'INFO', detail: 'Next pick only.' }] } : status();
+  } });
+  return { m, calls };
+};
+const handoff = (generation = 'S2') => zonesOf(zones()).find((z) => z.target === `Study@${generation}`);
+
+for (const generation of ['S1', 'S2']) test(`inspector hands the ${generation} group to the single editor without a write`, async () => {
+  const { m, calls } = direction();
+  assert.equal(await m.openFor(handoff(generation)), true);
+  assert.equal(m.state.target, `Study@${generation}`);
+  assert.deepEqual(calls.at(-1), ['djSteeringStatus', { params: { room: `Study@${generation}` } }]);
+  assert.equal(calls.some(([name]) => name === 'djSteeringWrite'), false);
+});
+
+test('handoff checks the complete membership and never substitutes a new group', async () => {
+  const { m, calls } = direction({ call: async (name) => name === 'djSteeringZones' ? [{ ...zones()[0], members: ['Study'] }]
+    : { moods: [{ name: 'focus' }] } });
+  assert.equal(await m.openFor(handoff('S1')), false);
+  assert.equal(m.state.target, '');
+  assert.equal(m.state.ready, false);
+  assert.match(m.state.message, /inspected group changed/);
+  assert.equal(calls.some(([name]) => name === 'djSteeringStatus' || name === 'djSteeringWrite'), false);
+});
+
+test('a later handoff wins over a delayed older handoff; closing invalidates reads', async () => {
+  const delayed = deferred(); let reads = 0;
+  const { m } = direction({ call: async (name) => name === 'djSteeringZones' ? (++reads === 1 ? delayed.promise : zones())
+    : name === 'djSteeringMoods' ? { moods: [{ name: 'focus' }] } : status() });
+  const old = m.openFor(handoff('S1'));
+  assert.equal(await m.openFor(handoff('S2')), true);
+  delayed.resolve(zones());
+  assert.equal(await old, false);
+  assert.equal(m.state.target, 'Study@S2');
+  const wait = deferred();
+  const closing = direction({ call: async (name) => name === 'djSteeringZones' ? wait.promise : { moods: [] } }).m;
+  const pending = closing.openFor(handoff()); closing.close(); wait.resolve(zones());
+  assert.equal(await pending, false);
+  assert.equal(closing.state.open, false);
+});
+
+test('handoff requires an explicit valid destination and does not interrupt a sent mutation', async () => {
+  const wait = deferred();
+  const { m, calls } = direction({ call: async (name) => name === 'djSteeringZones' ? zones() : name === 'djSteeringMoods'
+    ? { moods: [{ name: 'focus' }] } : name === 'djSteeringWrite' ? wait.promise : status() });
+  for (const bad of [null, {}, { target: '', signature: 'x' }, { target: 'Study@S2' }]) assert.equal(await m.openFor(bad), false);
+  assert.equal(calls.length, 0);
+  await m.openFor(handoff()); const review = m.review({ mood: 'focus', keep_expiry: true });
+  const saving = m.confirm(review); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await m.openFor(handoff('S1')), false);
+  assert.equal(m.state.target, 'Study@S2');
+  wait.resolve({ done: 'Saved', changed: true }); assert.equal(await saving, true);
+});
+
+test('preserving expiry uses the new server countdown rather than the old duration or phone clock', async () => {
+  let remaining = 600;
+  const { m, calls } = direction({ call: async (name) => name === 'djSteeringZones' ? zones() : name === 'djSteeringMoods'
+    ? { moods: [{ name: 'focus' }] } : name === 'djSteeringWrite' ? { done: 'Saved', changed: true }
+      : { ...status(), steering: { ...status().steering, expires_in_secs: remaining } } });
+  await m.openFor(handoff());
+  const review = m.review({ mood: 'focus', constraints: { include_artists: ['Earth, Wind & Fire'] }, keep_expiry: true });
+  assert.equal(review.keep_expiry, true);
+  assert.equal(review.deadline, status().steering.expires_at);
+  assert.equal(review.body.for_secs, undefined);
+  remaining = 179;
+  assert.equal(await m.confirm(review), true);
+  assert.deepEqual(calls.find(([name]) => name === 'djSteeringWrite')[1].body,
+    { zone: 'Study@S2', mood: 'focus', constraints: { include_artists: ['Earth, Wind & Fire'] }, for_secs: 179 });
+  assert.equal(review.body.for_secs, undefined, 'the immutable reviewed body is not mutated');
+});
+
+test('deadline preservation rejects absent deadlines, short countdowns and conflicting new durations', async () => {
+  for (const patch of [{ source: 'program' }, { expires_at: null }, { expires_in_secs: null },
+    { expires_in_secs: 59 }, { expires_in_secs: 604801 }]) {
+    const { m } = direction({ call: async (name) => name === 'djSteeringZones' ? zones() : name === 'djSteeringMoods'
+      ? { moods: [{ name: 'focus' }] } : { ...status(), steering: { ...status().steering, ...patch } } });
+    await m.openFor(handoff());
+    assert.equal(m.review({ mood: 'focus', keep_expiry: true }), null);
+  }
+  for (const draft of [{ mood: 'focus', keep_expiry: 'true' }, { mood: 'focus', keep_expiry: true, minutes: '30' }]) {
+    assert.throws(() => steering.requestOf('Study@S2', draft, ['focus']));
+  }
+});
+
+test('a deadline that expires during review fails before writing and never gets an implicit extension', async () => {
+  let remaining = 600;
+  const { m, calls } = direction({ call: async (name) => name === 'djSteeringZones' ? zones() : name === 'djSteeringMoods'
+    ? { moods: [{ name: 'focus' }] } : { ...status(), steering: { ...status().steering, expires_in_secs: remaining } } });
+  await m.openFor(handoff()); const review = m.review({ mood: 'focus', keep_expiry: true });
+  remaining = 59;
+  assert.equal(await m.confirm(review), false);
+  assert.equal(calls.some(([name]) => name === 'djSteeringWrite'), false);
+  assert.match(m.state.message, /deadline is too close/);
+  assert.equal(m.state.ready, false);
+});
+
+test('new duration, indefinite steering and clear retain the established API contract and notes', async () => {
+  for (const [draft, expected] of [[{ mood: 'focus', minutes: '30' }, { zone: 'Study@S2', mood: 'focus', constraints: {}, for_secs: 1800 }],
+    [{ mood: 'focus' }, { zone: 'Study@S2', mood: 'focus', constraints: {} }], [{ clear: true, keep_expiry: true }, { zone: 'Study@S2', clear: true }]]) {
+    const { m, calls } = direction(); await m.openFor(handoff());
+    assert.equal(await m.confirm(m.review(draft)), true);
+    assert.deepEqual(calls.find(([name]) => name === 'djSteeringWrite')[1].body, expected);
+    assert.equal(m.state.message, 'Saved Next pick only.');
+    assert.equal(m.state.ready, true);
+  }
+});
+
+test('keep-expiry saves remain single dispatch and uncertain answers are never replayed', async () => {
+  const wait = deferred(); let writes = 0;
+  const { m } = direction({ call: async (name) => name === 'djSteeringZones' ? zones() : name === 'djSteeringMoods'
+    ? { moods: [{ name: 'focus' }] } : name === 'djSteeringWrite' ? (writes++, wait.promise) : status() });
+  await m.openFor(handoff()); const reviewed = m.review({ mood: 'focus', keep_expiry: true });
+  const first = m.confirm(reviewed);
+  assert.equal(await m.confirm(reviewed), false);
+  wait.resolve({}); assert.equal(await first, false);
+  assert.equal(writes, 1);
+  assert.equal(await m.confirm(reviewed), false);
+  assert.match(m.state.message, /Outcome uncertain/);
+});
+
+test('real localhost handoff and preserved deadline dispatch the same API used by both panels', async (t) => {
+  const seen = []; let remaining = 600;
+  const server = http.createServer(async (req, res) => {
+    let bytes = ''; for await (const chunk of req) bytes += chunk;
+    seen.push({ method: req.method, path: req.url, body: bytes ? JSON.parse(bytes) : null });
+    const result = req.url === '/zones' ? zones() : req.url === '/dj/moods' ? { moods: [{ name: 'focus' }] }
+      : req.method === 'POST' ? { done: 'Saved', changed: true }
+        : { ...status(), steering: { ...status().steering, expires_in_secs: remaining } };
+    res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(result));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const apiRoutes = { ...routes, ...steering.routes };
+  const call = async (name, { params = {}, body } = {}) => {
+    const [method, template] = apiRoutes[name];
+    const path = template.replace(/\{(\w+)\}/g, (_, key) => encodeURIComponent(params[key]));
+    return (await fetch(`http://127.0.0.1:${server.address().port}${path}`,
+      { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })).json();
+  };
+  const inspect = model({ call }); await inspect.refresh(); await inspect.select('Study@S2');
+  const editor = steering.model({ call }); await editor.openFor(inspect.state.zones.find((z) => z.target === inspect.state.target));
+  const review = editor.review({ mood: 'focus', keep_expiry: true }); remaining = 120;
+  assert.equal(await editor.confirm(review), true);
+  assert.deepEqual(seen.filter((r) => r.method === 'POST'), [{ method: 'POST', path: '/dj/steer',
+    body: { zone: 'Study@S2', mood: 'focus', constraints: {}, for_secs: 120 } }]);
+});
