@@ -33,6 +33,10 @@ pub struct ZoneStateDto {
     /// track), when its coordinator says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repeat: Option<String>,
+    /// The group's play mode as `set_play_mode` takes it (`NORMAL`,
+    /// `SHUFFLE_NOREPEAT` and so on), when its coordinator says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub play_mode: Option<String>,
     /// What the group is on, when anything is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track: Option<TrackDto>,

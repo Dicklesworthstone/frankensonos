@@ -11,11 +11,11 @@
 //!
 //! | `event:` | `data:` |
 //! |---|---|
-//! | `zone.state` | `{player, room, transport?, track?, volume?, mute?, group_volume?, queue_length?}`: only what changed |
+//! | `zone.state` | `{player, room, transport?, track?, volume?, mute?, group_volume?, queue_length?, shuffle?, repeat?, play_mode?}`: only what changed (`repeat`: `off`, `all` or `one`; `play_mode` as `set_play_mode` takes it) |
 //! | `topology.changed` | `{households, rooms}` (read `GET /zones` for the new shape) |
 //! | `player.health` | `{player, room, health}`: `healthy`, `degraded` or `offline` |
 //! | `action.logged` | the action as `GET /actions` shows it |
-//! | `dj.status` | `{player, zone, running, now?, next, steering}` as `GET /zones/{room}/dj` shows it: what the DJ plays, the works it picked next and why, and its steering, sent when that changes (a pick, a new work, a start, skip, stop or steer) |
+//! | `dj.status` | `{player, zone, running, now?, next, steering, problem?}` as `GET /zones/{room}/dj` shows it: what the DJ plays, the works it picked next and why, its steering, and what it last ran into feeding the queue (`problem`), sent when that changes (a pick, a new work, a start, skip, stop or steer, a top-up that fails) |
 //! | `events.reset` | `{oldest}`: events before it are gone |
 //!
 //! While nothing happens the stream sends a `: heartbeat` comment every
@@ -318,14 +318,15 @@ impl EventBus {
                 if let Some(length) = changes.queue_length {
                     data.insert("queue_length".into(), json!(length));
                 }
-                if let Some((shuffle, repeat)) = changes
+                if let Some(mode) = changes
                     .play_mode
                     .as_deref()
                     .and_then(fsonos_types::PlayMode::from_wire)
-                    .map(crate::zones::shuffle_and_repeat)
                 {
+                    let (shuffle, repeat) = crate::zones::shuffle_and_repeat(mode);
                     data.insert("shuffle".into(), json!(shuffle));
                     data.insert("repeat".into(), json!(repeat));
+                    data.insert("play_mode".into(), json!(mode.as_str()));
                 }
                 self.publish("zone.state", Value::Object(data));
             }
@@ -592,6 +593,7 @@ mod tests {
         let event = &bus.after(0).unwrap()[0];
         assert_eq!(event.data["shuffle"], json!(false), "{}", event.data);
         assert_eq!(event.data["repeat"], "all", "{}", event.data);
+        assert_eq!(event.data["play_mode"], "REPEAT_ALL", "{}", event.data);
         assert!(event.data.get("volume").is_none());
     }
 }

@@ -1411,6 +1411,7 @@ impl Surface {
             group_volume,
             shuffle,
             repeat,
+            play_mode: mode.map(|mode| mode.as_str().to_owned()),
             track,
         })
     }
@@ -2108,6 +2109,7 @@ mod tests {
             (state.shuffle, state.repeat.as_deref()),
             (Some(true), Some("one"))
         );
+        assert_eq!(state.play_mode.as_deref(), Some("SHUFFLE_REPEAT_ONE"));
         assert!(
             sent.lock()
                 .unwrap()
