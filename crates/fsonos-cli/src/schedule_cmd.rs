@@ -305,10 +305,28 @@ pub struct FileClock(pub PathBuf);
 
 impl Clock for FileClock {
     fn now(&self) -> DateTime<FixedOffset> {
-        std::fs::read_to_string(&self.0)
-            .ok()
-            .and_then(|text| DateTime::parse_from_rfc3339(text.trim()).ok())
-            .unwrap_or_else(|| SystemClock.now())
+        // A writer may be rewriting the file in place: a read that finds it
+        // empty or cut short is tried again before the system clock stands
+        // in, so the time never jumps back to the host's mid-write.
+        for _ in 0..10 {
+            if let Some(at) = std::fs::read_to_string(&self.0)
+                .ok()
+                .and_then(|text| DateTime::parse_from_rfc3339(text.trim()).ok())
+            {
+                return at;
+            }
+            if !self.0.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        SystemClock.now()
+    }
+
+    /// The file's time: the e2e harness moves it, and how long the music
+    /// played moves with it.
+    fn elapsed_secs(&self) -> i64 {
+        self.now().timestamp()
     }
 }
 

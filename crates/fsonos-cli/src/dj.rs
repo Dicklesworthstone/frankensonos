@@ -773,6 +773,7 @@ impl DjEngine for SpotifyDj {
                 pool,
                 store,
                 playback,
+                clock.elapsed_secs(),
                 cx.now,
             )
         {

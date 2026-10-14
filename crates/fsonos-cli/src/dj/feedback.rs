@@ -21,7 +21,6 @@ use fsonos_spotify::feedback::{
 use fsonos_spotify::works::Work;
 use fsonos_types::TransportState;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use super::{State, room};
 use crate::config::GlobalArgs;
@@ -88,9 +87,6 @@ pub struct Listening {
     finished: Option<FeedbackSignal>,
     observed_at: Option<i64>,
     advancing: bool,
-    /// Production observations use elapsed monotonic time, not the wall clock
-    /// used to timestamp durable feedback.
-    epoch: Option<Instant>,
 }
 
 impl Listening {
@@ -102,23 +98,6 @@ impl Listening {
         if let Some((movement, _)) = &mut self.current {
             movement.started = false;
         }
-    }
-
-    fn observe(
-        &mut self,
-        transport: Option<TransportState>,
-        playing: Option<Movement>,
-    ) -> Option<(String, Signal)> {
-        let elapsed = self
-            .epoch
-            .get_or_insert_with(Instant::now)
-            .elapsed()
-            .as_secs();
-        self.on_change(
-            i64::try_from(elapsed).unwrap_or(i64::MAX),
-            transport,
-            playing,
-        )
     }
 
     /// Fold playback at `now`, seconds on a monotonic observation clock.
@@ -204,12 +183,15 @@ fn record(store: &mut dyn Store, work: &Work, signal: Signal, now: i64) -> Resul
 
 /// Fold `playback` into the listening of the group `feed` plays in, and
 /// record the signal a movement's end gives; whether one was recorded.
+/// `elapsed` measures the listening ([`Clock::elapsed_secs`], monotonic on
+/// the host); `now` stamps the record.
 pub(super) fn implicit(
     listening: &mut Listening,
     feed: &QueueFeed,
     pool: &WorkPool,
     store: &mut dyn Store,
     playback: &PlayerPlayback,
+    elapsed: i64,
     now: i64,
 ) -> bool {
     if !feed.is_active() {
@@ -234,7 +216,7 @@ pub(super) fn implicit(
         listening.interrupt();
         return false;
     }
-    let _ = listening.observe(playback.transport, playing);
+    let _ = listening.on_change(elapsed, playback.transport, playing);
     let Some(mut evidence) = listening.finished.take() else {
         return false;
     };

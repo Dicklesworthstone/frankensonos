@@ -139,7 +139,10 @@ fn sorted(mut signals: Vec<i64>) -> Vec<i64> {
 }
 
 fn set_clock(path: &Path, at: DateTime<FixedOffset>) {
-    std::fs::write(path, at.to_rfc3339()).expect("write the clock file");
+    // Whole or not at all: the daemon reads the file on every event.
+    let next = path.with_extension("next");
+    std::fs::write(&next, at.to_rfc3339()).expect("write the clock file");
+    std::fs::rename(&next, path).expect("replace the clock file");
 }
 
 /// The Living Room's queue position and the length of its track.
@@ -255,10 +258,14 @@ fn likes_dislikes_skips_and_full_listens_are_recorded_and_steer_the_dj() {
     // That work is heard to the end: both its movements play out.
     let sim = s.sim_handle().expect("the sim");
     let (first, length) = on_now(&s);
+    let mark = last_event(&api);
     let t3 = t2 + TimeDelta::seconds(i64::from(length) + 2);
     set_clock(&clock, t3);
     sim.advance(Duration::from_secs(u64::from(length) + 2));
     let moved = eventually(Duration::from_secs(10), || on_now(&s).0 == first + 1);
+    // The DJ takes in the second movement before the daemon's time moves on,
+    // so the time that follows is heard as the second's, not the first's.
+    let taken = dj_reached(&api, mark, 2);
     let (second, length2) = on_now(&s);
     let state = zone_state(&api);
     set_clock(&clock, t3 + TimeDelta::seconds(i64::from(length2) + 2));
@@ -269,13 +276,17 @@ fn likes_dislikes_skips_and_full_listens_are_recorded_and_steer_the_dj() {
             .any(|r| r.signal == 1 && r.work_key != liked && r.work_key != skipped)
     };
     let heard = eventually(Duration::from_secs(10), full);
+    // Heard by the daemon's clock, as it played: never an early skip on the way.
+    let false_skip = feedback(&s)
+        .iter()
+        .any(|r| r.signal == -1 && r.work_key != liked && r.work_key != skipped);
     s.check(
         "full-listen",
         "store",
-        "a work heard to the end of its last movement is a full listen (+1) of that work",
-        moved && heard,
+        "a work heard to the end of its last movement is a full listen (+1) of that work, not an early skip",
+        moved && taken && heard && !false_skip,
         format!(
-            "moved {moved} ({first}/{length}s -> {second}/{length2}s, then {:?}); zone then {state}, now {}; rows {:?}",
+            "moved {moved} ({first}/{length}s -> {second}/{length2}s, then {:?}), DJ took it in {taken}; zone then {state}, now {}; rows {:?}",
             on_now(&s),
             zone_state(&api),
             feedback(&s)
@@ -417,6 +428,46 @@ fn a_like_from_the_cli_moves_the_daemons_next_pick() {
 }
 
 /// The Living Room's DJ as serve reports it.
+/// The newest event's id on the daemon's event bus.
+fn last_event(api: &str) -> u64 {
+    http(api, "GET", "/events?wait=0", &[], "")
+        .ok()
+        .and_then(|(_, _, body)| serde_json::from_str::<Value>(&body).ok())
+        .and_then(|events| events["last_id"].as_u64())
+        .unwrap_or(0)
+}
+
+/// Whether, after event `since`, the DJ said (`dj.status`, which it
+/// publishes once it has handled a playback change) that movement
+/// `movement` of its work plays.
+fn dj_reached(api: &str, since: u64, movement: u64) -> bool {
+    let mut since = since;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let Some(events) = http(
+            api,
+            "GET",
+            &format!("/events?since={since}&wait=2"),
+            &[],
+            "",
+        )
+        .ok()
+        .and_then(|(_, _, body)| serde_json::from_str::<Value>(&body).ok()) else {
+            continue;
+        };
+        if events["events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|e| e["event"] == "dj.status" && e["data"]["now"]["movement"] == movement)
+        {
+            return true;
+        }
+        since = events["last_id"].as_u64().unwrap_or(since);
+    }
+    false
+}
+
 fn dj_status(api: &str) -> Value {
     http(api, "GET", "/zones/Living%20Room/dj", &[], "")
         .ok()

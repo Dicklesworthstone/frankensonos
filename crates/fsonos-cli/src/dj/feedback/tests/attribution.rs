@@ -289,6 +289,7 @@ fn completed_feedback_keeps_its_recording_metadata_through_reload_and_is_written
             &pool,
             &mut store,
             &state,
+            0,
             1000
         ));
         let rows = store.feedback_between(0..2000).unwrap();
@@ -302,6 +303,7 @@ fn completed_feedback_keeps_its_recording_metadata_through_reload_and_is_written
             &pool,
             &mut store,
             &state,
+            0,
             1001
         ));
         assert_eq!(store.feedback_between(0..2000).unwrap(), rows);
@@ -334,6 +336,7 @@ fn loss_of_ownership_and_non_dj_playback_are_not_dislikes() {
             &pool,
             &mut store,
             &state,
+            0,
             10
         ));
         assert!(store.feedback_between(0..100).unwrap().is_empty());
