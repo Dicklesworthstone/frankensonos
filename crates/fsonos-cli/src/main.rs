@@ -205,10 +205,15 @@ enum Command {
         search: Option<String>,
         /// With --search: list the matches instead (`--pick`), or play the
         /// Nth of them (`--pick 3`).
+        // clap waives a `requires` once an argument that conflicts with the
+        // required one is present (`--favorite` conflicts with `--search`
+        // and the source URI), so each of these flags also conflicts with
+        // the alternatives directly.
         #[arg(
             long,
             value_name = "N",
             requires = "search",
+            conflicts_with_all = ["source_uri", "favorite"],
             num_args = 0..=1,
             default_missing_value = "0"
         )]
@@ -219,10 +224,18 @@ enum Command {
         /// Add the Spotify track, album or playlist to the group's queue,
         /// right after the track playing, instead of playing it now
         /// (`fsonos undo` takes it off again).
-        #[arg(long, requires = "source_uri", conflicts_with = "queue")]
+        #[arg(
+            long,
+            requires = "source_uri",
+            conflicts_with_all = ["queue", "favorite", "search"]
+        )]
         next: bool,
         /// Add it to the end of the group's queue instead.
-        #[arg(long, requires = "source_uri")]
+        #[arg(
+            long,
+            requires = "source_uri",
+            conflicts_with_all = ["favorite", "search"]
+        )]
         queue: bool,
     },
     /// Pause a room's group.
@@ -1458,6 +1471,49 @@ mod tests {
             "words needed"
         );
         assert!(Cli::try_parse_from(["fsonos", "search", "x", "--limit", "51"]).is_err());
+    }
+
+    /// `--next`, `--queue` and `--pick` belong to one way of choosing what
+    /// to play. Paired with another way they must be refused, not dropped:
+    /// `play Den --favorite X --next` used to play X at once, replacing what
+    /// was playing, instead of queueing it.
+    #[test]
+    fn play_flags_never_ride_along_with_another_source() {
+        let refused = |args: &[&str]| {
+            Cli::try_parse_from(std::iter::once("fsonos").chain(args.iter().copied())).is_err()
+        };
+        for flag in ["--next", "--queue"] {
+            assert!(
+                refused(&["play", "Den", "--favorite", "Jazz", flag]),
+                "{flag}"
+            );
+            assert!(
+                refused(&["play", "Den", "--search", "bwv 988", flag]),
+                "{flag}"
+            );
+            assert!(refused(&["play", "Den", flag]), "{flag} alone");
+            assert!(
+                matches!(
+                    parse(&["play", "Den", "spotify:track:abc", flag]),
+                    Command::Play { next, queue, .. } if next || queue
+                ),
+                "{flag} with a source URI"
+            );
+        }
+        assert!(refused(&[
+            "play",
+            "Den",
+            "--favorite",
+            "Jazz",
+            "--pick",
+            "2"
+        ]));
+        assert!(refused(&["play", "Den", "spotify:track:abc", "--pick"]));
+        assert!(refused(&["play", "Den", "--pick", "2"]));
+        assert!(matches!(
+            parse(&["play", "Den", "--search", "bwv 988", "--pick", "2"]),
+            Command::Play { pick: Some(2), .. }
+        ));
     }
 
     #[test]

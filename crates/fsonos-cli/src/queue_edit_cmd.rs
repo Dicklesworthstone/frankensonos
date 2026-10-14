@@ -49,10 +49,14 @@ pub struct QueueSelection {
     #[arg(long, value_name = "FILE")]
     snapshot: Option<PathBuf>,
     /// With --snapshot, select this many consecutive entries (default: one).
+    // clap waives `requires = "snapshot"` once an argument that conflicts
+    // with --snapshot is present, so the explicit selection's arguments must
+    // conflict with --count directly.
     #[arg(
         long,
         value_name = "N",
         requires = "snapshot",
+        conflicts_with_all = ["expected_uris", "expected_revision"],
         value_parser = clap::value_parser!(u32).range(1..=100)
     )]
     count: Option<u32>,
