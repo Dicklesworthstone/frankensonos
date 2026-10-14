@@ -122,10 +122,9 @@ function tag(text) {
 // The house as last read.
 const house = {
   zones: [],
-  // Room name -> household, to name a room unambiguously when two
-  // households both have it.
-  homes: new Map(),
   cards: new Map(),
+  readVersion: 0,
+  layout: null,
   moods: null,
   dj: true,
   // Household -> its playable Sonos favorites, as last read.
@@ -138,31 +137,91 @@ function roomName(room, household) {
 }
 
 function zoneKey(zone) {
-  return `${zone.household}/${zone.coordinator_room}`;
+  return JSON.stringify([zone.household, zone.coordinator_room]);
+}
+
+/** Membership, not transport state, determines a card's lifetime. */
+function groupShape(zone) {
+  return JSON.stringify([zone.household, zone.coordinator_room, [...zone.members].sort()]);
+}
+
+function checkedZones(value) {
+  const text = (v) => typeof v === 'string' && v.trim() !== '';
+  if (!Array.isArray(value)) throw new Error('The room list is unreadable.');
+  const seen = new Set();
+  for (const zone of value) {
+    if (!zone || !text(zone.household) || !text(zone.coordinator_room)
+        || !Array.isArray(zone.members) || !zone.members.length
+        || !zone.members.every(text) || !zone.members.includes(zone.coordinator_room)) {
+      throw new Error('The room list is incomplete.');
+    }
+    for (const room of zone.members) {
+      const key = JSON.stringify([zone.household, room]);
+      if (seen.has(key)) throw new Error('The room list assigns a room more than once.');
+      seen.add(key);
+    }
+  }
+  return value;
+}
+
+/** Settle all reads with bounded fan-out, including when one room fails. */
+async function readEach(items, read, current = () => true) {
+  let index = 0, failure = null;
+  await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
+    while (current() && index < items.length) {
+      const item = items[index++];
+      try { await read(item); } catch (error) { failure = error; }
+    }
+  }));
+  if (failure && current()) throw failure;
 }
 
 async function loadZones() {
-  const zones = await call('zones');
+  const version = ++house.readVersion;
+  const zones = checkedZones(await call('zones'));
+  if (version !== house.readVersion) return;
   house.zones = zones;
-  house.homes = new Map();
-  for (const zone of zones) {
-    for (const room of zone.members) {
-      if (!house.homes.has(room)) house.homes.set(room, new Set());
-      house.homes.get(room).add(zone.household);
-    }
-  }
   render();
-  const reads = await Promise.allSettled(zones.map((zone) => refreshZone(zone)));
-  if (reads.some((read) => read.status === 'rejected')) {
-    throw new Error('Some room state could not be read.');
+  await readEach(zones, refreshZone, () => version === house.readVersion);
+}
+
+function ownsCard(parts) {
+  return !parts.disposed && house.cards.get(zoneKey(parts.zone)) === parts;
+}
+
+function disposeCard(parts) {
+  parts.disposed = true;
+  ++parts.readVersion;
+  parts.queue.dispose();
+  for (const entry of parts.sliders.values()) {
+    clearTimeout(entry.timer);
+    ++entry.version;
   }
 }
 
 function render() {
+  const layout = JSON.stringify(house.zones.map(groupShape));
+  // Do not detach nodes when only playback changed: focus, drafts, queue
+  // selections, reviews and scroll belong to the person using this card.
+  if (layout === house.layout) {
+    for (const zone of house.zones) house.cards.get(zoneKey(zone)).zone = zone;
+    return;
+  }
+  const old = house.cards;
+  const keep = new Map();
+  for (const zone of house.zones) {
+    const parts = old.get(zoneKey(zone));
+    if (parts && groupShape(parts.zone) === groupShape(zone)) {
+      parts.zone = zone;
+      keep.set(zoneKey(zone), parts);
+    }
+  }
+  for (const [key, parts] of old) if (!keep.has(key)) disposeCard(parts);
+  house.cards = keep;
+  house.layout = layout;
   const main = $('households');
-  for (const parts of house.cards.values()) parts.queue.dispose();
+  const focused = document.activeElement;
   main.replaceChildren();
-  house.cards = new Map();
   if (!house.zones.length) {
     main.append(el('p', { class: 'empty', text: 'No speakers found yet.' }));
     return;
@@ -175,11 +234,12 @@ function render() {
   for (const [household, zones] of byHome) {
     const id = `home-${tag(household)}`;
     const grid = el('div', { class: 'zones' });
-    for (const zone of zones) grid.append(card(zone));
+    for (const zone of zones) grid.append(keep.get(zoneKey(zone))?.node || card(zone));
     main.append(el('section', { 'aria-labelledby': id },
       el('h2', { id, text: byHome.size > 1 ? `Household ${household}` : 'Rooms' }),
       grid));
   }
+  if (focused && main.contains(focused)) focused.focus({ preventScroll: true });
 }
 
 /** One zone's card; its parts are kept to update in place. */
@@ -189,6 +249,9 @@ function card(zone) {
   const parts = {
     zone,
     name,
+    disposed: false,
+    readVersion: 0,
+    writing: false,
     art: el('img', { alt: '', hidden: true, width: 64, height: 64 }),
     title: el('div', { class: 'title', text: 'Nothing playing' }),
     by: el('div', { class: 'by' }),
@@ -212,36 +275,34 @@ function card(zone) {
   parts.art.addEventListener('error', () => { parts.art.hidden = true; });
   parts.play.addEventListener('click', () => {
     const verb = parts.zone.transport_state === 'playing' ? 'pause' : 'resume';
-    act(parts, call(verb, { body: { zone: name } }));
+    act(parts, () => call(verb, { body: { zone: name } }));
   });
-  parts.next.addEventListener('click', () => act(parts, call('next', { body: { zone: name } })));
-  parts.previous.addEventListener('click', () => act(parts, call('previous', { body: { zone: name } })));
+  parts.next.addEventListener('click', () => act(parts, () => call('next', { body: { zone: name } })));
+  parts.previous.addEventListener('click', () => act(parts, () => call('previous', { body: { zone: name } })));
   parts.favorite.addEventListener('change', () => {
     const favorite = parts.favorite.value;
     parts.favorite.value = '';
-    if (favorite) act(parts, call('playFavorite', { body: { zone: name, favorite } }));
+    if (favorite) act(parts, () => call('playFavorite', { body: { zone: name, favorite } }));
   });
-  parts.skip.addEventListener('click', () => act(parts, call('djSkip', { body: { zone: name } })));
+  parts.skip.addEventListener('click', () => act(parts, () => call('djSkip', { body: { zone: name } })));
   // A running DJ takes a new mood from its next pick; a stopped one starts in it.
   parts.mood.addEventListener('change', () => {
     if (!parts.djRunning) return;
     const body = parts.mood.value ? { zone: name, mood: parts.mood.value } : { zone: name, clear: true };
-    call('djSteer', { body }).then((outcome) => toast(outcome.done)).catch(failed);
+    act(parts, () => call('djSteer', { body }), true);
   });
   for (const [button, signal] of [[parts.like, 'like'], [parts.dislike, 'dislike']]) {
     button.addEventListener('click', () => {
-      call('djFeedback', { body: { zone: name, signal } })
-        .then((recorded) => toast(recorded.done))
-        .catch(failed);
+      act(parts, () => call('djFeedback', { body: { zone: name, signal } }), true);
     });
   }
   parts.dj.addEventListener('click', () => {
     if (parts.djRunning) {
-      act(parts, call('djStop', { body: { zone: name } }));
+      act(parts, () => call('djStop', { body: { zone: name } }));
     } else {
       const body = { zone: name };
       if (parts.mood.value) body.mood = parts.mood.value;
-      act(parts, call('djStart', { body }));
+      act(parts, () => call('djStart', { body }));
     }
   });
   const volumes = el('div', { class: 'volumes' });
@@ -254,7 +315,7 @@ function card(zone) {
     zone: name, call, el, played: () => { refreshZone(zone).catch(() => {}); },
   });
   house.cards.set(zoneKey(zone), parts);
-  return el('article', { class: 'zone', 'aria-label': label },
+  parts.node = el('article', { class: 'zone', 'aria-label': label },
     el('h3', { text: label }),
     el('div', { class: 'now' }, parts.art, el('div', { class: 'track' }, parts.title, parts.by, parts.state)),
     el('div', { class: 'row' }, parts.previous, parts.play, parts.next),
@@ -263,6 +324,7 @@ function card(zone) {
     parts.djRow,
     parts.djPlaying,
     parts.queue.node);
+  return parts.node;
 }
 
 /** A room's volume slider, sent once the hand rests (debounced). */
@@ -271,22 +333,34 @@ function slider(parts, room, household) {
   const input = el('input', { id, type: 'range', min: 0, max: 100, step: 1, value: 0, disabled: true });
   const shown = el('output', { for: id, text: '–' });
   const mute = el('button', { type: 'button', class: 'mute', text: 'Mute', 'aria-pressed': 'false', 'aria-label': `Mute ${room}` });
-  const entry = { input, shown, mute, muted: false, room: roomName(room, household), until: 0, timer: 0 };
+  const entry = { input, shown, mute, muted: false, room: roomName(room, household), until: 0, timer: 0, version: 0, readVersion: 0, volumeVersion: 0, mutedPending: false };
   mute.addEventListener('click', () => {
+    if (!ownsCard(parts) || entry.mutedPending) return;
+    entry.mutedPending = mute.disabled = true;
+    ++entry.version;
     const want = !entry.muted;
     setMute(entry, want);
     call('mute', { body: { zone: entry.room, mute: want } })
       .then(noted)
-      .catch((error) => { setMute(entry, !want); failed(error); });
+      .catch((error) => { if (ownsCard(parts)) { setMute(entry, !want); failed(error); } })
+      .finally(() => {
+        entry.mutedPending = false;
+        if (ownsCard(parts)) { mute.disabled = false; void refreshVolume(entry, parts).catch(() => {}); }
+      });
   });
   input.addEventListener('input', () => {
+    if (!ownsCard(parts)) return;
+    ++entry.version;
+    const version = ++entry.volumeVersion;
     shown.textContent = input.value;
     entry.until = Date.now() + 1500;
     clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
+      if (!ownsCard(parts) || version !== entry.volumeVersion) return;
       call('volume', { body: { zone: entry.room, volume: Number(input.value) } })
         .then(noted)
         .then((outcome) => {
+          if (!ownsCard(parts) || version !== entry.volumeVersion) return;
           if (outcome && typeof outcome.volume === 'number') setVolume(entry, outcome.volume, true);
         })
         .catch(failed);
@@ -311,21 +385,48 @@ function setVolume(entry, volume, force = false) {
   entry.shown.textContent = String(volume);
 }
 
-function act(parts, request) {
-  parts.play.disabled = true;
-  request
-    .then(noted)
-    .catch(failed)
-    .finally(() => {
-      parts.play.disabled = false;
-      refreshZone(parts.zone).catch(() => {});
-    });
+async function act(parts, request, announce = false) {
+  if (!ownsCard(parts) || parts.writing) return;
+  parts.writing = true;
+  ++parts.readVersion;
+  const controls = [parts.play, parts.next, parts.previous, parts.favorite,
+    parts.dj, parts.skip, parts.mood, parts.like, parts.dislike];
+  for (const control of controls) control.disabled = true;
+  try {
+    const outcome = noted(await request());
+    if (announce && outcome && typeof outcome.done === 'string') toast(outcome.done);
+  } catch (error) { failed(error); }
+  finally {
+    parts.writing = false;
+    if (ownsCard(parts)) {
+      for (const control of controls) control.disabled = false;
+      void refreshZone(parts.zone).catch(() => {});
+    }
+  }
 }
 
 async function refreshZone(zone) {
   const parts = house.cards.get(zoneKey(zone));
-  if (!parts) return;
-  const state = await call('state', { params: { room: parts.name } });
+  if (!parts || !ownsCard(parts)) return;
+  const version = ++parts.readVersion;
+  const current = () => ownsCard(parts) && version === parts.readVersion;
+  const primary = parts.sliders.get(zone.coordinator_room);
+  const levelVersion = primary?.version;
+  let state;
+  try {
+    state = await call('state', { params: { room: parts.name } });
+    if (!current()) return;
+    if (!state || !['playing', 'paused', 'stopped', 'transitioning', 'unknown'].includes(state.transport_state)
+        || (state.track != null && (typeof state.track !== 'object' || typeof state.track.uri !== 'string'))) {
+      throw new Error('The playback state is unreadable.');
+    }
+    checkedZones([state.zone]);
+    if (groupShape(state.zone) !== groupShape(parts.zone)) throw new Error('The group changed; refreshing topology.');
+  } catch (error) {
+    if (!current()) return;
+    parts.state.textContent = 'State unavailable; last observation shown';
+    throw error;
+  }
   parts.zone.transport_state = state.transport_state;
   const playing = state.transport_state === 'playing';
   parts.play.textContent = playing ? 'Pause' : 'Play';
@@ -344,29 +445,41 @@ async function refreshZone(zone) {
       parts.art.removeAttribute('src');
     }
   }
-  const coordinator = parts.sliders.get(zone.coordinator_room);
+  const coordinator = primary && primary.version === levelVersion ? primary : null;
   if (coordinator && typeof state.volume === 'number') setVolume(coordinator, state.volume);
-  if (coordinator && typeof state.mute === 'boolean') setMute(coordinator, state.mute);
-  await Promise.all(zone.members
-    .filter((room) => room !== zone.coordinator_room)
-    .map((room) => refreshVolume(parts.sliders.get(room)).catch(() => {})));
-  await refreshDj(parts).catch(() => {});
+  if (coordinator && !coordinator.mutedPending && typeof state.mute === 'boolean') setMute(coordinator, state.mute);
+  // Member reads are sequential inside each of at most four group workers.
+  let failure = null;
+  for (const room of zone.members.filter((room) => room !== zone.coordinator_room)) {
+    if (!current()) return;
+    try { await refreshVolume(parts.sliders.get(room), parts); } catch (error) { failure = error; }
+  }
+  if (!current()) return;
+  try { await refreshDj(parts, current); } catch (error) { failure = error; }
+  if (failure && current()) throw failure;
 }
 
-async function refreshVolume(entry) {
+async function refreshVolume(entry, parts) {
+  const version = entry.version;
+  const readVersion = ++entry.readVersion;
   const state = await call('state', { params: { room: entry.room } });
+  if (!ownsCard(parts) || version !== entry.version || readVersion !== entry.readVersion) return;
+  if (!state || typeof state !== 'object') throw new Error('The room level is unreadable.');
   if (typeof state.volume === 'number') setVolume(entry, state.volume);
-  if (typeof state.mute === 'boolean') setMute(entry, state.mute);
+  if (!entry.mutedPending && typeof state.mute === 'boolean') setMute(entry, state.mute);
 }
 
-async function refreshDj(parts) {
+async function refreshDj(parts, current = () => ownsCard(parts)) {
   if (!house.dj) return;
   try {
     const status = await call('djStatus', { params: { room: parts.name } });
-    parts.djRunning = Boolean(status.running);
+    if (!current()) return;
+    if (!status || typeof status.running !== 'boolean') throw new Error('The DJ state is unreadable.');
+    parts.djRunning = status.running;
     // A rebuilt card shows the mood the running DJ plays, not "Any mood".
     if (parts.djRunning) parts.mood.value = (status.steering && status.steering.mood) || '';
   } catch (error) {
+    if (!current()) return;
     if (error.code === 'NOT_IMPLEMENTED') {
       house.dj = false;
       for (const each of house.cards.values()) {
@@ -375,7 +488,7 @@ async function refreshDj(parts) {
       }
       return;
     }
-    parts.djRunning = false;
+    throw error;
   }
   const label = parts.zone.members.join(' + ');
   parts.dj.textContent = parts.djRunning ? 'Stop DJ' : 'Start DJ';
@@ -644,11 +757,13 @@ function listen() {
   const controller = LiveRemote.model({
     connect: 'EventSource' in window ? () => new EventSource(path('events')) : null,
     reload: async () => {
-      await loadZones();
-      if (!catalogsLoaded && house.zones.length) {
-        catalogsLoaded = true;
-        void loadMoods();
-        void loadFavorites();
+      try { await loadZones(); }
+      finally {
+        if (!catalogsLoaded && house.zones.length) {
+          catalogsLoaded = true;
+          void loadMoods();
+          void loadFavorites();
+        }
       }
     },
     refresh: async (room) => {

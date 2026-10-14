@@ -11,6 +11,7 @@ on:
       - "scripts/test-remote-groups.cjs"
       - "scripts/test-remote-transfers.cjs"
       - "scripts/test-remote-live.cjs"
+      - "scripts/test-remote-state.cjs"
       - "vendor/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -51,7 +52,7 @@ jobs:
       - name: Web room grouping regressions
         run: node --test scripts/test-remote-groups.cjs scripts/test-remote-transfers.cjs
       - name: Live remote recovery regressions
-        run: node --test scripts/test-remote-live.cjs
+        run: node --test scripts/test-remote-live.cjs scripts/test-remote-state.cjs
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy
       - name: Formatting
