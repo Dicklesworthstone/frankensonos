@@ -2,8 +2,8 @@
 //!
 //! The capture and encoder run on the machine which can reach the speakers;
 //! no speaker is modified and the stream is exposed only on that LAN interface.
-//! Ctrl-C terminates the encoder and restores the group only while the group
-//! still plays *our* stream, so manual changes are never overwritten.
+//! Ctrl-C restores playback only while source and group ownership still match.
+//! Cleanup does not restore volume, mute or grouping it did not change.
 //!
 //! Sonos buffers HTTP radio for seconds. This is live audio for listening,
 //! NOT synchronized playback with a computer's video (issue #2's separate
@@ -23,6 +23,7 @@ use crate::config::GlobalArgs;
 use crate::direct::Direct;
 
 mod broadcast;
+mod recovery;
 
 #[derive(Debug, Clone, Args)]
 pub struct StreamArgs {
@@ -90,31 +91,25 @@ fn launch_encoder(args: &StreamArgs) -> anyhow::Result<Child> {
         })
 }
 
-/// Restore only if the room still names this source; a later manual play,
-/// regroup or DJ action belongs to its caller, not this CLI process.
+/// Address the captured coordinator by identity, not a possibly renamed room.
 fn restore_if_still_streaming(
     global: &GlobalArgs,
-    room: &str,
     source: &str,
     snapshot: &ZoneSnapshot,
+    started: bool,
 ) -> anyhow::Result<()> {
     let direct = Direct::survey(global)?;
-    let now = direct.status(room)?;
-    let matches = now.track.as_ref().is_some_and(|track| {
-        track.uri == source
-            || source
-                .strip_prefix("x-rincon-mp3radio://")
-                .is_some_and(|tail| track.uri == format!("http://{tail}"))
-    });
-    if !matches {
-        eprintln!("fsonos stream: playback changed elsewhere; leaving it alone");
-        return Ok(());
-    }
     let network = global.network()?;
-    let report = snapshot::restore(&*network.transport, direct.households()?, snapshot)?;
+    let report = recovery::restore(
+        &*network.transport,
+        direct.households()?,
+        snapshot,
+        source,
+        started,
+    )?;
     if !report.skipped.is_empty() {
         eprintln!(
-            "fsonos stream: some prior state could not be restored: {:?}",
+            "fsonos stream: some prior state was left unchanged: {:?}",
             report.skipped
         );
     }
@@ -162,10 +157,16 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     )
     .context("start live capture and the MP3 listener")?;
 
+    let mut attempted = false;
     let play = stream
         .wait_ready(Duration::from_secs(10))
         .context("prepare live audio before replacing the group's music")
         .and_then(|()| {
+            recovery::verify_start(&*network.transport, direct.households()?, &previous)
+                .map_err(anyhow::Error::msg)?;
+            stream.check().context("confirm live capture before playback")?;
+            // Record intent before dispatch: an error can follow an applied URI.
+            attempted = true;
             direct
                 .run("play", |rooms| {
                     fsonos_api::plan::plan_play(
@@ -188,12 +189,14 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
         Err(error) => Err(error),
     };
 
-    let stopped = stream.shutdown();
-    if was_started
-        && let Err(error) = restore_if_still_streaming(global, &args.room, &source, &previous)
+    // Keep capture available while checking ownership and restoring playback.
+    // Cancellation does not close the audio sockets before this observation.
+    if attempted
+        && let Err(error) = restore_if_still_streaming(global, &source, &previous, was_started)
     {
         eprintln!("fsonos stream: could not restore prior playback: {error:#}");
     }
+    let stopped = stream.shutdown();
     result?;
     stopped.context("stop the live MP3 stream")
 }

@@ -285,7 +285,6 @@ fn partial_http_requests_do_not_block_other_clients_or_shutdown() {
     worker.join().unwrap().unwrap();
 }
 
-
 #[test]
 #[ignore = "child process fixture; launched only by the lifecycle tests"]
 fn encoder_fixture() {
@@ -306,11 +305,14 @@ fn encoder_fixture() {
 }
 
 fn encoder(mode: &str, stdout: Stdio) -> Child {
+    // libtest names omit the crate prefix included by module_path!().
+    let (_, module) = module_path!().split_once("::").unwrap();
+    let fixture = format!("{module}::encoder_fixture");
     Command::new(std::env::current_exe().unwrap())
         .args([
             "--ignored",
             "--exact",
-            &format!("{}::encoder_fixture", module_path!()),
+            &fixture,
             "--nocapture",
         ])
         .env("FSONOS_STREAM_TEST_ENCODER", mode)
@@ -388,4 +390,22 @@ fn setup_failure_after_launch_reaps_the_owned_encoder() {
     );
     assert!(result.is_err());
     assert!(!process.exists(), "setup failure left the encoder alive or a zombie");
+}
+
+#[test]
+fn cancellation_keeps_audio_available_until_playback_restoration_finishes() {
+    let mut stream = live("audio");
+    stream.wait_ready(Duration::from_secs(3)).unwrap();
+    stream.cancel.store(true, Ordering::Release);
+    stream.wait_until_stopped().unwrap();
+    assert_eq!(stream.check().unwrap_err().kind(), io::ErrorKind::Interrupted);
+    assert!(!stream.stop.load(Ordering::Acquire));
+    assert!(stream.encoder.try_wait().unwrap().is_none());
+    let before = stream.audio.state.lock().unwrap().next;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while stream.audio.state.lock().unwrap().next == before {
+        assert!(Instant::now() < deadline, "cancellation cut audio before cleanup");
+        thread::sleep(Duration::from_millis(10));
+    }
+    stream.shutdown().unwrap();
 }

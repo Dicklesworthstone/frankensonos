@@ -20,7 +20,8 @@ const MAX_CLIENTS: usize = 8;
 const HEADER_LIMIT: usize = 8192;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(3);
 const IO_POLL: Duration = Duration::from_millis(100);
-const AUDIO_HEADERS: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+const AUDIO_HEADERS: &[u8] =
+    b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
 const NOT_FOUND: &[u8] =
     b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
 
@@ -329,6 +330,7 @@ pub(super) struct LiveStream {
     encoder: Child,
     audio: Arc<Audio>,
     stop: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
     producer: Option<JoinHandle<io::Result<()>>>,
     server: Option<JoinHandle<io::Result<()>>>,
     closed: bool,
@@ -339,12 +341,13 @@ impl LiveStream {
         encoder: Child,
         listener: TcpListener,
         path: String,
-        stop: Arc<AtomicBool>,
+        cancel: Arc<AtomicBool>,
     ) -> io::Result<Self> {
         let mut stream = Self {
             encoder,
             audio: Arc::new(Audio::default()),
-            stop,
+            stop: Arc::new(AtomicBool::new(false)),
+            cancel,
             producer: None,
             server: None,
             closed: false,
@@ -372,11 +375,17 @@ impl LiveStream {
     }
 
     pub(super) fn wait_ready(&mut self, timeout: Duration) -> io::Result<()> {
-        self.audio.wait_ready(&self.stop, timeout)?;
+        self.audio.wait_ready(&self.cancel, timeout)?;
         self.check()
     }
 
-    fn check(&mut self) -> io::Result<()> {
+    pub(super) fn check(&mut self) -> io::Result<()> {
+        if self.cancel.load(Ordering::Acquire) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "stream cancelled"));
+        }
+        if self.stop.load(Ordering::Acquire) {
+            return Err(io::Error::other("the live MP3 workers are stopping"));
+        }
         if let Some(status) = self.encoder.try_wait()? {
             return Err(io::Error::other(format!(
                 "FFmpeg stopped ({status}); check --format and --input"
@@ -396,7 +405,7 @@ impl LiveStream {
     }
 
     pub(super) fn wait_until_stopped(&mut self) -> io::Result<()> {
-        while !self.stop.load(Ordering::Acquire) {
+        while !self.cancel.load(Ordering::Acquire) {
             self.check()?;
             thread::sleep(IO_POLL);
         }
