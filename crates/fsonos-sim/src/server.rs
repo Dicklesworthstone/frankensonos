@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+mod queue;
+
 /// A running listener: its address, and how to stop it.
 pub(crate) struct Listener {
     pub addr: SocketAddr,
@@ -275,7 +277,12 @@ fn soap(state: &mut State, index: usize, service: &ServiceDef, req: &Request) ->
         log(state, index, service, action, args, Ok(Vec::new()));
         return text(200, "OK", body);
     }
-    match state.invoke(index, service, &action, &Args(&args)) {
+    let result = if service.name == "AVTransport" && action == "ReorderTracksInQueue" {
+        queue::reorder(state, index, &args)
+    } else {
+        state.invoke(index, service, &action, &Args(&args))
+    };
+    match result {
         Ok(out) => {
             // Every change reaches the subscribers.
             state.flush_events();

@@ -30,6 +30,7 @@ pub mod gena;
 pub mod mdns;
 pub mod net;
 pub mod play_mode;
+pub mod queue;
 pub mod soap;
 pub mod ssdp;
 pub mod topology;
