@@ -51,6 +51,12 @@ use crate::zones::transport_state_name;
 use fsonos_core::policy::Client;
 use serde::{Deserialize, Serialize};
 
+mod delivery;
+mod wake;
+
+pub use delivery::EventStream;
+pub use wake::MAX_READERS as MAX_EVENT_READERS;
+
 /// How many events the bus keeps for clients that reconnect.
 pub const RING: usize = 1024;
 
@@ -156,7 +162,7 @@ pub fn poll_response(bus: Arc<EventBus>, since: u64, wait: Duration) -> Response
     Response::ok()
         .header("content-type", b"application/json".to_vec())
         .header("cache-control", b"no-cache".to_vec())
-        .body(ResponseBody::stream(EventStream { shared }))
+        .body(ResponseBody::stream(LongPollStream { shared }))
 }
 
 /// One event.
@@ -212,6 +218,7 @@ const HEARTBEAT_FRAME: &[u8] = b": heartbeat\n\n";
 pub struct EventBus {
     ring: Mutex<Ring>,
     arrived: Condvar,
+    wake: Arc<wake::WakeHub>,
 }
 
 #[derive(Debug, Default)]
@@ -222,12 +229,22 @@ struct Ring {
 }
 
 impl Ring {
+    fn oldest(&self) -> u64 {
+        self.events
+            .front()
+            .map_or(self.last.saturating_add(1), |event| event.id)
+    }
+
+    fn needs_reset(&self, after: u64) -> bool {
+        after > self.last || after < self.oldest().saturating_sub(1)
+    }
+
     /// The retained events after `after`, or the oldest retained id when
     /// some event after `after` has already been dropped.
     fn after(&self, after: u64) -> Result<Vec<Event>, u64> {
-        let oldest = self.events.front().map_or(self.last + 1, |e| e.id);
+        let oldest = self.oldest();
         // Past the newest too: an id from before the daemon restarted.
-        if after + 1 < oldest || after > self.last {
+        if self.needs_reset(after) {
             return Err(oldest);
         }
         Ok(self
@@ -256,6 +273,7 @@ impl EventBus {
         }
         drop(ring);
         self.arrived.notify_all();
+        self.wake.notify();
         id
     }
 
@@ -382,82 +400,49 @@ fn player_fields(player: &PlayerId, households: &[HouseholdState]) -> Map<String
 }
 
 /// `GET /events`: the server-sent events after `after`, as they happen.
+/// Capacity or deadline-worker failure is reported before sending an SSE body.
 #[must_use]
 pub fn response(bus: Arc<EventBus>, after: u64) -> Response {
-    Response::ok()
-        .header("content-type", b"text/event-stream".to_vec())
-        .header("cache-control", b"no-cache".to_vec())
-        .header("x-accel-buffering", b"no".to_vec())
-        .body(ResponseBody::stream(stream(bus, after)))
+    match try_stream(bus, after) {
+        Ok(stream) => Response::ok()
+            .header("content-type", b"text/event-stream".to_vec())
+            .header("cache-control", b"no-cache".to_vec())
+            .header("x-accel-buffering", b"no".to_vec())
+            .body(ResponseBody::stream(stream)),
+        Err(failure) => failure.http_response().header("retry-after", "1"),
+    }
 }
 
-/// The SSE frames for a client that has seen everything up to `after`, as
-/// they happen. Each client gets a thread that waits on the bus; it ends
-/// within a [`HEARTBEAT`] of the client going away.
+/// Admit an SSE reader. Readers share the retained journal and one lazy
+/// deadline worker; dropping a stream releases its capacity immediately.
+/// At most [`MAX_EVENT_READERS`] streams are admitted on one bus.
+pub fn try_stream(bus: Arc<EventBus>, after: u64) -> Result<EventStream, Failure> {
+    EventStream::open(bus, after)
+}
+
+/// The SSE frames after `after`, as the caller consumes them. A lagging
+/// reader receives `events.reset` then the retained events, not a private
+/// backlog. Admission failure yields one `events.unavailable` frame and ends;
+/// use [`try_stream`] to handle it before beginning an HTTP response.
 #[must_use]
 pub fn stream(bus: Arc<EventBus>, after: u64) -> EventStream {
-    let shared = Arc::new(Mutex::new(Shared::default()));
-    let feed = Arc::clone(&shared);
-    let spawned = std::thread::Builder::new()
-        .name("fsonos-events".into())
-        .spawn(move || pump(&bus, after, &feed));
-    if spawned.is_err() {
-        shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .finished = true;
-    }
-    EventStream { shared }
-}
-
-/// Feed `shared` from `bus` until the stream is dropped.
-fn pump(bus: &EventBus, mut after: u64, shared: &Mutex<Shared>) {
-    loop {
-        let next = bus.wait_after(after, HEARTBEAT);
-        let mut s = shared.lock().unwrap_or_else(PoisonError::into_inner);
-        if s.closed {
-            return;
-        }
-        match next {
-            Ok(events) if events.is_empty() => s.queue.push_back(HEARTBEAT_FRAME.to_vec()),
-            Ok(events) => {
-                for event in events {
-                    after = event.id;
-                    s.queue.push_back(event.frame());
-                }
-            }
-            Err(oldest) => {
-                s.queue.push_back(reset(oldest));
-                after = oldest - 1;
-            }
-        }
-        // A client that stopped reading: start it over rather than buffer.
-        if s.queue.len() > RING {
-            s.queue.clear();
-            s.queue.push_back(reset(after + 1));
-        }
-        if let Some(waker) = s.waker.take() {
-            waker.wake();
-        }
-    }
+    try_stream(bus, after).unwrap_or_else(|failure| EventStream::unavailable(&failure))
 }
 
 #[derive(Default)]
 struct Shared {
     queue: VecDeque<Vec<u8>>,
     waker: Option<Waker>,
-    /// The client went away.
-    closed: bool,
     /// No pump is feeding the queue.
     finished: bool,
 }
 
-/// The body of `GET /events`; see [`stream`].
-pub struct EventStream {
+/// The one-shot body of `GET /events?wait=`.
+struct LongPollStream {
     shared: Arc<Mutex<Shared>>,
 }
 
-impl Stream for EventStream {
+impl Stream for LongPollStream {
     type Item = Vec<u8>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Vec<u8>>> {
@@ -470,15 +455,6 @@ impl Stream for EventStream {
         }
         s.waker = Some(cx.waker().clone());
         Poll::Pending
-    }
-}
-
-impl Drop for EventStream {
-    fn drop(&mut self) {
-        self.shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .closed = true;
     }
 }
 
