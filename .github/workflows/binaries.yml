@@ -1,0 +1,79 @@
+name: Mac and Linux binaries
+
+# Every push to main builds a release `fsonos` for Apple Silicon macOS and
+# x86_64 Linux and keeps it as a downloadable artifact for 14 days: the way
+# to get a Mac binary without compiling on the Mac. A `v*` tag also drafts a
+# GitHub release with those archives, for the owner to publish.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A started build always finishes; GitHub keeps one pending run behind it.
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal
+      - name: Build fsonos (release)
+        run: cargo build --release --locked -p fsonos-cli
+      - name: Package with its deploy notes and launchd template
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="${GITHUB_SHA::7}"; fi
+          name="fsonos-$version-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp target/release/fsonos LICENSE README.md docs/DEPLOY.md \
+            docs/launchd/io.github.dicklesworthstone.fsonos.plist "dist/$name/"
+          "dist/$name/fsonos" --version
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: fsonos-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Draft the release (the owner publishes it)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/* --draft
+          --repo "$GITHUB_REPOSITORY" --title "fsonos $GITHUB_REF_NAME"
+          --notes "Release binaries for Apple Silicon macOS and x86_64 Linux. See DEPLOY.md inside each archive."

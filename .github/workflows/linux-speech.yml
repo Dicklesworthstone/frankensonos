@@ -29,7 +29,10 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A started run always finishes: GitHub keeps one pending run behind it,
+  # so the newest commit is tested next. Cancelling in progress left about
+  # two of every three runs on main without a verdict (2026-10-14).
+  cancel-in-progress: false
 
 jobs:
   linux:

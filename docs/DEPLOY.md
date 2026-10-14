@@ -96,6 +96,29 @@ mkdir -p ~/Library/Logs/fsonos "$HOME/Library/Application Support/fsonos"
 To upgrade later, rebuild, re-run the `install` line, and restart the job with
 `kickstart -k` (§4).
 
+No toolchain on the Mac? Every push to `main` builds a release binary for
+Apple Silicon (and x86_64 Linux) in CI, the "Mac and Linux binaries"
+workflow; download it instead of building:
+
+```bash
+gh run download --repo Dicklesworthstone/frankensonos \
+  --name fsonos-aarch64-apple-darwin \
+  $(gh run list --repo Dicklesworthstone/frankensonos --workflow binaries.yml \
+      --branch main --status success --limit 1 --json databaseId -q '.[0].databaseId')
+tar -xzf fsonos-*-aarch64-apple-darwin.tar.gz
+install -m 0755 fsonos-*-aarch64-apple-darwin/fsonos ~/.local/bin/fsonos
+```
+
+macOS keeps its Local Network approval (§4) per code signature, and a CI or
+`cargo` build is ad-hoc signed, so each new build would need approving
+again. Sign it with your own Developer ID once installed, and the approval
+carries over between builds:
+
+```bash
+codesign --force --sign "Developer ID Application: <you>" \
+  --identifier io.github.dicklesworthstone.fsonos ~/.local/bin/fsonos
+```
+
 ## 4. Run it under launchd
 
 ### Why a LaunchDaemon (recommended)
