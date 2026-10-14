@@ -26,7 +26,7 @@ use crate::SpotifyError;
 use crate::classical::{CandidatePool, ClassicalTrack};
 use crate::dj::{DjConfig, WorkPool};
 use crate::expand::{AlbumMisses, complete_from_cache, complete_works};
-use crate::genres::tag_genres;
+use crate::genres::{GenreRead, tag_genres};
 use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, split_artists};
 use crate::session::Session;
 use crate::taste::read_taste;
@@ -46,6 +46,13 @@ pub struct LibrarySync {
     pub retired: usize,
 }
 
+/// A completed library write plus best-effort enrichment progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibrarySyncDetailed {
+    pub library: LibrarySync,
+    pub genres: GenreRead,
+}
+
 /// Read the owner's whole library from Spotify, add and weigh what their
 /// other taste signals name ([`read_taste`], as far as the grant allows),
 /// tag it all with its artists' genres ([`tag_genres`], guessed where they
@@ -57,6 +64,15 @@ pub async fn sync_library<S: Store + ?Sized>(
     cx: &Cx,
     store: &mut S,
 ) -> Result<LibrarySync, SpotifyError> {
+    Ok(sync_library_detailed(session, cx, store).await?.library)
+}
+
+/// A library sync that also reports unfinished artist-genre enrichment.
+pub async fn sync_library_detailed<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+) -> Result<LibrarySyncDetailed, SpotifyError> {
     let mut items = session.read_library(cx).await?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -90,7 +106,7 @@ pub async fn sync_library<S: Store + ?Sized>(
         );
     }
     taste.weigh(&mut items);
-    tag_genres(session, cx, store, &mut items, now).await;
+    let genres = tag_genres(session, cx, store, &mut items, now).await;
     // Songs whose artists carry no tags get the best guess there is: what
     // the owner's playlists call them first.
     taste.name_genres(&mut items);
@@ -114,7 +130,7 @@ pub async fn sync_library<S: Store + ?Sized>(
     )
     .await;
     let _ = misses.save(store, now);
-    Ok(report)
+    Ok(LibrarySyncDetailed { library: report, genres })
 }
 
 /// Write a *complete* library read to the store. Tracks the owner has since

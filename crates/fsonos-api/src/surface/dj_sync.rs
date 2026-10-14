@@ -47,6 +47,14 @@ pub struct SyncedDto {
     pub classical: usize,
     /// Cached tracks no longer in the library, now retired.
     pub retired: usize,
+    /// Artist genre lookups left after this pass. Cached successes let the
+    /// next pass continue rather than repeat them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub genre_artists_pending: usize,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl LibrarySyncDto {
@@ -84,8 +92,15 @@ impl SyncedDto {
             0 => String::new(),
             n => format!(", {n} no longer saved"),
         };
+        let pending = match self.genre_artists_pending {
+            0 => String::new(),
+            1 => ", 1 artist genre lookup pending; continuing at the next daemon check".to_owned(),
+            n => format!(
+                ", {n} artist genre lookups pending; continuing at the next daemon check"
+            ),
+        };
         format!(
-            "Library refreshed {when}: {} tracks, {} the DJ can play ({} classical){retired}.",
+            "Library refreshed {when}: {} tracks, {} the DJ can play ({} classical){retired}{pending}.",
             self.tracks, self.candidates, self.classical
         )
     }
@@ -123,6 +138,7 @@ mod tests {
             candidates: 1100,
             classical: 300,
             retired,
+            genre_artists_pending: 0,
         }
     }
 

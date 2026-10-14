@@ -23,7 +23,7 @@ use fsonos_api::surface::dj_sync::{LibrarySyncDto, SyncedDto};
 use fsonos_api::{ErrorCode, Failure};
 use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
-use fsonos_spotify::cache::sync_library;
+use fsonos_spotify::cache::sync_library_detailed;
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
 use std::path::{Path, PathBuf};
@@ -186,19 +186,24 @@ impl LibrarySync {
                         return Err(SpotifyError::Auth("not signed in to Spotify".into()));
                     }
                     let mut store = SqliteStore::open(&dir.join(crate::daemon::DB_FILE))?;
-                    sync_library(&mut session, &cx, &mut store).await
+                    sync_library_detailed(&mut session, &cx, &mut store).await
                 })
             })
             .map_err(|e| Failure::new(ErrorCode::Internal, format!("start the refresh: {e}")))?
             .join()
             .map_err(|_| Failure::new(ErrorCode::Internal, "the library refresh panicked"))?
             .map_err(failure)?;
+        let pending = synced
+            .genres
+            .deferred
+            .saturating_add(synced.genres.failed.len());
         Ok(SyncedDto {
             at: now(),
-            tracks: synced.tracks,
-            candidates: synced.candidates,
-            classical: synced.classical,
-            retired: synced.retired,
+            tracks: synced.library.tracks,
+            candidates: synced.library.candidates,
+            classical: synced.library.classical,
+            retired: synced.library.retired,
+            genre_artists_pending: pending,
         })
     }
 
@@ -221,8 +226,9 @@ impl LibrarySync {
     #[must_use]
     pub fn due(&self, now: i64) -> bool {
         let max = i64::try_from(MAX_AGE.as_secs()).unwrap_or(i64::MAX);
-        self.last()
-            .is_none_or(|last| now.saturating_sub(last.at) >= max)
+        self.last().is_none_or(|last| {
+            last.genre_artists_pending > 0 || now.saturating_sub(last.at) >= max
+        })
     }
 
     /// Whether a refresh landed since the last call (the DJ then rebuilds
@@ -401,6 +407,7 @@ mod tests {
             candidates: 2,
             classical: 1,
             retired: 0,
+            genre_artists_pending: 0,
         }
     }
 
@@ -413,6 +420,22 @@ mod tests {
         assert_eq!(sync.last(), Some(synced(1_000_000)));
         assert!(!sync.due(1_000_000 + day - 1));
         assert!(sync.due(1_000_000 + day));
+
+        let mut pending = synced(1_000_000 + day);
+        pending.genre_artists_pending = 3;
+        write_stamp(&sync.data_dir, &pending).unwrap();
+        assert!(
+            sync.due(1_000_001 + day),
+            "unfinished genre enrichment retries at the next daemon check"
+        );
+
+        std::fs::write(
+            sync.data_dir.join(STAMP),
+            r#"{"at":1000000,"tracks":3,"candidates":2,"classical":1,"retired":0}"#,
+        )
+        .unwrap();
+        assert!(!sync.due(1_000_000 + day - 1));
+
         // A stamp that cannot be read is a refresh never made.
         std::fs::write(sync.data_dir.join(STAMP), "not json").unwrap();
         assert!(sync.due(1_000_000));
