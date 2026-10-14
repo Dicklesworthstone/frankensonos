@@ -163,6 +163,7 @@ mod tests {
         };
         let model = Model {
             ticked: (started, SystemTime::now()),
+            remembered: Vec::new(),
             rec,
             playback: Playback::default(),
             sink: Some(sink),

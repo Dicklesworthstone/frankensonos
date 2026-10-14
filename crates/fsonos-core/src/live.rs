@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
+mod bootstrap;
 mod pump;
 
 /// How [`Live`] runs.
@@ -42,8 +43,9 @@ mod pump;
 pub struct LiveConfig {
     /// Player addresses to survey besides SSDP (seeds.toml, `--seeds`).
     pub seeds: Vec<IpAddr>,
-    /// Players an earlier run found: surveyed too until the model has found
-    /// the households itself (after that, the players it knows are).
+    /// Addresses from an earlier run: also usable to open the event listener.
+    /// Each is probed until observed in live topology; the reconciler then
+    /// retains its UUID-address hint independently of the live room model.
     pub remembered: Vec<IpAddr>,
     /// How often to survey.
     pub interval: Duration,
@@ -356,6 +358,8 @@ fn slept(before: (Instant, SystemTime), after: (Instant, SystemTime)) -> bool {
 struct Model {
     /// The previous tick, by both clocks.
     ticked: (Instant, SystemTime),
+    /// Bootstrap addresses not yet observed during this run.
+    remembered: Vec<IpAddr>,
     rec: Reconciler,
     playback: Playback,
     sink: Option<EventSink>,
@@ -427,6 +431,7 @@ impl Engine {
     fn run(self) {
         let mut m = Model {
             ticked: (Instant::now(), SystemTime::now()),
+            remembered: self.config.remembered.clone(),
             rec: Reconciler::new(
                 self.config.interval,
                 self.config.max_backoff,
@@ -530,29 +535,13 @@ impl Engine {
         }
         let Some(s) = &m.sink else { return };
         let callback = |service: Service| s.callback_url(service.tag());
-        // Survey the players already known as well as the seeds, so they
-        // are found again even when SSDP stops answering; before the first
-        // survey finds them, the players an earlier run found.
-        let mut seeds = self.config.seeds.clone();
-        let known: Vec<IpAddr> = m
-            .rec
-            .households
-            .iter()
-            .flat_map(|h| &h.players)
-            .map(|p| p.ip)
-            .collect();
-        let also = if known.is_empty() {
-            self.config.remembered.clone()
-        } else {
-            known
-        };
-        for ip in also {
-            if !seeds.contains(&ip) {
-                seeds.push(ip);
-            }
-        }
+        // Known households are probed selectively by the reconciler. Only
+        // explicit seeds and as-yet-unresolved startup hints are unconditional.
+        bootstrap::observed(&mut m.remembered, &m.rec.households);
+        let seeds = bootstrap::seeds(&self.config.seeds, &m.remembered);
         match m.rec.refresh(&self.via(), &seeds, callback, now) {
             Ok(report) => {
+                bootstrap::observed(&mut m.remembered, &m.rec.households);
                 for gone in &report.missing {
                     m.playback.remove(gone);
                 }
@@ -621,6 +610,7 @@ impl Engine {
             .on_notify(&self.via(), &mut m.playback, &n, callback, Instant::now())
         {
             Ok(Some(report)) => {
+                bootstrap::observed(&mut m.remembered, &m.rec.households);
                 for gone in &report.gone {
                     m.playback.remove(gone);
                 }
@@ -641,20 +631,24 @@ impl Engine {
         Some(pushed)
     }
 
-    /// Listen for events on the address this host uses to reach the
-    /// players: toward a known player, else a seed, else whoever answers
-    /// discovery (SSDP or mDNS).
+    /// Listen toward a live player, an explicit seed, or a cached address.
+    /// Cached-only startup must not depend on multicast before it can survey.
     fn open_sink(&self, households: &[HouseholdState]) -> Result<EventSink, String> {
-        let known = households
-            .iter()
-            .flat_map(|h| &h.players)
-            .map(|p| p.ip)
-            .next()
-            .or_else(|| self.config.seeds.first().copied());
-        let toward = match known {
-            Some(ip) => ip,
-            None => answering(&self.transport.discover(1, DISCOVERY_WAIT))?,
-        };
+        let mut candidates = bootstrap::listener_candidates(households, &self.config);
+        if candidates.is_empty() {
+            candidates.push(answering(&self.transport.discover(1, DISCOVERY_WAIT))?);
+        }
+        let mut error = "no usable local route to the players".to_string();
+        for toward in candidates {
+            match self.listen_toward(toward) {
+                Ok(sink) => return Ok(sink),
+                Err(why) => error = why,
+            }
+        }
+        Err(error)
+    }
+
+    fn listen_toward(&self, toward: IpAddr) -> Result<EventSink, String> {
         let local = self
             .lan
             .local_address_toward(toward)
