@@ -277,6 +277,9 @@ fn move_failure(err: moving::MoveError) -> Failure {
         moving::MoveError::JoinTimedOut { .. } => {
             Failure::new(ErrorCode::PlayerUnreachable, detail)
         }
+        moving::MoveError::SourceChanged(_) => Failure::new(ErrorCode::NotReady, detail)
+            .with_hint("Wait for the source room's playback to settle, then try the move again."),
+        moving::MoveError::Unplayable(_) => Failure::new(ErrorCode::InvalidArgument, detail),
         moving::MoveError::Core(e) => Failure::from(e),
     }
 }

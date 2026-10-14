@@ -56,10 +56,12 @@ impl Prepared {
                 metadata,
                 position_secs,
             } => {
-                let item = if let Some(spotify) = spotify_uri_from_renderer_uri(uri) {
-                    let title = parse_didl(metadata)?
-                        .into_iter()
-                        .next()
+                let item = if let Some(spotify) =
+                    spotify_uri_from_renderer_uri(uri).filter(|s| s.starts_with("spotify:track:"))
+                {
+                    let title = parse_didl(metadata)
+                        .ok()
+                        .and_then(|v| v.into_iter().next())
                         .map(|object| object.title)
                         .unwrap_or_default();
                     let params = parameters(t, households, target)?;
@@ -85,7 +87,9 @@ impl Prepared {
             } => {
                 let queue = content::browse_snapshot(t, ip(households, &snap.coordinator)?, QUEUE)?;
                 if queue.update_id != *update_id {
-                    return Err(invalid("the source queue changed while preparing the move"));
+                    return Err(MoveError::SourceChanged(
+                        "the source queue changed while preparing the move".into(),
+                    ));
                 }
                 if queue.objects.is_empty() {
                     // A cleared queue stays the source (at track 0): there
@@ -100,7 +104,9 @@ impl Prepared {
                     .and_then(|p| usize::try_from(p).ok())
                     .is_none_or(|p| p >= queue.objects.len())
                 {
-                    return Err(invalid("the source has no selected track in its queue"));
+                    return Err(MoveError::SourceChanged(
+                        "the source has no selected track in its queue".into(),
+                    ));
                 }
                 let items = queue_items(t, households, target, &queue.objects)?;
                 Source::Queue {
@@ -130,14 +136,20 @@ impl Prepared {
                 SnapshotSource::Queue { update_id, .. } => Some(update_id),
                 _ => None,
             };
-            let position = verify::source(t, host, &snap.coordinator, &self.source, revision)?;
+            let position = verify::source(t, host, &snap.coordinator, &self.source, revision)
+                .map_err(|e| match e {
+                    MoveError::Core(crate::CoreError::Proto(ProtoError::Malformed(msg))) => {
+                        MoveError::SourceChanged(msg)
+                    }
+                    other => other,
+                })?;
             self.transport = soap::get_transport_info(t, host)?.state;
             if !matches!(
                 self.transport,
                 TransportState::Playing | TransportState::Paused | TransportState::Stopped
             ) {
-                return Err(invalid(
-                    "the source is still changing transport state; retry the move",
+                return Err(MoveError::SourceChanged(
+                    "the source is still changing transport state; retry the move".into(),
                 ));
             }
             // Queue reads and render discovery take time. Use the latest
@@ -239,13 +251,19 @@ fn queue_items<T: Transport + ?Sized>(
             .res
             .as_ref()
             .filter(|res| !res.uri.trim().is_empty())
-            .ok_or_else(|| invalid("a source queue item has no playable resource"))?;
+            .ok_or_else(|| {
+                MoveError::Unplayable("a source queue item has no playable resource".into())
+            })?;
         if object.kind != DidlKind::Item {
-            return Err(invalid("a source queue item is an unexpanded container"));
+            return Err(MoveError::Unplayable(
+                "a source queue item is an unexpanded container".into(),
+            ));
         }
         let item = if let Some(spotify) = spotify_uri_from_renderer_uri(&res.uri) {
             if !spotify.starts_with("spotify:track:") {
-                return Err(invalid("a source queue item is not a Spotify track"));
+                return Err(MoveError::Unplayable(
+                    "a source queue item is not a Spotify track".into(),
+                ));
             }
             if learned.is_none() {
                 learned = Some(parameters(t, households, target)?);
@@ -523,7 +541,10 @@ mod simulator_tests {
         )
         .unwrap();
         let calls = sim.soap_log().len();
-        assert!(Prepared::new(&lan, &households, &snap, &to.coordinator.id).is_err());
+        let Err(err) = Prepared::new(&lan, &households, &snap, &to.coordinator.id) else {
+            panic!("expected SourceChanged");
+        };
+        assert!(matches!(err, MoveError::SourceChanged(_)), "{err:?}");
         read_only_since(&sim, calls);
         assert!(
             content::browse_all(&lan, to.coordinator.ip, QUEUE)
@@ -709,8 +730,36 @@ mod simulator_tests {
         let snap = snapshot::capture(&lan, &households, &from.coordinator.id, 0).unwrap();
         soap::seek_track(&lan, from.coordinator.ip, 1).unwrap();
         let calls = sim.soap_log().len();
-        assert!(Prepared::new(&lan, &households, &snap, &to.coordinator.id).is_err());
+        let Err(err) = Prepared::new(&lan, &households, &snap, &to.coordinator.id) else {
+            panic!("expected SourceChanged");
+        };
+        assert!(matches!(err, MoveError::SourceChanged(_)), "{err:?}");
         read_only_since(&sim, calls);
+    }
+
+    #[test]
+    fn unparseable_didl_metadata_falls_back_to_empty_title_on_copy() {
+        let sim = fixture();
+        let lan = sim.lan();
+        let households = houses(&sim);
+        let from = resolve_room(&households, "Kitchen").unwrap();
+        let to = resolve_room(&households, "Den").unwrap();
+        let (uri, metadata) = control::spotify_track_source(
+            &lan,
+            &households,
+            &from.coordinator.id,
+            "spotify:track:0000000000000000000001",
+            "Broken Metadata",
+        )
+        .unwrap()
+        .unwrap();
+        control::play_uri(&lan, &households, &from.coordinator.id, &uri, &metadata).unwrap();
+        let mut snap = snapshot::capture(&lan, &households, &from.coordinator.id, 0).unwrap();
+        if let SnapshotSource::Uri { metadata, .. } = &mut snap.source {
+            *metadata = "<DIDL-Lite><unclosed".into();
+        }
+        let prepared = Prepared::new(&lan, &households, &snap, &to.coordinator.id).unwrap();
+        assert!(!prepared.is_empty());
     }
 
     #[test]

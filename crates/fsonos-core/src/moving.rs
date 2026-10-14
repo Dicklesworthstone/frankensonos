@@ -47,6 +47,12 @@ pub enum MoveError {
     /// The target never showed up in the source's group.
     #[error("{room} did not join the group within {waited:?}; the music stayed where it was")]
     JoinTimedOut { room: String, waited: Duration },
+    /// The source's playback or queue changed while preparing the move.
+    #[error("the source playback changed while preparing the move: {0}")]
+    SourceChanged(String),
+    /// The source cannot be replayed on the destination.
+    #[error("the source cannot be replayed on the destination: {0}")]
+    Unplayable(String),
     #[error(transparent)]
     Core(#[from] CoreError),
 }
@@ -186,11 +192,14 @@ pub fn move_playback_within<T: Transport + ?Sized>(
                     };
                 if handed {
                     report.method = MoveMethod::Delegated;
-                } else {
-                    replay_instead_of_delegating(t, households, &coordinator, &to.player.id)?;
+                    report.new_coordinator = to.player.id.clone();
+                } else if replay_instead_of_delegating(t, households, &coordinator, &to.player.id)?
+                {
                     report.method = MoveMethod::Copied;
+                    report.new_coordinator = to.player.id.clone();
+                } else {
+                    report.method = MoveMethod::Nothing;
                 }
-                report.new_coordinator = to.player.id.clone();
             }
         }
     }
@@ -254,10 +263,13 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
     target: &PlayerId,
-) -> Result<(), MoveError> {
+) -> Result<bool, MoveError> {
     let snap = snapshot::capture(t, households, coordinator, 0)?;
     let prepared = replay::Prepared::new(t, households, &snap, target)?;
     control::leave(t, households, target)?;
+    if prepared.is_empty() {
+        return Ok(false);
+    }
     prepared.apply(t, ip(households, target)?, target)?;
     for member in snap
         .members
@@ -267,7 +279,7 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
         soap::join_group(t, ip(households, member)?, target)?;
     }
     soap::stop(t, ip(households, coordinator)?)?;
-    Ok(())
+    Ok(true)
 }
 
 /// Copy the music `from` plays onto `to`'s group (any household: Spotify
