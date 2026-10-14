@@ -7,6 +7,7 @@ on:
       - "crates/**"
       - "scripts/test-remote-queue.cjs"
       - "scripts/test-remote-library.cjs"
+      - "scripts/test-remote-groups.cjs"
       - "vendor/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -44,6 +45,8 @@ jobs:
         run: node --test scripts/test-remote-queue.cjs
       - name: Web library client regressions
         run: node --test scripts/test-remote-library.cjs
+      - name: Web room grouping regressions
+        run: node --test scripts/test-remote-groups.cjs
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy
       - name: Formatting
