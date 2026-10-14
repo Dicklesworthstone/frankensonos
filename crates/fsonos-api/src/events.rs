@@ -32,7 +32,6 @@
 //! `mod sse`), so the stream goes out through the public streaming body
 //! ([`fastapi::ResponseBody::stream`]) instead.
 
-use asupersync::stream::Stream;
 use fastapi::{JsonSchema, Response, ResponseBody, fastapi_openapi};
 use fsonos_core::HouseholdState;
 use fsonos_core::live::{Live, LiveEvent};
@@ -40,18 +39,17 @@ use fsonos_core::reconcile::Health;
 use fsonos_types::PlayerId;
 use serde_json::{Map, Value, json};
 use std::collections::VecDeque;
-use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
-use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
-use crate::failure::Failure;
+use crate::failure::{ErrorCode, Failure};
 use crate::surface::Surface;
 use crate::zones::transport_state_name;
 use fsonos_core::policy::Client;
 use serde::{Deserialize, Serialize};
 
 mod delivery;
+mod polling;
 mod wake;
 
 pub use delivery::EventStream;
@@ -114,55 +112,52 @@ impl Surface {
 
 /// The events after `since`, waiting up to `wait` (at most [`MAX_WAIT`]).
 fn poll(bus: &EventBus, since: u64, wait: Duration) -> EventsDto {
-    let (since, events, reset) = match bus.wait_after(since, wait.min(MAX_WAIT)) {
-        Ok(events) => (since, events, None),
-        Err(oldest) => {
-            let since = oldest.saturating_sub(1);
-            (since, bus.after(since).unwrap_or_default(), Some(oldest))
+    let deadline = Instant::now() + wait.min(MAX_WAIT);
+    let mut ring = bus.ring.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if since != ring.last || left.is_zero() {
+            return ring.snapshot(since);
         }
-    };
-    EventsDto {
-        last_id: events.last().map_or(since, |e| e.id),
-        events: events
-            .into_iter()
-            .map(|e| EventDto {
-                id: e.id,
-                event: e.kind.to_owned(),
-                data: e.data,
-            })
-            .collect(),
-        reset,
+        ring = bus
+            .arrived
+            .wait_timeout(ring, left)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
     }
 }
 
-/// `GET /events?wait=`: the [`EventsDto`] after `since`, as one JSON body
-/// that a thread of its own waits for, so the listener serves other
-/// requests meanwhile.
+fn unavailable(error: &std::io::Error) -> Failure {
+    Failure::new(
+        ErrorCode::NotReady,
+        format!("event delivery unavailable: {error}"),
+    )
+    .with_hint("Close an unused event connection, then reconnect.")
+}
+
+/// `GET /events?wait=`: one coherent JSON observation. Waiting HTTP bodies
+/// share the SSE deadline worker and reader budget, not a thread per poll.
+/// Ready and zero-wait reads need no reader slot, even at capacity.
 #[must_use]
 pub fn poll_response(bus: Arc<EventBus>, since: u64, wait: Duration) -> Response {
-    let shared = Arc::new(Mutex::new(Shared::default()));
-    let feed = Arc::clone(&shared);
-    let spawned = std::thread::Builder::new()
-        .name("fsonos-events-poll".into())
-        .spawn(move || {
-            let body = serde_json::to_vec(&poll(&bus, since, wait)).unwrap_or_default();
-            let mut s = feed.lock().unwrap_or_else(PoisonError::into_inner);
-            s.queue.push_back(body);
-            s.finished = true;
-            if let Some(waker) = s.waker.take() {
-                waker.wake();
-            }
-        });
-    if spawned.is_err() {
-        shared
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .finished = true;
+    let ready = {
+        let ring = bus.ring.lock().unwrap_or_else(PoisonError::into_inner);
+        (since != ring.last || wait.is_zero()).then(|| ring.snapshot(since))
+    };
+    if let Some(ready) = ready {
+        return Response::json(&ready)
+            .unwrap_or_else(|error| {
+                Failure::new(ErrorCode::Internal, error.to_string()).http_response()
+            })
+            .header("cache-control", "no-cache");
     }
-    Response::ok()
-        .header("content-type", b"application/json".to_vec())
-        .header("cache-control", b"no-cache".to_vec())
-        .body(ResponseBody::stream(LongPollStream { shared }))
+    match polling::PollStream::open(bus, since, wait) {
+        Ok(stream) => Response::ok()
+            .header("content-type", "application/json")
+            .header("cache-control", "no-cache")
+            .body(ResponseBody::stream(stream)),
+        Err(failure) => failure.http_response().header("retry-after", "1"),
+    }
 }
 
 /// One event.
@@ -237,6 +232,27 @@ impl Ring {
 
     fn needs_reset(&self, after: u64) -> bool {
         after > self.last || after < self.oldest().saturating_sub(1)
+    }
+
+    /// Reset and cursor information from the same lock as the returned events.
+    fn snapshot(&self, after: u64) -> EventsDto {
+        let reset = self.needs_reset(after).then(|| self.oldest());
+        let after = reset.map_or(after, |oldest| oldest.saturating_sub(1));
+        let events: Vec<EventDto> = self
+            .events
+            .iter()
+            .filter(|event| event.id > after)
+            .map(|event| EventDto {
+                id: event.id,
+                event: event.kind.to_owned(),
+                data: event.data.clone(),
+            })
+            .collect();
+        EventsDto {
+            last_id: events.last().map_or(after, |event| event.id),
+            events,
+            reset,
+        }
     }
 
     /// The retained events after `after`, or the oldest retained id when
@@ -415,7 +431,7 @@ pub fn response(bus: Arc<EventBus>, after: u64) -> Response {
 
 /// Admit an SSE reader. Readers share the retained journal and one lazy
 /// deadline worker; dropping a stream releases its capacity immediately.
-/// At most [`MAX_EVENT_READERS`] streams are admitted on one bus.
+/// SSE and waiting HTTP long polls share [`MAX_EVENT_READERS`] reader slots.
 pub fn try_stream(bus: Arc<EventBus>, after: u64) -> Result<EventStream, Failure> {
     EventStream::open(bus, after)
 }
@@ -427,35 +443,6 @@ pub fn try_stream(bus: Arc<EventBus>, after: u64) -> Result<EventStream, Failure
 #[must_use]
 pub fn stream(bus: Arc<EventBus>, after: u64) -> EventStream {
     try_stream(bus, after).unwrap_or_else(|failure| EventStream::unavailable(&failure))
-}
-
-#[derive(Default)]
-struct Shared {
-    queue: VecDeque<Vec<u8>>,
-    waker: Option<Waker>,
-    /// No pump is feeding the queue.
-    finished: bool,
-}
-
-/// The one-shot body of `GET /events?wait=`.
-struct LongPollStream {
-    shared: Arc<Mutex<Shared>>,
-}
-
-impl Stream for LongPollStream {
-    type Item = Vec<u8>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Vec<u8>>> {
-        let mut s = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(event) = s.queue.pop_front() {
-            return Poll::Ready(Some(event));
-        }
-        if s.finished {
-            return Poll::Ready(None);
-        }
-        s.waker = Some(cx.waker().clone());
-        Poll::Pending
-    }
 }
 
 #[cfg(test)]

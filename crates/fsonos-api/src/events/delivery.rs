@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use super::wake::Reader;
 use super::{EventBus, HEARTBEAT, HEARTBEAT_FRAME, frame, reset};
-use crate::failure::{ErrorCode, Failure};
+use crate::failure::Failure;
 
 struct Subscription {
     lease: Reader,
@@ -26,13 +26,7 @@ pub struct EventStream {
 
 impl EventStream {
     pub(super) fn open(bus: Arc<EventBus>, after: u64) -> Result<Self, Failure> {
-        let lease = bus.wake.reader().map_err(|error| {
-            Failure::new(
-                ErrorCode::NotReady,
-                format!("event delivery unavailable: {error}"),
-            )
-            .with_hint("Close an unused event connection, then reconnect.")
-        })?;
+        let lease = bus.wake.reader().map_err(|error| super::unavailable(&error))?;
         Ok(Self {
             subscription: Some(Subscription {
                 lease,
