@@ -17,6 +17,7 @@ const ROUTES = {
   queue: ['GET', '/zones/{room}/queue'],
   queuePlay: ['POST', '/queue/play'],
   queueRemove: ['POST', '/queue/remove'],
+  queueMove: ['POST', '/queue/move'],
   queueAdd: ['POST', '/queue'],
   pause: ['POST', '/pause'],
   resume: ['POST', '/resume'],

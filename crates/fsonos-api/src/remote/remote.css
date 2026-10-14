@@ -142,3 +142,14 @@ input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 32px
 .queue-items li { padding: 8px 0; border-top: 1px solid var(--line); }
 .queue-items li > button { margin-top: 6px; }
 .queue-items [aria-current="true"]::marker { color: var(--accent); font-weight: 700; }
+.queue-position {
+  font: inherit;
+  width: 10ch;
+  max-width: 100%;
+  min-height: 40px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text);
+}

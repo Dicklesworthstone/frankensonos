@@ -9,6 +9,30 @@ Read the room's queue first with `GET /zones/{room}/queue` or MCP `get_queue`.
 Keep that response's `revision` and the exact renderer `uri` of each selected
 entry. A move requires both; it will not silently act on a newer observation.
 
+## Phone remote
+
+Open **Queue** on the room's card and select consecutive entries on the current
+page (up to 25). Choose **To start…**, **To end…**, or enter a one-based
+**Before original position** and choose **Review move**. The destination can
+be anywhere in the full queue, not just the displayed page. The review names
+the room, selected titles, destination, and resulting first position. Only
+**Move entries** sends the request; **Cancel move** leaves the queue alone.
+
+The browser keeps exact renderer identities, including duplicate tracks, and
+the observed revision. After success it reads the page containing the moved
+block. A second edit therefore starts from a new observation. Moving within
+the selected block or immediately after it is a no-op with no request.
+
+Changing the selection, refreshing, paging, or closing the panel discards the
+review. A replaced room card cannot send its old confirmation. A request
+already sent is never retried or silently cancelled on closing; reopen the
+panel to inspect its outcome. Lost or unreadable replies require an explicit
+refresh before another edit. The browser does not clear/rebuild the queue,
+start playback, or pretend that queue reordering is undoable.
+
+For terminal use, `fsonos queue-move` accepts a saved queue page or explicit
+URI/revision guards; see [CLI_QUEUE_EDIT.md](CLI_QUEUE_EDIT.md).
+
 ## Request
 
 Send JSON with `Content-Type: application/json` to `/queue/move`, or pass the
@@ -80,6 +104,14 @@ transition and `queue_reorder` socket tests, API `queue_move_sim` and
 `queue_remove_http`, and MCP queue forwarding tests. Rust compilation and test
 execution were not available in the implementation environment.
 
-Queue moves are currently exposed through HTTP and MCP. There is no dedicated
-CLI queue-move subcommand or automatic queue-move undo. `fsonos queue --json`
-can still supply the observation for an HTTP or agent client.
+The browser tests execute the shipped queue model and fetch client, including
+all block/destination combinations for a six-entry queue, duplicate identities,
+cross-page moves, stale reviews, and uncertain replies. Run them without extra
+packages:
+
+```sh
+node --test scripts/test-remote-queue.cjs
+```
+
+Client tests and localhost HTTP fixtures do not establish physical-speaker
+behavior. Check the matching Rust CI and opt-in live-device results separately.

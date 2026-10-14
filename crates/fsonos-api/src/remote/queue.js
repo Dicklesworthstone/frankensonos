@@ -8,6 +8,9 @@ const QueueRemote = (() => {
   const identity = (value) => nonblank(value) && value !== 'NOT_IMPLEMENTED';
   const index = (value) => Number.isInteger(value) && value >= 0 && value <= MAX_INDEX;
 
+  const positionOf = (value) => typeof value === 'string' && /^[0-9]{1,10}$/.test(value)
+    && index(Number(value)) && Number(value) > 0 ? Number(value) : null;
+
   function pageOf(value, offset) {
     if (!value || !index(value.total) || !Array.isArray(value.items)
         || value.items.length > PAGE_SIZE
@@ -35,14 +38,17 @@ const QueueRemote = (() => {
   function model({ zone, call, changed = () => {}, played = () => {} }) {
     let epoch = 0;
     let disposed = false;
+    let visible = true;
     const state = { offset: 0, page: null, loading: false, writing: false, message: '',
-      selected: new Set(), pending: null, source: '' };
-    const clearSelection = () => { state.selected.clear(); state.pending = null; };
+      selected: new Set(), pending: null, source: '', destination: '' };
+    const clearSelection = () => { state.selected.clear(); state.pending = null; state.destination = ''; };
     const publish = () => { if (!disposed) changed(state); };
-    const ready = () => !disposed && !state.loading && !state.writing && state.page;
+    const ready = () => !disposed && visible && !state.loading && !state.writing && state.page;
 
     async function load(offset = state.offset, keepMessage = false) {
-      if (disposed || state.writing) return false;
+      if (disposed) return false;
+      visible = true;
+      if (state.writing) return false;
       if (!index(offset) || offset > MAX_INDEX - PAGE_SIZE) return false;
       const request = ++epoch;
       state.offset = offset;
@@ -87,6 +93,9 @@ const QueueRemote = (() => {
         if (route === 'queueRemove') {
           nextOffset = Math.min(nextOffset, Math.floor(Math.max(0, result.remaining - 1) / PAGE_SIZE) * PAGE_SIZE);
         }
+        if (route === 'queueMove') {
+          nextOffset = Math.min(Math.floor((result.position - 1) / PAGE_SIZE) * PAGE_SIZE, MAX_INDEX - PAGE_SIZE);
+        }
         if (route === 'queueAdd') state.source = '';
         success = true;
       } catch (error) {
@@ -96,9 +105,10 @@ const QueueRemote = (() => {
         publish();
       }
       if (!disposed) {
-        played();
+        // A failed status refresh must not turn an acknowledged edit into a retry.
+        try { Promise.resolve(played()).catch(() => {}); } catch (_) { /* read-only callback */ }
         // Only refresh reads after success; an uncertain write needs an explicit fresh read.
-        if (success) await load(nextOffset, true);
+        if (success && visible) await load(nextOffset, true);
       }
       return success;
     }
@@ -147,6 +157,7 @@ const QueueRemote = (() => {
       if (!items) return false;
       // Freeze the exact selection the person reviewed. Never reselect by title.
       state.pending = Object.freeze({
+        kind: 'remove',
         titles: Object.freeze(items.map((item) => item.title || 'Untitled track')),
         remaining: state.page.total - items.length,
         body: Object.freeze({ zone, position: items[0].position,
@@ -162,10 +173,10 @@ const QueueRemote = (() => {
       publish();
     }
 
-    async function remove() {
+    async function remove(pending = state.pending) {
       const page = ready();
-      const pending = state.pending;
-      if (!page || !pending || page.revision !== pending.body.expected_revision) return false;
+      if (!page || !pending || pending !== state.pending || pending.kind !== 'remove'
+          || page.revision !== pending.body.expected_revision) return false;
       const body = pending.body;
       return write('queueRemove', body, (result) => result.position === body.position
         && result.count === body.expected_uris.length && result.remaining === pending.remaining
@@ -173,7 +184,59 @@ const QueueRemote = (() => {
       'Removing the reviewed queue entries…');
     }
 
-    return { state, load, play, add, select, removable, reviewRemoval, cancelRemoval, remove, dispose() { disposed = true; ++epoch; } };
+    function reviewMove(insertBefore) {
+      const items = removable();
+      if (!items) return false;
+      state.pending = null;
+      const start = items[0].position;
+      if (!index(insertBefore) || insertBefore < 1 || insertBefore > state.page.total + 1) {
+        state.message = 'Choose a one-based destination in the original queue, or its end.';
+        publish();
+        return false;
+      }
+      if (insertBefore >= start && insertBefore <= start + items.length) {
+        state.message = 'The selection is already at that position. No move was sent.';
+        publish();
+        return false;
+      }
+      state.message = '';
+      state.pending = Object.freeze({
+        kind: 'move',
+        titles: Object.freeze(items.map((item) => item.title || 'Untitled track')),
+        total: state.page.total,
+        position: insertBefore < start ? insertBefore : insertBefore - items.length,
+        body: Object.freeze({ zone, position: start, insert_before: insertBefore,
+          expected_uris: Object.freeze(items.map((item) => item.uri)),
+          expected_revision: state.page.revision }),
+      });
+      publish();
+      return true;
+    }
+
+    async function move(pending = state.pending) {
+      const page = ready();
+      if (!page || !pending || pending !== state.pending || pending.kind !== 'move'
+          || page.revision !== pending.body.expected_revision) return false;
+      const body = pending.body;
+      return write('queueMove', body, (result) => result.position === pending.position
+        && result.count === body.expected_uris.length && result.total === pending.total
+        && nonblank(result.zone) && nonblank(result.revision)
+        && result.revision !== body.expected_revision && result.changed === true
+        && result.undoable === false && typeof result.recovered === 'boolean',
+      'Moving the reviewed queue entries…');
+    }
+
+    function close() {
+      visible = false;
+      ++epoch;
+      state.loading = false;
+      state.page = null;
+      clearSelection();
+      publish();
+    }
+
+    return { state, load, play, add, select, removable, reviewRemoval, cancelRemoval, remove,
+      reviewMove, move, close, dispose() { disposed = true; close(); } };
   }
 
   /** Lazy, bounded browsing inside the existing room card. No background poll. */
@@ -193,7 +256,7 @@ const QueueRemote = (() => {
       draw(state);
       const list = body.querySelector('.queue-items');
       if (list) list.scrollTop = scroll;
-      const key = state.pending ? 'Cancel removal' : focus;
+      const key = state.pending ? (state.pending.kind === 'move' ? 'Cancel move' : 'Cancel removal') : focus;
       const target = [...body.querySelectorAll('[data-focus]')]
         .find((each) => each.getAttribute('data-focus') === key);
       if (target && !target.disabled) target.focus({ preventScroll: true });
@@ -250,20 +313,46 @@ const QueueRemote = (() => {
       if (page.revision) {
         body.append(el('div', { class: 'row' },
           button('Review removal', () => control.reviewRemoval(), busy || deciding || !control.removable())));
+        if (state.selected.size) {
+          const destination = el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: 10,
+            size: 8, class: 'queue-position', value: state.destination, disabled: !editable,
+            'aria-label': 'Move before original queue position', 'data-focus': 'destination' });
+          const canMove = () => editable && control.removable() && positionOf(destination.value) !== null
+            && positionOf(destination.value) <= page.total + 1;
+          const reviewMove = button('Review move', () => control.reviewMove(positionOf(state.destination)), !canMove());
+          destination.addEventListener('input', () => {
+            state.destination = destination.value;
+            reviewMove.disabled = !canMove();
+          });
+          body.append(el('label', {}, 'Before original position ', destination),
+            el('div', { class: 'row' }, reviewMove,
+              button('To start…', () => control.reviewMove(1), !editable || !control.removable()),
+              button('To end…', () => control.reviewMove(page.total + 1),
+                !editable || !control.removable() || page.total === MAX_INDEX)));
+        }
         if (state.selected.size && !control.removable()) {
-          body.append(el('p', { text: 'Select consecutive entries on this page to remove them together.' }));
+          body.append(el('p', { text: 'Select consecutive entries on this page to move or remove them together.' }));
         }
       }
       if (state.pending) {
         const pending = state.pending;
-        const review = el('div', { class: 'queue-review', role: 'group', 'aria-label': 'Confirm queue removal' },
-          el('p', { text: `Remove ${pending.titles.length} entry(s) starting at position ${pending.body.position}?` }),
-          el('p', { text: 'This cannot be undone. Removing the current entry may advance or stop playback. An active DJ can add new music.' }));
+        const moving = pending.kind === 'move';
+        const destination = pending.body.insert_before === pending.total + 1
+          ? 'to the end of the queue' : `before original position ${pending.body.insert_before}`;
+        const review = el('div', { class: 'queue-review', role: 'group',
+          'aria-label': moving ? 'Confirm queue move' : 'Confirm queue removal' },
+          el('p', { text: moving
+            ? `Move ${pending.titles.length} entry(s) from position ${pending.body.position} ${destination} in ${zone}? The block will start at ${pending.position}.`
+            : `Remove ${pending.titles.length} entry(s) starting at position ${pending.body.position}?` }),
+          el('p', { text: moving
+            ? 'Only queue order changes; this does not start playback. Reordering cannot be undone. Other queue changes require a fresh review.'
+            : 'This cannot be undone. Removing the current entry may advance or stop playback. An active DJ can add new music.' }));
         const titles = el('ul');
         for (const title of pending.titles) titles.append(el('li', { text: title }));
         review.append(titles, el('div', { class: 'row' },
-          button('Cancel removal', () => control.cancelRemoval()),
-          button('Remove permanently', () => control.remove(), busy)));
+          button(moving ? 'Cancel move' : 'Cancel removal', () => control.cancelRemoval()),
+          button(moving ? 'Move entries' : 'Remove permanently',
+            () => moving ? control.move(pending) : control.remove(pending), busy)));
         body.append(review);
       }
       body.append(el('div', { class: 'row' },
@@ -272,7 +361,7 @@ const QueueRemote = (() => {
       body.append(el('p', { class: 'empty', text: 'This is a queue snapshot. Refresh after changes from another controller.' }));
     }
 
-    node.addEventListener('toggle', () => { if (node.open) control.load(); });
+    node.addEventListener('toggle', () => { if (node.open) control.load(); else control.close(); });
     render(control.state);
     return { node, dispose: control.dispose };
   }
