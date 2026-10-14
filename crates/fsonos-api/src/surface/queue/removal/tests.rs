@@ -75,6 +75,10 @@ fn invalid_requests() -> Vec<QueueRemoveRequest> {
         QueueRemoveRequest {
             position: u32::MAX,
             expected_uris: vec!["uri".into(); 2],
+            ..valid.clone()
+        },
+        QueueRemoveRequest {
+            expected_revision: Some(" ".into()),
             ..valid
         },
     ]
@@ -241,6 +245,7 @@ fn request(position: u32, names: &[&str]) -> QueueRemoveRequest {
             .iter()
             .map(|name| format!("x-file-cifs://example.invalid/{name}.flac"))
             .collect(),
+        expected_revision: None,
     }
 }
 
@@ -256,7 +261,7 @@ fn removes_ranges_through_a_member_without_rebuilding_or_starting_playback() {
         for (position, names, left) in [
             (1, vec!["a"], vec!["b", "c", "d"]),
             (2, vec!["b", "c"], vec!["a", "d"]),
-            (4, vec!["d"], vec!["a", "b", "c"],),
+            (4, vec!["d"], vec!["a", "b", "c"]),
             (1, vec!["a", "b", "c", "d"], vec![]),
         ] {
             let (sim, surface, attempts) = setup(s2, Fault::None);
@@ -410,4 +415,50 @@ fn fresh_topology_does_not_remove_from_a_former_coordinators_queue() {
         );
         sim.shutdown();
     }
+}
+
+#[test]
+fn revision_tokens_bind_removal_to_the_queue_observed_by_the_client() {
+    for s2 in [false, true] {
+        let (sim, surface, attempts) = setup(s2, Fault::None);
+        let mut req = request(2, &["b"]);
+        req.expected_revision = surface.queue(&Client::Cli, "Beta", 0, 100).unwrap().revision;
+        assert!(req.expected_revision.is_some());
+        let mut stale = req.clone();
+        stale.expected_revision = Some("another coordinator or revision".into());
+        assert!(surface.queue_remove(&Client::Cli, &stale).is_err());
+        assert_eq!(attempts.load(Ordering::Acquire), 0);
+        let done = surface.queue_remove(&Client::Cli, &req).unwrap();
+        assert_eq!(done.remaining, 3);
+        assert_eq!(attempts.load(Ordering::Acquire), 1);
+        sim.shutdown();
+    }
+}
+
+#[test]
+fn equal_uris_after_an_intervening_edit_do_not_satisfy_a_stale_revision() {
+    let (sim, surface, attempts) = setup(true, Fault::None);
+    let host = sim.player("Alpha").unwrap().ip;
+    let mut req = request(2, &["b"]);
+    req.expected_revision = surface.queue(&Client::Cli, "Beta", 0, 100).unwrap().revision;
+    let before = current(&sim);
+    insert_other(&sim.lan(), host).unwrap();
+    let updated = read(&sim.lan(), host).unwrap();
+    soap::remove_track_range_from_queue(&sim.lan(), host, updated.revision, 5, 1).unwrap();
+    assert_eq!(current(&sim), before);
+    assert!(surface.queue_remove(&Client::Cli, &req).is_err());
+    assert_eq!(attempts.load(Ordering::Acquire), 0);
+    assert_eq!(current(&sim), before);
+    sim.shutdown();
+}
+
+#[test]
+fn old_removal_requests_decode_without_a_revision() {
+    let decoded: QueueRemoveRequest = serde_json::from_value(serde_json::json!({
+        "zone": "Beta", "position": 2,
+        "expected_uris": ["x-file-cifs://example.invalid/b.flac"]
+    }))
+    .unwrap();
+    assert_eq!(decoded, request(2, &["b"]));
+    assert!(serde_json::to_value(decoded).unwrap().get("expected_revision").is_none());
 }

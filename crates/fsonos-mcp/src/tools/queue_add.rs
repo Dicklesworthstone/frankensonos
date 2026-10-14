@@ -1,13 +1,36 @@
-//! The `add_to_queue` and `play_queue` tools (see `fsonos_api::surface::queue`).
+//! Queue addition, playback and removal (see `fsonos_api::surface::queue`).
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::queue::{QueueAddRequest, QueuePlayRequest};
+use fsonos_api::surface::queue::{
+    QueueAddRequest, QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto,
+};
 use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 
 use super::{Backend, respond, said, sentence, with_backend};
 
 impl Backend {
+    /// Keep queue deletion on the daemon when present. A failed or malformed
+    /// daemon response is terminal: it may have already removed the range.
+    pub fn remove_from_queue(&self, req: &QueueRemoveRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).map_err(|error| {
+            crate::tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
+        })?;
+        if let Some(result) = self.on_daemon::<QueueRemovedDto>(
+            "POST",
+            "/queue/remove",
+            Some(&body),
+            |removed| removed.done.clone(),
+        ) {
+            return result;
+        }
+        respond(|| {
+            let removed = self.surface.queue_remove(&self.client, req)?;
+            Ok((removed.done.clone(), removed))
+        })
+    }
+
+
     /// Prefer the running daemon so playback and undo share its action log.
     /// A daemon error is returned, never retried through a second control path.
     pub fn play_queue(&self, req: &QueuePlayRequest) -> McpResult<FinalCallToolResult> {
@@ -149,4 +172,75 @@ mod tests {
         assert!(error.message.contains("POLICY_DENIED"));
         assert_eq!(reply.calls.lock().unwrap().len(), 1);
     }
+
+    fn removal() -> QueueRemoveRequest {
+        QueueRemoveRequest {
+            zone: "Room@S2".into(),
+            position: 3,
+            expected_uris: vec![
+                "x-sonos-spotify:spotify%3Atrack%3AExactIdentity?sid=12&sn=2".into(),
+                "x-file-cifs://example.invalid/second.flac".into(),
+            ],
+            expected_revision: Some("opaque-token-from-get-queue".into()),
+        }
+    }
+
+    #[test]
+    fn removal_forwards_exact_identities_and_revision_and_returns_confirmed_counts() {
+        let outcome = json!({
+            "done": "removed 2 tracks (not undoable)", "zone": "Room", "position": 3,
+            "count": 2, "remaining": 8, "recovered": true, "undoable": false
+        });
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(Ok(outcome.clone())),
+        });
+        let result = backend(&reply).remove_from_queue(&removal()).unwrap();
+        assert!(!result.is_error);
+        assert_eq!(result.structured_content, Some(outcome));
+        assert_eq!(
+            *reply.calls.lock().unwrap(),
+            [json!(["POST", "/queue/remove", removal()])]
+        );
+    }
+
+    #[test]
+    fn every_daemon_removal_failure_is_terminal_without_local_replay() {
+        for code in [
+            ErrorCode::PlayerUnreachable,
+            ErrorCode::UpnpFault,
+            ErrorCode::PolicyDenied,
+            ErrorCode::InvalidArgument,
+        ] {
+            let reply = Arc::new(Reply {
+                calls: Mutex::default(),
+                answer: Some(Err(Failure::new(code, "synthetic daemon failure"))),
+            });
+            let error = backend(&reply).remove_from_queue(&removal()).unwrap_err();
+            assert!(error.message.contains(code.as_str()));
+            assert_eq!(reply.calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn malformed_daemon_removal_success_is_not_a_reason_to_remove_locally() {
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: Some(Ok(json!({ "done": "missing confirmation fields" }))),
+        });
+        assert!(backend(&reply).remove_from_queue(&removal()).is_err());
+        assert_eq!(reply.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn standalone_removal_still_checks_the_local_house_policy_before_speaker_io() {
+        let reply = Arc::new(Reply {
+            calls: Mutex::default(),
+            answer: None,
+        });
+        let error = backend(&reply).remove_from_queue(&removal()).unwrap_err();
+        assert!(error.message.contains("POLICY_DENIED"));
+        assert_eq!(reply.calls.lock().unwrap().len(), 1);
+    }
+
 }

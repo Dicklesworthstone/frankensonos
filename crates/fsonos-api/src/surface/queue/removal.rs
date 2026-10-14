@@ -27,6 +27,10 @@ pub struct QueueRemoveRequest {
     /// Exact renderer URIs from `get_queue`, in order (one to 100 items).
     /// These are mandatory: a shifted position must not remove other music.
     pub expected_uris: Vec<String>,
+    /// Opaque `revision` from `get_queue`. When supplied, the coordinator,
+    /// revision and queue length must still match that observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_revision: Option<String>,
 }
 
 impl QueueRemoveRequest {
@@ -35,6 +39,13 @@ impl QueueRemoveRequest {
             return Err(Failure::invalid(
                 "give a room and a queue position starting at one",
             ));
+        }
+        if self
+            .expected_revision
+            .as_deref()
+            .is_some_and(|revision| revision.trim().is_empty())
+        {
+            return Err(Failure::invalid("expected_revision must not be blank"));
         }
         let count = u32::try_from(self.expected_uris.len())
             .map_err(|_| Failure::invalid("too many queue items to remove"))?;
@@ -186,9 +197,23 @@ impl Surface {
             )
             .with_hint("A revision-checked removal requires a nonzero queue revision."));
         }
-        self.queue_group_unchanged(host, &group)?;
         let count = u32::try_from(end - start)
             .map_err(|_| Failure::invalid("too many queue items to remove"))?;
+        if let Some(expected) = &req.expected_revision {
+            // Reuse the queue reader's token contract rather than parsing or
+            // independently reconstructing its opaque coordinator identity.
+            let page = super::snapshot::page(&*self.transport, host, req.position - 1, count)?;
+            if page.update_id != before.revision
+                || usize::try_from(page.total_matches).ok() != Some(before.uris.len())
+                || super::snapshot::revision(&group.coordinator, &page) != *expected
+            {
+                return Err(Failure::invalid(
+                    "the queue revision changed since the selection; nothing was removed",
+                )
+                .with_hint("Read the current queue and select its current identities and revision."));
+            }
+        }
+        self.queue_group_unchanged(host, &group)?;
         // A fresh topology read cannot pin the queue. The native UpdateID
         // check closes that race at the player instead of clearing/rebuilding.
         let sent = soap::remove_track_range_from_queue(

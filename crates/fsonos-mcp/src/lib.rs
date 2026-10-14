@@ -49,6 +49,28 @@ fn play_queue(
     Ok(CompleteResult::new(result, ResultMeta::empty()))
 }
 
+/// Remove selected consecutive queue entries through the shared backend.
+#[tool(
+    description = "Remove consecutive entries from a room's group queue. First read get_queue, then pass the one-based starting position and exact renderer URIs in expected_uris (one to 100, in queue order). Pass that response's revision as expected_revision to reject intervening queue or coordinator changes. Uses revision-checked deletion, never clears/rebuilds the queue, and never automatically retries a failed write. This deletes queue entries and is NOT undoable with undo_last; read the queue again after any uncertain result rather than blindly retrying."
+)]
+fn remove_from_queue(
+    ctx: &McpContext,
+    zone: String,
+    position: u32,
+    expected_uris: Vec<String>,
+    expected_revision: Option<String>,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    ctx.checkpoint()?;
+    let backend = tools::backend().map_err(|failure| tool_error(&failure))?;
+    let result = backend.remove_from_queue(&fsonos_api::surface::queue::QueueRemoveRequest {
+        zone,
+        position,
+        expected_uris,
+        expected_revision,
+    })?;
+    Ok(CompleteResult::new(result, ResultMeta::empty()))
+}
+
 /// Build the FrankenSonos MCP server. `auto` admission accepts both the
 /// 2024-11-05 and 2026-07-28 protocol eras, pinning each connection to the era
 /// its client opened with.
@@ -116,6 +138,7 @@ pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
         .tool(tools::GetQueue)
         .tool(tools::AddToQueue)
         .tool(PlayQueue)
+        .tool(RemoveFromQueue)
         .tool(tools::Announce)
         .tool(tools::dj_feedback::DjFeedback)
         .tool(tools::dj_prefs::DjPreferences)
