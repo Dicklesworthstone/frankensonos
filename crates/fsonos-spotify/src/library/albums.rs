@@ -79,7 +79,7 @@ mod tests {
     fn page(numbers: &[u32], offset: u32, next: Option<String>) -> Value {
         json!({
             "items": numbers.iter().copied().map(track).collect::<Vec<_>>(),
-            "offset": offset, "limit": 50, "total": 3, "next": next
+            "offset": offset, "limit": 50, "total": 3, "next": Value::from(next)
         })
     }
 
@@ -91,7 +91,7 @@ mod tests {
                 "name": "Test Album", "total_tracks": 3,
                 "artists": [{ "name": "Test Album Artist" }],
                 "genres": ["chamber music"], "release_date": "1982",
-                "label": "Test Label", "tracks": embedded
+                "label": "Test Label", "tracks": Value::from(embedded)
             }
         }], "offset": 0, "total": 1, "next": null })
     }

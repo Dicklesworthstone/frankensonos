@@ -155,7 +155,7 @@ mod tests {
             assert_eq!(validate(service, &event).is_ok(), valid);
         }
         let service = Service::ZoneGroupTopology;
-        let partial = vec![("AvailableSoftwareUpdate".into(), "".into())];
+        let partial = vec![("AvailableSoftwareUpdate".into(), String::new())];
         assert!(validate(service, &notify(service, 0, partial.clone())).is_err());
         assert!(validate(service, &notify(service, 1, partial)).is_ok());
         let full = vec![("ZoneGroupState".into(), "<ZoneGroupState/>".into())];
@@ -362,12 +362,12 @@ mod tests {
             // Conflicting values would visibly alter state if instance seven
             // were accidentally applied. Repeating the current values would
             // not test that the delta is actually isolated.
-            let changed = if service == Service::AvTransport {
+            let conflicting = if service == Service::AvTransport {
                 "<TransportState val=\"PLAYING\"/><CurrentTrackURI val=\"test:other\"/>"
             } else {
                 "<Volume channel=\"Master\" val=\"55\"/><Mute channel=\"Master\" val=\"0\"/>"
             };
-            let mut other = notify(service, 0, last_change(changed));
+            let mut other = notify(service, 0, last_change(conflicting));
             let body = &mut other.properties[0].1;
             *body = body.replacen("val=\"0\"", "val=\"7\"", 1);
             assert!(apply(&mut [], &mut playback, &player, service, &other, now).is_err());

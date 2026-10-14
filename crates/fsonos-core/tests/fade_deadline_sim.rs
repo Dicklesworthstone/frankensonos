@@ -187,7 +187,7 @@ fn a_new_scene_volume_intent_during_initial_reads_wins() {
             Duration::ZERO,
         )
         .unwrap();
-    assert_eq!(left, [kitchen.clone()]);
+    assert_eq!(left, std::slice::from_ref(&kitchen));
     assert_eq!(control::volume(&lan, &h, &kitchen).unwrap(), 7);
     assert_eq!(control::volume(&lan, &h, &living).unwrap(), 60);
     assert_eq!(

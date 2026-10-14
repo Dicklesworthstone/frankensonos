@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 /// configured step interval is long. These wakeups perform no speaker reads.
 const WAKE_NANOS: u128 = 50_000_000;
 
+#[derive(Clone, Copy)]
 pub(super) struct Timing {
     started: Instant,
     over: Duration,

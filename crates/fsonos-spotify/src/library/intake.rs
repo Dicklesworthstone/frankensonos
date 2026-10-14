@@ -122,7 +122,7 @@ mod tests {
 
     fn liked(number: u32, next: Option<String>) -> Vec<u8> {
         serde_json::to_vec(&json!({
-            "items": [{ "track": track(number) }], "next": next
+            "items": [{ "track": track(number) }], "next": serde_json::Value::from(next)
         }))
         .unwrap()
     }
