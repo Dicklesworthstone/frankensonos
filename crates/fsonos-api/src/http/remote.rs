@@ -23,6 +23,8 @@ const REMOTE: &str = "remote";
 const PAGE: &str = include_str!("../remote/index.html");
 const QUEUE_SCRIPT: &str = include_str!("../remote/queue.js");
 const SCRIPT: &str = include_str!("../remote/remote.js");
+const LIBRARY_SCRIPT: &str = include_str!("../remote/library.js");
+const LIBRARY_STYLE: &str = include_str!("../remote/library.css");
 const STYLE: &str = include_str!("../remote/remote.css");
 
 /// What the remote's documents may do: load only themselves, talk only to
@@ -54,7 +56,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             |_, _, _| {
                 asset(
                     "text/javascript; charset=utf-8",
-                    &format!("{QUEUE_SCRIPT}\n{SCRIPT}"),
+                    &format!("{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}"),
                 )
             },
         )
@@ -66,7 +68,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 REMOTE,
                 "The web remote's style",
             ),
-            |_, _, _| asset("text/css; charset=utf-8", STYLE),
+            |_, _, _| asset("text/css; charset=utf-8", &format!("{STYLE}\n{LIBRARY_STYLE}")),
         )
         .response_schema::<String>(200, "The style sheet (text/css)"),
         cx.route(
@@ -242,6 +244,8 @@ mod tests {
             ("index.html", PAGE),
             ("remote.js", SCRIPT),
             ("queue.js", QUEUE_SCRIPT),
+            ("library.js", LIBRARY_SCRIPT),
+            ("library.css", LIBRARY_STYLE),
             ("remote.css", STYLE),
         ] {
             let lower = text.to_ascii_lowercase();
