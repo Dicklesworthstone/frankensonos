@@ -451,6 +451,7 @@ mod tests {
     use crate::zones::fixtures::{households, id};
     use fsonos_proto::ProtoError;
     use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::net::IpAddr;
 
     /// A transport that records each SOAP action and answers success with
@@ -460,7 +461,49 @@ mod tests {
         out_args: &'static str,
         /// The whole response to a ContentDirectory Browse.
         browse: &'static str,
+        /// Responses to successive Browses of the queue (`Q:0`), in order;
+        /// once they run out, the queue is browsed like anything else.
+        queue: RefCell<VecDeque<String>>,
         fail: Option<fn() -> ProtoError>,
+    }
+
+    /// A one-page Browse of the queue holding `uris`, at `update_id`.
+    fn queue_page(uris: &[&str], update_id: u32) -> String {
+        let escape = |s: &str| {
+            s.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+        };
+        let items: Vec<String> = uris
+            .iter()
+            .enumerate()
+            .map(|(i, uri)| {
+                format!(
+                    "<item id=\"Q:0/{n}\" parentID=\"Q:0\" restricted=\"true\">\
+                     <dc:title>Track {n}</dc:title>\
+                     <upnp:class>object.item.audioItem.musicTrack</upnp:class>\
+                     <res protocolInfo=\"sonos.com-spotify:*:audio/x-spotify:*\">{}</res></item>",
+                    escape(uri),
+                    n = i + 1
+                )
+            })
+            .collect();
+        let items = items.concat();
+        let didl = format!(
+            "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+             xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" \
+             xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">{items}</DIDL-Lite>"
+        );
+        format!(
+            "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+             <u:BrowseResponse xmlns:u=\"urn:schemas-upnp-org:service:ContentDirectory:1\">\
+             <Result>{}</Result><NumberReturned>{n}</NumberReturned>\
+             <TotalMatches>{n}</TotalMatches><UpdateID>{update_id}</UpdateID>\
+             </u:BrowseResponse></s:Body></s:Envelope>",
+            escape(&didl),
+            n = uris.len()
+        )
     }
 
     const FAVORITES_S1: &str =
@@ -474,6 +517,7 @@ mod tests {
                 sent: RefCell::new(Vec::new()),
                 out_args,
                 browse: NO_FAVORITES,
+                queue: RefCell::new(VecDeque::new()),
                 fail: None,
             }
         }
@@ -489,7 +533,7 @@ mod tests {
             host: IpAddr,
             _control_path: &str,
             soap_action: &str,
-            _body: &str,
+            body: &str,
         ) -> Result<String, ProtoError> {
             let action = soap_action
                 .trim_matches('"')
@@ -502,6 +546,11 @@ mod tests {
                 return Err(fail());
             }
             if action == "Browse" {
+                if body.contains("<ObjectID>Q:0</ObjectID>")
+                    && let Some(page) = self.queue.borrow_mut().pop_front()
+                {
+                    return Ok(page);
+                }
                 return Ok(self.browse.to_string());
             }
             Ok(format!(
@@ -721,18 +770,37 @@ mod tests {
             "spotify:album:0123456789ABCDEFabcdef",
             "spotify:playlist:0123456789ABCDEFabcdef",
         ] {
+            // The queue as the replacement reads it back: the old track; the
+            // two added after it; the old track taken off the front.
+            let (old, new) = (
+                "x-file-cifs://nas/old.mp3",
+                ["x-sonos-spotify:new1", "x-sonos-spotify:new2"],
+            );
             let t = Canned {
                 browse: FAVORITES_S1,
-                ..Canned::ok("<FirstTrackNumberEnqueued>1</FirstTrackNumberEnqueued>")
+                queue: RefCell::new(VecDeque::from([
+                    queue_page(&[old], 1),
+                    queue_page(&[old, new[0], new[1]], 2),
+                    queue_page(&new, 3),
+                ])),
+                ..Canned::ok(
+                    "<FirstTrackNumberEnqueued>2</FirstTrackNumberEnqueued>\
+                     <NumTracksAdded>2</NumTracksAdded><NewQueueLength>3</NewQueueLength>\
+                     <NewUpdateID>3</NewUpdateID>",
+                )
             };
             let out = execute(&t, &households(), &play_spotify(uri)).unwrap();
             assert!(out.changed && out.done.contains(uri), "{}", out.done);
+            // The old queue stays until the new tracks are read back after it.
             assert_eq!(
                 t.actions(),
                 [
                     "Browse",
-                    "RemoveAllTracksFromQueue",
+                    "Browse",
                     "AddURIToQueue",
+                    "Browse",
+                    "RemoveTrackRangeFromQueue",
+                    "Browse",
                     "SetAVTransportURI",
                     "Seek",
                     "Play"

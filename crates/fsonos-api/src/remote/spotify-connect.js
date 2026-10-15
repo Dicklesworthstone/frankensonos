@@ -63,7 +63,7 @@ const SpotifyConnectRemote = (() => {
     redirectOf(redirect);
     const url = urlOf(value.url), p = paramsOf(url);
     const fields = ['client_id', 'response_type', 'redirect_uri', 'code_challenge_method', 'code_challenge', 'scope', 'state'];
-    if (url.protocol !== 'https:' || url.hostname !== 'accounts.spotify.com' || url.port || url.pathname !== '/authorize'
+    if (url.protocol !== 'https:' || url.hostname !== 'accounts.spotify.com' || url.port || url.pathname.slice(1) !== 'authorize'
         || [...p.keys()].some((key) => !fields.includes(key)) || fields.some((key) => !p.get(key))
         || p.get('response_type') !== 'code' || p.get('redirect_uri') !== redirect
         || p.get('code_challenge_method') !== 'S256' || !/^[A-Za-z0-9_-]{43}$/.test(p.get('code_challenge'))
