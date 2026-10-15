@@ -49,6 +49,10 @@ mod queue_add;
 pub use queue_add::AddToQueue;
 
 mod documents;
+mod controls;
+
+#[cfg(test)]
+mod daemon_tests;
 
 mod events;
 pub use events::Events;
@@ -60,20 +64,20 @@ pub use fsonos_api::surface::Survey;
 pub struct Backend {
     surface: Arc<Surface>,
     client: Client,
-    /// The running daemon the stdio server hands its stateful tools to
+    /// The running daemon the stdio server hands house operations to
     /// ([`Backend::with_daemon`]).
     daemon: Option<Arc<dyn Daemon>>,
 }
 
-/// A running daemon that the stdio server hands the tools needing its running
-/// state to: the DJ (which keeps its queues fed), scenes that start it, sleep
-/// timers (which fade), moves (its DJ and sleep timer follow the music) and
-/// fades on demand (which give way to its other fades). The calls reach the
-/// daemon as the stdio client, so the house policy reads the same.
+/// The daemon owning live state, DJ queues, timers, policy and the action log.
+/// Stdio tools use it for reads as well as writes; otherwise a read could
+/// describe a different model than the next mutation uses. The bridge must
+/// preserve the stdio caller's identity, never upgrade it to the local CLI.
 pub trait Daemon: Send + Sync {
     /// `method path`, with `body` as JSON, on the daemon if one runs now: its
-    /// answer, or its failure. `None` when none runs, and the tool acts on the
-    /// speakers itself.
+    /// answer, or its failure. `None` means no daemon was selected and permits
+    /// standalone execution. Once a request is dispatched, every failure must
+    /// be `Some(Err(...))`: it must never cause a second local mutation.
     fn call(
         &self,
         method: &str,
@@ -108,9 +112,8 @@ impl Backend {
         }
     }
 
-    /// Hand the DJ, scene-apply, sleep-timer, move and fade tools to `daemon`
-    /// whenever it runs (the stdio server, `fsonos mcp`, alongside `fsonos
-    /// serve`).
+    /// Use `daemon` for house operations whenever it runs. Standalone mode
+    /// is used only when the bridge reports that no daemon was selected.
     #[must_use]
     pub fn with_daemon(mut self, daemon: Arc<dyn Daemon>) -> Self {
         self.daemon = Some(daemon);
@@ -131,6 +134,34 @@ impl Backend {
             let value: T = from_daemon(answer, method, path)?;
             Ok((say(&value), value))
         }))
+    }
+
+    /// Read typed daemon data while keeping MCP's own response envelope and
+    /// wording. An error or malformed response is terminal, not a LAN fallback.
+    fn read<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        here: impl FnOnce() -> Result<T, Failure>,
+    ) -> Result<T, Failure> {
+        match self.daemon.as_ref().and_then(|d| d.call("GET", path, None)) {
+            Some(answer) => from_daemon(answer, "GET", path),
+            None => here(),
+        }
+    }
+
+    /// Prefer the daemon for an ordinary control request. Serialize before
+    /// dispatch; a serialization failure must not become an empty request.
+    fn write<R: Serialize>(
+        &self,
+        path: &str,
+        request: &R,
+        here: impl FnOnce() -> McpResult<FinalCallToolResult>,
+    ) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(request).map_err(|error| {
+            tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
+        })?;
+        self.on_daemon::<OutcomeDto>("POST", path, Some(&body), sentence)
+            .unwrap_or_else(here)
     }
 
     /// The `dj_start` tool: on the daemon when one runs (its DJ keeps the
@@ -209,7 +240,11 @@ impl Backend {
     /// The `dj_moods` tool.
     pub fn dj_moods(&self, zone: Option<&str>) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let moods = self.surface.dj_moods(&self.client, zone)?;
+            let path = zone.map_or_else(
+                || "/dj/moods".to_owned(),
+                |zone| format!("/dj/moods?zone={}", segment(zone)),
+            );
+            let moods = self.read(&path, || self.surface.dj_moods(&self.client, zone))?;
             Ok((moods.summary(), moods))
         })
     }
@@ -217,7 +252,8 @@ impl Backend {
     /// The `get_queue` tool.
     pub fn queue(&self, zone: &str, offset: u32, limit: u32) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let queue = self.surface.queue(&self.client, zone, offset, limit)?;
+            let path = format!("/zones/{}/queue?offset={offset}&limit={limit}", segment(zone));
+            let queue = self.read(&path, || self.surface.queue(&self.client, zone, offset, limit))?;
             Ok((queue.text(), queue))
         })
     }
@@ -225,7 +261,8 @@ impl Backend {
     /// The `get_zone_state` tool.
     pub fn zone_state(&self, zone: &str) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let state = self.surface.zone_state(&self.client, zone)?;
+            let path = format!("/zones/{}/state", segment(zone));
+            let state = self.read(&path, || self.surface.zone_state(&self.client, zone))?;
             let on = state.track.as_ref().map_or_else(
                 || "nothing".to_string(),
                 |t| {
@@ -260,7 +297,8 @@ impl Backend {
     /// The `get_zone` tool.
     pub fn zone(&self, room: &str) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let zone = self.surface.zone(&self.client, room)?;
+            let path = format!("/zones/{}", segment(room));
+            let zone = self.read(&path, || self.surface.zone(&self.client, room))?;
             let degraded = if zone.degraded.is_empty() {
                 String::new()
             } else {
@@ -279,7 +317,8 @@ impl Backend {
     /// The `list_favorites` tool.
     pub fn list_favorites(&self, zone: &str) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let favorites = self.surface.favorites(&self.client, zone)?;
+            let path = format!("/favorites?zone={}", segment(zone));
+            let favorites = self.read(&path, || self.surface.favorites(&self.client, zone))?;
             let text = favorites
                 .iter()
                 .enumerate()
@@ -292,18 +331,23 @@ impl Backend {
 
     /// The `play_favorite` tool.
     pub fn play_favorite(&self, zone: String, favorite: String) -> McpResult<FinalCallToolResult> {
-        respond(|| {
-            let outcome = self
-                .surface
-                .play_favorite(&self.client, &PlayFavoriteRequest { zone, favorite })?;
-            Ok((outcome.done.clone(), outcome))
+        let request = PlayFavoriteRequest { zone, favorite };
+        self.write("/play/favorite", &request, || {
+            respond(|| self.surface.play_favorite(&self.client, &request).map(said))
         })
     }
 
     /// The `search_library` tool.
     pub fn search_library(&self, req: &SearchRequest) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let hits = self.surface.search_library(&self.client, req)?;
+            let mut path = format!("/library/search?q={}", segment(&req.query));
+            if let Some(zone) = &req.zone {
+                let _ = write!(path, "&zone={}", segment(zone));
+            }
+            if let Some(limit) = req.limit {
+                let _ = write!(path, "&limit={limit}");
+            }
+            let hits = self.read(&path, || self.surface.search_library(&self.client, req))?;
             let text = if hits.is_empty() {
                 format!("nothing matches {:?}", req.query.trim())
             } else {
@@ -345,7 +389,11 @@ impl Backend {
     /// The `recent_plays` tool.
     pub fn recent_plays(&self, zone: Option<&str>, limit: usize) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let plays = self.surface.recent_plays(&self.client, zone, limit)?;
+            let mut path = format!("/history?limit={limit}");
+            if let Some(zone) = zone {
+                let _ = write!(path, "&zone={}", segment(zone));
+            }
+            let plays = self.read(&path, || self.surface.recent_plays(&self.client, zone, limit))?;
             let text = if plays.is_empty() {
                 "no plays recorded".to_string()
             } else {
@@ -371,24 +419,31 @@ impl Backend {
 
     /// `sonos://zones`: every zone, as `list_zones` returns them.
     pub fn zones_document(&self) -> Result<String, Failure> {
-        let zones = self.surface.zones(&self.client)?;
+        let zones = self.read("/zones", || self.surface.zones(&self.client))?;
         json_document(&ZonesDto { zones })
     }
 
     /// `sonos://zones/{room}`: the room's zone state, as `get_zone_state`.
     pub fn zone_document(&self, room: &str) -> Result<String, Failure> {
-        json_document(&self.surface.zone_state(&self.client, room)?)
+        let path = format!("/zones/{}/state", segment(room));
+        json_document(&self.read(&path, || self.surface.zone_state(&self.client, room))?)
     }
 
     /// The `recent_actions` tool.
     pub fn recent_actions(&self, query: &ActionsQuery) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let actions: Vec<ActionDto> = self
-                .surface
-                .recent_actions(&self.client, &query.filter())?
-                .iter()
-                .map(ActionDto::from)
-                .collect();
+            let mut path = format!("/actions?limit={}", query.limit.unwrap_or(20));
+            if let Some(client) = &query.client {
+                let _ = write!(path, "&client={}", segment(client));
+            }
+            if let Some(since) = query.since {
+                let _ = write!(path, "&since={since}");
+            }
+            let actions: Vec<ActionDto> = self.read(&path, || {
+                self.surface
+                    .recent_actions(&self.client, &query.filter())
+                    .map(|actions| actions.iter().map(ActionDto::from).collect())
+            })?;
             let text = if actions.is_empty() {
                 "no actions logged".to_string()
             } else {
@@ -404,6 +459,12 @@ impl Backend {
 
     /// The `undo_last` tool: undo this caller's own newest action.
     pub fn undo_last(&self) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::json!({ "own_only": true });
+        if let Some(answer) = self.on_daemon::<UndoDto>("POST", "/undo", Some(&body), |r| {
+            r.summary.clone()
+        }) {
+            return answer;
+        }
         respond(|| {
             let undone = UndoDto::from(self.surface.undo(&self.client, true)?);
             Ok((undone.summary.clone(), undone))
@@ -439,7 +500,7 @@ impl Backend {
     /// The `list_rooms` tool.
     pub fn list_rooms(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let rooms = self.surface.rooms(&self.client)?;
+            let rooms = self.read("/rooms", || self.surface.rooms(&self.client))?;
             let text = rooms
                 .iter()
                 .map(|r| {
@@ -458,7 +519,7 @@ impl Backend {
 
     pub fn list_zones(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let zones = self.surface.zones(&self.client)?;
+            let zones = self.read("/zones", || self.surface.zones(&self.client))?;
             let text = zones
                 .iter()
                 .map(|z| {
@@ -620,7 +681,7 @@ async fn with_backend_off_thread(
     description = "Search the owner's saved Spotify library for music, and with `zone` also that room's household Sonos favorites. `query` is title words, a composer or performer, an album or playlist name, or a catalog number ('goldberg gould', 'bwv 988', 'dvorak 9', 'op 67'); case, accents and small typos are forgiven. Results come best first: play a track, a saved album or one of the owner's playlists with `play` (zone, source_uri; an album or playlist replaces the queue) or a favorite with `play_favorite` (zone, favorite). `limit` 1-50, default 10.",
     annotations(read_only, idempotent)
 )]
-fn search_library(
+async fn search_library(
     _ctx: &McpContext,
     query: String,
     zone: Option<String>,
@@ -631,13 +692,13 @@ fn search_library(
         zone,
         limit: limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
     };
-    with_backend(move |b| b.search_library(&req))
+    with_backend_off_thread(move |b| b.search_library(&req)).await
 }
 
 #[tool(
     description = "Search the owner's library plus the target room's household Sonos favorites and immediately play one ranked match. `pick` is one-based and defaults to 1; use search_library first when you want to inspect choices. The selected hit is played through the same guarded play/play_favorite path, so volume policy, action logging, undo, history and household-specific Spotify rendering still apply. Do not retry automatically after an uncertain playback error."
 )]
-fn search_and_play(
+async fn search_and_play(
     _ctx: &McpContext,
     zone: String,
     query: String,
@@ -648,14 +709,14 @@ fn search_and_play(
         query,
         pick: pick.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
     };
-    with_backend(move |b| b.search_and_play(&req))
+    with_backend_off_thread(move |b| b.search_and_play(&req)).await
 }
 
 #[tool(
     description = "What played recently, newest first: each play's URI, the room whose group played it, and when (unix seconds). Plays started through fsonos and by the DJ are recorded. Optional `zone` (a room) narrows it to that group; `limit` default 20, at most 200.",
     annotations(read_only, idempotent)
 )]
-fn recent_plays(
+async fn recent_plays(
     _ctx: &McpContext,
     zone: Option<String>,
     limit: Option<u32>,
@@ -663,78 +724,78 @@ fn recent_plays(
     let limit = limit.map_or(20, |n| {
         usize::try_from(n).unwrap_or(usize::MAX).clamp(1, 200)
     });
-    with_backend(move |b| b.recent_plays(zone.as_deref(), limit))
+    with_backend_off_thread(move |b| b.recent_plays(zone.as_deref(), limit)).await
 }
 
 #[tool(
     description = "The queue a room's group plays from: its tracks in order (position, title, artist, album, URI), how many there are, and the position playing now (absent when the group isn't playing from its queue). `zone` is a room; `offset` skips that many tracks from the start (default 0); `limit` 1-100, default 50.",
     annotations(read_only, idempotent)
 )]
-fn get_queue(
+async fn get_queue(
     _ctx: &McpContext,
     zone: String,
     offset: Option<u32>,
     limit: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let limit = limit.map_or(50, |n| n.clamp(1, 100));
-    with_backend(move |b| b.queue(&zone, offset.unwrap_or(0), limit))
+    with_backend_off_thread(move |b| b.queue(&zone, offset.unwrap_or(0), limit)).await
 }
 
 #[tool(
     description = "List every room: its household (S1/S2), the zone (group) it plays in, and the owner's aliases for it. Any tool's `zone` accepts a room name, Room@S1 / Room@S2, or one of these aliases.",
     annotations(read_only, idempotent)
 )]
-fn list_rooms(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(Backend::list_rooms)
+async fn list_rooms(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(Backend::list_rooms).await
 }
 
 #[tool(
     description = "List the zone groups: which rooms play together, in which household (S1/S2), and whether each group is playing, paused or stopped.",
     annotations(read_only, idempotent)
 )]
-fn list_zones(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(Backend::list_zones)
+async fn list_zones(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(Backend::list_zones).await
 }
 
 #[tool(
     description = "What a room is doing right now: its group, whether that group is playing, paused or stopped, the current track or station (title, artist, position), and the room's volume (and the whole group's, when it plays with others). Call this before changing anything relative ('a bit louder', 'what's playing?'). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
     annotations(read_only, idempotent)
 )]
-fn get_zone_state(
+async fn get_zone_state(
     _ctx: &McpContext,
     zone: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.zone_state(&zone))
+    with_backend_off_thread(move |b| b.zone_state(&zone)).await
 }
 
 #[tool(
     description = "The zone (group) a room plays in: the rooms grouped with it (coordinator first), the household (S1/S2), whether the group is playing, paused or stopped, and any degraded rooms (e.g. one half of a stereo pair offline). For the current track and volume use get_zone_state. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
     annotations(read_only, idempotent)
 )]
-fn get_zone(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.zone(&zone))
+async fn get_zone(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(move |b| b.zone(&zone)).await
 }
 
 #[tool(
     description = "List the Sonos favorites of the household a room belongs to (tracks, stations, albums and playlists the owner saved in the Sonos app), numbered. Play one with play_favorite. `zone` is any room of that household.",
     annotations(read_only, idempotent)
 )]
-fn list_favorites(
+async fn list_favorites(
     _ctx: &McpContext,
     zone: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.list_favorites(&zone))
+    with_backend_off_thread(move |b| b.list_favorites(&zone)).await
 }
 
 #[tool(
     description = "Play one of the household's Sonos favorites in the group a room plays in. `favorite` is its title (case, accents and punctuation ignored; a unique prefix or all its words in any order will do), its number from list_favorites, or its FV:2/<n> id. Albums and playlists replace the queue. `zone` is a room name."
 )]
-fn play_favorite(
+async fn play_favorite(
     _ctx: &McpContext,
     zone: String,
     favorite: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| b.play_favorite(zone, favorite))
+    with_backend_off_thread(move |b| b.play_favorite(zone, favorite)).await
 }
 
 #[tool(
@@ -749,7 +810,7 @@ async fn doctor(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResu
     description = "The house's recent actions, newest first: who asked (client), what (intent), the policy decision (allow / clamp / deny) and what happened, and whether each can be undone. Optional `limit` (default 20), `since` (unix seconds) and `client` filter.",
     annotations(read_only, idempotent)
 )]
-fn recent_actions(
+async fn recent_actions(
     _ctx: &McpContext,
     limit: Option<u32>,
     since: Option<i64>,
@@ -760,7 +821,7 @@ fn recent_actions(
         since,
         limit: limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
     };
-    with_backend(move |b| b.recent_actions(&query))
+    with_backend_off_thread(move |b| b.recent_actions(&query)).await
 }
 
 #[tool(
@@ -773,114 +834,97 @@ async fn undo_last(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolR
 #[tool(
     description = "Play something in the group a room plays in. `source_uri` is a Spotify track, album or playlist (spotify:track:<id>, spotify:album:<id>, spotify:playlist:<id>, or an open.spotify.com link; rendered through the household's own Spotify link, and an album or playlist replaces the group's queue), or a radio/HTTP stream or Sonos favorite URI. Optional `title` is shown on the speaker. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household)."
 )]
-fn play(
+async fn play(
     _ctx: &McpContext,
     zone: String,
     source_uri: String,
     title: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| {
-        b.control("play", |h| {
-            plan::plan_play(
-                h,
-                &PlayRequest {
-                    zone,
-                    source_uri,
-                    title,
-                },
-            )
+    with_backend_off_thread(move |b| {
+        b.play(&PlayRequest {
+            zone,
+            source_uri,
+            title,
         })
     })
+    .await
 }
 
-fn transport(
+async fn transport(
     zone: String,
-    tool: &str,
     action: TransportAction,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| {
-        b.control_set(tool, |h| {
-            plan::plan_transport_set(h, &ZoneRequest { zone }, action)
-        })
-    })
+    with_backend_off_thread(move |b| b.transport(&ZoneRequest { zone }, action)).await
 }
 
 #[tool(
     description = "Pause the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room.",
     annotations(idempotent)
 )]
-fn pause(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    transport(zone, "pause", TransportAction::Pause)
+async fn pause(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    transport(zone, TransportAction::Pause).await
 }
 
 #[tool(
     description = "Resume (or start) playback in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room.",
     annotations(idempotent)
 )]
-fn resume(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    transport(zone, "resume", TransportAction::Resume)
+async fn resume(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    transport(zone, TransportAction::Resume).await
 }
 
 #[tool(
     description = "Skip to the next track in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
-fn next(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    transport(zone, "next", TransportAction::Next)
+async fn next(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    transport(zone, TransportAction::Next).await
 }
 
 #[tool(
     description = "Go back a track in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
-fn previous(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    transport(zone, "previous", TransportAction::Previous)
+async fn previous(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    transport(zone, TransportAction::Previous).await
 }
 
 #[tool(
     description = "Move within the track the group a room plays in is on. Give exactly one of `to_secs` (seconds from its start; 0 starts it over) or `by_secs` (seconds from where it is now: 30 skips ahead, -15 goes back; kept within the track). A radio stream has no position to move in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household) or one of your aliases."
 )]
-fn seek(
+async fn seek(
     _ctx: &McpContext,
     zone: String,
     to_secs: Option<u32>,
     by_secs: Option<i64>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| {
-        b.control("seek", |h| {
-            plan::plan_seek(
-                h,
-                &fsonos_api::SeekRequest {
-                    zone,
-                    to_secs,
-                    by_secs,
-                },
-            )
+    with_backend_off_thread(move |b| {
+        b.seek(&fsonos_api::SeekRequest {
+            zone,
+            to_secs,
+            by_secs,
         })
     })
+    .await
 }
 
 #[tool(
     description = "Change a room's volume: give exactly one of `volume` (0-100, absolute) or `delta` (-100..100, relative; e.g. +5 for 'a bit louder'). With `group` true the change applies to the room's whole group. The house policy may lower a loud request; the reply then says so. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
-fn set_volume(
+async fn set_volume(
     _ctx: &McpContext,
     zone: String,
     volume: Option<i64>,
     delta: Option<i64>,
     group: Option<bool>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| {
-        b.control_set("set_volume", |h| {
-            plan::plan_volume_set(
-                h,
-                &VolumeRequest {
-                    zone,
-                    volume,
-                    delta,
-                    group: group.unwrap_or(false),
-                },
-            )
+    with_backend_off_thread(move |b| {
+        b.set_volume(&VolumeRequest {
+            zone,
+            volume,
+            delta,
+            group: group.unwrap_or(false),
         })
     })
+    .await
 }
 
 #[tool(
@@ -888,46 +932,38 @@ fn set_volume(
     description = "Mute a room, or unmute it with `mute` false (default true). `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room.",
     annotations(idempotent)
 )]
-fn mute_tool(
+async fn mute_tool(
     _ctx: &McpContext,
     zone: String,
     mute: Option<bool>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| {
-        b.control_set("mute", |h| {
-            plan::plan_mute_set(
-                h,
-                &MuteRequest {
-                    zone,
-                    mute: mute.unwrap_or(true),
-                },
-            )
+    with_backend_off_thread(move |b| {
+        b.mute(&MuteRequest {
+            zone,
+            mute: mute.unwrap_or(true),
         })
     })
+    .await
 }
 
 #[tool(
     description = "Move the room `zone` into the group that the room `to` plays in, so they play the same thing in sync. Both must be in the same household. Room names are case-insensitive; Room@S1 / Room@S2 picks a household.",
     annotations(idempotent)
 )]
-fn group(
+async fn group(
     _ctx: &McpContext,
     zone: String,
     to: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| b.control("group", |h| plan::plan_group(h, &GroupRequest { zone, to })))
+    with_backend_off_thread(move |b| b.group(&GroupRequest { zone, to })).await
 }
 
 #[tool(
     description = "Take a room out of its group so it plays on its own. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to break every group up (each group's leading room plays on).",
     annotations(idempotent)
 )]
-fn ungroup(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(|b| {
-        b.control_set("ungroup", |h| {
-            plan::plan_ungroup_set(h, &ZoneRequest { zone })
-        })
-    })
+async fn ungroup(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(move |b| b.ungroup(&ZoneRequest { zone })).await
 }
 
 #[tool(
@@ -957,7 +993,7 @@ async fn group_all(
     household: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let req = PartyRequest { zone, household };
-    with_backend_off_thread(move |b| b.control("group_all", |h| plan::plan_party(h, &req))).await
+    with_backend_off_thread(move |b| b.group_all(&req)).await
 }
 
 async fn dj(
@@ -1043,19 +1079,19 @@ async fn dj_steer(
     description = "What the DJ plays in the group a room plays in, and why: the song or work (with the movement, i of n, for a classical work), its artist or composer, performers, album, the reason it was chosen (a summary and the weighted factors), the next two works, and the steering in effect (from dj_steer, or the time-of-day program: mood, constraints, how long it lasts). `zone` is a room name.",
     annotations(read_only, idempotent)
 )]
-fn dj_status(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.dj_status(&zone))
+async fn dj_status(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(move |b| b.dj_status(&zone)).await
 }
 
 #[tool(
     description = "The DJ's moods (built-in and the owner's moods.toml) with their constraints, the time-of-day programs (which mood plays when a zone isn't steered), and the steering in effect now: in `zone`'s group when a room is given, else the house's program. Use a mood's name with dj_steer or dj_start.",
     annotations(read_only, idempotent)
 )]
-fn dj_moods(
+async fn dj_moods(
     _ctx: &McpContext,
     zone: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.dj_moods(zone.as_deref()))
+    with_backend_off_thread(move |b| b.dj_moods(zone.as_deref())).await
 }
 
 #[tool(
