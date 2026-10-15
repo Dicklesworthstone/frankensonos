@@ -1,0 +1,9 @@
+.source-player > div { display: grid; gap: .75rem; padding-top: .75rem; }
+.source-player label { display: grid; gap: .4rem; }
+.source-player input { font: inherit; padding: .6rem; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: .5rem; }
+.source-player input, .source-player select { width: 100%; min-width: 0; max-width: 100%; }
+.source-player p { margin: 0; overflow-wrap: anywhere; }
+.source-review { display: grid; gap: .6rem; border: 1px solid var(--line); border-radius: .5rem; padding: .75rem; }
+.source-review[hidden] { display: none; }
+.source-help { font-size: .9rem; color: var(--muted); }
+.source-player [role="status"]:empty { display: none; }

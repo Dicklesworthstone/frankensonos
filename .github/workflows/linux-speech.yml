@@ -8,6 +8,7 @@ on:
       - "scripts/test-remote-queue.cjs"
       - "scripts/test-remote-play-mode.cjs"
       - "scripts/test-remote-equalizer.cjs"
+      - "scripts/test-remote-source-player.cjs"
       - "scripts/test-remote-fades.cjs"
       - "scripts/test-remote-library.cjs"
       - "scripts/test-remote-library-browse.cjs"
@@ -66,6 +67,8 @@ jobs:
           sudo apt-get install --yes espeak-ng nodejs
       - name: Web queue client regressions
         run: node --test scripts/test-remote-queue.cjs scripts/test-remote-play-mode.cjs
+      - name: Web direct source playback regressions
+        run: node --test scripts/test-remote-source-player.cjs
       - name: Web speaker sound regressions
         run: node --test scripts/test-remote-equalizer.cjs scripts/test-remote-fades.cjs
       - name: Web library client regressions
