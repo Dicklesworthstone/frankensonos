@@ -20,9 +20,12 @@ house from the terminal, an HTTP API, or any AI agent that speaks MCP.
 > **Status: pre-release (before `0.1.0`).** Everything below is implemented,
 > and every feature is tested end to end against `fsonos-sim`, a virtual
 > Sonos house (an S1 and an S2 household speaking SOAP and GENA on loopback,
-> checked against scrubbed captures of real players). Live tests against real
-> players exist but are opt-in; there is no real-hardware CI yet, and
-> interfaces may still change before `0.1.0`.
+> checked against scrubbed captures of real players). The daemon also runs a
+> real two-household house, S1 and S2, where discovery, grouping, volume,
+> favorites, Spotify rendering and announcements have run on real players,
+> and `fsonos selftest` checks yours without changing anything you can hear.
+> There is no real-hardware CI yet, and interfaces may still change before
+> `0.1.0`.
 
 ---
 
@@ -108,6 +111,7 @@ fsonos undo                                       # put the newest action back
 fsonos serve                                      # the daemon: HTTP API on loopback + tailnet, MCP on loopback
 fsonos tailscale setup                            # HTTPS for the tailnet via Tailscale Serve (never Funnel)
 fsonos doctor                                     # what is wrong, and how to fix it
+fsonos selftest                                   # live checks on your players; nothing you can hear changes
 ```
 
 No speakers handy? Run `fsonos sim` in one terminal; it prints the `--seeds` and
@@ -378,7 +382,9 @@ and `fsonos dj sync` refreshes it on demand.
 
 Next:
 
-- Real-hardware CI, then `0.1.0` with prebuilt binaries.
+- Real-hardware CI (a nightly `fsonos selftest` against a real house), then
+  `0.1.0` with prebuilt binaries; CI already builds them for Apple Silicon and
+  x86_64 Linux on every push to `main`.
 
 ## Scope & privacy
 
@@ -392,13 +398,14 @@ learned at runtime and kept locally. The full boundary is in
 
 ## Limitations
 
-- It is pre-release: simulator-verified end to end, with opt-in live tests but
-  no real-hardware CI yet. Expect interfaces to change until `0.1.0`.
+- It is pre-release: simulator-verified end to end and run on one real
+  two-household house, with a live self-test (`fsonos selftest`) but no
+  real-hardware CI yet. Expect interfaces to change until `0.1.0`.
 - Sonos plays Spotify through its own music-service integration; the Spotify
   Web API is only used to read your library. Spotify must be linked once in
   each household's Sonos app, and the per-household render parameters are
-  learned from your own Sonos favorites. Rendering on legacy S1 players is
-  still being confirmed on real hardware.
+  learned from your own Sonos favorites. Rendering was verified on real S1 and
+  S2 players ([`docs/PROTOCOL.md`](docs/PROTOCOL.md) §4).
 - The DJ's taste comes from your liked tracks and saved albums, plus your top
   tracks, recent plays and own playlists, leaning toward the artists you follow
   and play most (read-only scopes you grant at sign-in; without them it uses
