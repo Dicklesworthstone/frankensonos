@@ -228,6 +228,105 @@ const SoundCopyRemote = (() => {
     };
   }
 
-  return { model, routes, inventory, observed, MAX_TARGETS, READ_CONCURRENCY };
+  function describe(tone) {
+    const signed = (v) => v > 0 ? `+${v}` : String(v);
+    return `bass ${signed(tone.bass)}, treble ${signed(tone.treble)}, loudness ${tone.loudness ? 'on' : 'off'}`;
+  }
+
+  function panel({ call, el, page = document, browser = window }) {
+    const body = el('div', { class: 'sound-copy-body' });
+    const details = el('details', { class: 'zone sound-copy' }, el('summary', { text: 'Copy speaker sound' }), body);
+    const node = el('section', { class: 'scenes', 'aria-label': 'Copy speaker sound' }, details);
+    const control = model({ call, changed: render });
+    const button = (label, action, disabled = false) => el('button', {
+      type: 'button', text: label, disabled, 'data-copy-focus': label, onclick: action,
+    });
+    function render(state) {
+      const focus = body.contains(page.activeElement) ? page.activeElement.getAttribute('data-copy-focus') : null;
+      const busy = state.reading || state.writing || !state.active;
+      body.replaceChildren(); body.setAttribute('aria-busy', String(state.reading || state.writing));
+      body.append(el('p', { text: 'Copy bass, treble and loudness from one speaker to only the destinations you select. Playback, grouping, volume and mute are not changed.' }),
+        button('Refresh copy rooms', () => { void control.refresh(); }, busy));
+      const source = el('select', { 'aria-label': 'Copy sound from', 'data-copy-focus': 'source', disabled: busy },
+        el('option', { value: '', text: 'Choose a source speaker…', disabled: true }));
+      for (const room of state.rooms) source.append(el('option', { value: room.target, text: room.label }));
+      source.value = state.source;
+      source.addEventListener('change', () => {
+        if (control.selectSource(source.value)) void control.readSource();
+      });
+      body.append(el('label', { class: 'sound-copy-source' }, 'Copy sound from', source),
+        button('Read source sound', () => { void control.readSource(); }, busy || !state.source));
+      body.append(el('p', { role: 'status', 'aria-live': 'polite', text: state.detail }));
+      if (state.sourceTone) body.append(el('p', { text: `${state.fresh ? 'Read from source' : 'Previous source reading; refresh before copying'}: ${describe(state.sourceTone)}.` }));
+      const destinations = el('fieldset', { class: 'sound-copy-targets', disabled: busy },
+        el('legend', { text: `Destination speakers (${state.targets.length} selected; maximum ${MAX_TARGETS})` }));
+      for (const room of state.rooms.filter((r) => r.target !== state.source)) {
+        const input = el('input', { type: 'checkbox', checked: state.targets.includes(room.target),
+          disabled: busy || !state.source, 'aria-label': `Copy to ${room.label}`,
+          'data-copy-focus': `target:${room.target}` });
+        input.addEventListener('change', () => {
+          // Restore the actual selection when the bounded model rejects a check.
+          if (!control.selectTarget(room.target, input.checked)) render(control.view());
+        });
+        destinations.append(el('label', {}, input, el('span', { text: room.label })));
+      }
+      body.append(destinations, button('Review sound copy', () => { void control.prepare(); }, !state.canPrepare));
+      if (state.review) {
+        const selected = state.review;
+        const rows = el('ul', { class: 'sound-copy-review-list' });
+        for (const entry of selected.entries) rows.append(el('li', {},
+          el('strong', { text: entry.room.label }),
+          el('p', { text: `Before: ${describe(entry.before)}.` }),
+          el('p', { text: Object.keys(entry.patch).length ? `After: ${describe(selected.tone)}.` : 'Already matches. No command will be sent unless a new review is made.' })));
+        body.append(el('section', { class: 'sound-copy-review', 'aria-label': 'Review sound copy' },
+          el('h3', { text: `Copy the observed sound of ${selected.from.label}` }),
+          el('p', { text: `${describe(selected.tone)}. The source is not written.` }), rows,
+          el('p', { text: 'This is not an atomic operation. Every destination is checked first, then changed and verified individually. A conflict or uncertain result stops remaining copies; completed changes stay in place.' }),
+          button(`Confirm copy to ${selected.entries.length} speakers`, () => { void control.confirm(selected); }, busy),
+          button('Cancel sound copy review', () => control.cancel(), busy)));
+      }
+      if (state.writing) body.append(button(state.stopping ? 'Stopping remaining copies…' : 'Stop remaining copies',
+        () => control.cancel(), state.stopping));
+      if (state.report) {
+        const rows = el('ol', { class: 'sound-copy-results' });
+        const labels = { pending: 'Not sent yet', sending: 'Sending', verified: 'Verified', unchanged: 'Already matched',
+          conflict: 'Conflicting change', accepted_unverified: 'Accepted, not verified', different: 'Different sound reported',
+          uncertain: 'Outcome uncertain', not_sent: 'Not sent', not_attempted: 'Not attempted' };
+        for (const result of state.report.rows) rows.append(el('li', { 'data-copy-status': result.status },
+          el('strong', { text: `${result.room.label}: ${labels[result.status] || result.status}` }),
+          el('p', { text: result.detail }), result.observed ? el('p', { text: `Observed: ${describe(result.observed)}.` }) : null));
+        body.append(el('section', { class: 'sound-copy-report', 'aria-label': 'Latest sound copy results' },
+          el('h3', { text: 'Latest sound copy results' }),
+          el('p', { text: `Source: ${state.report.from.label}; reviewed sound: ${describe(state.report.tone)}.` }), rows,
+          el('p', { text: 'Each changed speaker has its own action-history entry. Review that history for any available undo; one undo does not reverse the whole copy. Read source sound and make a new review before another attempt. Nothing is automatically retried.' })));
+      }
+      const restore = [...body.querySelectorAll('[data-copy-focus]')].find((entry) => entry.getAttribute('data-copy-focus') === focus);
+      if (restore && !restore.disabled) restore.focus({ preventScroll: true });
+    }
+    details.addEventListener('toggle', (event) => {
+      if (event.target !== details) return;
+      if (details.open) void control.refresh(); else control.close();
+    });
+    const visibility = () => { if (page.hidden) control.suspend(); else control.resume(); };
+    const hide = () => control.suspend(), show = () => { if (!page.hidden) control.resume(); };
+    page.addEventListener('visibilitychange', visibility);
+    browser.addEventListener('pagehide', hide);
+    browser.addEventListener('pageshow', show);
+    if (page.hidden) control.suspend();
+    render(control.view());
+    return { node, ...control, dispose() {
+      page.removeEventListener('visibilitychange', visibility);
+      browser.removeEventListener('pagehide', hide);
+      browser.removeEventListener('pageshow', show);
+      control.dispose();
+    } };
+  }
+
+  return { model, panel, routes, inventory, observed, MAX_TARGETS, READ_CONCURRENCY };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = SoundCopyRemote;
+else {
+  Object.assign(ROUTES, SoundCopyRemote.routes);
+  const host = document.getElementById('households');
+  if (host) host.before(SoundCopyRemote.panel({ call, el }).node);
+}

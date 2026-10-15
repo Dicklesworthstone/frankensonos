@@ -233,3 +233,162 @@ test('destination count and read concurrency are bounded', async () => {
   assert.ok(await f.model.prepare()); assert.equal(peak, Copy.READ_CONCURRENCY); assert.equal(running, 0);
   assert.equal(f.writes().length, 0);
 });
+
+// Exercise production controls and lifecycle listeners without extra dependencies.
+class Element {
+  constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.events = new Map(); this.ownText = ''; this.disabled = this.hidden = this.open = this.checked = false; }
+  setAttribute(k, v) { this.attrs[k] = String(v); if (['disabled', 'hidden', 'open', 'checked'].includes(k)) this[k] = true; if (k === 'value') this.value = String(v); }
+  getAttribute(k) { return this.attrs[k] ?? null; }
+  addEventListener(k, f) { if (!this.events.has(k)) this.events.set(k, new Set()); this.events.get(k).add(f); }
+  removeEventListener(k, f) { this.events.get(k)?.delete(f); }
+  event(k) { for (const f of this.events.get(k) || []) f({ target: this }); }
+  click() { if (!this.disabled) this.event('click'); }
+  append(...nodes) { this.children.push(...nodes); }
+  replaceChildren(...nodes) { this.children = [...nodes]; this.ownText = ''; }
+  set textContent(s) { this.ownText = String(s); this.children = []; }
+  get textContent() { return this.ownText + this.children.map((c) => typeof c === 'string' ? c : c.textContent).join(''); }
+  contains(node) { return all(this).includes(node); }
+  querySelectorAll(selector) { const key = /^\[(.+)\]$/.exec(selector)?.[1]; return all(this).filter((n) => key in n.attrs); }
+  focus() { this.focused = true; }
+}
+function el(tag, attrs = {}, ...children) {
+  const node = new Element(tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (value === null || value === undefined || value === false) continue;
+    if (key === 'text') node.textContent = value;
+    else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value === true ? '' : String(value));
+  }
+  node.append(...children.filter((c) => c != null)); return node;
+}
+function all(node) { return [node, ...node.children.filter((n) => typeof n !== 'string').flatMap(all)]; }
+function button(panel, label) { const n = all(panel.node).find((n) => n.tag === 'button' && n.textContent === label); assert.ok(n, label); return n; }
+function labelled(panel, label) { const n = all(panel.node).find((n) => n.attrs['aria-label'] === label); assert.ok(n, label); return n; }
+function panelFixture() {
+  const f = fixture(), page = new Element('document'), browser = new Element('window');
+  const panel = Copy.panel({ call: f.call, el, page, browser });
+  return { ...f, panel, page, browser,
+    async open() { const details = all(panel.node).find((n) => n.tag === 'details'); details.open = true; details.event('toggle'); await tick(); },
+    async source() { const input = labelled(panel, 'Copy sound from'); input.value = 'First@S2'; input.event('change'); await tick(); },
+    target(label, selected = true) { const input = labelled(panel, `Copy to ${label}`); input.checked = selected; input.event('change'); } };
+}
+test('the production panel is lazy, selection-only until review and explicit confirmation', async () => {
+  const f = panelFixture(); assert.equal(f.calls.length, 0); await f.open();
+  assert.equal(f.panel.view().source, ''); assert.deepEqual(f.panel.view().targets, []);
+  await f.source(); f.target('Second (S2)'); f.target('First (S1)');
+  assert.equal(f.writes().length, 0); button(f.panel, 'Review sound copy').click(); await tick();
+  assert.ok(f.panel.node.textContent.includes('Before: bass 0, treble 0, loudness on'));
+  assert.ok(f.panel.node.textContent.includes('After: bass +4, treble -2, loudness off'));
+  assert.equal(f.writes().length, 0); button(f.panel, 'Confirm copy to 2 speakers').click(); await tick();
+  assert.deepEqual(f.writes().map((c) => c.args.body.zone), ['Second@S2', 'First@S1']);
+  assert.deepEqual(f.tones.get('Third@S2'), flat);
+  assert.ok(f.panel.node.textContent.includes('Second (S2): Verified'));
+  assert.ok(f.panel.node.textContent.includes('one undo does not reverse the whole copy'));
+  f.panel.dispose();
+});
+test('a detached confirmation button cannot apply a replaced destination review', async () => {
+  const f = panelFixture(); await f.open(); await f.source(); f.target('Second (S2)');
+  button(f.panel, 'Review sound copy').click(); await tick();
+  const old = button(f.panel, 'Confirm copy to 1 speakers'); f.target('Third (S2)');
+  old.click(); await tick(); assert.equal(f.writes().length, 0);
+  button(f.panel, 'Review sound copy').click(); await tick();
+  button(f.panel, 'Cancel sound copy review').click(); old.click(); await tick();
+  assert.equal(f.writes().length, 0); assert.equal(f.panel.view().review, null);
+});
+test('the actual stop button preserves an in-flight outcome and leaves other rooms alone', async () => {
+  const f = panelFixture(); await f.open(); await f.source(); f.target('Second (S2)'); f.target('Third (S2)');
+  button(f.panel, 'Review sound copy').click(); await tick(); const gate = deferred();
+  f.hook(async (name, args, normal) => name === 'soundCopyWrite' ? gate.promise : normal(name, args));
+  button(f.panel, 'Confirm copy to 2 speakers').click(); await tick();
+  assert.equal(labelled(f.panel, 'Copy sound from').disabled, true);
+  button(f.panel, 'Stop remaining copies').click(); gate.reject(new Error('reply lost')); await tick();
+  assert.equal(f.writes().length, 1); assert.deepEqual(f.tones.get('Third@S2'), flat);
+  assert.ok(f.panel.node.textContent.includes('Second (S2): Outcome uncertain'));
+  assert.ok(f.panel.node.textContent.includes('Third (S2): Not attempted'));
+  assert.equal(button(f.panel, 'Review sound copy').disabled, true);
+});
+test('page lifecycle invalidates live reviews and does not resume commands or automatic reads', async () => {
+  const f = panelFixture(); await f.open(); await f.source(); f.target('Second (S2)');
+  button(f.panel, 'Review sound copy').click(); await tick(); const old = button(f.panel, 'Confirm copy to 1 speakers');
+  const count = f.calls.length;
+  f.page.hidden = true; f.page.event('visibilitychange');
+  assert.equal(labelled(f.panel, 'Copy sound from').disabled, true);
+  f.page.hidden = false; f.page.event('visibilitychange'); old.click(); await tick();
+  assert.equal(f.calls.length, count); assert.equal(f.writes().length, 0);
+  assert.equal(button(f.panel, 'Review sound copy').disabled, true);
+  button(f.panel, 'Read source sound').click(); await tick();
+  assert.equal(button(f.panel, 'Review sound copy').disabled, false);
+  f.panel.dispose();
+  assert.equal(f.page.events.get('visibilitychange').size, 0);
+  assert.equal(f.browser.events.get('pagehide').size, 0); assert.equal(f.browser.events.get('pageshow').size, 0);
+});
+test('room names render as text, not markup, in source options and destinations', async () => {
+  const f = panelFixture(); f.groups([{ household: 'S2', coordinator_room: 'First', members: ['First', '<img src=x onerror=bad()>'] }]);
+  await f.open(); assert.ok(f.panel.node.textContent.includes('<img src=x onerror=bad()>'));
+  assert.ok(!all(f.panel.node).some((n) => n.tag === 'img'));
+});
+
+for (const loseReply of [false, true]) {
+  test(`real HTTP copy: ${loseReply ? 'lost POST response stops later destinations' : 'qualified partial writes and read-back'}`, async (t) => {
+    const http = require('node:http'); const f = fixture(), requests = [];
+    const server = http.createServer(async (req, res) => {
+      try {
+        requests.push({ method: req.method, path: req.url });
+        let value;
+        if (req.method === 'POST') {
+          assert.equal(req.url, '/eq'); assert.equal(req.headers['content-type'], 'application/json');
+          let body = ''; for await (const part of req) body += part;
+          value = await f.call('soundCopyWrite', { body: JSON.parse(body) });
+          if (loseReply) { req.socket.destroy(); return; }
+        } else if (req.url === '/zones') value = await f.call('zones');
+        else {
+          const match = /^\/zones\/([^/]+)\/eq$/.exec(req.url); assert.ok(match);
+          value = await f.call('soundCopyRead', { params: { room: decodeURIComponent(match[1]) } });
+        }
+        res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value));
+      } catch (error) { res.statusCode = 500; res.end(JSON.stringify({ error: error.message })); }
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const model = Copy.model({ call: async (name, args = {}) => {
+      const [method, route] = name === 'zones' ? ['GET', '/zones'] : Copy.routes[name];
+      const path = route.replace('{room}', encodeURIComponent(args.params?.room));
+      const response = await fetch(origin + path, { method, signal: AbortSignal.timeout(2000),
+        headers: { 'content-type': 'application/json' }, ...(args.body ? { body: JSON.stringify(args.body) } : {}) });
+      assert.equal(response.status, 200); return response.json();
+    } });
+    // The first destination already shares treble: it must not enter the patch.
+    f.tones.get('Second@S2').treble = wanted.treble;
+    await model.refresh(); model.selectSource('First@S2'); await model.readSource();
+    model.selectTarget('Second@S2', true); model.selectTarget('Third@S2', true);
+    const plan = await model.prepare(); assert.equal(f.writes().length, 0);
+    assert.equal(await model.confirm(plan), !loseReply);
+    assert.deepEqual(f.writes()[0].args.body, { zone: 'Second@S2', bass: 4, loudness: false });
+    assert.equal(f.writes().length, loseReply ? 1 : 2);
+    assert.deepEqual(model.view().report.rows.map((r) => r.status), loseReply ? ['uncertain', 'not_attempted'] : ['verified', 'verified']);
+    assert.ok(requests.some((r) => r.path === '/zones/Second%40S2/eq'));
+    if (loseReply) {
+      assert.deepEqual(f.tones.get('Third@S2'), flat);
+      assert.equal(await model.confirm(plan), false); await model.readSource();
+      assert.equal(f.writes().length, 1);
+    }
+  });
+}
+
+test('the daemon embeds both copy assets, preserves the single-speaker editor, and checks asset privacy', () => {
+  const fs = require('node:fs'), path = require('node:path');
+  const root = path.join(__dirname, '../crates/fsonos-api/src');
+  const rust = fs.readFileSync(path.join(root, 'http/remote.rs'), 'utf8');
+  for (const [file, constant] of [['sound-copy.js', 'SOUND_COPY_SCRIPT'], ['sound-copy.css', 'SOUND_COPY_STYLE']]) {
+    assert.ok(rust.includes(`const ${constant}: &str = include_str!("../remote/${file}");`));
+    assert.ok(rust.includes(`\\n{${constant}}`)); assert.ok(rust.includes(`("${file}", ${constant})`));
+    const source = fs.readFileSync(path.join(root, 'remote', file), 'utf8').toLowerCase();
+    for (const secret of ['token', 'authorization', 'x-fsonos', 'tailscale-user', 'password', 'cookie', 'ts.net', 'http://', 'https://']) {
+      assert.equal(source.includes(secret), false, `${file}: ${secret}`);
+    }
+    assert.doesNotMatch(source, /innerhtml|outerhtml|insertadjacenthtml|\beval\(/);
+  }
+  assert.ok(rust.includes('../remote/equalizer.js'));
+  assert.ok(rust.includes('{EQ_SCRIPT}\\n{SOUND_COPY_SCRIPT}'));
+});

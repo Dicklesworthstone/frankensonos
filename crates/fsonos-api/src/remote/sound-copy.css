@@ -1,0 +1,14 @@
+.sound-copy > summary { cursor: pointer; font-weight: 600; }
+.sound-copy-body { display: grid; gap: .7rem; margin-top: .75rem; min-width: 0; }
+.sound-copy-body p { margin: 0; line-height: 1.45; overflow-wrap: anywhere; }
+.sound-copy-body button { justify-self: start; max-width: 100%; white-space: normal; }
+.sound-copy-source { display: grid; gap: .4rem; min-width: 0; }
+.sound-copy-source select { width: 100%; min-width: 0; }
+.sound-copy-targets { display: grid; gap: .45rem; min-width: 0; margin: 0; padding: .7rem; }
+.sound-copy-targets label { display: flex; align-items: start; gap: .6rem; padding: .3rem 0; overflow-wrap: anywhere; }
+.sound-copy-targets input { width: auto; flex-shrink: 0; margin-top: .2rem; }
+.sound-copy-review, .sound-copy-report { display: grid; gap: .6rem; min-width: 0; border-top: 1px solid var(--line, #666); padding-top: .7rem; }
+.sound-copy-body h3 { margin: 0; font-size: 1rem; overflow-wrap: anywhere; }
+.sound-copy-review-list, .sound-copy-results { padding-left: 1.4rem; margin: 0; display: grid; gap: .7rem; }
+.sound-copy-review-list li, .sound-copy-results li { padding-left: .2rem; overflow-wrap: anywhere; }
+.sound-copy-review-list p, .sound-copy-results p { font-size: .88rem; margin-top: .2rem; }
