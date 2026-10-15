@@ -24,6 +24,8 @@ const REMOTE: &str = "remote";
 
 const PAGE: &str = include_str!("../remote/index.html");
 const QUEUE_SCRIPT: &str = include_str!("../remote/queue.js");
+const PLAYBACK_SCRIPT: &str = include_str!("../remote/playback.js");
+const PLAYBACK_STYLE: &str = include_str!("../remote/playback.css");
 const SCRIPT: &str = include_str!("../remote/remote.js");
 const LIBRARY_SCRIPT: &str = include_str!("../remote/library.js");
 const LIBRARY_STYLE: &str = include_str!("../remote/library.css");
@@ -83,7 +85,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}"
+                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}"
                     ),
                 )
             },
@@ -100,7 +102,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}\n{PLAYBACK_STYLE}"
                     ),
                 )
             },
@@ -281,6 +283,8 @@ mod tests {
             ("index.html", PAGE),
             ("remote.js", SCRIPT),
             ("queue.js", QUEUE_SCRIPT),
+            ("playback.js", PLAYBACK_SCRIPT),
+            ("playback.css", PLAYBACK_STYLE),
             ("library.js", LIBRARY_SCRIPT),
             ("library.css", LIBRARY_STYLE),
             ("remote.css", STYLE),

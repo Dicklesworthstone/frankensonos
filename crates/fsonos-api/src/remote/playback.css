@@ -1,0 +1,5 @@
+.playback-clock { margin-block: .75rem; padding-block: .5rem; border-block: 1px solid currentColor; }
+.playback-time { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem; font-variant-numeric: tabular-nums; }
+.playback-clock progress { width: 100%; height: .65rem; margin-block: .4rem; }
+.playback-clock [hidden] { display: none; }
+.playback-detail { font-size: .85rem; margin-block: .35rem; }

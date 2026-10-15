@@ -242,6 +242,23 @@ const house = {
   catalogStatus: new Map(),
 };
 
+// Embedded card panels share the card's lifetime and ordered state reads.
+const cardPanels = [];
+function addCardPanel(parts, factory) {
+  const panel = factory(parts);
+  parts.panels.push(panel);
+  parts.panelHost.append(panel.node);
+  if (parts.lastState) panel.observe(parts.lastState);
+}
+function registerCardPanel(factory) {
+  cardPanels.push(factory);
+  for (const parts of house.cards.values()) addCardPanel(parts, factory);
+}
+function notifyCard(parts, method, ...args) {
+  if (method === 'stale') parts.lastState = null;
+  for (const panel of parts.panels || []) panel[method]?.(...args);
+}
+
 /** How to name `room` of `household` to the API. */
 function roomName(room, household) {
   return `${room}@${household}`;
@@ -289,7 +306,12 @@ async function readEach(items, read, current = () => true) {
 
 async function loadZones() {
   const version = ++house.readVersion;
-  const zones = checkedZones(await call('zones'));
+  let zones;
+  try { zones = checkedZones(await call('zones')); }
+  catch (error) {
+    if (version === house.readVersion) for (const parts of house.cards.values()) notifyCard(parts, 'stale');
+    throw error;
+  }
   if (version !== house.readVersion) return;
   house.zones = zones;
   render();
@@ -305,6 +327,7 @@ function disposeCard(parts) {
   parts.disposed = true;
   ++parts.readVersion;
   parts.queue.dispose();
+  notifyCard(parts, 'dispose');
   for (const entry of parts.sliders.values()) {
     clearTimeout(entry.timer);
     entry.timer = entry.pendingVolume = null;
@@ -365,6 +388,9 @@ function card(zone) {
     disposed: false,
     readVersion: 0,
     writing: false,
+    panels: [],
+    panelHost: el('div'),
+    lastState: null,
     art: el('img', { alt: '', hidden: true, width: 64, height: 64 }),
     title: el('div', { class: 'title', text: 'Nothing playing' }),
     by: el('div', { class: 'by' }),
@@ -433,11 +459,13 @@ function card(zone) {
     el('h3', { text: label }),
     el('div', { class: 'now' }, parts.art, el('div', { class: 'track' }, parts.title, parts.by, parts.state)),
     el('div', { class: 'row' }, parts.previous, parts.play, parts.next),
+    parts.panelHost,
     parts.favorite,
     volumes,
     parts.djRow,
     parts.djPlaying,
     parts.queue.node);
+  for (const factory of cardPanels) addCardPanel(parts, factory);
   return parts.node;
 }
 
@@ -588,8 +616,11 @@ async function refreshZone(zone) {
   } catch (error) {
     if (!current()) return;
     parts.state.textContent = 'State unavailable; last observation shown';
+    notifyCard(parts, 'stale');
     throw error;
   }
+  parts.lastState = state;
+  notifyCard(parts, 'observe', state);
   parts.zone.transport_state = state.transport_state;
   const playing = state.transport_state === 'playing';
   parts.play.textContent = playing ? 'Pause' : 'Play';
@@ -767,7 +798,7 @@ const LiveRemote = (() => {
   const MAX_BACKOFF = 60000;
   const MAX_PENDING = 64;
 
-  function model({ connect, reload, refresh, status = () => {},
+  function model({ connect, reload, refresh, status = () => {}, invalidate = () => {},
     schedule = setTimeout, cancel = clearTimeout }) {
     let active = false, disposed = false, connected = false, busy = false;
     let full = false, synced = false, failedRead = false, generation = 0;
@@ -799,6 +830,7 @@ const LiveRemote = (() => {
 
     function request(room = null) {
       if (!active) return;
+      invalidate(room);
       if (typeof room !== 'string' || !room.trim() || room.length > 512 || rooms.size >= MAX_PENDING) {
         full = true;
         rooms.clear();
@@ -863,6 +895,7 @@ const LiveRemote = (() => {
       feed.addEventListener('error', () => {
         if (!current()) return;
         connected = false;
+        invalidate();
         // Let a CONNECTING EventSource retain its own resume cursor. A CLOSED
         // one will never reconnect itself; replace it only at the retry pace.
         if (feed.readyState === 2) { feed.close(); stream = null; }
@@ -883,6 +916,7 @@ const LiveRemote = (() => {
     }
 
     function suspend() {
+      invalidate();
       active = false;
       ++generation;
       connected = synced = false;
@@ -1067,6 +1101,12 @@ function listen() {
       else for (const zone of zones) await refreshZone(zone);
     },
     status: (text) => { $('live').textContent = text; },
+    invalidate: (room) => {
+      const matches = typeof room === 'string' ? LiveRemote.affected(house.zones, room) : [];
+      for (const parts of house.cards.values()) {
+        if (!matches.length || parts.zone.members.includes(room)) notifyCard(parts, 'stale');
+      }
+    },
   });
   const suspend = () => { controller.suspend(); catalogs.suspend(); };
   const resume = () => { if (!document.hidden) { catalogs.resume(); controller.resume(); } };
