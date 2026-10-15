@@ -425,6 +425,7 @@ fn household(sw_gen: u8) -> Household {
     let track = |tag: &str, title: &str, by: &str| {
         let enc = format!("spotify%3atrack%3a{}", spotify_id(tag));
         Favorite {
+            id: 0,
             title: title.to_string(),
             uri: format!("x-sonos-spotify:{enc}{}", query(flags)),
             protocol_info: docs::protocol_info("x-sonos-spotify:"),
@@ -441,6 +442,7 @@ fn household(sw_gen: u8) -> Household {
     let container = |kind: &str, code: &str, tag: &str, title: &str, class: &str| {
         let enc = format!("{code}spotify%3a{kind}%3a{}", spotify_id(tag));
         Favorite {
+            id: 0,
             title: title.to_string(),
             uri: format!("x-rincon-cpcontainer:{enc}{}", query(8300)),
             protocol_info: docs::protocol_info("x-rincon-cpcontainer:"),
@@ -449,7 +451,7 @@ fn household(sw_gen: u8) -> Household {
             description: "Spotify".to_string(),
         }
     };
-    let favorites = vec![
+    let mut favorites = vec![
         track("TrackA", "Nocturne in E-flat", "Sim Pianist"),
         track("TrackB", "Aria", "Sim Harpsichordist"),
         container(
@@ -467,6 +469,7 @@ fn household(sw_gen: u8) -> Household {
             "object.container.playlistContainer",
         ),
         Favorite {
+            id: 0,
             title: "Sim Radio".to_string(),
             uri: "x-rincon-mp3radio://stream.example.invalid/sim.mp3".to_string(),
             protocol_info: docs::protocol_info("x-rincon-mp3radio:"),
@@ -480,6 +483,9 @@ fn household(sw_gen: u8) -> Household {
             description: "Custom Station".to_string(),
         },
     ];
+    for (id, favorite) in favorites.iter_mut().enumerate() {
+        favorite.id = id;
+    }
     Household {
         id: format!("SIM_HOUSEHOLD_S{sw_gen}"),
         sw_gen,

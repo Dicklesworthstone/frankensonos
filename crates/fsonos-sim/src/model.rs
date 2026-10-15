@@ -50,6 +50,10 @@ impl Args<'_> {
 /// A favorite in a household's `FV:2`.
 #[derive(Debug, Clone)]
 pub(crate) struct Favorite {
+    /// Its `FV:2/<id>`, kept when other favorites are removed: a real
+    /// player's ids are not positions (captures/soap/fav_s1.xml lists
+    /// `FV:2/3` first, at ordinal 0).
+    pub id: usize,
     pub title: String,
     pub uri: String,
     pub protocol_info: &'static str,
@@ -1996,6 +2000,36 @@ mod tests {
             (get(&out, "RampTime"), s.players[0].volume),
             ("10".into(), 10)
         );
+    }
+
+    #[test]
+    fn favorites_keep_their_ids_when_others_go() {
+        let mut s = state();
+        let household = s.players[0].household;
+        s.households[household]
+            .favorites
+            .retain(|f| f.uri.starts_with("x-rincon-cpcontainer:"));
+        let out = call(
+            &mut s,
+            0,
+            &CONTENT_DIRECTORY,
+            "Browse",
+            &[
+                ("ObjectID", "FV:2"),
+                ("BrowseFlag", "BrowseDirectChildren"),
+                ("Filter", "*"),
+                ("StartingIndex", "0"),
+                ("RequestedCount", "0"),
+                ("SortCriteria", ""),
+            ],
+        )
+        .unwrap();
+        let result = get(&out, "Result");
+        // The album and the playlist, still FV:2/2 and FV:2/3, now listed
+        // first and second.
+        assert!(result.contains("id=\"FV:2/2\"") && result.contains("id=\"FV:2/3\""));
+        assert!(!result.contains("id=\"FV:2/0\""), "{result}");
+        assert!(result.contains("<r:ordinal>0</r:ordinal>"), "{result}");
     }
 
     #[test]
