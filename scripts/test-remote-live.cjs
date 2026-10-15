@@ -179,6 +179,28 @@ test('partial refresh failures are repaired with a full read', async () => {
   assert.equal(h.labels.at(-1), 'Live');
 });
 
+test('one failed room refresh does not starve later rooms in the same live batch', async () => {
+  const rooms = [];
+  const h = harness({
+    refresh: async (room) => {
+      rooms.push(room);
+      if (room === 'A') throw new Error('A is unreachable');
+    },
+  });
+  await opened(h);
+  h.feeds[0].emit('zone.state', { room: 'A' });
+  h.feeds[0].emit('zone.state', { room: 'B' });
+  h.feeds[0].emit('zone.state', { room: 'C' });
+  await h.time.tick(300);
+  assert.deepEqual(rooms, ['A', 'B', 'C']);
+  assert.equal(h.labels.at(-1), 'State refresh failed; retrying…');
+  assert.deepEqual(h.time.delays, [20000]);
+
+  await h.time.tick(20300);
+  assert.deepEqual(h.reads, ['all', 'all']);
+  assert.equal(h.labels.at(-1), 'Live');
+});
+
 test('suspension closes the stream and stops timers; resumption reconciles anew', async () => {
   const h = harness(); await opened(h);
   h.feeds[0].emit('zone.state', { room: 'Den' }); h.controller.suspend();
