@@ -18,6 +18,7 @@ on:
       - "scripts/test-remote-dj-preferences.cjs"
       - "scripts/test-remote-dj-session.cjs"
       - "scripts/test-remote-schedules.cjs"
+      - "scripts/test-remote-scenes.cjs"
       - "scripts/test-remote-dj-steering.cjs"
       - "scripts/test-remote-history.cjs"
       - "vendor/**"
@@ -70,6 +71,8 @@ jobs:
         run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-remote-dj-steering.cjs scripts/test-remote-dj-session.cjs
       - name: Web scheduled routine regressions
         run: node --test scripts/test-remote-schedules.cjs
+      - name: Web scene regressions
+        run: node --test scripts/test-remote-scenes.cjs
       - name: Web action history regressions
         run: node --test scripts/test-remote-history.cjs
       - name: Install the pinned Rust toolchain

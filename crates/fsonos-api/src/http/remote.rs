@@ -33,6 +33,8 @@ const TIMERS_SCRIPT: &str = include_str!("../remote/timers.js");
 const TIMERS_STYLE: &str = include_str!("../remote/timers.css");
 const SCHEDULES_SCRIPT: &str = include_str!("../remote/schedules.js");
 const SCHEDULES_STYLE: &str = include_str!("../remote/schedules.css");
+const SCENES_SCRIPT: &str = include_str!("../remote/scenes.js");
+const SCENES_STYLE: &str = include_str!("../remote/scenes.css");
 const MODE_SCRIPT: &str = include_str!("../remote/play-mode.js");
 const MODE_STYLE: &str = include_str!("../remote/play-mode.css");
 const ANNOUNCEMENTS_SCRIPT: &str = include_str!("../remote/announcements.js");
@@ -81,7 +83,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}"
+                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}"
                     ),
                 )
             },
@@ -98,7 +100,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}"
                     ),
                 )
             },
@@ -288,6 +290,8 @@ mod tests {
             ("timers.css", TIMERS_STYLE),
             ("schedules.js", SCHEDULES_SCRIPT),
             ("schedules.css", SCHEDULES_STYLE),
+            ("scenes.js", SCENES_SCRIPT),
+            ("scenes.css", SCENES_STYLE),
             ("play-mode.js", MODE_SCRIPT),
             ("play-mode.css", MODE_STYLE),
             ("announcements.js", ANNOUNCEMENTS_SCRIPT),
