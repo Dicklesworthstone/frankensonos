@@ -1,0 +1,8 @@
+.library-sync { margin-top: .75rem; }
+.library-sync-panel { margin-top: .75rem; padding: 1rem; border: 1px solid var(--line); border-radius: .75rem; background: var(--card); }
+.library-sync-panel h2 { margin-top: 0; }
+.library-sync-panel p, .library-sync-panel li, .library-sync-panel time { overflow-wrap: anywhere; }
+.library-sync-counts { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .4rem 1rem; max-width: 32rem; }
+.library-sync-counts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.library-sync-warning { background: var(--warn-bg); color: var(--warn-text); padding: .75rem; border-radius: .5rem; }
+.library-sync-panel [hidden] { display: none; }
