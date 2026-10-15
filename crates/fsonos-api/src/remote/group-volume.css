@@ -1,0 +1,6 @@
+.group-volume { border-top: 1px solid var(--line); margin-top: .5rem; padding-top: .7rem; }
+.group-volume-level { display: flex; gap: .75rem; align-items: center; }
+.group-volume-level input { flex: 1; min-width: 0; }
+.group-volume-level output { font-variant-numeric: tabular-nums; font-size: .9rem; }
+.group-volume p { overflow-wrap: anywhere; margin: .5rem 0; font-size: .9rem; }
+.group-volume-help { color: var(--muted); }
