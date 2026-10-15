@@ -25,8 +25,8 @@ async function server(t, handler) {
 function reply(res, value, status = 200) {
   res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value));
 }
-function controller(t, base, lanes = new Map()) {
-  const p = Playback.model({ zone: z, lanes,
+function controller(t, base, lanes = new Map(), zone = z) {
+  const p = Playback.model({ zone, lanes,
     call: async (name, options) => {
       const [method, route] = name === 'state'
         ? ['GET', `/zones/${encodeURIComponent(options.params.room)}/state`] : ['POST', '/seek'];
@@ -39,7 +39,8 @@ function controller(t, base, lanes = new Map()) {
       if (!r.ok) throw Object.assign(new Error(data.detail || 'HTTP error'), { status: r.status, code: data.code });
       return data;
     } });
-  t.after(() => p.dispose()); p.observe(sample()); return p;
+  t.after(() => p.dispose());
+  const initial = sample(); initial.zone = clone(zone); p.observe(initial); return p;
 }
 
 const statePath = '/zones/A%20%26%20B%2F%3F%23%40S1/state';
@@ -168,4 +169,57 @@ test('production card registration shares its own seek map and preserves the exi
   assert.equal(options[0].lanes, options[1].lanes, 'all panels in the same remote share ownership');
   assert.ok(options[0].lanes);
   a.dispose(); b.dispose(); assert.equal(listeners.size, 0);
+});
+
+test('a lost HTTP acknowledgement cannot be bypassed by electing another coordinator', { timeout: 5000 }, async (t) => {
+  const original = { household: 'S2', coordinator_room: 'Alpha', members: ['Alpha', 'Beta'] };
+  const successor = { ...original, coordinator_room: 'Beta', members: ['Beta', 'Alpha'] };
+  const value = sample(); value.zone = original;
+  const arrived = deferred(), lanes = new Map(), calls = [];
+  const base = await server(t, (req, res) => {
+    calls.push([req.method, req.url]);
+    if (req.method === 'GET') { reply(res, value); return; }
+    let body = ''; req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      assert.deepEqual(JSON.parse(body), { zone: 'Alpha@S2', to_secs: 90 });
+      value.track.position_secs = 90; arrived.resolve(() => res.destroy());
+    });
+  });
+  const old = controller(t, base, lanes, original);
+  const pending = old.confirm(old.preview(90)), dropReply = await arrived.promise;
+  old.dispose(); value.zone = successor;
+  const current = controller(t, base, lanes, successor);
+  assert.equal(current.view().pending, true); assert.equal(current.preview(120), null);
+  assert.equal(await current.refresh(), false);
+  dropReply(); assert.equal(await pending, false);
+  current.observe(value); assert.equal(current.view().uncertain, true);
+  assert.equal(current.preview(150), null);
+  assert.equal(await current.refresh(), true); assert.equal(current.view().elapsed, 90);
+  assert.deepEqual(calls, [
+    ['GET', '/zones/Alpha%40S2/state'], ['POST', '/seek'], ['GET', '/zones/Beta%40S2/state'],
+  ]);
+});
+
+test('HTTP read-back of one split group cannot authorize writes to the other', { timeout: 5000 }, async (t) => {
+  const original = { household: 'S2', coordinator_room: 'Alpha', members: ['Alpha', 'Beta'] };
+  const alpha = { ...original, members: ['Alpha'] };
+  const beta = { ...original, coordinator_room: 'Beta', members: ['Beta'] };
+  const lanes = new Map(), calls = []; let split = false;
+  const base = await server(t, (req, res) => {
+    calls.push([req.method, req.url]);
+    if (req.method === 'POST') { req.resume(); res.destroy(); return; }
+    const value = sample(); value.track.position_secs = 90;
+    value.zone = split ? (req.url === '/zones/Beta%40S2/state' ? beta : alpha) : original;
+    reply(res, value);
+  });
+  const old = controller(t, base, lanes, original);
+  assert.equal(await old.confirm(old.preview(90)), false); old.dispose(); split = true;
+  const a = controller(t, base, lanes, alpha), b = controller(t, base, lanes, beta);
+  assert.equal(await a.refresh(), true); assert.equal(a.view().seekable, true);
+  assert.equal(b.view().uncertain, true); assert.equal(b.preview(150), null);
+  assert.equal(await b.refresh(), true); assert.equal(b.view().seekable, true);
+  assert.deepEqual(calls, [
+    ['GET', '/zones/Alpha%40S2/state'], ['POST', '/seek'],
+    ['GET', '/zones/Alpha%40S2/state'], ['GET', '/zones/Beta%40S2/state'],
+  ]);
 });

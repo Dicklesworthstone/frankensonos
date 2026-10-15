@@ -259,3 +259,145 @@ test('changing a track or losing state clears exact-time review guidance along w
   h.input.value = '2:30'; h.input.emit('input'); h.panel.stale();
   assert.equal(guidance.textContent, ''); assert.equal(h.input.value, '');
 });
+
+const grouped = (coordinator_room, members, household = 'S2') => ({ household, coordinator_room, members });
+
+test('coordinator re-election retains a pending seek and its lost acknowledgement', async (t) => {
+  const lanes = new Map(), wait = deferred();
+  const old = harness(t, { lanes, zone: grouped('Den', ['Den', 'Office']) });
+  old.handler = (route) => route === 'state' ? old.value : wait.promise;
+  const operation = old.api.confirm(old.api.preview(90)); await settle(); old.api.dispose();
+  const replacement = harness(t, { lanes, zone: grouped('Office', ['Office', 'Den']) });
+  assert.equal(replacement.api.view().pending, true);
+  assert.equal(replacement.api.preview(150), null);
+  assert.equal(await replacement.api.refresh(), false);
+  wait.reject(new Error('accepted seek lost its reply during re-election'));
+  assert.equal(await operation, false);
+  assert.equal(replacement.api.view().uncertain, true);
+  assert.match(replacement.api.view().result.detail, /re-election/);
+  assert.equal(await replacement.api.refresh(), true);
+  assert.equal(replacement.api.view().seekable, true);
+  assert.equal(writes(old).length, 1); assert.equal(writes(replacement).length, 0);
+});
+
+test('an absent coordinator cannot erase unresolved ownership of the remaining members', async (t) => {
+  const lanes = new Map();
+  const old = harness(t, { lanes, zone: grouped('Den', ['Den', 'Office', 'Hall']) });
+  old.handler = async (route) => { if (route === 'state') return old.value; throw new Error('reply lost'); };
+  await old.api.confirm(old.api.preview(90)); old.api.dispose();
+  const remaining = harness(t, { lanes, zone: grouped('Office', ['Hall', 'Office']) });
+  assert.equal(remaining.api.view().uncertain, true);
+  assert.equal(remaining.api.preview(150), null);
+  assert.equal(await remaining.api.refresh(), true); remaining.api.dispose();
+  // The absent room still needs an observation when it returns as a separate group.
+  const returned = harness(t, { lanes, zone: zone('S2', 'Den') });
+  assert.equal(returned.api.view().uncertain, true);
+  assert.equal(await returned.api.refresh(), true); returned.api.dispose();
+  assert.equal(lanes.size, 0);
+});
+
+test('a split keeps both groups blocked while their former group seek is pending', async (t) => {
+  const lanes = new Map(), wait = deferred();
+  const old = harness(t, { lanes, zone: grouped('Den', ['Den', 'Office']) });
+  old.handler = (route) => route === 'state' ? old.value : wait.promise;
+  const operation = old.api.confirm(old.api.preview(90)); await settle(); old.api.dispose();
+  const a = harness(t, { lanes, zone: zone('S2', 'Den') });
+  const b = harness(t, { lanes, zone: zone('S2', 'Office') });
+  for (const h of [a, b]) {
+    assert.equal(h.api.view().pending, true); assert.equal(h.api.preview(150), null);
+    assert.equal(await h.api.refresh(), false); assert.equal(h.calls.length, 0);
+  }
+  wait.resolve({ done: 'Seek accepted', changed: true }); await operation;
+  for (const h of [a, b]) {
+    assert.equal(h.api.view().pending, false); assert.equal(h.api.view().fresh, false);
+    assert.equal(h.api.view().result.status, 'accepted');
+    assert.equal(await h.api.refresh(), true);
+  }
+});
+
+test('observing one split group cannot clear uncertainty in its former sibling', async (t) => {
+  const lanes = new Map();
+  const old = harness(t, { lanes, zone: grouped('Den', ['Den', 'Office']) });
+  old.handler = async (route) => { if (route === 'state') return old.value; throw new Error('lost'); };
+  await old.api.confirm(old.api.preview(90)); old.api.dispose();
+  const a = harness(t, { lanes, zone: zone('S2', 'Den') });
+  const b = harness(t, { lanes, zone: zone('S2', 'Office') });
+  assert.equal(await a.api.refresh(), true);
+  assert.equal(a.api.view().seekable, true);
+  assert.equal(b.api.view().uncertain, true); assert.equal(b.api.preview(150), null);
+  b.api.observe(b.value); assert.equal(b.api.view().uncertain, true);
+  b.api.dispose(); const returned = harness(t, { lanes, zone: zone('S2', 'Office') });
+  assert.equal(returned.api.view().uncertain, true);
+  assert.equal(await returned.api.refresh(), true);
+  a.api.dispose(); returned.api.dispose(); assert.equal(lanes.size, 0);
+});
+
+test('merging independent groups retains both in-flight owners until each settles', async (t) => {
+  const lanes = new Map(), aw = deferred(), bw = deferred();
+  const a = harness(t, { lanes, zone: zone('S2', 'Den') });
+  const b = harness(t, { lanes, zone: zone('S2', 'Office') });
+  a.handler = (route) => route === 'state' ? a.value : aw.promise;
+  b.handler = (route) => route === 'state' ? b.value : bw.promise;
+  const ar = a.api.confirm(a.api.preview(90)), br = b.api.confirm(b.api.preview(120));
+  await settle(); a.api.dispose(); b.api.dispose();
+  const merged = harness(t, { lanes, zone: grouped('Den', ['Den', 'Office']) });
+  assert.equal(merged.api.view().pending, true);
+  aw.resolve({ done: 'First seek accepted', changed: true }); await ar;
+  assert.equal(merged.api.view().pending, true, 'the second member still has a pending command');
+  assert.equal(await merged.api.refresh(), false); assert.equal(merged.api.preview(150), null);
+  bw.reject(new Error('second acknowledgement lost')); await br;
+  assert.equal(merged.api.view().pending, false); assert.equal(merged.api.view().uncertain, true);
+  assert.match(merged.api.view().result.detail, /second acknowledgement lost/);
+  assert.equal(await merged.api.refresh(), true); assert.equal(merged.api.view().seekable, true);
+  assert.equal(writes(merged).length, 0);
+});
+
+test('a newly joined room inherits exclusion through an old member, not its new coordinator name', async (t) => {
+  const lanes = new Map(), wait = deferred();
+  const old = harness(t, { lanes, zone: grouped('Den', ['Den', 'Office']) });
+  old.handler = (route) => route === 'state' ? old.value : wait.promise;
+  const operation = old.api.confirm(old.api.preview(90)); await settle(); old.api.dispose();
+  const merged = harness(t, { lanes, zone: grouped('Hall', ['Hall', 'Office']) });
+  assert.equal(merged.api.view().pending, true); assert.equal(merged.api.preview(150), null);
+  wait.reject(new Error('lost')); await operation;
+  assert.equal(merged.api.view().uncertain, true); assert.equal(await merged.api.refresh(), true);
+});
+
+test('member-scoped recovery is isolated between households and unrelated groups', async (t) => {
+  const lanes = new Map(), wait = deferred();
+  const a = harness(t, { lanes, zone: grouped('Den', ['Den', 'Office'], 'S1') });
+  a.handler = (route) => route === 'state' ? a.value : wait.promise;
+  const operation = a.api.confirm(a.api.preview(90)); await settle();
+  const otherHouse = harness(t, { lanes, zone: grouped('Office', ['Office', 'Den'], 'S2') });
+  const otherGroup = harness(t, { lanes, zone: zone('S1', 'Hall') });
+  for (const h of [otherHouse, otherGroup]) {
+    assert.equal(h.api.view().pending, false);
+    assert.equal(await h.api.confirm(h.api.preview(150)), true);
+  }
+  wait.resolve({ done: 'Seek accepted', changed: true }); await operation;
+});
+
+test('an obsolete preflight releases every affected member without inventing uncertainty', async (t) => {
+  const lanes = new Map(), wait = deferred();
+  const old = harness(t, { lanes, zone: grouped('Den', ['Den', 'Office']) });
+  old.handler = () => wait.promise;
+  const operation = old.api.confirm(old.api.preview(90)); await settle(); old.api.dispose();
+  const next = harness(t, { lanes, zone: grouped('Office', ['Office', 'Den']) });
+  assert.equal(next.api.view().pending, true);
+  wait.resolve(old.value); assert.equal(await operation, false);
+  assert.equal(next.api.view().pending, false); assert.equal(next.api.view().uncertain, false);
+  assert.equal(writes(old).length, 0); assert.equal(await next.api.refresh(), true);
+});
+
+test('retiring a former coordinator twice leaves replacement members registered', async (t) => {
+  const lanes = new Map();
+  const old = harness(t, { lanes, zone: grouped('Den', ['Den', 'Office']) });
+  const next = harness(t, { lanes, zone: grouped('Office', ['Office', 'Den']) });
+  old.api.dispose(); old.api.dispose(); assert.equal(lanes.size, 2);
+  const wait = deferred(); next.handler = (route) => route === 'state' ? next.value : wait.promise;
+  const operation = next.api.confirm(next.api.preview(90)); await settle();
+  const sibling = harness(t, { lanes, zone: zone('S2', 'Den') });
+  assert.equal(sibling.api.view().pending, true);
+  wait.resolve({ done: 'Seek accepted', changed: true }); await operation;
+  next.api.dispose(); sibling.api.dispose(); assert.equal(lanes.size, 0);
+});

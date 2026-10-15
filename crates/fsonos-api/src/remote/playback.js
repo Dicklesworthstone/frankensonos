@@ -78,33 +78,51 @@ const PlaybackRemote = (() => {
     now = () => performance.now(), schedule = setTimeout, cancel = clearTimeout, lanes = new Map() }) {
     const group = shape(zone), name = `${zone.coordinator_room}@${zone.household}`;
     const owner = {};
-    const lane = lanes.get(name) || { owner: null, uncertain: false, result: null, listeners: new Set() };
-    lanes.set(name, lane);
+    // A coordinator can disappear or be replaced while its command is still
+    // in flight. Ownership follows the affected rooms, not a card or leader.
+    const members = zone.members.map((room) => {
+      const key = JSON.stringify([zone.household, room]);
+      const lane = lanes.get(key) || { owner: null, uncertain: false, result: null, listeners: new Set() };
+      lanes.set(key, lane);
+      return { key, lane };
+    });
+    const busy = () => members.some(({ lane }) => lane.owner);
+    const unresolved = () => members.some(({ lane }) => lane.uncertain);
+    const receipt = () => members.find(({ lane }) => lane.uncertain && lane.result)?.lane.result
+      ?? members.find(({ lane }) => lane.result)?.lane.result ?? null;
+    const updateMembers = (change) => { for (const { lane } of members) Object.assign(lane, change); };
     let sample = null, anchor = 0, frozen = null, fresh = false, active = true;
     let disposed = false, reading = false, serial = 0, timer = null;
     let message = 'Waiting for playback position.';
-    let review = null, pending = false, sent = false, uncertain = lane.uncertain, result = lane.result;
-    const forgetLane = () => { if (lanes.get(name) === lane && !lane.owner && !lane.uncertain && !lane.listeners.size) lanes.delete(name); };
+    let review = null, pending = false, sent = false, uncertain = unresolved(), result = receipt();
+    const forgetLane = () => {
+      for (const { key, lane } of members) {
+        if (lanes.get(key) === lane && !lane.owner && !lane.uncertain && !lane.listeners.size) lanes.delete(key);
+      }
+    };
     function laneChanged() {
-      uncertain = lane.uncertain;
-      if (lane.result) result = lane.result;
-      stale(lane.owner ? 'Another seek is pending in this group.'
+      uncertain = unresolved();
+      result = receipt();
+      stale(busy() ? 'Another seek is pending in this group.'
         : 'A seek in this group finished. Refresh position before choosing again.');
     }
-    lane.listeners.add(laneChanged);
-    const notifyLane = () => { for (const listener of lane.listeners) if (listener !== laneChanged) listener(); };
+    for (const { lane } of members) lane.listeners.add(laneChanged);
+    const notifyLane = () => {
+      const listeners = new Set(members.flatMap(({ lane }) => [...lane.listeners]));
+      for (const listener of listeners) if (listener !== laneChanged) listener();
+    };
     let epoch = 0, lifetime = 0;
     const live = () => !disposed && active && current();
     const stop = () => { if (timer !== null) cancel(timer); timer = null; };
     const at = () => fresh && live() ? position(sample, now() - anchor) : frozen;
     const writable = () => live() && fresh && !reading && !pending && !uncertain
-      && !lane.owner && !blocked() && canSeek(sample);
+      && !busy() && !blocked() && canSeek(sample);
     function view() {
       const elapsed = at(), duration = sample?.track?.duration ?? null;
       return Object.freeze({ elapsed, duration,
         remaining: duration !== null && elapsed !== null ? duration - elapsed : null,
         transport: sample?.transport ?? 'unknown', fresh: fresh && live(), reading,
-        seekable: writable(), review, pending: pending || !!lane.owner, uncertain, result,
+        seekable: writable(), review, pending: pending || busy(), uncertain, result,
         trackIdentity: sample?.identity ?? null,
         estimated: fresh && live() && elapsed !== null && sample?.transport === 'playing', message });
     }
@@ -139,7 +157,7 @@ const PlaybackRemote = (() => {
       catch (error) { stale(error.message); return false; }
     }
     async function refresh() {
-      if (!live() || reading || pending || lane.owner || blocked()) return false;
+      if (!live() || reading || pending || busy() || blocked()) return false;
       stale('Reading playback position…'); const version = serial;
       reading = true; emit();
       try {
@@ -148,7 +166,9 @@ const PlaybackRemote = (() => {
         // Only a successful explicit read clears an uncertain write. Passive
         // updates may display current timing but cannot silently allow a retry.
         decode(value, group);
-        uncertain = lane.uncertain = false; lane.result = null; notifyLane();
+        // A read of one split group clears only its current members. Sibling
+        // groups retain their own unresolved evidence until explicitly read.
+        uncertain = false; updateMembers({ uncertain: false, result: null }); notifyLane();
         reading = false; accept(value); return true;
       } catch (error) {
         if (live() && serial === version) stale(error.hint || error.message || 'Position could not be read.');
@@ -180,7 +200,7 @@ const PlaybackRemote = (() => {
       const valid = () => live() && version === epoch && life === lifetime;
       let entered = false, acknowledged = false;
       review = null; pending = true; result = null;
-      lane.owner = owner; lane.result = null; notifyLane(); emit();
+      updateMembers({ owner, result: null }); notifyLane(); emit();
       try {
         // The card's native action lane owns both preflight and dispatch, so
         // play/next/previous cannot interleave with a reviewed seek.
@@ -203,8 +223,9 @@ const PlaybackRemote = (() => {
             const outcome = await call('seek', { body: { zone: name, to_secs: selected.target } });
             if (!acknowledgement(outcome)) throw new Error('The seek reply is incomplete.');
             acknowledged = true;
-            lane.result = Object.freeze({ status: 'accepted', detail: outcome.done });
-            if (!disposed) result = lane.result;
+            const accepted = Object.freeze({ status: 'accepted', detail: outcome.done });
+            updateMembers({ result: accepted });
+            if (!disposed) result = accepted;
             if (live() && life === lifetime) {
               stale('Seek accepted; waiting for an observed playback position.');
             }
@@ -212,7 +233,7 @@ const PlaybackRemote = (() => {
           } catch (error) {
             // A sent write can finish even after closing this view. Retain its
             // uncertainty across hide/show without dispatching or replaying it.
-            if (sent) uncertain = lane.uncertain = true;
+            if (sent) { uncertain = true; updateMembers({ uncertain: true }); }
             const detail = sent
               ? 'Seek result uncertain. Refresh position before making another selection; the seek was not repeated.'
               : 'The seek was not sent. Refresh position and review it again.';
@@ -220,7 +241,7 @@ const PlaybackRemote = (() => {
             // a hidden view. Resuming must not show unexplained disabled controls.
             const failure = Object.freeze({ status: sent ? 'uncertain' : 'not_sent',
               detail: [detail, error?.hint || error?.message].filter(Boolean).join(' ') });
-            if (sent) lane.result = failure;
+            if (sent) updateMembers({ result: failure });
             if (!disposed && (sent || (live() && life === lifetime))) result = failure;
             if (live() && life === lifetime) stale(detail);
             throw error;
@@ -231,7 +252,7 @@ const PlaybackRemote = (() => {
       } catch (_) { /* The outcome above survives a card's error presenter. */ }
       finally {
         pending = false; sent = false;
-        if (lane.owner === owner) lane.owner = null;
+        for (const { lane } of members) if (lane.owner === owner) lane.owner = null;
         notifyLane(); forgetLane();
         if (live() && life === lifetime) {
           if (!entered) { review = null; message = 'Another control is busy. Choose the position again.'; }
@@ -250,7 +271,8 @@ const PlaybackRemote = (() => {
       dispose() {
         if (disposed) return;
         disposed = true; active = false; ++lifetime; ++epoch; ++serial; review = null; stop();
-        lane.listeners.delete(laneChanged); forgetLane();
+        for (const { lane } of members) lane.listeners.delete(laneChanged);
+        forgetLane();
       },
     };
   }
@@ -337,7 +359,7 @@ const PlaybackRemote = (() => {
 
 if (typeof module !== 'undefined' && module.exports) module.exports = PlaybackRemote;
 if (typeof registerCardPanel === 'function') {
-  // This remote retains pending seeks and unresolved results across card replacement.
+  // This remote retains pending seeks and unresolved results across group changes.
   const seekLanes = new Map();
   ROUTES.seek = ['POST', '/seek'];
   registerCardPanel((parts) => {
