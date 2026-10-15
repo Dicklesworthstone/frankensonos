@@ -10,6 +10,8 @@
 //! the DJ plays from what it found from its next pick. A start is logged.
 //! It is not undoable: the next sync reads the library afresh anyway.
 
+pub mod library;
+
 use std::fmt::Write as _;
 
 use fastapi::{JsonSchema, fastapi_openapi};
