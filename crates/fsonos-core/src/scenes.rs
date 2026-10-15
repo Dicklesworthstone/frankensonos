@@ -17,14 +17,17 @@
 //!    room whose sound starts with the scene fades in from silence.
 //!
 //! Rooms are named, so a scene survives regrouping and new addresses; a room
-//! that is gone (or renamed) is skipped with a note. Rooms in different
-//! households can never share a group (S1 and S2 are always separate), so
+//! that is gone (or renamed) is skipped with a note. Household-qualified
+//! names and player ids disambiguate duplicate names; ambiguity is an error,
+//! never a first-match choice. Captures retain every duplicate room. Rooms
+//! in different households can never share a group (S1 and S2 are always separate), so
 //! [`check`] rejects such a scene. A group's queue is not part of a scene:
 //! a group that played its queue keeps whatever it has
 //! ([`SceneSource::Keep`]). The DJ is started through [`SceneHooks`].
 
 use crate::fade::Fader;
 use crate::favorites::{self, Favorite};
+use crate::rooms::{named_room, normalize_room};
 use crate::snapshot::{self, SnapshotSource, ZoneSnapshot};
 use crate::store::{Store, StoreError, StoredScene};
 use crate::{CoreError, HouseholdState, Room, control};
@@ -34,6 +37,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
+
+mod targets;
+
+pub use targets::canonical_room_name;
 
 /// The longest scene name.
 pub const MAX_NAME: usize = 64;
@@ -234,17 +241,16 @@ impl Default for ApplyOptions<'_> {
     }
 }
 
-/// The room called `name` (ignoring case), and its household.
+/// A uniquely named room and its household. Planning first runs `check`,
+/// which propagates ambiguity; read-only zone enumeration never guesses.
 fn find_room<'a>(
     households: &'a [HouseholdState],
     name: &str,
 ) -> Option<(usize, &'a HouseholdState, &'a Room)> {
-    households.iter().enumerate().find_map(|(i, h)| {
-        h.rooms
-            .iter()
-            .find(|r| r.name.eq_ignore_ascii_case(name.trim()))
-            .map(|r| (i, h, r))
-    })
+    named_room(households, name)
+        .ok()
+        .flatten()
+        .map(|(i, room)| (i, &households[i], room))
 }
 
 /// Whether `room` leads the group it plays in.
@@ -267,18 +273,24 @@ pub fn check(scene: &Scene, households: &[HouseholdState]) -> Result<Vec<String>
     check_name(&scene.name)?;
     let mut notes = Vec::new();
     let mut seen: Vec<String> = Vec::new();
+    let mut players: Vec<(usize, PlayerId)> = Vec::new();
     for g in &scene.groups {
         let mut house = None;
         let mut rooms = Vec::new();
         for name in std::iter::once(&g.coordinator).chain(&g.members) {
-            let key = name.trim().to_lowercase();
+            let key = normalize_room(name);
             if seen.contains(&key) {
                 return Err(SceneError::RoomTwice(name.clone()));
             }
             seen.push(key);
-            match find_room(households, name) {
+            match named_room(households, name)? {
                 None => notes.push(format!("{name} is not in the house now; skipped")),
-                Some((i, _, r)) => {
+                Some((i, r)) => {
+                    let identity = (i, r.primary.clone());
+                    if players.contains(&identity) {
+                        return Err(SceneError::RoomTwice(name.clone()));
+                    }
+                    players.push(identity);
                     rooms.push(r.name.clone());
                     if *house.get_or_insert(i) != i {
                         return Err(SceneError::CrossHousehold { rooms });
@@ -289,7 +301,7 @@ pub fn check(scene: &Scene, households: &[HouseholdState]) -> Result<Vec<String>
     }
     for name in scene.volumes.keys().chain(scene.mutes.keys()) {
         let note = format!("{name} is not in the house now; skipped");
-        if find_room(households, name).is_none() && !notes.contains(&note) {
+        if named_room(households, name)?.is_none() && !notes.contains(&note) {
             notes.push(note);
         }
     }
@@ -742,7 +754,8 @@ pub fn capture<T: Transport + ?Sized>(
         mutes: BTreeMap::new(),
         writer: None,
     };
-    for household in households {
+    for (i, household) in households.iter().enumerate() {
+        let room_name = |room: &Room| targets::captured_name(households, i, room);
         // Favorites are only a nicer name for a URI: carry on without them.
         let favorites = household
             .groups
@@ -760,8 +773,9 @@ pub fn capture<T: Transport + ?Sized>(
             let snap = snapshot::capture(t, households, &group.coordinator, now)?;
             for level in &snap.levels {
                 if let Some(r) = household.rooms.iter().find(|r| r.primary == level.player) {
-                    scene.volumes.insert(r.name.clone(), level.volume);
-                    scene.mutes.insert(r.name.clone(), level.mute);
+                    let name = room_name(r)?;
+                    scene.volumes.insert(name.clone(), level.volume);
+                    scene.mutes.insert(name, level.mute);
                 }
             }
             let dj = djs.iter().find(|d| d.coordinator == group.coordinator);
@@ -787,18 +801,19 @@ pub fn capture<T: Transport + ?Sized>(
                 (None, _) => SceneSource::Keep,
             };
             scene.groups.push(SceneGroup {
-                coordinator: lead.name.clone(),
+                coordinator: room_name(lead)?,
                 members: household
                     .rooms
                     .iter()
                     .filter(|r| r.coordinator == group.coordinator && r.primary != lead.primary)
-                    .map(|r| r.name.clone())
-                    .collect(),
+                    .map(room_name)
+                    .collect::<Result<_, _>>()?,
                 source,
                 playing: Some(snap.transport_state == TransportState::Playing),
             });
         }
     }
+    check(&scene, households)?;
     Ok(scene)
 }
 

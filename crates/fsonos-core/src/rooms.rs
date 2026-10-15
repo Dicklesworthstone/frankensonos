@@ -292,6 +292,24 @@ pub fn resolve_targets<'a>(
     Err(unknown())
 }
 
+/// Resolve a complete room name, household-qualified name or player id,
+/// without requiring player addresses. Missing rooms return `None`;
+/// ambiguous names return the same error as interactive control.
+///
+/// Persistent definitions use this instead of prefix, alias or reserved-set
+/// expansion: a renamed or missing room must never silently become another.
+pub fn named_room<'a>(
+    households: &'a [HouseholdState],
+    query: &str,
+) -> Result<Option<(usize, &'a Room)>, CoreError> {
+    let labels = household_labels(households);
+    match direct_hits(households, &labels, query).as_slice() {
+        [] => Ok(None),
+        [(i, room)] => Ok(Some((*i, *room))),
+        many => Err(ambiguous(query, many, &labels)),
+    }
+}
+
 /// Steps 1–3 as one room: `Ok(None)` when nothing matched, an error when
 /// several rooms did.
 fn direct<'a>(
