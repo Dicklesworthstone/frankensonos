@@ -3,14 +3,19 @@
 //! [`EventSink`] that receives the players' NOTIFY callbacks (and can serve
 //! them announcement clips, see [`MediaFiles`]).
 //!
-//! One worker thread owns a current-thread asupersync runtime and runs each
-//! request to completion, in order. Callers are ordinary synchronous code (the
-//! protocol and core logic stay pure), and because they never run on the
-//! worker's thread they may call in from anywhere, including from inside
-//! another asupersync runtime such as the MCP server's, without nesting
-//! `block_on`. A household is a handful of players, so serial requests are
-//! plenty. A discovery is one request: its SSDP and mDNS searches listen
-//! side by side, so a survey waits once for both.
+//! Requests run on lanes: one per address a request goes to (each player),
+//! one for discovery and one for route lookups. Each lane is a worker thread
+//! that owns a current-thread asupersync runtime and runs its requests to
+//! completion, in order, so one player's requests keep their order while a
+//! player that doesn't answer (each request waits out its timeout) or a
+//! survey's listening window holds up only its own lane, never control of
+//! the other players. Lanes start on first use. Callers are ordinary
+//! synchronous code (the protocol and core logic stay pure), and because
+//! they never run on a lane's thread they may call in from anywhere,
+//! including from inside another asupersync runtime such as the MCP
+//! server's, without nesting `block_on`. A discovery is one request: its
+//! SSDP and mDNS searches listen side by side, so a survey waits once for
+//! both.
 
 use crate::gena::{self, Notify, Subscription};
 use crate::mdns;
@@ -25,9 +30,10 @@ use asupersync::net::UdpSocket;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use asupersync::server::shutdown::ShutdownSignal;
 use asupersync::time::{timeout, wall_now};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::task::Poll;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -38,11 +44,19 @@ pub const PLAYER_PORT: u16 = 1400;
 /// How long one request may take before it fails as [`ProtoError::Network`].
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A handle to the LAN worker. Cheap to share by reference; dropping it stops
-/// the worker after any request in flight.
+/// The most lanes a [`Lan`] runs; requests to further addresses share them.
+const MAX_LANES: usize = 64;
+
+/// The lane discovery runs on.
+const DISCOVERY: &str = "discovery";
+
+/// The lane route lookups run on.
+const ROUTE: &str = "route";
+
+/// A handle to the LAN workers. Cheap to share by reference; dropping it
+/// stops every lane after any request in flight.
 pub struct Lan {
-    jobs: Option<mpsc::Sender<Job>>,
-    worker: Option<JoinHandle<()>>,
+    lanes: Mutex<HashMap<String, Lane>>,
     timeout: Duration,
     routes: Vec<(IpAddr, SocketAddr)>,
     ssdp_target: SocketAddr,
@@ -85,6 +99,48 @@ enum Job {
     },
 }
 
+/// A worker thread and its queue of requests.
+struct Lane {
+    jobs: mpsc::Sender<Job>,
+    worker: JoinHandle<()>,
+}
+
+impl Lane {
+    fn start(name: &str) -> Result<Self, ProtoError> {
+        let (jobs, inbox) = mpsc::channel::<Job>();
+        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+        let worker = thread::Builder::new()
+            .name(format!("fsonos-lan {name}"))
+            .spawn(move || {
+                let runtime = match new_runtime() {
+                    Ok(rt) => {
+                        let _ = ready_tx.send(Ok(()));
+                        rt
+                    }
+                    Err(e) => {
+                        let _ = ready_tx.send(Err(e));
+                        return;
+                    }
+                };
+                for job in inbox {
+                    runtime.block_on(run(job));
+                }
+            })
+            .map_err(|e| network("LAN worker", e))?;
+        match ready_rx.recv() {
+            Ok(Ok(())) => Ok(Self { jobs, worker }),
+            Ok(Err(e)) => Err(network("asupersync runtime", e)),
+            Err(e) => Err(network("LAN worker", e)),
+        }
+    }
+}
+
+/// The lane for a request to `url`: its authority (`ip:port`).
+fn lane_of(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    &rest[..rest.find('/').unwrap_or(rest.len())]
+}
+
 struct Reply {
     status: u16,
     headers: Vec<(String, String)>,
@@ -115,42 +171,20 @@ impl Lan {
         Self::with_timeout(DEFAULT_TIMEOUT)
     }
 
-    /// Start the worker; every request fails after `timeout`.
+    /// Start the workers; every request fails after `timeout`. The
+    /// discovery lane starts now, so a runtime that can't start fails here;
+    /// the others start on first use.
     pub fn with_timeout(timeout: Duration) -> Result<Self, ProtoError> {
-        let (jobs, inbox) = mpsc::channel::<Job>();
-        let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
-        let worker = thread::Builder::new()
-            .name("fsonos-lan".into())
-            .spawn(move || {
-                let runtime = match new_runtime() {
-                    Ok(rt) => {
-                        let _ = ready_tx.send(Ok(()));
-                        rt
-                    }
-                    Err(e) => {
-                        let _ = ready_tx.send(Err(e));
-                        return;
-                    }
-                };
-                for job in inbox {
-                    runtime.block_on(run(job));
-                }
-            })
-            .map_err(|e| network("LAN worker", e))?;
-        match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Self {
-                jobs: Some(jobs),
-                worker: Some(worker),
-                timeout,
-                routes: Vec::new(),
-                ssdp_target: SocketAddr::from(([239, 255, 255, 250], 1900)),
-                ssdp_target_set: false,
-                mdns_target: mdns::MDNS_ADDR.parse().expect("literal group"),
-                mdns_target_set: false,
-            }),
-            Ok(Err(e)) => Err(network("asupersync runtime", e)),
-            Err(e) => Err(network("LAN worker", e)),
-        }
+        let discovery = Lane::start(DISCOVERY)?;
+        Ok(Self {
+            lanes: Mutex::new(HashMap::from([(DISCOVERY.to_owned(), discovery)])),
+            timeout,
+            routes: Vec::new(),
+            ssdp_target: SocketAddr::from(([239, 255, 255, 250], 1900)),
+            ssdp_target_set: false,
+            mdns_target: mdns::MDNS_ADDR.parse().expect("literal group"),
+            mdns_target_set: false,
+        })
     }
 
     /// Send traffic for these player addresses to other socket addresses
@@ -209,16 +243,40 @@ impl Lan {
         format!("http://{}{event_path}", self.endpoint(host))
     }
 
+    /// Run a job on lane `lane` (started if need be) and wait for its
+    /// answer. Past [`MAX_LANES`], a new address shares an existing lane.
     fn submit<T>(
         &self,
+        lane: &str,
         make: impl FnOnce(mpsc::Sender<Result<T, ProtoError>>) -> Job,
     ) -> Result<T, ProtoError> {
         let (reply, answer) = mpsc::channel();
-        self.jobs
-            .as_ref()
-            .ok_or_else(|| network("LAN worker", "stopped"))?
-            .send(make(reply))
-            .map_err(|e| network("LAN worker", e))?;
+        {
+            let mut lanes = self.lanes.lock().unwrap_or_else(PoisonError::into_inner);
+            let name = if lanes.contains_key(lane) || lanes.len() < MAX_LANES {
+                lane.to_owned()
+            } else {
+                // Never a survey's or the route lookups' lane.
+                let players: Vec<&String> = lanes
+                    .keys()
+                    .filter(|k| *k != DISCOVERY && *k != ROUTE)
+                    .collect();
+                let shared = lane.bytes().map(usize::from).sum::<usize>() % players.len();
+                players[shared].clone()
+            };
+            if !lanes.contains_key(&name) {
+                let started = Lane::start(&name)?;
+                lanes.insert(name.clone(), started);
+            }
+            let Some(lane) = lanes.get(&name) else {
+                return Err(network("LAN worker", "stopped"));
+            };
+            if let Err(e) = lane.jobs.send(make(reply)) {
+                // A lane whose worker died is started afresh next time.
+                lanes.remove(&name);
+                return Err(network("LAN worker", e));
+            }
+        }
         answer.recv().map_err(|e| network("LAN worker", e))?
     }
 
@@ -230,7 +288,8 @@ impl Lan {
         body: Vec<u8>,
     ) -> Result<Reply, ProtoError> {
         let timeout = self.timeout;
-        self.submit(|reply| Job::Http {
+        let lane = lane_of(&url).to_owned();
+        self.submit(&lane, |reply| Job::Http {
             method,
             url,
             headers,
@@ -244,7 +303,7 @@ impl Lan {
     /// give players as a GENA callback. Sends nothing.
     pub fn local_address_toward(&self, player: IpAddr) -> Result<IpAddr, ProtoError> {
         let toward = self.endpoint(player);
-        self.submit(|reply| Job::Route { toward, reply })
+        self.submit(ROUTE, |reply| Job::Route { toward, reply })
     }
 
     /// SUBSCRIBE to the events `event_path` on the player at `host` publishes,
@@ -344,9 +403,11 @@ impl Lan {
 
 impl Drop for Lan {
     fn drop(&mut self) {
-        // Closing the channel ends the worker's loop.
-        self.jobs.take();
-        if let Some(worker) = self.worker.take() {
+        let lanes = std::mem::take(self.lanes.get_mut().unwrap_or_else(PoisonError::into_inner));
+        // Close every queue first, ending each worker's loop after its
+        // request in flight, then wait for them all.
+        let workers: Vec<JoinHandle<()>> = lanes.into_values().map(|l| l.worker).collect();
+        for worker in workers {
             let _ = worker.join();
         }
     }
@@ -417,7 +478,7 @@ impl Transport for Lan {
             return Ok(Vec::new());
         }
         let target = self.ssdp_target;
-        self.submit(|reply| Job::Search {
+        self.submit(DISCOVERY, |reply| Job::Search {
             target,
             mx_secs,
             wait,
@@ -435,7 +496,7 @@ impl Transport for Lan {
             return Ok(Vec::new());
         }
         let target = self.mdns_target;
-        self.submit(|reply| Job::MdnsSearch {
+        self.submit(DISCOVERY, |reply| Job::MdnsSearch {
             target,
             wait,
             reply,
@@ -465,7 +526,7 @@ impl Transport for Lan {
             };
         }
         let (ssdp_target, mdns_target) = (self.ssdp_target, self.mdns_target);
-        self.submit(|reply| Job::Discover {
+        self.submit(DISCOVERY, |reply| Job::Discover {
             ssdp_target,
             mdns_target,
             mx_secs,
@@ -1161,6 +1222,66 @@ mod tests {
             lan.http_get(&format!("http://{addr}/x")),
             Err(ProtoError::Network { .. })
         ));
+    }
+
+    /// How long `lan.http_get` of a healthy player at `addr` takes while
+    /// `busy` (run first, on another thread) occupies the transport.
+    fn while_busy<R: Send>(
+        lan: &Lan,
+        addr: SocketAddr,
+        busy: impl FnOnce() -> R + Send,
+    ) -> (Duration, R) {
+        thread::scope(|s| {
+            let busy = s.spawn(busy);
+            // The busy request is in flight.
+            thread::sleep(Duration::from_millis(300));
+            let started = Instant::now();
+            let body = lan.http_get(&format!("http://{addr}/x")).expect("get");
+            let took = started.elapsed();
+            assert_eq!(body, "desc /x");
+            (took, busy.join().expect("busy thread"))
+        })
+    }
+
+    #[test]
+    fn a_player_that_never_answers_holds_up_only_its_own_requests() {
+        let (addr, stop) = serve(200);
+        // The kernel completes the connection; nothing ever answers it.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let dead = silent.local_addr().expect("addr");
+        let lan = Lan::with_timeout(Duration::from_secs(3)).expect("lan");
+        let (took, stuck) = while_busy(&lan, addr, || {
+            lan.http_get(&format!("http://{dead}/xml/device_description.xml"))
+        });
+        assert!(
+            took < Duration::from_secs(1),
+            "waited {took:?} behind a dead player"
+        );
+        assert!(
+            matches!(stuck, Err(ProtoError::Network { .. })),
+            "{stuck:?}"
+        );
+        drop(lan);
+        stop();
+    }
+
+    #[test]
+    fn a_survey_listening_does_not_hold_up_requests() {
+        let (addr, stop) = serve(200);
+        // An SSDP responder that never responds: the search listens for its
+        // whole window.
+        let quiet = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+        let lan = Lan::start()
+            .expect("lan")
+            .with_ssdp_target(quiet.local_addr().expect("addr"));
+        let (took, found) = while_busy(&lan, addr, || lan.ssdp_search(1, Duration::from_secs(3)));
+        assert!(
+            took < Duration::from_secs(1),
+            "waited {took:?} behind a survey"
+        );
+        assert!(found.expect("search").is_empty());
+        drop(lan);
+        stop();
     }
 
     #[test]
