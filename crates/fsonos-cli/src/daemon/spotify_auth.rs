@@ -53,11 +53,12 @@ struct PendingSignIn {
 impl PendingSignIn {
     fn idle(&self) -> Result<(), Failure> {
         if self.exchanging {
-            return Err(Failure::new(
-                ErrorCode::NotReady,
-                "a Spotify sign-in is being completed",
-            )
-            .with_hint("Check sign-in status before starting or completing another sign-in."));
+            return Err(
+                Failure::new(ErrorCode::NotReady, "a Spotify sign-in is being completed")
+                    .with_hint(
+                        "Check sign-in status before starting or completing another sign-in.",
+                    ),
+            );
         }
         Ok(())
     }
@@ -181,7 +182,9 @@ impl SpotifyAuth for SpotifySignIn {
         let (pending, mut completion) = self.claim()?;
         let redirect = redirect.to_owned();
         let result = self.with_session(async move |session, cx| {
-            session.complete_authorization(cx, &pending, &redirect).await
+            session
+                .complete_authorization(cx, &pending, &redirect)
+                .await
         });
         // A forged/stale redirect or failed worker leaves the same pending
         // flow in place. It cannot overwrite a newer sign-in: begin is

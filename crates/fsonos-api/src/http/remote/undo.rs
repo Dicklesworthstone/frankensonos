@@ -33,7 +33,9 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "Undo the reviewed action only if it is still the caller's newest eligible action",
             ),
             |s, c, req| {
-                answer(body::<CheckedUndoRequest>(req).and_then(|r| s.undo_checked(c, r.expected_id)))
+                answer(
+                    body::<CheckedUndoRequest>(req).and_then(|r| s.undo_checked(c, r.expected_id)),
+                )
             },
         )
         .request_schema::<CheckedUndoRequest>(true)
@@ -48,7 +50,8 @@ mod tests {
 
     #[test]
     fn checked_undo_requires_an_id_and_never_accepts_a_wider_scope() {
-        let request: CheckedUndoRequest = serde_json::from_value(json!({"expected_id": 7})).unwrap();
+        let request: CheckedUndoRequest =
+            serde_json::from_value(json!({"expected_id": 7})).unwrap();
         assert_eq!(request.expected_id, 7);
         for value in [
             json!({}),

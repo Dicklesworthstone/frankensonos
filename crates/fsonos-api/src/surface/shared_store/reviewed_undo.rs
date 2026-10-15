@@ -15,9 +15,10 @@ impl Surface {
     /// This is an observation, not a reservation or a grant of permission.
     pub fn preview_undo(&self, client: &Client) -> Result<Option<ActionDto>, Failure> {
         self.guard(client).authorize("recent_actions", true)?;
-        let log = self.log.as_ref().ok_or_else(|| {
-            Failure::new(ErrorCode::NotImplemented, "undo needs the action log")
-        })?;
+        let log = self
+            .log
+            .as_ref()
+            .ok_or_else(|| Failure::new(ErrorCode::NotImplemented, "undo needs the action log"))?;
         // Do not preview a target while another undo is still consuming it.
         let _undoing = log.undoing.lock().unwrap_or_else(PoisonError::into_inner);
         let selected = SharedStore(&log.store)
@@ -33,9 +34,10 @@ impl Surface {
         if expected_id <= 0 {
             return Err(Failure::invalid("expected_id must be a positive action id"));
         }
-        let log = self.log.as_ref().ok_or_else(|| {
-            Failure::new(ErrorCode::NotImplemented, "undo needs the action log")
-        })?;
+        let log = self
+            .log
+            .as_ref()
+            .ok_or_else(|| Failure::new(ErrorCode::NotImplemented, "undo needs the action log"))?;
         let guard = self.guard(client);
         if let Err(denied) = guard.authorize("undo_last", false) {
             let detail = denied.detail.clone();
@@ -60,7 +62,10 @@ impl Surface {
         // Match the legacy lock order. Store calls stay short: never hold its
         // mutex across network I/O, and keep DJ top-ups out during restore.
         let _undoing = log.undoing.lock().unwrap_or_else(PoisonError::into_inner);
-        let _restoring = log.restoring.write().unwrap_or_else(PoisonError::into_inner);
+        let _restoring = log
+            .restoring
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
         let report = actions::undo_last_vetted_checked(
             &*self.transport,
             &households,
@@ -128,16 +133,18 @@ mod tests {
 
     fn add(s: &Surface, client: &Client, at: i64) -> i64 {
         let mut store = SharedStore(&s.log.as_ref().unwrap().store);
-        store.record_action(&Action {
-            at,
-            client: client.key().into(),
-            surface: "test".into(),
-            intent: format!("synthetic action {at}"),
-            decision: "allow".into(),
-            result: "recorded".into(),
-            before_state: Some("[]".into()),
-            undo_of: None,
-        }).unwrap()
+        store
+            .record_action(&Action {
+                at,
+                client: client.key().into(),
+                surface: "test".into(),
+                intent: format!("synthetic action {at}"),
+                decision: "allow".into(),
+                result: "recorded".into(),
+                before_state: Some("[]".into()),
+                undo_of: None,
+            })
+            .unwrap()
     }
 
     fn undo_count(s: &Surface) -> usize {
@@ -162,7 +169,10 @@ mod tests {
         let failure = s.undo_checked(&Client::LoopbackHttp, other).unwrap_err();
         assert_eq!(failure.code, ErrorCode::InvalidArgument);
         assert_eq!(undo_count(&s), 0);
-        assert_eq!(s.undo_checked(&Client::LoopbackHttp, own).unwrap().undone, Some(own));
+        assert_eq!(
+            s.undo_checked(&Client::LoopbackHttp, own).unwrap().undone,
+            Some(own)
+        );
         assert_eq!(s.preview_undo(&Client::Cli).unwrap().unwrap().id, other);
     }
 
@@ -171,7 +181,10 @@ mod tests {
         let s = surface();
         let other = add(&s, &Client::McpStdio, 1);
         assert!(s.preview_undo(&Client::Cli).unwrap().is_none());
-        assert_eq!(s.undo_checked(&Client::Cli, other).unwrap_err().code, ErrorCode::InvalidArgument);
+        assert_eq!(
+            s.undo_checked(&Client::Cli, other).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
         assert_eq!(undo_count(&s), 0);
     }
 
@@ -193,14 +206,24 @@ mod tests {
     fn denied_and_invalid_requests_do_not_restore_anything() {
         let s = surface();
         let own = add(&s, &Client::Unknown, 1);
-        assert_eq!(s.undo_checked(&Client::Unknown, own).unwrap_err().code, ErrorCode::PolicyDenied);
+        assert_eq!(
+            s.undo_checked(&Client::Unknown, own).unwrap_err().code,
+            ErrorCode::PolicyDenied
+        );
         for id in [0, -1] {
-            assert_eq!(s.undo_checked(&Client::Cli, id).unwrap_err().code, ErrorCode::InvalidArgument);
+            assert_eq!(
+                s.undo_checked(&Client::Cli, id).unwrap_err().code,
+                ErrorCode::InvalidArgument
+            );
         }
         assert_eq!(undo_count(&s), 0);
         let rows = SharedStore(&s.log.as_ref().unwrap().store)
-            .recent_actions(&ActionFilter::default()).unwrap();
-        assert!(rows.iter().any(|row| row.action.decision.starts_with("deny:")));
+            .recent_actions(&ActionFilter::default())
+            .unwrap();
+        assert!(
+            rows.iter()
+                .any(|row| row.action.decision.starts_with("deny:"))
+        );
     }
 
     #[test]
@@ -208,14 +231,16 @@ mod tests {
         let s = Arc::new(surface());
         let own = add(&s, &Client::Cli, 1);
         let barrier = Arc::new(Barrier::new(3));
-        let workers: Vec<_> = (0..2).map(|_| {
-            let s = Arc::clone(&s);
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
-                barrier.wait();
-                s.undo_checked(&Client::Cli, own)
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let s = Arc::clone(&s);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    s.undo_checked(&Client::Cli, own)
+                })
             })
-        }).collect();
+            .collect();
         barrier.wait();
         let results: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
         assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);

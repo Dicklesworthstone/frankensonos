@@ -51,7 +51,13 @@ fn a_missing_or_ineligible_target_is_refused_without_a_log_write() {
     let id = add(&mut store, &Client::Cli, 1, None);
     assert!(matches!(checked(&mut store, id),
         Err(CheckedUndoError::TargetChanged { expected, actual: None }) if expected == id));
-    assert_eq!(store.recent_actions(&ActionFilter::default()).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .recent_actions(&ActionFilter::default())
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -62,8 +68,17 @@ fn a_newer_action_is_not_silently_substituted_for_the_reviewed_one() {
     let newer = add(&mut store, &Client::Cli, 2, Some("broken"));
     assert!(matches!(checked(&mut store, first),
         Err(CheckedUndoError::TargetChanged { actual: Some(id), .. }) if id == newer));
-    assert_eq!(store.recent_actions(&ActionFilter::default()).unwrap().len(), 2);
-    assert_eq!(store.last_undoable_action(Some("cli")).unwrap().unwrap().id, newer);
+    assert_eq!(
+        store
+            .recent_actions(&ActionFilter::default())
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        store.last_undoable_action(Some("cli")).unwrap().unwrap().id,
+        newer
+    );
 }
 
 #[test]
@@ -91,7 +106,8 @@ fn a_repeated_confirmation_cannot_step_back_to_an_older_action() {
     assert_eq!(log.iter().filter(|r| r.action.undo_of.is_some()).count(), 1);
     // Legacy undo still uses the identical restore implementation.
     let report = undo_last(&NoLan, &[], &mut store, None, &Client::Cli, "test", 101)
-        .unwrap().unwrap();
+        .unwrap()
+        .unwrap();
     assert_eq!(report.undone, older);
 }
 
@@ -99,6 +115,9 @@ fn a_repeated_confirmation_cannot_step_back_to_an_older_action() {
 fn an_unreadable_selected_snapshot_is_a_core_failure_not_a_stale_review() {
     let mut store = MemStore::default();
     let id = add(&mut store, &Client::Cli, 1, Some("broken"));
-    assert!(matches!(checked(&mut store, id), Err(CheckedUndoError::Core(_))));
+    assert!(matches!(
+        checked(&mut store, id),
+        Err(CheckedUndoError::Core(_))
+    ));
     assert_eq!(store.last_undoable_action(None).unwrap().unwrap().id, id);
 }

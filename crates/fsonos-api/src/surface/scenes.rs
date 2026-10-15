@@ -151,9 +151,8 @@ impl SceneDefinition {
     /// them, or why it can't be one (a room not in the house, a source that
     /// can't play, two households in one group).
     fn scene(&self, name: &str, households: &[HouseholdState]) -> Result<Scene, Failure> {
-        let room = |asked: &str| {
-            scenes::canonical_room_name(households, asked).map_err(Failure::from)
-        };
+        let room =
+            |asked: &str| scenes::canonical_room_name(households, asked).map_err(Failure::from);
         let mut groups = Vec::with_capacity(self.groups.len());
         for g in &self.groups {
             let source = g
@@ -404,7 +403,11 @@ fn describe(households: &[HouseholdState], op: &SceneOp) -> String {
         } => format!("{} joins {}", room(player), room(coordinator)),
         SceneOp::Volume { player, level, .. } => format!("{} volume {level}", room(player)),
         SceneOp::Mute { player, mute, .. } => {
-            format!("{} {}", room(player), if *mute { "muted" } else { "unmuted" })
+            format!(
+                "{} {}",
+                room(player),
+                if *mute { "muted" } else { "unmuted" }
+            )
         }
         SceneOp::Favorite { coordinator, name } => {
             format!("{} plays the favorite {name}", room(coordinator))

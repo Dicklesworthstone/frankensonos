@@ -104,7 +104,9 @@ pub(super) fn survey(engine: &Engine, model: &mut Model) -> Vec<LiveEvent> {
                 }
             }
             Ok(None) => break,
-            Err(error) => tracing::debug!(%error, "playback read-back failed; retaining live state"),
+            Err(error) => {
+                tracing::debug!(%error, "playback read-back failed; retaining live state")
+            }
         }
     }
     events

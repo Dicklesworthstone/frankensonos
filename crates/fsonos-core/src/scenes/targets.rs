@@ -35,7 +35,8 @@ pub(super) fn captured_name(
         .iter()
         .flat_map(|h| &h.rooms)
         .filter(|r| normalize_room(&r.name) == normalized)
-        .count() == 1;
+        .count()
+        == 1;
     if unique && refers_to(households, &room.name, i, room) {
         return Ok(room.name.clone());
     }
@@ -150,10 +151,7 @@ mod tests {
     fn scene() -> Scene {
         Scene {
             name: "Both houses".into(),
-            groups: vec![
-                group("Kitchen@S1", "Den@S1"),
-                group("Kitchen@S2", "Den@S2"),
-            ],
+            groups: vec![group("Kitchen@S1", "Den@S1"), group("Kitchen@S2", "Den@S2")],
             volumes: [("Kitchen@S1".into(), 11), ("Kitchen@S2".into(), 22)].into(),
             mutes: [("Den@S1".into(), true), ("Den@S2".into(), false)].into(),
             writer: None,
@@ -275,7 +273,11 @@ mod tests {
 
     #[test]
     fn canonical_names_keep_explicit_household_scope_and_fold_apostrophes() {
-        let h = vec![household("HH_ONE", Generation::S2, &[("ONE", "Ada’s Studio")])];
+        let h = vec![household(
+            "HH_ONE",
+            Generation::S2,
+            &[("ONE", "Ada’s Studio")],
+        )];
         assert_eq!(
             canonical_room_name(&h, " ada's studio ").unwrap(),
             "Ada’s Studio"
@@ -284,8 +286,14 @@ mod tests {
             canonical_room_name(&h, "ada's studio@s2").unwrap(),
             "Ada’s Studio@HH_ONE"
         );
-        assert_eq!(canonical_room_name(&h, "ONE").unwrap(), "Ada’s Studio@HH_ONE");
-        assert_eq!(captured_name(&h, 0, &h[0].rooms[0]).unwrap(), "Ada’s Studio");
+        assert_eq!(
+            canonical_room_name(&h, "ONE").unwrap(),
+            "Ada’s Studio@HH_ONE"
+        );
+        assert_eq!(
+            captured_name(&h, 0, &h[0].rooms[0]).unwrap(),
+            "Ada’s Studio"
+        );
     }
 
     #[test]

@@ -137,14 +137,16 @@ impl Transport for Recorder {
             .borrow_mut()
             .push((host, action.clone(), body.into()));
         let out = match action.as_str() {
-            "AddURIToQueue" => {
-                "<FirstTrackNumberEnqueued>1</FirstTrackNumberEnqueued>\
+            "AddURIToQueue" => "<FirstTrackNumberEnqueued>1</FirstTrackNumberEnqueued>\
                  <NumTracksAdded>1</NumTracksAdded>"
-                    .to_string()
-            }
+                .to_string(),
             "Browse" => {
                 assert!(body.contains("<ObjectID>Q:0</ObjectID>"));
-                let added = self.0.borrow().iter().any(|(_, name, _)| name == "AddURIToQueue");
+                let added = self
+                    .0
+                    .borrow()
+                    .iter()
+                    .any(|(_, name, _)| name == "AddURIToQueue");
                 let (didl, count) = if added {
                     (
                         "<DIDL-Lite><item id=\"Q:0/1\">\

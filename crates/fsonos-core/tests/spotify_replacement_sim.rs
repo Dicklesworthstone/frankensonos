@@ -55,8 +55,7 @@ impl Transport for Replies {
             self.writes.borrow_mut().push(name.to_string());
         }
         if (name == "AddURIToQueue" && matches!(self.fault, Fault::RefusedAdd))
-            || (name == "RemoveTrackRangeFromQueue"
-                && matches!(self.fault, Fault::RefusedRemoval))
+            || (name == "RemoveTrackRangeFromQueue" && matches!(self.fault, Fault::RefusedRemoval))
         {
             return Err(ProtoError::SoapFault {
                 code: 800,
@@ -74,8 +73,7 @@ impl Transport for Replies {
         }
         let response = self.inner.soap_post(host, path, action, body)?;
         if (name == "AddURIToQueue" && matches!(self.fault, Fault::LostAdd))
-            || (name == "RemoveTrackRangeFromQueue"
-                && matches!(self.fault, Fault::LostRemoval))
+            || (name == "RemoveTrackRangeFromQueue" && matches!(self.fault, Fault::LostRemoval))
         {
             return Err(lost());
         }
@@ -215,7 +213,11 @@ fn post_commit_start_uncertainty_does_not_request_address_healing_or_reenqueue()
         assert!(matches!(error, CoreError::Proto(ProtoError::Malformed(_))));
         assert_eq!(
             *replies.writes.borrow(),
-            ["AddURIToQueue", "RemoveTrackRangeFromQueue", "SetAVTransportURI"]
+            [
+                "AddURIToQueue",
+                "RemoveTrackRangeFromQueue",
+                "SetAVTransportURI"
+            ]
         );
         assert!(queue(&sim, host).iter().all(|item| item != OLD));
     }

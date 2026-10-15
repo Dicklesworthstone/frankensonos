@@ -128,7 +128,10 @@ fn a_written_scene_controls_duplicate_named_rooms_and_each_households_source() {
     let applied = s.apply_scene(&Client::Cli, "Both").unwrap();
     assert!(applied.complete && applied.changed, "{applied:?}");
     assert_eq!(joined(&sim), [true, true]);
-    assert_eq!(levels(&sim), [(11, false), (12, true), (31, false), (32, false)]);
+    assert_eq!(
+        levels(&sim),
+        [(11, false), (12, true), (31, false), (32, false)]
+    );
     let households = house(&sim);
     for (zone, uri) in [("Kitchen@S1", OLD_STREAM), ("Kitchen@S2", NEW_STREAM)] {
         let target = resolve_room(&households, zone).unwrap();
@@ -136,9 +139,13 @@ fn a_written_scene_controls_duplicate_named_rooms_and_each_households_source() {
         assert_eq!(playing.transport.state, TransportState::Playing);
         assert_eq!(playing.position.uri, uri);
     }
-    assert!(applied.steps.iter().filter(|step| step.contains(" joins ")).all(|step| {
-        step.contains("Office@") && step.contains("Kitchen@")
-    }));
+    assert!(
+        applied
+            .steps
+            .iter()
+            .filter(|step| step.contains(" joins "))
+            .all(|step| { step.contains("Office@") && step.contains("Kitchen@") })
+    );
     let again = s.apply_scene(&Client::Cli, "Both").unwrap();
     assert!(!again.changed && again.steps.is_empty(), "{again:?}");
 }
@@ -207,8 +214,11 @@ fn each_favorite_is_resolved_in_its_selected_household_before_the_scene_is_saved
 
     // S1 still has the favorite; S2 must not borrow that account or save an
     // unchecked favorite merely because its canonical room is qualified.
-    sim.retain_favorites(2, |uri| !uri.contains("TrackB")).unwrap();
-    let missing = s.save_scene_from(&Client::Cli, "Missing", &def).unwrap_err();
+    sim.retain_favorites(2, |uri| !uri.contains("TrackB"))
+        .unwrap();
+    let missing = s
+        .save_scene_from(&Client::Cli, "Missing", &def)
+        .unwrap_err();
     assert_eq!(missing.code, ErrorCode::UnknownFavorite);
     assert!(s.scene(&Client::Cli, "Missing").is_err());
 }
@@ -220,7 +230,10 @@ fn ambiguous_or_cross_household_definitions_never_save_or_mutate_a_speaker() {
     let before = levels(&sim);
     let at = sim.soap_log().len();
     for (value, expected) in [
-        (json!({"groups": [{"coordinator": "Kitchen"}]}), ErrorCode::AmbiguousRoom),
+        (
+            json!({"groups": [{"coordinator": "Kitchen"}]}),
+            ErrorCode::AmbiguousRoom,
+        ),
         (
             json!({"groups": [{"coordinator": "Kitchen@S1", "members": ["Office"]}]}),
             ErrorCode::AmbiguousRoom,
@@ -231,15 +244,22 @@ fn ambiguous_or_cross_household_definitions_never_save_or_mutate_a_speaker() {
             json!({"groups": [{"coordinator": "Kitchen@S1", "members": ["Office@S2"]}]}),
             ErrorCode::CrossHouseholdGroup,
         ),
-        (json!({"groups": [{"coordinator": "Kit@S1"}]}), ErrorCode::UnknownRoom),
+        (
+            json!({"groups": [{"coordinator": "Kit@S1"}]}),
+            ErrorCode::UnknownRoom,
+        ),
     ] {
-        let err = s.save_scene_from(&Client::Cli, "Refused", &definition(value)).unwrap_err();
+        let err = s
+            .save_scene_from(&Client::Cli, "Refused", &definition(value))
+            .unwrap_err();
         assert_eq!(err.code, expected, "{err:?}");
         assert!(s.scene(&Client::Cli, "Refused").is_err());
     }
-    assert!(sim.soap_log()[at..].iter().all(|entry| {
-        entry.action.starts_with("Get") || entry.action == "Browse"
-    }));
+    assert!(
+        sim.soap_log()[at..]
+            .iter()
+            .all(|entry| { entry.action.starts_with("Get") || entry.action == "Browse" })
+    );
     assert_eq!(levels(&sim), before);
 }
 
@@ -256,7 +276,9 @@ fn duplicate_physical_settings_are_rejected_even_when_the_keys_differ() {
             json!({"volumes": {"Kitchen@S1": 10, (alias): 20}}),
             json!({"mutes": {"Kitchen@S1": true, (alias): false}}),
         ] {
-            let err = s.save_scene_from(&Client::Cli, "Collision", &definition(value)).unwrap_err();
+            let err = s
+                .save_scene_from(&Client::Cli, "Collision", &definition(value))
+                .unwrap_err();
             assert_eq!(err.code, ErrorCode::InvalidArgument, "{err:?}");
         }
     }
@@ -270,7 +292,8 @@ fn an_ambiguous_legacy_scene_is_rejected_before_snapshot_reads() {
     let legacy: Scene = serde_json::from_value(json!({
         "name": "Legacy", "groups": [{"coordinator": "Kitchen", "playing": true}],
         "volumes": {"Office@S2": 90}
-    })).unwrap();
+    }))
+    .unwrap();
     scenes::save(&mut store, &legacy, 0).unwrap();
     let s = surface(&sim, store);
     let err = s.apply_scene(&Client::Cli, "Legacy").unwrap_err();
@@ -297,7 +320,12 @@ fn a_qualified_volume_scene_is_still_bounded_by_its_writers_policy() {
     let got = levels(&sim);
     assert_eq!(got[0].0, 20, "S1 Kitchen is untouched");
     assert!(got[2].0 > 40 && got[2].0 <= 70, "{got:?}");
-    assert!(applied.notes.iter().any(|n| n.code == NoteCode::VolumeClamped));
+    assert!(
+        applied
+            .notes
+            .iter()
+            .any(|n| n.code == NoteCode::VolumeClamped)
+    );
 }
 
 #[test]
@@ -328,7 +356,8 @@ fn a_player_id_scene_keeps_its_room_when_the_house_has_duplicate_names() {
 fn the_persisted_scheduler_applies_a_qualified_scene_once() {
     let sim = sim();
     let s = Arc::new(surface(&sim, MemStore::default()));
-    s.save_scene_from(&Client::Cli, "Scheduled", &both()).unwrap();
+    s.save_scene_from(&Client::Cli, "Scheduled", &both())
+        .unwrap();
     let schedule = s
         .add_schedule(
             &Client::Cli,
@@ -344,10 +373,22 @@ fn the_persisted_scheduler_applies_a_qualified_scene_once() {
         .unwrap()
         .to_utc();
     let scheduler = Scheduler::new(&s);
-    assert_eq!(scheduler.tick_at(at, &Utc), [Ran::Fired { id: schedule.id, at }]);
-    assert!(scheduler.wait(Duration::from_secs(20)), "scheduled scene did not finish");
+    assert_eq!(
+        scheduler.tick_at(at, &Utc),
+        [Ran::Fired {
+            id: schedule.id,
+            at
+        }]
+    );
+    assert!(
+        scheduler.wait(Duration::from_secs(20)),
+        "scheduled scene did not finish"
+    );
     assert_eq!(joined(&sim), [true, true]);
-    assert_eq!(levels(&sim), [(11, false), (12, true), (31, false), (32, false)]);
+    assert_eq!(
+        levels(&sim),
+        [(11, false), (12, true), (31, false), (32, false)]
+    );
     assert!(scheduler.tick_at(at, &Utc).is_empty());
     let log = s
         .recent_actions(&Client::Cli, &ActionFilter::default())

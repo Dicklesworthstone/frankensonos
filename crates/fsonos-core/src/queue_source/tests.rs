@@ -95,8 +95,7 @@ impl Transport for Replies {
         let name = action.trim_matches('"').rsplit('#').next().unwrap();
         self.calls.borrow_mut().push(name.into());
         if (name == "AddURIToQueue" && matches!(self.fault, Fault::RefusedAdd))
-            || (name == "RemoveTrackRangeFromQueue"
-                && matches!(self.fault, Fault::RefusedRemoval))
+            || (name == "RemoveTrackRangeFromQueue" && matches!(self.fault, Fault::RefusedRemoval))
         {
             return Err(ProtoError::SoapFault {
                 code: 800,
@@ -106,9 +105,7 @@ impl Transport for Replies {
         if name == "Browse" && self.added.get() && matches!(self.fault, Fault::Unreadable) {
             return Err(Self::lost(host));
         }
-        if name == "RemoveTrackRangeFromQueue"
-            && matches!(self.fault, Fault::ConcurrentRemoval)
-        {
+        if name == "RemoveTrackRangeFromQueue" && matches!(self.fault, Fault::ConcurrentRemoval) {
             // Another controller inserts before our observed prefix. The
             // simulator's native revision check must reject our old range.
             soap::enqueue_uri(&self.inner, host, OTHER, "", 1, false)?;
@@ -296,7 +293,10 @@ fn removal_races_and_refusals_do_not_clear_restart_or_repeat_the_source() {
                 ["AddURIToQueue", "RemoveTrackRangeFromQueue"]
             );
             let current = queue(&sim, host);
-            assert!(OLD.iter().all(|uri| current.iter().any(|item| item.as_str() == *uri)));
+            assert!(
+                OLD.iter()
+                    .all(|uri| current.iter().any(|item| item.as_str() == *uri))
+            );
             if matches!(fault, Fault::ConcurrentRemoval) {
                 assert_eq!(current[0], OTHER);
             }

@@ -55,7 +55,9 @@ impl QueueFixture {
         let first = self.rows.borrow().len() + 1;
         let serial = self.serial.get() + 1;
         self.serial.set(serial);
-        self.rows.borrow_mut().push(format!("x-file:track-{serial}"));
+        self.rows
+            .borrow_mut()
+            .push(format!("x-file:track-{serial}"));
         self.revision.set(self.revision.get() + 1);
         format!(
             "<FirstTrackNumberEnqueued>{first}</FirstTrackNumberEnqueued>\

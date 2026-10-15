@@ -111,7 +111,10 @@ mod tests {
         let playing = read(TransportState::Playing, 1, None);
         playback.apply_observation(&player, &playing, resumed);
         let state = playback.of(&player).unwrap();
-        assert_eq!(state.position_at(resumed + Duration::from_secs(2)), Some(45));
+        assert_eq!(
+            state.position_at(resumed + Duration::from_secs(2)),
+            Some(45)
+        );
         let stopped = read(TransportState::Stopped, 1, Some(46));
         let changed = playback.apply_observation(&player, &stopped, resumed);
         assert_eq!(
@@ -177,7 +180,10 @@ mod tests {
         empty.position.uri.clear();
         empty.media.tracks = 0;
         let changed = playback.apply_observation(&player, &empty, now);
-        assert_eq!(changed.track, Some((Some("test:same-recording".into()), None)));
+        assert_eq!(
+            changed.track,
+            Some((Some("test:same-recording".into()), None))
+        );
         let state = playback.of(&player).unwrap();
         assert_eq!(state.position_at(now), None);
         assert_eq!(state.expected_end(), None);

@@ -89,7 +89,9 @@ pub(crate) fn play<T: Transport + ?Sized>(
     }
     if !before.uris.is_empty() {
         if staged.revision == 0 {
-            return Err(unconfirmed("the player reports wildcard queue revision zero"));
+            return Err(unconfirmed(
+                "the player reports wildcard queue revision zero",
+            ));
         }
         let count = u32::try_from(before.uris.len()).map_err(unconfirmed)?;
         let removed = soap::remove_track_range_from_queue(t, host, staged.revision, 1, count);
