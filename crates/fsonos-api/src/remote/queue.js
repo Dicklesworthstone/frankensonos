@@ -35,20 +35,24 @@ const QueueRemote = (() => {
   }
 
   /** One card owns one snapshot. Reads can supersede reads, never a write. */
-  function model({ zone, call, changed = () => {}, played = () => {} }) {
+  function model({ zone, call, changed = () => {}, played = () => {},
+    execute = (work) => work(), blocked = () => false, current = () => true }) {
     let epoch = 0;
     let disposed = false;
     let visible = true;
     const state = { offset: 0, page: null, loading: false, writing: false, message: '',
       selected: new Set(), pending: null, source: '', destination: '' };
     const clearSelection = () => { state.selected.clear(); state.pending = null; state.destination = ''; };
-    const publish = () => { if (!disposed) changed(state); };
-    const ready = () => !disposed && visible && !state.loading && !state.writing && state.page;
+    const publish = () => {
+      if (!disposed && current()) { try { changed(state); } catch (_) { /* View only. */ } }
+    };
+    const ready = () => !disposed && current() && visible && !blocked()
+      && !state.loading && !state.writing && state.page;
 
     async function load(offset = state.offset, keepMessage = false) {
-      if (disposed) return false;
+      if (disposed || !current()) return false;
       visible = true;
-      if (state.writing) return false;
+      if (state.writing || blocked()) return false;
       if (!index(offset) || offset > MAX_INDEX - PAGE_SIZE) return false;
       const request = ++epoch;
       state.offset = offset;
@@ -59,14 +63,14 @@ const QueueRemote = (() => {
       publish();
       try {
         const response = await call('queue', { params: { room: zone }, query: { offset, limit: PAGE_SIZE } });
-        if (disposed || request !== epoch) return false;
+        if (disposed || !current() || request !== epoch) return false;
         state.page = pageOf(response, offset);
         return true;
       } catch (error) {
-        if (!disposed && request === epoch) state.message = error.hint ? `${error.message} ${error.hint}` : error.message;
+        if (!disposed && current() && request === epoch) state.message = error.hint ? `${error.message} ${error.hint}` : error.message;
         return false;
       } finally {
-        if (!disposed && request === epoch) {
+        if (!disposed && current() && request === epoch) {
           state.loading = false;
           publish();
         }
@@ -78,33 +82,39 @@ const QueueRemote = (() => {
       state.page = null;
       clearSelection();
       state.message = message;
-      ++epoch;
+      const request = ++epoch;
       publish();
-      let success = false;
+      let success = false, entered = false;
       let nextOffset = state.offset;
       try {
-        const result = await call(route, { body });
-        if (!result || typeof result.done !== 'string' || !validate(result)) {
-          throw new Error('The action returned an unreadable result. Its outcome is uncertain.');
-        }
-        const notes = (Array.isArray(result.notes) ? result.notes : [])
-          .filter((note) => note && typeof note.detail === 'string');
-        state.message = [result.done, ...notes.map((note) => note.detail)].join(' ');
-        if (route === 'queueRemove') {
-          nextOffset = Math.min(nextOffset, Math.floor(Math.max(0, result.remaining - 1) / PAGE_SIZE) * PAGE_SIZE);
-        }
-        if (route === 'queueMove') {
-          nextOffset = Math.min(Math.floor((result.position - 1) / PAGE_SIZE) * PAGE_SIZE, MAX_INDEX - PAGE_SIZE);
-        }
-        if (route === 'queueAdd') state.source = '';
-        success = true;
+        await execute(async () => {
+          // A declined lane or a disposed/closed view must never dispatch late.
+          if (entered || disposed || !current() || !visible || request !== epoch) return;
+          entered = true;
+          const result = await call(route, { body });
+          if (!result || typeof result.done !== 'string' || !validate(result)) {
+            throw new Error('The action returned an unreadable result. Its outcome is uncertain.');
+          }
+          const notes = (Array.isArray(result.notes) ? result.notes : [])
+            .filter((note) => note && typeof note.detail === 'string');
+          state.message = [result.done, ...notes.map((note) => note.detail)].join(' ');
+          if (route === 'queueRemove') {
+            nextOffset = Math.min(nextOffset, Math.floor(Math.max(0, result.remaining - 1) / PAGE_SIZE) * PAGE_SIZE);
+          }
+          if (route === 'queueMove') {
+            nextOffset = Math.min(Math.floor((result.position - 1) / PAGE_SIZE) * PAGE_SIZE, MAX_INDEX - PAGE_SIZE);
+          }
+          if (route === 'queueAdd') state.source = '';
+          success = true;
+        });
+        if (!entered) state.message = 'Another playback control is busy. Refresh the queue before trying again; no queue command was sent.';
       } catch (error) {
         state.message = `${error.message}${error.hint ? ` ${error.hint}` : ''} Refresh before trying again; the request was not repeated.`;
       } finally {
         state.writing = false;
         publish();
       }
-      if (!disposed) {
+      if (!disposed && current() && entered) {
         // A failed status refresh must not turn an acknowledged edit into a retry.
         try { Promise.resolve(played()).catch(() => {}); } catch (_) { /* read-only callback */ }
         // Only refresh reads after success; an uncertain write needs an explicit fresh read.
@@ -226,6 +236,18 @@ const QueueRemote = (() => {
       'Moving the reviewed queue entries…');
     }
 
+    function block() {
+      if (blocked() && !state.writing) {
+        // A native play/DJ/seek may invalidate this snapshot while a read is pending.
+        ++epoch;
+        state.loading = false;
+        state.page = null;
+        clearSelection();
+        state.message = 'Playback is changing. Refresh the queue when the control finishes.';
+      }
+      publish();
+    }
+
     function close() {
       visible = false;
       ++epoch;
@@ -236,15 +258,15 @@ const QueueRemote = (() => {
     }
 
     return { state, load, play, add, select, removable, reviewRemoval, cancelRemoval, remove,
-      reviewMove, move, close, dispose() { disposed = true; close(); } };
+      reviewMove, move, block, close, dispose() { disposed = true; close(); } };
   }
 
   /** Lazy, bounded browsing inside the existing room card. No background poll. */
-  function panel({ zone, call, el, played }) {
+  function panel({ zone, call, el, played, execute, blocked = () => false, current }) {
     const summary = el('summary', { text: 'Queue' });
     const body = el('div', { class: 'queue-body' });
     const node = el('details', { class: 'queue' }, summary, body);
-    const control = model({ zone, call, played, changed: render });
+    const control = model({ zone, call, played, execute, blocked, current, changed: render });
     const button = (text, action, disabled = false) => el('button', {
       type: 'button', text, disabled, onclick: action, 'data-focus': text,
     });
@@ -264,8 +286,8 @@ const QueueRemote = (() => {
 
     function draw(state) {
       body.replaceChildren();
-      body.setAttribute('aria-busy', String(state.loading || state.writing));
-      const busy = state.loading || state.writing;
+      body.setAttribute('aria-busy', String(state.loading || state.writing || blocked()));
+      const busy = state.loading || state.writing || blocked();
       const deciding = Boolean(state.pending);
       body.append(el('div', { class: 'row' }, button('Refresh queue', () => control.load(), busy)));
       if (state.message) body.append(el('p', { role: 'status', 'aria-live': 'polite', text: state.message }));
@@ -363,7 +385,7 @@ const QueueRemote = (() => {
 
     node.addEventListener('toggle', () => { if (node.open) control.load(); else control.close(); });
     render(control.state);
-    return { node, dispose: control.dispose };
+    return { node, block: control.block, dispose: control.dispose };
   }
 
   return { model, panel, PAGE_SIZE };
