@@ -8,6 +8,8 @@ use fsonos_api::{
     ZoneRequest,
 };
 
+mod reviewed_undo;
+
 impl Backend {
     /// Play through the daemon, or the same planner in standalone mode.
     pub fn play(&self, req: &PlayRequest) -> McpResult<FinalCallToolResult> {

@@ -11,6 +11,8 @@
 //! house policy, so both surfaces answer alike.
 
 mod play_mode;
+mod reviewed_undo;
+mod worker;
 
 pub mod resources;
 pub mod tools;
@@ -133,6 +135,8 @@ pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
         .tool(tools::PlayFavorite)
         .tool(tools::RecentActions)
         .tool(tools::UndoLast)
+        .tool(reviewed_undo::PreviewUndo)
+        .tool(reviewed_undo::UndoChecked)
         .tool(tools::GetPolicy)
         .tool(tools::Events)
         .tool(tools::Doctor)
