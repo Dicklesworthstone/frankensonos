@@ -12,7 +12,8 @@
 //!    fewest ordered ops that get there (none when the house already
 //!    matches): regroup, then volumes and mutes, then sources, then play or
 //!    pause. It is pure;
-//! 3. [`apply`] runs the ops and carries on past one that fails. Asked to
+//! 3. [`apply`] confirms grouping before playback and isolates failed
+//!    dependencies while continuing independent groups. Asked to
 //!    fade, it leaves the volumes for last and fades them together, and a
 //!    room whose sound starts with the scene fades in from silence.
 //!
@@ -38,6 +39,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
+mod execution;
 mod layout;
 mod targets;
 
@@ -447,7 +449,8 @@ fn plan_sources(
     }
 }
 
-/// Run `plan`, carrying on past an op that fails. With a fade, the volumes
+/// Run `plan`, confirming group transitions before dependent sound changes.
+/// Failed dependencies are skipped; independent groups continue. With a fade, volumes
 /// go last and together, each room to its own level over the one fade, and a
 /// room whose sound starts with the scene fades in from silence.
 pub fn apply<T: Transport + ?Sized>(
@@ -456,33 +459,7 @@ pub fn apply<T: Transport + ?Sized>(
     plan: &ScenePlan,
     options: &ApplyOptions<'_>,
 ) -> SceneReport {
-    let mut report = SceneReport {
-        notes: plan.notes.clone(),
-        ..SceneReport::default()
-    };
-    let mut favorites: HashMap<usize, Vec<Favorite>> = HashMap::new();
-    // The rooms silenced to fade in, once the regrouping is done.
-    let mut ins: Option<Vec<(PlayerId, u8)>> = None;
-    for op in &plan.ops {
-        if let Some((fader, _)) = options.fade {
-            let regroups = matches!(op, SceneOp::Leave { .. } | SceneOp::Join { .. });
-            if !regroups && ins.is_none() {
-                ins = Some(silence_starting(t, households, plan, fader));
-            }
-            if matches!(op, SceneOp::Volume { .. }) {
-                continue;
-            }
-        }
-        match run(t, households, op, options, &mut favorites) {
-            Ok(()) => report.done.push(op.clone()),
-            Err(e) => report.failed.push((op.clone(), e)),
-        }
-    }
-    if let Some(fade) = options.fade {
-        let ins = ins.unwrap_or_default();
-        fade_volumes(t, households, plan, &ins, fade, &mut report);
-    }
-    report
+    execution::apply(t, households, plan, options)
 }
 
 /// Before a faded scene's sources start: silence the rooms whose sound
