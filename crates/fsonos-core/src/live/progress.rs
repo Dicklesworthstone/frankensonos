@@ -198,11 +198,28 @@ mod tests {
         let mut playback = Playback::default();
         let mut watchdog = Watchdog::default();
         sample(&mut playback, &targets[0].0, 1, now);
-        assert!(watchdog.next(&targets, &playback, now + Duration::from_secs(14)).is_none());
-        sample(&mut playback, &targets[0].0, 2, now + Duration::from_secs(10));
-        assert!(watchdog.next(&targets, &playback, now + Duration::from_secs(24)).is_none());
+        assert!(
+            watchdog
+                .next(&targets, &playback, now + Duration::from_secs(14))
+                .is_none()
+        );
+        sample(
+            &mut playback,
+            &targets[0].0,
+            2,
+            now + Duration::from_secs(10),
+        );
+        assert!(
+            watchdog
+                .next(&targets, &playback, now + Duration::from_secs(24))
+                .is_none()
+        );
         assert!(watchdog.attempts.is_empty());
-        assert!(watchdog.next(&targets, &playback, now + Duration::from_secs(25)).is_some());
+        assert!(
+            watchdog
+                .next(&targets, &playback, now + Duration::from_secs(25))
+                .is_some()
+        );
     }
 
     #[test]
@@ -218,12 +235,23 @@ mod tests {
         assert_eq!(first.player, targets[0].0);
         watchdog.completed(first, false, now);
         let other = watchdog.next(&targets, &playback, now).unwrap();
-        assert_eq!(other.player, targets[1].0, "one failing room cannot starve another");
+        assert_eq!(
+            other.player, targets[1].0,
+            "one failing room cannot starve another"
+        );
         watchdog.completed(other, true, now);
         for delay in [30, 60, 120, 240, 300, 300] {
             let due = watchdog.attempts[&targets[0].0].retry_at;
             assert_eq!(due.duration_since(now), Duration::from_secs(delay));
-            assert!(watchdog.next(&targets[..1], &playback, due - Duration::from_nanos(1)).is_none());
+            assert!(
+                watchdog
+                    .next(
+                        &targets[..1],
+                        &playback,
+                        due.checked_sub(Duration::from_nanos(1)).unwrap()
+                    )
+                    .is_none()
+            );
             let probe = watchdog.next(&targets[..1], &playback, due).unwrap();
             watchdog.completed(probe, false, due);
             now = due;
