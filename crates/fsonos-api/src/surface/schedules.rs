@@ -44,6 +44,7 @@ use crate::plan::{self, TransportAction, resolve};
 use crate::request::{DjStartRequest, VolumeChange, VolumeRequest, ZoneRequest, zone_name};
 
 mod dispatch;
+mod recovery;
 
 /// The longest sleep timer. The speaker's own timer, which backs the
 /// daemon's up five minutes later, counts down from just under a day.
@@ -592,9 +593,8 @@ pub struct Sleep {
     timers: SleepTimers,
     fader: Fader,
     saved: Option<PathBuf>,
-    /// Held while the file is written, so two saves never share the
-    /// partial file.
-    writing: Mutex<()>,
+    /// Serializes snapshots and startup-candidate transitions, never speaker I/O.
+    writing: Mutex<recovery::State>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -616,7 +616,7 @@ impl Sleep {
             timers: SleepTimers::with_fade(fade),
             fader: Fader::default(),
             saved: None,
-            writing: Mutex::new(()),
+            writing: Mutex::new(recovery::State::default()),
         }
     }
 
@@ -627,46 +627,15 @@ impl Sleep {
         self
     }
 
-    /// Write every armed timer to the file, whole (a crash mid-write leaves
-    /// the old one). A file that can't be written never fails a timer.
+    /// Save armed and unresolved startup timers together. Failed publication
+    /// stays pending for the recovery worker; an unreadable old file stays intact.
     fn save(&self) {
-        let Some(path) = &self.saved else {
-            return;
-        };
-        let _writing = self.writing.lock().unwrap_or_else(PoisonError::into_inner);
-        let saved = SavedTimers {
-            timers: self.timers.all(),
-        };
-        let partial = path.with_extension("json.partial");
-        let written = serde_json::to_string_pretty(&saved)
-            .map_err(std::io::Error::other)
-            .and_then(|text| std::fs::write(&partial, text))
-            .and_then(|()| std::fs::rename(&partial, path));
-        if let Err(e) = written {
-            tracing::warn!("sleep timers not saved to {}: {e}", path.display());
-        }
+        recovery::save(self, true);
     }
 
-    /// The timers the file holds; none when it is missing or unreadable.
+    /// The startup timers still awaiting evidence from their own speaker.
     fn saved_timers(&self) -> Vec<SleepTimer> {
-        let Some(path) = &self.saved else {
-            return Vec::new();
-        };
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-            Err(e) => {
-                tracing::warn!("saved sleep timers unreadable: {e}");
-                return Vec::new();
-            }
-        };
-        serde_json::from_str::<SavedTimers>(&text).map_or_else(
-            |e| {
-                tracing::warn!("saved sleep timers malformed: {e}");
-                Vec::new()
-            },
-            |saved| saved.timers,
-        )
+        recovery::saved(self)
     }
 
     /// A volume or mute change on `coordinator`'s group: every fade in flight
@@ -674,6 +643,9 @@ impl Sleep {
     /// asked for with `--fade`), so the new level stands and the group is not
     /// paused. Returns whether a sleep fade was superseded.
     pub fn volume_changed(&self, households: &[HouseholdState], coordinator: &PlayerId) -> bool {
+        // A deliberate local change must not be superseded by a delayed
+        // startup adoption. Already armed, not-yet-due timers are unchanged.
+        recovery::supersede(self, coordinator);
         self.fader.supersede(coordinator);
         for household in households {
             for room in household
@@ -756,7 +728,10 @@ fn speaker_timer(
 /// backstop the daemon set for `timer` (its end plus [`BACKSTOP`], give or
 /// take a minute) rather than one set on the speaker meanwhile.
 fn is_backstop(timer: &SleepTimer, left: Duration, now: DateTime<Utc>) -> bool {
-    let expected = timer.ends + delta(BACKSTOP) - now;
+    let Some(end) = timer.ends.checked_add_signed(delta(BACKSTOP)) else {
+        return false;
+    };
+    let expected = end - now;
     (delta(left) - expected).abs() <= TimeDelta::minutes(1)
 }
 
@@ -895,6 +870,7 @@ impl Surface {
                 continue;
             }
             set.push(group);
+            recovery::supersede(sleep, group);
             if let Err(e) = sleep
                 .timers
                 .start(t, households, &sleep.fader, group, FADE, now)
@@ -929,12 +905,17 @@ impl Surface {
         let Some(old) = before.iter().find_map(|h| h.coordinator_of(from)) else {
             return;
         };
+        // Do not later revive an unverified timer on the room the music left.
+        if recovery::supersede(sleep, old).is_some() {
+            sleep.save();
+        }
         if sleep.timers.get(old).is_none() {
             return;
         }
         let t = &*self.transport;
         let followed = fsonos_core::moving::coordinator_now(t, before, to).and_then(|new| {
             let now = self.clock.now().to_utc();
+            recovery::supersede(sleep, &new);
             sleep.timers.rekey(t, before, &sleep.fader, old, &new, now)
         });
         match followed {
@@ -1033,64 +1014,18 @@ impl Surface {
         result
     }
 
-    /// Take up the sleep timers a previous run of the daemon saved: each one
-    /// whose group still has the player's own timer running as its backstop
-    /// is armed again, to fade out when it comes due, even if that is now. A
-    /// timer whose player dropped its own meanwhile (cancelled from the
-    /// Sonos app, a reboot) stays gone, and so does one whose player runs a
-    /// timer set on it meanwhile: that one is the owner's, left alone. How
-    /// many were taken up.
+    /// Adopt saved timers whose original coordinators still run their matching
+    /// backstops. Unavailable players remain pending across saves and restarts;
+    /// the scheduler retries verification off-thread. A cancelled, replaced or
+    /// expired backstop never grants a new timer. Returns the adoption count.
     pub fn adopt_sleep_timers(&self) -> usize {
         let Some(sleep) = &self.sleep else {
             return 0;
         };
-        let saved = sleep.saved_timers();
-        if saved.is_empty() {
+        let Some(_permit) = recovery::reserve(sleep, true) else {
             return 0;
-        }
-        let households = match self.households() {
-            Ok(households) => households,
-            Err(f) => {
-                tracing::warn!("saved sleep timers not taken up: {}", f.detail);
-                return 0;
-            }
         };
-        let now = self.clock.now().to_utc();
-        let mut adopted = 0;
-        for timer in saved {
-            let Some(zone) = Zone::of(&households, &timer.coordinator) else {
-                tracing::info!(
-                    "sleep timer of {}'s group dropped: no such group now",
-                    timer.room
-                );
-                continue;
-            };
-            match speaker_timer(&*self.transport, &zone) {
-                Ok(Some(left)) if is_backstop(&timer, left, now) => {
-                    if sleep.timers.adopt(SleepTimer {
-                        room: zone.room.clone(),
-                        ..timer
-                    }) {
-                        adopted += 1;
-                    }
-                }
-                Ok(Some(_)) => tracing::info!(
-                    "sleep timer of {}'s group dropped: the speaker runs a timer set on it meanwhile",
-                    zone.room
-                ),
-                Ok(None) => tracing::info!(
-                    "sleep timer of {}'s group dropped: the speaker's own timer is gone",
-                    zone.room
-                ),
-                Err(f) => tracing::warn!(
-                    "sleep timer of {}'s group not taken up: {}",
-                    zone.room,
-                    f.detail
-                ),
-            }
-        }
-        sleep.save();
-        adopted
+        recovery::adopt(self, sleep, || true)
     }
 
     fn sleep_in_daemon(
@@ -1104,30 +1039,41 @@ impl Surface {
         let (t, fader, utc) = (&*self.transport, &sleep.fader, now.to_utc());
         let at = &zone.coordinator;
         let timer = match change {
-            SleepChange::Set(after) => sleep.timers.start(t, households, fader, at, after, utc)?,
+            SleepChange::Set(after) => {
+                recovery::supersede(sleep, at);
+                sleep.timers.start(t, households, fader, at, after, utc)?
+            }
             SleepChange::Extend(by) => {
                 if let Some(timer) = sleep.timers.get(at) {
                     let after = (timer.ends.max(utc) - utc).to_std().unwrap_or_default() + by;
                     if after > MAX_SLEEP {
                         return Err(too_long(after));
                     }
+                    recovery::supersede(sleep, at);
                     sleep
                         .timers
                         .extend(t, households, fader, at, by, utc)?
                         .ok_or_else(|| no_timer(zone))?
                 } else {
-                    // The speaker's own timer (the Sonos app's, say): the
-                    // daemon takes it over, and fades it out.
                     let left = speaker_timer(t, zone)?.ok_or_else(|| no_timer(zone))?;
+                    // An unadopted daemon backstop includes five extra minutes.
+                    // Extend its saved deadline, not that later emergency pause.
+                    let saved = sleep.saved_timers().into_iter()
+                        .find(|timer| timer.coordinator == *at);
+                    let prior = sleep.timers.get(at).or(saved);
+                    let left = prior.filter(|timer| is_backstop(timer, left, utc))
+                        .map_or(left, |timer| (timer.ends.max(utc) - utc).to_std().unwrap_or_default());
                     if left + by > MAX_SLEEP {
                         return Err(too_long(left + by));
                     }
+                    recovery::supersede(sleep, at);
                     sleep
                         .timers
                         .start(t, households, fader, at, left + by, utc)?
                 }
             }
             SleepChange::Cancel => {
+                recovery::supersede(sleep, at);
                 let mut had = sleep.timers.cancel(t, households, fader, at)?;
                 // A timer of the speaker's own goes too.
                 if !had && speaker_timer(t, zone)?.is_some() {
@@ -1705,6 +1651,7 @@ impl Scheduler {
         if self.dispatch.stopped() {
             return Vec::new();
         }
+        recovery::start(self);
         let mut ran = self.start_fades(now);
         ran.extend(dispatch::run_schedules(self, now, tz));
         ran
