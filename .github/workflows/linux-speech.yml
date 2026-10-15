@@ -13,6 +13,7 @@ on:
       - "scripts/test-remote-groups.cjs"
       - "scripts/test-remote-transfers.cjs"
       - "scripts/test-remote-live.cjs"
+      - "scripts/test-remote-invalidation.cjs"
       - "scripts/test-remote-state.cjs"
       - "scripts/test-remote-announcements.cjs"
       - "scripts/test-remote-dj-preferences.cjs"
@@ -64,7 +65,7 @@ jobs:
       - name: Web room grouping regressions
         run: node --test scripts/test-remote-groups.cjs scripts/test-remote-transfers.cjs
       - name: Live remote recovery regressions
-        run: node --test scripts/test-remote-live.cjs scripts/test-remote-state.cjs
+        run: node --test scripts/test-remote-live.cjs scripts/test-remote-state.cjs scripts/test-remote-invalidation.cjs
       - name: Web announcement regressions
         run: node --test scripts/test-remote-announcements.cjs
       - name: Web DJ taste regressions

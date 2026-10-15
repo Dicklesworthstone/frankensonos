@@ -17,6 +17,8 @@ use fsonos_types::{PlayerId, TransportState};
 use std::collections::HashMap;
 use std::time::Instant;
 
+#[cfg(test)]
+mod metadata_tests;
 mod observation;
 pub use observation::PlaybackObservation;
 
@@ -107,6 +109,10 @@ pub struct Changes {
     pub queue_length: Option<u32>,
     /// The AVTransport play mode changed (NORMAL, shuffle, repeat, ...).
     pub play_mode: Option<String>,
+    /// Title, artist, album, artwork or duration changed, possibly on the
+    /// same stream URI. Reread track details; this is not a new queue entry
+    /// or permission to reset its clock or record another listen.
+    pub metadata_changed: bool,
 }
 
 impl Changes {
@@ -175,6 +181,10 @@ impl Playback {
                 }
             }
         }
+        let before = self.players.get(player);
+        changes.metadata_changed = before.and_then(|p| p.now_playing.as_ref())
+            != state.now_playing.as_ref()
+            || before.and_then(|p| p.duration_secs) != state.duration_secs;
         self.players.insert(player.clone(), state);
         Ok(changes)
     }
