@@ -2,31 +2,53 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="referrer" content="no-referrer">
-<title>FrankenSonos</title>
+<meta name="theme-color" content="#111510">
+<title>FrankenSonos · Your listening studio</title>
 <link rel="stylesheet" href="/remote.css">
+<link rel="stylesheet" href="/studio.css">
 <script src="/remote.js" defer></script>
+<script src="/studio.js" defer></script>
 </head>
-<body>
-<header class="top">
-  <h1>FrankenSonos</h1>
-  <a href="/dashboard">Listening room &amp; visualizer ↗</a>
-  <button id="pause-all" type="button">Pause everywhere</button>
-  <p id="live" class="live" role="status" aria-live="polite">Connecting…</p>
-</header>
-<div id="doctor" class="banner" role="alert" hidden></div>
-<section id="music-library" class="scenes" aria-label="Music library"></section>
-<section id="room-groups" class="scenes" aria-label="Room grouping"></section>
-<section id="scenes-section" class="scenes" aria-labelledby="scenes-title" hidden>
-  <h2 id="scenes-title">Scenes</h2>
-  <div id="scenes" class="scene-buttons"></div>
-</section>
-<main id="households">
-  <p class="empty">Looking for the speakers…</p>
-</main>
+<body class="studio" data-theme="dark">
+<a class="studio-skip" href="#studio-content">Skip to your music</a>
+<aside class="studio-sidebar" aria-label="Studio navigation">
+  <a class="studio-brand" href="/" aria-label="FrankenSonos home"><span class="studio-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span><span>franken<strong>sonos</strong><small>THE LISTENING STUDIO</small></span></a>
+  <p class="studio-nav-label">YOUR SPACE</p>
+  <nav id="studio-nav" aria-label="Workspaces">
+    <button type="button" data-workspace="listen" aria-current="page"><span aria-hidden="true">◉</span>Listen</button>
+    <button type="button" data-workspace="music"><span aria-hidden="true">♫</span>Music &amp; DJ</button>
+    <button type="button" data-workspace="house"><span aria-hidden="true">⌂</span>House &amp; sound</button>
+    <button type="button" data-workspace="routines"><span aria-hidden="true">◷</span>Routines</button>
+    <button type="button" data-workspace="activity"><span aria-hidden="true">≋</span>Activity</button>
+  </nav>
+  <div class="studio-sidebar-bottom"><a class="studio-immersive" href="/dashboard"><span aria-hidden="true">✳</span><strong>Just the music.</strong><span>Open the Listening Room ↗</span></a><p>LOCAL BY DESIGN<br><span>S1 + S2 · Tailscale-ready</span></p></div>
+</aside>
+<div class="studio-content" id="studio-content" tabindex="-1">
+  <header class="top studio-topbar"><a class="studio-mobile-brand" href="/">franken<strong>sonos</strong></a><span class="studio-breadcrumb">YOUR HOME / <span id="studio-location">LISTEN</span></span><div class="studio-top-actions"><p id="live" class="live" role="status" aria-live="polite">Connecting…</p><button type="button" id="studio-command" aria-haspopup="dialog">Find a control <kbd>⌘ K</kbd></button><button type="button" id="studio-theme" aria-label="Switch to light appearance" title="Change appearance">◐</button><button id="pause-all" type="button">Pause everywhere</button></div></header>
+  <div id="doctor" class="banner" role="alert" hidden></div>
+  <header class="studio-intro"><div><p class="studio-kicker" id="studio-kicker">GOOD MUSIC. EVERY ROOM.</p><h1 id="studio-title">Your house. <em>In harmony.</em></h1><p id="studio-description">A soundtrack that follows you. A DJ that gets you. You're in control.</p></div><div class="studio-house-count" id="studio-house-count" aria-live="polite">Discovering your house…</div></header>
+  <section id="studio-listen" data-studio-workspace="listen" aria-label="Listen">
+    <div class="studio-section-heading"><h2>Where we're listening</h2><span>Choose a group to bring its controls forward</span></div>
+    <div id="studio-room-rail" class="studio-room-rail" aria-label="Choose a listening group"></div>
+    <div id="studio-native">
+      <section id="music-library" class="scenes" aria-label="Music library"></section>
+      <section id="room-groups" class="scenes" aria-label="Room grouping"></section>
+      <section id="scenes-section" class="scenes" aria-labelledby="scenes-title" hidden><h2 id="scenes-title">Scenes</h2><div id="scenes" class="scene-buttons"></div></section>
+      <main id="households"><p class="empty">Looking for the speakers…</p></main>
+    </div>
+    <section class="studio-paths" aria-label="Make the most of your house"><button type="button" data-tool="dj-steering"><span class="studio-path-icon" aria-hidden="true">✳</span><span><strong>Your taste. Your next chapter.</strong><small>Shape the DJ's next picks, not just this track.</small></span><span aria-hidden="true">↗</span></button><button type="button" data-tool="room-groups"><span class="studio-path-icon" aria-hidden="true">⌂</span><span><strong>Let the music follow you.</strong><small>Move a session or bring rooms together.</small></span><span aria-hidden="true">↗</span></button><button type="button" data-tool="scenes"><span class="studio-path-icon" aria-hidden="true">◷</span><span><strong>Set the whole atmosphere.</strong><small>Scenes, gentle fades, and a softer goodnight.</small></span><span aria-hidden="true">↗</span></button></section>
+  </section>
+  <section id="studio-music" data-studio-workspace="music" class="studio-tool-grid" aria-label="Music and DJ" hidden></section>
+  <section id="studio-house" data-studio-workspace="house" class="studio-tool-grid" aria-label="House and sound" hidden></section>
+  <section id="studio-routines" data-studio-workspace="routines" class="studio-tool-grid" aria-label="Routines" hidden></section>
+  <section id="studio-activity" data-studio-workspace="activity" class="studio-tool-grid" aria-label="Activity and recovery" hidden></section>
+  <footer class="studio-footer"><span>YOUR SPEAKERS. YOUR RULES.</span><a href="/dashboard">Less screen. More listening. ↗</a></footer>
+</div>
+<dialog id="studio-palette" class="studio-palette" aria-labelledby="studio-palette-title"><header><h2 id="studio-palette-title">What would you like to do?</h2><button type="button" id="studio-palette-close" aria-label="Close control finder">✕</button></header><label for="studio-search">Find a feature</label><input id="studio-search" type="search" placeholder="Try “quiet hours”, “whole work”, or “move music”…" autocomplete="off"><div id="studio-results" class="studio-results"></div><p>Opens a control. Never sends a speaker command.</p></dialog>
 <p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
-<noscript><p class="banner">The remote needs JavaScript. The same controls are in the HTTP API (GET /openapi.json).</p></noscript>
+<noscript><p class="banner">The studio needs JavaScript. The same controls are available through the CLI and HTTP API.</p></noscript>
 </body>
 </html>

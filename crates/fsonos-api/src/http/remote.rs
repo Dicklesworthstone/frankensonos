@@ -19,6 +19,7 @@ use super::{Ctx, Op, query_param};
 use crate::failure::{ErrorCode, Failure};
 
 mod dashboard;
+mod studio;
 mod undo;
 
 const REMOTE: &str = "remote";
@@ -153,6 +154,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     ];
     routes.extend(undo::routes(cx));
     routes.extend(dashboard::routes(cx));
+    routes.extend(studio::routes(cx));
     routes
 }
 
