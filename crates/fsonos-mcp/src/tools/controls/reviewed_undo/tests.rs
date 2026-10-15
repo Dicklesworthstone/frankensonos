@@ -195,9 +195,7 @@ fn daemon_preview_and_confirmation_use_exact_routes_and_only_expected_id() {
 fn null_preview_is_not_replaced_by_local_history() {
     let daemon = remote(vec![Some(Ok(Value::Null))]);
     let backend = local(Client::McpStdio).with_daemon(daemon);
-    assert!(
-        backend.preview_undo().unwrap().structured_content.unwrap()["action"].is_null()
-    );
+    assert!(backend.preview_undo().unwrap().structured_content.unwrap()["action"].is_null());
 }
 
 #[test]

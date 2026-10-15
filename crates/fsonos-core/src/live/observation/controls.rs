@@ -98,7 +98,11 @@ pub(super) fn survey(engine: &Engine, model: &mut Model, events: &mut Vec<LiveEv
             return;
         }
         match mode {
-            Ok(mode) => record(events, &player, model.playback.apply_play_mode(&player, mode)),
+            Ok(mode) => record(
+                events,
+                &player,
+                model.playback.apply_play_mode(&player, mode),
+            ),
             Err(error) => {
                 tracing::debug!(%error, "play mode read-back failed; retaining live state");
             }

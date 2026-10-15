@@ -22,7 +22,12 @@ struct Reply {
 }
 
 impl Daemon for Reply {
-    fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Option<Result<Value, Failure>> {
+    fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Option<Result<Value, Failure>> {
         self.calls.lock().unwrap().push(json!([method, path, body]));
         self.answer.clone()
     }
@@ -79,14 +84,23 @@ fn control(backend: &Backend, path: &str, body: Value) -> McpResult<FinalCallToo
 
 fn writes() -> Vec<(&'static str, Value)> {
     vec![
-        ("/play", json!({"zone":"Room@S2", "source_uri":"spotify:track:Exact", "title":"Title"})),
-        ("/play/favorite", json!({"zone":"Room@S1", "favorite":"FV:2/7"})),
+        (
+            "/play",
+            json!({"zone":"Room@S2", "source_uri":"spotify:track:Exact", "title":"Title"}),
+        ),
+        (
+            "/play/favorite",
+            json!({"zone":"Room@S1", "favorite":"FV:2/7"}),
+        ),
         ("/pause", json!({"zone":"everywhere"})),
         ("/resume", json!({"zone":"Room@S1"})),
         ("/next", json!({"zone":"downstairs"})),
         ("/previous", json!({"zone":"Room@S2"})),
         ("/seek", json!({"zone":"Room@S1", "by_secs":-15})),
-        ("/volume", json!({"zone":"everywhere", "volume":null, "delta":5, "group":true})),
+        (
+            "/volume",
+            json!({"zone":"everywhere", "volume":null, "delta":5, "group":true}),
+        ),
         ("/mute", json!({"zone":"Room@S2", "mute":false})),
         ("/group", json!({"zone":"Office@S1", "to":"Room@S1"})),
         ("/ungroup", json!({"zone":"all@S2"})),
@@ -161,7 +175,10 @@ fn read(backend: &Backend, route: usize) -> McpResult<FinalCallToolResult> {
 fn all_house_reads_use_the_daemon_and_never_mask_its_failures() {
     for route in 0..10 {
         for answer in [
-            Err(Failure::new(ErrorCode::NotReady, "the daemon is discovering")),
+            Err(Failure::new(
+                ErrorCode::NotReady,
+                "the daemon is discovering",
+            )),
             Ok(json!({"invalid_reply":true})),
         ] {
             let (backend, reply) = fixture(Some(answer));
@@ -180,9 +197,17 @@ fn list_responses_keep_mcp_envelopes_and_encode_query_values_once() {
         (0, "/zones", "zones"),
         (1, "/rooms", "rooms"),
         (5, "/favorites?zone=Room%20%2F%20%26%40S2", "favorites"),
-        (6, "/library/search?q=Bj%C3%B6rk%20%26%20strings%3F&zone=Room%20%2F%20%26%40S2&limit=7", "hits"),
+        (
+            6,
+            "/library/search?q=Bj%C3%B6rk%20%26%20strings%3F&zone=Room%20%2F%20%26%40S2&limit=7",
+            "hits",
+        ),
         (7, "/history?limit=15&zone=Room%20%2F%20%26%40S2", "plays"),
-        (8, "/actions?limit=5&client=person%2Btag%40example.invalid&since=-3", "actions"),
+        (
+            8,
+            "/actions?limit=5&client=person%2Btag%40example.invalid&since=-3",
+            "actions",
+        ),
     ] {
         let (backend, reply) = fixture(Some(Ok(json!([]))));
         let result = read(&backend, route).unwrap();
@@ -195,10 +220,12 @@ fn list_responses_keep_mcp_envelopes_and_encode_query_values_once() {
 fn a_read_falls_back_only_when_no_daemon_was_selected() {
     let (backend, reply) = fixture(None);
     let calls = AtomicUsize::new(0);
-    let answer: u32 = backend.read("/test", || {
-        calls.fetch_add(1, Ordering::SeqCst);
-        Ok(7)
-    }).unwrap();
+    let answer: u32 = backend
+        .read("/test", || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(7)
+        })
+        .unwrap();
     assert_eq!(answer, 7);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(reply.calls.lock().unwrap().len(), 1);
@@ -211,13 +238,19 @@ fn undo_uses_the_same_daemon_log_without_widening_ownership() {
     let (backend, reply) = fixture(Some(Ok(answer.clone())));
     let result = backend.undo_last().unwrap();
     assert_eq!(result.structured_content, Some(answer));
-    assert_eq!(*reply.calls.lock().unwrap(), [json!(["POST", "/undo", {"own_only":true}])]);
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [json!(["POST", "/undo", {"own_only":true}])]
+    );
 }
 
 #[test]
 fn failed_or_malformed_undo_never_tries_the_local_action_log() {
     for answer in [
-        Err(Failure::new(ErrorCode::PlayerUnreachable, "restore reply lost")),
+        Err(Failure::new(
+            ErrorCode::PlayerUnreachable,
+            "restore reply lost",
+        )),
         Ok(json!({"undone":7})),
     ] {
         let (backend, reply) = fixture(Some(answer));
@@ -231,8 +264,14 @@ fn resource_reads_use_daemon_state_and_propagate_failure() {
     let (backend, reply) = fixture(Some(Ok(json!([]))));
     let document: Value = serde_json::from_str(&backend.zones_document().unwrap()).unwrap();
     assert_eq!(document, json!({"zones":[]}));
-    assert_eq!(*reply.calls.lock().unwrap(), [json!(["GET", "/zones", null])]);
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [json!(["GET", "/zones", null])]
+    );
     let (backend, reply) = fixture(Some(Err(Failure::new(ErrorCode::NotReady, "not ready"))));
     assert!(backend.zone_document("Room / &@S2").is_err());
-    assert_eq!(*reply.calls.lock().unwrap(), [json!(["GET", "/zones/Room%20%2F%20%26%40S2/state", null])]);
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [json!(["GET", "/zones/Room%20%2F%20%26%40S2/state", null])]
+    );
 }

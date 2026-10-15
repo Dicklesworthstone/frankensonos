@@ -59,7 +59,10 @@ fn a_blocked_control_yields_without_holding_the_request_thread() {
             .poll(&mut Context::from_waker(&wake))
             .is_pending()
     );
-    assert_ne!(running.recv_timeout(Duration::from_secs(5)).unwrap(), caller);
+    assert_ne!(
+        running.recv_timeout(Duration::from_secs(5)).unwrap(),
+        caller
+    );
     release.send(()).unwrap();
     let result = finish(waiting).unwrap();
     assert_eq!(result.structured_content, answer().structured_content);

@@ -42,8 +42,8 @@ impl Playback {
         state.transport = Some(transport);
         let tracks = observation.media.tracks;
         state.queue_length = Some(tracks);
-        let metadata_changed = before.now_playing != state.now_playing
-            || before.duration_secs != state.duration_secs;
+        let metadata_changed =
+            before.now_playing != state.now_playing || before.duration_secs != state.duration_secs;
         Changes {
             metadata_changed,
             transport: changed_transport.then_some((before.transport, transport)),

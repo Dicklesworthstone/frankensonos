@@ -91,7 +91,8 @@ pub fn enqueue<T: Transport + ?Sized>(
 ) -> Result<Queued, CoreError> {
     if !matches!(favorite.kind, FavoriteKind::Track | FavoriteKind::Container) {
         return Err(ProtoError::Malformed(
-            "only track, album and playlist favorites can be queued; play a station directly".into(),
+            "only track, album and playlist favorites can be queued; play a station directly"
+                .into(),
         )
         .into());
     }
@@ -113,10 +114,9 @@ pub fn enqueue<T: Transport + ?Sized>(
         .map_err(|_| ProtoError::Malformed("queue length exceeds u32".into()))?;
     let at = match track {
         Some(track) if track > length => {
-            return Err(ProtoError::Malformed(
-                "playing queue track changed; read it again".into(),
-            )
-            .into());
+            return Err(
+                ProtoError::Malformed("playing queue track changed; read it again".into()).into(),
+            );
         }
         Some(track) if track > 0 => track
             .checked_add(1)
@@ -137,7 +137,9 @@ pub fn enqueue<T: Transport + ?Sized>(
     let count = match sent {
         Ok(added) => {
             if added.first != first {
-                return Err(uncertain("the speaker reported a different insertion position"));
+                return Err(uncertain(
+                    "the speaker reported a different insertion position",
+                ));
             }
             usize::try_from(added.count)
                 .map_err(|_| uncertain("the added track count exceeds usize"))?

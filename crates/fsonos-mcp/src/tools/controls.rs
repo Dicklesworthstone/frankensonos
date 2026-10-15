@@ -4,8 +4,7 @@ use super::{Backend, TransportAction, plan};
 use fastmcp::FinalCallToolResult;
 use fastmcp::prelude::McpResult;
 use fsonos_api::{
-    GroupRequest, MuteRequest, PartyRequest, PlayRequest, SeekRequest, VolumeRequest,
-    ZoneRequest,
+    GroupRequest, MuteRequest, PartyRequest, PlayRequest, SeekRequest, VolumeRequest, ZoneRequest,
 };
 
 mod reviewed_undo;

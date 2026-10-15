@@ -12,7 +12,8 @@ impl Backend {
     /// Queue a Spotify source or a native household favorite on the daemon
     /// when present. The original `add_to_queue` Rust helper delegates here.
     pub fn queue_request(&self, req: &QueueRequest) -> McpResult<FinalCallToolResult> {
-        req.validate().map_err(|failure| crate::tool_error(&failure))?;
+        req.validate()
+            .map_err(|failure| crate::tool_error(&failure))?;
         let body = serde_json::to_value(req).map_err(|error| {
             crate::tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
         })?;

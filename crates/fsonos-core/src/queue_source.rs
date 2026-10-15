@@ -121,11 +121,15 @@ fn replace<T: Transport + ?Sized>(
     }
     if !autoplay
         && !matches!(
-            soap::get_transport_info(t, host).map_err(unconfirmed)?.state,
+            soap::get_transport_info(t, host)
+                .map_err(unconfirmed)?
+                .state,
             TransportState::Paused | TransportState::Stopped
         )
     {
-        return Err(unconfirmed("playback resumed while the replacement was staged"));
+        return Err(unconfirmed(
+            "playback resumed while the replacement was staged",
+        ));
     }
     if !before.uris.is_empty() {
         if staged.revision == 0 {

@@ -192,7 +192,10 @@ impl Controller {
     }
 
     pub(super) fn ready(&mut self) -> anyhow::Result<bool> {
-        ensure!(!self.relinquished, "synchronization ownership was relinquished");
+        ensure!(
+            !self.relinquished,
+            "synchronization ownership was relinquished"
+        );
         let current = self.observed()?;
         if (current.delay - self.expected).abs() > EPSILON {
             self.relinquished = true;

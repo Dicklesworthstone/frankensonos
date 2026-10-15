@@ -46,8 +46,13 @@ fn surface(sim: &SimHandle) -> Surface {
 }
 
 fn with_transport(transport: Box<dyn Transport + Send + Sync>) -> Surface {
-    Surface::new(transport, survey(), Policy::default(), Box::new(SystemClock))
-        .with_action_log(Box::new(MemStore::default()), "test")
+    Surface::new(
+        transport,
+        survey(),
+        Policy::default(),
+        Box::new(SystemClock),
+    )
+    .with_action_log(Box::new(MemStore::default()), "test")
 }
 
 fn id(h: &[HouseholdState], name: &str) -> PlayerId {

@@ -166,7 +166,10 @@ fn native_and_spotify_tracks_load_silently_without_touching_the_queue_or_levels(
             f.assert_silent();
             replies.assert_no_play();
             assert_eq!(replies.count("SetAVTransportURI"), 1);
-            assert_eq!(browse_snapshot(&f.sim.lan(), f.host, QUEUE).unwrap(), before);
+            assert_eq!(
+                browse_snapshot(&f.sim.lan(), f.host, QUEUE).unwrap(),
+                before
+            );
             let media = soap::get_media_info(&f.sim.lan(), f.host).unwrap();
             if spotify {
                 assert_eq!(
@@ -178,7 +181,9 @@ fn native_and_spotify_tracks_load_silently_without_touching_the_queue_or_levels(
             }
             control::resume(&f.sim.lan(), &f.houses, &f.id).unwrap();
             assert_eq!(
-                soap::get_transport_info(&f.sim.lan(), f.host).unwrap().state,
+                soap::get_transport_info(&f.sim.lan(), f.host)
+                    .unwrap()
+                    .state,
                 TransportState::Playing
             );
         }
@@ -271,17 +276,18 @@ fn album_and_playlist_preparation_pauses_before_any_new_track_can_enter_the_queu
             } else {
                 "spotify:playlist:0SimPreparedList000001"
             };
-            control::load_spotify_container(
-                &replies, &f.houses, &f.id, kind, uri, "Prepared",
-            )
-            .unwrap();
+            control::load_spotify_container(&replies, &f.houses, &f.id, kind, uri, "Prepared")
+                .unwrap();
             f.assert_silent();
             replies.assert_no_play();
             assert_eq!(replies.count("AddURIToQueue"), 1);
             assert_eq!(replies.count("RemoveTrackRangeFromQueue"), 1);
             let calls = replies.calls.borrow();
             let pause = calls.iter().position(|name| name == "Pause").unwrap();
-            let append = calls.iter().position(|name| name == "AddURIToQueue").unwrap();
+            let append = calls
+                .iter()
+                .position(|name| name == "AddURIToQueue")
+                .unwrap();
             assert!(pause < append);
             let queue = browse_snapshot(&f.sim.lan(), f.host, QUEUE).unwrap();
             assert_eq!(queue.objects.len(), 3);

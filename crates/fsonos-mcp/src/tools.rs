@@ -48,8 +48,8 @@ pub use eq::{GetEq, SetEq};
 mod queue_add;
 pub use queue_add::AddToQueue;
 
-mod documents;
 mod controls;
+mod documents;
 
 #[cfg(test)]
 mod daemon_tests;
@@ -157,9 +157,8 @@ impl Backend {
         request: &R,
         here: impl FnOnce() -> McpResult<FinalCallToolResult>,
     ) -> McpResult<FinalCallToolResult> {
-        let body = serde_json::to_value(request).map_err(|error| {
-            tool_error(&Failure::new(ErrorCode::Internal, error.to_string()))
-        })?;
+        let body = serde_json::to_value(request)
+            .map_err(|error| tool_error(&Failure::new(ErrorCode::Internal, error.to_string())))?;
         self.on_daemon::<OutcomeDto>("POST", path, Some(&body), sentence)
             .unwrap_or_else(here)
     }
@@ -252,8 +251,13 @@ impl Backend {
     /// The `get_queue` tool.
     pub fn queue(&self, zone: &str, offset: u32, limit: u32) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let path = format!("/zones/{}/queue?offset={offset}&limit={limit}", segment(zone));
-            let queue = self.read(&path, || self.surface.queue(&self.client, zone, offset, limit))?;
+            let path = format!(
+                "/zones/{}/queue?offset={offset}&limit={limit}",
+                segment(zone)
+            );
+            let queue = self.read(&path, || {
+                self.surface.queue(&self.client, zone, offset, limit)
+            })?;
             Ok((queue.text(), queue))
         })
     }
@@ -393,7 +397,9 @@ impl Backend {
             if let Some(zone) = zone {
                 let _ = write!(path, "&zone={}", segment(zone));
             }
-            let plays = self.read(&path, || self.surface.recent_plays(&self.client, zone, limit))?;
+            let plays = self.read(&path, || {
+                self.surface.recent_plays(&self.client, zone, limit)
+            })?;
             let text = if plays.is_empty() {
                 "no plays recorded".to_string()
             } else {
@@ -460,9 +466,9 @@ impl Backend {
     /// The `undo_last` tool: undo this caller's own newest action.
     pub fn undo_last(&self) -> McpResult<FinalCallToolResult> {
         let body = serde_json::json!({ "own_only": true });
-        if let Some(answer) = self.on_daemon::<UndoDto>("POST", "/undo", Some(&body), |r| {
-            r.summary.clone()
-        }) {
+        if let Some(answer) =
+            self.on_daemon::<UndoDto>("POST", "/undo", Some(&body), |r| r.summary.clone())
+        {
             return answer;
         }
         respond(|| {
@@ -772,7 +778,10 @@ async fn get_zone_state(
     description = "The zone (group) a room plays in: the rooms grouped with it (coordinator first), the household (S1/S2), whether the group is playing, paused or stopped, and any degraded rooms (e.g. one half of a stereo pair offline). For the current track and volume use get_zone_state. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household).",
     annotations(read_only, idempotent)
 )]
-async fn get_zone(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+async fn get_zone(
+    _ctx: &McpContext,
+    zone: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(move |b| b.zone(&zone)).await
 }
 
@@ -883,7 +892,10 @@ async fn next(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<Final
 #[tool(
     description = "Go back a track in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
-async fn previous(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+async fn previous(
+    _ctx: &McpContext,
+    zone: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
     transport(zone, TransportAction::Previous).await
 }
 
@@ -962,7 +974,10 @@ async fn group(
     description = "Take a room out of its group so it plays on its own. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to break every group up (each group's leading room plays on).",
     annotations(idempotent)
 )]
-async fn ungroup(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+async fn ungroup(
+    _ctx: &McpContext,
+    zone: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(move |b| b.ungroup(&ZoneRequest { zone })).await
 }
 
@@ -1079,7 +1094,10 @@ async fn dj_steer(
     description = "What the DJ plays in the group a room plays in, and why: the song or work (with the movement, i of n, for a classical work), its artist or composer, performers, album, the reason it was chosen (a summary and the weighted factors), the next two works, and the steering in effect (from dj_steer, or the time-of-day program: mood, constraints, how long it lasts). `zone` is a room name.",
     annotations(read_only, idempotent)
 )]
-async fn dj_status(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+async fn dj_status(
+    _ctx: &McpContext,
+    zone: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(move |b| b.dj_status(&zone)).await
 }
 

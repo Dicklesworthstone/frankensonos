@@ -35,7 +35,8 @@ impl Default for State {
 fn server() -> (Client, Arc<Mutex<State>>, thread::JoinHandle<()>) {
     let (client, mut peer) = UnixStream::pair().unwrap();
     peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-    peer.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+    peer.set_write_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
     let state = Arc::new(Mutex::new(State::default()));
     let remote = Arc::clone(&state);
     let worker = thread::spawn(move || {
@@ -174,7 +175,8 @@ fn invalid_speed_and_baselines_fail_before_a_write() {
 fn raw_response(reply: Vec<u8>) -> (Client, thread::JoinHandle<()>) {
     let (client, mut peer) = UnixStream::pair().unwrap();
     peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-    peer.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+    peer.set_write_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
     let worker = thread::spawn(move || {
         let mut line = String::new();
         BufReader::new(peer.try_clone().unwrap())

@@ -66,14 +66,18 @@ pub(super) fn load<T: Transport + ?Sized>(
         .ok_or_else(|| ProtoError::Malformed("queue positions start at one".into()))?;
     let before = browse_range_snapshot(transport, host, QUEUE, offset, 1)?;
     let [item] = before.objects.as_slice() else {
-        return Err(ProtoError::Malformed("the requested queue slot is absent".into()));
+        return Err(ProtoError::Malformed(
+            "the requested queue slot is absent".into(),
+        ));
     };
     if item
         .res
         .as_ref()
         .is_none_or(|res| res.uri.trim().is_empty() || res.uri == "NOT_IMPLEMENTED")
     {
-        return Err(ProtoError::Malformed("the queue slot has no identity".into()));
+        return Err(ProtoError::Malformed(
+            "the queue slot has no identity".into(),
+        ));
     }
     start(transport, host, coordinator, position, in_order, false)?;
     if !confirmed(transport, host, coordinator, position, Stage::Track)?

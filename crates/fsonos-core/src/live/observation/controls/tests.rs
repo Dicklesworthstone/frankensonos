@@ -184,7 +184,8 @@ fn a_survey_recovers_room_and_group_controls_without_any_notifications() {
         drop(snapshot);
         let calls = rig.calls.lock().unwrap().clone();
         assert_eq!(
-            calls.len(), 11,
+            calls.len(),
+            11,
             "five transport, four room, two group reads"
         );
         assert!(calls.iter().all(|(_, action)| action.starts_with("Get")));

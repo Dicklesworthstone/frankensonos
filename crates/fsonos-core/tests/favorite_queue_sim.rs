@@ -203,8 +203,14 @@ fn native_tracks_append_or_play_next_without_interrupting_the_owner() {
                 action == "AddURIToQueue" && body.contains(&xml_escape(&favorite.metadata))
             }));
             assert!(
-                control::unqueue(&sim.lan(), &households, &coordinator, added.first, &added.uris)
-                    .unwrap()
+                control::unqueue(
+                    &sim.lan(),
+                    &households,
+                    &coordinator,
+                    added.first,
+                    &added.uris
+                )
+                .unwrap()
             );
             assert_eq!(queue(&sim.lan(), host), original);
         }
@@ -242,8 +248,14 @@ fn native_album_and_playlist_favorites_need_no_track_render_template() {
             assert_eq!(queue(&sim.lan(), host), expected);
             t.assert_only_adds(1);
             assert!(
-                control::unqueue(&sim.lan(), &households, &coordinator, added.first, &added.uris)
-                    .unwrap()
+                control::unqueue(
+                    &sim.lan(),
+                    &households,
+                    &coordinator,
+                    added.first,
+                    &added.uris
+                )
+                .unwrap()
             );
             assert_eq!(queue(&sim.lan(), host), original);
         }
@@ -269,7 +281,10 @@ fn lost_native_track_replies_are_read_back_without_duplicate_mutations() {
             let added =
                 favorite_queue::enqueue(&t, &households, &coordinator, &favorite, false).unwrap();
             assert_eq!(added.first, 2);
-            assert_eq!(queue(&sim.lan(), host), vec![favorite.uri.clone().unwrap(); 2]);
+            assert_eq!(
+                queue(&sim.lan(), host),
+                vec![favorite.uri.clone().unwrap(); 2]
+            );
             t.assert_only_adds(1);
         }
     }
@@ -285,9 +300,8 @@ fn unconfirmed_writes_never_replay_or_change_transport() {
     ] {
         let (sim, households, coordinator) = fixture(2);
         let t = Tape::new(&sim, Some(fault));
-        let error =
-            favorite_queue::enqueue(&t, &households, &coordinator, &local("track"), false)
-                .unwrap_err();
+        let error = favorite_queue::enqueue(&t, &households, &coordinator, &local("track"), false)
+            .unwrap_err();
         assert!(error.to_string().contains("uncertain"), "{error}");
         t.assert_only_adds(1);
     }
@@ -303,8 +317,8 @@ fn a_lost_container_reply_is_not_inferred_from_an_unattributable_expansion() {
             .find(|favorite| favorite.kind == FavoriteKind::Container)
             .unwrap();
         let t = Tape::new(&sim, Some(Fault::LostReply));
-        let error = favorite_queue::enqueue(&t, &households, &coordinator, &favorite, false)
-            .unwrap_err();
+        let error =
+            favorite_queue::enqueue(&t, &households, &coordinator, &favorite, false).unwrap_err();
         assert!(error.to_string().contains("uncertain"));
         assert!(!queue(&sim.lan(), sim.player("Den").unwrap().ip).is_empty());
         t.assert_only_adds(1);

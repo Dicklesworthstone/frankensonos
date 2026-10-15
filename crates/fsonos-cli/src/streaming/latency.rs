@@ -227,10 +227,8 @@ mod tests {
         let mut microphone = delayed(&reference, lag);
         let noise = noise(reference.len(), 3);
         for index in (1..microphone.len()).rev() {
-            microphone[index] = -0.6 * microphone[index]
-                + 0.12 * microphone[index - 1]
-                + 0.05 * noise[index]
-                + 0.1;
+            microphone[index] =
+                -0.6 * microphone[index] + 0.12 * microphone[index - 1] + 0.05 * noise[index] + 0.1;
         }
         let found = estimate(&reference, &microphone, 4 * SAMPLE_RATE).unwrap();
         assert_eq!(found.lag_samples, lag);

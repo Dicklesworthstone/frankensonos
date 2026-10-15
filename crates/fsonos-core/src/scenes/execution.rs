@@ -2,8 +2,8 @@
 //! whose reply was lost; topology is the authority for whether it happened.
 
 use super::{
-    ApplyOptions, HouseholdState, Room, SceneOp, ScenePlan, SceneReport, fade_volumes, leads,
-    run, silence_starting,
+    ApplyOptions, HouseholdState, Room, SceneOp, ScenePlan, SceneReport, fade_volumes, leads, run,
+    silence_starting,
 };
 use fsonos_proto::Transport;
 use fsonos_proto::topology::get_zone_group_state;
@@ -169,9 +169,8 @@ fn observed(before: &[HouseholdState], live: &[HouseholdState], op: &SceneOp) ->
                     other.primary == current.primary || other.coordinator != current.coordinator
                 })
         }
-        SceneOp::Join { coordinator, .. } => room(live, coordinator).is_some_and(|lead| {
-            leads(lead) && lead.players.contains(&current.coordinator)
-        }),
+        SceneOp::Join { coordinator, .. } => room(live, coordinator)
+            .is_some_and(|lead| leads(lead) && lead.players.contains(&current.coordinator)),
         _ => false,
     }
 }

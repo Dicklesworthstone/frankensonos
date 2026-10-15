@@ -84,12 +84,7 @@ fn an_occupied_callback_port_does_not_hide_reachable_households_or_controls() {
         pause(&sim.lan(), host).unwrap();
         set_volume(&sim.lan(), host, 23).unwrap();
         set_mute(&sim.lan(), host, true).unwrap();
-        set_play_mode(
-            &sim.lan(),
-            host,
-            PlayMode::from_wire("REPEAT_ALL").unwrap(),
-        )
-        .unwrap();
+        set_play_mode(&sim.lan(), host, PlayMode::from_wire("REPEAT_ALL").unwrap()).unwrap();
     }
     let calls = sim.soap_log().len();
     survey(&engine, &mut model);
@@ -100,8 +95,17 @@ fn an_occupied_callback_port_does_not_hide_reachable_households_or_controls() {
     assert!(snapshot.surveyed_at.is_some());
     assert_eq!(snapshot.callback, None);
     assert_eq!(snapshot.subscriptions, 0);
-    assert!(snapshot.last_error.as_deref().unwrap().contains("cannot listen"));
-    assert!(sim.gena_log().is_empty(), "no bogus callback was subscribed");
+    assert!(
+        snapshot
+            .last_error
+            .as_deref()
+            .unwrap()
+            .contains("cannot listen")
+    );
+    assert!(
+        sim.gena_log().is_empty(),
+        "no bogus callback was subscribed"
+    );
     for name in ["Legacy", "Modern"] {
         let id = PlayerId(sim.player(name).unwrap().uuid.clone());
         let state = snapshot.playback.of(&id).unwrap();
@@ -119,7 +123,11 @@ fn an_occupied_callback_port_does_not_hide_reachable_households_or_controls() {
     );
     let events: Vec<_> = received.try_iter().collect();
     assert!(events.contains(&LiveEvent::Topology));
-    assert!(events.iter().any(|e| matches!(e, LiveEvent::Playback { .. })));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, LiveEvent::Playback { .. }))
+    );
     let next = model.rec.schedule.next_at();
     assert!(next > Instant::now());
     assert!(next <= Instant::now() + EVENTLESS_RETRY);
@@ -180,7 +188,14 @@ fn releasing_the_requested_port_restores_subscriptions_and_event_driven_updates(
         "GENA, not polling, delivered the update"
     );
     assert_eq!(
-        engine.snapshot.lock().unwrap().playback.of(&id).unwrap().volume,
+        engine
+            .snapshot
+            .lock()
+            .unwrap()
+            .playback
+            .of(&id)
+            .unwrap()
+            .volume,
         Some(47)
     );
     engine.release(&mut model);

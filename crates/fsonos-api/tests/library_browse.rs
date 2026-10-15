@@ -31,22 +31,27 @@ fn app() -> fastapi::App {
         }
     }
     let mut store = MemStore::default();
-    let entries = (0..51).map(|n| {
-        let mut entry = LibraryEntry::default();
-        entry.track.source_uri = format!("spotify:track:sim{n:03}");
-        entry.track.title = format!("Track {n:03}");
-        entry.album_uri = Some("spotify:album:simAlbum".into());
-        entry.track.album = Some("A cached album".into());
-        entry
-    }).collect::<Vec<_>>();
+    let entries = (0..51)
+        .map(|n| {
+            let mut entry = LibraryEntry::default();
+            entry.track.source_uri = format!("spotify:track:sim{n:03}");
+            entry.track.title = format!("Track {n:03}");
+            entry.album_uri = Some("spotify:album:simAlbum".into());
+            entry.track.album = Some("A cached album".into());
+            entry
+        })
+        .collect::<Vec<_>>();
     store.upsert_library(&entries).unwrap();
-    store.save_playlists(&[("spotify:playlist:simList".into(), "A list".into())]).unwrap();
+    store
+        .save_playlists(&[("spotify:playlist:simList".into(), "A list".into())])
+        .unwrap();
     let surface = fsonos_api::Surface::new(
         Box::new(NoLan),
         Box::new(|_| panic!("library browsing must not discover speakers")),
         fsonos_core::policy::Policy::default(),
         Box::new(fsonos_core::clock::SystemClock),
-    ).with_action_log(Box::new(store), "http-test");
+    )
+    .with_action_log(Box::new(store), "http-test");
     fsonos_api::app(
         &Arc::new(surface),
         &fsonos_api::Identity::fixed(fsonos_core::policy::Client::LoopbackHttp),
@@ -63,7 +68,9 @@ fn browse_routes_page_filter_validate_and_describe_the_cache_over_loopback() {
         std::thread::spawn(move || {
             runtime().block_on(async move {
                 let cx = Cx::current().unwrap();
-                let listener = asupersync::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let listener = asupersync::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .unwrap();
                 tx.send(listener.local_addr().unwrap()).unwrap();
                 let _ = server.serve_on_app(&cx, listener, Arc::new(app())).await;
             });
@@ -87,7 +94,11 @@ fn browse_routes_page_filter_validate_and_describe_the_cache_over_loopback() {
         let client = Client::default_for_runtime(&cx);
         let mut replies = Vec::new();
         for path in paths {
-            let response = client.get(format!("http://{addr}{path}")).send(&cx).await.unwrap();
+            let response = client
+                .get(format!("http://{addr}{path}"))
+                .send(&cx)
+                .await
+                .unwrap();
             replies.push((response.status, response.body));
         }
         replies
@@ -97,7 +108,12 @@ fn browse_routes_page_filter_validate_and_describe_the_cache_over_loopback() {
     worker.join().unwrap();
 
     for (i, (status, _)) in replies.iter().enumerate() {
-        assert_eq!(*status, if (5..=8).contains(&i) { 400 } else { 200 }, "{}", paths[i]);
+        assert_eq!(
+            *status,
+            if (5..=8).contains(&i) { 400 } else { 200 },
+            "{}",
+            paths[i]
+        );
     }
     let page = |i: usize| serde_json::from_slice::<BrowsePage>(&replies[i].1).unwrap();
     assert_eq!(page(0).items.len(), 50);
@@ -108,5 +124,8 @@ fn browse_routes_page_filter_validate_and_describe_the_cache_over_loopback() {
     assert_eq!(page(3).items[0].kind, "playlist");
     assert_eq!(page(4).items[0].title, "Track 050");
     let spec: serde_json::Value = serde_json::from_slice(&replies[9].1).unwrap();
-    assert_eq!(spec["paths"]["/library/browse"]["get"]["operationId"], "browse_library");
+    assert_eq!(
+        spec["paths"]["/library/browse"]["get"]["operationId"],
+        "browse_library"
+    );
 }

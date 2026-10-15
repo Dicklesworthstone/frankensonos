@@ -93,7 +93,13 @@ fn parsed_same_uri_metadata_survives_the_live_filter_and_reaches_json_consumers(
     assert_eq!(answer.events[1].data["metadata_changed"], true);
     assert!(answer.events[1].data.get("track").is_none());
     assert_eq!(
-        playback.of(&player).unwrap().now_playing.as_ref().unwrap().title,
+        playback
+            .of(&player)
+            .unwrap()
+            .now_playing
+            .as_ref()
+            .unwrap()
+            .title,
         "Second"
     );
 }

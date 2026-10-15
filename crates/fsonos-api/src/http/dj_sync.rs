@@ -6,8 +6,8 @@
 //! | `POST /dj/sync` | `{}` | [`LibrarySyncDto`]: the refresh started (or already running) |
 //! | `GET /library/browse` | | [`BrowsePage`]: cached tracks, albums, or playlists |
 
-use fastapi::core::RouteEntry;
 use fastapi::Request;
+use fastapi::core::RouteEntry;
 use serde_json::{Map, Value};
 
 use super::{Ctx, DJ, Op, answer, body_or_default, query_param, whole_number};
@@ -49,7 +49,10 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             |s, c, req| answer(browse_query(req).and_then(|q| s.browse_library(c, &q))),
         )
         .query_schema::<BrowseQuery>(false)
-        .response_schema::<BrowsePage>(200, "A bounded page of cached music with a change detector"),
+        .response_schema::<BrowsePage>(
+            200,
+            "A bounded page of cached music with a change detector",
+        ),
     ]
 }
 
@@ -60,13 +63,13 @@ fn browse_query(req: &Request) -> Result<BrowseQuery, Failure> {
     }
     let mut seen = std::collections::BTreeSet::new();
     for pair in raw.split('&').filter(|pair| !pair.is_empty()) {
-        let (name, _) = pair.split_once('=').ok_or_else(|| {
-            Failure::invalid("browse parameters must be name=value pairs")
-        })?;
-        if !["kind", "q", "album_uri", "offset", "limit"].contains(&name)
-            || !seen.insert(name)
-        {
-            return Err(Failure::invalid("unknown or repeated library browse parameter"));
+        let (name, _) = pair
+            .split_once('=')
+            .ok_or_else(|| Failure::invalid("browse parameters must be name=value pairs"))?;
+        if !["kind", "q", "album_uri", "offset", "limit"].contains(&name) || !seen.insert(name) {
+            return Err(Failure::invalid(
+                "unknown or repeated library browse parameter",
+            ));
         }
     }
     let query = BrowseQuery {

@@ -291,10 +291,7 @@ mod tests {
                     }],
                 );
             }
-            assert!(matches!(
-                receive.try_recv(),
-                Ok(LiveEvent::Playback { .. })
-            ));
+            assert!(matches!(receive.try_recv(), Ok(LiveEvent::Playback { .. })));
             // This is also called on quiet outer-loop turns, not just on NOTIFY.
             engine.emit(&[]);
             assert_eq!(receive.try_recv(), Ok(LiveEvent::Resync));

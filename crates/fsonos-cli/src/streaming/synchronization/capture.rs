@@ -68,7 +68,11 @@ pub(super) fn record(options: &Options, stop: &Stop) -> anyhow::Result<Option<Ve
             .context("start local synchronized microphone/reference capture")?,
         reader: None,
     };
-    let stdout = capture.child.stdout.take().context("capture has no PCM pipe")?;
+    let stdout = capture
+        .child
+        .stdout
+        .take()
+        .context("capture has no PCM pipe")?;
     let (send, receive) = mpsc::sync_channel(1);
     capture.reader = Some(
         thread::Builder::new()
@@ -143,7 +147,10 @@ mod tests {
             ("-f", "s16le"),
             ("-c:a", "pcm_s16le"),
         ] {
-            assert!(args.windows(2).any(|pair| pair[0] == option && pair[1] == value));
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair[0] == option && pair[1] == value)
+            );
         }
     }
 }

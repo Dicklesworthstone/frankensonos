@@ -14,7 +14,12 @@ struct PreviewDto {
 
 fn undo_text(undone: &UndoDto) -> String {
     std::iter::once(undone.summary.clone())
-        .chain(undone.failures.iter().map(|why| format!("Not restored: {why}")))
+        .chain(
+            undone
+                .failures
+                .iter()
+                .map(|why| format!("Not restored: {why}")),
+        )
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -33,8 +38,11 @@ impl Backend {
             return Ok(None);
         };
         let answer = daemon.call(method, path, body).ok_or_else(|| {
-            Failure::new(ErrorCode::NotReady, "the daemon's action log is not reachable")
-                .with_hint("Reconnect to the same daemon; no local log or alternate undo was used.")
+            Failure::new(
+                ErrorCode::NotReady,
+                "the daemon's action log is not reachable",
+            )
+            .with_hint("Reconnect to the same daemon; no local log or alternate undo was used.")
         })?;
         from_daemon(answer, method, path).map(Some).map_err(|failure| {
             if method != "GET" && failure.code == ErrorCode::Internal {
@@ -60,20 +68,23 @@ impl Backend {
             if action.as_ref().is_some_and(|a| {
                 a.id <= 0 || !a.undoable || a.undo_of.is_some() || a.client != self.client.key()
             }) {
-                return Err(Failure::new(
-                    ErrorCode::Internal,
-                    "the undo preview is inconsistent",
-                )
-                .with_hint("Read a new preview from the same daemon; nothing was restored."));
+                return Err(
+                    Failure::new(ErrorCode::Internal, "the undo preview is inconsistent")
+                        .with_hint(
+                            "Read a new preview from the same daemon; nothing was restored.",
+                        ),
+                );
             }
             let text = action.as_ref().map_or_else(
                 || "nothing to undo".to_string(),
-                |a| format!(
-                    "Review action #{} by {}: {}\nResult: {}\n\
+                |a| {
+                    format!(
+                        "Review action #{} by {}: {}\nResult: {}\n\
                      Confirm with undo_checked(expected_id={}). Restoring its before-state \
                      can overwrite later changes; there is no redo.",
-                    a.id, a.client, a.intent, a.result, a.id,
-                ),
+                        a.id, a.client, a.intent, a.result, a.id,
+                    )
+                },
             );
             Ok((text, PreviewDto { action }))
         })
@@ -96,7 +107,9 @@ impl Backend {
                     ErrorCode::Internal,
                     "the undo reply did not confirm the reviewed action; the outcome is uncertain",
                 )
-                .with_hint("Inspect playback and read a new preview; do not automatically retry undo."));
+                .with_hint(
+                    "Inspect playback and read a new preview; do not automatically retry undo.",
+                ));
             }
             Ok((undo_text(&undone), undone))
         })

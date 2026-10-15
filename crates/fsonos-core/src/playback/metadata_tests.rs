@@ -91,10 +91,20 @@ fn each_same_uri_track_detail_is_published_without_resetting_playback() {
     let now = Instant::now();
     let at = now + Duration::from_secs(10);
     for doc in [
-        document("Next <song> & 雨", "First artist", "First album", "/first-art"),
+        document(
+            "Next <song> & 雨",
+            "First artist",
+            "First album",
+            "/first-art",
+        ),
         document("First song", "Next artist", "First album", "/first-art"),
         document("First song", "First artist", "Next album", "/first-art"),
-        document("First song", "First artist", "First album", "/next-art?x=1&y=2"),
+        document(
+            "First song",
+            "First artist",
+            "First album",
+            "/next-art?x=1&y=2",
+        ),
     ] {
         let (mut playback, _) = playing(now);
         let changes = playback
@@ -111,7 +121,11 @@ fn each_same_uri_track_detail_is_published_without_resetting_playback() {
         assert_eq!(state.mute, Some(true));
         assert_eq!(
             state.now_playing,
-            sample(&doc).position.metadata.as_ref().map(NowPlaying::from_didl)
+            sample(&doc)
+                .position
+                .metadata
+                .as_ref()
+                .map(NowPlaying::from_didl)
         );
     }
 }
