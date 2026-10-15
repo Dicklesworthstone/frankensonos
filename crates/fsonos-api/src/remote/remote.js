@@ -44,6 +44,135 @@ function path(name, params = {}, query = null) {
   return search ? `${filled}?${search}` : filled;
 }
 
+// One deadline covers connection, response body and read-only backoff. A
+// browser abort is not proof that a command stopped executing on the daemon.
+const RequestRemote = (() => {
+  const READ_TIMEOUT = 15000;
+  const WRITE_TIMEOUT = 120000;
+  const LONG_WRITE_TIMEOUT = 600000;
+  const ANNOUNCE_TIMEOUT = 1200000;
+  const RETRIES = 2;
+  const TRANSIENT = new Set([408, 429, 502, 503, 504]);
+  const UNCERTAIN_HINT = 'It may have taken effect or may still finish. Check the current state before sending another command. This request was not repeated.';
+
+  function timeoutFor(method, where) {
+    if (method === 'GET') return READ_TIMEOUT;
+    const pathname = where.split('?')[0];
+    // Queue expansion, scene fades and spoken announcements can legitimately
+    // outlast ordinary controls. Do not interrupt them at a read's deadline.
+    if (pathname === '/announce') return ANNOUNCE_TIMEOUT;
+    if (pathname === '/queue' || pathname.startsWith('/dj/')
+        || /^\/scenes\/[^/]+\/apply$/.test(pathname)) return LONG_WRITE_TIMEOUT;
+    return WRITE_TIMEOUT;
+  }
+
+  function retryAfter(value, now) {
+    if (typeof value !== 'string' || !value.trim()) return null;
+    const text = value.trim();
+    if (/^[0-9]+$/.test(text)) return Number(text) * 1000;
+    // Negative and fractional numbers are not HTTP dates or delta-seconds.
+    if (/^[+-]?[0-9.]+$/.test(text)) return null;
+    const date = Date.parse(text);
+    return Number.isFinite(date) ? Math.max(0, date - now) : null;
+  }
+
+  function create({ fetcher = (where, init) => fetch(where, init),
+    schedule = setTimeout, cancel = clearTimeout, now = Date.now, random = Math.random } = {}) {
+    return async function request(where, init) {
+      const read = init.method === 'GET';
+      const timeout = timeoutFor(init.method, where);
+      const ends = now() + timeout;
+      const controller = new AbortController();
+      let finished = false, backoff = null, deadline = null;
+      const failure = (code, detail, uncertain = false) => {
+        const error = new Error(detail);
+        error.code = code;
+        error.uncertain = uncertain;
+        if (uncertain) error.hint = UNCERTAIN_HINT;
+        return error;
+      };
+      const timedOut = failure(read ? 'REMOTE_READ_TIMEOUT' : 'REMOTE_OUTCOME_UNKNOWN',
+        read ? 'The state request timed out. Refresh to read it again.'
+          : 'The action did not return a confirmation in time.', !read);
+      const expired = new Promise((_, reject) => {
+        deadline = schedule(() => {
+          finished = true;
+          // Settle independently of abort: even a stuck body/transport that
+          // ignores cancellation must release its caller's busy state.
+          reject(timedOut);
+          controller.abort();
+        }, timeout);
+      });
+      const run = async () => {
+        for (let attempt = 0; ; attempt++) {
+          if (finished) throw timedOut;
+          try {
+            let answer, text;
+            try {
+              answer = await fetcher(where, { ...init, signal: controller.signal,
+                credentials: 'same-origin', redirect: 'error' });
+              if (finished) throw timedOut;
+              text = await answer.text();
+            } catch (cause) {
+              if (finished) throw timedOut;
+              const error = failure(read ? 'REMOTE_NETWORK_ERROR' : 'REMOTE_OUTCOME_UNKNOWN',
+                read ? 'Could not read the current state. Check the connection to FrankenSonos.'
+                  : 'The connection ended before this action was confirmed.', !read);
+              error.cause = cause;
+              throw error;
+            }
+            if (finished) throw timedOut;
+            let data = null, decoded = false;
+            try { data = JSON.parse(text); decoded = true; } catch (_) { /* Checked below. */ }
+            if (!answer.ok) {
+              const detail = data && typeof data.detail === 'string' && data.detail
+                ? data.detail : `${init.method} ${where}: ${answer.status}`;
+              const error = failure(data && typeof data.code === 'string' ? data.code : 'HTTP_ERROR',
+                detail, !read && (answer.status >= 500 || answer.status === 408));
+              error.status = answer.status;
+              const hint = data && typeof data.hint === 'string' ? data.hint : '';
+              error.hint = [hint, error.hint].filter(Boolean).join(' ');
+              error.retryAfter = retryAfter(answer.headers?.get('retry-after'), now());
+              throw error;
+            }
+            // Empty/malformed successes cannot acknowledge a write. JSON null
+            // and a genuine 204 remain valid for endpoints with no result.
+            if (!decoded && answer.status !== 204) {
+              throw failure(read ? 'REMOTE_INVALID_RESPONSE' : 'REMOTE_OUTCOME_UNKNOWN',
+                'The daemon returned an unreadable response.', !read);
+            }
+            return data;
+          } catch (error) {
+            if (finished) throw timedOut;
+            // Only reads can repeat. Never retry a POST, including 429/503,
+            // lost replies, malformed acknowledgements or timed-out bodies.
+            if (!read || attempt >= RETRIES
+                || !((error.status === undefined && error.code === 'REMOTE_NETWORK_ERROR') || TRANSIENT.has(error.status))) throw error;
+            const base = 250 * (2 ** attempt);
+            const delay = Math.max(base + Math.floor(random() * base), error.retryAfter ?? 0);
+            // Honor Retry-After in full or stop; never cap it into an early retry.
+            if (delay >= ends - now()) throw error;
+            await new Promise((resolve) => { backoff = schedule(resolve, delay); });
+            backoff = null;
+          }
+        }
+      };
+      try {
+        return await Promise.race([run(), expired]);
+      } finally {
+        finished = true;
+        cancel(deadline);
+        if (backoff !== null) cancel(backoff);
+      }
+    };
+  }
+
+  return { create, timeoutFor, retryAfter, READ_TIMEOUT, WRITE_TIMEOUT,
+    LONG_WRITE_TIMEOUT, ANNOUNCE_TIMEOUT, RETRIES };
+})();
+
+const requestJson = RequestRemote.create();
+
 /** Call route `name`; its JSON answer, or an Error carrying the API's. */
 async function call(name, { params, query, body } = {}) {
   const [method] = ROUTES[name];
@@ -52,31 +181,7 @@ async function call(name, { params, query, body } = {}) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body || {});
   }
-  const where = path(name, params, query);
-  // A stuck read must not hold event recovery forever. Writes are never
-  // timed out into an automatic retry or dispatched through another path.
-  const controller = method === 'GET' ? new AbortController() : null;
-  const deadline = controller ? setTimeout(() => controller.abort(), 15000) : null;
-  if (controller) init.signal = controller.signal;
-  try {
-    const answer = await fetch(where, init);
-    const text = await answer.text();
-    let data = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch (_) {
-      data = null;
-    }
-    if (!answer.ok) {
-      const error = new Error((data && data.detail) || `${method} ${where}: ${answer.status}`);
-      error.code = data && data.code;
-      error.hint = data && data.hint;
-      throw error;
-    }
-    return data;
-  } finally {
-    if (deadline !== null) clearTimeout(deadline);
-  }
+  return requestJson(path(name, params, query), init);
 }
 
 /** An element: `attrs` (text, class, on<event>, attributes) and children. */
