@@ -65,11 +65,12 @@ const DashboardCore = (() => {
   function request({ fetcher = (...a) => fetch(...a), schedule = setTimeout, cancel = clearTimeout } = {}) {
     return async (url, body) => {
       const write = body !== undefined, abort = new AbortController();
+      const budget = write && (url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)) ? 600000 : write ? 120000 : 10000;
       let timer;
       const timeout = new Promise((_, reject) => {
         timer = schedule(() => { reject(new Error(write
           ? 'No command confirmation arrived. It may still complete; refresh before another action.'
-          : 'The daemon did not answer in time.')); abort.abort(); }, write ? 120000 : 10000);
+          : 'The daemon did not answer in time.')); abort.abort(); }, budget);
       });
       try {
         return await Promise.race([timeout, (async () => {
@@ -111,7 +112,7 @@ const DashboardCore = (() => {
         if (!current()) return false;
         const old = new Map(state.items.map((i) => [shape(i.zone), i]));
         const items = list.map((zone) => ({ zone, state: old.get(shape(zone))?.state || null,
-          fresh: false, at: now(), error: '' }));
+          fresh: false, at: old.get(shape(zone))?.at ?? now(), error: '' }));
         let failed = false;
         await each(items, async (item) => {
           if (!current()) return;
@@ -140,23 +141,23 @@ const DashboardCore = (() => {
       if (disposed || state.busy || !state.items.some((i) => key(i.zone) === target)) return false;
       state.selected = target; emit(); return true;
     }
-    async function command(verb, change = {}) {
-      if (!canControl() || !['pause', 'resume', 'next', 'previous', 'volume'].includes(verb)) return false;
-      if (verb === 'volume' && (!Number.isInteger(change.delta) || ![-5, 5].includes(change.delta))) return false;
+    // One mutation lane for transport, the DJ, search and house scenes. A
+    // retained callback cannot dispatch after its operation/lifetime ended.
+    async function mutate(operation) {
+      if (!canControl()) return false;
       const item = selected(), version = epoch, target = key(item.zone);
-      const valid = () => !disposed && state.active && version === epoch && state.selected === target;
-      const body = { zone: target, ...(verb === 'volume' ? { delta: change.delta, group: true } : {}) };
-      let sent = false, accepted = false;
+      let sent = false, accepted = false, open = true;
+      const valid = () => open && !disposed && state.active && version === epoch && state.selected === target;
+      const check = () => { if (!valid()) throw new Error('The view changed. Review this action again.'); };
       state.busy = true; state.message = ''; emit();
       try {
-        const fresh = playback(await call(`/zones/${encodeURIComponent(target)}/state`), item.zone);
-        if (!valid()) return false;
-        if (verb !== 'volume' && (fresh.transport_state !== item.state.transport_state
-            || fresh.track?.uri !== item.state.track?.uri || fresh.track?.queue_position !== item.state.track?.queue_position)) {
-          throw new Error('Playback changed. Refresh before sending this command.');
-        }
-        sent = true;
-        const result = await call(`/${verb}`, body);
+        const result = await operation({ item, target, check,
+          async send(url, body) {
+            check();
+            if (sent) throw new Error('This action already dispatched its one command.');
+            sent = true;
+            return call(url, body);
+          } });
         if (!result || typeof result.done !== 'string' || typeof result.changed !== 'boolean'
             || (result.notes != null && (!Array.isArray(result.notes) || !result.notes.every((n) => n && typeof n.detail === 'string')))) {
           throw new Error('The command response was incomplete.');
@@ -170,16 +171,30 @@ const DashboardCore = (() => {
         state.message = `${problem(e)} ${sent ? 'Outcome uncertain; no retry was sent. Use Refresh before another command.' : 'No command was sent.'}`;
         return false;
       } finally {
+        const canRefresh = valid(); open = false;
         state.busy = false; emit();
-        if (accepted && valid()) await refresh();
+        if (accepted && canRefresh) await refresh();
       }
+    }
+    async function command(verb, change = {}) {
+      if (!['pause', 'resume', 'next', 'previous', 'volume'].includes(verb)) return false;
+      if (verb === 'volume' && (!Number.isInteger(change.delta) || ![-5, 5].includes(change.delta))) return false;
+      return mutate(async ({ item, target, check, send }) => {
+        const fresh = playback(await call(`/zones/${encodeURIComponent(target)}/state`), item.zone);
+        check();
+        if (verb !== 'volume' && (fresh.transport_state !== item.state.transport_state
+            || fresh.track?.uri !== item.state.track?.uri || fresh.track?.queue_position !== item.state.track?.queue_position)) {
+          throw new Error('Playback changed. Refresh before sending this command.');
+        }
+        return send(`/${verb}`, { zone: target, ...(verb === 'volume' ? { delta: change.delta, group: true } : {}) });
+      });
     }
     function suspend() {
       ++epoch; state.active = false; state.loading = false; state.connected = false;
       for (const i of state.items) i.fresh = false;
       emit();
     }
-    return { state, refresh, select, selected, canControl, command, suspend,
+    return { state, refresh, select, selected, canControl, command, mutate, suspend,
       connection(value) { state.connected = value; emit(); },
       resume() { if (!disposed) { state.active = true; emit(); } },
       dispose() { disposed = true; suspend(); } };
