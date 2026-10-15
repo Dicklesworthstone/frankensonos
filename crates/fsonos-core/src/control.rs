@@ -22,6 +22,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 mod loading;
+pub mod queue_removal;
 mod queue_start;
 mod seek_relative;
 mod source_start;
@@ -380,10 +381,9 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
     })
 }
 
-/// Take tracks [`enqueue_spotify`] added (`uris`, from queue position
-/// `first`) off the queue of the group `coordinator` leads again.
-/// `Ok(false)`, with nothing removed, when a consistent read no longer
-/// finds them there. The read and removal are separate device operations.
+/// Take the recorded tracks off the original coordinator's queue again.
+/// A stale range returns `Ok(false)` without writing. A matching range uses
+/// a nonzero revision and exact read-back; lost replies never repeat removal.
 pub fn unqueue<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -394,20 +394,13 @@ pub fn unqueue<T: Transport + ?Sized>(
     if uris.is_empty() {
         return Ok(true);
     }
-    if uris.iter().any(|uri| uri.trim().is_empty()) {
-        return Err(ProtoError::Malformed("queued track identity is empty".into()).into());
-    }
-    let host = addr(households, coordinator)?;
-    let count = u32::try_from(uris.len())
-        .map_err(|_| ProtoError::Malformed("queued range exceeds u32 tracks".into()))?;
-    if queue_uris(t, host, first, count)? != uris {
-        return Ok(false);
-    }
-    // UpdateID 0 takes the queue as it is, as SoCo and node-sonos send it:
-    // the tracks were just read back where they were added, and players
-    // need not count a queue's changes the way its Browse does.
-    soap::remove_track_range_from_queue(t, host, 0, first, count)?;
-    Ok(true)
+    Ok(queue_removal::undo(
+        t,
+        addr(households, coordinator)?,
+        coordinator,
+        first,
+        uris,
+    )?)
 }
 
 /// The URIs of up to `count` queue tracks from position `first` (1-based)
