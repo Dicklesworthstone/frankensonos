@@ -19,6 +19,8 @@ use std::time::Instant;
 
 #[cfg(test)]
 mod metadata_tests;
+#[cfg(test)]
+mod position_tests;
 mod observation;
 pub use observation::PlaybackObservation;
 
@@ -71,9 +73,23 @@ pub struct PlayerPlayback {
     pub group_mute: Option<bool>,
     /// The last known position and when it was observed.
     position: Option<(u32, Instant)>,
+    /// AVTransport reports a change but omits its actual playback clock.
+    position_requested: bool,
 }
 
 impl PlayerPlayback {
+    /// One read-back is needed after a transport observation, including a
+    /// seek whose URI and transport state are unchanged. The live worker
+    /// coalesces these requests; this flag never performs I/O itself.
+    pub(crate) fn needs_position_sample(&self) -> bool {
+        self.position_requested
+            && self.track_uri.is_some()
+            && matches!(
+                self.transport,
+                Some(TransportState::Playing | TransportState::Paused | TransportState::Stopped)
+            )
+    }
+
     /// The play position at `now`: the last observed position, advanced by
     /// the time since while playing, and never past the track's end.
     #[must_use]
@@ -195,6 +211,9 @@ impl Playback {
     /// retain optional details the player omitted (GENA may know more).
     pub fn apply_position(&mut self, player: &PlayerId, info: &PositionInfo, now: Instant) {
         let state = self.players.entry(player.clone()).or_default();
+        // A complete read can legitimately omit timing (radio, for example).
+        // Consume the request even then; do not spin on an unknowable clock.
+        state.position_requested = false;
         let uri = match info.uri.trim() {
             "" | "NOT_IMPLEMENTED" => None,
             uri => Some(uri.to_string()),
@@ -298,6 +317,15 @@ fn apply_av_transport(
             .current_track_metadata()?
             .as_ref()
             .map(NowPlaying::from_didl);
+    }
+    if ["TransportState", "CurrentTrackURI", "CurrentTrack"]
+        .iter()
+        .any(|field| lc.get(field).is_some())
+    {
+        // LastChange does not carry RelTime. Even an otherwise identical
+        // accepted event may mean the owner sought within this same track.
+        // Preserve the display estimate until a complete read replaces it.
+        state.position_requested = state.track_uri.is_some();
     }
     Ok(())
 }

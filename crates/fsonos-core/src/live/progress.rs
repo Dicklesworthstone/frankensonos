@@ -1,4 +1,6 @@
-//! Repair a missed track-end event without polling normally advancing music.
+//! Sample clocks after transport events and repair missed track-end events.
+//! No periodic position polling: accepted events request a coalesced read,
+//! otherwise only an overdue finite track or the ordinary survey reads it.
 
 use super::{Engine, LiveEvent, Model, observation};
 use crate::playback::{Playback, PlayerPlayback};
@@ -10,6 +12,7 @@ use std::time::{Duration, Instant};
 
 /// Allow ordinary NOTIFY delivery and small position-estimate errors first.
 const END_GRACE: Duration = Duration::from_secs(5);
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 const RETRY_MIN: Duration = Duration::from_secs(30);
 const RETRY_MAX: Duration = Duration::from_secs(300);
 
@@ -38,18 +41,22 @@ struct Probe {
     player: PlayerId,
     host: IpAddr,
     identity: Identity,
+    position_requested: bool,
 }
 
 /// Bounded per-coordinator attempts; entries disappear with their identity.
 #[derive(Default)]
 pub(super) struct Watchdog {
     attempts: HashMap<PlayerId, Attempt>,
+    /// Per player, not per URI: rapid skips cannot defeat event coalescing.
+    position_after: HashMap<PlayerId, Instant>,
 }
 
 impl Watchdog {
-    /// Oldest overdue finite track, at most one per live-worker turn. The
-    /// usual event stream continually moves the predicted end forward, so
-    /// healthy playback makes no additional network requests.
+    /// Oldest eligible read, at most one per live-worker turn. A transport
+    /// event requests its real clock; repeated events coalesce without
+    /// postponing the fixed deadline. Quiet playback only needs the existing
+    /// end watchdog, not a position poll every two seconds.
     fn next(
         &mut self,
         coordinators: &[(PlayerId, IpAddr)],
@@ -59,17 +66,25 @@ impl Watchdog {
         self.attempts.retain(|id, attempt| {
             coordinators.iter().any(|(player, _)| player == id)
                 && playback.of(id).is_some_and(|state| {
-                    state.expected_end().is_some()
-                        && Identity::of(state).as_ref() == Some(&attempt.identity)
+                    Identity::of(state).as_ref() == Some(&attempt.identity)
                 })
         });
+        self.position_after
+            .retain(|id, _| coordinators.iter().any(|(player, _)| player == id));
         coordinators
             .iter()
             .filter_map(|(player, host)| {
                 let state = playback.of(player)?;
                 let identity = Identity::of(state)?;
-                let mut due = state.expected_end()?.checked_add(END_GRACE)?;
-                if let Some(attempt) = self.attempts.get(player) {
+                let position_requested = state.needs_position_sample();
+                let mut due = if position_requested {
+                    self.position_after.get(player).copied().unwrap_or(now)
+                } else {
+                    state.expected_end()?.checked_add(END_GRACE)?
+                };
+                if let Some(attempt) = self.attempts.get(player)
+                    && (!position_requested || attempt.failures > 0)
+                {
                     due = due.max(attempt.retry_at);
                 }
                 (now >= due).then_some((
@@ -78,6 +93,7 @@ impl Watchdog {
                         player: player.clone(),
                         host: *host,
                         identity,
+                        position_requested,
                     },
                 ))
             })
@@ -100,6 +116,8 @@ impl Watchdog {
         // cooldown. Network time is not subtracted from the retry interval.
         let factor = 1_u32 << failures.saturating_sub(1).min(4);
         let delay = (RETRY_MIN * factor).min(RETRY_MAX);
+        self.position_after
+            .insert(probe.player.clone(), now + SAMPLE_INTERVAL);
         self.attempts.insert(
             probe.player,
             Attempt {
@@ -132,7 +150,9 @@ pub(super) fn recover(engine: &Engine, model: &mut Model) {
             let changes = model
                 .playback
                 .apply_observation(&probe.player, &observation, observed);
-            let events = if changes.is_empty() {
+            // An empty delta still invalidates this room's cached position.
+            // Do not invent a track transition: that would corrupt DJ listens.
+            let events = if changes.is_empty() && !probe.position_requested {
                 Vec::new()
             } else {
                 vec![LiveEvent::Playback {
@@ -145,7 +165,7 @@ pub(super) fn recover(engine: &Engine, model: &mut Model) {
         }
         Ok(None) => {}
         Err(error) => {
-            tracing::debug!(%error, "overdue track read-back failed; retrying with backoff");
+            tracing::debug!(%error, "playback read-back failed; retrying with backoff");
             model.progress.completed(probe, false, Instant::now());
         }
     }
@@ -311,3 +331,6 @@ mod tests {
         assert!(watchdog.next(&targets, &playback, now).is_none());
     }
 }
+
+#[cfg(test)]
+mod position_tests;
