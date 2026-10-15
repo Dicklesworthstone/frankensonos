@@ -61,7 +61,8 @@ impl PlayerPlayback {
         }
         let duration = self.duration_secs.filter(|&d| d > 0)?;
         let (position, observed) = self.position?;
-        observed.checked_add(Duration::from_secs(u64::from(duration.saturating_sub(position))))
+        let remaining = u64::from(duration.saturating_sub(position));
+        observed.checked_add(Duration::from_secs(remaining))
     }
 }
 
@@ -71,12 +72,22 @@ mod tests {
 
     fn read(state: TransportState, track: u32, position: Option<u32>) -> PlaybackObservation {
         PlaybackObservation {
-            transport: TransportInfo { state, status: "OK".into() },
-            position: PositionInfo {
-                track, duration_secs: Some(180), position_secs: position,
-                uri: "test:same-recording".into(), metadata: None,
+            transport: TransportInfo {
+                state,
+                status: "OK".into(),
             },
-            media: MediaInfo { tracks: 4, uri: "test:queue".into(), uri_metadata: String::new() },
+            position: PositionInfo {
+                track,
+                duration_secs: Some(180),
+                position_secs: position,
+                uri: "test:same-recording".into(),
+                metadata: None,
+            },
+            media: MediaInfo {
+                tracks: 4,
+                uri: "test:queue".into(),
+                uri_metadata: String::new(),
+            },
         }
     }
 
@@ -85,16 +96,28 @@ mod tests {
         let player = PlayerId("test-player".into());
         let start = Instant::now();
         let mut playback = Playback::default();
-        playback.apply_observation(&player, &read(TransportState::Playing, 1, Some(40)), start);
+        let playing = read(TransportState::Playing, 1, Some(40));
+        playback.apply_observation(&player, &playing, start);
         let at = start + Duration::from_secs(10);
-        let changed = playback.apply_observation(&player, &read(TransportState::Paused, 1, Some(43)), at);
-        assert_eq!(changed.transport, Some((Some(TransportState::Playing), TransportState::Paused)));
-        assert_eq!(playback.of(&player).unwrap().position_at(at + Duration::from_secs(50)), Some(43));
+        let paused = read(TransportState::Paused, 1, Some(43));
+        let changed = playback.apply_observation(&player, &paused, at);
+        assert_eq!(
+            changed.transport,
+            Some((Some(TransportState::Playing), TransportState::Paused))
+        );
+        let state = playback.of(&player).unwrap();
+        assert_eq!(state.position_at(at + Duration::from_secs(50)), Some(43));
         let resumed = at + Duration::from_secs(50);
-        playback.apply_observation(&player, &read(TransportState::Playing, 1, None), resumed);
-        assert_eq!(playback.of(&player).unwrap().position_at(resumed + Duration::from_secs(2)), Some(45));
-        let changed = playback.apply_observation(&player, &read(TransportState::Stopped, 1, Some(46)), resumed);
-        assert_eq!(changed.transport, Some((Some(TransportState::Playing), TransportState::Stopped)));
+        let playing = read(TransportState::Playing, 1, None);
+        playback.apply_observation(&player, &playing, resumed);
+        let state = playback.of(&player).unwrap();
+        assert_eq!(state.position_at(resumed + Duration::from_secs(2)), Some(45));
+        let stopped = read(TransportState::Stopped, 1, Some(46));
+        let changed = playback.apply_observation(&player, &stopped, resumed);
+        assert_eq!(
+            changed.transport,
+            Some((Some(TransportState::Playing), TransportState::Stopped))
+        );
         assert_eq!(playback.of(&player).unwrap().expected_end(), None);
     }
 
@@ -103,10 +126,12 @@ mod tests {
         let player = PlayerId("test-player".into());
         let now = Instant::now();
         let mut playback = Playback::default();
-        playback.apply_observation(&player, &read(TransportState::Playing, 1, Some(179)), now);
+        let first = read(TransportState::Playing, 1, Some(179));
+        playback.apply_observation(&player, &first, now);
         let second = read(TransportState::Playing, 2, Some(3));
         let changed = playback.apply_observation(&player, &second, now);
-        assert_eq!(changed.track, Some((Some(second.position.uri.clone()), Some(second.position.uri.clone()))));
+        let uri = Some(second.position.uri.clone());
+        assert_eq!(changed.track, Some((uri.clone(), uri)));
         assert_eq!(playback.of(&player).unwrap().queue_position, Some(2));
         assert_eq!(playback.of(&player).unwrap().position_at(now), Some(3));
         assert!(playback.apply_observation(&player, &second, now).is_empty());
@@ -117,9 +142,13 @@ mod tests {
         let player = PlayerId("test-player".into());
         let now = Instant::now();
         let mut playback = Playback::default();
-        playback.apply_observation(&player, &read(TransportState::Playing, 1, Some(120)), now);
+        let first = read(TransportState::Playing, 1, Some(120));
+        playback.apply_observation(&player, &first, now);
         let previous = playback.players.get_mut(&player).unwrap();
-        previous.now_playing = Some(super::super::NowPlaying { title: "Old title".into(), ..Default::default() });
+        previous.now_playing = Some(super::super::NowPlaying {
+            title: "Old title".into(),
+            ..Default::default()
+        });
         previous.volume = Some(23);
         previous.mute = Some(true);
         previous.play_mode = Some("NORMAL".into());
@@ -142,7 +171,8 @@ mod tests {
         let player = PlayerId("test-player".into());
         let now = Instant::now();
         let mut playback = Playback::default();
-        playback.apply_observation(&player, &read(TransportState::Playing, 1, Some(170)), now);
+        let first = read(TransportState::Playing, 1, Some(170));
+        playback.apply_observation(&player, &first, now);
         let mut empty = read(TransportState::Stopped, 0, None);
         empty.position.uri.clear();
         empty.media.tracks = 0;
@@ -159,7 +189,8 @@ mod tests {
         let player = PlayerId("test-player".into());
         let now = Instant::now();
         let mut playback = Playback::default();
-        playback.apply_observation(&player, &read(TransportState::Playing, 1, Some(175)), now);
+        let playing = read(TransportState::Playing, 1, Some(175));
+        playback.apply_observation(&player, &playing, now);
         let state = playback.of(&player).unwrap();
         assert_eq!(state.expected_end(), Some(now + Duration::from_secs(5)));
         assert_eq!(state.position_at(now + Duration::from_secs(100)), Some(180));

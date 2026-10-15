@@ -36,6 +36,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 mod bootstrap;
+mod observation;
+mod progress;
 mod pump;
 
 /// How [`Live`] runs.
@@ -362,6 +364,7 @@ struct Model {
     remembered: Vec<IpAddr>,
     rec: Reconciler,
     playback: Playback,
+    progress: progress::Watchdog,
     sink: Option<EventSink>,
     surveyed_at: Option<Instant>,
     last_error: Option<String>,
@@ -438,6 +441,7 @@ impl Engine {
                 Instant::now(),
             ),
             playback: Playback::default(),
+            progress: progress::Watchdog::default(),
             sink: None,
             surveyed_at: None,
             last_error: None,
@@ -457,8 +461,8 @@ impl Engine {
                 m.rec.schedule.due_now(now);
             }
             if m.rec.schedule.due(now) {
-                self.survey(&mut m, now);
-                self.publish(&m, Vec::new());
+                let events = self.survey(&mut m, now);
+                self.publish(&m, events);
             }
             if m.sink.is_none() {
                 std::thread::sleep(TICK);
@@ -498,7 +502,7 @@ impl Engine {
     }
 
     /// Survey, opening the event listener first if there is none yet.
-    fn survey(&self, m: &mut Model, now: Instant) {
+    fn survey(&self, m: &mut Model, now: Instant) -> Vec<LiveEvent> {
         // This host's address toward the players can change (a new DHCP
         // lease, a VPN). Renewals would keep succeeding while every NOTIFY
         // went to the old address, so listen again where they can reach us.
@@ -529,11 +533,13 @@ impl Engine {
                     let retry = m.rec.schedule.failed(now);
                     tracing::warn!(error = %e, retry_in_s = retry.as_secs(), "cannot listen for events yet");
                     m.last_error = Some(e);
-                    return;
+                    return Vec::new();
                 }
             }
         }
-        let Some(s) = &m.sink else { return };
+        let Some(s) = &m.sink else {
+            return Vec::new();
+        };
         let callback = |service: Service| s.callback_url(service.tag());
         // Known households are probed selectively by the reconciler. Only
         // explicit seeds and as-yet-unresolved startup hints are unconditional.
@@ -548,32 +554,15 @@ impl Engine {
                 if let Some(surveyed) = &self.config.surveyed {
                     surveyed(&m.rec.households);
                 }
-                // Reconcile play positions from ground truth every survey,
-                // not only on GENA track-change: a daemon restart or an
-                // external seek (the Sonos app, another controller) leaves
-                // no event, so the position would otherwise stay stale or
-                // empty until the next track. Best effort per player: a
-                // player that does not answer keeps its interpolated
-                // position, and a player the survey just found offline is
-                // not asked at all (its timeout would stall every survey).
-                for player in m.rec.households.iter().flat_map(|h| &h.players) {
-                    if m.rec
-                        .health
-                        .of(&player.id)
-                        .is_some_and(|h| h.health == Health::Offline)
-                    {
-                        continue;
-                    }
-                    if let Ok(info) =
-                        fsonos_proto::control::get_position_info(&self.via(), player.ip)
-                    {
-                        m.playback.apply_position(&player.id, &info, now);
-                    }
-                }
+                let events = observation::survey(self, m);
                 m.surveyed_at = Some(now);
                 m.last_error = None;
+                events
             }
-            Err(e) => m.last_error = Some(e.to_string()),
+            Err(e) => {
+                m.last_error = Some(e.to_string());
+                Vec::new()
+            }
         }
     }
 

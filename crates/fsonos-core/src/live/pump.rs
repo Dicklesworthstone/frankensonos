@@ -41,6 +41,9 @@ pub(super) fn turn(engine: &Engine, model: &mut Model) {
     {
         engine.publish(model, pushed);
     }
+    // Buffered events and subscription maintenance take precedence over
+    // suspected track-end loss. Recovery is at most one read-back per turn.
+    super::progress::recover(engine, model);
 }
 
 fn drain(mut next: impl FnMut() -> bool) {
@@ -166,6 +169,7 @@ mod tests {
             remembered: Vec::new(),
             rec,
             playback: Playback::default(),
+            progress: super::super::progress::Watchdog::default(),
             sink: Some(sink),
             surveyed_at: Some(started),
             last_error: None,
@@ -243,4 +247,73 @@ mod tests {
             sim.shutdown();
         }
     }
+
+    #[test]
+    fn missed_duplicate_track_and_pause_events_are_recovered_without_playback_writes() {
+        use fsonos_proto::control::{
+            add_uri_to_queue, next, pause, play, play_from_queue, seek_track,
+        };
+        use std::sync::mpsc::sync_channel;
+
+        for generation in [1, 2] {
+            let (sim, engine, mut model, id) = buffered(generation, false);
+            turn(&engine, &mut model);
+            let host = sim.player("Room").unwrap().ip;
+            // The callback exists, but all following NOTIFYs are deliberately
+            // dropped. Recovery must use the real SOAP endpoints instead.
+            sim.drop_notifies("Room", Some(NotifyDrop::Next(100))).unwrap();
+            for _ in 0..2 {
+                add_uri_to_queue(&*engine.lan, host, "test:duplicate", "", false).unwrap();
+            }
+            play_from_queue(&*engine.lan, host, &id).unwrap();
+            seek_track(&*engine.lan, host, 1).unwrap();
+            play(&*engine.lan, host).unwrap();
+            let (mut sample, _) = super::super::observation::read(&engine.via(), host, || false)
+                .unwrap().unwrap();
+            assert_eq!(sample.position.track, 1);
+            // Move only the cached deadline into the past. No wall-clock
+            // sleeps through track durations are needed for this regression.
+            sample.position.duration_secs = Some(1);
+            sample.position.position_secs = Some(0);
+            let overdue = Instant::now() - Duration::from_secs(7);
+            model.playback.apply_observation(&id, &sample, overdue);
+            engine.publish(&model, Vec::new());
+            let (send, receive) = sync_channel(16);
+            engine.subscribers.lock().unwrap().push(send);
+
+            next(&*engine.lan, host).unwrap();
+            let before = sim.soap_log().len();
+            turn(&engine, &mut model);
+            assert_eq!(model.playback.of(&id).unwrap().queue_position, Some(2));
+            let event = receive.recv_timeout(Duration::from_secs(1)).unwrap();
+            assert!(matches!(event, super::super::LiveEvent::Playback { changes, .. }
+                if changes.track == Some((Some("test:duplicate".into()), Some("test:duplicate".into())))));
+            let log = sim.soap_log();
+            assert_eq!(log[before..].iter().map(|entry| entry.action.as_str()).collect::<Vec<_>>(),
+                ["GetTransportInfo", "GetMediaInfo", "GetPositionInfo", "GetMediaInfo", "GetTransportInfo"]);
+            assert_eq!(engine.snapshot.lock().unwrap().playback.of(&id).unwrap().queue_position, Some(2));
+
+            let (mut sample, _) = super::super::observation::read(&engine.via(), host, || false)
+                .unwrap().unwrap();
+            sample.position.duration_secs = Some(1);
+            sample.position.position_secs = Some(0);
+            model.playback.apply_observation(&id, &sample, overdue);
+            pause(&*engine.lan, host).unwrap();
+            let before = sim.soap_log().len();
+            turn(&engine, &mut model);
+            let state = model.playback.of(&id).unwrap();
+            assert_eq!(state.transport, Some(TransportState::Paused));
+            assert_eq!(state.volume, Some(23));
+            assert_eq!(state.mute, Some(true));
+            let log = sim.soap_log();
+            assert_eq!(log.len() - before, 5);
+            assert!(log[before..].iter().all(|entry| entry.action.starts_with("Get")));
+            let before = log.len();
+            turn(&engine, &mut model);
+            assert_eq!(sim.soap_log().len(), before, "paused playback is not polled or resumed");
+            engine.release(&mut model);
+            sim.shutdown();
+        }
+    }
+
 }
