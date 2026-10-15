@@ -4,12 +4,13 @@ use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::queue::{
     QueueAddRequest, QueueMoveRequest, QueueMovedDto, QueuePlayRequest, QueueRemoveRequest,
-    QueueRemovedDto,
+    QueueRemovedDto, QueueRequest,
 };
 use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 
 use super::{Backend, respond, said, sentence, with_backend};
 
+mod input;
 mod mode;
 
 impl Backend {
@@ -65,29 +66,28 @@ impl Backend {
         respond(|| self.surface.queue_play(&self.client, req).map(said))
     }
 
-    /// The `add_to_queue` tool.
+    /// The source-compatible Spotify helper, using the shared daemon path.
     pub fn add_to_queue(&self, req: &QueueAddRequest) -> McpResult<FinalCallToolResult> {
-        respond(|| {
-            let added = self.surface.queue_add(&self.client, req)?;
-            Ok((added.done.clone(), added))
-        })
+        self.queue_request(&QueueRequest::from(req))
     }
 }
 
 #[tool(
-    description = "Add a Spotify track, album or playlist (`spotify:track|album|playlist:<id>`, or an open.spotify.com link) to the queue of the group a room plays in: at the end, or with `next` true right after the track playing. An album or playlist adds all its tracks; `title` names it in the queue. Undoable with undo_last. `zone` is a room name, Room@S1 / Room@S2, or one of your aliases."
+    description = "Add to a room's group queue without starting or replacing playback. Give exactly one of source_uri (a Spotify track, album or playlist URI/link) or favorite (a native Sonos favorite id, numbered position or unambiguous title from that room's household). Native tracks, albums and playlists retain their original service metadata and need no Spotify library sign-in; stations and browse shortcuts cannot be queued. next=true inserts after the playing queue track, otherwise appends. title is for Spotify sources only. Uses the running daemon's policy and undo log when available; an uncertain request is never automatically repeated. zone is a room, Room@S1 / Room@S2, or an alias."
 )]
 fn add_to_queue(
     _ctx: &McpContext,
     zone: String,
-    source_uri: String,
+    source_uri: Option<String>,
     title: Option<String>,
     next: Option<bool>,
+    favorite: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend(move |b| {
-        b.add_to_queue(&QueueAddRequest {
+        b.queue_request(&QueueRequest {
             zone,
             source_uri,
+            favorite,
             title,
             next: next.unwrap_or(false),
         })

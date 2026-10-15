@@ -2,7 +2,7 @@
 //!
 //! | Route | Body | Answer |
 //! |---|---|---|
-//! | `POST /queue` | [`crate::surface::queue::QueueAddRequest`] | [`crate::surface::queue::QueueAddedDto`] |
+//! | `POST /queue` | [`crate::surface::queue::QueueRequest`] | [`crate::surface::queue::QueueAddedDto`] |
 //! | `POST /queue/remove` | [`crate::surface::queue::QueueRemoveRequest`] | [`crate::surface::queue::QueueRemovedDto`] |
 //! | `POST /queue/play` | [`crate::surface::queue::QueuePlayRequest`] | [`crate::OutcomeDto`] |
 
@@ -11,8 +11,8 @@ use fastapi::core::RouteEntry;
 use super::{CONTROL, Ctx, Op, answer, body};
 use crate::OutcomeDto;
 use crate::surface::queue::{
-    ADD, MOVE, PLAY, QueueAddRequest, QueueAddedDto, QueueMoveRequest, QueueMovedDto,
-    QueuePlayRequest, QueueRemoveRequest, QueueRemovedDto, REMOVE,
+    ADD, MOVE, PLAY, QueueAddedDto, QueueMoveRequest, QueueMovedDto, QueuePlayRequest,
+    QueueRemoveRequest, QueueRemovedDto, QueueRequest, REMOVE,
 };
 
 mod mode;
@@ -25,11 +25,11 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/queue",
                 ADD,
                 CONTROL,
-                "Add a Spotify track, album or playlist to a room's group's queue, at its end or next (undoable)",
+                "Queue a Spotify source or native household favorite at the end or next, without starting playback (undoable)",
             ),
-            |s, c, req| answer(body::<QueueAddRequest>(req).and_then(|r| s.queue_add(c, &r))),
+            |s, c, req| answer(body::<QueueRequest>(req).and_then(|r| s.queue_request(c, &r))),
         )
-        .request_schema::<QueueAddRequest>(true)
+        .request_schema::<QueueRequest>(true)
         .response_schema::<QueueAddedDto>(200, "Where the tracks went"),
         cx.route(
             &Op::post(

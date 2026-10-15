@@ -3,7 +3,7 @@
 //! a time, how many there are, and which one plays; and adding a Spotify
 //! track, album or playlist to it, at its end or next (`add_to_queue`,
 //! `POST /queue`, `fsonos play --queue|--next`), logged so `undo` takes the
-//! tracks off again.
+//! tracks off again. [`QueueRequest`] also accepts a native household favorite.
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, QueuedBefore};
@@ -17,6 +17,9 @@ use super::{Surface, resolve, room_view};
 use crate::execute::spotify_failure;
 use crate::failure::Failure;
 use crate::request::PlayRequest;
+
+mod input;
+pub use input::QueueRequest;
 
 mod mode;
 pub use mode::{MODE_READ, MODE_WRITE, PlayModeDto, PlayModeRequest, PlayModeSetDto};
