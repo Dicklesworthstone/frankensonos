@@ -52,8 +52,11 @@ const DashboardSession = (() => {
     if (!object(v) || !text(v.name, 256) || !Number.isSafeInteger(v.saved)
         || !list(v.groups, (g) => object(g) && text(g.coordinator) && list(g.members, text)
           && object(g.source) && ['keep', 'favorite', 'uri', 'dj'].includes(g.source.kind)
+          && (g.source.kind !== 'favorite' || text(g.source.name))
+          && (g.source.kind !== 'uri' || text(g.source.uri))
+          && (g.source.mood == null || text(g.source.mood))
           && (g.playing == null || typeof g.playing === 'boolean'))
-        || !object(v.volumes) || !object(v.mutes)
+        || !object(v.volumes) || !object(v.mutes) || Object.keys(v.volumes).length > 256 || Object.keys(v.mutes).length > 256
         || Object.entries(v.volumes).some(([r, n]) => !text(r) || !Number.isInteger(n) || n < 0 || n > 100)
         || Object.entries(v.mutes).some(([r, m]) => !text(r) || typeof m !== 'boolean')) fail('The saved scene is unreadable.');
     return freeze(clone(v));
@@ -131,6 +134,8 @@ const DashboardSession = (() => {
         const running = state.dj.running;
         if (kind === 'start' ? running : !running) return null;
         r.dj = djIdentity(state.dj); r.work = state.dj.now;
+        if (['like', 'dislike', 'skip'].includes(kind) && r.work?.movement_title
+            && item.state?.track?.title && r.work.movement_title !== item.state.track.title) return null;
         r.url = `/dj/${['like', 'dislike'].includes(kind) ? 'feedback' : kind === 'clear' ? 'steer' : kind}`;
         if (kind === 'steer' || kind === 'start') {
           const mood = args.mood && state.moods.find((m) => m.name === args.mood);
@@ -191,6 +196,10 @@ const DashboardSession = (() => {
             const current = dj(await call(`/zones/${encodeURIComponent(target)}/dj`), item.zone);
             valid(check);
             if (djIdentity(current) !== r.dj) fail('The DJ session or current work changed. Review it again.');
+            if (['like', 'dislike', 'skip'].includes(r.kind) && current.now?.movement_title
+                && fresh.track?.title && current.now.movement_title !== fresh.track.title) {
+              fail('The reported movement does not match playback. Refresh the session.');
+            }
             if (r.mood) {
               const available = moods(await call('/dj/moods'));
               valid(check);
@@ -206,7 +215,7 @@ const DashboardSession = (() => {
         const result = await send(r.url, r.body);
         if (r.kind === 'like' || r.kind === 'dislike') {
           if (!result || result.zone !== item.zone.coordinator_room || result.signal !== r.kind || !text(result.work)
-              || result.composer !== r.work.composer || !text(result.done)) fail('The feedback acknowledgement was incomplete.');
+              || result.composer !== r.work.composer || result.work !== `${r.work.composer}: ${r.work.title}` || !text(result.done)) fail('The feedback acknowledgement was incomplete.');
           return { done: result.done, changed: true };
         }
         if (r.kind === 'scene') {

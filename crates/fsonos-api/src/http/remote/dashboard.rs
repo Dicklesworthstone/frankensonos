@@ -11,6 +11,7 @@ const STYLE: &str = include_str!("../../remote/dashboard.css");
 const CORE: &str = include_str!("../../remote/dashboard-core.js");
 const VISUALIZER: &str = include_str!("../../remote/dashboard-visualizer.js");
 const AUDIO: &str = include_str!("../../remote/dashboard-audio.js");
+const SESSION: &str = include_str!("../../remote/dashboard-session.js");
 const SCRIPT: &str = include_str!("../../remote/dashboard.js");
 
 fn document(content_type: &str, text: &str) -> Response {
@@ -52,7 +53,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             |_, _, _| {
                 document(
                     "text/javascript; charset=utf-8",
-                    &format!("{CORE}\n{VISUALIZER}\n{AUDIO}\n{SCRIPT}"),
+                    &format!("{CORE}\n{VISUALIZER}\n{AUDIO}\n{SESSION}\n{SCRIPT}"),
                 )
             },
         )

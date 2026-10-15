@@ -196,3 +196,27 @@ test('real loopback HTTP: reviewed scene application sends the exact native body
   const r=await session.reviewScene('Dinner');assert.equal(await session.confirm(r),true);assert.equal(f.writes().length,1);
   assert.deepEqual(f.writes()[0].body,{});
 });
+test('a feedback reply for another work by the same composer stays uncertain',async()=>{
+  const f=await fixture().ready();const r=f.session.review('like');
+  f.setHook(url=>url==='/dj/feedback'?{zone:'Studio',composer:'Synthetic composer',work:'Synthetic composer: Another work',signal:'like',done:'Recorded'}:undefined);
+  assert.equal(await f.session.confirm(r),false);assert.equal(f.controller.state.uncertain,true);
+});
+test('incomplete scene sources and excessive room-level maps cannot be previewed as valid',()=>{
+  for(const source of [{kind:'favorite'},{kind:'uri'},{kind:'dj',mood:17}])assert.throws(()=>S.scene({...scene(),groups:[{...scene().groups[0],source}]}));
+  assert.throws(()=>S.scene({...scene(),volumes:Object.fromEntries(Array.from({length:257},(_,i)=>[String(i),5]))}));
+});
+
+
+test('a stale DJ movement cannot authorize feedback on a different observed source',async()=>{
+  const f=await fixture().ready();f.data.states.get('Studio@S2').track.title='Different source';
+  await f.controller.refresh();
+  for(const kind of ['like','dislike','skip'])assert.equal(f.session.review(kind),null);
+  assert.equal(f.writes().length,0);
+});
+
+test('newly mismatched movement metadata is checked again before feedback dispatch',async()=>{
+  const f=await fixture().ready();const r=f.session.review('like');
+  f.data.states.get('Studio@S2').track.title='Different source';
+  assert.equal(await f.session.confirm(r),false);assert.equal(f.writes().length,0);
+  assert.match(f.controller.state.message,/does not match playback/);
+});

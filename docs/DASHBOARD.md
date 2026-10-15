@@ -1,126 +1,199 @@
 # Listening Room
 
-A local-first graphical dashboard and immersive visualizer, served by the same
-FrankenSonos daemon as the full remote. No frontend build, package installation,
-CDN, remote font, analytics, or cloud account is required.
+The dashboard at `/dashboard` brings FrankenSonos's own strengths into the
+listening experience: household-aware control, a DJ that explains its choices,
+whole classical works, preference feedback, and named house scenes. The full
+remote remains at `/` for queue editing, grouping, moves, announcements,
+schedules, sound settings and other advanced controls.
 
 ## Open it
 
-Rebuild FrankenSonos after updating the checkout, then start the daemon:
+Update the checkout, rebuild, and start the daemon:
 
 ```sh
 cargo run -p fsonos-cli -- serve
 ```
 
-Open the HTTP address printed by the daemon in a local browser and choose
-**Listening room & visualizer**, or append `/dashboard` to that address. The
-existing full remote stays at `/`. The dashboard also uses the same listener
-and origin rules when reached through Tailscale Serve.
+Open the HTTP address printed by the daemon, then choose **Listening room &
+visualizer**, or append `/dashboard`. It runs in your local browser using the
+same listener, native HTTP API, policy and action log as the rest of FrankenSonos.
+Tailscale Serve uses the same routes and existing Host/Origin protection. There
+is no new service to expose and nothing is installed on the speakers.
 
-To try the visual design without Rust or any speakers:
+All HTML, CSS and JavaScript are embedded. No frontend build, CDN, external font,
+analytics or third-party browser dependency is required.
+
+To explore without Rust, a running daemon or speakers:
 
 ```sh
 python3 scripts/dashboard-preview.py
 ```
 
-Open `http://127.0.0.1:8765/dashboard?demo=1`. The preview server binds loopback
-only and has no control API. The dashboard's explicit preview mode uses synthetic
-rooms and music, displays a persistent preview banner, and cannot issue speaker
-commands. `/dashboard?demo=1` works on the daemon too. Preview music is fictional,
-not a claim about the owner's library or currently playing speakers.
+Open `http://127.0.0.1:8765/dashboard?demo=1`. The preview binds loopback only and
+has no speaker API. A persistent banner identifies its fictional rooms and
+music. You may select groups, inspect DJ factors, explore moods, search fixture
+music and review scenes, but confirmation and all playback mutations remain
+disabled. Preview data never substitutes for a failed live read.
 
-## The dashboard
+## A house in harmony
 
-- **Now playing:** the selected group's artwork, title, artist, album, observed
-  transport state, estimated elapsed time and group volume. Unknown information
-  remains unknown. Artwork goes through the existing same-origin `/art` endpoint;
-  locally generated cover graphics are a fallback, not claimed album artwork.
-- **Your rooms:** select independent groups across households. Each card names
-  the coordinator, other members, playback state and any stale observation.
-  The sound map shows the actual grouping; highlighted nodes are coordinators.
-- **Control:** pause/resume, next, previous and group-volume steps of five use
-  the native public API, including existing policy, logging and undo behavior.
-  No source replacements, queue reconstructions, or hidden commands are added.
-- **Context:** the selected DJ's explanation, mood, next pick and reported
-  problems, plus the four latest recorded plays. Advanced DJ, queue, sound,
-  grouping, scenes and scheduling controls remain in the linked full remote.
+The light appearance uses ivory, sage and forest green; the appearance button
+switches to the dark palette. Only appearance and visualization choice are
+saved in local browser preferences, not music, room names or audio.
 
-## Visualization
+The central stage shows the selected group's actual track, or the whole work
+when the DJ's reported movement agrees with the observed track title. A late
+DJ read cannot replace a newer source's title. Recording art is read through the
+existing `/art` endpoint; the sculptural field and small graphic placeholders
+are original procedural art, not purported album covers.
 
-**Aurora** draws flowing light ribbons, **Orbit** draws layered circular fields,
-and **Contour** draws evolving topographic lines. These are procedural ambient
-visuals, not fake speaker measurements, BPM estimates, or Sonos frequency data.
-They respond to observed playback state and the selected track's identity.
+**Your house** shows actual playing groups, their household and their other
+member rooms. The selectable **Map** is a grouping diagram, not an invented
+floor plan or geographical location. S1 and S2 stay separate. Missing bonded
+players and stale observations are labelled. Selecting a group changes the
+scope of the player, DJ and search; it never changes physical grouping.
 
-**Immersive** expands the listening stage and requests browser fullscreen from
-that click. When native fullscreen is unavailable or denied, the full-window
-layout still works. **Back to dashboard** or Escape returns to the previous
-view and focus. Keyboard focus stays within the immersive controls.
+The persistent player keeps pause/resume, previous/next track and group-volume
+steps of five within reach, including on mobile. The current group is named
+next to the track. Policy clamps and native response notes are displayed.
+Elapsed time is estimated from the most recent sample, marked accordingly;
+unknown timing is not invented, and stale samples do not keep advancing.
 
-The visualizer respects the operating system's reduced-motion preference;
-**Resume motion** explicitly enables movement. Animation is capped at 24 frames
-per second and approximately 1.8 million backing pixels. Hidden pages stop
-animation and event subscriptions. Canvas failure leaves the dashboard controls
-usable without animation.
+## The DJ, not just a play button
 
-### Real, optional audio reaction
+**Behind the pick** shows the actual engine explanation, the current work and
+its selection factors. A factor of 1000 is displayed as **×1.0**, neutral;
+above one favors a work, below one disfavors it. The displayed number is the
+engine's multiplier, not a confidence or taste percentage. Bars are capped at
+×2 visually but their labels retain the actual value. Relaxed filters and
+reported feed problems remain visible. Owner preferences take precedence over
+learned feedback and raw taste signals; the dashboard does not invent scores.
 
-**Use microphone** asks for the browser's microphone permission. This analyzes
-this computer's default audio input with Web Audio, entirely in browser memory.
-It is not a direct feed from Sonos, and anything audible to that microphone can
-influence the visuals. No recording, upload, persistent audio storage, or audio
-output connection is created.
+For a multi-movement recording the stage shows **Every movement. In order.**,
+the current movement and total, with a segmented work progression. Upcoming DJ
+picks distinguish songs from whole works. They are the engine's next selections,
+not a fabricated representation of the entire speaker queue.
 
-The interface explicitly distinguishes **Live microphone** from **Ambient**.
-**Stop microphone**, a disconnected input, page hiding, and leaving the page
-release the tracks and audio context. Capture never automatically resumes.
-Cancelling or timing out a pending permission also fences late permission grants
-so they cannot leave an input running. Permission requests time out after 30 s.
+**Set the feeling** is populated from the daemon's mood catalog, including the
+owner's custom presets. Choose a mood and a duration of 30 minutes, one hour,
+two hours or until cleared; review the exact group before confirming. Starting
+a stopped DJ uses `/dj/start`; changing a running DJ uses `/dj/steer` and shapes
+the next pick, not the movement playing. A mood steer replaces that group's
+session overrides; standing preferences remain in force. **Follow program**
+clears session steering so the time-of-day program can take over again.
 
-Microphone access requires a compatible browser on localhost or HTTPS. A direct
-non-loopback HTTP listener may not qualify; ambient mode still works there.
-Fullscreen, microphone permission, and the availability of input hardware remain
-browser/OS capabilities, not guarantees of the dashboard.
+**More like this** and **Less like this** record native work feedback after
+checking the current work and playback again. They do not skip, ban or change
+the owner's saved Spotify library. **Skip whole work** uses `/dj/skip`, leaving
+the remaining movements of the current pick; the player's ordinary Next remains
+`/next`, a different operation. Session start/stop, mood changes and feedback
+all use the existing daemon implementation rather than a second DJ engine.
 
-## Reliability boundaries
+## Collection and house scenes
 
-One SSE connection coalesces changes into refreshed observations. A bounded
-15-second read fallback catches missing events, backing off on failures. Playback
-reads use at most four concurrent requests; DJ and history reads are separate.
-Reads have a ten-second connection/body deadline. Hidden pages stop scheduling
-reads, close SSE, and invalidate results that arrive after suspension.
+Use **Your collection**, the search field, or **Command/Ctrl+K** to search the
+cached library and the selected household's favorites. Results are explicit
+tracks, albums, playlists or native favorites. Review a specific result before
+playing it. The dashboard rechecks that exact identity; it never substitutes a
+new top search result. Album and playlist playback can replace the selected
+group's queue. Unsupported kinds remain read-only.
 
-Before a control command, the dashboard re-reads the selected group and checks
-membership and, for transport commands, the track and playback state. This is
-read-before-write, not an atomic physical-speaker reservation: another controller
-can still intervene between the check and the command.
+**Scenes** lists real saved house states. A review shows their groups, sources,
+playing state, per-room volumes and mutes before any change. The dashboard
+re-reads both the saved definition and the household topology before invoking
+one native scene-apply call. Edited scenes or changed grouping invalidate the
+review. The daemon applies its normal policy, logs the action and supplies its
+normal undo behavior.
 
-Commands are sent once and never automatically replayed. A missing, malformed,
-or failed command response is surfaced as uncertain, even when a later passive
-read shows a new state. Use **Refresh** to inspect playback and re-enable controls.
-A response acknowledging a command is distinct from subsequently observed state.
-Group-volume policy clamps and other native response notes are shown verbatim.
+Scenes are multi-step operations, not atomic house transactions. A partially
+completed response shows failed and skipped steps; successful earlier steps
+are not silently rolled back and no retry is automatically sent. Use the full
+remote to inspect the action history and available undo.
+
+## Sculptural visualization
+
+Three distinct procedural Canvas modes:
+
+- **Sculpture:** a lit, slowly deforming three-dimensional ribbon with fine
+  copper orbit lines.
+- **Halo:** a ridged circular field with different geometry and depth.
+- **Terrain:** evolving projected topographic contours.
+
+**Enter the visualizer** expands the composition and requests browser
+fullscreen from that user gesture. A full-window layout remains available when
+fullscreen is blocked. Back or Escape restores the dashboard and focus. Other
+controls are inert while immersed; keyboard focus stays inside the stage.
+The current track and transport controls remain available there.
+
+The operating system's reduced-motion preference starts the visualizer still.
+**Resume motion** enables animation explicitly. Hidden pages stop drawing;
+rendering is paced at at most 24 frames per second with approximately 1.6 million
+backing pixels and a capped pixel ratio. Canvas failure leaves the rest of the
+interface usable. Ambient geometry responds to selected track identity and
+observed playback state, but is explicitly **not measured speaker audio**.
+
+### Optional, private audio reaction
+
+The microphone menu enables real local Web Audio analysis only after an explicit
+click and browser permission. It analyzes this computer's default input, not a
+direct Sonos feed. Any sound reaching that microphone can influence the visuals.
+No recording, upload, persistent audio storage or audio output connection is
+created. Live microphone and ambient modes are labelled separately.
+
+Stopping, hiding/leaving the page, or disconnecting the input releases capture.
+It never resumes automatically. Cancelled and timed-out permission requests
+also fence late grants so they cannot leave a microphone open. A compatible
+browser on localhost or HTTPS is required; ambient mode needs no permission.
+
+## Control and lifecycle boundaries
+
+Transport, group volume, DJ, library playback and scenes share one dashboard
+mutation lane. Double clicks and competing controls cannot overlap their
+preflight and dispatch. Reviews bind the exact household-qualified group,
+current playback, applicable DJ work/session, catalog mood or saved scene.
+Cancelling, switching group or hiding the page invalidates unsent work.
+
+These checks are read-before-write, not physical-speaker reservations. Another
+controller can still intervene between observation and command. The native API
+remains authoritative. One action sends at most one mutation; no timeout,
+refusal, malformed acknowledgement or lost reply triggers automatic replay.
+An uncertain result stays blocked through passive refreshes until the user
+explicitly refreshes current state. Accepted commands and observed playback
+are distinguished.
+
+One SSE connection coalesces events without starving refresh during event
+bursts. Playback reads have bounded four-way concurrency; a 15-second fallback
+backs off up to a minute on failure and honors Retry-After. Reads have a ten-second
+connection/body deadline; DJ and scene writes allow up to ten minutes without
+turning a browser timeout into a playback cancellation. Hidden pages stop new
+reads, clocks and SSE and reject stale results from their previous lifetime.
 
 ## Validation
 
 ```sh
-node --test scripts/test-dashboard.cjs scripts/test-dashboard-audio.cjs scripts/test-dashboard-http.cjs
+node --test scripts/test-dashboard-session.cjs
 python3 scripts/test-dashboard-browser.py
+python3 scripts/test-dashboard-preview.py
 ```
 
-The browser suite requires Python Playwright and Chromium. An installed Chromium
-can be selected with `--browser-executable /path/to/chromium`. It renders the real
-assets with explicitly synthetic API fixtures; it does not contact real speakers.
-The Node suite includes real loopback HTTP tests as well as deterministic model,
-permission-lifecycle, animation-budget and asset-embedding regressions.
+The browser suite requires Python Playwright and Chromium. Pass
+`--browser-executable /path/to/chromium` to select an installed executable.
+It runs the production assets with explicit synthetic API fixtures, not a Rust
+daemon. `--screenshots-dir /path/to/output` captures the rendered preview.
 
-Implementation-session checks: 42 Node tests passed, plus Chromium component
-checks for native control payloads, household targeting, uncertain outcomes,
-event refresh, offline recovery, safe text rendering, hidden-page behavior,
-preview isolation, all three modes, reduced motion, immersive focus/Escape,
-microphone fallback, and 1440/768/390/320-pixel viewports without overflow.
-The environment's browser policy denied native fullscreen and real microphone
-capture, so CSS immersion and microphone fallback were exercised there; actual
-analysis data/lifecycles were tested with deterministic audio fixtures. No Rust
-compiler or physical Sonos hardware was available: Rust workspace checks, real
-GENA/daemon integration, and physical-device acceptance remain separate gates.
+In this redesign session, 34 Node tests passed, including actual loopback HTTP
+scene dispatch, native request bodies, immutable/stale reviews, whole-work
+feedback, partial scenes, shared control exclusion, cancellation and uncertainty.
+Seventeen Chromium acceptance groups passed, including actual production event
+handlers, both households, search-to-play, continuous event bursts, safe metadata,
+offline recovery, hidden-page shutdown, preview isolation, three rendered modes,
+dark/light appearance, immersive focus, microphone fallback and eight viewport
+widths from 320 to 1536 pixels without horizontal overflow or page exceptions.
+The preview HTTP test checks the real embedded bundle and refuses POSTs.
+
+No Rust compiler or physical Sonos devices were available in this environment.
+Rust workspace gates, real daemon/GENA integration and live-speaker acceptance
+remain separate checks. Browser policy blocked native fullscreen and actual
+microphone capture; the full-window fallback was exercised, not a claim of
+native fullscreen or acoustic validation. Source control commits are not evidence
+that those unexecuted integration gates passed.
