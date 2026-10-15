@@ -15,6 +15,8 @@ use crate::failure::{ErrorCode, Failure};
 /// Response and query limit, independent of the size of the owner's library.
 pub const MAX_PAGE: usize = 50;
 
+mod client;
+
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct BrowseQuery {
     /// tracks (default), albums, or playlists.

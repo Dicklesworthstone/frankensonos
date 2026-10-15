@@ -25,6 +25,8 @@ use crate::config::GlobalArgs;
 use crate::direct::Direct;
 use crate::remote::{Daemon, pct as encode};
 
+mod browse;
+
 #[derive(Subcommand)]
 pub enum DjAction {
     /// Start the DJ in a room's group; with --mood, steered by it.
@@ -74,6 +76,9 @@ pub enum DjAction {
     /// their genres, and the taste signals the sign-in allows. The daemon
     /// does it daily on its own.
     Sync(crate::dj::sync::SyncArgs),
+    /// Browse cached tracks, albums or playlists without contacting Spotify
+    /// or speakers. Refresh separately with dj sync.
+    Browse(browse::BrowseArgs),
 }
 
 /// `fsonos dj steer`: the fields of `dj_steer`.
@@ -198,6 +203,7 @@ impl DjAction {
                 | Self::Dislike { .. }
                 | Self::Prefs { .. }
                 | Self::Sync(_)
+                | Self::Browse(_)
         )
     }
 
@@ -217,6 +223,7 @@ impl DjAction {
             } => "dj_preferences",
             Self::Prefs { .. } => "dj_prefer",
             Self::Sync(_) => "dj_sync",
+            Self::Browse(_) => "browse_library",
         }
     }
 
@@ -247,7 +254,8 @@ impl DjAction {
             | Self::Like { .. }
             | Self::Dislike { .. }
             | Self::Prefs { .. }
-            | Self::Sync(_) => return None,
+            | Self::Sync(_)
+            | Self::Browse(_) => return None,
         })
     }
 
@@ -277,7 +285,8 @@ impl DjAction {
             | Self::Like { .. }
             | Self::Dislike { .. }
             | Self::Prefs { .. }
-            | Self::Sync(_) => Err(Failure::new(
+            | Self::Sync(_)
+            | Self::Browse(_) => Err(Failure::new(
                 ErrorCode::Internal,
                 "dj status, why, moods, like and dislike run on their own",
             )),
@@ -315,6 +324,7 @@ pub fn read(global: &GlobalArgs, action: &DjAction) -> anyhow::Result<()> {
         }
         DjAction::Prefs { action } => crate::dj::prefs::run(global, action),
         DjAction::Sync(args) => crate::dj::sync::run(global, args),
+        DjAction::Browse(args) => browse::run(global, args),
         _ => Err(Failure::new(ErrorCode::Internal, "not a DJ read").into()),
     }
 }
