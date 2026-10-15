@@ -14,12 +14,13 @@ use fsonos_types::PlayerId;
 use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 
-use crate::execute::{OutcomeDto, execute_guarded};
+use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::Command;
 
 mod attempt;
+mod volume;
 
 /// Carry `command` out. `fresh` is used only for an eligible address recovery;
 /// it is not called after a coordinator retry or a partially applied command.
@@ -31,7 +32,15 @@ pub fn execute_healing<T: Transport + ?Sized>(
     fresh: impl FnOnce() -> Option<Vec<HouseholdState>>,
 ) -> Result<OutcomeDto, Failure> {
     let can_readdress = Cell::new(true);
-    let result = on_new_coordinator(transport, households, guard, command, &can_readdress);
+    let volume = RefCell::new(volume::RetryVolume::default());
+    let result = on_new_coordinator(
+        transport,
+        households,
+        guard,
+        command,
+        &can_readdress,
+        &volume,
+    );
     let Err(failure) = &result else {
         return result;
     };
@@ -52,7 +61,7 @@ pub fn execute_healing<T: Transport + ?Sized>(
     };
     match address(&moved, player) {
         Some(to) if to != from => {
-            let (retried, _) = observed_execute(transport, &moved, guard, command.clone());
+            let (retried, _) = observed_execute(transport, &moved, guard, command.clone(), &volume);
             tracing::info!(
                 player = player.0.as_str(),
                 %from,
@@ -81,9 +90,12 @@ fn observed_execute<T: Transport + ?Sized>(
     households: &[HouseholdState],
     guard: &Guard<'_>,
     command: Command,
+    volume: &RefCell<volume::RetryVolume>,
 ) -> (Result<OutcomeDto, Failure>, bool) {
     let observed = attempt::Observed::new(transport);
-    let result = execute_guarded(&observed, households, guard, command);
+    let result = volume
+        .borrow_mut()
+        .execute(&observed, households, guard, command);
     let prior = observed.preceding_writes();
     let blocked = result.is_err() && prior > 0;
     let result = result.map_err(|failure| {
@@ -107,9 +119,10 @@ fn on_new_coordinator<T: Transport + ?Sized>(
     guard: &Guard<'_>,
     command: &Command,
     can_readdress: &Cell<bool>,
+    volume: &RefCell<volume::RetryVolume>,
 ) -> Result<OutcomeDto, Failure> {
     let Some(coordinator) = command.group_coordinator() else {
-        let (result, blocked) = observed_execute(transport, households, guard, command.clone());
+        let (result, blocked) = observed_execute(transport, households, guard, command.clone(), volume);
         can_readdress.set(!blocked);
         return result;
     };
@@ -122,8 +135,13 @@ fn on_new_coordinator<T: Transport + ?Sized>(
             // recovery budget, including if its answer is lost afterward.
             can_readdress.set(false);
         }
-        let (result, blocked) =
-            observed_execute(transport, hs, guard, command.clone().on_coordinator(to));
+        let (result, blocked) = observed_execute(
+            transport,
+            hs,
+            guard,
+            command.clone().on_coordinator(to),
+            volume,
+        );
         if blocked {
             can_readdress.set(false);
             return Ok(result);

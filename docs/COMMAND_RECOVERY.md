@@ -33,3 +33,20 @@ one shared recovery budget, positive coordinator/address recovery, and
 read-back completion after an accepted write loses its acknowledgement.
 Physical-speaker acceptance is separate. Rust tests were not executed in the
 editing environment, which has no Rust toolchain.
+
+## A volume retry keeps its first allowance
+
+For absolute room and group volumes, the shared recovery path remembers the
+first policy-bounded target and its clamp notes. A lost acknowledgement after
+a successful increase must not grant another max-step increase when the same
+player is rediscovered at a different address. The retry can only retain or
+lower that first target; it rechecks the same policy against current levels.
+A room lowered by another controller, a changed group, or a newly applicable
+quiet-hours cap can therefore impose a stricter limit. The first clamp remains
+visible in a successful recovery's notes. Uncapped CLI behavior is unchanged.
+
+This allowance is scoped to one call; it does not change future deliberate
+requests, add a retry, or make relative adjustments safe to replay. Run
+`cargo test --locked -p fsonos-api --test recovery_volume_sim` for S1/S2 room,
+group, intervening-lower-level and uncapped-client cases. These additional
+Rust regressions were authored but not executed in the editing environment.
