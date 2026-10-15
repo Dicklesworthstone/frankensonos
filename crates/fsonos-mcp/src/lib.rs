@@ -10,6 +10,7 @@
 //! (`fsonos_api::request`) and share its validation, planning, execution and
 //! house policy, so both surfaces answer alike.
 
+mod library;
 mod play_mode;
 mod reviewed_undo;
 mod worker;
@@ -169,6 +170,7 @@ pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
         .tool(tools::DjStatus)
         .tool(tools::DjMoods)
         .tool(tools::SearchLibrary)
+        .tool(library::BrowseLibrary)
         .tool(tools::SearchAndPlay)
         .tool(tools::RecentPlays)
         .tool(tools::GetQueue)

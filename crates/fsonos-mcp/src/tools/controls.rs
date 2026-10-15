@@ -7,6 +7,7 @@ use fsonos_api::{
     GroupRequest, MuteRequest, PartyRequest, PlayRequest, SeekRequest, VolumeRequest, ZoneRequest,
 };
 
+mod library;
 mod reviewed_undo;
 
 impl Backend {
