@@ -43,7 +43,7 @@ pub fn pause_confirmed<T: Transport + ?Sized>(
     match soap::get_transport_info(t, host)?.state {
         TransportState::Paused | TransportState::Stopped => return Ok(()),
         TransportState::Playing | TransportState::Transitioning => {}
-        _ => {
+        TransportState::Unknown => {
             return Err(
                 ProtoError::Malformed("playback state is unknown before loading".into()).into(),
             );
