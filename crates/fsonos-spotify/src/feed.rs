@@ -40,7 +40,6 @@ use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::{Store, StoreError};
 use fsonos_core::{CoreError, HouseholdState, control, moving};
 use fsonos_proto::content::{QUEUE, browse_all};
-use fsonos_proto::control::get_position_info;
 use fsonos_proto::didl::{
     SpotifyRenderParams, spotify_queue_uri, spotify_track_didl, spotify_uri_from_renderer_uri,
 };
@@ -55,6 +54,145 @@ use crate::steer::Steer;
 
 mod enqueue;
 mod mode;
+mod navigation {
+    //! Follow a listener back through the retained DJ queue without mistaking an
+    //! old event for a new seek. Queue positions are checked against the player
+    //! before they can bring a previously played work back into the active set.
+
+    use fsonos_proto::Transport;
+    use fsonos_proto::content::{QUEUE, browse_range_snapshot};
+    use fsonos_proto::control::{get_media_info, get_position_info};
+    use fsonos_proto::didl::spotify_uri_from_renderer_uri;
+    use fsonos_proto::topology::get_zone_group_state;
+
+    use super::{FeedError, QueueFeed, Speakers, host_of};
+
+    impl QueueFeed {
+        pub(super) fn moves_back_to(&self, position: Option<u32>) -> bool {
+            position
+                .zip(self.playing)
+                .is_some_and(|(position, previous)| position < previous)
+        }
+    }
+
+    /// Buffered events can name an earlier track even though the player has
+    /// already moved on. Check both the occurrence (not just the Spotify URI)
+    /// and the active source. A temporary announcement must not be interrupted.
+    /// These are read-before-write checks, not an atomic device transaction.
+    pub(super) fn is_current<T: Transport + ?Sized>(
+        at: &Speakers<'_, T>,
+        position: Option<u32>,
+        uri: Option<&str>,
+    ) -> Result<bool, FeedError> {
+        let Some(position) = position.filter(|position| *position > 0) else {
+            return Ok(false);
+        };
+        let Some(uri) = uri.filter(|uri| !uri.is_empty()) else {
+            return Ok(false);
+        };
+        let host = host_of(at)?;
+        let own_queue = format!("x-rincon-queue:{}#0", at.coordinator.0);
+        if get_media_info(at.transport, host)?.uri != own_queue {
+            return Ok(false);
+        }
+        let current = get_position_info(at.transport, host)?;
+        if current.track != position || !same_track(uri, &current.uri) {
+            return Ok(false);
+        }
+        Ok(get_media_info(at.transport, host)?.uri == own_queue)
+    }
+
+    fn same_track(expected: &str, actual: &str) -> bool {
+        if expected == actual {
+            return true;
+        }
+        match (
+            spotify_uri_from_renderer_uri(expected),
+            spotify_uri_from_renderer_uri(actual),
+        ) {
+            (Some(expected), Some(actual)) => expected == actual,
+            _ => false,
+        }
+    }
+
+    /// A skip is an explicit request to advance the DJ, not permission to
+    /// replace whatever source or queue the owner selected since the last event.
+    /// Read into a clone so a failed prerequisite never publishes half a model.
+    pub(super) fn prepare_skip<T: Transport + ?Sized>(
+        feed: &mut QueueFeed,
+        at: &Speakers<'_, T>,
+    ) -> Result<(), FeedError> {
+        let host = host_of(at)?;
+        let own_queue = format!("x-rincon-queue:{}#0", at.coordinator.0);
+        let before = browse_range_snapshot(at.transport, host, QUEUE, 0, 1)?;
+        let mut reconciled = feed.clone();
+        let queue = reconciled.resync(at)?;
+        if get_media_info(at.transport, host)?.uri != own_queue {
+            // Preserve a temporary announcement's retained queue. If clearing
+            // the queue also cleared its source, still relinquish the session.
+            if reconciled.queued.is_empty() && reconciled.played.is_empty() {
+                let after = browse_range_snapshot(at.transport, host, QUEUE, 0, 1)?;
+                if before == after {
+                    feed.release();
+                } else {
+                    feed.queue_len = None;
+                }
+            }
+            return Err(FeedError::Inactive);
+        }
+        let current = if queue.is_empty() {
+            None
+        } else {
+            Some(get_position_info(at.transport, host)?)
+        };
+        let topology = get_zone_group_state(at.transport, host)?;
+        let after = browse_range_snapshot(at.transport, host, QUEUE, 0, 1)?;
+        if before != after
+            || !topology
+                .groups
+                .iter()
+                .any(|group| group.coordinator == *at.coordinator)
+            || get_media_info(at.transport, host)?.uri != own_queue
+        {
+            // A concurrent edit is not a coherent replacement. Keep ownership
+            // provisional and force the next event to read the queue again.
+            feed.queue_len = None;
+            return Err(FeedError::Inactive);
+        }
+        if reconciled.queued.is_empty() && reconciled.played.is_empty() {
+            feed.release();
+            return Err(FeedError::Inactive);
+        }
+        let Some(current) = current else {
+            return Err(FeedError::Inactive);
+        };
+        let index = current
+            .track
+            .checked_sub(1)
+            .and_then(|index| usize::try_from(index).ok());
+        let source = spotify_uri_from_renderer_uri(&current.uri);
+        // Non-Spotify items belong to the owner, but can still be skipped to a
+        // waiting DJ work. A missing track or a changed Spotify occurrence is
+        // not evidence on which to seek or enqueue.
+        if current.uri.is_empty()
+            || index.and_then(|index| queue.get(index)).map(Option::as_deref)
+                != Some(source.as_deref())
+        {
+            feed.queue_len = None;
+            return Err(FeedError::Inactive);
+        }
+        reconciled.restore_played_from(current.track);
+        if reconciled.queued.is_empty() {
+            // Only already-past remnants are left. No DJ work is current or
+            // waiting, so skip must not create a new session behind the owner.
+            feed.release();
+            return Err(FeedError::Inactive);
+        }
+        reconciled.playing = Some(current.track);
+        *feed = reconciled;
+        Ok(())
+    }
+}
 mod trim;
 
 /// How far apart a play recorded here and the owner's Spotify history's
@@ -415,23 +553,34 @@ impl QueueFeed {
             || playback
                 .queue_length
                 .is_some_and(|n| self.queue_len != Some(n));
-        if moved || resized {
+        let backwards = self.moves_back_to(position);
+        if moved || resized || backwards {
             let had = !self.queued.is_empty();
-            let queue = self.resync(at)?;
-            if had && self.queued.is_empty() {
-                // None of the DJ's works is on the queue any more: the owner
-                // cleared or replaced it, and the DJ steps aside.
+            // Keep read-back provisional: a buffered backward event or a
+            // failed confirmation must not change the feed's ownership.
+            let mut reconciled = self.clone();
+            let queue = reconciled.resync(at)?;
+            // Queue trims can renumber a still-playing track while its
+            // events are on their way. Match its observed occurrence first.
+            position = position.and_then(|p| placed(&queue, p, uri.as_deref()));
+            if (backwards || self.moves_back_to(position))
+                && !navigation::is_current(at, position, playback.track_uri.as_deref())?
+            {
+                return Ok(0);
+            }
+            if let Some(position) = position {
+                reconciled.restore_played_from(position);
+            }
+            if had && reconciled.queued.is_empty() {
+                // No current or waiting DJ work remains, including one the
+                // owner sought back to: leave their replacement queue alone.
                 self.release();
                 return Ok(0);
             }
-            // An event from before a change to the queue gives a position
-            // its track is no longer at: the feed's own trim renumbers the
-            // queue while events are on their way. Taken at its word, it
-            // would count unplayed works as played. The track it names is
-            // the one playing, so its position is where the queue has it.
-            position = position.and_then(|p| placed(&queue, p, uri.as_deref()));
+            *self = reconciled;
         }
         if let Some(position) = position {
+            self.restore_played_from(position);
             self.playing = Some(position);
             self.jumped = false;
             // Works wholly behind the playing position are played now; the
@@ -561,11 +710,7 @@ impl QueueFeed {
         if !self.active {
             return Err(FeedError::Inactive);
         }
-        self.resync(at)?;
-        let track = get_position_info(at.transport, host_of(at)?)?.track;
-        if track > 0 {
-            self.playing = Some(track);
-        }
+        navigation::prepare_skip(self, at)?;
         self.finish_partial(at, store, plan.now)?;
         let playing = self.playing.unwrap_or(0);
         let waiting = self
@@ -629,13 +774,18 @@ impl QueueFeed {
     /// queue: a DJ position must hold the DJ track there, and a DJ track must
     /// be at its DJ position.
     fn agrees(&self, position: u32, uri: Option<&str>) -> bool {
-        let expected = self.queued.iter().find_map(|w| w.track_at(position));
+        let expected = self
+            .played
+            .iter()
+            .chain(&self.queued)
+            .find_map(|w| w.track_at(position));
         match (expected, uri) {
             (Some(expected), Some(uri)) => expected == uri,
             (Some(_), None) => false,
             (None, Some(uri)) => !self
-                .queued
+                .played
                 .iter()
+                .chain(&self.queued)
                 .any(|w| w.movements.iter().any(|m| m.uri == uri)),
             (None, None) => true,
         }
@@ -1099,6 +1249,8 @@ mod tests {
     use super::*;
     use crate::cache::{apply_library_read, pool_from_store};
     use crate::test_shelf::{MIDNIGHT, shelf_items, song_items, works_of};
+
+    mod navigation;
 
     const ROOM: &str = "Living Room";
 
