@@ -1,0 +1,12 @@
+.favorite-routines { margin-block: 1rem; border: 1px solid var(--line, #555); border-radius: .6rem; padding: .9rem; }
+.favorite-routines > summary { cursor: pointer; font-weight: 650; }
+.favorite-routine-content { margin-top: .8rem; min-width: 0; }
+.favorite-routine-content p, .favorite-routine-content option { overflow-wrap: anywhere; }
+.favorite-routine-form { display: grid; gap: .8rem; max-width: 48rem; }
+.favorite-routine-form label { display: grid; gap: .3rem; min-width: 0; }
+.favorite-routine-form input, .favorite-routine-form select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; font: inherit; }
+.favorite-routine-content .row { display: flex; flex-wrap: wrap; gap: .5rem; }
+.favorite-routine-content button { white-space: normal; min-height: 2.75rem; max-width: 100%; overflow-wrap: anywhere; }
+.favorite-routine-review { border: 2px solid currentColor; border-radius: .4rem; padding: .8rem; margin-block: 1rem; }
+.favorite-routine-identity { overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+.favorite-routines :focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }

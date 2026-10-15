@@ -147,7 +147,8 @@ const FavoriteRoutines = (() => {
       scene: value.scene ? copy(value.scene) : null };
   }
 
-  function model({ call, changed = () => {}, nonce = () => globalThis.crypto.randomUUID().replace(/-/g, ''),
+  function model({ call, changed = () => {}, nonce = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)),
+    (byte) => byte.toString(16).padStart(2, '0')).join(''),
     journal = { load: () => null, save: () => {}, clear: () => {} }, active = () => true }) {
     let epoch = 0, disposed = false;
     const state = { open: false, busy: false, groups: [], group: null, favorites: [],
@@ -187,7 +188,7 @@ const FavoriteRoutines = (() => {
       state.phase = 'schedule_sending'; publish();
       const row = await call('routineAdd', { body: { when: p.when, action: 'apply_scene', scene: p.name } });
       state.result = scheduleOf(row, p);
-      state.phase = 'complete'; state.message = `Routine #${state.result.id} was acknowledged. No music was played during setup.`;
+      state.phase = 'complete'; state.message = `Routine #${state.result.id} was acknowledged. Setup sent no playback command.`;
     }
     return {
       state,
