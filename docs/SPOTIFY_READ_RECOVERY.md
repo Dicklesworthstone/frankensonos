@@ -32,12 +32,32 @@ commands, dependencies or token persistence rules are introduced. Successful
 response bodies still pass to their existing parsers; malformed JSON is not a
 reason to replay a request.
 
+## Successive reads on the same session
+
+A 429 records a monotonic cooldown before returning or waiting, including the
+last permitted attempt. Later Web API reads check that cooldown before obtaining
+an access token or sending a request. This prevents taste/genre/album stages
+from immediately making fresh requests after a preceding stage returned early
+for a long rate limit. Grant checks return 429 without waiting; other reads wait
+only when the full remaining cooldown fits their wait and total-read budgets.
+Dropping a waiting future does not clear the cooldown.
+
+The cooldown uses elapsed process time, not a reinterpreted wall clock or a new
+runtime context's timer epoch. Changing the configured API endpoint clears its
+old peer's limit; reinstalling the same endpoint and refreshing credentials do
+not. Huge unrepresentable delays fail closed for that session rather than
+wrapping into an early retry. This state is local to a Session: separate sessions
+and processes are not coordinated, and a restart does not persist the limit.
+
 ## Verification
 
 `session/retry/tests.rs` adds pure policy checks and a scripted loopback TCP
 peer exercised through the real asupersync HTTP client. Cases cover recovered
 reads, bounded mixed failures, token refresh, lost responses, rejected delays,
-terminal errors and deadlines spanning body reads, backoff and refresh.
+terminal errors and deadlines spanning body reads, backoff and refresh. Six
+additional cases cover cross-endpoint cooldown, expiration, early-return grant
+checks, dropped waits, last-attempt rate limits and endpoint changes. The
+runtime test futures own their session state, matching the existing test style.
 
 These Rust regressions were authored but **not executed in the editing
 environment**, which has no Rust compiler, Cargo, rustfmt or RCH. Baseline and

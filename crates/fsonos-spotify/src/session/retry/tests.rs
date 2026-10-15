@@ -280,7 +280,7 @@ fn transient_status_recovers_with_the_same_authorized_get() {
         Reply::status(200),
     ]);
     let (mut session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
         assert_eq!(session.get(&cx, &url).await.unwrap(), b"{\"ok\":true}");
@@ -305,7 +305,7 @@ fn a_lost_read_response_can_be_requested_again() {
     };
     let server = Server::start(vec![lost, Reply::status(200)]);
     let (mut session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
         session.get(&cx, &url).await.unwrap();
@@ -318,7 +318,7 @@ fn a_lost_read_response_can_be_requested_again() {
 fn repeated_failures_end_with_the_last_api_error() {
     let server = Server::start((0..4).map(|_| Reply::status(503)).collect());
     let (mut session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
         assert!(matches!(
@@ -341,7 +341,7 @@ fn permanent_failures_and_grant_checks_are_not_retried() {
     ] {
         let server = Server::start(vec![Reply::status(status), Reply::status(200)]);
         let (mut session, directory) = server.session();
-        runtime().block_on(async {
+        runtime().block_on(async move {
             let cx = Cx::current().unwrap();
             let url = format!("{}/me/tracks", session.endpoints.api);
             let result = if grant {
@@ -361,7 +361,7 @@ fn oversized_retry_after_never_becomes_an_early_retry() {
     for header in ["36000", "18446744073709551616"] {
         let server = Server::start(vec![Reply::status(429).after(header), Reply::status(200)]);
         let (mut session, directory) = server.session();
-        runtime().block_on(async {
+        runtime().block_on(async move {
             let cx = Cx::current().unwrap();
             let url = format!("{}/me/tracks", session.endpoints.api);
             assert!(matches!(
@@ -384,7 +384,7 @@ fn mixed_rate_limits_server_failure_and_refresh_share_one_budget() {
         Reply::status(200),
     ]);
     let (mut session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
         session.get(&cx, &url).await.unwrap();
@@ -408,7 +408,7 @@ fn a_second_unauthorized_response_does_not_refresh_again() {
         Reply::status(401),
     ]);
     let (mut session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
         assert!(matches!(
@@ -424,7 +424,7 @@ fn a_second_unauthorized_response_does_not_refresh_again() {
 fn token_posts_are_not_replayed_after_transient_failures() {
     let server = Server::start(vec![Reply::status(503), Reply::token()]);
     let (session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         assert!(
             session
@@ -445,7 +445,7 @@ fn a_stalled_response_body_is_bounded_by_the_total_deadline() {
         ..Reply::status(200)
     }]);
     let (mut session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
         let error = get_with_limit(&mut session, &cx, &url, 5, Duration::from_millis(40))
@@ -461,7 +461,7 @@ fn a_stalled_response_body_is_bounded_by_the_total_deadline() {
 fn zero_total_budget_and_other_origins_send_nothing() {
     let server = Server::start(vec![Reply::status(200)]);
     let (mut session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
         assert!(get_with_limit(&mut session, &cx, &url, 5, Duration::ZERO).await.is_err());
@@ -484,7 +484,7 @@ fn backoff_and_a_later_body_cannot_each_get_a_fresh_deadline() {
         },
     ]);
     let (mut session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
         let error = get_with_limit(&mut session, &cx, &url, 5, Duration::from_millis(400))
@@ -507,7 +507,7 @@ fn reactive_refresh_is_inside_the_same_read_deadline() {
         Reply::status(200),
     ]);
     let (mut session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
         assert!(
@@ -515,15 +515,15 @@ fn reactive_refresh_is_inside_the_same_read_deadline() {
                 .await
                 .is_err()
         );
+        assert_eq!(
+            session.cache.load().unwrap().unwrap().refresh_token,
+            "test-refresh"
+        );
     });
     let seen = server.seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[1].method, "POST");
     assert_eq!(seen[1].target, "/api/token");
-    assert_eq!(
-        session.cache.load().unwrap().unwrap().refresh_token,
-        "test-refresh"
-    );
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -533,12 +533,138 @@ fn a_failed_read_does_not_poison_later_reads_on_the_session() {
     replies.push(Reply::status(200));
     let server = Server::start(replies);
     let (mut session, directory) = server.session();
-    runtime().block_on(async {
+    runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
         assert!(session.get(&cx, &url).await.is_err());
         assert_eq!(session.get(&cx, &url).await.unwrap(), b"{\"ok\":true}");
     });
     assert_eq!(server.count(), 5);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn a_long_rate_limit_blocks_other_endpoints_without_refreshing() {
+    let server = Server::start(vec![Reply::status(429).after("60"), Reply::status(200)]);
+    let (mut session, directory) = server.session();
+    runtime().block_on(async move {
+        let cx = Cx::current().unwrap();
+        let url = format!("{}/me/tracks", session.endpoints.api);
+        assert!(matches!(
+            session.get_brief(&cx, &url).await,
+            Err(SpotifyError::Api { status: 429, .. })
+        ));
+        // A known cooldown should not even rotate an expired token.
+        session.token.as_mut().unwrap().expires_at = 0;
+        for path in ["me/albums", "artists/fixture"] {
+            let url = format!("{}/{path}", session.endpoints.api);
+            assert!(matches!(
+                session.get_brief(&cx, &url).await,
+                Err(SpotifyError::Api { status: 429, .. })
+            ));
+        }
+        assert!(matches!(
+            session.check_grant(&cx).await,
+            Err(SpotifyError::Api { status: 429, .. })
+        ));
+    });
+    assert_eq!(server.count(), 1, "no GET or token POST during cooldown");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn cooldown_expiration_uses_elapsed_time_without_overflow_or_clock_reinterpretation() {
+    let mut limit = Cooldown::default();
+    limit.record(Some("10"), 0);
+    let started = limit.limited.unwrap().0;
+    assert_eq!(limit.remaining_at(started), Duration::from_secs(10));
+    assert_eq!(
+        limit.remaining_at(started + Duration::from_secs(4)),
+        Duration::from_secs(6)
+    );
+    assert_eq!(limit.remaining_at(started + Duration::from_secs(10)), Duration::ZERO);
+    limit.record(Some("18446744073709551616"), 0);
+    assert_eq!(limit.limited.unwrap().1, Duration::MAX);
+    limit.record(None, 0);
+    assert_eq!(limit.limited.unwrap().1, Duration::from_secs(1));
+    limit.record(Some("0"), 0);
+    assert!(limit.limited.is_none());
+}
+
+#[test]
+fn a_later_read_waits_out_a_short_cooldown_before_sending() {
+    let server = Server::start(vec![Reply::status(429).after("1"), Reply::status(200)]);
+    let (mut session, directory) = server.session();
+    runtime().block_on(async move {
+        let cx = Cx::current().unwrap();
+        assert!(session.check_grant(&cx).await.is_err());
+        let url = format!("{}/me/albums", session.endpoints.api);
+        session.get_brief(&cx, &url).await.unwrap();
+        assert!(session.api_cooldown.limited.is_none());
+    });
+    let seen = server.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].target, "/v1/me/albums");
+    assert!(seen[1].at.duration_since(seen[0].at) >= Duration::from_secs(1));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn dropping_a_wait_preserves_the_limit_for_the_next_caller() {
+    let server = Server::start(vec![Reply::status(429).after("1"), Reply::status(200)]);
+    let (mut session, directory) = server.session();
+    runtime().block_on(async move {
+        let cx = Cx::current().unwrap();
+        assert!(session.check_grant(&cx).await.is_err());
+        let url = format!("{}/me/albums", session.endpoints.api);
+        let pending = session.get(&cx, &url);
+        assert!(
+            timeout(now(&cx), Duration::from_millis(20), std::pin::pin!(pending))
+                .await
+                .is_err()
+        );
+        assert!(matches!(
+            session.check_grant(&cx).await,
+            Err(SpotifyError::Api { status: 429, .. })
+        ));
+    });
+    assert_eq!(server.count(), 1);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn retry_after_on_the_last_attempt_still_gates_the_next_read() {
+    let mut replies: Vec<_> = (0..3).map(|_| Reply::status(503)).collect();
+    replies.push(Reply::status(429).after("60"));
+    let server = Server::start(replies);
+    let (mut session, directory) = server.session();
+    runtime().block_on(async move {
+        let cx = Cx::current().unwrap();
+        let url = format!("{}/me/tracks", session.endpoints.api);
+        assert!(matches!(
+            session.get(&cx, &url).await,
+            Err(SpotifyError::Api { status: 429, .. })
+        ));
+        assert!(matches!(
+            session.get_brief(&cx, &url).await,
+            Err(SpotifyError::Api { status: 429, .. })
+        ));
+    });
+    assert_eq!(server.count(), 4);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn changing_the_api_endpoint_does_not_transfer_an_old_peers_rate_limit() {
+    let server = Server::start(vec![Reply::status(200)]);
+    let (mut session, directory) = server.session();
+    session.api_cooldown.record(Some("60"), 0);
+    let mut endpoints = session.endpoints().clone();
+    session = session.with_endpoints(endpoints.clone());
+    assert!(session.api_cooldown.limited.is_some(), "same API keeps its limit");
+    endpoints.api.push_str("/alternate");
+    session = session.with_endpoints(endpoints);
+    assert!(session.api_cooldown.limited.is_none());
+    assert_eq!(server.count(), 0);
     std::fs::remove_dir_all(directory).unwrap();
 }

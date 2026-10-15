@@ -8,12 +8,67 @@ use asupersync::time::{sleep, timeout, wall_now};
 use asupersync::{Cx, Time};
 use chrono::DateTime;
 use std::io::ErrorKind;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MAX_ATTEMPTS: u32 = 4;
 const READ_TIMEOUT: Duration = Duration::from_secs(90);
 const BRIEF_TIMEOUT: Duration = Duration::from_secs(35);
 const CANCEL_POLL: Duration = Duration::from_millis(100);
+
+/// One session's Web API rate limit, retained even if a read returns early or
+/// its future is dropped during backoff. This is process-local, not persisted.
+/// Instant remains monotonic if the session is used with a different Cx later.
+#[derive(Default)]
+pub(super) struct Cooldown {
+    limited: Option<(Instant, Duration)>,
+}
+
+impl Cooldown {
+    fn record(&mut self, header: Option<&str>, unix: i64) {
+        let delay = retry_after(header, unix)
+            .unwrap_or(Some(Duration::MAX))
+            .unwrap_or(Duration::from_secs(1));
+        self.limited = (!delay.is_zero()).then(|| (Instant::now(), delay));
+    }
+
+    fn remaining_at(&self, now: Instant) -> Duration {
+        self.limited.map_or(Duration::ZERO, |(started, delay)| {
+            delay.saturating_sub(now.saturating_duration_since(started))
+        })
+    }
+
+    async fn admit(
+        &mut self,
+        cx: &Cx,
+        max_wait_secs: u64,
+        budget: Duration,
+    ) -> Result<(), SpotifyError> {
+        let started = Instant::now();
+        loop {
+            checkpoint(cx)?;
+            let left = self.remaining_at(Instant::now());
+            if left.is_zero() {
+                self.limited = None;
+                return Ok(());
+            }
+            if max_wait_secs == 0
+                || left > Duration::from_secs(max_wait_secs)
+                || left >= budget.saturating_sub(started.elapsed())
+            {
+                let seconds = left
+                    .as_secs()
+                    .saturating_add(u64::from(left.subsec_nanos() != 0));
+                return Err(SpotifyError::Api {
+                    status: 429,
+                    body: format!("Web API rate limit still active; retry in {seconds} seconds"),
+                });
+            }
+            // Do not clear the limit before waiting: dropping this future is
+            // not permission for the next caller to retry early.
+            wait(cx, left).await?;
+        }
+    }
+}
 
 fn now(cx: &Cx) -> Time {
     cx.timer_driver()
@@ -94,13 +149,12 @@ fn retry_delay(
         return None;
     }
     let backoff = Duration::from_millis(250 * (1_u64 << attempt));
-    let required = retry_after(header, unix).ok()?.unwrap_or_else(|| {
-        if status == Some(429) {
-            Duration::from_secs(1)
-        } else {
-            Duration::ZERO
-        }
-    });
+    let fallback = if status == Some(429) {
+        Duration::from_secs(1)
+    } else {
+        Duration::ZERO
+    };
+    let required = retry_after(header, unix).ok()?.unwrap_or(fallback);
     let delay = backoff.max(required);
     // Leave time for the next attempt. Refuse a wait that cannot fit, rather
     // than truncating Retry-After and hitting Spotify before permission to retry.
@@ -183,6 +237,13 @@ async fn attempts(
         if remaining().is_zero() {
             return Err(deadline_error());
         }
+        session
+            .api_cooldown
+            .admit(cx, max_wait_secs, remaining())
+            .await?;
+        if remaining().is_zero() {
+            return Err(deadline_error());
+        }
         let token = session.access_token(cx).await?;
         checkpoint(cx)?;
         let left = remaining();
@@ -197,7 +258,18 @@ async fn attempts(
             .timeout(REQUEST_TIMEOUT.min(left))
             .send(cx)
             .await;
+        if let Ok(response) = &response
+            && response.status == 429
+        {
+            // Remember the limit even on the final attempt or a cancelled read.
+            session
+                .api_cooldown
+                .record(response.header_value("Retry-After"), unix_now());
+        }
         checkpoint(cx)?;
+        if remaining().is_zero() {
+            return Err(deadline_error());
+        }
         match response {
             Ok(response) => {
                 if response.is_success() {

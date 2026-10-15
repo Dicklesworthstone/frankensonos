@@ -72,6 +72,8 @@ pub struct Session {
     cache: TokenCache,
     http: Client,
     token: Option<CachedToken>,
+    /// A server rate limit also applies to the next read on this session.
+    api_cooldown: retry::Cooldown,
 }
 
 impl fmt::Debug for Session {
@@ -100,12 +102,16 @@ impl Session {
             cache,
             http,
             token,
+            api_cooldown: retry::Cooldown::default(),
         })
     }
 
     /// Talk to other hosts than Spotify's (tests use a loopback server).
     #[must_use]
     pub fn with_endpoints(mut self, endpoints: Endpoints) -> Self {
+        if self.endpoints.api != endpoints.api {
+            self.api_cooldown = retry::Cooldown::default();
+        }
         self.endpoints = endpoints;
         self
     }
