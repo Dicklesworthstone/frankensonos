@@ -193,12 +193,26 @@ fn join_targets_the_member_and_names_the_coordinator() {
     assert_eq!(sent[0].0, ip("192.0.2.15"));
     assert!(sent[0].2.contains("x-rincon:RINCON_000E58A0000201400"));
     drop(sent);
-    // Leaving is joining itself (docs/PROTOCOL.md §6).
-    control::leave(&t, &h, &pid(3)).unwrap();
+    // A member leaves by joining itself (docs/PROTOCOL.md §6).
+    control::leave(&t, &h, &pid(8)).unwrap();
     let sent = t.sent.borrow();
-    assert_eq!(sent[1].0, ip("192.0.2.15"));
     assert_eq!(sent[1].1, "SetAVTransportURI");
-    assert!(sent[1].2.contains(&format!("x-rincon:{}", pid(3).0)));
+    assert!(sent[1].2.contains(&format!("x-rincon:{}", pid(8).0)));
+    drop(sent);
+    // A coordinator that leads another room hands that room the group: its
+    // own self-join changes nothing on real players (S1 and S2, live
+    // 2026-10-14). The recorder serves no topology, so the read-back after
+    // it fails; the request is what this checks.
+    let _ = control::leave(&t, &h, &pid(3));
+    let sent = t.sent.borrow();
+    assert_eq!(sent[2].0, ip("192.0.2.15"));
+    assert_eq!(sent[2].1, "DelegateGroupCoordinationTo");
+    assert!(
+        sent[2]
+            .2
+            .contains(&format!("<NewCoordinator>{}</NewCoordinator>", pid(8).0))
+    );
+    assert!(sent[2].2.contains("<RejoinGroup>0</RejoinGroup>"));
 }
 
 #[test]
@@ -834,6 +848,64 @@ fn a_container_refused_at_play_relearns_once_too() {
 }
 
 const ZGS_S1_STUDY_LEFT: &str = include_str!("fixtures/zgs_s1_study_left.xml");
+const ZGS_S1_BEDROOM_HANDED_OVER: &str = include_str!("fixtures/zgs_s1_bedroom_handed_over.xml");
+
+/// Delegation answers success, and the topology shows the hand-over as a
+/// real S1 stereo pair does it (2026-10-14): Bedroom (a pair) leads a group
+/// of its own, its hidden half left behind in Bedroom 2's group.
+#[derive(Default)]
+struct HandedOver {
+    sent: RefCell<Vec<(IpAddr, String, String)>>,
+}
+
+impl Transport for HandedOver {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        _: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let action = soap_action
+            .trim_matches('"')
+            .rsplit('#')
+            .next()
+            .unwrap()
+            .to_string();
+        self.sent
+            .borrow_mut()
+            .push((host, action.clone(), body.into()));
+        Ok(if action == "GetZoneGroupState" {
+            ZGS_S1_BEDROOM_HANDED_OVER.to_string()
+        } else {
+            format!(
+                "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
+                 <u:{action}Response xmlns:u=\"urn:x\"></u:{action}Response></s:Body></s:Envelope>"
+            )
+        })
+    }
+}
+
+#[test]
+fn a_pair_that_hands_its_group_on_takes_its_hidden_half_back() {
+    let h = house();
+    let t = HandedOver::default();
+    control::leave(&t, &h, &pid(3)).expect("Bedroom stands alone");
+    let sent = t.sent.borrow();
+    assert_eq!(sent[0].1, "DelegateGroupCoordinationTo", "{sent:?}");
+    // The pair's hidden half (192.0.2.17) is asked back to its primary.
+    let rejoin = sent
+        .iter()
+        .find(|(host, action, _)| *host == ip("192.0.2.17") && action == "SetAVTransportURI")
+        .expect("the hidden half was asked back");
+    assert!(rejoin.2.contains(&format!("x-rincon:{}", pid(3).0)));
+    // Bedroom 2, which took the group over, is left where it is.
+    assert!(
+        !sent
+            .iter()
+            .any(|(host, action, _)| *host == ip("192.0.2.16") && action == "SetAVTransportURI")
+    );
+}
 
 /// Serves the study's own reads stale (it is still grouped) and every other
 /// player fresh (the study left, and leads a group of its own) — what the

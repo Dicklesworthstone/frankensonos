@@ -622,10 +622,13 @@ pub fn join<T: Transport + ?Sized>(
     Ok(soap::join_group(t, addr(households, member)?, coordinator)?)
 }
 
-/// Take `member` out of its group into a group of its own. Players answer
-/// the request with UPnP 402 and leave anyway (docs/PROTOCOL.md §6), so
-/// then the topology is read back until `member` leads a group of its own;
-/// still grouped after [`LEAVE_WAIT`], the player's 402 stands.
+/// Take `member` out of its group into a group of its own. A member joins
+/// itself: players answer that with UPnP 402 and leave anyway
+/// (docs/PROTOCOL.md §6). A coordinator that leads other rooms hands its
+/// group to one of them, which plays on (a coordinator's self-join is
+/// refused and changes nothing; S1 and S2, live 2026-10-14). Then the
+/// topology is read back until `member` leads a group of its own; still
+/// grouped after [`LEAVE_WAIT`], the player's 402 stands.
 ///
 /// The read-back is cross-checked against another player of the household:
 /// a player that just acted (an announcement, a regroup) can serve its own
@@ -638,9 +641,33 @@ pub fn leave<T: Transport + ?Sized>(
     member: &PlayerId,
 ) -> Result<(), CoreError> {
     let host = addr(households, member)?;
-    if soap::leave_group(t, host, member)? == soap::Leaving::Done {
+    let delegated = match heir_of(households, member) {
+        Some(heir) => match soap::delegate_group(t, host, &heir) {
+            Ok(()) => true,
+            // Refused: the self-join, and the topology decides.
+            Err(ProtoError::SoapFault { .. }) => false,
+            Err(e) => return Err(e.into()),
+        },
+        None => false,
+    };
+    if !delegated && soap::leave_group(t, host, member)? == soap::Leaving::Done {
         return Ok(());
     }
+    wait_until_alone(t, households, member, host)?;
+    if delegated {
+        reunite_room(t, households, member, host);
+    }
+    Ok(())
+}
+
+/// Read the topology back until `member` leads a group of its own (see
+/// [`leave`]); still grouped after [`LEAVE_WAIT`], the player's 402 stands.
+fn wait_until_alone<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    member: &PlayerId,
+    host: IpAddr,
+) -> Result<(), CoreError> {
     let household = households
         .iter()
         .find(|h| h.player(member).is_some())
@@ -694,6 +721,57 @@ pub fn leave<T: Transport + ?Sized>(
         }
         std::thread::sleep(LEAVE_POLL.min(left));
     }
+}
+
+/// After a coordinator handed its group on, bring back the players of its
+/// own room that stayed in that group: an S1 stereo pair leaves its hidden
+/// half behind with the heir, and it rejoins its primary when asked to
+/// (verified live 2026-10-14). Best effort: the leave itself has happened.
+fn reunite_room<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    member: &PlayerId,
+    host: IpAddr,
+) {
+    let Some(room) = households
+        .iter()
+        .flat_map(|h| h.rooms.iter())
+        .find(|r| r.players.contains(member))
+    else {
+        return;
+    };
+    let Ok(now) = get_zone_group_state(t, host) else {
+        return;
+    };
+    let own = now.groups.iter().find(|g| g.coordinator == *member);
+    for p in room.players.iter().filter(|p| *p != member) {
+        if own.is_some_and(|g| g.members.iter().any(|m| m.uuid == *p)) {
+            continue;
+        }
+        if let Ok(ip) = addr(households, p)
+            && let Err(e) = soap::join_group(t, ip, member)
+        {
+            tracing::warn!(
+                player = p.0.as_str(),
+                "a bonded player did not rejoin its room: {e}"
+            );
+        }
+    }
+}
+
+/// The room that takes over the group `member` leads when it leaves: the
+/// first other room in the group's member order. `None` when `member` leads
+/// no other room (it is a member, or alone with its own pair or sub).
+fn heir_of(households: &[HouseholdState], member: &PlayerId) -> Option<PlayerId> {
+    households.iter().find_map(|h| {
+        let group = h.groups.iter().find(|g| g.coordinator == *member)?;
+        group.members.iter().find_map(|m| {
+            h.rooms
+                .iter()
+                .find(|r| r.primary == *m && !r.players.contains(member))
+                .map(|r| r.primary.clone())
+        })
+    })
 }
 
 /// What the group `coordinator` leads is doing right now.

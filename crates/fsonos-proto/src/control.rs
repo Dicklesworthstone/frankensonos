@@ -256,10 +256,13 @@ pub enum Leaving {
 }
 
 /// Take the player at `host`, whose id is `own`, out of its group into a
-/// group of its own: it joins itself (`x-rincon:<own>`). Players answer
-/// that with UPnP 402 and leave anyway (docs/PROTOCOL.md §6, verified on S1
-/// and S2): [`Leaving::Unconfirmed`]. `BecomeCoordinatorOfStandaloneGroup`
-/// is refused (1023) on current firmware.
+/// group of its own: it joins itself (`x-rincon:<own>`). A group *member*
+/// answers that with UPnP 402 and leaves anyway (docs/PROTOCOL.md §6,
+/// verified on S1 and S2): [`Leaving::Unconfirmed`]. A *coordinator* that
+/// leads other rooms answers 402 and stays grouped (verified on S1 and S2,
+/// 2026-10-14): it leaves with [`delegate_group`] instead.
+/// `BecomeCoordinatorOfStandaloneGroup` is refused (1023) on current
+/// firmware.
 pub fn leave_group<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
@@ -270,6 +273,26 @@ pub fn leave_group<T: Transport + ?Sized>(
         Err(ProtoError::SoapFault { code: 402, .. }) => Ok(Leaving::Unconfirmed),
         Err(e) => Err(e),
     }
+}
+
+/// Hand the group the coordinator at `host` leads to its member `heir`,
+/// the coordinator then in a group of its own (`RejoinGroup` 0): how a
+/// coordinator that leads other rooms leaves its group, the music playing on
+/// with `heir` (docs/PROTOCOL.md §6, verified on S1 and S2). A grouping
+/// verb can answer success and do nothing: confirm on the topology.
+pub fn delegate_group<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    heir: &PlayerId,
+) -> Result<(), ProtoError> {
+    call(
+        t,
+        host,
+        &AV_TRANSPORT,
+        "DelegateGroupCoordinationTo",
+        &[INSTANCE, ("NewCoordinator", &heir.0), ("RejoinGroup", "0")],
+    )
+    .map(drop)
 }
 
 // ---------------------------------------------------------------- volume

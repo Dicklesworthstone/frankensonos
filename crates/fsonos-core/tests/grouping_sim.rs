@@ -58,6 +58,15 @@ fn groups(houses: &[HouseholdState]) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Whether `room`'s player asked to hand its group on: how a coordinator
+/// leaves, since its self-join changes nothing on real players.
+fn delegated(sim: &SimHandle, room: &str) -> bool {
+    let uuid = &sim.player(room).unwrap().uuid;
+    sim.soap_log()
+        .iter()
+        .any(|e| e.action == "DelegateGroupCoordinationTo" && &e.player == uuid)
+}
+
 fn names(v: &[&str]) -> Vec<String> {
     v.iter().map(|s| (*s).to_string()).collect()
 }
@@ -142,10 +151,13 @@ fn group_and_ungroup_rooms_through_the_simulator() {
     );
     assert_eq!(sim.soap_log().len(), sent);
 
-    // Kitchen leaves the group it leads; the others keep a group of their own.
+    // Kitchen leaves the group it leads; the others keep a group of their
+    // own. A coordinator's self-join changes nothing on real players, so it
+    // hands the group on.
     let kitchen = resolve_room(&houses, "Kitchen").unwrap();
     let out = grouping::ungroup(&lan, &houses, &[kitchen]);
     assert_eq!(out.moved, names(&["Kitchen"]));
+    assert!(delegated(&sim, "Kitchen"));
     let houses = snapshot(&sim, &lan);
     assert_eq!(
         groups(&houses),

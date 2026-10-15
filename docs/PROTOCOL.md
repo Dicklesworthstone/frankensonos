@@ -247,6 +247,21 @@ Grouping verbs (verified live on S2 97.1, 2026-10-07, with full restore):
   generations (S1 confirmed still grouped after 95 s; S2's apparent effect
   was actually the subsequent self-join). A controller must treat the 402
   on the self-join as success and verify via a topology read-back.
+- **A coordinator leaving the group it leads** (verified live on S1 57.23
+  stereo pairs and S2 86.10, 2026-10-14, stopped groups, fully restored):
+  the self-join above answers 402 and changes **nothing** on a coordinator
+  that leads other rooms (still grouped after 10-14 s). Instead
+  `DelegateGroupCoordinationTo(InstanceID=0, NewCoordinator=<member's
+  UUID>, RejoinGroup=0)` on the coordinator: HTTP 200, and the coordinator
+  is solo about 1 s after the call while the member leads the rest (playback
+  moves with it). A controller leaving (or announcing in) a room that leads
+  a group must delegate first.
+  On S1, a **stereo-pair** coordinator that delegates leaves its pair's
+  hidden half behind in the heir's group (the pair is split: the primary is
+  solo, the right channel plays on with the heir). Sending that hidden half
+  `SetAVTransportURI x-rincon:<primary UUID>` answers 200 and reunites the
+  pair (verified live 2026-10-14; S2 pairs unverified). `fsonos-sim` keeps a
+  pair together through a delegation, so this split is not simulated.
 - ZGT events fire on grouping changes; each NOTIFY carries the new full
   ZoneGroupState (fixtures: solo-state and grouped-state S2 captures).
 

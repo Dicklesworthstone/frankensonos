@@ -498,10 +498,20 @@ impl State {
     /// `SetAVTransportURI x-rincon:<target>`: join `target`'s group, now or,
     /// with a join lag, later (see [`Self::settle_joins`]).
     fn join_uri(&mut self, p: usize, target: &str) -> Result<Out, Fault> {
-        // Joining itself is how a player leaves its group: real ones answer
-        // 402 and leave anyway (docs/PROTOCOL.md §6).
+        // Joining itself is how a member leaves its group: real ones answer
+        // 402 and leave anyway (docs/PROTOCOL.md §6). A coordinator that
+        // leads other rooms answers 402 and stays (S1 and S2, live
+        // 2026-10-14): it leaves with DelegateGroupCoordinationTo.
         if target == self.players[p].uuid {
-            self.make_standalone(p);
+            let own = self.secondary_of(p);
+            let leads_others = self.players[p].coordinator == p
+                && self
+                    .members(p)
+                    .into_iter()
+                    .any(|m| m != p && Some(m) != own);
+            if !leads_others {
+                self.make_standalone(p);
+            }
             return Err(INVALID_ARGS);
         }
         let t = self.find(target).ok_or(SONOS_FAILURE)?;
@@ -1737,10 +1747,14 @@ mod tests {
             ),
             Err(STANDALONE_REFUSED)
         );
-        // The coordinator joining itself answers 402 and leaves anyway,
-        // handing the group to its member.
+        // The coordinator joining itself answers 402 and stays where it
+        // is, as real ones do (S1 and S2, live 2026-10-14).
         let own = format!("x-rincon:{}", s.players[0].uuid);
         assert_eq!(join(&mut s, 0, &own), Err(INVALID_ARGS));
+        assert_eq!((s.players[0].coordinator, s.players[1].coordinator), (0, 0));
+        // The member joining itself answers 402 and leaves.
+        let member = format!("x-rincon:{}", s.players[1].uuid);
+        assert_eq!(join(&mut s, 1, &member), Err(INVALID_ARGS));
         assert_eq!((s.players[0].coordinator, s.players[1].coordinator), (0, 1));
         assert_ne!(s.players[0].group_id, s.players[1].group_id);
         let zgs = docs::zone_group_state(&s, 0);
@@ -1780,9 +1794,28 @@ mod tests {
         join(&mut s, den, kitchen).unwrap();
         assert_eq!(s.members(kitchen), [kitchen, den, rf]);
         assert_eq!(s.players[rf].group_id, s.players[kitchen].group_id);
-        // Kitchen leaving (joining itself: 402, and it leaves) hands the
-        // group to the pair's primary, never its hidden half.
+        // Kitchen joining itself answers 402 and stays where it is, as real
+        // coordinators do (S1 and S2, live 2026-10-14).
         assert_eq!(join(&mut s, kitchen, kitchen), Err(INVALID_ARGS));
+        assert_eq!(s.members(kitchen), [kitchen, den, rf]);
+        // It leaves by handing the group to the pair's primary, never its
+        // hidden half.
+        let hand = |s: &mut State, to: usize| {
+            let heir = s.players[to].uuid.clone();
+            call(
+                s,
+                kitchen,
+                &AV_TRANSPORT,
+                "DelegateGroupCoordinationTo",
+                &[
+                    ("InstanceID", "0"),
+                    ("NewCoordinator", &heir),
+                    ("RejoinGroup", "0"),
+                ],
+            )
+        };
+        assert_eq!(hand(&mut s, rf), Err(SONOS_FAILURE));
+        hand(&mut s, den).unwrap();
         assert_eq!(s.members(den), [den, rf]);
         assert_eq!(s.members(kitchen), [kitchen]);
     }
