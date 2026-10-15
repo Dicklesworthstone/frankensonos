@@ -131,7 +131,7 @@ const LibrarySyncRemote = (() => {
     const button = (text, onclick) => el('button', { type: 'button', text, onclick });
     const toggle = button('Spotify library', () => { if (control.state.open) control.close(); else void control.open(); });
     toggle.setAttribute('aria-controls', id);
-    const box = el('div', { id, class: 'library-sync-panel', hidden: true });
+    const box = el('div', { id, class: 'library-sync-panel', hidden: true, tabindex: -1 });
     const check = button('Check refresh status', () => { void control.refresh(); });
     const start = button('Refresh library from Spotify', () => { void control.start(); });
     const status = el('p', { role: 'status', 'aria-live': 'polite' });
@@ -179,10 +179,15 @@ const LibrarySyncRemote = (() => {
       el('p', { text: 'Reads your Spotify library into the daemon cache. Does not start or skip music. Newly selected DJ picks use the updated cache; already queued works stay queued.' }),
       el('div', { class: 'row' }, check, start, button('Close', () => { control.close(); toggle.focus(); })), status, stale, facts);
     const visibility = () => control.setVisible(!document.hidden);
+    const requested = () => { void control.open(); box.focus(); };
+    document.addEventListener('fsonos-library-refresh-open', requested);
     document.addEventListener('visibilitychange', visibility); visibility();
     render(control.state);
     return { node: el('div', { class: 'library-sync' }, toggle, box), model: control,
-      dispose() { document.removeEventListener('visibilitychange', visibility); control.dispose(); } };
+      dispose() {
+        document.removeEventListener('fsonos-library-refresh-open', requested);
+        document.removeEventListener('visibilitychange', visibility); control.dispose();
+      } };
   }
   return { routes, statusOf, model, panel, POLL_MS, MAX_BACKOFF_MS };
 })();

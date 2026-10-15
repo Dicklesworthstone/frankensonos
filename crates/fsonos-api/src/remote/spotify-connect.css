@@ -1,0 +1,12 @@
+.spotify-connect { margin-top: .75rem; }
+.spotify-connect-panel { padding: 1rem; margin-top: .75rem; background: var(--card); border: 1px solid var(--line); border-radius: .75rem; }
+.spotify-connect-panel h2 { margin-top: 0; }
+.spotify-connect-panel p, .spotify-connect-address { overflow-wrap: anywhere; }
+.spotify-connect-address { display: block; white-space: pre-wrap; }
+.spotify-connect-panel textarea { display: block; width: 100%; font: inherit; margin: .5rem 0; padding: .5rem; border: 1px solid var(--line); border-radius: .5rem; background: var(--card); color: var(--text); resize: vertical; }
+.spotify-connect-panel a { color: var(--accent); display: inline-block; padding: .5rem 0; }
+.spotify-connect-panel summary { cursor: pointer; padding: .5rem 0; }
+.spotify-connect-panel a:focus-visible, .spotify-connect-panel summary:focus-visible, .spotify-connect-panel textarea:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.spotify-connect-review { border: 2px solid var(--accent); border-radius: .5rem; padding: .75rem; }
+.spotify-connect-review button { margin: .25rem; }
+.spotify-connect-panel [hidden] { display: none; }

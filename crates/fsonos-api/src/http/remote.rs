@@ -47,6 +47,8 @@ const HISTORY_SCRIPT: &str = include_str!("../remote/history.js");
 const HISTORY_STYLE: &str = include_str!("../remote/history.css");
 const SYNC_SCRIPT: &str = include_str!("../remote/library-sync.js");
 const SYNC_STYLE: &str = include_str!("../remote/library-sync.css");
+const CONNECT_SCRIPT: &str = include_str!("../remote/spotify-connect.js");
+const CONNECT_STYLE: &str = include_str!("../remote/spotify-connect.css");
 const STYLE: &str = include_str!("../remote/remote.css");
 
 /// What the remote's documents may do: load only themselves, talk only to
@@ -79,7 +81,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}"
+                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}"
                     ),
                 )
             },
@@ -96,7 +98,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}"
                     ),
                 )
             },
@@ -300,6 +302,8 @@ mod tests {
             ("history.css", HISTORY_STYLE),
             ("library-sync.js", SYNC_SCRIPT),
             ("library-sync.css", SYNC_STYLE),
+            ("spotify-connect.js", CONNECT_SCRIPT),
+            ("spotify-connect.css", CONNECT_STYLE),
         ] {
             let lower = text.to_ascii_lowercase();
             for secret in [
