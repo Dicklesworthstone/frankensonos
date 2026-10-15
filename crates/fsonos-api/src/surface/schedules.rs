@@ -643,9 +643,6 @@ impl Sleep {
     /// asked for with `--fade`), so the new level stands and the group is not
     /// paused. Returns whether a sleep fade was superseded.
     pub fn volume_changed(&self, households: &[HouseholdState], coordinator: &PlayerId) -> bool {
-        // A deliberate local change must not be superseded by a delayed
-        // startup adoption. Already armed, not-yet-due timers are unchanged.
-        recovery::supersede(self, coordinator);
         self.fader.supersede(coordinator);
         for household in households {
             for room in household
@@ -870,7 +867,7 @@ impl Surface {
                 continue;
             }
             set.push(group);
-            recovery::supersede(sleep, group);
+            let _ = recovery::supersede(sleep, group);
             if let Err(e) = sleep
                 .timers
                 .start(t, households, &sleep.fader, group, FADE, now)
@@ -915,7 +912,7 @@ impl Surface {
         let t = &*self.transport;
         let followed = fsonos_core::moving::coordinator_now(t, before, to).and_then(|new| {
             let now = self.clock.now().to_utc();
-            recovery::supersede(sleep, &new);
+            let _ = recovery::supersede(sleep, &new);
             sleep.timers.rekey(t, before, &sleep.fader, old, &new, now)
         });
         match followed {
@@ -1040,7 +1037,7 @@ impl Surface {
         let at = &zone.coordinator;
         let timer = match change {
             SleepChange::Set(after) => {
-                recovery::supersede(sleep, at);
+                let _ = recovery::supersede(sleep, at);
                 sleep.timers.start(t, households, fader, at, after, utc)?
             }
             SleepChange::Extend(by) => {
@@ -1049,7 +1046,7 @@ impl Surface {
                     if after > MAX_SLEEP {
                         return Err(too_long(after));
                     }
-                    recovery::supersede(sleep, at);
+                    let _ = recovery::supersede(sleep, at);
                     sleep
                         .timers
                         .extend(t, households, fader, at, by, utc)?
@@ -1066,14 +1063,14 @@ impl Surface {
                     if left + by > MAX_SLEEP {
                         return Err(too_long(left + by));
                     }
-                    recovery::supersede(sleep, at);
+                    let _ = recovery::supersede(sleep, at);
                     sleep
                         .timers
                         .start(t, households, fader, at, left + by, utc)?
                 }
             }
             SleepChange::Cancel => {
-                recovery::supersede(sleep, at);
+                let _ = recovery::supersede(sleep, at);
                 let mut had = sleep.timers.cancel(t, households, fader, at)?;
                 // A timer of the speaker's own goes too.
                 if !had && speaker_timer(t, zone)?.is_some() {
@@ -1740,6 +1737,7 @@ impl Scheduler {
     pub fn shut_down(&self, timeout: Duration) {
         self.dispatch.stop();
         if let Some(sleep) = &self.surface.sleep {
+            recovery::stop(sleep);
             let fading: Vec<_> = sleep
                 .timers
                 .all()

@@ -30,6 +30,7 @@ pub(super) struct State {
     superseded: HashSet<PlayerId>,
     dirty: bool,
     busy: bool,
+    stopped: bool,
     next: Instant,
     delay: Duration,
 }
@@ -42,6 +43,7 @@ impl Default for State {
             superseded: HashSet::new(),
             dirty: false,
             busy: false,
+            stopped: false,
             next: Instant::now(),
             delay: FIRST,
         }
@@ -180,11 +182,20 @@ pub(super) fn reserve(sleep: &Arc<Sleep>, force: bool) -> Option<Permit> {
         Err(TryLockError::Poisoned(error)) => error.into_inner(),
         Err(TryLockError::WouldBlock) => return None,
     };
-    if state.busy || !state.needs_work() || (!force && Instant::now() < state.next) {
+    if state.stopped || state.busy || !state.needs_work()
+        || (!force && Instant::now() < state.next)
+    {
         return None;
     }
     state.busy = true;
     Some(Permit(Arc::clone(sleep)))
+}
+
+/// Close adoption under the same mutex used by `finish`. A read that passed
+/// its last cancellation check still cannot arm a timer after this boundary.
+/// Pending evidence remains durable for a new daemon, not a later call here.
+pub(super) fn stop(sleep: &Sleep) {
+    sleep.writing.lock().unwrap_or_else(PoisonError::into_inner).stopped = true;
 }
 
 /// Retry verification and dirty persistence away from the scheduling thread.
@@ -218,7 +229,7 @@ fn expired(timer: &SleepTimer, now: DateTime<Utc>) -> bool {
 /// Removing a candidate before a concurrent command's I/O fences late reads.
 fn finish(sleep: &Sleep, timer: &SleepTimer, adopt: bool, room: &str) -> bool {
     let mut state = sleep.writing.lock().unwrap_or_else(PoisonError::into_inner);
-    if state.pending.get(&timer.coordinator) != Some(timer) {
+    if (adopt && state.stopped) || state.pending.get(&timer.coordinator) != Some(timer) {
         return false;
     }
     let adopted = adopt

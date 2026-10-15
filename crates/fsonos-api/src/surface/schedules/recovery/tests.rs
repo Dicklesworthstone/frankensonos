@@ -519,3 +519,127 @@ fn partial_startup_adoption_preserves_both_verified_and_unresolved_timers() {
     assert_eq!(sleep(&restarted).timers.all().len(), 2);
     assert_eq!(h.saved(), original);
 }
+
+/// The same interruption hook used for local volume/mute changes, followed
+/// by a real simulator volume write. It is not an explicit timer cancel.
+fn change_volume(house: &House, surface: &Surface, room: &str) {
+    let households = house.rooms.lock().unwrap().clone();
+    assert!(!sleep(surface).volume_changed(&households, &house.id(room)));
+    fsonos_proto::control::set_volume(&house.sim.lan(), house.ip(room), 17).unwrap();
+}
+
+#[test]
+fn changing_volume_before_the_first_recovery_read_preserves_a_future_timer() {
+    for s2 in [false, true] {
+        let h = House::new(s2);
+        let original = h.seed();
+        let surface = h.surface();
+        change_volume(&h, &surface, "RecoverA");
+        let state = sleep(&surface).writing.lock().unwrap();
+        assert!(!state.loaded, "a volume event must not perform recovery file I/O");
+        assert!(!state.dirty, "volume is not a timer snapshot mutation");
+        assert!(state.superseded.is_empty());
+        drop(state);
+        assert_eq!(h.saved(), [original.clone()]);
+        assert_eq!(surface.adopt_sleep_timers(), 1);
+        assert_eq!(sleep(&surface).timers.all(), [original]);
+    }
+}
+
+#[test]
+fn changing_volume_while_verification_is_unavailable_keeps_the_timer_durable() {
+    let h = House::new(true);
+    let original = h.seed();
+    h.replies.fail.lock().unwrap().insert(h.ip("RecoverA"));
+    let surface = h.surface();
+    assert_eq!(surface.adopt_sleep_timers(), 0);
+    change_volume(&h, &surface, "RecoverA");
+    // An unrelated later save must not make the local volume change a
+    // permanent cancellation of an otherwise valid future timer.
+    set(&surface, "RecoverB", "10m", false);
+    assert!(h.saved().contains(&original));
+    h.replies.fail.lock().unwrap().clear();
+    assert_eq!(surface.adopt_sleep_timers(), 1);
+    assert_eq!(sleep(&surface).timers.get(&h.id("RecoverA")), Some(original));
+}
+
+#[test]
+fn a_future_timer_can_finish_verification_across_a_volume_adjustment() {
+    let h = House::new(false);
+    let original = h.seed();
+    let surface = h.surface();
+    let (entered, resume) = h.hold_read();
+    let reading = Arc::clone(&surface);
+    let worker = std::thread::spawn(move || reading.adopt_sleep_timers());
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    change_volume(&h, &surface, "RecoverA");
+    resume.send(()).unwrap();
+    assert_eq!(worker.join().unwrap(), 1);
+    assert_eq!(sleep(&surface).timers.all(), [original.clone()]);
+    assert_eq!(h.saved(), [original]);
+}
+
+#[test]
+fn volume_changes_preserve_an_already_adopted_future_timer_too() {
+    let h = House::new(true);
+    let original = h.seed();
+    let surface = h.surface();
+    assert_eq!(surface.adopt_sleep_timers(), 1);
+    change_volume(&h, &surface, "RecoverA");
+    assert_eq!(sleep(&surface).timers.all(), [original.clone()]);
+    assert_eq!(h.saved(), [original]);
+    assert!(!sleep(&surface).writing.lock().unwrap().dirty);
+}
+
+#[test]
+fn shutdown_closes_forced_public_adoption_as_well_as_scheduler_admission() {
+    let h = House::new(true);
+    let original = h.seed();
+    let surface = h.surface();
+    let scheduler = Scheduler::new(&surface);
+    scheduler.shut_down(Duration::ZERO);
+    let before = h.replies.count.load(Ordering::SeqCst);
+    assert!(reserve(sleep(&surface), true).is_none());
+    assert_eq!(surface.adopt_sleep_timers(), 0);
+    assert_eq!(h.replies.count.load(Ordering::SeqCst), before);
+    assert!(sleep(&surface).timers.all().is_empty());
+    assert_eq!(h.saved(), [original]);
+}
+
+#[test]
+fn shutdown_between_the_last_read_check_and_adoption_cannot_arm_a_timer() {
+    let h = House::new(false);
+    let original = h.seed();
+    let surface = h.surface();
+    let scheduler = Scheduler::new(&surface);
+    let checks = AtomicUsize::new(0);
+    // The final allowed() check has already observed "running". Stop just
+    // before it returns true: finish must independently check under the same
+    // mutex as shutdown, rather than relying on that earlier observation.
+    let recovered = adopt(&surface, sleep(&surface), || {
+        if checks.fetch_add(1, Ordering::SeqCst) == 2 {
+            scheduler.shut_down(Duration::ZERO);
+        }
+        true
+    });
+    assert_eq!(checks.load(Ordering::SeqCst), 3);
+    assert_eq!(recovered, 0);
+    assert!(sleep(&surface).timers.all().is_empty());
+    assert_eq!(h.saved(), [original]);
+}
+
+#[test]
+fn stopping_one_daemon_does_not_retire_the_next_daemons_pending_recovery() {
+    let h = House::new(true);
+    let original = h.seed();
+    {
+        let surface = h.surface();
+        let scheduler = Scheduler::new(&surface);
+        scheduler.shut_down(Duration::ZERO);
+        assert_eq!(surface.adopt_sleep_timers(), 0);
+        assert_eq!(h.saved(), [original.clone()]);
+    }
+    let restarted = h.surface();
+    assert_eq!(restarted.adopt_sleep_timers(), 1);
+    assert_eq!(sleep(&restarted).timers.all(), [original]);
+}
