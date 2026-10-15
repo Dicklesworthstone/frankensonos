@@ -39,46 +39,114 @@ const QueueRemote = (() => {
     execute = (work) => work(), blocked = () => false, current = () => true }) {
     let epoch = 0;
     let disposed = false;
-    let visible = true;
+    let visible = false, active = true, reconciliation = null;
+    const reads = new Set();
     const state = { offset: 0, page: null, loading: false, writing: false, message: '',
+      stale: true, updating: false, uncertain: false,
       selected: new Set(), pending: null, source: '', destination: '' };
     const clearSelection = () => { state.selected.clear(); state.pending = null; state.destination = ''; };
     const publish = () => {
       if (!disposed && current()) { try { changed(state); } catch (_) { /* View only. */ } }
     };
-    const ready = () => !disposed && current() && visible && !blocked()
-      && !state.loading && !state.writing && state.page;
+    const ready = () => !disposed && current() && visible && active && !blocked()
+      && !state.stale && !state.uncertain && !state.loading && !state.writing && state.page;
 
-    async function load(offset = state.offset, keepMessage = false) {
-      if (disposed || !current()) return false;
-      visible = true;
-      if (state.writing || blocked()) return false;
-      if (!index(offset) || offset > MAX_INDEX - PAGE_SIZE) return false;
+    // Live reads share the household's coalesced refresh, not a second stream
+    // or per-card polling loop. A snapshot is never edited while it is stale.
+    function stale(message = 'Queue changed; waiting for a fresh snapshot.') {
+      const notify = !state.stale || state.pending || state.loading || state.updating;
+      ++epoch;
+      state.stale = true;
+      state.loading = state.updating = false;
+      state.pending = null;
+      if (!state.writing && !state.uncertain) state.message = message;
+      if (notify) publish();
+    }
+
+    const available = () => !disposed && current() && active && visible
+      && !blocked() && !state.writing;
+    const sameEntries = (a, b) => a && a.revision && a.revision === b.revision
+      && a.total === b.total && a.items.length === b.items.length
+      && a.items.every((item, n) => item.position === b.items[n].position && item.uri === b.items[n].uri);
+
+    async function readPage(offset, background, keepMessage) {
+      const previous = background ? state.page : null;
       const request = ++epoch;
+      const valid = () => available() && request === epoch;
       state.offset = offset;
-      clearSelection();
-      state.page = null;
-      state.loading = true;
-      if (!keepMessage) state.message = '';
+      state.stale = true;
+      state.loading = !background;
+      state.updating = background;
+      if (!background) { clearSelection(); state.page = null; }
+      // Keep uncertain outcomes until an explicit read actually succeeds.
+      if (!keepMessage && !state.uncertain) state.message = '';
       publish();
       try {
-        const response = await call('queue', { params: { room: zone }, query: { offset, limit: PAGE_SIZE } });
-        if (disposed || !current() || request !== epoch) return false;
-        state.page = pageOf(response, offset);
+        let next;
+        // A queue can shrink while its last page is open. Correct the offset
+        // once; repeated churn goes through the ordinary read-recovery path.
+        for (let attempt = 0; attempt < 2; attempt++) {
+          if (!valid()) return false;
+          const flight = (async () => call('queue', { params: { room: zone }, query: { offset, limit: PAGE_SIZE } }))();
+          reads.add(flight);
+          let response;
+          try { response = await flight; } finally { reads.delete(flight); }
+          if (!valid()) return false;
+          next = pageOf(response, offset);
+          if (offset === 0 || offset < next.total) break;
+          if (attempt) throw new Error('The queue changed again while paging. Refresh to read it again.');
+          offset = Math.min(MAX_INDEX - PAGE_SIZE, Math.floor(Math.max(0, next.total - 1) / PAGE_SIZE) * PAGE_SIZE);
+        }
+        if (!sameEntries(previous, next)) clearSelection();
+        state.offset = offset;
+        state.page = next;
+        state.stale = false;
+        state.uncertain = false;
+        if (!keepMessage) state.message = '';
         return true;
       } catch (error) {
-        if (!disposed && current() && request === epoch) state.message = error.hint ? `${error.message} ${error.hint}` : error.message;
+        if (!valid()) return false;
+        state.message = `${state.uncertain ? 'The previous queue command is still unconfirmed. ' : ''}${error.hint ? `${error.message} ${error.hint}` : error.message}`;
+        if (background) throw error; // The shared live controller owns backoff.
         return false;
       } finally {
         if (!disposed && current() && request === epoch) {
-          state.loading = false;
+          state.loading = state.updating = false;
           publish();
         }
       }
     }
 
+    async function load(offset = state.offset, keepMessage = false) {
+      if (disposed || !current() || !active) return false;
+      if (!index(offset) || offset > MAX_INDEX - PAGE_SIZE) return false;
+      visible = true;
+      if (!available()) return false;
+      return readPage(offset, false, keepMessage);
+    }
+
+    function reconcile() {
+      if (reconciliation) return reconciliation;
+      if (!available() || state.uncertain || !state.stale) return Promise.resolve(false);
+      // Wait for manual reads too. Live notifications can supersede a sample,
+      // but must not multiply concurrent queue requests while it is pending.
+      const running = (async () => {
+        while (reads.size) {
+          await Promise.allSettled([...reads]);
+          if (!available()) return false;
+        }
+        if (!available() || state.uncertain || !state.stale) return false;
+        return readPage(state.offset, true, false);
+      })();
+      reconciliation = running;
+      const clear = () => { if (reconciliation === running) reconciliation = null; };
+      running.then(clear, clear);
+      return running;
+    }
+
     async function write(route, body, validate, message) {
       state.writing = true;
+      state.stale = true;
       state.page = null;
       clearSelection();
       state.message = message;
@@ -89,7 +157,7 @@ const QueueRemote = (() => {
       try {
         await execute(async () => {
           // A declined lane or a disposed/closed view must never dispatch late.
-          if (entered || disposed || !current() || !visible || request !== epoch) return;
+          if (!state.writing || entered || disposed || !current() || !active || !visible || request !== epoch) return;
           entered = true;
           const result = await call(route, { body });
           if (!result || typeof result.done !== 'string' || !validate(result)) {
@@ -109,6 +177,7 @@ const QueueRemote = (() => {
         });
         if (!entered) state.message = 'Another playback control is busy. Refresh the queue before trying again; no queue command was sent.';
       } catch (error) {
+        if (entered) state.uncertain = true;
         state.message = `${error.message}${error.hint ? ` ${error.hint}` : ''} Refresh before trying again; the request was not repeated.`;
       } finally {
         state.writing = false;
@@ -118,7 +187,7 @@ const QueueRemote = (() => {
         // A failed status refresh must not turn an acknowledged edit into a retry.
         try { Promise.resolve(played()).catch(() => {}); } catch (_) { /* read-only callback */ }
         // Only refresh reads after success; an uncertain write needs an explicit fresh read.
-        if (success && visible) await load(nextOffset, true);
+        if (success && visible && active) await load(nextOffset, true);
       }
       return success;
     }
@@ -242,8 +311,10 @@ const QueueRemote = (() => {
         ++epoch;
         state.loading = false;
         state.page = null;
+        state.stale = true;
+        state.updating = false;
         clearSelection();
-        state.message = 'Playback is changing. Refresh the queue when the control finishes.';
+        if (!state.uncertain) state.message = 'Playback is changing. Refresh the queue when the control finishes.';
       }
       publish();
     }
@@ -251,14 +322,18 @@ const QueueRemote = (() => {
     function close() {
       visible = false;
       ++epoch;
-      state.loading = false;
+      state.stale = true;
+      state.loading = state.updating = false;
       state.page = null;
       clearSelection();
       publish();
     }
 
     return { state, load, play, add, select, removable, reviewRemoval, cancelRemoval, remove,
-      reviewMove, move, block, close, dispose() { disposed = true; close(); } };
+      reviewMove, move, block, stale, reconcile, close,
+      suspend() { active = false; stale('Queue updates paused while this page is hidden.'); },
+      resume() { if (!disposed) { active = true; stale(); } },
+      dispose() { disposed = true; close(); } };
   }
 
   /** Lazy, bounded browsing inside the existing room card. No background poll. */
@@ -286,20 +361,23 @@ const QueueRemote = (() => {
 
     function draw(state) {
       body.replaceChildren();
-      body.setAttribute('aria-busy', String(state.loading || state.writing || blocked()));
+      body.setAttribute('aria-busy', String(state.loading || state.updating || state.writing || blocked()));
       const busy = state.loading || state.writing || blocked();
       const deciding = Boolean(state.pending);
+      const untrusted = state.stale || state.uncertain || state.updating;
       body.append(el('div', { class: 'row' }, button('Refresh queue', () => control.load(), busy)));
       if (state.message) body.append(el('p', { role: 'status', 'aria-live': 'polite', text: state.message }));
       if (state.loading) body.append(el('p', { text: 'Reading queue…' }));
       const page = state.page;
-      const editable = page && page.revision && !busy && !deciding;
+      const editable = page && page.revision && !busy && !untrusted && !deciding;
+      const ownsPage = () => state.page === page && !state.stale && !state.uncertain;
       const source = el('input', { type: 'text', value: state.source, disabled: !editable,
         placeholder: 'Spotify track, album or playlist', 'aria-label': 'Spotify link or URI',
         'data-focus': 'source', class: 'queue-source' });
-      const append = button('Add to end', () => control.add(state.source), !editable || !nonblank(state.source));
-      const next = button('Queue next', () => control.add(state.source, true), !editable || !nonblank(state.source));
+      const append = button('Add to end', () => { if (ownsPage()) return control.add(state.source); }, !editable || !nonblank(state.source));
+      const next = button('Queue next', () => { if (ownsPage()) return control.add(state.source, true); }, !editable || !nonblank(state.source));
       source.addEventListener('input', () => {
+        if (!ownsPage()) return;
         state.source = source.value;
         append.disabled = next.disabled = !editable || !nonblank(source.value);
       });
@@ -318,12 +396,12 @@ const QueueRemote = (() => {
       for (const item of page.items) {
         const title = item.title || 'Untitled track';
         const current = page.playing === item.position;
-        const play = button('Play', () => control.play(item.position), busy || deciding || !page.revision || !identity(item.uri));
+        const play = button('Play', () => { if (ownsPage()) return control.play(item.position); }, busy || untrusted || deciding || !page.revision || !identity(item.uri));
         play.setAttribute('data-focus', `play-${item.position}`);
         const select = el('input', { type: 'checkbox', checked: state.selected.has(item.position),
-          disabled: busy || !page.revision || !identity(item.uri), 'data-focus': `select-${item.position}`,
+          disabled: busy || untrusted || !page.revision || !identity(item.uri), 'data-focus': `select-${item.position}`,
           'aria-label': `Select queue position ${item.position}: ${title}`,
-          onchange: (event) => control.select(item.position, event.target.checked) });
+          onchange: (event) => { if (ownsPage()) control.select(item.position, event.target.checked); } });
         play.setAttribute('aria-label', `Play queue position ${item.position}: ${title}`);
         list.append(el('li', { 'aria-current': current ? 'true' : null },
           el('div', { class: 'track' },
@@ -343,6 +421,7 @@ const QueueRemote = (() => {
             && positionOf(destination.value) <= page.total + 1;
           const reviewMove = button('Review move', () => control.reviewMove(positionOf(state.destination)), !canMove());
           destination.addEventListener('input', () => {
+            if (!ownsPage()) return;
             state.destination = destination.value;
             reviewMove.disabled = !canMove();
           });
@@ -380,12 +459,26 @@ const QueueRemote = (() => {
       body.append(el('div', { class: 'row' },
         button('Previous page', () => control.load(Math.max(0, state.offset - PAGE_SIZE)), busy || state.offset === 0),
         button('Next page', () => control.load(last.position), busy || !last || last.position >= page.total)));
-      body.append(el('p', { class: 'empty', text: 'This is a queue snapshot. Refresh after changes from another controller.' }));
+      body.append(el('p', { class: 'empty', text: 'Live updates refresh this open queue. A changed queue revision clears its selection.' }));
     }
 
     node.addEventListener('toggle', () => { if (node.open) control.load(); else control.close(); });
+    const visibility = () => { if (document.hidden) control.suspend(); else control.resume(); };
+    const hide = () => control.suspend();
+    document.addEventListener?.('visibilitychange', visibility);
+    const win = typeof window === 'undefined' ? null : window;
+    win?.addEventListener('pagehide', hide);
+    win?.addEventListener('pageshow', visibility);
+    if (document.hidden) control.suspend();
     render(control.state);
-    return { node, block: control.block, dispose: control.dispose };
+    return { node, block: control.block, stale: control.stale, reconcile: control.reconcile,
+      dispose() {
+        control.dispose();
+        document.removeEventListener?.('visibilitychange', visibility);
+        win?.removeEventListener('pagehide', hide);
+        win?.removeEventListener('pageshow', visibility);
+      },
+    };
   }
 
   return { model, panel, PAGE_SIZE };

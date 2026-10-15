@@ -29,7 +29,7 @@ const result = (route, body) => route === 'queueRemove'
       : { done: 'Playing', changed: true };
 
 function browser() {
-  let serial = 0;
+  let serial = 0, now = 10000;
   const timers = new Map(), ids = new Map(), calls = [];
   class Element {
     constructor(tag) { this.tag = tag; this.children = []; this.attrs = {}; this.events = new Map(); this.value = ''; this.disabled = false; this.open = false; }
@@ -50,7 +50,7 @@ function browser() {
   const doc = new Element('document'), win = new Element('window'); doc.hidden = false;
   doc.createElement = tag => new Element(tag); doc.getElementById = id => ids.get(id); doc.activeElement = null;
   for (const id of ['households', 'toast', 'live', 'pause-all']) { const node = new Element('div'); node.setAttribute('id', id); }
-  const h = { calls, timers, doc, win, zones: [zone()], intercept: null };
+  const h = { calls, timers, doc, win, zones: [zone()], intercept: null, feeds: [] };
   const network = async (route, args = {}) => {
     calls.push([route, JSON.parse(JSON.stringify(args))]);
     const override = h.intercept?.(route, args);
@@ -63,12 +63,20 @@ function browser() {
         track: { uri: 'renderer:1', position_secs: 10, duration_secs: 120, queue_position: 1 } };
     }
     if (route === 'djStatus') return { running: false };
+    if (route === 'favorites') return [];
+    if (route === 'moods') return { moods: [] };
     return result(route, args.body || {});
   };
-  const ctx = vm.createContext({ document: doc, window: win, network, performance: { now: () => 0 },
-    URLSearchParams, AbortController, setTimeout(fn, delay) { timers.set(++serial, { fn, delay }); return serial; }, clearTimeout(id) { timers.delete(id); } });
+  class Feed extends Element {
+    constructor() { super('feed'); this.readyState = 0; h.feeds.push(this); }
+    close() { this.readyState = 2; }
+  }
+  win.EventSource = Feed;
+  const ctx = vm.createContext({ document: doc, window: win, network, EventSource: Feed,
+    Date: { now: () => now, parse: Date.parse }, performance: { now: () => now },
+    URLSearchParams, AbortController, setTimeout(fn, delay) { timers.set(++serial, { fn, delay, at: now + delay }); return serial; }, clearTimeout(id) { timers.delete(id); } });
   vm.runInContext(queueSource + '\n' + remoteSource.replace(/\nstart\(\);\s*$/, '') + '\ncall = network;', ctx);
-  h.api = vm.runInContext('({house, render, refreshZone, beginAction, endAction, ownsCard, disposeCard, notifyCard})', ctx);
+  h.api = vm.runInContext('({house, render, refreshZone, beginAction, endAction, ownsCard, disposeCard, notifyCard, loadZones, listen, LiveRemote})', ctx);
   h.render = () => { h.api.house.zones = h.zones; h.api.render(); };
   h.parts = () => [...h.api.house.cards.values()];
   h.render();
@@ -77,6 +85,20 @@ function browser() {
   h.click = (p, key) => { const node = h.control(p, key); assert.ok(node, key); node.emit('click'); return node; };
   h.refresh = async (p = h.parts()[0]) => { h.click(p, 'Refresh queue'); await settle(); };
   h.posts = () => calls.filter(([, args]) => args.body);
+  h.tick = async (ms) => {
+    const end = now + ms; await settle();
+    for (let i = 0; i < 10000; i++) {
+      const next = [...timers].filter(([,t])=>t.at<=end).sort((a,b)=>a[1].at-b[1].at)[0];
+      if (!next) { now=end; await settle(); return; }
+      timers.delete(next[0]); now=next[1].at; next[1].fn(); await settle();
+    }
+    throw new Error('timer loop');
+  };
+  h.event = (kind, data = {}) => {
+    const feed = h.feeds.at(-1);
+    if (kind === 'open') feed.readyState = 1;
+    feed.emit(kind, { data: JSON.stringify(data) });
+  };
   return h;
 }
 
@@ -171,7 +193,8 @@ test('a native action fences an earlier queue read before it can reenable editin
   await h.open(p); p.next.emit('click'); reading.resolve(page()); await settle();
   assert.equal(h.control(p, 'play-1'), undefined);
   writing.resolve({ done: 'Next', changed: true }); await settle();
-  assert.equal(h.control(p, 'play-1'), undefined); assert.equal(h.posts().length, 1);
+  assert.equal(h.calls.filter(([r]) => r === 'queue').length, 2, 'a fresh post-action read replaces the fenced response');
+  assert.equal(h.control(p, 'play-1').disabled, false); assert.equal(h.posts().length, 1);
 });
 
 test('declining execution does not send a queue command or replay the consumed intent', async () => {
@@ -197,4 +220,97 @@ test('view callbacks cannot change the result or leak the action lane', async ()
     execute: async work => { held = true; try { await work(); } finally { held = false; } },
     call: async route => { if (route === 'queue') return page(); commands++; return { done: 'Playing', changed: true }; } });
   await c.load(); assert.equal(await c.play(1), true); assert.equal(held, false); assert.equal(commands, 1);
+});
+
+// Open queues reconcile inside the same bounded household refresh, never a
+// parallel event feed. These tests execute that wiring and the actual DOM.
+async function live(h) {
+  const controller=h.api.listen(); h.event('open'); await h.tick(300); return controller;
+}
+const queueReads = h => h.calls.filter(([r])=>r==='queue');
+
+test('a coalesced live event burst refreshes only open queues and retains their source draft', async () => {
+  const h=browser(); h.zones=[zone('Den'),zone('Office')]; h.render(); const controller=await live(h);
+  assert.equal(queueReads(h).length,0); const p=h.parts()[0]; await h.open(p);
+  const source=h.control(p,'source'); source.value='my unsent Spotify source'; source.emit('input');
+  h.intercept=(r,a)=>r==='queue'?{...page(a.query.offset,6,'new'),playing:3}:undefined;
+  for(let n=0;n<100;n++)h.event('zone.state',{room:'Den',queue_length:6});
+  assert.equal(h.control(p,'play-1').disabled,true); await h.tick(300);
+  assert.equal(queueReads(h).length,2); assert.equal(h.control(p,'source').value,'my unsent Spotify source');
+  assert.equal(p.queue.node.descendants().find(n=>n.attrs['aria-current']==='true').children[0].children[0].textContent,'▶ Track 3');
+  assert.equal(h.feeds.length,1); assert.equal(h.posts().length,0);
+  await h.tick(180000); assert.equal(queueReads(h).length,2,'healthy quiet queues do not poll'); controller.dispose();
+});
+
+test('live refresh retains exact selection but consumes old confirmation buttons', async () => {
+  const h=browser(); const controller=await live(h),p=h.parts()[0]; await h.open(p);
+  const select=h.control(p,'select-1');select.checked=true;select.emit('change');h.click(p,'Review removal');
+  const old=h.control(p,'Remove permanently');h.event('zone.state',{room:'Den',volume:22}); await h.tick(300);
+  assert.equal(h.control(p,'select-1').checked,true); assert.equal(h.control(p,'Remove permanently'),undefined);
+  old.emit('click');await settle();assert.equal(h.posts().length,0);controller.dispose();
+});
+
+test('detached play and selection handlers cannot act on a freshly reconciled page', async () => {
+  const h=browser();const controller=await live(h),p=h.parts()[0];await h.open(p);
+  const play=h.control(p,'play-1'),select=h.control(p,'select-1');
+  h.intercept=(r,a)=>r==='queue'?page(a.query.offset,4,'new'):undefined;
+  h.event('zone.state',{room:'Den'});await h.tick(300);play.emit('click');select.checked=true;select.emit('change');await settle();
+  assert.equal(h.posts().length,0);assert.notEqual(h.control(p,'select-1').checked,true);
+  h.click(p,'play-1');await settle();assert.equal(h.posts()[0][1].body.expected_revision,'new');controller.dispose();
+});
+
+test('same-name household notifications refresh each open queue with its exact qualified address', async () => {
+  const h=browser();h.zones=[zone('Den','S1'),zone('Den','S2')];h.render();const controller=await live(h);
+  for(const p of h.parts())await h.open(p);h.event('zone.state',{room:'Den'});await h.tick(300);
+  assert.deepEqual(queueReads(h).slice(2).map(([,a])=>a.params.room),['Den@S1','Den@S2']);
+  assert.equal(h.posts().length,0);controller.dispose();
+});
+
+test('a failing queue is isolated and later healthy rooms still receive their live snapshots', async () => {
+  const h=browser();h.zones=[zone('Den'),zone('Office')];h.render();const controller=await live(h);
+  for(const p of h.parts())await h.open(p);
+  h.intercept=(r,a)=>r==='queue'?(a.params.room==='Den@S2'?Promise.reject(new Error('offline')):page(0,5,'new')):undefined;
+  h.event('zone.state',{room:'Den'});h.event('zone.state',{room:'Office'});await h.tick(300);
+  assert.equal(h.doc.getElementById('live').textContent,'State refresh failed; retrying…');
+  assert.equal(h.control(h.parts()[0],'play-1').disabled,true);assert.equal(h.control(h.parts()[1],'play-1').disabled,false);
+  const reads=queueReads(h).length;await h.tick(10000);assert.equal(queueReads(h).length,reads);
+  h.intercept=null;await h.tick(10300);assert.equal(h.doc.getElementById('live').textContent,'Live');controller.dispose();
+});
+
+test('reset, action log and reconnect events all reconcile open queues without replaying actions', async () => {
+  const h=browser();const controller=await live(h);await h.open();
+  for(const kind of ['events.reset','action.logged','open']) {
+    const before=queueReads(h).length;h.event(kind);await h.tick(300);assert.equal(queueReads(h).length,before+1);
+  }
+  assert.equal(h.feeds.length,1);assert.equal(h.posts().length,0);controller.dispose();
+});
+
+test('an uncertain queue write remains blocked through automatic post-action and event refreshes', async () => {
+  const h=browser();const controller=await live(h),p=h.parts()[0];await h.open(p);
+  h.intercept=(r,a)=>a.body?Promise.reject(new Error('reply lost')):undefined;
+  h.click(p,'play-1');await settle();const count=queueReads(h).length;
+  h.event('zone.state',{room:'Den'});await h.tick(300);assert.equal(queueReads(h).length,count);assert.equal(h.control(p,'play-1'),undefined);
+  assert.match(p.queue.node.descendants().map(n=>n.textContent||'').join(' '),/not repeated/);
+  h.intercept=null;await h.refresh(p);assert.equal(h.control(p,'play-1').disabled,false);assert.equal(h.posts().length,1);controller.dispose();
+});
+
+test('closed queues ignore updates; hidden queues wait for the shared resume snapshot', async () => {
+  const h=browser();const controller=await live(h),p=h.parts()[0];await h.open(p);
+  p.queue.node.open=false;p.queue.node.emit('toggle');h.event('zone.state',{room:'Den'});await h.tick(300);assert.equal(queueReads(h).length,1);
+  await h.open(p);h.doc.hidden=true;h.doc.emit('visibilitychange');const count=queueReads(h).length;
+  await h.tick(60000);assert.equal(queueReads(h).length,count);
+  h.doc.hidden=false;h.doc.emit('visibilitychange');assert.equal(queueReads(h).length,count);
+  h.event('open');await h.tick(300);assert.equal(queueReads(h).length,count+1);controller.dispose();
+});
+
+test('queue lifecycle listeners are released when topology removes their cards', async () => {
+  const h=browser();await h.open();assert.equal(h.doc.events.get('visibilitychange').size,1);
+  h.zones=[];h.render();assert.equal(h.doc.events.get('visibilitychange').size,0);
+  assert.equal(h.win.events.get('pagehide').size,0);assert.equal(h.win.events.get('pageshow').size,0);assert.equal(h.timers.size,0);
+});
+
+test('native actions trigger automatic open-queue recovery without needing a new SSE event', async () => {
+  const h=browser(),p=h.parts()[0];await h.open(p);h.intercept=(r,a)=>r==='queue'?page(a.query.offset,5,'after native action'):undefined;
+  p.next.emit('click');await settle();assert.equal(queueReads(h).length,2);assert.equal(h.control(p,'play-1').disabled,false);
+  assert.deepEqual(h.posts().map(([r])=>r),['next']);
 });

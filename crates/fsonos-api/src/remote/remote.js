@@ -956,7 +956,7 @@ const LiveRemote = (() => {
           request(change && !Array.isArray(change) ? change[field] : null);
         });
       }
-      for (const kind of ['topology.changed', 'player.health', 'events.reset']) {
+      for (const kind of ['topology.changed', 'player.health', 'events.reset', 'action.logged']) {
         feed.addEventListener(kind, () => { if (current()) request(); });
       }
     }
