@@ -10,6 +10,9 @@
 //! * [`HOUSE`]: the households and rooms the survey found.
 //! * [`READS`]: every read the controller relies on, on every group and room.
 //! * [`BROWSE`]: favorites and each group's queue browse.
+//! * [`EVENTS`]: on one group's coordinator per household, each event
+//!   service the daemon follows subscribes, sends its full-state event,
+//!   renews and unsubscribes.
 //! * [`INAUDIBLE_WRITES`]: writes that change nothing audible, so the
 //!   control path is exercised: `SetVolume` to each room's current level,
 //!   `SetPlayMode` to the current mode of each group playing its queue, and
@@ -37,6 +40,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+mod events;
+pub use events::EVENTS;
+
 pub const HOUSE: CheckId = CheckId("selftest.house");
 pub const READS: CheckId = CheckId("selftest.reads");
 pub const BROWSE: CheckId = CheckId("selftest.browse");
@@ -56,6 +62,7 @@ pub fn register(runner: &mut Runner, lan: Arc<Lan>, probe: &Arc<LanProbe>) {
     runner.register(HouseCheck(Arc::clone(&shared)));
     runner.register(ReadsCheck(Arc::clone(&shared)));
     runner.register(BrowseCheck(Arc::clone(&shared)));
+    runner.register(events::EventsCheck(Arc::clone(&shared)));
     runner.register(WritesCheck(shared));
 }
 

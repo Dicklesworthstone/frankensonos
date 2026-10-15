@@ -56,13 +56,14 @@ fn the_inaudible_selftest_passes_and_changes_nothing() {
     s.check(
         "selftest",
         "cli",
-        "the four inaudible checks ran and passed (exit 0)",
+        "the five inaudible checks ran and passed (exit 0)",
         run.ok()
             && ids
                 == [
                     "selftest.house",
                     "selftest.reads",
                     "selftest.browse",
+                    "selftest.events",
                     "selftest.inaudible_writes",
                 ]
             && checks.iter().all(|c| c["status"] == "pass"),
