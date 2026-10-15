@@ -21,7 +21,7 @@
 use crate::control::{self, Tone, ToneChange};
 use crate::policy::Client;
 use crate::snapshot::{self, RestoreReport, ZoneSnapshot};
-use crate::store::{Action, DjSession, Store, StoreError};
+use crate::store::{Action, DjSession, LoggedAction, Store, StoreError};
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::Transport;
 use fsonos_types::PlayerId;
@@ -260,6 +260,59 @@ pub fn undo_last_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     else {
         return Ok(None);
     };
+    restore_target_vetted(t, households, store, target, by, surface, at, vet).map(Some)
+}
+
+/// A reviewed undo refused before restoring, or failed during restoration.
+#[derive(Debug, thiserror::Error)]
+pub enum CheckedUndoError {
+    /// The caller's latest eligible action is no longer the one reviewed.
+    #[error("reviewed action #{expected} is no longer the newest undoable action (now {actual:?})")]
+    TargetChanged { expected: i64, actual: Option<i64> },
+    #[error(transparent)]
+    Core(#[from] CoreError),
+}
+
+/// Undo exactly `expected`, but only while it is the newest eligible action.
+/// Select once, check before any restoration I/O, then retain that selected
+/// row. A later log insertion cannot substitute another action. The surface
+/// must serialize this with every other undo; this does not lock the house
+/// against ordinary speaker commands.
+#[allow(clippy::too_many_arguments)] // undo_last_vetted plus the reviewed id
+pub fn undo_last_vetted_checked<T: Transport + ?Sized, S: Store + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    store: &mut S,
+    only: Option<&Client>,
+    by: &Client,
+    surface: &str,
+    at: i64,
+    expected: i64,
+    vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
+) -> Result<UndoReport, CheckedUndoError> {
+    let target = store
+        .last_undoable_action(only.map(Client::key))
+        .map_err(|e| store_err(&e))?;
+    let actual = target.as_ref().map(|row| row.id);
+    let Some(target) = target.filter(|row| row.id == expected) else {
+        return Err(CheckedUndoError::TargetChanged { expected, actual });
+    };
+    Ok(restore_target_vetted(
+        t, households, store, target, by, surface, at, vet,
+    )?)
+}
+
+#[allow(clippy::too_many_arguments)] // the selected row replaces undo_last's filter
+fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    store: &mut S,
+    target: LoggedAction,
+    by: &Client,
+    surface: &str,
+    at: i64,
+    vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
+) -> Result<UndoReport, CoreError> {
     let before = BeforeState::parse(target.action.before_state.as_deref().unwrap_or("[]"))
         .map_err(|e| {
             CoreError::Store(format!(
@@ -331,7 +384,7 @@ pub fn undo_last_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
             undo_of: Some(target.id),
         },
     )?;
-    Ok(Some(UndoReport {
+    Ok(UndoReport {
         undone: target.id,
         intent: target.action.intent,
         undo_id,
@@ -344,7 +397,7 @@ pub fn undo_last_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
         unqueued,
         unqueue_failures,
         summary,
-    }))
+    })
 }
 
 /// Each coordinator's room name, or its id when the households no longer
@@ -414,7 +467,7 @@ fn outcome_lines(
         lines.push(format!("{what} {} {done}", names.join(", ")));
     }
     for (id, why) in failures {
-        lines.push(format!("{what} {} not {done}: {why}", id.0));
+        lines.push(format!("{what} {id} not {done}: {why}", id = id.0));
     }
     lines
 }
@@ -673,3 +726,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod checked_tests;

@@ -97,7 +97,7 @@ pub struct UndoDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<String>,
     /// Zones (and DJ steering, tones and queued tracks) that could not be
-    /// restored, with why.
+    /// restored, including skipped aspects of otherwise restored zones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<String>,
 }
@@ -134,6 +134,12 @@ impl From<Option<UndoReport>> for UndoDto {
                             .into_iter()
                             .map(|(zone, why)| format!("{} queue: {why}", zone.0)),
                     )
+                    .chain(r.zones.into_iter().flat_map(|(zone, report)| {
+                        report
+                            .skipped
+                            .into_iter()
+                            .map(move |(aspect, why)| format!("{} {aspect:?}: {why}", zone.0))
+                    }))
                     .collect(),
             },
         }
@@ -182,5 +188,37 @@ mod tests {
         let q: ActionsQuery = serde_json::from_value(serde_json::json!({})).unwrap();
         assert_eq!(q.filter().limit, 20);
         assert!(serde_json::from_value::<ActionsQuery>(serde_json::json!({ "who": "x" })).is_err());
+    }
+
+    #[test]
+    fn partial_zone_restoration_is_in_structured_failures() {
+        use fsonos_core::snapshot::{Aspect, RestoreReport};
+        use fsonos_types::PlayerId;
+
+        let dto = UndoDto::from(Some(UndoReport {
+            undone: 7,
+            intent: "play".into(),
+            undo_id: 8,
+            zones: vec![(
+                PlayerId("SYNTHETIC".into()),
+                RestoreReport {
+                    restored: vec![Aspect::Volume],
+                    skipped: vec![(Aspect::Position, "queue changed".into())],
+                },
+            )],
+            failures: Vec::new(),
+            sessions: Vec::new(),
+            session_failures: Vec::new(),
+            tones: Vec::new(),
+            tone_failures: Vec::new(),
+            unqueued: Vec::new(),
+            unqueue_failures: Vec::new(),
+            summary: "partial restoration".into(),
+        }));
+        assert_eq!(dto.failures, ["SYNTHETIC Position: queue changed"]);
+        assert_eq!(
+            serde_json::to_value(dto).unwrap()["failures"][0],
+            "SYNTHETIC Position: queue changed"
+        );
     }
 }

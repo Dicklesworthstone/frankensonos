@@ -18,6 +18,8 @@ use fastapi::{JsonSchema, Request, Response, ResponseBody, StatusCode, fastapi_o
 use super::{Ctx, Op, query_param};
 use crate::failure::{ErrorCode, Failure};
 
+mod undo;
+
 const REMOTE: &str = "remote";
 
 const PAGE: &str = include_str!("../remote/index.html");
@@ -55,7 +57,7 @@ const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-
 
 /// Every remote route.
 pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
-    vec![
+    let mut routes = vec![
         cx.route(
             &Op::get(
                 "/",
@@ -105,7 +107,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/art",
                 "album_art",
                 REMOTE,
-                "The album art of what a room's group plays, from its own player (204 none)",
+                "The album art of what a room's group plays, from its own player (204 when none)",
             ),
             |s, c, req| match same_origin(req)
                 .and_then(|()| art_query(req))
@@ -131,7 +133,9 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .query_schema::<ArtQuery>(false)
         .response_schema::<String>(200, "The image, as the player serves it (image/*)"),
-    ]
+    ];
+    routes.extend(undo::routes(cx));
+    routes
 }
 
 /// The headers every remote response carries: the [`CSP`], no sniffing,

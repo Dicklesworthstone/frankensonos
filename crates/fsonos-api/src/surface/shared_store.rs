@@ -19,6 +19,8 @@ use fsonos_types::{Player, ZoneGroup};
 use std::ops::Range;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+mod reviewed_undo;
+
 use super::Surface;
 use crate::failure::{ErrorCode, Failure};
 
