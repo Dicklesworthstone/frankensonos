@@ -54,6 +54,7 @@ mod remote;
 mod rooms_cmd;
 mod scene_cmd;
 mod schedule_cmd;
+mod selftest_cmd;
 mod setup_cmd;
 mod setup_spotify;
 #[cfg(feature = "sim")]
@@ -152,6 +153,11 @@ enum Command {
     /// Diagnose the setup: speakers, Spotify linkage, listener addresses,
     /// the daemon. Exits 0 (all pass), 6 (warnings) or 7 (a failure).
     Doctor(doctor::DoctorArgs),
+    /// Live acceptance checks on this house's real players: every read the
+    /// controller relies on, favorites and queues, and writes that change
+    /// nothing audible (verified before and after). The report names no
+    /// room, address or id, so it can be shared. Exits as `doctor` does.
+    Selftest(selftest_cmd::SelftestArgs),
     /// A guided first run: the data directory, finding the players (and
     /// writing seeds.toml when multicast cannot), the households, Spotify,
     /// Tailscale, and what to run next. Exits as `doctor` does.
@@ -433,6 +439,12 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Command::Doctor(args) = &cli.command {
         return match doctor::run(&cli.global, args) {
+            Ok(code) => code,
+            Err(err) => report_error(&err),
+        };
+    }
+    if let Command::Selftest(args) = &cli.command {
+        return match selftest_cmd::run(&cli.global, args) {
             Ok(code) => code,
             Err(err) => report_error(&err),
         };
@@ -978,6 +990,7 @@ fn plan_for<'a>(
         | Command::Rooms { .. }
         | Command::Scene(_)
         | Command::Setup(_)
+        | Command::Selftest(_)
         | Command::Say(_)
         | Command::Chime(_)
         | Command::Announce(_)

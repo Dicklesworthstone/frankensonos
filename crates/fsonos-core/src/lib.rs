@@ -51,6 +51,7 @@ pub mod rooms;
 pub mod scenes;
 pub mod schedule;
 pub mod search;
+pub mod selftest;
 pub mod sleep;
 pub mod snapshot;
 pub mod store;
