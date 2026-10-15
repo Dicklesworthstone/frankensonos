@@ -38,6 +38,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
+mod layout;
 mod targets;
 
 pub use targets::canonical_room_name;
@@ -68,7 +69,8 @@ pub struct Scene {
 pub struct SceneGroup {
     /// The room that leads the group.
     pub coordinator: String,
-    /// The other rooms in it.
+    /// Exactly the other rooms in it. Unlisted rooms currently in this
+    /// group are detached; an empty list makes the coordinator's room solo.
     #[serde(default)]
     pub members: Vec<String>,
     #[serde(default)]
@@ -346,34 +348,9 @@ pub fn plan_apply(
     Ok(plan)
 }
 
-/// Leaves first (each scene group's lead must lead), then joins.
+/// Establish each declared group's exact membership before changing sound.
 fn plan_groups(scene: &Scene, households: &[HouseholdState], plan: &mut ScenePlan) {
-    let mut joins = Vec::new();
-    for g in &scene.groups {
-        let Some((_, _, lead)) = find_room(households, &g.coordinator) else {
-            continue;
-        };
-        if !leads(lead) {
-            plan.ops.push(SceneOp::Leave {
-                room: lead.name.clone(),
-                player: lead.primary.clone(),
-            });
-        }
-        for name in &g.members {
-            let Some((_, _, room)) = find_room(households, name) else {
-                continue;
-            };
-            let with_lead = leads(lead) && lead.players.contains(&room.coordinator);
-            if !with_lead {
-                joins.push(SceneOp::Join {
-                    room: room.name.clone(),
-                    player: room.primary.clone(),
-                    coordinator: lead.primary.clone(),
-                });
-            }
-        }
-    }
-    plan.ops.extend(joins);
+    layout::plan(scene, households, plan);
 }
 
 /// Volumes and mutes that differ from the snapshots (or are unknown).
