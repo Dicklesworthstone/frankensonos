@@ -37,6 +37,8 @@ on:
       - "scripts/test-remote-scenes.cjs"
       - "scripts/test-remote-dj-steering.cjs"
       - "scripts/test-remote-history.cjs"
+      - "scripts/test-remote-studio.cjs"
+      - "scripts/test-remote-studio-insights.cjs"
       - "vendor/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -103,6 +105,8 @@ jobs:
         run: node --test scripts/test-remote-scenes.cjs
       - name: Web action history regressions
         run: node --test scripts/test-remote-history.cjs
+      - name: Listening studio and DJ insight regressions
+        run: node --test scripts/test-remote-studio.cjs scripts/test-remote-studio-insights.cjs
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy
       - name: Formatting

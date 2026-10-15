@@ -26,7 +26,7 @@ test('arbitrary room punctuation cannot collide in the selection key', () => {
   assert.equal(studio.choose([zone('S2', '<b>Den</b>')], null), '["S2","<b>Den</b>"]');
 });
 test('native music capabilities land in Music and DJ, not a settings pile', () => {
-  for (const label of ['Music library', 'DJ session', 'DJ steering', 'DJ preferences', 'Play a link or stream', 'Spotify connection', 'Library sync']) {
+  for (const label of ['Music library', 'DJ session', 'DJ steering', 'DJ direction and explanations', 'DJ preferences', 'Play a link or stream', 'Spotify connection', 'Library sync']) {
     assert.equal(studio.identify(node(label)).workspace, 'music', label);
   }
 });
@@ -77,8 +77,8 @@ test('all workspace controls point to real static destinations', () => {
 });
 test('studio assets use the same hardened asset helper and the route is registered', () => {
   const route = fs.readFileSync(path.join(base, 'http/remote/studio.rs'), 'utf8');
-  assert.ok(route.includes('asset("text/javascript; charset=utf-8", SCRIPT)'));
-  assert.ok(route.includes('asset("text/css; charset=utf-8", STYLE)'));
+  assert.ok(route.includes('{SCRIPT}\\n{INSIGHTS_SCRIPT}'));
+  assert.ok(route.includes('{STYLE}\\n{INSIGHTS_STYLE}'));
   assert.ok(fs.readFileSync(path.join(base, 'http/remote.rs'), 'utf8').includes('routes.extend(studio::routes(cx));'));
 });
 test('the stylesheet preserves native hidden state, reduced motion and visible keyboard focus', () => {
@@ -87,4 +87,8 @@ test('the stylesheet preserves native hidden state, reduced motion and visible k
   assert.ok(css.includes('prefers-reduced-motion'));
   assert.ok(css.includes(':focus-visible'));
   assert.ok(css.includes('safe-area-inset-bottom'));
+});
+
+test('the actual button-driven DJ direction root is a first-class steering tool', () => {
+  assert.equal(studio.identify(node('DJ direction and explanations')).id, 'dj-steering');
 });

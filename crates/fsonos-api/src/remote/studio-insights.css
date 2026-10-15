@@ -1,0 +1,55 @@
+/* Put the DJ's real explanations and whole-work contract in the listening flow. */
+.studio-story { border: 1px solid var(--line); background: var(--studio-surface); border-radius: 16px; margin-top: 20px; padding: 25px 27px; }
+.studio-story > header { display: flex; justify-content: space-between; gap: 18px; align-items: center; }
+.studio .studio-story h2 { font-size: 24px; font-weight: 500; color: var(--text); letter-spacing: -.035em; margin: 0; }
+.studio-story h2 em { font-family: Georgia, serif; font-weight: 400; color: var(--studio-coral); }
+.studio .studio-story .studio-kicker { font-size: 8px; margin-bottom: 7px; }
+.studio-story-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: end; gap: 12px; }
+.studio-story-time { color: var(--muted); font-size: 9px; }
+.studio .studio-story-actions button { background: transparent; font-size: 10px; min-height: 34px; padding: 6px 11px; }
+.studio-story-notice { color: var(--studio-coral); font-size: 11px; margin: 13px 0 0; }
+.studio-story-notice:empty { display: none; }
+.studio-story-content { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(0,1fr); gap: 26px; margin-top: 22px; }
+.studio-story-current { min-width: 0; }
+.studio-work-badge { display: inline-block; color: var(--accent); border: 1px solid var(--line); padding: 4px 7px; border-radius: 4px; font-size: 8px; letter-spacing: .08em; margin-bottom: 12px; }
+.studio .studio-story-current h3 { font-size: 21px; font-weight: 500; letter-spacing: -.035em; margin: 0 0 6px; line-height: 1.2; }
+.studio-story-credit { color: var(--muted); font-size: 11px; }
+.studio-story-reason { font: 17px/1.5 Georgia, serif; color: var(--text); margin: 17px 0; max-width: 580px; overflow-wrap: anywhere; }
+.studio-story-current progress { width: 100%; height: 4px; accent-color: var(--accent); }
+.studio .studio-steering-line { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-top: 10px; font-size: 10px; color: var(--muted); }
+.studio .studio-steering-line button { font-size: 10px; background: transparent; color: var(--accent); min-height: 34px; padding: 6px 10px; }
+.studio-story-next { border-left: 1px solid var(--line); padding-left: 24px; min-width: 0; }
+.studio-story-next ol { list-style: none; padding: 0; margin: 0; }
+.studio-story-next li { display: flex; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.studio-next-number { color: var(--studio-coral); font: 12px ui-monospace, monospace; padding-top: 2px; }
+.studio-story-next strong { display: block; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.studio-story-next small { display: block; color: var(--muted); font-size: 10px; margin-top: 5px; }
+.studio-next-note { color: var(--muted); font-size: 9px; margin: 12px 0 0; }
+.studio-story-problem { color: var(--warn-text); background: var(--warn-bg); border-radius: 8px; padding: 10px 12px; font-size: 11px; grid-column: 1 / -1; }
+.studio-story .empty { font-size: 12px; color: var(--muted); }
+@media (max-width: 700px) {
+  .studio-story { padding: 20px 18px; }
+  .studio-story > header { align-items: start; gap: 12px; }
+  .studio .studio-story h2 { font-size: 21px; line-height: 1.2; }
+  .studio-story h2 em { display: block; }
+  .studio-story-actions { flex-direction: column-reverse; align-items: end; gap: 6px; }
+  .studio-story-time { font-size: 8px; }
+  .studio-story-content { grid-template-columns: minmax(0,1fr); gap: 22px; margin-top: 20px; }
+  .studio-story-next { border: 0; border-top: 1px solid var(--line); padding: 19px 0 0; }
+  .studio-story-reason { font-size: 16px; }
+  .studio .studio-story .studio-kicker { max-width: 190px; font-size: 7px; }
+  .studio .volume .mute { min-height: 44px; }
+  .studio .studio-mobile-brand { font-size: 14px; }
+  .studio #studio-theme { display: inline-block; min-width: 34px; padding: 7px; }
+  .studio .studio-top-actions { gap: 5px; }
+  .studio .group-volume .row button { min-height: 44px; }
+}
+@media (max-width: 350px) { .studio #studio-theme { position: fixed; bottom: calc(81px + env(safe-area-inset-bottom)); right: 14px; z-index: 8; background: var(--studio-subtle); } }
+
+.studio-story :is(h3,p,small,span) { overflow-wrap: anywhere; }
+.studio-story-content > .studio-story-problem { margin-bottom: 0; }
+
+.studio-story progress { appearance: none; border: 0; border-radius: 10px; overflow: hidden; background: var(--line); }
+.studio-story progress::-webkit-progress-bar { background: var(--line); border-radius: 10px; }
+.studio-story progress::-webkit-progress-value { background: var(--accent); border-radius: 10px; }
+.studio-story progress::-moz-progress-bar { background: var(--accent); border-radius: 10px; }

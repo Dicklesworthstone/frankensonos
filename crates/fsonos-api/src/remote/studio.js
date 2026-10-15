@@ -9,7 +9,7 @@ const StudioRemote = (() => {
     activity: ['CONFIDENCE, NOT GUESSWORK.', 'Know what changed.', 'Stay in control.', 'Review the action history and recovery details. Undo is offered only where the daemon supports it.'],
   });
   const tools = Object.freeze([
-    { id: 'dj-steering', workspace: 'music', match: /steer/i, title: 'Shape the next DJ pick', description: 'Mood, energy, artists, genres, eras, and whole-work constraints.', keywords: 'whole work classical composer focus dinner next mood' },
+    { id: 'dj-steering', workspace: 'music', match: /steer|dj direction/i, title: 'Shape the next DJ pick', description: 'Mood, energy, artists, genres, eras, and whole-work constraints.', keywords: 'whole work classical composer focus dinner next mood' },
     { id: 'dj-session', workspace: 'music', match: /dj session/i, title: 'See why the DJ chose it', description: 'The current work, upcoming selections, and the reasons behind them.', keywords: 'reason explain upcoming movement classical' },
     { id: 'dj-preferences', workspace: 'music', match: /preference|taste/i, title: 'Teach the DJ your taste', description: 'Standing preferences, favorites, avoids, and explicit-content choices.', keywords: 'pin ban artist genre explicit' },
     { id: 'music-library', workspace: 'music', match: /music library/i, title: 'Find music in your library', description: 'Browse and search your music and household favorites.', keywords: 'search spotify album playlist track favorite' },
@@ -139,6 +139,15 @@ const StudioRemote = (() => {
       navigate(tool.workspace, false);
       const details = node.matches('details') ? node : node.querySelector('details');
       if (details) details.open = true;
+      // The native editor rechecks this observed group before prefilling it.
+      // This event opens and reads the editor; it cannot save steering.
+      if (id === 'dj-steering') {
+        const zone = house.zones.find(each => key(each) === selected);
+        if (zone) doc.dispatchEvent(new win.CustomEvent('fsonos:dj-edit', { cancelable: true, detail: {
+          target: `${zone.coordinator_room}@${zone.household}`,
+          signature: JSON.stringify([zone.household, zone.coordinator_room, [...zone.members].sort()]),
+        } }));
+      }
       schedule(() => {
         if (disposed || !node.isConnected) return;
         node.scrollIntoView({ block: 'start', behavior: 'instant' });
