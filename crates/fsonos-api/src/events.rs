@@ -7,7 +7,9 @@
 //! events, so a client that reconnects with
 //! `Last-Event-ID` (or `?since=<id>`) gets what it missed. One that has
 //! fallen further behind gets an `events.reset` event first and should read
-//! the state afresh (`GET /zones`).
+//! the state afresh (`GET /zones` and the affected zone states). A lost
+//! publication inside the daemon invalidates the journal in the same way,
+//! including when no further event arrives.
 //!
 //! | `event:` | `data:` |
 //! |---|---|
@@ -50,6 +52,8 @@ use serde::{Deserialize, Serialize};
 
 mod delivery;
 mod polling;
+#[cfg(test)]
+mod resync_tests;
 mod wake;
 
 pub use delivery::EventStream;
@@ -84,8 +88,9 @@ pub struct EventsDto {
     pub events: Vec<EventDto>,
     /// The newest event id: pass it as `since` next time.
     pub last_id: u64,
-    /// Set when events after `since` are gone (too many happened): the
-    /// oldest one kept. Read the state afresh (`list_zones`).
+    /// Set when continuity after `since` was lost, either here or upstream:
+    /// the oldest retained id (the next id when none remain). Read current
+    /// zones, playback and DJ state again instead of replaying actions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset: Option<u64>,
 }
@@ -293,7 +298,20 @@ impl EventBus {
         id
     }
 
-    /// The id of the newest event (0 before any).
+    /// Fence all earlier cursors after upstream loss. Advancing the cursor
+    /// without retaining a delta creates a detectable gap even for a reader
+    /// that consumed the previously newest event. Existing SSE and JSON reset
+    /// handling then works without another publication or a new wire format.
+    fn invalidate(&self) {
+        let mut ring = self.ring.lock().unwrap_or_else(PoisonError::into_inner);
+        ring.last += 1;
+        ring.events.clear();
+        drop(ring);
+        self.arrived.notify_all();
+        self.wake.notify();
+    }
+
+    /// The newest event or invalidation cursor (0 before any).
     #[must_use]
     pub fn last_id(&self) -> u64 {
         self.ring
@@ -332,6 +350,7 @@ impl EventBus {
     /// Publish what the live model saw, naming rooms from `households`.
     pub fn publish_live(&self, event: &LiveEvent, households: &[HouseholdState]) {
         match event {
+            LiveEvent::Resync => self.invalidate(),
             LiveEvent::Playback { player, changes } => {
                 let mut data = player_fields(player, households);
                 if let Some((_, now)) = changes.transport {

@@ -130,7 +130,7 @@ mod tests {
                 .unwrap();
         }
         let report = rec.subscriptions.sync(&*lan, &wants, callback, started);
-        assert_eq!(report.subscribed, wants.len());
+        assert_eq!(report.subscribed, wants.len(),);
         assert!(report.failed.is_empty());
         // Wait for the complete initial burst to be delivered or dropped.
         // The live worker has not consumed anything from the listener yet.
@@ -249,6 +249,78 @@ mod tests {
     }
 
     #[test]
+    fn upstream_overflow_flushes_against_the_committed_snapshot_without_network_io() {
+        use crate::live::LiveEvent;
+        use crate::playback::EventSource;
+        use fsonos_proto::gena::Notify;
+        use std::sync::mpsc::{TryRecvError, sync_channel};
+
+        for generation in [1, 2] {
+            let (sim, engine, mut model, id) = buffered(generation, false);
+            turn(&engine, &mut model);
+            let (send, receive) = sync_channel(1);
+            engine
+                .subscribers
+                .lock()
+                .unwrap()
+                .push(super::super::delivery::Pending::new(send));
+            let before = sim.soap_log().len();
+            // Real parsed playback deltas, published by the production Engine.
+            // Its deliberately tiny subscriber stops consuming for a burst.
+            for volume in [24, 25, 26] {
+                let event = Notify {
+                    sid: "uuid:test".into(),
+                    seq: volume,
+                    path: "/RenderingControl".into(),
+                    properties: vec![(
+                        "LastChange".into(),
+                        format!(
+                            "<Event><InstanceID val=\"0\"><Volume channel=\"Master\" val=\"{volume}\"/></InstanceID></Event>"
+                        ),
+                    )],
+                };
+                let changes = model
+                    .playback
+                    .apply(&id, EventSource::RenderingControl, &event, Instant::now())
+                    .unwrap();
+                engine.publish(
+                    &model,
+                    vec![LiveEvent::Playback {
+                        player: id.clone(),
+                        changes,
+                    }],
+                );
+            }
+            assert!(matches!(
+                receive.try_recv(),
+                Ok(LiveEvent::Playback { .. })
+            ));
+            // This is also called on quiet outer-loop turns, not just on NOTIFY.
+            engine.emit(&[]);
+            assert_eq!(receive.try_recv(), Ok(LiveEvent::Resync));
+            assert_eq!(
+                engine
+                    .snapshot
+                    .lock()
+                    .unwrap()
+                    .playback
+                    .of(&id)
+                    .unwrap()
+                    .volume,
+                Some(26)
+            );
+            engine.emit(&[]);
+            assert_eq!(receive.try_recv(), Err(TryRecvError::Empty));
+            assert_eq!(sim.soap_log().len(), before);
+            drop(receive);
+            engine.emit(&[LiveEvent::Topology]);
+            assert!(engine.subscribers.lock().unwrap().is_empty());
+            engine.release(&mut model);
+            sim.shutdown();
+        }
+    }
+
+    #[test]
     fn missed_duplicate_track_and_pause_events_are_recovered_without_playback_writes() {
         use fsonos_proto::control::{
             add_uri_to_queue, next, pause, play, play_from_queue, seek_track,
@@ -281,7 +353,11 @@ mod tests {
             model.playback.apply_observation(&id, &sample, overdue);
             engine.publish(&model, Vec::new());
             let (send, receive) = sync_channel(16);
-            engine.subscribers.lock().unwrap().push(send);
+            engine
+                .subscribers
+                .lock()
+                .unwrap()
+                .push(super::super::delivery::Pending::new(send));
 
             next(&*engine.lan, host).unwrap();
             let before = sim.soap_log().len();

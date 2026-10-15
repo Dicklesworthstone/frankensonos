@@ -75,7 +75,9 @@ fn targets(
                 health: Health::Healthy,
             },
         ) => Some(player),
-        Some(LiveEvent::Topology) | None => None,
+        // After an upstream gap, reconcile every currently owned feed from
+        // the snapshot, not the identities of whatever deltas survived.
+        Some(LiveEvent::Topology | LiveEvent::Resync) | None => None,
         Some(LiveEvent::Health { .. }) => return Vec::new(),
     };
     let mut seen = HashSet::new();
@@ -303,6 +305,23 @@ mod tests {
             household.players.retain(|p| p.id != ids[0]);
         }
         assert!(targets(&snapshot, Some(&event), |_| true).is_empty());
+    }
+
+    #[test]
+    fn resync_revisits_active_feeds_from_current_state_only() {
+        let (mut snapshot, ids) = snapshot();
+        assert!(ids.len() >= 4);
+        snapshot.health.missing(&ids[0], "offline now");
+        snapshot.playback.remove(&ids[1]);
+        let feeds = |id: &PlayerId| *id != ids[2];
+        assert_eq!(
+            targets(&snapshot, Some(&LiveEvent::Resync), feeds),
+            ids[3..]
+        );
+        // A reset must never start a stopped feed or recreate a lost group.
+        assert!(targets(&snapshot, Some(&LiveEvent::Resync), |_| false).is_empty());
+        snapshot.households.clear();
+        assert!(targets(&snapshot, Some(&LiveEvent::Resync), |_| true).is_empty());
     }
 
     #[test]
@@ -559,6 +578,7 @@ mod simulator_tests {
             changes: Changes::default(),
         };
         assert!(handle(&weak, Some(&stale)));
+        assert!(handle(&weak, Some(&LiveEvent::Resync)));
         assert!(handle(&weak, None));
         assert!(matches!(
             received.try_recv(),

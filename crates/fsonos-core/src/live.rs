@@ -30,12 +30,13 @@ use fsonos_types::text::normalize;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 mod bootstrap;
+mod delivery;
 mod observation;
 mod progress;
 mod pump;
@@ -140,13 +141,17 @@ pub enum LiveEvent {
     Topology,
     /// A player's health changed (it went offline or came back, say).
     Health { player: PlayerId, health: Health },
+    /// This subscriber missed one or more changes. Read [`Live::snapshot`]
+    /// again; the retained prefix is not a complete account of current state.
+    /// This is an invalidation, never a command to replay past actions.
+    Resync,
 }
 
-/// How far a subscriber may fall behind; newer events are dropped for it
-/// until it catches up (it can resync from [`Live::snapshot`]).
+/// How far a subscriber may fall behind. Overflow coalesces into a
+/// [`LiveEvent::Resync`] after the queued prefix, even if no new event arrives.
 pub const SUBSCRIBER_BACKLOG: usize = 1024;
 
-type Subscribers = Arc<Mutex<Vec<SyncSender<LiveEvent>>>>;
+type Subscribers = Arc<Mutex<Vec<delivery::Pending>>>;
 
 /// A running live model; see the module docs.
 pub struct Live {
@@ -262,15 +267,15 @@ impl Live {
     }
 
     /// Every change from now on, as it happens. Dropping the receiver
-    /// unsubscribes; one that falls [`SUBSCRIBER_BACKLOG`] behind misses
-    /// events until it catches up.
+    /// unsubscribes. A lagging subscriber receives [`LiveEvent::Resync`] and
+    /// must reread the snapshot rather than assume every delta was delivered.
     #[must_use]
     pub fn subscribe(&self) -> Receiver<LiveEvent> {
         let (tx, rx) = sync_channel(SUBSCRIBER_BACKLOG);
         self.subscribers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(tx);
+            .push(delivery::Pending::new(tx));
         rx
     }
 
@@ -447,6 +452,9 @@ impl Engine {
             last_error: None,
         };
         while !self.stop.load(Ordering::Acquire) {
+            // Flush lost-event markers even when the model is quiet. The
+            // snapshot was committed before the dropped publication.
+            self.emit(&[]);
             let now = Instant::now();
             let wall = SystemTime::now();
             if slept(m.ticked, (now, wall)) {
@@ -702,20 +710,12 @@ impl Engine {
         self.emit(&changed);
     }
 
-    /// Push `events` to every subscriber, forgetting those that hung up.
+    /// Push events without blocking; empty batches flush pending resyncs.
     fn emit(&self, events: &[LiveEvent]) {
-        if events.is_empty() {
-            return;
-        }
-        let mut subscribers = self
-            .subscribers
+        self.subscribers
             .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        subscribers.retain(|tx| {
-            events
-                .iter()
-                .all(|e| !matches!(tx.try_send(e.clone()), Err(TrySendError::Disconnected(_))))
-        });
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain_mut(|subscriber| subscriber.deliver(events));
     }
 }
 
