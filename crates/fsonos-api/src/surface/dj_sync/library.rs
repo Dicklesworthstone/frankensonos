@@ -152,6 +152,61 @@ fn item(kind: &str, uri: &str, title: &str, subtitle: &str) -> BrowseItem {
     }
 }
 
+/// One item per cached album, counting its cached tracks.
+fn album_items(entries: &[&LibraryEntry]) -> Vec<BrowseItem> {
+    let mut albums = BTreeMap::<String, BrowseItem>::new();
+    for entry in entries {
+        let Some(uri) = entry
+            .album_uri
+            .as_deref()
+            .filter(|uri| source(uri, "album"))
+        else {
+            continue;
+        };
+        let album = albums.entry(uri.to_owned()).or_insert_with(|| {
+            let mut album = item(
+                "album",
+                uri,
+                entry.track.album.as_deref().unwrap_or("Untitled album"),
+                entry
+                    .album_artists
+                    .as_deref()
+                    .or(entry.track.artist.as_deref())
+                    .unwrap_or(""),
+            );
+            album.album_uri = Some(uri.to_owned());
+            album.cached_tracks = Some(0);
+            album
+        });
+        album.cached_tracks = Some(album.cached_tracks.unwrap_or_default() + 1);
+        album.explicit |= entry.explicit;
+    }
+    albums.into_values().collect()
+}
+
+/// One item per cached track, of `album_uri` only when given.
+fn track_items(entries: Vec<&LibraryEntry>, album_uri: Option<&str>) -> Vec<BrowseItem> {
+    entries
+        .into_iter()
+        .filter(|entry| album_uri.is_none_or(|uri| entry.album_uri.as_deref() == Some(uri)))
+        .map(|entry| {
+            let mut track = item(
+                "track",
+                &entry.track.source_uri,
+                &entry.track.title,
+                entry.track.artist.as_deref().unwrap_or(""),
+            );
+            track.album.clone_from(&entry.track.album);
+            track.album_uri = entry.album_uri.clone().filter(|uri| source(uri, "album"));
+            track.disc_number = entry.disc_number;
+            track.track_number = entry.track_number;
+            track.duration_secs = entry.track.duration_secs;
+            track.explicit = entry.explicit;
+            track
+        })
+        .collect()
+}
+
 /// Pure projection, shared by all callers and deterministic under store reordering.
 fn browse(
     library: &[LibraryEntry],
@@ -167,36 +222,7 @@ fn browse(
     entries.sort_by(|a, b| a.track.source_uri.cmp(&b.track.source_uri));
     entries.dedup_by(|a, b| a.track.source_uri == b.track.source_uri);
     let mut items = match kind {
-        "albums" => {
-            let mut albums = BTreeMap::<String, BrowseItem>::new();
-            for entry in &entries {
-                let Some(uri) = entry
-                    .album_uri
-                    .as_deref()
-                    .filter(|uri| source(uri, "album"))
-                else {
-                    continue;
-                };
-                let album = albums.entry(uri.to_owned()).or_insert_with(|| {
-                    let mut album = item(
-                        "album",
-                        uri,
-                        entry.track.album.as_deref().unwrap_or("Untitled album"),
-                        entry
-                            .album_artists
-                            .as_deref()
-                            .or(entry.track.artist.as_deref())
-                            .unwrap_or(""),
-                    );
-                    album.album_uri = Some(uri.to_owned());
-                    album.cached_tracks = Some(0);
-                    album
-                });
-                album.cached_tracks = Some(album.cached_tracks.unwrap_or_default() + 1);
-                album.explicit |= entry.explicit;
-            }
-            albums.into_values().collect::<Vec<_>>()
-        }
+        "albums" => album_items(&entries),
         "playlists" => {
             let mut lists = BTreeMap::<String, BrowseItem>::new();
             for (uri, name) in playlists.iter().filter(|(uri, _)| source(uri, "playlist")) {
@@ -206,30 +232,7 @@ fn browse(
             }
             lists.into_values().collect()
         }
-        _ => entries
-            .into_iter()
-            .filter(|entry| {
-                query
-                    .album_uri
-                    .as_ref()
-                    .is_none_or(|uri| entry.album_uri.as_ref() == Some(uri))
-            })
-            .map(|entry| {
-                let mut track = item(
-                    "track",
-                    &entry.track.source_uri,
-                    &entry.track.title,
-                    entry.track.artist.as_deref().unwrap_or(""),
-                );
-                track.album.clone_from(&entry.track.album);
-                track.album_uri = entry.album_uri.clone().filter(|uri| source(uri, "album"));
-                track.disc_number = entry.disc_number;
-                track.track_number = entry.track_number;
-                track.duration_secs = entry.track.duration_secs;
-                track.explicit = entry.explicit;
-                track
-            })
-            .collect(),
+        _ => track_items(entries, query.album_uri.as_deref()),
     };
     let q = normalize(query.q.as_deref().unwrap_or(""));
     items.retain(|item| {
