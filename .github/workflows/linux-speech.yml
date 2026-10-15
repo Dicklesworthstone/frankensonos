@@ -7,6 +7,7 @@ on:
       - "crates/**"
       - "scripts/test-remote-queue.cjs"
       - "scripts/test-remote-play-mode.cjs"
+      - "scripts/test-remote-equalizer.cjs"
       - "scripts/test-remote-library.cjs"
       - "scripts/test-remote-library-browse.cjs"
       - "scripts/test-remote-library-sync.cjs"
@@ -62,6 +63,8 @@ jobs:
           sudo apt-get install --yes espeak-ng nodejs
       - name: Web queue client regressions
         run: node --test scripts/test-remote-queue.cjs scripts/test-remote-play-mode.cjs
+      - name: Web speaker sound regressions
+        run: node --test scripts/test-remote-equalizer.cjs
       - name: Web library client regressions
         run: node --test scripts/test-remote-library.cjs scripts/test-remote-library-browse.cjs scripts/test-remote-library-sync.cjs scripts/test-remote-spotify-connect.cjs
       - name: Web room grouping regressions

@@ -1,0 +1,11 @@
+.equalizer > div { display: grid; gap: .8rem; padding-top: .8rem; }
+.equalizer p { margin: 0; overflow-wrap: anywhere; }
+.equalizer label { display: grid; gap: .4rem; }
+.equalizer select { max-width: 100%; min-width: 0; }
+.equalizer .eq-level { display: grid; grid-template-columns: 4rem minmax(5rem, 1fr) 2.5rem; align-items: center; gap: .6rem; }
+.equalizer .eq-level input { width: 100%; min-width: 0; }
+.equalizer output { text-align: end; font-variant-numeric: tabular-nums; }
+.equalizer .eq-loudness { display: flex; align-items: center; gap: .6rem; }
+.equalizer .eq-loudness input { width: auto; }
+.equalizer .eq-help { font-size: .9rem; opacity: .85; }
+.equalizer .row { display: flex; flex-wrap: wrap; gap: .5rem; }
