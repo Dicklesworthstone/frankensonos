@@ -7,7 +7,7 @@ use fsonos_proto::control::{get_media_info, get_position_info, set_normal_play_m
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
 use fsonos_proto::topology::get_zone_group_state;
 
-use super::{FeedError, QueueFeed, Speakers, host_of, placed};
+use super::{FeedError, QueueFeed, QueuedWork, Speakers, host_of, placed};
 
 /// Some players reject SetPlayMode while a stream, not the queue, is active.
 /// The core starts the queue, sets NORMAL, seeks, then plays; any failed
@@ -18,6 +18,28 @@ pub(super) fn start<T: Transport + ?Sized>(
 ) -> Result<(), FeedError> {
     control::play_queue_from_in_order(at.transport, at.households, at.coordinator, position)?;
     Ok(())
+}
+
+impl QueueFeed {
+    /// A retained work can be heard again. Preserve every movement of the
+    /// current work and put its retained successors before newer picks.
+    /// Call only after reconciling positions and confirming the observation.
+    pub(super) fn restore_played_from(&mut self, position: u32) {
+        if !self
+            .played
+            .iter()
+            .any(|work| work.last().is_some_and(|last| last >= position))
+        {
+            return;
+        }
+        let (played, mut ahead): (Vec<QueuedWork>, Vec<QueuedWork>) =
+            std::mem::take(&mut self.played)
+                .into_iter()
+                .partition(|work| work.last().is_none_or(|last| last < position));
+        self.played = played;
+        ahead.append(&mut self.queued);
+        self.queued = ahead;
+    }
 }
 
 /// Repair shuffle/repeat only on a still-owned active queue. A stale event
@@ -42,7 +64,7 @@ pub(super) fn maintain<T: Transport + ?Sized>(
         return Ok(false);
     }
     let before = browse_range_snapshot(at.transport, host, QUEUE, 0, 1)?;
-    let had = !feed.queued.is_empty();
+    let had = !feed.queued.is_empty() || !feed.played.is_empty();
     // Do not publish a partial reconciliation if a later read fails or an
     // independent queue edit changes the evidence while these reads run.
     let mut reconciled = feed.clone();
@@ -63,7 +85,7 @@ pub(super) fn maintain<T: Transport + ?Sized>(
         feed.queue_len = None;
         return Ok(false);
     }
-    let owned = reconciled.queued.iter().any(|work| {
+    let owned = reconciled.played.iter().chain(&reconciled.queued).any(|work| {
         work.movements
             .iter()
             .any(|movement| movement.added && movement.position.is_some())
@@ -76,6 +98,13 @@ pub(super) fn maintain<T: Transport + ?Sized>(
     }
     if !event_matches(playback, current.track, &current.uri, &queue) {
         feed.queue_len = None;
+        return Ok(false);
+    }
+    // A rewind can return to a retained work after every newer pick was
+    // removed. Restore it before deciding that the DJ no longer owns a set.
+    reconciled.restore_played_from(current.track);
+    if reconciled.queued.is_empty() {
+        feed.release();
         return Ok(false);
     }
     *feed = reconciled;
@@ -235,3 +264,265 @@ mod observation_tests {
 
 #[cfg(test)]
 mod ownership;
+#[cfg(test)]
+mod replay {
+    //! Retained-work recovery uses the real S1/S2 simulator, not fabricated replies.
+
+    use super::*;
+    use crate::dj::{DjConfig, PickReason};
+    use crate::feed::{FeedSnapshot, Movement};
+    use fsonos_core::HouseholdState;
+    use fsonos_proto::control as soap;
+    use fsonos_proto::soap::{AV_TRANSPORT, args_xml, call};
+    use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+    use fsonos_types::PlayerId;
+    use std::net::IpAddr;
+
+    const ROOM: &str = "Replay Room";
+    const TRACKS: [&str; 4] = [
+        "spotify:track:ReplayTestA",
+        "spotify:track:ReplayTestB",
+        "spotify:track:ReplayTestC",
+        "spotify:track:ReplayTestD",
+    ];
+
+    struct Rig {
+        sim: SimHandle,
+        houses: Vec<HouseholdState>,
+        id: PlayerId,
+        host: IpAddr,
+    }
+
+    impl Rig {
+        fn new(generation: u8) -> Self {
+            let builder = SimHousehold::builder();
+            let builder = if generation == 1 {
+                builder.s1([SimPlayerSpec::new(ROOM, SimModel::Play5Gen1)])
+            } else {
+                builder.s2([SimPlayerSpec::new(ROOM, SimModel::One)])
+            };
+            let sim = builder.spawn().unwrap();
+            let player = sim.player(ROOM).unwrap();
+            let id = PlayerId(player.uuid.clone());
+            let host = player.ip;
+            let lan = sim.lan();
+            let mut house = HouseholdState::default();
+            house.apply_topology(&get_zone_group_state(&lan, host).unwrap());
+            let houses = vec![house];
+            let tracks: Vec<_> = TRACKS.iter().map(|uri| (*uri, "Test movement")).collect();
+            control::queue_spotify_tracks(&lan, &houses, &id, &tracks).unwrap();
+            control::play_queue_from(&lan, &houses, &id, 3).unwrap();
+            Self {
+                sim,
+                houses,
+                id,
+                host,
+            }
+        }
+
+        fn work(start: usize) -> QueuedWork {
+            QueuedWork {
+                title: format!("Test work {start}"),
+                composer: "Test composer".into(),
+                work_key: format!("replay-work-{start}"),
+                movements: (start..start + 2)
+                    .map(|index| Movement {
+                        uri: TRACKS[index].into(),
+                        title: format!("Test movement {index}"),
+                        position: Some(u32::try_from(index + 1).unwrap()),
+                        added: true,
+                    })
+                    .collect(),
+                reason: PickReason {
+                    factors: Vec::new(),
+                    relaxed: Vec::new(),
+                    summary: "Test selection".into(),
+                },
+            }
+        }
+
+        fn feed(&self) -> QueueFeed {
+            QueueFeed::restore(
+                FeedSnapshot {
+                    zone: self.id.0.clone(),
+                    earlier: Vec::new(),
+                    lookahead: 1,
+                    queued: vec![Self::work(2)],
+                    played: vec![Self::work(0)],
+                    playing: Some(3),
+                    recorded: Some((3, TRACKS[2].into())),
+                },
+                DjConfig::default(),
+                7,
+            )
+        }
+
+        fn seek(&self, position: u32) {
+            control::play_queue_from(&self.sim.lan(), &self.houses, &self.id, position).unwrap();
+        }
+
+        fn remove_newer(&self) {
+            let lan = self.sim.lan();
+            let revision = browse_range_snapshot(&lan, self.host, QUEUE, 0, 4)
+                .unwrap()
+                .update_id;
+            soap::remove_track_range_from_queue(&lan, self.host, revision, 3, 2).unwrap();
+        }
+
+        fn mode(&self, mode: &str) {
+            call(
+                &self.sim.lan(),
+                self.host,
+                &AV_TRANSPORT,
+                "SetPlayMode",
+                &args_xml(&[("InstanceID", "0"), ("NewPlayMode", mode)]),
+            )
+            .unwrap();
+        }
+
+        fn observation(&self, mode: &str) -> PlayerPlayback {
+            let position = soap::get_position_info(&self.sim.lan(), self.host).unwrap();
+            let mut state = PlayerPlayback::default();
+            state.track_uri = Some(position.uri);
+            state.queue_position = Some(position.track);
+            state.play_mode = Some(mode.into());
+            state
+        }
+
+        fn repair(&self, feed: &mut QueueFeed, event: &PlayerPlayback) -> Result<bool, FeedError> {
+            maintain(
+                feed,
+                &Speakers {
+                    transport: &self.sim.lan(),
+                    households: &self.houses,
+                    coordinator: &self.id,
+                },
+                event,
+            )
+        }
+
+        fn writes_since(&self, start: usize) -> Vec<String> {
+            self.sim
+                .soap_log()
+                .into_iter()
+                .skip(start)
+                .filter(|entry| entry.action != "Browse" && !entry.action.starts_with("Get"))
+                .map(|entry| entry.action)
+                .collect()
+        }
+    }
+
+    #[test]
+    fn retained_work_recovers_order_after_all_newer_picks_were_removed() {
+        for generation in [1, 2] {
+            let rig = Rig::new(generation);
+            rig.seek(2);
+            rig.remove_newer();
+            for mode in ["SHUFFLE", "REPEAT_ONE", "REPEAT_ALL"] {
+                let mut feed = rig.feed();
+                rig.mode(mode);
+                let event = rig.observation(mode);
+                let before = browse_range_snapshot(&rig.sim.lan(), rig.host, QUEUE, 0, 4).unwrap();
+                let marker = rig.sim.soap_log().len();
+                assert!(rig.repair(&mut feed, &event).unwrap());
+                assert!(feed.is_active());
+                assert_eq!(feed.queued(), &[Rig::work(0)]);
+                assert!(feed.played.is_empty());
+                assert_eq!(rig.writes_since(marker), ["SetPlayMode"]);
+                assert_eq!(
+                    soap::get_position_info(&rig.sim.lan(), rig.host)
+                        .unwrap()
+                        .track,
+                    2
+                );
+                assert_eq!(
+                    browse_range_snapshot(&rig.sim.lan(), rig.host, QUEUE, 0, 4).unwrap(),
+                    before
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn replayed_work_precedes_still_waiting_picks_without_duplicate_movements() {
+        for generation in [1, 2] {
+            let rig = Rig::new(generation);
+            let mut feed = rig.feed();
+            rig.seek(2);
+            rig.mode("SHUFFLE");
+            let event = rig.observation("SHUFFLE");
+            assert!(rig.repair(&mut feed, &event).unwrap());
+            assert_eq!(feed.queued(), &[Rig::work(0), Rig::work(2)]);
+            assert!(feed.played.is_empty());
+            assert!(rig.repair(&mut feed, &event).unwrap());
+            assert_eq!(feed.queued(), &[Rig::work(0), Rig::work(2)]);
+        }
+    }
+
+    #[test]
+    fn a_stale_event_cannot_restore_or_release_a_retained_set() {
+        for generation in [1, 2] {
+            let rig = Rig::new(generation);
+            let mut feed = rig.feed();
+            rig.seek(1);
+            rig.mode("SHUFFLE");
+            let stale = rig.observation("SHUFFLE");
+            rig.seek(2);
+            rig.remove_newer();
+            let saved = feed.snapshot();
+            let marker = rig.sim.soap_log().len();
+            assert!(!rig.repair(&mut feed, &stale).unwrap());
+            assert_eq!(feed.snapshot(), saved);
+            assert!(rig.writes_since(marker).is_empty());
+            let current = rig.observation("SHUFFLE");
+            assert!(rig.repair(&mut feed, &current).unwrap());
+            assert_eq!(feed.queued(), &[Rig::work(0)]);
+        }
+    }
+
+    #[test]
+    fn a_failed_read_keeps_retained_ownership_and_recovery_can_retry() {
+        for generation in [1, 2] {
+            let rig = Rig::new(generation);
+            let mut feed = rig.feed();
+            rig.seek(2);
+            rig.remove_newer();
+            rig.mode("REPEAT_ONE");
+            let event = rig.observation("REPEAT_ONE");
+            let saved = feed.snapshot();
+            rig.sim.upnp_fault(ROOM, "GetPositionInfo", 701).unwrap();
+            let marker = rig.sim.soap_log().len();
+            assert!(rig.repair(&mut feed, &event).is_err());
+            assert_eq!(feed.snapshot(), saved);
+            assert!(rig.writes_since(marker).is_empty());
+            rig.sim.clear_faults(ROOM).unwrap();
+            assert!(rig.repair(&mut feed, &event).unwrap());
+            assert_eq!(feed.queued(), &[Rig::work(0)]);
+        }
+    }
+
+    #[test]
+    fn old_remnants_do_not_authorize_changing_the_owners_current_source() {
+        for generation in [1, 2] {
+            let rig = Rig::new(generation);
+            let mut feed = rig.feed();
+            rig.seek(2);
+            rig.remove_newer();
+            soap::add_uri_to_queue(
+                &rig.sim.lan(),
+                rig.host,
+                "http://example.invalid/owners-track.wav",
+                "",
+                false,
+            )
+            .unwrap();
+            rig.seek(3);
+            rig.mode("SHUFFLE");
+            let event = rig.observation("SHUFFLE");
+            let marker = rig.sim.soap_log().len();
+            assert!(!rig.repair(&mut feed, &event).unwrap());
+            assert!(!feed.is_active());
+            assert!(rig.writes_since(marker).is_empty());
+        }
+    }
+}
