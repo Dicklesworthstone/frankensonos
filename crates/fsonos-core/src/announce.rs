@@ -57,6 +57,11 @@ pub const STOP_GRACE: Duration = Duration::from_secs(5);
 /// How often the transport state is checked while the clip plays.
 const POLL: Duration = Duration::from_millis(250);
 
+/// How long putting the house back keeps trying players that stopped
+/// answering (a Wi-Fi drop on a real house) before it reports what it could
+/// not put back.
+pub const PUT_BACK_PATIENCE: Duration = Duration::from_secs(180);
+
 /// A clip the players can fetch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
@@ -218,6 +223,7 @@ pub struct Announcer {
     turn_over: Condvar,
     poll: Duration,
     stop_grace: Duration,
+    patience: Duration,
 }
 
 impl Default for Announcer {
@@ -252,7 +258,7 @@ impl Drop for Turn<'_> {
 impl Announcer {
     #[must_use]
     pub fn new() -> Self {
-        Self::with_timing(POLL, STOP_GRACE)
+        Self::with_timing(POLL, STOP_GRACE).with_patience(PUT_BACK_PATIENCE)
     }
 
     /// Check the transport state every `poll` while a clip plays, and give
@@ -264,7 +270,17 @@ impl Announcer {
             turn_over: Condvar::new(),
             poll,
             stop_grace,
+            patience: Duration::ZERO,
         }
+    }
+
+    /// Keep trying players that stopped answering for up to `patience` while
+    /// putting the house back ([`PUT_BACK_PATIENCE`] from [`Self::new`];
+    /// none from [`Self::with_timing`]).
+    #[must_use]
+    pub fn with_patience(mut self, patience: Duration) -> Self {
+        self.patience = patience;
+        self
     }
 
     /// How many announcements are playing or waiting, over all households.
@@ -402,7 +418,8 @@ impl Announcer {
         }
         let (outcome, effects) = self.play(t, hs, &plan, rooms, &report.levels, clip);
         report.outcome = outcome;
-        recovery::put_back(t, household, &plan, &snaps, &effects, &mut report);
+        let give_up = std::time::Instant::now() + self.patience;
+        recovery::put_back(t, household, &plan, &snaps, &effects, give_up, &mut report);
         report
     }
 
@@ -443,6 +460,7 @@ impl Announcer {
             effects.sources.push(plan.lead.clone());
             effects.clip = Some(clip.url.clone());
             control::play_uri(t, hs, &plan.lead, &clip.url, &clip.didl())?;
+            effects.installed = true;
             Ok(())
         })();
         let outcome = prepared.map_err(|e| e.to_string()).and_then(|()| {
@@ -454,10 +472,14 @@ impl Announcer {
                 clip.duration + self.stop_grace,
                 self.poll,
             );
-            if let Err(why) = &result {
-                effects.preserve = Some(why.clone());
-            }
-            result
+            result.map_err(|interrupted| match interrupted {
+                watch::Interrupted::LeaveAlone(why) => {
+                    effects.preserve = Some(why.clone());
+                    why
+                }
+                // Put back once the players answer again, if still owned.
+                watch::Interrupted::Unanswered(why) => why,
+            })
         });
         (outcome, effects)
     }

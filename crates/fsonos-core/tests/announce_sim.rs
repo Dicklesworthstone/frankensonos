@@ -2,7 +2,7 @@
 //! generations: the clip plays in the target rooms only, and every zone is
 //! put back as it was.
 
-use fsonos_core::announce::{Announcer, Clip, Ending};
+use fsonos_core::announce::{Announcer, Clip, Ending, HouseholdAnnouncement};
 use fsonos_core::{HouseholdState, Room, control, resolve_room};
 use fsonos_proto::ProtoError;
 use fsonos_proto::Transport;
@@ -10,7 +10,8 @@ use fsonos_proto::control as soap;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec, SoapLogEntry};
 use fsonos_types::{PlayerId, TransportState};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 fn sim() -> SimHandle {
@@ -463,4 +464,202 @@ fn a_transient_402_on_the_source_restore_is_retried_once() {
     let h = houses(&sim, &lan);
     let (state, track, _, _) = playing(&lan, &h, "Kitchen");
     assert_eq!((state, track), (TransportState::Playing, 2));
+}
+
+/// Delegates to the inner `Lan`, but plays a Wi-Fi drop like the one that
+/// left the owner's house regrouped on 2026-10-14 (bead co55.6): after the
+/// `nth` `GetTransportInfo` answer of `state` once the clip is installed,
+/// at the `skip + 1`th `then` request, no player answers for `outage`.
+/// `meanwhile` runs once as the players fall silent.
+struct Outage<'a> {
+    inner: &'a SimLan,
+    state: (&'static str, usize),
+    then: (&'static str, usize),
+    outage: Duration,
+    meanwhile: Option<Box<dyn Fn() + Send + Sync + 'a>>,
+    installed: AtomicBool,
+    seen: AtomicUsize,
+    passed: AtomicUsize,
+    began: Mutex<Option<Instant>>,
+}
+
+impl<'a> Outage<'a> {
+    fn new(
+        inner: &'a SimLan,
+        state: (&'static str, usize),
+        then: (&'static str, usize),
+        outage: Duration,
+    ) -> Self {
+        Self {
+            inner,
+            state,
+            then,
+            outage,
+            meanwhile: None,
+            installed: AtomicBool::new(false),
+            seen: AtomicUsize::new(0),
+            passed: AtomicUsize::new(0),
+            began: Mutex::new(None),
+        }
+    }
+
+    fn happened(&self) -> bool {
+        self.began.lock().unwrap().is_some()
+    }
+
+    fn silent(&self, soap_action: &str) -> bool {
+        let mut began = self.began.lock().unwrap();
+        if began.is_none()
+            && self.seen.load(Ordering::SeqCst) >= self.state.1
+            && soap_action.contains(self.then.0)
+            && self.passed.fetch_add(1, Ordering::SeqCst) >= self.then.1
+        {
+            *began = Some(Instant::now());
+            if let Some(meanwhile) = &self.meanwhile {
+                meanwhile();
+            }
+        }
+        began.is_some_and(|at| at.elapsed() < self.outage)
+    }
+}
+
+impl Transport for Outage<'_> {
+    fn soap_post(
+        &self,
+        host: std::net::IpAddr,
+        control_path: &str,
+        soap_action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if self.silent(soap_action) {
+            return Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: "synthetic Wi-Fi drop".into(),
+            });
+        }
+        let result = self.inner.soap_post(host, control_path, soap_action, body);
+        if let Ok(reply) = &result {
+            if soap_action.contains("#SetAVTransportURI") && body.contains("/media/") {
+                self.installed.store(true, Ordering::SeqCst);
+            }
+            if self.installed.load(Ordering::SeqCst)
+                && soap_action.contains("#GetTransportInfo")
+                && reply.contains(&format!(">{}<", self.state.0))
+            {
+                self.seen.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        result
+    }
+}
+
+/// The Kitchen plays its queue with the Office in its group; the Office
+/// steps out to announce over `t`. Returns the report and the rooms' levels
+/// (coordinator, volume, mute) from before.
+fn office_steps_out(
+    sim: &SimHandle,
+    announcer: &Announcer,
+    t: &(dyn Transport + Sync),
+) -> (HouseholdAnnouncement, Vec<(PlayerId, u8, bool)>) {
+    let lan = sim.lan();
+    play_queue(sim, &lan, "Kitchen");
+    let h = houses(sim, &lan);
+    control::join(&lan, &h, &id(&h, "Office"), &id(&h, "Kitchen")).unwrap();
+    let h = houses(sim, &lan);
+    let before = levels(&lan, &h, &["Kitchen", "Office"]);
+    let office = [resolve_room(&h, "Office").unwrap()];
+    let report = with_clock_running(sim, || {
+        announcer.announce(t, &office, &clip("office", 2), 35, &no_cap)
+    })
+    .unwrap();
+    (report.households[0].clone(), before)
+}
+
+/// The house came back whole: the Office with the Kitchen, the queue on.
+fn back_whole(sim: &SimHandle, house: &HouseholdAnnouncement, before: &[(PlayerId, u8, bool)]) {
+    assert_eq!(house.outcome, Ok(Ending::Finished), "{house:#?}");
+    assert!(house.is_clean(), "{house:#?}");
+    let lan = sim.lan();
+    let h = houses(sim, &lan);
+    assert_eq!(
+        levels(&lan, &h, &["Kitchen", "Office"]),
+        before,
+        "Office is back with Kitchen"
+    );
+    let (state, track, _, _) = playing(&lan, &h, "Kitchen");
+    assert_eq!((state, track), (TransportState::Playing, 2));
+}
+
+#[test]
+fn players_that_stop_answering_while_the_clip_plays_are_waited_for() {
+    let sim = sim();
+    let lan = sim.lan();
+    // The second PLAYING answer is the clip's first poll (play_uri's start
+    // check had the first); then 300 ms of silence (3 s on the simulator's
+    // clock), through the clip's end.
+    let outage = Outage::new(
+        &lan,
+        ("PLAYING", 2),
+        ("#GetTransportInfo", 0),
+        Duration::from_millis(300),
+    );
+    let (house, before) = office_steps_out(&sim, &fast(), &outage);
+    assert!(outage.happened());
+    back_whole(&sim, &house, &before);
+}
+
+#[test]
+fn players_that_stop_answering_while_the_house_is_put_back_are_tried_again() {
+    let sim = sim();
+    let lan = sim.lan();
+    // The clip ends; the put-back's first topology read meets a second of
+    // silence.
+    let outage = Outage::new(
+        &lan,
+        ("STOPPED", 1),
+        ("#GetZoneGroupState", 0),
+        Duration::from_secs(1),
+    );
+    let patient = fast().with_patience(Duration::from_secs(20));
+    let (house, before) = office_steps_out(&sim, &patient, &outage);
+    assert!(outage.happened());
+    back_whole(&sim, &house, &before);
+}
+
+#[test]
+fn music_started_while_the_players_were_silent_is_not_put_back_over() {
+    const NEWER: &str = "x-rincon-mp3radio://stream.example.invalid/newer";
+    let sim = sim();
+    let lan = sim.lan();
+    let office_ip = sim.player("Office").unwrap().ip;
+    // The put-back owns the Office's clip and starts restoring; its second
+    // topology read meets silence, during which the owner starts a station
+    // on the Office. The retry must see that and leave the station alone.
+    let mut outage = Outage::new(
+        &lan,
+        ("STOPPED", 1),
+        ("#GetZoneGroupState", 1),
+        Duration::from_millis(500),
+    );
+    let owner = sim.lan();
+    outage.meanwhile = Some(Box::new(move || {
+        soap::set_av_transport_uri(&owner, office_ip, NEWER, "").unwrap();
+        soap::play(&owner, office_ip).unwrap();
+    }));
+    let patient = fast().with_patience(Duration::from_secs(20));
+    let (house, _) = office_steps_out(&sim, &patient, &outage);
+    assert!(outage.happened());
+    assert!(!house.is_clean(), "{house:#?}");
+    assert!(
+        house.restored.iter().any(|(_, r)| !r.skipped.is_empty()),
+        "{house:#?}"
+    );
+    let lan = sim.lan();
+    assert_eq!(soap::get_media_info(&lan, office_ip).unwrap().uri, NEWER);
+    let h = houses(&sim, &lan);
+    assert_eq!(
+        resolve_room(&h, "Office").unwrap().coordinator.id,
+        id(&h, "Office"),
+        "the Office plays on alone"
+    );
 }
