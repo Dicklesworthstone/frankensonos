@@ -52,24 +52,41 @@ const PlaybackRemote = (() => {
     return Math.min(track.duration ?? MAX_SECONDS, Math.floor(track.position + advance));
   }
 
+  function canSeek(sample) {
+    return !!sample?.track && sample.track.position !== null && sample.track.duration !== null
+      && ['playing', 'paused'].includes(sample.transport);
+  }
+
+  function acknowledgement(value) {
+    return value && typeof value.done === 'string' && typeof value.changed === 'boolean'
+      && (value.notes == null || (Array.isArray(value.notes)
+        && value.notes.every((note) => note && typeof note.detail === 'string')));
+  }
+
   function model({ zone, call, changed = () => {}, current = () => true,
+    execute = (work) => work(), blocked = () => false, externalRefresh = false,
     now = () => performance.now(), schedule = setTimeout, cancel = clearTimeout }) {
     const group = shape(zone), name = `${zone.coordinator_room}@${zone.household}`;
     let sample = null, anchor = 0, frozen = null, fresh = false, active = true;
     let disposed = false, reading = false, serial = 0, timer = null;
     let message = 'Waiting for playback position.';
+    let review = null, pending = false, sent = false, uncertain = false, result = null;
+    let epoch = 0, lifetime = 0;
     const live = () => !disposed && active && current();
     const stop = () => { if (timer !== null) cancel(timer); timer = null; };
     const at = () => fresh && live() ? position(sample, now() - anchor) : frozen;
+    const writable = () => live() && fresh && !reading && !pending && !uncertain
+      && !blocked() && canSeek(sample);
     function view() {
       const elapsed = at(), duration = sample?.track?.duration ?? null;
       return Object.freeze({ elapsed, duration,
         remaining: duration !== null && elapsed !== null ? duration - elapsed : null,
         transport: sample?.transport ?? 'unknown', fresh: fresh && live(), reading,
+        seekable: writable(), review, pending, uncertain, result,
         estimated: fresh && live() && elapsed !== null && sample?.transport === 'playing', message });
     }
     function emit() {
-      if (disposed || !current()) return;
+      if (disposed || !active || !current()) return;
       try { changed(view()); } catch (_) { /* A view cannot change the operation's result. */ }
     }
     function tick() {
@@ -81,27 +98,34 @@ const PlaybackRemote = (() => {
     }
     function stale(detail = 'Position is stale; refresh to read it again.') {
       frozen = at(); fresh = false; reading = false; ++serial;
+      review = null; ++epoch;
       message = detail; stop(); emit();
     }
     function accept(value) {
-      sample = decode(value, group); anchor = now(); frozen = position(sample, 0); fresh = true;
+      const next = decode(value, group);
+      if (next.identity !== sample?.identity || !canSeek(next)) { review = null; ++epoch; }
+      sample = next; anchor = now(); frozen = position(sample, 0); fresh = true;
       message = !sample.track ? 'Nothing playing.' : sample.track.position === null ? 'Position unavailable.'
         : sample.track.duration === null ? 'Duration unavailable; elapsed time only.' : '';
       emit(); tick();
     }
     function observe(value) {
-      if (!live()) return false;
+      if (!live() || sent) return false;
       ++serial; reading = false;
       try { accept(value); return true; }
       catch (error) { stale(error.message); return false; }
     }
     async function refresh() {
-      if (!live() || reading) return false;
+      if (!live() || reading || pending || blocked()) return false;
       stale('Reading playback position…'); const version = serial;
       reading = true; emit();
       try {
         const value = await call('state', { params: { room: name } });
         if (!live() || serial !== version) return false;
+        // Only a successful explicit read clears an uncertain write. Passive
+        // updates may display current timing but cannot silently allow a retry.
+        decode(value, group);
+        uncertain = false;
         reading = false; accept(value); return true;
       } catch (error) {
         if (live() && serial === version) stale(error.hint || error.message || 'Position could not be read.');
@@ -110,30 +134,143 @@ const PlaybackRemote = (() => {
         if (serial === version) { reading = false; emit(); }
       }
     }
-    return { view, observe, refresh, stale,
-      suspend() { if (!disposed) { stale('Position paused while this page is hidden.'); active = false; stop(); } },
-      resume() { if (!disposed) { active = true; stale(); } },
-      dispose() { disposed = true; active = false; ++serial; stop(); },
+    function preview(target) {
+      if (!live() || pending) return null;
+      review = null; ++epoch;
+      if (!writable() || !seconds(target) || target >= sample.track.duration) { emit(); return null; }
+      result = null;
+      review = Object.freeze({ target, identity: sample.identity });
+      emit();
+      return review;
+    }
+    function nudge(delta) {
+      if (!Number.isInteger(delta) || ![-15, 15].includes(delta) || !writable()) return null;
+      return preview(Math.max(0, Math.min(sample.track.duration - 1, at() + delta)));
+    }
+    function cancelReview() {
+      if (!live() || sent) return;
+      review = null; ++epoch; emit();
+    }
+    async function confirm(selected) {
+      if (!selected || selected !== review || !writable()) return false;
+      const version = epoch, life = lifetime;
+      const valid = () => live() && version === epoch && life === lifetime;
+      let entered = false, acknowledged = false;
+      review = null; pending = true; result = null; emit();
+      try {
+        // The card's native action lane owns both preflight and dispatch, so
+        // play/next/previous cannot interleave with a reviewed seek.
+        await execute(async () => {
+          entered = true;
+          try {
+            if (!valid()) return;
+            const observed = decode(await call('state', { params: { room: name } }), group);
+            if (!valid()) return;
+            if (observed.identity !== selected.identity || !canSeek(observed)
+                || selected.target >= observed.track.duration) {
+              throw new Error('The track or playback state changed. Refresh and choose a new position.');
+            }
+            frozen = at(); fresh = false; ++serial; stop();
+            message = 'Sending the reviewed position…'; emit();
+            if (!valid()) return;
+            sent = true;
+            // This is a client preflight, not an atomic speaker reservation.
+            // Keep the native contract: no guessed fields or resume command.
+            const outcome = await call('seek', { body: { zone: name, to_secs: selected.target } });
+            if (!acknowledgement(outcome)) throw new Error('The seek reply is incomplete.');
+            acknowledged = true;
+            if (live() && life === lifetime) {
+              result = Object.freeze({ status: 'accepted', detail: outcome.done });
+              stale('Seek accepted; waiting for an observed playback position.');
+            }
+            return outcome;
+          } catch (error) {
+            // A sent write can finish even after closing this view. Retain its
+            // uncertainty across hide/show without dispatching or replaying it.
+            if (sent) uncertain = true;
+            const detail = sent
+              ? 'Seek result uncertain. Refresh position before making another selection; the seek was not repeated.'
+              : 'The seek was not sent. Refresh position and review it again.';
+            // Keep the remedy for a sent action even if its reply arrives in
+            // a hidden view. Resuming must not show unexplained disabled controls.
+            if (!disposed && (sent || (live() && life === lifetime))) {
+              result = Object.freeze({ status: sent ? 'uncertain' : 'not_sent',
+                detail: [detail, error?.hint || error?.message].filter(Boolean).join(' ') });
+            }
+            if (live() && life === lifetime) stale(detail);
+            throw error;
+          } finally {
+            pending = false; sent = false; emit();
+          }
+        });
+      } catch (_) { /* The outcome above survives a card's error presenter. */ }
+      finally {
+        pending = false; sent = false;
+        if (live() && life === lifetime) {
+          if (!entered) { review = null; message = 'Another control is busy. Choose the position again.'; }
+          emit();
+          // Embedded cards already schedule their shared refresh after an
+          // action. Standalone controllers refresh only acknowledged writes.
+          if (!externalRefresh && acknowledged) await refresh();
+        }
+      }
+      return acknowledged;
+    }
+    return { view, observe, refresh, stale, preview, nudge, confirm, cancelReview,
+      suspend() { if (!disposed) { ++lifetime; stale('Position paused while this page is hidden.'); active = false; stop(); } },
+      resume() { if (!disposed) { ++lifetime; active = true; stale(); } },
+      dispose() { disposed = true; active = false; ++lifetime; ++epoch; ++serial; review = null; stop(); },
     };
   }
 
-  function panel({ zone, call, el, current, now, schedule, cancel }) {
+  function panel({ zone, call, el, current, now, schedule, cancel, execute, blocked, externalRefresh }) {
     const elapsed = el('span', { text: '–:––' });
     const remaining = el('span');
     const progress = el('progress', { max: 1, value: 0, hidden: true,
       'aria-label': `Playback position in ${zone.members.join(' + ')}` });
     const detail = el('div', { class: 'playback-detail' });
+    const outcome = el('div', { class: 'playback-detail', role: 'status' });
     const refresh = el('button', { type: 'button', text: 'Refresh position' });
+    const range = el('input', { type: 'range', min: 0, max: 1, value: 0, step: 1, disabled: true,
+      'aria-label': `Choose a playback position in ${zone.members.join(' + ')}` });
+    const restart = el('button', { type: 'button', text: 'Restart', disabled: true });
+    const back = el('button', { type: 'button', text: '−15 seconds', disabled: true });
+    const ahead = el('button', { type: 'button', text: '+15 seconds', disabled: true });
+    const consent = el('div', { class: 'row', hidden: true });
+    let shown = null, apply = null, cancelButton = null;
     const node = el('section', { class: 'playback-clock', 'aria-label': 'Playback position' },
-      el('div', { class: 'playback-time' }, elapsed, remaining), progress, detail, refresh);
-    const controller = model({ zone, call, current, now, schedule, cancel, changed(state) {
+      el('div', { class: 'playback-time' }, elapsed, remaining), progress, detail, range,
+      el('div', { class: 'row' }, restart, back, ahead, refresh), consent, outcome);
+    const controller = model({ zone, call, current, now, schedule, cancel, execute, blocked, externalRefresh, changed(state) {
       elapsed.textContent = `${state.estimated ? '≈ ' : ''}${time(state.elapsed)} / ${time(state.duration)}`;
       remaining.textContent = state.remaining === null ? '' : `${time(state.remaining)} left`;
       progress.hidden = state.duration === null || state.elapsed === null;
       progress.max = state.duration ?? 1; progress.value = state.elapsed ?? 0;
       detail.textContent = state.message || (state.estimated ? 'Estimated from the latest playback sample.' : 'Observed playback position.');
-      refresh.disabled = state.reading;
+      outcome.textContent = state.result?.detail || '';
+      refresh.disabled = state.reading || state.pending || !!blocked?.();
+      for (const control of [range, restart, back, ahead]) control.disabled = !state.seekable;
+      range.max = Math.max(0, (state.duration ?? 1) - 1);
+      range.value = String(state.review?.target ?? Math.min(Number(range.max), state.elapsed ?? 0));
+      range.setAttribute('aria-valuetext', time(Number(range.value)));
+      if (shown !== state.review) {
+        shown = state.review;
+        consent.replaceChildren(); consent.hidden = !shown;
+        if (shown) {
+          const selected = shown;
+          apply = el('button', { type: 'button', text: `Seek to ${time(selected.target)}` });
+          cancelButton = el('button', { type: 'button', text: 'Cancel seek' });
+          apply.addEventListener('click', () => { void controller.confirm(selected); });
+          cancelButton.addEventListener('click', () => controller.cancelReview());
+          consent.append(apply, cancelButton);
+        }
+      }
+      if (apply) apply.disabled = !state.seekable || !state.review;
     } });
+    range.addEventListener('input', () => controller.preview(Number(range.value)));
+    restart.addEventListener('click', () => controller.preview(0));
+    back.addEventListener('click', () => controller.nudge(-15));
+    ahead.addEventListener('click', () => controller.nudge(15));
     refresh.addEventListener('click', () => { void controller.refresh(); });
     return { node, ...controller };
   }
@@ -143,8 +280,10 @@ const PlaybackRemote = (() => {
 
 if (typeof module !== 'undefined' && module.exports) module.exports = PlaybackRemote;
 if (typeof registerCardPanel === 'function') {
+  ROUTES.seek = ['POST', '/seek'];
   registerCardPanel((parts) => {
-    const panel = PlaybackRemote.panel({ zone: parts.zone, call, el, current: () => ownsCard(parts) });
+    const panel = PlaybackRemote.panel({ zone: parts.zone, call, el, current: () => ownsCard(parts),
+      execute: (work) => act(parts, work), blocked: () => parts.writing, externalRefresh: true });
     const visibility = () => { if (document.hidden) panel.suspend(); else panel.resume(); };
     const hide = () => panel.suspend(), show = () => { if (!document.hidden) panel.resume(); };
     document.addEventListener('visibilitychange', visibility);
