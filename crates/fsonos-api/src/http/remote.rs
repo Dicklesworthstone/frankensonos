@@ -41,6 +41,8 @@ const SESSION_SCRIPT: &str = include_str!("../remote/dj-session.js");
 const SESSION_STYLE: &str = include_str!("../remote/dj-session.css");
 const STEERING_SCRIPT: &str = include_str!("../remote/dj-steering.js");
 const STEERING_STYLE: &str = include_str!("../remote/dj-steering.css");
+const HISTORY_SCRIPT: &str = include_str!("../remote/history.js");
+const HISTORY_STYLE: &str = include_str!("../remote/history.css");
 const STYLE: &str = include_str!("../remote/remote.css");
 
 /// What the remote's documents may do: load only themselves, talk only to
@@ -73,7 +75,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}"
+                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}"
                     ),
                 )
             },
@@ -90,7 +92,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}"
                     ),
                 )
             },
@@ -101,7 +103,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/art",
                 "album_art",
                 REMOTE,
-                "The album art of what a room's group plays, from its own player (204 when none)",
+                "The album art of what a room's group plays, from its own player (204 none)",
             ),
             |s, c, req| match same_origin(req)
                 .and_then(|()| art_query(req))
@@ -288,6 +290,8 @@ mod tests {
             ("dj-session.css", SESSION_STYLE),
             ("dj-steering.js", STEERING_SCRIPT),
             ("dj-steering.css", STEERING_STYLE),
+            ("history.js", HISTORY_SCRIPT),
+            ("history.css", HISTORY_STYLE),
         ] {
             let lower = text.to_ascii_lowercase();
             for secret in [

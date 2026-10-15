@@ -1,0 +1,9 @@
+/* History uses the remote's existing colors, spacing and focus treatment. */
+.history-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 12px; }
+.history-list { padding: 0; list-style: none; }
+.history-list > li { border-top: 1px solid var(--line); padding: 8px 0; }
+.history-list summary { cursor: pointer; padding: 8px 0; overflow-wrap: anywhere; }
+.history-list summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.history-list dt { font-weight: 600; margin-top: 8px; }
+.history-list dd { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.history-body { min-width: 0; }
