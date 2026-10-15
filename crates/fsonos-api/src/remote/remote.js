@@ -120,6 +120,10 @@ function tag(text) {
   return h.toString(36);
 }
 
+// A room keeps its write lane even when topology replaces its card.
+const volumeFlights = new Map();
+const validVolume = (value) => Number.isInteger(value) && value >= 0 && value <= 100;
+
 // The house as last read.
 const house = {
   zones: [],
@@ -196,6 +200,7 @@ function disposeCard(parts) {
   parts.queue.dispose();
   for (const entry of parts.sliders.values()) {
     clearTimeout(entry.timer);
+    entry.timer = entry.pendingVolume = null;
     ++entry.version;
   }
 }
@@ -334,7 +339,7 @@ function slider(parts, room, household) {
   const input = el('input', { id, type: 'range', min: 0, max: 100, step: 1, value: 0, disabled: true });
   const shown = el('output', { for: id, text: '–' });
   const mute = el('button', { type: 'button', class: 'mute', text: 'Mute', 'aria-pressed': 'false', 'aria-label': `Mute ${room}` });
-  const entry = { input, shown, mute, muted: false, room: roomName(room, household), until: 0, timer: 0, version: 0, readVersion: 0, volumeVersion: 0, mutedPending: false };
+  const entry = { input, shown, mute, muted: false, room: roomName(room, household), timer: null, pendingVolume: null, volumeWriting: false, version: 0, readVersion: 0, volumeVersion: 0, mutedPending: false };
   mute.addEventListener('click', () => {
     if (!ownsCard(parts) || entry.mutedPending) return;
     entry.mutedPending = mute.disabled = true;
@@ -350,25 +355,71 @@ function slider(parts, room, household) {
       });
   });
   input.addEventListener('input', () => {
-    if (!ownsCard(parts)) return;
+    const volume = Number(input.value);
+    if (!ownsCard(parts) || input.disabled || !validVolume(volume)) return;
     ++entry.version;
-    const version = ++entry.volumeVersion;
-    shown.textContent = input.value;
-    entry.until = Date.now() + 1500;
+    ++entry.volumeVersion;
+    entry.pendingVolume = volume;
+    shown.textContent = `${volume}…`;
+    input.setAttribute('aria-busy', 'true');
+    input.title = 'Applying volume; further adjustments replace the queued level.';
     clearTimeout(entry.timer);
     entry.timer = setTimeout(() => {
-      if (!ownsCard(parts) || version !== entry.volumeVersion) return;
-      call('volume', { body: { zone: entry.room, volume: Number(input.value) } })
-        .then(noted)
-        .then((outcome) => {
-          if (!ownsCard(parts) || version !== entry.volumeVersion) return;
-          if (outcome && typeof outcome.volume === 'number') setVolume(entry, outcome.volume, true);
-        })
-        .catch(failed);
+      entry.timer = null;
+      void writeVolume(entry, parts);
     }, 250);
   });
   parts.sliders.set(room, entry);
   return el('div', { class: 'volume' }, el('label', { for: id, text: room }), input, shown, mute);
+}
+
+/** One request per room at a time, with at most one unsent absolute level. */
+async function writeVolume(entry, parts) {
+  if (!ownsCard(parts) || volumeFlights.has(entry.room)
+      || entry.timer !== null || entry.pendingVolume === null) return;
+  const volume = entry.pendingVolume;
+  entry.pendingVolume = null;
+  entry.volumeWriting = true;
+  volumeFlights.set(entry.room, entry);
+  let outcome, error;
+  try {
+    outcome = await call('volume', { body: { zone: entry.room, volume } });
+    if (!outcome || !validVolume(outcome.volume)) throw new Error('The volume reply is incomplete.');
+    if (ownsCard(parts)) noted(outcome);
+  } catch (failure) { error = failure; }
+  volumeFlights.delete(entry.room);
+  entry.volumeWriting = false;
+  // Fence reads that began while the old command could still change the level.
+  ++entry.version;
+  if (!ownsCard(parts)) {
+    for (const card of house.cards.values()) {
+      for (const replacement of card.sliders.values()) {
+        if (replacement.room === entry.room) void refreshVolume(replacement, card).catch(() => {});
+      }
+    }
+    return;
+  }
+  if (error) {
+    // A lost reply is not proof of no effect. Never replay it or drain drafts
+    // after it; require a new user adjustment following an authoritative read.
+    clearTimeout(entry.timer);
+    entry.timer = entry.pendingVolume = null;
+    ++entry.volumeVersion;
+    entry.input.disabled = true;
+    entry.input.setAttribute('aria-busy', 'false');
+    entry.input.title = 'Volume result uncertain. Reading the current level; queued changes were discarded.';
+    entry.shown.textContent = '?';
+    failed(error);
+    void refreshVolume(entry, parts).catch(() => {});
+    return;
+  }
+  // Repeating the same draft must not repeatedly step around a policy clamp.
+  if (entry.pendingVolume === volume) {
+    clearTimeout(entry.timer);
+    entry.timer = entry.pendingVolume = null;
+  }
+  if (entry.pendingVolume === null) setVolume(entry, outcome.volume);
+  else if (entry.timer === null) void writeVolume(entry, parts);
 }
 
 /** Show whether a room is muted. */
@@ -378,10 +429,13 @@ function setMute(entry, muted) {
   entry.mute.setAttribute('aria-pressed', String(muted));
 }
 
-/** Show a room's volume, unless its slider is in hand. */
-function setVolume(entry, volume, force = false) {
-  if (!force && Date.now() < entry.until) return;
+/** Show an observed level only when no local adjustment can still change it. */
+function setVolume(entry, volume) {
+  if (!validVolume(volume) || volumeFlights.has(entry.room)
+      || entry.pendingVolume !== null || entry.timer !== null) return;
   entry.input.disabled = false;
+  entry.input.setAttribute('aria-busy', 'false');
+  entry.input.title = '';
   entry.input.value = String(volume);
   entry.shown.textContent = String(volume);
 }
