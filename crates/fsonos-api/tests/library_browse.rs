@@ -110,7 +110,8 @@ fn browse_routes_page_filter_validate_and_describe_the_cache_over_loopback() {
     for (i, (status, _)) in replies.iter().enumerate() {
         assert_eq!(
             *status,
-            if (5..=8).contains(&i) { 400 } else { 200 },
+            // INVALID_ARGUMENT is 422 on every route (failure.rs).
+            if (5..=8).contains(&i) { 422 } else { 200 },
             "{}",
             paths[i]
         );
