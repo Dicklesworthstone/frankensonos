@@ -65,9 +65,9 @@ impl Watchdog {
     ) -> Option<Probe> {
         self.attempts.retain(|id, attempt| {
             coordinators.iter().any(|(player, _)| player == id)
-                && playback.of(id).is_some_and(|state| {
-                    Identity::of(state).as_ref() == Some(&attempt.identity)
-                })
+                && playback
+                    .of(id)
+                    .is_some_and(|state| Identity::of(state).as_ref() == Some(&attempt.identity))
         });
         self.position_after
             .retain(|id, _| coordinators.iter().any(|(player, _)| player == id));

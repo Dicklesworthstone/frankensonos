@@ -53,7 +53,11 @@ fn finish(command: &mut Command) -> Output {
 }
 
 fn error_text(output: &Output) -> String {
-    format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr))
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
 }
 
 fn through_daemon(args: &[&str], status: u16, body: &Value) -> (Output, Vec<String>) {
@@ -68,14 +72,21 @@ fn through_daemon(args: &[&str], status: u16, body: &Value) -> (Output, Vec<Stri
             let (mut stream, _) = match listener.accept() {
                 Ok(accepted) => accepted,
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "CLI did not send expected requests");
+                    assert!(
+                        Instant::now() < deadline,
+                        "CLI did not send expected requests"
+                    );
                     std::thread::sleep(Duration::from_millis(2));
                     continue;
                 }
                 Err(error) => panic!("accept: {error}"),
             };
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut reader = BufReader::new(&mut stream);
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
@@ -84,7 +95,9 @@ fn through_daemon(args: &[&str], status: u16, body: &Value) -> (Output, Vec<Stri
             loop {
                 line.clear();
                 assert!(reader.read_line(&mut line).unwrap() > 0, "missing headers");
-                if line == "\r\n" { break; }
+                if line == "\r\n" {
+                    break;
+                }
             }
             drop(reader);
             let (code, reply) = if paths.is_empty() {
@@ -102,21 +115,41 @@ fn through_daemon(args: &[&str], status: u16, body: &Value) -> (Output, Vec<Stri
         paths
     });
     let dir = tempfile::tempdir().unwrap();
-    let result = finish(command(dir.path())
-        .env("FSONOS_HTTP_ADDR", addr.to_string())
-        .arg("--daemon")
-        .args(args));
+    let result = finish(
+        command(dir.path())
+            .env("FSONOS_HTTP_ADDR", addr.to_string())
+            .arg("--daemon")
+            .args(args),
+    );
     (result, server.join().unwrap())
 }
 
 #[test]
 fn cli_json_and_text_browse_the_selected_daemons_cache() {
-    let args = ["--json", "dj", "browse", "albums", "--limit", "2", "--q", "Björk & Guests"];
+    let args = [
+        "--json",
+        "dj",
+        "browse",
+        "albums",
+        "--limit",
+        "2",
+        "--q",
+        "Björk & Guests",
+    ];
     let (output, paths) = through_daemon(&args, 200, &page());
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert_eq!(serde_json::from_slice::<Value>(&output.stdout).unwrap(), page());
-    assert_eq!(paths[1],
-        "GET /library/browse?kind=albums&offset=0&limit=2&q=Bj%C3%B6rk%20%26%20Guests HTTP/1.1");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        page()
+    );
+    assert_eq!(
+        paths[1],
+        "GET /library/browse?kind=albums&offset=0&limit=2&q=Bj%C3%B6rk%20%26%20Guests HTTP/1.1"
+    );
     let (output, _) = through_daemon(&["dj", "browse", "albums", "--limit", "2"], 200, &page());
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
@@ -128,14 +161,27 @@ fn cli_json_and_text_browse_the_selected_daemons_cache() {
 
 #[test]
 fn stale_and_inconsistent_pages_do_not_become_successful_cli_output() {
-    let args = ["--json", "dj", "browse", "albums", "--limit", "2", "--expected-revision", "old"];
+    let args = [
+        "--json",
+        "dj",
+        "browse",
+        "albums",
+        "--limit",
+        "2",
+        "--expected-revision",
+        "old",
+    ];
     let (output, paths) = through_daemon(&args, 200, &page());
     assert!(!output.status.success());
     assert!(error_text(&output).contains("INVALID_ARGUMENT"));
     assert_eq!(paths.len(), 2, "health and one read; no automatic restart");
     let mut wrong = page();
     wrong["items"][0]["source_uri"] = "spotify:track:WrongKind".into();
-    let (output, _) = through_daemon(&["--json", "dj", "browse", "albums", "--limit", "2"], 200, &wrong);
+    let (output, _) = through_daemon(
+        &["--json", "dj", "browse", "albums", "--limit", "2"],
+        200,
+        &wrong,
+    );
     assert!(!output.status.success());
     assert!(error_text(&output).contains("INTERNAL"));
 }
@@ -146,8 +192,10 @@ fn daemon_failures_do_not_fall_back_to_an_empty_local_cache() {
         &["--json", "dj", "browse", "albums", "--limit", "2"],
         503,
         &serde_json::to_value(
-            fsonos_api::Failure::new(fsonos_api::ErrorCode::NotReady, "cache is unavailable").body(),
-        ).unwrap(),
+            fsonos_api::Failure::new(fsonos_api::ErrorCode::NotReady, "cache is unavailable")
+                .body(),
+        )
+        .unwrap(),
     );
     assert!(!output.status.success());
     assert!(error_text(&output).contains("NOT_READY"));
@@ -158,7 +206,11 @@ fn daemon_failures_do_not_fall_back_to_an_empty_local_cache() {
 fn direct_empty_cache_needs_no_daemon_or_speaker_discovery() {
     let dir = tempfile::tempdir().unwrap();
     let output = finish(command(dir.path()).args(["--direct", "--json", "dj", "browse"]));
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let page: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(page["coverage"], "cached");
     assert_eq!(page["total"], 0);

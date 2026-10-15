@@ -179,9 +179,11 @@ fn live_worker_recovers_initial_and_same_track_seek_clocks_on_both_generations()
         seek_position(&sim.lan(), host, 41).unwrap();
         let sent = sim.soap_log().len();
         wait(41, TransportState::Paused);
-        assert!(events.try_iter().any(|event| {
-            matches!(event, LiveEvent::Playback { player, .. } if player == id)
-        }));
+        assert!(
+            events.try_iter().any(|event| {
+                matches!(event, LiveEvent::Playback { player, .. } if player == id)
+            })
+        );
         assert!(
             sim.soap_log()[sent..]
                 .iter()

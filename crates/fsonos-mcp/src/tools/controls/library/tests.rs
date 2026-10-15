@@ -68,7 +68,12 @@ struct Remote {
 }
 
 impl Daemon for Remote {
-    fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Option<Result<Value, Failure>> {
+    fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Option<Result<Value, Failure>> {
         self.calls.lock().unwrap().push(json!([method, path, body]));
         self.answer.clone()
     }
@@ -84,12 +89,19 @@ fn remote(answer: Option<Result<Value, Failure>>) -> Arc<Remote> {
 #[test]
 fn agents_can_page_the_real_cached_surface_without_speaker_io() {
     let backend = local(true);
-    let first = data(backend.browse_library(&BrowseQuery::default(), None).unwrap());
+    let first = data(
+        backend
+            .browse_library(&BrowseQuery::default(), None)
+            .unwrap(),
+    );
     assert_eq!(
         (first.items.len(), first.total, first.next_offset),
         (50, 53, Some(50))
     );
-    assert!(first.items[0].explicit, "browsing does not apply DJ exclusions");
+    assert!(
+        first.items[0].explicit,
+        "browsing does not apply DJ exclusions"
+    );
     let second = data(
         backend
             .browse_library(
@@ -127,7 +139,10 @@ fn albums_open_cached_disc_order_and_playlists_keep_their_own_uris() {
     assert_eq!(tracks.items[0].source_uri, "spotify:track:sim052");
     let lists = data(backend.browse_library(&query("playlists"), None).unwrap());
     assert_eq!(lists.items[0].source_uri, "spotify:playlist:simList");
-    assert_eq!(lists.items[0].cached_tracks, None, "membership is not invented");
+    assert_eq!(
+        lists.items[0].cached_tracks, None,
+        "membership is not invented"
+    );
 }
 
 #[test]
@@ -184,7 +199,11 @@ fn daemon_routing_encodes_literal_filters_and_retains_the_page_contract() {
         .unwrap();
     let daemon = remote(Some(Ok(serde_json::to_value(&page).unwrap())));
     let backend = backend.with_daemon(daemon.clone());
-    let result = data(backend.browse_library(&query, Some(&page.revision)).unwrap());
+    let result = data(
+        backend
+            .browse_library(&query, Some(&page.revision))
+            .unwrap(),
+    );
     assert_eq!(result, page);
     assert_eq!(
         *daemon.calls.lock().unwrap(),
@@ -220,7 +239,11 @@ fn daemon_failures_never_fall_back_to_a_different_nonempty_cache() {
     ] {
         let daemon = remote(Some(answer));
         let backend = local(true).with_daemon(daemon.clone());
-        assert!(backend.browse_library(&BrowseQuery::default(), None).is_err());
+        assert!(
+            backend
+                .browse_library(&BrowseQuery::default(), None)
+                .is_err()
+        );
         assert_eq!(daemon.calls.lock().unwrap().len(), 1);
     }
 }
@@ -229,7 +252,11 @@ fn daemon_failures_never_fall_back_to_a_different_nonempty_cache() {
 fn no_selected_daemon_preserves_standalone_browsing() {
     let daemon = remote(None);
     let backend = local(true).with_daemon(daemon.clone());
-    let page = data(backend.browse_library(&BrowseQuery::default(), None).unwrap());
+    let page = data(
+        backend
+            .browse_library(&BrowseQuery::default(), None)
+            .unwrap(),
+    );
     assert_eq!(page.total, 53);
     assert_eq!(daemon.calls.lock().unwrap().len(), 1);
 }

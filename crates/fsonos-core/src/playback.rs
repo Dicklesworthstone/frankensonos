@@ -19,9 +19,9 @@ use std::time::Instant;
 
 #[cfg(test)]
 mod metadata_tests;
+mod observation;
 #[cfg(test)]
 mod position_tests;
-mod observation;
 pub use observation::PlaybackObservation;
 
 /// Which service a NOTIFY came from (the subscription that delivered it

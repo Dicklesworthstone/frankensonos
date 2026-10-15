@@ -33,8 +33,7 @@ fn sample(playback: &mut Playback, secs: Option<u32>, now: Instant) {
     );
 }
 
-const PLAYING: &str =
-    "<TransportState val=\"PLAYING\"/><CurrentTrackURI val=\"test:clock\"/><CurrentTrack val=\"1\"/>";
+const PLAYING: &str = "<TransportState val=\"PLAYING\"/><CurrentTrackURI val=\"test:clock\"/><CurrentTrack val=\"1\"/>";
 
 #[test]
 fn first_transport_event_requests_a_clock_without_guessing_zero() {

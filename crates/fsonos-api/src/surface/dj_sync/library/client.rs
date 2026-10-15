@@ -66,8 +66,11 @@ fn check_page(
 ) -> Result<(), Failure> {
     query.validate()?;
     let inconsistent = || {
-        Failure::new(ErrorCode::Internal, "the cached library page is inconsistent")
-            .with_hint("Read the first page again; no music was started or queued.")
+        Failure::new(
+            ErrorCode::Internal,
+            "the cached library page is inconsistent",
+        )
+        .with_hint("Read the first page again; no music was started or queued.")
     };
     let kind = query.kind.as_deref().unwrap_or("tracks");
     let item_kind = match kind {
@@ -141,7 +144,10 @@ fn page_text(page: &BrowsePage) -> String {
         );
         let _ = writeln!(text, "  source_uri: {}", one_line(&item.source_uri));
         if let Some(count) = item.cached_tracks {
-            let _ = writeln!(text, "  {count} cached track(s); the album may contain more.");
+            let _ = writeln!(
+                text,
+                "  {count} cached track(s); the album may contain more."
+            );
         }
         if item.kind == "track" {
             if let Some(album) = &item.album {
@@ -157,11 +163,15 @@ fn page_text(page: &BrowsePage) -> String {
     }
     let _ = writeln!(text, "Revision: {}", one_line(&page.revision));
     if let Some(next) = page.next_offset {
-        let _ = writeln!(text, "Next: offset={next}; pass this revision as expected_revision and keep the same filters.");
+        let _ = writeln!(
+            text,
+            "Next: offset={next}; pass this revision as expected_revision and keep the same filters."
+        );
     } else {
         text.push_str("End of this cached listing.\n");
     }
-    text.push_str("Play or queue an exact source_uri. Album tracks: browse tracks with that album_uri.");
+    text.push_str(
+        "Play or queue an exact source_uri. Album tracks: browse tracks with that album_uri.",
+    );
     text
 }
-
