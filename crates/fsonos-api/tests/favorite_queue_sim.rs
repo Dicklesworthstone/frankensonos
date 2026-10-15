@@ -59,7 +59,12 @@ fn queue(sim: &SimHandle, houses: &[HouseholdState], zone: &str) -> Vec<String> 
         .collect()
 }
 
-fn favorite(sim: &SimHandle, houses: &[HouseholdState], zone: &str, kind: FavoriteKind) -> Favorite {
+fn favorite(
+    sim: &SimHandle,
+    houses: &[HouseholdState],
+    zone: &str,
+    kind: FavoriteKind,
+) -> Favorite {
     let player = resolve_room(houses, zone).unwrap();
     favorites::list(&sim.lan(), houses, &player.coordinator.id)
         .unwrap()
@@ -105,19 +110,28 @@ fn favorite_add_and_undo_leave_music_and_the_other_household_untouched() {
             sim.retain_favorites(generation, |uri| uri.starts_with("x-rincon-cpcontainer:"))
                 .unwrap();
             let s = surface(Box::new(sim.lan()), &houses);
-            let added = s.queue_request(&Client::McpStdio, &request(zone, &selected.id, next)).unwrap();
+            let added = s
+                .queue_request(&Client::McpStdio, &request(zone, &selected.id, next))
+                .unwrap();
             assert_eq!(added.first, if next { 2 } else { 3 });
             assert!(added.count > 1 && added.playing_queue);
             let target = resolve_room(&houses, zone).unwrap();
             let now = control::playback(&sim.lan(), &houses, &target.coordinator.id).unwrap();
             assert_eq!(now.transport.state, TransportState::Playing);
             assert_eq!(now.position.uri, original[0]);
-            let other = if zone.ends_with("S1") { "Den@S2" } else { "Den@S1" };
+            let other = if zone.ends_with("S1") {
+                "Den@S2"
+            } else {
+                "Den@S1"
+            };
             assert!(queue(&sim, &houses, other).is_empty());
-            let log = s.recent_actions(&Client::Cli, &ActionFilter::default()).unwrap();
+            let log = s
+                .recent_actions(&Client::Cli, &ActionFilter::default())
+                .unwrap();
             assert_eq!(log.len(), 1);
             assert_eq!(log[0].action.client, "mcp-stdio");
-            let before = BeforeState::parse(log[0].action.before_state.as_deref().unwrap()).unwrap();
+            let before =
+                BeforeState::parse(log[0].action.before_state.as_deref().unwrap()).unwrap();
             assert_eq!(before.queued.len(), 1);
             assert_eq!(before.queued[0].first, added.first);
             assert_eq!(before.queued[0].uris.len(), added.count as usize);
@@ -140,7 +154,9 @@ fn a_member_queue_add_resolves_fresh_grouping_instead_of_its_cached_coordinator(
     let lead = resolve_room(&houses, "Den@S2").unwrap();
     let member = resolve_room(&houses, "Office@S2").unwrap();
     soap::join_group(&sim.lan(), member.player.ip, &lead.coordinator.id).unwrap();
-    let added = s.queue_request(&Client::McpStdio, &request("Office@S2", &selected.id, true)).unwrap();
+    let added = s
+        .queue_request(&Client::McpStdio, &request("Office@S2", &selected.id, true))
+        .unwrap();
     assert_eq!(added.zone, "Den");
     assert_eq!(added.first, 2);
     assert_eq!(added.count, 1);
@@ -158,11 +174,15 @@ fn original_spotify_bodies_still_queue_through_the_unified_surface() {
     let houses = households(&sim);
     let s = surface(Box::new(sim.lan()), &houses);
     let req: QueueRequest = serde_json::from_value(serde_json::json!({
-        "zone": "Den@S1", "source_uri": "spotify:track:0SimQueueTrack000000001",
+        "zone": "Den@S1", "source_uri": "spotify:track:0SimQueueTrack00000021",
         "title": "Existing client", "next": false
-    })).unwrap();
+    }))
+    .unwrap();
     let added = s.queue_request(&Client::McpStdio, &req).unwrap();
-    assert_eq!((added.first, added.count, added.playing_queue), (1, 1, false));
+    assert_eq!(
+        (added.first, added.count, added.playing_queue),
+        (1, 1, false)
+    );
     assert_eq!(queue(&sim, &houses, "Den@S1").len(), 1);
 }
 
@@ -177,15 +197,22 @@ impl Transport for NoSpeakerIo {
 #[test]
 fn denied_callers_are_logged_and_invalid_source_choices_do_no_speaker_io() {
     let s = surface(Box::new(NoSpeakerIo), &[]);
-    let error = s.queue_request(&Client::Unknown, &request("Den@S2", "FV:2/1", true)).unwrap_err();
+    let error = s
+        .queue_request(&Client::Unknown, &request("Den@S2", "FV:2/1", true))
+        .unwrap_err();
     assert_eq!(error.code, ErrorCode::PolicyDenied);
-    let log = s.recent_actions(&Client::Cli, &ActionFilter::default()).unwrap();
+    let log = s
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
     assert_eq!(log.len(), 1);
     assert!(log[0].action.decision.starts_with("deny:"));
     assert!(log[0].action.before_state.is_none());
     let mut req = request("Den@S2", "FV:2/1", false);
-    req.source_uri = Some("spotify:track:0SimQueueTrack000000001".into());
-    assert_eq!(s.queue_request(&Client::McpStdio, &req).unwrap_err().code, ErrorCode::InvalidArgument);
+    req.source_uri = Some("spotify:track:0SimQueueTrack00000021".into());
+    assert_eq!(
+        s.queue_request(&Client::McpStdio, &req).unwrap_err().code,
+        ErrorCode::InvalidArgument
+    );
 }
 
 #[test]
@@ -194,22 +221,30 @@ fn ambiguous_rooms_unknown_favorites_and_stations_cannot_modify_a_queue() {
     let houses = households(&sim);
     let s = surface(Box::new(sim.lan()), &houses);
     assert_eq!(
-        s.queue_request(&Client::McpStdio, &request("Den", "FV:2/1", false)).unwrap_err().code,
+        s.queue_request(&Client::McpStdio, &request("Den", "FV:2/1", false))
+            .unwrap_err()
+            .code,
         ErrorCode::AmbiguousRoom
     );
     assert_eq!(
-        s.queue_request(&Client::McpStdio, &request("Den@S1", "FV:2/999999", false)).unwrap_err().code,
+        s.queue_request(&Client::McpStdio, &request("Den@S1", "FV:2/999999", false))
+            .unwrap_err()
+            .code,
         ErrorCode::UnknownFavorite
     );
     let station = favorite(&sim, &houses, "Den@S2", FavoriteKind::Stream);
     assert_eq!(
-        s.queue_request(&Client::McpStdio, &request("Den@S2", &station.id, false)).unwrap_err().code,
+        s.queue_request(&Client::McpStdio, &request("Den@S2", &station.id, false))
+            .unwrap_err()
+            .code,
         ErrorCode::InvalidArgument
     );
     for zone in ["Den@S1", "Den@S2", "Office@S1", "Office@S2"] {
         assert!(queue(&sim, &houses, zone).is_empty());
     }
-    let log = s.recent_actions(&Client::Cli, &ActionFilter::default()).unwrap();
+    let log = s
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
     assert_eq!(log.len(), 3);
     assert!(log.iter().all(|entry| entry.action.before_state.is_none()));
 }
@@ -220,11 +255,20 @@ struct LostAdd {
 }
 
 impl Transport for LostAdd {
-    fn soap_post(&self, host: IpAddr, path: &str, action: &str, body: &str) -> Result<String, ProtoError> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
         let response = self.lan.soap_post(host, path, action, body)?;
         if action.contains("#AddURIToQueue") {
             self.adds.fetch_add(1, Ordering::SeqCst);
-            Err(ProtoError::Network { target: host.to_string(), detail: "injected lost add reply".into() })
+            Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: "injected lost add reply".into(),
+            })
         } else {
             Ok(response)
         }
@@ -237,13 +281,23 @@ fn uncertain_container_adds_are_not_replayed_or_given_a_fabricated_undo_range() 
     let houses = households(&sim);
     let selected = favorite(&sim, &houses, "Den@S2", FavoriteKind::Container);
     let adds = Arc::new(AtomicUsize::new(0));
-    let s = surface(Box::new(LostAdd { lan: sim.lan(), adds: Arc::clone(&adds) }), &houses);
-    let failure = s.queue_request(&Client::McpStdio, &request("Den@S2", &selected.id, false)).unwrap_err();
+    let s = surface(
+        Box::new(LostAdd {
+            lan: sim.lan(),
+            adds: Arc::clone(&adds),
+        }),
+        &houses,
+    );
+    let failure = s
+        .queue_request(&Client::McpStdio, &request("Den@S2", &selected.id, false))
+        .unwrap_err();
     assert!(!failure.retryable());
     assert!(failure.detail.contains("uncertain"));
     assert_eq!(adds.load(Ordering::SeqCst), 1);
     assert!(!queue(&sim, &houses, "Den@S2").is_empty());
-    let log = s.recent_actions(&Client::Cli, &ActionFilter::default()).unwrap();
+    let log = s
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
     assert_eq!(log.len(), 1);
     assert!(log[0].action.result.contains("uncertain"));
     assert!(log[0].action.before_state.is_none());

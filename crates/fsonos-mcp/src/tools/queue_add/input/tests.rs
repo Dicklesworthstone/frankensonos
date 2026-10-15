@@ -81,12 +81,15 @@ fn the_original_spotify_rust_helper_uses_the_daemons_action_log() {
     });
     let req = QueueAddRequest {
         zone: "Den@S2".into(),
-        source_uri: "spotify:album:0SimQueueAlbum000000001".into(),
+        source_uri: "spotify:album:0SimQueueAlbum00000001".into(),
         title: Some("Album".into()),
         next: false,
     };
     assert!(!backend(&reply).add_to_queue(&req).unwrap().is_error);
-    assert_eq!(*reply.calls.lock().unwrap(), [json!(["POST", "/queue", req])]);
+    assert_eq!(
+        *reply.calls.lock().unwrap(),
+        [json!(["POST", "/queue", req])]
+    );
 }
 
 #[test]
@@ -125,7 +128,7 @@ fn an_ambiguous_source_choice_is_not_sent_to_the_daemon() {
     });
     for req in [
         QueueRequest {
-            source_uri: Some("spotify:track:0SimQueueTrack000000001".into()),
+            source_uri: Some("spotify:track:0SimQueueTrack00000021".into()),
             ..request()
         },
         QueueRequest {

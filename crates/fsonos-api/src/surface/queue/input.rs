@@ -115,10 +115,10 @@ impl Surface {
                     next: req.next,
                 },
             ),
-            (None, Some(favorite)) => {
-                self.queue_favorite(client, &req.zone, favorite, req.next)
-            }
-            _ => Err(Failure::invalid("give exactly one of source_uri or favorite")),
+            (None, Some(favorite)) => self.queue_favorite(client, &req.zone, favorite, req.next),
+            _ => Err(Failure::invalid(
+                "give exactly one of source_uri or favorite",
+            )),
         }
     }
 
@@ -148,7 +148,9 @@ impl Surface {
                     "favorite {:?} is not a track, album or playlist and cannot be queued",
                     selected.title
                 ))
-                .with_hint("Use play_favorite to play a station directly; browse shortcuts cannot play."));
+                .with_hint(
+                    "Use play_favorite to play a station directly; browse shortcuts cannot play.",
+                ));
             }
             self.queue_group_unchanged(player.ip, &group)?;
             let queued = favorite_queue::enqueue(
@@ -164,7 +166,10 @@ impl Surface {
                 )
             })?;
             let count = u32::try_from(queued.uris.len()).map_err(|_| {
-                Failure::new(ErrorCode::Internal, "confirmed queue range exceeds u32 tracks")
+                Failure::new(
+                    ErrorCode::Internal,
+                    "confirmed queue range exceeds u32 tracks",
+                )
             })?;
             let mut done = format!(
                 "queued {count} track(s) from favorite {:?} in {zone} at position {}",
@@ -218,14 +223,20 @@ mod tests {
     fn old_spotify_bodies_and_rust_requests_keep_their_meaning() {
         let old = QueueAddRequest {
             zone: "Den@S2".into(),
-            source_uri: "spotify:track:0SimQueueTrack000000001".into(),
+            source_uri: "spotify:track:0SimQueueTrack00000021".into(),
             title: Some("Track".into()),
             next: true,
         };
-        let req: QueueRequest = serde_json::from_value(serde_json::to_value(&old).unwrap()).unwrap();
+        let req: QueueRequest =
+            serde_json::from_value(serde_json::to_value(&old).unwrap()).unwrap();
         assert_eq!(req, QueueRequest::from(&old));
         req.validate().unwrap();
-        assert!(serde_json::to_value(&req).unwrap().get("favorite").is_none());
+        assert!(
+            serde_json::to_value(&req)
+                .unwrap()
+                .get("favorite")
+                .is_none()
+        );
     }
 
     #[test]
@@ -248,7 +259,7 @@ mod tests {
             json!({"zone": "Den", "favorite": "a".repeat(1025)}),
             json!({"zone": "", "favorite": "FV:2/1"}),
             json!({"zone": "Den", "favorite": "FV:2/1", "title": "discarded"}),
-            json!({"zone": "Den", "favorite": "FV:2/1", "source_uri": "spotify:track:0SimQueueTrack000000001"}),
+            json!({"zone": "Den", "favorite": "FV:2/1", "source_uri": "spotify:track:0SimQueueTrack00000021"}),
             json!({"zone": "Den", "source_uri": ""}),
             json!({"zone": "Den", "source_uri": "x-rincon-mp3radio://example.invalid/radio"}),
         ] {
