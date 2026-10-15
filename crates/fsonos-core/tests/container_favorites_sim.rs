@@ -5,7 +5,8 @@
 use fsonos_core::{CoreError, HouseholdState, control, resolve_room};
 use fsonos_proto::content::{self, QUEUE};
 use fsonos_proto::didl::{
-    SpotifyContainer, SpotifyRenderParams, spotify_container_didl, spotify_container_uri, xml_escape,
+    SpotifyContainer, SpotifyRenderParams, spotify_container_didl, spotify_container_uri,
+    xml_escape,
 };
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
@@ -309,19 +310,19 @@ fn rejected_stale_majorities_fail_over_for_play_and_enqueue_in_both_households()
                 let transport = FavoritesReply {
                     lan: &lan,
                     host: sim.player(room).unwrap().ip,
-                    reply: favorites_reply(
-                        &sim.render_params(generation).unwrap(),
-                        kind,
-                        2,
-                        true,
-                    ),
+                    reply: favorites_reply(&sim.render_params(generation).unwrap(), kind, 2, true),
                     lose_add_reply: Cell::new(false),
                 };
                 let source = format!("spotify:{name}:0SimRecoveredContainer");
                 let before = sim.soap_log().len();
                 if replace {
                     control::play_spotify_container(
-                        &transport, &houses, coordinator, kind, &source, "Recovered",
+                        &transport,
+                        &houses,
+                        coordinator,
+                        kind,
+                        &source,
+                        "Recovered",
                     )
                     .unwrap();
                     let after = queue(&sim, &lan, room);
@@ -329,7 +330,12 @@ fn rejected_stale_majorities_fail_over_for_play_and_enqueue_in_both_households()
                     assert!(original.iter().all(|uri| !after.contains(uri)));
                 } else {
                     let added = control::enqueue_spotify(
-                        &transport, &houses, coordinator, &source, "Recovered", false,
+                        &transport,
+                        &houses,
+                        coordinator,
+                        &source,
+                        "Recovered",
+                        false,
                     )
                     .unwrap();
                     let after = queue(&sim, &lan, room);
