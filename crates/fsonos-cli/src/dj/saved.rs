@@ -66,6 +66,12 @@ pub(super) fn load(path: &Path, seed: u64) -> (HashMap<PlayerId, QueueFeed>, Tra
                 })
                 .collect();
             let tracker = Tracker::restore(saved.groups, &feeds);
+            // The file says what runs: without them, so they are let go once.
+            if !empty.is_empty()
+                && let Err(e) = write(path, &encode(&feeds, &tracker))
+            {
+                tracing::warn!(error = %e, "the DJ's saved feeds were not rewritten");
+            }
             (feeds, tracker)
         }
         Err(e) => {
@@ -297,6 +303,10 @@ mod tests {
         let (feeds, tracker) = load(&path, 1);
         assert_eq!(feeds.keys().collect::<Vec<_>>(), [&PlayerId(office.into())]);
         assert!(!encode(&feeds, &tracker).contains(kitchen));
+        // The file is rewritten without it, so a restart lets go once.
+        let rewritten = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(rewritten, encode(&feeds, &tracker));
+        assert!(!rewritten.contains(kitchen) && rewritten.contains(office));
         let _ = std::fs::remove_dir_all(dir);
     }
 
