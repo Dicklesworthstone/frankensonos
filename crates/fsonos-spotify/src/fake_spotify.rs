@@ -3,7 +3,9 @@
 //! mocks of the HTTP client, no network beyond 127.0.0.1. It verifies PKCE
 //! server-side, rotates tokens on refresh, can rate-limit, and serves the
 //! library and album-track fixtures with paging links rewritten to itself,
-//! and artists with the genres a test gives them.
+//! and artists with the genres a test gives them. Other crates' tests reach it
+//! through the `test-support` feature, with a debug build's
+//! [`TEST_BASE_ENV`](crate::client::TEST_BASE_ENV) pointing a daemon at it.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -19,10 +21,10 @@ use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 
 use crate::client::{Endpoints, SCOPE, SpotifyConfig, base64url, parse_query, sha256};
 
-pub(crate) const CLIENT_ID: &str = "0123456789abcdef0123456789abcdef";
-pub(crate) const REDIRECT: &str = "http://127.0.0.1:8099/auth/spotify/callback";
+pub const CLIENT_ID: &str = "0123456789abcdef0123456789abcdef";
+pub const REDIRECT: &str = "http://127.0.0.1:8099/auth/spotify/callback";
 
-pub(crate) fn runtime() -> Runtime {
+pub fn runtime() -> Runtime {
     RuntimeBuilder::current_thread()
         .with_reactor(create_reactor().expect("reactor"))
         .blocking_threads(0, 4)
@@ -33,7 +35,7 @@ pub(crate) fn runtime() -> Runtime {
 /// The parser fixture is an excerpt of a larger library. For complete-read
 /// tests, keep all its musical metadata but make paging describe the retained
 /// entries rather than the omitted albums and tracks.
-pub(crate) fn library_albums_page() -> Vec<u8> {
+pub fn library_albums_page() -> Vec<u8> {
     let mut page: serde_json::Value =
         serde_json::from_slice(include_bytes!("../tests/fixtures/saved_albums_page.json")).unwrap();
     page["total"] = 2.into();
@@ -49,39 +51,39 @@ pub(crate) fn library_albums_page() -> Vec<u8> {
 
 /// What the fake Spotify has seen and will accept.
 #[derive(Default)]
-pub(crate) struct Fake {
-    pub(crate) base: String,
-    pub(crate) expected_challenge: Option<String>,
-    pub(crate) access: String,
-    pub(crate) refresh: String,
-    pub(crate) refreshes: usize,
-    pub(crate) rate_limit_tracks_once: bool,
+pub struct Fake {
+    pub base: String,
+    pub expected_challenge: Option<String>,
+    pub access: String,
+    pub refresh: String,
+    pub refreshes: usize,
+    pub rate_limit_tracks_once: bool,
     /// Serve this liked-tracks page instead of the fixture.
-    pub(crate) liked_tracks: Option<String>,
+    pub liked_tracks: Option<String>,
     /// Exact request targets to override for library paging regressions.
-    pub(crate) library_pages: HashMap<String, String>,
+    pub library_pages: HashMap<String, String>,
     /// Answer this many album-tracks requests (any album) with a 429.
-    pub(crate) rate_limit_albums: u32,
+    pub rate_limit_albums: u32,
     /// `GET /v1/artists/{id}`: each artist's genres (an id not here is a
     /// 404).
-    pub(crate) artist_genres: HashMap<String, Vec<String>>,
+    pub artist_genres: HashMap<String, Vec<String>>,
     /// Answer this many artist requests with a 429, asking to wait this
     /// many seconds (1 when unset).
-    pub(crate) rate_limit_artists: u32,
-    pub(crate) artist_retry_after: Option<u32>,
+    pub rate_limit_artists: u32,
+    pub artist_retry_after: Option<u32>,
     /// Answer every taste request (followed, top, recent, playlists) with a
     /// 500.
-    pub(crate) taste_down: bool,
+    pub taste_down: bool,
     /// Also follow an artist with nothing saved (`FakeArtist000000000009`,
     /// "Lantern Coast"), whose top tracks are `FakeTrack0000000000120` on.
-    pub(crate) follow_unsaved: bool,
+    pub follow_unsaved: bool,
     /// Answer artist top-tracks requests with this status instead (403:
     /// closed to the app).
-    pub(crate) top_tracks_refused: Option<u16>,
-    pub(crate) log: Vec<String>,
+    pub top_tracks_refused: Option<u16>,
+    pub log: Vec<String>,
 }
 
-pub(crate) fn json(status: u16, body: impl Into<Vec<u8>>) -> Response {
+pub fn json(status: u16, body: impl Into<Vec<u8>>) -> Response {
     Response::new(status, "", body).with_header("Content-Type", "application/json")
 }
 
@@ -425,15 +427,15 @@ fn album_tracks(uri: &str, rewrite: impl Fn(&[u8]) -> String) -> Response {
 }
 
 /// A fake Spotify on a loopback port, served from its own thread.
-pub(crate) struct FakeSpotify {
-    pub(crate) addr: SocketAddr,
-    pub(crate) state: Arc<Mutex<Fake>>,
+pub struct FakeSpotify {
+    pub addr: SocketAddr,
+    pub state: Arc<Mutex<Fake>>,
     shutdown: Box<dyn FnOnce()>,
     thread: thread::JoinHandle<()>,
 }
 
 impl FakeSpotify {
-    pub(crate) fn start() -> Self {
+    pub fn start() -> Self {
         let state = Arc::new(Mutex::new(Fake::default()));
         let shared = Arc::clone(&state);
         let config = Http1ListenerConfig::default().http_config(
@@ -473,14 +475,14 @@ impl FakeSpotify {
         }
     }
 
-    pub(crate) fn endpoints(&self) -> Endpoints {
+    pub fn endpoints(&self) -> Endpoints {
         Endpoints {
             token: format!("http://{}/api/token", self.addr),
             api: format!("http://{}/v1", self.addr),
         }
     }
 
-    pub(crate) fn stop(self) -> Fake {
+    pub fn stop(self) -> Fake {
         (self.shutdown)();
         self.thread.join().expect("server thread");
         Arc::try_unwrap(self.state)
@@ -491,7 +493,7 @@ impl FakeSpotify {
     }
 }
 
-pub(crate) fn scratch_dir(name: &str) -> PathBuf {
+pub fn scratch_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "fsonos-spotify-session-{}-{name}",
         std::process::id()
@@ -500,14 +502,14 @@ pub(crate) fn scratch_dir(name: &str) -> PathBuf {
     dir
 }
 
-pub(crate) fn config() -> SpotifyConfig {
+pub fn config() -> SpotifyConfig {
     SpotifyConfig {
         client_id: CLIENT_ID.into(),
         redirect_uri: REDIRECT.into(),
     }
 }
 
-pub(crate) fn query_param(url: &str, key: &str) -> String {
+pub fn query_param(url: &str, key: &str) -> String {
     let query = url.split_once('?').unwrap().1;
     parse_query(query)
         .unwrap()

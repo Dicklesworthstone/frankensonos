@@ -99,7 +99,7 @@ impl Session {
         let token = cache.load()?;
         Ok(Self {
             config,
-            endpoints: Endpoints::default(),
+            endpoints: Endpoints::for_session(),
             cache,
             http,
             token,

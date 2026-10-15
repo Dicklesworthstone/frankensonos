@@ -544,8 +544,14 @@ impl Scenario {
     /// Start a long-running `fsonos <args>` (a daemon) with the isolation
     /// environment, logged as step `step`.
     pub fn spawn(&mut self, step: &str, args: &[&str]) -> Daemon {
+        self.spawn_env(step, args, &[])
+    }
+
+    /// [`Self::spawn`] with `env` set as well.
+    pub fn spawn_env(&mut self, step: &str, args: &[&str], env: &[(&str, &str)]) -> Daemon {
         let mut child = self
             .command()
+            .envs(env.iter().copied())
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())

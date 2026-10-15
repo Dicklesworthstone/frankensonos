@@ -49,6 +49,9 @@ tailscale-live = []
 [dev-dependencies]
 # The e2e harness (tests/e2e) drives the binary against virtual players.
 fsonos-sim = { workspace = true }
+# A fake Spotify for the library refresh through the daemon
+# (e2e_dj_sync_fake).
+fsonos-spotify = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

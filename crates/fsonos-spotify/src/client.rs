@@ -498,6 +498,11 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 // ── Library endpoints ──────────────────────────────────────────────────────
 
+/// Points a debug build's Spotify sessions at a fake Spotify on loopback:
+/// `http://127.0.0.1:<port>` (the e2e tests' hook, see
+/// [`Endpoints::for_session`]).
+pub const TEST_BASE_ENV: &str = "FSONOS_SPOTIFY_TEST_BASE";
+
 /// Where requests go: Spotify's hosts by default (tests point them at a
 /// loopback server). The bearer token is only ever sent under `api`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -518,6 +523,29 @@ impl Default for Endpoints {
 }
 
 impl Endpoints {
+    /// Where a [`Session`](crate::session::Session) talks: Spotify's hosts,
+    /// except in a debug build with [`TEST_BASE_ENV`] naming a loopback
+    /// `http://127.0.0.1:<port>`, which talks to the fake Spotify there (its
+    /// `/api/token` and `/v1`). Release builds ignore the variable, so no
+    /// environment can send the owner's Spotify token anywhere but Spotify.
+    #[must_use]
+    pub fn for_session() -> Self {
+        let base = std::env::var(TEST_BASE_ENV)
+            .ok()
+            .filter(|_| cfg!(debug_assertions));
+        Self::at_loopback(base.as_deref()).unwrap_or_default()
+    }
+
+    /// The endpoints of a fake Spotify at `base`, if it is a loopback
+    /// `http://127.0.0.1:<port>`.
+    fn at_loopback(base: Option<&str>) -> Option<Self> {
+        let port: u16 = base?.strip_prefix("http://127.0.0.1:")?.parse().ok()?;
+        Some(Self {
+            token: format!("http://127.0.0.1:{port}/api/token"),
+            api: format!("http://127.0.0.1:{port}/v1"),
+        })
+    }
+
     /// A page of the owner's saved albums, each embedding its first 50
     /// tracks. `market=from_token` makes Spotify relink tracks and report
     /// `is_playable`.
@@ -1722,5 +1750,22 @@ mod tests {
         );
         assert_eq!(clair.origin, Origin::LikedTrack);
         assert!(crate::classical::is_classical(clair));
+    }
+
+    #[test]
+    fn only_a_loopback_fake_stands_in_for_spotify() {
+        let fake = Endpoints::at_loopback(Some("http://127.0.0.1:4567")).unwrap();
+        assert_eq!(fake.token, "http://127.0.0.1:4567/api/token");
+        assert_eq!(fake.api, "http://127.0.0.1:4567/v1");
+        for elsewhere in [
+            "https://api.spotify.com",
+            "http://192.0.2.7:4567",
+            "http://127.0.0.1.example:80",
+            "http://127.0.0.1:4567/v1",
+            "http://127.0.0.1:port",
+        ] {
+            assert_eq!(Endpoints::at_loopback(Some(elsewhere)), None, "{elsewhere}");
+        }
+        assert_eq!(Endpoints::at_loopback(None), None);
     }
 }

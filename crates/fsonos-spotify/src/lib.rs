@@ -59,8 +59,10 @@ pub mod classical;
 pub mod client;
 pub mod dj;
 pub mod expand;
-#[cfg(test)]
-mod fake_spotify;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+#[allow(clippy::must_use_candidate)]
+pub mod fake_spotify;
 pub mod feed;
 pub mod feedback;
 pub mod genre_guess;

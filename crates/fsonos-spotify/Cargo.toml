@@ -26,6 +26,11 @@ tracing = { workspace = true }
 # Web API (OAuth PKCE, library reads).
 asupersync = { workspace = true }
 
+[features]
+# The fake Spotify (accounts + Web API on loopback, `fake_spotify`) for other
+# crates' tests; never a normal dependency's feature.
+test-support = []
+
 [dev-dependencies]
 # Virtual Sonos players over real localhost sockets for the queue-feed tests.
 fsonos-sim = { workspace = true }
