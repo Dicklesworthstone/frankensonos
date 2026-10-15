@@ -5,3 +5,6 @@
 .playback-detail { font-size: .85rem; margin-block: .35rem; }
 .playback-clock input[type="range"] { width: 100%; min-height: 2rem; }
 .playback-clock .row { flex-wrap: wrap; }
+
+.playback-clock input[type="text"] { min-width: 8rem; width: 12rem; max-width: 100%; min-height: 2.75rem; font-variant-numeric: tabular-nums; }
+.playback-clock input[type="text"]:focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }

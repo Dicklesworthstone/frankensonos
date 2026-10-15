@@ -20,6 +20,8 @@ on:
       - "scripts/test-remote-invalidation.cjs"
       - "scripts/test-remote-state.cjs"
       - "scripts/test-remote-playback.cjs"
+      - "scripts/test-remote-seek.cjs"
+      - "scripts/test-remote-seek-http.cjs"
       - "scripts/test-remote-transport.cjs"
       - "scripts/test-remote-volume.cjs"
       - "scripts/test-remote-announcements.cjs"
@@ -77,6 +79,8 @@ jobs:
         run: node --test scripts/test-remote-groups.cjs scripts/test-remote-transfers.cjs
       - name: Live remote recovery regressions
         run: node --test scripts/test-remote-live.cjs scripts/test-remote-state.cjs scripts/test-remote-invalidation.cjs scripts/test-remote-playback.cjs
+      - name: Web seek recovery regressions
+        run: node --test scripts/test-remote-seek.cjs scripts/test-remote-seek-http.cjs
       - name: Web transport and volume regressions
         run: node --test scripts/test-remote-transport.cjs scripts/test-remote-volume.cjs
       - name: Web announcement regressions
