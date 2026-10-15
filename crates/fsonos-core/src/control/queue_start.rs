@@ -12,7 +12,7 @@ use fsonos_proto::control as soap;
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
-use fsonos_types::PlayerId;
+use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -40,7 +40,7 @@ pub(super) fn play<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
 ) -> Result<(), ProtoError> {
-    start(transport, host, coordinator, position, false)
+    start(transport, host, coordinator, position, false, true)
 }
 
 pub(super) fn play_in_order<T: Transport + ?Sized>(
@@ -49,7 +49,45 @@ pub(super) fn play_in_order<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
 ) -> Result<(), ProtoError> {
-    start(transport, host, coordinator, position, true)
+    start(transport, host, coordinator, position, true, true)
+}
+
+/// Select a queue slot while stopped. Retain the pre-load revision so a
+/// shifted or replaced queue cannot be reported as the requested selection.
+pub(super) fn load<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+    position: u32,
+    in_order: bool,
+) -> Result<(), ProtoError> {
+    let offset = position
+        .checked_sub(1)
+        .ok_or_else(|| ProtoError::Malformed("queue positions start at one".into()))?;
+    let before = browse_range_snapshot(transport, host, QUEUE, offset, 1)?;
+    let [item] = before.objects.as_slice() else {
+        return Err(ProtoError::Malformed("the requested queue slot is absent".into()));
+    };
+    if item
+        .res
+        .as_ref()
+        .is_none_or(|res| res.uri.trim().is_empty() || res.uri == "NOT_IMPLEMENTED")
+    {
+        return Err(ProtoError::Malformed("the queue slot has no identity".into()));
+    }
+    start(transport, host, coordinator, position, in_order, false)?;
+    if !confirmed(transport, host, coordinator, position, Stage::Track)?
+        || !matches!(
+            soap::get_transport_info(transport, host)?.state,
+            TransportState::Paused | TransportState::Stopped
+        )
+        || before != browse_range_snapshot(transport, host, QUEUE, offset, 1)?
+    {
+        return Err(ProtoError::Malformed(
+            "the requested queue slot was not confirmed loaded without playback".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn start<T: Transport + ?Sized>(
@@ -58,12 +96,13 @@ fn start<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     position: u32,
     in_order: bool,
+    autoplay: bool,
 ) -> Result<(), ProtoError> {
     if position == 0 {
         return Err(ProtoError::Malformed("queue positions start at one".into()));
     }
     for stage in [Stage::Source, Stage::Mode, Stage::Track, Stage::Play] {
-        if stage == Stage::Mode && !in_order {
+        if (stage == Stage::Mode && !in_order) || (stage == Stage::Play && !autoplay) {
             continue;
         }
         let result = match stage {
@@ -94,6 +133,25 @@ fn start<T: Transport + ?Sized>(
                 // stage without proof. A read failure is not permission to
                 // retry a mutation or roll playback back.
                 return Err(error);
+            }
+        }
+        if !autoplay {
+            let selected = if stage == Stage::Mode {
+                fsonos_proto::play_mode::get_play_mode(transport, host)?
+                    == fsonos_types::PlayMode::Normal
+            } else {
+                confirmed(transport, host, coordinator, position, stage)?
+            };
+            if !selected
+                || !matches!(
+                    soap::get_transport_info(transport, host)?.state,
+                    TransportState::Paused | TransportState::Stopped
+                )
+            {
+                return Err(ProtoError::Malformed(format!(
+                    "{} did not establish the requested inactive queue state",
+                    stage.name()
+                )));
             }
         }
     }

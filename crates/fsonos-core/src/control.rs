@@ -21,9 +21,15 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+mod loading;
 mod queue_start;
 mod source_start;
 mod spotify_source;
+
+pub use loading::{
+    load_queue_from, load_queue_from_in_order, load_spotify_container, load_spotify_track,
+    load_uri, pause_confirmed,
+};
 
 /// How long a player that left its group may take to show alone (real ones
 /// do within about a second). Not a settle-time knob: a fleet-verified
@@ -213,28 +219,7 @@ pub fn play_spotify_track<T: Transport + ?Sized>(
     spotify_uri: &str,
     title: &str,
 ) -> Result<(), CoreError> {
-    let source = |uri: &str| spotify_track_source(t, households, coordinator, uri, title);
-    let Some((uri, didl)) = source(spotify_uri)? else {
-        return Err(CoreError::NoSpotifyFavorite);
-    };
-    match play_uri(t, households, coordinator, &uri, &didl) {
-        Ok(()) => Ok(()),
-        // Parameters drift when Spotify is relinked, the service updates,
-        // or the household is rebuilt: what the favorites carried when we
-        // learned them is no longer what the renderer accepts. Learn them
-        // again and render once more.
-        Err(e) if is_render_800(&e) => {
-            let Some((uri, didl)) = source(spotify_uri)? else {
-                return Err(CoreError::NoSpotifyFavorite);
-            };
-            match play_uri(t, households, coordinator, &uri, &didl) {
-                Ok(()) => Ok(()),
-                Err(e) if is_render_800(&e) => Err(CoreError::RenderParamsStale),
-                Err(e) => Err(e),
-            }
-        }
-        Err(e) => Err(e),
-    }
+    loading::spotify_track(t, households, coordinator, spotify_uri, title, true)
 }
 
 /// Replace the queue of the group `coordinator` leads with a Spotify album
@@ -256,28 +241,7 @@ pub fn play_spotify_container<T: Transport + ?Sized>(
     spotify_uri: &str,
     title: &str,
 ) -> Result<(), CoreError> {
-    let host = addr(households, coordinator)?;
-    let source = |rejected: Option<&(String, String)>| -> Result<(String, String), CoreError> {
-        let favorites = content::browse_all(t, host, "FV:2")?;
-        match rejected {
-            Some(old) => spotify_source::after_rejection(&favorites, kind, spotify_uri, title, old),
-            None => spotify_source::container(&favorites, kind, spotify_uri, title),
-        }
-        .ok_or(CoreError::NoSpotifyFavorite)
-    };
-    let render = |(uri, didl): &(String, String)| -> Result<(), CoreError> {
-        crate::queue_source::play(t, households, coordinator, uri, didl)
-    };
-    let initial = source(None)?;
-    match render(&initial) {
-        Ok(()) => Ok(()),
-        Err(e) if is_render_800(&e) => match render(&source(Some(&initial))?) {
-            Ok(()) => Ok(()),
-            Err(e) if is_render_800(&e) => Err(CoreError::RenderParamsStale),
-            Err(e) => Err(e),
-        },
-        Err(e) => Err(e),
-    }
+    loading::spotify_container(t, households, coordinator, kind, spotify_uri, title, true)
 }
 
 /// Append Spotify tracks (`(spotify:track URI, title)`) to the queue of the

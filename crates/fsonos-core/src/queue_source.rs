@@ -8,7 +8,7 @@ use crate::{CoreError, HouseholdState, control};
 use fsonos_proto::content::{QUEUE, browse_snapshot};
 use fsonos_proto::control::{self as soap, Enqueued};
 use fsonos_proto::{ProtoError, Transport};
-use fsonos_types::PlayerId;
+use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -74,8 +74,40 @@ pub(crate) fn play<T: Transport + ?Sized>(
     uri: &str,
     metadata: &str,
 ) -> Result<(), CoreError> {
+    replace(t, households, coordinator, uri, metadata, true)
+}
+
+/// Replace and select without starting. Silence is established before the
+/// append: a playing old queue could otherwise run into the staged tracks.
+/// Failures may leave the old source paused or the new tracks appended.
+pub(crate) fn load<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    uri: &str,
+    metadata: &str,
+) -> Result<(), CoreError> {
+    replace(t, households, coordinator, uri, metadata, false)
+}
+
+fn replace<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    uri: &str,
+    metadata: &str,
+    autoplay: bool,
+) -> Result<(), CoreError> {
+    if uri.trim().is_empty() {
+        return Err(ProtoError::Malformed("cannot load an empty source URI".into()).into());
+    }
     let host = control::locate(households, coordinator)?.ip;
     let before = read(t, host)?;
+    if !autoplay {
+        // This is not a source-parameter refusal: do not retry the whole
+        // replacement when pausing or its read-back fails.
+        control::pause_confirmed(t, households, coordinator).map_err(unconfirmed)?;
+    }
     let added = match soap::enqueue_uri(t, host, uri, metadata, 0, false) {
         Ok(added) => added,
         Err(error @ ProtoError::SoapFault { .. }) => return Err(error.into()),
@@ -86,6 +118,14 @@ pub(crate) fn play<T: Transport + ?Sized>(
         return Err(unconfirmed(
             "the append did not preserve the original prefix and the reported new range",
         ));
+    }
+    if !autoplay
+        && !matches!(
+            soap::get_transport_info(t, host).map_err(unconfirmed)?.state,
+            TransportState::Paused | TransportState::Stopped
+        )
+    {
+        return Err(unconfirmed("playback resumed while the replacement was staged"));
     }
     if !before.uris.is_empty() {
         if staged.revision == 0 {
@@ -106,6 +146,11 @@ pub(crate) fn play<T: Transport + ?Sized>(
                 |error| error.to_string(),
             )));
         }
+    }
+    if !autoplay {
+        // The new queue is committed. Even a definite source-selection
+        // refusal must not trigger a second append through account recovery.
+        return control::load_queue_from(t, households, coordinator, 1).map_err(unconfirmed);
     }
     match control::play_queue_from(t, households, coordinator, 1) {
         Ok(()) => Ok(()),

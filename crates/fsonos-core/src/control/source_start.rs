@@ -38,12 +38,50 @@ pub(super) fn play<T: Transport + ?Sized>(
     uri: &str,
     metadata: &str,
 ) -> Result<(), ProtoError> {
+    start(transport, host, coordinator, uri, metadata, true)
+}
+
+/// Select the source without Play, and verify both its identity and silence.
+pub(super) fn load<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+    uri: &str,
+    metadata: &str,
+) -> Result<(), ProtoError> {
+    start(transport, host, coordinator, uri, metadata, false)?;
+    let source = Source { uri, metadata };
+    if !confirmed(transport, host, coordinator, &source, Stage::Source)?
+        || !matches!(
+            soap::get_transport_info(transport, host)?.state,
+            TransportState::Paused | TransportState::Stopped
+        )
+        || !source.matches(&soap::get_media_info(transport, host)?)
+    {
+        return Err(ProtoError::Malformed(
+            "the requested source was not confirmed loaded without playback".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn start<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+    uri: &str,
+    metadata: &str,
+    autoplay: bool,
+) -> Result<(), ProtoError> {
     if uri.trim().is_empty() {
         let detail = "cannot start an empty source URI";
         return Err(ProtoError::Malformed(detail.into()));
     }
     let source = Source { uri, metadata };
     for stage in [Stage::Source, Stage::Play] {
+        if matches!(stage, Stage::Play) && !autoplay {
+            continue;
+        }
         let result = match stage {
             Stage::Source => soap::set_av_transport_uri(transport, host, uri, metadata),
             Stage::Play => soap::play(transport, host),
