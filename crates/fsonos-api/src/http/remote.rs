@@ -55,6 +55,8 @@ const CONNECT_SCRIPT: &str = include_str!("../remote/spotify-connect.js");
 const CONNECT_STYLE: &str = include_str!("../remote/spotify-connect.css");
 const EQ_SCRIPT: &str = include_str!("../remote/equalizer.js");
 const EQ_STYLE: &str = include_str!("../remote/equalizer.css");
+const FADES_SCRIPT: &str = include_str!("../remote/fades.js");
+const FADES_STYLE: &str = include_str!("../remote/fades.css");
 const STYLE: &str = include_str!("../remote/remote.css");
 
 /// What the remote's documents may do: load only themselves, talk only to
@@ -87,7 +89,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}"
+                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{FADES_SCRIPT}"
                     ),
                 )
             },
@@ -104,7 +106,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}\n{PLAYBACK_STYLE}\n{EQ_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}\n{PLAYBACK_STYLE}\n{EQ_STYLE}\n{FADES_STYLE}"
                     ),
                 )
             },
@@ -316,6 +318,8 @@ mod tests {
             ("spotify-connect.css", CONNECT_STYLE),
             ("equalizer.js", EQ_SCRIPT),
             ("equalizer.css", EQ_STYLE),
+            ("fades.js", FADES_SCRIPT),
+            ("fades.css", FADES_STYLE),
         ] {
             let lower = text.to_ascii_lowercase();
             for secret in [

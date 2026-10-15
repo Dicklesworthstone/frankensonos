@@ -1,0 +1,12 @@
+.fades > div { display: grid; gap: .8rem; padding-top: .8rem; }
+.fades p { margin: 0; overflow-wrap: anywhere; }
+.fades label { display: grid; gap: .4rem; }
+.fades select { max-width: 100%; min-width: 0; }
+.fades input[type=text] { width: 5rem; max-width: 100%; }
+.fades .fade-level { display: grid; grid-template-columns: auto minmax(4rem, 1fr) 2.5rem; align-items: center; gap: .5rem; }
+.fades .fade-level input { width: 100%; min-width: 0; }
+.fades output { text-align: end; font-variant-numeric: tabular-nums; }
+.fades .fade-help { font-size: .9rem; opacity: .85; }
+.fades .fade-review { display: grid; gap: .8rem; border: 1px solid currentColor; border-radius: .5rem; padding: .8rem; }
+.fades .fade-review h3 { margin: 0; }
+.fades .row { display: flex; flex-wrap: wrap; gap: .5rem; }
