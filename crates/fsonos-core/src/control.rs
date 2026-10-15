@@ -16,7 +16,7 @@ use fsonos_proto::didl::{
     spotify_track_didl, spotify_track_uri,
 };
 use fsonos_proto::topology::get_zone_group_state;
-use fsonos_types::{Player, PlayerId, TransportState};
+use fsonos_types::{Player, PlayerId};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
@@ -26,6 +26,7 @@ mod queue_start;
 mod seek_relative;
 mod source_start;
 mod spotify_source;
+mod transport_state;
 
 pub use loading::{
     load_queue_from, load_queue_from_in_order, load_spotify_container, load_spotify_track,
@@ -57,13 +58,18 @@ fn addr(households: &[HouseholdState], id: &PlayerId) -> Result<IpAddr, CoreErro
     locate(households, id).map(|p| p.ip)
 }
 
-/// Resume (or start) playback on the group `coordinator` leads.
+/// Resume (or start) playback on the group `coordinator` leads. A lost
+/// acknowledgement is confirmed by read-back, not another Play.
 pub fn resume<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    Ok(soap::play(t, addr(households, coordinator)?)?)
+    Ok(transport_state::play(
+        t,
+        addr(households, coordinator)?,
+        coordinator,
+    )?)
 }
 
 /// Pause the group `coordinator` leads (see [`pause_at`]).
@@ -80,16 +86,10 @@ pub fn pause<T: Transport + ?Sized>(
 /// is a stream that cannot pause, so a refusal is read back: a group already
 /// paused or stopped stays as it is (a set's pause goes on to the next
 /// group), and one still playing is stopped, as a stream resumes live anyway.
+/// Lost or malformed replies are observed rather than replayed or treated as
+/// a 701 refusal. A confirmed inactive state satisfies the pause request.
 pub fn pause_at<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<(), CoreError> {
-    let refused = match soap::pause(t, host) {
-        Err(e @ ProtoError::SoapFault { code: 701, .. }) => e,
-        done => return Ok(done?),
-    };
-    match soap::get_transport_info(t, host).map(|info| info.state) {
-        Ok(TransportState::Paused | TransportState::Stopped) => Ok(()),
-        Ok(TransportState::Playing | TransportState::Transitioning) => Ok(soap::stop(t, host)?),
-        _ => Err(refused.into()),
-    }
+    Ok(transport_state::pause(t, host)?)
 }
 
 pub fn stop<T: Transport + ?Sized>(
@@ -97,7 +97,7 @@ pub fn stop<T: Transport + ?Sized>(
     households: &[HouseholdState],
     coordinator: &PlayerId,
 ) -> Result<(), CoreError> {
-    Ok(soap::stop(t, addr(households, coordinator)?)?)
+    Ok(transport_state::stop(t, addr(households, coordinator)?)?)
 }
 
 pub fn next<T: Transport + ?Sized>(

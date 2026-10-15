@@ -38,3 +38,34 @@ cargo test --locked -p fsonos-core --test relative_seek_recovery_sim
 The simulator cases use real S1/S2 loopback sockets, discarding a reply only
 after the simulated renderer accepts it. They are separate from physical-Sonos
 acceptance. Rust execution was unavailable in the editing environment.
+
+## Pause, resume and stop
+
+Ordinary native playback controls now use read-back recovery too, not just
+source starts. An acknowledged control keeps its existing single-write path.
+After a network failure or malformed acknowledgement, Pause can confirm paused
+or stopped playback, and Stop requires stopped playback. Resume uses the shared
+bounded source-start transition wait and checks coordinator ownership around
+the playing-state observation. No control write is repeated by these helpers.
+
+A definite Pause/701 still preserves already-inactive playback or stops an
+active unpausable stream. A lost Pause reply is not treated as a 701: it cannot
+escalate into Stop. An uncertain Stop in the definite-701 fallback can itself
+be confirmed by a stopped-state read. Other explicit SOAP faults are returned
+unchanged; failed observations keep the original write error.
+
+These are desired-state observations, not proof that no other controller acted
+or that a particular source is still selected. Existing outer coordinator and
+address recovery rules remain in force when a result cannot be established.
+Next and Previous are not state-setting operations and gain no retry or inferred
+success behavior. Existing policy, logging and source-loading checks remain
+shared with the callers; no new endpoint or background polling is added.
+
+```sh
+cargo test --locked -p fsonos-core --lib control::transport_state
+cargo test --locked -p fsonos-core --test transport_state_recovery_sim --test control_sim
+```
+
+The new simulator cases cover normal and malformed lost acknowledgements for
+all three controls on both generations. They were authored but not executed
+locally; the full Rust and physical-speaker validation gates remain separate.
