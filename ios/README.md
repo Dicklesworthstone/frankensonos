@@ -9,10 +9,23 @@ iPhone ── HTTP + SSE ────────────▶ fsonos serve �
 iPhone ── Spotify PKCE consent ──▶ POST /auth/spotify/exchange (the daemon keeps the tokens)
 ```
 
-The tabs are Rooms, Music (search all of Spotify, your library, browse), Now
-Playing, and Settings. Paste a Spotify link to play it. Siri and Shortcuts
-get pause, resume, and favorites. The room checkboxes add speakers to and
-remove them from the selected group.
+The tabs are Music (your Spotify library, the classical DJ, paste a link to
+play it), Rooms, Search (all of Spotify), and Settings. Now Playing is the
+full-screen player. Siri and Shortcuts get pause, resume, and favorites. The
+room checkboxes add speakers to and remove them from the selected group.
+
+Screenshots use the app's mock data (`-mock`), not a real house.
+
+| Rooms | Group rooms | Now Playing |
+|---|---|---|
+| ![Rooms](docs/screenshots/rooms.png) | ![Group rooms](docs/screenshots/group-rooms.png) | ![Now Playing](docs/screenshots/now-playing.png) |
+
+| Music | Search |
+|---|---|
+| ![Music](docs/screenshots/music.png) | ![Search](docs/screenshots/search.png) |
+
+Regenerate them with `swift run --disable-sandbox SketchShots <output dir>`
+from `ios/`.
 
 The daemon routes the app calls are listed in
 [docs/DEPLOY.md](../docs/DEPLOY.md), under "The iPhone app".

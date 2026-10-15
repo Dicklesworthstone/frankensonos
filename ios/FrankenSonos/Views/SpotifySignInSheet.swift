@@ -1,4 +1,5 @@
 import AuthenticationServices
+#if canImport(UIKit)
 import UIKit
 
 /// Shows Spotify's consent page in the system sign-in sheet and returns the `frankensonos://` redirect it ends on.
@@ -30,3 +31,10 @@ final class SpotifySignInSheet: NSObject, ASWebAuthenticationPresentationContext
         }
     }
 }
+#else
+/// The screenshot renderer builds these views on macOS, where there is no sign-in sheet to show.
+@MainActor
+final class SpotifySignInSheet {
+    func callAsFunction(_ url: URL) async throws -> URL { throw URLError(.unsupportedURL) }
+}
+#endif
