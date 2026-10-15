@@ -94,6 +94,10 @@ pub enum CoreError {
              the player still refuses the render with UPnP 800"
     )]
     RenderParamsStale,
+    /// Undo refused: the action is too old to put back without overwriting
+    /// what happened since.
+    #[error("{0}")]
+    NotUndoable(String),
 }
 
 fn list(items: &[String]) -> String {

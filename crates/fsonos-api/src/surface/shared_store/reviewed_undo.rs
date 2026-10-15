@@ -7,7 +7,6 @@ use crate::log::{ActionDto, UndoDto};
 use fsonos_core::actions::{self, CheckedUndoError};
 use fsonos_core::policy::Client;
 use fsonos_core::snapshot::RestoreOp;
-use fsonos_core::store::Store;
 use std::sync::PoisonError;
 
 impl Surface {
@@ -21,9 +20,8 @@ impl Surface {
             .ok_or_else(|| Failure::new(ErrorCode::NotImplemented, "undo needs the action log"))?;
         // Do not preview a target while another undo is still consuming it.
         let _undoing = log.undoing.lock().unwrap_or_else(PoisonError::into_inner);
-        let selected = SharedStore(&log.store)
-            .last_undoable_action(Some(client.key()))
-            .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))?;
+        // The same selection, and the same refusals, the checked undo makes.
+        let selected = actions::undo_target(&SharedStore(&log.store), Some(client), self.now())?;
         Ok(selected.as_ref().map(ActionDto::from))
     }
 
@@ -96,7 +94,7 @@ mod tests {
     use crate::surface::ActionLog;
     use fsonos_core::clock::FakeClock;
     use fsonos_core::policy::Policy;
-    use fsonos_core::store::{Action, ActionFilter, MemStore};
+    use fsonos_core::store::{Action, ActionFilter, MemStore, Store};
     use fsonos_proto::{ProtoError, Transport};
     use std::sync::{Arc, Barrier, Mutex, RwLock};
 

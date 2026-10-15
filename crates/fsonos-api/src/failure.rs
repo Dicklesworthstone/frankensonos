@@ -508,6 +508,7 @@ impl From<CoreError> for Failure {
             CoreError::Store(_) => Self::new(ErrorCode::Internal, "internal error"),
             CoreError::NoSpotifyFavorite => Self::new(ErrorCode::RenderParamsMissing, detail),
             CoreError::RenderParamsStale => Self::new(ErrorCode::RenderParamsStale, detail),
+            CoreError::NotUndoable(_) => Self::new(ErrorCode::InvalidArgument, detail),
         }
     }
 }

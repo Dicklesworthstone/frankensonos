@@ -191,6 +191,39 @@ pub fn record<S: Store + ?Sized>(store: &mut S, action: &Action) -> Result<i64, 
     Ok(id)
 }
 
+/// How old an action may be and still be undone. Past this the house has
+/// moved on: restoring what it was then would overwrite what people (the
+/// Sonos app, other agents) did since.
+pub const UNDO_MAX_AGE_SECS: i64 = 60 * 60;
+
+/// The action [`undo_last_vetted`] would put back for `only` (or anyone) at
+/// `at`, or `None` when there is nothing to undo; refused
+/// ([`CoreError::NotUndoable`]) when it is older than [`UNDO_MAX_AGE_SECS`].
+pub fn undo_target<S: Store + ?Sized>(
+    store: &S,
+    only: Option<&Client>,
+    at: i64,
+) -> Result<Option<LoggedAction>, CoreError> {
+    let Some(target) = store
+        .last_undoable_action(only.map(Client::key))
+        .map_err(|e| store_err(&e))?
+    else {
+        return Ok(None);
+    };
+    let age = at.saturating_sub(target.action.at);
+    if age > UNDO_MAX_AGE_SECS {
+        return Err(CoreError::NotUndoable(format!(
+            "#{} ({}) was {} minutes ago; undo goes back at most {} minutes, so the speakers \
+             stay as they are now",
+            target.id,
+            target.action.intent,
+            age / 60,
+            UNDO_MAX_AGE_SECS / 60
+        )));
+    }
+    Ok(Some(target))
+}
+
 /// What [`undo_last`] did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UndoReport {
@@ -240,8 +273,10 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
 /// it changed, log the undo, and report. `Ok(None)` when there is nothing to
 /// undo.
 ///
-/// The zones go back to exactly the state captured before that action, even
-/// if later actions changed them since; undoing again steps further back.
+/// The zones go back to exactly the state captured before that action;
+/// undoing again steps further back. An action older than
+/// [`UNDO_MAX_AGE_SECS`] is refused instead ([`CoreError::NotUndoable`], see
+/// [`undo_target`]): the house has moved on since.
 /// Each zone step passes through `vet` first ([`snapshot::restore_vetted`]).
 #[allow(clippy::too_many_arguments)] // undo_last's arguments, and the vet
 pub fn undo_last_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
@@ -254,10 +289,7 @@ pub fn undo_last_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     at: i64,
     vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> Result<Option<UndoReport>, CoreError> {
-    let Some(target) = store
-        .last_undoable_action(only.map(Client::key))
-        .map_err(|e| store_err(&e))?
-    else {
+    let Some(target) = undo_target(store, only, at)? else {
         return Ok(None);
     };
     restore_target_vetted(t, households, store, target, by, surface, at, vet).map(Some)
@@ -290,9 +322,7 @@ pub fn undo_last_vetted_checked<T: Transport + ?Sized, S: Store + ?Sized>(
     expected: i64,
     vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> Result<UndoReport, CheckedUndoError> {
-    let target = store
-        .last_undoable_action(only.map(Client::key))
-        .map_err(|e| store_err(&e))?;
+    let target = undo_target(store, only, at)?;
     let actual = target.as_ref().map(|row| row.id);
     let Some(target) = target.filter(|row| row.id == expected) else {
         return Err(CheckedUndoError::TargetChanged { expected, actual });
@@ -571,9 +601,41 @@ mod tests {
         }
         let mut store = MemStore::default();
         // A denial has no before-state: nothing to undo.
-        record(&mut store, &action(1, None)).unwrap();
+        let denied = Action {
+            decision: "deny: the agent may not set volumes".into(),
+            ..action(1, None)
+        };
+        record(&mut store, &denied).unwrap();
         let done = undo_last(&NoLan, &[], &mut store, None, &Client::Cli, "cli", 2).unwrap();
         assert_eq!(done, None);
+    }
+
+    /// Fails every call: the refusals below must come before any speaker is
+    /// touched.
+    struct Unreached;
+    impl Transport for Unreached {
+        fn soap_post(
+            &self,
+            _: std::net::IpAddr,
+            _: &str,
+            _: &str,
+            _: &str,
+        ) -> Result<String, fsonos_proto::ProtoError> {
+            panic!("undo touched a speaker before refusing")
+        }
+    }
+
+    #[test]
+    fn an_action_older_than_the_limit_is_not_undone() {
+        let mut store = MemStore::default();
+        record(&mut store, &action(100, before_state(&[snap("RINCON_A")]))).unwrap();
+        let late = 100 + UNDO_MAX_AGE_SECS + 1;
+        let err =
+            undo_last(&Unreached, &[], &mut store, None, &Client::Cli, "cli", late).unwrap_err();
+        assert!(
+            matches!(&err, CoreError::NotUndoable(why) if why.contains("60 minutes")),
+            "{err}"
+        );
     }
 
     #[test]
