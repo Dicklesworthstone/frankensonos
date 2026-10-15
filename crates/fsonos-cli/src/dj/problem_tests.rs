@@ -98,3 +98,36 @@ fn a_top_up_that_fails_says_why_in_the_status_until_a_command() {
     let status = dj.status(at, &store, Some(2), &clock).unwrap();
     assert_eq!((status.running, status.problem), (false, None));
 }
+
+#[test]
+fn a_start_with_nothing_to_play_leaves_no_feed_behind() {
+    let sim = SimHousehold::builder()
+        .s2([SimPlayerSpec::new("Den", SimModel::One)])
+        .spawn()
+        .unwrap();
+    let lan = sim.lan();
+    let den = PlayerId(sim.player("Den").unwrap().uuid.clone());
+    let host = sim.player("Den").unwrap().ip;
+    let mut house = HouseholdState::default();
+    house.apply_topology(&get_zone_group_state(&lan, host).unwrap());
+    let households = vec![house];
+    let at = DjSpeakers {
+        transport: &lan,
+        households: &households,
+        coordinator: &den,
+    };
+    let (mut store, clock) = (MemStore::default(), SystemClock);
+    // No library yet: the start fails before anything is queued.
+    let dj = SpotifyDj::new(None);
+    let failed = dj.act(at, &mut store, DjAction::Start, &clock).unwrap_err();
+    assert_eq!(failed.code, fsonos_api::ErrorCode::SpotifyAuthRequired);
+    assert!(dj.state().feeds.is_empty(), "no feed is left to retry");
+    // Later playback in the room is the owner's, not the DJ's to top up.
+    let mut playback = PlayerPlayback::default();
+    playback.transport = Some(TransportState::Playing);
+    playback.queue_position = Some(1);
+    playback.queue_length = Some(1);
+    dj.on_playback(at, &mut store, &playback, &clock);
+    let status = dj.status(at, &store, Some(1), &clock).unwrap();
+    assert_eq!((status.running, status.problem), (false, None));
+}

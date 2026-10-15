@@ -335,12 +335,30 @@ impl QueueFeed {
 
     /// Start (or, after a failure, resume starting): queue the first work and
     /// `lookahead` more, and play from the first. Returns the queued works.
+    /// A start that fails with none of its works on the queue lets go: it
+    /// owns nothing there, and running on would fill the queue on some later
+    /// playback event, days after the owner saw the start fail.
     pub fn start<T: Transport + ?Sized, S: Store + ?Sized>(
         &mut self,
         at: &Speakers<'_, T>,
         plan: Planning<'_>,
         store: &mut S,
     ) -> Result<&[QueuedWork], FeedError> {
+        if let Err(e) = self.begin(at, plan, store) {
+            if self.queued.is_empty() && self.played.is_empty() {
+                self.release();
+            }
+            return Err(e);
+        }
+        Ok(&self.queued)
+    }
+
+    fn begin<T: Transport + ?Sized, S: Store + ?Sized>(
+        &mut self,
+        at: &Speakers<'_, T>,
+        plan: Planning<'_>,
+        store: &mut S,
+    ) -> Result<(), FeedError> {
         if self.active {
             // Resuming: the queue may have changed since.
             self.resync(at)?;
@@ -359,7 +377,7 @@ impl QueueFeed {
         mode::start(at, first)?;
         self.playing = Some(first);
         self.jumped = true;
-        Ok(&self.queued)
+        Ok(())
     }
 
     /// Fold in the coordinator's latest playback state (after a GENA event).
@@ -2445,6 +2463,10 @@ mod tests {
             .start(&rig.speakers(&lan), plan(&empty, MIDNIGHT), &mut store)
             .unwrap_err();
         assert!(matches!(err, FeedError::EmptyPool), "{err}");
+        assert!(
+            !feed.is_active() && feed.snapshot().is_none(),
+            "a start that queued nothing lets go"
+        );
 
         // A household that never had a Spotify favorite to learn from.
         let bare = Flaky {
@@ -2461,6 +2483,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, FeedError::NoRenderParams), "{err}");
         assert!(err.to_string().contains("Sonos favorites"));
+        assert!(!feed.is_active());
         assert_eq!(rig.queue().len(), queue_len, "dead ends queue nothing");
 
         // Once learned, the store's cached render parameters keep the DJ

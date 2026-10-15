@@ -42,8 +42,20 @@ pub(super) fn load(path: &Path, seed: u64) -> (HashMap<PlayerId, QueueFeed>, Tra
     };
     match serde_json::from_str::<Saved>(&text) {
         Ok(saved) => {
-            let feeds = saved
+            // A feed with none of its works on the queue owns nothing there
+            // (a start that failed, saved before such a feed let go): taken
+            // up, it would fill the queue whenever a pick became possible.
+            let (feeds, empty): (Vec<_>, Vec<_>) = saved
                 .feeds
+                .into_iter()
+                .partition(|f| !(f.queued.is_empty() && f.played.is_empty()));
+            if !empty.is_empty() {
+                tracing::info!(
+                    feeds = empty.len(),
+                    "the DJ lets go of saved feeds with nothing on the queue"
+                );
+            }
+            let feeds = feeds
                 .into_iter()
                 .zip(std::iter::successors(Some(seed), |s| {
                     Some(s.wrapping_add(1))
@@ -265,6 +277,27 @@ mod tests {
         assert_eq!(old[&id].snapshot(), Some(snapshot(&id.0)));
         assert!(unknown.snapshot(&old).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_saved_feed_with_nothing_on_the_queue_is_not_taken_up() {
+        let dir = scratch("empty");
+        let path = dir.join(FEEDS_FILE);
+        let kitchen = "RINCON_000000000000021400";
+        let office = "RINCON_000000000000011400";
+        // As found on a real Mac: a start that queued nothing, saved days
+        // earlier, before such a feed let go of the queue.
+        let empty = FeedSnapshot {
+            queued: Vec::new(),
+            recorded: None,
+            ..snapshot(kitchen)
+        };
+        let text = serde_json::json!({"feeds": [empty, snapshot(office)]});
+        write(&path, &text.to_string()).unwrap();
+        let (feeds, tracker) = load(&path, 1);
+        assert_eq!(feeds.keys().collect::<Vec<_>>(), [&PlayerId(office.into())]);
+        assert!(!encode(&feeds, &tracker).contains(kitchen));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn scratch(label: &str) -> std::path::PathBuf {

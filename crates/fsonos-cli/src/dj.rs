@@ -507,9 +507,18 @@ impl SpotifyDj {
                 let feed = feeds.entry(at.coordinator.clone()).or_insert_with(|| {
                     QueueFeed::new(at.coordinator, DjConfig::default(), now.unsigned_abs())
                 });
-                let queued = feed
-                    .start(&speakers, plan(pool, feedback.as_ref(), &cx), store)
-                    .map_err(failure)?;
+                let queued = match feed.start(&speakers, plan(pool, feedback.as_ref(), &cx), store)
+                {
+                    Ok(queued) => queued,
+                    Err(e) => {
+                        // A start that queued nothing let go: no feed is
+                        // left to retry (and save) until a pick is possible.
+                        if !feed.is_active() {
+                            feeds.remove(at.coordinator);
+                        }
+                        return Err(failure(e));
+                    }
+                };
                 let next = queued
                     .get(1)
                     .map_or_else(String::new, |w| format!("; then {}", describe(w)));
