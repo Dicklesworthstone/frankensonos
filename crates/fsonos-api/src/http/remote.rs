@@ -18,6 +18,7 @@ use fastapi::{JsonSchema, Request, Response, ResponseBody, StatusCode, fastapi_o
 use super::{Ctx, Op, query_param};
 use crate::failure::{ErrorCode, Failure};
 
+mod dashboard;
 mod undo;
 
 const REMOTE: &str = "remote";
@@ -151,6 +152,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         .response_schema::<String>(200, "The image, as the player serves it (image/*)"),
     ];
     routes.extend(undo::routes(cx));
+    routes.extend(dashboard::routes(cx));
     routes
 }
 

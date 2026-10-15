@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#151412">
+  <title>Listening Room · FrankenSonos</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script defer src="/dashboard.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to listening room</a>
+  <svg class="symbols" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m9 5 11 7-11 7Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5h3v14H8zm7 0h3v14h-3z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24"><path d="m5 5 10 7-10 7Zm12 0h2v14h-2z"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24"><path d="m19 5-10 7 10 7ZM5 5h2v14H5z"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M3 10v4m4-8v12m5-16v20m5-16v12m4-8v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-house" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10H3Zm6 10v-7h6v7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m10 5-7 7 7 7M3 12h18" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M3 6h18M3 12h18M3 18h18" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 3v6m10 0v6M9 15v6" stroke="currentColor" stroke-width="3"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7a9 9 0 1 0 1 9M20 2v6h-6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="15" r="3" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="6" r="1"/></symbol>
+  </svg>
+  <aside class="sidebar" aria-label="Dashboard navigation">
+    <a class="brand" href="/dashboard" aria-label="FrankenSonos dashboard"><span class="brand-mark"><svg><use href="#i-wave"/></svg></span><span>franken<span class="brand-light">sonos</span></span></a>
+    <p class="nav-label">YOUR SOUND, EVERYWHERE</p>
+    <nav>
+      <a class="nav-item active" href="#main" aria-current="page"><svg><use href="#i-wave"/></svg>Listening room</a>
+      <a class="nav-item" href="#room-section"><svg><use href="#i-house"/></svg>Your rooms <span id="nav-count" class="count">—</span></a>
+      <button class="nav-item" id="nav-immerse"><svg><use href="#i-expand"/></svg>Visualize</button>
+      <a class="nav-item" href="/"><svg><use href="#i-sliders"/></svg>Full remote <span class="arrow">↗</span></a>
+    </nav>
+    <div class="sidebar-note"><span class="small-orbit" aria-hidden="true"></span><p>A little less noise.<br>A lot more music.</p></div>
+    <div class="local-stamp"><span class="status-dot"></span>YOUR NETWORK. YOUR MUSIC.</div>
+  </aside>
+  <main id="main" class="main" tabindex="-1">
+    <header class="topbar">
+      <div><p class="eyebrow">FRANKENSONOS / HOME AUDIO</p><h1>Listening room<span class="orange">.</span></h1></div>
+      <div class="top-actions"><span id="connection" class="connection" role="status">Connecting…</span><button id="refresh" class="icon-button" title="Refresh playback" aria-label="Refresh playback"><svg><use href="#i-refresh"/></svg></button></div>
+    </header>
+    <div id="demo-banner" class="notice demo-notice" hidden><strong>Design preview</strong><span>Synthetic music and rooms. No speakers are contacted and playback controls are disabled.</span><a href="/dashboard">Connect to daemon ↗</a></div>
+    <div id="error" class="notice error" role="alert" hidden></div>
+    <div id="summary" class="summary" aria-label="Household summary"><span>Waiting for your house…</span></div>
+    <div class="workspace">
+      <section id="stage" class="stage" aria-label="Now playing and visualizer" data-palette="ember">
+        <canvas id="visualizer" aria-hidden="true"></canvas>
+        <div class="stage-shade"></div>
+        <header class="stage-top"><span class="live-label"><span class="status-dot"></span><span id="stage-status">WAITING FOR PLAYBACK</span></span><button id="exit-immerse" class="soft-button" hidden><svg><use href="#i-back"/></svg>Back to dashboard</button><button id="immerse" class="soft-button"><svg><use href="#i-expand"/></svg>Immersive</button></header>
+        <div class="listening-art" aria-hidden="true"><div class="record-halo"></div><div class="record-cover" id="cover"><div class="cover-graphic"></div><span class="cover-edition">F / S &nbsp; — &nbsp; LISTENING SERIES</span><span class="cover-word">A room<br>for sound.</span><span class="cover-footer">SELECTED WITH INTENTION · 001</span><img id="art" alt="" hidden></div></div>
+        <div class="track-info"><p id="target" class="eyebrow">CHOOSE YOUR ROOM</p><h2 id="track-title">Make room for music.</h2><p id="track-by" class="track-by">Your speakers. Your soundtrack.</p></div>
+        <div class="player">
+          <div class="timeline"><span id="elapsed">—:—</span><progress id="progress" value="0" max="1" aria-label="Estimated track position"></progress><span id="duration">—:—</span></div>
+          <div class="transport-row"><span id="source-label" class="source-label">NOT CONNECTED</span><div class="transport"><button class="icon-button" id="previous" aria-label="Previous track" disabled><svg><use href="#i-prev"/></svg></button><button class="play-button" id="play" aria-label="Play selected group" disabled><svg id="play-icon"><use href="#i-play"/></svg></button><button class="icon-button" id="next" aria-label="Next track" disabled><svg><use href="#i-next"/></svg></button></div><div class="group-volume"><button id="volume-down" aria-label="Lower selected group volume by five" disabled>−</button><span id="group-volume" title="Group volume">—</span><button id="volume-up" aria-label="Raise selected group volume by five" disabled>+</button></div></div>
+        </div>
+        <p id="stage-outcome" class="stage-outcome" role="status" aria-live="polite"></p>
+        <div class="audio-controls"><button id="microphone" class="soft-button" aria-pressed="false">Use microphone</button><span id="audio-status" role="status">Optional: react to this device’s microphone. Local analysis only; never recorded or uploaded.</span></div>
+        <footer class="visual-toolbar"><div class="mode-tabs" role="group" aria-label="Visualization style"><button data-mode="aurora" aria-pressed="true">Aurora</button><button data-mode="orbit" aria-pressed="false">Orbit</button><button data-mode="contour" aria-pressed="false">Contour</button></div><button id="motion" class="motion-button" aria-pressed="false">Pause motion</button><span id="visual-source">AMBIENT · NOT AUDIO ANALYSIS</span></footer>
+      </section>
+      <section class="rooms-panel panel" id="room-section" aria-labelledby="rooms-title"><header class="panel-heading"><div><p class="eyebrow">FOLLOW THE MUSIC</p><h2 id="rooms-title">Your rooms</h2></div><svg><use href="#i-speaker"/></svg></header><div id="rooms" class="rooms"><p class="empty">Looking for speakers on your network…</p></div><a class="panel-link" href="/">Grouping &amp; speaker settings <span>↗</span></a></section>
+    </div>
+    <p id="outcome" class="outcome" role="status" aria-live="polite"></p>
+    <div class="detail-grid">
+      <section class="panel topology-panel" aria-labelledby="topology-title"><header class="panel-heading"><div><p class="eyebrow">ONE HOUSE. IN HARMONY.</p><h2 id="topology-title">The sound map</h2></div><span class="quiet-tag">LIVE TOPOLOGY</span></header><div id="topology" class="topology"><p class="empty">Groups will appear when discovery completes.</p></div></section>
+      <section class="panel dj-panel" aria-labelledby="dj-title"><header class="panel-heading"><div><p class="eyebrow">A PERSONAL TOUCH</p><h2 id="dj-title">Behind the selection</h2></div><span class="dj-star" aria-hidden="true">✳</span></header><div id="dj"><p class="empty">Select a room to see what your DJ has in mind.</p></div><a class="panel-link" href="/">DJ moods, steering &amp; library <span>↗</span></a></section>
+    </div>
+    <section class="history-section" aria-labelledby="history-title"><header class="panel-heading"><div><p class="eyebrow">THE HOUSE'S RECENT SOUNDTRACK</p><h2 id="history-title">Recently heard</h2></div><button id="history-refresh" class="text-button">Refresh history ↻</button></header><div id="history" class="history-grid"><p class="empty">Listening history will appear here.</p></div></section>
+    <footer class="page-footer"><span>Built for listening, not for looking at your phone.</span><a href="/">All controls in the full remote ↗</a></footer>
+  </main>
+  <noscript><p class="notice">JavaScript is required for the live dashboard. The command-line interface remains available.</p></noscript>
+</body>
+</html>
