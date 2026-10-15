@@ -241,29 +241,37 @@ test('read requests have a deadline and an aborted fetch releases recovery', asy
     }); },
   };
   const call = vm.runInNewContext(source.replace(/\nstart\(\);\s*$/, '') + '\ncall;', ctx);
-  const result = call('zones'); const rejected = assert.rejects(result, /read aborted/);
+  const result = call('zones');
+  const rejected = assert.rejects(result, (error) => error.code === 'REMOTE_READ_TIMEOUT' && !error.uncertain);
   assert.equal(request.signal.aborted, false); await time.tick(15000); await rejected;
   assert.equal(request.signal.aborted, true); assert.equal(time.pending, 0);
 });
 
 test('read deadlines are removed after response parsing, including failures', async () => {
   for (const ok of [true, false]) {
-    const time = clock();
+    const time = clock(); let reads = 0;
     const call = vm.runInNewContext(source.replace(/\nstart\(\);\s*$/, '') + '\ncall;', {
       AbortController, URLSearchParams, setTimeout: time.schedule, clearTimeout: time.cancel,
-      fetch: async () => ({ ok, status: 503, text: async () => '[]' }),
+      fetch: async () => { reads++; return { ok, status: ok ? 200 : 503, text: async () => '[]' }; },
     });
-    if (ok) await call('zones'); else await assert.rejects(call('zones'));
+    if (ok) await call('zones');
+    else {
+      const rejected = assert.rejects(call('zones'), (error) => error.status === 503);
+      await settle(); await time.tick(2000); await rejected;
+    }
+    assert.equal(reads, ok ? 1 : 3);
     assert.equal(time.pending, 0);
   }
 });
 
-test('write requests have no read deadline and are dispatched exactly once', async () => {
+test('write failures release their separate deadline without replay or a false cancellation', async () => {
   const time = clock(); let writes = 0, request;
   const call = vm.runInNewContext(source.replace(/\nstart\(\);\s*$/, '') + '\ncall;', {
     AbortController, URLSearchParams, setTimeout: time.schedule, clearTimeout: time.cancel,
     fetch: async (_, init) => { writes++; request = init; throw new Error('reply lost'); },
   });
-  await assert.rejects(call('pause', { body: { zone: 'Den@S2' } }), /reply lost/);
-  assert.equal(writes, 1); assert.equal(request.signal, undefined); assert.equal(time.pending, 0);
+  await assert.rejects(call('pause', { body: { zone: 'Den@S2' } }),
+    (error) => error.code === 'REMOTE_OUTCOME_UNKNOWN' && error.uncertain && error.cause.message === 'reply lost');
+  assert.equal(writes, 1); assert.equal(request.signal.aborted, false); assert.equal(time.pending, 0);
+  await time.tick(120000); assert.equal(writes, 1); assert.equal(request.signal.aborted, false);
 });
