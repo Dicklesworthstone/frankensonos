@@ -5,6 +5,7 @@
 //! - GENA subscriptions renewed on time;
 //! - every NOTIFY folded into the household model and the playback state;
 //! - a rebooted player resubscribed at once;
+//! - read-only surveys while the callback listener is unavailable;
 //! - each player's health.
 //!
 //! Callers read snapshots ([`Live::households`], [`Live::player`],
@@ -40,6 +41,9 @@ mod delivery;
 mod observation;
 mod progress;
 mod pump;
+
+#[cfg(test)]
+mod eventless_tests;
 
 /// How [`Live`] runs.
 #[derive(Clone)]
@@ -107,7 +111,8 @@ pub struct Snapshot {
     pub subscriptions: usize,
     /// When a survey last succeeded.
     pub surveyed_at: Option<Instant>,
-    /// Why the last survey (or the event listener) failed, until one works.
+    /// Why the last survey or event listener failed. A successful read-only
+    /// survey retains a listener failure until callbacks can be served again.
     pub last_error: Option<String>,
     /// Where players send events, once listening (`http://host:port`);
     /// also the base of clip URLs when [`LiveConfig::media`] is set.
@@ -348,6 +353,10 @@ fn answering(found: &Discovered) -> Result<IpAddr, String> {
 /// The longest the loop waits for a NOTIFY before looking at its schedule.
 const TICK: Duration = Duration::from_millis(200);
 
+/// Successful read-only fallback surveys retry the local listener within
+/// this interval. Failed discovery retains its ordinary exponential backoff.
+const EVENTLESS_RETRY: Duration = Duration::from_secs(30);
+
 /// A wall-clock gap this much longer than the monotonic one means the host
 /// slept.
 const SLEEP_GAP: Duration = Duration::from_secs(60);
@@ -509,8 +518,12 @@ impl Engine {
         m.rec.schedule.due_now(Instant::now());
     }
 
-    /// Survey, opening the event listener first if there is none yet.
+    /// Survey even when the callback listener cannot open. GENA is the
+    /// normal update path, not a prerequisite for discovering reachable rooms.
     fn survey(&self, m: &mut Model, now: Instant) -> Vec<LiveEvent> {
+        if self.stop.load(Ordering::Acquire) {
+            return Vec::new();
+        }
         // This host's address toward the players can change (a new DHCP
         // lease, a VPN). Renewals would keep succeeding while every NOTIFY
         // went to the old address, so listen again where they can reach us.
@@ -531,29 +544,36 @@ impl Engine {
             );
             self.relisten(m, &why);
         }
-        if m.sink.is_none() {
+        let listener_error = if m.sink.is_none() {
             match self.open_sink(&m.rec.households) {
                 Ok(s) => {
                     tracing::info!(callback = %s.callback_url(""), "listening for player events");
                     m.sink = Some(s);
+                    None
                 }
-                Err(e) => {
-                    let retry = m.rec.schedule.failed(now);
-                    tracing::warn!(error = %e, retry_in_s = retry.as_secs(), "cannot listen for events yet");
-                    m.last_error = Some(e);
-                    return Vec::new();
+                Err(error) => {
+                    tracing::warn!(%error, "cannot listen for events; surveying without callbacks");
+                    Some(error)
                 }
             }
-        }
-        let Some(s) = &m.sink else {
-            return Vec::new();
+        } else {
+            None
         };
-        let callback = |service: Service| s.callback_url(service.tag());
+        if self.stop.load(Ordering::Acquire) {
+            return Vec::new();
+        }
         // Known households are probed selectively by the reconciler. Only
         // explicit seeds and as-yet-unresolved startup hints are unconditional.
         bootstrap::observed(&mut m.remembered, &m.rec.households);
         let seeds = bootstrap::seeds(&self.config.seeds, &m.remembered);
-        match m.rec.refresh(&self.via(), &seeds, callback, now) {
+        let surveyed = match &m.sink {
+            Some(s) => {
+                let callback = |service: Service| s.callback_url(service.tag());
+                m.rec.refresh(&self.via(), &seeds, callback, now)
+            }
+            None => m.rec.refresh_inventory(&self.via(), &seeds, now),
+        };
+        match surveyed {
             Ok(report) => {
                 bootstrap::observed(&mut m.remembered, &m.rec.households);
                 for gone in &report.missing {
@@ -564,11 +584,21 @@ impl Engine {
                 }
                 let events = observation::survey(self, m);
                 m.surveyed_at = Some(now);
-                m.last_error = None;
+                m.last_error = listener_error;
+                if m.sink.is_none() {
+                    // Count the cooldown from completion: a slow read must
+                    // not make the fallback loop immediately overdue again.
+                    let completed = Instant::now();
+                    m.rec.schedule.succeeded(completed);
+                    m.rec.schedule.retry_within(completed, EVENTLESS_RETRY);
+                }
                 events
             }
-            Err(e) => {
-                m.last_error = Some(e.to_string());
+            Err(error) => {
+                m.last_error = Some(match listener_error {
+                    Some(listener) => format!("{listener}; survey failed: {error}"),
+                    None => error.to_string(),
+                });
                 Vec::new()
             }
         }

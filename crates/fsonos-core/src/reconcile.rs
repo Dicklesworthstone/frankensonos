@@ -290,6 +290,27 @@ impl Reconciler {
         callback_url: impl Fn(Service) -> String,
         now: Instant,
     ) -> Result<RefreshReport, CoreError> {
+        let mut report = self.refresh_inventory(lan, seeds, now)?;
+        let forgotten = report.events.dropped;
+        report.events =
+            self.subscriptions
+                .sync(lan, &events::wanted(&self.households), callback_url, now);
+        report.events.dropped += forgotten;
+        self.health.record(&report.events, now);
+        Ok(report)
+    }
+
+    /// Refresh inventory and health without attempting GENA subscriptions.
+    /// Used when the daemon cannot open its local callback listener: that
+    /// local failure is not evidence that the speakers are unreachable.
+    /// Reboots and disappearances still invalidate old subscription state.
+    /// The same discovery hints, reconciliation and backoff serve both modes.
+    pub(crate) fn refresh_inventory<L: Transport + ?Sized>(
+        &mut self,
+        lan: &L,
+        seeds: &[IpAddr],
+        now: Instant,
+    ) -> Result<RefreshReport, CoreError> {
         self.discovery.observe(&self.households);
         let surveyed =
             inventory::survey_known(lan, seeds, self.discovery.households(), DISCOVERY_WAIT);
@@ -310,7 +331,7 @@ impl Reconciler {
             }
         };
         // A player that rebooted since last seen has forgotten its
-        // subscriptions; drop them so the sync below subscribes afresh.
+        // subscriptions; drop them so the next sync subscribes afresh.
         let rebooted = self
             .subscriptions
             .reboots(survey.boot_seqs.iter().map(|(p, seq)| (p, *seq)));
@@ -374,11 +395,7 @@ impl Reconciler {
                 report.missing.push(id);
             }
         }
-        report.events =
-            self.subscriptions
-                .sync(lan, &events::wanted(&self.households), callback_url, now);
-        report.events.dropped += forgotten;
-        self.health.record(&report.events, now);
+        report.events.dropped = forgotten;
         self.schedule.succeeded(now);
         Ok(report)
     }
