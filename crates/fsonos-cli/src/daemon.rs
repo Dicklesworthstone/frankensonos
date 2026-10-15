@@ -341,6 +341,13 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             cli_token: cli_token.clone(),
             pid: std::process::id(),
             routes: global.routes.as_deref().map(crate::remote::canonical),
+            serve: Some(crate::remote::ServeSettings {
+                http: args.http,
+                mcp_http: args.mcp_http,
+                tailscale_serve: args.tailscale_serve,
+                allow_unsafe_bind: args.allow_unsafe_bind,
+                tailscale_off: args.tailscale == config::TailscaleMode::Off,
+            }),
         };
         if let Err(e) = crate::remote::write_daemon_file(&data_dir, &file) {
             tracing::warn!("the CLI will not find this daemon: {e}");

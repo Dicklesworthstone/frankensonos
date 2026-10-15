@@ -81,6 +81,31 @@ pub struct DaemonFile {
     /// any: a command asks it only when it runs under the same file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routes: Option<PathBuf>,
+    /// The listener settings it runs with (none from an older daemon).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serve: Option<ServeSettings>,
+}
+
+/// The settings `fsonos serve` runs with that a command run elsewhere does
+/// not see in its own environment: `fsonos doctor` checks a running daemon
+/// by these, not by its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServeSettings {
+    /// `--http` / `FSONOS_HTTP_ADDR`, if set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<SocketAddr>,
+    /// `--mcp-http` / `FSONOS_MCP_HTTP_ADDR`, if set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_http: Option<SocketAddr>,
+    /// `--tailscale-serve` / `FSONOS_TAILSCALE_SERVE`.
+    #[serde(default)]
+    pub tailscale_serve: bool,
+    /// `--allow-unsafe-bind`.
+    #[serde(default)]
+    pub allow_unsafe_bind: bool,
+    /// `--tailscale off` / `FSONOS_TAILSCALE=off`: no tailnet.
+    #[serde(default)]
+    pub tailscale_off: bool,
 }
 
 /// Write `daemon.json` (owner-only), replacing any earlier one whole.
@@ -138,7 +163,7 @@ pub fn remove_daemon_file(dir: &Path, pid: u32) {
     }
 }
 
-fn read_daemon_file(dir: &Path) -> Option<DaemonFile> {
+pub(crate) fn read_daemon_file(dir: &Path) -> Option<DaemonFile> {
     serde_json::from_str(&std::fs::read_to_string(dir.join(DAEMON_FILE)).ok()?).ok()
 }
 
@@ -1168,6 +1193,7 @@ mod tests {
             cli_token: "0123456789abcdef0123456789abcdef".into(),
             pid: 42,
             routes: None,
+            serve: None,
         };
         write_daemon_file(&dir, &file).unwrap();
         assert_eq!(read_daemon_file(&dir), Some(file));
@@ -1240,6 +1266,7 @@ mod tests {
             cli_token: "0123456789abcdef0123456789abcdef".into(),
             pid: 42,
             routes: None,
+            serve: None,
         };
         write_daemon_file(&dir, &file).unwrap();
         assert!(
@@ -1286,6 +1313,7 @@ mod tests {
                 cli_token: "0123456789abcdef0123456789abcdef".into(),
                 pid: 42,
                 routes: routes.map(Path::to_path_buf),
+                serve: None,
             };
             write_daemon_file(&dir, &file).unwrap();
         };

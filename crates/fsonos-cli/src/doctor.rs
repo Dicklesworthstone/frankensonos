@@ -47,6 +47,8 @@ pub mod tailscale;
 #[derive(Debug, Clone, clap::Args)]
 pub struct DoctorArgs {
     /// The daemon settings to check (the same flags and env as `serve`).
+    /// While a daemon serves this data directory and answers, the settings
+    /// it runs with are checked instead.
     #[command(flatten)]
     pub serve: ServeArgs,
     /// Only checks whose id starts with this (e.g. `spotify`, `daemon.`).
@@ -324,14 +326,45 @@ pub fn lan_checks(
 }
 
 /// Every check this layer adds for `serve`'s settings: [`lan_checks`], then
-/// [`register`]'s.
+/// [`register`]'s. While a daemon serves this data directory, it is judged
+/// by the settings it runs with ([`serving_with`], at each run).
 pub fn checks(global: &GlobalArgs, serve: ServeArgs) -> Result<DoctorChecks, Failure> {
     let lan = lan_checks(global)?;
     let data_dir = crate::daemon::data_dir(global)?;
     Ok(Box::new(move |runner| {
         lan(runner);
+        let serve = serving_with(&serve, &data_dir, &|addr| {
+            probe_health(addr, Duration::from_secs(1))
+        });
         register(runner, &serve, &data_dir);
     }))
+}
+
+/// The settings to check: while a daemon serving `data_dir` answers, the
+/// ones it recorded in daemon.json (this command's environment need not be
+/// serve's: a daemon started by launchd or a script sets its own), else
+/// `serve` as given.
+fn serving_with(
+    serve: &ServeArgs,
+    data_dir: &Path,
+    probe: &dyn Fn(SocketAddr) -> Result<String, String>,
+) -> ServeArgs {
+    let mut effective = serve.clone();
+    if let Some(file) = crate::remote::read_daemon_file(data_dir)
+        && let Some(settings) = file.serve
+        && probe(file.http).is_ok()
+    {
+        effective.http = settings.http;
+        effective.mcp_http = settings.mcp_http;
+        effective.tailscale_serve = settings.tailscale_serve;
+        effective.allow_unsafe_bind = settings.allow_unsafe_bind;
+        effective.tailscale = if settings.tailscale_off {
+            config::TailscaleMode::Off
+        } else {
+            config::TailscaleMode::Auto
+        };
+    }
+    effective
 }
 
 /// Run `fsonos doctor` and print the report; the exit code is the report's.
@@ -525,5 +558,65 @@ mod tests {
         assert_eq!(r.evidence["executable"], json!(executable));
         assert_eq!(r.evidence["synthesis_tested"], false);
         assert!(r.detail.unwrap().contains("not run"));
+    }
+
+    #[test]
+    fn a_running_daemon_is_checked_by_the_settings_it_runs_with() {
+        let dir =
+            std::env::temp_dir().join(format!("fsonos-doctor-serving-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mine = ServeArgs {
+            http: None,
+            mcp_http: None,
+            spotify_client_id: None,
+            spotify_redirect_uri: String::new(),
+            events_port: 0,
+            allow_unsafe_bind: false,
+            tailscale: crate::config::TailscaleMode::Auto,
+            tailscale_serve: false,
+        };
+        let loopback: SocketAddr = "127.0.0.1:8099".parse().unwrap();
+        let answers = |_: SocketAddr| Ok("0.1.0".to_string());
+        let silent = |_: SocketAddr| Err("refused".to_string());
+        assert_eq!(
+            serving_with(&mine, &dir, &answers).http,
+            None,
+            "no daemon.json"
+        );
+
+        let mut file = crate::remote::DaemonFile {
+            http: loopback,
+            cli_token: "0123456789abcdef0123456789abcdef".into(),
+            pid: 1,
+            routes: None,
+            serve: None,
+        };
+        crate::remote::write_daemon_file(&dir, &file).unwrap();
+        let older = serving_with(&mine, &dir, &answers);
+        assert!(
+            !older.tailscale_serve && older.http.is_none(),
+            "an older daemon"
+        );
+
+        file.serve = Some(crate::remote::ServeSettings {
+            http: Some(loopback),
+            mcp_http: Some("127.0.0.1:8098".parse().unwrap()),
+            tailscale_serve: true,
+            allow_unsafe_bind: true,
+            tailscale_off: true,
+        });
+        crate::remote::write_daemon_file(&dir, &file).unwrap();
+        let theirs = serving_with(&mine, &dir, &answers);
+        assert!(theirs.tailscale_serve);
+        assert_eq!(theirs.http, Some(loopback));
+        assert_eq!(theirs.mcp_http, Some("127.0.0.1:8098".parse().unwrap()));
+        assert!(theirs.allow_unsafe_bind);
+        assert_eq!(theirs.tailscale, crate::config::TailscaleMode::Off);
+        assert!(
+            !serving_with(&mine, &dir, &silent).tailscale_serve,
+            "a daemon.json left by a daemon that no longer answers is not believed"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
