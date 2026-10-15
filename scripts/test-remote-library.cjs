@@ -84,7 +84,11 @@ test('album and playlist additions use queue insertion, not source replacement',
 });
 test('favorite playback re-reads its household and never substitutes a Spotify source', async () => {
   const f = fixture(); await ready(f);
-  assert.equal(f.control.choose(3, 'append'), false);
+  assert.equal(f.control.choose(3, 'append'), true);
+  assert.equal(await f.control.confirm(), false);
+  assert.equal(f.writes().length, 0);
+  assert.match(f.control.state.message, /Station favorites cannot be queued/);
+  await f.control.search();
   f.control.choose(3, 'play');
   assert.equal(await f.control.confirm(), true);
   assert.deepEqual(f.calls.find(([name]) => name === 'favorites'), ['favorites', { query: { zone: 'Room@S2' } }]);
@@ -305,4 +309,166 @@ test('history cannot be read during a write or without a destination', async () 
   f.control.choose(0, 'play'); const writing = f.control.confirm();
   assert.equal(await f.control.recent(), false); gate.resolve(outcome); await writing;
   assert.equal(f.calls.some(([name]) => name === 'libraryHistory'), false);
+});
+
+const nativeHit = { kind: 'favorite', title: 'Dvořák & friends <live>', subtitle: 'Local collection',
+  favorite: 'FV:2/17', source_uri: 'spotify:track:MustNotBeSubstituted' };
+const nativeRecord = (kind = 'track') => ({ id: nativeHit.favorite, title: nativeHit.title,
+  description: nativeHit.subtitle, kind });
+function nativeFixture(kind = 'track', override = async () => undefined) {
+  return fixture(async (name, args) => {
+    const result = await override(name, args);
+    if (result !== undefined) return result;
+    if (name === 'librarySearch') return [nativeHit];
+    if (name === 'favorites') return [nativeRecord(kind)];
+    return undefined;
+  });
+}
+
+for (const kind of ['track', 'container']) {
+  for (const action of ['append', 'next']) {
+    for (const zone of ['Room@S1', 'Room@S2']) {
+      test(`native ${kind} ${action} stays in ${zone} and sends no replacement metadata`, async () => {
+        const f = nativeFixture(kind); await ready(f);
+        f.control.target(zone); await f.control.search();
+        assert.equal(f.control.choose(0, action), true);
+        assert.equal(f.writes().length, 0);
+        const reviewed = f.control.state.pending;
+        assert.ok(Object.isFrozen(reviewed) && Object.isFrozen(reviewed.body));
+        assert.deepEqual(reviewed.body, { zone, favorite: 'FV:2/17', next: action === 'next' });
+        assert.equal(await f.control.confirm(reviewed), true);
+        assert.deepEqual(f.writes(), [['libraryAdd', { body: reviewed.body }]]);
+        assert.deepEqual(f.calls.find(([name]) => name === 'favorites'), ['favorites', { query: { zone } }]);
+        assert.equal(await f.control.confirm(reviewed), false);
+        assert.match(f.control.state.message, /without starting playback/);
+      });
+    }
+  }
+}
+
+test('changed and duplicate native favorite identities never become queue additions', async () => {
+  for (const records of [[], [nativeRecord(), nativeRecord()], [{ ...nativeRecord(), id: 'FV:2/18' }],
+    [{ ...nativeRecord(), title: 'Another track' }], [{ ...nativeRecord(), description: 'Another collection' }],
+    [nativeRecord('unplayable')], [nativeRecord('future-kind')]]) {
+    const f = nativeFixture('track', async (name) => name === 'favorites' ? records : undefined);
+    await ready(f); f.control.choose(0, 'next');
+    assert.equal(await f.control.confirm(f.control.state.pending), false);
+    assert.equal(f.writes().length, 0);
+    assert.match(f.control.state.message, /favorite changed/);
+  }
+});
+
+test('a detached confirmation cannot execute a different newly reviewed action', async () => {
+  const f = nativeFixture(); await ready(f);
+  f.control.choose(0, 'append'); const old = f.control.state.pending;
+  f.control.choose(0, 'next'); const fresh = f.control.state.pending;
+  const before = f.calls.length;
+  assert.equal(await f.control.confirm(old), false);
+  assert.equal(f.calls.length, before);
+  assert.equal(await f.control.confirm(fresh), true);
+  assert.equal(f.writes()[0][1].body.next, true);
+});
+
+for (const end of ['close', 'dispose']) {
+  test(`${end} during native-favorite verification stops an unsent queue add`, async () => {
+    const gate = later();
+    const f = nativeFixture('container', async (name) => name === 'favorites' ? gate.promise : undefined);
+    await ready(f); f.control.choose(0, 'next');
+    const waiting = f.control.confirm(f.control.state.pending);
+    await new Promise(setImmediate);
+    assert.equal(f.calls.filter(([name]) => name === 'favorites').length, 1);
+    f.control[end](); gate.resolve([nativeRecord('container')]);
+    assert.equal(await waiting, false);
+    assert.equal(f.writes().length, 0);
+  });
+}
+
+test('double confirmation while verifying a native favorite dispatches only one queue write', async () => {
+  const gate = later();
+  const f = nativeFixture('track', async (name) => name === 'favorites' ? gate.promise : undefined);
+  await ready(f); f.control.choose(0, 'next');
+  const review = f.control.state.pending;
+  const first = f.control.confirm(review);
+  assert.equal(await f.control.confirm(review), false);
+  assert.equal(f.control.choose(0, 'append'), false);
+  gate.resolve([nativeRecord()]);
+  assert.equal(await first, true);
+  assert.equal(f.writes().length, 1);
+});
+
+test('lost or contradictory favorite queue replies never fall back to playback or retry', async () => {
+  for (const reply of ['lost', null, { ...added, count: 0 }, { ...added, playing_queue: 'yes' }]) {
+    const f = nativeFixture('container', async (name) => {
+      if (name !== 'libraryAdd') return undefined;
+      if (reply === 'lost') throw new Error('Reply lost after enqueue');
+      return reply;
+    });
+    await ready(f); f.control.choose(0, 'next');
+    assert.equal(await f.control.confirm(f.control.state.pending), false);
+    assert.equal(f.writes().length, 1);
+    assert.equal(f.writes()[0][0], 'libraryAdd');
+    assert.equal(f.control.choose(0, 'next'), false);
+    assert.match(f.control.state.message, /request was not repeated/);
+  }
+});
+
+test('view callback exceptions do not turn a confirmed native add into a failed operation', async () => {
+  const calls = [];
+  const c = model({ changed: () => { throw new Error('view failed'); }, call: async (name) => {
+    calls.push(name);
+    return name === 'zones' ? houses : name === 'librarySearch' ? [nativeHit]
+      : name === 'favorites' ? [nativeRecord()] : added;
+  } });
+  await c.refreshRooms(); c.target('Room@S2'); c.query('music'); await c.search(); c.choose(0, 'append');
+  assert.equal(await c.confirm(c.state.pending), true);
+  assert.equal(calls.filter((name) => name === 'libraryAdd').length, 1);
+});
+
+test('the same favorite can be deliberately queued twice with two separate reviews', async () => {
+  const f = nativeFixture(); await ready(f);
+  f.control.choose(0, 'append'); const first = f.control.state.pending;
+  assert.equal(await f.control.confirm(first), true);
+  assert.equal(await f.control.confirm(first), false);
+  f.control.choose(0, 'append'); const second = f.control.state.pending;
+  assert.notEqual(second, first);
+  assert.equal(await f.control.confirm(second), true);
+  assert.equal(f.writes().length, 2);
+});
+
+test('native favorite queueing crosses a real HTTP socket with the exact public JSON contract', async (t) => {
+  const http = require('node:http');
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (bytes) => { body += bytes; });
+    req.on('end', () => {
+      const url = new URL(req.url, 'http://fixture.invalid');
+      requests.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams),
+        body, contentType: req.headers['content-type'] });
+      res.setHeader('Content-Type', 'application/json');
+      const value = url.pathname === '/zones' ? houses : url.pathname === '/library/search' ? [nativeHit]
+        : url.pathname === '/favorites' ? [nativeRecord('container')] : url.pathname === '/queue' ? added : null;
+      if (value === null) res.statusCode = 404;
+      res.end(JSON.stringify(value));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  const routes = { ...require('../crates/fsonos-api/src/remote/library.js').routes,
+    zones: ['GET', '/zones'], favorites: ['GET', '/favorites'] };
+  const root = `http://127.0.0.1:${server.address().port}`;
+  const c = model({ call: async (name, { query, body } = {}) => {
+    const [method, path] = routes[name];
+    const response = await fetch(root + path + (query ? `?${new URLSearchParams(query)}` : ''), {
+      method, headers: body ? { 'Content-Type': 'application/json' } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    assert.equal(response.ok, true); return response.json();
+  } });
+  await c.refreshRooms(); c.target('Room@S1'); c.query('Dvořák'); await c.search(); c.choose(0, 'next');
+  assert.equal(await c.confirm(c.state.pending), true);
+  const writes = requests.filter((request) => request.method === 'POST');
+  assert.deepEqual(writes, [{ method: 'POST', path: '/queue', query: {},
+    body: '{"zone":"Room@S1","favorite":"FV:2/17","next":true}', contentType: 'application/json' }]);
+  assert.deepEqual(requests.find((request) => request.path === '/favorites').query, { zone: 'Room@S1' });
 });

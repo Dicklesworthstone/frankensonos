@@ -54,3 +54,22 @@ cargo test -p fsonos-mcp tools::queue_add::input
 ```
 
 These are test instructions, not a claim of physical-device acceptance.
+
+## From the phone remote
+
+Open **Find music**, choose the household-qualified destination group, and
+search for the favorite. **Add to end** and **Queue next** now work for native
+track, album and playlist favorites as well as Spotify sources. Review the
+item and destination, then confirm. The client re-reads the group and native
+favorite before sending the same `POST /queue` contract above.
+
+Search results do not carry a favorite's native kind, so a station can reach
+the queue review; the preflight rejects it without sending a queue write and
+points to **Play now**. A changed or ambiguous favorite is also refused.
+Closing the panel invalidates an unsent review; an already sent request cannot
+be cancelled or automatically repeated. A stale confirmation button cannot
+execute a different, newer review. Inspect the queue after an uncertain reply.
+
+Client regressions: `node --test scripts/test-remote-library.cjs`. The HTTP
+fixture and Chromium component checks use synthetic replies, not physical
+speakers or a running Rust daemon. Existing CLI favorite flags are unchanged.

@@ -77,7 +77,7 @@ const LibraryRemote = (() => {
     let disposed = false;
     const state = { open: false, zones: [], target: '', query: '', hits: [], view: 'search',
       loaded: false, loading: false, writing: false, pending: null, message: '' };
-    const publish = () => { if (!disposed) changed(state); };
+    const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* View only. */ } } };
     const destination = () => state.zones.find((zone) => zone.target === state.target);
     const invalidate = () => {
       ++epoch;
@@ -175,7 +175,7 @@ const LibraryRemote = (() => {
       const hit = state.hits[index];
       if (disposed || !state.open || state.loading || state.writing || !state.loaded || !zone || !hit || hit !== expected
           || !['play', 'append', 'next'].includes(action)
-          || !(hit.source || (hit.favorite && action === 'play'))) return false;
+          || !(hit.source || hit.favorite)) return false;
       const body = hit.favorite ? { zone: zone.target, favorite: hit.favorite }
         : { zone: zone.target, source_uri: hit.source, title: hit.title };
       if (action !== 'play') body.next = action === 'next';
@@ -193,9 +193,9 @@ const LibraryRemote = (() => {
       publish();
     }
 
-    async function confirm() {
-      const pending = state.pending;
-      if (disposed || !state.open || state.writing || !pending || pending.version !== epoch) return false;
+    async function confirm(pending = state.pending) {
+      if (disposed || !state.open || state.writing || !pending || pending !== state.pending
+          || pending.version !== epoch) return false;
       state.writing = true;
       state.pending = null;
       state.message = 'Checking the destination before sending…';
@@ -218,6 +218,9 @@ const LibraryRemote = (() => {
             && (favorite.description || '') === pending.hit.subtitle
             && ['track', 'stream', 'container'].includes(favorite.kind)) : [];
           if (matches.length !== 1) throw new Error('The household favorite changed. Search again.');
+          if (pending.action !== 'play' && !['track', 'container'].includes(matches[0].kind)) {
+            throw new Error('Station favorites cannot be queued. Use Play now instead.');
+          }
         }
         if (!current(version)) return false;
         sent = true;
@@ -305,10 +308,12 @@ const LibraryRemote = (() => {
         results.append(el('div', { class: 'library-review', role: 'group', 'aria-label': 'Review music action' },
           el('strong', { text: `${label}: ${pending.hit.title || 'Untitled'}` }),
           el('p', { text: `Destination: ${pending.zone.label}` }), el('p', { text: warning }),
+          pending.hit.favorite && pending.action !== 'play'
+            ? el('p', { text: 'Only track, album and playlist favorites can be queued. The household favorite is checked again before sending; stations use Play now.' }) : null,
           pending.hit.playedAt !== undefined && pending.action === 'play'
             ? el('p', { text: 'Replays this item from the beginning, not its old queue position.' }) : null,
           el('div', { class: 'row' }, button('Cancel', () => control.cancel()),
-            button(`Confirm ${label.toLowerCase()}`, () => control.confirm()))));
+            button(`Confirm ${label.toLowerCase()}`, () => control.confirm(pending)))));
       } else if (state.loaded) {
         const count = state.hits.length;
         const heading = state.view === 'history'
@@ -333,7 +338,7 @@ const LibraryRemote = (() => {
             control.choose(index, action, hit);
           };
           if (hit.source || hit.favorite) actions.append(button('Play now', () => select('play'), locked, `play-${index}`));
-          if (hit.source) actions.append(button('Add to end', () => select('append'), locked, `append-${index}`),
+          if (hit.source || hit.favorite) actions.append(button('Add to end', () => select('append'), locked, `append-${index}`),
             button('Queue next', () => select('next'), locked, `next-${index}`));
           if (!hit.source && !hit.favorite) actions.append(el('span', { text: 'Read-only: unsupported item.' }));
           row.append(actions);
