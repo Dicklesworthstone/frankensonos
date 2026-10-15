@@ -32,6 +32,9 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: "0"
+      # A fat-LTO release build of the whole tree at full parallelism ran the
+      # 16 GB Linux runner out of memory (killed, exit 143, 2026-10-15).
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
