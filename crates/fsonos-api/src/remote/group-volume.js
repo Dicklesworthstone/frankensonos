@@ -22,7 +22,7 @@ const GroupVolumeRemote = (() => {
   function recovery() {
     const records = new Set(), listeners = new Set();
     const overlaps = (record, keys) => keys.some(k => record.keys.has(k));
-    const notify = (keys) => { for (const fn of listeners) { try { fn(keys); } catch (_) { /* View only. */ } } };
+    const notify = (keys, phase) => { for (const fn of listeners) { try { fn(keys, phase); } catch (_) { /* View only. */ } } };
     return {
       status(keys) {
         const matches = [...records].filter(r => overlaps(r, keys));
@@ -31,12 +31,12 @@ const GroupVolumeRemote = (() => {
       start(keys) {
         if ([...records].some(r => overlaps(r, keys))) return null;
         const record = { keys: new Set(keys), pending: true };
-        records.add(record); notify(keys); return record;
+        records.add(record); notify(keys, 'start'); return record;
       },
       finish(record, uncertain) {
         if (!records.has(record)) return;
         if (uncertain) record.pending = false; else records.delete(record);
-        notify([...record.keys]);
+        notify([...record.keys], 'finish');
       },
       clear(keys) {
         for (const record of records) {
@@ -44,7 +44,7 @@ const GroupVolumeRemote = (() => {
           for (const key of keys) record.keys.delete(key);
           if (!record.keys.size) records.delete(record);
         }
-        notify(keys);
+        notify(keys, 'clear');
       },
       subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     };
@@ -66,8 +66,10 @@ const GroupVolumeRemote = (() => {
     function stale(detail = 'Group level is stale; waiting for a fresh observation.') {
       ++serial; ++epoch; reading = false; fresh = false; review = null; message = detail; emit();
     }
-    const unsubscribe = registry.subscribe(affected => {
-      if (!disposed && affected.some(k => keys.includes(k))) emit();
+    const unsubscribe = registry.subscribe((affected, phase) => {
+      if (disposed || !affected.some(k => keys.includes(k))) return;
+      if (phase !== 'clear' && !writing) stale('A group-volume change needs a fresh observation.');
+      else emit();
     });
     function observe(dto) {
       if (!live() || writing || registry.status(keys).pending) return false;
@@ -86,7 +88,12 @@ const GroupVolumeRemote = (() => {
         const next = observed(await call('state', { params: { room: name } }), group);
         if (!live() || serial !== version) return false;
         value = next; fresh = true; reading = false; message = '';
-        if (explicit) registry.clear(keys);
+        if (explicit) {
+          const unresolved = registry.status(keys).uncertain;
+          registry.clear(keys);
+          if (unresolved) result = Object.freeze({ status: 'reconciled',
+            detail: `Current group level is ${next}. The earlier request was not repeated.` });
+        }
         emit(); return true;
       } catch (error) { if (live() && serial === version) stale(problem(error)); return false; }
       finally { if (serial === version) { reading = false; emit(); } }
@@ -96,6 +103,15 @@ const GroupVolumeRemote = (() => {
       review = null; ++epoch;
       if (!ready() || !level(wanted) || wanted === value) { emit(); return null; }
       review = Object.freeze({ volume: wanted, before: value }); result = null; emit(); return review;
+    }
+    function nudge(delta) {
+      if (!live() || writing) return null;
+      review = null; ++epoch;
+      if (!ready() || !Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 100
+          || (delta < 0 && value === 0) || (delta > 0 && value === 100)) { emit(); return null; }
+      // Preserve a relative intent for the native group service. Never convert
+      // it to N room writes or repeatedly send it to get past a policy cap.
+      review = Object.freeze({ delta, before: value }); result = null; emit(); return review;
     }
     function cancelReview() { if (live() && !writing) { review = null; ++epoch; emit(); } }
     async function apply(selected) {
@@ -118,7 +134,8 @@ const GroupVolumeRemote = (() => {
         message = 'Applying the reviewed group level…'; emit();
         if (!valid()) return false;
         sent = true;
-        const answer = await call('volume', { body: { zone: name, group: true, volume: selected.volume } });
+        const change = selected.delta === undefined ? { volume: selected.volume } : { delta: selected.delta };
+        const answer = await call('volume', { body: { zone: name, group: true, ...change } });
         if (!answer || !text(answer.done) || typeof answer.changed !== 'boolean' || !level(answer.volume)
             || (answer.notes != null && (!Array.isArray(answer.notes) || !answer.notes.every(n => n && typeof n.detail === 'string')))) {
           throw new Error('The group-volume response is incomplete.');
@@ -140,7 +157,7 @@ const GroupVolumeRemote = (() => {
       }
       return success;
     }
-    return { view, observe, stale, refresh, preview, cancelReview, apply, block: emit,
+    return { view, observe, stale, refresh, preview, nudge, cancelReview, apply, block: emit,
       suspend() { if (!disposed) { stale('Group controls paused while the page is hidden.'); active = false; } },
       resume() { if (!disposed) { active = true; stale(); } },
       dispose() { disposed = true; active = false; ++epoch; ++serial; review = null; unsubscribe(); },
@@ -152,34 +169,45 @@ const GroupVolumeRemote = (() => {
     const shown = el('output', { text: '–' });
     const range = el('input', { type: 'range', min: 0, max: 100, step: 1, value: 0, disabled: true,
       'aria-label': `Group volume for ${zone.members.join(' + ')}` });
+    const lower = el('button', { type: 'button', text: 'Quieter −5', disabled: true });
+    const raise = el('button', { type: 'button', text: 'Louder +5', disabled: true });
     const refresh = el('button', { type: 'button', text: 'Refresh group level' });
     const review = el('div', { class: 'row', hidden: true });
     const detail = el('p', { role: 'status', 'aria-live': 'polite' });
     const help = el('p', { class: 'group-volume-help', text: 'Changes every room in this group through the daemon. Room caps and quiet hours still apply; playback and mute are unchanged.' });
     const node = el('section', { class: 'group-volume', 'aria-label': 'Whole-group volume' },
-      heading, el('div', { class: 'group-volume-level' }, range, shown), review, detail, refresh, help);
+      heading, el('div', { class: 'group-volume-level' }, range, shown),
+      el('div', { class: 'row' }, lower, raise), review, detail, refresh, help);
     let consent = null;
     const control = model({ zone, call, ...options, changed(state) {
       range.disabled = !state.ready;
+      lower.disabled = !state.ready || state.value === 0;
+      raise.disabled = !state.ready || state.value === 100;
       range.value = String(state.review?.volume ?? state.value ?? 0);
-      shown.textContent = state.review ? `${state.review.volume} (not sent)` : state.value === null ? '–' : `${state.value}${state.fresh ? '' : ' (stale)'}`;
+      shown.textContent = state.review ? state.review.delta !== undefined
+        ? `${state.value} (${state.review.delta > 0 ? '+' : ''}${state.review.delta} not sent)`
+        : `${state.review.volume} (not sent)` : state.value === null ? '–' : `${state.value}${state.fresh ? '' : ' (stale)'}`;
       range.setAttribute('aria-valuetext', shown.textContent);
       refresh.disabled = state.reading || state.writing || state.pending || Boolean(options.blocked?.());
       node.setAttribute('aria-busy', String(state.reading || state.writing || state.pending));
-      const notice = state.result?.detail || (state.uncertain
-        ? 'An earlier group-volume result is uncertain. Refresh this group level before changing it.' : state.message);
+      const status = state.uncertain
+        ? 'An earlier group-volume result is uncertain. Refresh this group level before changing it.' : state.message;
+      const notice = [state.result?.detail, status].filter(Boolean).join(' ');
       if (detail.textContent !== notice) detail.textContent = notice;
       if (consent !== state.review) {
         consent = state.review; review.replaceChildren(); review.hidden = !consent;
         if (consent) {
           const chosen = consent;
-          review.append(el('button', { type: 'button', text: `Set group to ${chosen.volume}`,
+          review.append(el('button', { type: 'button', text: chosen.delta === undefined
+            ? `Set group to ${chosen.volume}` : `${chosen.delta < 0 ? 'Lower' : 'Raise'} group by ${Math.abs(chosen.delta)}`,
             onclick: () => { void control.apply(chosen); } }),
           el('button', { type: 'button', text: 'Cancel group change', onclick: () => control.cancelReview() }));
         }
       }
       for (const child of review.children) child.disabled = !state.ready;
     } });
+    lower.addEventListener('click', () => control.nudge(-5));
+    raise.addEventListener('click', () => control.nudge(5));
     range.addEventListener('input', () => control.preview(Number(range.value)));
     range.addEventListener('keydown', event => { if (event.key === 'Escape') control.cancelReview(); });
     refresh.addEventListener('click', () => { void control.refresh(); });

@@ -1,7 +1,10 @@
 # Whole-group volume in the web remote
 
 Every card containing two or more rooms includes **Group volume**. Move the
-slider to choose a level, then confirm **Set group to …**. The gesture alone
+slider to choose a level, then confirm **Set group to …**. For a relative
+adjustment use **Quieter −5** or **Louder +5**, then confirm the direction and
+amount. These send the native `delta` request, not a guessed absolute level.
+Repeated previews replace the draft rather than queueing repeated changes. The gesture alone
 is a local draft. The panel reads the coordinator's `group_volume`, never the
 coordinator's own room level or an invented average of the room sliders.
 
@@ -20,7 +23,10 @@ The panel acquires the existing native playback-action lane and the member
 room volume lanes. An outstanding room slider write or unsent debounced
 adjustment prevents group dispatch. Replacement cards inherit outstanding
 lanes, and completion fences old volume reads before shared reconciliation.
-There is no additional polling timer or event connection.
+Starting or completing another overlapping group-volume operation also fences
+older in-flight group reads. An explicit successful recovery reports the newly
+observed level separately from the uncertain earlier request. There is no
+additional polling timer or event connection.
 
 A lost or malformed write response is never repeated. Its outcome remains
 uncertain across hiding, coordinator replacement, splits and merges. Passive
@@ -34,7 +40,7 @@ user actions; these records do not create a durable daemon command service.
 ## Checks
 
 ```sh
-node --test scripts/test-remote-group-volume.cjs
+node --test scripts/test-remote-group-volume.cjs scripts/test-remote-group-volume-relative.cjs
 ```
 
 The tests execute the shipped model, panel and native-lane adapter with

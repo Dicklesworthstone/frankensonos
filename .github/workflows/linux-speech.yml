@@ -28,6 +28,8 @@ on:
       - "scripts/test-remote-seek-http.cjs"
       - "scripts/test-remote-transport.cjs"
       - "scripts/test-remote-volume.cjs"
+      - "scripts/test-remote-group-volume.cjs"
+      - "scripts/test-remote-group-volume-relative.cjs"
       - "scripts/test-remote-announcements.cjs"
       - "scripts/test-remote-dj-preferences.cjs"
       - "scripts/test-remote-dj-session.cjs"
@@ -89,6 +91,8 @@ jobs:
         run: node --test scripts/test-remote-seek.cjs scripts/test-remote-seek-http.cjs
       - name: Web transport and volume regressions
         run: node --test scripts/test-remote-transport.cjs scripts/test-remote-volume.cjs
+      - name: Web whole-group volume regressions
+        run: node --test scripts/test-remote-group-volume.cjs scripts/test-remote-group-volume-relative.cjs
       - name: Web announcement regressions
         run: node --test scripts/test-remote-announcements.cjs
       - name: Web DJ taste regressions
