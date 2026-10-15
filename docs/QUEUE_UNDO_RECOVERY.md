@@ -40,3 +40,12 @@ responses. Simulator cases exercise S1/S2 through real loopback sockets,
 including a concurrent insertion that would shift the saved range. They were
 authored but not executed in the editing environment, which has no Rust
 toolchain. Physical-speaker acceptance remains a separate check.
+
+`POST /queue/remove` now delegates the native deletion and observation to the
+same core operation as logged enqueue undo. Its own authorization, required
+URI selection, optional opaque revision token, 100-item request bound, group
+membership check and action log remain in the API. Response fields and error
+categories are unchanged. A handoff during deletion cannot confirm the old
+coordinator's result, and explicit faults keep their UPnP cause even if another
+controller happens to make the same edit. Direct queue deletion remains
+non-undoable; this does not invent a saved copy of removed queue contents.

@@ -3,16 +3,21 @@
 //! a complete, coherent read; the non-idempotent removal is never replayed.
 
 use fastapi::{JsonSchema, fastapi_openapi};
+use fsonos_core::control::queue_removal::{self, RemovalError, read};
 use fsonos_core::policy::Client;
 use fsonos_core::{CoreError, control};
-use fsonos_proto::content::{QUEUE, browse_snapshot};
-use fsonos_proto::{ProtoError, Transport, control as soap};
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 
 use super::super::Surface;
 use super::MAX_PAGE;
 use crate::failure::{ErrorCode, Failure};
+
+#[cfg(test)]
+use fsonos_core::control::queue_removal::{Snapshot as Queue, removed};
+#[cfg(test)]
+use fsonos_proto::{ProtoError, Transport, control as soap};
+#[cfg(test)]
+use std::net::IpAddr;
 
 /// The policy tool name for `POST /queue/remove`.
 pub const REMOVE: &str = "remove_from_queue";
@@ -91,49 +96,23 @@ impl QueueRemovedDto {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct Queue {
-    revision: u32,
-    uris: Vec<String>,
-}
-
-fn read<T: Transport + ?Sized>(transport: &T, host: IpAddr) -> Result<Queue, ProtoError> {
-    let snapshot = browse_snapshot(transport, host, QUEUE)?;
-    let uris = snapshot
-        .objects
-        .into_iter()
-        .map(|item| {
-            item.res
-                .map(|res| res.uri)
-                .filter(|uri| !uri.trim().is_empty() && uri != "NOT_IMPLEMENTED")
-                .ok_or_else(|| {
-                    ProtoError::Malformed(
-                        "queue item has no identity for removal verification".into(),
-                    )
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Queue {
-        revision: snapshot.update_id,
-        uris,
-    })
-}
-
-fn removed(before: &Queue, after: &Queue, start: usize, end: usize) -> bool {
-    start < end
-        && end <= before.uris.len()
-        && before.revision != after.revision
-        && before.uris.len() - (end - start) == after.uris.len()
-        && before.uris[..start] == after.uris[..start]
-        && before.uris[end..] == after.uris[start..]
-}
-
 fn uncertain(detail: impl std::fmt::Display) -> Failure {
     Failure::new(
         ErrorCode::UpnpFault,
         format!("queue removal outcome is uncertain: {detail}; the write was not replayed"),
     )
     .with_hint("Read the queue again before deciding on another removal; do not retry blindly.")
+}
+
+fn removal_failure(error: RemovalError) -> Failure {
+    match error {
+        RemovalError::Invalid(detail) => Failure::invalid(detail),
+        RemovalError::Before(cause) | RemovalError::Refused(cause) => {
+            Failure::from(CoreError::from(cause))
+                .with_hint("Read the current queue before selecting a range to remove.")
+        }
+        RemovalError::Uncertain(detail) => uncertain(detail),
+    }
 }
 
 impl Surface {
@@ -218,30 +197,18 @@ impl Surface {
             }
         }
         self.queue_group_unchanged(host, &group)?;
-        // A fresh topology read cannot pin the queue. The native UpdateID
-        // check closes that race at the player instead of clearing/rebuilding.
-        let sent = soap::remove_track_range_from_queue(
+        // The same native mutation and read-back as enqueue undo. The API
+        // retains its stricter request, revision-token and membership checks.
+        let done = queue_removal::remove(
             &*self.transport,
             host,
-            before.revision,
+            &group.coordinator,
+            &before,
             req.position,
             count,
-        );
-        let after = read(&*self.transport, host).map_err(uncertain)?;
-        if !removed(&before, &after, start, end) {
-            if before == after
-                && let Err(error @ ProtoError::SoapFault { .. }) = sent
-            {
-                return Err(Failure::from(CoreError::from(error))
-                    .with_hint("Read the current queue before selecting a range to remove."));
-            }
-            return Err(uncertain(
-                "read-back did not confirm exactly the selected deletion",
-            ));
-        }
-        let recovered = sent.is_err();
-        let remaining = u32::try_from(after.uris.len())
-            .map_err(|_| uncertain("the resulting queue length does not fit u32"))?;
+        )
+        .map_err(removal_failure)?;
+        let (remaining, recovered) = (done.remaining, done.recovered);
         let recovery = if recovered {
             "; confirmed by read-back, not replayed"
         } else {
@@ -265,3 +232,6 @@ impl Surface {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod authority_tests;
