@@ -885,9 +885,13 @@ const LiveRemote = (() => {
       retry = null;
       try {
         if (all) await reload();
-        else for (const room of batch) {
-          if (!active || version !== generation) break;
-          await refresh(room);
+        else {
+          let failure = null;
+          for (const room of batch) {
+            if (!active || version !== generation) break;
+            try { await refresh(room); } catch (error) { failure = error; }
+          }
+          if (failure && active && version === generation) throw failure;
         }
         if (active && version === generation) {
           if (all) { synced = true; failedRead = false; }
