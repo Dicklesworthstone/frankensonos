@@ -28,6 +28,9 @@ use std::net::IpAddr;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+mod dispatch;
+pub use dispatch::SleepRun;
+
 /// How long before the end the fade starts.
 pub const FADE: Duration = Duration::from_mins(2);
 
@@ -68,8 +71,10 @@ pub enum SleepOutcome {
 #[derive(Debug)]
 struct Armed {
     timer: SleepTimer,
-    /// Changes whenever the timer is re-armed, so a fade can tell.
+    /// Changes whenever the timer is re-armed or dispatched, so a fade can tell.
     generation: u64,
+    /// The worker has crossed into execution; it must never be requeued.
+    running: bool,
     /// The rooms a running fade is turning down.
     fading_rooms: Vec<PlayerId>,
     /// Fixed when due: dispatch and state reads consume the remaining fade time.
@@ -182,6 +187,7 @@ impl SleepTimers {
             Armed {
                 timer: timer.clone(),
                 generation,
+                running: false,
                 fading_rooms: Vec::new(),
                 fade_deadline: None,
                 interrupted: false,
@@ -213,6 +219,8 @@ impl SleepTimers {
             entry.timer.ends = entry.timer.ends.max(now) + delta(by);
             entry.timer.fading = false;
             entry.generation = generation;
+            entry.running = false;
+            entry.interrupted = false;
             entry.fading_rooms.clear();
             entry.fade_deadline = None;
             entry.timer.clone()
@@ -280,6 +288,8 @@ impl SleepTimers {
             entry.timer.ends = ends;
             entry.timer.fading = false;
             entry.generation = generation;
+            entry.running = false;
+            entry.interrupted = false;
             entry.fading_rooms.clear();
             entry.fade_deadline = None;
             if let Some(replaced) = armed.insert(new.clone(), entry) {
@@ -300,7 +310,7 @@ impl SleepTimers {
     pub fn interrupt(&self, fader: &Fader, coordinator: &PlayerId) -> bool {
         let mut armed = self.lock();
         match armed.get_mut(coordinator) {
-            Some(a) if a.timer.fading => {
+            Some(a) if a.timer.fading || a.fade_deadline.is_some() => {
                 // Before the run has taken up its rooms there is no fade to
                 // stop yet: the run ends the timer when it gets there.
                 a.interrupted |= a.fading_rooms.is_empty();
@@ -329,6 +339,7 @@ impl SleepTimers {
                     ..timer
                 },
                 generation,
+                running: false,
                 fading_rooms: Vec::new(),
                 fade_deadline: None,
                 interrupted: false,
@@ -355,25 +366,10 @@ impl SleepTimers {
     /// (it is marked as fading). Run [`Self::run`] for each. Short or late
     /// timers get only the time remaining, never a fresh full-length fade.
     pub fn due(&self, now: DateTime<Utc>) -> Vec<SleepTimer> {
-        let monotonic_now = Instant::now();
-        let mut due: Vec<SleepTimer> = self
-            .lock()
-            .values_mut()
-            .filter(|a| !a.timer.fading && now >= a.timer.ends - delta(self.fade))
-            .map(|a| {
-                a.timer.fading = true;
-                a.interrupted = false;
-                let remaining = (a.timer.ends - now).to_std().unwrap_or_default();
-                a.fade_deadline = Some(
-                    monotonic_now
-                        .checked_add(remaining.min(self.fade))
-                        .unwrap_or(monotonic_now),
-                );
-                a.timer.clone()
-            })
-            .collect();
-        due.sort_by_key(|t| t.ends);
-        due
+        self.due_runs(now, usize::MAX)
+            .into_iter()
+            .map(|run| run.timer)
+            .collect()
     }
 
     /// Fade the group `coordinator` leads out within its remaining time,
@@ -389,19 +385,36 @@ impl SleepTimers {
         fader: &Fader,
         coordinator: &PlayerId,
     ) -> Result<SleepOutcome, CoreError> {
-        let household = households
-            .iter()
-            .find(|h| h.player(coordinator).is_some())
-            .ok_or_else(|| self.lost(coordinator))?;
-        let rooms = member_rooms(household, coordinator);
+        self.run_generation(t, households, fader, coordinator, None)
+    }
+
+    fn run_generation<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        fader: &Fader,
+        coordinator: &PlayerId,
+        expected: Option<u64>,
+    ) -> Result<SleepOutcome, CoreError> {
+        let household = households.iter().find(|h| h.player(coordinator).is_some());
+        let rooms = household.map_or_else(Vec::new, |h| member_rooms(h, coordinator));
         let joined = household
-            .coordinator_of(coordinator)
+            .and_then(|h| h.coordinator_of(coordinator))
             .is_some_and(|lead| lead != coordinator);
         let (generation, deadline, claimed) = {
             let mut armed = self.lock();
-            let Some(a) = armed.get_mut(coordinator).filter(|a| a.timer.fading) else {
+            let Some(a) = armed.get_mut(coordinator).filter(|a| {
+                a.timer.fading && !a.running && expected.is_none_or(|g| g == a.generation)
+            }) else {
                 return Ok(SleepOutcome::Gone);
             };
+            // Validate the ticket before even retiring an absent player: an
+            // obsolete worker must not consume a newly armed timer here.
+            if household.is_none() {
+                armed.remove(coordinator);
+                return Err(CoreError::UnknownPlayer(coordinator.0.clone()));
+            }
+            a.running = true;
             if a.interrupted {
                 // Someone set a volume before this run got going: the timer
                 // ends where it is, as it would during the fade.
@@ -481,17 +494,6 @@ impl SleepTimers {
         }
     }
 
-    /// `coordinator` is nowhere in the house: let go of a timer a run took
-    /// up, which would otherwise stay fading for good (the player's own
-    /// timer, if it is still there, pauses the group).
-    fn lost(&self, coordinator: &PlayerId) -> CoreError {
-        let mut armed = self.lock();
-        if armed.get(coordinator).is_some_and(|a| a.timer.fading) {
-            armed.remove(coordinator);
-        }
-        CoreError::UnknownPlayer(coordinator.0.clone())
-    }
-
     /// Drop `coordinator`'s timer if it is still the one a run took up as
     /// `generation`: a run that failed must not leave it fading for good.
     fn forget(&self, coordinator: &PlayerId, generation: u64) {
@@ -569,6 +571,7 @@ mod tests {
                         fading: false,
                     },
                     generation: 0,
+                    running: false,
                     fading_rooms: Vec::new(),
                     fade_deadline: None,
                     interrupted: false,

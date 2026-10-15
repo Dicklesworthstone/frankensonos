@@ -24,7 +24,7 @@ use fsonos_core::schedule::{
     self as core_schedule, DEFAULT_GRACE, Schedule, ScheduleAction, ScheduleError, ScheduleSpec,
     Tick,
 };
-use fsonos_core::sleep::{BACKSTOP, FADE, SleepOutcome, SleepTimer, SleepTimers};
+use fsonos_core::sleep::{BACKSTOP, FADE, SleepTimer, SleepTimers};
 use fsonos_core::{CoreError, HouseholdState};
 use fsonos_proto::{ProtoError, Transport, control as soap};
 use fsonos_types::PlayerId;
@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::{self, Write as _};
 use std::net::IpAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -45,6 +45,7 @@ use crate::request::{DjStartRequest, VolumeChange, VolumeRequest, ZoneRequest, z
 
 mod dispatch;
 mod recovery;
+mod sleep_dispatch;
 
 /// The longest sleep timer. The speaker's own timer, which backs the
 /// daemon's up five minutes later, counts down from just under a day.
@@ -124,8 +125,7 @@ pub struct FadeVolumeRequest {
     pub volume: i64,
     /// How long the ramp takes, 1-60 seconds; 0 (or left out) lets each
     /// speaker ramp itself at its own pace, about 0.8 s a step, and the call
-    /// answers once each has started (one that can't ramp itself is stepped
-    /// there first).
+    /// answers once each has started (one that can't is stepped there first).
     #[serde(default)]
     pub fade_secs: u32,
 }
@@ -592,6 +592,8 @@ pub const SLEEP_FILE: &str = "sleep-timers.json";
 pub struct Sleep {
     timers: SleepTimers,
     fader: Fader,
+    /// Includes queued workers and restoration, shared across schedulers.
+    fades_in_flight: AtomicUsize,
     saved: Option<PathBuf>,
     /// Serializes snapshots and startup-candidate transitions, never speaker I/O.
     writing: Mutex<recovery::State>,
@@ -615,6 +617,7 @@ impl Sleep {
         Self {
             timers: SleepTimers::with_fade(fade),
             fader: Fader::default(),
+            fades_in_flight: AtomicUsize::new(0),
             saved: None,
             writing: Mutex::new(recovery::State::default()),
         }
@@ -1606,7 +1609,8 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
 /// What a scheduler tick started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ran {
-    /// A sleep timer's fade began, in the group named by `zone`.
+    /// A sleep worker started for `zone`; it checks its dispatch generation
+    /// before acting, so a replaced timer cannot be consumed by old work.
     Fading { zone: String },
     /// Schedule `id`'s worker for the run due at `at` began. The worker
     /// rechecks the schedule before claiming and executing the action.
@@ -1655,53 +1659,21 @@ impl Scheduler {
     }
 
     fn start_fades(&self, now: DateTime<Utc>) -> Vec<Ran> {
-        let Some(sleep) = self.surface.sleep.clone() else {
-            return Vec::new();
-        };
-        sleep
-            .timers
-            .due(now)
-            .into_iter()
-            .map(|timer| {
-                let (surface, sleep) = (Arc::clone(&self.surface), Arc::clone(&sleep));
-                let zone = timer.room.clone();
-                self.spawn("fsonos-sleep", move || {
-                    let households = surface.households().unwrap_or_default();
-                    let ran = sleep.timers.run(
-                        &*surface.transport,
-                        &households,
-                        &sleep.fader,
-                        &timer.coordinator,
-                    );
-                    match ran {
-                        Ok(outcome) => tracing::info!(
-                            "sleep timer in {}'s group: {}",
-                            timer.room,
-                            match outcome {
-                                SleepOutcome::Paused => "faded out and paused",
-                                SleepOutcome::Cancelled => "cancelled during its fade",
-                                SleepOutcome::Interrupted =>
-                                    "ended by a volume change during its fade",
-                                SleepOutcome::Gone => "already cancelled",
-                            }
-                        ),
-                        Err(e) => tracing::warn!("sleep timer in {}'s group: {e}", timer.room),
-                    }
-                    sleep.save();
-                });
-                Ran::Fading { zone }
-            })
-            .collect()
+        sleep_dispatch::start(self, now)
     }
 
-    fn spawn(&self, name: &str, work: impl FnOnce() + Send + 'static) {
+    fn spawn(&self, name: &str, work: impl FnOnce() + Send + 'static) -> bool {
         match thread::Builder::new().name(name.into()).spawn(work) {
             Ok(handle) => {
                 let mut runs = self.runs.lock().unwrap_or_else(PoisonError::into_inner);
                 runs.retain(|h| !h.is_finished());
                 runs.push(handle);
+                true
             }
-            Err(e) => tracing::warn!("{name} not started: {e}"),
+            Err(e) => {
+                tracing::warn!("{name} not started: {e}");
+                false
+            }
         }
     }
 
