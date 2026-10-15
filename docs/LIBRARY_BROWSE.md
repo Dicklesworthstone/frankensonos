@@ -45,3 +45,29 @@ invalid album filters and limits outside 1–50 fail with `INVALID_ARGUMENT`.
 No local store is `NOT_READY`, rather than a misleading empty library.
 An empty cache is a successful empty page; refresh through `POST /dj/sync` is a
 separate, explicit action.
+
+## From the phone remote
+
+Open **Find music**, then **Browse tracks**, **Browse albums**, or **Browse
+playlists**. You can read the cache even before choosing a destination group.
+The search box also filters a browse listing: enter words, then press Enter or
+**Refresh listing**. Previous/Next page reads at most 50 items at a time.
+
+**View cached tracks** opens the selected album's cached disc/track sequence;
+it clears the album-title filter so that it does not hide movements. **Back to
+albums** returns to the album listing. Each album's displayed count explicitly
+says it may have more tracks than the cache contains. Choosing a destination
+keeps the page you were looking at.
+
+Play now, Add to end and Queue next use the existing two-step review: inspect
+the exact item and household-qualified destination, then confirm. The client
+rechecks group membership before dispatch and sends the chosen source URI,
+never a title search or a mutable page position. Changing category, filter,
+page or destination consumes any previous review. Late replies cannot replace
+a newer page. A changed cache revision during pagination asks for an explicit
+refresh from the beginning; it never combines pages from two listings.
+
+Closing the panel invalidates an unsent action. A failed or unreadable write
+is not retried; read the room and queue before deliberately trying again.
+The remote uses the same existing embedded library assets and public play/queue
+routes, with no new automatic sync, microphone capture or playback polling.

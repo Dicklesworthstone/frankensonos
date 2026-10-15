@@ -8,6 +8,7 @@ on:
       - "scripts/test-remote-queue.cjs"
       - "scripts/test-remote-play-mode.cjs"
       - "scripts/test-remote-library.cjs"
+      - "scripts/test-remote-library-browse.cjs"
       - "scripts/test-remote-library-sync.cjs"
       - "scripts/test-remote-spotify-connect.cjs"
       - "scripts/test-remote-groups.cjs"
@@ -61,7 +62,7 @@ jobs:
       - name: Web queue client regressions
         run: node --test scripts/test-remote-queue.cjs scripts/test-remote-play-mode.cjs
       - name: Web library client regressions
-        run: node --test scripts/test-remote-library.cjs scripts/test-remote-library-sync.cjs scripts/test-remote-spotify-connect.cjs
+        run: node --test scripts/test-remote-library.cjs scripts/test-remote-library-browse.cjs scripts/test-remote-library-sync.cjs scripts/test-remote-spotify-connect.cjs
       - name: Web room grouping regressions
         run: node --test scripts/test-remote-groups.cjs scripts/test-remote-transfers.cjs
       - name: Live remote recovery regressions

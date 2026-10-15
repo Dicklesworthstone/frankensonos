@@ -6,6 +6,7 @@ const LibraryRemote = (() => {
   const MAX_QUERY = 512;
   const routes = {
     librarySearch: ['GET', '/library/search'],
+    libraryBrowse: ['GET', '/library/browse'],
     libraryHistory: ['GET', '/history'],
     libraryPlay: ['POST', '/play'],
     libraryAdd: ['POST', '/queue'],
@@ -72,16 +73,50 @@ const LibraryRemote = (() => {
     });
   }
 
+  const categories = Object.freeze({ tracks: 'track', albums: 'album', playlists: 'playlist' });
+
+  function pageOf(value, kind, offset, album) {
+    const albumUri = album ? album.uri : null;
+    if (!value || value.kind !== kind || value.offset !== offset || value.limit !== LIMIT
+        || value.album_uri !== albumUri || value.coverage !== 'cached'
+        || !number(value.total) || !text(value.revision) || value.revision.length > 256
+        || !Array.isArray(value.items)
+        || value.items.length !== Math.min(LIMIT, Math.max(0, value.total - offset))) {
+      throw new Error('The library page is incomplete. Refresh the listing.');
+    }
+    const end = offset + value.items.length;
+    const next = end < value.total ? end : null;
+    if (value.next_offset !== next) throw new Error('The library page positions disagree. Refresh the listing.');
+    const seen = new Set();
+    const hits = hitsOf(value.items).map((hit, i) => {
+      const raw = value.items[i];
+      if (hit.kind !== categories[kind] || !hit.source || seen.has(hit.source)
+          || typeof raw.explicit !== 'boolean'
+          || (album && raw.album_uri !== albumUri)
+          || (kind === 'albums' && (!number(raw.cached_tracks) || raw.cached_tracks < 1))
+          || [raw.disc_number, raw.track_number].some((n) => n != null && !number(n))) {
+        throw new Error('The library page identities disagree. Refresh the listing.');
+      }
+      seen.add(hit.source);
+      return Object.freeze({ ...hit, explicit: raw.explicit, cachedTracks: raw.cached_tracks,
+        disc: raw.disc_number, track: raw.track_number });
+    });
+    return Object.freeze({ kind, offset, total: value.total, next, revision: value.revision,
+      hits: Object.freeze(hits) });
+  }
+
   function model({ call, changed = () => {}, played = () => {} }) {
     let epoch = 0;
     let disposed = false;
     const state = { open: false, zones: [], target: '', query: '', hits: [], view: 'search',
-      loaded: false, loading: false, writing: false, pending: null, message: '' };
+      loaded: false, loading: false, writing: false, pending: null, message: '',
+      page: null, browseKind: 'tracks', browseAlbum: null };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* View only. */ } } };
     const destination = () => state.zones.find((zone) => zone.target === state.target);
     const invalidate = () => {
       ++epoch;
       state.pending = null;
+      state.page = null;
       state.hits = [];
       state.loaded = false;
       state.loading = false;
@@ -118,7 +153,11 @@ const LibraryRemote = (() => {
 
     function target(value) {
       if (disposed || state.writing || !state.zones.some((zone) => zone.target === value)) return false;
+      // Cached browsing is independent of the destination. Keep its observed
+      // page, but consume any review and invalidate an outstanding read.
+      const cached = state.view === 'browse' && state.loaded ? state.page : null;
       invalidate();
+      if (cached) { state.page = cached; state.hits = cached.hits; state.loaded = true; }
       state.target = value;
       state.message = '';
       publish();
@@ -129,7 +168,7 @@ const LibraryRemote = (() => {
       if (disposed || state.writing || typeof value !== 'string') return false;
       invalidate();
       state.query = value;
-      state.view = 'search';
+      if (state.view !== 'browse') state.view = 'search';
       state.message = '';
       publish();
       return true;
@@ -167,6 +206,62 @@ const LibraryRemote = (() => {
       }
     }
 
+    async function browse(kind = state.browseKind, offset = 0, album = null, revision = null) {
+      if (disposed || !state.open || state.writing || !Object.hasOwn(categories, kind)
+          || !number(offset) || (album && (kind !== 'tracks' || spotify(album.uri)?.[1] !== 'album'))) return false;
+      invalidate();
+      state.view = 'browse';
+      state.browseKind = kind;
+      state.browseAlbum = album;
+      const q = state.query.trim();
+      if ([...q].length > MAX_QUERY) {
+        state.message = `Use at most ${MAX_QUERY} characters to filter the listing.`;
+        publish();
+        return false;
+      }
+      const version = epoch;
+      state.loading = true;
+      state.message = '';
+      publish();
+      try {
+        const query = { kind, offset, limit: LIMIT };
+        if (q) query.q = q;
+        if (album) query.album_uri = album.uri;
+        const value = await call('libraryBrowse', { query });
+        if (!current(version)) return false;
+        const page = pageOf(value, kind, offset, album);
+        if (revision !== null && page.revision !== revision) {
+          throw new Error('The library changed between pages. Refresh the listing to start from the beginning.');
+        }
+        state.page = page;
+        state.hits = page.hits;
+        state.loaded = true;
+        return true;
+      } catch (error) {
+        if (current(version)) state.message = message(error);
+        return false;
+      } finally {
+        if (current(version)) { state.loading = false; publish(); }
+      }
+    }
+
+    function turn(forward, expected = state.page) {
+      if (!expected || expected !== state.page || !state.loaded || state.loading || state.writing) return false;
+      const offset = forward ? expected.next : expected.offset > 0 ? Math.max(0, expected.offset - LIMIT) : null;
+      return offset === null ? false : browse(state.browseKind, offset, state.browseAlbum, expected.revision);
+    }
+
+    function openAlbum(index, expected = state.hits[index]) {
+      const hit = state.hits[index];
+      if (disposed || !state.open || state.loading || state.writing || !state.loaded
+          || !hit || hit !== expected || hit.kind !== 'album' || !hit.source) return false;
+      // An album title filter should not silently filter its movement list.
+      state.query = '';
+      return browse('tracks', 0, Object.freeze({ uri: hit.source, title: hit.title }));
+    }
+
+    const refresh = () => state.view === 'browse'
+      ? browse(state.browseKind, 0, state.browseAlbum) : read('search');
     const search = () => read('search');
     const recent = () => read('history');
 
@@ -252,7 +347,8 @@ const LibraryRemote = (() => {
       }
     }
 
-    return { state, refreshRooms, target, query, search, recent, choose, cancel, confirm,
+    return { state, refreshRooms, target, query, search, recent, browse, openAlbum, refresh,
+      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, cancel, confirm,
       close() { state.open = false; invalidate(); publish(); },
       dispose() { disposed = true; invalidate(); } };
   }
@@ -270,17 +366,25 @@ const LibraryRemote = (() => {
     const search = button('Search library', () => control.search());
     const rooms = button('Refresh rooms', () => control.refreshRooms());
     const recent = button('Recently played', () => control.recent());
+    const browseButtons = Object.keys(categories).map((kind) =>
+      [kind, button(`Browse ${kind}`, () => control.browse(kind))]);
+    const previous = button('Previous page', () => control.previous());
+    const next = button('Next page', () => control.next());
+    const refresh = button('Refresh listing', () => control.refresh());
+    const back = button('Back to albums', () => { control.query(''); control.browse('albums'); });
+    const navigation = el('div', { class: 'row' }, previous, next, refresh, back);
     let reviewFocus = null;
     const status = el('p', { role: 'status', 'aria-live': 'polite' });
     const results = el('div', { class: 'library-results' });
     destination.addEventListener('change', () => control.target(destination.value));
     input.addEventListener('input', () => control.query(input.value));
     input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); control.search(); }
+      if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); control.refresh(); }
     });
-    body.append(el('p', { text: 'Search your cached Spotify library and the chosen household’s Sonos favorites.' }),
+    body.append(el('p', { text: 'Browse cached tracks, albums and playlists, or search your library and the chosen household’s Sonos favorites. Choose a group before playing.' }),
       el('label', {}, 'Play in', destination), el('div', { class: 'row' }, rooms),
-      input, el('div', { class: 'row' }, search, recent), status, results);
+      input, el('div', { class: 'row' }, search, recent),
+      el('div', { class: 'row' }, ...browseButtons.map(([, button]) => button)), navigation, status, results);
 
     function render(state) {
       const active = document.activeElement;
@@ -295,6 +399,17 @@ const LibraryRemote = (() => {
       search.disabled = state.writing || state.loading || !state.target || !state.query.trim();
       rooms.disabled = state.writing || state.loading;
       recent.disabled = state.writing || state.loading || !state.target;
+      for (const [kind, button] of browseButtons) {
+        button.disabled = state.loading || state.writing;
+        button.setAttribute('aria-pressed', String(state.view === 'browse' && state.browseKind === kind));
+      }
+      navigation.hidden = state.view !== 'browse' || Boolean(state.pending);
+      const busy = state.loading || state.writing;
+      previous.disabled = busy || !state.loaded || !state.page || state.page.offset === 0;
+      next.disabled = busy || !state.loaded || !state.page || state.page.next === null;
+      refresh.disabled = busy;
+      back.disabled = busy;
+      back.hidden = !state.browseAlbum;
       recent.setAttribute('aria-pressed', String(state.view === 'history'));
       search.setAttribute('aria-pressed', String(state.view === 'search'));
       status.textContent = state.message || (state.loading ? 'Reading…' : '');
@@ -316,7 +431,10 @@ const LibraryRemote = (() => {
             button(`Confirm ${label.toLowerCase()}`, () => control.confirm(pending)))));
       } else if (state.loaded) {
         const count = state.hits.length;
-        const heading = state.view === 'history'
+        const heading = state.view === 'browse'
+          ? `${state.browseAlbum ? `Cached tracks in ${state.browseAlbum.title || 'Untitled album'}` : `Cached ${state.browseKind}`}: ${count
+            ? `${state.page.offset + 1}–${state.page.offset + count} of ${state.page.total}` : 'no matching entries'}. This cache may include older entries and incomplete albums.`
+          : state.view === 'history'
           ? count ? `${count} recent recorded play(s) for this group. Times are shown in this browser's local time.`
             : 'No recorded plays for this group yet.'
           : count ? `${count} match(es)${count === LIMIT ? '; refine the search for more specific results' : ''}.`
@@ -332,7 +450,18 @@ const LibraryRemote = (() => {
             row.append(el('time', { datetime: at.toISOString(), text: at.toLocaleString() }));
           }
           const actions = el('div', { class: 'row' });
-          const locked = state.loading || state.writing;
+          if (state.view === 'browse') {
+            if (hit.kind === 'album') {
+              row.append(el('p', { class: 'by', text: `${hit.cachedTracks} cached track(s); the album may contain more.` }));
+              actions.append(button('View cached tracks', () => control.openAlbum(index, hit),
+                state.loading || state.writing, `album-${index}`));
+            }
+            if (state.browseAlbum && (hit.disc != null || hit.track != null)) {
+              row.append(el('p', { class: 'by', text: `Disc ${hit.disc ?? '?'}, track ${hit.track ?? '?'}` }));
+            }
+            if (hit.explicit) row.append(el('span', { class: 'by', text: 'Explicit' }));
+          }
+          const locked = state.loading || state.writing || !state.target;
           const select = (action) => {
             reviewFocus = `${action}-${index}`;
             control.choose(index, action, hit);

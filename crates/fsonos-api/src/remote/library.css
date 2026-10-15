@@ -12,3 +12,4 @@
 .library-review { border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-wrap: anywhere; }
 .library button { max-width: 100%; white-space: normal; }
 .library summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.library-body [hidden] { display: none; }
