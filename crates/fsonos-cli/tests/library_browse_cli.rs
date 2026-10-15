@@ -6,6 +6,31 @@ use std::net::TcpListener;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+/// A scratch data directory for one fsonos run, removed afterwards.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(tag: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "fsonos-library-browse-cli-{tag}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 fn page() -> Value {
     json!({
         "kind": "albums", "album_uri": null, "offset": 0, "limit": 2,
@@ -114,7 +139,7 @@ fn through_daemon(args: &[&str], status: u16, body: &Value) -> (Output, Vec<Stri
         }
         paths
     });
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new("daemon");
     let result = finish(
         command(dir.path())
             .env("FSONOS_HTTP_ADDR", addr.to_string())
@@ -204,7 +229,7 @@ fn daemon_failures_do_not_fall_back_to_an_empty_local_cache() {
 
 #[test]
 fn direct_empty_cache_needs_no_daemon_or_speaker_discovery() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new("direct");
     let output = finish(command(dir.path()).args(["--direct", "--json", "dj", "browse"]));
     assert!(
         output.status.success(),
