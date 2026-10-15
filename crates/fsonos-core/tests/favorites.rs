@@ -115,7 +115,7 @@ fn favorites_are_found_by_position_title_prefix_and_words() {
     ));
 }
 
-/// Records each action and answers with `<FirstTrackNumberEnqueued>1`.
+/// Records each action and exposes the acknowledged single-track insertion.
 #[derive(Default)]
 struct Recorder(RefCell<Vec<(IpAddr, String, String)>>);
 
@@ -136,10 +136,32 @@ impl Transport for Recorder {
         self.0
             .borrow_mut()
             .push((host, action.clone(), body.into()));
-        let out = if action == "AddURIToQueue" {
-            "<FirstTrackNumberEnqueued>1</FirstTrackNumberEnqueued>"
-        } else {
-            ""
+        let out = match action.as_str() {
+            "AddURIToQueue" => {
+                "<FirstTrackNumberEnqueued>1</FirstTrackNumberEnqueued>\
+                 <NumTracksAdded>1</NumTracksAdded>"
+                    .to_string()
+            }
+            "Browse" => {
+                assert!(body.contains("<ObjectID>Q:0</ObjectID>"));
+                let added = self.0.borrow().iter().any(|(_, name, _)| name == "AddURIToQueue");
+                let (didl, count) = if added {
+                    (
+                        "<DIDL-Lite><item id=\"Q:0/1\">\
+                         <res>x-file:Sim Symphonies</res></item></DIDL-Lite>",
+                        "1",
+                    )
+                } else {
+                    ("<DIDL-Lite/>", "0")
+                };
+                soap::args_xml(&[
+                    ("Result", didl),
+                    ("NumberReturned", count),
+                    ("TotalMatches", count),
+                    ("UpdateID", count),
+                ])
+            }
+            _ => String::new(),
         };
         Ok(format!(
             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
@@ -198,13 +220,14 @@ fn each_kind_plays_with_the_right_soap() {
     assert_eq!(
         t.actions(),
         [
-            "RemoveAllTracksFromQueue",
+            "Browse",
             "AddURIToQueue",
+            "Browse",
             "SetAVTransportURI",
             "Seek",
             "Play"
         ],
-        "a container replaces the queue and plays it from the top"
+        "a container stages and verifies the new queue before playing from the top"
     );
     assert!(
         t.0.borrow()

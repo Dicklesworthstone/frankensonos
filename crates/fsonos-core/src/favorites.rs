@@ -5,13 +5,13 @@
 //! favorites the first real playback on both S1 and S2, and the fallback when
 //! a Spotify track won't render. Tracks and streams go straight to the
 //! renderer; albums and playlists (containers) replace the group's queue and
-//! play it from the top. Shortcuts (artist pages; their `<res/>` is empty)
-//! open a browse view in the Sonos app and cannot be played.
+//! play it from the top. The replacement is staged before removing old tracks.
+//! Shortcuts (artist pages; their `<res/>` is empty) open a browse view in the
+//! Sonos app and cannot be played.
 
-use crate::{CoreError, HouseholdState, control};
+use crate::{CoreError, HouseholdState, control, queue_source};
 use fsonos_proto::Transport;
 use fsonos_proto::content;
-use fsonos_proto::control as soap;
 use fsonos_proto::didl::DidlObject;
 use fsonos_types::PlayerId;
 use fsonos_types::text::normalize;
@@ -230,12 +230,12 @@ pub fn play<T: Transport + ?Sized>(
             uri,
             &favorite.metadata,
         )?),
-        FavoriteKind::Container => {
-            let host = control::locate(households, coordinator)?.ip;
-            soap::remove_all_tracks_from_queue(t, host).map_err(CoreError::from)?;
-            let first = soap::add_uri_to_queue(t, host, uri, &favorite.metadata, false)
-                .map_err(CoreError::from)?;
-            Ok(control::play_queue_from(t, households, coordinator, first)?)
-        }
+        FavoriteKind::Container => Ok(queue_source::play(
+            t,
+            households,
+            coordinator,
+            uri,
+            &favorite.metadata,
+        )?),
     }
 }

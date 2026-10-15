@@ -45,6 +45,7 @@ pub mod live;
 pub mod moving;
 pub mod playback;
 pub mod policy;
+mod queue_source;
 pub mod reconcile;
 pub mod rooms;
 pub mod scenes;
