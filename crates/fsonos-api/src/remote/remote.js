@@ -259,6 +259,7 @@ function registerCardPanel(factory) {
 }
 function notifyCard(parts, method, ...args) {
   if (method === 'stale') parts.lastState = null;
+  parts.queue?.[method]?.(...args);
   for (const panel of parts.panels || []) panel[method]?.(...args);
 }
 
@@ -329,7 +330,6 @@ function ownsCard(parts) {
 function disposeCard(parts) {
   parts.disposed = true;
   ++parts.readVersion;
-  parts.queue.dispose();
   notifyCard(parts, 'dispose');
   for (const entry of parts.sliders.values()) {
     clearTimeout(entry.timer);
@@ -455,7 +455,12 @@ function card(zone) {
   fillMoods(parts.mood);
   fillFavorites(parts);
   parts.queue = QueueRemote.panel({
-    zone: name, call, el, played: () => { refreshZone(zone).catch(() => {}); },
+    zone: name, call, el, current: () => ownsCard(parts),
+    blocked: () => parts.writing || transportBusy(parts),
+    execute: async (work) => {
+      if (!beginAction(parts)) return;
+      try { return await work(); } finally { endAction(parts); }
+    },
   });
   house.cards.set(zoneKey(zone), parts);
   parts.node = el('article', { class: 'zone', 'aria-label': label },
@@ -683,6 +688,8 @@ async function refreshZone(zone) {
     if (!current()) return;
     try { await refreshVolume(parts.sliders.get(room), parts); } catch (error) { failure = error; }
   }
+  if (!current()) return;
+  try { await parts.queue?.reconcile?.(); } catch (error) { failure = error; }
   if (!current()) return;
   try { await refreshDj(parts, current); } catch (error) { failure = error; }
   if (failure && current()) throw failure;
