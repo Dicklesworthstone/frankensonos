@@ -17,6 +17,9 @@ use fsonos_types::{PlayerId, TransportState};
 use std::collections::HashMap;
 use std::time::Instant;
 
+mod observation;
+pub use observation::PlaybackObservation;
+
 /// Which service a NOTIFY came from (the subscription that delivered it
 /// knows).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
