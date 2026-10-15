@@ -1,20 +1,11 @@
 //! Carrying a command out when the speakers changed under it, through
-//! [`fsonos_core::heal`]: once, and only where repeating is harmless.
+//! [`fsonos_core::heal`]: at most one recovery, without replaying prior steps.
 //!
-//! * A group command refused with UPnP 800 is retried on the group's new
-//!   coordinator when the topology shows the coordinator really moved
-//!   ([`heal::on_coordinator`]). 800 means the player refused, so nothing
-//!   ran and any group command may be retried. When the coordinator did
-//!   not move, the fault stands (a wrong Spotify item also gives 800). When
-//!   the new coordinator refuses it with 800 too, the group changed again
-//!   under the command: it answers NOT_COORDINATOR, which a caller may retry.
-//! * A command whose player did not answer is retried at the player's new
-//!   address, when a fresh survey shows it moved, but only if it is
-//!   [`Command::repeat_safe`]: the first request may have run with only its
-//!   reply lost, so a step (next, previous, a relative volume or seek) or an
-//!   append is never sent twice.
-//!
-//! Either recovery adds a [`NoteCode::Healed`] note to the outcome.
+//! A group's initial UPnP 800 refusal can recover on a confirmed new
+//! coordinator. A repeat-safe command can recover at a player's new address.
+//! Neither path restarts a command after earlier speaker writes may have
+//! taken effect: a fault from a later step does not roll the earlier ones back.
+//! Coordinator recovery and address recovery share one retry budget.
 
 use fsonos_core::heal::{self, Recovery};
 use fsonos_core::{CoreError, HouseholdState, control};
@@ -28,8 +19,10 @@ use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::Command;
 
-/// Carry `command` out (see the module docs). `fresh` surveys again: it is
-/// called only when a repeat-safe command's player did not answer.
+mod attempt;
+
+/// Carry `command` out. `fresh` is used only for an eligible address recovery;
+/// it is not called after a coordinator retry or a partially applied command.
 pub fn execute_healing<T: Transport + ?Sized>(
     transport: &T,
     households: &[HouseholdState],
@@ -37,11 +30,15 @@ pub fn execute_healing<T: Transport + ?Sized>(
     command: &Command,
     fresh: impl FnOnce() -> Option<Vec<HouseholdState>>,
 ) -> Result<OutcomeDto, Failure> {
-    let result = on_new_coordinator(transport, households, guard, command);
+    let can_readdress = Cell::new(true);
+    let result = on_new_coordinator(transport, households, guard, command, &can_readdress);
     let Err(failure) = &result else {
         return result;
     };
-    if failure.code != ErrorCode::PlayerUnreachable || !command.repeat_safe() {
+    if !can_readdress.get()
+        || failure.code != ErrorCode::PlayerUnreachable
+        || !command.repeat_safe()
+    {
         return result;
     }
     let Some(player) = command.addressed() else {
@@ -55,7 +52,7 @@ pub fn execute_healing<T: Transport + ?Sized>(
     };
     match address(&moved, player) {
         Some(to) if to != from => {
-            let retried = execute_guarded(transport, &moved, guard, command.clone());
+            let (retried, _) = observed_execute(transport, &moved, guard, command.clone());
             tracing::info!(
                 player = player.0.as_str(),
                 %from,
@@ -75,37 +72,74 @@ pub fn execute_healing<T: Transport + ?Sized>(
     }
 }
 
-/// The command, retried once on the group's new coordinator if a UPnP 800
-/// turns out to mean the coordinator moved.
+/// Observe below orchestration, including its read-back paths. A network or
+/// malformed reply may follow a real effect, so it also counts as a write.
+/// A final unconfirmed operation is excluded: an initial refusal can still heal,
+/// as can a single repeat-safe write whose player moved before answering.
+fn observed_execute<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    guard: &Guard<'_>,
+    command: Command,
+) -> (Result<OutcomeDto, Failure>, bool) {
+    let observed = attempt::Observed::new(transport);
+    let result = execute_guarded(&observed, households, guard, command);
+    let prior = observed.preceding_writes();
+    let blocked = result.is_err() && prior > 0;
+    let result = result.map_err(|failure| {
+        if blocked {
+            failure.with_hint(format!(
+                "{prior} earlier speaker step(s) may have taken effect; this command was not \
+                 repeated. Inspect playback and the action log before issuing a new command."
+            ))
+        } else {
+            failure
+        }
+    });
+    (result, blocked)
+}
+
+/// Retry an initial 800 on a genuinely new coordinator. A late 800 stays a
+/// command failure, not a request to restart all of its successful stages.
 fn on_new_coordinator<T: Transport + ?Sized>(
     transport: &T,
     households: &[HouseholdState],
     guard: &Guard<'_>,
     command: &Command,
+    can_readdress: &Cell<bool>,
 ) -> Result<OutcomeDto, Failure> {
     let Some(coordinator) = command.group_coordinator() else {
-        return execute_guarded(transport, households, guard, command.clone());
+        let (result, blocked) = observed_execute(transport, households, guard, command.clone());
+        can_readdress.set(!blocked);
+        return result;
     };
-    // The 800 that stood, kept as reported rather than re-derived, and how
-    // many coordinators were tried.
     let (refused, tried) = (RefCell::new(None), Cell::new(0));
+    let attempted = Cell::new(false);
     let mut hs = households.to_vec();
-    let attempt = |hs: &[HouseholdState], to: &PlayerId| match execute_guarded(
-        transport,
-        hs,
-        guard,
-        command.clone().on_coordinator(to),
-    ) {
-        Err(f) if f.upnp_code == Some(800) => {
-            tried.set(tried.get() + 1);
-            let e = CoreError::Proto(ProtoError::SoapFault {
-                code: 800,
-                reason: f.detail.clone(),
-            });
-            *refused.borrow_mut() = Some(f);
-            Err(e)
+    let attempt = |hs: &[HouseholdState], to: &PlayerId| {
+        if attempted.replace(true) {
+            // A second attempt on a new coordinator consumes the entire
+            // recovery budget, including if its answer is lost afterward.
+            can_readdress.set(false);
         }
-        other => Ok(other),
+        let (result, blocked) =
+            observed_execute(transport, hs, guard, command.clone().on_coordinator(to));
+        if blocked {
+            can_readdress.set(false);
+            return Ok(result);
+        }
+        match result {
+            Err(f) if f.upnp_code == Some(800) => {
+                tried.set(tried.get() + 1);
+                let e = CoreError::Proto(ProtoError::SoapFault {
+                    code: 800,
+                    reason: f.detail.clone(),
+                });
+                *refused.borrow_mut() = Some(f);
+                Err(e)
+            }
+            other => Ok(other),
+        }
     };
     match heal::on_coordinator(transport, &mut hs, coordinator, attempt) {
         Ok((Ok(outcome), Recovery::CoordinatorMoved { from, to })) => Ok(healed(
