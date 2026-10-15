@@ -12,15 +12,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use asupersync::Cx;
 use asupersync::http::Client;
-use asupersync::time::{sleep, wall_now};
 
 use crate::SpotifyError;
 use crate::client::{
     Artist, CachedToken, Endpoints, FORM_CONTENT_TYPE, Pkce, SpotifyConfig, TokenCache,
-    TokenResponse, api_error, missing_taste_scopes, parse_callback, random_state, retry_after_secs,
-    token_error,
+    TokenResponse, missing_taste_scopes, parse_callback, random_state, token_error,
 };
 use crate::library::{LibraryItem, LibraryRead};
+
+mod retry;
 
 /// Per-request ceiling; the Cx budget can shorten it further.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -28,9 +28,6 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const REFRESH_MARGIN_SECS: i64 = 60;
 /// The longest rate limit a background read waits out ([`Session::get_brief`]).
 pub const BRIEF_WAIT_SECS: u64 = 5;
-
-/// How many 429s one GET waits out before giving up.
-const MAX_RATE_LIMIT_WAITS: u32 = 3;
 
 /// A started authorization: send the owner to [`Self::url`], then hand the
 /// redirect they land on to [`Session::complete_authorization`]. Holds the
@@ -174,9 +171,10 @@ impl Session {
             .ok_or_else(not_authorized)
     }
 
-    /// GET a Web API URL with the owner's token. A 401 refreshes the token
-    /// and retries once; a 429 waits out `Retry-After` (a few times); any
-    /// other failure maps to [`SpotifyError::Api`].
+    /// GET a Web API URL with the owner's token. Transient read failures
+    /// retry with backoff, and a 401 refreshes the token at most once. All
+    /// attempts, refresh and waits share a 90-second ceiling; a longer
+    /// `Retry-After` is returned, never shortened into an early retry.
     pub async fn get(&mut self, cx: &Cx, url: &str) -> Result<Vec<u8>, SpotifyError> {
         self.get_waiting(cx, url, u64::MAX).await
     }
@@ -184,7 +182,8 @@ impl Session {
     /// [`Self::get`] for a background read (taste, artist genres, album
     /// lists): a rate limit asking for more than [`BRIEF_WAIT_SECS`] is
     /// returned as the 429 at once, so the read halts and resumes next sync
-    /// rather than holding the sync for up to an hour.
+    /// rather than holding the sync for up to an hour. The entire read,
+    /// including retries and refresh, is bounded to 35 seconds.
     pub async fn get_brief(&mut self, cx: &Cx, url: &str) -> Result<Vec<u8>, SpotifyError> {
         self.get_waiting(cx, url, BRIEF_WAIT_SECS).await
     }
@@ -195,41 +194,7 @@ impl Session {
         url: &str,
         max_wait_secs: u64,
     ) -> Result<Vec<u8>, SpotifyError> {
-        if !self.endpoints.is_api_url(url) {
-            return Err(SpotifyError::Config(format!(
-                "refusing to send the Spotify token outside the Web API: {url}"
-            )));
-        }
-        let mut refreshed = false;
-        let mut waits = 0;
-        loop {
-            let token = self.access_token(cx).await?;
-            let response = self
-                .http
-                .get(url)
-                .bearer_auth(&token)
-                .header("Accept", "application/json")
-                .timeout(REQUEST_TIMEOUT)
-                .send(cx)
-                .await
-                .map_err(|e| SpotifyError::Http(e.to_string()))?;
-            match response.status {
-                200..=299 => return Ok(response.body),
-                401 if !refreshed => {
-                    refreshed = true;
-                    self.refresh(cx).await?;
-                }
-                429 if waits < MAX_RATE_LIMIT_WAITS => {
-                    let secs = retry_after_secs(response.header_value("Retry-After"));
-                    if secs > max_wait_secs {
-                        return Err(api_error(429, &response.body));
-                    }
-                    waits += 1;
-                    sleep(wall_now(), Duration::from_secs(secs)).await;
-                }
-                status => return Err(api_error(status, &response.body)),
-            }
-        }
+        retry::get(self, cx, url, max_wait_secs).await
     }
 
     /// Whether the owner's grant still works, read-only: one liked track is
