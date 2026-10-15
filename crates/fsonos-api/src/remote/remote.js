@@ -23,6 +23,7 @@ const ROUTES = {
   resume: ['POST', '/resume'],
   next: ['POST', '/next'],
   previous: ['POST', '/previous'],
+  seek: ['POST', '/seek'],
   volume: ['POST', '/volume'],
   mute: ['POST', '/mute'],
   playFavorite: ['POST', '/play/favorite'],
@@ -227,6 +228,8 @@ function tag(text) {
 
 // A room keeps its write lane even when topology replaces its card.
 const volumeFlights = new Map();
+// A regrouped card must not overtake a transport command still addressing its rooms.
+const transportFlights = new Map();
 const validVolume = (value) => Number.isInteger(value) && value >= 0 && value <= 100;
 
 // The house as last read.
@@ -466,6 +469,7 @@ function card(zone) {
     parts.djPlaying,
     parts.queue.node);
   for (const factory of cardPanels) addCardPanel(parts, factory);
+  actionControls(parts, transportBusy(parts));
   return parts.node;
 }
 
@@ -576,24 +580,55 @@ function setVolume(entry, volume) {
   entry.shown.textContent = String(volume);
 }
 
-async function act(parts, request, announce = false) {
-  if (!ownsCard(parts) || parts.writing) return;
+function transportRooms(parts) {
+  return parts.zone.members.map((room) => roomName(room, parts.zone.household));
+}
+
+function transportBusy(parts) {
+  return transportRooms(parts).some((room) => transportFlights.has(room));
+}
+
+function actionControls(parts, busy) {
+  for (const control of [parts.play, parts.next, parts.previous, parts.favorite,
+    parts.dj, parts.skip, parts.mood, parts.like, parts.dislike]) control.disabled = busy;
+  parts.favorite.disabled = busy || !(house.favorites.get(parts.zone.household) || []).length;
+  notifyCard(parts, 'block', busy);
+}
+
+function beginAction(parts) {
+  if (!ownsCard(parts) || parts.writing || transportBusy(parts)) return false;
   parts.writing = true;
+  for (const room of transportRooms(parts)) transportFlights.set(room, parts);
   ++parts.readVersion;
-  const controls = [parts.play, parts.next, parts.previous, parts.favorite,
-    parts.dj, parts.skip, parts.mood, parts.like, parts.dislike];
-  for (const control of controls) control.disabled = true;
+  actionControls(parts, true);
+  return true;
+}
+
+function endAction(parts) {
+  parts.writing = false;
+  const affected = new Set();
+  for (const [room, owner] of transportFlights) {
+    if (owner === parts) { affected.add(room); transportFlights.delete(room); }
+  }
+  ++parts.readVersion;
+  // A split/merged group inherits the pending command's exclusion until it
+  // settles. Then invalidate old reads and reconcile each affected live card.
+  for (const current of house.cards.values()) {
+    if (!ownsCard(current) || !transportRooms(current).some((room) => affected.has(room))) continue;
+    ++current.readVersion;
+    const busy = current.writing || transportBusy(current);
+    actionControls(current, busy);
+    if (!busy) void refreshZone(current.zone).catch(() => {});
+  }
+}
+
+async function act(parts, request, announce = false) {
+  if (!beginAction(parts)) return;
   try {
     const outcome = noted(await request());
     if (announce && outcome && typeof outcome.done === 'string') toast(outcome.done);
   } catch (error) { failed(error); }
-  finally {
-    parts.writing = false;
-    if (ownsCard(parts)) {
-      for (const control of controls) control.disabled = false;
-      void refreshZone(parts.zone).catch(() => {});
-    }
-  }
+  finally { endAction(parts); }
 }
 
 async function refreshZone(zone) {
@@ -705,7 +740,7 @@ function fillFavorites(parts) {
   }
   if (favorites.some((favorite) => favorite.id === selected)) parts.favorite.value = selected;
   parts.favorite.hidden = favorites.length === 0 && phase === 'ready';
-  parts.favorite.disabled = parts.writing || favorites.length === 0;
+  parts.favorite.disabled = parts.writing || transportBusy(parts) || favorites.length === 0;
   parts.favorite.title = phase !== 'ready' && favorites.length
     ? 'Last-known favorites are shown while their list is refreshed.' : '';
 }

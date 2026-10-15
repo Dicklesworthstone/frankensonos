@@ -217,6 +217,7 @@ const PlaybackRemote = (() => {
       return acknowledged;
     }
     return { view, observe, refresh, stale, preview, nudge, confirm, cancelReview,
+      block() { emit(); },
       suspend() { if (!disposed) { ++lifetime; stale('Position paused while this page is hidden.'); active = false; stop(); } },
       resume() { if (!disposed) { ++lifetime; active = true; stale(); } },
       dispose() { disposed = true; active = false; ++lifetime; ++epoch; ++serial; review = null; stop(); },
@@ -283,7 +284,7 @@ if (typeof registerCardPanel === 'function') {
   ROUTES.seek = ['POST', '/seek'];
   registerCardPanel((parts) => {
     const panel = PlaybackRemote.panel({ zone: parts.zone, call, el, current: () => ownsCard(parts),
-      execute: (work) => act(parts, work), blocked: () => parts.writing, externalRefresh: true });
+      execute: (work) => act(parts, work), blocked: () => parts.writing || transportBusy(parts), externalRefresh: true });
     const visibility = () => { if (document.hidden) panel.suspend(); else panel.resume(); };
     const hide = () => panel.suspend(), show = () => { if (!document.hidden) panel.resume(); };
     document.addEventListener('visibilitychange', visibility);

@@ -18,6 +18,8 @@ on:
       - "scripts/test-remote-invalidation.cjs"
       - "scripts/test-remote-state.cjs"
       - "scripts/test-remote-playback.cjs"
+      - "scripts/test-remote-transport.cjs"
+      - "scripts/test-remote-volume.cjs"
       - "scripts/test-remote-announcements.cjs"
       - "scripts/test-remote-dj-preferences.cjs"
       - "scripts/test-remote-dj-session.cjs"
@@ -71,6 +73,8 @@ jobs:
         run: node --test scripts/test-remote-groups.cjs scripts/test-remote-transfers.cjs
       - name: Live remote recovery regressions
         run: node --test scripts/test-remote-live.cjs scripts/test-remote-state.cjs scripts/test-remote-invalidation.cjs scripts/test-remote-playback.cjs
+      - name: Web transport and volume regressions
+        run: node --test scripts/test-remote-transport.cjs scripts/test-remote-volume.cjs
       - name: Web announcement regressions
         run: node --test scripts/test-remote-announcements.cjs
       - name: Web DJ taste regressions

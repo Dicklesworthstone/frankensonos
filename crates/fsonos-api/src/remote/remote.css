@@ -27,6 +27,8 @@
 }
 
 * { box-sizing: border-box; }
+/* Author display rules (notably .row) must not reveal hidden controls. */
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
