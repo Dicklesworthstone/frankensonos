@@ -245,7 +245,9 @@ pub fn play_spotify_track<T: Transport + ?Sized>(
 /// no track favorite is required for that kind), self-healing one round of
 /// parameter drift as [`play_spotify_track`] does, whether the renderer
 /// refuses the enqueue or the play that follows it (docs/PROTOCOL.md: 800
-/// "at/after SetAVTransportURI").
+/// "at/after SetAVTransportURI"). The old queue remains intact until the
+/// replacement has been accepted and verified; an uncertain append never
+/// triggers another render attempt.
 pub fn play_spotify_container<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -264,9 +266,7 @@ pub fn play_spotify_container<T: Transport + ?Sized>(
         .ok_or(CoreError::NoSpotifyFavorite)
     };
     let render = |(uri, didl): &(String, String)| -> Result<(), CoreError> {
-        soap::remove_all_tracks_from_queue(t, host)?;
-        let first = soap::add_uri_to_queue(t, host, uri, didl, false)?;
-        play_queue_from(t, households, coordinator, first)
+        crate::queue_source::play(t, households, coordinator, uri, didl)
     };
     let initial = source(None)?;
     match render(&initial) {

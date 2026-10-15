@@ -9,6 +9,10 @@ use fsonos_types::PlayerId;
 use std::cell::RefCell;
 use std::net::IpAddr;
 
+#[path = "control/queue_fixture.rs"]
+mod queue_fixture;
+use queue_fixture::QueueFixture;
+
 const ZGS_S1: &str = include_str!("../../fsonos-proto/tests/fixtures/zgs_s1.xml");
 const ZGS_S2: &str = include_str!("../../fsonos-proto/tests/fixtures/zgs_s2.xml");
 
@@ -279,11 +283,12 @@ fn a_household_without_spotify_favorites_has_nothing_to_render_with() {
     );
 }
 
-/// Answers Browse with the S1 favorites and AddURIToQueue with consecutive
-/// queue positions from 5; records every action with its body.
+/// Answers Browse with the S1 favorites or a coherent queue initially holding
+/// four tracks; records every action with its body.
 #[derive(Default)]
 struct QueueLan {
     sent: RefCell<Vec<(IpAddr, String, String)>>,
+    queue: QueueFixture,
 }
 
 impl Transport for QueueLan {
@@ -304,21 +309,16 @@ impl Transport for QueueLan {
             .borrow_mut()
             .push((host, action.clone(), body.into()));
         if action == "Browse" {
-            return Ok(FAV_S1.to_string());
+            return Ok(if body.contains("<ObjectID>Q:0</ObjectID>") {
+                self.queue.browse()
+            } else {
+                FAV_S1.to_string()
+            });
         }
-        let enqueued = self
-            .sent
-            .borrow()
-            .iter()
-            .filter(|(_, a, _)| a == "AddURIToQueue")
-            .count();
-        let out = if action == "AddURIToQueue" {
-            format!(
-                "<FirstTrackNumberEnqueued>{}</FirstTrackNumberEnqueued>",
-                4 + enqueued
-            )
-        } else {
-            String::new()
+        let out = match action.as_str() {
+            "AddURIToQueue" => self.queue.add(),
+            "RemoveTrackRangeFromQueue" => self.queue.remove(body),
+            _ => String::new(),
         };
         Ok(format!(
             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
@@ -577,8 +577,11 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
         actions,
         [
             "Browse",
-            "RemoveAllTracksFromQueue",
+            "Browse",
             "AddURIToQueue",
+            "Browse",
+            "RemoveTrackRangeFromQueue",
+            "Browse",
             "SetAVTransportURI",
             "Seek",
             "Play"
@@ -603,9 +606,9 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
         "{add}"
     );
     assert!(
-        sent[4]
+        sent[7]
             .2
-            .contains("<Unit>TRACK_NR</Unit><Target>5</Target>")
+            .contains("<Unit>TRACK_NR</Unit><Target>1</Target>")
     );
 
     // A playlist, on a household with no playlist favorite: the common prefix.
@@ -656,6 +659,7 @@ struct ContainerDrift {
     browses: std::cell::Cell<usize>,
     actions: RefCell<Vec<String>>,
     adds: RefCell<Vec<String>>,
+    queue: QueueFixture,
 }
 
 impl ContainerDrift {
@@ -666,6 +670,7 @@ impl ContainerDrift {
             browses: std::cell::Cell::new(0),
             actions: RefCell::default(),
             adds: RefCell::default(),
+            queue: QueueFixture::new(0),
         }
     }
 
@@ -700,6 +705,9 @@ impl Transport for ContainerDrift {
         self.actions.borrow_mut().push(name.clone());
         let out = match name.as_str() {
             "Browse" => {
+                if body.contains("<ObjectID>Q:0</ObjectID>") {
+                    return Ok(self.queue.browse());
+                }
                 let stale = self.browses.get() == 0;
                 self.browses.set(self.browses.get() + 1);
                 return Ok(if stale {
@@ -716,8 +724,9 @@ impl Transport for ContainerDrift {
                         reason: "refused".to_string(),
                     });
                 }
-                "<FirstTrackNumberEnqueued>1</FirstTrackNumberEnqueued>"
+                self.queue.add()
             }
+            "RemoveTrackRangeFromQueue" => self.queue.remove(body),
             "Play"
                 if self.at_play
                     && self
@@ -731,7 +740,7 @@ impl Transport for ContainerDrift {
                     reason: "refused".to_string(),
                 });
             }
-            _ => "",
+            _ => String::new(),
         };
         Ok(format!(
             "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\

@@ -105,7 +105,13 @@ pub(crate) fn play<T: Transport + ?Sized>(
             )));
         }
     }
-    control::play_queue_from(t, households, coordinator, 1)
+    match control::play_queue_from(t, households, coordinator, 1) {
+        Ok(()) => Ok(()),
+        Err(error @ CoreError::Proto(ProtoError::SoapFault { .. })) => Err(error),
+        // The queue has already changed. A lost start reply may be recovered
+        // inside queue_start, but must not replay this entire replacement.
+        Err(error) => Err(unconfirmed(error)),
+    }
 }
 
 #[cfg(test)]
