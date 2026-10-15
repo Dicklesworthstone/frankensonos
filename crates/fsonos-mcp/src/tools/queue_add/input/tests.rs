@@ -140,7 +140,7 @@ fn an_ambiguous_source_choice_is_not_sent_to_the_daemon() {
             ..request()
         },
         QueueRequest {
-            favorite: Some("".into()),
+            favorite: Some(String::new()),
             ..request()
         },
     ] {

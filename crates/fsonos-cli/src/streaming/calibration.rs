@@ -36,16 +36,11 @@ pub fn decode_wave(bytes: &[u8]) -> Result<(Vec<f64>, Vec<f64>), &'static str> {
         let size = usize::try_from(number(&header[4..8])).map_err(|_| "WAV chunk is too large")?;
         let end = header_end.checked_add(size).ok_or("WAV chunk overflow")?;
         let chunk = bytes.get(header_end..end).ok_or("truncated WAV chunk")?;
+        // Each chunk is taken as it comes; a second one is an error.
         match &header[..4] {
-            b"fmt " => {
-                if format.replace(chunk).is_some() {
-                    return Err("duplicate WAV format");
-                }
-            }
-            b"data" => {
-                if samples.replace(chunk).is_some() {
-                    return Err("duplicate WAV audio data");
-                }
+            b"fmt " if format.replace(chunk).is_some() => return Err("duplicate WAV format"),
+            b"data" if samples.replace(chunk).is_some() => {
+                return Err("duplicate WAV audio data");
             }
             _ => {}
         }
@@ -75,7 +70,7 @@ pub fn decode_pcm(bytes: &[u8]) -> Result<(Vec<f64>, Vec<f64>), &'static str> {
     }
     let mut reference = Vec::with_capacity(bytes.len() / 4);
     let mut microphone = Vec::with_capacity(bytes.len() / 4);
-    for frame in bytes.chunks_exact(4) {
+    for frame in bytes.as_chunks::<4>().0 {
         reference.push(f64::from(i16::from_le_bytes([frame[0], frame[1]])) / 32_768.0);
         microphone.push(f64::from(i16::from_le_bytes([frame[2], frame[3]])) / 32_768.0);
     }

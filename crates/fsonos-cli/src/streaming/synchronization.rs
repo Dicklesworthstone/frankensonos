@@ -14,6 +14,8 @@ use super::{StreamArgs, calibration, latency};
 mod capture;
 mod mpv;
 
+// The field names are the flags (--sync-mpv, --sync-input, ...).
+#[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Default, Args)]
 pub struct SyncArgs {
     /// Opt in to local microphone feedback and correction through this mpv Unix socket.
@@ -23,7 +25,12 @@ pub struct SyncArgs {
     #[arg(long, requires = "sync_mpv", conflicts_with = "latency_wav")]
     pub sync_input: Option<String>,
     /// Uncorrected media-specific mpv delay in seconds, not the last correction.
-    #[arg(long, default_value_t = 0.0, requires = "sync_mpv", allow_negative_numbers = true)]
+    #[arg(
+        long,
+        default_value_t = 0.0,
+        requires = "sync_mpv",
+        allow_negative_numbers = true
+    )]
     pub sync_base_delay: f64,
 }
 
@@ -183,7 +190,11 @@ impl StableLag {
     }
 }
 
-fn run_loop(controller: &mut mpv::Controller, options: &Options, stop: &Stop) -> anyhow::Result<()> {
+fn run_loop(
+    controller: &mut mpv::Controller,
+    options: &Options,
+    stop: &Stop,
+) -> anyhow::Result<()> {
     let mut stable = StableLag::default();
     let mut last_rejection = None;
     while !stop.requested() {
@@ -195,7 +206,8 @@ fn run_loop(controller: &mut mpv::Controller, options: &Options, stop: &Stop) ->
         let Some(bytes) = capture::record(options, stop)? else {
             break;
         };
-        let (reference, microphone) = calibration::decode_pcm(&bytes).map_err(anyhow::Error::msg)?;
+        let (reference, microphone) =
+            calibration::decode_pcm(&bytes).map_err(anyhow::Error::msg)?;
         let max_lag = usize::try_from(options.max_lag_ms)? * (latency::SAMPLE_RATE / 1_000);
         let measured = match latency::estimate(&reference, &microphone, max_lag) {
             Ok(measured) => {

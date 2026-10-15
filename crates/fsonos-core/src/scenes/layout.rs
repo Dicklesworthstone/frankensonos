@@ -117,8 +117,8 @@ mod tests {
             })
             .collect();
         vec![HouseholdState {
-            rooms,
             groups,
+            rooms,
             ..HouseholdState::default()
         }]
     }
@@ -154,7 +154,11 @@ mod tests {
         let s = scene(&[Some(0), None, None, None]);
         let p = plan_apply(&s, &h, &[]).unwrap();
         assert_eq!(p.ops, [leave(&h[0].rooms[1]), leave(&h[0].rooms[2])]);
-        assert_eq!(zones(&s, &h), [id(0)], "snapshot includes the removed rooms");
+        assert_eq!(
+            zones(&s, &h),
+            [id(0)],
+            "snapshot includes the removed rooms"
+        );
     }
 
     #[test]
@@ -235,7 +239,10 @@ mod tests {
         h[0].rooms[1].players.push(id(11));
         h[0].groups[0].members.extend([id(10), id(11)]);
         let s = scene(&[Some(0), None]);
-        assert_eq!(plan_apply(&s, &h, &[]).unwrap().ops, [leave(&h[0].rooms[1])]);
+        assert_eq!(
+            plan_apply(&s, &h, &[]).unwrap().ops,
+            [leave(&h[0].rooms[1])]
+        );
     }
 
     #[test]
@@ -254,7 +261,10 @@ mod tests {
         h.push(other);
         let mut s = scene(&[Some(0), None]);
         s.groups[0].coordinator = "Room 0@SECOND".into();
-        assert_eq!(plan_apply(&s, &h, &[]).unwrap().ops, [leave(&h[1].rooms[1])]);
+        assert_eq!(
+            plan_apply(&s, &h, &[]).unwrap().ops,
+            [leave(&h[1].rooms[1])]
+        );
     }
 
     // Model room-level moves independently of SOAP. If a coordinator moves,

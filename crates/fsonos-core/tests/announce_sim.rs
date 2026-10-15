@@ -469,13 +469,13 @@ fn a_transient_402_on_the_source_restore_is_retried_once() {
 /// Delegates to the inner `Lan`, but plays a Wi-Fi drop like the one that
 /// left the owner's house regrouped on 2026-10-14 (bead co55.6): after the
 /// `nth` `GetTransportInfo` answer of `state` once the clip is installed,
-/// at the `skip + 1`th `then` request, no player answers for `outage`.
+/// at the `skip + 1`th `then` request, no player answers for `lasting`.
 /// `meanwhile` runs once as the players fall silent.
 struct Outage<'a> {
     inner: &'a SimLan,
     state: (&'static str, usize),
     then: (&'static str, usize),
-    outage: Duration,
+    lasting: Duration,
     meanwhile: Option<Box<dyn Fn() + Send + Sync + 'a>>,
     installed: AtomicBool,
     seen: AtomicUsize,
@@ -494,7 +494,7 @@ impl<'a> Outage<'a> {
             inner,
             state,
             then,
-            outage,
+            lasting: outage,
             meanwhile: None,
             installed: AtomicBool::new(false),
             seen: AtomicUsize::new(0),
@@ -519,7 +519,7 @@ impl<'a> Outage<'a> {
                 meanwhile();
             }
         }
-        began.is_some_and(|at| at.elapsed() < self.outage)
+        began.is_some_and(|at| at.elapsed() < self.lasting)
     }
 }
 
