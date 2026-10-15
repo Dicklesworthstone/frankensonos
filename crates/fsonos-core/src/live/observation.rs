@@ -11,6 +11,8 @@ use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+mod controls;
+
 /// Current coordinators only. Never ask an offline room, or mistake a
 /// member's transport state for that of the group it follows.
 pub(super) fn coordinators(model: &Model) -> Vec<(PlayerId, IpAddr)> {
@@ -89,7 +91,8 @@ pub(super) fn read<T: Transport + ?Sized>(
 }
 
 /// The existing low-frequency survey also repairs lost pause, resume, stop
-/// and queue notifications, publishing changes for the DJ and API consumers.
+/// and queue notifications, plus room levels, group volume and play mode,
+/// publishing the same deltas for the DJ and API consumers as GENA.
 pub(super) fn survey(engine: &Engine, model: &mut Model) -> Vec<LiveEvent> {
     let mut events = Vec::new();
     for (player, host) in coordinators(model) {
@@ -109,6 +112,7 @@ pub(super) fn survey(engine: &Engine, model: &mut Model) -> Vec<LiveEvent> {
             }
         }
     }
+    controls::survey(engine, model, &mut events);
     events
 }
 

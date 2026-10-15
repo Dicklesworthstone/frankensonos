@@ -5,6 +5,8 @@ use fsonos_proto::control::{MediaInfo, PositionInfo, TransportInfo};
 use fsonos_types::{PlayerId, TransportState};
 use std::time::{Duration, Instant};
 
+mod controls;
+
 /// One completed read-back of a renderer. Collect every response before
 /// applying it: a failed read must not publish half of a new playback state.
 #[derive(Debug, Clone, PartialEq, Eq)]
