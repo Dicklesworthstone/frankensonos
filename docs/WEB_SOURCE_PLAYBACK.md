@@ -40,3 +40,27 @@ Validation: `node --test scripts/test-remote-source-player.cjs` executes the
 shipped parsing, controller, DOM panel and mounting adapter. It also checks
 a real loopback HTTP exchange. Physical Sonos/Spotify acceptance is a separate
 hardware check; the loopback server does not emulate the Rust daemon.
+
+## Add Spotify music without interrupting the current source
+
+Select **Queue next** or **Queue at end** in the Action field, then **Review
+queue addition**. Tracks, albums and playlists use the existing `/queue`
+contract with `next: true` or `next: false`; no play, resume, source replacement
+or volume request is added. Streams are play-only in this panel.
+
+The review shows the existing queue size and, for Queue next, the entry after
+which music will be inserted. If no queue entry is selected, Queue next uses
+the native append behavior and the review says so. Neither option starts an
+idle queue or resumes paused music. A completed addition reports the actual
+first position, track count and whether the group is using its queue.
+
+Both modes recheck queue revision and group membership before sending. Queue
+next also rechecks the current playback/insertion anchor; Queue at end permits
+natural track advances. These checks cannot prevent changes between the final
+read and the speaker's write. An incomplete acknowledgement remains uncertain:
+never retry automatically or fall back to Play now, which would interrupt music.
+
+Queue tests: `node --test scripts/test-remote-source-player*.cjs`. Coverage
+includes real loopback HTTP, paused/idle queues, stale revisions and anchors,
+malformed receipts, delayed replies and duplicate submissions. The HTTP fixture
+is not the Rust daemon or a physical speaker.

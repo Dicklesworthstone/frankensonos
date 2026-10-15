@@ -225,7 +225,7 @@ function panelFixture(call) {
     node.append(...children); return node;
   };
   const panel = Player.panel({ call, el, document: doc });
-  return { doc, panel, el, find: text => descendants(panel.node).find(n => n.textContent === text),
+  return { doc, panel, el, find: text => descendants(panel.node).find(n => n.tag === 'button' && n.textContent === text),
     field: label => descendants(panel.node).find(n => n.attributes['aria-label'] === label) };
 }
 
@@ -289,7 +289,7 @@ test('the browser adapter uses the existing native action lock and releases it a
   const details = descendants(inserted).find(n => n.tag === 'details'); details.open = true; details.emit('toggle'); await settle();
   const target = descendants(inserted).find(n => n.tag === 'select'); target.value = 'Den@S2'; target.emit('change');
   const input = descendants(inserted).find(n => n.attributes['aria-label'] === 'Spotify link or audio stream address'); input.value = `spotify:track:${ID}`; input.emit('input');
-  const button = label => descendants(inserted).find(n => n.textContent === label);
+  const button = label => descendants(inserted).find(n => n.tag === 'button' && n.textContent === label);
   button('Review playback').emit('click'); await settle(); busy = true; button('Play now').emit('click'); await settle();
   assert.equal(h.writes().length, 0); assert.equal(ends, 0);
   busy = false; button('Review playback').emit('click'); await settle(); button('Play now').emit('click'); await settle();
@@ -300,12 +300,23 @@ test('the source UI is embedded and covered by the unchanged browser policy and 
   const root = path.join(__dirname, '..');
   const rust = fs.readFileSync(path.join(root, 'crates/fsonos-api/src/http/remote.rs'), 'utf8');
   const ci = fs.readFileSync(path.join(root, '.github/workflows/linux-speech.yml'), 'utf8');
-  assert.ok(rust.includes('{EQ_SCRIPT}\\n{SOURCE_PLAYER_SCRIPT}'));
-  assert.ok(rust.includes('{EQ_STYLE}\\n{SOURCE_PLAYER_STYLE}'));
+  assert.ok(rust.includes('{SOURCE_PLAYER_SCRIPT}'), 'source code is part of the script bundle');
+  assert.ok(rust.indexOf('{SCRIPT}') < rust.indexOf('{SOURCE_PLAYER_SCRIPT}'), 'the shared client initializes first');
+  assert.ok(rust.includes('{SOURCE_PLAYER_STYLE}'), 'source controls are styled in the bundle');
   assert.match(ci, /run: node --test scripts\/test-remote-source-player.cjs/);
   for (const [file, name] of [['source-player.js', 'SOURCE_PLAYER_SCRIPT'], ['source-player.css', 'SOURCE_PLAYER_STYLE']]) {
     assert.ok(rust.includes(`("${file}", ${name})`));
     const text = fs.readFileSync(path.join(root, 'crates/fsonos-api/src/remote', file), 'utf8').toLowerCase();
     for (const banned of ['token', 'authorization', 'x-fsonos', 'tailscale-user', 'password', 'cookie', 'ts.net', 'http://', 'https://']) assert.ok(!text.includes(banned), `${file}: ${banned}`);
   }
+});
+
+test('page-cache transitions consume reviews and remove listeners on disposal', async () => {
+  const win = new Element(), doc = new Element(); doc.defaultView = win; doc.hidden = false;
+  const ui = panelFixture(async () => []);
+  const panel = Player.panel({ call: async name => name === 'zones' ? [zone()] : state(), el: ui.el, document: doc });
+  await panel.refresh(); panel.edit('target', 'Den@S2'); panel.edit('input', `spotify:track:${ID}`); await panel.review();
+  const p = panel.state.pending; win.emit('pagehide');
+  assert.equal(panel.state.pending, null); assert.equal(await panel.confirm(p), false);
+  panel.dispose(); assert.equal(win.events.size, 0); assert.equal(doc.events.size, 0); ui.panel.dispose();
 });
