@@ -121,6 +121,22 @@ codesign --force --sign "Developer ID Application: <you>" \
 
 ## 4. Run it under launchd
 
+> **macOS 26: check that launchd can reach the speakers.** On a Mac running
+> macOS 26.2 (2026-10-14), `fsonos serve` installed as the LaunchDaemon below
+> could not reach a single speaker: every connection failed at once with "No
+> route to host (os error 65)", and so did a ten-line Rust program run the
+> same way, while Apple's `curl` and an approved Python got through. macOS
+> keeps Local Network approvals per code identity, and a daemon cannot show
+> the prompt that would grant one. The `fsonos` binary now carries an
+> `Info.plist` (a bundle identifier and the usage string) so it has an
+> identity to approve; sign it with your own Developer ID (§3) so the approval
+> survives rebuilds, then approve it in System Settings > Privacy & Security >
+> Local Network. Until `fsonos doctor` passes when run by launchd
+> (`sudo launchctl kickstart -k system/$LABEL`, then `GET /doctor`), run
+> `fsonos serve` from a Terminal session instead: it inherits the terminal's
+> approval, and keeps running when detached (`nohup fsonos serve &`), though
+> not across a reboot.
+
 ### Why a LaunchDaemon (recommended)
 
 On macOS 15 and later, **Local Network privacy** gates the daemon's core work:
