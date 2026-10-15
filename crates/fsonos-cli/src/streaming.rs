@@ -23,6 +23,8 @@ use crate::config::GlobalArgs;
 use crate::direct::Direct;
 
 mod broadcast;
+mod calibration;
+mod latency;
 mod recovery;
 
 #[derive(Debug, Clone, Args)]
@@ -41,6 +43,12 @@ pub struct StreamArgs {
     /// Path to the locally installed FFmpeg executable.
     #[arg(long, default_value = "ffmpeg")]
     pub ffmpeg: String,
+    /// Measure a synchronized stereo WAV instead of streaming (no device I/O).
+    #[arg(long)]
+    pub latency_wav: Option<std::path::PathBuf>,
+    /// Largest acoustic delay to measure; recording must be at least twice as long.
+    #[arg(long, default_value_t = 8_000, value_parser = clap::value_parser!(u32).range(21..=14_000))]
+    pub max_lag_ms: u32,
 }
 
 fn encoder_args(args: &StreamArgs) -> Vec<String> {
@@ -116,12 +124,47 @@ fn restore_if_still_streaming(
     Ok(())
 }
 
+fn report_measurement(
+    json: bool,
+    room: &str,
+    path: &std::path::Path,
+    max_lag_ms: u32,
+) -> anyhow::Result<()> {
+    let measured = calibration::measure_file(path, max_lag_ms)?;
+    crate::emit(
+        json,
+        &serde_json::json!({
+            "room": room,
+            "lag_seconds": measured.seconds(),
+            "lag_samples": measured.lag_samples,
+            "sample_rate": latency::SAMPLE_RATE,
+            "correlation": measured.correlation,
+            "peak_ratio": measured.peak_ratio,
+            "mpv_audio_delay_delta": -measured.seconds(),
+            "device_verified": false,
+        }),
+        |_| {
+            format!(
+                "Measured acoustic lag: {:.3} s (correlation {:.3}, peak ratio {:.2}).\n\
+                 mpv audio-delay correction: -{:.3} s. No device was contacted.\n",
+                measured.seconds(),
+                measured.correlation,
+                measured.peak_ratio,
+                measured.seconds()
+            )
+        },
+    )
+}
+
 pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     if global.daemon || global.daemon_url.is_some() {
         bail!("stream needs a direct LAN connection to Sonos; remove --daemon/--daemon-url");
     }
     if args.ffmpeg.is_empty() || args.format.is_empty() || args.input.is_empty() {
         bail!("--ffmpeg, --format and --input must not be empty");
+    }
+    if let Some(path) = &args.latency_wav {
+        return report_measurement(global.json, &args.room, path, args.max_lag_ms);
     }
     let direct = Direct::survey(global)?;
     let target = fsonos_api::plan::resolve(direct.households()?, &args.room)?;
@@ -207,6 +250,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn calibration_arguments_are_explicit_and_bounded() {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: StreamArgs,
+        }
+        let parsed = Cli::try_parse_from([
+            "stream",
+            "Room",
+            "--latency-wav",
+            "aligned.wav",
+            "--max-lag-ms",
+            "4000",
+        ])
+        .unwrap();
+        assert_eq!(parsed.args.max_lag_ms, 4_000);
+        assert!(parsed.args.latency_wav.is_some());
+        assert!(Cli::try_parse_from(["stream", "Room", "--max-lag-ms", "0"]).is_err());
+        assert!(Cli::try_parse_from(["stream", "Room", "--max-lag-ms", "15000"]).is_err());
+    }
+
+    #[test]
     fn encoder_is_a_local_argument_array_without_a_shell() {
         let args = StreamArgs {
             room: "Office".into(),
@@ -214,6 +280,8 @@ mod tests {
             format: "pulse".into(),
             bitrate: 256,
             ffmpeg: "ffmpeg".into(),
+            latency_wav: None,
+            max_lag_ms: 8_000,
         };
         let command = encoder_args(&args);
         assert_eq!(
