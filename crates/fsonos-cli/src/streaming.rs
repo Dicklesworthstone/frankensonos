@@ -5,9 +5,8 @@
 //! Ctrl-C restores playback only while source and group ownership still match.
 //! Cleanup does not restore volume, mute or grouping it did not change.
 //!
-//! Sonos buffers HTTP radio for seconds. This is live audio for listening,
-//! NOT synchronized playback with a computer's video (issue #2's separate
-//! calibration and drift-correction work).
+//! Sonos buffers HTTP radio for seconds. Acoustic measurement and optional mpv
+//! correction are experimental; neither implies a physical lip-sync guarantee.
 
 use anyhow::{Context as _, bail};
 use clap::Args;
@@ -26,6 +25,8 @@ mod broadcast;
 mod calibration;
 mod latency;
 mod recovery;
+#[cfg(unix)]
+mod synchronization;
 
 #[derive(Debug, Clone, Args)]
 pub struct StreamArgs {
@@ -49,6 +50,9 @@ pub struct StreamArgs {
     /// Largest acoustic delay to measure; recording must be at least twice as long.
     #[arg(long, default_value_t = 8_000, value_parser = clap::value_parser!(u32).range(21..=14_000))]
     pub max_lag_ms: u32,
+    #[cfg(unix)]
+    #[command(flatten)]
+    pub sync: synchronization::SyncArgs,
 }
 
 fn encoder_args(args: &StreamArgs) -> Vec<String> {
@@ -166,6 +170,8 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     if let Some(path) = &args.latency_wav {
         return report_measurement(global.json, &args.room, path, args.max_lag_ms);
     }
+    #[cfg(unix)]
+    let sync = synchronization::Prepared::from_args(args)?;
     let direct = Direct::survey(global)?;
     let target = fsonos_api::plan::resolve(direct.households()?, &args.room)?;
     let coordinator = target.coordinator;
@@ -228,7 +234,11 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
                 "fsonos stream: {} listening; press Ctrl-C to stop",
                 args.room
             );
-            stream.wait_until_stopped().map_err(anyhow::Error::from)
+            #[cfg(unix)]
+            let result = synchronization::wait(&mut stream, sync, Arc::clone(&stop));
+            #[cfg(not(unix))]
+            let result = stream.wait_until_stopped().map_err(anyhow::Error::from);
+            result
         }
         Err(error) => Err(error),
     };
@@ -270,6 +280,35 @@ mod tests {
         assert!(parsed.args.latency_wav.is_some());
         assert!(Cli::try_parse_from(["stream", "Room", "--max-lag-ms", "0"]).is_err());
         assert!(Cli::try_parse_from(["stream", "Room", "--max-lag-ms", "15000"]).is_err());
+        #[cfg(unix)]
+        {
+            assert!(Cli::try_parse_from(["stream", "Room", "--sync-mpv", "/tmp/mpv"]).is_err());
+            assert!(
+                Cli::try_parse_from([
+                    "stream",
+                    "Room",
+                    "--sync-input",
+                    "paired",
+                    "--sync-mpv",
+                    "/tmp/mpv",
+                    "--latency-wav",
+                    "aligned.wav",
+                ])
+                .is_err()
+            );
+            let live = Cli::try_parse_from([
+                "stream",
+                "Room",
+                "--sync-input",
+                "paired",
+                "--sync-mpv",
+                "/tmp/mpv",
+                "--sync-base-delay",
+                "-0.2",
+            ])
+            .unwrap();
+            assert!((live.args.sync.sync_base_delay + 0.2).abs() < 1e-9);
+        }
     }
 
     #[test]
@@ -282,6 +321,8 @@ mod tests {
             ffmpeg: "ffmpeg".into(),
             latency_wav: None,
             max_lag_ms: 8_000,
+            #[cfg(unix)]
+            sync: synchronization::SyncArgs::default(),
         };
         let command = encoder_args(&args);
         assert_eq!(

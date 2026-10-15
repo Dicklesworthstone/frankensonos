@@ -40,10 +40,14 @@ header size, header time and write time are bounded. A partial request or a
 reset connection does not terminate the whole stream.
 
 These limits bound application buffering, not Sonos's internal buffering or
-all operating-system network buffers. **This is not video synchronization.**
-Automatic latency measurement, video delay control and drift correction from
-issue #2 remain separate work; the command does not claim a fixed end-to-end
-latency or lip-sync guarantee.
+all operating-system network buffers. **Ordinary streaming does not synchronize
+video.** An experimental, explicit `--sync-mpv` / `--sync-input` pair now adds
+acoustic feedback and guarded mpv delay correction. `--latency-wav` measures
+an existing synchronized reference/microphone recording without contacting a
+speaker. See [Acoustic calibration](AUDIO_CALIBRATION.md) for required channel
+routing, ownership safeguards and limitations. Automatic source pairing,
+startup chirps and real-hardware lip-sync acceptance remain work for issue #2;
+no fixed end-to-end latency or lip-sync guarantee is claimed.
 
 ## Stopping and restoration
 
