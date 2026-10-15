@@ -774,7 +774,7 @@ fn sqlite_in_memory_conforms() {
     suite(&mut s);
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     );
     s.close().unwrap();
 }
@@ -792,7 +792,7 @@ fn sqlite_file_survives_close_and_reopen() {
     let s = SqliteStore::open(&path).unwrap();
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     );
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);
@@ -842,4 +842,82 @@ fn sqlite_file_survives_close_and_reopen() {
         ["spotify:track:9"]
     );
     s.close().unwrap();
+}
+
+#[test]
+fn spotify_browse_cache_survives_reopen_and_replaces_membership() {
+    use fsonos_core::store::{SpotifyAlbum, SpotifyCache};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("spotify.db");
+    let album = SpotifyAlbum {
+        id: "fakealbum".into(),
+        uri: "spotify:album:fakealbum".into(),
+        title: "Bach".into(),
+        artist: "Test Pianist".into(),
+        year: Some(1982),
+        tracks: 3,
+        art_url: Some("https://cdn.example.invalid/cover.jpg".into()),
+        saved: true,
+    };
+    let cache = SpotifyCache {
+        albums: vec![album],
+        liked_uris: vec!["spotify:track:fake".into()],
+        track_uris: vec!["spotify:track:fake".into()],
+        synced_at: Some(123),
+    };
+    let mut store = SqliteStore::open(&path).unwrap();
+    assert_eq!(store.spotify_cache().unwrap(), SpotifyCache::default());
+    store.save_spotify_cache(&cache).unwrap();
+    store.close().unwrap();
+    let mut reopened = SqliteStore::open(&path).unwrap();
+    assert_eq!(reopened.spotify_cache().unwrap(), cache);
+    let empty = SpotifyCache {
+        synced_at: Some(124),
+        ..SpotifyCache::default()
+    };
+    reopened.save_spotify_cache(&empty).unwrap();
+    assert_eq!(reopened.spotify_cache().unwrap(), empty);
+    let mut memory = MemStore::default();
+    memory.save_spotify_cache(&cache).unwrap();
+    assert_eq!(memory.spotify_cache().unwrap(), cache);
+    memory.save_spotify_cache(&empty).unwrap();
+    assert_eq!(memory.spotify_cache().unwrap(), empty);
+}
+
+#[test]
+fn account_switch_clears_library_and_browse_preserves_history_and_survives_reopen() {
+    use fsonos_core::store::SpotifyCache;
+    fn clear(s: &mut dyn Store) {
+        s.upsert_library(&[entry("spotify:track:previous", 1, Some("Bach"), true)])
+            .unwrap();
+        s.save_spotify_cache(&SpotifyCache {
+            track_uris: vec!["spotify:track:previous".into()],
+            liked_uris: vec!["spotify:track:previous".into()],
+            synced_at: Some(1),
+            ..Default::default()
+        })
+        .unwrap();
+        s.record_play("RINCON_ART_STUB", "spotify:track:previous", 1)
+            .unwrap();
+        s.clear_spotify_library().unwrap();
+        assert!(s.library().unwrap().is_empty());
+        assert_eq!(s.spotify_cache().unwrap(), SpotifyCache::default());
+        assert_eq!(s.recent_plays(None, 1).unwrap().len(), 1);
+    }
+    clear(&mut MemStore::default());
+    clear(&mut SqliteStore::open_in_memory().unwrap());
+    let path = std::env::temp_dir().join(format!(
+        "fsonos-account-switch-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    {
+        clear(&mut SqliteStore::open(&path).unwrap());
+    }
+    let s = SqliteStore::open(&path).unwrap();
+    assert!(s.library().unwrap().is_empty());
+    assert_eq!(s.spotify_cache().unwrap(), SpotifyCache::default());
 }

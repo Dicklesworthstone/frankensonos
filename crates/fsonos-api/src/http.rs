@@ -154,7 +154,13 @@ fn openapi_document(entries: &[RouteEntry]) -> String {
         .cloned()
         .fold(App::builder().openapi(config), AppBuilder::route_entry)
         .build();
-    documented.openapi_spec().unwrap_or("{}").to_string()
+    let mut spec: serde_json::Value =
+        serde_json::from_str(documented.openapi_spec().unwrap_or("{}")).unwrap();
+    let art = &mut spec["paths"]["/speaker-art"]["get"]["responses"]["200"];
+    art["content"] =
+        serde_json::json!({"image/*": {"schema": {"type": "string", "format": "binary"}}});
+    art["headers"] = serde_json::json!({"Cache-Control": {"schema": {"type": "string"}, "description": "public, max-age=86400"}});
+    serde_json::to_string(&spec).unwrap()
 }
 
 const DAEMON: &str = "daemon";
@@ -183,6 +189,8 @@ fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(schedules::routes(cx));
     routes.extend(spotify_auth::routes(cx));
     routes.extend(remote::routes(cx));
+    routes.extend(spotify(cx));
+    routes.push(speaker_art(cx));
     routes
 }
 
@@ -258,6 +266,217 @@ fn dj_moods_query(req: &Request) -> Result<DjMoodsQuery, Failure> {
     Ok(DjMoodsQuery {
         zone: query_param(req, "zone")?,
     })
+}
+
+fn spotify_exchange(cx: &Ctx<'_>) -> RouteEntry {
+    cx.async_route(
+        &Op::post(
+            "/auth/spotify/exchange",
+            "spotify_exchange",
+            "spotify",
+            "Complete app Spotify sign-in",
+        ),
+        |surface, caller, cx, req| {
+            let input = serde_json::from_slice::<crate::spotify::ExchangeRequest>(
+                &req.take_body().into_bytes(),
+            )
+            .map_err(|_| {
+                Failure::invalid("exchange requires code, code_verifier and redirect_uri strings")
+            });
+            Box::pin(async move {
+                match input {
+                    Ok(input) => surface.spotify_exchange(&cx, &caller, input).await,
+                    Err(err) => crate::failure::http_error(&err, 400, false),
+                }
+            })
+        },
+    )
+    .request_schema::<crate::spotify::ExchangeRequest>(true)
+    .response_schema::<crate::spotify::ExchangeDto>(200, "Signed in")
+}
+
+fn spotify(cx: &Ctx<'_>) -> Vec<RouteEntry> {
+    use crate::spotify::{AlbumsDto, StatusDto, TrackDto, TracksDto};
+    let mut entries = vec![spotify_exchange(cx)];
+    entries.extend(vec![
+        cx.route(
+            &Op::get(
+                "/spotify/status",
+                "spotify_status",
+                "spotify",
+                "Spotify sign-in, library and sync progress",
+            ),
+            |s, c, _| answer(s.spotify_status(c)),
+        )
+        .response_schema::<StatusDto>(200, "Spotify status"),
+        cx.route(
+            &Op::get(
+                "/spotify/albums",
+                "list_spotify_albums",
+                "spotify",
+                "Saved albums in the library cache",
+            ),
+            |s, c, req| {
+                answer(spotify_list_query(req).and_then(|q| {
+                    s.spotify_albums(
+                        c,
+                        q.offset.unwrap_or(0),
+                        q.limit.unwrap_or(50),
+                        q.q.as_deref().unwrap_or_default(),
+                    )
+                }))
+            },
+        )
+        .query_schema::<SpotifyListQuery>(false)
+        .response_schema::<AlbumsDto>(200, "Saved albums"),
+        cx.route(
+            &Op::get(
+                "/spotify/albums/{id}/tracks",
+                "list_spotify_album_tracks",
+                "spotify",
+                "Cached tracks of a saved album",
+            ),
+            |s, c, req| answer(spotify_album_id(req).and_then(|id| s.spotify_album_tracks(c, &id))),
+        )
+        .response_schema::<Vec<TrackDto>>(200, "Album tracks, in disc and track order")
+        .path_schema::<String>(&["id"]),
+        cx.route(
+            &Op::get(
+                "/spotify/tracks",
+                "list_spotify_tracks",
+                "spotify",
+                "Liked tracks in the library cache",
+            ),
+            |s, c, req| {
+                answer(spotify_list_query(req).and_then(|q| {
+                    s.spotify_tracks(
+                        c,
+                        q.offset.unwrap_or(0),
+                        q.limit.unwrap_or(50),
+                        q.q.as_deref().unwrap_or_default(),
+                    )
+                }))
+            },
+        )
+        .query_schema::<SpotifyListQuery>(false)
+        .response_schema::<TracksDto>(200, "Liked tracks"),
+        spotify_search(cx),
+    ]);
+    entries
+}
+
+fn spotify_search(cx: &Ctx<'_>) -> RouteEntry {
+    cx.route(
+        &Op::get(
+            "/spotify/search",
+            "search_spotify",
+            "spotify",
+            "Search all of Spotify for albums and tracks",
+        ),
+        |s, c, req| {
+            answer(spotify_search_query(req).and_then(|query| {
+                s.spotify_search(
+                    c,
+                    &query.q,
+                    query.limit.unwrap_or(crate::spotify::SEARCH_LIMIT),
+                )
+            }))
+        },
+    )
+    .query_schema::<SpotifySearchQuery>(true)
+    .response_schema::<crate::spotify::SearchDto>(200, "Matching albums and tracks")
+}
+
+#[derive(JsonSchema)]
+struct ArtQuery {
+    player: String,
+    u: String,
+}
+
+fn speaker_art(cx: &Ctx<'_>) -> RouteEntry {
+    cx.async_route(
+        &Op::get(
+            "/speaker-art",
+            "get_speaker_art",
+            "art",
+            "Read artwork from a discovered speaker",
+        ),
+        |surface, caller, cx, req| {
+            let input = (|| {
+                Ok::<_, Failure>(ArtQuery {
+                    player: query_param(req, "player")?
+                        .ok_or_else(|| Failure::invalid("player is required"))?,
+                    u: query_param(req, "u")?.ok_or_else(|| Failure::invalid("u is required"))?,
+                })
+            })();
+            Box::pin(async move {
+                match input {
+                    Ok(q) => surface.art(&cx, &caller, &q.player, &q.u).await,
+                    Err(_) => crate::failure::http_error(
+                        &Failure::invalid("invalid art query"),
+                        400,
+                        false,
+                    ),
+                }
+            })
+        },
+    )
+    .query_schema::<ArtQuery>(true)
+    .response_schema::<String>(200, "Image bytes; cache-control: public, max-age=86400")
+}
+
+#[derive(JsonSchema)]
+struct SpotifyListQuery {
+    offset: Option<usize>,
+    /// 1 to 200, default 50.
+    limit: Option<usize>,
+    q: Option<String>,
+}
+
+fn spotify_list_query(req: &Request) -> Result<SpotifyListQuery, Failure> {
+    let limit = whole_number(req, "limit")?;
+    if limit.is_some_and(|n| n == 0 || n > 200) {
+        return Err(Failure::invalid("limit must be 1 to 200"));
+    }
+    Ok(SpotifyListQuery {
+        offset: whole_number(req, "offset")?,
+        limit,
+        q: query_param(req, "q")?,
+    })
+}
+
+#[derive(JsonSchema)]
+struct SpotifySearchQuery {
+    /// What to look for: an artist, song or album.
+    q: String,
+    /// 1 to 10 per kind, default 10.
+    limit: Option<usize>,
+}
+
+fn spotify_search_query(req: &Request) -> Result<SpotifySearchQuery, Failure> {
+    let q = query_param(req, "q")?
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if q.is_empty() {
+        return Err(Failure::invalid(
+            "say what to look for: GET /spotify/search?q=<words>",
+        ));
+    }
+    let limit = whole_number(req, "limit")?;
+    if limit.is_some_and(|n| n == 0 || n > crate::spotify::SEARCH_LIMIT) {
+        return Err(Failure::invalid("limit must be 1 to 10"));
+    }
+    Ok(SpotifySearchQuery { q, limit })
+}
+
+fn spotify_album_id(req: &Request) -> Result<String, Failure> {
+    let raw = req
+        .get_extension::<PathParams>()
+        .and_then(|p| p.get("id"))
+        .unwrap_or_default();
+    percent_decode(raw)
+        .ok_or_else(|| Failure::invalid("album id is not valid percent-encoded UTF-8"))
 }
 
 /// Moving the music between rooms, and the whole-house party.
@@ -584,6 +803,35 @@ impl Ctx<'_> {
         )
     }
 
+    fn async_route<F>(&self, op: &Op, work: F) -> RouteEntry
+    where
+        F: Fn(Arc<Surface>, Client, asupersync::Cx, &mut Request) -> BoxFuture<'static, Response>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let surface = Arc::clone(self.surface);
+        let identity = self.identity.clone();
+        let web = Arc::clone(self.web);
+        let write = op.method == Method::Post;
+        let route = Route::new(op.method, op.path)
+            .operation_id(op.id)
+            .summary(op.summary)
+            .tag(op.tag);
+        let entry = RouteEntry::from_route(route, move |ctx, req| {
+            if let Err(err) = web.admit(req, write) {
+                return Box::pin(ready(err.http_response())) as BoxFuture<'_, Response>;
+            }
+            work(
+                Arc::clone(&surface),
+                identity.of(req),
+                ctx.cx().clone(),
+                req,
+            )
+        });
+        error_answers(entry, write)
+    }
+
     /// A control route: parse the JSON body as `B`, plan it, carry it out.
     /// The action is logged under the operation id (the MCP tool's name).
     fn control<B, P>(&self, op: Op, plan: P) -> RouteEntry
@@ -593,7 +841,15 @@ impl Ctx<'_> {
     {
         let tool = op.id;
         self.route(&op, move |surface, client, req| {
-            answer(body::<B>(req).and_then(|b| surface.control(client, tool, |h| plan(h, &b))))
+            let result =
+                body::<B>(req).and_then(|b| surface.control(client, tool, |h| plan(h, &b)));
+            if tool == "play"
+                && let Err(failure) = &result
+                && failure.code == ErrorCode::SpotifyNotConfigured
+            {
+                return crate::failure::http_error(failure, 409, false);
+            }
+            answer(result)
         })
         .request_schema::<B>(true)
         .response_schema::<OutcomeDto>(200, "What was done")

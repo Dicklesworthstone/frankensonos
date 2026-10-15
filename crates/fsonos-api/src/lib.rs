@@ -27,6 +27,7 @@
 //!   status, steering and moods as the surfaces show them;
 //! * [`failure`] — the one [`Failure`] shape (status + agent-readable detail).
 
+mod art;
 pub mod dj;
 pub mod events;
 pub mod execute;
@@ -42,6 +43,7 @@ pub mod plan;
 pub mod reads;
 pub mod request;
 pub mod source;
+pub mod spotify;
 pub mod surface;
 pub mod web;
 pub mod zones;

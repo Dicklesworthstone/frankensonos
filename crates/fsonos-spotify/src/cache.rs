@@ -76,7 +76,19 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     cx: &Cx,
     store: &mut S,
 ) -> Result<LibrarySyncDetailed, SpotifyError> {
-    let mut items = session.read_library(cx).await?;
+    sync_library_observed(session, cx, store, &mut |_, _| {}).await
+}
+
+/// [`sync_library_detailed`], reporting `(done, total)` as the library read
+/// pages on. The albums and membership a browsing app lists are cached with
+/// the library ([`Store::save_spotify_cache`]).
+pub async fn sync_library_observed<S: Store + ?Sized>(
+    session: &mut Session,
+    cx: &Cx,
+    store: &mut S,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<LibrarySyncDetailed, SpotifyError> {
+    let (mut items, mut browse) = session.read_library_observed(cx, progress).await?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
@@ -134,6 +146,8 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     taste.name_genres(&mut items);
     crate::genre_guess::fill(&mut items);
     let report = apply_library_read(store, &items)?;
+    browse.synced_at = Some(now);
+    store.save_spotify_cache(&browse)?;
     // Read and cache the album track lists that complete partly-held works
     // (a liked Adagietto), so the DJ plays them whole from the cache. Best
     // effort, like the reads above: a halted run resumes next sync.

@@ -1,0 +1,6 @@
+.build/
+# Generated from project.yml by `xcodegen generate`.
+FrankenSonos.xcodeproj/
+Generated/
+# Screenshots rendered by the SketchShots target; not committed.
+sketch-shots/

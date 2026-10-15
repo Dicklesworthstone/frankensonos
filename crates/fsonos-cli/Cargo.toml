@@ -47,6 +47,7 @@ sim = ["dep:fsonos-sim"]
 tailscale-live = []
 
 [dev-dependencies]
+fsonos-spotify = { workspace = true, features = ["test-support"] }
 # The e2e harness (tests/e2e) drives the binary against virtual players.
 fsonos-sim = { workspace = true }
 

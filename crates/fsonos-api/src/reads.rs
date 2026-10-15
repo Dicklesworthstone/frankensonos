@@ -69,6 +69,8 @@ pub struct TrackDto {
     pub album: Option<String>,
     pub uri: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub art_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position_secs: Option<u32>,
@@ -90,6 +92,7 @@ impl TrackDto {
             creator: meta.and_then(|m| m.creator.clone()),
             album: meta.and_then(|m| m.album.clone()),
             uri: position.uri.clone(),
+            art_url: meta.and_then(|m| m.album_art_uri.clone()),
             duration_secs: position.duration_secs,
             position_secs: position.position_secs,
             queue_position: (position.track > 0).then_some(position.track),

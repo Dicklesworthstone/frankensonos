@@ -757,6 +757,11 @@ mod tests {
         let artist = play_spotify("spotify:artist:0123456789ABCDEFabcdef");
         let err = execute(&t, &households(), &artist).unwrap_err();
         assert_eq!((err.code, err.status()), (ErrorCode::NotImplemented, 501));
+        assert!(
+            err.hint.contains("track") && err.hint.contains("album"),
+            "{}",
+            err.hint
+        );
         let dj = Command::Dj {
             coordinator: id("RINCON_DEN"),
             action: DjAction::Start,

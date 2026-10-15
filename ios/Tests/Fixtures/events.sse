@@ -1,0 +1,48 @@
+id: 9
+event: zone.state
+data: {"player":"RINCON_000E58A0000101400","room":"Living Room","track":"x-sonos-spotify:spotify%3atrack%3a0SimS2TrackA0000000000?sid=12&flags=8232&sn=2","queue_length":1}
+
+id: 10
+event: zone.state
+data: {"player":"RINCON_000E58A0000101400","room":"Living Room","transport":"playing"}
+
+id: 11
+event: action.logged
+data: {"id":1,"at":1791489253,"client":"loopback-http","surface":"serve","intent":"play_favorite: PlayFavorite { coordinator: PlayerId(\"RINCON_000E58A0000101400\"), favorite: Favorite { id: \"FV:2/0\", title: \"Nocturne in E-flat\", kind: Track, uri: Some(\"x-sonos-spotify:spotify%3atrack%3a0SimS2TrackA0000000000?sid=12&flags=8232&sn=2\"), metadata: \"<DIDL-Lite xmlns:dc=\\\"http://purl.org/dc/elements/1.1/\\\" xmlns:upnp=\\\"urn:schemas-upnp-org:metadata-1-0/upnp/\\\" xmlns:r=\\\"urn:schemas-rinconnetworks-com:metadata-1-0/\\\" xmlns=\\\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\\\"><item id=\\\"10032028spotify%3atrack%3a0SimS2TrackA0000000000\\\" parentID=\\\"-1\\\" restricted=\\\"true\\\"><dc:title>Nocturne in E-flat</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class><desc id=\\\"cdudn\\\" nameSpace=\\\"urn:schemas-rinconnetworks-com:metadata-1-0/\\\">SA_RINCON3079_X_#Svc3079-0-Token</desc></item></DIDL-Lite>\", description: Some(\"By Sim Pianist\"), art_uri: None } }","decision":"allow","result":"playing the favorite \"Nocturne in E-flat\" in Living Room's group","undoable":true}
+
+id: 12
+event: zone.state
+data: {"player":"RINCON_000E58A0000101400","room":"Living Room","group_volume":35}
+
+id: 13
+event: zone.state
+data: {"player":"RINCON_000E58A0000101400","room":"Living Room","volume":35}
+
+id: 14
+event: action.logged
+data: {"id":2,"at":1791489255,"client":"loopback-http","surface":"serve","intent":"set_volume: Volume { target: PlayerId(\"RINCON_000E58A0000101400\"), scope: Room, change: Set(35) }","decision":"allow","result":"Living Room volume is 35","undoable":true}
+
+id: 15
+event: topology.changed
+data: {"households":1,"rooms":2}
+
+id: 16
+event: action.logged
+data: {"id":3,"at":1791489255,"client":"loopback-http","surface":"serve","intent":"group: Join { member: PlayerId(\"RINCON_000E58A0000201400\"), coordinator: PlayerId(\"RINCON_000E58A0000101400\") }","decision":"allow","result":"Bedroom joined Living Room's group","undoable":true}
+
+id: 17
+event: topology.changed
+data: {"households":1,"rooms":2}
+
+id: 18
+event: zone.state
+data: {"player":"RINCON_000E58A0000101400","room":"Living Room","group_volume":28}
+
+id: 19
+event: zone.state
+data: {"player":"RINCON_000E58A0000101400","room":"Living Room","transport":"paused"}
+
+id: 20
+event: action.logged
+data: {"id":4,"at":1791489259,"client":"loopback-http","surface":"serve","intent":"pause: Transport { coordinator: PlayerId(\"RINCON_000E58A0000101400\"), action: Pause }","decision":"allow","result":"paused Living Room's group","undoable":true}
+

@@ -10,6 +10,7 @@ description = "FrankenSonos HTTP control API (fastapi_rust), fronted for off-LAN
 [dependencies]
 fsonos-types = { workspace = true }
 fsonos-core = { workspace = true }
+fsonos-spotify = { workspace = true }
 fsonos-proto = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -25,6 +26,8 @@ fastapi = { workspace = true }
 asupersync = { workspace = true }
 
 [dev-dependencies]
+fsonos-spotify = { workspace = true, features = ["test-support"] }
+tracing-subscriber = { workspace = true }
 # Action-log and undo tests drive virtual players.
 fsonos-sim = { workspace = true }
 

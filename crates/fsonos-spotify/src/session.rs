@@ -21,6 +21,7 @@ use crate::client::{
     token_error,
 };
 use crate::library::{LibraryItem, LibraryRead};
+use fsonos_core::store::SpotifyCache;
 
 /// Per-request ceiling; the Cx budget can shorten it further.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -42,6 +43,15 @@ pub struct PendingAuthorization {
 }
 
 impl PendingAuthorization {
+    /// Start a flow without reading the token cache or making a request.
+    pub fn begin(config: &SpotifyConfig) -> Result<Self, SpotifyError> {
+        config.validate()?;
+        let pkce = Pkce::generate()?;
+        let state = random_state()?;
+        let url = config.authorize_url(&pkce, &state);
+        Ok(Self { url, pkce, state })
+    }
+
     /// The Spotify consent page for `user-library-read`.
     #[must_use]
     pub fn url(&self) -> &str {
@@ -133,10 +143,7 @@ impl Session {
 
     /// Start the Authorization Code + PKCE flow.
     pub fn begin_authorization(&self) -> Result<PendingAuthorization, SpotifyError> {
-        let pkce = Pkce::generate()?;
-        let state = random_state()?;
-        let url = self.config.authorize_url(&pkce, &state);
-        Ok(PendingAuthorization { url, pkce, state })
+        PendingAuthorization::begin(&self.config)
     }
 
     /// Finish the flow with the redirect the owner's browser landed on (a
@@ -152,6 +159,33 @@ impl Session {
         let body = self.config.code_exchange_body(&code, &pending.pkce);
         let response = self.post_token(cx, body).await?;
         let token = CachedToken::from_exchange(response, unix_now())?;
+        self.cache.store(&token)?;
+        self.token = Some(token);
+        Ok(())
+    }
+
+    /// Finish an app-started PKCE flow; the caller validates its redirect and state.
+    pub async fn exchange_code(
+        &mut self,
+        cx: &Cx,
+        code: &str,
+        pkce: &Pkce,
+        redirect_uri: &str,
+    ) -> Result<(), SpotifyError> {
+        let body = self
+            .config
+            .code_exchange_body_with_redirect(code, pkce, redirect_uri);
+        let response = self.send_token(cx, body).await?;
+        if response.status >= 500 || response.status == 429 {
+            return Err(SpotifyError::Api {
+                status: response.status,
+                body: "Spotify token endpoint unavailable".into(),
+            });
+        }
+        if !response.is_success() {
+            return Err(token_error(response.status, &response.body));
+        }
+        let token = CachedToken::from_exchange(TokenResponse::parse(&response.body)?, unix_now())?;
         self.cache.store(&token)?;
         self.token = Some(token);
         Ok(())
@@ -178,7 +212,7 @@ impl Session {
     /// and retries once; a 429 waits out `Retry-After` (a few times); any
     /// other failure maps to [`SpotifyError::Api`].
     pub async fn get(&mut self, cx: &Cx, url: &str) -> Result<Vec<u8>, SpotifyError> {
-        self.get_waiting(cx, url, u64::MAX).await
+        self.get_waiting(cx, url, u64::MAX, |_| {}).await
     }
 
     /// [`Self::get`] for a background read (taste, artist genres, album
@@ -186,7 +220,17 @@ impl Session {
     /// returned as the 429 at once, so the read halts and resumes next sync
     /// rather than holding the sync for up to an hour.
     pub async fn get_brief(&mut self, cx: &Cx, url: &str) -> Result<Vec<u8>, SpotifyError> {
-        self.get_waiting(cx, url, BRIEF_WAIT_SECS).await
+        self.get_waiting(cx, url, BRIEF_WAIT_SECS, |_| {}).await
+    }
+
+    /// Read a page while reporting each rate-limit wait to the daemon.
+    pub async fn get_observed(
+        &mut self,
+        cx: &Cx,
+        url: &str,
+        rate_limited: impl FnMut(u64),
+    ) -> Result<Vec<u8>, SpotifyError> {
+        self.get_waiting(cx, url, u64::MAX, rate_limited).await
     }
 
     async fn get_waiting(
@@ -194,6 +238,7 @@ impl Session {
         cx: &Cx,
         url: &str,
         max_wait_secs: u64,
+        mut rate_limited: impl FnMut(u64),
     ) -> Result<Vec<u8>, SpotifyError> {
         if !self.endpoints.is_api_url(url) {
             return Err(SpotifyError::Config(format!(
@@ -219,9 +264,10 @@ impl Session {
                     refreshed = true;
                     self.refresh(cx).await?;
                 }
-                429 if waits < MAX_RATE_LIMIT_WAITS => {
+                429 => {
                     let secs = retry_after_secs(response.header_value("Retry-After"));
-                    if secs > max_wait_secs {
+                    rate_limited(secs);
+                    if waits >= MAX_RATE_LIMIT_WAITS || secs > max_wait_secs {
                         return Err(api_error(429, &response.body));
                     }
                     waits += 1;
@@ -244,7 +290,7 @@ impl Session {
             .access_token
             .clone();
         let url = format!("{}/me/tracks?limit=1", self.endpoints.api);
-        self.get_waiting(cx, &url, 0).await?;
+        self.get_waiting(cx, &url, 0, |_| {}).await?;
         let token = self.token.as_ref().ok_or_else(not_authorized)?;
         Ok(GrantCheck {
             refreshed: token.access_token != before,
@@ -255,12 +301,26 @@ impl Session {
     /// Read the owner's whole library: every saved album's tracks and every
     /// liked track (read-only).
     pub async fn read_library(&mut self, cx: &Cx) -> Result<Vec<LibraryItem>, SpotifyError> {
+        Ok(self.read_library_observed(cx, &mut |_, _| {}).await?.0)
+    }
+
+    /// [`Self::read_library`], reporting `(done, total)` after each page, and
+    /// returning with the items what a browsing app needs: the albums seen
+    /// and which tracks are in the library now.
+    pub async fn read_library_observed(
+        &mut self,
+        cx: &Cx,
+        progress: &mut dyn FnMut(usize, usize),
+    ) -> Result<(Vec<LibraryItem>, SpotifyCache), SpotifyError> {
         let mut read = LibraryRead::new(&self.endpoints);
         while let Some(url) = read.next_url().map(str::to_owned) {
             let body = self.get(cx, &url).await?;
             read.ingest(&body)?;
+            let (done, total) = read.progress();
+            progress(done, total);
         }
-        Ok(read.into_items())
+        let browse = read.browse_cache();
+        Ok((read.into_items(), browse))
     }
 
     /// An artist's genre tags (`GET /artists/{id}`, read-only; often none).
@@ -285,16 +345,23 @@ impl Session {
         Ok(())
     }
 
-    async fn post_token(&self, cx: &Cx, body: String) -> Result<TokenResponse, SpotifyError> {
-        let response = self
-            .http
+    async fn send_token(
+        &self,
+        cx: &Cx,
+        body: String,
+    ) -> Result<asupersync::http::Response, SpotifyError> {
+        self.http
             .post(self.endpoints.token.as_str())
             .header("Content-Type", FORM_CONTENT_TYPE)
             .body(body)
             .timeout(REQUEST_TIMEOUT)
             .send(cx)
             .await
-            .map_err(|e| SpotifyError::Http(e.to_string()))?;
+            .map_err(|e| SpotifyError::Http(e.to_string()))
+    }
+
+    async fn post_token(&self, cx: &Cx, body: String) -> Result<TokenResponse, SpotifyError> {
+        let response = self.send_token(cx, body).await?;
         if response.is_success() {
             TokenResponse::parse(&response.body)
         } else {

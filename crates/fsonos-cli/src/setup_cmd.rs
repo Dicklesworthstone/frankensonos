@@ -525,10 +525,13 @@ mod tests {
     #[test]
     fn next_steps_name_the_daemon_and_skip_the_tailnet_when_tailscale_is_off() {
         let serve = ServeArgs {
-            http: Some("127.0.0.1:8099".parse().unwrap()),
+            http: vec!["127.0.0.1:8099".parse().unwrap()],
             mcp_http: None,
             spotify_client_id: None,
             spotify_redirect_uri: String::new(),
+            spotify_app_redirect_uri: fsonos_api::spotify::DEFAULT_APP_REDIRECT.into(),
+            spotify_accounts_url: None,
+            spotify_api_url: None,
             events_port: 0,
             allow_unsafe_bind: false,
             tailscale: crate::config::TailscaleMode::Off,

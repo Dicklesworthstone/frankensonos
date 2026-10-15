@@ -1258,11 +1258,13 @@ dependencies = [
  "fsonos-core",
  "fsonos-proto",
  "fsonos-sim",
+ "fsonos-spotify",
  "fsonos-types",
  "serde",
  "serde_json",
  "thiserror",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

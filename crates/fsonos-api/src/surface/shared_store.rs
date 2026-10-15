@@ -11,8 +11,8 @@
 
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback,
-    FeedbackKey, LibraryEntry, LoggedAction, PlayRecord, Store, StoreError, StoredScene,
-    StoredSchedule,
+    FeedbackKey, LibraryEntry, LoggedAction, PlayRecord, SpotifyCache, Store, StoreError,
+    StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, ZoneGroup};
@@ -125,6 +125,18 @@ impl Store for SharedStore<'_> {
 
     fn library(&self) -> Result<Vec<LibraryEntry>, StoreError> {
         self.lock().library()
+    }
+
+    fn spotify_cache(&self) -> Result<SpotifyCache, StoreError> {
+        self.lock().spotify_cache()
+    }
+
+    fn save_spotify_cache(&mut self, cache: &SpotifyCache) -> Result<(), StoreError> {
+        self.lock().save_spotify_cache(cache)
+    }
+
+    fn clear_spotify_library(&mut self) -> Result<(), StoreError> {
+        self.lock().clear_spotify_library()
     }
 
     fn save_render_params(

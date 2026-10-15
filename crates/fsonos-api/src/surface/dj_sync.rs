@@ -34,6 +34,18 @@ pub struct LibrarySyncDto {
     /// daemon's next check (a rate limit resumes where it stopped).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// How far the running refresh's library read has got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<ReadProgressDto>,
+}
+
+/// How much of the library a running refresh has read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReadProgressDto {
+    /// Entries read so far.
+    pub done: usize,
+    /// Entries seen advertised so far; it grows while the read pages on.
+    pub total: usize,
 }
 
 /// One completed refresh.
@@ -88,7 +100,15 @@ impl LibrarySyncDto {
             running,
             last,
             error,
+            progress: None,
         }
+    }
+
+    /// The same state with the running read's progress.
+    #[must_use]
+    pub fn with_progress(mut self, progress: Option<ReadProgressDto>) -> Self {
+        self.progress = progress;
+        self
     }
 }
 

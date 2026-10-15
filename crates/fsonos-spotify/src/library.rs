@@ -8,10 +8,11 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use fsonos_core::store::{SpotifyAlbum, SpotifyCache};
 use fsonos_types::Track;
 use serde::{Deserialize, Serialize};
 
-pub(crate) use self::coverage::Page;
+pub(crate) use self::coverage::{Coverage, Page};
 use crate::SpotifyError;
 use crate::classical::normalize;
 use crate::client::{Album, Endpoints, SavedAlbum, SavedTrack, SimplifiedTrack};
@@ -248,6 +249,9 @@ pub struct LibraryRead {
     requested: HashSet<String>,
     items: Vec<LibraryItem>,
     pages: usize,
+    cache: SpotifyCache,
+    done: usize,
+    total: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -286,6 +290,9 @@ impl LibraryRead {
             requested: HashSet::new(),
             items: Vec::new(),
             pages: 0,
+            cache: SpotifyCache::default(),
+            done: 0,
+            total: 0,
         };
         read.queue(Fetch::SavedAlbums(endpoints.saved_albums(0), None));
         read.queue(Fetch::SavedTracks(endpoints.saved_tracks(0), None));
@@ -312,8 +319,15 @@ impl LibraryRead {
                 let page = Page::<SavedAlbum>::read(body, &url, &self.endpoints, total, |next| {
                     self.endpoints.saved_albums(next)
                 })?;
+                self.advance(page.items.len(), &page.coverage);
                 for saved in page.items {
+                    self.remember_saved_album(&saved);
+                    let queued = self.pending.len();
+                    let unread = saved_album_unread(&saved);
                     self.saved_album(saved)?;
+                    if self.pending.len() > queued {
+                        self.total += unread;
+                    }
                 }
                 self.follow(page.next, |url| {
                     Fetch::SavedAlbums(url, page.coverage.total)
@@ -323,8 +337,14 @@ impl LibraryRead {
                 let page = Page::<SavedTrack>::read(body, &url, &self.endpoints, total, |next| {
                     self.endpoints.saved_tracks(next)
                 })?;
-                self.items
-                    .extend(page.items.iter().filter_map(SavedTrack::library_item));
+                self.advance(page.items.len(), &page.coverage);
+                for saved in &page.items {
+                    if let Some(item) = saved.library_item() {
+                        self.cache.liked_uris.push(item.source_uri.clone());
+                        self.items.push(item);
+                    }
+                    self.remember_track_album(saved);
+                }
                 self.follow(page.next, |url| {
                     Fetch::SavedTracks(url, page.coverage.total)
                 })
@@ -334,6 +354,7 @@ impl LibraryRead {
                     Page::<SimplifiedTrack>::read(body, &url, &self.endpoints, total, |next| {
                         self.endpoints.album_tracks(&album.id, next)
                     })?;
+                self.advance(page.items.len(), &page.coverage);
                 self.items.extend(page.items.iter().filter_map(|t| {
                     let mut item = album.library_item(t)?;
                     item.added_at = added_at;
@@ -344,6 +365,97 @@ impl LibraryRead {
                 })
             }
         }
+    }
+
+    fn remember_album(&mut self, album: SpotifyAlbum) {
+        if let Some(existing) = self.cache.albums.iter_mut().find(|a| a.uri == album.uri) {
+            if album.saved || !existing.saved {
+                *existing = album;
+            }
+        } else {
+            self.cache.albums.push(album);
+        }
+    }
+
+    fn remember_saved_album(&mut self, saved: &SavedAlbum) {
+        let album = &saved.album;
+        self.remember_album(SpotifyAlbum {
+            id: album.id.clone(),
+            title: album.name.clone(),
+            artist: joined_artists(&album.artists),
+            year: release_year(album.release_date.as_deref()),
+            tracks: album.total_tracks,
+            uri: album.uri.clone(),
+            art_url: album.images.first().map(|i| i.url.clone()),
+            saved: true,
+        });
+    }
+
+    /// The album of a liked track, kept for browsing unless it was saved.
+    fn remember_track_album(&mut self, saved: &SavedTrack) {
+        let Some(track) = &saved.track else {
+            return;
+        };
+        let album = &track.album;
+        let (Some(id), Some(uri)) = (&album.id, &album.uri) else {
+            return;
+        };
+        self.remember_album(SpotifyAlbum {
+            id: id.clone(),
+            title: album.name.clone(),
+            artist: joined_artists(&album.artists),
+            year: release_year(album.release_date.as_deref()),
+            tracks: 0,
+            uri: uri.clone(),
+            art_url: album.images.first().map(|i| i.url.clone()),
+            saved: false,
+        });
+    }
+
+    fn advance(&mut self, items: usize, coverage: &Coverage) {
+        self.done += items;
+        if coverage.offset.unwrap_or(0) == 0 {
+            self.total += coverage.total.unwrap_or(0) as usize;
+        }
+    }
+
+    /// Fold a committed page's browse data and progress into this read.
+    pub(super) fn absorb_staged(&mut self, staged: Self) {
+        for album in staged.cache.albums {
+            self.remember_album(album);
+        }
+        self.cache.liked_uris.extend(staged.cache.liked_uris);
+        self.done += staged.done;
+        self.total = (self.total + staged.total).max(self.done);
+    }
+
+    /// Received library items and the total advertised by pages seen so far.
+    #[must_use]
+    pub fn progress(&self) -> (usize, usize) {
+        (
+            self.done,
+            if self.pending.is_empty() {
+                self.done
+            } else {
+                self.total
+            },
+        )
+    }
+
+    /// Browse metadata and membership collected alongside the DJ's tracks.
+    #[must_use]
+    pub fn browse_cache(&self) -> SpotifyCache {
+        let mut cache = self.cache.clone();
+        cache.track_uris = self
+            .items
+            .iter()
+            .map(|item| item.source_uri.clone())
+            .collect();
+        cache.track_uris.sort();
+        cache.track_uris.dedup();
+        cache.liked_uris.sort();
+        cache.liked_uris.dedup();
+        cache
     }
 
     /// Pages ingested so far.
@@ -382,6 +494,28 @@ impl LibraryRead {
     fn queue(&mut self, fetch: Fetch) {
         self.requested.insert(fetch.url().to_owned());
         self.pending.push_back(fetch);
+    }
+}
+
+fn release_year(date: Option<&str>) -> Option<u32> {
+    crate::client::release_year(date).map(u32::from)
+}
+
+fn joined_artists(artists: &[crate::client::SimplifiedArtist]) -> String {
+    artists
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect::<Vec<_>>()
+        .join(ARTIST_SEPARATOR)
+}
+
+/// Album tracks a saved album still has to fetch after its embedded page.
+fn saved_album_unread(saved: &SavedAlbum) -> usize {
+    match &saved.album.tracks {
+        Some(tracks) if tracks.next.is_some() => {
+            (tracks.total as usize).saturating_sub(tracks.items.len())
+        }
+        _ => saved.album.total_tracks as usize,
     }
 }
 

@@ -62,7 +62,7 @@ variables. The environment form is what launchd uses.
 
 | Setting | Env var | Default | Notes |
 |---|---|---|---|
-| HTTP API address | `FSONOS_HTTP_ADDR` | unset: `127.0.0.1:8099` plus this host's tailnet addresses when Tailscale is up | Set it to bind exactly one address, e.g. loopback behind Tailscale Serve. |
+| HTTP API address | `FSONOS_HTTP_ADDR` | unset: `127.0.0.1:8099` plus this host's tailnet addresses when Tailscale is up | Set it to bind exactly these addresses: one, e.g. loopback behind Tailscale Serve, or a comma-separated list such as `127.0.0.1:8099,192.0.2.20:8099` to serve the LAN and keep loopback for on-host tools and the Spotify sign-in tunnel (callers on a LAN address are `unknown`). |
 | MCP (streamable HTTP) address | `FSONOS_MCP_HTTP_ADDR` | unset: `127.0.0.1:8098` | Endpoint path `/mcp`. Loopback unless set: reach it from the tailnet through Serve. |
 | Tailscale detection | `FSONOS_TAILSCALE` | `auto` | `off` (or `--tailscale off`) stops `fsonos` looking for Tailscale: unconfigured listeners bind loopback only, and `fsonos doctor` skips its `tailscale.*` checks. |
 | Tailscale Serve at startup | `FSONOS_TAILSCALE_SERVE` | off | `true` (or `--tailscale-serve`) runs `fsonos tailscale setup` when the daemon starts (§ "Recommended: Tailscale Serve"); a refusal or failure is logged and the daemon serves on. |
@@ -70,7 +70,10 @@ variables. The environment form is what launchd uses.
 | Data directory | `FSONOS_DATA_DIR` | `~/Library/Application Support/fsonos` | Store DB (including the players last found) and Spotify token cache. |
 | Direct-seed list | `FSONOS_SEEDS` | `seeds.toml` in the data directory, when present | Optional file of player addresses for flaky-SSDP networks; every IP address in it is tried (e.g. TOML `players = ["192.0.2.10"]`, or one per line). `fsonos setup` writes the default one when multicast fails but the players answer. Every command also takes `--seed <ip>`. Keep the file under `local/` or outside the repo. When discovery and the seeds find nothing, the players the last survey found (remembered in the store) are tried too. |
 | Routes file | `FSONOS_ROUTES` | unset | Only for `fsonos sim`: maps the virtual players' advertised addresses to the loopback sockets that serve them, plus the simulator's SSDP target. `fsonos sim` writes it; real players need none. While it is set, `fsonos` reaches nothing the file does not name (other addresses and multicast are refused): it asks only a daemon running under the same file, and unless `FSONOS_DATA_DIR` says otherwise it keeps its data in `data` beside the file, never the real house's store. |
-| Spotify client id | `FSONOS_SPOTIFY_CLIENT_ID` | unset | Needed only for the DJ (see §5). |
+| Spotify client id | `FSONOS_SPOTIFY_CLIENT_ID` | unset | Needed for Spotify sign-in, the library behind the DJ, and the iPhone app's browsing and search (see §5). |
+| Spotify app redirect URI | `FSONOS_SPOTIFY_APP_REDIRECT_URI` | `frankensonos://spotify-callback` | `--spotify-app-redirect-uri`; the URI the phone app signs in with. Register this exact URI in the Spotify dashboard too. |
+| Spotify accounts base | `FSONOS_SPOTIFY_ACCOUNTS_URL` | unset | Tests and fakes only; overrides the accounts base for the token exchange. |
+| Spotify API base | `FSONOS_SPOTIFY_API_URL` | unset | Tests and fakes only; overrides the Web API base, including `/v1`. |
 | Spotify redirect URI | `FSONOS_SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8099/auth/spotify/callback` | Must match the URI registered for your Spotify app. |
 | Log filter | `RUST_LOG` | `info` | `tracing` EnvFilter syntax. Logs go to stderr. |
 
@@ -358,6 +361,51 @@ machine, tunnel the port first, then open the authorize URL locally:
 
 ```bash
 ssh -L 8099:127.0.0.1:8099 <mac>
+```
+
+### The iPhone app: Spotify sign-in, browsing and search
+
+The app in `ios/` finds the daemon with Bonjour (`_fsonos._tcp`), so the
+daemon must listen on the LAN: `FSONOS_HTTP_ADDR` takes a comma-separated list
+(`127.0.0.1:8099,192.0.2.20:8099`) to serve the LAN and keep the loopback
+listener for on-host tools and the sign-in above. A container for a NAS is in
+`deploy/docker`.
+
+The app signs in to Spotify itself and hands the result to the daemon, so the
+daemon never needs a browser:
+
+```text
+phone app ── PKCE consent in the system browser ──▶ accounts.spotify.com
+phone app ── POST /auth/spotify/exchange {code, code_verifier, redirect_uri}
+daemon    ── code → tokens (token endpoint) ──▶ the same token cache `fsonos setup` writes
+```
+
+Register `frankensonos://spotify-callback` (or the value of
+`FSONOS_SPOTIFY_APP_REDIRECT_URI`) beside the loopback callback in the Spotify
+dashboard. `GET /spotify/status` returns `client_id` and `app_redirect_uri`
+when configured. A successful exchange clears the previous account's library
+and browse cache; the app then starts a refresh with `POST /dj/sync`, and
+`sync` in the status shows its progress (`done` of `total` entries read).
+
+| Route | Operation id | Answers |
+|---|---|---|
+| `POST /auth/spotify/exchange` | `spotify_exchange` | `{"signed_in": true}` |
+| `GET /spotify/status` | `spotify_status` | configuration, sign-in, library counts, sync progress |
+| `GET /spotify/albums`, `GET /spotify/tracks` | `list_spotify_albums`, `list_spotify_tracks` | the synced library, paged (`offset`, `limit` 1 to 200, `q`) |
+| `GET /spotify/albums/{id}/tracks` | `list_spotify_album_tracks` | a saved album's tracks in disc and track order |
+| `GET /spotify/search?q=&limit=` | `search_spotify` | albums and tracks from all of Spotify's catalog (`limit` 1 to 10); needs the sign-in and no new scope |
+| `GET /speaker-art?player=&u=` | `get_speaker_art` | artwork a speaker serves: the daemon fetches only that player's `:1400` and passes images through |
+
+Playing a result uses the existing `play` operation with a `spotify:album:` or
+`spotify:track:` URI. LAN and tailnet callers are `unknown`: the default
+policy allows reads, and writes need an explicit rule. A policy with
+`[clients.unknown] allow` must name the operations the app calls:
+
+```toml
+[clients.unknown]
+allow = ["spotify_exchange", "spotify_status", "list_spotify_albums",
+         "list_spotify_album_tracks", "list_spotify_tracks", "search_spotify",
+         "get_speaker_art", "dj_sync", "dj_sync_status"]
 ```
 
 ## 6. Verify and troubleshoot
