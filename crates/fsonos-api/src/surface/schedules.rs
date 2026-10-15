@@ -43,6 +43,8 @@ use crate::failure::{ErrorCode, Failure};
 use crate::plan::{self, TransportAction, resolve};
 use crate::request::{DjStartRequest, VolumeChange, VolumeRequest, ZoneRequest, zone_name};
 
+mod dispatch;
+
 /// The longest sleep timer. The speaker's own timer, which backs the
 /// daemon's up five minutes later, counts down from just under a day.
 pub const MAX_SLEEP: Duration = Duration::from_hours(23);
@@ -1663,7 +1665,8 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
 pub enum Ran {
     /// A sleep timer's fade began, in the group named by `zone`.
     Fading { zone: String },
-    /// Schedule `id`'s run due at `at` began.
+    /// Schedule `id`'s worker for the run due at `at` began. The worker
+    /// rechecks the schedule before claiming and executing the action.
     Fired { id: i64, at: DateTime<Utc> },
     /// Schedule `id`'s run due at `at` was too late to start: recorded as
     /// done, not run.
@@ -1677,6 +1680,7 @@ pub struct Scheduler {
     surface: Arc<Surface>,
     grace: Duration,
     runs: Mutex<Vec<JoinHandle<()>>>,
+    dispatch: Arc<dispatch::Dispatch>,
 }
 
 impl Scheduler {
@@ -1687,6 +1691,7 @@ impl Scheduler {
             surface: Arc::clone(surface),
             grace: DEFAULT_GRACE,
             runs: Mutex::new(Vec::new()),
+            dispatch: Arc::new(dispatch::Dispatch::default()),
         }
     }
 
@@ -1697,8 +1702,11 @@ impl Scheduler {
 
     /// One tick at `now`, with wall times in `tz`.
     pub fn tick_at<Tz: TimeZone>(&self, now: DateTime<Utc>, tz: &Tz) -> Vec<Ran> {
+        if self.dispatch.stopped() {
+            return Vec::new();
+        }
         let mut ran = self.start_fades(now);
-        ran.extend(self.run_schedules(now, tz));
+        ran.extend(dispatch::run_schedules(self, now, tz));
         ran
     }
 
@@ -1742,55 +1750,6 @@ impl Scheduler {
             .collect()
     }
 
-    fn run_schedules<Tz: TimeZone>(&self, now: DateTime<Utc>, tz: &Tz) -> Vec<Ran> {
-        let schedules = match self.surface.load_schedules() {
-            Ok(schedules) => schedules,
-            Err(f) => {
-                if f.code != ErrorCode::NotImplemented {
-                    tracing::warn!("schedules not read: {}", f.detail);
-                }
-                return Vec::new();
-            }
-        };
-        let mut ran = Vec::new();
-        for (id, tick) in core_schedule::due(&schedules, now, tz, self.grace) {
-            // Recorded first, so a run can never happen twice.
-            match self
-                .surface
-                .with_store(|s| s.mark_schedule_fired(id, tick.at().timestamp()))
-            {
-                Ok(Some(true)) => {}
-                Ok(_) => continue,
-                Err(f) => {
-                    tracing::warn!("schedule #{id} not recorded, so not run: {}", f.detail);
-                    continue;
-                }
-            }
-            let Some(schedule) = schedules.iter().find(|s| s.id == id).cloned() else {
-                continue;
-            };
-            let what = summary(&schedule.action);
-            match tick {
-                Tick::Fire { at } => {
-                    let surface = Arc::clone(&self.surface);
-                    self.spawn("fsonos-schedule", move || match fire(&surface, &schedule) {
-                        Ok(done) => tracing::info!("schedule #{id} ({what}): {done}"),
-                        Err(f) => tracing::warn!("schedule #{id} ({what}): {}", f.cli_text()),
-                    });
-                    ran.push(Ran::Fired { id, at });
-                }
-                Tick::Skip { at } => {
-                    tracing::warn!(
-                        "schedule #{id} ({what}) skipped its run at {at}: more than {} late",
-                        span(self.grace)
-                    );
-                    ran.push(Ran::Skipped { id, at });
-                }
-            }
-        }
-        ran
-    }
-
     fn spawn(&self, name: &str, work: impl FnOnce() + Send + 'static) {
         match thread::Builder::new().name(name.into()).spawn(work) {
             Ok(handle) => {
@@ -1832,6 +1791,7 @@ impl Scheduler {
     /// fade-out pauses its group and puts the volumes back); and the runs
     /// started are waited for, up to `timeout` each.
     pub fn shut_down(&self, timeout: Duration) {
+        self.dispatch.stop();
         if let Some(sleep) = &self.surface.sleep {
             let fading: Vec<_> = sleep
                 .timers
@@ -1938,8 +1898,8 @@ mod tests {
         s.sleep_again(&houses, &sleeping);
         let timer = sleep.timers.get(&patio).expect("a timer again");
         assert!(!timer.fading);
-        let again = Utc::now();
         assert!(timer.ends > now + TimeDelta::minutes(1), "{timer:?}");
+        let again = Utc::now();
         assert!(timer.ends <= again + delta(FADE), "{timer:?}");
         assert_eq!(sleep.timers.due(again + delta(FADE)).len(), 1);
     }
@@ -2210,7 +2170,7 @@ mod tests {
 
         // Extending reads what the speaker has left (10 minutes here).
         let extended = s
-            .set_sleep_timer(&Client::Cli, &sleep_req(Some("15m"), true, false))
+            .set_sleep_timer(&Client::Cli, &sleep_req(Some("15"), true, false))
             .unwrap();
         assert_eq!(extended.remaining_secs, Some(25 * 60));
         assert_eq!(
