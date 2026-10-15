@@ -239,6 +239,7 @@ const house = {
   dj: true,
   // Household -> its playable Sonos favorites, as last read.
   favorites: new Map(),
+  catalogStatus: new Map(),
 };
 
 /** How to name `room` of `household` to the API. */
@@ -292,6 +293,7 @@ async function loadZones() {
   if (version !== house.readVersion) return;
   house.zones = zones;
   render();
+  catalogs.reconcile(zones);
   await readEach(zones, refreshZone, () => version === house.readVersion);
 }
 
@@ -380,6 +382,7 @@ function card(zone) {
     djRow: null,
     djPlaying: null,
     djRunning: false,
+    djMood: null,
     tag: '',
   };
   parts.art.addEventListener('load', () => { parts.art.hidden = false; });
@@ -637,7 +640,8 @@ async function refreshDj(parts, current = () => ownsCard(parts)) {
     if (!status || typeof status.running !== 'boolean') throw new Error('The DJ state is unreadable.');
     parts.djRunning = status.running;
     // A rebuilt card shows the mood the running DJ plays, not "Any mood".
-    if (parts.djRunning) parts.mood.value = (status.steering && status.steering.mood) || '';
+    parts.djMood = (status.steering && status.steering.mood) || '';
+    if (parts.djRunning) parts.mood.value = parts.djMood;
   } catch (error) {
     if (!current()) return;
     if (error.code === 'NOT_IMPLEMENTED') {
@@ -656,50 +660,54 @@ async function refreshDj(parts, current = () => ownsCard(parts)) {
   parts.djPlaying.hidden = !parts.djRunning;
 }
 
-/** A zone's favorites picker, from its household's favorites. */
+/** A zone's favorites picker, retaining last-known choices during an outage. */
 function fillFavorites(parts) {
   const favorites = house.favorites.get(parts.zone.household) || [];
-  parts.favorite.replaceChildren(el('option', { value: '', text: 'Play a favorite…' }));
+  const phase = house.catalogStatus.get(CatalogRemote.keyOf('favorites', parts.zone.household)) || 'loading';
+  const selected = parts.favorite.value;
+  const caption = phase === 'ready' ? 'Play a favorite…'
+    : phase === 'loading' ? 'Loading favorites…'
+      : phase === 'retry' ? 'Favorites unavailable; retrying…' : 'Favorites unavailable';
+  parts.favorite.replaceChildren(el('option', { value: '', text: caption }));
   for (const favorite of favorites) {
     parts.favorite.append(el('option', { value: favorite.id, text: favorite.title }));
   }
-  parts.favorite.hidden = favorites.length === 0;
+  if (favorites.some((favorite) => favorite.id === selected)) parts.favorite.value = selected;
+  parts.favorite.hidden = favorites.length === 0 && phase === 'ready';
+  parts.favorite.disabled = parts.writing || favorites.length === 0;
+  parts.favorite.title = phase !== 'ready' && favorites.length
+    ? 'Last-known favorites are shown while their list is refreshed.' : '';
 }
 
-/** Each household's playable favorites, read through one of its rooms. */
-async function loadFavorites() {
-  const firsts = new Map();
-  for (const zone of house.zones) {
-    if (!firsts.has(zone.household)) firsts.set(zone.household, zone);
+/** Read one household; a failure is not an empty favorites collection. */
+async function loadFavorites(zone) {
+  const favorites = await call('favorites', { query: { zone } });
+  const text = (value) => typeof value === 'string' && value.trim() !== '';
+  if (!Array.isArray(favorites) || favorites.some((f) => !f || !text(f.id)
+      || typeof f.title !== 'string' || !text(f.kind))
+      || new Set(favorites.map((f) => f.id)).size !== favorites.length) {
+    throw new Error('The favorites list is unreadable.');
   }
-  await Promise.all([...firsts].map(async ([household, zone]) => {
-    try {
-      const favorites = await call('favorites', {
-        query: { zone: roomName(zone.coordinator_room, household) },
-      });
-      house.favorites.set(household, favorites.filter((f) => f.kind !== 'unplayable'));
-    } catch (_) {
-      house.favorites.set(household, []);
-    }
-  }));
-  for (const parts of house.cards.values()) fillFavorites(parts);
+  return favorites.filter((f) => f.kind !== 'unplayable');
 }
 
-function fillMoods(select) {
-  select.replaceChildren(el('option', { value: '', text: 'Any mood' }));
+function fillMoods(select, selected = select.value) {
+  const phase = house.catalogStatus.get(CatalogRemote.keyOf('moods')) || 'loading';
+  const caption = phase === 'ready' ? 'Any mood'
+    : phase === 'loading' ? 'Any mood — loading choices…'
+      : phase === 'retry' ? 'Any mood — other moods unavailable; retrying…' : 'Any mood — other moods unavailable';
+  select.replaceChildren(el('option', { value: '', text: caption }));
   for (const mood of house.moods || []) select.append(el('option', { value: mood, text: mood }));
+  if ((house.moods || []).includes(selected)) select.value = selected;
 }
 
-async function loadMoods() {
-  const zone = house.zones[0];
-  if (!zone) return;
-  try {
-    const moods = await call('moods', { query: { zone: roomName(zone.coordinator_room, zone.household) } });
-    house.moods = moods.moods.map((m) => m.name);
-  } catch (_) {
-    house.moods = [];
-  }
-  for (const parts of house.cards.values()) fillMoods(parts.mood);
+async function loadMoods(zone) {
+  const moods = await call('moods', { query: { zone } });
+  if (!moods || !Array.isArray(moods.moods) || moods.moods.some((m) => !m
+      || typeof m.name !== 'string' || !m.name.trim())) throw new Error('The DJ mood list is unreadable.');
+  const names = moods.moods.map((m) => m.name);
+  if (new Set(names).size !== names.length) throw new Error('The DJ mood list is ambiguous.');
+  return names;
 }
 
 async function loadScenes() {
@@ -912,20 +920,147 @@ const LiveRemote = (() => {
   return { model, affected, COALESCE, FALLBACK, MAX_BACKOFF, MAX_PENDING };
 })();
 
-function listen() {
-  let catalogsLoaded = false;
-  const controller = LiveRemote.model({
-    connect: 'EventSource' in window ? () => new EventSource(path('events')) : null,
-    reload: async () => {
-      try { await loadZones(); }
-      finally {
-        if (!catalogsLoaded && house.zones.length) {
-          catalogsLoaded = true;
-          void loadMoods();
-          void loadFavorites();
+// Catalog reads have their own recovery lane: a failed favorites/moods read
+// must not hide controls until a page reload or force whole-house polling.
+const CatalogRemote = (() => {
+  const FIRST = 5000, MAX = 60000, CONCURRENCY = 4;
+  const keyOf = (kind, household = '') => JSON.stringify([kind, household]);
+
+  function sources(zones) {
+    const firsts = new Map();
+    for (const zone of zones) {
+      const source = { kind: 'favorites', household: zone.household,
+        zone: roomName(zone.coordinator_room, zone.household) };
+      const prior = firsts.get(source.household);
+      if (!prior || source.zone < prior.zone) firsts.set(source.household, source);
+    }
+    const found = [...firsts.values()].sort((a, b) => a.zone < b.zone ? -1 : a.zone > b.zone ? 1 : 0);
+    return [...found.map((source) => ({ ...source, key: keyOf('favorites', source.household) })),
+      ...(found.length ? [{ ...found[0], kind: 'moods', key: keyOf('moods') }] : [])];
+  }
+
+  function model({ read, publish, status = () => {}, removed = () => {},
+    schedule = setTimeout, cancel = clearTimeout, now = Date.now }) {
+    const slots = new Map();
+    let active = false, disposed = false, running = 0, timer = null;
+    const clear = () => { if (timer !== null) cancel(timer); timer = null; };
+    const reset = (slot) => { ++slot.epoch; slot.done = false; slot.due = Math.max(now(), slot.notBefore); slot.delay = FIRST; };
+
+    async function run(slot) {
+      const source = slot.source, epoch = slot.epoch;
+      const current = () => active && slots.get(source.key) === slot && slot.epoch === epoch;
+      slot.busy = true;
+      ++running;
+      try {
+        // Do not reenter the dispatcher if an injected read throws synchronously.
+        await Promise.resolve();
+        if (!current()) return;
+        status(source, 'loading');
+        const value = await read(source);
+        if (!current()) return;
+        publish(source, value);
+        slot.done = true;
+        slot.notBefore = 0;
+        slot.delay = FIRST;
+        status(source, 'ready');
+      } catch (error) {
+        if (!current()) return;
+        // Missing optional capabilities and explicit permission denials wait
+        // for a new source, reconnect or user refresh, not automatic hammering.
+        slot.done = [401, 403].includes(error?.status)
+          || ['NOT_IMPLEMENTED', 'POLICY_DENIED'].includes(error?.code);
+        // Preserve the server's minimum across page visibility and reconnects.
+        slot.notBefore = now() + Math.max(0, error?.retryAfter ?? 0);
+        slot.done ||= !Number.isFinite(slot.notBefore);
+        slot.due = Math.max(now() + slot.delay, slot.notBefore);
+        slot.delay = Math.min(MAX, slot.delay * 2);
+        status(source, slot.done ? 'unavailable' : 'retry');
+      } finally {
+        slot.busy = false;
+        --running;
+        pump();
+      }
+    }
+
+    function pump() {
+      clear();
+      if (!active) return;
+      for (const slot of slots.values()) {
+        if (running >= CONCURRENCY) break;
+        if (!slot.busy && !slot.done && slot.due <= now()) void run(slot);
+      }
+      if (running >= CONCURRENCY) return;
+      const due = [...slots.values()].filter((slot) => !slot.busy && !slot.done && Number.isFinite(slot.due)).map((slot) => slot.due);
+      // Chunk a long wait without ever dispatching before its actual due time.
+      if (due.length) timer = schedule(() => { timer = null; pump(); }, Math.min(MAX, Math.max(0, Math.min(...due) - now())));
+    }
+
+    function reconcile(zones) {
+      if (disposed) return;
+      const wanted = new Map(sources(zones).map((source) => [source.key, source]));
+      for (const [key, slot] of slots) {
+        if (!wanted.has(key)) { slots.delete(key); removed(slot.source); }
+      }
+      for (const [key, source] of wanted) {
+        let slot = slots.get(key);
+        if (!slot) {
+          slot = { source, epoch: 0, busy: false, notBefore: 0 };
+          reset(slot);
+          slots.set(key, slot);
+        } else if (slot.source.zone !== source.zone) {
+          slot.source = source;
+          reset(slot);
         }
       }
-    },
+      pump();
+    }
+
+    function suspend() {
+      active = false;
+      clear();
+      for (const slot of slots.values()) reset(slot);
+    }
+
+    function resume() {
+      if (disposed || active) return;
+      active = true;
+      pump();
+    }
+
+    return { reconcile, resume, suspend,
+      refresh() { if (active) { for (const slot of slots.values()) reset(slot); pump(); } },
+      dispose() { disposed = true; suspend(); slots.clear(); },
+    };
+  }
+
+  return { model, sources, keyOf, FIRST, MAX, CONCURRENCY };
+})();
+
+const catalogs = CatalogRemote.model({
+  read: (source) => source.kind === 'favorites' ? loadFavorites(source.zone) : loadMoods(source.zone),
+  publish(source, value) {
+    if (source.kind === 'favorites') house.favorites.set(source.household, value);
+    else house.moods = value;
+  },
+  status(source, phase) {
+    house.catalogStatus.set(source.key, phase);
+    for (const parts of house.cards.values()) {
+      if (source.kind === 'favorites' && parts.zone.household === source.household) fillFavorites(parts);
+      if (source.kind === 'moods') fillMoods(parts.mood,
+        !parts.writing && parts.djRunning ? (parts.djMood ?? parts.mood.value) : parts.mood.value);
+    }
+  },
+  removed(source) {
+    house.catalogStatus.delete(source.key);
+    if (source.kind === 'favorites') house.favorites.delete(source.household);
+    else house.moods = null;
+  },
+});
+
+function listen() {
+  const controller = LiveRemote.model({
+    connect: 'EventSource' in window ? () => new EventSource(path('events')) : null,
+    reload: loadZones,
     refresh: async (room) => {
       const zones = LiveRemote.affected(house.zones, room);
       if (!zones.length) await loadZones();
@@ -933,13 +1068,15 @@ function listen() {
     },
     status: (text) => { $('live').textContent = text; },
   });
+  const suspend = () => { controller.suspend(); catalogs.suspend(); };
+  const resume = () => { if (!document.hidden) { catalogs.resume(); controller.resume(); } };
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) controller.suspend(); else controller.resume();
+    if (document.hidden) suspend(); else resume();
   });
-  window.addEventListener('online', () => controller.refresh());
-  window.addEventListener('pagehide', () => controller.suspend());
-  window.addEventListener('pageshow', () => { if (!document.hidden) controller.resume(); });
-  if (!document.hidden) controller.resume();
+  window.addEventListener('online', () => { controller.refresh(); catalogs.refresh(); });
+  window.addEventListener('pagehide', suspend);
+  window.addEventListener('pageshow', resume);
+  resume();
   return controller;
 }
 
