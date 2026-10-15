@@ -56,7 +56,9 @@ pub struct LiveConfig {
     pub remembered: Vec<IpAddr>,
     /// How often to survey.
     pub interval: Duration,
-    /// The longest a failing survey backs off to.
+    /// The longest a failing survey backs off to (no longer than `interval`
+    /// by default: a house that stopped answering is looked for at least as
+    /// often as one that answers).
     pub max_backoff: Duration,
     /// The port players send events to (0: any free port).
     pub callback_port: u16,
@@ -86,14 +88,15 @@ impl std::fmt::Debug for LiveConfig {
 }
 
 impl LiveConfig {
-    /// Survey every 5 minutes, back off to at most 30, events on any port.
+    /// Survey every 5 minutes, and after failures no less often; events on
+    /// any port.
     #[must_use]
     pub fn new(seeds: Vec<IpAddr>) -> Self {
         Self {
             seeds,
             remembered: Vec::new(),
             interval: Duration::from_mins(5),
-            max_backoff: Duration::from_mins(30),
+            max_backoff: Duration::from_mins(5),
             callback_port: 0,
             media: None,
             surveyed: None,
@@ -353,6 +356,10 @@ fn answering(found: &Discovered) -> Result<IpAddr, String> {
 /// The longest the loop waits for a NOTIFY before looking at its schedule.
 const TICK: Duration = Duration::from_millis(200);
 
+/// How often the live model checks which address this host reaches the
+/// players from (a local route lookup; nothing is sent).
+const ROUTE_CHECK: Duration = Duration::from_secs(5);
+
 /// Successful read-only fallback surveys retry the local listener within
 /// this interval. Failed discovery retains its ordinary exponential backoff.
 const EVENTLESS_RETRY: Duration = Duration::from_secs(30);
@@ -382,6 +389,8 @@ struct Model {
     sink: Option<EventSink>,
     surveyed_at: Option<Instant>,
     last_error: Option<String>,
+    /// When [`Engine::follow_route`] last looked.
+    route_checked: Instant,
 }
 
 /// Surveys and reads through one transport, GENA through the LAN.
@@ -459,6 +468,7 @@ impl Engine {
             sink: None,
             surveyed_at: None,
             last_error: None,
+            route_checked: Instant::now(),
         };
         while !self.stop.load(Ordering::Acquire) {
             // Flush lost-event markers even when the model is quiet. The
@@ -476,6 +486,10 @@ impl Engine {
             m.ticked = (now, wall);
             if self.wake.swap(false, Ordering::AcqRel) {
                 m.rec.schedule.due_now(now);
+            }
+            if now.duration_since(m.route_checked) >= ROUTE_CHECK {
+                m.route_checked = now;
+                self.follow_route(&mut m);
             }
             if m.rec.schedule.due(now) {
                 let events = self.survey(&mut m, now);
@@ -518,15 +532,13 @@ impl Engine {
         m.rec.schedule.due_now(Instant::now());
     }
 
-    /// Survey even when the callback listener cannot open. GENA is the
-    /// normal update path, not a prerequisite for discovering reachable rooms.
-    fn survey(&self, m: &mut Model, now: Instant) -> Vec<LiveEvent> {
-        if self.stop.load(Ordering::Acquire) {
-            return Vec::new();
-        }
-        // This host's address toward the players can change (a new DHCP
-        // lease, a VPN). Renewals would keep succeeding while every NOTIFY
-        // went to the old address, so listen again where they can reach us.
+    /// This host's address toward the players can change (a new DHCP lease,
+    /// a VPN, Wi-Fi dropping out and the route moving to another interface
+    /// and back). Renewals would keep succeeding while every NOTIFY went to
+    /// the old address, so listen again where they can reach us, and survey
+    /// at once ([`Self::relisten`]): checked every [`ROUTE_CHECK`], not only
+    /// at surveys, which back off while the players do not answer.
+    fn follow_route(&self, m: &mut Model) {
         if let Some(s) = &m.sink
             && let Some(toward) = m
                 .rec
@@ -544,6 +556,15 @@ impl Engine {
             );
             self.relisten(m, &why);
         }
+    }
+
+    /// Survey even when the callback listener cannot open. GENA is the
+    /// normal update path, not a prerequisite for discovering reachable rooms.
+    fn survey(&self, m: &mut Model, now: Instant) -> Vec<LiveEvent> {
+        if self.stop.load(Ordering::Acquire) {
+            return Vec::new();
+        }
+        self.follow_route(m);
         let listener_error = if m.sink.is_none() {
             match self.open_sink(&m.rec.households) {
                 Ok(s) => {
@@ -893,5 +914,12 @@ mod tests {
             !slept((t0, w0 + Duration::from_secs(600)), (t0 + step, w0)),
             "the wall clock set back is no sleep"
         );
+    }
+
+    #[test]
+    fn a_house_that_stopped_answering_is_looked_for_as_often_as_one_that_answers() {
+        let config = LiveConfig::new(Vec::new());
+        assert!(config.max_backoff <= config.interval, "{config:?}");
+        assert!(ROUTE_CHECK < config.interval);
     }
 }

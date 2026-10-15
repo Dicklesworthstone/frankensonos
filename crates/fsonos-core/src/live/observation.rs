@@ -172,6 +172,7 @@ mod tests {
                 sink: None,
                 surveyed_at: Some(now),
                 last_error: None,
+                route_checked: now,
             };
             set_av_transport_uri(&*lan, host, "test:radio", "").unwrap();
             play(&*lan, host).unwrap();

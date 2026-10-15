@@ -51,6 +51,7 @@ fn model(config: &LiveConfig) -> Model {
         sink: None,
         surveyed_at: None,
         last_error: None,
+        route_checked: now,
     }
 }
 
@@ -132,7 +133,9 @@ fn an_occupied_callback_port_does_not_hide_reachable_households_or_controls() {
     assert!(next > Instant::now());
     assert!(next <= Instant::now() + EVENTLESS_RETRY);
     // Even a slow preceding pass gets a fresh cooldown, not an overdue loop.
-    let old = Instant::now() - engine.config.interval * 2;
+    let old = Instant::now()
+        .checked_sub(engine.config.interval * 2)
+        .unwrap();
     let events = engine.survey(&mut model, old);
     engine.publish(&model, events);
     assert!(model.rec.schedule.next_at() > Instant::now());

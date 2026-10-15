@@ -173,6 +173,7 @@ mod tests {
             sink: Some(sink),
             surveyed_at: Some(started),
             last_error: None,
+            route_checked: started,
         };
         (sim, engine, model, id)
     }

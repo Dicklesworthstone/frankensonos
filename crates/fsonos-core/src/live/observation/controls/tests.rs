@@ -124,6 +124,7 @@ fn fixture(generation: u8) -> Rig {
         sink: None,
         surveyed_at: Some(now),
         last_error: None,
+        route_checked: now,
     };
     Rig {
         sim,
