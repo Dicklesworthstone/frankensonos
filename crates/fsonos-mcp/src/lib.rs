@@ -18,7 +18,7 @@ pub mod resources;
 pub mod tools;
 
 use fastmcp::prelude::*;
-use fastmcp::{CompleteResult, FinalCallToolResult, ResultMeta};
+use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::Failure;
 
 /// Room-name matching is the core's: one normalizer for every surface.
@@ -37,7 +37,7 @@ async fn echo(ctx: &McpContext, text: String) -> McpResult<String> {
 #[tool(
     description = "Play an existing entry in a room's group queue without adding or removing tracks. First read get_queue and pass its one-based position; optional expected_uri must be the exact renderer URI returned for that entry, so a changed selection is refused. Also pass the queue's opaque revision as expected_revision to reject edits and coordinator changes even with duplicate track URIs. On a mismatch read the queue again; never silently discard these checks. Activates the queue even when a radio or another source is playing. Room caps and quiet hours apply, and undo_last restores previous playback. Preserves shuffle/repeat; do not automatically replay a failed request."
 )]
-fn play_queue(
+async fn play_queue(
     ctx: &McpContext,
     zone: String,
     position: u32,
@@ -45,21 +45,22 @@ fn play_queue(
     expected_revision: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
-    let backend = tools::backend().map_err(|failure| tool_error(&failure))?;
-    let result = backend.play_queue(&fsonos_api::surface::queue::QueuePlayRequest {
-        zone,
-        position,
-        expected_uri,
-        expected_revision,
-    })?;
-    Ok(CompleteResult::new(result, ResultMeta::empty()))
+    worker::run(move |backend| {
+        backend.play_queue(&fsonos_api::surface::queue::QueuePlayRequest {
+            zone,
+            position,
+            expected_uri,
+            expected_revision,
+        })
+    })
+    .await
 }
 
 /// Remove selected consecutive queue entries through the shared backend.
 #[tool(
     description = "Remove consecutive entries from a room's group queue. First read get_queue, then pass the one-based starting position and exact renderer URIs in expected_uris (one to 100, in queue order). Pass that response's revision as expected_revision to reject intervening queue or coordinator changes. Uses revision-checked deletion, never clears/rebuilds the queue, and never automatically retries a failed write. This deletes queue entries and is NOT undoable with undo_last; read the queue again after any uncertain result rather than blindly retrying."
 )]
-fn remove_from_queue(
+async fn remove_from_queue(
     ctx: &McpContext,
     zone: String,
     position: u32,
@@ -67,21 +68,22 @@ fn remove_from_queue(
     expected_revision: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
-    let backend = tools::backend().map_err(|failure| tool_error(&failure))?;
-    let result = backend.remove_from_queue(&fsonos_api::surface::queue::QueueRemoveRequest {
-        zone,
-        position,
-        expected_uris,
-        expected_revision,
-    })?;
-    Ok(CompleteResult::new(result, ResultMeta::empty()))
+    worker::run(move |backend| {
+        backend.remove_from_queue(&fsonos_api::surface::queue::QueueRemoveRequest {
+            zone,
+            position,
+            expected_uris,
+            expected_revision,
+        })
+    })
+    .await
 }
 
 /// Rearrange an identified block without rebuilding the queue or playback.
 #[tool(
     description = "Move consecutive queue entries without clearing, re-enqueueing or restarting playback. First read get_queue. Pass its revision as REQUIRED expected_revision, one-based position, and one to 100 exact consecutive renderer URIs in expected_uris. insert_before refers to a position in the ORIGINAL queue; total plus one appends. Destinations inside or just after the selected block are no-ops. Returns the block's new position and observed revision. Not undoable with undo_last. Never automatically retry a failed move or discard a revision; read the queue again after uncertainty."
 )]
-fn move_in_queue(
+async fn move_in_queue(
     ctx: &McpContext,
     zone: String,
     position: u32,
@@ -90,15 +92,16 @@ fn move_in_queue(
     expected_revision: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
-    let backend = tools::backend().map_err(|failure| tool_error(&failure))?;
-    let result = backend.move_in_queue(&fsonos_api::surface::queue::QueueMoveRequest {
-        zone,
-        position,
-        insert_before,
-        expected_uris,
-        expected_revision,
-    })?;
-    Ok(CompleteResult::new(result, ResultMeta::empty()))
+    worker::run(move |backend| {
+        backend.move_in_queue(&fsonos_api::surface::queue::QueueMoveRequest {
+            zone,
+            position,
+            insert_before,
+            expected_uris,
+            expected_revision,
+        })
+    })
+    .await
 }
 
 /// Build the FrankenSonos MCP server. `auto` admission accepts both the

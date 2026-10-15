@@ -9,7 +9,17 @@ pub(crate) async fn run(
     call: impl FnOnce(&tools::Backend) -> McpResult<FinalCallToolResult> + Send + 'static,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let backend = tools::backend().map_err(|failure| tool_error(&failure))?;
-    let done = fsonos_api::off_thread::off_thread(move || call(backend))
+    let done = perform(move || call(backend)).await?;
+    Ok(CompleteResult::new(done, ResultMeta::empty()))
+}
+
+async fn perform(
+    call: impl FnOnce() -> McpResult<FinalCallToolResult> + Send + 'static,
+) -> McpResult<FinalCallToolResult> {
+    // The shared limiter refuses overload before running a closure. Once a
+    // closure starts, dropping the awaiting request cannot undo its I/O and
+    // must not release its slot early or cause another attempt.
+    fsonos_api::off_thread::off_thread(call)
         .map_err(|failure| tool_error(&failure))?
         .await
         .ok_or_else(|| {
@@ -17,6 +27,8 @@ pub(crate) async fn run(
                 ErrorCode::Internal,
                 "the call stopped before it answered; inspect state before trying again",
             ))
-        })??;
-    Ok(CompleteResult::new(done, ResultMeta::empty()))
+        })?
 }
+
+#[cfg(test)]
+mod tests;
