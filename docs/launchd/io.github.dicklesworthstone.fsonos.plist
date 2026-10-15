@@ -6,9 +6,10 @@
   OUTSIDE the repo. Never commit a filled-in copy.
 
   Installed as a LaunchDaemon (/Library/LaunchDaemons, runs at boot as
-  __USER__). launchd daemons are exempt from macOS Local Network privacy;
-  launchd agents are not. To run it as a LaunchAgent instead, delete the
-  UserName key and see docs/DEPLOY.md.
+  __USER__). Apple documents launchd daemons as exempt from Local Network
+  privacy, but on macOS 26.2 this one reached no speaker until its code
+  identity was approved (docs/DEPLOY.md section 4). To run it as a
+  LaunchAgent instead, delete the UserName key and see docs/DEPLOY.md.
 
   launchd does not expand ~ or $HOME, so every path here is absolute.
 -->

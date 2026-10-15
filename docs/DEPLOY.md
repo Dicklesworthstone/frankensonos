@@ -148,14 +148,20 @@ macOS automatically allows local-network access for:
 - processes running as root;
 - command-line tools run from Terminal or over SSH, including their children.
 
+On macOS 26.2 the first of these did not hold (the note above): the daemon
+reached no speaker until its code identity was approved. Check with
+`fsonos doctor` run by launchd rather than trusting the exemption.
+
 The exemption does **not** cover launchd **agents**. An agent gets the Local
 Network alert, and its LAN traffic is blocked until someone approves it. A
-headless Mac can't answer that prompt. Approval is also tracked by code
-signature, which is unreliable for the ad-hoc-signed binaries `cargo`
-produces, so a rebuild can trigger the prompt again.
+headless Mac can't answer that prompt; a Mac that stays logged in at its
+console can, once (not yet tried with `fsonos`). Approval is also tracked by
+code signature, which is unreliable for the ad-hoc-signed binaries `cargo`
+produces, so a rebuild can trigger the prompt again; a Developer ID
+signature (§3) keeps it.
 
-A **LaunchDaemon** with a `UserName` key avoids all of that. It starts at boot
-without anyone logging in and runs as your user, not root. Inbound connections
+A **LaunchDaemon** with a `UserName` key is still the shape to use. It starts
+at boot without anyone logging in and runs as your user, not root. Inbound connections
 (the speakers' event callbacks) need no Local Network privilege in either mode.
 
 ### Install the LaunchDaemon
