@@ -9,7 +9,10 @@ use fsonos_types::Generation;
 /// stays readable; a qualified name stays scoped, preferring the household
 /// id to a generation label that could become ambiguous after discovery.
 /// Missing or ambiguous rooms fail before a definition is saved.
-pub fn canonical_room_name(households: &[HouseholdState], asked: &str) -> Result<String, CoreError> {
+pub fn canonical_room_name(
+    households: &[HouseholdState],
+    asked: &str,
+) -> Result<String, CoreError> {
     let (i, room) = named_room(households, asked)?.ok_or_else(|| CoreError::UnknownRoom {
         name: asked.trim().to_string(),
         known: known_rooms(households),

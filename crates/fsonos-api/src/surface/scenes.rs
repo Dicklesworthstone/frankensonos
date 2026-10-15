@@ -13,17 +13,17 @@
 //! logged, but there is nothing on the speakers to undo.
 
 use fastapi::{JsonSchema, fastapi_openapi};
-use fsonos_core::HouseholdState;
 use fsonos_core::actions;
 use fsonos_core::fade::Fader;
 use fsonos_core::favorites;
 use fsonos_core::policy::Client;
-use fsonos_core::rooms::suggest_rooms;
+use fsonos_core::rooms::{known_rooms, named_room, suggest_rooms};
 use fsonos_core::scenes::{
     self, ApplyOptions, PlayingDj, Scene, SceneError, SceneGroup, SceneHooks, SceneOp, ScenePlan,
     SceneReport, SceneSource,
 };
 use fsonos_core::store::{Store, StoreError};
+use fsonos_core::{CoreError, HouseholdState, Room};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -109,6 +109,8 @@ pub struct SceneApplyDto {
 /// `PUT /scenes/{name}` body, `save_scene`'s `scene`, `fsonos scene save
 /// --from`). Rooms are named as the house names them (any case) and must be
 /// in it now; `volumes` and `mutes` leave the rooms they don't name alone.
+/// Use `Room@S1`, `Room@S2`, `Room@<household id>` or a player id for
+/// duplicate names. Explicit household scope is retained in the saved scene.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SceneDefinition {
@@ -149,19 +151,8 @@ impl SceneDefinition {
     /// them, or why it can't be one (a room not in the house, a source that
     /// can't play, two households in one group).
     fn scene(&self, name: &str, households: &[HouseholdState]) -> Result<Scene, Failure> {
-        let room = |asked: &str| -> Result<String, Failure> {
-            let rooms = || households.iter().flat_map(|h| &h.rooms);
-            rooms()
-                .find(|r| r.name.eq_ignore_ascii_case(asked.trim()))
-                .map(|r| r.name.clone())
-                .ok_or_else(|| {
-                    let known: Vec<String> = rooms().map(|r| r.name.clone()).collect();
-                    Failure::new(
-                        ErrorCode::UnknownRoom,
-                        format!("no room {asked:?} in the house"),
-                    )
-                    .with_suggestions(suggest_rooms(asked, &known))
-                })
+        let room = |asked: &str| {
+            scenes::canonical_room_name(households, asked).map_err(Failure::from)
         };
         let mut groups = Vec::with_capacity(self.groups.len());
         for g in &self.groups {
@@ -184,19 +175,15 @@ impl SceneDefinition {
                 source,
             });
         }
-        let mut volumes = BTreeMap::new();
         for (asked, level) in &self.volumes {
             if *level > 100 {
                 return Err(Failure::invalid(format!(
                     "the volume for {asked} must be 0 to 100, not {level}"
                 )));
             }
-            volumes.insert(room(asked)?, *level);
         }
-        let mut mutes = BTreeMap::new();
-        for (asked, muted) in &self.mutes {
-            mutes.insert(room(asked)?, *muted);
-        }
+        let volumes = scene_settings(households, &self.volumes, "volume")?;
+        let mutes = scene_settings(households, &self.mutes, "mute")?;
         let scene = Scene {
             name: name.trim().to_string(),
             groups,
@@ -207,6 +194,46 @@ impl SceneDefinition {
         scenes::check(&scene, households).map_err(scene_failure)?;
         Ok(scene)
     }
+}
+
+/// Resolve a persisted reference without aliases, prefixes or first-match
+/// fallbacks. This also resolves favorites in their intended household.
+fn scene_room<'a>(
+    households: &'a [HouseholdState],
+    asked: &str,
+) -> Result<(usize, &'a Room), Failure> {
+    named_room(households, asked)
+        .map_err(Failure::from)?
+        .ok_or_else(|| {
+            Failure::from(CoreError::UnknownRoom {
+                name: asked.trim().to_string(),
+                known: known_rooms(households),
+            })
+        })
+}
+
+/// Two spellings of the same physical room must not silently overwrite a
+/// setting, or cause it to be applied twice with conflicting values.
+fn scene_settings<T: Copy>(
+    households: &[HouseholdState],
+    settings: &BTreeMap<String, T>,
+    kind: &str,
+) -> Result<BTreeMap<String, T>, Failure> {
+    let mut seen = Vec::new();
+    let mut canonical = BTreeMap::new();
+    for (asked, value) in settings {
+        let (i, room) = scene_room(households, asked)?;
+        let identity = (i, room.primary.clone());
+        if seen.contains(&identity) {
+            return Err(Failure::invalid(format!(
+                "the scene names room {asked:?} more than once in its {kind} settings"
+            )));
+        }
+        seen.push(identity);
+        let name = scenes::canonical_room_name(households, asked).map_err(Failure::from)?;
+        canonical.insert(name, *value);
+    }
+    Ok(canonical)
 }
 
 /// What a written-out group plays, or why that can't be a scene's source.
@@ -357,22 +384,27 @@ fn room_of(households: &[HouseholdState], player: &PlayerId) -> String {
         .iter()
         .flat_map(|h| &h.rooms)
         .find(|r| r.primary == *player || r.players.contains(player))
-        .map_or_else(|| player.0.clone(), |r| r.name.clone())
+        .and_then(|r| {
+            scenes::canonical_room_name(households, &r.name)
+                .or_else(|_| scenes::canonical_room_name(households, &r.primary.0))
+                .ok()
+        })
+        .unwrap_or_else(|| player.0.clone())
 }
 
 /// `op` in words.
 fn describe(households: &[HouseholdState], op: &SceneOp) -> String {
     let room = |p: &PlayerId| room_of(households, p);
     match op {
-        SceneOp::Leave { room, .. } => format!("{room} leaves its group"),
+        SceneOp::Leave { player, .. } => format!("{} leaves its group", room(player)),
         SceneOp::Join {
-            room: member,
+            player,
             coordinator,
             ..
-        } => format!("{member} joins {}", room(coordinator)),
-        SceneOp::Volume { room, level, .. } => format!("{room} volume {level}"),
-        SceneOp::Mute { room, mute, .. } => {
-            format!("{room} {}", if *mute { "muted" } else { "unmuted" })
+        } => format!("{} joins {}", room(player), room(coordinator)),
+        SceneOp::Volume { player, level, .. } => format!("{} volume {level}", room(player)),
+        SceneOp::Mute { player, mute, .. } => {
+            format!("{} {}", room(player), if *mute { "muted" } else { "unmuted" })
         }
         SceneOp::Favorite { coordinator, name } => {
             format!("{} plays the favorite {name}", room(coordinator))
@@ -585,13 +617,7 @@ impl Surface {
             let SceneSource::Favorite { name, uri } = &mut group.source else {
                 continue;
             };
-            let Some(lead) = households
-                .iter()
-                .flat_map(|h| &h.rooms)
-                .find(|r| r.name == group.coordinator)
-            else {
-                continue;
-            };
+            let (_, lead) = scene_room(&households, &group.coordinator)?;
             let found = favorites::list(&*self.transport, &households, &lead.primary)
                 .map_err(Failure::from)
                 .inspect_err(|f| self.notice(f))?;
@@ -736,6 +762,9 @@ impl Surface {
         self.authorize_logged(client, tool)?;
         let scene = self.scene_store(|store| scenes::load(store, name))?;
         let households = self.scene_house()?;
+        // Reject ambiguous legacy definitions before even capturing state;
+        // policy preflight and scene execution must see the same targets.
+        scenes::check(&scene, &households).map_err(scene_failure)?;
         let zones = scenes::zones(&scene, &households);
         let (snaps, missed) =
             actions::capture_zones(&*self.transport, &households, &zones, self.now());
