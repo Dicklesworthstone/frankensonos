@@ -83,11 +83,19 @@ pub enum ErrorCode {
     UnknownScene,
     /// No schedule has that id.
     UnknownSchedule,
+    /// Spotify sign-in has no configured app client id.
+    SpotifyNotConfigured,
+    /// The app redirect differs from the configured value.
+    SpotifyRedirectNotAllowed,
+    /// No discovered player has that id.
+    UnknownPlayer,
+    /// The speaker returned invalid artwork.
+    BadArt,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 30] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -114,12 +122,19 @@ impl ErrorCode {
         Self::NoMatch,
         Self::UnknownScene,
         Self::UnknownSchedule,
+        Self::SpotifyNotConfigured,
+        Self::SpotifyRedirectNotAllowed,
+        Self::UnknownPlayer,
+        Self::BadArt,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::SpotifyRedirectNotAllowed => "SPOTIFY_REDIRECT_NOT_ALLOWED",
+            Self::UnknownPlayer => "UNKNOWN_PLAYER",
+            Self::BadArt => "BAD_ART",
             Self::InvalidArgument => "INVALID_ARGUMENT",
             Self::UnknownRoom => "UNKNOWN_ROOM",
             Self::AmbiguousRoom => "AMBIGUOUS_ROOM",
@@ -140,6 +155,7 @@ impl ErrorCode {
             Self::NotImplemented => "NOT_IMPLEMENTED",
             Self::UnknownFavorite => "UNKNOWN_FAVORITE",
             Self::NoMatch => "NO_MATCH",
+            Self::SpotifyNotConfigured => "SPOTIFY_NOT_CONFIGURED",
             Self::AmbiguousFavorite => "AMBIGUOUS_FAVORITE",
             Self::UnplayableFavorite => "UNPLAYABLE_FAVORITE",
             Self::UntrustedOrigin => "UNTRUSTED_ORIGIN",
@@ -153,8 +169,10 @@ impl ErrorCode {
     #[must_use]
     pub fn status(self) -> u16 {
         match self {
+            Self::SpotifyRedirectNotAllowed => 400,
             Self::InvalidArgument | Self::CrossHouseholdGroup | Self::UnplayableFavorite => 422,
-            Self::UnknownRoom
+            Self::UnknownPlayer
+            | Self::UnknownRoom
             | Self::UnknownHousehold
             | Self::UnknownMood
             | Self::NoDjSession
@@ -171,8 +189,8 @@ impl ErrorCode {
             | Self::AmbiguousFavorite => 409,
             Self::PolicyDenied | Self::UntrustedOrigin => 403,
             Self::UnsupportedMediaType => 415,
-            Self::UpnpFault => 502,
-            Self::NotReady | Self::PlayerUnreachable => 503,
+            Self::BadArt | Self::UpnpFault => 502,
+            Self::NotReady | Self::PlayerUnreachable | Self::SpotifyNotConfigured => 503,
             Self::Internal => 500,
             Self::NotImplemented => 501,
         }
@@ -183,13 +201,15 @@ impl ErrorCode {
     #[must_use]
     pub fn exit_code(self) -> u8 {
         match self {
-            Self::InvalidArgument
+            Self::SpotifyRedirectNotAllowed
+            | Self::InvalidArgument
             | Self::AmbiguousRoom
             | Self::CrossHouseholdGroup
             | Self::AmbiguousFavorite
             | Self::UnplayableFavorite
             | Self::UnsupportedMediaType => 2,
-            Self::UnknownRoom
+            Self::UnknownPlayer
+            | Self::UnknownRoom
             | Self::UnknownHousehold
             | Self::UnknownMood
             | Self::NoDjSession
@@ -199,13 +219,15 @@ impl ErrorCode {
             | Self::UnknownSchedule => 3,
             Self::NotReady | Self::PlayerUnreachable | Self::NotCoordinator => 4,
             Self::PolicyDenied | Self::UntrustedOrigin => 5,
-            Self::UpnpFault
+            Self::BadArt
+            | Self::UpnpFault
             | Self::SpotifyNotLinked
             | Self::RenderParamsMissing
             | Self::RenderParamsStale
             | Self::SpotifyAuthRequired
             | Self::Internal
-            | Self::NotImplemented => 1,
+            | Self::NotImplemented
+            | Self::SpotifyNotConfigured => 1,
         }
     }
 
@@ -222,6 +244,9 @@ impl ErrorCode {
     #[must_use]
     pub fn default_hint(self) -> &'static str {
         match self {
+            Self::SpotifyRedirectNotAllowed => "Use app_redirect_uri from GET /spotify/status.",
+            Self::UnknownPlayer => "List zones to find a discovered player.",
+            Self::BadArt => "Keep the generated cover until the speaker reports valid artwork.",
             Self::InvalidArgument => "Fix the field the detail names and send the request again.",
             Self::UnknownRoom => {
                 "Use a suggested room, or list rooms with list_zones (GET /zones)."
@@ -254,6 +279,9 @@ impl ErrorCode {
                  favorite), then retry."
             }
             Self::SpotifyAuthRequired => "Sign in to Spotify on the daemon host, then retry.",
+            Self::SpotifyNotConfigured => {
+                "Set FSONOS_SPOTIFY_CLIENT_ID and register the redirect URI in the Spotify dashboard."
+            }
             Self::PolicyDenied => "The house policy forbids this; ask the owner to change it.",
             Self::UnknownMood => "Use one of the suggested moods.",
             Self::NoDjSession => "Start the DJ in that zone first (dj_start).",
@@ -542,6 +570,16 @@ fn proto_failure(err: &ProtoError, detail: String) -> Failure {
         ProtoError::Network { .. } => Failure::new(ErrorCode::PlayerUnreachable, detail),
         ProtoError::NotWired(_) => Failure::new(ErrorCode::Internal, detail),
     }
+}
+
+pub(crate) fn http_error(failure: &Failure, status: u16, retryable: bool) -> Response {
+    let mut body = failure.body();
+    body.retryable = retryable;
+    Response::with_status(StatusCode::from_u16(status))
+        .header("content-type", b"application/json".to_vec())
+        .body(ResponseBody::Bytes(
+            serde_json::to_vec(&body).expect("ApiError serializes"),
+        ))
 }
 
 #[cfg(test)]

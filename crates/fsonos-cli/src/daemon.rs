@@ -111,6 +111,19 @@ pub fn surface(global: &GlobalArgs, policy: Policy) -> Result<Surface, Failure> 
     )
 }
 
+/// The phone app's Spotify sign-in exchange, search and browse lists.
+fn app_spotify(
+    args: &ServeArgs,
+    data_dir: &Path,
+) -> Result<Arc<fsonos_api::spotify::Spotify>, Failure> {
+    fsonos_api::spotify::Spotify::new(
+        args.spotify_config(),
+        data_dir,
+        args.spotify_endpoints(),
+        args.spotify_app_redirect_uri.clone(),
+    )
+}
+
 /// The daemon's surface over a live model of the speakers: surveys and
 /// reads through the (confined) transport, events through the LAN on
 /// `events_port`. The caller owns the model: dropping the returned `Arc`
@@ -298,7 +311,11 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         .with_sleep(scheduler.sleep(&data_dir));
     // The owner's Spotify sign-in comes back to this daemon's own port.
     let surface = spotify_auth::install(surface, args, &data_dir);
-    let surface = Arc::new(with_action_log(surface, &data_dir, "serve").with_doctor_checks(checks));
+    let surface = Arc::new(
+        with_action_log(surface, &data_dir, "serve")
+            .with_spotify(app_spotify(args, &data_dir)?)
+            .with_doctor_checks(checks),
+    );
     // The live model's playback keeps each DJ queue topped up.
     fsonos_api::surface::follow(&surface);
 

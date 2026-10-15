@@ -5,6 +5,7 @@
 use super::{Fetch, LibraryRead};
 use crate::SpotifyError;
 use crate::client::{Endpoints, parse_query};
+use fsonos_core::store::SpotifyCache;
 use std::collections::{HashSet, VecDeque};
 
 const PAGE_BUDGET: usize = 20_000;
@@ -74,6 +75,9 @@ impl LibraryRead {
             requested: HashSet::new(),
             items: Vec::new(),
             pages: 0,
+            cache: SpotifyCache::default(),
+            done: 0,
+            total: 0,
         };
         staged.ingest_page(fetch, body)?;
         if !fits(self.requested.len(), staged.pending.len(), PAGE_BUDGET) {
@@ -95,10 +99,11 @@ impl LibraryRead {
             }
         }
         self.pending.pop_front();
-        for next in staged.pending {
+        for next in std::mem::take(&mut staged.pending) {
             self.queue(next);
         }
-        self.items.extend(staged.items);
+        self.items.append(&mut staged.items);
+        self.absorb_staged(staged);
         self.pages += 1;
         Ok(())
     }

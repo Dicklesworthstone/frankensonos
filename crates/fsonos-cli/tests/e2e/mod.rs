@@ -63,7 +63,7 @@ pub const ROUTES_REFUSAL: &str = "refused: outside the routes file";
 const INLINE: usize = 2000;
 
 /// The settings the harness controls; any ambient value is removed first.
-const SETTINGS: [&str; 16] = [
+const SETTINGS: [&str; 19] = [
     "FSONOS_ROUTES",
     "FSONOS_TAILSCALE_SERVE",
     "FSONOS_EVENTS_PORT",
@@ -73,6 +73,9 @@ const SETTINGS: [&str; 16] = [
     "FSONOS_SEEDS",
     "FSONOS_SPOTIFY_CLIENT_ID",
     "FSONOS_SPOTIFY_REDIRECT_URI",
+    "FSONOS_SPOTIFY_APP_REDIRECT_URI",
+    "FSONOS_SPOTIFY_ACCOUNTS_URL",
+    "FSONOS_SPOTIFY_API_URL",
     "FSONOS_TAILSCALE",
     "RUST_LOG",
     "FSONOS_TTS_BACKEND",

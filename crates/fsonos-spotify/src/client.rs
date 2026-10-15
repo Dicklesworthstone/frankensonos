@@ -189,10 +189,21 @@ impl SpotifyConfig {
     /// Body for `POST` [`TOKEN_URL`] exchanging the callback's `code`.
     #[must_use]
     pub fn code_exchange_body(&self, code: &str, pkce: &Pkce) -> String {
+        self.code_exchange_body_with_redirect(code, pkce, &self.redirect_uri)
+    }
+
+    /// Exchange an app's PKCE code using its registered redirect.
+    #[must_use]
+    pub fn code_exchange_body_with_redirect(
+        &self,
+        code: &str,
+        pkce: &Pkce,
+        redirect_uri: &str,
+    ) -> String {
         form_encode(&[
             ("grant_type", "authorization_code"),
             ("code", code),
-            ("redirect_uri", &self.redirect_uri),
+            ("redirect_uri", redirect_uri),
             ("client_id", &self.client_id),
             ("code_verifier", &pkce.verifier),
         ])
@@ -615,6 +626,19 @@ impl Endpoints {
         )
     }
 
+    /// Catalog search for albums and tracks, one page of each. Unlike the
+    /// library endpoints it reads all of Spotify and needs no extra scope.
+    /// It sends no `market`: `market=from_token` needs `user-read-private`,
+    /// and Spotify answers 403 "Insufficient client scope" without it.
+    #[must_use]
+    pub fn search(&self, query: &str, limit: u32) -> String {
+        format!(
+            "{}/search?q={}&type=album,track&limit={limit}",
+            self.api,
+            percent_encode(query)
+        )
+    }
+
     /// Whether `url` (e.g. a page's `next`) is under the Web API base — the
     /// bearer token is only ever sent there.
     #[must_use]
@@ -780,9 +804,16 @@ pub struct Album {
     #[serde(default)]
     pub release_date: Option<String>,
     #[serde(default)]
+    pub images: Vec<AlbumImage>,
+    #[serde(default)]
     pub total_tracks: u32,
     #[serde(default)]
     pub tracks: Option<Paging<SimplifiedTrack>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AlbumImage {
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -869,6 +900,8 @@ pub struct SimplifiedAlbum {
     pub album_type: Option<String>,
     #[serde(default)]
     pub release_date: Option<String>,
+    #[serde(default)]
+    pub images: Vec<AlbumImage>,
 }
 
 impl SavedAlbum {
@@ -975,7 +1008,7 @@ impl FullTrack {
 
 /// The year of a Spotify `release_date` (`"1982"`, `"2019-05"`,
 /// `"2019-05-10"`); `None` when absent or unknown (`"0000"`).
-fn release_year(date: Option<&str>) -> Option<u16> {
+pub(crate) fn release_year(date: Option<&str>) -> Option<u16> {
     date?.get(..4)?.parse::<u16>().ok().filter(|&year| year > 0)
 }
 
@@ -985,6 +1018,42 @@ fn lead_id(artists: &[SimplifiedArtist]) -> Option<String> {
         .first()
         .and_then(|a| a.id.clone())
         .filter(|id| !id.is_empty())
+}
+
+/// `GET /search?type=album,track`. Spotify pads result pages with nulls, so
+/// every entry is optional.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchResponse {
+    #[serde(default)]
+    pub albums: Option<Paging<Option<Album>>>,
+    #[serde(default)]
+    pub tracks: Option<Paging<Option<FullTrack>>>,
+}
+
+impl SearchResponse {
+    pub fn parse(body: &[u8]) -> Result<Self, SpotifyError> {
+        serde_json::from_slice(body)
+            .map_err(|e| SpotifyError::Decode(format!("search response: {e}")))
+    }
+
+    /// The matching albums, nulls dropped.
+    #[must_use]
+    pub fn albums(&self) -> Vec<&Album> {
+        self.albums
+            .iter()
+            .flat_map(|page| page.items.iter().flatten())
+            .collect()
+    }
+
+    /// The matching tracks Sonos can render, nulls and unplayable ones dropped.
+    #[must_use]
+    pub fn tracks(&self) -> Vec<&FullTrack> {
+        self.tracks
+            .iter()
+            .flat_map(|page| page.items.iter().flatten())
+            .filter(|t| renderable(&t.uri, t.is_local, t.is_playable))
+            .collect()
+    }
 }
 
 /// Sonos renders only real Spotify tracks the owner's market can play.
@@ -1294,6 +1363,34 @@ mod tests {
         }
         // The URL-safe alphabet: 62 → '-', 63 → '_'.
         assert_eq!(base64url(&[0xfb, 0xff]), "-_8");
+    }
+
+    #[test]
+    fn app_exchange_body_uses_supplied_redirect_and_encodes_secrets() {
+        let config = SpotifyConfig {
+            client_id: "app123".into(),
+            redirect_uri: "http://127.0.0.1:8099/callback".into(),
+        };
+        let pkce = Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk").unwrap();
+        let pairs = parse_query(&config.code_exchange_body_with_redirect(
+            "code+&=",
+            &pkce,
+            "frankensonos://spotify-callback",
+        ))
+        .unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                ("grant_type".into(), "authorization_code".into()),
+                ("code".into(), "code+&=".into()),
+                (
+                    "redirect_uri".into(),
+                    "frankensonos://spotify-callback".into()
+                ),
+                ("client_id".into(), "app123".into()),
+                ("code_verifier".into(), pkce.verifier)
+            ]
+        );
     }
 
     #[test]

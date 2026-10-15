@@ -19,12 +19,12 @@
 use asupersync::Cx;
 use asupersync::http::Client;
 use clap::Args;
-use fsonos_api::surface::dj_sync::{LibrarySyncDto, SyncedDto};
+use fsonos_api::surface::dj_sync::{LibrarySyncDto, ReadProgressDto, SyncedDto};
 use fsonos_api::{ErrorCode, Failure};
 use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
-use fsonos_spotify::cache::sync_library_detailed;
-use fsonos_spotify::client::{SpotifyConfig, TokenCache};
+use fsonos_spotify::cache::sync_library_observed;
+use fsonos_spotify::client::{Endpoints, SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,16 +50,19 @@ const STACK: usize = 8 * 1024 * 1024;
 /// The library refresh for one data directory; see the module docs.
 pub struct LibrarySync {
     config: SpotifyConfig,
+    endpoints: Endpoints,
     data_dir: PathBuf,
-    state: Mutex<Running>,
+    state: Mutex<RefreshState>,
     /// A refresh landed since the DJ last rebuilt its pool.
     fresh: AtomicBool,
 }
 
 #[derive(Default)]
-struct Running {
+struct RefreshState {
     running: bool,
     error: Option<String>,
+    /// `(done, total)` of the library read now running.
+    progress: Option<(usize, usize)>,
 }
 
 impl LibrarySync {
@@ -74,10 +77,18 @@ impl LibrarySync {
         }
         Some(Self {
             config,
+            endpoints: Endpoints::default(),
             data_dir,
-            state: Mutex::new(Running::default()),
+            state: Mutex::new(RefreshState::default()),
             fresh: AtomicBool::new(false),
         })
+    }
+
+    /// The same refresh against other Spotify endpoints (a fake, in tests).
+    #[must_use]
+    pub fn with_endpoints(mut self, endpoints: Endpoints) -> Self {
+        self.endpoints = endpoints;
+        self
     }
 
     /// The daemon's: when `serve` names a Spotify app (it says so when not).
@@ -94,21 +105,26 @@ impl LibrarySync {
             client_id,
             redirect_uri: serve.spotify_redirect_uri.clone(),
         };
-        Self::new(config, data_dir.to_owned()).map(Arc::new)
+        Self::new(config, data_dir.to_owned())
+            .map(|sync| Arc::new(sync.with_endpoints(serve.spotify_endpoints())))
     }
 
-    fn running(&self) -> std::sync::MutexGuard<'_, Running> {
+    fn running(&self) -> std::sync::MutexGuard<'_, RefreshState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Where it stands.
     #[must_use]
     pub fn status(&self) -> LibrarySyncDto {
-        let (running, error) = {
+        let (running, error, progress) = {
             let state = self.running();
-            (state.running, state.error.clone())
+            (state.running, state.error.clone(), state.progress)
         };
-        LibrarySyncDto::new(running, self.last(), error)
+        LibrarySyncDto::new(running, self.last(), error).with_progress(
+            progress
+                .filter(|_| running)
+                .map(|(done, total)| ReadProgressDto { done, total }),
+        )
     }
 
     /// Claim the one refresh slot. Admission happens before a worker is
@@ -120,6 +136,7 @@ impl LibrarySync {
         }
         state.running = true;
         state.error = None;
+        state.progress = None;
         true
     }
 
@@ -182,29 +199,37 @@ impl LibrarySync {
     /// Read Spotify into a store of its own.
     fn read(&self) -> Result<SyncedDto, Failure> {
         let (config, dir) = (self.config.clone(), self.data_dir.clone());
-        let synced = thread::Builder::new()
-            .stack_size(STACK)
-            .spawn(move || {
-                let runtime = crate::runtime().map_err(|e| SpotifyError::Http(format!("{e:#}")))?;
-                runtime.block_on(async move {
-                    let cx = Cx::current()
-                        .ok_or_else(|| SpotifyError::Http("no async context".to_owned()))?;
-                    let mut session = Session::open(
-                        config,
-                        TokenCache::in_data_dir(&dir),
-                        Client::default_for_runtime(&cx),
-                    )?;
-                    if !session.is_authorized() {
-                        return Err(SpotifyError::Auth("not signed in to Spotify".into()));
-                    }
-                    let mut store = SqliteStore::open(&dir.join(crate::daemon::DB_FILE))?;
-                    sync_library_detailed(&mut session, &cx, &mut store).await
+        let endpoints = self.endpoints.clone();
+        // A scoped thread, so the progress callback can reach the state.
+        let synced = thread::scope(|scope| {
+            thread::Builder::new()
+                .stack_size(STACK)
+                .spawn_scoped(scope, move || {
+                    let runtime =
+                        crate::runtime().map_err(|e| SpotifyError::Http(format!("{e:#}")))?;
+                    runtime.block_on(async move {
+                        let cx = Cx::current()
+                            .ok_or_else(|| SpotifyError::Http("no async context".to_owned()))?;
+                        let mut session = Session::open(
+                            config,
+                            TokenCache::in_data_dir(&dir),
+                            Client::default_for_runtime(&cx),
+                        )?
+                        .with_endpoints(endpoints);
+                        if !session.is_authorized() {
+                            return Err(SpotifyError::Auth("not signed in to Spotify".into()));
+                        }
+                        let mut store = SqliteStore::open(&dir.join(crate::daemon::DB_FILE))?;
+                        let mut progress =
+                            |done, total| self.running().progress = Some((done, total));
+                        sync_library_observed(&mut session, &cx, &mut store, &mut progress).await
+                    })
                 })
-            })
-            .map_err(|e| Failure::new(ErrorCode::Internal, format!("start the refresh: {e}")))?
-            .join()
-            .map_err(|_| Failure::new(ErrorCode::Internal, "the library refresh panicked"))?
-            .map_err(failure)?;
+                .map_err(|e| Failure::new(ErrorCode::Internal, format!("start the refresh: {e}")))?
+                .join()
+                .map_err(|_| Failure::new(ErrorCode::Internal, "the library refresh panicked"))?
+                .map_err(failure)
+        })?;
         let pending = synced
             .genres
             .deferred

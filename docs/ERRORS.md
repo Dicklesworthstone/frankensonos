@@ -59,6 +59,10 @@ succeed.
 | `NO_MATCH` | 404 | 3 | no | A library search found nothing to play (`fsonos search`, `fsonos play --search`; the HTTP and MCP searches answer an empty list instead), or a like or dislike found no work from the library playing. | Try fewer or other words: a composer's surname, a performer, or a catalog number (bwv 988). |
 | `UNKNOWN_SCENE` | 404 | 3 | no | No saved scene has that name. | List the scenes with list_scenes (GET /scenes), or use a suggested name. |
 | `UNKNOWN_SCHEDULE` | 404 | 3 | no | No schedule has that id. | Use an id that list_schedules (GET /schedules) shows. |
+| `SPOTIFY_NOT_CONFIGURED` | 503 | 1 | no | Spotify sign-in has no configured app client id. | Set FSONOS_SPOTIFY_CLIENT_ID and register the redirect URI in the Spotify dashboard. |
+| `SPOTIFY_REDIRECT_NOT_ALLOWED` | 400 | 2 | no | App callback differs from configuration. | Use app_redirect_uri from GET /spotify/status. |
+| `UNKNOWN_PLAYER` | 404 | 3 | no | Player id is not discovered. | List zones to find a discovered player. |
+| `BAD_ART` | 502 | 1 | no | Speaker returned invalid or oversized artwork. | Keep the generated cover until the speaker reports valid artwork. |
 
 ## Notes
 
@@ -69,3 +73,9 @@ A successful response can carry notes about how the request was carried out.
 | `VOLUME_CLAMPED` | The requested volume exceeded the house policy and was lowered. |
 | `HEALED` | The speakers had changed under the request (a player at a new address, or a new group coordinator) and it was retried once there. Only commands that are safe to repeat are retried at a new address. |
 | `SKIPPED` | A room or group of a set (`everywhere`, `all`, a multi-room alias, or the rooms a party gathers) could not do it: its speaker did not answer, or refused (nothing to resume, say). The rest went ahead; the call fails only when none could. |
+
+Exchange and artwork input failures use `400 INVALID_ARGUMENT`. An exchange
+that arrives while another runs answers 409; upstream failures answer 502 with
+`retryable: true`. A token-cache write failure names the cache path and
+answers 500. A speaker artwork timeout or connection failure answers 502 with
+`retryable: true`; its 404 is passed through without a cache header.

@@ -200,10 +200,13 @@ mod tests {
 
     fn serve(client_id: Option<&str>) -> ServeArgs {
         ServeArgs {
-            http: Some("127.0.0.1:0".parse().unwrap()),
+            http: vec!["127.0.0.1:0".parse().unwrap()],
             mcp_http: Some("127.0.0.1:0".parse().unwrap()),
             spotify_client_id: client_id.map(str::to_owned),
             spotify_redirect_uri: "http://127.0.0.1:8099/auth/spotify/callback".into(),
+            spotify_app_redirect_uri: fsonos_api::spotify::DEFAULT_APP_REDIRECT.into(),
+            spotify_accounts_url: None,
+            spotify_api_url: None,
             events_port: 0,
             allow_unsafe_bind: false,
             tailscale: crate::config::TailscaleMode::Auto,

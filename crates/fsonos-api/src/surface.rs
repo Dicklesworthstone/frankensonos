@@ -123,6 +123,7 @@ pub struct Surface {
     /// The owner's Spotify sign-in ([`Self::with_spotify_auth`]); without
     /// it the sign-in routes answer NOT_IMPLEMENTED.
     spotify_auth: Option<Box<dyn spotify_auth::SpotifyAuth>>,
+    pub(crate) spotify: Option<Arc<crate::spotify::Spotify>>,
 }
 
 /// Doctor checks a surface adds to the core's (the daemon's bind and health
@@ -164,10 +165,11 @@ impl PolicyFile {
         }
     }
 }
+pub(crate) type StoreHandle = Arc<Mutex<Box<dyn Store + Send>>>;
 
 /// Where a surface logs its actions, and its name in the log.
 struct ActionLog {
-    store: Mutex<Box<dyn Store + Send>>,
+    store: StoreHandle,
     surface: String,
     /// Held for a whole undo, so two never put the same action back; the
     /// store itself is locked only per call (see [`Surface::undo`]).
@@ -206,7 +208,19 @@ impl Surface {
             announcements: None,
             sleep: None,
             spotify_auth: None,
+            spotify: None,
         }
+    }
+
+    /// Share Spotify sign-in and sync across every HTTP listener.
+    #[must_use]
+    pub fn with_spotify(mut self, spotify: Arc<crate::spotify::Spotify>) -> Self {
+        self.spotify = Some(spotify);
+        self
+    }
+
+    pub(crate) fn spotify_store(&self) -> Option<StoreHandle> {
+        self.log.as_ref().map(|log| Arc::clone(&log.store))
     }
 
     /// Read the households and playback from `live` (the daemon's model,
@@ -465,7 +479,7 @@ impl Surface {
     #[must_use]
     pub fn with_action_log(mut self, store: Box<dyn Store + Send>, surface: &str) -> Self {
         self.log = Some(ActionLog {
-            store: Mutex::new(store),
+            store: Arc::new(Mutex::new(store)),
             surface: surface.to_string(),
             undoing: Mutex::new(()),
             restoring: RwLock::new(()),
@@ -517,7 +531,7 @@ impl Surface {
         }
     }
 
-    fn guard<'a>(&'a self, client: &'a Client) -> Guard<'a> {
+    pub(crate) fn guard<'a>(&'a self, client: &'a Client) -> Guard<'a> {
         Guard {
             policy: self.policy(),
             client,
@@ -1106,7 +1120,7 @@ impl Surface {
 
     /// Run `f` on the store, if the surface keeps one (with its action log).
     /// Never a DJ engine call: those go through [`Self::with_dj_store`].
-    fn with_store<R>(
+    pub(crate) fn with_store<R>(
         &self,
         f: impl FnOnce(&mut dyn Store) -> Result<R, StoreError>,
     ) -> Result<Option<R>, Failure> {
@@ -1270,7 +1284,7 @@ impl Surface {
     }
 
     /// The DJ engine, or why there is none.
-    fn dj_engine(&self) -> Result<&dyn DjEngine, Failure> {
+    pub(crate) fn dj_engine(&self) -> Result<&dyn DjEngine, Failure> {
         self.dj.as_deref().ok_or_else(|| {
             Failure::new(ErrorCode::NotImplemented, "this surface runs no DJ")
                 .with_hint("Ask the daemon (fsonos serve), which runs the DJ.")
@@ -1341,7 +1355,15 @@ impl Surface {
         let target = resolve(room_view(&households, aliases.as_ref(), client), zone)
             .map_err(|f| self.explain(f))?;
         let listed = favorites::list(&*self.transport, &households, &target.coordinator.id)?;
-        Ok(listed.iter().map(FavoriteDto::from).collect())
+        Ok(listed
+            .iter()
+            .map(|favorite| {
+                let mut dto = FavoriteDto::from(favorite);
+                dto.art_uri =
+                    crate::art::normalize(favorite.art_uri.as_deref(), target.coordinator);
+                dto
+            })
+            .collect())
     }
 
     /// What `zone` is doing right now (`get_zone_state`): its group, the
@@ -1356,7 +1378,7 @@ impl Surface {
         let heard = |p: &PlayerId| self.live().and_then(|live| live.player(p));
         // The group's transport and track, from its events when it has
         // reported them, else asked.
-        let (state, track) = match heard(&target.coordinator.id) {
+        let (state, mut track) = match heard(&target.coordinator.id) {
             Some(group) if group.transport.is_some() => (
                 group.transport.unwrap_or(TransportState::Unknown),
                 crate::live::track(&group, Instant::now()),
@@ -1372,6 +1394,9 @@ impl Surface {
                 )
             }
         };
+        if let Some(track) = &mut track {
+            track.art_url = crate::art::normalize(track.art_url.as_deref(), target.coordinator);
+        }
         let volume = heard(&target.player.id)
             .and_then(|room| room.volume)
             .or_else(|| control::volume(&*self.transport, &households, &target.player.id).ok());

@@ -88,6 +88,7 @@ pub fn track(playback: &PlayerPlayback, now: Instant) -> Option<TrackDto> {
         creator: meta.and_then(|m| m.creator.clone()),
         album: meta.and_then(|m| m.album.clone()),
         uri,
+        art_url: meta.and_then(|m| m.art_uri.clone()),
         duration_secs: playback.duration_secs,
         position_secs: playback.position_at(now),
         queue_position: playback.queue_position.filter(|p| *p > 0),

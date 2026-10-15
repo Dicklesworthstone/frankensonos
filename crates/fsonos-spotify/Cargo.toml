@@ -26,6 +26,10 @@ tracing = { workspace = true }
 # Web API (OAuth PKCE, library reads).
 asupersync = { workspace = true }
 
+[features]
+# Shared local Spotify host for daemon integration tests.
+test-support = []
+
 [dev-dependencies]
 # Virtual Sonos players over real localhost sockets for the queue-feed tests.
 fsonos-sim = { workspace = true }

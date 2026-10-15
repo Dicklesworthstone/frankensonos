@@ -9,8 +9,8 @@
 
 use super::{
     Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback,
-    FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction, PlayRecord, Store, StoreError,
-    StoredScene, StoredSchedule,
+    FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction, PlayRecord, SpotifyCache, Store,
+    StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -171,6 +171,11 @@ const MIGRATIONS: &[Migration] = &[
         sql: "
         ALTER TABLE feedback ADD COLUMN genres TEXT;
     ",
+    },
+    Migration {
+        version: 13,
+        name: "Spotify browse metadata and sync membership",
+        sql: "CREATE TABLE spotify_cache (id INTEGER PRIMARY KEY, data TEXT NOT NULL);",
     },
 ];
 
@@ -598,6 +603,31 @@ impl Store for SqliteStore {
             })
         })
         .collect()
+    }
+
+    fn spotify_cache(&self) -> Result<SpotifyCache, StoreError> {
+        self.query("SELECT data FROM spotify_cache WHERE id = 1", &[])?
+            .first()
+            .map(|row| serde_json::from_str(&text(row, 0)?).map_err(backend))
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+
+    fn save_spotify_cache(&mut self, cache: &SpotifyCache) -> Result<(), StoreError> {
+        let data = serde_json::to_string(cache).map_err(backend)?;
+        self.execute(
+            "INSERT OR REPLACE INTO spotify_cache (id, data) VALUES (1, ?1)",
+            &[data.into()],
+        )
+        .map(drop)
+    }
+
+    fn clear_spotify_library(&mut self) -> Result<(), StoreError> {
+        self.in_transaction(|c| {
+            c.execute_sync("DELETE FROM spotify_library")?;
+            c.execute_sync("DELETE FROM spotify_cache")?;
+            Ok(())
+        })
     }
 
     fn save_render_params(
@@ -1255,7 +1285,7 @@ mod tests {
         let store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1296,7 +1326,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1353,7 +1383,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 2, "no row lost");

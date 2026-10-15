@@ -223,6 +223,9 @@ curl https://<mac>.<tailnet>.ts.net/zones
 The full walkthrough (launchd, the firewall, tailnet policy grants, the
 Spotify sign-in) is in [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
+An iPhone remote that finds the daemon with Bonjour is in
+[`ios/`](ios/README.md).
+
 ## For agents
 
 `fsonos serve` exposes the house as MCP tools (also `fsonos mcp` over stdio for
