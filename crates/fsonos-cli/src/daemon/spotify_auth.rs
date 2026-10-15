@@ -15,7 +15,7 @@ use fsonos_spotify::SpotifyError;
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::{PendingAuthorization, Session};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::config::ServeArgs;
 
@@ -39,7 +39,45 @@ pub fn install(surface: Surface, args: &ServeArgs, data_dir: &Path) -> Surface {
 pub struct SpotifySignIn {
     config: SpotifyConfig,
     data_dir: PathBuf,
-    pending: Mutex<Option<PendingAuthorization>>,
+    pending: Mutex<PendingSignIn>,
+}
+
+/// Keep the pending flow visible while exchanging it. A competing begin or
+/// callback must not replace it until the exchange has finished.
+#[derive(Default)]
+struct PendingSignIn {
+    authorization: Option<Arc<PendingAuthorization>>,
+    exchanging: bool,
+}
+
+impl PendingSignIn {
+    fn idle(&self) -> Result<(), Failure> {
+        if self.exchanging {
+            return Err(Failure::new(
+                ErrorCode::NotReady,
+                "a Spotify sign-in is being completed",
+            )
+            .with_hint("Check sign-in status before starting or completing another sign-in."));
+        }
+        Ok(())
+    }
+}
+
+/// Always release the reservation, including session-open failures and
+/// unwinding. No mutex is held while the worker opens its cache or uses HTTP.
+struct Completing<'a> {
+    owner: &'a SpotifySignIn,
+    successful: bool,
+}
+
+impl Drop for Completing<'_> {
+    fn drop(&mut self) {
+        let mut pending = self.owner.pending();
+        if self.successful {
+            pending.authorization = None;
+        }
+        pending.exchanging = false;
+    }
 }
 
 impl SpotifySignIn {
@@ -55,7 +93,7 @@ impl SpotifySignIn {
         Some(Self {
             config,
             data_dir,
-            pending: Mutex::new(None),
+            pending: Mutex::new(PendingSignIn::default()),
         })
     }
 
@@ -79,8 +117,25 @@ impl SpotifySignIn {
         .map_err(failure)
     }
 
-    fn pending(&self) -> std::sync::MutexGuard<'_, Option<PendingAuthorization>> {
+    fn pending(&self) -> std::sync::MutexGuard<'_, PendingSignIn> {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn claim(&self) -> Result<(Arc<PendingAuthorization>, Completing<'_>), Failure> {
+        let mut pending = self.pending();
+        pending.idle()?;
+        let authorization = pending.authorization.clone().ok_or_else(|| {
+            Failure::invalid("no Spotify sign-in is waiting")
+                .with_hint("Start one: fsonos setup (or POST /auth/spotify/begin).")
+        })?;
+        pending.exchanging = true;
+        Ok((
+            authorization,
+            Completing {
+                owner: self,
+                successful: false,
+            },
+        ))
     }
 }
 
@@ -102,42 +157,37 @@ impl SpotifyAuth for SpotifySignIn {
             signed_in: TokenCache::in_data_dir(&self.data_dir)
                 .load()
                 .is_ok_and(|token| token.is_some()),
-            pending: self.pending().is_some(),
+            pending: self.pending().authorization.is_some(),
             redirect_uri: self.config.redirect_uri.clone(),
         }
     }
 
     fn begin(&self) -> Result<SignInStartDto, Failure> {
-        let pending = self.with_session(async |session, _| session.begin_authorization())?;
+        self.pending().idle()?;
+        let authorization = self.with_session(async |session, _| session.begin_authorization())?;
         let started = SignInStartDto {
-            url: pending.url().to_owned(),
+            url: authorization.url().to_owned(),
             redirect_uri: self.config.redirect_uri.clone(),
         };
-        *self.pending() = Some(pending);
+        let mut pending = self.pending();
+        // A callback could have claimed the previous flow while this one
+        // was being generated. Recheck before replacing it.
+        pending.idle()?;
+        pending.authorization = Some(Arc::new(authorization));
         Ok(started)
     }
 
     fn complete(&self, redirect: &str) -> Result<(), Failure> {
-        let Some(pending) = self.pending().take() else {
-            return Err(Failure::invalid("no Spotify sign-in is waiting")
-                .with_hint("Start one: fsonos setup (or POST /auth/spotify/begin)."));
-        };
+        let (pending, mut completion) = self.claim()?;
         let redirect = redirect.to_owned();
-        let (result, pending) = self.with_session(async move |session, cx| {
-            let result = session
-                .complete_authorization(cx, &pending, &redirect)
-                .await;
-            Ok((result, pending))
-        })?;
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                // A forged or stale redirect leaves the real one able to
-                // finish.
-                *self.pending() = Some(pending);
-                Err(failure(e))
-            }
-        }
+        let result = self.with_session(async move |session, cx| {
+            session.complete_authorization(cx, &pending, &redirect).await
+        });
+        // A forged/stale redirect or failed worker leaves the same pending
+        // flow in place. It cannot overwrite a newer sign-in: begin is
+        // refused for the entire reservation, including the cache write.
+        completion.successful = result.is_ok();
+        result
     }
 }
 
@@ -196,5 +246,100 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::SpotifyAuthRequired, "{}", err.detail);
         assert!(auth.status().pending);
+    }
+
+    #[test]
+    fn an_exchange_stays_pending_and_refuses_competing_writes() {
+        let auth = sign_in("reserved");
+        auth.begin().unwrap();
+        let (flow, reservation) = auth.claim().unwrap();
+        assert!(auth.status().pending);
+        assert_eq!(auth.begin().unwrap_err().code, ErrorCode::NotReady);
+        assert_eq!(
+            auth.complete("?code=c&state=s").unwrap_err().code,
+            ErrorCode::NotReady
+        );
+        assert!(Arc::ptr_eq(
+            auth.pending().authorization.as_ref().unwrap(),
+            &flow
+        ));
+        drop(reservation);
+        assert!(auth.status().pending);
+        assert!(!auth.pending().exchanging);
+    }
+
+    #[test]
+    fn a_successful_exchange_consumes_the_flow_once() {
+        let auth = sign_in("success");
+        auth.begin().unwrap();
+        let (_, mut reservation) = auth.claim().unwrap();
+        reservation.successful = true;
+        drop(reservation);
+        assert!(!auth.status().pending);
+        assert!(auth.claim().is_err());
+        assert!(!auth.pending().exchanging);
+        auth.begin().unwrap();
+        assert!(auth.status().pending);
+    }
+
+    #[test]
+    fn a_session_open_failure_keeps_the_original_flow() {
+        let mut auth = sign_in("open-failure");
+        auth.begin().unwrap();
+        let flow = auth.pending().authorization.clone().unwrap();
+        // Session::open rejects this before network I/O. Previously its
+        // error bypassed restoration and silently discarded the pending flow.
+        auth.config.client_id = "invalid client id!".into();
+        assert_eq!(
+            auth.complete("?code=c&state=s").unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        assert!(Arc::ptr_eq(
+            auth.pending().authorization.as_ref().unwrap(),
+            &flow
+        ));
+        assert!(!auth.pending().exchanging);
+    }
+
+    #[test]
+    fn unwinding_releases_the_reservation_without_losing_the_flow() {
+        let auth = sign_in("unwind");
+        auth.begin().unwrap();
+        let flow = auth.pending().authorization.clone().unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (_, _reservation) = auth.claim().unwrap();
+            panic!("synthetic completion failure");
+        }));
+        assert!(result.is_err());
+        assert!(!auth.pending().exchanging);
+        assert!(Arc::ptr_eq(
+            auth.pending().authorization.as_ref().unwrap(),
+            &flow
+        ));
+    }
+
+    #[test]
+    fn another_thread_can_read_status_while_an_exchange_is_reserved() {
+        let auth = sign_in("concurrent");
+        auth.begin().unwrap();
+        let (_, reservation) = auth.claim().unwrap();
+        std::thread::scope(|scope| {
+            let (send, receive) = std::sync::mpsc::channel();
+            let auth = &auth;
+            scope.spawn(move || {
+                let pending = auth.status().pending;
+                let begin = auth.begin().unwrap_err().code;
+                let complete = auth.complete("?code=c&state=s").unwrap_err().code;
+                send.send((pending, begin, complete)).unwrap();
+            });
+            let answer = receive.recv_timeout(std::time::Duration::from_secs(5));
+            // Release even on timeout so a regression cannot deadlock the
+            // scope's join. This test must not hold a mutex across exchange.
+            drop(reservation);
+            assert_eq!(
+                answer.unwrap(),
+                (true, ErrorCode::NotReady, ErrorCode::NotReady)
+            );
+        });
     }
 }
