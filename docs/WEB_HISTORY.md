@@ -20,3 +20,22 @@ filtering history does not send a mutation.
 
 Run the client regressions with `node --test scripts/test-remote-history.cjs`.
 The socket fixture tests the JSON client contract, not real Sonos hardware.
+
+## Undo an action
+
+Open **Undo an action** alongside history. **Read undo preview** asks the daemon
+for the current caller's newest eligible action; it does not guess eligibility
+from the loaded history window. The caller shown may be shared by other tabs
+or local applications. Review the exact action, then confirm it explicitly.
+
+The client re-reads the preview and sends only its `expected_id` to
+`POST /undo/checked`. The server binds restoration to that action and refuses
+a changed target. The client never falls back to the older unbound undo route,
+never repeats a sent request, and requires a new preview after every attempt.
+Closing a panel cannot cancel a request already sent to the daemon.
+
+The result shows incomplete restoration separately, with every reported
+failure. A lost or contradictory reply is shown as uncertain, not success.
+An open history panel refreshes after the attempt; check speaker state too.
+An undo can overwrite later changes and has no redo. See `REVIEWED_UNDO.md`
+for the server contract and its concurrency limits.

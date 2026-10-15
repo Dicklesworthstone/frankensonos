@@ -132,14 +132,161 @@ const HistoryRemote = (() => {
       if (node.open) control.refresh(); else control.close();
     });
     render(control.state);
-    return { node, dispose: control.dispose };
+    return { node, dispose: control.dispose, refreshIfOpen: () => node.open && control.refresh() };
   }
 
   return { routes, actionOf, actionsOf, visible, model, panel };
 })();
 
-if (typeof module !== 'undefined' && module.exports) module.exports = HistoryRemote;
+// The daemon, not the loaded history window, selects the eligible action.
+const UndoRemote = (() => {
+  const routes = { undoPreview: ['GET', '/undo/preview'], undoChecked: ['POST', '/undo/checked'] };
+  const text = (v) => typeof v === 'string' && v.trim() !== '' && v.length <= 65536;
+  const errorText = (e) => e && typeof e.message === 'string'
+    ? `${e.message}${text(e.hint) ? ` ${e.hint}` : ''}` : 'The request failed.';
+  function previewOf(value) {
+    if (value === null) return null;
+    const row = HistoryRemote.actionOf(value);
+    if (!row.undoable || row.undo_of !== null || !text(row.client) || !text(row.intent)) {
+      throw new Error('The undo preview does not identify an eligible action.');
+    }
+    return row;
+  }
+  function resultOf(value, target) {
+    const failures = value?.failures === undefined ? [] : value.failures;
+    if (!value || value.undone !== target.id || value.intent !== target.intent || !text(value.summary)
+        || !Array.isArray(failures) || failures.length > 2000 || !failures.every(text)) {
+      throw new Error('The reply did not confirm the reviewed undo.');
+    }
+    return Object.freeze({ undone: value.undone, summary: value.summary,
+      failures: Object.freeze([...failures]) });
+  }
+  const signature = (row) => JSON.stringify(row);
+  function model({ call, changed = () => {}, settled = () => {} }) {
+    let epoch = 0, disposed = false;
+    const state = { open: false, loading: false, writing: false, loaded: false,
+      target: null, pending: null, result: null, error: '', message: '' };
+    const publish = () => { if (!disposed) { try { changed(state); } catch (_) { /* View only. */ } } };
+    const current = (v) => !disposed && state.open && v === epoch;
+    const ready = () => !disposed && state.open && state.loaded && !state.loading && !state.writing;
+    async function refresh() {
+      if (disposed) return false;
+      state.open = true;
+      if (state.writing) return false;
+      const v = ++epoch;
+      Object.assign(state, { loading: true, loaded: false, target: null, pending: null,
+        result: null, error: '', message: '' });
+      publish();
+      try {
+        const target = previewOf(await call('undoPreview'));
+        if (!current(v)) return false;
+        state.target = target; state.loaded = true;
+        return true;
+      } catch (e) {
+        if (current(v)) state.error = errorText(e);
+        return false;
+      } finally {
+        if (current(v)) { state.loading = false; publish(); }
+      }
+    }
+    function review() {
+      if (!ready() || !state.target) return false;
+      state.pending = Object.freeze({ target: state.target });
+      publish(); return true;
+    }
+    async function confirm(pending) {
+      if (!ready() || !pending || pending !== state.pending) return false;
+      const v = ++epoch;
+      Object.assign(state, { pending: null, loaded: false, writing: true, error: '', message: '', result: null });
+      publish();
+      let sent = false;
+      try {
+        const latest = previewOf(await call('undoPreview'));
+        if (!current(v)) return false;
+        if (!latest || signature(latest) !== signature(pending.target)) {
+          throw new Error('The eligible action changed. Read a new preview and review it again.');
+        }
+        sent = true;
+        const result = resultOf(await call('undoChecked', { body: { expected_id: pending.target.id } }), pending.target);
+        state.result = result;
+        state.message = result.failures.length ? `Undo #${result.undone} reported incomplete restoration.`
+          : `Undo #${result.undone} reported no restoration failures.`;
+        return true;
+      } catch (e) {
+        state.error = `${errorText(e)}${sent ? ' The outcome may be uncertain. No request was repeated; check history and speaker state.' : ''}`;
+        return false;
+      } finally {
+        state.writing = false; state.loaded = false; state.target = null;
+        if (sent && !disposed) { try { settled(); } catch (_) { /* Never replay a write for a view. */ } }
+        publish();
+      }
+    }
+    return { state, refresh, review, confirm,
+      cancel() { if (!disposed && !state.writing) { state.pending = null; publish(); } },
+      close() { ++epoch; state.open = false; state.pending = null; state.loaded = false; state.loading = false; publish(); },
+      dispose() { disposed = true; ++epoch; state.pending = null; } };
+  }
+  function panel({ call, el, settled }) {
+    const content = el('div', { class: 'automation-body undo-body' });
+    const node = el('details', { class: 'automation scenes undo' }, el('summary', { text: 'Undo an action' }), content);
+    const control = model({ call, changed: render, settled });
+    const button = (label, key, work, disabled = false) => el('button', { type: 'button', text: label,
+      'data-undo-focus': key, onclick: work, disabled });
+    function render(s) {
+      const active = document.activeElement;
+      const focus = content.contains(active) ? active.getAttribute('data-undo-focus') : null;
+      content.replaceChildren(); content.setAttribute('aria-busy', String(s.loading || s.writing));
+      content.append(el('p', { text: 'Review the newest eligible action belonging to this daemon caller. Reading or reviewing does not change the speakers.' }),
+        button(s.loading ? 'Reading undo preview…' : 'Read undo preview', 'preview', () => control.refresh(), s.writing),
+        el('p', { role: 'status', tabindex: -1, 'data-undo-focus': 'status',
+          text: s.writing ? 'Checking and submitting the reviewed undo…' : s.message }));
+      if (s.error) content.append(el('p', { role: 'alert', text: s.error }));
+      if (s.result) {
+        content.append(el('p', { text: s.result.summary }));
+        if (s.result.failures.length) content.append(el('ul', { 'aria-label': 'Incomplete restoration' },
+          ...s.result.failures.map((failure) => el('li', { text: failure }))));
+        content.append(el('p', { text: 'Read another preview before undoing anything else. Check the current speaker state.' }));
+      }
+      if (s.loaded && !s.target) content.append(el('p', { text: 'No eligible action for this caller.' }));
+      if (s.loaded && s.target) {
+        const row = s.target;
+        content.append(el('h3', { text: `#${row.id} · ${row.intent}` }),
+          el('p', { text: `Caller: ${row.client} · Original surface: ${row.surface}` }),
+          el('p', { text: 'This caller identity may be shared by other tabs or local applications.' }),
+          el('p', { text: `Original result: ${row.result}` }));
+        if (!s.pending) content.append(button('Review this undo', 'review', () => control.review()));
+      }
+      if (s.pending) {
+        const p = s.pending;
+        content.append(el('section', { class: 'automation-review', 'aria-label': 'Review undo' },
+          el('h3', { text: `Undo action #${p.target.id}?` }),
+          el('p', { text: 'Restore the state recorded before this action. Later changes may be overwritten; unavailable speakers or current limits can cause a partial restore. There is no redo.' }),
+          el('p', { text: 'The daemon checks the exact action again. A changed target is refused, not replaced by another action.' }),
+          el('div', { class: 'undo-buttons' },
+            button('Confirm reviewed undo', 'confirm', () => control.confirm(p)),
+            button('Cancel undo review', 'cancel', () => control.cancel()))));
+      }
+      let key = focus;
+      if (s.pending && focus === 'review') key = 'confirm';
+      else if (!s.pending && focus === 'cancel') key = 'review';
+      else if (focus === 'confirm') key = 'status';
+      else if (focus === 'status' && !s.writing) key = 'preview';
+      const next = [...content.querySelectorAll('[data-undo-focus]')].find((n) => n.getAttribute('data-undo-focus') === key);
+      if (next && !next.disabled) next.focus({ preventScroll: true });
+    }
+    node.addEventListener('toggle', (e) => {
+      if (e.target === node) { if (node.open) control.refresh(); else control.close(); }
+    });
+    render(control.state);
+    return { node, dispose: control.dispose };
+  }
+  return { routes, previewOf, resultOf, model, panel };
+})();
+
+if (typeof module !== 'undefined' && module.exports) module.exports = { ...HistoryRemote, undo: UndoRemote };
 else {
-  Object.assign(ROUTES, HistoryRemote.routes);
-  document.getElementById('scenes-section')?.after(HistoryRemote.panel({ call, el }).node);
+  Object.assign(ROUTES, HistoryRemote.routes, UndoRemote.routes);
+  const history = HistoryRemote.panel({ call, el });
+  const undo = UndoRemote.panel({ call, el, settled: history.refreshIfOpen });
+  document.getElementById('scenes-section')?.after(undo.node, history.node);
 }

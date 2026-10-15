@@ -7,3 +7,6 @@
 .history-list dt { font-weight: 600; margin-top: 8px; }
 .history-list dd { margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .history-body { min-width: 0; }
+.undo-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.undo-body h3, .undo-body p, .undo-body li { overflow-wrap: anywhere; }
+.undo-body button { max-width: 100%; white-space: normal; }
