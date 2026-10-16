@@ -6,49 +6,21 @@
 //! copy belonging to the owner cannot be adopted and removed instead.
 
 use super::{FeedError, QueueFeed, QueuedWork, Speakers, host_of};
-use fsonos_proto::content::{QUEUE, browse_snapshot};
+use fsonos_core::control::queue_removal::{self, RemovalError, read};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
 use fsonos_proto::{ProtoError, Transport};
 use std::net::IpAddr;
 
-#[derive(Debug, PartialEq, Eq)]
-struct Queue {
-    revision: u32,
-    uris: Vec<String>,
-}
+// Keep the existing focused predicate regressions on the shared verifier.
+#[cfg(test)]
+use queue_removal::Snapshot as Queue;
 
-fn read<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<Queue, FeedError> {
-    let snapshot = browse_snapshot(t, host, QUEUE)?;
-    let uris = snapshot
-        .objects
-        .into_iter()
-        .map(|object| {
-            object
-                .res
-                .map(|resource| resource.uri)
-                .filter(|uri| !uri.is_empty())
-                .ok_or_else(|| ProtoError::Malformed("queue item has no trim identity".into()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Queue {
-        revision: snapshot.update_id,
-        uris,
-    })
-}
-
-/// A changed revision and exactly the intended removal, with every other
-/// URI still in order. Length or the target's absence alone is not proof.
+#[cfg(test)]
 fn removed_range(before: &Queue, after: &Queue, start: usize, count: usize) -> bool {
-    let Some(end) = start.checked_add(count) else {
-        return false;
-    };
-    count > 0
-        && end <= before.uris.len()
-        && before.revision != after.revision
-        && before.uris.len().checked_sub(count) == Some(after.uris.len())
-        && before.uris[..start] == after.uris[..start]
-        && before.uris[end..] == after.uris[start..]
+    start
+        .checked_add(count)
+        .is_some_and(|end| queue_removal::removed(before, after, start, end))
 }
 
 fn same_track(actual: &str, expected: &str) -> bool {
@@ -79,7 +51,7 @@ fn range(work: &QueuedWork, before: u32) -> Option<(u32, u32)> {
 enum Removal {
     Kept,
     Removed(u32),
-    Uncertain(ProtoError),
+    Uncertain(String),
 }
 
 fn remove_work<T: Transport + ?Sized>(
@@ -127,21 +99,19 @@ fn remove_work<T: Transport + ?Sized>(
     {
         return Ok(Removal::Kept);
     }
-    match soap::remove_track_range_from_queue(at.transport, host, queue.revision, first, count) {
-        Ok(()) => Ok(Removal::Removed(count)),
-        Err(error @ ProtoError::SoapFault { .. }) => Err(error.into()),
-        Err(error) => {
-            // A missing response is not permission to repeat a positional
-            // delete. Read once more through the bounded snapshot reader.
-            if let Ok(after) = read(at.transport, host)
-                && removed_range(&queue, &after, start, work.movements.len())
-            {
-                tracing::warn!(cause = %error, "queue trim confirmed; removal not replayed");
-                Ok(Removal::Removed(count))
-            } else {
-                Ok(Removal::Uncertain(error))
+    // All queue deletions use the same native-revision and exact read-back
+    // contract. Even an acknowledged reply cannot hide an unrelated edit or
+    // coordinator handoff; neither an uncertain delete nor an explicit fault
+    // is repeated here.
+    match queue_removal::remove(at.transport, host, at.coordinator, &queue, first, count) {
+        Ok(removed) => {
+            if removed.recovered {
+                tracing::warn!("queue trim confirmed by read-back; removal not replayed");
             }
+            Ok(Removal::Removed(count))
         }
+        Err(RemovalError::Uncertain(why)) => Ok(Removal::Uncertain(why)),
+        Err(error) => Err(fsonos_core::CoreError::from(error).into()),
     }
 }
 
@@ -205,3 +175,6 @@ impl QueueFeed {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod verification;
