@@ -312,6 +312,23 @@ fn page_routes(script: &str) -> Vec<(String, String)> {
     routes
 }
 
+/// The page's path literals outside the route tables (its deadline and
+/// read-sharing rules), bare "/" and "//" separators aside.
+fn other_paths(script: &str) -> Vec<&str> {
+    let mut paths = Vec::new();
+    for (at, _) in script.match_indices("'/") {
+        if script[..at].ends_with("', ") {
+            continue;
+        }
+        let literal = &script[at + 1..];
+        let literal = &literal[..literal.find('\'').unwrap_or(literal.len())];
+        if !literal.trim_matches('/').is_empty() {
+            paths.push(literal);
+        }
+    }
+    paths
+}
+
 #[test]
 fn every_route_the_page_calls_exists() {
     let sim = SimHousehold::standard().spawn().expect("sim");
@@ -331,12 +348,18 @@ fn every_route_the_page_calls_exists() {
     assert_eq!(script.matches("fetch(").count(), 1);
     assert_eq!(script.matches("new EventSource(").count(), 1);
     assert!(script.contains("new EventSource(path('events'))"));
-    // Every path is a route-table entry's, and none is templated.
-    assert_eq!(
-        script.matches("'/").count(),
-        script.matches("', '/").count(),
-        "a path outside the route tables"
-    );
+    // Every other path names one of the API's routes (or, ending in "/",
+    // a family of them), and none is templated.
+    let api = openapi["paths"].as_object().expect("documented paths");
+    let others = other_paths(&script);
+    assert!(others.contains(&"/announce"), "{others:?}");
+    for literal in others {
+        assert!(
+            api.keys().any(|path| path.as_str() == literal
+                || (literal.ends_with('/') && path.starts_with(literal))),
+            "the page names {literal}, which is no route of the API"
+        );
+    }
     assert!(
         !script.contains("`/"),
         "a templated path outside the route tables"
