@@ -134,6 +134,30 @@ fn uncertain_writes_survive_a_later_read_back_failure() {
 }
 
 #[test]
+fn a_group_volume_snapshot_is_not_an_earlier_write() {
+    for last in [
+        refused(),
+        Err(ProtoError::Network {
+            target: "synthetic".into(),
+            detail: "lost".into(),
+        }),
+    ] {
+        let replies = Replies(RefCell::new(VecDeque::from([
+            ack("SnapshotGroupVolume"),
+            last,
+        ])));
+        let t = Observed::new(&replies);
+        invoke(&t, "SnapshotGroupVolume").unwrap();
+        assert!(invoke(&t, "SetGroupVolume").is_err());
+        assert_eq!(
+            t.preceding_writes(),
+            0,
+            "a new coordinator or address may still receive the group volume"
+        );
+    }
+}
+
+#[test]
 fn unknown_actions_are_not_assumed_to_be_reads() {
     let replies = Replies(RefCell::new(VecDeque::from([
         ack("GetAndChangeSomething"),

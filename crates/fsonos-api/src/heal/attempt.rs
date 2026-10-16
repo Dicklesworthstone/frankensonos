@@ -64,6 +64,14 @@ fn read_only(action: &str) -> bool {
     )
 }
 
+/// `SnapshotGroupVolume` only records the members' volume ratios for the
+/// group volume write that follows it: nothing audible changes, and every
+/// group volume attempt, a recovery's included, takes its own snapshot first.
+/// It is not an earlier effect a later refusal or lost reply leaves behind.
+fn prepares_only(action: &str) -> bool {
+    action == "SnapshotGroupVolume"
+}
+
 impl<T: Transport + ?Sized> Transport for Observed<'_, T> {
     fn soap_post(
         &self,
@@ -75,7 +83,7 @@ impl<T: Transport + ?Sized> Transport for Observed<'_, T> {
         self.begin();
         let reply = self.inner.soap_post(host, path, header, body);
         let action = header.trim_matches('"').rsplit('#').next().unwrap_or("");
-        if !read_only(action) {
+        if !read_only(action) && !prepares_only(action) {
             // Transport implementations may return the fault as an error or
             // as HTTP 500's raw SOAP body. Recognize both with the real parser.
             // Only 800 proves the refusal used by coordinator recovery here:

@@ -14,7 +14,8 @@ third command to the original player.
 Once an earlier write may have taken effect, the outer path preserves the
 original failure and reports that earlier steps may have applied. It does not
 resend the source selection, queue edits or playback command from the start.
-Known reads do not count as writes. Typed and raw SOAP 800 refusals are both
+Known reads do not count as writes, nor does the `SnapshotGroupVolume` that
+only prepares a group volume write. Typed and raw SOAP 800 refusals are both
 recognized; other write replies, including lost replies and Leave/402, are
 conservatively treated as possible effects.
 

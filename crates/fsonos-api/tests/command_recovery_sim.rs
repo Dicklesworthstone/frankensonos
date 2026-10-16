@@ -172,10 +172,13 @@ fn source_success_then_lost_play_and_readback_does_not_restart_at_a_new_address(
     );
 }
 
+/// Counts group volume attempts by the SnapshotGroupVolume each one opens
+/// with: the old coordinator refuses that with 800, so its attempt never
+/// reaches SetGroupVolume. The new coordinator's SetGroupVolume is lost.
 struct LostOnNewCoordinator {
     lan: SimLan,
     new: IpAddr,
-    writes: Cell<usize>,
+    attempts: Cell<usize>,
 }
 
 impl Transport for LostOnNewCoordinator {
@@ -186,14 +189,14 @@ impl Transport for LostOnNewCoordinator {
         header: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
-        if header.ends_with("#SetGroupVolume\"") {
-            self.writes.set(self.writes.get() + 1);
-            if host == self.new {
-                return Err(ProtoError::Network {
-                    target: "synthetic".into(),
-                    detail: "lost at new coordinator".into(),
-                });
-            }
+        if header.ends_with("#SnapshotGroupVolume\"") {
+            self.attempts.set(self.attempts.get() + 1);
+        }
+        if header.ends_with("#SetGroupVolume\"") && host == self.new {
+            return Err(ProtoError::Network {
+                target: "synthetic".into(),
+                detail: "lost at new coordinator".into(),
+            });
         }
         self.lan.soap_post(host, path, header, body)
     }
@@ -206,7 +209,7 @@ fn coordinator_retry_cannot_chain_into_a_third_attempt_at_the_original_player() 
     let t = LostOnNewCoordinator {
         lan: sim.lan(),
         new: sim.player("Office").unwrap().ip,
-        writes: Cell::new(0),
+        attempts: Cell::new(0),
     };
     let command = Command::Volume {
         target: kitchen,
@@ -220,7 +223,7 @@ fn coordinator_retry_cannot_chain_into_a_third_attempt_at_the_original_player() 
     })
     .unwrap_err();
     assert_eq!(failure.code, ErrorCode::PlayerUnreachable);
-    assert_eq!(t.writes.get(), 2);
+    assert_eq!(t.attempts.get(), 2, "no third attempt");
     assert_eq!(surveys.get(), 0);
 }
 
