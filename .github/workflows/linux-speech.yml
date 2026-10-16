@@ -34,6 +34,9 @@ on:
       - "scripts/test-remote-dj-preferences.cjs"
       - "scripts/test-remote-dj-session.cjs"
       - "scripts/test-remote-schedules.cjs"
+      - "scripts/test-favorite-routines.cjs"
+      - "scripts/test-favorite-routines-panel.cjs"
+      - "scripts/test-music-routines.cjs"
       - "scripts/test-remote-scenes.cjs"
       - "scripts/test-remote-dj-steering.cjs"
       - "scripts/test-remote-history.cjs"
@@ -101,6 +104,8 @@ jobs:
         run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-remote-dj-steering.cjs scripts/test-remote-dj-session.cjs
       - name: Web scheduled routine regressions
         run: node --test scripts/test-remote-schedules.cjs
+      - name: Web music routine composition and recovery regressions
+        run: node --test scripts/test-favorite-routines.cjs scripts/test-favorite-routines-panel.cjs scripts/test-music-routines.cjs
       - name: Web scene regressions
         run: node --test scripts/test-remote-scenes.cjs
       - name: Web action history regressions

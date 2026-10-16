@@ -15,7 +15,7 @@ FIXTURE = r"""
 const fixture = {
   groups: [{household:'S2', coordinator_room:'Kitchen', members:['Kitchen','Study']}],
   favorites: [{id:'FV:2/1', title:'Morning Music', kind:'container', description:'Spotify'}],
-  scenes:[], rows:[], writes:[], mode:'normal', accepted:false, release:null,
+  scenes:[], rows:[], writes:[], favoriteReads:0, noFavorites:false, mode:'normal', accepted:false, release:null,
 };
 const fixtureData = new Map();
 const fixtureStorage = { getItem: k => fixtureData.get(k) ?? null,
@@ -24,6 +24,8 @@ const copy = v => JSON.parse(JSON.stringify(v));
 async function fixtureCall(name, {body, params, query}={}) {
   if (name==='routineZones') return copy(fixture.groups);
   if (name==='routineFavorites') {
+    fixture.favoriteReads++;
+    if(fixture.noFavorites) throw new Error('Favorites are offline');
     if (query.zone!=='Kitchen@S2') throw new Error('wrong household');
     return copy(fixture.favorites);
   }
@@ -32,7 +34,7 @@ async function fixtureCall(name, {body, params, query}={}) {
   fixture.writes.push([name, copy(body)]);
   if (name==='routineSaveScene') {
     const scene = {name:params.name, saved:100, ...copy(body)};
-    scene.groups[0].source={kind:'favorite', name:fixture.favorites[0].title, uri:'x-rincon-cpcontainer:fixture'};
+    if (scene.groups[0].source.kind === 'favorite') scene.groups[0].source={kind:'favorite', name:fixture.favorites[0].title, uri:'x-rincon-cpcontainer:fixture'};
     fixture.scenes.push(scene); fixture.accepted=true;
     if (fixture.mode==='hold_put') await new Promise(resolve => {fixture.release=resolve;});
     if (fixture.mode==='lost_put') throw new Error('lost scene reply');
@@ -87,8 +89,8 @@ def choose(page):
 
 
 def review(page):
-    page.get_by_role("button", name="Review favorite routine", exact=True).click()
-    expect(page.get_by_role("region", name="Review favorite routine")).to_be_visible()
+    page.get_by_role("button", name="Review music routine", exact=True).click()
+    expect(page.get_by_role("region", name="Review music routine")).to_be_visible()
     expect(page.get_by_role("button", name="Cancel review")).to_be_focused()
 
 
@@ -120,7 +122,7 @@ def cancel_delay(page):
     choose(page)
     review(page)
     page.keyboard.press("Escape")
-    expect(page.get_by_role("button", name="Review favorite routine", exact=True)).to_be_focused()
+    expect(page.get_by_role("button", name="Review music routine", exact=True)).to_be_focused()
     page.get_by_role("combobox", name="When", exact=True).select_option("delay")
     page.get_by_label("Delay in minutes").fill("45")
     review(page)
@@ -160,7 +162,7 @@ def lost_post(page, mode='lost_post'):
         expect(page.get_by_role("status")).to_contain_text('may still finish' if mode=='refuse_post' else 'observation')
     assert writes(page) == ['routineSaveScene', 'routineAdd']
     if mode=='refuse_post':
-        expect(page.get_by_role("button", name="New favorite routine")).to_have_count(0)
+        expect(page.get_by_role("button", name="New music routine")).to_have_count(0)
 
 
 def close_put(page):
@@ -201,7 +203,7 @@ def storage_block(page):
     page.evaluate("fixtureStorage.setItem('fsonos.favorite-routine.v1', '{broken'); mountFixture()")
     page.locator("#favorite-routines-section > summary").click()
     expect(page.get_by_role('status')).to_contain_text('Setup blocked')
-    expect(page.get_by_role('button', name='Review favorite routine', exact=True)).to_have_count(0)
+    expect(page.get_by_role('button', name='Review music routine', exact=True)).to_have_count(0)
     assert writes(page) == []
 
 
@@ -235,6 +237,168 @@ def workspace_hide(page):
     assert writes(page) == ['routineSaveScene']
 
 
+SPOTIFY_ID = '0123456789ABCDEFGHIJKL'
+
+
+def choose_uri(page, kind='spotify', uri=None):
+    page.evaluate("fixture.noFavorites=true")
+    page.locator("#favorite-routines-section > summary").click()
+    page.get_by_label("Routine name", exact=True).fill("Morning music")
+    page.get_by_role("combobox", name="Music source", exact=True).select_option(kind)
+    page.get_by_role("combobox", name="Group to save", exact=True).select_option("Kitchen@S2")
+    page.get_by_label('Spotify URI or full share link' if kind == 'spotify' else 'Radio stream URL', exact=True).fill(
+        uri or f'https://open.spotify.com/album/{SPOTIFY_ID}?si=discarded')
+    expect(page.get_by_role('combobox', name='Playable favorite', exact=True)).to_have_count(0)
+    assert page.evaluate('fixture.favoriteReads') == 0
+
+
+def spotify_levels(page, kind='album'):
+    choose_uri(page, uri=f'https://open.spotify.com/{kind}/{SPOTIFY_ID}?si=discarded')
+    page.get_by_label('Volume for each saved room (optional)', exact=True).fill('23')
+    page.get_by_role('checkbox', name='Unmute the saved rooms when this routine runs', exact=True).check()
+    review(page)
+    region = page.get_by_role('region', name='Review music routine')
+    expect(region).to_contain_text(f'spotify:{kind}:{SPOTIFY_ID}')
+    expect(region).not_to_contain_text('discarded')
+    expect(region).to_contain_text('Volume: request 23 for each saved room')
+    expect(region).to_contain_text('Mute: explicitly unmute every saved room')
+    expect(region).to_contain_text('replaces the group’s queue' if kind != 'track' else 'switches the group to this track or stream')
+    page.keyboard.press('Escape')
+    expect(page.get_by_role('button', name='Review music routine', exact=True)).to_be_focused()
+    expect(page.get_by_label('Volume for each saved room (optional)', exact=True)).to_have_value('23')
+    expect(page.get_by_role('checkbox')).to_be_checked()
+    review(page)
+    page.get_by_role('button', name='Save scene and create routine', exact=True).click()
+    expect(page.get_by_role('status')).to_contain_text('acknowledged')
+    assert writes(page) == ['routineSaveScene', 'routineAdd']
+    assert page.evaluate('fixture.scenes[0].groups[0].source') == {'kind': 'uri', 'uri': f'spotify:{kind}:{SPOTIFY_ID}'}
+    assert page.evaluate('fixture.scenes[0].volumes') == {'Kitchen@S2': 23, 'Study@S2': 23}
+    assert page.evaluate('fixture.scenes[0].mutes') == {'Kitchen@S2': False, 'Study@S2': False}
+    assert page.evaluate('fixture.favoriteReads') == 0
+
+
+def radio_defaults(page):
+    uri = 'https://radio.example.invalid/live?channel=' + 'r' * 1200
+    choose_uri(page, 'stream', uri)
+    for width in [1440, 768, 390, 320]:
+        page.set_viewport_size({'width': width, 'height': 900})
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+    review(page)
+    for width in [1440, 768, 390, 320]:
+        page.set_viewport_size({'width': width, 'height': 900})
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+    expect(page.get_by_role('region', name='Review music routine')).to_contain_text('Volume: keep current levels')
+    expect(page.get_by_role('region', name='Review music routine')).to_contain_text('Mute: keep current mute settings')
+    assert page.locator('#favorite-routines-section a').count() == 0
+    page.get_by_role('button', name='Save scene and create routine', exact=True).click()
+    expect(page.get_by_role('status')).to_contain_text('acknowledged')
+    assert page.evaluate('fixture.scenes[0].groups[0].source.uri') == uri
+    assert page.evaluate('fixture.scenes[0].volumes') == {}
+    assert page.evaluate('fixture.scenes[0].mutes') == {}
+
+
+def mode_switch(page):
+    choose_uri(page)
+    page.get_by_label('Volume for each saved room (optional)', exact=True).fill('17')
+    page.evaluate('fixture.noFavorites=false')
+    page.get_by_role('combobox', name='Music source', exact=True).select_option('favorite')
+    page.get_by_role('combobox', name='Playable favorite', exact=True).select_option('FV:2/1')
+    expect(page.get_by_label('Volume for each saved room (optional)', exact=True)).to_have_value('17')
+    review(page)
+    expect(page.get_by_role('region', name='Review music routine')).to_contain_text('Morning Music · container')
+    page.get_by_role('button', name='Save scene and create routine', exact=True).click()
+    expect(page.get_by_role('status')).to_contain_text('acknowledged')
+    assert page.evaluate('fixture.scenes[0].groups[0].source.kind') == 'favorite'
+    assert writes(page) == ['routineSaveScene', 'routineAdd']
+    page.get_by_role('button', name='New music routine', exact=True).click()
+    expect(page.get_by_role('combobox', name='Music source', exact=True)).to_have_value('favorite')
+    expect(page.get_by_label('Volume for each saved room (optional)', exact=True)).to_have_value('')
+    expect(page.get_by_role('checkbox')).not_to_be_checked()
+
+
+def invalid_uri(page):
+    choose_uri(page, uri='spotify:album:short')
+    page.get_by_role('button', name='Review music routine', exact=True).click()
+    expect(page.get_by_role('status')).to_contain_text('22-character ID')
+    expect(page.get_by_role('region', name='Review music routine')).to_have_count(0)
+    assert writes(page) == []
+    page.get_by_label('Spotify URI or full share link', exact=True).fill(f'spotify:track:{SPOTIFY_ID}')
+    page.get_by_label('Volume for each saved room (optional)', exact=True).fill('0')
+    review(page)
+    expect(page.get_by_role('region', name='Review music routine')).to_contain_text('Zero is silent')
+    page.get_by_role('button', name='Save scene and create routine', exact=True).click()
+    expect(page.get_by_role('status')).to_contain_text('acknowledged')
+    assert page.evaluate('fixture.scenes[0].volumes') == {'Kitchen@S2': 0, 'Study@S2': 0}
+    assert page.evaluate('fixture.scenes[0].mutes') == {}
+
+
+def uri_recovery(page, mode='lost_put'):
+    page.evaluate('(mode)=>{fixture.mode=mode}', mode)
+    choose_uri(page)
+    page.get_by_label('Volume for each saved room (optional)', exact=True).fill('18')
+    page.get_by_role('checkbox').check()
+    review(page)
+    page.get_by_role('button', name='Save scene and create routine', exact=True).click()
+    expect(page.get_by_role('status')).to_contain_text('needs inspection')
+    sent = writes(page)
+    page.evaluate('mountFixture()')
+    page.locator('#favorite-routines-section > summary').click()
+    page.get_by_role('button', name='Inspect saved state', exact=True).click()
+    assert writes(page) == sent
+    if mode == 'lost_put':
+        expect(page.get_by_role('status')).to_contain_text('routine not submitted')
+        page.get_by_role('button', name='Review scheduling saved scene', exact=True).click()
+        expect(page.get_by_role('region', name='Review music routine')).to_contain_text('Volume: request 18')
+        expect(page.get_by_role('region', name='Review music routine')).to_contain_text('explicitly unmute')
+        page.get_by_role('button', name='Create routine for saved scene', exact=True).click()
+        expect(page.get_by_role('status')).to_contain_text('acknowledged')
+    else:
+        expect(page.get_by_role('status')).to_contain_text('observation')
+    assert writes(page) == ['routineSaveScene', 'routineAdd']
+    assert page.evaluate('fixture.favoriteReads') == 0
+
+
+def legacy_journal(page):
+    # Build a genuine v1-shaped review and evidence, then inspect it with v2 UI.
+    page.evaluate("""() => {
+      const group = FavoriteRoutines.groupsOf(fixture.groups)[0];
+      const favorite = FavoriteRoutines.favoritesOf(fixture.favorites)[0];
+      const plan = copy(FavoriteRoutines.planOf(group, favorite,
+        {label:'Legacy morning',cadence:'daily',time:'07:30'},'a'.repeat(32)));
+      delete plan.source; delete plan.settings;
+      const scene = {name:plan.name,saved:100,...copy(plan.definition)};
+      scene.groups[0].source={kind:'favorite',name:favorite.title,uri:'x-rincon-cpcontainer:fixture'};
+      fixture.scenes.push(scene);
+      const attempt = {version:1,plan,sceneSent:true,scheduleSent:false,scene:FavoriteRoutines.sceneOf(scene,plan)};
+      fixtureStorage.setItem(FavoriteRoutinePanel.JOURNAL_KEY,JSON.stringify(attempt));
+      mountFixture();
+    }""")
+    page.locator('#favorite-routines-section > summary').click()
+    page.get_by_role('button', name='Inspect saved state', exact=True).click()
+    expect(page.get_by_role('status')).to_contain_text('routine not submitted')
+    page.get_by_role('button', name='Review scheduling saved scene', exact=True).click()
+    expect(page.get_by_role('region', name='Review music routine')).to_contain_text('Morning Music')
+    expect(page.get_by_role('region', name='Review music routine')).to_contain_text('keep current levels')
+    page.get_by_role('button', name='Create routine for saved scene', exact=True).click()
+    expect(page.get_by_role('status')).to_contain_text('acknowledged')
+    assert writes(page) == ['routineAdd']
+
+
+def edited_levels(page):
+    page.evaluate("fixture.mode='lost_put'")
+    choose_uri(page)
+    page.get_by_label('Volume for each saved room (optional)', exact=True).fill('18')
+    review(page)
+    page.get_by_role('button', name='Save scene and create routine', exact=True).click()
+    expect(page.get_by_role('status')).to_contain_text('needs inspection')
+    page.evaluate("fixture.scenes[0].volumes['Kitchen@S2']=90; mountFixture()")
+    page.locator('#favorite-routines-section > summary').click()
+    page.get_by_role('button', name='Inspect saved state', exact=True).click()
+    expect(page.get_by_role('status')).to_contain_text('does not match')
+    expect(page.get_by_role('button', name='Review scheduling saved scene', exact=True)).to_have_count(0)
+    assert writes(page) == ['routineSaveScene']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--chromium', default=shutil.which('chromium') or shutil.which('chromium-browser'))
@@ -244,7 +408,14 @@ def main():
         ('malformed POST',lambda page:lost_post(page,'malformed_post')),
         ('uncertain absent POST',lambda page:lost_post(page,'refuse_post')),
         ('close during PUT',close_put),('stale membership',stale),('safe text and four widths',safe_text),
-        ('corrupt journal',storage_block),('visibility invalidation',visibility),('hidden Studio workspace',workspace_hide)]
+        ('corrupt journal',storage_block),('visibility invalidation',visibility),('hidden Studio workspace',workspace_hide),
+        ('Spotify album and exact levels',spotify_levels),
+        ('Spotify track and exact levels',lambda page:spotify_levels(page,'track')),
+        ('Spotify playlist and exact levels',lambda page:spotify_levels(page,'playlist')),
+        ('radio defaults and four widths',radio_defaults),('source mode switch and new routine reset',mode_switch),
+        ('invalid source and deliberate zero',invalid_uri),('URI lost PUT with settings',uri_recovery),
+        ('URI lost POST with settings',lambda page:uri_recovery(page,'lost_post')),
+        ('legacy journal in expanded panel',legacy_journal),('edited levels block scheduling',edited_levels)]
     with sync_playwright() as p:
         browser=p.chromium.launch(executable_path=args.chromium,headless=True,args=['--no-sandbox'])
         try:

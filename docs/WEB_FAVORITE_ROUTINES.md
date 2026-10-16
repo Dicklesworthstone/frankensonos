@@ -1,16 +1,37 @@
-# Favorite routines in the web remote
+# Music routines in the web remote
 
-Open the full web remote at `/`, choose **Routines**, and expand **Favorite routines**. Give the
-routine a name, choose a current household-qualified group and a playable
-favorite, then choose weekdays, every day, weekends, or a one-time delay of
-1–10080 minutes. Review the favorite, exact group, timing and playback effects
-before choosing **Save scene and create routine**.
+Open the full web remote at `/`, choose **Routines**, and expand **Music routines**.
+Give the routine a name, choose its music source and a current household-qualified
+group, then choose weekdays, every day, weekends, or a one-time delay of
+1–10080 minutes. Optional volume and unmute settings appear below the timing.
+Choose **Review music routine**, check the source, exact rooms, timing and
+playback effects, then choose **Save scene and create routine**.
 
-This connects two existing capabilities rather than introducing a second
-scheduler or player. It saves a dedicated scene, then creates an enabled
-`apply_scene` schedule. Manage its future runs in **Routines** and its saved
-scene in **Scenes**. The daemon executes it after the browser closes, provided
-the daemon is running and the schedule's creator still has permission.
+The composer supports three sources:
+
+- **Sonos favorite:** choose a playable track, stream, album or playlist from
+  the selected household's favorites. Existing favorite routines still work.
+- **Spotify track, album or playlist:** paste a canonical Spotify URI or its
+  full `open.spotify.com` / `play.spotify.com` link. Locale, embed, tracking and
+  legacy playlist forms are normalized; review shows the canonical source.
+  Artist, episode and show links are not offered by the scene engine. Short
+  links must be opened separately; the browser does not expand them or contact
+  Spotify. Playback still needs the daemon and speakers' existing Spotify setup.
+- **Radio stream URL:** paste a direct HTTP(S) audio stream, not the station's
+  web page. The speaker must be able to reach and decode it. Embedded user-info,
+  fragments, backslashes, whitespace and overlong input are rejected. Avoid
+  private access keys: a source is stored in the scene and the tab's journal.
+
+Spotify and radio routines do not require favorite discovery. Changing the
+source mode changes only the form and, when needed, its read-only choices.
+The supported URI subset is checked locally, then validated again by the daemon;
+saving a scene is not a playback or reachability test.
+
+This connects existing capabilities rather than introducing another scheduler
+or player. It saves a dedicated scene, then creates an enabled `apply_scene`
+schedule. Manage its future runs in **Routines** and its saved scene in **Scenes**.
+The daemon executes it after the browser closes, provided the daemon is running
+and the schedule's creator still has permission.
 
 Daily and weekly times use the daemon host's local time zone, not the browser's.
 The existing scheduler handles daylight-saving transitions and skips occurrences
@@ -23,45 +44,57 @@ the enabled schedule may run as soon as its own deadline arrives.
 
 The scene saves the selected group's coordinator and exact room membership,
 qualified by household. Each execution restores that grouping: listed rooms
-may leave other groups, and unlisted rooms joined later may be detached. The
-review spells this out before either saved change is sent. An album or playlist
-favorite replaces the group's queue; a track or stream replaces its playback
-source. The scene contains no volume or mute settings and does not unmute a
-room or raise its level to make an alarm audible.
+may leave other groups, and unlisted rooms joined later may be detached.
+An album or playlist can replace the group's queue; a track or stream changes
+its playback source. The review identifies these effects before either write.
 
-A scene is not a frozen playlist or a queue backup. Its favorite is resolved by
-the existing scene engine, which stores the resolved title and URI when saving.
-Later scene edits, renamed or ambiguous favorites, account changes and altered
-playlist contents can change or prevent a future run. The composer does not
-claim an immutable favorite identity or whole-house transactional isolation.
+**Volume is optional.** Blank leaves current levels unchanged, subject to the
+house policy. A number from 0 to 100 requests that level for each saved room,
+not an aggregate group volume. Zero deliberately requests silence. Each room's
+policy cap and the existing scene execution/fade behavior still apply. The
+composer does not add a separate volume command during setup.
+
+**Unmute is separately opt-in.** Unchecked preserves mute settings. Checked
+stores an explicit unmute for every saved room. Setting a nonzero volume alone
+does not promise audible playback; a muted room may stay muted. Source switches
+and cancelled reviews retain the chosen settings; **New music routine** resets
+them to the non-mutating defaults.
+
+A scene is not a frozen playlist or a queue backup. Favorites are resolved by
+the scene engine, which stores the resolved title and URI when saving. Later
+scene edits, renamed or ambiguous favorites, account changes, altered playlists
+and unavailable streams can change or prevent a run. The composer does not
+claim immutable content identity or whole-house transactional isolation.
 
 ## Setup and recovery
 
-Before saving, the composer reads the current group and favorites again. A
-changed membership, household, selected favorite or colliding scene name
-invalidates the review without sending a write. Its dedicated scene name uses
-128 random bits from browser cryptography; it never silently reuses an existing
-user-named scene. This avoids ordinary collisions but is not a server-side
-create-only transaction with another controller.
+Before saving, the composer reads the current group again. Favorite routines
+also reread the selected favorite. Changed membership, household, favorite or a
+colliding scene name invalidates review before any write. The dedicated scene
+name uses 128 random bits from browser cryptography; it never silently reuses
+an existing user-named scene. This avoids ordinary collisions but is not a
+server-side create-only transaction with another controller.
 
-The only writes made by this composer are:
+The only writes made by this composer remain:
 
 ```text
 PUT  /scenes/{generated-name}
 POST /schedules   { when, action: "apply_scene", scene: generated-name }
 ```
 
-The PUT contains a favorite scene definition and empty volume/mute maps. Its
-response must match the reviewed group and favorite. A fresh scene observation
-must then match the acknowledged definition, including its saved time and
-resolved URI. Existing schedules referencing that scene prevent a second add.
-The shared remote request adapter remains responsible for ordinary HTTP
-failures and deadlines; neither write is automatically retried.
+The PUT contains a `favorite` or `uri` scene definition, exact group membership,
+and the reviewed volume/mute maps (empty by default). Its response must match
+the reviewed source, rooms and settings. A fresh scene observation must then
+match that acknowledgement, including saved time and resolved URI. Existing
+schedules referencing the scene prevent another add. Neither write is retried
+automatically; ordinary HTTP deadlines remain the shared client's responsibility.
 
 Submission intent is written to this tab's session journal before each request.
-An unreadable, unavailable, oversized or non-persisting journal blocks further
-setup rather than silently falling back to an untracked write. Recovery states
-are explicit:
+Unreadable, unavailable, oversized or non-persisting storage blocks further
+setup instead of silently falling back to untracked writes. New records use
+version 2. The same session-storage key is retained so version-1 favorite
+attempts can still be inspected and explicitly continued after an update.
+Contradictory source, settings or scene data blocks recovery.
 
 - **Scene saved; routine not submitted:** inspection found the reviewed scene,
   and this attempt has not submitted a schedule. A new explicit review can
@@ -71,17 +104,16 @@ are explicit:
   never authorizes replay. A matching row is described as an observation, not
   proof that a lost request succeeded.
 - **Routine saved or observed:** its ID, enabled/paused state, stored time and
-  reported next run are shown. **New favorite routine** explicitly clears this
-  completed attempt's journal; it does not remove a scene or schedule.
+  reported next run are shown. **New music routine** clears this completed
+  attempt's journal without removing its scene or schedule.
 
 There is no automatic rollback. A saved scene can remain after a later failure;
-check its references in Routines before deleting it through normal scene
-management. Removing a routine does not remove its dedicated scene. Closing or
-hiding the panel invalidates future submissions, but cannot cancel a request
-already sent to the daemon. Dispatch checks the native details element's open
-state, not only its asynchronously delivered toggle event. The composer mounts
-as a native section in the Studio Routines workspace. Hidden or inert ancestors
-also fence dispatch, and workspace navigation discards dormant reviews.
+check its references before deleting it through normal scene management.
+Removing a routine does not remove its dedicated scene. Closing or hiding the
+panel invalidates later submissions but cannot cancel an already-sent request.
+Dispatch checks native open state, document visibility and hidden/inert Studio
+ancestors. Navigation discards dormant reviews; Escape cancels review and
+returns keyboard focus without sending a write.
 
 Session storage is per origin and tab. It survives a reload of the same tab,
 not necessarily closing the tab or clearing browser data. It is not a shared
@@ -91,23 +123,27 @@ before recreating an uncertain attempt in a new tab.
 ## Validation
 
 ```sh
-node --test scripts/test-favorite-routines.cjs scripts/test-favorite-routines-panel.cjs
+node --test scripts/test-favorite-routines.cjs scripts/test-favorite-routines-panel.cjs scripts/test-music-routines.cjs
 python scripts/test-favorite-routines-component.py --chromium /path/to/chromium
 ```
 
-The Node suite has 35 passing tests for request contracts, immutable reviews,
-changed membership/favorites, duplicate dispatch, lost and malformed replies,
-scene changes, partial setup, journal failures, restart-style model recovery,
-asset embedding and a real loopback HTTP fixture. Chromium component checks
-have 12 passing cases covering actual controls, review/Escape focus, timing,
-recovery/remount, closing during a pending PUT, hidden Studio workspaces, visibility, hostile metadata and
-1440/768/390/320-pixel widths. Component transport and storage are in-memory
-fixtures, not a real daemon or browser reload test.
+The 78 passing Node tests include 35 existing favorite/panel regressions and
+43 music-source tests: canonicalization, positive Spotify/radio setup, exact
+levels, immutable reviews, changed membership/sources, duplicate dispatch,
+lost replies, version-1/2 recovery, journal failures, static asset checks and
+real loopback HTTP fixtures. The existing workflow runs all three Node suites.
 
-The editing environment blocked browser loopback navigation. The Node HTTP
-fixture did run; browser-to-daemon acceptance and real session-storage reloads
-remain unverified. Rust embedding changes were checked against the exact parent
-file and by static asset tests, but no Rust compiler was available. Workspace
-compilation, physical S1/S2 playback and actual scheduled scene execution still
-require their normal acceptance gates. The backend scheduler, scene executor,
-policy and speaker protocols are unchanged.
+The 22 passing Chromium component cases include the original 12 cases and
+10 additional cases covering each Spotify content type, radio, source-mode
+switching, optional levels, explicit silence, legacy journals, edited settings
+and lost replies. Review and form layouts were checked at 1440, 768, 390 and
+320 pixels, including long source text. They use the actual component and DOM
+helper with fixture transport and storage, not a live Rust daemon.
+
+Full-page browser navigation is blocked in the editing environment, including
+an intercepted fixture origin, so real session-storage reload behavior remains
+unverified here. Component remount recovery and the Node HTTP fixtures did run.
+No Rust compiler or physical Sonos devices were available: full workspace
+compilation, actual scheduled playback, S1/S2 interoperability and the complete
+native remote remain acceptance gates. Backend scheduling, scene execution,
+policy, asset delivery and speaker protocols are unchanged.

@@ -10,3 +10,5 @@
 .favorite-routine-review { border: 2px solid currentColor; border-radius: .4rem; padding: .8rem; margin-block: 1rem; }
 .favorite-routine-identity { overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
 .favorite-routines :focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.favorite-routine-form .favorite-routine-unmute { display: flex; align-items: center; gap: .6rem; min-height: 2.75rem; }
+.favorite-routine-unmute input[type="checkbox"] { flex: 0 0 auto; width: 1.2rem; height: 1.2rem; }

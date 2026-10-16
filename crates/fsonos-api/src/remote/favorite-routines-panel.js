@@ -30,10 +30,12 @@ const FavoriteRoutinePanel = (() => {
 
   function panel({ core, call, el, doc = globalThis.document, journal = sessionJournal(), nonce }) {
     const content = el('div', { class: 'favorite-routine-content' });
-    const heading = el('summary', { text: 'Favorite routines' });
+    const heading = el('summary', { text: 'Music routines' });
     const node = el('details', { id: 'favorite-routines-section', class: 'favorite-routines' }, heading, content);
     const root = el('section', { id: 'favorite-routines-root' }, node);
-    let draft = { label: '', cadence: 'weekdays', time: '07:30', minutes: '45', favorite: '' };
+    const defaults = () => ({ label: '', cadence: 'weekdays', time: '07:30', minutes: '45',
+      source_kind: 'favorite', source_uri: '', favorite: '', volume: '', unmute: false });
+    let draft = defaults();
     let lastPending = null, resumeFocus = 'review', wasBusy = false;
     const control = core.model({ call, journal, ...(nonce ? { nonce } : {}),
       active: () => node.open && node.isConnected && !doc.hidden && !node.closest('[hidden], [inert]'),
@@ -43,7 +45,7 @@ const FavoriteRoutinePanel = (() => {
     });
     const paragraph = (text) => el('p', { text });
     const phaseText = {
-      idle: 'Choose a favorite routine', choosing: 'Choose a favorite routine', checking: 'Checking the reviewed group and favorite',
+      idle: 'Choose a music routine', choosing: 'Choose a music routine', checking: 'Checking the reviewed group and music source',
       scene_sending: 'Saving the scene', schedule_sending: 'Creating the routine',
       scene_ready: 'Scene saved; routine not submitted', unknown: 'Setup needs inspection',
       blocked: 'Setup blocked', complete: 'Routine saved or observed',
@@ -69,13 +71,29 @@ const FavoriteRoutinePanel = (() => {
       } });
       formNode.append(
         field('Routine name', 'label', { type: 'text', maxlength: 80, autocomplete: 'off', required: true }, disabled),
+        select('Music source', 'source_kind', draft.source_kind, [['favorite', 'Sonos favorite'],
+          ['spotify', 'Spotify track, album or playlist'], ['stream', 'Radio stream URL']], (value) => {
+          draft.source_kind = value; draft.favorite = '';
+          void control.choose(state.group?.target || '', value);
+        }, disabled),
         select('Group to save', 'group', state.group?.target || '', [['', 'Choose a current group…'],
           ...state.groups.map((g) => [g.target, g.label])], (target) => {
-          draft.favorite = ''; void control.choose(target);
+          draft.favorite = ''; void control.choose(target, draft.source_kind);
         }, disabled),
+      );
+      if (draft.source_kind === 'favorite') formNode.append(
         select('Playable favorite', 'favorite', draft.favorite, [['', 'Choose a favorite…'],
           ...state.favorites.map((f) => [f.id, `${f.title} · ${f.kind}${f.description ? ` · ${f.description}` : ''}`])],
         (value) => { draft.favorite = value; }, disabled || !state.group || !state.favorites.length),
+      );
+      else formNode.append(
+        field(draft.source_kind === 'spotify' ? 'Spotify URI or full share link' : 'Radio stream URL', 'source_uri',
+          { type: 'text', maxlength: 2048, autocomplete: 'off', spellcheck: 'false', required: true }, disabled),
+        paragraph(draft.source_kind === 'spotify'
+          ? 'Paste a track, album or playlist link. The review shows its canonical Spotify URI. Short links are not expanded; this browser never contacts Spotify.'
+          : 'Use the station’s direct HTTP or HTTPS audio stream, not its web page. The speaker must be able to reach it. Avoid private access keys: the source is saved in the scene and this tab’s recovery record.'),
+      );
+      formNode.append(
         select('When', 'cadence', draft.cadence, [['weekdays', 'Weekdays'], ['daily', 'Every day'],
           ['weekends', 'Weekends'], ['delay', 'Once after a delay']], (value) => {
           draft.cadence = value; render(control.state);
@@ -89,28 +107,45 @@ const FavoriteRoutinePanel = (() => {
         field('House time', 'time', { type: 'time', step: 60, required: true }, disabled),
         paragraph('Uses the daemon host’s time zone, not this browser’s. The daemon handles daylight-saving changes.'),
       );
-      if (state.group && !state.busy && !state.favorites.length) formNode.append(paragraph('No playable favorites were read for this group. Add one in its household, then refresh the choices.'));
+      formNode.append(
+        field('Volume for each saved room (optional)', 'volume',
+          { type: 'number', min: 0, max: 100, step: 1, placeholder: 'Keep current levels' }, disabled),
+        el('label', { class: 'favorite-routine-unmute' },
+          el('input', { type: 'checkbox', checked: draft.unmute, disabled, 'data-routine-focus': 'unmute',
+            onchange: (event) => { draft.unmute = event.target.checked; } }),
+          'Unmute the saved rooms when this routine runs'),
+        paragraph('Leave volume blank and unmute unchecked to preserve current settings. A requested level applies to every listed room, subject to the house policy. Zero means silence, not “keep”.'),
+      );
+      if (draft.source_kind === 'favorite' && state.group && !state.busy && !state.favorites.length) formNode.append(paragraph('No playable favorites were read for this group. Add one in its household, then refresh the choices.'));
       formNode.append(el('div', { class: 'row' },
         button('Refresh choices', 'refresh', () => { draft.favorite = ''; void control.refresh(); }, state.busy || !!state.pending),
-        button('Review favorite routine', 'review', () => control.review({ ...draft }), disabled || !state.group || !state.favorites.length),
+        button('Review music routine', 'review', () => control.review({ ...draft }),
+          disabled || !state.group || (draft.source_kind === 'favorite' && !state.favorites.length)),
       ));
       return formNode;
     }
 
     function review(plan, state) {
       const continuing = !!state.attempt;
-      const section = el('section', { class: 'favorite-routine-review', 'aria-label': 'Review favorite routine' },
+      const settings = plan.settings || { volume: null, unmute: false };
+      const container = plan.favorite?.kind === 'container' || /^spotify:(album|playlist):/.test(plan.source?.uri || '');
+      const section = el('section', { class: 'favorite-routine-review', 'aria-label': 'Review music routine' },
         el('h3', { text: continuing ? 'Schedule this saved scene?' : 'Save this scene and create an enabled routine?' }),
-        paragraph(`${plan.favorite.title} · ${plan.favorite.kind}`),
+        paragraph(core.sourceLabel(plan)),
         paragraph(`When: ${plan.when}${plan.when.startsWith('in ') ? ' after daemon acceptance' : ' in the house’s time zone'}`),
         paragraph(`Coordinator: ${plan.group.target}`),
         paragraph(`Exact saved group: ${plan.group.members.join(' + ')}`),
-        paragraph('Each run restores this exact grouping. Listed rooms may leave other groups; rooms added later may be detached. It then starts the favorite, replacing whatever that group was playing.'),
-        paragraph(plan.favorite.kind === 'container'
+        paragraph('Each run restores this exact grouping. Listed rooms may leave other groups; rooms added later may be detached. It then starts the selected music source, replacing whatever that group was playing.'),
+        paragraph(container
           ? 'This album or playlist replaces the group’s queue at run time; the routine is not a backup of that queue.'
           : 'The routine switches the group to this track or stream at run time.'),
-        paragraph('This scene sets no volume or mute levels. Current levels remain subject to the house policy; a muted room may stay silent.'),
-        paragraph('The scene and favorite are not frozen copies. Later scene edits, renamed favorites, changed playlists or account availability can affect future runs.'),
+        paragraph(settings.volume === null
+          ? 'Volume: keep current levels, subject to the house policy.'
+          : `Volume: request ${settings.volume} for each saved room, subject to its policy cap and fade. This can raise or lower the level.${settings.volume === 0 ? ' Zero is silent.' : ''}`),
+        paragraph(settings.unmute
+          ? 'Mute: explicitly unmute every saved room when the routine runs.'
+          : 'Mute: keep current mute settings. A muted room may stay silent.'),
+        paragraph('The scene is not a frozen copy of the music. Later scene edits, renamed favorites, changed playlists, stream or account availability can affect future runs. Saving is not a playback test.'),
         paragraph('The daemon must be running. The routine uses its creator’s rights, and occurrences more than ten minutes late are skipped. No playback command is sent during setup.'),
         paragraph('Setup uses two separate saved changes, not an atomic transaction. A scene may remain without a routine. Closing this panel stops later submissions, not a request already sent.'),
         el('details', {}, el('summary', { text: 'Dedicated scene name' }), el('p', { class: 'favorite-routine-identity', text: plan.name })),
@@ -135,7 +170,7 @@ const FavoriteRoutinePanel = (() => {
       content.replaceChildren();
       content.setAttribute('aria-busy', String(state.busy));
       content.append(
-        paragraph('Choose a favorite once, then let the daemon play it on schedule. Setup saves a dedicated scene and a routine; it does not play music now.'),
+        paragraph('Choose a favorite, Spotify music or a radio stream, then let the daemon play it on schedule. Setup saves a dedicated scene and a routine; it does not play music now.'),
         el('p', { role: 'status', 'aria-live': 'polite', text: `${phaseText[state.phase] || 'Routine setup'}${state.message ? ` — ${state.message}` : ''}` }),
       );
       if (state.busy) content.append(paragraph('A reviewed step is in progress. Do not repeat setup from another tab. A lost response will be inspected, never automatically resubmitted.'));
@@ -148,8 +183,8 @@ const FavoriteRoutinePanel = (() => {
         );
         const actions = el('div', { class: 'row' }, button('Inspect saved state', 'inspect', () => { void control.recover(); }, state.busy || !!state.pending));
         if (state.phase === 'scene_ready') actions.append(button('Review scheduling saved scene', 'review-continue', () => control.reviewContinue(), state.busy || !!state.pending));
-        if (state.phase === 'complete') actions.append(button('New favorite routine', 'new', () => {
-          draft = { label: '', cadence: 'weekdays', time: '07:30', minutes: '45', favorite: '' };
+        if (state.phase === 'complete') actions.append(button('New music routine', 'new', () => {
+          draft = defaults();
           void control.newRoutine();
         }, state.busy));
         content.append(actions, paragraph('Manage, pause or remove the saved routine in Routines. The dedicated scene is retained in Scenes; removing a routine does not delete its scene.'));

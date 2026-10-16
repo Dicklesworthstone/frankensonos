@@ -107,8 +107,8 @@ const FavoriteRoutines = (() => {
     }
     let parsed;
     try { parsed = new URL(uri); } catch (_) { fail('Enter a full HTTP or HTTPS radio stream URL.'); }
-    if (!/^https?:\/\//i.test(uri) || !['http:', 'https:'].includes(parsed.protocol)
-        || !parsed.hostname || parsed.username || parsed.password || parsed.hash || uri.includes('\\')) {
+    if (!/^https?:\/\/[^/?#@]+(?:[/?#]|$)/i.test(uri) || !['http:', 'https:'].includes(parsed.protocol)
+        || !parsed.hostname || parsed.hash || uri.includes('\\')) {
       fail('Use an HTTP or HTTPS stream URL without embedded credentials, a fragment or backslashes.');
     }
     if (['open.spotify.com', 'play.spotify.com', 'spotify.link'].includes(parsed.hostname)

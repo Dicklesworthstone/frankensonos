@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const R = require('../crates/fsonos-api/src/remote/favorite-routines.js');
 const P = require('../crates/fsonos-api/src/remote/favorite-routines-panel.js');
+// Supply the browser API when the Node runner does not expose it globally.
+if (!globalThis.crypto) globalThis.crypto = require('node:crypto').webcrypto;
 function storage() {
   const map = new Map();
   return { getItem: (k) => map.get(k) ?? null, setItem: (k, v) => map.set(k, v), removeItem: (k) => map.delete(k) };
