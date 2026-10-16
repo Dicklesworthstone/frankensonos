@@ -164,10 +164,8 @@ fn retry_request(model: &mut Model, probe: &Probe) {
     }
 }
 
-pub(super) fn complete(engine: &Engine, model: &mut Model) {
-    if engine.stop.load(Ordering::Acquire) {
-        model.progress.reads.cancel_all();
-    }
+/// Invalidate on each accepted event, including intermediate regrouping.
+pub(super) fn invalidate(model: &Model) {
     // Cancelling is monotonic: a group which disappears and later returns
     // cannot make an already-invalidated result authoritative again.
     for read in &model.progress.reads.pending {
@@ -175,6 +173,13 @@ pub(super) fn complete(engine: &Engine, model: &mut Model) {
             read.cancelled.store(true, Ordering::Release);
         }
     }
+}
+
+pub(super) fn complete(engine: &Engine, model: &mut Model) {
+    if engine.stop.load(Ordering::Acquire) {
+        model.progress.reads.cancel_all();
+    }
+    invalidate(model);
     let mut events = Vec::new();
     let mut publish = false;
     for read in model.progress.reads.ready() {

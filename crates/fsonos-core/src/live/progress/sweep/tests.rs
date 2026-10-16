@@ -417,3 +417,66 @@ fn group_members_only_read_their_own_levels_on_both_generations() {
         f.finish();
     }
 }
+
+#[test]
+fn returning_to_the_original_group_never_revives_an_invalidated_read() {
+    for clock in [false, true] {
+        let mut f = Fixture::new(2, 1, false);
+        let player = f.players[0].0.clone();
+        if clock {
+            let source = EventSource::AvTransport;
+            let body = "<TransportState val=\"STOPPED\"/><CurrentTrackURI val=\"test:sweep\"/>";
+            f.model
+                .playback
+                .apply(&player, source, &notify(source, body), Instant::now())
+                .unwrap();
+            super::super::recover(&f.engine, &mut f.model);
+        } else {
+            f.only_first();
+            assert!(start_next(&f.engine, &mut f.model));
+        }
+        wait_for(|| f.transport.gate.entered.load(Ordering::Acquire) == 1);
+        let before = f.model.rec.households[0].clone();
+        let member = f.players[1].0.clone();
+        let house = &mut f.model.rec.households[0];
+        house.groups.retain(|group| group.coordinator != member);
+        house
+            .groups
+            .iter_mut()
+            .find(|group| group.coordinator == player)
+            .unwrap()
+            .members
+            .push(member);
+        // This hook runs after every consumed notification, not only once
+        // after the complete burst has returned to its original topology.
+        super::super::invalidate(&f.model);
+        f.model.rec.households[0] = before;
+        super::super::invalidate(&f.model);
+        f.release();
+        wait_for(|| {
+            super::super::background::complete(&f.engine, &mut f.model);
+            complete(&f.engine, &mut f.model);
+            f.model.progress.reads.len() + f.model.progress.sweep.len() == 0
+        });
+        assert_eq!(f.transport.calls.load(Ordering::Relaxed), 1);
+        assert!(f.state(0).is_none_or(|state| state.position_at(Instant::now()).is_none()));
+        f.finish();
+    }
+}
+
+#[test]
+fn a_completed_sweep_stays_invalid_after_an_offline_player_returns() {
+    let mut f = Fixture::new(2, 0, false);
+    f.only_first();
+    assert!(start_next(&f.engine, &mut f.model));
+    wait_for(|| f.model.progress.sweep.pending[0].thread.is_finished());
+    let player = f.players[0].0.clone();
+    f.model.rec.health.missing(&player, "test offline transition");
+    super::super::invalidate(&f.model);
+    f.model.rec.health.ok(&player, Instant::now());
+    super::super::invalidate(&f.model);
+    complete(&f.engine, &mut f.model);
+    assert!(f.state(0).is_none());
+    assert!(f.model.progress.sweep.pending.is_empty());
+    f.finish();
+}

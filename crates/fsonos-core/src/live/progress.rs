@@ -178,8 +178,16 @@ pub(super) fn recover(engine: &Engine, model: &mut Model) {
     }
 }
 
+/// Remember intermediate authority changes before another event can undo
+/// their visible values. Cancellation never becomes valid again.
+pub(super) fn invalidate(model: &Model) {
+    background::invalidate(model);
+    sweep::invalidate(model);
+}
+
 /// Queue one ordinary read-back per renderer, without doing network I/O.
 pub(super) fn request_survey(model: &mut Model) {
+    invalidate(model);
     sweep::request(model);
 }
 

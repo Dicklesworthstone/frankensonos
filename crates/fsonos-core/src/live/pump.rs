@@ -17,6 +17,7 @@ pub(super) fn turn(engine: &Engine, model: &mut Model) {
         let Some(pushed) = engine.next_event(model, Duration::ZERO) else {
             return false;
         };
+        super::progress::invalidate(model);
         engine.publish(model, pushed);
         true
     });
@@ -34,11 +35,13 @@ pub(super) fn turn(engine: &Engine, model: &mut Model) {
         .is_some_and(|due| due <= now)
     {
         engine.renew(model, now);
+        super::progress::invalidate(model);
         engine.publish(model, Vec::new());
     }
     if !engine.stop.load(Ordering::Acquire)
         && let Some(pushed) = engine.next_event(model, TICK)
     {
+        super::progress::invalidate(model);
         engine.publish(model, pushed);
     }
     // A bounded burst may leave notifications queued, including events which
@@ -47,6 +50,7 @@ pub(super) fn turn(engine: &Engine, model: &mut Model) {
     // Consume at most one extra event, then yield to the next bounded turn.
     if !engine.stop.load(Ordering::Acquire) {
         if let Some(pushed) = engine.next_event(model, Duration::ZERO) {
+            super::progress::invalidate(model);
             engine.publish(model, pushed);
         } else {
             super::progress::recover(engine, model);
