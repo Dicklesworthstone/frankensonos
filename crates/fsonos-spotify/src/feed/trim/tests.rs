@@ -451,6 +451,7 @@ fn wrong_removals_or_changed_neighbors_cannot_confirm_a_lost_reply() {
         queue(8, &["owner", "a", "b", "next"]),
         queue(8, &["owner"]),
     ] {
+        assert!(!removed_range(&before, &queue(8, &[]), 0, 0));
         assert!(!removed_range(&before, &after, 1, 2));
     }
     // Do not collapse renderer/account parameters while comparing neighbors.
@@ -527,8 +528,8 @@ fn a_confirmed_lost_reply_allows_other_old_works_to_be_retired_once() {
         feed.trim(&f.speakers(&replies)).unwrap();
         assert_eq!(
             replies.removes.get(),
-            2,
-            "one removal per work, not a replay"
+            1,
+            "one removal for both adjacent works, not a replay"
         );
         assert_eq!(f.queue(), f.after_trim());
         assert_eq!(feed.playing, Some(4));
