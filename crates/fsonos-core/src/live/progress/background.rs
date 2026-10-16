@@ -186,9 +186,10 @@ pub(super) fn complete(engine: &Engine, model: &mut Model) {
         }
         match result {
             Ok(Some((observation, observed))) => {
-                let changes = model
-                    .playback
-                    .apply_observation(&probe.player, &observation, observed);
+                let changes =
+                    model
+                        .playback
+                        .apply_observation(&probe.player, &observation, observed);
                 // Even an unchanged identity needs a position invalidation
                 // after a seek, but never an invented DJ track transition.
                 if !changes.is_empty() || probe.position_requested {

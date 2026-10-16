@@ -39,12 +39,22 @@ fn listen(fixture: &mut Fixture, services: &[(usize, Service)], now: Instant) {
             .gena_log()
             .iter()
             .filter(|entry| {
-                matches!(entry.event, GenaEvent::Delivered { seq: 0, status: 200, .. })
+                matches!(
+                    entry.event,
+                    GenaEvent::Delivered {
+                        seq: 0,
+                        status: 200,
+                        ..
+                    }
+                )
             })
             .count()
             == wants.len()
     });
-    while let Some(pushed) = fixture.engine.next_event(&mut fixture.model, Duration::ZERO) {
+    while let Some(pushed) = fixture
+        .engine
+        .next_event(&mut fixture.model, Duration::ZERO)
+    {
         fixture.engine.publish(&fixture.model, pushed);
     }
 }
@@ -92,7 +102,14 @@ fn a_finished_sample_cannot_overtake_a_seek_behind_the_callback_burst() {
         seek_position(&*fixture.engine.lan, fixture.players[0].1, 17).unwrap();
         wait_for(|| {
             fixture.sim.gena_log().iter().any(|entry| {
-                matches!(entry.event, GenaEvent::Delivered { seq: 1, status: 200, .. })
+                matches!(
+                    entry.event,
+                    GenaEvent::Delivered {
+                        seq: 1,
+                        status: 200,
+                        ..
+                    }
+                )
             })
         });
         pump::turn(&fixture.engine, &mut fixture.model);
@@ -138,14 +155,26 @@ fn live_notifications_and_due_renewals_continue_beside_a_blocked_read() {
         set_volume(&*fixture.engine.lan, fixture.players[1].1, 29).unwrap();
         wait_for(|| {
             fixture.sim.gena_log().iter().any(|entry| {
-                matches!(entry.event, GenaEvent::Delivered { seq: 1, status: 200, .. })
+                matches!(
+                    entry.event,
+                    GenaEvent::Delivered {
+                        seq: 1,
+                        status: 200,
+                        ..
+                    }
+                )
             })
         });
         let started = Instant::now();
         pump::turn(&fixture.engine, &mut fixture.model);
         assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(
-            fixture.model.playback.of(&fixture.players[1].0).unwrap().volume,
+            fixture
+                .model
+                .playback
+                .of(&fixture.players[1].0)
+                .unwrap()
+                .volume,
             Some(29)
         );
         assert!(fixture.model.progress.reads.contains(&fixture.players[0].0));

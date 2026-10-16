@@ -212,7 +212,10 @@ fn request(playback: &mut Playback, player: &PlayerId) {
 fn wait_for(mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT;
     while !ready() {
-        assert!(Instant::now() < deadline, "background test did not converge");
+        assert!(
+            Instant::now() < deadline,
+            "background test did not converge"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -286,7 +289,11 @@ fn cancelled_workers_keep_their_capacity_and_single_flight_until_they_exit() {
         fixture
             .model
             .progress
-            .next(&fixture.players[..1], &fixture.model.playback, Instant::now())
+            .next(
+                &fixture.players[..1],
+                &fixture.model.playback,
+                Instant::now()
+            )
             .is_none()
     );
     fixture.release();
@@ -417,7 +424,11 @@ fn failed_reads_rearm_the_request_and_retry_after_backoff_without_new_events() {
         fixture
             .model
             .progress
-            .next(&fixture.players[..1], &fixture.model.playback, Instant::now())
+            .next(
+                &fixture.players[..1],
+                &fixture.model.playback,
+                Instant::now()
+            )
             .is_none()
     );
     let due = fixture.model.progress.attempts[&player].retry_at;
@@ -500,7 +511,12 @@ fn volume_and_mute_changes_do_not_starve_clock_recovery_or_get_overwritten() {
     fixture
         .model
         .playback
-        .apply(&player, EventSource::RenderingControl, &notify, Instant::now())
+        .apply(
+            &player,
+            EventSource::RenderingControl,
+            &notify,
+            Instant::now(),
+        )
         .unwrap();
     complete(&fixture.engine, &mut fixture.model);
     assert!(fixture.model.progress.reads.pending[0].current(&fixture.model));
