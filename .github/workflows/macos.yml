@@ -1,0 +1,56 @@
+name: macOS checks and tests
+
+# The deploy target is a Mac: check every target there, lint the launchd
+# job, render real speech with `say`, and run the workspace tests, as the
+# Linux workflow does on Linux. Informational (continue-on-error) until it
+# has run green on main; then drop continue-on-error so it gates.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "vendor/**"
+      - "docs/launchd/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/macos.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A started run always finishes; GitHub keeps one pending run behind it.
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 120
+    continue-on-error: true
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      # Real local synthesis with the system `say` (fsonos-core clip tests).
+      FSONOS_TEST_SAY: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Lint the launchd job
+        run: plutil -lint docs/launchd/*.plist
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal
+      - name: Check every target
+        id: check
+        run: cargo check --locked --workspace --all-targets
+      - name: Real macOS speech (say)
+        if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        run: cargo test --locked -p fsonos-core --lib -- say_renders_a_wav_clip --nocapture
+      - name: Workspace tests
+        if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        run: cargo test --locked --workspace --no-fail-fast
