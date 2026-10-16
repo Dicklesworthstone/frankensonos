@@ -1,14 +1,17 @@
 //! Sample clocks after transport events and repair missed track-end events.
 //! No periodic position polling: accepted events request a coalesced read,
 //! otherwise only an overdue finite track or the ordinary survey reads it.
+//! Bounded background reads leave notification intake and renewal responsive.
 
-use super::{Engine, LiveEvent, Model, observation};
+use super::{Engine, Model, observation};
 use crate::playback::{Playback, PlayerPlayback};
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+
+mod background;
 
 /// Allow ordinary NOTIFY delivery and small position-estimate errors first.
 const END_GRACE: Duration = Duration::from_secs(5);
@@ -50,6 +53,7 @@ pub(super) struct Watchdog {
     attempts: HashMap<PlayerId, Attempt>,
     /// Per player, not per URI: rapid skips cannot defeat event coalescing.
     position_after: HashMap<PlayerId, Instant>,
+    reads: background::Reads,
 }
 
 impl Watchdog {
@@ -74,6 +78,9 @@ impl Watchdog {
         coordinators
             .iter()
             .filter_map(|(player, host)| {
+                if self.reads.contains(player) {
+                    return None;
+                }
                 let state = playback.of(player)?;
                 let identity = Identity::of(state)?;
                 let position_requested = state.needs_position_sample();
@@ -134,6 +141,11 @@ impl Watchdog {
 /// and retains its own ownership, policy and indeterminate-write safeguards.
 pub(super) fn recover(engine: &Engine, model: &mut Model) {
     if engine.stop.load(Ordering::Acquire) {
+        model.progress.reads.cancel_all();
+        return;
+    }
+    background::complete(engine, model);
+    if !model.progress.reads.has_capacity() {
         return;
     }
     let coordinators = observation::coordinators(model);
@@ -143,32 +155,7 @@ pub(super) fn recover(engine: &Engine, model: &mut Model) {
     else {
         return;
     };
-    match observation::read(&engine.via(), probe.host, || {
-        engine.stop.load(Ordering::Acquire)
-    }) {
-        Ok(Some((observation, observed))) => {
-            let changes = model
-                .playback
-                .apply_observation(&probe.player, &observation, observed);
-            // An empty delta still invalidates this room's cached position.
-            // Do not invent a track transition: that would corrupt DJ listens.
-            let events = if changes.is_empty() && !probe.position_requested {
-                Vec::new()
-            } else {
-                vec![LiveEvent::Playback {
-                    player: probe.player.clone(),
-                    changes,
-                }]
-            };
-            model.progress.completed(probe, true, Instant::now());
-            engine.publish(model, events);
-        }
-        Ok(None) => {}
-        Err(error) => {
-            tracing::debug!(%error, "playback read-back failed; retrying with backoff");
-            model.progress.completed(probe, false, Instant::now());
-        }
-    }
+    background::start(engine, model, probe);
 }
 
 #[cfg(test)]
@@ -332,5 +319,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+use super::LiveEvent;
 #[cfg(test)]
 mod position_tests;

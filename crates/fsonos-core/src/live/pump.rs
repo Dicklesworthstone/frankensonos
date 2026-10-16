@@ -42,7 +42,7 @@ pub(super) fn turn(engine: &Engine, model: &mut Model) {
         engine.publish(model, pushed);
     }
     // Buffered events and subscription maintenance take precedence over
-    // suspected track-end loss. Recovery is at most one read-back per turn.
+    // suspected track-end loss. Admit at most one background read per turn.
     super::progress::recover(engine, model);
 }
 
@@ -359,7 +359,11 @@ mod tests {
 
             next(&*engine.lan, host).unwrap();
             let before = sim.soap_log().len();
-            turn(&engine, &mut model);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while model.playback.of(&id).unwrap().queue_position != Some(2) {
+                assert!(Instant::now() < deadline, "missed track did not recover");
+                turn(&engine, &mut model);
+            }
             assert_eq!(model.playback.of(&id).unwrap().queue_position, Some(2));
             let event = receive.recv_timeout(Duration::from_secs(1)).unwrap();
             assert!(
@@ -400,7 +404,11 @@ mod tests {
             model.playback.apply_observation(&id, &sample, overdue);
             pause(&*engine.lan, host).unwrap();
             let before = sim.soap_log().len();
-            turn(&engine, &mut model);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while model.playback.of(&id).unwrap().transport != Some(TransportState::Paused) {
+                assert!(Instant::now() < deadline, "missed pause did not recover");
+                turn(&engine, &mut model);
+            }
             let state = model.playback.of(&id).unwrap();
             assert_eq!(state.transport, Some(TransportState::Paused));
             assert_eq!(state.volume, Some(23));

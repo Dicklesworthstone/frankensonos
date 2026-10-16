@@ -17,6 +17,24 @@ pub struct PlaybackObservation {
 }
 
 impl Playback {
+    /// Claim the pending clock request before starting a background read.
+    /// A later, even otherwise identical, AVTransport event re-arms the flag
+    /// and therefore differs from this baseline. The older read must not
+    /// consume a seek which happened while it was in flight.
+    pub(crate) fn begin_position_sample(&mut self, player: &PlayerId) -> Option<PlayerPlayback> {
+        let state = self.players.get_mut(player)?;
+        state.position_requested = false;
+        Some(state.clone())
+    }
+
+    /// Retry a claimed request without inventing a player or a track. This
+    /// changes no playback value and never sends a command to the renderer.
+    pub(crate) fn request_position_sample(&mut self, player: &PlayerId) {
+        if let Some(state) = self.players.get_mut(player) {
+            state.position_requested = state.track_uri.is_some();
+        }
+    }
+
     /// Reconcile transport, track identity, queue length and position from
     /// one completed read-back. Emit the same changes as a NOTIFY, including
     /// a queue-slot transition between two copies of the same track URI.
@@ -94,6 +112,49 @@ mod tests {
                 uri_metadata: String::new(),
             },
         }
+    }
+
+    #[test]
+    fn claiming_a_clock_preserves_display_and_an_identical_event_rearms_it() {
+        use crate::playback::EventSource;
+        use fsonos_proto::gena::Notify;
+
+        let player = PlayerId("test-player".into());
+        let now = Instant::now();
+        let mut playback = Playback::default();
+        playback.apply_observation(&player, &read(TransportState::Paused, 1, Some(23)), now);
+        playback.request_position_sample(&player);
+        let baseline = playback.begin_position_sample(&player).unwrap();
+        assert!(!baseline.needs_position_sample());
+        assert_eq!(baseline.position_at(now), Some(23));
+        let notify = Notify {
+            sid: "uuid:test".into(),
+            seq: 1,
+            path: "/AVTransport".into(),
+            properties: vec![(
+                "LastChange".into(),
+                "<Event><InstanceID val=\"0\"><TransportState val=\"PAUSED_PLAYBACK\"/>\
+                 </InstanceID></Event>"
+                    .into(),
+            )],
+        };
+        let changes = playback
+            .apply(&player, EventSource::AvTransport, &notify, now)
+            .unwrap();
+        assert!(changes.is_empty());
+        let after = playback.of(&player).unwrap();
+        assert!(after.needs_position_sample());
+        assert_ne!(after, &baseline);
+        assert_eq!(after.position_at(now), Some(23));
+    }
+
+    #[test]
+    fn retrying_a_sample_does_not_resurrect_a_removed_player() {
+        let player = PlayerId("test-player".into());
+        let mut playback = Playback::default();
+        playback.request_position_sample(&player);
+        assert!(playback.begin_position_sample(&player).is_none());
+        assert!(playback.of(&player).is_none());
     }
 
     #[test]
