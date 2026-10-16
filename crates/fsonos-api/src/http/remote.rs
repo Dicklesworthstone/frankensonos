@@ -25,6 +25,7 @@ mod undo;
 const REMOTE: &str = "remote";
 
 const PAGE: &str = include_str!("../remote/index.html");
+const READ_SCRIPT: &str = include_str!("../remote/read-requests.js");
 const QUEUE_SCRIPT: &str = include_str!("../remote/queue.js");
 const PLAYBACK_SCRIPT: &str = include_str!("../remote/playback.js");
 const PLAYBACK_STYLE: &str = include_str!("../remote/playback.css");
@@ -100,7 +101,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
+                        "{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
                     ),
                 )
             },
@@ -299,6 +300,7 @@ mod tests {
         for (name, text) in [
             ("index.html", PAGE),
             ("remote.js", SCRIPT),
+            ("read-requests.js", READ_SCRIPT),
             ("queue.js", QUEUE_SCRIPT),
             ("playback.js", PLAYBACK_SCRIPT),
             ("playback.css", PLAYBACK_STYLE),

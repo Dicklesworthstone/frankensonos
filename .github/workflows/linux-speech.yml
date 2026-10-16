@@ -20,6 +20,8 @@ on:
       - "scripts/test-remote-spotify-connect.cjs"
       - "scripts/test-remote-groups.cjs"
       - "scripts/test-remote-transfers.cjs"
+      - "scripts/test-remote-read-requests.cjs"
+      - "scripts/test-remote-request-lifecycle.cjs"
       - "scripts/test-remote-live.cjs"
       - "scripts/test-remote-invalidation.cjs"
       - "scripts/test-remote-state.cjs"
@@ -78,6 +80,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes espeak-ng nodejs
+      - name: Web shared reads and request lifecycle regressions
+        run: node --test scripts/test-remote-read-requests.cjs scripts/test-remote-request-lifecycle.cjs
       - name: Web queue client regressions
         run: node --test scripts/test-remote-queue.cjs scripts/test-remote-play-mode.cjs
       - name: Live queue and command coordination regressions

@@ -83,8 +83,8 @@ test('failure and overlapping commands retain barriers until all commands settle
 test('an old read settling cannot remove a post-command shared observation', async () => {
   const f = fixture(); const old = f.request('/zones', read()); await tick();
   const command = f.request('/pause', write()); f.calls[1].resolve({}); await command;
-  const fresh = f.request('/zones', read()); await tick(); f.calls[0].resolve('old'); await old;
-  const join = f.request('/zones', read()); await tick(); assert.equal(f.calls.length, 3);
+  const fresh = f.request('/zones', read()); f.calls[0].resolve('old');
+  const join = f.request('/zones', read()); await old; await tick(); assert.equal(f.calls.length, 3);
   f.calls[2].resolve('fresh'); assert.deepEqual(await Promise.all([fresh, join]), ['fresh', 'fresh']);
 });
 
@@ -99,8 +99,7 @@ test('last cancelled reader aborts the underlying read and permits a fresh excha
   const f = fixture(), a = new AbortController(), b = new AbortController();
   const tasks = Promise.allSettled([f.request('/zones', read(a.signal)), f.request('/zones', read(b.signal))]);
   await tick(); a.abort(); b.abort(); await tasks; assert.equal(f.calls[0].init.signal.aborted, true);
-  const fresh = f.request('/zones', read()); await tick(); assert.equal(f.calls.length, 2);
-  f.calls[0].resolve('late old'); await tick();
+  const fresh = f.request('/zones', read()); f.calls[0].resolve('late old');
   const join = f.request('/zones', read()); await tick(); assert.equal(f.calls.length, 2);
   f.calls[1].resolve('current'); assert.deepEqual(await Promise.all([fresh, join]), ['current', 'current']);
 });
@@ -156,4 +155,25 @@ test('real HTTP burst shares one response; later reads and commands stay separat
   await request('/zones', read()); assert.equal(gets, 2);
   await Promise.all([request('/pause', write()), request('/pause', write())]); assert.equal(posts, 2);
   await request('/zones', read()); assert.equal(gets, 3);
+});
+
+// A later preflight must not borrow an observation sent before it began.
+test('reads arriving after dispatch start a fresh exchange even while the old body is pending', async () => {
+  const f = fixture(); const first = f.request('/zones', read()); await tick();
+  const second = f.request('/zones', read()); await tick();
+  assert.equal(f.calls.length, 2);
+  f.calls[0].resolve('older observation'); f.calls[1].resolve('new observation');
+  assert.equal(await first, 'older observation'); assert.equal(await second, 'new observation');
+});
+
+
+test('a read cancelled globally cannot succeed from a late ignored-abort reply', async () => {
+  const f = fixture();
+  const task = f.request('/zones', read());
+  const rejected = assert.rejects(task, { name: 'AbortError' });
+  await tick(); f.request.cancelReads();
+  assert.equal(f.calls[0].init.signal.aborted, true);
+  f.calls[0].resolve({ stale: true }); await rejected;
+  const fresh = f.request('/zones', read()); await tick();
+  f.calls[1].resolve({ current: true }); assert.deepEqual(await fresh, { current: true });
 });

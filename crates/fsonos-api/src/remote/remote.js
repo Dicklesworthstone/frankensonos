@@ -79,12 +79,14 @@ const RequestRemote = (() => {
 
   function create({ fetcher = (where, init) => fetch(where, init),
     schedule = setTimeout, cancel = clearTimeout, now = Date.now, random = Math.random } = {}) {
-    return async function request(where, init) {
+    const readers = new Set();
+    const send = async function request(where, init) {
       const read = init.method === 'GET';
       const timeout = timeoutFor(init.method, where);
       const ends = now() + timeout;
       const controller = new AbortController();
-      let finished = false, backoff = null, deadline = null;
+      let finished = false, backoff = null, deadline = null, wakeBackoff = null;
+      let stoppedWith = null, rejectStopped = null;
       const failure = (code, detail, uncertain = false) => {
         const error = new Error(detail);
         error.code = code;
@@ -92,37 +94,46 @@ const RequestRemote = (() => {
         if (uncertain) error.hint = UNCERTAIN_HINT;
         return error;
       };
+      if (init.signal?.aborted) throw failure('REMOTE_CANCELLED', 'The request was cancelled before sending.');
       const timedOut = failure(read ? 'REMOTE_READ_TIMEOUT' : 'REMOTE_OUTCOME_UNKNOWN',
         read ? 'The state request timed out. Refresh to read it again.'
           : 'The action did not return a confirmation in time.', !read);
-      const expired = new Promise((_, reject) => {
-        deadline = schedule(() => {
-          finished = true;
-          // Settle independently of abort: even a stuck body/transport that
-          // ignores cancellation must release its caller's busy state.
-          reject(timedOut);
-          controller.abort();
-        }, timeout);
-      });
+      const cancelled = failure(read ? 'REMOTE_READ_CANCELLED' : 'REMOTE_OUTCOME_UNKNOWN',
+        read ? 'The state request was cancelled.' : 'The action was cancelled before its result was confirmed.', !read);
+      const expired = new Promise((_, reject) => { rejectStopped = reject; });
+      const stop = (error) => {
+        if (finished) return;
+        finished = true;
+        stoppedWith = error;
+        // Release callers even when a response body ignores abort. A sent
+        // command is still uncertain; cancellation never authorizes a replay.
+        rejectStopped(error);
+        controller.abort();
+        wakeBackoff?.();
+      };
+      const onAbort = () => stop(cancelled);
+      init.signal?.addEventListener('abort', onAbort, { once: true });
+      if (read) readers.add(onAbort);
+      deadline = schedule(() => stop(timedOut), timeout);
       const run = async () => {
         for (let attempt = 0; ; attempt++) {
-          if (finished) throw timedOut;
+          if (finished) throw stoppedWith;
           try {
             let answer, text;
             try {
               answer = await fetcher(where, { ...init, signal: controller.signal,
                 credentials: 'same-origin', redirect: 'error' });
-              if (finished) throw timedOut;
+              if (finished) throw stoppedWith;
               text = await answer.text();
             } catch (cause) {
-              if (finished) throw timedOut;
+              if (finished) throw stoppedWith;
               const error = failure(read ? 'REMOTE_NETWORK_ERROR' : 'REMOTE_OUTCOME_UNKNOWN',
                 read ? 'Could not read the current state. Check the connection to FrankenSonos.'
                   : 'The connection ended before this action was confirmed.', !read);
               error.cause = cause;
               throw error;
             }
-            if (finished) throw timedOut;
+            if (finished) throw stoppedWith;
             let data = null, decoded = false;
             try { data = JSON.parse(text); decoded = true; } catch (_) { /* Checked below. */ }
             if (!answer.ok) {
@@ -144,7 +155,7 @@ const RequestRemote = (() => {
             }
             return data;
           } catch (error) {
-            if (finished) throw timedOut;
+            if (finished) throw stoppedWith;
             // Only reads can repeat. Never retry a POST, including 429/503,
             // lost replies, malformed acknowledgements or timed-out bodies.
             if (!read || attempt >= RETRIES
@@ -153,8 +164,12 @@ const RequestRemote = (() => {
             const delay = Math.max(base + Math.floor(random() * base), error.retryAfter ?? 0);
             // Honor Retry-After in full or stop; never cap it into an early retry.
             if (delay >= ends - now()) throw error;
-            await new Promise((resolve) => { backoff = schedule(resolve, delay); });
-            backoff = null;
+            await new Promise((resolve) => {
+              wakeBackoff = resolve;
+              backoff = schedule(resolve, delay);
+            });
+            if (backoff !== null) cancel(backoff);
+            backoff = wakeBackoff = null;
           }
         }
       };
@@ -164,8 +179,20 @@ const RequestRemote = (() => {
         finished = true;
         cancel(deadline);
         if (backoff !== null) cancel(backoff);
+        wakeBackoff?.();
+        init.signal?.removeEventListener('abort', onAbort);
+        readers.delete(onAbort);
       }
     };
+    // The served bundle installs the broker first. Standalone embeds can use
+    // the same deadline/cancellation adapter without optional read sharing.
+    const request = typeof ReadRequests === 'undefined' ? send : ReadRequests.create(send);
+    const cancelShared = request.cancelReads;
+    request.cancelReads = () => {
+      cancelShared?.();
+      for (const stopRead of [...readers]) stopRead();
+    };
+    return request;
   }
 
   return { create, timeoutFor, retryAfter, READ_TIMEOUT, WRITE_TIMEOUT,
@@ -175,9 +202,10 @@ const RequestRemote = (() => {
 const requestJson = RequestRemote.create();
 
 /** Call route `name`; its JSON answer, or an Error carrying the API's. */
-async function call(name, { params, query, body } = {}) {
+async function call(name, { params, query, body, signal } = {}) {
   const [method] = ROUTES[name];
   const init = { method, headers: { Accept: 'application/json' }, cache: 'no-store' };
+  if (signal) init.signal = signal;
   if (method !== 'GET') {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body || {});
@@ -1154,7 +1182,7 @@ function listen() {
       }
     },
   });
-  const suspend = () => { controller.suspend(); catalogs.suspend(); };
+  const suspend = () => { controller.suspend(); catalogs.suspend(); requestJson.cancelReads(); };
   const resume = () => { if (!document.hidden) { catalogs.resume(); controller.resume(); } };
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) suspend(); else resume();

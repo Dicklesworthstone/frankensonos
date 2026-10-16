@@ -1,4 +1,4 @@
-// Share concurrent JSON observations, never cache them or combine commands.
+// Coalesce a burst of JSON observations before dispatch, never cache replies.
 'use strict';
 
 const ReadRequests = (() => {
@@ -29,6 +29,7 @@ const ReadRequests = (() => {
       throw new TypeError('A request function and a bounded pending-read limit are required.');
     }
     const pending = new Map();
+    const active = new Set();
     let commands = 0;
     const forget = (key, entry) => { if (pending.get(key) === entry) pending.delete(key); };
 
@@ -59,7 +60,7 @@ const ReadRequests = (() => {
       });
     }
 
-    return async function request(where, init) {
+    const request = async function request(where, init) {
       if (init.signal?.aborted) throw abortReason(init.signal);
       if (init.method !== 'GET') {
         // Neither pre-command reads nor observations made while a command runs
@@ -78,17 +79,28 @@ const ReadRequests = (() => {
         if (pending.size >= limit) return send(where, init);
         entry = { key, controller: new AbortController(), waiters: 0, settled: false, promise: null };
         pending.set(key, entry);
+        active.add(entry);
         entry.promise = Promise.resolve().then(() => {
+          // Close admission BEFORE sending. A preflight or event-driven read
+          // arriving later must start a new exchange, not join an older one.
+          forget(key, entry);
           if (entry.controller.signal.aborted) throw abortReason(entry.controller.signal);
           return send(where, { ...init, signal: entry.controller.signal });
         }).then((value) => {
-          entry.settled = true; forget(key, entry); return value;
+          entry.settled = true; active.delete(entry); forget(key, entry);
+          if (entry.controller.signal.aborted) throw abortReason(entry.controller.signal);
+          return value;
         }, (error) => {
-          entry.settled = true; forget(key, entry); throw error;
+          entry.settled = true; active.delete(entry); forget(key, entry); throw error;
         });
       }
       return observe(entry, init.signal);
     };
+    request.cancelReads = () => {
+      pending.clear();
+      for (const entry of active) entry.controller.abort();
+    };
+    return request;
   }
   return { create, keyOf, MAX_PENDING };
 })();
