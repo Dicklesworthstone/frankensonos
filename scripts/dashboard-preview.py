@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 ASSETS = Path(__file__).resolve().parents[1] / "crates/fsonos-api/src/remote"
-SCRIPTS = ["dashboard-core.js", "dashboard-visualizer.js", "dashboard-audio.js", "dashboard-session.js", "dashboard.js"]
+SCRIPTS = ["dashboard-core.js", "dashboard-visualizer.js", "dashboard-audio.js", "dashboard-session.js", "dashboard-queue.js", "dashboard-workspace.js", "dashboard.js"]
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 

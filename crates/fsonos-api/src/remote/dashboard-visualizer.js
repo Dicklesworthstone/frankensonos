@@ -13,25 +13,55 @@ const DashboardVisualizer = (() => {
     try { ctx = canvas.getContext('2d', { alpha: false }); } catch (_) { ctx = null; }
     let mode = 'aurora', seed = 0, playing = false, paused = reduced, visible = true, immersive = false;
     let disposed = false, frame = null, last = 0, time = 1200, audio = null, energy = 0;
+    // A small software-shaded surface avoids a faceted mesh or a WebGL dependency.
+    // Unsupported OffscreenCanvas implementations keep the vector fallback below.
+    let field = null, fieldContext = null, pixels = null;
+    try {
+      if (typeof OffscreenCanvas !== 'undefined') {
+        field = new OffscreenCanvas(280, 280); fieldContext = field.getContext('2d');
+        pixels = fieldContext?.createImageData(280, 280);
+      }
+    } catch (_) { field = fieldContext = pixels = null; }
+    function prism(t, phase) {
+      const data = pixels.data, n = 280;
+      for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+        const k = (y * n + x) * 4, px = (x - 140) / 129, py = (y - 140) / 129;
+        const theta = Math.atan2(py, px), radius = 1 + .022 * Math.sin(theta * 3 + t * .4);
+        const nx = px / radius, ny = py / radius, r = nx * nx + ny * ny;
+        if (r >= 1) { data[k + 3] = 0; continue; }
+        const z = Math.sqrt(1 - r);
+        const flow = nx * .72 + ny * .62 + Math.sin(z * 3.5 + ny * 2 + t * .22 + phase) * .27;
+        const band = .5 + .5 * Math.sin(flow * 29 + t * .35);
+        const light = .21 + .79 * Math.max(0, -.45 * nx - .58 * ny + .68 * z);
+        const spec = Math.pow(Math.max(0, -.45 * nx - .58 * ny + .68 * z), 25);
+        const pearl = Math.pow(band, 3) * .55 + spec * .5;
+        const rim = Math.pow(1 - z, 3) * .5;
+        data[k] = (76 + light * 86 + pearl * 100 + rim * 66) * (1 + energy * .06);
+        data[k + 1] = 61 + light * 76 + pearl * 130 + rim * 83;
+        data[k + 2] = 117 + light * 102 + pearl * 63 + rim * 63;
+        data[k + 3] = Math.min(255, Math.max(0, (1 - r) * 24000));
+      }
+      fieldContext.putImageData(pixels, 0, 0);
+    }
     const stop = () => { if (frame !== null) caf(frame); frame = null; };
     function draw() {
       if (!ctx || disposed || !visible) return;
       const w = canvas.width, h = canvas.height, small = w / h < 1.15;
-      const cx = immersive ? w * .52 : small ? w * .57 : w * .74;
-      const cy = immersive ? h * .44 : small ? h * .31 : h * .46;
-      const size = immersive ? Math.min(w * .36, h * .35) : small ? Math.min(w * .39, h * .26) : Math.min(w * .26, h * .33);
+      const cx = immersive ? w * .5 : small ? w * .5 : w * .2;
+      const cy = immersive ? h * .38 : small ? h * .27 : h * .18 + w * .16;
+      const size = immersive ? Math.min(w * .34, h * .32) : small ? Math.min(w * .26, h * .17) : Math.min(w * .16, h * .36);
       let sample = null;
       try { sample = audio?.(); } catch (_) { /* A stopped device is not a render failure. */ }
       energy += (Math.min(1, Math.max(0, sample?.energy || 0)) - energy) * .2;
       const t = time * .00016, phase = (seed % 137) / 137;
-      ctx.fillStyle = '#10201f'; ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#11121c'; ctx.fillRect(0, 0, w, h);
       const ambient = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(w, h) * .68);
-      ambient.addColorStop(0, '#2c4a40'); ambient.addColorStop(.45, '#182e29'); ambient.addColorStop(1, '#101d1d');
+      ambient.addColorStop(0, '#49415f'); ambient.addColorStop(.45, '#262339'); ambient.addColorStop(1, '#14141f');
       ctx.fillStyle = ambient; ctx.fillRect(0, 0, w, h);
       // Fine, stationary grain gives depth without flashing or pretending to measure sound.
       for (let n = 0; n < 180; n++) {
         const x = ((n * 1877 + 317) % 1009) / 1009 * w, y = ((n * 991 + 17) % 997) / 997 * h;
-        ctx.fillStyle = `rgba(210,231,187,${n % 5 === 0 ? .16 : .065})`;
+        ctx.fillStyle = `rgba(216,213,255,${n % 5 === 0 ? .16 : .065})`;
         ctx.fillRect(x, y, Math.max(.6, w / 1500), Math.max(.6, w / 1500));
       }
       const ax = -.6 + Math.sin(t * .43) * .08, az = -.45 + Math.cos(t * .27) * .09;
@@ -41,7 +71,14 @@ const DashboardVisualizer = (() => {
         const perspective = 3.8 / (3.8 + z1);
         return [cx + x2 * size * perspective, cy + y2 * size * perspective, z1];
       }
-      if (mode === 'contour') {
+      if (mode === 'aurora' && fieldContext && pixels) {
+        prism(t, phase);
+        ctx.save(); ctx.shadowColor = '#05051188'; ctx.shadowBlur = size * .3; ctx.shadowOffsetY = size * .11;
+        ctx.drawImage(field, cx - size, cy - size, size * 2, size * 2); ctx.restore();
+        // A faint orbital path is decorative, not an audio measurement.
+        ctx.beginPath(); ctx.ellipse(cx, cy + size * .1, size * 1.13, size * .42, -.32, 0, Math.PI * 2);
+        ctx.strokeStyle = '#c6b0ed26'; ctx.lineWidth = Math.max(.6, w / 1800); ctx.stroke();
+      } else if (mode === 'contour') {
         for (let row = 0; row < 65; row++) {
           const v = row / 64 * 2 - 1;
           ctx.beginPath();
@@ -52,11 +89,11 @@ const DashboardVisualizer = (() => {
             const p = project(u, v * .85 - z * .45, z);
             if (col === 0) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
           }
-          ctx.strokeStyle = `rgba(${155 + row},${177 + row},${141 + row},${.18 + Math.sin(row / 64 * Math.PI) * .57})`;
+          ctx.strokeStyle = `rgba(${171 + row},${149 + row},${195 + row},${.18 + Math.sin(row / 64 * Math.PI) * .57})`;
           ctx.lineWidth = Math.max(.6, w / 1100); ctx.stroke();
         }
       } else {
-        const rows = mode === 'orbit' ? 48 : 40, cols = 128, points = [], quads = [];
+        const rows = mode === 'orbit' ? 48 : 58, cols = 128, points = [], quads = [];
         for (let j = 0; j <= rows; j++) {
           const v = j / rows * Math.PI * 2;
           const ring = [];
@@ -67,9 +104,13 @@ const DashboardVisualizer = (() => {
             const tube = (mode === 'orbit' ? .18 : .31) + energy * .065 + bin * .07;
             const ripple = mode === 'orbit' ? Math.sin(v * 13) * .02 : Math.cos(v * 7 + u * 2) * .015;
             const twist = v + Math.sin(u * 2 + t) * .3;
-            const p = project((radius + (tube + ripple) * Math.cos(twist)) * Math.cos(u),
-              (radius + (tube + ripple) * Math.cos(twist)) * Math.sin(u),
-              tube * Math.sin(twist) + Math.sin(u * 3 + t * .6) * (mode === 'orbit' ? .08 : .2));
+            const latitude = j / rows * Math.PI;
+            const silk = .96 + .105 * Math.sin(u * 5 + latitude * 7 + t + phase) * Math.sin(latitude) + energy * .08;
+            const p = mode === 'aurora'
+              ? project(silk * Math.sin(latitude) * Math.cos(u), silk * Math.cos(latitude),
+                silk * Math.sin(latitude) * Math.sin(u))
+              : project((radius + (tube + ripple) * Math.cos(twist)) * Math.cos(u),
+                (radius + (tube + ripple) * Math.cos(twist)) * Math.sin(u), tube * Math.sin(twist) + Math.sin(u * 3 + t * .6) * .08);
             ring.push(p);
           }
           points.push(ring);
@@ -81,7 +122,10 @@ const DashboardVisualizer = (() => {
         quads.sort((a, b) => b.z - a.z);
         for (const { p, j, k } of quads) {
           const u = k / cols * Math.PI * 2, v = j / rows * Math.PI * 2;
-          const nx = Math.cos(v) * Math.cos(u), ny = Math.cos(v) * Math.sin(u), nz = Math.sin(v);
+          const latitude = j / rows * Math.PI;
+          const nx = mode === 'aurora' ? Math.sin(latitude) * Math.cos(u) : Math.cos(v) * Math.cos(u);
+          const ny = mode === 'aurora' ? Math.cos(latitude) : Math.cos(v) * Math.sin(u);
+          const nz = mode === 'aurora' ? Math.sin(latitude) * Math.sin(u) : Math.sin(v);
           const ry = ny * Math.cos(ax) - nz * Math.sin(ax), rz = ny * Math.sin(ax) + nz * Math.cos(ax);
           const rx = nx * Math.cos(az) - ry * Math.sin(az);
           const lit = Math.max(0, -rx * .5 - ry * .6 - rz * .5);
@@ -89,7 +133,10 @@ const DashboardVisualizer = (() => {
           const shine = Math.min(1, .05 + lit * .88 + specular);
           const rib = mode === 'orbit' && j % 3 === 0 ? .68 : 1;
           const warm = Math.pow(Math.max(0, Math.cos(u + 1.5)), 8) * .45;
-          const r = (32 + shine * 196 + warm * 39) * rib, g = (71 + shine * 171 - warm * 24) * rib, b = (57 + shine * 148 - warm * 39) * rib;
+          const stripe = mode === 'aurora' ? .86 + Math.sin(j * .8 + k * .07) * .14 : 1;
+          const r = (41 + shine * 176 + warm * 50) * rib * stripe;
+          const g = (45 + shine * 146 + warm * 16) * rib * stripe;
+          const b = (85 + shine * 166 - warm * 30) * rib * stripe;
           ctx.fillStyle = `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
           ctx.beginPath(); ctx.moveTo(p[0][0], p[0][1]);
           for (let n = 1; n < p.length; n++) ctx.lineTo(p[n][0], p[n][1]);
@@ -104,11 +151,11 @@ const DashboardVisualizer = (() => {
             const p = project(Math.cos(a) * r, Math.sin(a) * r * .68, Math.sin(a + t) * .15);
             if (!k) ctx.moveTo(p[0], p[1]); else ctx.lineTo(p[0], p[1]);
           }
-          ctx.strokeStyle = `rgba(220,177,116,${.27 - j * .07})`; ctx.lineWidth = Math.max(.6, w / 1600); ctx.stroke();
+          ctx.strokeStyle = `rgba(211,182,246,${.27 - j * .07})`; ctx.lineWidth = Math.max(.6, w / 1600); ctx.stroke();
         }
       }
       const veil = ctx.createLinearGradient(0, 0, 0, h);
-      veil.addColorStop(0, '#0d18151a'); veil.addColorStop(.6, '#0d181500'); veil.addColorStop(1, '#0b171b99');
+      veil.addColorStop(0, '#11101c1a'); veil.addColorStop(.6, '#11101c00'); veil.addColorStop(1, '#11111d66');
       ctx.fillStyle = veil; ctx.fillRect(0, 0, w, h);
     }
     function loop(stamp) {

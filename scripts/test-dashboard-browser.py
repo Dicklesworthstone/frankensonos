@@ -12,7 +12,7 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['dashboard-core.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'dashboard-session.js', 'dashboard.js']
+SCRIPTS = ['dashboard-core.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
   writes: [], calls: [], feeds: [], offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
@@ -207,7 +207,7 @@ def main():
         preview.locator('[data-mode="aurora"]').click()
         checks.append('three genuinely different rendered modes and reduced-motion default')
         preview.locator('#theme').click()
-        assert preview.evaluate('document.documentElement.dataset.theme')=='dark'
+        assert preview.evaluate('document.documentElement.dataset.theme')=='light'
         preview.locator('#theme').click()
         preview.locator('#immerse').click()
         assert 'immersive' in preview.locator('#stage').get_attribute('class')
@@ -227,12 +227,15 @@ def main():
         checks.append('microphone fallback without imaginary audio analysis')
         if args.screenshots_dir:
             preview.screenshot(path=str(args.screenshots_dir/'listening-room-desktop.png'))
-            preview.locator('#theme').click();preview.screenshot(path=str(args.screenshots_dir/'listening-room-dark.png'));preview.locator('#theme').click()
+            preview.locator('#theme').click();preview.screenshot(path=str(args.screenshots_dir/'listening-room-light.png'));preview.locator('#theme').click()
             preview.locator('#scene-section').scroll_into_view_if_needed();preview.screenshot(path=str(args.screenshots_dir/'listening-room-scenes.png'));preview.evaluate('window.scrollTo(0,0)')
         for width in [1536,1280,1050,820,768,600,390,320]:
             preview.set_viewport_size({'width':width,'height':900});preview.wait_for_timeout(100)
             assert not preview.evaluate('document.documentElement.scrollWidth>innerWidth'),width
-            if width<=820: assert preview.locator('#volume-up').is_visible(),width
+            if width<=820:
+                preview.locator('#toggle-volume').click()
+                assert preview.locator('#volume-up').is_visible(),width
+                preview.locator('#toggle-volume').click()
             if args.screenshots_dir and width==390:preview.screenshot(path=str(args.screenshots_dir/'listening-room-mobile.png'),full_page=True)
         checks.append('eight responsive widths; group volume remains available on mobile')
         assert not errors,errors

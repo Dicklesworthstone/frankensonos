@@ -48,6 +48,14 @@
         track: index === 0 ? { uri: 'demo:movement2', title: 'II. Glass & Rain', creator: 'Adrian Vale · Northlight Ensemble', album: 'Rooms of Memory', position_secs: 154, duration_secs: 486, queue_position: 2 }
           : index === 1 ? { uri: 'demo:terrace', title: 'After Hours', creator: 'Mira Sol', album: 'Side Streets', position_secs: 54, duration_secs: 273 } : null };
     }
+    if (url.includes('/queue?')) {
+      const zone = fixtureZones.find((z) => url.includes(encodeURIComponent(C.key(z))));
+      const offset = Number(new URLSearchParams(url.split('?')[1]).get('offset'));
+      const titles = ['I. Still Water', 'II. Glass & Rain', 'III. First Light', 'Kind of Somewhere', 'The Long Way Home'];
+      return { zone: zone.coordinator_room, total: titles.length, playing: zone === fixtureZones[0] ? 2 : null,
+        revision: 'fictional-queue', items: titles.slice(offset, offset + 40).map((title, n) => ({ position: offset + n + 1,
+          title, creator: offset + n < 3 ? 'Adrian Vale · Northlight Ensemble' : offset + n === 3 ? 'Mira Sol' : 'Canopy', uri: `demo:queued${offset + n}` })) };
+    }
     if (url.endsWith('/dj')) {
       const zone = fixtureZones.find((z) => url.includes(encodeURIComponent(C.key(z))));
       const running = zone === fixtureZones[0];
@@ -68,7 +76,7 @@
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   let active = !document.hidden, disposed = false, immersive = false, lastFocus = null, motionPaused = reduced.matches;
   let artKey = '', visualKey = '', roomKey = '', mapKey = '', sessionKey = '', sceneKey = '', reviewed = null, selectedKey = '';
-  let controller, session, timer = null, clockTimer = null, source = null, runningRead = false, pending = false, explicit = false;
+  let workspace, controller, session, timer = null, clockTimer = null, source = null, runningRead = false, pending = false, explicit = false;
   let timerDue = 0, reviewReading = false, retryAt = 0, wait = 15000, searchTimer = null, historyVersion = 0, historyRunning = false;
   const renderer = DashboardVisualizer.create($('visualizer'), { reduced: reduced.matches });
   const audio = DashboardAudio.create({ changed(s) {
@@ -80,15 +88,18 @@
   } });
   controller = C.model({ call, demo, changed: render });
   session = S.model({ call, controller, demo, changed: renderSession });
+  workspace = DashboardWorkspace.create({ call, controller, session, el, icon, openSearch,
+    native: (...args) => native(...args), immerse });
   const resize = () => { const box = $('stage').getBoundingClientRect(); renderer.resize(box.width, box.height, devicePixelRatio || 1); };
   const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null;
   observer?.observe($('stage')); window.addEventListener('resize', resize);
   function theme(value) {
     document.documentElement.dataset.theme = value;
     $('theme').setAttribute('aria-label', `Switch to ${value === 'dark' ? 'light' : 'dark'} appearance`);
+    $('theme').querySelector('use').setAttribute('href', value === 'dark' ? '#i-sun' : '#i-moon');
     setting('theme', value);
   }
-  theme(setting('theme') === 'dark' ? 'dark' : 'light');
+  theme(setting('theme') === 'light' ? 'light' : 'dark');
   $('theme').addEventListener('click', () => theme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
   function chooseMode(value) {
     if (!DashboardVisualizer.MODES.includes(value)) return;
@@ -97,6 +108,10 @@
   }
   for (const b of document.querySelectorAll('[data-mode]')) b.addEventListener('click', () => chooseMode(b.dataset.mode));
   chooseMode(setting('mode') || 'aurora');
+  for (const id of ['art', 'dock-art']) {
+    $(id).addEventListener('load', () => { if ($(id).getAttribute('src') === artKey) $(id).hidden = false; });
+    $(id).addEventListener('error', () => { $(id).hidden = true; });
+  }
   function motion() {
     renderer.pause(motionPaused); $('motion').textContent = !renderer.supported ? 'Canvas unavailable' : motionPaused ? 'Resume motion' : 'Pause motion';
     $('motion').setAttribute('aria-pressed', String(motionPaused)); $('motion').disabled = !renderer.supported;
@@ -108,8 +123,8 @@
     if (value === immersive) return;
     immersive = value; if (value) lastFocus = document.activeElement;
     $('stage').classList.toggle('immersive', value); document.body.classList.toggle('is-immersive', value); $('exit-immerse').hidden = !value;
-    for (const n of document.querySelectorAll('.sidebar,.topbar,.greeting,.demo-banner,#summary,#error,#room-section,.intelligence-column,.lower-grid,.recent-section,.page-footer,.player-dock,.outcome')) n.inert = value;
-    renderer.immersive(value); resize();
+    for (const n of document.querySelectorAll('.sidebar,.topbar,.greeting,.demo-banner,#summary,#error,#room-section,.intelligence-column,.lower-grid,.recent-section,.page-footer,.player-dock,.outcome,.mobile-nav')) n.inert = value;
+    workspace?.immerse(value); renderer.immersive(value); resize();
     if (value) {
       $('exit-immerse').focus();
       try { Promise.resolve($('stage').requestFullscreen?.()).catch(() => {}); } catch (_) { /* Full-window view remains. */ }
@@ -123,7 +138,7 @@
   document.addEventListener('fullscreenchange', () => { if (immersive && !document.fullscreenElement) immerse(false); });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && immersive) { e.preventDefault(); immerse(false); }
-    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && !immersive && !$('review-dialog').open) { e.preventDefault(); openSearch(); }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k' && !immersive && !document.querySelector('dialog[open]')) { e.preventDefault(); openSearch(); }
     if (immersive && e.key === 'Tab') {
       const nodes = [...$('stage').querySelectorAll('button:not(:disabled), summary')].filter((n) => !n.hidden && n.getClientRects().length);
       if (e.shiftKey && document.activeElement === nodes[0]) { e.preventDefault(); nodes.at(-1)?.focus(); }
@@ -145,7 +160,7 @@
     $('volume-down').disabled = $('volume-up').disabled = !can || !Number.isInteger(volume);
     for (const b of document.querySelectorAll('[data-command]')) {
       b.disabled = !can || !hasTrack;
-      if (b.dataset.command === 'toggle') { b.querySelector('use').setAttribute('href', playing ? '#i-pause' : '#i-play'); b.setAttribute('aria-label', $('play').getAttribute('aria-label')); }
+      if (b.dataset.command === 'toggle') { b.querySelector('use').setAttribute('href', playing ? '#i-pause' : '#i-play'); b.setAttribute('aria-label', $('play').getAttribute('aria-label')); const label = b.querySelector('[data-transport-label]'); if (label) label.textContent = playing ? 'Pause' : 'Play'; }
     }
     const d = session?.state, sessionReady = d?.dj && d.target === controller.state.selected && !d.loading && active && (demo || can);
     for (const id of ['like', 'dislike', 'skip-work']) $(id).disabled = !sessionReady || !d.dj.running || !d.dj.now;
@@ -173,10 +188,10 @@
     $('dock-title').textContent = track?.title || 'Your next listen is waiting'; $('dock-target').textContent = item ? `${item.zone.members.join(' + ')} · ${item.zone.household}` : 'Choose a listening group';
     $('dock-title').title = $('dock-title').textContent; $('dock-target').title = $('dock-target').textContent;
     const art = !demo && track ? `/art?${new URLSearchParams({ zone: selected, v: C.hash(`${track.uri}|${track.title}`).toString(36) })}` : '';
-    if (art !== artKey) { artKey = art; $('art').hidden = true; if (art) $('art').src = art; else $('art').removeAttribute('src'); }
+    if (art !== artKey) { artKey = art; for (const id of ['art', 'dock-art']) { $(id).hidden = true; if (art) $(id).src = art; else $(id).removeAttribute('src'); } }
     const visual = `${selected}|${track?.uri}|${item?.fresh && item?.state?.transport_state}`;
     if (visual !== visualKey) { visualKey = visual; renderer.track(C.hash(track?.uri || selected), item?.fresh && item?.state?.transport_state === 'playing'); }
-    renderRooms(state); renderMap(state); renderHero(); timing(); controls();
+    renderRooms(state); renderMap(state); renderHero(); timing(); controls(); workspace?.observe(state);
     if (selected !== selectedKey) { selectedKey = selected; sessionKey = ''; queueMicrotask(() => { if (!disposed && active) void session.load(); }); }
   }
   function renderHero() {
@@ -412,18 +427,18 @@
     feed.onerror = () => { if (current()) controller.connection(false); };
     for (const name of C.EVENTS) feed.addEventListener(name, () => { if (current()) kick(); });
   }
-  function kick(user = false) { schedule(user ? 0 : 350, user); }
+  function kick(user = false) { workspace?.invalidate(); schedule(user ? 0 : 350, user); }
   function suspend() {
     active = false; ++historyVersion;
     clearTimeout(timer); timer = null; clearTimeout(clockTimer); clockTimer = null; clearTimeout(searchTimer); searchTimer = null;
     pending = explicit = false; if (source) source.close(); source = null;
     audio.stop('Microphone stopped while hidden. Enable it again explicitly to resume.');
-    session.suspend(); controller.suspend(); renderer.visible(false);
+    workspace?.suspend(); session.suspend(); controller.suspend(); renderer.visible(false);
   }
   function clockLoop() { if (!active || disposed) return; timing(); controls(); clockTimer = setTimeout(clockLoop, 1000); }
   function resume() {
     if (document.hidden || disposed) return;
-    active = true; controller.resume(); session.resume(); renderer.visible(true); connect(); kick();
+    active = true; workspace?.resume(); controller.resume(); session.resume(); renderer.visible(true); connect(); kick();
     if (clockTimer === null) clockLoop(); void session.catalog(); void history();
   }
   document.addEventListener('visibilitychange', () => document.hidden ? suspend() : resume());
