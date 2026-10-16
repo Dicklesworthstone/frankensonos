@@ -702,13 +702,7 @@ impl Surface {
                 sleep.volume_changed(&households, &coordinator);
             }
         }
-        let regroups = matches!(
-            command,
-            Command::Join { .. }
-                | Command::Leave { .. }
-                | Command::Move { .. }
-                | Command::Party { .. }
-        );
+        let regroups = regroups(&command);
         // Already satisfied requests change nothing and are not logged.
         if self.log.is_none() || matches!(command, Command::Nothing { .. }) {
             let result = self.execute_following(&households, &guard, &command);
@@ -792,9 +786,14 @@ impl Surface {
                 notes: Vec::new(),
             });
         }
+        // `ungroup everywhere`: the cached zones are stale once it has run.
+        let regroups = commands.iter().any(regroups);
         // No action log: the per-command path is enough.
         if self.log.is_none() {
             let outcome = self.execute_set(&households, &guard, &commands);
+            if regroups {
+                self.invalidate();
+            }
             if let Err(f) = &outcome {
                 self.notice(f);
             }
@@ -814,6 +813,9 @@ impl Surface {
         let (snaps, missed) =
             actions::capture_zones(&*self.transport, &households, &targets, self.now());
         let result = self.execute_set(&households, &guard, &commands);
+        if regroups {
+            self.invalidate();
+        }
         if let Err(f) = &result {
             self.notice(f);
         }
@@ -1687,6 +1689,14 @@ fn log_entry(
 
 /// The coordinators of the groups `command` changes (a join changes both
 /// the member's old group and the one it joins).
+/// Whether `command` changes which rooms play together.
+fn regroups(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Join { .. } | Command::Leave { .. } | Command::Move { .. } | Command::Party { .. }
+    )
+}
+
 fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
     let group_of = |p: &PlayerId| {
         households

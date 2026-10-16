@@ -3,7 +3,8 @@
 //! sockets, the way the HTTP API and MCP tools drive it.
 
 use fsonos_api::plan::{
-    TransportAction, plan_group, plan_play, plan_transport_set, plan_volume, plan_volume_set,
+    TransportAction, plan_group, plan_play, plan_transport_set, plan_ungroup_set, plan_volume,
+    plan_volume_set,
 };
 use fsonos_api::surface::{Surface, Survey};
 use fsonos_api::{GroupRequest, PlayRequest, VolumeRequest, ZoneRequest};
@@ -198,6 +199,45 @@ fn undo_restores_the_uri_and_the_group() {
         Some(&office),
         "{report:?}"
     );
+    sim.shutdown();
+}
+
+#[test]
+fn ungrouping_everywhere_is_seen_by_the_next_zones_read() {
+    let sim = sim();
+    let s = surface(&sim);
+    s.control(&agent(), "group", |h| {
+        plan_group(
+            h,
+            &GroupRequest {
+                zone: "Office".into(),
+                to: "Kitchen".into(),
+            },
+        )
+    })
+    .unwrap();
+    // This read caches the grouped survey.
+    let grouped = s.zones(&agent()).unwrap();
+    assert_eq!(grouped.len(), 1, "{grouped:?}");
+    assert_eq!(grouped[0].members.len(), 2, "{grouped:?}");
+
+    s.control_set(&agent(), "ungroup", |h| {
+        plan_ungroup_set(
+            h,
+            &ZoneRequest {
+                zone: "everywhere".into(),
+            },
+        )
+    })
+    .unwrap();
+    assert_eq!(now(&sim)[0].groups.len(), 2, "the speakers regrouped");
+    let apart = s.zones(&agent()).unwrap();
+    assert_eq!(
+        apart.len(),
+        2,
+        "the next read is not the cached survey: {apart:?}"
+    );
+    assert!(apart.iter().all(|z| z.members.len() == 1), "{apart:?}");
     sim.shutdown();
 }
 
