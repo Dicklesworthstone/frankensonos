@@ -23,6 +23,7 @@ const MAX_FILE: u64 = 1024 * 1024;
 /// The original file is read once successfully. A failed read never grants
 /// permission to replace it with an empty snapshot. Unresolved timers stay in
 /// every subsequent snapshot alongside newly armed ones.
+#[allow(clippy::struct_excessive_bools)] // independent conditions, each with its own transitions
 pub(super) struct State {
     loaded: bool,
     pending: HashMap<PlayerId, SleepTimer>,

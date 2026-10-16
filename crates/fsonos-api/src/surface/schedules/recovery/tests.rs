@@ -211,7 +211,7 @@ fn failed_startup_reads_survive_another_restart_on_both_generations() {
         h.replies.fail.lock().unwrap().insert(h.ip("RecoverA"));
         let unavailable = h.surface();
         assert_eq!(unavailable.adopt_sleep_timers(), 0);
-        assert_eq!(h.saved(), [original.clone()]);
+        assert_eq!(h.saved(), std::slice::from_ref(&original));
         assert!(sleep(&unavailable).timers.all().is_empty());
         drop(unavailable);
         h.replies.fail.lock().unwrap().clear();
@@ -256,7 +256,7 @@ fn discovery_recovery_rearms_on_a_scheduler_worker_without_rewriting_the_speaker
     let rooms = std::mem::take(&mut *h.rooms.lock().unwrap());
     let surface = h.surface();
     assert_eq!(surface.adopt_sleep_timers(), 0);
-    assert_eq!(h.saved(), [original.clone()]);
+    assert_eq!(h.saved(), std::slice::from_ref(&original));
     *h.rooms.lock().unwrap() = rooms;
     sleep(&surface).writing.lock().unwrap().next = Instant::now();
     let before = h.sim.soap_log().len();
@@ -657,7 +657,7 @@ fn changing_volume_before_the_first_recovery_read_preserves_a_future_timer() {
         assert!(!state.dirty, "volume is not a timer snapshot mutation");
         assert!(state.superseded.is_empty());
         drop(state);
-        assert_eq!(h.saved(), [original.clone()]);
+        assert_eq!(h.saved(), std::slice::from_ref(&original));
         assert_eq!(surface.adopt_sleep_timers(), 1);
         assert_eq!(sleep(&surface).timers.all(), [original]);
     }
@@ -695,7 +695,10 @@ fn a_future_timer_can_finish_verification_across_a_volume_adjustment() {
     change_volume(&h, &surface, "RecoverA");
     resume.send(()).unwrap();
     assert_eq!(worker.join().unwrap(), 1);
-    assert_eq!(sleep(&surface).timers.all(), [original.clone()]);
+    assert_eq!(
+        sleep(&surface).timers.all(),
+        std::slice::from_ref(&original)
+    );
     assert_eq!(h.saved(), [original]);
 }
 
@@ -706,7 +709,10 @@ fn volume_changes_preserve_an_already_adopted_future_timer_too() {
     let surface = h.surface();
     assert_eq!(surface.adopt_sleep_timers(), 1);
     change_volume(&h, &surface, "RecoverA");
-    assert_eq!(sleep(&surface).timers.all(), [original.clone()]);
+    assert_eq!(
+        sleep(&surface).timers.all(),
+        std::slice::from_ref(&original)
+    );
     assert_eq!(h.saved(), [original]);
     assert!(!sleep(&surface).writing.lock().unwrap().dirty);
 }
@@ -757,7 +763,7 @@ fn stopping_one_daemon_does_not_retire_the_next_daemons_pending_recovery() {
         let scheduler = Scheduler::new(&surface);
         scheduler.shut_down(Duration::ZERO);
         assert_eq!(surface.adopt_sleep_timers(), 0);
-        assert_eq!(h.saved(), [original.clone()]);
+        assert_eq!(h.saved(), std::slice::from_ref(&original));
     }
     let restarted = h.surface();
     assert_eq!(restarted.adopt_sleep_timers(), 1);

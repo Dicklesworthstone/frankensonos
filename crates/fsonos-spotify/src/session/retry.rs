@@ -72,7 +72,7 @@ impl Cooldown {
 
 fn now(cx: &Cx) -> Time {
     cx.timer_driver()
-        .or_else(|| Cx::with_current(|ambient| ambient.timer_driver()).flatten())
+        .or_else(|| Cx::with_current(Cx::timer_driver).flatten())
         .map_or_else(wall_now, |timer| timer.now())
 }
 

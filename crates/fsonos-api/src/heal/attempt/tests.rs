@@ -31,6 +31,7 @@ impl Transport for Replies {
     }
 }
 
+#[allow(clippy::unnecessary_wraps)] // a scripted reply, beside refused()
 fn ack(action: &str) -> Result<String, ProtoError> {
     Ok(format!(
         "<Envelope><Body><{action}Response/></Body></Envelope>"

@@ -20,7 +20,7 @@ impl Pending {
     fn reserve(sleep: &Arc<Sleep>, ticket: SleepRun) -> Option<Self> {
         if sleep
             .fades_in_flight
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 (count < MAX_FADES).then_some(count + 1)
             })
             .is_err()

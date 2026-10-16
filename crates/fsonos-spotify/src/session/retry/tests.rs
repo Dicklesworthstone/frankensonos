@@ -107,7 +107,7 @@ struct Reply {
     body: String,
     after: Option<String>,
     stall: Duration,
-    drop_reply: bool,
+    hang_up: bool,
 }
 
 impl Reply {
@@ -121,7 +121,7 @@ impl Reply {
             },
             after: None,
             stall: Duration::ZERO,
-            drop_reply: false,
+            hang_up: false,
         }
     }
 
@@ -215,7 +215,7 @@ impl Server {
                     .unwrap();
                 log.lock().unwrap().push(read_request(&mut stream));
                 let reply = replies.pop_front().unwrap_or_else(|| Reply::status(418));
-                if reply.drop_reply {
+                if reply.hang_up {
                     continue;
                 }
                 let after = reply
@@ -306,7 +306,7 @@ fn transient_status_recovers_with_the_same_authorized_get() {
 #[test]
 fn a_lost_read_response_can_be_requested_again() {
     let lost = Reply {
-        drop_reply: true,
+        hang_up: true,
         ..Reply::status(200)
     };
     let server = Server::start(vec![lost, Reply::status(200)]);

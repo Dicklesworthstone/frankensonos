@@ -73,8 +73,8 @@ pub(super) fn run_schedules<Tz: TimeZone>(
     now: DateTime<Utc>,
     tz: &Tz,
 ) -> Vec<Ran> {
-    let schedules = match scheduler.surface.load_schedules() {
-        Ok(schedules) => schedules,
+    let saved = match scheduler.surface.load_schedules() {
+        Ok(saved) => saved,
         Err(failure) => {
             if failure.code != ErrorCode::NotImplemented {
                 tracing::warn!("schedules not read: {}", failure.detail);
@@ -83,8 +83,8 @@ pub(super) fn run_schedules<Tz: TimeZone>(
         }
     };
     let mut ran = Vec::new();
-    for (id, tick) in core_schedule::due(&schedules, now, tz, scheduler.grace) {
-        let Some(schedule) = schedules.iter().find(|schedule| schedule.id == id).cloned() else {
+    for (id, tick) in core_schedule::due(&saved, now, tz, scheduler.grace) {
+        let Some(schedule) = saved.iter().find(|schedule| schedule.id == id).cloned() else {
             continue;
         };
         match tick {

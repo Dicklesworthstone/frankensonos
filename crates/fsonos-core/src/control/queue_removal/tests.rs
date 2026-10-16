@@ -51,7 +51,7 @@ fn browse(revision: u32, uris: &[&str]) -> String {
              <dc:title>Track {index}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class>\
              <res protocolInfo=\"test:*:audio/flac:*\">{}</res></item>", xml_escape(uri)
         )
-    }).collect::<String>();
+    }).collect::<Vec<_>>().concat();
     let didl = format!(
         "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" \
          xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \

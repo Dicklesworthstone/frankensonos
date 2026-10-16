@@ -248,7 +248,7 @@ fn a_queued_worker_cannot_pause_a_replacement_timer() {
             &h.houses,
             &h.sleep().fader,
             &id,
-            Duration::from_secs(1200),
+            Duration::from_mins(20),
             h.now,
         )
         .unwrap();
