@@ -1,0 +1,22 @@
+#!/bin/sh
+# Opt-in pre-commit check: refuse a commit whose staged Rust files are not
+# rustfmt-formatted. Enable with `git config core.hooksPath scripts/hooks`.
+# rustfmt only formats (it does not compile), so this runs on any machine
+# with the pinned toolchain's rustfmt, including the owner's Mac.
+#
+# The staged content is checked (not the working tree), through stdin; with
+# stdin `rustfmt --check` exits 0 even on a difference, so its "Diff in"
+# output is what decides.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+if ! command -v rustfmt >/dev/null 2>&1; then
+    echo "pre-commit: rustfmt not found; skipping the format check" >&2
+    exit 0
+fi
+status=0
+for file in $(git diff --cached --name-only --diff-filter=ACM -- '*.rs'); do
+    if git show ":$file" | rustfmt --edition 2024 --check 2>&1 | grep -q '^Diff in'; then
+        echo "pre-commit: $file is not formatted; run: rustfmt --edition 2024 $file" >&2
+        status=1
+    fi
+done
+exit $status
