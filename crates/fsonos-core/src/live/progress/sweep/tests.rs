@@ -582,4 +582,5 @@ fn a_completed_sweep_stays_invalid_after_an_offline_player_returns() {
     f.finish();
 }
 
+mod eventless;
 mod streaming;

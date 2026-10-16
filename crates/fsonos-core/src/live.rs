@@ -496,6 +496,9 @@ impl Engine {
                 self.publish(&m, events);
             }
             if m.sink.is_none() {
+                // A callback outage must not suspend bounded read recovery.
+                // There is no callback backlog to drain before publishing.
+                progress::recover(&self, &mut m);
                 std::thread::sleep(TICK);
                 continue;
             }

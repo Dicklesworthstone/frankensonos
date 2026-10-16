@@ -98,14 +98,19 @@ pub(super) fn survey(engine: &Engine, model: &mut Model) -> Vec<LiveEvent> {
     if engine.stop.load(Ordering::Acquire) {
         return Vec::new();
     }
-    if model.sink.is_some() && model.surveyed_at.is_some() {
-        // The event pump applies completed parts after buffered notifications.
-        // Eventless recovery retains its existing synchronous fallback, and so
-        // does a fresh model's first survey: no event intake has begun yet,
-        // and the households it publishes are what readiness waits for.
+    if model.surveyed_at.is_some() {
+        // Both the callback pump and the eventless loop drain completed reads.
+        // A slow renderer must not stall recovery just because callbacks are
+        // unavailable. The existing survey schedule still owns the cadence.
         super::progress::request_survey(model);
         return Vec::new();
     }
+    initial(engine, model)
+}
+
+/// Bootstrap still collects state before publishing the households that
+/// readiness waits for. Subsequent surveys use the shared bounded workers.
+fn initial(engine: &Engine, model: &mut Model) -> Vec<LiveEvent> {
     let mut events = Vec::new();
     for (player, host) in coordinators(model) {
         let read = read(&engine.via(), host, || engine.stop.load(Ordering::Acquire));
@@ -145,7 +150,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     #[test]
-    fn survey_recovers_unreported_transport_changes_on_both_generations() {
+    fn initial_readback_recovers_transport_changes_on_both_generations() {
         for generation in [1, 2] {
             let builder = SimHousehold::builder();
             let sim = match generation {
@@ -188,7 +193,7 @@ mod tests {
             };
             set_av_transport_uri(&*lan, host, "test:radio", "").unwrap();
             play(&*lan, host).unwrap();
-            let events = survey(&engine, &mut model);
+            let events = initial(&engine, &mut model);
             engine.publish(&model, events);
             let snapshot = engine.snapshot.lock().unwrap();
             let state = snapshot.playback.of(&player).unwrap();
@@ -197,22 +202,22 @@ mod tests {
             // No event listener exists here: these state changes must be
             // recovered through real SOAP reads, not a synthetic NOTIFY.
             pause(&*lan, host).unwrap();
-            let events = survey(&engine, &mut model);
+            let events = initial(&engine, &mut model);
             let expected = Some((Some(TransportState::Playing), TransportState::Paused));
             assert!(events.iter().any(|event| {
                 matches!(event, LiveEvent::Playback { changes, .. } if changes.transport == expected)
             }));
             let state = model.playback.of(&player).unwrap();
             assert_eq!(state.transport, Some(TransportState::Paused));
-            assert!(survey(&engine, &mut model).is_empty());
+            assert!(initial(&engine, &mut model).is_empty());
             play(&*lan, host).unwrap();
-            assert!(!survey(&engine, &mut model).is_empty());
+            assert!(!initial(&engine, &mut model).is_empty());
             stop(&*lan, host).unwrap();
-            assert!(!survey(&engine, &mut model).is_empty());
+            assert!(!initial(&engine, &mut model).is_empty());
             let state = model.playback.of(&player).unwrap();
             assert_eq!(state.transport, Some(TransportState::Stopped));
             engine.stop.store(true, Ordering::Release);
-            assert!(survey(&engine, &mut model).is_empty());
+            assert!(initial(&engine, &mut model).is_empty());
             sim.shutdown();
         }
     }
