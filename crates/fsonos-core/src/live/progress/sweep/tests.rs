@@ -240,8 +240,11 @@ fn both_generations_recover_healthy_rooms_while_one_sweep_is_stalled() {
         wait_for(|| f.transport.gate.entered.load(Ordering::Acquire) == 1);
         wait_for(|| {
             super::super::recover(&f.engine, &mut f.model);
-            f.state(1)
-                .is_some_and(|state| state.position_at(Instant::now()) == Some(41))
+            f.state(1).is_some_and(|state| {
+                state.position_at(Instant::now()) == Some(41)
+                    && state.group_volume == Some(37)
+                    && state.play_mode.as_deref() == Some("NORMAL")
+            })
         });
         assert!(
             f.state(0).is_none(),
@@ -578,3 +581,5 @@ fn a_completed_sweep_stays_invalid_after_an_offline_player_returns() {
     assert!(f.model.progress.sweep.pending.is_empty());
     f.finish();
 }
+
+mod streaming;

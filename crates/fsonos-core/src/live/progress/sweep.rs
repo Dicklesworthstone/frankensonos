@@ -14,8 +14,8 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{Generation, HouseholdId, PlayMode, PlayerId, ZoneGroup};
 use std::collections::{HashSet, VecDeque};
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -90,32 +90,50 @@ fn one<T>(stopping: &impl Fn() -> bool, read: impl FnOnce() -> Result<T, ProtoEr
     Ok((!stopping()).then_some(value))
 }
 
-fn read(transport: &dyn Transport, target: &Target, stopping: impl Fn() -> bool) -> Sample {
-    let host = target.host;
-    let levels = observation::room_levels(transport, host, &stopping);
-    if target.group.is_none() {
-        return Sample {
-            levels,
+impl Default for Sample {
+    fn default() -> Self {
+        Self {
+            levels: Ok(None),
             transport: Ok(None),
             group_volume: Ok(None),
             mode: Ok(None),
-        };
+        }
     }
-    // Do not use `?` between services: one unavailable SOAP service must not
-    // suppress the other services' valid results. Check cancellation per call.
-    Sample {
-        levels,
-        transport: observation::read(transport, host, &stopping),
-        group_volume: one(&stopping, || get_group_volume(transport, host)),
-        mode: one(&stopping, || get_play_mode(transport, host)),
+}
+
+/// A fixed, single-use slot for each service, not an unbounded message queue.
+/// Never hold the mailbox lock while reading the network. The model can take
+/// completed services even while this player's next service is still blocked.
+fn read(
+    transport: &dyn Transport,
+    target: &Target,
+    stopping: impl Fn() -> bool,
+    sample: &Mutex<Sample>,
+) {
+    let host = target.host;
+    let levels = observation::room_levels(transport, host, &stopping);
+    sample.lock().unwrap_or_else(PoisonError::into_inner).levels = levels;
+    if target.group.is_none() || stopping() {
+        return;
     }
+    // One unavailable service does not suppress the other services' results.
+    let playback = observation::read(transport, host, &stopping);
+    sample.lock().unwrap_or_else(PoisonError::into_inner).transport = playback;
+    let volume = one(&stopping, || get_group_volume(transport, host));
+    sample
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .group_volume = volume;
+    let mode = one(&stopping, || get_play_mode(transport, host));
+    sample.lock().unwrap_or_else(PoisonError::into_inner).mode = mode;
 }
 
 struct Pending {
     target: Target,
     stamps: Stamps,
     cancelled: Arc<AtomicBool>,
-    thread: JoinHandle<Sample>,
+    sample: Arc<Mutex<Sample>>,
+    thread: JoinHandle<()>,
 }
 
 #[derive(Default)]
@@ -139,19 +157,6 @@ impl Sweep {
         for read in &self.pending {
             read.cancelled.store(true, Ordering::Release);
         }
-    }
-
-    fn ready(&mut self) -> Vec<Pending> {
-        let mut ready = Vec::new();
-        let mut index = 0;
-        while index < self.pending.len() {
-            if self.pending[index].thread.is_finished() {
-                ready.push(self.pending.swap_remove(index));
-            } else {
-                index += 1;
-            }
-        }
-        ready
     }
 }
 
@@ -214,18 +219,24 @@ pub(super) fn start_next(engine: &Engine, model: &mut Model) -> bool {
     let cancelled = Arc::new(AtomicBool::new(false));
     let cancellation = Arc::clone(&cancelled);
     let at = target.clone();
+    let sample = Arc::new(Mutex::new(Sample::default()));
+    let output = Arc::clone(&sample);
     let spawned = std::thread::Builder::new()
         .name("fsonos-survey-read".into())
         .spawn(move || {
-            read(&*transport, &at, || {
-                stopping.load(Ordering::Acquire) || cancellation.load(Ordering::Acquire)
-            })
+            read(
+                &*transport,
+                &at,
+                || stopping.load(Ordering::Acquire) || cancellation.load(Ordering::Acquire),
+                &output,
+            );
         });
     match spawned {
         Ok(thread) => model.progress.sweep.pending.push(Pending {
             target,
             stamps,
             cancelled,
+            sample,
             thread,
         }),
         Err(error) => {
@@ -257,53 +268,75 @@ fn record(events: &mut Vec<LiveEvent>, player: &PlayerId, changes: Changes) {
     }
 }
 
+fn apply(model: &mut Model, pending: &mut Pending, sample: Sample, events: &mut Vec<LiveEvent>) {
+    let player = &pending.target.player;
+    let now = Stamps::of(&model.playback, player);
+    // Transport and settings share a stamp. Only our own accepted parts may
+    // advance the expected stamp; an intervening event still fences settings.
+    let av_current = now.transport == pending.stamps.transport;
+    if let Some((volume, mute)) = accepted(
+        sample.levels,
+        now.rendering == pending.stamps.rendering,
+        "RenderingControl",
+    ) {
+        let changes = model.playback.apply_room_levels(player, volume, mute);
+        record(events, player, changes);
+    }
+    if let Some((sample, observed)) = accepted(sample.transport, av_current, "AVTransport") {
+        let changes = model.playback.apply_observation(player, &sample, observed);
+        pending.stamps.transport = model
+            .playback
+            .observation_stamp(player, EventSource::AvTransport);
+        // A corrected position is observable even without a track change.
+        events.push(LiveEvent::Playback {
+            player: player.clone(),
+            changes,
+        });
+    }
+    if let Some(volume) = accepted(
+        sample.group_volume,
+        now.group == pending.stamps.group,
+        "GroupRenderingControl",
+    ) {
+        let changes = model.playback.apply_group_volume(player, volume);
+        record(events, player, changes);
+    }
+    if let Some(mode) = accepted(sample.mode, av_current, "transport settings") {
+        let changes = model.playback.apply_play_mode(player, mode);
+        pending.stamps.transport = model
+            .playback
+            .observation_stamp(player, EventSource::AvTransport);
+        record(events, player, changes);
+    }
+}
+
 pub(super) fn complete(engine: &Engine, model: &mut Model) {
     invalidate(model);
     if engine.stop.load(Ordering::Acquire) {
         model.progress.sweep.cancel_all();
     }
     let mut events = Vec::new();
-    for pending in model.progress.sweep.ready() {
-        let cancelled = pending.cancelled.load(Ordering::Acquire);
-        let Ok(sample) = pending.thread.join() else {
-            tracing::warn!("survey read worker panicked; retaining live state");
-            continue;
-        };
-        if cancelled || engine.stop.load(Ordering::Acquire) {
-            continue;
+    // Visit each of the at-most-four workers once. Returning unfinished reads
+    // to the vector retains capacity and per-player exclusion, even after all
+    // currently available output was consumed or cancellation was requested.
+    let count = model.progress.sweep.pending.len();
+    for _ in 0..count {
+        let mut pending = model.progress.sweep.pending.remove(0);
+        // Check before taking the mailbox: if finished, all final parts are
+        // visible. A worker finishing after this check is reaped next turn.
+        let finished = pending.thread.is_finished();
+        let sample = std::mem::take(
+            &mut *pending.sample.lock().unwrap_or_else(PoisonError::into_inner),
+        );
+        if !pending.cancelled.load(Ordering::Acquire) && !engine.stop.load(Ordering::Acquire) {
+            apply(model, &mut pending, sample, &mut events);
         }
-        let player = &pending.target.player;
-        let now = Stamps::of(&model.playback, player);
-        // Decide before applying any part: transport and play mode share an
-        // AVTransport stamp, and each accepted read advances that stamp.
-        let av_current = now.transport == pending.stamps.transport;
-        if let Some((volume, mute)) = accepted(
-            sample.levels,
-            now.rendering == pending.stamps.rendering,
-            "RenderingControl",
-        ) {
-            let changes = model.playback.apply_room_levels(player, volume, mute);
-            record(&mut events, player, changes);
-        }
-        if let Some((sample, observed)) = accepted(sample.transport, av_current, "AVTransport") {
-            let changes = model.playback.apply_observation(player, &sample, observed);
-            // A corrected position is observable even without a track change.
-            events.push(LiveEvent::Playback {
-                player: player.clone(),
-                changes,
-            });
-        }
-        if let Some(volume) = accepted(
-            sample.group_volume,
-            now.group == pending.stamps.group,
-            "GroupRenderingControl",
-        ) {
-            let changes = model.playback.apply_group_volume(player, volume);
-            record(&mut events, player, changes);
-        }
-        if let Some(mode) = accepted(sample.mode, av_current, "transport settings") {
-            let changes = model.playback.apply_play_mode(player, mode);
-            record(&mut events, player, changes);
+        if finished {
+            if pending.thread.join().is_err() {
+                tracing::warn!("survey read worker panicked; retaining completed services");
+            }
+        } else {
+            model.progress.sweep.pending.push(pending);
         }
     }
     if !events.is_empty() {
