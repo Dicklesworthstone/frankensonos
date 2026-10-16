@@ -53,16 +53,8 @@ fn eventually(within: Duration, mut probe: impl FnMut() -> bool) -> bool {
     }
 }
 
-/// Reads (`Get*`) sent to players so far: a change that arrives through an
-/// event needs none.
-fn reads(s: &Scenario) -> usize {
-    s.sim_handle().map_or(0, |sim| {
-        sim.soap_log()
-            .iter()
-            .filter(|e| e.action.starts_with("Get"))
-            .count()
-    })
-}
+/// The reads a live model's clock sample makes (fsonos-core live/observation).
+const CLOCK_READS: [&str; 3] = ["GetTransportInfo", "GetMediaInfo", "GetPositionInfo"];
 
 #[test]
 fn serve_heals_around_reboots_regrouping_and_power_loss() {
@@ -199,7 +191,16 @@ fn check_ungrouped(s: &mut Scenario, api: &str) {
         format!("{left:?}"),
     );
     std::thread::sleep(Duration::from_millis(300));
-    let polled = reads(s);
+    // Position is never evented (real players neither), so the live model
+    // reads a clock right after a transport event. The Office refuses those
+    // reads meanwhile: the playing state the API shows can then only have
+    // come from the Office's new subscription.
+    let refused = s.sim_handle().is_some_and(|sim| {
+        CLOCK_READS
+            .iter()
+            .all(|action| sim.upnp_fault("Office", action, 501).is_ok())
+    });
+    let polled = s.sim_handle().map_or(0, |sim| sim.soap_log().len());
     let started = set_av_transport_uri(
         &s.lan(),
         office,
@@ -220,13 +221,22 @@ fn check_ungrouped(s: &mut Scenario, api: &str) {
         seen,
         format!("{started:?} {state}"),
     );
-    let asked = reads(s) - polled;
+    let answered: Vec<String> = s.sim_handle().map_or_else(Vec::new, |sim| {
+        sim.soap_log()[polled..]
+            .iter()
+            .filter(|e| e.room == "Office" && e.action.starts_with("Get") && e.result.is_ok())
+            .map(|e| e.action.clone())
+            .collect()
+    });
+    let cleared = s
+        .sim_handle()
+        .is_some_and(|sim| sim.clear_faults("Office").is_ok());
     s.check(
         "ungrouped",
         "sim",
-        "it came from the Office's new subscription: no player was read",
-        asked == 0,
-        format!("{asked} Get* calls to players"),
+        "it came from the Office's new subscription: no read of the Office was answered",
+        refused && cleared && answered.is_empty(),
+        format!("refused={refused} cleared={cleared} answered={answered:?}"),
     );
 }
 
