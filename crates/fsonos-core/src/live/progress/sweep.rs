@@ -118,7 +118,10 @@ fn read(
     }
     // One unavailable service does not suppress the other services' results.
     let playback = observation::read(transport, host, &stopping);
-    sample.lock().unwrap_or_else(PoisonError::into_inner).transport = playback;
+    sample
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .transport = playback;
     let volume = one(&stopping, || get_group_volume(transport, host));
     sample
         .lock()
@@ -191,9 +194,10 @@ pub(super) fn request(model: &mut Model) {
         // An invalidated read still owns its worker slot, but can no longer
         // satisfy this survey. Keep one replacement queued behind it, even if
         // the player returned to its original address and group in the meantime.
-        let in_flight = sweep.pending.iter().any(|read| {
-            read.target == target && !read.cancelled.load(Ordering::Acquire)
-        });
+        let in_flight = sweep
+            .pending
+            .iter()
+            .any(|read| read.target == target && !read.cancelled.load(Ordering::Acquire));
         if !sweep.queue.contains(&target) && !in_flight {
             sweep.queue.push_back(target);
         }
@@ -331,7 +335,10 @@ pub(super) fn complete(engine: &Engine, model: &mut Model) {
         // visible. A worker finishing after this check is reaped next turn.
         let finished = pending.thread.is_finished();
         let sample = std::mem::take(
-            &mut *pending.sample.lock().unwrap_or_else(PoisonError::into_inner),
+            &mut *pending
+                .sample
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
         );
         if !pending.cancelled.load(Ordering::Acquire) && !engine.stop.load(Ordering::Acquire) {
             apply(model, &mut pending, sample, &mut events);

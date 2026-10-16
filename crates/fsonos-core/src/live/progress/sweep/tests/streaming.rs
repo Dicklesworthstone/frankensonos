@@ -73,13 +73,21 @@ fn completed_services_publish_before_later_replies_on_both_generations() {
             let state = f.state(0).unwrap();
             assert_eq!(state.volume, Some(37));
             assert_eq!(state.mute, Some(true));
-            assert_eq!(state.position_at(Instant::now()), (hold_at >= 8).then_some(41));
+            assert_eq!(
+                state.position_at(Instant::now()),
+                (hold_at >= 8).then_some(41)
+            );
             assert_eq!(state.group_volume, (hold_at == 9).then_some(37));
             assert!(state.play_mode.is_none());
             assert_eq!(f.model.progress.sweep.len(), 1);
             assert!(!f.model.progress.sweep.pending[0].thread.is_finished());
             assert_eq!(
-                f.engine.snapshot.lock().unwrap().playback.of(&f.players[0].0),
+                f.engine
+                    .snapshot
+                    .lock()
+                    .unwrap()
+                    .playback
+                    .of(&f.players[0].0),
                 Some(&state)
             );
             let changes = receive
@@ -102,7 +110,11 @@ fn completed_services_publish_before_later_replies_on_both_generations() {
             assert_eq!(state.group_volume, Some(37));
             let log = f.sim.soap_log();
             assert_eq!(log.len() - before, 9);
-            assert!(log[before..].iter().all(|entry| entry.action.starts_with("Get")));
+            assert!(
+                log[before..]
+                    .iter()
+                    .all(|entry| entry.action.starts_with("Get"))
+            );
             f.finish();
         }
     }
@@ -124,7 +136,12 @@ fn an_intervening_transport_event_fences_later_settings_but_a_volume_event_does_
         };
         f.model
             .playback
-            .apply(&f.players[0].0, source, &notify(source, body), Instant::now())
+            .apply(
+                &f.players[0].0,
+                source,
+                &notify(source, body),
+                Instant::now(),
+            )
             .unwrap();
         drop(release);
         f.drive();
@@ -151,7 +168,12 @@ fn a_newer_room_event_rejects_buffered_levels_without_discarding_transport() {
     let body = "<Volume channel=\"Master\" val=\"59\"/><Mute channel=\"Master\" val=\"0\"/>";
     f.model
         .playback
-        .apply(&f.players[0].0, source, &notify(source, body), Instant::now())
+        .apply(
+            &f.players[0].0,
+            source,
+            &notify(source, body),
+            Instant::now(),
+        )
         .unwrap();
     complete(&f.engine, &mut f.model);
     assert_eq!(f.state(0).unwrap().volume, Some(59));
@@ -176,7 +198,11 @@ fn shutdown_after_partial_publication_keeps_the_worker_slot_until_exit() {
     f.engine.stop.store(true, Ordering::Release);
     complete(&f.engine, &mut f.model);
     assert_eq!(f.model.progress.sweep.len(), 1);
-    assert!(f.model.progress.sweep.pending[0].cancelled.load(Ordering::Acquire));
+    assert!(
+        f.model.progress.sweep.pending[0]
+            .cancelled
+            .load(Ordering::Acquire)
+    );
     drop(release);
     wait_for(|| {
         complete(&f.engine, &mut f.model);

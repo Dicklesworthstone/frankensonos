@@ -19,7 +19,10 @@ fn eventless_sweeps_keep_the_shared_worker_bound_and_do_not_add_polling() {
             f.begin();
             progress::recover(&f.engine, &mut f.model);
         }
-        assert_eq!(f.model.progress.sweep.len() + f.model.progress.reads.len(), 4);
+        assert_eq!(
+            f.model.progress.sweep.len() + f.model.progress.reads.len(),
+            4
+        );
         assert_eq!(f.transport.calls.load(Ordering::Relaxed), 4);
         assert!(f.model.progress.sweep.queue.len() <= f.players.len());
         assert!(f.model.sink.is_none());
@@ -152,7 +155,11 @@ fn the_live_loop_recovers_healthy_rooms_and_stops_during_a_callback_outage() {
         assert!(events.try_iter().any(|event| {
             matches!(event, LiveEvent::Playback { player, .. } if player == healthy)
         }));
-        assert!(f.sim.soap_log()[before..].iter().all(|entry| entry.action.starts_with("Get")));
+        assert!(
+            f.sim.soap_log()[before..]
+                .iter()
+                .all(|entry| entry.action.starts_with("Get"))
+        );
         let calls = transport.slow_calls.load(Ordering::Relaxed);
         let started = Instant::now();
         live.stop();
@@ -183,7 +190,10 @@ fn callbacks_can_be_restored_while_an_eventless_read_is_still_pending() {
         });
         assert!(live.snapshot().last_error.is_none());
         set_volume(&f.sim.lan(), f.players[0].1, 59).unwrap();
-        wait_for(|| live.player(&f.players[0].0).is_some_and(|state| state.volume == Some(59)));
+        wait_for(|| {
+            live.player(&f.players[0].0)
+                .is_some_and(|state| state.volume == Some(59))
+        });
         assert!(!transport.gate.released.load(Ordering::Acquire));
         assert_eq!(transport.gate.entered.load(Ordering::Acquire), 1);
         drop(release);
@@ -215,7 +225,13 @@ fn a_new_survey_replaces_a_cancelled_read_after_the_same_player_returns() {
             f.begin();
         }
         assert_eq!(
-            f.model.progress.sweep.queue.iter().filter(|t| t.player == player).count(),
+            f.model
+                .progress
+                .sweep
+                .queue
+                .iter()
+                .filter(|t| t.player == player)
+                .count(),
             1,
             "the cancelled job cannot satisfy the new survey"
         );
@@ -234,8 +250,15 @@ fn a_new_survey_replaces_a_cancelled_read_after_the_same_player_returns() {
         assert_eq!(f.state(0).unwrap().position_at(Instant::now()), Some(41));
         assert_eq!(f.state(0).unwrap().volume, Some(37));
         let log = f.sim.soap_log();
-        let slow: Vec<_> = log[before..].iter().filter(|call| call.room == "A").collect();
-        assert_eq!(slow.len(), 10, "one cancelled call, then one complete sweep");
+        let slow: Vec<_> = log[before..]
+            .iter()
+            .filter(|call| call.room == "A")
+            .collect();
+        assert_eq!(
+            slow.len(),
+            10,
+            "one cancelled call, then one complete sweep"
+        );
         assert!(slow.iter().all(|call| call.action.starts_with("Get")));
         f.finish();
     }
