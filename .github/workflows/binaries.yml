@@ -39,6 +39,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Apple client contract tests
+        if: ${{ runner.os == 'macOS' }}
+        run: swift test --package-path apps/apple
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install nightly-2026-08-31 --profile minimal
       - name: Build fsonos (release)

@@ -203,3 +203,24 @@ func client(_ transport: RecordingTransport) throws -> DaemonClient {
     for _ in 0..<65_536 { _ = try parser.feed(65) }
     #expect(throws: ClientError.self) { try parser.feed(65) }
 }
+
+
+@Test func ordinaryHTTPRepliesAreBoundedBeforeAndDuringReceipt() throws {
+    let url = try #require(URL(string: "https://music.example.test/zones"))
+    let exact = try #require(HTTPURLResponse(
+        url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+        headerFields: ["Content-Length": String(URLSessionTransport.maxReplyBytes)]
+    ))
+    #expect(try URLSessionTransport.checkedHTTP(exact).statusCode == 200)
+
+    let oversized = try #require(HTTPURLResponse(
+        url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+        headerFields: ["Content-Length": String(URLSessionTransport.maxReplyBytes + 1)]
+    ))
+    #expect(throws: ClientError.self) { try URLSessionTransport.checkedHTTP(oversized) }
+
+    var data = Data(repeating: 0, count: URLSessionTransport.maxReplyBytes - 1)
+    try URLSessionTransport.append(1, to: &data)
+    #expect(data.count == URLSessionTransport.maxReplyBytes)
+    #expect(throws: ClientError.self) { try URLSessionTransport.append(2, to: &data) }
+}

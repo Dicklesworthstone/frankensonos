@@ -83,7 +83,21 @@ private final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
     }
 }
 public struct URLSessionTransport: DaemonTransport {
+    static let maxReplyBytes = 4 * 1_024 * 1_024
     private let session: URLSession
+
+    static func checkedHTTP(_ response: URLResponse) throws -> HTTPURLResponse {
+        guard let http = response as? HTTPURLResponse else { throw ClientError.unreadable }
+        let announced = http.expectedContentLength
+        if announced > Int64(maxReplyBytes) { throw ClientError.unreadable }
+        return http
+    }
+
+    static func append(_ byte: UInt8, to data: inout Data) throws {
+        guard data.count < maxReplyBytes else { throw ClientError.unreadable }
+        data.append(byte)
+    }
+
     public init() {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
@@ -93,9 +107,30 @@ public struct URLSessionTransport: DaemonTransport {
         session = URLSession(configuration: configuration, delegate: NoRedirects(), delegateQueue: nil)
     }
     public func send(_ request: URLRequest) async throws -> HTTPReply {
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, data.count <= 4 * 1_024 * 1_024 else { throw ClientError.unreadable }
+        #if canImport(Darwin)
+        // Apple platforms stream ordinary API replies too: reject an announced
+        // oversize before buffering and stop at the hard cap even for chunked
+        // or dishonest responses.
+        let (bytes, response) = try await session.bytes(for: request)
+        let http = try Self.checkedHTTP(response)
+        var data = Data()
+        if http.expectedContentLength > 0 {
+            data.reserveCapacity(min(Int(http.expectedContentLength), Self.maxReplyBytes))
+        }
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            try Self.append(byte, to: &data)
+        }
         return HTTPReply(data: data, status: http.statusCode)
+        #else
+        // FoundationNetworking does not expose URLSession.AsyncBytes. Keep the
+        // same contract for package tests and non-Apple tools, with a post-read
+        // hard cap; shipping Apple clients use the streaming branch above.
+        let (data, response) = try await session.data(for: request)
+        let http = try Self.checkedHTTP(response)
+        guard data.count <= Self.maxReplyBytes else { throw ClientError.unreadable }
+        return HTTPReply(data: data, status: http.statusCode)
+        #endif
     }
     public func events(_ request: URLRequest) -> AsyncThrowingStream<EventSignal, Error> {
         AsyncThrowingStream(bufferingPolicy: .bufferingNewest(128)) { continuation in
