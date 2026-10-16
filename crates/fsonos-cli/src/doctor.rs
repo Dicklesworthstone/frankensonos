@@ -497,7 +497,9 @@ mod tests {
         assert!(r.remedy.unwrap().contains("speech.toml"));
     }
 
-    #[cfg(unix)]
+    // macOS file systems (APFS, HFS+) refuse names that are not UTF-8
+    // (EILSEQ, "Illegal byte sequence"), so no data directory there is one.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn speech_evidence_handles_a_non_utf8_data_directory() {
         use std::ffi::OsString;
