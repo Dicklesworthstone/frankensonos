@@ -140,11 +140,14 @@ fn fixture(generation: u8) -> Rig {
     }
 }
 
+// These two examine the synchronous survey read-back (`initial`): since
+// d67eb92 a survey after the first one queues its reads on the shared
+// background workers instead (covered by live::progress::sweep's tests).
 #[test]
 fn a_survey_recovers_room_and_group_controls_without_any_notifications() {
     for generation in [1, 2] {
         let mut rig = fixture(generation);
-        let events = super::super::survey(&rig.engine, &mut rig.model);
+        let events = super::super::initial(&rig.engine, &mut rig.model);
         rig.engine.publish(&rig.model, events);
         // No callback or subscriptions exist: all recovery uses real SOAP.
         set_volume(&rig.sim.lan(), rig.host, 19).unwrap();
@@ -158,7 +161,7 @@ fn a_survey_recovers_room_and_group_controls_without_any_notifications() {
         .unwrap();
         let group = get_group_volume(&rig.sim.lan(), rig.host).unwrap();
         rig.calls.lock().unwrap().clear();
-        let events = super::super::survey(&rig.engine, &mut rig.model);
+        let events = super::super::initial(&rig.engine, &mut rig.model);
         assert!(events.iter().any(|event| {
             matches!(event, LiveEvent::Playback { player, changes }
                 if player == &rig.member
@@ -194,7 +197,7 @@ fn a_survey_recovers_room_and_group_controls_without_any_notifications() {
             !matches!(action.as_str(), "GetGroupVolume" | "GetTransportSettings")
                 || *host == rig.host
         }));
-        assert!(super::super::survey(&rig.engine, &mut rig.model).is_empty());
+        assert!(super::super::initial(&rig.engine, &mut rig.model).is_empty());
         rig.sim.shutdown();
     }
 }
@@ -230,7 +233,7 @@ fn an_unsupported_optional_service_does_not_block_other_controls_or_transport() 
     for failed in ["GetGroupVolume", "GetTransportSettings"] {
         let mut rig = fixture(2);
         *rig.fault.lock().unwrap() = Some((rig.host, failed));
-        let events = super::super::survey(&rig.engine, &mut rig.model);
+        let events = super::super::initial(&rig.engine, &mut rig.model);
         assert!(!events.is_empty());
         let state = rig.model.playback.of(&rig.coordinator).unwrap();
         assert!(state.transport.is_some());
