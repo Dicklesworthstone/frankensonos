@@ -40,7 +40,8 @@ reads the queue.
 A partially queued work, an unowned entry between claims, or a work crossing
 the retained boundary is never swept into a combined range. Missing positions
 and overflowing ranges are ineligible; overlapping or reordered eligible
-claims do not authorize cleanup. Batches stay within the protocol's object
+claims do not authorize cleanup. Retained complete works participate in the
+overlap check too, so an eligible claim cannot delete part of a retained work. Batches stay within the protocol's object
 limit and run back to front so removing a later range does not renumber an
 unprocessed earlier one. Movement metadata is borrowed, not cloned or sorted.
 
@@ -59,8 +60,9 @@ item identities; identical replacements before observation cannot always be
 distinguished. Cleanup never gains permission to search another coordinator's
 queue for the same songs.
 
-Six new simulator tests cover shared-verifier integration. Six pure batching
-tests and seven additional simulator tests cover whole-work batching, owner
+Seven simulator tests cover shared-verifier integration and the deliberately
+false acknowledgement fixture. Seven pure batching tests and seven additional
+simulator tests cover whole-work batching, owner
 gaps, incomplete work, a 120-song range, eight-batch yielding and continuation,
 a changed member of a batch, and a backwards seek. The existing adjacent-work
 lost-reply test now requires one combined removal, while retaining its queue,

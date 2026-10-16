@@ -204,7 +204,7 @@ impl Transport for Replies {
                 // this request's acknowledged success.
                 return Err(ProtoError::SoapFault {
                     code: 800,
-                    description: "synthetic refusal after an external edit".into(),
+                    reason: "synthetic refusal after an external edit".into(),
                 });
             }
             Fault::CoordinatorAfter => self.join_peer(host)?,
@@ -448,4 +448,14 @@ fn a_backwards_seek_keeps_a_merged_batch_that_touches_the_retained_work() {
     feed.trim(&f.speakers(&replies)).unwrap();
     assert_eq!(replies.removes.get(), 0);
     assert_eq!(read(&f.sim.lan(), f.host).unwrap().uris.len(), 5);
+}
+
+#[test]
+fn the_no_change_fixture_is_a_successful_soap_acknowledgement() {
+    let f = Fixture::new(2);
+    let replies = Replies::new(&f, Fault::AcknowledgedNoChange);
+    let before = read(&f.sim.lan(), f.host).unwrap();
+    soap::remove_track_range_from_queue(&replies, f.host, before.revision, 1, 2).unwrap();
+    assert_eq!(read(&f.sim.lan(), f.host).unwrap(), before);
+    assert_eq!(replies.removes.get(), 1);
 }

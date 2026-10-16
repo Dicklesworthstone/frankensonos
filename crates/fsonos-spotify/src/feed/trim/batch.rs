@@ -18,15 +18,16 @@ pub(super) fn plan(works: &[QueuedWork], before: u32) -> Vec<Batch> {
     let mut batches: Vec<Batch> = Vec::new();
     let mut previous_end = 0;
     for (index, work) in works.iter().enumerate() {
-        let Some((first, count)) = range(work, before) else {
+        let Some((first, count)) = range(work, u32::MAX) else {
             continue;
         };
         if first < previous_end {
             return Vec::new();
         }
-        // range's last position is below `before`, so its exclusive end fits.
+        // Inspect retained complete works too: an overlapping older claim must
+        // not delete part of one. The exclusive end fits after range validates it.
         previous_end = first + count;
-        if count > MAX_BROWSE_OBJECTS {
+        if previous_end > before || count > MAX_BROWSE_OBJECTS {
             continue;
         }
         if let Some(last) = batches.last_mut()
@@ -145,6 +146,14 @@ mod tests {
         ] {
             assert!(plan(&works, 10).is_empty());
         }
+    }
+
+    #[test]
+    fn a_retained_complete_work_also_blocks_an_overlapping_eligible_claim() {
+        assert!(plan(&[work(2, 5), work(4, 1)], 5).is_empty());
+        assert!(plan(&[work(4, 1), work(2, 5)], 5).is_empty());
+        // An ordinary retained tail leaves the disjoint old work eligible.
+        assert_eq!(plan(&[work(1, 2), work(3, 5)], 5).len(), 1);
     }
 
     #[test]
