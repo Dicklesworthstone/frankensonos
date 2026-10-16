@@ -242,7 +242,9 @@ impl Server {
     }
 
     fn session(&self) -> (Session, PathBuf) {
-        let directory = scratch_dir("read-recovery");
+        // One directory per server: tests run in parallel in one process, and
+        // scratch_dir removes any earlier directory of the same name.
+        let directory = scratch_dir(&format!("read-recovery-{}", self.address.port()));
         let cache = TokenCache::in_data_dir(&directory);
         cache
             .store(&CachedToken {
