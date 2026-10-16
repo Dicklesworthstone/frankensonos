@@ -1,4 +1,4 @@
-// Favorite routines compose the existing scene and durable schedule APIs.
+// Music routines compose the existing scene and durable schedule APIs.
 // No browser alarm, playback call, automatic write retry or rollback.
 'use strict';
 
@@ -70,14 +70,83 @@ const FavoriteRoutines = (() => {
       || (/^in \d+m$/.test(when) && integer(Number(when.slice(3, -1)), 1, 10080)));
   }
 
+  // This is the composer's supported subset. The daemon validates the source
+  // again and owns rendering, account linkage, volume policy and playback.
+  function sourceOf(draft, favorite) {
+    const kind = draft.source_kind ?? 'favorite';
+    if (kind === 'favorite') {
+      if (!favorite || favoritesOf([favorite]).length !== 1) fail('Choose a playable favorite.');
+      return { kind: 'favorite', name: favorite.id };
+    }
+    if (!['spotify', 'stream'].includes(kind)) fail('Choose a favorite, Spotify source or radio stream.');
+    if (typeof draft.source_uri !== 'string') fail('Enter the music source.');
+    const uri = draft.source_uri.trim();
+    if (!text(uri, 2048) || /[\s\x80-\x9f]/.test(uri) || new TextEncoder().encode(uri).length > 2048) {
+      fail('Use one source URI of at most 2048 bytes, without whitespace or control characters.');
+    }
+    if (kind === 'spotify') {
+      let parts;
+      if (/^spotify:/i.test(uri)) {
+        parts = uri.slice(8).split(':');
+        if (parts.length === 4 && parts[0].toLowerCase() === 'user' && parts[2].toLowerCase() === 'playlist') {
+          parts = ['playlist', parts[3]];
+        }
+      } else {
+        // Parse the raw path, as the server does; URL path normalization must
+        // not turn an unreviewed path, user-info or lookalike host into music.
+        const link = /^https?:\/\/(?:open|play)\.spotify\.com\/([^?#]*)(?:[?#].*)?$/i.exec(uri);
+        if (!link) fail('Paste a Spotify track, album or playlist URI, or its full open.spotify.com link. Short links are not expanded.');
+        parts = link[1].split('/').filter(Boolean);
+        if (parts[0]?.startsWith('intl-')) parts.shift();
+        if (parts[0] === 'embed') parts.shift();
+        if (parts.length === 4 && parts[0] === 'user' && parts[2] === 'playlist') parts = ['playlist', parts[3]];
+      }
+      if (parts.length !== 2 || !['track', 'album', 'playlist'].includes(parts[0].toLowerCase())
+          || !/^[A-Za-z0-9]{22}$/.test(parts[1])) fail('Spotify routines need a track, album or playlist with its full 22-character ID.');
+      return { kind: 'uri', uri: `spotify:${parts[0].toLowerCase()}:${parts[1]}` };
+    }
+    let parsed;
+    try { parsed = new URL(uri); } catch (_) { fail('Enter a full HTTP or HTTPS radio stream URL.'); }
+    if (!/^https?:\/\//i.test(uri) || !['http:', 'https:'].includes(parsed.protocol)
+        || !parsed.hostname || parsed.username || parsed.password || parsed.hash || uri.includes('\\')) {
+      fail('Use an HTTP or HTTPS stream URL without embedded credentials, a fragment or backslashes.');
+    }
+    if (['open.spotify.com', 'play.spotify.com', 'spotify.link'].includes(parsed.hostname)
+        || parsed.hostname.endsWith('.spotify.link')) fail('Choose Spotify for Spotify links; short links must be opened separately.');
+    return { kind: 'uri', uri };
+  }
+
+  function settingsOf(draft) {
+    const raw = draft.volume ?? '', unmute = draft.unmute ?? false;
+    if (typeof raw !== 'string' || (raw !== '' && (!/^\d{1,3}$/.test(raw) || !integer(Number(raw), 0, 100)))
+        || typeof unmute !== 'boolean') fail('Volume must be a whole number from 0 to 100, or blank to keep current levels.');
+    return { volume: raw === '' ? null : Number(raw), unmute };
+  }
+
+  function definitionOf(group, source, settings) {
+    return { groups: [{ coordinator: group.target,
+      members: group.members.filter((r) => r !== group.target), source: copy(source), playing: true }],
+    volumes: settings.volume === null ? {} : Object.fromEntries(group.members.map((r) => [r, settings.volume])),
+    mutes: settings.unmute ? Object.fromEntries(group.members.map((r) => [r, false])) : {} };
+  }
+
+  function planSource(plan) {
+    return plan.source ?? { kind: 'favorite', name: plan.favorite.id };
+  }
+
+  function sourceLabel(plan) {
+    const source = planSource(plan);
+    return source.kind === 'favorite' ? `${plan.favorite.title} · ${plan.favorite.kind}`
+      : source.uri.startsWith('spotify:') ? `Spotify ${source.uri.split(':')[1]} · ${source.uri}` : source.uri;
+  }
+
   function planOf(group, favorite, draft, nonce) {
     if (!text(draft.label, 80) || !/^[a-f0-9]{32}$/.test(nonce)) fail('Give this routine a name; a secure browser identity is required.');
+    const source = sourceOf(draft, favorite), settings = settingsOf(draft);
     // A private random name avoids replacing a user's existing named scene.
     const name = `Routine ${Array.from(draft.label.trim()).slice(0, 20).join('')} ${nonce}`;
-    return freeze({ name, group: copy(group), favorite: copy(favorite), when: whenOf(draft),
-      definition: { groups: [{ coordinator: group.target,
-        members: group.members.filter((r) => r !== group.target),
-        source: { kind: 'favorite', name: favorite.id }, playing: true }], volumes: {}, mutes: {} } });
+    return freeze({ name, group: copy(group), favorite: source.kind === 'favorite' ? copy(favorite) : null,
+      source, settings, when: whenOf(draft), definition: definitionOf(group, source, settings) });
   }
 
   function sceneList(rows) {
@@ -90,21 +159,30 @@ const FavoriteRoutines = (() => {
     return rows;
   }
 
+  function sameSettings(a, b) {
+    return object(a) && object(b) && same(sorted(Object.keys(a)), sorted(Object.keys(b)))
+      && Object.keys(a).every((key) => a[key] === b[key]);
+  }
+
   function sceneOf(s, p) {
     if (!object(s) || s.name !== p.name || !Number.isSafeInteger(s.saved)
         || !Array.isArray(s.groups) || s.groups.length !== 1
-        || !object(s.volumes) || Object.keys(s.volumes).length
-        || !object(s.mutes) || Object.keys(s.mutes).length) fail('The saved scene does not match the reviewed routine.');
-    const g = s.groups[0];
+        || !sameSettings(s.volumes, p.definition.volumes)
+        || !sameSettings(s.mutes, p.definition.mutes)) fail('The saved scene does not match the reviewed routine.');
+    const g = s.groups[0], requested = planSource(p);
     if (!object(g) || g.coordinator !== p.group.target || !Array.isArray(g.members)
         || !same(sorted(g.members), p.group.members.filter((r) => r !== p.group.target))
-        || g.playing !== true || !object(g.source) || g.source.kind !== 'favorite'
-        || g.source.name !== p.favorite.title || !text(g.source.uri, 16384) || g.source.mood != null) {
-      fail('The saved favorite or grouping changed. Inspect the scene; no routine was added.');
+        || g.playing !== true || !object(g.source) || g.source.kind !== requested.kind || g.source.mood != null) {
+      fail('The saved source or grouping changed. Inspect the scene; no routine was added.');
     }
-    // Keep the resolved URI as evidence for the subsequent read; do not render it ourselves.
+    const source = requested.kind === 'favorite'
+      ? { kind: 'favorite', name: g.source.name, uri: g.source.uri } : { kind: 'uri', uri: g.source.uri };
+    if (requested.kind === 'favorite' ? g.source.name !== p.favorite.title || !text(g.source.uri, 16384)
+      : g.source.name != null || g.source.uri !== requested.uri) fail('The saved music source differs from the review. No routine was added.');
+    // Retain the legacy evidence shape when inspecting a version-one journal.
     return freeze({ name: s.name, saved: s.saved, group: { coordinator: g.coordinator,
-      members: sorted(g.members), source: { kind: 'favorite', name: g.source.name, uri: g.source.uri }, playing: true } });
+      members: sorted(g.members), source, playing: true },
+    ...(p.settings ? { volumes: copy(s.volumes), mutes: copy(s.mutes) } : {}) });
   }
 
   function scheduleOf(r, p) {
@@ -131,19 +209,30 @@ const FavoriteRoutines = (() => {
   }
 
   function journalOf(value) {
-    if (!object(value) || value.version !== 1 || !object(value.plan) || typeof value.sceneSent !== 'boolean'
+    if (!object(value) || ![1, 2].includes(value.version) || !object(value.plan) || typeof value.sceneSent !== 'boolean'
         || typeof value.scheduleSent !== 'boolean' || !value.sceneSent) fail('The saved routine attempt is unreadable; inspect Scenes and Routines before clearing browser data.');
     const p = value.plan;
     if (!text(p.name, 128) || !validWhen(p.when) || !object(p.group) || !text(p.group.target)
         || !Array.isArray(p.group.members) || !p.group.members.length || p.group.members.length > 512
         || !p.group.members.every((m) => text(m)) || !p.group.members.includes(p.group.target)
         || new Set(p.group.members).size !== p.group.members.length || !text(p.group.label, 4096)
-        || favoritesOf([p.favorite]).length !== 1 || !object(p.definition)) fail('The saved routine review is unreadable.');
-    const expected = { groups: [{ coordinator: p.group.target,
-      members: p.group.members.filter((r) => r !== p.group.target),
-      source: { kind: 'favorite', name: p.favorite.id }, playing: true }], volumes: {}, mutes: {} };
-    if (!same(p.definition, expected)) fail('The saved routine definition is inconsistent.');
-    return { version: 1, plan: freeze(copy(p)), sceneSent: true, scheduleSent: value.scheduleSent,
+        || !same(p.group.members, sorted(p.group.members)) || !object(p.definition)) fail('The saved routine review is unreadable.');
+    let source, settings;
+    if (value.version === 1) {
+      if (p.source != null || p.settings != null) fail('The saved routine version is inconsistent.');
+      source = sourceOf({}, p.favorite); settings = { volume: null, unmute: false };
+    } else {
+      if (!object(p.source) || !object(p.settings) || typeof p.settings.unmute !== 'boolean'
+          || (p.settings.volume !== null && !integer(p.settings.volume, 0, 100))) fail('The saved source or level settings are unreadable.');
+      const kind = p.source.kind === 'favorite' ? 'favorite' : p.source.kind === 'uri'
+        ? (typeof p.source.uri === 'string' && p.source.uri.startsWith('spotify:') ? 'spotify' : 'stream') : '';
+      source = sourceOf({ source_kind: kind, source_uri: p.source.uri }, p.favorite);
+      settings = { volume: p.settings.volume, unmute: p.settings.unmute };
+      if (!same(source, p.source) || !same(settings, p.settings)
+          || (kind !== 'favorite' && p.favorite !== null)) fail('The saved music source is inconsistent.');
+    }
+    if (!same(p.definition, definitionOf(p.group, source, settings))) fail('The saved routine definition is inconsistent.');
+    return { version: value.version, plan: freeze(copy(p)), sceneSent: true, scheduleSent: value.scheduleSent,
       scene: value.scene ? copy(value.scene) : null };
   }
 
@@ -171,8 +260,10 @@ const FavoriteRoutines = (() => {
     async function preflight(p) {
       const current = groupsOf(await call('routineZones')).find((g) => g.target === p.group.target);
       if (!current || !same(current.members, p.group.members)) fail('The group changed. Refresh and review the rooms again.');
-      const favorite = (await listFavorites(p.group.target)).find((f) => f.id === p.favorite.id);
-      if (!favorite || !same(favorite, p.favorite)) fail('The favorite changed. Refresh and choose it again.');
+      if (planSource(p).kind === 'favorite') {
+        const favorite = (await listFavorites(p.group.target)).find((f) => f.id === p.favorite.id);
+        if (!favorite || !same(favorite, p.favorite)) fail('The favorite changed. Refresh and choose it again.');
+      }
     }
     async function addSchedule(version) {
       const a = state.attempt, p = a.plan;
@@ -203,12 +294,12 @@ const FavoriteRoutines = (() => {
         } catch (e) { if (present(version)) { state.groups = []; state.message = message(e); } }
         finally { state.busy = false; publish(); }
       },
-      async choose(target) {
+      async choose(target, sourceKind = 'favorite') {
         if (state.busy || state.attempt || !state.open || state.phase === 'blocked') return;
         const group = state.groups.find((g) => g.target === target);
         const version = ++epoch;
         state.pending = null; state.group = group || null; state.favorites = []; state.message = '';
-        if (!group) { publish(); return; }
+        if (!group || sourceKind !== 'favorite') { publish(); return; }
         state.busy = true; publish();
         try { const found = await listFavorites(target); if (present(version)) state.favorites = found; }
         catch (e) { if (present(version)) state.message = message(e); }
@@ -218,7 +309,7 @@ const FavoriteRoutines = (() => {
         if (state.busy || state.attempt || !state.open || !active() || state.phase === 'blocked') return;
         try {
           const favorite = state.favorites.find((f) => f.id === draft.favorite);
-          if (!state.group || !favorite) fail('Choose a current group and playable favorite.');
+          if (!state.group) fail('Choose a current group.');
           state.pending = planOf(state.group, favorite, draft, nonce()); state.message = '';
         } catch (e) { state.pending = null; state.message = message(e); }
         publish();
@@ -232,7 +323,7 @@ const FavoriteRoutines = (() => {
           await preflight(expected);
           if ((await scenes()).some((s) => s.name.toLowerCase() === expected.name.toLowerCase())) fail('The generated scene name already exists. Nothing was overwritten; review again.');
           if (!present(version)) return;
-          state.attempt = { version: 1, plan: expected, sceneSent: true, scheduleSent: false, scene: null };
+          state.attempt = { version: 2, plan: expected, sceneSent: true, scheduleSent: false, scene: null };
           save();
           state.phase = 'scene_sending'; publish();
           const saved = await call('routineSaveScene', { body: expected.definition, params: { name: expected.name } });
@@ -290,6 +381,6 @@ const FavoriteRoutines = (() => {
       dispose() { ++epoch; disposed = true; state.open = false; state.pending = null; },
     };
   }
-  return { routes, groupsOf, favoritesOf, whenOf, planOf, sceneOf, scheduleOf, journalOf, model };
+  return { routes, groupsOf, favoritesOf, whenOf, sourceOf, settingsOf, sourceLabel, planOf, sceneOf, scheduleOf, journalOf, model };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = FavoriteRoutines;
