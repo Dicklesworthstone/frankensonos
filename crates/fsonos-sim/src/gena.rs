@@ -220,12 +220,14 @@ impl State {
                 EventService::GroupRenderingControl => self.grc_props(player),
                 EventService::ZoneGroupTopology => self.zgt_props(player),
             };
+            let again = service == EventService::AvTransport && self.seeked.contains(&player);
             let send: Vec<&(String, String)> = match &self.subscriptions[i].sent {
                 Some(prev) if service == EventService::RenderingControl => {
                     vars.iter().filter(|v| !prev.contains(v)).collect()
                 }
-                Some(prev) if *prev == vars => Vec::new(),
-                // The initial NOTIFY, or a changed AVTransport/topology state.
+                Some(prev) if *prev == vars && !again => Vec::new(),
+                // The initial NOTIFY, a changed AVTransport/topology state, or
+                // the AVTransport state a seek re-sends unchanged.
                 _ => vars.iter().collect(),
             };
             if send.is_empty() {
@@ -261,6 +263,7 @@ impl State {
                 let _ = notifier.send(out);
             }
         }
+        self.seeked.clear();
     }
 
     fn should_drop(&mut self, player: usize) -> bool {

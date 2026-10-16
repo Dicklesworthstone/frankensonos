@@ -315,6 +315,9 @@ pub(crate) struct State {
     pub pending_fetches: Vec<(usize, String)>,
     pub fetches_in_flight: usize,
     pub fetch_log: Vec<crate::FetchLogEntry>,
+    /// Players whose AVTransport state is notified again although no evented
+    /// variable changed: a real player re-sends it after a REL_TIME seek.
+    pub seeked: Vec<usize>,
 }
 
 impl State {
@@ -333,6 +336,7 @@ impl State {
             pending_fetches: Vec::new(),
             fetches_in_flight: 0,
             fetch_log: Vec::new(),
+            seeked: Vec::new(),
         }
     }
 
@@ -978,6 +982,10 @@ impl State {
                         if t.state == TransportState::Playing {
                             t.playing_since = Some(now);
                         }
+                        // Position is not evented, but a real player sends its
+                        // AVTransport state again, unchanged, right after a
+                        // same-track seek (seen on an S1 player while paused).
+                        self.seeked.push(p);
                     }
                     _ => return Err(INVALID_ARGS),
                 }

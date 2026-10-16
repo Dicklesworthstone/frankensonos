@@ -67,10 +67,10 @@ fn unsubscribes(sim: &SimHandle) -> usize {
 
 #[test]
 fn a_seek_made_elsewhere_is_reflected_on_the_next_survey() {
-    // No track-change event follows an external seek (the sim sends none),
-    // so only the survey's position sweep can learn it: after a daemon
-    // restart the position is populated by the first survey, and a seek
-    // shows up on a running model on the next one.
+    // No event carries a position: the NOTIFY a seek re-sends is dropped
+    // below, so only the survey's position sweep can learn it. After a
+    // daemon restart the position is populated by the first survey, and a
+    // seek shows up on a running model on the next one.
     let sim = sim();
     let lan = routed(&sim);
     let live = Live::start(Arc::clone(&lan), LiveConfig::new(Vec::new()));
@@ -92,10 +92,19 @@ fn a_seek_made_elsewhere_is_reflected_on_the_next_survey() {
     let near =
         |want: u32| move |got: Option<u32>| got.is_some_and(|p| (want..want + 15).contains(&p));
 
-    // External seek: reaches the running model on the next survey (the sim
-    // emits no track-change for it; its clock only moves when advanced, so
-    // the sim's position stays put until then).
+    // External seek: reaches the running model on the next survey. Its
+    // unchanged AVTransport NOTIFY is dropped, as if lost; the sim's clock
+    // only moves when advanced, so its position stays put until then.
+    sim.drop_notifies("Kitchen", Some(NotifyDrop::Next(1)))
+        .unwrap();
     fsonos_proto::control::seek_position(&*lan, kitchen_addr, 95).unwrap();
+    assert!(
+        eventually(Duration::from_secs(5), || sim
+            .gena_log()
+            .iter()
+            .any(|e| matches!(e.event, GenaEvent::Dropped { .. }))),
+        "the seek re-sends its AVTransport state"
+    );
     live.refresh_soon();
     assert!(
         eventually(Duration::from_secs(10), || near(95)(pos_of(
