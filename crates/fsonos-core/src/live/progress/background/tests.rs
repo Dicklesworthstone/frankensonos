@@ -8,7 +8,7 @@ use fsonos_proto::control::{seek_position, set_av_transport_uri};
 use fsonos_proto::gena::Notify;
 use fsonos_proto::net::Lan;
 use fsonos_proto::topology::get_zone_group_state;
-use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, SystemTime};
@@ -32,7 +32,7 @@ impl Drop for Release {
 /// Hold a real SOAP reply, not the live-model thread. Every other call goes
 /// through the simulator's actual localhost HTTP endpoints.
 struct HeldReply {
-    inner: Lan,
+    inner: SimLan,
     hosts: Vec<IpAddr>,
     gate: Arc<Gate>,
     calls: AtomicUsize,
