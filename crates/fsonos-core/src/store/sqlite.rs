@@ -18,7 +18,7 @@ use fsqlite::{AsyncConnection, FrankenError, Row, SqliteValue};
 use std::fmt::Display;
 use std::ops::Range;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// One schema step. Append new steps to [`MIGRATIONS`]; never edit or
 /// reorder applied ones (their `version` is recorded in each database).
@@ -198,25 +198,52 @@ fn backend(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
+/// Attempts at an operation that meets a transient conflict (busy, snapshot
+/// conflict, lock) before the conflict is reported. Other connections share
+/// the database file: the daemon's own (known players, DJ sync) and other
+/// fsonos processes (`fsonos mcp`, CLI direct mode).
+const BUSY_ATTEMPTS: u32 = 8;
+
+/// Run `op` again after a transient conflict, backing off from 5 ms and
+/// doubling (with jitter, so two waiting connections do not collide again),
+/// about 1.3 s in all. Other errors return at once.
+fn retrying<T>(mut op: impl FnMut() -> Result<T, FrankenError>) -> Result<T, FrankenError> {
+    let mut attempt = 0;
+    loop {
+        match op() {
+            Err(e) if e.is_transient() && attempt + 1 < BUSY_ATTEMPTS => {
+                let base = 5_u64 << attempt;
+                let jitter = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| u64::from(d.subsec_nanos()))
+                    % (base / 2 + 1);
+                std::thread::sleep(Duration::from_millis(base + jitter));
+                attempt += 1;
+            }
+            done => return done,
+        }
+    }
+}
+
 impl SqliteStore {
     /// Open (creating if needed) the database at `path` and bring its schema
     /// up to date.
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        Self::open_at(path.to_string_lossy().into_owned())
+        Self::open_at(&path.to_string_lossy())
     }
 
     /// A private, non-persistent database (tests, `--no-store` runs).
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        Self::open_at(":memory:".to_string())
+        Self::open_at(":memory:")
     }
 
-    fn open_at(path: String) -> Result<Self, StoreError> {
+    fn open_at(path: &str) -> Result<Self, StoreError> {
         Self::open_migrated(path, MIGRATIONS)
     }
 
-    fn open_migrated(path: String, migrations: &[Migration]) -> Result<Self, StoreError> {
+    fn open_migrated(path: &str, migrations: &[Migration]) -> Result<Self, StoreError> {
         let store = Self {
-            conn: AsyncConnection::open_sync(path).map_err(backend)?,
+            conn: retrying(|| AsyncConnection::open_sync(path)).map_err(backend)?,
         };
         store.migrate(migrations)?;
         Ok(store)
@@ -224,12 +251,14 @@ impl SqliteStore {
 
     /// Versions of the migrations applied to this database, ascending.
     pub fn schema_versions(&self) -> Result<Vec<i64>, StoreError> {
-        self.conn
-            .query_sync("SELECT version FROM schema_migrations ORDER BY version")
-            .map_err(backend)?
-            .iter()
-            .map(|row| int(row, 0))
-            .collect()
+        retrying(|| {
+            self.conn
+                .query_sync("SELECT version FROM schema_migrations ORDER BY version")
+        })
+        .map_err(backend)?
+        .iter()
+        .map(|row| int(row, 0))
+        .collect()
     }
 
     /// Close the database, checkpointing its WAL. Dropping a store without
@@ -240,58 +269,83 @@ impl SqliteStore {
     }
 
     fn migrate(&self, migrations: &[Migration]) -> Result<(), StoreError> {
-        self.conn
-            .execute_sync(
+        retrying(|| {
+            self.conn.execute_sync(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (\
                  version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)",
             )
-            .map_err(backend)?;
+        })
+        .map_err(backend)?;
         let applied = self.schema_versions()?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
         for m in migrations.iter().filter(|m| !applied.contains(&m.version)) {
-            self.in_transaction(|c| {
-                c.execute_batch_sync(m.sql)?;
-                c.execute_with_params_sync(
-                    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
-                    &[m.version.into(), m.name.into(), now.into()],
-                )
-                .map(drop)
-            })
-            .map_err(|e| backend(format!("migration {} ({}): {e}", m.version, m.name)))?;
+            self.apply(m, now)?;
         }
         Ok(())
     }
 
-    /// Run `f` in one transaction, rolling back if it fails.
-    fn in_transaction<T>(
-        &self,
-        f: impl FnOnce(&AsyncConnection) -> Result<T, FrankenError>,
-    ) -> Result<T, StoreError> {
-        self.conn.begin_transaction_sync().map_err(backend)?;
-        match f(&self.conn) {
-            Ok(value) => {
-                self.conn.commit_transaction_sync().map_err(backend)?;
-                Ok(value)
+    /// Apply `m` unless another connection has since: two processes opening
+    /// a new database at once both find it unmigrated. The check shares the
+    /// schema change's transaction, and a change that fails because the
+    /// other one won is not an error.
+    fn apply(&self, m: &Migration, now: i64) -> Result<(), StoreError> {
+        let applied = |c: &AsyncConnection| {
+            c.query_with_params_sync(
+                "SELECT 1 FROM schema_migrations WHERE version = ?1",
+                &[m.version.into()],
+            )
+            .map(|rows| !rows.is_empty())
+        };
+        let changed = self.in_transaction(|c| {
+            if applied(c)? {
+                return Ok(());
             }
-            Err(e) => {
-                // The original error is the one worth reporting.
-                let _ = self.conn.rollback_transaction_sync();
-                Err(backend(e))
+            c.execute_batch_sync(m.sql)?;
+            c.execute_with_params_sync(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+                &[m.version.into(), m.name.into(), now.into()],
+            )
+            .map(drop)
+        });
+        match changed {
+            Err(_) if retrying(|| applied(&self.conn)).unwrap_or(false) => Ok(()),
+            other => {
+                other.map_err(|e| backend(format!("migration {} ({}): {e}", m.version, m.name)))
             }
         }
     }
 
+    /// Run `f` in one transaction, rolling back if it fails; a transient
+    /// conflict runs it again in a new one (see [`retrying`]).
+    fn in_transaction<T>(
+        &self,
+        mut f: impl FnMut(&AsyncConnection) -> Result<T, FrankenError>,
+    ) -> Result<T, StoreError> {
+        retrying(|| {
+            self.conn.begin_transaction_sync()?;
+            match f(&self.conn)
+                .and_then(|value| self.conn.commit_transaction_sync().map(|()| value))
+            {
+                Ok(value) => Ok(value),
+                Err(e) => {
+                    // The original error is the one worth reporting; a failed
+                    // commit leaves nothing open for the next attempt either.
+                    let _ = self.conn.rollback_transaction_sync();
+                    Err(e)
+                }
+            }
+        })
+        .map_err(backend)
+    }
+
     fn query(&self, sql: &str, params: &[SqliteValue]) -> Result<Vec<Row>, StoreError> {
-        self.conn
-            .query_with_params_sync(sql, params)
-            .map_err(backend)
+        retrying(|| self.conn.query_with_params_sync(sql, params)).map_err(backend)
     }
 
     fn execute(&self, sql: &str, params: &[SqliteValue]) -> Result<(), StoreError> {
-        self.conn
-            .execute_with_params_sync(sql, params)
+        retrying(|| self.conn.execute_with_params_sync(sql, params))
             .map(drop)
             .map_err(backend)
     }
@@ -1234,6 +1288,86 @@ fn dj_session_row(r: &Row) -> Result<DjSession, StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn a_migration_another_connection_applied_is_not_applied_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fsonos.db").to_string_lossy().into_owned();
+        let first = SqliteStore::open_migrated(&path, MIGRATIONS).unwrap();
+        // A second connection that read the versions before the first
+        // migrated: it reaches migration 1 although it is applied.
+        let second = SqliteStore {
+            conn: AsyncConnection::open_sync(path.as_str()).unwrap(),
+        };
+        second.apply(&MIGRATIONS[0], 0).unwrap();
+        assert_eq!(
+            second.schema_versions().unwrap(),
+            first.schema_versions().unwrap()
+        );
+        // A migration that fails for a reason of its own is still an error.
+        let broken = Migration {
+            version: 99,
+            name: "broken",
+            sql: "CREATE TABLE players (id TEXT)",
+        };
+        let error = second.apply(&broken, 0).unwrap_err();
+        assert!(error.to_string().contains("migration 99"), "{error}");
+        assert!(!second.schema_versions().unwrap().contains(&99));
+    }
+
+    #[test]
+    fn concurrent_first_opens_of_one_database_all_succeed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fsonos.db");
+        let start = Arc::new(Barrier::new(4));
+        let opens: Vec<_> = (0..4)
+            .map(|_| {
+                let (path, start) = (path.clone(), Arc::clone(&start));
+                std::thread::spawn(move || {
+                    start.wait();
+                    SqliteStore::open(&path).map(|store| store.schema_versions())
+                })
+            })
+            .collect();
+        let all: Vec<i64> = MIGRATIONS.iter().map(|m| m.version).collect();
+        for open in opens {
+            let versions = open.join().unwrap().unwrap().unwrap();
+            assert_eq!(versions, all);
+        }
+    }
+
+    #[test]
+    fn transient_conflicts_are_retried_a_bounded_number_of_times() {
+        let mut calls = 0;
+        let busy = retrying(|| -> Result<(), FrankenError> {
+            calls += 1;
+            Err(FrankenError::Busy)
+        });
+        assert!(matches!(busy, Err(FrankenError::Busy)));
+        assert_eq!(calls, BUSY_ATTEMPTS);
+
+        let mut calls = 0;
+        let recovered = retrying(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(FrankenError::BusySnapshot {
+                    conflicting_pages: "1".into(),
+                })
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(recovered.unwrap(), 3);
+
+        let mut calls = 0;
+        let fatal = retrying(|| -> Result<(), FrankenError> {
+            calls += 1;
+            Err(FrankenError::Internal("not transient".into()))
+        });
+        assert!(fatal.is_err());
+        assert_eq!(calls, 1, "a non-transient error is not retried");
+    }
 
     #[test]
     fn v1_database_upgrades_in_place() {
@@ -1241,7 +1375,7 @@ mod tests {
         let path = dir.path().join("fsonos.db").to_string_lossy().into_owned();
 
         // A database created before migration 2, with a library row in it.
-        let v1 = SqliteStore::open_migrated(path.clone(), &MIGRATIONS[..1]).unwrap();
+        let v1 = SqliteStore::open_migrated(&path, &MIGRATIONS[..1]).unwrap();
         assert_eq!(v1.schema_versions().unwrap(), [1]);
         v1.execute(
             "INSERT INTO spotify_library \
@@ -1278,7 +1412,7 @@ mod tests {
         let path = dir.path().join("fsonos.db").to_string_lossy().into_owned();
 
         // A database created before migration 3, with a v2 library row.
-        let v2 = SqliteStore::open_migrated(path.clone(), &MIGRATIONS[..2]).unwrap();
+        let v2 = SqliteStore::open_migrated(&path, &MIGRATIONS[..2]).unwrap();
         assert_eq!(v2.schema_versions().unwrap(), [1, 2]);
         v2.execute(
             "INSERT INTO spotify_library \
@@ -1325,7 +1459,7 @@ mod tests {
 
         // Before migration 7: a classical candidate, a song that wasn't a
         // candidate then, and a feedback row.
-        let v6 = SqliteStore::open_migrated(path.clone(), &MIGRATIONS[..6]).unwrap();
+        let v6 = SqliteStore::open_migrated(&path, &MIGRATIONS[..6]).unwrap();
         v6.execute(
             "INSERT INTO spotify_library (source_uri, title, is_classical, added, work_key) \
              VALUES (?1, ?2, 1, 7, ?3)",
