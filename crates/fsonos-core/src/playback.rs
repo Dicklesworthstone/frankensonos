@@ -20,9 +20,11 @@ use std::time::Instant;
 #[cfg(test)]
 mod metadata_tests;
 mod observation;
+mod stamp;
 #[cfg(test)]
 mod position_tests;
 pub use observation::PlaybackObservation;
+pub(crate) use stamp::Stamp;
 
 /// Which service a NOTIFY came from (the subscription that delivered it
 /// knows).
@@ -142,6 +144,7 @@ impl Changes {
 #[derive(Debug, Clone, Default)]
 pub struct Playback {
     players: HashMap<PlayerId, PlayerPlayback>,
+    observations: stamp::Observations,
 }
 
 impl Playback {
@@ -202,6 +205,7 @@ impl Playback {
             != state.now_playing.as_ref()
             || before.and_then(|p| p.duration_secs) != state.duration_secs;
         self.players.insert(player.clone(), state);
+        self.observations.mark(player, source);
         Ok(changes)
     }
 
@@ -210,6 +214,7 @@ impl Playback {
     /// inherit the old track's clock, duration or metadata. Same-track reads
     /// retain optional details the player omitted (GENA may know more).
     pub fn apply_position(&mut self, player: &PlayerId, info: &PositionInfo, now: Instant) {
+        self.observations.mark(player, EventSource::AvTransport);
         let state = self.players.entry(player.clone()).or_default();
         // A complete read can legitimately omit timing (radio, for example).
         // Consume the request even then; do not spin on an unknowable clock.
@@ -245,6 +250,7 @@ impl Playback {
     /// Forget `player` (it left the household or went offline).
     pub fn remove(&mut self, player: &PlayerId) {
         self.players.remove(player);
+        self.observations.forget(player);
     }
 }
 

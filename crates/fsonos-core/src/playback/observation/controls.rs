@@ -1,6 +1,6 @@
 //! Read-back of independent controls, using the same deltas as GENA.
 
-use super::super::{Changes, Playback};
+use super::super::{Changes, EventSource, Playback};
 use fsonos_types::{PlayMode, PlayerId};
 
 impl Playback {
@@ -12,6 +12,7 @@ impl Playback {
         volume: u8,
         mute: bool,
     ) -> Changes {
+        self.observations.mark(player, EventSource::RenderingControl);
         let state = self.players.entry(player.clone()).or_default();
         let volume = volume.min(100);
         let changes = Changes {
@@ -26,6 +27,7 @@ impl Playback {
 
     /// Only the current coordinator reports the whole group's volume.
     pub(crate) fn apply_group_volume(&mut self, player: &PlayerId, volume: u8) -> Changes {
+        self.observations.mark(player, EventSource::GroupRenderingControl);
         let state = self.players.entry(player.clone()).or_default();
         let volume = volume.min(100);
         let changes = Changes {
@@ -38,6 +40,7 @@ impl Playback {
 
     /// A settings read never changes transport, track identity or its clock.
     pub(crate) fn apply_play_mode(&mut self, player: &PlayerId, mode: PlayMode) -> Changes {
+        self.observations.mark(player, EventSource::AvTransport);
         let state = self.players.entry(player.clone()).or_default();
         let mode = mode.as_str();
         let changed = state.play_mode.as_deref() != Some(mode);
@@ -52,7 +55,6 @@ impl Playback {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::playback::EventSource;
     use fsonos_proto::gena::Notify;
     use std::time::{Duration, Instant};
 

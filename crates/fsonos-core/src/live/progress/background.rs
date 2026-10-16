@@ -3,7 +3,7 @@
 
 use super::{Engine, Model, Probe, observation};
 use crate::live::LiveEvent;
-use crate::playback::{PlaybackObservation, PlayerPlayback};
+use crate::playback::{EventSource, PlaybackObservation, PlayerPlayback, Stamp};
 use fsonos_proto::ProtoError;
 use fsonos_types::{HouseholdId, PlayerId, ZoneGroup};
 use std::net::IpAddr;
@@ -47,6 +47,7 @@ impl Authority {
 struct Pending {
     probe: Probe,
     baseline: PlayerPlayback,
+    stamp: Option<Stamp>,
     authority: Authority,
     cancelled: Arc<AtomicBool>,
     thread: JoinHandle<ReadResult>,
@@ -59,6 +60,10 @@ impl Pending {
                 .playback
                 .of(&self.probe.player)
                 .is_some_and(|state| state.same_transport_observation(&self.baseline))
+            && model
+                .playback
+                .observation_stamp(&self.probe.player, EventSource::AvTransport)
+                == self.stamp
             && Authority::of(model, &self.probe.player).as_ref() == Some(&self.authority)
     }
 }
@@ -121,6 +126,9 @@ pub(super) fn start(engine: &Engine, model: &mut Model, probe: Probe) {
     let Some(baseline) = model.playback.begin_position_sample(&probe.player) else {
         return;
     };
+    let stamp = model
+        .playback
+        .observation_stamp(&probe.player, EventSource::AvTransport);
     let transport = Arc::clone(&engine.transport);
     let stopping = Arc::clone(&engine.stop);
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -137,6 +145,7 @@ pub(super) fn start(engine: &Engine, model: &mut Model, probe: Probe) {
         Ok(thread) => model.progress.reads.pending.push(Pending {
             probe,
             baseline,
+            stamp,
             authority,
             cancelled,
             thread,
@@ -219,3 +228,28 @@ pub(super) fn complete(engine: &Engine, model: &mut Model) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use fsonos_proto::control::PositionInfo;
+
+    #[test]
+    fn a_newer_clockless_read_invalidates_an_equal_transport_baseline() {
+        let player = PlayerId("test-clockless".into());
+        let mut playback = crate::playback::Playback::default();
+        let sample = PositionInfo {
+            track: 0,
+            duration_secs: None,
+            position_secs: None,
+            uri: "test:radio".into(),
+            metadata: None,
+        };
+        playback.apply_position(&player, &sample, Instant::now());
+        let baseline = playback.begin_position_sample(&player).unwrap();
+        let stamp = playback.observation_stamp(&player, EventSource::AvTransport);
+        playback.apply_position(&player, &sample, Instant::now());
+        assert!(playback.of(&player).unwrap().same_transport_observation(&baseline));
+        assert_ne!(playback.observation_stamp(&player, EventSource::AvTransport), stamp);
+    }
+}
