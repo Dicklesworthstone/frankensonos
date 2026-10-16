@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 mod background;
+mod sweep;
 
 /// Allow ordinary NOTIFY delivery and small position-estimate errors first.
 const END_GRACE: Duration = Duration::from_secs(5);
@@ -54,9 +55,20 @@ pub(super) struct Watchdog {
     /// Per player, not per URI: rapid skips cannot defeat event coalescing.
     position_after: HashMap<PlayerId, Instant>,
     reads: background::Reads,
+    sweep: sweep::Sweep,
+    /// Alternate admission when both periodic and event-driven work wait.
+    sweep_next: bool,
 }
 
 impl Watchdog {
+    fn has_capacity(&self) -> bool {
+        self.reads.len() + self.sweep.len() < background::MAX_READS
+    }
+
+    fn busy(&self, player: &PlayerId) -> bool {
+        self.reads.contains(player) || self.sweep.contains(player)
+    }
+
     /// Oldest eligible read, at most one per live-worker turn. A transport
     /// event requests its real clock; repeated events coalesce without
     /// postponing the fixed deadline. Quiet playback only needs the existing
@@ -78,7 +90,7 @@ impl Watchdog {
         coordinators
             .iter()
             .filter_map(|(player, host)| {
-                if self.reads.contains(player) {
+                if self.busy(player) {
                     return None;
                 }
                 let state = playback.of(player)?;
@@ -142,20 +154,33 @@ impl Watchdog {
 pub(super) fn recover(engine: &Engine, model: &mut Model) {
     if engine.stop.load(Ordering::Acquire) {
         model.progress.reads.cancel_all();
+        model.progress.sweep.cancel_all();
         return;
     }
     background::complete(engine, model);
-    if !model.progress.reads.has_capacity() {
+    sweep::complete(engine, model);
+    if !model.progress.has_capacity() {
+        return;
+    }
+    if model.progress.sweep_next && sweep::start_next(engine, model) {
+        model.progress.sweep_next = false;
         return;
     }
     let coordinators = observation::coordinators(model);
-    let Some(probe) = model
+    if let Some(probe) = model
         .progress
         .next(&coordinators, &model.playback, Instant::now())
-    else {
-        return;
-    };
-    background::start(engine, model, probe);
+    {
+        background::start(engine, model, probe);
+        model.progress.sweep_next = true;
+    } else {
+        sweep::start_next(engine, model);
+    }
+}
+
+/// Queue one ordinary read-back per renderer, without doing network I/O.
+pub(super) fn request_survey(model: &mut Model) {
+    sweep::request(model);
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 
-fn room_levels<T: Transport + ?Sized>(
+pub(in crate::live) fn room_levels<T: Transport + ?Sized>(
     transport: &T,
     host: IpAddr,
     stopping: impl Fn() -> bool,

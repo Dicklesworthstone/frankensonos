@@ -12,6 +12,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 mod controls;
+pub(super) use controls::room_levels;
 
 /// Current coordinators only. Never ask an offline room, or mistake a
 /// member's transport state for that of the group it follows.
@@ -94,6 +95,15 @@ pub(super) fn read<T: Transport + ?Sized>(
 /// and queue notifications, plus room levels, group volume and play mode,
 /// publishing the same deltas for the DJ and API consumers as GENA.
 pub(super) fn survey(engine: &Engine, model: &mut Model) -> Vec<LiveEvent> {
+    if engine.stop.load(Ordering::Acquire) {
+        return Vec::new();
+    }
+    if model.sink.is_some() {
+        // The event pump applies completed parts after buffered notifications.
+        // Eventless recovery retains its existing synchronous fallback.
+        super::progress::request_survey(model);
+        return Vec::new();
+    }
     let mut events = Vec::new();
     for (player, host) in coordinators(model) {
         let read = read(&engine.via(), host, || engine.stop.load(Ordering::Acquire));

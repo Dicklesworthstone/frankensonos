@@ -14,7 +14,7 @@ use std::time::Instant;
 
 /// One slow room must not block every other room. Never replace a stuck
 /// worker with another: its slot remains occupied until it actually exits.
-const MAX_READS: usize = 4;
+pub(super) const MAX_READS: usize = 4;
 
 type ReadResult = Result<Option<(PlaybackObservation, Instant)>, ProtoError>;
 
@@ -78,8 +78,8 @@ impl Reads {
         self.pending.iter().any(|read| read.probe.player == *player)
     }
 
-    pub(super) fn has_capacity(&self) -> bool {
-        self.pending.len() < MAX_READS
+    pub(super) fn len(&self) -> usize {
+        self.pending.len()
     }
 
     pub(super) fn cancel_all(&self) {
@@ -112,8 +112,8 @@ impl Drop for Reads {
 
 pub(super) fn start(engine: &Engine, model: &mut Model, probe: Probe) {
     if engine.stop.load(Ordering::Acquire)
-        || !model.progress.reads.has_capacity()
-        || model.progress.reads.contains(&probe.player)
+        || !model.progress.has_capacity()
+        || model.progress.busy(&probe.player)
     {
         return;
     }
