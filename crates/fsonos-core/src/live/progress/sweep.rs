@@ -188,8 +188,13 @@ pub(super) fn request(model: &mut Model) {
     let sweep = &mut model.progress.sweep;
     sweep.queue.retain(|target| targets.contains(target));
     for target in targets {
-        if !sweep.queue.contains(&target) && !sweep.pending.iter().any(|read| read.target == target)
-        {
+        // An invalidated read still owns its worker slot, but can no longer
+        // satisfy this survey. Keep one replacement queued behind it, even if
+        // the player returned to its original address and group in the meantime.
+        let in_flight = sweep.pending.iter().any(|read| {
+            read.target == target && !read.cancelled.load(Ordering::Acquire)
+        });
+        if !sweep.queue.contains(&target) && !in_flight {
             sweep.queue.push_back(target);
         }
     }
