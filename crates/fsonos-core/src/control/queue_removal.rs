@@ -149,11 +149,12 @@ pub fn remove<T: Transport + ?Sized>(
             "the queue coordinator changed; nothing was removed",
         ));
     }
-    let write_error = match soap::remove_track_range_from_queue(t, host, before.revision, first, count) {
-        Ok(()) => None,
-        Err(cause @ (ProtoError::Network { .. } | ProtoError::Malformed(_))) => Some(cause),
-        Err(cause) => return Err(RemovalError::Refused(cause)),
-    };
+    let write_error =
+        match soap::remove_track_range_from_queue(t, host, before.revision, first, count) {
+            Ok(()) => None,
+            Err(cause @ (ProtoError::Network { .. } | ProtoError::Malformed(_))) => Some(cause),
+            Err(cause) => return Err(RemovalError::Refused(cause)),
+        };
     let after = read(t, host).map_err(|error| uncertain(write_error.as_ref(), error))?;
     if !removed(before, &after, selected.start, selected.end) {
         return Err(uncertain(
@@ -161,9 +162,7 @@ pub fn remove<T: Transport + ?Sized>(
             "read-back did not confirm exactly the selected deletion",
         ));
     }
-    if !coordinator(t, host, expected)
-        .map_err(|error| uncertain(write_error.as_ref(), error))?
-    {
+    if !coordinator(t, host, expected).map_err(|error| uncertain(write_error.as_ref(), error))? {
         return Err(uncertain(
             write_error.as_ref(),
             "the queue coordinator changed during removal",

@@ -27,14 +27,21 @@ fn response(action: &str, args: &str) -> String {
 }
 
 fn topology(current: bool) -> String {
-    let id = if current { "RINCON_SYNTHETIC_A" } else { "RINCON_SYNTHETIC_B" };
+    let id = if current {
+        "RINCON_SYNTHETIC_A"
+    } else {
+        "RINCON_SYNTHETIC_B"
+    };
     let xml = format!(
         "<ZoneGroups><ZoneGroup Coordinator=\"{id}\" ID=\"test:1\">\
          <ZoneGroupMember UUID=\"{id}\" ZoneName=\"Synthetic\" \
          Location=\"http://127.0.0.1:1400/xml/device_description.xml\"/>\
          </ZoneGroup></ZoneGroups>"
     );
-    response("GetZoneGroupState", &format!("<ZoneGroupState>{}</ZoneGroupState>", xml_escape(&xml)))
+    response(
+        "GetZoneGroupState",
+        &format!("<ZoneGroupState>{}</ZoneGroupState>", xml_escape(&xml)),
+    )
 }
 
 fn browse(revision: u32, uris: &[&str]) -> String {
@@ -50,15 +57,23 @@ fn browse(revision: u32, uris: &[&str]) -> String {
          xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
          xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">{items}</DIDL-Lite>"
     );
-    response("Browse", &format!(
-        "<Result>{}</Result><NumberReturned>{}</NumberReturned>\
+    response(
+        "Browse",
+        &format!(
+            "<Result>{}</Result><NumberReturned>{}</NumberReturned>\
          <TotalMatches>{}</TotalMatches><UpdateID>{revision}</UpdateID>",
-        xml_escape(&didl), uris.len(), uris.len()
-    ))
+            xml_escape(&didl),
+            uris.len(),
+            uris.len()
+        ),
+    )
 }
 
 fn lost() -> ProtoError {
-    ProtoError::Network { target: "synthetic-player".into(), detail: "reply lost".into() }
+    ProtoError::Network {
+        target: "synthetic-player".into(),
+        detail: "reply lost".into(),
+    }
 }
 
 type Reply = (&'static str, Result<String, ProtoError>);
@@ -70,23 +85,43 @@ struct Wire {
 
 impl Wire {
     fn new(replies: impl IntoIterator<Item = Reply>) -> Self {
-        Self { replies: RefCell::new(replies.into_iter().collect()), calls: RefCell::new(Vec::new()) }
+        Self {
+            replies: RefCell::new(replies.into_iter().collect()),
+            calls: RefCell::new(Vec::new()),
+        }
     }
 
     fn writes(&self) -> usize {
-        self.calls.borrow().iter().filter(|(name, _)| name == "RemoveTrackRangeFromQueue").count()
+        self.calls
+            .borrow()
+            .iter()
+            .filter(|(name, _)| name == "RemoveTrackRangeFromQueue")
+            .count()
     }
 
     fn finished(&self) {
-        assert!(self.replies.borrow().is_empty(), "some expected observations did not run");
+        assert!(
+            self.replies.borrow().is_empty(),
+            "some expected observations did not run"
+        );
     }
 }
 
 impl Transport for Wire {
-    fn soap_post(&self, _: IpAddr, _: &str, action: &str, body: &str) -> Result<String, ProtoError> {
+    fn soap_post(
+        &self,
+        _: IpAddr,
+        _: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
         let action = action.trim_matches('"').rsplit('#').next().unwrap();
         self.calls.borrow_mut().push((action.into(), body.into()));
-        let (expected, result) = self.replies.borrow_mut().pop_front().expect("no unexpected I/O");
+        let (expected, result) = self
+            .replies
+            .borrow_mut()
+            .pop_front()
+            .expect("no unexpected I/O");
         assert_eq!(action, expected);
         result
     }
@@ -106,8 +141,13 @@ fn exact_deletion_checks_both_sides_and_never_panics_on_invalid_ranges() {
     let before = snapshot(7, &["a", "b", "c", "d"]);
     assert!(removed(&before, &snapshot(8, &["a", "d"]), 1, 3));
     assert!(removed(&before, &snapshot(8, &[]), 0, 4));
-    for after in [snapshot(7, &["a", "d"]), snapshot(8, &["x", "d"]),
-        snapshot(8, &["a", "x"]), snapshot(8, &["a"]), snapshot(8, &["a", "d", "x"])] {
+    for after in [
+        snapshot(7, &["a", "d"]),
+        snapshot(8, &["x", "d"]),
+        snapshot(8, &["a", "x"]),
+        snapshot(8, &["a"]),
+        snapshot(8, &["a", "d", "x"]),
+    ] {
         assert!(!removed(&before, &after, 1, 3));
     }
     for (start, end) in [(0, 0), (3, 2), (0, 5), (usize::MAX, usize::MAX)] {
@@ -125,8 +165,22 @@ fn duplicate_uris_and_revision_wrap_are_valid_observations() {
 #[test]
 fn sends_the_observed_revision_and_reads_the_entire_result() {
     let wire = successful_tail(Ok(response("RemoveTrackRangeFromQueue", "")));
-    let done = remove(&wire, host(), &owner(), &snapshot(7, &["a", "b", "c", "d"]), 2, 2).unwrap();
-    assert_eq!(done, Removed { remaining: 2, recovered: false });
+    let done = remove(
+        &wire,
+        host(),
+        &owner(),
+        &snapshot(7, &["a", "b", "c", "d"]),
+        2,
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        done,
+        Removed {
+            remaining: 2,
+            recovered: false
+        }
+    );
     let calls = wire.calls.borrow();
     let write = &calls[1].1;
     assert!(write.contains("<UpdateID>7</UpdateID>"));
@@ -139,10 +193,27 @@ fn sends_the_observed_revision_and_reads_the_entire_result() {
 
 #[test]
 fn lost_and_malformed_replies_recover_without_repeating_deletion() {
-    for error in [lost(), ProtoError::Malformed("unreadable acknowledgement".into())] {
+    for error in [
+        lost(),
+        ProtoError::Malformed("unreadable acknowledgement".into()),
+    ] {
         let wire = successful_tail(Err(error));
-        let done = remove(&wire, host(), &owner(), &snapshot(7, &["a", "b", "c", "d"]), 2, 2).unwrap();
-        assert_eq!(done, Removed { remaining: 2, recovered: true });
+        let done = remove(
+            &wire,
+            host(),
+            &owner(),
+            &snapshot(7, &["a", "b", "c", "d"]),
+            2,
+            2,
+        )
+        .unwrap();
+        assert_eq!(
+            done,
+            Removed {
+                remaining: 2,
+                recovered: true
+            }
+        );
         assert_eq!(wire.writes(), 1);
         wire.finished();
     }
@@ -153,7 +224,13 @@ fn explicit_faults_remain_faults_without_readback_inference() {
     for code in [701, 800, 1000] {
         let wire = Wire::new([
             ("GetZoneGroupState", Ok(topology(true))),
-            ("RemoveTrackRangeFromQueue", Err(ProtoError::SoapFault { code, reason: "refused".into() })),
+            (
+                "RemoveTrackRangeFromQueue",
+                Err(ProtoError::SoapFault {
+                    code,
+                    reason: "refused".into(),
+                }),
+            ),
         ]);
         assert!(matches!(
             remove(&wire, host(), &owner(), &snapshot(7, &["a"]), 1, 1),
@@ -167,11 +244,27 @@ fn explicit_faults_remain_faults_without_readback_inference() {
 #[test]
 fn zero_revision_bad_identities_and_ranges_do_no_io() {
     let wire = Wire::new([]);
-    for before in [snapshot(0, &["a"]), snapshot(7, &[""]), snapshot(7, &["NOT_IMPLEMENTED"])] {
-        assert!(matches!(remove(&wire, host(), &owner(), &before, 1, 1), Err(RemovalError::Invalid(_))));
+    for before in [
+        snapshot(0, &["a"]),
+        snapshot(7, &[""]),
+        snapshot(7, &["NOT_IMPLEMENTED"]),
+    ] {
+        assert!(matches!(
+            remove(&wire, host(), &owner(), &before, 1, 1),
+            Err(RemovalError::Invalid(_))
+        ));
     }
-    for (first, count) in [(0, 1), (1, 0), (u32::MAX, 2), (2, 1), (1, MAX_BROWSE_OBJECTS + 1)] {
-        assert!(matches!(remove(&wire, host(), &owner(), &snapshot(7, &["a"]), first, count), Err(RemovalError::Invalid(_))));
+    for (first, count) in [
+        (0, 1),
+        (1, 0),
+        (u32::MAX, 2),
+        (2, 1),
+        (1, MAX_BROWSE_OBJECTS + 1),
+    ] {
+        assert!(matches!(
+            remove(&wire, host(), &owner(), &snapshot(7, &["a"]), first, count),
+            Err(RemovalError::Invalid(_))
+        ));
     }
     assert!(wire.calls.borrow().is_empty());
 }
@@ -179,7 +272,10 @@ fn zero_revision_bad_identities_and_ranges_do_no_io() {
 #[test]
 fn changed_coordinator_before_dispatch_never_writes() {
     let wire = Wire::new([("GetZoneGroupState", Ok(topology(false)))]);
-    assert!(matches!(remove(&wire, host(), &owner(), &snapshot(7, &["a"]), 1, 1), Err(RemovalError::Invalid(_))));
+    assert!(matches!(
+        remove(&wire, host(), &owner(), &snapshot(7, &["a"]), 1, 1),
+        Err(RemovalError::Invalid(_))
+    ));
     assert_eq!(wire.writes(), 0);
     wire.finished();
 }
@@ -201,13 +297,30 @@ fn matching_contents_on_a_changed_coordinator_do_not_confirm_success() {
 
 #[test]
 fn acknowledged_but_incorrect_changes_are_uncertain() {
-    for (revision, uris) in [(7, vec!["a", "d"]), (8, vec!["a", "d", "other"]), (8, vec!["a", "b", "c", "d"])] {
+    for (revision, uris) in [
+        (7, vec!["a", "d"]),
+        (8, vec!["a", "d", "other"]),
+        (8, vec!["a", "b", "c", "d"]),
+    ] {
         let wire = Wire::new([
             ("GetZoneGroupState", Ok(topology(true))),
-            ("RemoveTrackRangeFromQueue", Ok(response("RemoveTrackRangeFromQueue", ""))),
+            (
+                "RemoveTrackRangeFromQueue",
+                Ok(response("RemoveTrackRangeFromQueue", "")),
+            ),
             ("Browse", Ok(browse(revision, &uris))),
         ]);
-        assert!(matches!(remove(&wire, host(), &owner(), &snapshot(7, &["a", "b", "c", "d"]), 2, 2), Err(RemovalError::Uncertain(_))));
+        assert!(matches!(
+            remove(
+                &wire,
+                host(),
+                &owner(),
+                &snapshot(7, &["a", "b", "c", "d"]),
+                2,
+                2
+            ),
+            Err(RemovalError::Uncertain(_))
+        ));
         assert_eq!(wire.writes(), 1);
         wire.finished();
     }
@@ -218,7 +331,10 @@ fn failed_readback_retains_the_original_write_diagnostic() {
     let wire = Wire::new([
         ("GetZoneGroupState", Ok(topology(true))),
         ("RemoveTrackRangeFromQueue", Err(lost())),
-        ("Browse", Err(ProtoError::Malformed("bad observation".into()))),
+        (
+            "Browse",
+            Err(ProtoError::Malformed("bad observation".into())),
+        ),
     ]);
     let error = remove(&wire, host(), &owner(), &snapshot(7, &["a"]), 1, 1).unwrap_err();
     assert!(error.to_string().contains("reply lost"));
@@ -243,7 +359,11 @@ fn undo_reads_and_removes_only_the_recorded_range() {
 
 #[test]
 fn undo_does_not_search_for_a_shifted_or_partially_missing_selection() {
-    for uris in [vec!["a", "x", "b", "c"], vec!["a", "b"], vec!["b", "c", "a", "d"]] {
+    for uris in [
+        vec!["a", "x", "b", "c"],
+        vec!["a", "b"],
+        vec!["b", "c", "a", "d"],
+    ] {
         let wire = Wire::new([("Browse", Ok(browse(7, &uris)))]);
         assert!(!undo(&wire, host(), &owner(), 2, &["b".into(), "c".into()]).unwrap());
         assert_eq!(wire.writes(), 0);
@@ -254,7 +374,11 @@ fn undo_does_not_search_for_a_shifted_or_partially_missing_selection() {
 #[test]
 fn undo_invalid_input_is_rejected_before_browsing() {
     let wire = Wire::new([]);
-    for (first, uris) in [(0, vec!["a".into()]), (1, vec!["NOT_IMPLEMENTED".into()]), (u32::MAX, vec!["a".into(), "b".into()])] {
+    for (first, uris) in [
+        (0, vec!["a".into()]),
+        (1, vec!["NOT_IMPLEMENTED".into()]),
+        (u32::MAX, vec!["a".into(), "b".into()]),
+    ] {
         assert!(undo(&wire, host(), &owner(), first, &uris).is_err());
     }
     assert!(wire.calls.borrow().is_empty());

@@ -68,9 +68,16 @@ impl State {
                     .map_err(io::Error::other)?
                     .timers
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound
-                && path.parent().filter(|p| !p.as_os_str().is_empty())
-                    .unwrap_or_else(|| Path::new(".")).is_dir() => Vec::new(),
+            Err(error)
+                if error.kind() == io::ErrorKind::NotFound
+                    && path
+                        .parent()
+                        .filter(|p| !p.as_os_str().is_empty())
+                        .unwrap_or_else(|| Path::new("."))
+                        .is_dir() =>
+            {
+                Vec::new()
+            }
             Err(error) => return Err(error),
         };
         let mut pending = HashMap::new();
@@ -79,7 +86,9 @@ impl State {
                 || timer.room.trim().is_empty()
                 || pending.insert(timer.coordinator.clone(), timer).is_some()
             {
-                return Err(io::Error::other("saved sleep timers have ambiguous identities"));
+                return Err(io::Error::other(
+                    "saved sleep timers have ambiguous identities",
+                ));
             }
         }
         pending.retain(|id, _| !self.superseded.contains(id));
@@ -168,7 +177,11 @@ pub(super) struct Permit(Arc<Sleep>);
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        let mut state = self.0.writing.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self
+            .0
+            .writing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         state.busy = false;
         state.next = Instant::now() + state.delay;
         state.delay = state.delay.saturating_mul(2).min(MAX);
@@ -182,8 +195,7 @@ pub(super) fn reserve(sleep: &Arc<Sleep>, force: bool) -> Option<Permit> {
         Err(TryLockError::Poisoned(error)) => error.into_inner(),
         Err(TryLockError::WouldBlock) => return None,
     };
-    if state.stopped || state.busy || !state.needs_work()
-        || (!force && Instant::now() < state.next)
+    if state.stopped || state.busy || !state.needs_work() || (!force && Instant::now() < state.next)
     {
         return None;
     }
@@ -195,7 +207,11 @@ pub(super) fn reserve(sleep: &Arc<Sleep>, force: bool) -> Option<Permit> {
 /// its last cancellation check still cannot arm a timer after this boundary.
 /// Pending evidence remains durable for a new daemon, not a later call here.
 pub(super) fn stop(sleep: &Sleep) {
-    sleep.writing.lock().unwrap_or_else(PoisonError::into_inner).stopped = true;
+    sleep
+        .writing
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .stopped = true;
 }
 
 /// Retry verification and dirty persistence away from the scheduling thread.
@@ -281,7 +297,10 @@ pub(super) fn adopt(surface: &Surface, sleep: &Sleep, allowed: impl Fn() -> bool
         // Never infer a replacement coordinator by room name or adopt a
         // former coordinator into the unrelated group it has since joined.
         if !households.iter().any(|household| {
-            household.groups.iter().any(|group| group.coordinator == timer.coordinator)
+            household
+                .groups
+                .iter()
+                .any(|group| group.coordinator == timer.coordinator)
         }) {
             continue;
         }
@@ -295,9 +314,8 @@ pub(super) fn adopt(surface: &Surface, sleep: &Sleep, allowed: impl Fn() -> bool
         match observed {
             Ok(Some(left)) => {
                 let now = surface.clock.now().to_utc();
-                let matches = !expired(&timer, now)
-                    && !left.is_zero()
-                    && is_backstop(&timer, left, now);
+                let matches =
+                    !expired(&timer, now) && !left.is_zero() && is_backstop(&timer, left, now);
                 if finish(sleep, &timer, matches, &zone.room) {
                     adopted += 1;
                 }
@@ -308,7 +326,9 @@ pub(super) fn adopt(surface: &Surface, sleep: &Sleep, allowed: impl Fn() -> bool
             Err(failure) => {
                 surface.notice(&failure);
                 tracing::debug!(
-                    "sleep timer in {} awaits a readable backstop: {}", timer.room, failure.detail
+                    "sleep timer in {} awaits a readable backstop: {}",
+                    timer.room,
+                    failure.detail
                 );
             }
         }

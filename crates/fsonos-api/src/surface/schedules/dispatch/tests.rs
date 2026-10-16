@@ -87,15 +87,21 @@ fn repeated_ticks_cannot_allocate_two_workers_for_one_schedule() {
     let (surface, schedule, at) = fixture();
     let scheduler = Scheduler::new(&surface);
     let (release, wait) = mpsc::channel();
-    assert!(launch(&scheduler, schedule.clone(), at, at, |name, work| {
-        spawn(
-            name,
-            Box::new(move || {
-                wait.recv().unwrap();
-                work();
-            }),
-        )
-    }));
+    assert!(launch(
+        &scheduler,
+        schedule.clone(),
+        at,
+        at,
+        |name, work| {
+            spawn(
+                name,
+                Box::new(move || {
+                    wait.recv().unwrap();
+                    work();
+                }),
+            )
+        }
+    ));
     assert_eq!(
         recorded(&surface),
         None,
@@ -179,15 +185,21 @@ fn shutdown_before_admission_keeps_work_due_for_a_later_daemon() {
     let (surface, schedule, at) = fixture();
     let scheduler = Scheduler::new(&surface);
     let (release, wait) = mpsc::channel();
-    assert!(launch(&scheduler, schedule.clone(), at, at, |name, work| {
-        spawn(
-            name,
-            Box::new(move || {
-                wait.recv().unwrap();
-                work();
-            }),
-        )
-    }));
+    assert!(launch(
+        &scheduler,
+        schedule.clone(),
+        at,
+        at,
+        |name, work| {
+            spawn(
+                name,
+                Box::new(move || {
+                    wait.recv().unwrap();
+                    work();
+                }),
+            )
+        }
+    ));
     scheduler.dispatch.stop();
     release.send(()).unwrap();
     assert!(scheduler.wait(Duration::from_secs(5)));

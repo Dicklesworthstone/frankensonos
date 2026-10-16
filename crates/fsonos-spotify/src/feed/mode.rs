@@ -85,11 +85,15 @@ pub(super) fn maintain<T: Transport + ?Sized>(
         feed.queue_len = None;
         return Ok(false);
     }
-    let owned = reconciled.played.iter().chain(&reconciled.queued).any(|work| {
-        work.movements
-            .iter()
-            .any(|movement| movement.added && movement.position.is_some())
-    });
+    let owned = reconciled
+        .played
+        .iter()
+        .chain(&reconciled.queued)
+        .any(|work| {
+            work.movements
+                .iter()
+                .any(|movement| movement.added && movement.position.is_some())
+        });
     if !owned {
         if had {
             feed.release();

@@ -18,13 +18,20 @@ struct Pending {
 
 impl Pending {
     fn reserve(sleep: &Arc<Sleep>, ticket: SleepRun) -> Option<Self> {
-        if sleep.fades_in_flight.fetch_update(Ordering::AcqRel, Ordering::Acquire,
-            |count| (count < MAX_FADES).then_some(count + 1)).is_err()
+        if sleep
+            .fades_in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                (count < MAX_FADES).then_some(count + 1)
+            })
+            .is_err()
         {
             sleep.timers.release_run(&ticket);
             return None;
         }
-        Some(Self { sleep: Arc::clone(sleep), ticket })
+        Some(Self {
+            sleep: Arc::clone(sleep),
+            ticket,
+        })
     }
 }
 
@@ -39,7 +46,11 @@ pub(super) fn start(scheduler: &Scheduler, now: DateTime<Utc>) -> Vec<Ran> {
     start_with(scheduler, now, |work| scheduler.spawn("fsonos-sleep", work))
 }
 
-fn start_with(scheduler: &Scheduler, now: DateTime<Utc>, mut spawn: impl FnMut(Work) -> bool) -> Vec<Ran> {
+fn start_with(
+    scheduler: &Scheduler,
+    now: DateTime<Utc>,
+    mut spawn: impl FnMut(Work) -> bool,
+) -> Vec<Ran> {
     if scheduler.dispatch.stopped() {
         return Vec::new();
     }
@@ -68,11 +79,15 @@ fn start_with(scheduler: &Scheduler, now: DateTime<Utc>, mut spawn: impl FnMut(W
             }
             let timer = guard.ticket.timer();
             let outcome = guard.sleep.timers.run_due(
-                &*surface.transport, &households, &guard.sleep.fader, &guard.ticket,
+                &*surface.transport,
+                &households,
+                &guard.sleep.fader,
+                &guard.ticket,
             );
             match outcome {
                 Ok(outcome) => tracing::info!(
-                    "sleep timer in {}'s group: {}", timer.room,
+                    "sleep timer in {}'s group: {}",
+                    timer.room,
                     match outcome {
                         SleepOutcome::Paused => "faded out and paused",
                         SleepOutcome::Cancelled => "cancelled during its fade",

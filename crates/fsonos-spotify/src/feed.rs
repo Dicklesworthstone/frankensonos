@@ -175,7 +175,9 @@ mod navigation {
         // waiting DJ work. A missing track or a changed Spotify occurrence is
         // not evidence on which to seek or enqueue.
         if current.uri.is_empty()
-            || index.and_then(|index| queue.get(index)).map(Option::as_deref)
+            || index
+                .and_then(|index| queue.get(index))
+                .map(Option::as_deref)
                 != Some(source.as_deref())
         {
             feed.queue_len = None;

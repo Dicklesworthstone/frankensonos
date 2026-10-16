@@ -114,7 +114,10 @@ fn a_late_800_does_not_replay_the_accepted_source_on_a_new_coordinator() {
     assert_eq!(failure.upnp_code, Some(800));
     assert!(failure.hint.contains("earlier speaker step"), "{failure:?}");
     let calls = t.calls.borrow();
-    assert_eq!(calls.iter().filter(|a| *a == "SetAVTransportURI").count(), 1);
+    assert_eq!(
+        calls.iter().filter(|a| *a == "SetAVTransportURI").count(),
+        1
+    );
     assert_eq!(calls.iter().filter(|a| *a == "Play").count(), 1);
 }
 
@@ -234,7 +237,12 @@ fn an_initial_coordinator_refusal_still_recovers_and_changes_the_group_volume() 
         panic!("coordinator recovery already used its retry")
     })
     .unwrap();
-    assert!(outcome.notes.iter().any(|note| note.code == NoteCode::Healed));
+    assert!(
+        outcome
+            .notes
+            .iter()
+            .any(|note| note.code == NoteCode::Healed)
+    );
     assert_eq!(
         fsonos_proto::control::get_group_volume(&sim.lan(), sim.player("Office").unwrap().ip)
             .unwrap(),
@@ -254,7 +262,12 @@ fn a_single_repeat_safe_write_still_recovers_at_the_players_new_address() {
         Some(survey(&sim.lan()))
     })
     .unwrap();
-    assert!(outcome.notes.iter().any(|note| note.code == NoteCode::Healed));
+    assert!(
+        outcome
+            .notes
+            .iter()
+            .any(|note| note.code == NoteCode::Healed)
+    );
     assert!(fsonos_proto::control::get_mute(&sim.lan(), new).unwrap());
 }
 
@@ -320,7 +333,10 @@ fn verified_lost_acknowledgements_still_complete_without_replaying_either_stage(
         .unwrap();
         assert!(outcome.changed);
         let calls = t.calls.borrow();
-        assert_eq!(calls.iter().filter(|a| *a == "SetAVTransportURI").count(), 1);
+        assert_eq!(
+            calls.iter().filter(|a| *a == "SetAVTransportURI").count(),
+            1
+        );
         assert_eq!(calls.iter().filter(|a| *a == "Play").count(), 1);
         assert!(calls.iter().any(|a| a == "GetMediaInfo"));
     }

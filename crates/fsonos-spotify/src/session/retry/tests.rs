@@ -132,7 +132,9 @@ impl Reply {
 
     fn token() -> Self {
         Self {
-            body: format!(r#"{{"access_token":"rotated-access","refresh_token":"rotated-refresh","token_type":"Bearer","expires_in":3600,"scope":"{SCOPE}"}}"#),
+            body: format!(
+                r#"{{"access_token":"rotated-access","refresh_token":"rotated-refresh","token_type":"Bearer","expires_in":3600,"scope":"{SCOPE}"}}"#
+            ),
             ..Self::status(200)
         }
     }
@@ -219,7 +221,11 @@ impl Server {
                 let after = reply
                     .after
                     .map_or_else(String::new, |value| format!("Retry-After: {value}\r\n"));
-                let head = format!("HTTP/1.1 {} Scripted\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{after}\r\n", reply.status, reply.body.len());
+                let head = format!(
+                    "HTTP/1.1 {} Scripted\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n{after}\r\n",
+                    reply.status,
+                    reply.body.len()
+                );
                 if stream.write_all(head.as_bytes()).is_err() {
                     continue;
                 }
@@ -396,17 +402,16 @@ fn mixed_rate_limits_server_failure_and_refresh_share_one_budget() {
     let seen = server.seen.lock().unwrap();
     assert_eq!(seen.len(), 5);
     assert_eq!(seen.iter().filter(|seen| seen.method == "POST").count(), 1);
-    assert_eq!(seen[4].authorization.as_deref(), Some("Bearer rotated-access"));
+    assert_eq!(
+        seen[4].authorization.as_deref(),
+        Some("Bearer rotated-access")
+    );
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
 fn a_second_unauthorized_response_does_not_refresh_again() {
-    let server = Server::start(vec![
-        Reply::status(401),
-        Reply::token(),
-        Reply::status(401),
-    ]);
+    let server = Server::start(vec![Reply::status(401), Reply::token(), Reply::status(401)]);
     let (mut session, directory) = server.session();
     runtime().block_on(async move {
         let cx = Cx::current().unwrap();
@@ -464,7 +469,11 @@ fn zero_total_budget_and_other_origins_send_nothing() {
     runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
-        assert!(get_with_limit(&mut session, &cx, &url, 5, Duration::ZERO).await.is_err());
+        assert!(
+            get_with_limit(&mut session, &cx, &url, 5, Duration::ZERO)
+                .await
+                .is_err()
+        );
         assert!(matches!(
             session.get(&cx, "https://example.invalid/v1/me").await,
             Err(SpotifyError::Config(_))
@@ -582,7 +591,10 @@ fn cooldown_expiration_uses_elapsed_time_without_overflow_or_clock_reinterpretat
         limit.remaining_at(started + Duration::from_secs(4)),
         Duration::from_secs(6)
     );
-    assert_eq!(limit.remaining_at(started + Duration::from_secs(10)), Duration::ZERO);
+    assert_eq!(
+        limit.remaining_at(started + Duration::from_secs(10)),
+        Duration::ZERO
+    );
     limit.record(Some("18446744073709551616"), 0);
     assert_eq!(limit.limited.unwrap().1, Duration::MAX);
     limit.record(None, 0);
@@ -661,7 +673,10 @@ fn changing_the_api_endpoint_does_not_transfer_an_old_peers_rate_limit() {
     session.api_cooldown.record(Some("60"), 0);
     let mut endpoints = session.endpoints().clone();
     session = session.with_endpoints(endpoints.clone());
-    assert!(session.api_cooldown.limited.is_some(), "same API keeps its limit");
+    assert!(
+        session.api_cooldown.limited.is_some(),
+        "same API keeps its limit"
+    );
     endpoints.api.push_str("/alternate");
     session = session.with_endpoints(endpoints);
     assert!(session.api_cooldown.limited.is_none());

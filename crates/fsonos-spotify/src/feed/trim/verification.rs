@@ -229,7 +229,9 @@ fn acknowledged_cleanup_preserves_playback_and_owner_duplicates() {
         assert_eq!(feed.playing, Some(2));
         assert_eq!(feed.recorded, Some((2, uri(4))));
         assert_eq!(
-            soap::get_transport_info(&f.sim.lan(), f.host).unwrap().state,
+            soap::get_transport_info(&f.sim.lan(), f.host)
+                .unwrap()
+                .state,
             TransportState::Playing
         );
     }
@@ -378,7 +380,10 @@ fn playing_at(f: &Fixture, position: u32, length: u32) -> QueueFeed {
     feed.playing = Some(position);
     feed.recorded = Some((position, uri(position)));
     feed.queue_len = Some(length);
-    feed.queued = vec![work(position, &[position]), work(position + 1, &[position + 1])];
+    feed.queued = vec![
+        work(position, &[position]),
+        work(position + 1, &[position + 1]),
+    ];
     feed
 }
 
@@ -397,7 +402,9 @@ fn a_large_contiguous_history_is_not_rescanned_and_deleted_per_song() {
         assert_eq!(feed.recorded, Some((7, uri(127))));
         assert!(feed.played.is_empty());
         assert_eq!(
-            soap::get_transport_info(&f.sim.lan(), f.host).unwrap().state,
+            soap::get_transport_info(&f.sim.lan(), f.host)
+                .unwrap()
+                .state,
             TransportState::Playing
         );
     }
@@ -410,7 +417,10 @@ fn fragmented_cleanup_yields_after_eight_batches_and_continues_later() {
         append_until(&f, generation, 48);
         let replies = Replies::new(&f, Fault::None);
         let mut feed = playing_at(&f, 47, 48);
-        feed.played = (6..=44).step_by(2).map(|first| work(first, &[first])).collect();
+        feed.played = (6..=44)
+            .step_by(2)
+            .map(|first| work(first, &[first]))
+            .collect();
         assert_eq!(feed.played.len(), 20);
         for (removals, remaining) in [(8, 12), (16, 4), (20, 0)] {
             feed.trim(&f.speakers(&replies)).unwrap();
@@ -420,7 +430,12 @@ fn fragmented_cleanup_yields_after_eight_batches_and_continues_later() {
         let after = read(&f.sim.lan(), f.host).unwrap();
         assert_eq!(after.uris.len(), 28);
         for track in (7..=45).step_by(2) {
-            assert!(after.uris.iter().any(|candidate| same_track(candidate, &uri(track))));
+            assert!(
+                after
+                    .uris
+                    .iter()
+                    .any(|candidate| same_track(candidate, &uri(track)))
+            );
         }
         assert_eq!(feed.recorded, Some((27, uri(47))));
         assert!(feed.is_active());

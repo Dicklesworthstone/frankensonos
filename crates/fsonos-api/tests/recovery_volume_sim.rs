@@ -108,15 +108,16 @@ fn scenario(s2: bool, group: bool, client: &Client, lower_after_move: bool) {
     .unwrap();
     let capped = !matches!(client, Client::Cli);
     let first = if capped { 25 } else { 80 };
-    let final_level = if capped && lower_after_move {
-        5
-    } else {
-        first
-    };
+    let final_level = if capped && lower_after_move { 5 } else { first };
     assert_eq!(surveys.get(), 1);
     assert!(t.lost.get());
     assert_eq!(outcome.volume, Some(final_level));
-    assert!(outcome.notes.iter().any(|note| note.code == NoteCode::Healed));
+    assert!(
+        outcome
+            .notes
+            .iter()
+            .any(|note| note.code == NoteCode::Healed)
+    );
     assert_eq!(
         outcome
             .notes

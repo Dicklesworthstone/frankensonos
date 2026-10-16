@@ -122,7 +122,8 @@ fn on_new_coordinator<T: Transport + ?Sized>(
     volume: &RefCell<volume::RetryVolume>,
 ) -> Result<OutcomeDto, Failure> {
     let Some(coordinator) = command.group_coordinator() else {
-        let (result, blocked) = observed_execute(transport, households, guard, command.clone(), volume);
+        let (result, blocked) =
+            observed_execute(transport, households, guard, command.clone(), volume);
         can_readdress.set(!blocked);
         return result;
     };

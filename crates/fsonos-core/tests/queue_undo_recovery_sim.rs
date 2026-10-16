@@ -27,15 +27,27 @@ struct Replies {
 }
 
 fn uris(names: &[&str]) -> Vec<String> {
-    names.iter().map(|name| format!("x-file-cifs://example.invalid/{name}.flac")).collect()
+    names
+        .iter()
+        .map(|name| format!("x-file-cifs://example.invalid/{name}.flac"))
+        .collect()
 }
 
 fn lost() -> ProtoError {
-    ProtoError::Network { target: "synthetic-player".into(), detail: "removal reply lost".into() }
+    ProtoError::Network {
+        target: "synthetic-player".into(),
+        detail: "removal reply lost".into(),
+    }
 }
 
 impl Transport for Replies {
-    fn soap_post(&self, host: IpAddr, path: &str, action: &str, body: &str) -> Result<String, ProtoError> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
         if !action.contains("#RemoveTrackRangeFromQueue") {
             return self.lan.soap_post(host, path, action, body);
         }
@@ -60,10 +72,20 @@ impl Transport for Replies {
 }
 
 fn setup(s2: bool, fault: Fault) -> (SimHandle, Replies, Vec<HouseholdState>, PlayerId, IpAddr) {
-    let model = if s2 { SimModel::One } else { SimModel::Play5Gen1 };
+    let model = if s2 {
+        SimModel::One
+    } else {
+        SimModel::Play5Gen1
+    };
     let players = [SimPlayerSpec::new("Synthetic", model)];
     let builder = SimHousehold::builder();
-    let sim = if s2 { builder.s2(players) } else { builder.s1(players) }.spawn().unwrap();
+    let sim = if s2 {
+        builder.s2(players)
+    } else {
+        builder.s1(players)
+    }
+    .spawn()
+    .unwrap();
     let player = sim.player("Synthetic").unwrap();
     let (host, id) = (player.ip, PlayerId(player.uuid.clone()));
     let lan = sim.lan();
@@ -72,7 +94,11 @@ fn setup(s2: bool, fault: Fault) -> (SimHandle, Replies, Vec<HouseholdState>, Pl
     }
     let mut household = HouseholdState::default();
     household.apply_topology(&get_zone_group_state(&lan, host).unwrap());
-    let wire = Replies { lan, fault, writes: AtomicUsize::new(0) };
+    let wire = Replies {
+        lan,
+        fault,
+        writes: AtomicUsize::new(0),
+    };
     (sim, wire, vec![household], id, host)
 }
 
@@ -91,7 +117,8 @@ fn undo_preserves_surrounding_tracks_and_recovers_lost_replies_on_both_generatio
             assert_eq!(wire.writes.load(Ordering::SeqCst), 1);
             let log = sim.soap_log();
             assert!(log[before..].iter().all(|entry| {
-                entry.action == "Browse" || entry.action == "GetZoneGroupState"
+                entry.action == "Browse"
+                    || entry.action == "GetZoneGroupState"
                     || entry.action == "RemoveTrackRangeFromQueue"
             }));
             sim.shutdown();
@@ -130,7 +157,8 @@ fn incomplete_or_concurrent_effects_do_not_become_success_or_a_second_write() {
             (Fault::ConcurrentAfter, vec!["a", "d", "other"]),
         ] {
             let (sim, wire, households, id, host) = setup(s2, fault);
-            let error = control::unqueue(&wire, &households, &id, 2, &uris(&["b", "b"])).unwrap_err();
+            let error =
+                control::unqueue(&wire, &households, &id, 2, &uris(&["b", "b"])).unwrap_err();
             assert!(error.to_string().contains("uncertain"));
             assert_eq!(wire.writes.load(Ordering::SeqCst), 1);
             assert_eq!(current(&sim, host), uris(&expected));

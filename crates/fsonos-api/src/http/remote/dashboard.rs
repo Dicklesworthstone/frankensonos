@@ -1,8 +1,8 @@
 //! The Listening Room dashboard is a separate, embedded client of the same API.
 //! It inherits the remote's browser security headers and listener guards.
 
-use fastapi::core::RouteEntry;
 use fastapi::Response;
+use fastapi::core::RouteEntry;
 
 use super::{Ctx, Op, REMOTE, asset};
 
@@ -55,7 +55,9 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             |_, _, _| {
                 document(
                     "text/javascript; charset=utf-8",
-                    &format!("{CORE}\n{VISUALIZER}\n{AUDIO}\n{SESSION}\n{QUEUE}\n{WORKSPACE}\n{SCRIPT}"),
+                    &format!(
+                        "{CORE}\n{VISUALIZER}\n{AUDIO}\n{SESSION}\n{QUEUE}\n{WORKSPACE}\n{SCRIPT}"
+                    ),
                 )
             },
         )

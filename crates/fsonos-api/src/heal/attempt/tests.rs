@@ -6,7 +6,10 @@ struct Replies(RefCell<VecDeque<Result<String, ProtoError>>>);
 
 impl Transport for Replies {
     fn soap_post(&self, _: IpAddr, _: &str, _: &str, _: &str) -> Result<String, ProtoError> {
-        self.0.borrow_mut().pop_front().expect("unexpected SOAP call")
+        self.0
+            .borrow_mut()
+            .pop_front()
+            .expect("unexpected SOAP call")
     }
 
     fn http_get(&self, _: &str) -> Result<String, ProtoError> {

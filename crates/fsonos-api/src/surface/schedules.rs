@@ -1058,11 +1058,16 @@ impl Surface {
                     let left = speaker_timer(t, zone)?.ok_or_else(|| no_timer(zone))?;
                     // An unadopted daemon backstop includes five extra minutes.
                     // Extend its saved deadline, not that later emergency pause.
-                    let saved = sleep.saved_timers().into_iter()
+                    let saved = sleep
+                        .saved_timers()
+                        .into_iter()
                         .find(|timer| timer.coordinator == *at);
                     let prior = sleep.timers.get(at).or(saved);
-                    let left = prior.filter(|timer| is_backstop(timer, left, utc))
-                        .map_or(left, |timer| (timer.ends.max(utc) - utc).to_std().unwrap_or_default());
+                    let left = prior
+                        .filter(|timer| is_backstop(timer, left, utc))
+                        .map_or(left, |timer| {
+                            (timer.ends.max(utc) - utc).to_std().unwrap_or_default()
+                        });
                     if left + by > MAX_SLEEP {
                         return Err(too_long(left + by));
                     }

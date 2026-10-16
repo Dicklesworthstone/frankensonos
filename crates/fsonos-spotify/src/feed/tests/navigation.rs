@@ -56,12 +56,8 @@ impl Running {
     }
 
     fn sample(&self) -> PlayerPlayback {
-        let live = control::playback(
-            &self.rig.lan,
-            &self.rig.houses,
-            &self.rig.coordinator,
-        )
-        .unwrap();
+        let live =
+            control::playback(&self.rig.lan, &self.rig.houses, &self.rig.coordinator).unwrap();
         let mut sample = PlayerPlayback::default();
         sample.queue_position = Some(live.position.track);
         sample.track_uri = Some(live.position.uri);
@@ -227,7 +223,10 @@ fn a_failed_rewind_read_keeps_the_old_model_and_can_be_retried() {
     let snapshot = run.feed.snapshot();
     let queue_len = run.feed.queue_len;
     let heard = plays(&run.store);
-    run.rig.sim.upnp_fault(ROOM, "GetPositionInfo", 701).unwrap();
+    run.rig
+        .sim
+        .upnp_fault(ROOM, "GetPositionInfo", 701)
+        .unwrap();
     let result = run.feed.on_playback(
         &run.rig.speakers(&run.rig.lan),
         plan(&run.pool, MIDNIGHT + 900),
@@ -313,7 +312,10 @@ fn removing_only_future_works_does_not_end_a_session_rewound_into_retained_music
     for position in (keep + 1..=u32::try_from(run.rig.queue().len()).unwrap()).rev() {
         run.rig.owner_removes(position);
     }
-    assert!(run.observe(MIDNIGHT + 900) > 0, "the DJ replenishes its lookahead");
+    assert!(
+        run.observe(MIDNIGHT + 900) > 0,
+        "the DJ replenishes its lookahead"
+    );
     assert!(run.feed.is_active());
     assert_eq!(run.feed.current(), Some(&run.started[0]));
     assert_eq!(run.skip().unwrap(), run.started[1]);
@@ -398,7 +400,10 @@ fn skip_on_an_owner_item_still_finds_the_shifted_waiting_work() {
     run.rig.next();
     let next = run.skip().unwrap();
     assert_eq!(next.work_key, run.started[3].work_key);
-    assert_eq!(next.first(), run.started[3].first().map(|position| position + 1));
+    assert_eq!(
+        next.first(),
+        run.started[3].first().map(|position| position + 1)
+    );
     assert!(run.rig.queue().iter().any(|uri| uri == OWNER));
     assert_eq!(run.rig.position(), next.first().unwrap());
 }
@@ -410,7 +415,10 @@ fn a_failed_skip_read_does_not_publish_resync_or_write_to_the_player() {
     let snapshot = run.feed.snapshot();
     let queue_len = run.feed.queue_len;
     let queue = run.rig.queue();
-    run.rig.sim.upnp_fault(ROOM, "GetPositionInfo", 701).unwrap();
+    run.rig
+        .sim
+        .upnp_fault(ROOM, "GetPositionInfo", 701)
+        .unwrap();
     assert!(matches!(
         run.skip(),
         Err(FeedError::Proto(ProtoError::SoapFault { code: 701, .. }))
@@ -444,10 +452,15 @@ impl Transport for EditingDuringRead {
         body: &str,
     ) -> Result<String, ProtoError> {
         let action = soap_action.trim_matches('"').rsplit('#').next().unwrap();
-        if matches!(action, "AddURIToQueue" | "SetAVTransportURI" | "Seek" | "Play") {
+        if matches!(
+            action,
+            "AddURIToQueue" | "SetAVTransportURI" | "Seek" | "Play"
+        ) {
             self.writes.set(self.writes.get() + 1);
         }
-        let response = self.inner.soap_post(host, control_path, soap_action, body)?;
+        let response = self
+            .inner
+            .soap_post(host, control_path, soap_action, body)?;
         if action == "GetPositionInfo" && !self.edited.replace(true) {
             // This separate controller changes state after the response was
             // produced. Calls through inner are not writes made by the feed.
@@ -486,7 +499,10 @@ fn queue_or_source_changes_during_skip_reads_are_not_overwritten() {
             &mut run.store,
         );
         assert!(matches!(result, Err(FeedError::Inactive)));
-        assert!(transport.edited.get(), "the concurrent edit really occurred");
+        assert!(
+            transport.edited.get(),
+            "the concurrent edit really occurred"
+        );
         assert_eq!(transport.writes.get(), 0);
         assert_eq!(run.feed.snapshot(), snapshot);
         assert_eq!(run.feed.queue_len, None, "retry needs fresh queue evidence");

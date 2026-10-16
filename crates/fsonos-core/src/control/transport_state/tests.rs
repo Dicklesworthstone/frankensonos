@@ -13,18 +13,15 @@ impl Script {
     }
 
     fn done(&self) {
-        assert!(self.0.borrow().is_empty(), "all expected reads were performed");
+        assert!(
+            self.0.borrow().is_empty(),
+            "all expected reads were performed"
+        );
     }
 }
 
 impl Transport for Script {
-    fn soap_post(
-        &self,
-        _: IpAddr,
-        _: &str,
-        action: &str,
-        _: &str,
-    ) -> Result<String, ProtoError> {
+    fn soap_post(&self, _: IpAddr, _: &str, action: &str, _: &str) -> Result<String, ProtoError> {
         let (expected, reply) = self.0.borrow_mut().pop_front().expect("no write replay");
         assert!(action.ends_with(&format!("#{expected}\"")), "{action}");
         reply
@@ -49,22 +46,26 @@ fn reply(action: &str, args: &str) -> String {
 fn status(state: &str) -> Step {
     (
         "GetTransportInfo",
-        Ok(reply("GetTransportInfo", &format!(
-            "<CurrentTransportState>{state}</CurrentTransportState>"
-        ))),
+        Ok(reply(
+            "GetTransportInfo",
+            &format!("<CurrentTransportState>{state}</CurrentTransportState>"),
+        )),
     )
 }
 
 fn topology(coordinator: &str) -> Step {
     (
         "GetZoneGroupState",
-        Ok(reply("GetZoneGroupState", &format!(
-            "<ZoneGroupState>&lt;ZoneGroups&gt;\
+        Ok(reply(
+            "GetZoneGroupState",
+            &format!(
+                "<ZoneGroupState>&lt;ZoneGroups&gt;\
              &lt;ZoneGroup Coordinator=\"{coordinator}\" ID=\"g\"&gt;\
              &lt;ZoneGroupMember UUID=\"{coordinator}\" ZoneName=\"Test\" \
              Location=\"http://127.0.0.1:1400/xml/device_description.xml\"/&gt;\
              &lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;</ZoneGroupState>"
-        ))),
+            ),
+        )),
     )
 }
 
@@ -197,13 +198,14 @@ fn explicit_faults_skip_observation_and_read_failures_preserve_the_write_cause()
         reads.set(reads.get() + 1);
         Ok(true)
     });
-    assert!(matches!(result, Err(ProtoError::SoapFault { code: 701, .. })));
+    assert!(matches!(
+        result,
+        Err(ProtoError::SoapFault { code: 701, .. })
+    ));
     assert_eq!(reads.get(), 0);
     let result = complete("Play", Err(lost()), || {
         Err(ProtoError::Malformed("read-back failed".into()))
     });
-    assert!(
-        matches!(result, Err(ProtoError::Network { detail, .. })
-            if detail == "write reply lost")
-    );
+    assert!(matches!(result, Err(ProtoError::Network { detail, .. })
+            if detail == "write reply lost"));
 }

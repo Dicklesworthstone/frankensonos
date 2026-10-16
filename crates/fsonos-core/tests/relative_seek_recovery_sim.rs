@@ -77,8 +77,7 @@ fn prepare(sim: &SimHandle, houses: &[HouseholdState], room: &str, paused: bool)
     let target = resolve_room(houses, room).unwrap();
     // Equal URIs deliberately exercise queue-slot identity, not just URI equality.
     let track = ("spotify:track:0SimSeek00000000000001", "Synthetic track");
-    control::queue_spotify_tracks(&lan, houses, &target.coordinator.id, &[track, track])
-        .unwrap();
+    control::queue_spotify_tracks(&lan, houses, &target.coordinator.id, &[track, track]).unwrap();
     control::play_queue_from(&lan, houses, &target.coordinator.id, 1).unwrap();
     soap::seek_position(&lan, target.coordinator.ip, 70).unwrap();
     if paused {
@@ -107,8 +106,7 @@ fn accepted_seek_with_a_lost_reply_completes_on_s1_and_s2_without_another_write(
                     100
                 );
                 assert_eq!(t.writes.get(), 1);
-                let after = control::playback(&sim.lan(), &houses, &target.coordinator.id)
-                    .unwrap();
+                let after = control::playback(&sim.lan(), &houses, &target.coordinator.id).unwrap();
                 assert_eq!(after.position.position_secs, Some(100));
                 assert_eq!(after.position.track, 1);
                 assert_eq!(
@@ -124,7 +122,11 @@ fn accepted_seek_with_a_lost_reply_completes_on_s1_and_s2_without_another_write(
                     .filter(|entry| !entry.action.starts_with("Get"))
                     .map(|entry| entry.action.clone())
                     .collect();
-                assert_eq!(writes, ["Seek"], "no Play, source, volume or queue mutation");
+                assert_eq!(
+                    writes,
+                    ["Seek"],
+                    "no Play, source, volume or queue mutation"
+                );
             }
         }
     }
@@ -141,9 +143,12 @@ fn a_duplicate_track_in_a_different_slot_is_not_the_acknowledged_seek() {
         mode: LostReply::DuplicateTrack,
         writes: Cell::new(0),
     };
-    let error = control::seek(&t, &houses, &target.coordinator.id, control::Seek::By(30))
-        .unwrap_err();
-    assert!(matches!(error, fsonos_core::CoreError::Proto(ProtoError::Network { .. })));
+    let error =
+        control::seek(&t, &houses, &target.coordinator.id, control::Seek::By(30)).unwrap_err();
+    assert!(matches!(
+        error,
+        fsonos_core::CoreError::Proto(ProtoError::Network { .. })
+    ));
     assert_eq!(t.writes.get(), 1);
     let now = control::playback(&sim.lan(), &houses, &target.coordinator.id).unwrap();
     assert_eq!(now.position.track, 2);

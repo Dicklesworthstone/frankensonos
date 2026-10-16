@@ -47,9 +47,8 @@ fn unknown_duration_is_not_invented_and_invalid_samples_never_seek() {
 fn confirmation_requires_a_matching_track_slot_duration_and_clock() {
     let before = position(Some(70), Some(180));
     let good = position(Some(100), Some(180));
-    let prove = |after: &PositionInfo| {
-        reached(&before, after, 100, TransportState::Paused, Duration::ZERO)
-    };
+    let prove =
+        |after: &PositionInfo| reached(&before, after, 100, TransportState::Paused, Duration::ZERO);
     assert!(prove(&good));
     for bad in [
         position(None, Some(180)),
@@ -70,17 +69,41 @@ fn confirmation_requires_a_matching_track_slot_duration_and_clock() {
 fn only_playing_can_advance_and_confirmation_has_a_finite_age() {
     let before = position(Some(70), Some(180));
     let after = position(Some(103), Some(180));
-    assert!(reached(&before, &after, 100, TransportState::Playing, Duration::from_secs(2)));
+    assert!(reached(
+        &before,
+        &after,
+        100,
+        TransportState::Playing,
+        Duration::from_secs(2)
+    ));
     for state in [
         TransportState::Paused,
         TransportState::Stopped,
         TransportState::Unknown,
         TransportState::Transitioning,
     ] {
-        assert!(!reached(&before, &after, 100, state, Duration::from_secs(2)));
+        assert!(!reached(
+            &before,
+            &after,
+            100,
+            state,
+            Duration::from_secs(2)
+        ));
     }
-    assert!(!reached(&before, &after, 100, TransportState::Playing, Duration::ZERO));
-    assert!(!reached(&before, &after, 100, TransportState::Playing, Duration::from_secs(31)));
+    assert!(!reached(
+        &before,
+        &after,
+        100,
+        TransportState::Playing,
+        Duration::ZERO
+    ));
+    assert!(!reached(
+        &before,
+        &after,
+        100,
+        TransportState::Playing,
+        Duration::from_secs(31)
+    ));
     assert!(!reached(
         &before,
         &position(Some(180), Some(180)),
@@ -98,10 +121,13 @@ fn reply(action: &str, args: &str) -> String {
 }
 
 fn clock(at: &str, slot: u32) -> String {
-    reply("GetPositionInfo", &format!(
-        "<Track>{slot}</Track><TrackURI>synthetic:track</TrackURI>\
+    reply(
+        "GetPositionInfo",
+        &format!(
+            "<Track>{slot}</Track><TrackURI>synthetic:track</TrackURI>\
          <TrackDuration>00:03:00</TrackDuration><RelTime>{at}</RelTime>"
-    ))
+        ),
+    )
 }
 
 fn lost() -> ProtoError {
@@ -127,7 +153,10 @@ impl Script {
             &PlayerId("synthetic-player".into()),
             30,
         );
-        assert!(self.0.borrow().is_empty(), "all planned reads should be consumed");
+        assert!(
+            self.0.borrow().is_empty(),
+            "all planned reads should be consumed"
+        );
         result
     }
 }
@@ -191,16 +220,17 @@ fn normal_success_keeps_the_existing_one_read_one_write_path() {
 #[test]
 fn unreported_clock_prevents_the_write() {
     let script = Script::new(vec![("GetPositionInfo", Ok(clock("NOT_IMPLEMENTED", 2)))]);
-    assert!(
-        matches!(script.seek(), Err(ProtoError::Malformed(reason))
-            if reason.contains("reported playback position"))
-    );
+    assert!(matches!(script.seek(), Err(ProtoError::Malformed(reason))
+            if reason.contains("reported playback position")));
 }
 
 #[test]
 fn lost_and_malformed_acknowledgements_can_complete_without_a_second_seek() {
     for answer in [Err(lost()), Ok("unreadable reply".into())] {
-        let mut replies = vec![("GetPositionInfo", Ok(clock("00:01:10", 2))), ("Seek", answer)];
+        let mut replies = vec![
+            ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+            ("Seek", answer),
+        ];
         replies.extend(recovery(clock("00:01:40", 2)));
         assert_eq!(Script::new(replies).seek().unwrap(), 100);
     }
@@ -212,17 +242,27 @@ fn a_definite_fault_is_not_disguised_by_the_current_position() {
         ("GetPositionInfo", Ok(clock("00:01:10", 2))),
         (
             "Seek",
-            Err(ProtoError::SoapFault { code: 711, reason: "illegal seek".into() }),
+            Err(ProtoError::SoapFault {
+                code: 711,
+                reason: "illegal seek".into(),
+            }),
         ),
     ]);
-    assert!(matches!(script.seek(), Err(ProtoError::SoapFault { code: 711, .. })));
+    assert!(matches!(
+        script.seek(),
+        Err(ProtoError::SoapFault { code: 711, .. })
+    ));
 }
 
 #[test]
 fn failed_readback_keeps_the_original_write_failure_without_replay() {
     let script = Script::new(vec![
-        ("GetPositionInfo", Ok(clock("00:01:10", 2))), ("Seek", Err(lost())),
-        ("GetPositionInfo", Err(ProtoError::Malformed("read unavailable".into()))),
+        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        ("Seek", Err(lost())),
+        (
+            "GetPositionInfo",
+            Err(ProtoError::Malformed("read unavailable".into())),
+        ),
     ]);
     assert!(
         matches!(script.seek(), Err(ProtoError::Network { detail, .. })
@@ -232,7 +272,13 @@ fn failed_readback_keeps_the_original_write_failure_without_replay() {
 
 #[test]
 fn a_track_changing_during_readback_is_not_confirmed() {
-    let mut replies = vec![("GetPositionInfo", Ok(clock("00:01:10", 2))), ("Seek", Err(lost()))];
+    let mut replies = vec![
+        ("GetPositionInfo", Ok(clock("00:01:10", 2))),
+        ("Seek", Err(lost())),
+    ];
     replies.extend(recovery(clock("00:01:40", 3)));
-    assert!(matches!(Script::new(replies).seek(), Err(ProtoError::Network { .. })));
+    assert!(matches!(
+        Script::new(replies).seek(),
+        Err(ProtoError::Network { .. })
+    ));
 }

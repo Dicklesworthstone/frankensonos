@@ -202,7 +202,10 @@ fn launch(
     });
     match spawn(format!("fsonos-schedule-{id}"), work) {
         Ok(handle) => {
-            let mut runs = scheduler.runs.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut runs = scheduler
+                .runs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             runs.retain(|run| !run.is_finished());
             runs.push(handle);
             true

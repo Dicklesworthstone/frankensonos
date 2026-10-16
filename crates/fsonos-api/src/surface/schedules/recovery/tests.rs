@@ -23,8 +23,11 @@ impl Scratch {
     fn new() -> Self {
         let root = std::env::temp_dir();
         for _ in 0..128 {
-            let path = root.join(format!("fsonos-sleep-recovery-{}-{}", std::process::id(),
-                NEXT_DIR.fetch_add(1, Ordering::Relaxed)));
+            let path = root.join(format!(
+                "fsonos-sleep-recovery-{}-{}",
+                std::process::id(),
+                NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+            ));
             match std::fs::create_dir(&path) {
                 Ok(()) => return Self(path),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -58,7 +61,13 @@ struct ReplyTransport {
 }
 
 impl Transport for ReplyTransport {
-    fn soap_post(&self, host: IpAddr, path: &str, header: &str, body: &str) -> Result<String, ProtoError> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        header: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
         let reply = self.inner.soap_post(host, path, header, body)?;
         if header.contains("#GetRemainingSleepTimerDuration") {
             self.replies.count.fetch_add(1, Ordering::SeqCst);
@@ -87,10 +96,25 @@ struct House {
 
 impl House {
     fn new(s2: bool) -> Self {
-        let model = || if s2 { SimModel::One } else { SimModel::Play5Gen1 };
-        let specs = [SimPlayerSpec::new("RecoverA", model()), SimPlayerSpec::new("RecoverB", model())];
+        let model = || {
+            if s2 {
+                SimModel::One
+            } else {
+                SimModel::Play5Gen1
+            }
+        };
+        let specs = [
+            SimPlayerSpec::new("RecoverA", model()),
+            SimPlayerSpec::new("RecoverB", model()),
+        ];
         let builder = SimHousehold::builder();
-        let sim = if s2 { builder.s2(specs) } else { builder.s1(specs) }.spawn().unwrap();
+        let sim = if s2 {
+            builder.s2(specs)
+        } else {
+            builder.s1(specs)
+        }
+        .spawn()
+        .unwrap();
         let mut household = HouseholdState::default();
         let ip = sim.player("RecoverA").unwrap().ip;
         household.apply_topology(&get_zone_group_state(&sim.lan(), ip).unwrap());
@@ -113,17 +137,24 @@ impl House {
     fn surface(&self) -> Arc<Surface> {
         let rooms = Arc::clone(&self.rooms);
         let survey: Survey = Box::new(move |_| Ok(rooms.lock().unwrap().clone()));
-        Arc::new(Surface::new(
-            Box::new(ReplyTransport { inner: self.sim.lan(), replies: Arc::clone(&self.replies) }),
-            survey,
-            Policy::default(),
-            Box::new(SystemClock),
-        ).with_sleep(Sleep::default().saved_in(self.scratch.path())))
+        Arc::new(
+            Surface::new(
+                Box::new(ReplyTransport {
+                    inner: self.sim.lan(),
+                    replies: Arc::clone(&self.replies),
+                }),
+                survey,
+                Policy::default(),
+                Box::new(SystemClock),
+            )
+            .with_sleep(Sleep::default().saved_in(self.scratch.path())),
+        )
     }
 
     fn saved(&self) -> Vec<SleepTimer> {
         serde_json::from_slice::<SavedTimers>(&std::fs::read(self.scratch.path()).unwrap())
-            .unwrap().timers
+            .unwrap()
+            .timers
     }
 
     fn seed(&self) -> SleepTimer {
@@ -141,15 +172,31 @@ impl House {
 }
 
 fn set(surface: &Surface, room: &str, duration: &str, extend: bool) {
-    surface.set_sleep_timer(&Client::Cli, &SleepRequest {
-        zone: room.into(), duration: Some(duration.into()), extend, cancel: false,
-    }).unwrap();
+    surface
+        .set_sleep_timer(
+            &Client::Cli,
+            &SleepRequest {
+                zone: room.into(),
+                duration: Some(duration.into()),
+                extend,
+                cancel: false,
+            },
+        )
+        .unwrap();
 }
 
 fn cancel_timer(surface: &Surface, room: &str) {
-    surface.set_sleep_timer(&Client::Cli, &SleepRequest {
-        zone: room.into(), duration: None, extend: false, cancel: true,
-    }).unwrap();
+    surface
+        .set_sleep_timer(
+            &Client::Cli,
+            &SleepRequest {
+                zone: room.into(),
+                duration: None,
+                extend: false,
+                cancel: true,
+            },
+        )
+        .unwrap();
 }
 
 fn sleep(surface: &Surface) -> &Arc<Sleep> {
@@ -219,9 +266,15 @@ fn discovery_recovery_rearms_on_a_scheduler_worker_without_rewriting_the_speaker
     assert_eq!(sleep(&surface).timers.all(), [original]);
     assert_eq!(h.sim.soap_log().len() - before, 1, "only the backstop read");
     let reads = h.replies.count.load(Ordering::SeqCst);
-    for _ in 0..100 { scheduler.tick(); }
+    for _ in 0..100 {
+        scheduler.tick();
+    }
     assert!(scheduler.wait(Duration::from_secs(5)));
-    assert_eq!(h.replies.count.load(Ordering::SeqCst), reads, "healthy timers do not poll");
+    assert_eq!(
+        h.replies.count.load(Ordering::SeqCst),
+        reads,
+        "healthy timers do not poll"
+    );
 }
 
 #[test]
@@ -238,7 +291,10 @@ fn an_accepted_cancel_fences_a_delayed_recovery_read() {
     assert_eq!(worker.join().unwrap(), 0);
     assert!(sleep(&surface).timers.all().is_empty());
     assert!(h.saved().is_empty());
-    assert_eq!(get_remaining_sleep_timer(&h.sim.lan(), h.ip("RecoverA")).unwrap(), None);
+    assert_eq!(
+        get_remaining_sleep_timer(&h.sim.lan(), h.ip("RecoverA")).unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -268,7 +324,10 @@ fn extending_an_unadopted_backstop_does_not_add_its_five_minute_allowance() {
     set(&surface, "RecoverA", "5m", true);
     let timers = sleep(&surface).timers.all();
     assert_eq!(timers.len(), 1);
-    assert_eq!(timers[0].ends, original.ends + chrono::TimeDelta::minutes(5));
+    assert_eq!(
+        timers[0].ends,
+        original.ends + chrono::TimeDelta::minutes(5)
+    );
     assert_eq!(surface.adopt_sleep_timers(), 0);
 }
 
@@ -277,9 +336,19 @@ fn an_invalid_extension_does_not_consume_the_pending_timer() {
     let h = House::new(false);
     h.seed();
     let surface = h.surface();
-    assert!(surface.set_sleep_timer(&Client::Cli, &SleepRequest {
-        zone: "RecoverA".into(), duration: Some("23h".into()), extend: true, cancel: false,
-    }).is_err());
+    assert!(
+        surface
+            .set_sleep_timer(
+                &Client::Cli,
+                &SleepRequest {
+                    zone: "RecoverA".into(),
+                    duration: Some("23h".into()),
+                    extend: true,
+                    cancel: false,
+                }
+            )
+            .is_err()
+    );
     assert_eq!(surface.adopt_sleep_timers(), 1);
 }
 
@@ -292,7 +361,11 @@ fn speaker_cancellation_or_replacement_is_observed_but_never_overwritten() {
         let surface = h.surface();
         let before = h.sim.soap_log().len();
         assert_eq!(surface.adopt_sleep_timers(), 0);
-        assert_eq!(h.sim.soap_log().len() - before, 1, "verification is read-only");
+        assert_eq!(
+            h.sim.soap_log().len() - before,
+            1,
+            "verification is read-only"
+        );
         assert!(h.saved().is_empty());
         assert!(sleep(&surface).timers.all().is_empty());
         let left = get_remaining_sleep_timer(&h.sim.lan(), h.ip("RecoverA")).unwrap();
@@ -304,11 +377,19 @@ fn speaker_cancellation_or_replacement_is_observed_but_never_overwritten() {
 fn expired_or_overflowing_deadlines_are_retired_without_discovery_or_speaker_io() {
     let h = House::new(true);
     let mut timer = h.seed();
-    for ends in [Utc::now() - chrono::TimeDelta::hours(1), DateTime::<Utc>::MAX_UTC] {
+    for ends in [
+        Utc::now() - chrono::TimeDelta::hours(1),
+        DateTime::<Utc>::MAX_UTC,
+    ] {
         timer.ends = ends;
-        file::replace(&h.scratch.path(), &serde_json::to_vec(&SavedTimers {
-            timers: vec![timer.clone()],
-        }).unwrap()).unwrap();
+        file::replace(
+            &h.scratch.path(),
+            &serde_json::to_vec(&SavedTimers {
+                timers: vec![timer.clone()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
         h.rooms.lock().unwrap().clear();
         let surface = h.surface();
         let before = h.replies.count.load(Ordering::SeqCst);
@@ -326,13 +407,21 @@ fn corrupt_snapshot_is_preserved_and_later_loading_cannot_resurrect_a_local_canc
     let surface = h.surface();
     assert_eq!(surface.adopt_sleep_timers(), 0);
     cancel_timer(&surface, "RecoverA");
-    assert_eq!(std::fs::read(h.scratch.path()).unwrap(), b"{ broken snapshot");
+    assert_eq!(
+        std::fs::read(h.scratch.path()).unwrap(),
+        b"{ broken snapshot"
+    );
     assert!(!sleep(&surface).writing.lock().unwrap().loaded);
     // Even if the original file is restored after that explicit cancellation,
     // its old timer may no longer grant automatic control in this process.
-    file::replace(&h.scratch.path(), &serde_json::to_vec(&SavedTimers {
-        timers: vec![original],
-    }).unwrap()).unwrap();
+    file::replace(
+        &h.scratch.path(),
+        &serde_json::to_vec(&SavedTimers {
+            timers: vec![original],
+        })
+        .unwrap(),
+    )
+    .unwrap();
     assert_eq!(surface.adopt_sleep_timers(), 0);
     assert!(h.saved().is_empty());
 }
@@ -353,7 +442,11 @@ fn failed_publication_is_retried_without_replaying_the_timer_command() {
     assert!(scheduler.wait(Duration::from_secs(5)));
     assert!(!sleep(&surface).writing.lock().unwrap().dirty);
     assert_eq!(h.saved().len(), 1);
-    assert_eq!(h.sim.soap_log().len(), writes, "only local persistence is retried");
+    assert_eq!(
+        h.sim.soap_log().len(),
+        writes,
+        "only local persistence is retried"
+    );
 }
 
 #[test]
@@ -369,7 +462,9 @@ fn recovery_is_single_flight_and_does_not_block_the_tick_thread() {
     let other = Arc::clone(&scheduler);
     let (done, receive) = mpsc::channel();
     let ticker = std::thread::spawn(move || {
-        for _ in 0..100 { other.tick(); }
+        for _ in 0..100 {
+            other.tick();
+        }
         done.send(()).unwrap();
     });
     receive.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -386,7 +481,9 @@ fn a_former_coordinator_is_not_adopted_into_its_new_group() {
     let h = House::new(true);
     let original = h.seed();
     let id = h.id("RecoverA");
-    h.rooms.lock().unwrap()[0].groups.retain(|group| group.coordinator != id);
+    h.rooms.lock().unwrap()[0]
+        .groups
+        .retain(|group| group.coordinator != id);
     let surface = h.surface();
     assert_eq!(surface.adopt_sleep_timers(), 0);
     assert_eq!(h.saved(), [original]);
@@ -421,8 +518,15 @@ fn a_failed_worker_spawn_releases_admission_and_preserves_backoff() {
 fn malformed_duplicate_or_oversized_files_never_partially_initialize() {
     let h = House::new(true);
     let timer = h.seed();
-    let duplicate = serde_json::to_vec(&SavedTimers { timers: vec![timer.clone(), timer] }).unwrap();
-    for bytes in [b"{".to_vec(), duplicate, vec![b' '; usize::try_from(MAX_FILE + 1).unwrap()]] {
+    let duplicate = serde_json::to_vec(&SavedTimers {
+        timers: vec![timer.clone(), timer],
+    })
+    .unwrap();
+    for bytes in [
+        b"{".to_vec(),
+        duplicate,
+        vec![b' '; usize::try_from(MAX_FILE + 1).unwrap()],
+    ] {
         std::fs::write(h.scratch.path(), &bytes).unwrap();
         let mut state = State::default();
         assert!(state.load(&h.scratch.path()).is_err());
@@ -445,7 +549,10 @@ fn atomic_publication_preserves_unowned_staging_and_uses_private_permissions() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }
 
@@ -458,7 +565,9 @@ fn parallel_atomic_publications_never_mix_snapshots() {
         for bytes in &payloads {
             let path = &path;
             scope.spawn(move || {
-                for _ in 0..20 { file::replace(path, bytes).unwrap(); }
+                for _ in 0..20 {
+                    file::replace(path, bytes).unwrap();
+                }
             });
         }
     });
@@ -488,9 +597,14 @@ fn an_overdue_verified_timer_is_due_immediately_not_restarted_for_two_minutes() 
     let h = House::new(true);
     let mut original = h.seed();
     original.ends = Utc::now() - chrono::TimeDelta::seconds(1);
-    file::replace(&h.scratch.path(), &serde_json::to_vec(&SavedTimers {
-        timers: vec![original.clone()],
-    }).unwrap()).unwrap();
+    file::replace(
+        &h.scratch.path(),
+        &serde_json::to_vec(&SavedTimers {
+            timers: vec![original.clone()],
+        })
+        .unwrap(),
+    )
+    .unwrap();
     configure_sleep_timer(&h.sim.lan(), h.ip("RecoverA"), Some(299)).unwrap();
     let surface = h.surface();
     assert_eq!(surface.adopt_sleep_timers(), 1);
@@ -536,7 +650,10 @@ fn changing_volume_before_the_first_recovery_read_preserves_a_future_timer() {
         let surface = h.surface();
         change_volume(&h, &surface, "RecoverA");
         let state = sleep(&surface).writing.lock().unwrap();
-        assert!(!state.loaded, "a volume event must not perform recovery file I/O");
+        assert!(
+            !state.loaded,
+            "a volume event must not perform recovery file I/O"
+        );
         assert!(!state.dirty, "volume is not a timer snapshot mutation");
         assert!(state.superseded.is_empty());
         drop(state);
@@ -560,7 +677,10 @@ fn changing_volume_while_verification_is_unavailable_keeps_the_timer_durable() {
     assert!(h.saved().contains(&original));
     h.replies.fail.lock().unwrap().clear();
     assert_eq!(surface.adopt_sleep_timers(), 1);
-    assert_eq!(sleep(&surface).timers.get(&h.id("RecoverA")), Some(original));
+    assert_eq!(
+        sleep(&surface).timers.get(&h.id("RecoverA")),
+        Some(original)
+    );
 }
 
 #[test]

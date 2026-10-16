@@ -61,8 +61,7 @@ fn native_state_commands_recover_lost_and_malformed_replies_on_both_generations(
                 ("Pause", TransportState::Paused),
                 ("Stop", TransportState::Stopped),
             ] {
-                control::play_uri(&sim.lan(), &houses, &target.coordinator.id, source, "")
-                    .unwrap();
+                control::play_uri(&sim.lan(), &houses, &target.coordinator.id, source, "").unwrap();
                 if action == "Play" {
                     soap::pause(&sim.lan(), host).unwrap();
                 }
@@ -80,14 +79,21 @@ fn native_state_commands_recover_lost_and_malformed_replies_on_both_generations(
                 }
                 .unwrap();
                 assert_eq!(t.writes.get(), 1);
-                assert_eq!(soap::get_transport_info(&sim.lan(), host).unwrap().state, expected);
+                assert_eq!(
+                    soap::get_transport_info(&sim.lan(), host).unwrap().state,
+                    expected
+                );
                 assert_eq!(soap::get_media_info(&sim.lan(), host).unwrap().uri, source);
                 let writes: Vec<_> = sim.soap_log()[before..]
                     .iter()
                     .filter(|entry| !entry.action.starts_with("Get"))
                     .map(|entry| entry.action.clone())
                     .collect();
-                assert_eq!(writes, [action], "no source reset, queue edit or second write");
+                assert_eq!(
+                    writes,
+                    [action],
+                    "no source reset, queue edit or second write"
+                );
             }
         }
     }

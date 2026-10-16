@@ -169,7 +169,10 @@ fn logged_undo_reports_revision_conflict_without_removing_any_selected_music() {
         let pending = surface.preview_undo(&Client::Cli).unwrap().unwrap();
         let done = surface.undo_checked(&Client::Cli, pending.id).unwrap();
         assert_eq!(done.undone, Some(pending.id));
-        assert!(!done.failures.is_empty(), "the failed restoration is structured");
+        assert!(
+            !done.failures.is_empty(),
+            "the failed restoration is structured"
+        );
         let mut expected = uris(&["other"]);
         expected.extend(before);
         assert_eq!(current(&sim), expected);
@@ -183,14 +186,20 @@ fn explicit_refusal_is_not_recovered_from_another_clients_identical_edit() {
     for s2 in [false, true] {
         let (sim, surface, writes) = setup(s2, Fault::ForeignIdenticalRemoval);
         let error = surface
-            .queue_remove(&Client::Cli, &QueueRemoveRequest {
-                zone: "Beta".into(),
-                position: 2,
-                expected_uris: uris(&["b"]),
-                expected_revision: None,
-            })
+            .queue_remove(
+                &Client::Cli,
+                &QueueRemoveRequest {
+                    zone: "Beta".into(),
+                    position: 2,
+                    expected_uris: uris(&["b"]),
+                    expected_revision: None,
+                },
+            )
             .unwrap_err();
-        assert_eq!((error.code, error.upnp_code), (ErrorCode::UpnpFault, Some(701)));
+        assert_eq!(
+            (error.code, error.upnp_code),
+            (ErrorCode::UpnpFault, Some(701))
+        );
         assert!(error.detail.contains("original removal was refused"));
         assert!(!error.retryable());
         assert_eq!(current(&sim), uris(&["a", "c", "d"]));
@@ -204,12 +213,15 @@ fn a_handoff_during_removal_cannot_confirm_the_old_coordinators_result() {
     for s2 in [false, true] {
         let (sim, surface, writes) = setup(s2, Fault::HandoffAfter);
         let error = surface
-            .queue_remove(&Client::Cli, &QueueRemoveRequest {
-                zone: "Beta".into(),
-                position: 2,
-                expected_uris: uris(&["b"]),
-                expected_revision: None,
-            })
+            .queue_remove(
+                &Client::Cli,
+                &QueueRemoveRequest {
+                    zone: "Beta".into(),
+                    position: 2,
+                    expected_uris: uris(&["b"]),
+                    expected_revision: None,
+                },
+            )
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::UpnpFault);
         assert!(error.detail.contains("uncertain"));
@@ -221,11 +233,17 @@ fn a_handoff_during_removal_cannot_confirm_the_old_coordinators_result() {
 #[test]
 fn removal_errors_keep_the_existing_wire_categories() {
     let invalid = removal_failure(RemovalError::Invalid("stale range"));
-    assert_eq!((invalid.code, invalid.status()), (ErrorCode::InvalidArgument, 422));
+    assert_eq!(
+        (invalid.code, invalid.status()),
+        (ErrorCode::InvalidArgument, 422)
+    );
     let before = removal_failure(RemovalError::Before(lost()));
     assert_eq!(before.code, ErrorCode::PlayerUnreachable);
     let uncertain = removal_failure(RemovalError::Uncertain("read-back changed".into()));
-    assert_eq!((uncertain.code, uncertain.status()), (ErrorCode::UpnpFault, 502));
+    assert_eq!(
+        (uncertain.code, uncertain.status()),
+        (ErrorCode::UpnpFault, 502)
+    );
     assert!(!uncertain.retryable());
     assert!(uncertain.hint.contains("do not retry blindly"));
 }
