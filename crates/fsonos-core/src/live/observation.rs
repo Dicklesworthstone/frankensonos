@@ -98,9 +98,11 @@ pub(super) fn survey(engine: &Engine, model: &mut Model) -> Vec<LiveEvent> {
     if engine.stop.load(Ordering::Acquire) {
         return Vec::new();
     }
-    if model.sink.is_some() {
+    if model.sink.is_some() && model.surveyed_at.is_some() {
         // The event pump applies completed parts after buffered notifications.
-        // Eventless recovery retains its existing synchronous fallback.
+        // Eventless recovery retains its existing synchronous fallback, and so
+        // does a fresh model's first survey: no event intake has begun yet,
+        // and the households it publishes are what readiness waits for.
         super::progress::request_survey(model);
         return Vec::new();
     }
