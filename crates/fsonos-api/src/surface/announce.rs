@@ -23,7 +23,9 @@ use fsonos_core::rooms::{ControlTarget, ResolveContext, resolve_targets};
 use fsonos_core::{HouseholdState, Room};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
 use super::{Surface, room_view};
@@ -45,6 +47,68 @@ pub const MAX_ANNOUNCE_REQUEST_BYTES: usize = MAX_WAV_BASE64_BYTES + 16 * 1024;
 /// Time for local speech synthesis, playback, and restoration over HTTP or MCP.
 pub const ANNOUNCE_TIMEOUT_SECS: u64 = 1200;
 
+/// Announcements one client may have playing or waiting their turn at once.
+/// Each holds a call open (and one of the daemon's long-call threads) until
+/// it has played, so an agent looping `announce` must not queue without end.
+pub const MAX_PER_CLIENT: usize = 2;
+
+/// Announcements all clients together may have playing or waiting.
+pub const MAX_PENDING: usize = 8;
+
+/// The announcements each client has playing or waiting.
+#[derive(Debug, Default)]
+struct Turns {
+    held: Mutex<HashMap<String, usize>>,
+}
+
+/// One announcement's place in [`Turns`], given back when it is dropped:
+/// played, failed or refused later on.
+struct Turn<'a> {
+    turns: &'a Turns,
+    client: String,
+}
+
+impl Turns {
+    fn held(&self) -> std::sync::MutexGuard<'_, HashMap<String, usize>> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// A place for one more announcement from `client`, or `NOT_READY`
+    /// (retryable) while it already has [`MAX_PER_CLIENT`], or everyone
+    /// together [`MAX_PENDING`].
+    fn take(&self, client: &Client) -> Result<Turn<'_>, Failure> {
+        let mut held = self.held();
+        let mine = held.get(client.key()).copied().unwrap_or(0);
+        let all: usize = held.values().sum();
+        if mine >= MAX_PER_CLIENT || all >= MAX_PENDING {
+            let detail = if mine >= MAX_PER_CLIENT {
+                format!("{client} has {mine} announcements playing or waiting already")
+            } else {
+                format!("{all} announcements are playing or waiting already")
+            };
+            return Err(Failure::new(ErrorCode::NotReady, detail)
+                .with_hint("Retry once an earlier announcement has played."));
+        }
+        *held.entry(client.key().to_owned()).or_default() += 1;
+        Ok(Turn {
+            turns: self,
+            client: client.key().to_owned(),
+        })
+    }
+}
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        let mut held = self.turns.held();
+        if let Some(count) = held.get_mut(&self.client) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                held.remove(&self.client);
+            }
+        }
+    }
+}
+
 /// Where the players fetch clips: the media listener's base URL
 /// (`http://<address>:<port>`), once it is up.
 pub type MediaBase = Box<dyn Fn() -> Option<String> + Send + Sync>;
@@ -56,6 +120,7 @@ pub struct Announcements {
     announcer: Announcer,
     media: MediaStore,
     base: MediaBase,
+    turns: Turns,
 }
 
 impl Announcements {
@@ -65,6 +130,7 @@ impl Announcements {
             announcer: Announcer::new(),
             media,
             base,
+            turns: Turns::default(),
         }
     }
 
@@ -255,6 +321,7 @@ impl Surface {
                  which this surface does not run",
             ));
         };
+        let _turn = with.turns.take(client)?;
         let base = (with.base)().ok_or_else(|| {
             Failure::new(
                 ErrorCode::NotReady,
@@ -620,6 +687,44 @@ mod tests {
             clip_failure(&ClipError::NotWav("bad format")).code,
             ErrorCode::Internal
         );
+    }
+
+    #[test]
+    fn each_client_and_the_daemon_have_a_bounded_number_of_turns() {
+        let turns = Turns::default();
+        let agent = Client::Tailnet("agent@example.com".into());
+        let first = turns.take(&agent).unwrap();
+        let second = turns.take(&agent).unwrap();
+        let refused = turns.take(&agent).err().unwrap();
+        assert_eq!(refused.code, ErrorCode::NotReady);
+        assert!(refused.code.retryable());
+        assert!(
+            refused.detail.contains("agent@example.com"),
+            "{}",
+            refused.detail
+        );
+        // Another client still gets its own turns.
+        let cli = turns.take(&Client::Cli).unwrap();
+        // A turn comes back when its announcement is done.
+        drop(first);
+        let third = turns.take(&agent).unwrap();
+        drop((second, third, cli));
+        assert!(turns.held().is_empty());
+
+        // Everyone together: MAX_PENDING, however many clients.
+        let clients: Vec<Client> = (0..MAX_PENDING)
+            .map(|n| Client::Tailnet(format!("agent{n}@example.com")))
+            .collect();
+        let all: Vec<Turn<'_>> = clients.iter().map(|c| turns.take(c).unwrap()).collect();
+        let full = turns.take(&Client::Cli).err().unwrap();
+        assert_eq!(full.code, ErrorCode::NotReady);
+        assert!(
+            full.detail.contains(&MAX_PENDING.to_string()),
+            "{}",
+            full.detail
+        );
+        drop(all);
+        assert!(turns.take(&Client::Cli).is_ok());
     }
 
     #[test]

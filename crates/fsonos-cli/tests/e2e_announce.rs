@@ -21,8 +21,9 @@ use serde_json::{Value, json};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const STREAM: &str = "x-rincon-mp3radio://stream.example.org/before.mp3";
 
@@ -185,6 +186,113 @@ fn a_chime_plays_in_kitchen_and_the_music_comes_back() {
         run.code == Some(2) && run.stderr.contains("bell"),
         &run.stderr,
     );
+    s.finish();
+}
+
+/// An agent looping `announce`: with the sim's clock standing still, an
+/// accepted announcement stays in flight, so of twenty sent at once the
+/// first two keep their turns and the other eighteen are refused at once as
+/// a retryable NOT_READY. Control still answers meanwhile, and once the
+/// clock runs both accepted announcements play and put Kitchen back.
+#[test]
+fn a_client_gets_two_announcement_turns_and_control_still_answers() {
+    let mut s = Scenario::start("announce-turns");
+    let clock = s.sim(SimHousehold::standard()).clock().clone();
+    let (kitchen_before, _) = set_the_scene(&mut s);
+    let mut daemon = s.spawn("serve", &["serve", "--http", "127.0.0.1:0"]);
+    let ready = daemon
+        .wait_line("fsonos serve: ready", Duration::from_secs(20))
+        .unwrap_or_default();
+    let api = ready
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("http=http://"))
+        .unwrap_or("")
+        .to_string();
+    let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
+    s.check(
+        "live",
+        "daemon",
+        "serve is up with its live model",
+        !api.is_empty() && live.is_some(),
+        daemon.seen.join("\n"),
+    );
+
+    let (send, answers) = mpsc::channel();
+    for _ in 0..20 {
+        let (api, send) = (api.clone(), send.clone());
+        thread::spawn(move || {
+            let answer = http_waiting(
+                &api,
+                "POST",
+                "/announce",
+                &[("Content-Type", "application/json")],
+                r#"{"chime":"bell","rooms":["Kitchen"],"volume":30}"#,
+                UPLOAD_WAIT,
+            );
+            let _ =
+                send.send(answer.map_or((0, String::new()), |(status, _, body)| (status, body)));
+        });
+    }
+    drop(send);
+    let refused: Vec<(u16, String)> = (0..18)
+        .map_while(|_| answers.recv_timeout(Duration::from_secs(30)).ok())
+        .collect();
+    s.check(
+        "refused",
+        "http",
+        "18 of 20 announcements sent at once are refused as a retryable 503 NOT_READY",
+        refused.len() == 18
+            && refused
+                .iter()
+                .all(|(status, body)| *status == 503 && json(body)["code"] == "NOT_READY"),
+        format!("{refused:?}"),
+    );
+
+    let started = Instant::now();
+    let volume = http(
+        &api,
+        "POST",
+        "/volume",
+        &[("Content-Type", "application/json")],
+        r#"{"zone":"Office","volume":25}"#,
+    );
+    let took = started.elapsed();
+    let office = room(&s, s.ip("Office"));
+    s.check(
+        "control",
+        "http",
+        "a volume change answers promptly while two announcements wait",
+        volume.as_ref().is_ok_and(|(status, _, _)| *status == 200)
+            && took < Duration::from_secs(5)
+            && office.volume == Some(25),
+        format!("{took:?} {office:?} {volume:?}"),
+    );
+
+    let played: Vec<(u16, String)> = {
+        let _ticking = Ticker::start(clock);
+        (0..2)
+            .map_while(|_| answers.recv_timeout(UPLOAD_WAIT).ok())
+            .collect()
+    };
+    s.check(
+        "played",
+        "http",
+        "the two accepted announcements play once the clock runs",
+        played.len() == 2
+            && played
+                .iter()
+                .all(|(status, body)| *status == 200 && json(body)["clean"] == true),
+        format!("{played:?}"),
+    );
+    let kitchen = room(&s, s.ip("Kitchen"));
+    s.check(
+        "restored",
+        "sim",
+        "Kitchen plays the stream at 20 again",
+        kitchen == kitchen_before,
+        format!("{kitchen:?}"),
+    );
+    drop(daemon);
     s.finish();
 }
 
