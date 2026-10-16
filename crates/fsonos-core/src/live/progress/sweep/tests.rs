@@ -78,14 +78,24 @@ struct Fixture {
 
 impl Fixture {
     fn new(generation: u8, held: usize, fail_mute: bool) -> Self {
-        let hardware = if generation == 1 { SimModel::Play5Gen1 } else { SimModel::One };
+        let hardware = if generation == 1 {
+            SimModel::Play5Gen1
+        } else {
+            SimModel::One
+        };
         let rooms = ["A", "B", "C", "D", "E"].map(|name| SimPlayerSpec::new(name, hardware));
         let builder = SimHousehold::builder();
-        let sim = if generation == 1 { builder.s1(rooms) } else { builder.s2(rooms) }
-            .spawn()
-            .unwrap();
+        let sim = if generation == 1 {
+            builder.s1(rooms)
+        } else {
+            builder.s2(rooms)
+        }
+        .spawn()
+        .unwrap();
         let lan = Arc::new(
-            Lan::start().unwrap().with_routes(sim.players().iter().map(|p| (p.ip, p.addr)).collect()),
+            Lan::start()
+                .unwrap()
+                .with_routes(sim.players().iter().map(|p| (p.ip, p.addr)).collect()),
         );
         let players: Vec<_> = ["A", "B", "C", "D", "E"]
             .iter()
@@ -136,7 +146,14 @@ impl Fixture {
             last_error: None,
             route_checked: now,
         };
-        Self { _release: Release(gate), sim, engine, model, transport, players }
+        Self {
+            _release: Release(gate),
+            sim,
+            engine,
+            model,
+            transport,
+            players,
+        }
     }
 
     fn begin(&mut self) {
@@ -147,7 +164,11 @@ impl Fixture {
 
     fn only_first(&mut self) {
         self.begin();
-        self.model.progress.sweep.queue.retain(|target| target.player == self.players[0].0);
+        self.model
+            .progress
+            .sweep
+            .queue
+            .retain(|target| target.player == self.players[0].0);
     }
 
     fn state(&self, index: usize) -> Option<PlayerPlayback> {
@@ -178,7 +199,10 @@ impl Fixture {
             complete(&self.engine, &mut self.model);
             self.model.progress.sweep.len() + self.model.progress.reads.len() == 0
         });
-        self.model.rec.subscriptions.unsubscribe_all(&*self.engine.lan);
+        self.model
+            .rec
+            .subscriptions
+            .unsubscribe_all(&*self.engine.lan);
         self.sim.shutdown();
     }
 }
@@ -186,7 +210,10 @@ impl Fixture {
 fn wait_for(mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT;
     while !ready() {
-        assert!(Instant::now() < deadline, "survey recovery did not converge");
+        assert!(
+            Instant::now() < deadline,
+            "survey recovery did not converge"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -213,9 +240,13 @@ fn both_generations_recover_healthy_rooms_while_one_sweep_is_stalled() {
         wait_for(|| f.transport.gate.entered.load(Ordering::Acquire) == 1);
         wait_for(|| {
             super::super::recover(&f.engine, &mut f.model);
-            f.state(1).is_some_and(|state| state.position_at(Instant::now()) == Some(41))
+            f.state(1)
+                .is_some_and(|state| state.position_at(Instant::now()) == Some(41))
         });
-        assert!(f.state(0).is_none(), "the blocked room has not published a partial sample");
+        assert!(
+            f.state(0).is_none(),
+            "the blocked room has not published a partial sample"
+        );
         let state = f.state(1).unwrap();
         assert_eq!(state.transport, Some(TransportState::Stopped));
         assert_eq!(state.volume, Some(37));
@@ -227,12 +258,20 @@ fn both_generations_recover_healthy_rooms_while_one_sweep_is_stalled() {
         f.drive();
         let log = f.sim.soap_log();
         assert_eq!(log.len() - before, 5 * 9);
-        assert!(log[before..].iter().all(|call| call.action.starts_with("Get")));
+        assert!(
+            log[before..]
+                .iter()
+                .all(|call| call.action.starts_with("Get"))
+        );
         let calls = f.transport.calls.load(Ordering::Relaxed);
         for _ in 0..20 {
             super::super::recover(&f.engine, &mut f.model);
         }
-        assert_eq!(f.transport.calls.load(Ordering::Relaxed), calls, "no new polling loop");
+        assert_eq!(
+            f.transport.calls.load(Ordering::Relaxed),
+            calls,
+            "no new polling loop"
+        );
         f.finish();
     }
 }
@@ -248,7 +287,10 @@ fn newer_equal_room_events_reject_only_the_stale_service() {
     for volume in [20, 10] {
         let source = EventSource::RenderingControl;
         let body = format!("<Volume channel=\"Master\" val=\"{volume}\"/>");
-        f.model.playback.apply(&player, source, &notify(source, &body), Instant::now()).unwrap();
+        f.model
+            .playback
+            .apply(&player, source, &notify(source, &body), Instant::now())
+            .unwrap();
     }
     complete(&f.engine, &mut f.model);
     let state = f.state(0).unwrap();
@@ -263,11 +305,17 @@ fn newer_equal_room_events_reject_only_the_stale_service() {
 #[test]
 fn one_failed_service_does_not_erase_its_old_values_or_hide_other_services() {
     let mut f = Fixture::new(2, 0, true);
-    f.model.playback.apply_room_levels(&f.players[0].0, 11, false);
+    f.model
+        .playback
+        .apply_room_levels(&f.players[0].0, 11, false);
     f.begin();
     f.drive();
     let first = f.state(0).unwrap();
-    assert_eq!(first.volume, Some(11), "GetVolume alone cannot replace a room-level pair");
+    assert_eq!(
+        first.volume,
+        Some(11),
+        "GetVolume alone cannot replace a room-level pair"
+    );
     assert_eq!(first.mute, Some(false));
     assert_eq!(first.position_at(Instant::now()), Some(41));
     assert_eq!(first.play_mode.as_deref(), Some("NORMAL"));
@@ -281,7 +329,10 @@ fn sweep_and_clock_workers_share_one_bound_and_one_slot_per_player() {
     let player = f.players[0].0.clone();
     let source = EventSource::AvTransport;
     let body = "<TransportState val=\"STOPPED\"/><CurrentTrackURI val=\"test:sweep\"/>";
-    f.model.playback.apply(&player, source, &notify(source, body), Instant::now()).unwrap();
+    f.model
+        .playback
+        .apply(&player, source, &notify(source, body), Instant::now())
+        .unwrap();
     super::super::recover(&f.engine, &mut f.model);
     wait_for(|| f.transport.gate.entered.load(Ordering::Acquire) == 1);
     assert_eq!(f.model.progress.reads.len(), 1);
@@ -294,13 +345,23 @@ fn sweep_and_clock_workers_share_one_bound_and_one_slot_per_player() {
         request(&mut f.model);
         super::super::recover(&f.engine, &mut f.model);
     }
-    assert_eq!(f.model.progress.reads.len() + f.model.progress.sweep.len(), 4);
+    assert_eq!(
+        f.model.progress.reads.len() + f.model.progress.sweep.len(),
+        4
+    );
     assert_eq!(f.transport.calls.load(Ordering::Relaxed), 4);
     assert!(f.model.progress.sweep.queue.len() <= f.players.len());
-    assert!(!f.model.progress.sweep.contains(&player), "the clock already owns this player");
+    assert!(
+        !f.model.progress.sweep.contains(&player),
+        "the clock already owns this player"
+    );
     f.release();
     f.drive();
-    assert!(f.players.iter().all(|(id, _)| f.model.playback.of(id).is_some()));
+    assert!(
+        f.players
+            .iter()
+            .all(|(id, _)| f.model.playback.of(id).is_some())
+    );
     f.finish();
 }
 
@@ -314,7 +375,11 @@ fn shutdown_does_not_publish_or_continue_a_blocked_sweep() {
     let started = Instant::now();
     super::super::recover(&f.engine, &mut f.model);
     assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(f.model.progress.sweep.pending[0].cancelled.load(Ordering::Acquire));
+    assert!(
+        f.model.progress.sweep.pending[0]
+            .cancelled
+            .load(Ordering::Acquire)
+    );
     f.release();
     wait_for(|| {
         complete(&f.engine, &mut f.model);
@@ -322,7 +387,15 @@ fn shutdown_does_not_publish_or_continue_a_blocked_sweep() {
     });
     assert_eq!(f.transport.calls.load(Ordering::Relaxed), 1);
     assert!(f.state(0).is_none());
-    assert!(f.engine.snapshot.lock().unwrap().playback.of(&f.players[0].0).is_none());
+    assert!(
+        f.engine
+            .snapshot
+            .lock()
+            .unwrap()
+            .playback
+            .of(&f.players[0].0)
+            .is_none()
+    );
     f.finish();
 }
 
@@ -336,8 +409,12 @@ fn a_changed_group_or_address_rejects_the_old_renderer_sample() {
         let player = f.players[0].0.clone();
         let house = &mut f.model.rec.households[0];
         if change_address {
-            house.players.iter_mut().find(|p| p.id == player).unwrap().ip =
-                "192.0.2.200".parse().unwrap();
+            house
+                .players
+                .iter_mut()
+                .find(|p| p.id == player)
+                .unwrap()
+                .ip = "192.0.2.200".parse().unwrap();
         } else {
             house.groups.retain(|group| group.coordinator != player);
         }
@@ -354,7 +431,11 @@ fn the_actual_event_pump_still_applies_notifications_during_a_slow_sweep() {
     let sink = f.model.sink.as_ref().unwrap();
     let report = f.model.rec.subscriptions.sync(
         &*f.engine.lan,
-        &[Want { player: player.clone(), host, service: Service::RenderingControl }],
+        &[Want {
+            player: player.clone(),
+            host,
+            service: Service::RenderingControl,
+        }],
         |service| sink.callback_url(service.tag()),
         Instant::now(),
     );
@@ -369,7 +450,14 @@ fn the_actual_event_pump_still_applies_notifications_during_a_slow_sweep() {
     set_volume(&*f.engine.lan, host, 59).unwrap();
     wait_for(|| {
         f.sim.gena_log().iter().any(|entry| {
-            matches!(entry.event, GenaEvent::Delivered { seq: 1, status: 200, .. })
+            matches!(
+                entry.event,
+                GenaEvent::Delivered {
+                    seq: 1,
+                    status: 200,
+                    ..
+                }
+            )
         })
     });
     let started = Instant::now();
@@ -413,7 +501,11 @@ fn group_members_only_read_their_own_levels_on_both_generations() {
             .collect();
         assert_eq!(member_reads, ["GetVolume", "GetMute"]);
         assert_eq!(log.len() - before, 4 * 9 + 2);
-        assert!(log[before..].iter().all(|call| call.action.starts_with("Get")));
+        assert!(
+            log[before..]
+                .iter()
+                .all(|call| call.action.starts_with("Get"))
+        );
         f.finish();
     }
 }
@@ -459,7 +551,10 @@ fn returning_to_the_original_group_never_revives_an_invalidated_read() {
             f.model.progress.reads.len() + f.model.progress.sweep.len() == 0
         });
         assert_eq!(f.transport.calls.load(Ordering::Relaxed), 1);
-        assert!(f.state(0).is_none_or(|state| state.position_at(Instant::now()).is_none()));
+        assert!(
+            f.state(0)
+                .is_none_or(|state| state.position_at(Instant::now()).is_none())
+        );
         f.finish();
     }
 }
@@ -471,7 +566,10 @@ fn a_completed_sweep_stays_invalid_after_an_offline_player_returns() {
     assert!(start_next(&f.engine, &mut f.model));
     wait_for(|| f.model.progress.sweep.pending[0].thread.is_finished());
     let player = f.players[0].0.clone();
-    f.model.rec.health.missing(&player, "test offline transition");
+    f.model
+        .rec
+        .health
+        .missing(&player, "test offline transition");
     super::super::invalidate(&f.model);
     f.model.rec.health.ok(&player, Instant::now());
     super::super::invalidate(&f.model);

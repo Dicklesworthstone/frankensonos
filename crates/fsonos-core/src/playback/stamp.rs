@@ -41,7 +41,11 @@ impl Observations {
 }
 
 impl Playback {
-    pub(crate) fn observation_stamp(&self, player: &PlayerId, source: EventSource) -> Option<Stamp> {
+    pub(crate) fn observation_stamp(
+        &self,
+        player: &PlayerId,
+        source: EventSource,
+    ) -> Option<Stamp> {
         self.observations.0.get(player)?[index(source)].clone()
     }
 }
@@ -72,12 +76,18 @@ mod tests {
         for volume in [10, 20, 10, 10] {
             let before = playback.observation_stamp(&id, source);
             let body = format!("<Volume channel=\"Master\" val=\"{volume}\"/>");
-            playback.apply(&id, source, &notify(&body), Instant::now()).unwrap();
+            playback
+                .apply(&id, source, &notify(&body), Instant::now())
+                .unwrap();
             let after = playback.observation_stamp(&id, source);
             assert_ne!(after, before);
             assert_eq!(after, playback.clone().observation_stamp(&id, source));
             assert_eq!(playback.of(&id).unwrap().volume, Some(volume));
-            assert!(playback.observation_stamp(&id, EventSource::AvTransport).is_none());
+            assert!(
+                playback
+                    .observation_stamp(&id, EventSource::AvTransport)
+                    .is_none()
+            );
         }
     }
 
@@ -86,7 +96,9 @@ mod tests {
         let id = PlayerId("test-player".into());
         let mut playback = Playback::default();
         let source = EventSource::AvTransport;
-        playback.apply(&id, source, &notify(""), Instant::now()).unwrap();
+        playback
+            .apply(&id, source, &notify(""), Instant::now())
+            .unwrap();
         let before = playback.observation_stamp(&id, source);
         let bad = notify("<CurrentTrackMetaData val=\"not-xml\"/>");
         assert!(playback.apply(&id, source, &bad, Instant::now()).is_err());

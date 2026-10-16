@@ -12,7 +12,8 @@ impl Playback {
         volume: u8,
         mute: bool,
     ) -> Changes {
-        self.observations.mark(player, EventSource::RenderingControl);
+        self.observations
+            .mark(player, EventSource::RenderingControl);
         let state = self.players.entry(player.clone()).or_default();
         let volume = volume.min(100);
         let changes = Changes {
@@ -27,7 +28,8 @@ impl Playback {
 
     /// Only the current coordinator reports the whole group's volume.
     pub(crate) fn apply_group_volume(&mut self, player: &PlayerId, volume: u8) -> Changes {
-        self.observations.mark(player, EventSource::GroupRenderingControl);
+        self.observations
+            .mark(player, EventSource::GroupRenderingControl);
         let state = self.players.entry(player.clone()).or_default();
         let volume = volume.min(100);
         let changes = Changes {

@@ -20,9 +20,9 @@ use std::time::Instant;
 #[cfg(test)]
 mod metadata_tests;
 mod observation;
-mod stamp;
 #[cfg(test)]
 mod position_tests;
+mod stamp;
 pub use observation::PlaybackObservation;
 pub(crate) use stamp::Stamp;
 

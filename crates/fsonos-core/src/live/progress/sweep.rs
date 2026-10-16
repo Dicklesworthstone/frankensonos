@@ -33,7 +33,12 @@ struct Target {
 
 impl Target {
     fn of(model: &Model, player: &PlayerId) -> Option<Self> {
-        if model.rec.health.of(player).is_some_and(|h| h.health == Health::Offline) {
+        if model
+            .rec
+            .health
+            .of(player)
+            .is_some_and(|h| h.health == Health::Offline)
+        {
             return None;
         }
         model.rec.households.iter().find_map(|house| {
@@ -43,7 +48,11 @@ impl Target {
                 host: found.ip,
                 household: house.id.clone(),
                 generation: found.generation,
-                group: house.groups.iter().find(|g| g.coordinator == *player).cloned(),
+                group: house
+                    .groups
+                    .iter()
+                    .find(|g| g.coordinator == *player)
+                    .cloned(),
             })
         })
     }
@@ -117,7 +126,9 @@ pub(super) struct Sweep {
 
 impl Sweep {
     pub(super) fn contains(&self, player: &PlayerId) -> bool {
-        self.pending.iter().any(|read| read.target.player == *player)
+        self.pending
+            .iter()
+            .any(|read| read.target.player == *player)
     }
 
     pub(super) fn len(&self) -> usize {
@@ -172,8 +183,7 @@ pub(super) fn request(model: &mut Model) {
     let sweep = &mut model.progress.sweep;
     sweep.queue.retain(|target| targets.contains(target));
     for target in targets {
-        if !sweep.queue.contains(&target)
-            && !sweep.pending.iter().any(|read| read.target == target)
+        if !sweep.queue.contains(&target) && !sweep.pending.iter().any(|read| read.target == target)
         {
             sweep.queue.push_back(target);
         }
@@ -186,9 +196,12 @@ pub(super) fn start_next(engine: &Engine, model: &mut Model) -> bool {
     if engine.stop.load(Ordering::Acquire) || !model.progress.has_capacity() {
         return false;
     }
-    let index = model.progress.sweep.queue.iter().position(|target| {
-        !model.progress.busy(&target.player)
-    });
+    let index = model
+        .progress
+        .sweep
+        .queue
+        .iter()
+        .position(|target| !model.progress.busy(&target.player));
     let Some(target) = index.and_then(|index| model.progress.sweep.queue.remove(index)) else {
         return false;
     };

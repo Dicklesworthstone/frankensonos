@@ -254,7 +254,15 @@ mod observation_tests {
         let baseline = playback.begin_position_sample(&player).unwrap();
         let stamp = playback.observation_stamp(&player, EventSource::AvTransport);
         playback.apply_position(&player, &sample, Instant::now());
-        assert!(playback.of(&player).unwrap().same_transport_observation(&baseline));
-        assert_ne!(playback.observation_stamp(&player, EventSource::AvTransport), stamp);
+        assert!(
+            playback
+                .of(&player)
+                .unwrap()
+                .same_transport_observation(&baseline)
+        );
+        assert_ne!(
+            playback.observation_stamp(&player, EventSource::AvTransport),
+            stamp
+        );
     }
 }
