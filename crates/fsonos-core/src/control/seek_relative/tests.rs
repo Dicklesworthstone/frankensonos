@@ -177,7 +177,8 @@ impl Transport for Script {
         assert!(action.ends_with(&format!("#{expected}\"")), "{action}");
         if expected == "Seek" {
             assert!(body.contains("<Unit>REL_TIME</Unit>"));
-            assert!(body.contains("<Target>00:01:40</Target>"));
+            // fsonos-proto writes REL_TIME as H:MM:SS (UPnP H+:MM:SS).
+            assert!(body.contains("<Target>0:01:40</Target>"));
         }
         reply
     }
