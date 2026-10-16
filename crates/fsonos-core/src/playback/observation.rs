@@ -73,6 +73,23 @@ impl Playback {
 }
 
 impl PlayerPlayback {
+    /// Whether a pending transport read still belongs to this observation.
+    /// Room/group levels are deliberately excluded: a volume fade must not
+    /// keep cancelling a clock sample, and apply_observation never replaces
+    /// those controls. Metadata and the request flag still fence radio-title
+    /// updates and same-track seeks, even when URI and transport are equal.
+    pub(crate) fn same_transport_observation(&self, before: &Self) -> bool {
+        self.transport == before.transport
+            && self.track_uri == before.track_uri
+            && self.now_playing == before.now_playing
+            && self.duration_secs == before.duration_secs
+            && self.queue_position == before.queue_position
+            && self.queue_length == before.queue_length
+            && self.play_mode == before.play_mode
+            && self.position == before.position
+            && self.position_requested == before.position_requested
+    }
+
     /// When a finite, currently playing track is expected to end according
     /// to its last position sample. A paused player, radio stream or unknown
     /// clock has no predicted end. This is a read-back deadline, never
@@ -146,6 +163,31 @@ mod tests {
         assert!(after.needs_position_sample());
         assert_ne!(after, &baseline);
         assert_eq!(after.position_at(now), Some(23));
+    }
+
+    #[test]
+    fn transport_fence_ignores_levels_but_not_metadata_queue_or_clock_requests() {
+        let player = PlayerId("test-player".into());
+        let now = Instant::now();
+        let mut playback = Playback::default();
+        playback.apply_observation(&player, &read(TransportState::Playing, 1, Some(23)), now);
+        let before = playback.begin_position_sample(&player).unwrap();
+        let mut after = before.clone();
+        after.volume = Some(51);
+        after.mute = Some(true);
+        after.group_volume = Some(63);
+        after.group_mute = Some(true);
+        assert!(after.same_transport_observation(&before));
+        for changed in 0..4 {
+            let mut after = after.clone();
+            match changed {
+                0 => after.duration_secs = Some(999),
+                1 => after.queue_position = Some(2),
+                2 => after.position = Some((24, now)),
+                _ => after.position_requested = true,
+            }
+            assert!(!after.same_transport_observation(&before));
+        }
     }
 
     #[test]

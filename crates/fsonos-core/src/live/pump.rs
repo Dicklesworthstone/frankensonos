@@ -41,9 +41,17 @@ pub(super) fn turn(engine: &Engine, model: &mut Model) {
     {
         engine.publish(model, pushed);
     }
-    // Buffered events and subscription maintenance take precedence over
-    // suspected track-end loss. Admit at most one background read per turn.
-    super::progress::recover(engine, model);
+    // A bounded burst may leave notifications queued, including events which
+    // supersede an already-finished read. Check again after renewal and the
+    // blocking receive: never publish recovery over a known callback backlog.
+    // Consume at most one extra event, then yield to the next bounded turn.
+    if !engine.stop.load(Ordering::Acquire) {
+        if let Some(pushed) = engine.next_event(model, Duration::ZERO) {
+            engine.publish(model, pushed);
+        } else {
+            super::progress::recover(engine, model);
+        }
+    }
 }
 
 fn drain(mut next: impl FnMut() -> bool) {

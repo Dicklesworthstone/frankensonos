@@ -479,3 +479,39 @@ fn shutdown_and_drop_do_not_join_blocked_reads_or_send_followup_requests() {
         fixture.finish();
     }
 }
+
+#[test]
+fn volume_and_mute_changes_do_not_starve_clock_recovery_or_get_overwritten() {
+    let mut fixture = Fixture::new(2, false);
+    fixture.launch(0);
+    wait_for(|| fixture.transport.gate.entered.load(Ordering::Acquire) == 1);
+    let player = fixture.players[0].0.clone();
+    let notify = Notify {
+        sid: "uuid:rendering-test".into(),
+        seq: 1,
+        path: "/RenderingControl".into(),
+        properties: vec![(
+            "LastChange".into(),
+            "<Event><InstanceID val=\"0\"><Volume channel=\"Master\" val=\"77\"/>\
+             <Mute channel=\"Master\" val=\"1\"/></InstanceID></Event>"
+                .into(),
+        )],
+    };
+    fixture
+        .model
+        .playback
+        .apply(&player, EventSource::RenderingControl, &notify, Instant::now())
+        .unwrap();
+    complete(&fixture.engine, &mut fixture.model);
+    assert!(fixture.model.progress.reads.pending[0].current(&fixture.model));
+    fixture.release();
+    fixture.drain();
+    let state = fixture.model.playback.of(&player).unwrap();
+    assert_eq!(state.position_at(Instant::now()), Some(41));
+    assert_eq!(state.volume, Some(77));
+    assert_eq!(state.mute, Some(true));
+    assert!(!state.needs_position_sample());
+    fixture.finish();
+}
+
+mod backlog;

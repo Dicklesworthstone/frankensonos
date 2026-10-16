@@ -55,7 +55,10 @@ struct Pending {
 impl Pending {
     fn current(&self, model: &Model) -> bool {
         !self.cancelled.load(Ordering::Acquire)
-            && model.playback.of(&self.probe.player) == Some(&self.baseline)
+            && model
+                .playback
+                .of(&self.probe.player)
+                .is_some_and(|state| state.same_transport_observation(&self.baseline))
             && Authority::of(model, &self.probe.player).as_ref() == Some(&self.authority)
     }
 }
