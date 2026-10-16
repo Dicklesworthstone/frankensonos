@@ -161,19 +161,21 @@ impl Transport for Replies {
         action: &str,
         body: &str,
     ) -> Result<String, ProtoError> {
-        if action.ends_with("#Browse") && self.unreadable.get() {
+        // The SOAPACTION header arrives quoted: "urn:...:AVTransport:1#Name".
+        let name = action.trim_matches('"');
+        if name.ends_with("#Browse") && self.unreadable.get() {
             return Err(ProtoError::Network {
                 target: host.to_string(),
                 detail: "synthetic read-back failure".into(),
             });
         }
-        if action.ends_with("#GetZoneGroupState")
+        if name.ends_with("#GetZoneGroupState")
             && matches!(self.fault.get(), Fault::CoordinatorBefore)
         {
             self.fault.set(Fault::None);
             self.join_peer(host)?;
         }
-        if !action.ends_with("#RemoveTrackRangeFromQueue") {
+        if !name.ends_with("#RemoveTrackRangeFromQueue") {
             return self.inner.soap_post(host, path, action, body);
         }
         self.removes.set(self.removes.get() + 1);
