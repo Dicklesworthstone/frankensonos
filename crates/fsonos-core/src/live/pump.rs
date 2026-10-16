@@ -392,17 +392,9 @@ mod tests {
                     "GetTransportInfo"
                 ]
             );
-            assert_eq!(
-                engine
-                    .snapshot
-                    .lock()
-                    .unwrap()
-                    .playback
-                    .of(&id)
-                    .unwrap()
-                    .queue_position,
-                Some(2)
-            );
+            let published = engine.snapshot.lock().unwrap();
+            assert_eq!(published.playback.of(&id).unwrap().queue_position, Some(2));
+            drop(published);
 
             let (mut sample, _) = super::super::observation::read(&engine.via(), host, || false)
                 .unwrap()
