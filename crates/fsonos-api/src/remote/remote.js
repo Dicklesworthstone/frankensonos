@@ -867,6 +867,7 @@ const LiveRemote = (() => {
   const FALLBACK = 10000;
   const MAX_BACKOFF = 60000;
   const MAX_PENDING = 64;
+  const ROOM_CONCURRENCY = 4;
 
   function model({ connect, reload, refresh, status = () => {}, invalidate = () => {},
     schedule = setTimeout, cancel = clearTimeout }) {
@@ -921,11 +922,13 @@ const LiveRemote = (() => {
       try {
         if (all) await reload();
         else {
-          let failure = null;
-          for (const room of batch) {
-            if (!active || version !== generation) break;
-            try { await refresh(room); } catch (error) { failure = error; }
-          }
+          let index = 0, failure = null;
+          await Promise.all(Array.from({ length: Math.min(ROOM_CONCURRENCY, batch.length) }, async () => {
+            while (active && version === generation && index < batch.length) {
+              const room = batch[index++];
+              try { await refresh(room); } catch (error) { failure ??= error; }
+            }
+          }));
           if (failure && active && version === generation) throw failure;
         }
         if (active && version === generation) {
@@ -1025,7 +1028,7 @@ const LiveRemote = (() => {
     return zones.filter((zone) => zone.members.includes(room));
   }
 
-  return { model, affected, COALESCE, FALLBACK, MAX_BACKOFF, MAX_PENDING };
+  return { model, affected, COALESCE, FALLBACK, MAX_BACKOFF, MAX_PENDING, ROOM_CONCURRENCY };
 })();
 
 // Catalog reads have their own recovery lane: a failed favorites/moods read

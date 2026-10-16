@@ -201,6 +201,34 @@ test('one failed room refresh does not starve later rooms in the same live batch
   assert.equal(h.labels.at(-1), 'Live');
 });
 
+test('slow rooms refresh concurrently with a hard four-read ceiling', async () => {
+  const gates = new Map(), started = [], active = new Set(); let peak = 0;
+  const h = harness({ refresh: async (room) => {
+    started.push(room); active.add(room); peak = Math.max(peak, active.size);
+    const gate = deferred(); gates.set(room, gate); await gate.promise; active.delete(room);
+  } });
+  await opened(h);
+  for (const room of ['A', 'B', 'C', 'D', 'E', 'F']) h.feeds[0].emit('zone.state', { room });
+  await h.time.tick(300);
+  assert.deepEqual(started, ['A', 'B', 'C', 'D']); assert.equal(peak, 4);
+  gates.get('A').resolve(); await settle(); assert.deepEqual(started, ['A', 'B', 'C', 'D', 'E']);
+  gates.get('B').resolve(); await settle(); assert.deepEqual(started, ['A', 'B', 'C', 'D', 'E', 'F']);
+  for (const room of ['C', 'D', 'E', 'F']) gates.get(room).resolve();
+  await settle(); assert.equal(peak, 4); assert.equal(h.labels.at(-1), 'Live');
+});
+
+test('a slow room cannot delay a fast room in the same event batch', async () => {
+  const slow = deferred(), finished = [];
+  const h = harness({ refresh: async (room) => {
+    if (room === 'A') await slow.promise;
+    finished.push(room);
+  } });
+  await opened(h);
+  h.feeds[0].emit('zone.state', { room: 'A' }); h.feeds[0].emit('zone.state', { room: 'B' });
+  await h.time.tick(300); assert.deepEqual(finished, ['B']);
+  slow.resolve(); await settle(); assert.deepEqual(finished, ['B', 'A']);
+});
+
 test('suspension closes the stream and stops timers; resumption reconciles anew', async () => {
   const h = harness(); await opened(h);
   h.feeds[0].emit('zone.state', { room: 'Den' }); h.controller.suspend();
@@ -227,12 +255,15 @@ test('reconnect during an old read cannot report a synchronized baseline early',
   await h.time.tick(300); assert.equal(reads, 2); assert.equal(h.labels.at(-1), 'Live');
 });
 
-test('suspending an active batch prevents remaining obsolete room reads', async () => {
+test('suspending an active batch prevents queued obsolete room reads', async () => {
   const waiting = deferred(), rooms = [];
   const h = harness({ refresh: async (r) => { rooms.push(r); await waiting.promise; } });
-  await opened(h); h.feeds[0].emit('zone.state', { room: 'A' }); h.feeds[0].emit('zone.state', { room: 'B' });
-  await h.time.tick(300); h.controller.suspend(); waiting.resolve(); await settle();
-  assert.deepEqual(rooms, ['A']); assert.equal(h.time.pending, 0);
+  await opened(h);
+  for (const room of ['A', 'B', 'C', 'D', 'E']) h.feeds[0].emit('zone.state', { room });
+  await h.time.tick(300);
+  assert.deepEqual(rooms, ['A', 'B', 'C', 'D']);
+  h.controller.suspend(); waiting.resolve(); await settle();
+  assert.deepEqual(rooms, ['A', 'B', 'C', 'D']); assert.equal(h.time.pending, 0);
 });
 
 test('resume during an old read waits rather than starting overlapping work', async () => {
