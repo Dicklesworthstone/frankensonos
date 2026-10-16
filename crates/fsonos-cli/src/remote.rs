@@ -354,6 +354,31 @@ impl Daemon {
         self.post_with_timeout("/announce", body, ANNOUNCE_CALL)
     }
 
+    /// `method path` with `body`, as the stdio MCP server forwards a tool's
+    /// call. A method this client does not send is refused, never sent as
+    /// another one.
+    pub fn forward(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<serde_json::Value, Failure> {
+        let empty = serde_json::json!({});
+        match (method, body) {
+            ("GET", _) => self.get(path),
+            ("PUT", None) => self.put(path),
+            ("PUT", Some(body)) => self.put_json(path, body),
+            ("DELETE", _) => self.delete(path),
+            // An announcement answers once it has played and the music is back.
+            ("POST", _) if path == "/announce" => self.announce_json(body.unwrap_or(&empty)),
+            ("POST", _) => self.post(path, body.unwrap_or(&empty)),
+            _ => Err(Failure::new(
+                ErrorCode::Internal,
+                format!("the daemon client does not send {method} {path}"),
+            )),
+        }
+    }
+
     fn post_with_timeout<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
@@ -1113,6 +1138,71 @@ mod tests {
         assert!(!failure.retryable());
         assert!(failure.hint.contains("may still be running"));
         assert!(!failure.hint.contains("--direct"));
+    }
+
+    /// What a daemon at a fresh listener receives for `forward(method, ...)`:
+    /// its request line and body. It answers nothing.
+    fn forwarded(method: &str, body: Option<&serde_json::Value>) -> (String, String) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let daemon = Daemon {
+            addr: Endpoint::Socket(listener.local_addr().unwrap()),
+            token: None,
+            claim: None,
+        };
+        let worker = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut first = String::new();
+            reader.read_line(&mut first).unwrap();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap();
+                }
+            }
+            let mut sent = vec![0; length];
+            reader.read_exact(&mut sent).unwrap();
+            (
+                first.trim_end().to_owned(),
+                String::from_utf8(sent).unwrap(),
+            )
+        });
+        let _ = daemon.forward(method, "/scenes/evening", body);
+        worker.join().unwrap()
+    }
+
+    #[test]
+    fn the_stdio_server_forwards_each_method_as_itself() {
+        let (line, _) = forwarded("DELETE", None);
+        assert!(line.starts_with("DELETE /scenes/evening "), "{line}");
+        let levels = serde_json::json!({ "volume": 12 });
+        let (line, body) = forwarded("PUT", Some(&levels));
+        assert!(line.starts_with("PUT /scenes/evening "), "{line}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            levels
+        );
+        let (line, body) = forwarded("POST", None);
+        assert!(line.starts_with("POST /scenes/evening "), "{line}");
+        assert_eq!(body, "{}");
+
+        // A method the client does not send is refused, with no request.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let daemon = Daemon {
+            addr: Endpoint::Socket(listener.local_addr().unwrap()),
+            token: None,
+            claim: None,
+        };
+        let refused = daemon
+            .forward("PATCH", "/scenes/evening", None)
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::Internal);
+        listener.set_nonblocking(true).unwrap();
+        assert!(listener.accept().is_err(), "nothing was sent");
     }
 
     #[test]
