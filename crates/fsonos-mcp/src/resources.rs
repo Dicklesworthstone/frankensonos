@@ -1,5 +1,7 @@
 //! The house as MCP resources: documents an agent can read, and read again,
 //! instead of calling a tool.
+//! Reads share the tools' bounded worker budget: waiting on a daemon, a
+//! survey, or a speaker never holds the MCP listener's runtime threads.
 //!
 //! * `sonos://zones`: every zone (the `list_zones` answer, as JSON);
 //! * `sonos://zones/{room}`: one room's zone state (the `get_zone_state`
@@ -14,7 +16,7 @@
 //! `GET /events`.
 
 use fastmcp::prelude::*;
-use fsonos_api::Failure;
+use fsonos_api::{ErrorCode, Failure};
 
 use crate::tools::backend;
 
@@ -28,33 +30,49 @@ fn read_error(failure: &Failure) -> McpError {
     }
 }
 
+/// Await a blocking document read within the server's shared worker limit.
+async fn document(
+    work: impl FnOnce() -> Result<String, Failure> + Send + 'static,
+) -> McpResult<String> {
+    fsonos_api::off_thread::off_thread(work)
+        .map_err(|failure| read_error(&failure))?
+        .await
+        .ok_or_else(|| {
+            read_error(&Failure::new(
+                ErrorCode::Internal,
+                "the resource read stopped before it answered",
+            ))
+        })?
+        .map_err(|failure| read_error(&failure))
+}
+
 /// Every zone (group of rooms playing together) in both households: its
 /// rooms, its household, and whether it is playing.
 #[resource(uri = "sonos://zones", mime_type = "application/json")]
-fn zones() -> McpResult<String> {
-    backend()
-        .and_then(crate::tools::Backend::zones_document)
-        .map_err(|f| read_error(&f))
+async fn zones(ctx: &McpContext) -> McpResult<String> {
+    ctx.checkpoint()?;
+    let backend = backend().map_err(|failure| read_error(&failure))?;
+    document(move || backend.zones_document()).await
 }
 
 /// One room's zone state: its group, what the group plays, the room's
 /// volume. `room` is a percent-encoded room name.
 #[resource(uri = "sonos://zones/{room}", mime_type = "application/json")]
-fn zone(room: String) -> McpResult<String> {
+async fn zone(ctx: &McpContext, room: String) -> McpResult<String> {
+    ctx.checkpoint()?;
     let room = fsonos_api::http::percent_decode(&room).ok_or_else(move || {
         McpError::invalid_params(format!("room {room:?} is not valid percent-encoded UTF-8"))
     })?;
-    backend()
-        .and_then(|b| b.zone_document(&room))
-        .map_err(|f| read_error(&f))
+    let backend = backend().map_err(|failure| read_error(&failure))?;
+    document(move || backend.zone_document(&room)).await
 }
 
 /// The DJ in every zone: whether it feeds the queue, the work it plays and
 /// plays next, and how it is steered; with the moods it can be steered to
 /// and the time-of-day program that steers it otherwise.
 #[resource(uri = "sonos://dj", mime_type = "application/json")]
-fn dj() -> McpResult<String> {
-    backend()
-        .and_then(crate::tools::Backend::dj_document)
-        .map_err(|f| read_error(&f))
+async fn dj(ctx: &McpContext) -> McpResult<String> {
+    ctx.checkpoint()?;
+    let backend = backend().map_err(|failure| read_error(&failure))?;
+    document(move || backend.dj_document()).await
 }
