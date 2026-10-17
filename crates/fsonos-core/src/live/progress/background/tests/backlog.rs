@@ -179,15 +179,20 @@ fn live_notifications_and_due_renewals_continue_beside_a_blocked_read() {
         );
         assert!(fixture.model.progress.reads.contains(&fixture.players[0].0));
         assert!(!fixture.transport.gate.released.load(Ordering::Acquire));
-        assert_eq!(
+        // Lease I/O now completes outside the turn; wait for both renewals
+        // while proving that the unrelated slow read remains outstanding.
+        wait_for(|| {
+            pump::turn(&fixture.engine, &mut fixture.model);
             fixture
                 .sim
                 .gena_log()
                 .iter()
                 .filter(|entry| matches!(entry.event, GenaEvent::Renewed { .. }))
-                .count(),
-            2
-        );
+                .count()
+                == 2
+        });
+        assert!(fixture.model.progress.reads.contains(&fixture.players[0].0));
+        assert!(!fixture.transport.gate.released.load(Ordering::Acquire));
         fixture.finish();
     }
 }
