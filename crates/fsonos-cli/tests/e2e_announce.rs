@@ -893,3 +893,159 @@ fn daemon_speech_preserves_text_and_voice_and_uses_the_announcement_pipeline() {
     drop(daemon);
     s.finish();
 }
+
+/// `secs` seconds of 8 kHz mono 16-bit silence, as a WAV file.
+fn silence(secs: u32) -> Vec<u8> {
+    let data = secs * 8_000 * 2;
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1_u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&8_000_u32.to_le_bytes());
+    wav.extend_from_slice(&16_000_u32.to_le_bytes()); // bytes a second
+    wav.extend_from_slice(&2_u16.to_le_bytes()); // bytes a frame
+    wav.extend_from_slice(&16_u16.to_le_bytes()); // bits a sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data.to_le_bytes());
+    wav.resize(wav.len() + usize::try_from(data).unwrap(), 0);
+    wav
+}
+
+/// Whether a TCP connection to `addr` is accepted.
+fn connects(addr: &str) -> bool {
+    addr.parse()
+        .is_ok_and(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_millis(500)).is_ok())
+}
+
+/// `probe` answering true within `limit`, polled every 50 ms.
+fn within(limit: Duration, mut probe: impl FnMut() -> bool) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        if probe() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A stopping daemon closes its MCP port at once, while an announcement in
+/// flight still gets to put the music back (8hhv.11 item 2: the MCP listener
+/// took calls until the process exited).
+#[test]
+fn a_stopping_daemon_closes_its_mcp_port_while_an_announcement_drains() {
+    let mut s = Scenario::start("announce-stop");
+    let clock = s.sim(SimHousehold::standard()).clock().clone();
+    let (kitchen_before, _) = set_the_scene(&mut s);
+    let mut daemon = s.spawn(
+        "serve",
+        &[
+            "serve",
+            "--http",
+            "127.0.0.1:0",
+            "--mcp-http",
+            "127.0.0.1:0",
+        ],
+    );
+    let ready = daemon
+        .wait_line("fsonos serve: ready", Duration::from_secs(20))
+        .unwrap_or_default();
+    let at = |key: &str| {
+        ready
+            .split_whitespace()
+            .find_map(|w| w.strip_prefix(key))
+            .map_or_else(String::new, |a| a.trim_end_matches("/mcp").to_string())
+    };
+    let (api, mcp) = (at("http=http://"), at("mcp=http://"));
+    let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
+    s.check(
+        "live",
+        "daemon",
+        "serve is up with its live model, and both ports take connections",
+        live.is_some() && connects(&api) && connects(&mcp),
+        format!("http={api} mcp={mcp}\n{}", daemon.seen.join("\n")),
+    );
+
+    // One announcement in flight: a minute of silence, so the drain lasts
+    // (a chime's own deadline ends it within seconds, and the process with
+    // it, closing every port). With the sim's clock standing still, its clip
+    // plays in Kitchen and waits there.
+    let request = AnnounceRequest {
+        rooms: vec!["Kitchen".into()],
+        volume: Some(30),
+        ..AnnounceRequest::from_wav(&silence(60)).unwrap()
+    };
+    let body = serde_json::to_string(&request).unwrap();
+    let (send, answer) = mpsc::channel();
+    {
+        let api = api.clone();
+        thread::spawn(move || {
+            let answer = http_waiting(
+                &api,
+                "POST",
+                "/announce",
+                &[("Content-Type", "application/json")],
+                &body,
+                UPLOAD_WAIT,
+            );
+            let _ =
+                send.send(answer.map_or((0, String::new()), |(status, _, body)| (status, body)));
+        });
+    }
+    let kitchen = s.ip("Kitchen");
+    let playing = within(Duration::from_secs(60), || {
+        room(&s, kitchen).uri.is_some_and(|u| u.contains("/media/"))
+    });
+    s.check(
+        "in-flight",
+        "sim",
+        "the announcement's clip plays in Kitchen",
+        playing,
+        format!("{:?}", room(&s, kitchen)),
+    );
+
+    // SIGINT: the MCP listener closes at once; the announcement is waited
+    // for. (The HTTP listener stays bound, accepting nothing, until its
+    // open connection, the announcement's, is done.)
+    let exited = daemon.interrupt(Duration::from_millis(1));
+    let closed = within(Duration::from_secs(5), || !connects(&mcp));
+    let draining = daemon.running();
+    // Still draining a while later: the port closed while the daemon ran on.
+    thread::sleep(Duration::from_secs(3));
+    let still = daemon.running();
+    s.check(
+        "stopping",
+        "daemon",
+        "the MCP port refuses connections while the announcement still plays",
+        exited.is_none() && closed && draining && still,
+        format!(
+            "exited={exited:?} mcp_open={} http_open={} running={draining} 3 s later={still}",
+            connects(&mcp),
+            connects(&api)
+        ),
+    );
+
+    // The clock runs: the announcement ends, puts the music back, and the
+    // daemon, done draining, exits. (Its HTTP answer may or may not arrive:
+    // the stopped HTTP server drains open connections only for a while.)
+    let (code, played) = {
+        let _ticking = Ticker::start(clock);
+        let code = daemon.interrupt(Duration::from_secs(120));
+        (code, answer.recv_timeout(Duration::from_secs(5)).ok())
+    };
+    let kitchen = room(&s, kitchen);
+    s.check(
+        "drained",
+        "daemon",
+        "the announcement puts Kitchen's stream at 20 back, then the daemon exits cleanly",
+        kitchen == kitchen_before && code == Some(0),
+        format!("{kitchen:?} exit={code:?} answer={played:?}"),
+    );
+    drop(daemon);
+    s.finish();
+}
