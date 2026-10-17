@@ -240,10 +240,16 @@ fn stalled_discovery_and_descriptions_leave_callbacks_and_renewals_responsive() 
             wait_for(|| {
                 pump::turn(&f.engine, &mut f.model);
                 surveys.complete(&f.engine, &mut f.model);
+                let renewed = f
+                    .sim
+                    .gena_log()
+                    .iter()
+                    .any(|e| matches!(e.event, GenaEvent::Renewed { .. }));
                 f.model
                     .playback
                     .of(&id)
                     .is_some_and(|p| p.volume == Some(59))
+                    && renewed
             });
             assert!(surveys.busy());
             assert_eq!(f.model.surveyed_at, before);
@@ -422,14 +428,14 @@ fn startup_reads_leave_other_rooms_and_callbacks_live_before_readiness() {
                 set_volume(&sim.lan(), host, 37).unwrap();
             }
             let a = sim.player("A").unwrap();
-            let a_id = PlayerId(a.uuid.clone());
-            let a_ip = a.ip;
+            let player_id = PlayerId(a.uuid.clone());
+            let ip_address = a.ip;
             let b_id = PlayerId(sim.player("B").unwrap().uuid.clone());
             let lan = lan(&sim);
             let occupied = if callbacks {
                 None
             } else {
-                let local = lan.local_address_toward(a_ip).unwrap();
+                let local = lan.local_address_toward(ip_address).unwrap();
                 assert!(local.is_loopback());
                 Some(TcpListener::bind(SocketAddr::new(local, 0)).unwrap())
             };
@@ -453,24 +459,27 @@ fn startup_reads_leave_other_rooms_and_callbacks_live_before_readiness() {
             assert_eq!(live.households()[0].players.len(), 2);
             assert!(!live.wait_ready(Duration::ZERO));
             if callbacks {
-                set_volume(&sim.lan(), a_ip, 61).unwrap();
-                wait_for(|| live.player(&a_id).is_some_and(|p| p.volume == Some(61)));
+                set_volume(&sim.lan(), ip_address, 61).unwrap();
+                wait_for(|| {
+                    live.player(&player_id)
+                        .is_some_and(|p| p.volume == Some(61))
+                });
             } else {
                 assert!(live.snapshot().callback.is_none());
                 assert_eq!(live.snapshot().subscriptions, 0);
-                assert!(live.player(&a_id).is_none());
+                assert!(live.player(&player_id).is_none());
             }
             assert!(!transport.gate.released.load(Ordering::Acquire));
             assert!(!live.wait_ready(Duration::ZERO));
             drop(release);
             assert!(live.wait_ready(WAIT), "{:?}", live.snapshot());
             assert_eq!(
-                live.player(&a_id).unwrap().volume,
+                live.player(&player_id).unwrap().volume,
                 Some(if callbacks { 61 } else { 37 }),
                 "an older initial SOAP reply must not undo a newer rendering event"
             );
             assert_eq!(
-                live.player(&a_id).unwrap().position_at(Instant::now()),
+                live.player(&player_id).unwrap().position_at(Instant::now()),
                 Some(41)
             );
             live.stop();
@@ -511,8 +520,8 @@ fn startup_topology_changes_replace_cancelled_initial_reads() {
     for generation in [1, 2] {
         let sim = sim(generation);
         let a = sim.player("A").unwrap();
-        let a_ip = a.ip;
-        let a_id = PlayerId(a.uuid.clone());
+        let ip_address = a.ip;
+        let player_id = PlayerId(a.uuid.clone());
         let b_uuid = sim.player("B").unwrap().uuid.clone();
         let transport = transport(&sim, Stage::Playback);
         let release = Release(Arc::clone(&transport.gate));
@@ -520,11 +529,11 @@ fn startup_topology_changes_replace_cancelled_initial_reads() {
         let config = LiveConfig::new(sim.players().iter().map(|p| p.ip).collect());
         let live = Live::start_with(transport.clone(), lan(&sim), config);
         wait_for(|| transport.gate.entered.load(Ordering::Acquire));
-        set_av_transport_uri(&sim.lan(), a_ip, &format!("x-rincon:{b_uuid}"), "").unwrap();
+        set_av_transport_uri(&sim.lan(), ip_address, &format!("x-rincon:{b_uuid}"), "").unwrap();
         wait_for(|| {
-            live.households()
-                .first()
-                .is_some_and(|house| house.groups.len() == 1 && house.groups[0].coordinator != a_id)
+            live.households().first().is_some_and(|house| {
+                house.groups.len() == 1 && house.groups[0].coordinator != player_id
+            })
         });
         assert!(!live.wait_ready(Duration::ZERO));
         let before = sim.soap_log().len();
@@ -537,7 +546,7 @@ fn startup_topology_changes_replace_cancelled_initial_reads() {
             .map(|call| call.action.as_str())
             .collect();
         assert_eq!(later, ["GetVolume", "GetMute"]);
-        assert!(live.player(&a_id).is_some_and(|p| p.volume.is_some()));
+        assert!(live.player(&player_id).is_some_and(|p| p.volume.is_some()));
         live.stop();
         wait_for(|| Arc::strong_count(&transport) == 1);
         sim.shutdown();

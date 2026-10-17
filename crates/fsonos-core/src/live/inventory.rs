@@ -169,7 +169,10 @@ impl Surveys {
     /// sooner. Existing subscriptions retain the normal renewal engine.
     fn maintain_listener(&mut self, engine: &Engine, model: &mut Model) {
         if engine.stop.load(Ordering::Acquire)
-            || (model.surveyed_at.is_none() && model.rec.households.is_empty())
+            || (model.surveyed_at.is_none()
+                && model.rec.households.is_empty()
+                && model.remembered.is_empty()
+                && engine.config.seeds.is_empty())
         {
             return;
         }

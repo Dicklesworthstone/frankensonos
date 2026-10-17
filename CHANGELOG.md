@@ -456,6 +456,8 @@ library, in whatever genres it spans.
 
 A selection; each commit message has the details.
 
+- Cached-only startup opens the event listener even when every remembered
+  player is offline, so recovery works without a daemon restart.
 - HTTP connections are served concurrently, so an open event stream never
   holds up other callers.
   [`d52e4f3`](https://github.com/Dicklesworthstone/frankensonos/commit/d52e4f3)
