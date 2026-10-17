@@ -181,6 +181,23 @@ fn check_test_play(s: &mut Scenario) {
             && (before.0, &before.1) == (after.0, &after.1),
         format!("exit {code:?}\n{step}\nbefore {before:?}\nafter {after:?}"),
     );
+    let log = s.cli("setup-test-play-logged", &["log", "--json"]);
+    let rows: Value = serde_json::from_str(&log.stdout).unwrap_or(Value::Null);
+    s.check(
+        "setup-test-play-logged",
+        "cli",
+        "the test play is in the action log as the CLI's",
+        rows.as_array().is_some_and(|rows| {
+            rows.iter().any(|r| {
+                r["client"] == "cli"
+                    && r["intent"] == "setup --test-play: Kitchen"
+                    && r["result"]
+                        .as_str()
+                        .is_some_and(|t| t.contains("then stopped it again"))
+            })
+        }),
+        &log.stdout,
+    );
 
     let stream = "x-rincon-mp3radio://stream.example.invalid/setup.mp3";
     let run = s.cli("play-stream", &["play", "Kitchen", stream]);

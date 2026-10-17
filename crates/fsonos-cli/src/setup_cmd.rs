@@ -301,7 +301,14 @@ fn test_play(global: &GlobalArgs, direct: &Direct, args: &SetupArgs) -> StepOutc
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    play::test_play(&*lan, households, room, play::LISTEN, now)
+    let outcome = play::test_play(&*lan, households, room, play::LISTEN, now);
+    let result = if outcome.status == Status::Pass {
+        outcome.summary.clone()
+    } else {
+        format!("failed: {}", outcome.summary)
+    };
+    direct.log_done(format!("setup --test-play: {room}"), result);
+    outcome
 }
 
 /// Survey and run every doctor check once.

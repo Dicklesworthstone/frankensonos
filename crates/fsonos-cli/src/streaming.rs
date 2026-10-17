@@ -112,13 +112,27 @@ fn restore_if_still_streaming(
 ) -> anyhow::Result<()> {
     let direct = Direct::survey(global)?;
     let network = global.network()?;
-    let report = recovery::restore(
+    let restored = recovery::restore(
         &*network.transport,
         direct.households()?,
         snapshot,
         source,
         started,
-    )?;
+    );
+    let room = direct
+        .households()?
+        .iter()
+        .find_map(|h| h.player(&snapshot.coordinator))
+        .map_or_else(|| snapshot.coordinator.0.clone(), |p| p.room_name.clone());
+    direct.log_done(
+        format!("stream: restore {room}'s group"),
+        match &restored {
+            Ok(r) if r.skipped.is_empty() => "put back what was playing".into(),
+            Ok(r) => format!("put back, except {:?}", r.skipped),
+            Err(e) => format!("failed: {e}"),
+        },
+    );
+    let report = restored?;
     if !report.skipped.is_empty() {
         eprintln!(
             "fsonos stream: some prior state was left unchanged: {:?}",

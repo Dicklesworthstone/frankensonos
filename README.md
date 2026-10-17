@@ -290,10 +290,10 @@ deny = ["volume"]
 
 - One choke point: every mutating call on every surface is authorized,
   snapshotted, carried out under the policy, and logged with who asked, the
-  verdict (allow, clamp or deny) and what happened. The DJ logs each top-up
-  of a queue it feeds as client `dj` (not undoable). Not logged yet: the
-  short test play of `fsonos setup --test-play`, the restore at the end of
-  `fsonos stream`, and a Spotify sign-in.
+  verdict (allow, clamp or deny) and what happened. That includes the DJ's
+  own top-ups (client `dj`), `fsonos setup --test-play`'s short test play,
+  the restore at the end of `fsonos stream`, and each step of a Spotify
+  sign-in (never its code); none of these is undoable.
 - `allow` and `deny` name tools or whole classes of them: `volume`,
   `playback`, `grouping`, `queue`, `sound`, `house-config`, `announce`, `dj`,
   `auth`, `undo`, and `read` for every read. Composite calls are held to each

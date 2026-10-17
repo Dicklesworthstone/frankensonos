@@ -87,8 +87,20 @@ impl Surface {
 
     /// Start a sign-in (`POST /auth/spotify/begin`).
     pub fn spotify_sign_in_begin(&self, client: &Client) -> Result<SignInStartDto, Failure> {
-        self.guard(client).authorize(SIGN_IN_TOOL, false)?;
-        self.sign_in_engine()?.begin()
+        self.authorize_logged(client, SIGN_IN_TOOL)?;
+        let started = self.sign_in_engine()?.begin();
+        let result = match &started {
+            Ok(_) => "a sign-in waits for the browser".to_string(),
+            Err(failure) => format!("failed: {}", failure.code),
+        };
+        self.record(
+            client,
+            format!("{SIGN_IN_TOOL}: begin"),
+            "allow".into(),
+            result,
+            None,
+        );
+        started
     }
 
     /// Finish the waiting sign-in with the browser's redirect (the callback,
@@ -98,9 +110,21 @@ impl Surface {
         client: &Client,
         redirect: &str,
     ) -> Result<SignInDto, Failure> {
-        self.guard(client).authorize(SIGN_IN_TOOL, false)?;
+        self.authorize_logged(client, SIGN_IN_TOOL)?;
+        // Never the redirect itself: it carries the authorization code.
         let engine = self.sign_in_engine()?;
-        engine.complete(redirect)?;
-        Ok(engine.status())
+        let done = engine.complete(redirect).map(|()| engine.status());
+        let result = match &done {
+            Ok(_) => "signed in".to_string(),
+            Err(failure) => format!("failed: {}", failure.code),
+        };
+        self.record(
+            client,
+            format!("{SIGN_IN_TOOL}: complete"),
+            "allow".into(),
+            result,
+            None,
+        );
+        done
     }
 }

@@ -114,6 +114,12 @@ impl Direct {
         Err(Failure::new(ErrorCode::NotReady, detail).with_hint(NO_PLAYERS_HINT))
     }
 
+    /// Log an action the CLI carried out itself, outside the planned paths
+    /// (setup's test play, a stream's restore).
+    pub fn log_done(&self, intent: String, result: String) {
+        self.surface.log_done(&Client::Cli, intent, result);
+    }
+
     /// Plan a command as `tool` and carry it out under the house policy.
     pub fn run(
         &self,

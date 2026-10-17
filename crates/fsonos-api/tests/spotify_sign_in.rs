@@ -12,6 +12,7 @@ use fsonos_api::surface::spotify_auth::{SignInDto, SignInStartDto, SpotifyAuth};
 use fsonos_api::{Failure, Identity, Surface, WebPolicy};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
+use fsonos_core::store::{ActionFilter, MemStore};
 use fsonos_proto::{ProtoError, Transport};
 use serde_json::{Value, json};
 use std::net::{IpAddr, SocketAddr};
@@ -113,6 +114,49 @@ fn surface(policy: Policy) -> Surface {
         policy,
         Box::new(SystemClock),
     )
+}
+
+/// Each step of a sign-in is in the action log, as who asked and how it
+/// went, never with the browser's redirect (it carries the code).
+#[test]
+fn the_sign_in_is_logged_without_the_redirect() {
+    let s = surface(Policy::default())
+        .with_action_log(Box::new(MemStore::default()), "http")
+        .with_spotify_auth(Box::new(FakeAuth::default()));
+    let client = Client::Tailnet("owner@example.com".into());
+    s.spotify_sign_in_begin(&client).unwrap();
+    let bad = "http://127.0.0.1:8099/auth/spotify/callback?code=secret&state=bad";
+    assert!(s.spotify_sign_in_complete(&client, bad).is_err());
+    let good = "http://127.0.0.1:8099/auth/spotify/callback?code=secret&state=good";
+    assert!(s.spotify_sign_in_complete(&client, good).unwrap().signed_in);
+    let rows: Vec<(String, String, String)> = s
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap()
+        .into_iter()
+        .rev()
+        .map(|row| (row.action.client, row.action.intent, row.action.result))
+        .collect();
+    let who = || "owner@example.com".to_string();
+    assert_eq!(
+        rows,
+        [
+            (
+                who(),
+                "spotify_sign_in: begin".into(),
+                "a sign-in waits for the browser".into()
+            ),
+            (
+                who(),
+                "spotify_sign_in: complete".into(),
+                "failed: INVALID_ARGUMENT".into()
+            ),
+            (
+                who(),
+                "spotify_sign_in: complete".into(),
+                "signed in".into()
+            ),
+        ]
+    );
 }
 
 /// `(status, headers lowercased, body)`.

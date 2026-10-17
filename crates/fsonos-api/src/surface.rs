@@ -58,6 +58,7 @@ pub mod schedules;
 pub mod spotify_auth;
 
 pub mod announce;
+mod outside;
 mod playback_caps;
 pub mod players;
 mod search_play;
