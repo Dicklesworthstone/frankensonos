@@ -458,3 +458,5 @@ fn stopping_during_renewal_prevents_replacement_and_does_not_publish_failure() {
     assert_eq!(f.subs.active[0].renew_at, before.renew_at);
     f.finish();
 }
+
+mod deferred;

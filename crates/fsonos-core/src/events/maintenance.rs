@@ -47,7 +47,7 @@ impl Plan {
                     // replacement unnecessary, but not an ordinary renewal.
                     && (before.refresh_pending
                         || before.last_seq.is_some()
-                        || before.initial_deadline > self.due
+                        || before.initial_deadline > Instant::now()
                         || now.last_seq.is_none())
             }),
             Baseline::Pending { due, epoch } => {
@@ -442,6 +442,24 @@ impl Subscriber for Cancellable<'_> {
 }
 
 impl Subscriptions {
+    /// A malformed event or a sequence gap requests a fresh full-state
+    /// stream, but must not make the live event handler do network I/O.
+    /// Coalesce repeats without resetting a failed request's backoff.
+    pub(super) fn defer_refresh(&mut self, sid: &str, now: Instant) -> bool {
+        if !self.deferred_refresh {
+            return false;
+        }
+        if let Some(active) = self.active.iter_mut().find(|a| a.sid == sid)
+            && !active.refresh_pending
+        {
+            active.epoch = Arc::new(());
+            active.refresh_pending = true;
+            active.renew_at = now;
+        }
+        self.invalidate_renewals();
+        true
+    }
+
     pub(crate) fn renew_background(
         &mut self,
         provider: &Provider,
@@ -449,6 +467,7 @@ impl Subscriptions {
         stop: &Arc<AtomicBool>,
         now: Instant,
     ) -> Vec<(Report, Instant)> {
+        self.deferred_refresh = true;
         let mut workers = std::mem::take(&mut self.maintenance);
         let reports = workers.reap(self, stop.load(Ordering::Acquire));
         workers.start(self, provider, &callback, stop, now);
@@ -457,6 +476,7 @@ impl Subscriptions {
     }
 
     pub(crate) fn poll_renewals(&mut self, stopping: bool) -> Vec<(Report, Instant)> {
+        self.deferred_refresh = true;
         let mut workers = std::mem::take(&mut self.maintenance);
         let reports = workers.reap(self, stopping);
         self.maintenance = workers;

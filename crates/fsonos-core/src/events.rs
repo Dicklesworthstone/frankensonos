@@ -195,6 +195,8 @@ pub struct Subscriptions {
     boot_seqs: HashMap<PlayerId, u32>,
     pending_epoch: Arc<()>,
     maintenance: maintenance::Workers,
+    /// The live pump queues event-loss recovery; standalone callers stay synchronous.
+    deferred_refresh: bool,
 }
 
 impl Subscriptions {
@@ -415,6 +417,9 @@ impl Subscriptions {
         callback_url: impl Fn(Service) -> String,
         now: Instant,
     ) -> Report {
+        if self.defer_refresh(sid, now) {
+            return Report::default();
+        }
         let mut report = Report::default();
         let Some(a) = self.active.iter_mut().find(|a| a.sid == sid) else {
             return report;
