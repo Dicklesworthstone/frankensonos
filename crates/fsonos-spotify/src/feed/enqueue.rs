@@ -325,6 +325,7 @@ mod tests {
             feedback: None,
             now: MIDNIGHT,
             local_hour: Some(20),
+            queued_elsewhere: &[],
         }
     }
 

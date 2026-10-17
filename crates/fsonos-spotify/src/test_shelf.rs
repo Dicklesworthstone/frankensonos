@@ -306,6 +306,7 @@ pub(crate) fn simulate_with<'p>(
         let clock_hour = u8::try_from((now - MIDNIGHT) / 3600 % 24).unwrap();
         let ctx = PickContext {
             history: &history,
+            elsewhere: &[],
             now: Some(now),
             local_hour: Some(hour.unwrap_or(clock_hour)),
             energy_target: None,

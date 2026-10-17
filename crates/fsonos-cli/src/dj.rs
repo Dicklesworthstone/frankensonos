@@ -36,7 +36,7 @@ use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::Store;
 use fsonos_core::{CoreError, control};
 use fsonos_spotify::cache::works_from_store;
-use fsonos_spotify::dj::{DjConfig, WorkPool};
+use fsonos_spotify::dj::{DjConfig, PlayRecord, WorkPool};
 use fsonos_spotify::feed::{FeedError, Planning, QueueFeed, QueuedWork, Speakers};
 use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
 use fsonos_spotify::steer::{DjSession, Moods, Steer, steering};
@@ -286,6 +286,7 @@ fn plan<'a>(
     pool: &'a WorkPool,
     feedback: Option<&'a FeedbackModel>,
     cx: &'a Context,
+    queued_elsewhere: &'a [PlayRecord],
 ) -> Planning<'a> {
     Planning {
         pool,
@@ -293,7 +294,22 @@ fn plan<'a>(
         feedback,
         now: cx.now,
         local_hour: Some(cx.local_hour),
+        queued_elsewhere,
     }
+}
+
+/// What the house's other active feeds play now or have queued: a work
+/// playing or waiting in another room is not picked here too.
+fn queued_elsewhere(
+    feeds: &HashMap<PlayerId, QueueFeed>,
+    here: &PlayerId,
+    now: i64,
+) -> Vec<PlayRecord> {
+    feeds
+        .iter()
+        .filter(|(coordinator, feed)| *coordinator != here && feed.is_active())
+        .flat_map(|(_, feed)| feed.on_or_ahead(now))
+        .collect()
 }
 
 /// Act on what a feed made of playback in the group `at` leads: clear or
@@ -504,11 +520,12 @@ impl SpotifyDj {
                     feedback,
                     ..
                 } = &mut *state;
+                let elsewhere = queued_elsewhere(feeds, at.coordinator, cx.now);
                 let feed = feeds.entry(at.coordinator.clone()).or_insert_with(|| {
                     QueueFeed::new(at.coordinator, DjConfig::default(), now.unsigned_abs())
                 });
-                let queued = match feed.start(&speakers, plan(pool, feedback.as_ref(), &cx), store)
-                {
+                let planning = plan(pool, feedback.as_ref(), &cx, &elsewhere);
+                let queued = match feed.start(&speakers, planning, store) {
                     Ok(queued) => queued,
                     Err(e) => {
                         // A start that queued nothing let go: no feed is
@@ -544,11 +561,16 @@ impl SpotifyDj {
                     feedback,
                     ..
                 } = &mut *state;
+                let elsewhere = queued_elsewhere(feeds, at.coordinator, cx.now);
                 let feed = feeds
                     .get_mut(at.coordinator)
                     .ok_or_else(|| no_session(&room))?;
                 let work = feed
-                    .skip(&speakers, plan(pool, feedback.as_ref(), &cx), store)
+                    .skip(
+                        &speakers,
+                        plan(pool, feedback.as_ref(), &cx, &elsewhere),
+                        store,
+                    )
                     .map_err(failure)?;
                 Ok(sent(format!("skipped to {}", describe(work))))
             }
@@ -756,12 +778,13 @@ impl DjEngine for SpotifyDj {
             problems,
             ..
         } = &mut *state;
+        let elsewhere = queued_elsewhere(feeds, at.coordinator, cx.now);
         let Some(feed) = feeds.get_mut(at.coordinator) else {
             return;
         };
         let result = feed.on_playback(
             &speakers(at),
-            plan(pool, feedback.as_ref(), &cx),
+            plan(pool, feedback.as_ref(), &cx, &elsewhere),
             store,
             playback,
         );

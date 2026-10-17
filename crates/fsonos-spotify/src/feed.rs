@@ -221,6 +221,10 @@ pub struct Planning<'a> {
     pub now: i64,
     /// Local hour 0–23, for the time-of-day energy target.
     pub local_hour: Option<u8>,
+    /// What the house's other DJ feeds play now or have queued
+    /// ([`QueueFeed::on_or_ahead`]): with the other rooms' recorded plays it
+    /// cools a work here as if heard ([`PickContext::elsewhere`]).
+    pub queued_elsewhere: &'a [PlayRecord],
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1004,9 +1008,11 @@ impl QueueFeed {
         let params = render_params(at, store, plan.now)?;
         let host = host_of(at)?;
         let mut history = self.history(&*store, plan.now)?;
+        let elsewhere = self.elsewhere(&*store, &plan)?;
         for _ in 0..count {
             let ctx = PickContext {
                 history: &history,
+                elsewhere: &elsewhere,
                 now: Some(plan.now),
                 local_hour: plan.local_hour,
                 energy_target: None,
@@ -1095,15 +1101,50 @@ impl QueueFeed {
         }
         // Oldest first, the earlier zones' first in a tie.
         history.sort_by_key(|p| p.played_at);
-        let reached = self.playing.unwrap_or(0);
-        for work in &self.queued {
-            for m in &work.movements {
-                if m.position.is_none_or(|p| p > reached) {
-                    history.push(PlayRecord::at(m.uri.clone(), now));
-                }
-            }
-        }
+        history.extend(self.queued_from(now, false));
         Ok(history)
+    }
+
+    /// The movement playing now and those queued after it, as if played at
+    /// `now`: what another room's DJ must not pick
+    /// ([`Planning::queued_elsewhere`]). The playing one counts before its
+    /// play is recorded, which waits for the next playback event.
+    #[must_use]
+    pub fn on_or_ahead(&self, now: i64) -> Vec<PlayRecord> {
+        self.queued_from(now, true)
+    }
+
+    /// The queued movements not yet reached (and, with `playing`, the one
+    /// playing), as if played at `now`.
+    fn queued_from(&self, now: i64, playing: bool) -> Vec<PlayRecord> {
+        let reached = self.playing.unwrap_or(0);
+        self.queued
+            .iter()
+            .flat_map(|work| &work.movements)
+            .filter(|m| {
+                m.position
+                    .is_none_or(|p| p > reached || (playing && p == reached))
+            })
+            .map(|m| PlayRecord::at(m.uri.clone(), now))
+            .collect()
+    }
+
+    /// What the house's other rooms played (the store's plays under other
+    /// zones) and what their DJ feeds have queued: anti-repeat is house-wide.
+    fn elsewhere<S: Store + ?Sized>(
+        &self,
+        store: &S,
+        plan: &Planning<'_>,
+    ) -> Result<Vec<PlayRecord>, FeedError> {
+        let mine = |zone: &str| zone == self.zone || self.earlier.iter().any(|z| z == zone);
+        let mut heard: Vec<PlayRecord> = store
+            .recent_plays(None, self.config.history_horizon)?
+            .into_iter()
+            .filter(|p| !mine(p.zone.as_str()))
+            .map(|p| PlayRecord::at(p.source_uri, p.played_at))
+            .collect();
+        heard.extend_from_slice(plan.queued_elsewhere);
+        Ok(heard)
     }
 }
 
@@ -1492,6 +1533,7 @@ mod tests {
             feedback: None,
             now,
             local_hour: Some(20),
+            queued_elsewhere: &[],
         }
     }
 
@@ -2015,6 +2057,73 @@ mod tests {
             .filter(|p| p.source_uri == movements[0])
             .count();
         assert_eq!(once, 1, "{history:?}");
+    }
+
+    #[test]
+    fn a_work_another_room_played_or_queued_waits_here_too() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = multi_movement_pool();
+        let mut store = MemStore::default();
+        // Another room's DJ, seed 7: it plays a work and queues the next.
+        let mut there = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        there
+            .start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        // Before its play is recorded, the playing movement already counts.
+        let playing = rig.queue()[0].clone();
+        assert!(
+            there
+                .on_or_ahead(MIDNIGHT)
+                .iter()
+                .any(|p| p.source_uri == playing)
+        );
+        rig.pump(&lan, &mut there, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        let theirs: HashSet<String> = rig.queue().into_iter().collect();
+        let ahead = there.on_or_ahead(MIDNIGHT);
+        assert!(
+            !plays(&store).is_empty(),
+            "the other room's play is recorded"
+        );
+        assert!(!ahead.is_empty(), "the other room has movements waiting");
+        assert!(ahead.iter().all(|p| theirs.contains(&p.source_uri)));
+
+        // A DJ in this room, with nothing played here and the same seed.
+        let zone = PlayerId("RINCON_000E58A0HERE001400".into());
+        let here = QueueFeed::new(&zone, DjConfig::default(), 7);
+        let planning = Planning {
+            queued_elsewhere: &ahead,
+            ..plan(&pool, MIDNIGHT)
+        };
+        let history = here.history(&store, MIDNIGHT).unwrap();
+        let elsewhere = here.elsewhere(&store, &planning).unwrap();
+        let ctx = PickContext {
+            history: &history,
+            elsewhere: &elsewhere,
+            now: Some(MIDNIGHT),
+            local_hour: Some(20),
+            ..PickContext::default()
+        };
+        let pick = |ctx: &PickContext<'_>| {
+            pick_next(&pool, ctx, &DjConfig::default(), &mut Rng::new(7))
+                .unwrap()
+                .movements
+                .iter()
+                .map(|m| m.track.source_uri.clone())
+                .collect::<Vec<_>>()
+        };
+        let mine = pick(&ctx);
+        assert!(
+            mine.iter().all(|uri| !theirs.contains(uri)),
+            "{mine:?} repeats the other room's {theirs:?}"
+        );
+        // This room's history alone would repeat the other room's work.
+        let alone = pick(&PickContext {
+            elsewhere: &[],
+            ..ctx
+        });
+        assert!(alone.iter().any(|uri| theirs.contains(uri)), "{alone:?}");
     }
 
     /// A feed saved and read back, as across a daemon restart.

@@ -13,7 +13,9 @@
 //! * **Anti-repeat.** A work never recurs within
 //!   [`DjConfig::work_cooldown_plays`] work plays or
 //!   [`DjConfig::work_cooldown_secs`] seconds, and works heard a while ago stay
-//!   de-weighted until well clear of that. If the cooldown leaves too few works
+//!   de-weighted until well clear of that. The time-based cooldown is
+//!   house-wide: a work another room played or has queued
+//!   ([`PickContext::elsewhere`]) waits here too. If the cooldown leaves too few works
 //!   (a small library, a long session), the DJ rotates through the
 //!   least-recently-played slice instead of repeating.
 //! * **Spread.** No artist or composer recurs within
@@ -204,6 +206,11 @@ impl Default for DjConfig {
 pub struct PickContext<'h> {
     /// Play history, one row per track, most recent last.
     pub history: &'h [PlayRecord],
+    /// What the house's other rooms played lately or have queued: a work
+    /// heard there within [`DjConfig::work_cooldown_secs`] cools here too, so
+    /// two rooms do not repeat each other's music. Only the cooldown reads
+    /// it; energy, spacing and runs follow this room's `history`.
+    pub elsewhere: &'h [PlayRecord],
     /// Current Unix time (enables the time-based cooldown).
     pub now: Option<i64>,
     /// Local hour 0–23 (enables the time-of-day energy target).
@@ -458,7 +465,7 @@ pub fn pick_next<'p>(
     if pool.is_empty() {
         return None;
     }
-    let recency = Recency::scan(pool, ctx.history, config);
+    let recency = Recency::scan(pool, ctx.history, config).heard_elsewhere(pool, ctx.elsewhere);
     let steer = ctx.steer.filter(|s| s.constraints.is_active(ctx.now));
     let (allowed, avoids_relaxed) = pool.allowed(steer);
     let (admitted, relaxed) = match steer {
@@ -568,6 +575,9 @@ pub fn plan<'p>(
 struct Recency<'p> {
     work_ago: HashMap<usize, usize>,
     work_at: HashMap<usize, i64>,
+    /// When each work was last heard in another room
+    /// ([`PickContext::elsewhere`]).
+    elsewhere_at: HashMap<usize, i64>,
     composer_ago: HashMap<&'p str, usize>,
     composer_at: HashMap<&'p str, i64>,
     album_ago: HashMap<&'p str, usize>,
@@ -655,6 +665,18 @@ impl<'p> Recency<'p> {
         }
         seen
     }
+
+    /// Add when each pool work was last heard in another room.
+    fn heard_elsewhere(mut self, pool: &WorkPool, elsewhere: &[PlayRecord]) -> Self {
+        for play in elsewhere {
+            let work = pool.by_track.get(play.source_uri.as_str());
+            if let (Some(&(w, _)), Some(at)) = (work, play.played_at) {
+                let latest = self.elsewhere_at.entry(w).or_insert(at);
+                *latest = (*latest).max(at);
+            }
+        }
+        self
+    }
 }
 
 struct Eligible {
@@ -716,15 +738,20 @@ fn eligible(
             allowed = kept;
         }
     }
+    let lately = |at: Option<&i64>| {
+        at.is_some_and(|&at| {
+            ctx.now
+                .is_some_and(|now| now.saturating_sub(at) < config.work_cooldown_secs)
+        })
+    };
+    let elsewhere = |w: &usize| lately(recency.elsewhere_at.get(w));
     let cooling = |w: &usize| {
         recency
             .work_ago
             .get(w)
             .is_some_and(|&ago| ago < config.work_cooldown_plays)
-            || matches!(
-                (ctx.now, recency.work_at.get(w)),
-                (Some(now), Some(&at)) if now.saturating_sub(at) < config.work_cooldown_secs
-            )
+            || lately(recency.work_at.get(w))
+            || elsewhere(w)
     };
     let fresh: Vec<usize> = allowed.iter().copied().filter(|w| !cooling(w)).collect();
     if fresh.len() >= (allowed.len() / 10).max(1) {
@@ -734,7 +761,14 @@ fn eligible(
         };
     }
     let quarter = (allowed.len() / 4).max(1);
-    allowed.sort_by_key(|w| Reverse(recency.work_ago.get(w).copied().unwrap_or(usize::MAX)));
+    // Least recently played here first; what another room plays, has queued
+    // or played lately goes last, never ahead as "not played here".
+    allowed.sort_by_key(|w| {
+        (
+            elsewhere(w),
+            Reverse(recency.work_ago.get(w).copied().unwrap_or(usize::MAX)),
+        )
+    });
     allowed.truncate(quarter);
     Eligible {
         works: allowed,
@@ -1736,6 +1770,7 @@ mod tests {
         }
         let ctx = PickContext {
             history: &history,
+            elsewhere: &[],
             now: Some(now),
             local_hour: Some(19),
             energy_target: None,
@@ -1767,6 +1802,7 @@ mod tests {
             .collect();
         let ctx = PickContext {
             history: &untimed,
+            elsewhere: &[],
             now: None,
             local_hour: None,
             energy_target: Some(80),
@@ -1778,6 +1814,104 @@ mod tests {
             planned.reason.summary,
             "Brahms last heard 4 works ago; balancing toward late-Romantic; lively energy requested"
         );
+    }
+
+    #[test]
+    fn a_work_heard_in_another_room_waits_here_for_the_cooldown() {
+        let pool = works_of(&shelf_items(1));
+        let config = DjConfig::default();
+        let ctx = PickContext {
+            now: Some(MIDNIGHT),
+            local_hour: Some(20),
+            ..PickContext::default()
+        };
+        let first = pick_next(&pool, &ctx, &config, &mut Rng::new(7)).unwrap();
+        let heard = |at: i64| -> Vec<PlayRecord> {
+            first
+                .movements
+                .iter()
+                .map(|m| PlayRecord::at(m.track.source_uri.clone(), at))
+                .collect()
+        };
+        // Another room played it an hour ago: it waits here too.
+        let lately = heard(MIDNIGHT - 3600);
+        let ctx_lately = PickContext {
+            elsewhere: &lately,
+            ..ctx
+        };
+        let next = pick_next(&pool, &ctx_lately, &config, &mut Rng::new(7)).unwrap();
+        assert_ne!(next.work.work_key, first.work.work_key);
+        // Past the cooldown, the same seed picks it again: elsewhere
+        // reaches only that far.
+        let long_ago = heard(MIDNIGHT - config.work_cooldown_secs - 60);
+        let ctx_long_ago = PickContext {
+            elsewhere: &long_ago,
+            ..ctx
+        };
+        let again = pick_next(&pool, &ctx_long_ago, &config, &mut Rng::new(7)).unwrap();
+        assert_eq!(again.work.work_key, first.work.work_key);
+    }
+
+    #[test]
+    fn rotating_past_the_cooldown_still_passes_over_another_rooms_work() {
+        let pool = works_of(&shelf_items(1));
+        let config = DjConfig {
+            artist_cooldown_works: 0,
+            ..DjConfig::default()
+        };
+        let short: Vec<usize> = (0..pool.works.len())
+            .filter(|&w| !is_long(&pool.works[w], &config))
+            .collect();
+        assert!(short.len() >= 30, "{} short works", short.len());
+        // Every work but two played here within the hour: too few are out of
+        // cooldown, so the DJ rotates through the least recently played.
+        let (x, z) = (short[0], short[1]);
+        let mut history = Vec::new();
+        for (i, work) in pool.works.iter().enumerate() {
+            if i != x && i != z {
+                let at = MIDNIGHT - 3600 + i64::try_from(i).unwrap();
+                history.extend(
+                    work.movements
+                        .iter()
+                        .map(|m| PlayRecord::at(m.track.source_uri.clone(), at)),
+                );
+            }
+        }
+        // Another room has x queued.
+        let queued: Vec<PlayRecord> = pool.works[x]
+            .movements
+            .iter()
+            .map(|m| PlayRecord::at(m.track.source_uri.clone(), MIDNIGHT))
+            .collect();
+        let ctx = PickContext {
+            history: &history,
+            elsewhere: &queued,
+            now: Some(MIDNIGHT),
+            local_hour: Some(20),
+            ..PickContext::default()
+        };
+        let picks = |ctx: &PickContext<'_>| -> Vec<usize> {
+            (0..200)
+                .map(|seed| {
+                    let key = pick_next(&pool, ctx, &config, &mut Rng::new(seed))
+                        .unwrap()
+                        .work
+                        .work_key
+                        .clone();
+                    pool.works.iter().position(|w| w.work_key == key).unwrap()
+                })
+                .collect()
+        };
+        assert!(
+            !picks(&ctx).contains(&x),
+            "the rotation picked another room's work"
+        );
+        // Alone, never played here, x is among the rotation's first choices.
+        let alone = PickContext {
+            elsewhere: &[],
+            ..ctx
+        };
+        assert!(picks(&alone).contains(&x));
     }
 
     #[test]
@@ -1803,6 +1937,7 @@ mod tests {
         }
         let ctx = PickContext {
             history: &history,
+            elsewhere: &[],
             now: Some(MIDNIGHT),
             local_hour: Some(20),
             energy_target: None,

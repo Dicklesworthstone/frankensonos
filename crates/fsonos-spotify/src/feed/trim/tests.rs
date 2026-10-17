@@ -370,6 +370,7 @@ fn failed_readback_defers_top_up_until_positions_can_be_reconciled() {
         feedback: None,
         now: 0,
         local_hour: None,
+        queued_elsewhere: &[],
     };
     assert_eq!(
         feed.top_up(&f.speakers(&replies), plan, &mut MemStore::default())
@@ -558,6 +559,7 @@ fn playback_keeps_feeding_and_recording_once_after_a_confirmed_lost_trim_reply()
             feedback: None,
             now: MIDNIGHT,
             local_hour: Some(20),
+            queued_elsewhere: &[],
         };
         let state = || {
             let position = soap::get_position_info(&f.sim.lan(), f.host).unwrap();
