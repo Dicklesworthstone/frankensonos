@@ -180,11 +180,21 @@ enum Command {
     /// the DJ's picks. `--json` prints an object per line.
     Events(events_cmd::EventsArgs),
     /// Undo the newest action: restore the volumes, grouping and what was
-    /// playing in the zones it changed.
+    /// playing in the zones it changed. To be sure what is undone,
+    /// `--preview` shows the CLI's own newest undoable action, changing
+    /// nothing, and `--id` then undoes exactly that one.
     Undo {
         /// Only the CLI's own newest action, not an agent's.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["preview", "id"])]
         mine: bool,
+        /// Show the CLI's own newest undoable action; change nothing.
+        #[arg(long, conflicts_with = "id")]
+        preview: bool,
+        /// Undo exactly the CLI's action with this id (the one `--preview`
+        /// shows), and only while it is still the CLI's newest undoable one:
+        /// otherwise nothing is restored (INVALID_ARGUMENT).
+        #[arg(long, value_name = "ID")]
+        id: Option<i64>,
     },
     /// The house policy: what is in effect (show), and whether policy.toml
     /// can be used (check).
@@ -546,12 +556,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let actions = direct::actions(global, &query)?;
             emit(global.json, &actions, |a| direct::actions_text(a))
         }
-        Command::Undo { mine } => {
-            let undone = Direct::survey(global)?.undo(mine)?;
-            emit(global.json, &undone, |u: &fsonos_api::UndoDto| {
-                format!("{}\n", u.summary)
-            })
-        }
+        Command::Undo { mine, preview, id } => undo(global, mine, preview, id),
         Command::Dj { action } if action.is_read() => dj_cmd::read(global, &action),
         Command::Policy { action } => policy_cmd::run(global, &action),
         Command::Play {
@@ -672,6 +677,30 @@ fn queue_request(command: &Command) -> Option<QueueRequest> {
         }
         _ => None,
     }
+}
+
+/// `fsonos undo`: preview the action an undo would reverse (`--preview`),
+/// undo action `id` only if it is still the one to undo, or undo the latest.
+fn undo(
+    global: &config::GlobalArgs,
+    mine: bool,
+    preview: bool,
+    id: Option<i64>,
+) -> anyhow::Result<()> {
+    let house = Direct::survey(global)?;
+    if preview {
+        let next = house.preview_undo()?;
+        return emit(global.json, &next, |a: &Option<fsonos_api::ActionDto>| {
+            direct::undo_preview_text(a.as_ref())
+        });
+    }
+    let undone = match id {
+        Some(id) => house.undo_checked(id)?,
+        None => house.undo(mine)?,
+    };
+    emit(global.json, &undone, |u: &fsonos_api::UndoDto| {
+        format!("{}\n", u.summary)
+    })
 }
 
 /// Where `fsonos play --search` searches and plays: directly ([`Direct`]),

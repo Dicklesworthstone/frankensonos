@@ -742,7 +742,18 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         | Command::Queue { .. }
         | Command::History { .. }
         | Command::Log { .. } => read(&daemon, global, command)?,
-        Command::Undo { mine } => {
+        Command::Undo { preview: true, .. } => {
+            let next: Option<ActionDto> = daemon.get("/undo/preview")?;
+            emit(json, &next, |a: &Option<ActionDto>| {
+                crate::direct::undo_preview_text(a.as_ref())
+            })?;
+        }
+        Command::Undo { id: Some(id), .. } => {
+            let undone: UndoDto =
+                daemon.post("/undo/checked", &serde_json::json!({ "expected_id": id }))?;
+            emit(json, &undone, |u: &UndoDto| format!("{}\n", u.summary))?;
+        }
+        Command::Undo { mine, .. } => {
             let undone: UndoDto = daemon.post("/undo", &serde_json::json!({ "own_only": mine }))?;
             emit(json, &undone, |u: &UndoDto| format!("{}\n", u.summary))?;
         }

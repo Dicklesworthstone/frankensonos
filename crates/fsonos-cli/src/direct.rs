@@ -256,6 +256,18 @@ impl Direct {
         Ok(UndoDto::from(self.surface.undo(&Client::Cli, own_only)?))
     }
 
+    /// The CLI's own newest undoable action, without touching the speakers.
+    pub fn preview_undo(&self) -> Result<Option<ActionDto>, Failure> {
+        self.surface.preview_undo(&Client::Cli)
+    }
+
+    /// Undo exactly the CLI's action `id`, only while it is still the CLI's
+    /// newest undoable one.
+    pub fn undo_checked(&self, id: i64) -> Result<UndoDto, Failure> {
+        self.households()?;
+        self.surface.undo_checked(&Client::Cli, id)
+    }
+
     /// Play a favorite of `req.zone`'s household.
     pub fn play_favorite(&self, req: &PlayFavoriteRequest) -> Result<OutcomeDto, Failure> {
         self.households()?;
@@ -361,9 +373,22 @@ pub fn actions_text(actions: &[ActionDto]) -> String {
     })
 }
 
-/// `fsonos status` as text.
+/// `fsonos undo --preview` as text: the action, and how to undo exactly it.
 #[must_use]
+pub fn undo_preview_text(next: Option<&ActionDto>) -> String {
+    next.map_or_else(
+        || "nothing of the CLI's to undo\n".to_owned(),
+        |a| {
+            format!(
+                "#{} {} -> {}\nundo exactly this with: fsonos undo --id {}\n",
+                a.id, a.intent, a.result, a.id
+            )
+        },
+    )
+}
+
 /// A line per play, newest first: when (local time), the room, what.
+#[must_use]
 pub fn history_text(plays: &[PlayDto]) -> String {
     if plays.is_empty() {
         return "no plays recorded\n".to_owned();
@@ -390,6 +415,8 @@ pub fn history_text(plays: &[PlayDto]) -> String {
     text
 }
 
+/// `fsonos status` as text.
+#[must_use]
 pub fn status_text(state: &ZoneStateDto) -> String {
     let mut out = format!(
         "{} [{}]: {}",
