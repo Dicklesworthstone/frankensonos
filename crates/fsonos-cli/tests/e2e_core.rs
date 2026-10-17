@@ -704,4 +704,16 @@ fn check_search(s: &mut Scenario, kitchen: std::net::IpAddr) {
         run.code == Some(3) && run.stderr.contains("error[NO_MATCH]"),
         &run.stderr,
     );
+    // A pick past the matches is NO_MATCH, as HTTP and MCP answer it.
+    let run = s.cli(
+        "search-pick-past",
+        &["play", "Kitchen", "--search", "sim radio", "--pick", "9"],
+    );
+    s.check(
+        "search-pick-past",
+        "cli",
+        "--pick past the matches exits 3 as NO_MATCH",
+        run.code == Some(3) && run.stderr.contains("error[NO_MATCH]"),
+        &run.stderr,
+    );
 }

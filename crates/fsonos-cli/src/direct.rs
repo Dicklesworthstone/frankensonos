@@ -8,8 +8,8 @@ use fsonos_api::surface::queue::{QueueAddedDto, QueueDto, QueueRequest};
 use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
 use fsonos_api::{
     ActionDto, ActionsQuery, Command, DjMoodsDto, DjStatusDto, ErrorCode, Failure, FavoriteDto,
-    HitDto, OutcomeDto, PlayDto, PlayFavoriteRequest, RoomDto, SearchRequest, Surface, UndoDto,
-    ZoneDto, ZoneStateDto,
+    HitDto, OutcomeDto, PlayDto, PlayFavoriteRequest, RoomDto, SearchPlayRequest, SearchRequest,
+    Surface, UndoDto, ZoneDto, ZoneStateDto,
 };
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::{Clock, SystemClock};
@@ -223,6 +223,13 @@ impl Direct {
             self.households()?;
         }
         self.surface.dj_moods(&Client::Cli, zone)
+    }
+
+    /// Search the library and `req.zone`'s favorites and play one ranked
+    /// result (`search_and_play`).
+    pub fn search_and_play(&self, req: &SearchPlayRequest) -> Result<OutcomeDto, Failure> {
+        self.households()?;
+        self.surface.search_and_play(&Client::Cli, req)
     }
 
     /// The library (and `req.zone`'s favorites) searched for `req.query`.

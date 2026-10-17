@@ -70,7 +70,7 @@ use fsonos_api::surface::queue::{QueueAddedDto, QueueDto, QueueRequest};
 use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, HitDto, MoveRequest, MuteRequest, OutcomeDto, PartyRequest,
-    PlayFavoriteRequest, PlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
+    PlayFavoriteRequest, PlayRequest, SearchPlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
 };
 use serde::Serialize;
 use std::fmt::Write as _;
@@ -713,8 +713,8 @@ fn undo(
 /// or through a running daemon (`crate::remote`).
 trait SearchAndPlay {
     fn search(&self, req: &SearchRequest) -> Result<Vec<HitDto>, Failure>;
-    fn play(&self, req: &PlayRequest) -> Result<OutcomeDto, Failure>;
-    fn play_favorite(&self, req: &PlayFavoriteRequest) -> Result<OutcomeDto, Failure>;
+    /// `search_and_play`, as HTTP and MCP play a search result.
+    fn search_and_play(&self, req: &SearchPlayRequest) -> Result<OutcomeDto, Failure>;
 }
 
 impl SearchAndPlay for Direct {
@@ -722,12 +722,8 @@ impl SearchAndPlay for Direct {
         Direct::search(self, req)
     }
 
-    fn play(&self, req: &PlayRequest) -> Result<OutcomeDto, Failure> {
-        self.run("play", |h| plan::plan_play(h, req))
-    }
-
-    fn play_favorite(&self, req: &PlayFavoriteRequest) -> Result<OutcomeDto, Failure> {
-        Direct::play_favorite(self, req)
+    fn search_and_play(&self, req: &SearchPlayRequest) -> Result<OutcomeDto, Failure> {
+        Direct::search_and_play(self, req)
     }
 }
 
@@ -784,46 +780,28 @@ fn play_search(
     pick: Option<usize>,
     via: &dyn SearchAndPlay,
 ) -> anyhow::Result<()> {
-    let req = SearchRequest {
-        query,
-        zone: Some(zone.clone()),
-        limit: Some(if pick.is_some() { 10 } else { 1 }),
-    };
-    let hits = via.search(&req)?;
-    if hits.is_empty() {
-        return Err(Failure::new(
-            ErrorCode::NoMatch,
-            format!(
-                "nothing in the library or {zone}'s favorites matches {:?}",
-                req.query
-            ),
-        )
-        .into());
-    }
     if pick == Some(0) {
+        let req = SearchRequest {
+            query,
+            zone: Some(zone.clone()),
+            limit: Some(10),
+        };
+        let hits = via.search(&req)?;
+        if hits.is_empty() {
+            return Err(Failure::new(
+                ErrorCode::NoMatch,
+                format!(
+                    "nothing in the library or {zone}'s favorites matches {:?}",
+                    req.query
+                ),
+            )
+            .into());
+        }
         return emit(global.json, &hits, |hits: &Vec<HitDto>| hits_text(hits));
     }
-    let n = pick.unwrap_or(1);
-    let hit = hits.get(n - 1).ok_or_else(|| {
-        Failure::invalid(format!("--pick {n}, but only {} matched", hits.len()))
-            .with_hint("List the matches with --pick and choose one of their numbers.")
-    })?;
-    let outcome = match (&hit.source_uri, &hit.favorite) {
-        (Some(uri), _) => via.play(&PlayRequest {
-            zone,
-            source_uri: uri.clone(),
-            title: Some(hit.title.clone()),
-        })?,
-        (None, Some(id)) => via.play_favorite(&PlayFavoriteRequest {
-            zone,
-            favorite: id.clone(),
-        })?,
-        (None, None) => {
-            return Err(
-                Failure::new(ErrorCode::Internal, "a search hit with nothing to play").into(),
-            );
-        }
-    };
+    // The same search and pick HTTP and MCP make: a pick past the matches
+    // is NO_MATCH there too.
+    let outcome = via.search_and_play(&SearchPlayRequest { zone, query, pick })?;
     emit(global.json, &outcome, |o: &OutcomeDto| {
         format!("{}\n", o.done)
     })

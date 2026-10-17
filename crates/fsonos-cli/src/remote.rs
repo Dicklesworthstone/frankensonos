@@ -35,7 +35,7 @@ use fsonos_api::surface::schedules::{FadePauseRequest, SleepTimerDto};
 use fsonos_api::{
     ActionDto, ApiError, ErrorCode, Failure, FavoriteDto, GroupRequest, HitDto, MoveRequest,
     MuteRequest, OutcomeDto, PartyRequest, PlayDto, PlayFavoriteRequest, PlayRequest, RoomDto,
-    SearchRequest, UndoDto, ZoneDto, ZoneRequest, ZoneStateDto,
+    SearchPlayRequest, SearchRequest, UndoDto, ZoneDto, ZoneRequest, ZoneStateDto,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -931,12 +931,8 @@ impl crate::SearchAndPlay for Daemon {
         self.get(&path)
     }
 
-    fn play(&self, req: &PlayRequest) -> Result<OutcomeDto, Failure> {
-        self.post("/play", req)
-    }
-
-    fn play_favorite(&self, req: &PlayFavoriteRequest) -> Result<OutcomeDto, Failure> {
-        self.post("/play/favorite", req)
+    fn search_and_play(&self, req: &SearchPlayRequest) -> Result<OutcomeDto, Failure> {
+        self.post("/library/play", req)
     }
 }
 
