@@ -75,7 +75,10 @@ impl Surveys {
                     target: "inventory worker".into(),
                     detail: error.to_string(),
                 });
-                if let Err(error) = model.rec.finish_inventory(&plan, Err(error), Instant::now()) {
+                if let Err(error) = model
+                    .rec
+                    .finish_inventory(&plan, Err(error), Instant::now())
+                {
                     failed(model, self.listener_error.clone(), &error);
                 }
                 engine.publish(model, Vec::new());
@@ -108,9 +111,12 @@ impl Surveys {
         let Some(pending) = self.pending.take() else {
             return;
         };
-        let result = pending.thread.join().unwrap_or(Err(CoreError::Proto(
-            ProtoError::NotWired("inventory worker panicked"),
-        )));
+        let result = pending
+            .thread
+            .join()
+            .unwrap_or(Err(CoreError::Proto(ProtoError::NotWired(
+                "inventory worker panicked",
+            ))));
         if engine.stop.load(Ordering::Acquire) {
             return;
         }

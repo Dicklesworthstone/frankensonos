@@ -43,7 +43,10 @@ fn an_occupied_callback_port_retries_without_waiting_for_held_discovery() {
     wait_for(|| {
         pump::turn(&f.engine, &mut f.model);
         surveys.complete(&f.engine, &mut f.model);
-        f.model.playback.of(&id).is_some_and(|p| p.volume == Some(59))
+        f.model
+            .playback
+            .of(&id)
+            .is_some_and(|p| p.volume == Some(59))
     });
     assert!(!f.transport.gate.released.load(Ordering::Acquire));
     assert_eq!(f.transport.calls.load(Ordering::Relaxed), calls);
@@ -154,7 +157,10 @@ fn clearing_the_listener_failure_does_not_hide_independent_discovery_failures() 
     let mut surveys = Surveys::default();
     for (error, expected) in [
         ("listener failed", None),
-        ("listener failed; survey failed: timeout", Some("survey failed: timeout")),
+        (
+            "listener failed; survey failed: timeout",
+            Some("survey failed: timeout"),
+        ),
         ("separate failure", Some("separate failure")),
     ] {
         surveys.listener_error = Some("listener failed".into());

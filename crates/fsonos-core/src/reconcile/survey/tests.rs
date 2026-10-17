@@ -123,7 +123,11 @@ fn an_equal_returning_topology_cannot_revive_an_old_inventory_plan() {
     rec.invalidate_inventory();
     rec.invalidate_inventory();
     let now = Instant::now();
-    assert!(rec.finish_inventory(&plan, Ok(survey), now).unwrap().is_none());
+    assert!(
+        rec.finish_inventory(&plan, Ok(survey), now)
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(rec.households, before);
     assert!(rec.schedule.next_at() > now);
     assert!(rec.schedule.next_at() <= now + crate::events::RETRY);
@@ -152,7 +156,8 @@ fn newer_player_presence_rejects_a_survey_that_removes_or_relocates_it() {
         } else {
             house.players.retain(|p| p.id != player.id);
         }
-        rec.health.ok(&player.id, Instant::now() + Duration::from_secs(1));
+        rec.health
+            .ok(&player.id, Instant::now() + Duration::from_secs(1));
         let before = rec.households.clone();
         assert!(
             rec.finish_inventory(&plan, Ok(survey), Instant::now())
@@ -177,7 +182,11 @@ fn real_disappearance_is_committed_when_no_later_event_contradicts_it() {
         .unwrap()
         .unwrap();
     assert!(report.missing.contains(&player.id));
-    assert!(rec.households.iter().all(|h| h.player(&player.id).is_none()));
+    assert!(
+        rec.households
+            .iter()
+            .all(|h| h.player(&player.id).is_none())
+    );
     assert_eq!(rec.health.of(&player.id).unwrap().health, Health::Offline);
     assert!(!plan.current(&rec));
     // The independent discovery hints still remember the absent household.
@@ -199,7 +208,9 @@ fn failed_background_surveys_preserve_state_and_retain_exponential_backoff() {
     for n in 0..3 {
         let at = now + Duration::from_secs(n * 1000);
         let plan = rec.inventory_plan(&[]);
-        let failed = Err(CoreError::Proto(ProtoError::NotWired("failed inventory test")));
+        let failed = Err(CoreError::Proto(ProtoError::NotWired(
+            "failed inventory test",
+        )));
         assert!(rec.finish_inventory(&plan, failed, at).is_err());
         let delay = rec.schedule.next_at().duration_since(at);
         assert!(delay > last);

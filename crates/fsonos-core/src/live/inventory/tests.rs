@@ -299,8 +299,7 @@ fn newer_real_topology_discards_a_held_old_topology_reply() {
         let surveyed_at = f.model.surveyed_at;
         let leader = f.sim.player("A").unwrap().uuid.clone();
         let member = f.sim.player("B").unwrap().ip;
-        set_av_transport_uri(&f.sim.lan(), member, &format!("x-rincon:{leader}"), "")
-            .unwrap();
+        set_av_transport_uri(&f.sim.lan(), member, &format!("x-rincon:{leader}"), "").unwrap();
         wait_for(|| {
             pump::turn(&f.engine, &mut f.model);
             surveys.complete(&f.engine, &mut f.model);

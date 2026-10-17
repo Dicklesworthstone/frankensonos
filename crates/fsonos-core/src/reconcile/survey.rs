@@ -30,17 +30,20 @@ impl InventoryPlan {
     /// older survey. Ordinary volume/transport events do not reject a survey
     /// which still agrees about that player's identity and address.
     fn contradicts_later_event(&self, rec: &Reconciler, survey: &Survey) -> bool {
-        rec.households.iter().flat_map(|h| &h.players).any(|player| {
-            let before = self.health.of(&player.id).and_then(|h| h.last_ok);
-            let after = rec.health.of(&player.id).and_then(|h| h.last_ok);
-            after.is_some()
-                && before != after
-                && !survey.households.iter().any(|house| {
-                    house.player(&player.id).is_some_and(|found| {
-                        found.ip == player.ip && found.generation == player.generation
+        rec.households
+            .iter()
+            .flat_map(|h| &h.players)
+            .any(|player| {
+                let before = self.health.of(&player.id).and_then(|h| h.last_ok);
+                let after = rec.health.of(&player.id).and_then(|h| h.last_ok);
+                after.is_some()
+                    && before != after
+                    && !survey.households.iter().any(|house| {
+                        house.player(&player.id).is_some_and(|found| {
+                            found.ip == player.ip && found.generation == player.generation
+                        })
                     })
-                })
-        })
+            })
     }
 }
 
@@ -93,7 +96,11 @@ impl Reconciler {
             .collect();
         let result = self.apply_inventory(surveyed, now);
         for (player, health) in newer {
-            if self.households.iter().any(|house| house.player(&player).is_some()) {
+            if self
+                .households
+                .iter()
+                .any(|house| house.player(&player).is_some())
+            {
                 self.health.players.insert(player, health);
             }
         }
