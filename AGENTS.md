@@ -158,8 +158,8 @@ cargo test --workspace
 ```
 
 Optional: `git config core.hooksPath scripts/hooks` makes
-`scripts/hooks/pre-commit` refuse a commit whose staged Rust files are not
-rustfmt-formatted (rustfmt only formats; it does not compile).
+`scripts/hooks/pre-commit` refuse a commit whose staged `crates/` Rust files
+are not rustfmt-formatted (rustfmt only formats; it does not compile).
 
 Infrastructure failure is not a test pass. Prefer real localhost sockets and a
 real fsqlite `:memory:`/tempfile over mocks. Live-LAN tests are opt-in behind a
