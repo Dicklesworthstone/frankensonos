@@ -254,12 +254,10 @@ fn parse_member(node: roxmltree::Node<'_, '_>) -> Result<ZoneMember, ProtoError>
             .and_then(|b| b.trim().parse().ok()),
         channel_map: node
             .attribute("ChannelMapSet")
-            .map(parse_channel_map)
-            .unwrap_or_default(),
+            .map_or_default(parse_channel_map),
         ht_sat_chan_map: node
             .attribute("HTSatChanMapSet")
-            .map(parse_channel_map)
-            .unwrap_or_default(),
+            .map_or_default(parse_channel_map),
         satellites: xml::children(node, "Satellite")
             .map(parse_member)
             .collect::<Result<_, _>>()?,

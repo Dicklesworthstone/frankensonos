@@ -99,9 +99,7 @@ fn search_through_daemon(s: &mut Scenario, no_seeds: &str) {
             "sim radio",
         ],
     );
-    let uri = get_position_info(&s.lan(), s.ip("Kitchen"))
-        .map(|p| p.uri)
-        .unwrap_or_default();
+    let uri = get_position_info(&s.lan(), s.ip("Kitchen")).map_or_default(|p| p.uri);
     s.check(
         "search-play",
         "cli",

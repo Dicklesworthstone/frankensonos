@@ -108,15 +108,13 @@ fn set_the_scene(s: &mut Scenario) -> (Room, Room) {
 /// The fetches of announcement clips the sim saw, as `(room, url, status,
 /// has a WAV length)`.
 fn clip_fetches(s: &Scenario) -> Vec<(String, String, Result<u16, String>, bool)> {
-    s.sim_handle()
-        .map(|sim| {
-            sim.fetch_log()
-                .into_iter()
-                .filter(|f| f.url.contains("/media/"))
-                .map(|f| (f.room, f.url, f.result, f.wav_duration_ms.is_some()))
-                .collect()
-        })
-        .unwrap_or_default()
+    s.sim_handle().map_or_default(|sim| {
+        sim.fetch_log()
+            .into_iter()
+            .filter(|f| f.url.contains("/media/"))
+            .map(|f| (f.room, f.url, f.result, f.wav_duration_ms.is_some()))
+            .collect()
+    })
 }
 
 fn json(text: &str) -> Value {

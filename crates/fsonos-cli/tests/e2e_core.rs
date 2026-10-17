@@ -195,7 +195,7 @@ fn grouping_joins_and_leaves_within_a_household() {
                     .into_iter()
                     .find(|g| g.members.iter().any(|m| m.zone_name == room))
             })
-            .map(|g| {
+            .map_or_default(|g| {
                 let mut rooms: Vec<String> = g
                     .members
                     .iter()
@@ -205,7 +205,6 @@ fn grouping_joins_and_leaves_within_a_household() {
                 rooms.sort();
                 rooms
             })
-            .unwrap_or_default()
     };
 
     let run = s.cli("group", &["group", "Office", "Kitchen"]);
@@ -451,15 +450,12 @@ fn play_next_and_queue_add_to_the_queue_and_undo_takes_them_off() {
     s.sim(SimHousehold::standard());
     let queue = |s: &mut Scenario, step: &str| {
         let run = s.cli(step, &["--json", "queue", "Living Room"]);
-        json(&run)["items"]
-            .as_array()
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|i| i["title"].as_str().unwrap_or("").to_string())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
+        json(&run)["items"].as_array().map_or_default(|items| {
+            items
+                .iter()
+                .map(|i| i["title"].as_str().unwrap_or("").to_string())
+                .collect::<Vec<_>>()
+        })
     };
 
     let run = s.cli(
@@ -538,21 +534,18 @@ fn play_next_and_queue_add_to_the_queue_and_undo_takes_them_off() {
 /// A doctor report's checks that warn or fail, which a whole report
 /// (truncated in a failure's detail) can hide.
 fn flagged(report: &Value) -> String {
-    report["checks"]
-        .as_array()
-        .map(|c| {
-            c.iter()
-                .filter(|x| x["status"] == "warn" || x["status"] == "fail")
-                .map(|x| {
-                    format!(
-                        "{} {}: {} ({})",
-                        x["id"], x["status"], x["summary"], x["detail"]
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ")
-        })
-        .unwrap_or_default()
+    report["checks"].as_array().map_or_default(|c| {
+        c.iter()
+            .filter(|x| x["status"] == "warn" || x["status"] == "fail")
+            .map(|x| {
+                format!(
+                    "{} {}: {} ({})",
+                    x["id"], x["status"], x["summary"], x["detail"]
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
 }
 
 #[test]
@@ -593,14 +586,11 @@ fn doctor_reports_the_setup_with_its_exit_codes() {
             && status(&report, "daemon.health").as_deref() == Some("skip"),
         &run.stdout,
     );
-    let spotify: Vec<&Value> = report["checks"]
-        .as_array()
-        .map(|c| {
-            c.iter()
-                .filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("spotify")))
-                .collect()
-        })
-        .unwrap_or_default();
+    let spotify: Vec<&Value> = report["checks"].as_array().map_or_default(|c| {
+        c.iter()
+            .filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("spotify")))
+            .collect()
+    });
     s.check(
         "doctor",
         "cli",
@@ -627,8 +617,7 @@ fn doctor_reports_the_setup_with_its_exit_codes() {
     // A port nothing listens on: no daemon answers there.
     let free = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
-        .map(|a| a.to_string())
-        .unwrap_or_default();
+        .map_or_default(|a| a.to_string());
     let run = s.cli("doctor-no-daemon", &["doctor", "--json", "--http", &free]);
     s.check(
         "doctor-no-daemon",
@@ -699,9 +688,7 @@ fn check_search(s: &mut Scenario, kitchen: std::net::IpAddr) {
         &run.stdout,
     );
     let run = s.cli("search-play", &["play", "Kitchen", "--search", "sim radio"]);
-    let uri = get_position_info(&s.lan(), kitchen)
-        .map(|p| p.uri)
-        .unwrap_or_default();
+    let uri = get_position_info(&s.lan(), kitchen).map_or_default(|p| p.uri);
     s.check(
         "search-play",
         "cli",

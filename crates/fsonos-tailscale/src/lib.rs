@@ -168,8 +168,7 @@ impl Probe {
         };
         // getifaddrs failing leaves nothing to fall back on; report the CLI.
         let addrs: Vec<IpAddr> = if_addrs::get_if_addrs()
-            .map(|ifaces| ifaces.iter().map(if_addrs::Interface::ip).collect())
-            .unwrap_or_default();
+            .map_or_default(|ifaces| ifaces.iter().map(if_addrs::Interface::ip).collect());
         from_addresses(addrs).map_or(TailnetStatus::Unavailable(why), TailnetStatus::Available)
     }
 

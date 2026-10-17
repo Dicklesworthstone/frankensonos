@@ -56,7 +56,7 @@ fn call(
     path: &str,
     body: Option<&Value>,
 ) -> (u16, Vec<(String, String)>, String) {
-    let text = body.map(Value::to_string).unwrap_or_default();
+    let text = body.map_or_default(Value::to_string);
     let headers: &[(&str, &str)] = if body.is_some() {
         &[("Content-Type", "application/json")]
     } else {

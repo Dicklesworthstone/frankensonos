@@ -206,7 +206,7 @@ fn shutdown_after_partial_publication_keeps_the_worker_slot_until_exit() {
     drop(release);
     wait_for(|| {
         complete(&f.engine, &mut f.model);
-        f.model.progress.sweep.len() == 0
+        f.model.progress.sweep.is_empty()
     });
     assert_eq!(transport.calls.load(Ordering::Relaxed), 8);
     assert_eq!(f.state(0), Some(before));

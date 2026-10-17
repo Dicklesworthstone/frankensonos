@@ -21,7 +21,7 @@ fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 
 /// `method path` with an optional JSON body: (status, body).
 fn call(api: &str, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
-    let text = body.map(Value::to_string).unwrap_or_default();
+    let text = body.map_or_default(Value::to_string);
     let headers: &[(&str, &str)] = if body.is_some() {
         &[("Content-Type", "application/json")]
     } else {

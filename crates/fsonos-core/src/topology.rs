@@ -131,7 +131,7 @@ fn player_of(m: &ZoneMember, previous: &[Player]) -> Option<Player> {
         ip: m.ip()?,
         // The topology does not carry the model; it stays empty until the
         // device description is applied (see `apply_description`).
-        model: known.map(|p| p.model.clone()).unwrap_or_default(),
+        model: known.map_or_default(|p| p.model.clone()),
         generation: m
             .sw_gen
             .and_then(inventory::generation_for_sw_gen)

@@ -111,9 +111,7 @@ fn aliases_name_rooms_for_every_command() {
 fn on_now(s: &Scenario, room: &str) -> (Option<TransportState>, String) {
     let ip = s.ip(room);
     let state = get_transport_info(&s.lan(), ip).map(|t| t.state).ok();
-    let uri = fsonos_proto::control::get_position_info(&s.lan(), ip)
-        .map(|p| p.uri)
-        .unwrap_or_default();
+    let uri = fsonos_proto::control::get_position_info(&s.lan(), ip).map_or_default(|p| p.uri);
     (state, uri)
 }
 

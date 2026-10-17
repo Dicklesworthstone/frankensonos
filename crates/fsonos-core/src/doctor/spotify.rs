@@ -368,9 +368,7 @@ pub fn register<T: Transport + Send + Sync + ?Sized + 'static>(
         let probe = Arc::new(Probe {
             t: Arc::clone(t),
             generation: g,
-            hosts: household
-                .map(|h| h.players.iter().map(|p| p.ip).collect())
-                .unwrap_or_default(),
+            hosts: household.map_or_default(|h| h.players.iter().map(|p| p.ip).collect()),
             findings: OnceLock::new(),
         });
         for kind in [Kind::Favorite, Kind::Linked, Kind::RenderParams] {

@@ -67,8 +67,7 @@ pub fn player_views(households: &[HouseholdState]) -> Vec<PlayerDto> {
                 coordinator_room: h
                     .coordinator_of(&p.id)
                     .and_then(|c| h.players.iter().find(|q| q.id == *c))
-                    .map(|q| q.room_name.clone())
-                    .unwrap_or_default(),
+                    .map_or_default(|q| q.room_name.clone()),
             })
         })
         .collect();

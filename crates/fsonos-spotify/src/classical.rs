@@ -625,7 +625,7 @@ pub const CLASSICAL_THRESHOLD: i32 = 5;
 #[must_use]
 pub fn classical_score(item: &LibraryItem) -> i32 {
     let title = normalize(&item.title);
-    let album = item.album.as_deref().map(normalize).unwrap_or_default();
+    let album = item.album.as_deref().map_or_default(normalize);
     let mut score = 0;
     if item.artists.iter().any(|a| composer_by_name(a).is_some()) {
         score += 5;

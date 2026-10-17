@@ -1725,8 +1725,7 @@ fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
         Command::Party { member, .. } => households
             .iter()
             .find(|h| h.player(member).is_some())
-            .map(|h| h.groups.iter().map(|g| g.coordinator.clone()).collect())
-            .unwrap_or_default(),
+            .map_or_default(|h| h.groups.iter().map(|g| g.coordinator.clone()).collect()),
         // A steer changes the stored session, not the speakers.
         Command::DjSteer { start: false, .. } | Command::Nothing { .. } => Vec::new(),
     }

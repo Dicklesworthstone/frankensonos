@@ -59,8 +59,7 @@ pub fn classify(o: &DidlObject) -> Favorite {
         .res_md_object()
         .ok()
         .flatten()
-        .map(|item| item.class)
-        .unwrap_or_default();
+        .map_or_default(|item| item.class);
     let kind = match uri.as_deref() {
         None => FavoriteKind::Unplayable,
         Some(u) if u.starts_with("x-rincon-cpcontainer:") => FavoriteKind::Container,

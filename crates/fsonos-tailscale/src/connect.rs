@@ -112,10 +112,7 @@ pub fn describe(status: &TailnetStatus, listeners: &[Listener<'_>]) -> String {
         "Tailnet: {} ({}){}",
         t.magic_dns_name.as_deref().unwrap_or("this host"),
         addrs.join(", "),
-        t.tailnet
-            .as_deref()
-            .map(|n| format!(" on {n}"))
-            .unwrap_or_default()
+        t.tailnet.as_deref().map_or_default(|n| format!(" on {n}"))
     );
     let width = listeners.iter().map(|l| l.label.len()).max().unwrap_or(0) + 1;
     for l in listeners {

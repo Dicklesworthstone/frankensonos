@@ -85,8 +85,7 @@ pub(super) fn apply<T: Transport + ?Sized>(
     // no speculative regrouping; silence_starting reads the actual layout.
     let ins = options
         .fade
-        .map(|(fader, _)| silence_starting(t, &live, &ready, fader))
-        .unwrap_or_default();
+        .map_or_default(|(fader, _)| silence_starting(t, &live, &ready, fader));
     let mut failed_sources = HashSet::new();
     for op in &ready.ops {
         if options.fade.is_some() && matches!(op, SceneOp::Volume { .. }) {

@@ -332,8 +332,7 @@ fn check_reelect(s: &mut Scenario, api: &str) {
                 .iter()
                 .find(|g| g.members.iter().any(|m| m.uuid.0 == kitchen_uuid))
         })
-        .map(|g| g.coordinator.0.clone())
-        .unwrap_or_default();
+        .map_or_default(|g| g.coordinator.0.clone());
     let room = s
         .sim_handle()
         .and_then(|sim| {

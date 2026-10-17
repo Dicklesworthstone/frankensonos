@@ -210,7 +210,10 @@ impl Fixture {
 fn wait_for(mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT;
     while !ready() {
-        assert!(Instant::now() < deadline, "lease maintenance did not converge");
+        assert!(
+            Instant::now() < deadline,
+            "lease maintenance did not converge"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -278,7 +281,10 @@ fn replacement_initials_arriving_before_subscribe_returns_are_replayed_once() {
         }
         f.release();
         let reports = f.drain();
-        assert_eq!(reports.iter().map(|(r, _)| r.resubscribed).sum::<usize>(), 1);
+        assert_eq!(
+            reports.iter().map(|(r, _)| r.resubscribed).sum::<usize>(),
+            1
+        );
         for seq in [0, 1] {
             let n = f.subs.take_early().unwrap();
             assert_eq!(n.sid, initial.sid);
@@ -312,7 +318,10 @@ fn failed_replacement_keeps_the_live_sid_and_counts_backoff_from_completion() {
     assert_eq!(f.subs.active[0].sid, sid);
     assert!(f.subs.active[0].refresh_pending);
     assert!(f.subs.active[0].renew_at >= released + RETRY);
-    assert!(f.subs.route(&forwarded).is_none(), "failure cannot rewind SEQ");
+    assert!(
+        f.subs.route(&forwarded).is_none(),
+        "failure cannot rewind SEQ"
+    );
     assert!(f.subs.route(&notify(&sid, 2)).is_some());
     for _ in 0..100 {
         assert!(f.start().is_empty());
@@ -322,7 +331,10 @@ fn failed_replacement_keeps_the_live_sid_and_counts_backoff_from_completion() {
     f.provider.fail_subscribe.store(false, Ordering::Release);
     f.subs.active[0].renew_at = Instant::now();
     let _ = f.start();
-    assert_eq!(f.drain().iter().map(|(r, _)| r.resubscribed).sum::<usize>(), 1);
+    assert_eq!(
+        f.drain().iter().map(|(r, _)| r.resubscribed).sum::<usize>(),
+        1
+    );
     assert_eq!(
         f.provider.renewals.load(Ordering::Relaxed),
         1,
@@ -410,12 +422,14 @@ fn early_event_storage_is_bounded_by_count_bytes_and_lifetime() {
     }
     assert!(!f.subs.hold_early(&notify("uuid:over-count", 0)));
     for early in &mut f.subs.maintenance.early {
-        early.at = Instant::now() - EARLY_AGE;
+        early.at = Instant::now().checked_sub(EARLY_AGE).unwrap();
     }
     assert!(f.subs.take_early().is_none());
     assert_eq!(f.subs.maintenance.early_bytes, 0);
     let mut large = notify("uuid:large", 0);
-    large.properties.push(("LastChange".into(), "x".repeat(EARLY_BYTES)));
+    large
+        .properties
+        .push(("LastChange".into(), "x".repeat(EARLY_BYTES)));
     assert!(!f.subs.hold_early(&large));
     assert!(f.subs.hold_early(&notify("uuid:unmatched", 0)));
     f.release();

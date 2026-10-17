@@ -128,9 +128,7 @@ fn serve(s: &mut Scenario, base: &str, clock: &Path) -> (Daemon, String) {
 fn the_dj_plays_what_was_read(s: &mut Scenario, api: &str) {
     let zone = json!({ "zone": "Living Room" });
     let started = post(api, "/dj/start", &zone);
-    let on_now = get_position_info(&s.lan(), s.ip("Living Room"))
-        .map(|p| p.uri)
-        .unwrap_or_default();
+    let on_now = get_position_info(&s.lan(), s.ip("Living Room")).map_or_default(|p| p.uri);
     s.check(
         "dj start",
         "sim",

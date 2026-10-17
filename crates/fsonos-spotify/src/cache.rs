@@ -304,11 +304,7 @@ pub fn from_entry(entry: &LibraryEntry) -> LibraryItem {
     };
     let mut item = LibraryItem::from_track(&entry.track, origin);
     item.album_uri.clone_from(&entry.album_uri);
-    item.album_artists = entry
-        .album_artists
-        .as_deref()
-        .map(split_artists)
-        .unwrap_or_default();
+    item.album_artists = entry.album_artists.as_deref().map_or_default(split_artists);
     item.disc_number = entry.disc_number;
     item.track_number = entry.track_number;
     item.added_at = (entry.added != 0).then_some(entry.added);

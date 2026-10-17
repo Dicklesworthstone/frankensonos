@@ -1309,7 +1309,7 @@ mod tests {
     }
 
     fn notify_request(addr: SocketAddr, host: &str, sid: Option<&str>, body: &str) -> String {
-        let sid = sid.map(|s| format!("SID: {s}\r\n")).unwrap_or_default();
+        let sid = sid.map_or_default(|s| format!("SID: {s}\r\n"));
         format!(
             "NOTIFY /RenderingControl HTTP/1.1\r\nHost: {host}\r\n\
              Content-Type: text/xml; charset=\"utf-8\"\r\nNT: upnp:event\r\nNTS: upnp:propchange\r\n\

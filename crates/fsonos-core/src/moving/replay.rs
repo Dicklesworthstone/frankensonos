@@ -62,8 +62,7 @@ impl Prepared {
                     let title = parse_didl(metadata)
                         .ok()
                         .and_then(|v| v.into_iter().next())
-                        .map(|object| object.title)
-                        .unwrap_or_default();
+                        .map_or_default(|object| object.title);
                     let params = parameters(t, households, target)?;
                     Item {
                         uri: spotify_track_uri(&spotify, &params),

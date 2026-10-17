@@ -54,8 +54,7 @@ fn an_agent_reads_the_house_searches_and_plays() {
     let tools = mcp.request("tools/list", &json!({}));
     let names: Vec<&str> = tools["result"]["tools"]
         .as_array()
-        .map(|t| t.iter().filter_map(|x| x["name"].as_str()).collect())
-        .unwrap_or_default();
+        .map_or_default(|t| t.iter().filter_map(|x| x["name"].as_str()).collect());
     s.check(
         "tools",
         "mcp",
@@ -79,8 +78,7 @@ fn an_agent_reads_the_house_searches_and_plays() {
         .lines()
         .next()
         .and_then(|first| first.split_once("favorite="))
-        .map(|(_, id)| id.trim().to_string())
-        .unwrap_or_default();
+        .map_or_default(|(_, id)| id.trim().to_string());
     s.check(
         "search",
         "mcp",

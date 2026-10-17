@@ -39,7 +39,7 @@ impl Responder {
                     if !is_zoneplayer_search(&buf[..n]) {
                         continue;
                     }
-                    let replies = state.lock().map(|s| responses(&s)).unwrap_or_default();
+                    let replies = state.lock().map_or_default(|s| responses(&s));
                     for reply in replies {
                         let _ = socket.send_to(reply.as_bytes(), from);
                     }

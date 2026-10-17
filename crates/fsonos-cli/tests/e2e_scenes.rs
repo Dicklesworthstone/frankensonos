@@ -42,9 +42,7 @@ fn kitchen(s: &Scenario) -> Kitchen {
         volume: get_volume(&lan, ip).ok(),
         with_office,
         state: get_transport_info(&lan, ip).map(|t| t.state).ok(),
-        uri: get_position_info(&lan, ip)
-            .map(|p| p.uri)
-            .unwrap_or_default(),
+        uri: get_position_info(&lan, ip).map_or_default(|p| p.uri),
     }
 }
 

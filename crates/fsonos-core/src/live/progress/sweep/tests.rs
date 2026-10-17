@@ -386,7 +386,7 @@ fn shutdown_does_not_publish_or_continue_a_blocked_sweep() {
     f.release();
     wait_for(|| {
         complete(&f.engine, &mut f.model);
-        f.model.progress.sweep.len() == 0
+        f.model.progress.sweep.is_empty()
     });
     assert_eq!(f.transport.calls.load(Ordering::Relaxed), 1);
     assert!(f.state(0).is_none());

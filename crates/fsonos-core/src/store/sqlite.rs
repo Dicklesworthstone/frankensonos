@@ -178,14 +178,12 @@ const MIGRATIONS: &[Migration] = &[
 const GENRE_SEPARATOR: &str = "; ";
 
 fn split_genres(joined: Option<String>) -> Vec<String> {
-    joined
-        .map(|g| {
-            g.split(GENRE_SEPARATOR)
-                .filter(|t| !t.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+    joined.map_or_default(|g| {
+        g.split(GENRE_SEPARATOR)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
 }
 
 /// The durable store: one fsqlite database file in the daemon's data dir.

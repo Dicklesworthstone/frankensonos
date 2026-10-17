@@ -74,8 +74,7 @@ pub fn bind_plan(status: &TailnetStatus, port: u16, configured: Option<SocketAdd
     let name = tailnet
         .magic_dns_name
         .as_deref()
-        .map(|n| format!(" as {n}"))
-        .unwrap_or_default();
+        .map_or_default(|n| format!(" as {n}"));
     BindPlan {
         note: format!(
             "loopback and the tailnet{name}: {}",

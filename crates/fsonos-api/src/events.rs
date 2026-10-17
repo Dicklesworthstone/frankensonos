@@ -425,7 +425,7 @@ pub fn feed(bus: &Arc<EventBus>, live: &Arc<Live>) {
         .name("fsonos-event-bus".into())
         .spawn(move || {
             while let Ok(change) = changes.recv() {
-                let households = model.upgrade().map(|l| l.households()).unwrap_or_default();
+                let households = model.upgrade().map_or_default(|l| l.households());
                 bus.publish_live(&change, &households);
             }
         });

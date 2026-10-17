@@ -29,7 +29,7 @@ fn spotify_albums_and_playlists_play_from_their_first_track() {
         let state = get_transport_info(&s.lan(), kitchen).map(|t| t.state).ok();
         let position = get_position_info(&s.lan(), kitchen).ok();
         let track = position.as_ref().map(|p| p.track);
-        (state, track, position.map(|p| p.uri).unwrap_or_default())
+        (state, track, position.map_or_default(|p| p.uri))
     };
 
     let link = format!("https://open.spotify.com/album/{ALBUM}?si=share");

@@ -68,8 +68,7 @@ fn harness_self_test() {
     let list = mcp.request("tools/list", &json!({}));
     let names: Vec<&str> = list["result"]["tools"]
         .as_array()
-        .map(|tools| tools.iter().filter_map(|t| t["name"].as_str()).collect())
-        .unwrap_or_default();
+        .map_or_default(|tools| tools.iter().filter_map(|t| t["name"].as_str()).collect());
     s.check(
         "mcp-tools",
         "mcp",

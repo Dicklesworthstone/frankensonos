@@ -112,14 +112,8 @@ pub fn steering_of(
     let expires_at = steer.as_ref().and_then(|s| s.constraints.expires_at);
     Ok(DjSteeringDto {
         source: source.to_owned(),
-        constraints: steer
-            .as_ref()
-            .map(|s| from_dj(&s.constraints))
-            .unwrap_or_default(),
-        added: session
-            .as_ref()
-            .map(|s| from_dj(&s.constraints))
-            .unwrap_or_default(),
+        constraints: steer.as_ref().map_or_default(|s| from_dj(&s.constraints)),
+        added: session.as_ref().map_or_default(|s| from_dj(&s.constraints)),
         mood: steer.and_then(|s| s.mood),
         expires_at,
         expires_in_secs: expires_at.map(|at| at.saturating_sub(now).max(0).unsigned_abs()),
@@ -133,10 +127,7 @@ pub fn program_now(moods: &Moods, clock: &dyn Clock) -> DjSteeringDto {
     let mood = moods.program_at(local.weekday(), local.time());
     DjSteeringDto {
         source: if mood.is_some() { "program" } else { "none" }.to_owned(),
-        constraints: mood
-            .and_then(|m| moods.get(m))
-            .map(from_dj)
-            .unwrap_or_default(),
+        constraints: mood.and_then(|m| moods.get(m)).map_or_default(from_dj),
         added: SteerConstraints::default(),
         mood: mood.map(str::to_owned),
         expires_at: None,
@@ -152,7 +143,7 @@ pub fn moods_of(moods: &Moods, now: DjSteeringDto) -> DjMoodsDto {
             .names()
             .map(|name| DjMoodDto {
                 name: name.to_owned(),
-                constraints: moods.get(name).map(from_dj).unwrap_or_default(),
+                constraints: moods.get(name).map_or_default(from_dj),
             })
             .collect(),
         // fsonos-spotify writes a program as moods.toml does: days, from,
@@ -219,8 +210,7 @@ fn work(pool: &WorkPool, queued: &QueuedWork, queue_position: Option<u32>) -> Dj
     let track = known.and_then(|w| w.movements.first()).map(|m| &m.track);
     let performers = track
         .and_then(|t| t.artist.as_deref())
-        .map(split_artists)
-        .unwrap_or_default()
+        .map_or_default(split_artists)
         .into_iter()
         .filter(|artist| !composer_matches(artist, &queued.composer))
         .collect();

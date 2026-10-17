@@ -104,11 +104,7 @@ impl LibraryItem {
         Self {
             source_uri: track.source_uri.clone(),
             title: track.title.clone(),
-            artists: track
-                .artist
-                .as_deref()
-                .map(split_artists)
-                .unwrap_or_default(),
+            artists: track.artist.as_deref().map_or_default(split_artists),
             artist_id: None,
             album: track.album.clone(),
             album_uri: None,

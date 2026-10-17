@@ -88,16 +88,17 @@ pub fn remember_in(data_dir: &Path, households: &[HouseholdState]) {
 /// (see `fsonos_core::live::LiveConfig::surveyed`): it remembers them in the
 /// data directory's store, kept open. `None` without a store.
 pub fn remembering(global: &GlobalArgs) -> Option<Surveyed> {
-    let store = match open(&global.data_dir()?) {
-        Ok(store) => Mutex::new(store),
+    let store: Box<dyn Store + Send> = match open(&global.data_dir()?) {
+        Ok(store) => Box::new(store),
         Err(e) => {
             tracing::warn!("the players found will not be remembered: the store: {e}");
             return None;
         }
     };
+    let store = Mutex::new(store);
     Some(Arc::new(move |households: &[HouseholdState]| {
         let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
-        remember(&mut *store, households, now());
+        remember(&mut **store, households, now());
     }))
 }
 

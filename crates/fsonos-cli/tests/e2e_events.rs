@@ -317,8 +317,7 @@ fn check_long_poll(s: &mut Scenario, api: &str, first_id: u64) {
         .unwrap_or_default();
     let ids: Vec<u64> = answer["events"]
         .as_array()
-        .map(|events| events.iter().filter_map(|e| e["id"].as_u64()).collect())
-        .unwrap_or_default();
+        .map_or_default(|events| events.iter().filter_map(|e| e["id"].as_u64()).collect());
     s.check(
         "long-poll",
         "http",

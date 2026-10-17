@@ -58,7 +58,7 @@ fn library() -> Vec<LibraryItem> {
 
 /// `method path` with an optional JSON body: (status, body).
 fn call(api: &str, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
-    let text = body.map(Value::to_string).unwrap_or_default();
+    let text = body.map_or_default(Value::to_string);
     let headers: &[(&str, &str)] = if body.is_some() {
         &[("Content-Type", "application/json")]
     } else {
@@ -83,14 +83,12 @@ fn eventually(mut ready: impl FnMut() -> bool) -> bool {
 
 /// The Living Room's queue, as track URIs.
 fn queue(s: &Scenario) -> Vec<String> {
-    browse_all(&s.lan(), s.ip(ROOM), QUEUE)
-        .map(|items| {
-            items
-                .into_iter()
-                .filter_map(|o| o.res.map(|r| r.uri))
-                .collect()
-        })
-        .unwrap_or_default()
+    browse_all(&s.lan(), s.ip(ROOM), QUEUE).map_or_default(|items| {
+        items
+            .into_iter()
+            .filter_map(|o| o.res.map(|r| r.uri))
+            .collect()
+    })
 }
 
 /// (work, movement) of one of the library's tracks, by its queue URI.
@@ -111,7 +109,7 @@ fn subscriptions(s: &Scenario) -> usize {
     let Some(sim) = s.sim_handle() else {
         return 0;
     };
-    let uuid = sim.player(ROOM).map(|p| p.uuid.clone()).unwrap_or_default();
+    let uuid = sim.player(ROOM).map_or_default(|p| p.uuid.clone());
     sim.gena_log()
         .iter()
         .filter(|e| {

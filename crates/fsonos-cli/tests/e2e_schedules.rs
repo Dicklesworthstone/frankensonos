@@ -40,7 +40,7 @@ fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 
 /// `METHOD path` with an optional JSON body: (status, body).
 fn call(api: &str, method: &str, path: &str, body: Option<&Value>) -> (u16, Value) {
-    let text = body.map(Value::to_string).unwrap_or_default();
+    let text = body.map_or_default(Value::to_string);
     let headers: &[(&str, &str)] = if body.is_some() {
         &[("Content-Type", "application/json")]
     } else {
@@ -311,9 +311,7 @@ fn check_mood_expires(s: &mut Scenario, api: &str) {
 
 /// The DJ's track in the Living Room, if it plays one.
 fn dj_playing(s: &Scenario) -> bool {
-    let uri = get_position_info(&s.lan(), s.ip(ROOM))
-        .map(|p| p.uri)
-        .unwrap_or_default();
+    let uri = get_position_info(&s.lan(), s.ip(ROOM)).map_or_default(|p| p.uri);
     transport(s) == Some(TransportState::Playing) && uri.contains("simsched")
 }
 

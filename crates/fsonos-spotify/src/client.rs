@@ -383,9 +383,7 @@ pub fn token_error(status: u16, body: &[u8]) -> SpotifyError {
         Ok(b) => SpotifyError::Auth(format!(
             "token endpoint {status}: {}{}",
             b.error,
-            b.error_description
-                .map(|d| format!(" ({d})"))
-                .unwrap_or_default()
+            b.error_description.map_or_default(|d| format!(" ({d})"))
         )),
         Err(_) => SpotifyError::Auth(format!("token endpoint {status}")),
     }

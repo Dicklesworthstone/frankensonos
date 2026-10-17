@@ -98,8 +98,7 @@ pub fn run(cli: &crate::Cli) -> Option<anyhow::Result<()>> {
             let rooms = cli
                 .global
                 .data_dir()
-                .map(|dir| cached_rooms(&dir))
-                .unwrap_or_default();
+                .map_or_default(|dir| cached_rooms(&dir));
             print!("{}", rooms_text(&rooms));
             Some(Ok(()))
         }

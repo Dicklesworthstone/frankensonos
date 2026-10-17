@@ -664,12 +664,10 @@ impl Engine {
         let Some(s) = &m.sink else { return };
         let callback = |service: Service| s.callback_url(service.tag());
         let provider: Arc<dyn Subscriber + Send + Sync> = self.lan.clone();
-        let reports = m.rec.subscriptions.renew_background(
-            &provider,
-            callback,
-            &self.stop,
-            now,
-        );
+        let reports = m
+            .rec
+            .subscriptions
+            .renew_background(&provider, callback, &self.stop, now);
         self.lease_reports(m, reports);
     }
 

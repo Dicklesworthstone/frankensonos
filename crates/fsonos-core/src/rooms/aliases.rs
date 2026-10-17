@@ -46,7 +46,7 @@ pub struct Aliases {
 
 /// A malformed `aliases.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("aliases.toml{}: {message}", .line.map(|l| format!(" line {l}")).unwrap_or_default())]
+#[error("aliases.toml{}: {message}", .line.map_or_default(|l| format!(" line {l}")))]
 pub struct AliasError {
     pub line: Option<usize>,
     pub message: String,

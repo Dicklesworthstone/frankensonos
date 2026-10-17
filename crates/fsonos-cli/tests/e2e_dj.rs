@@ -77,9 +77,7 @@ fn post(api: &str, path: &str, body: &Value) -> (u16, Value) {
 
 /// The track URI the Living Room's transport is on.
 fn on_now(s: &Scenario) -> String {
-    get_position_info(&s.lan(), s.ip("Living Room"))
-        .map(|p| p.uri)
-        .unwrap_or_default()
+    get_position_info(&s.lan(), s.ip("Living Room")).map_or_default(|p| p.uri)
 }
 
 #[test]

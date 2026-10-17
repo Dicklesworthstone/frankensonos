@@ -154,6 +154,7 @@ impl std::fmt::Debug for Workers {
         f.debug_struct("LeaseWorkers")
             .field("jobs", &self.jobs.len())
             .field("early_events", &self.early.len())
+            .field("early_bytes", &self.early_bytes)
             .finish()
     }
 }
@@ -365,11 +366,12 @@ fn adopt(
             Baseline::Active(before) => !Arc::ptr_eq(&before.epoch, &next.epoch),
             Baseline::Pending { .. } => true,
         };
-        next.renew_at =
-            result.completed + next.renew_at.saturating_duration_since(result.started);
+        next.renew_at = result.completed + next.renew_at.saturating_duration_since(result.started);
         if fresh {
             next.initial_deadline = result.completed
-                + next.initial_deadline.saturating_duration_since(result.started);
+                + next
+                    .initial_deadline
+                    .saturating_duration_since(result.started);
         }
         if let Some(index) = old {
             let current = &subs.active[index];
@@ -470,11 +472,7 @@ impl Subscriptions {
     /// duplicate/replayed SIDs never enter this queue.
     pub(crate) fn hold_early(&mut self, notify: &Notify) -> bool {
         if self.active.iter().any(|a| a.sid == notify.sid)
-            || !self
-                .maintenance
-                .jobs
-                .iter()
-                .any(|job| !job.finalized)
+            || !self.maintenance.jobs.iter().any(|job| !job.finalized)
         {
             return false;
         }

@@ -109,10 +109,7 @@ fn running(status: &TailnetStatus) -> CheckResult {
                 "up as {} ({}){}",
                 t.magic_dns_name.as_deref().unwrap_or("this host"),
                 addresses(t).join(", "),
-                t.tailnet
-                    .as_deref()
-                    .map(|n| format!(" on {n}"))
-                    .unwrap_or_default()
+                t.tailnet.as_deref().map_or_default(|n| format!(" on {n}"))
             ));
             if t.source == Source::Interfaces {
                 found.with_detail(

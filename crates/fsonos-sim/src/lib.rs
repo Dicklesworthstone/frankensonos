@@ -549,8 +549,7 @@ impl SimHandle {
         let addrs: Vec<String> = self
             .state
             .lock()
-            .map(|s| s.players.iter().map(|p| format!("\"{}\"", p.ip)).collect())
-            .unwrap_or_default();
+            .map_or_default(|s| s.players.iter().map(|p| format!("\"{}\"", p.ip)).collect());
         format!(
             "# fsonos-sim players: advertised addresses (port 1400), reached through SimLan.\n\
              players = [{}]\n",
@@ -630,10 +629,7 @@ impl SimHandle {
     /// Every media fetch finished so far, oldest first.
     #[must_use]
     pub fn fetch_log(&self) -> Vec<FetchLogEntry> {
-        self.state
-            .lock()
-            .map(|s| s.fetch_log.clone())
-            .unwrap_or_default()
+        self.state.lock().map_or_default(|s| s.fetch_log.clone())
     }
 
     /// Wait until every media fetch players have started is finished, for
@@ -659,7 +655,7 @@ impl SimHandle {
     /// Every SOAP request answered so far, oldest first.
     #[must_use]
     pub fn soap_log(&self) -> Vec<SoapLogEntry> {
-        self.state.lock().map(|s| s.log.clone()).unwrap_or_default()
+        self.state.lock().map_or_default(|s| s.log.clone())
     }
 
     /// The simulator's clock: advance it to move playback positions.
@@ -693,10 +689,7 @@ impl SimHandle {
     /// Every GENA event so far, oldest first.
     #[must_use]
     pub fn gena_log(&self) -> Vec<GenaLogEntry> {
-        self.state
-            .lock()
-            .map(|s| s.gena_log.clone())
-            .unwrap_or_default()
+        self.state.lock().map_or_default(|s| s.gena_log.clone())
     }
 
     /// Run `f` on the player named by `who` (a room, its visible player, or a
