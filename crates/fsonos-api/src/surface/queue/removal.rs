@@ -130,7 +130,7 @@ impl Surface {
             Ok(done) => ("allow".to_string(), done.done.clone()),
             Err(failure) => {
                 self.notice(failure);
-                ("error".to_string(), failure.detail.clone())
+                ("allow".to_string(), format!("failed: {}", failure.detail))
             }
         };
         // A zone snapshot does not capture queue contents. Do not claim this

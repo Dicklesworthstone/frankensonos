@@ -252,6 +252,20 @@ fn stale_expected_modes_and_nonqueue_sources_never_change_playback() {
     assert_eq!(writes.load(Ordering::Acquire), 0);
     assert_eq!(soap::get_media_info(&sim.lan(), host).unwrap().uri, RADIO);
     assert!(surface.undo(&Client::Cli, false).unwrap().is_none());
+    // Each refusal is logged as every failed call is: the policy allowed
+    // it, and the result says it failed.
+    let log = surface
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
+    let refused: Vec<_> = log
+        .iter()
+        .filter(|e| e.action.intent.starts_with("set_play_mode"))
+        .collect();
+    assert!(!refused.is_empty(), "{log:?}");
+    for entry in refused {
+        assert_eq!(entry.action.decision, "allow", "{entry:?}");
+        assert!(entry.action.result.starts_with("failed: "), "{entry:?}");
+    }
     sim.shutdown();
 }
 
