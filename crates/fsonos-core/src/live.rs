@@ -168,6 +168,7 @@ pub struct Live {
     subscribers: Subscribers,
     wake: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    ready: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -203,6 +204,8 @@ impl Live {
         let subscribers: Subscribers = Arc::new(Mutex::new(Vec::new()));
         let wake = Arc::new(AtomicBool::new(false));
         let stop = Arc::new(AtomicBool::new(false));
+        let ready = Arc::new(AtomicBool::new(false));
+        let startup = Arc::clone(&ready);
         let engine = Engine {
             transport,
             lan,
@@ -214,13 +217,14 @@ impl Live {
         };
         let thread = std::thread::Builder::new()
             .name("fsonos-live".into())
-            .spawn(move || engine.run())
+            .spawn(move || engine.run(&startup))
             .expect("spawn the live-model thread");
         Self {
             snapshot,
             subscribers,
             wake,
             stop,
+            ready,
             thread: Some(thread),
         }
     }
@@ -255,13 +259,18 @@ impl Live {
             .cloned()
     }
 
-    /// Wait up to `timeout` for the first successful survey.
+    /// Wait up to `timeout` for the first successful inventory and its initial
+    /// playback read attempts to finish. A failed service may remain unknown;
+    /// households and accepted events are available while other reads wait.
     #[must_use]
     pub fn wait_ready(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            if !self.households().is_empty() {
+            if self.ready.load(Ordering::Acquire) {
                 return true;
+            }
+            if self.stop.load(Ordering::Acquire) {
+                return false;
             }
             if Instant::now() >= deadline {
                 return false;
@@ -455,7 +464,7 @@ impl Engine {
         }
     }
 
-    fn run(self) {
+    fn run(self, ready: &AtomicBool) {
         let mut m = Model {
             ticked: (Instant::now(), SystemTime::now()),
             remembered: self.config.remembered.clone(),
@@ -495,24 +504,32 @@ impl Engine {
                 self.follow_route(&mut m);
             }
             if m.rec.schedule.due(now) && !surveys.busy() {
-                if m.surveyed_at.is_none() {
-                    // Preserve bootstrap's complete readiness snapshot.
-                    let events = self.survey(&mut m, now);
-                    self.publish(&m, events);
-                } else {
-                    surveys.start(&self, &mut m);
-                    self.publish(&m, Vec::new());
-                }
+                surveys.start(&self, &mut m);
+                self.publish(&m, Vec::new());
             }
             if m.sink.is_none() {
                 // Neither discovery nor playback reads need a callback sink.
                 surveys.complete(&self, &mut m);
-                progress::recover(&self, &mut m);
-                std::thread::sleep(TICK);
-                continue;
+                if m.sink.is_some() {
+                    pump::turn(&self, &mut m);
+                } else {
+                    progress::recover(&self, &mut m);
+                }
+            } else {
+                pump::turn(&self, &mut m);
+                surveys.complete(&self, &mut m);
             }
-            pump::turn(&self, &mut m);
-            surveys.complete(&self, &mut m);
+            // The snapshot is already published, including the last accepted
+            // sweep results. Readiness must not race ahead of those read attempts.
+            if !ready.load(Ordering::Acquire)
+                && !self.stop.load(Ordering::Acquire)
+                && progress::finish_bootstrap(&mut m)
+            {
+                ready.store(true, Ordering::Release);
+            }
+            if m.sink.is_none() {
+                std::thread::sleep(TICK);
+            }
         }
         drop(surveys);
         self.release(&mut m);
@@ -573,8 +590,9 @@ impl Engine {
         }
     }
 
-    /// Survey even when the callback listener cannot open. GENA is the
-    /// normal update path, not a prerequisite for discovering reachable rooms.
+    /// Synchronous fixture setup. The live loop uses the inventory and
+    /// playback workers from its first survey onward.
+    #[cfg(test)]
     fn survey(&self, m: &mut Model, now: Instant) -> Vec<LiveEvent> {
         if self.stop.load(Ordering::Acquire) {
             return Vec::new();
@@ -663,24 +681,32 @@ impl Engine {
             }
         };
         let callback = |service: Service| s.callback_url(service.tag());
-        let from = m.rec.subscriptions.route(&n).map(|(p, _)| p.clone());
+        let from = m
+            .rec
+            .subscriptions
+            .route(&n)
+            .map(|(player, service)| (player.clone(), service));
         let mut pushed = Vec::new();
         match m
             .rec
             .on_notify(&self.via(), &mut m.playback, &n, callback, Instant::now())
         {
             Ok(Some(report)) => {
+                progress::invalidate_rebooted(m, &report.rebooted);
                 bootstrap::observed(&mut m.remembered, &m.rec.households);
                 for gone in &report.gone {
                     m.playback.remove(gone);
                 }
-                if let Some(player) = from
-                    && !report.changes.is_empty()
-                {
-                    pushed.push(LiveEvent::Playback {
-                        player,
-                        changes: report.changes,
-                    });
+                if let Some((player, service)) = from {
+                    if service == Service::ZoneGroupTopology {
+                        progress::refresh_bootstrap(m);
+                    }
+                    if !report.changes.is_empty() {
+                        pushed.push(LiveEvent::Playback {
+                            player,
+                            changes: report.changes,
+                        });
+                    }
                 }
             }
             Ok(None) => {}

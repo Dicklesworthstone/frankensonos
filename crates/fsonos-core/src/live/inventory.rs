@@ -126,6 +126,7 @@ impl Surveys {
         } else {
             match model.rec.finish_inventory(&pending.plan, result, now) {
                 Ok(Some(report)) => {
+                    progress::invalidate_rebooted(model, &report.rebooted);
                     for player in &report.missing {
                         model.playback.remove(player);
                     }
@@ -167,7 +168,9 @@ impl Surveys {
     /// a fixed cooldown; only an explicit refresh or new inventory retries
     /// sooner. Existing subscriptions retain the normal renewal engine.
     fn maintain_listener(&mut self, engine: &Engine, model: &mut Model) {
-        if engine.stop.load(Ordering::Acquire) || model.surveyed_at.is_none() {
+        if engine.stop.load(Ordering::Acquire)
+            || (model.surveyed_at.is_none() && model.rec.households.is_empty())
+        {
             return;
         }
         if model.sink.is_some() && !model.rec.subscriptions.is_empty() {

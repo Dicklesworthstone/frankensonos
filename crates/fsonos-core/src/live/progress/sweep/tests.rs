@@ -584,3 +584,96 @@ fn a_completed_sweep_stays_invalid_after_an_offline_player_returns() {
 
 mod eventless;
 mod streaming;
+
+#[test]
+fn bootstrap_readiness_counts_failed_services_as_finished_attempts() {
+    for generation in [1, 2] {
+        let mut f = Fixture::new(generation, 0, true);
+        f.model.surveyed_at = None;
+        super::super::request_survey(&mut f.model);
+        f.model.surveyed_at = Some(Instant::now());
+        assert!(!super::super::finish_bootstrap(&mut f.model));
+        f.drive();
+        assert!(super::super::finish_bootstrap(&mut f.model));
+        let state = f.state(0).unwrap();
+        assert!(state.volume.is_none());
+        assert!(state.mute.is_none());
+        assert_eq!(state.position_at(Instant::now()), Some(41));
+        assert_eq!(state.group_volume, Some(37));
+        assert_eq!(state.play_mode.as_deref(), Some("NORMAL"));
+        f.finish();
+    }
+}
+
+#[test]
+fn bootstrap_readiness_retains_bounded_workers_until_they_really_finish() {
+    let mut f = Fixture::new(2, 4, false);
+    f.model.surveyed_at = None;
+    super::super::request_survey(&mut f.model);
+    f.model.surveyed_at = Some(Instant::now());
+    wait_for(|| {
+        super::super::recover(&f.engine, &mut f.model);
+        f.transport.gate.entered.load(Ordering::Acquire) == 4
+    });
+    for _ in 0..100 {
+        super::super::refresh_bootstrap(&mut f.model);
+        super::super::recover(&f.engine, &mut f.model);
+        assert!(!super::super::finish_bootstrap(&mut f.model));
+    }
+    assert_eq!(f.model.progress.sweep.pending.len(), 4);
+    assert_eq!(f.model.progress.sweep.queue.len(), 1);
+    assert_eq!(f.transport.calls.load(Ordering::Relaxed), 4);
+    assert!(f.state(4).is_none());
+    f.release();
+    f.drive();
+    assert!(super::super::finish_bootstrap(&mut f.model));
+    assert!(f.state(4).is_some());
+    f.finish();
+}
+
+#[test]
+fn same_address_reboot_cancels_both_worker_kinds_before_fresh_events() {
+    for clock in [false, true] {
+        let mut f = Fixture::new(2, 1, false);
+        let player = f.players[0].0.clone();
+        if clock {
+            let source = EventSource::AvTransport;
+            let body = "<TransportState val=\"STOPPED\"/><CurrentTrackURI val=\"test:sweep\"/>";
+            f.model
+                .playback
+                .apply(&player, source, &notify(source, body), Instant::now())
+                .unwrap();
+            super::super::recover(&f.engine, &mut f.model);
+        } else {
+            f.only_first();
+            assert!(start_next(&f.engine, &mut f.model));
+        }
+        wait_for(|| f.transport.gate.entered.load(Ordering::Acquire) == 1);
+        let topology = f.model.rec.households.clone();
+        super::super::invalidate_rebooted(&f.model, std::slice::from_ref(&player));
+        super::super::request_survey(&mut f.model);
+        f.model
+            .progress
+            .sweep
+            .queue
+            .retain(|target| target.player == player);
+        assert_eq!(f.model.rec.households, topology);
+        assert_eq!(f.model.progress.sweep.queue.len(), 1);
+        assert!(!start_next(&f.engine, &mut f.model));
+        f.release();
+        wait_for(|| {
+            super::super::background::complete(&f.engine, &mut f.model);
+            complete(&f.engine, &mut f.model);
+            f.model.progress.reads.len() + f.model.progress.sweep.len() == 0
+        });
+        assert_eq!(f.transport.calls.load(Ordering::Relaxed), 1);
+        assert!(
+            f.state(0)
+                .is_none_or(|p| p.position_at(Instant::now()).is_none())
+        );
+        f.drive();
+        assert_eq!(f.state(0).unwrap().position_at(Instant::now()), Some(41));
+        assert_eq!(f.transport.calls.load(Ordering::Relaxed), 10);
+        f.finish();
+    }
+}

@@ -56,6 +56,8 @@ pub(super) struct Watchdog {
     position_after: HashMap<PlayerId, Instant>,
     reads: background::Reads,
     sweep: sweep::Sweep,
+    /// Until the initial inventory's current renderer reads have finished.
+    bootstrapping: bool,
     /// Alternate admission when both periodic and event-driven work wait.
     sweep_next: bool,
 }
@@ -185,10 +187,45 @@ pub(super) fn invalidate(model: &Model) {
     sweep::invalidate(model);
 }
 
+/// A same-address reboot changes authority before replacement NOTIFYs arrive.
+/// Keep the old workers' slots, but never apply or revive their replies.
+pub(super) fn invalidate_rebooted(model: &Model, players: &[PlayerId]) {
+    for player in players {
+        model.progress.reads.cancel(player);
+        model.progress.sweep.cancel(player);
+    }
+}
+
 /// Queue one ordinary read-back per renderer, without doing network I/O.
 pub(super) fn request_survey(model: &mut Model) {
+    if model.surveyed_at.is_none() {
+        model.progress.bootstrapping = true;
+    }
     invalidate(model);
     sweep::request(model);
+}
+
+/// A regroup, reboot or returning address can invalidate an initial attempt.
+/// Queue current targets before readiness can accept that cancelled attempt.
+pub(super) fn refresh_bootstrap(model: &mut Model) {
+    if model.progress.bootstrapping {
+        request_survey(model);
+    }
+}
+
+/// Failed services still count as attempted, as in synchronous bootstrap.
+/// Unfinished and cancelled workers retain their slots and prevent readiness.
+pub(super) fn finish_bootstrap(model: &mut Model) -> bool {
+    if !model.progress.bootstrapping
+        || model.surveyed_at.is_none()
+        || model.rec.households.is_empty()
+        || !model.progress.sweep.is_empty()
+        || model.progress.reads.len() != 0
+    {
+        return false;
+    }
+    model.progress.bootstrapping = false;
+    true
 }
 
 #[cfg(test)]

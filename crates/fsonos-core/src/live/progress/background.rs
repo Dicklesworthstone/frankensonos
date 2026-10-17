@@ -82,6 +82,14 @@ impl Reads {
         self.pending.len()
     }
 
+    pub(super) fn cancel(&self, player: &PlayerId) {
+        for read in &self.pending {
+            if read.probe.player == *player {
+                read.cancelled.store(true, Ordering::Release);
+            }
+        }
+    }
+
     pub(super) fn cancel_all(&self) {
         for read in &self.pending {
             read.cancelled.store(true, Ordering::Release);

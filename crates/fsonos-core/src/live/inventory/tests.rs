@@ -2,10 +2,11 @@ use super::*;
 use crate::live::{Live, LiveConfig, Snapshot, pump};
 use crate::playback::Playback;
 use crate::reconcile::Reconciler;
-use fsonos_proto::control::{set_av_transport_uri, set_volume};
+use fsonos_proto::control::{seek_position, set_av_transport_uri, set_volume};
 use fsonos_proto::net::Lan;
 use fsonos_sim::{GenaEvent, SimHandle, SimHousehold, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
+use std::net::{SocketAddr, TcpListener};
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::time::SystemTime;
@@ -17,6 +18,7 @@ enum Stage {
     Discovery,
     Description,
     Topology,
+    Playback,
 }
 
 #[derive(Default)]
@@ -38,6 +40,7 @@ struct Held {
     inner: Arc<dyn Transport + Send + Sync>,
     gate: Arc<Gate>,
     stage: Stage,
+    playback_host: IpAddr,
     calls: AtomicUsize,
     discoveries: AtomicUsize,
 }
@@ -66,12 +69,18 @@ impl Transport for Held {
         body: &str,
     ) -> Result<String, ProtoError> {
         let topology = action.trim_matches('"').ends_with("#GetZoneGroupState");
-        if topology {
+        let playback = self.stage == Stage::Playback
+            && host == self.playback_host
+            && action.trim_matches('"').ends_with("#GetVolume");
+        if topology || playback {
             self.calls.fetch_add(1, Ordering::Relaxed);
         }
         let result = self.inner.soap_post(host, path, action, body)?;
         if topology {
             self.hold(Stage::Topology);
+        }
+        if playback {
+            self.hold(Stage::Playback);
         }
         Ok(result)
     }
@@ -122,6 +131,7 @@ fn transport(sim: &SimHandle, stage: Stage) -> Arc<Held> {
         inner: Arc::new(sim.lan()),
         gate: Arc::new(Gate::default()),
         stage,
+        playback_host: sim.player("A").unwrap().ip,
         calls: AtomicUsize::new(0),
         discoveries: AtomicUsize::new(0),
     })
@@ -399,3 +409,137 @@ fn the_running_live_loop_keeps_applying_events_and_stops_while_discovery_is_held
 }
 
 mod listener;
+
+#[test]
+fn startup_reads_leave_other_rooms_and_callbacks_live_before_readiness() {
+    for generation in [1, 2] {
+        for callbacks in [false, true] {
+            let sim = sim(generation);
+            for room in ["A", "B"] {
+                let host = sim.player(room).unwrap().ip;
+                set_av_transport_uri(&sim.lan(), host, "test:startup", "").unwrap();
+                seek_position(&sim.lan(), host, 41).unwrap();
+                set_volume(&sim.lan(), host, 37).unwrap();
+            }
+            let a = sim.player("A").unwrap();
+            let a_id = PlayerId(a.uuid.clone());
+            let a_ip = a.ip;
+            let b_id = PlayerId(sim.player("B").unwrap().uuid.clone());
+            let lan = lan(&sim);
+            let occupied = if callbacks {
+                None
+            } else {
+                let local = lan.local_address_toward(a_ip).unwrap();
+                assert!(local.is_loopback());
+                Some(TcpListener::bind(SocketAddr::new(local, 0)).unwrap())
+            };
+            let mut config = LiveConfig::new(sim.players().iter().map(|p| p.ip).collect());
+            if let Some(listener) = &occupied {
+                config.callback_port = listener.local_addr().unwrap().port();
+            }
+            let transport = transport(&sim, Stage::Playback);
+            let release = Release(Arc::clone(&transport.gate));
+            transport.gate.armed.store(true, Ordering::Release);
+            let live = Live::start_with(transport.clone(), lan, config);
+            wait_for(|| transport.gate.entered.load(Ordering::Acquire));
+            wait_for(|| {
+                live.player(&b_id).is_some_and(|p| {
+                    p.position_at(Instant::now()) == Some(41)
+                        && p.volume == Some(37)
+                        && p.group_volume == Some(37)
+                        && p.play_mode.as_deref() == Some("NORMAL")
+                })
+            });
+            assert_eq!(live.households()[0].players.len(), 2);
+            assert!(!live.wait_ready(Duration::ZERO));
+            if callbacks {
+                set_volume(&sim.lan(), a_ip, 61).unwrap();
+                wait_for(|| live.player(&a_id).is_some_and(|p| p.volume == Some(61)));
+            } else {
+                assert!(live.snapshot().callback.is_none());
+                assert_eq!(live.snapshot().subscriptions, 0);
+                assert!(live.player(&a_id).is_none());
+            }
+            assert!(!transport.gate.released.load(Ordering::Acquire));
+            assert!(!live.wait_ready(Duration::ZERO));
+            drop(release);
+            assert!(live.wait_ready(WAIT), "{:?}", live.snapshot());
+            assert_eq!(
+                live.player(&a_id).unwrap().volume,
+                Some(if callbacks { 61 } else { 37 }),
+                "an older initial SOAP reply must not undo a newer rendering event"
+            );
+            assert_eq!(
+                live.player(&a_id).unwrap().position_at(Instant::now()),
+                Some(41)
+            );
+            live.stop();
+            wait_for(|| Arc::strong_count(&transport) == 1);
+            sim.shutdown();
+        }
+    }
+}
+
+#[test]
+fn startup_stops_without_waiting_for_discovery_or_inventory_io() {
+    for generation in [1, 2] {
+        for stage in [Stage::Discovery, Stage::Description, Stage::Topology] {
+            let sim = sim(generation);
+            let transport = transport(&sim, stage);
+            let release = Release(Arc::clone(&transport.gate));
+            transport.gate.armed.store(true, Ordering::Release);
+            // No seed can hide an inline discovery call in listener setup.
+            let live = Live::start_with(transport.clone(), lan(&sim), LiveConfig::new(Vec::new()));
+            wait_for(|| transport.gate.entered.load(Ordering::Acquire));
+            assert!(!live.wait_ready(Duration::ZERO));
+            assert!(live.households().is_empty());
+            let calls = transport.calls.load(Ordering::Relaxed);
+            let at = Instant::now();
+            live.stop();
+            assert!(at.elapsed() < Duration::from_secs(2));
+            drop(release);
+            wait_for(|| Arc::strong_count(&transport) == 1);
+            assert_eq!(transport.calls.load(Ordering::Relaxed), calls);
+            assert!(sim.gena_log().is_empty());
+            sim.shutdown();
+        }
+    }
+}
+
+#[test]
+fn startup_topology_changes_replace_cancelled_initial_reads() {
+    for generation in [1, 2] {
+        let sim = sim(generation);
+        let a = sim.player("A").unwrap();
+        let a_ip = a.ip;
+        let a_id = PlayerId(a.uuid.clone());
+        let b_uuid = sim.player("B").unwrap().uuid.clone();
+        let transport = transport(&sim, Stage::Playback);
+        let release = Release(Arc::clone(&transport.gate));
+        transport.gate.armed.store(true, Ordering::Release);
+        let config = LiveConfig::new(sim.players().iter().map(|p| p.ip).collect());
+        let live = Live::start_with(transport.clone(), lan(&sim), config);
+        wait_for(|| transport.gate.entered.load(Ordering::Acquire));
+        set_av_transport_uri(&sim.lan(), a_ip, &format!("x-rincon:{b_uuid}"), "").unwrap();
+        wait_for(|| {
+            live.households()
+                .first()
+                .is_some_and(|house| house.groups.len() == 1 && house.groups[0].coordinator != a_id)
+        });
+        assert!(!live.wait_ready(Duration::ZERO));
+        let before = sim.soap_log().len();
+        drop(release);
+        assert!(live.wait_ready(WAIT), "{:?}", live.snapshot());
+        let calls = sim.soap_log();
+        let later: Vec<_> = calls[before..]
+            .iter()
+            .filter(|call| call.room == "A")
+            .map(|call| call.action.as_str())
+            .collect();
+        assert_eq!(later, ["GetVolume", "GetMute"]);
+        assert!(live.player(&a_id).is_some_and(|p| p.volume.is_some()));
+        live.stop();
+        wait_for(|| Arc::strong_count(&transport) == 1);
+        sim.shutdown();
+    }
+}

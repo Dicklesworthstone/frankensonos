@@ -1,6 +1,8 @@
 //! Read-only recovery of playback when GENA did not deliver a transition.
 
-use super::{Engine, LiveEvent, Model};
+use super::Model;
+#[cfg(test)]
+use super::{Engine, LiveEvent};
 use crate::playback::PlaybackObservation;
 use crate::reconcile::Health;
 use fsonos_proto::control::{get_media_info, get_position_info, get_transport_info};
@@ -8,6 +10,7 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::collections::HashSet;
 use std::net::IpAddr;
+#[cfg(test)]
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
@@ -94,6 +97,7 @@ pub(super) fn read<T: Transport + ?Sized>(
 /// The existing low-frequency survey also repairs lost pause, resume, stop
 /// and queue notifications, plus room levels, group volume and play mode,
 /// publishing the same deltas for the DJ and API consumers as GENA.
+#[cfg(test)]
 pub(super) fn survey(engine: &Engine, model: &mut Model) -> Vec<LiveEvent> {
     if engine.stop.load(Ordering::Acquire) {
         return Vec::new();
@@ -108,8 +112,9 @@ pub(super) fn survey(engine: &Engine, model: &mut Model) -> Vec<LiveEvent> {
     initial(engine, model)
 }
 
-/// Bootstrap still collects state before publishing the households that
-/// readiness waits for. Subsequent surveys use the shared bounded workers.
+/// Synchronous read helper for fixtures. Production bootstrap uses the
+/// same bounded workers as subsequent playback surveys.
+#[cfg(test)]
 fn initial(engine: &Engine, model: &mut Model) -> Vec<LiveEvent> {
     let mut events = Vec::new();
     for (player, host) in coordinators(model) {

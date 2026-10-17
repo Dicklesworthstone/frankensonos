@@ -146,6 +146,10 @@ pub(super) struct Sweep {
 }
 
 impl Sweep {
+    pub(super) fn is_empty(&self) -> bool {
+        self.queue.is_empty() && self.pending.is_empty()
+    }
+
     pub(super) fn contains(&self, player: &PlayerId) -> bool {
         self.pending
             .iter()
@@ -154,6 +158,14 @@ impl Sweep {
 
     pub(super) fn len(&self) -> usize {
         self.pending.len()
+    }
+
+    pub(super) fn cancel(&self, player: &PlayerId) {
+        for read in &self.pending {
+            if read.target.player == *player {
+                read.cancelled.store(true, Ordering::Release);
+            }
+        }
     }
 
     pub(super) fn cancel_all(&self) {

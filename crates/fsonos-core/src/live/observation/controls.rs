@@ -1,16 +1,26 @@
 //! Repair missing RenderingControl and transport-settings notifications.
 //! Reuse the topology survey's cadence, never the fast track-end watchdog.
 
+#[cfg(test)]
 use super::{Engine, LiveEvent, Model, coordinators};
+#[cfg(test)]
 use crate::events::{Service, wanted};
+#[cfg(test)]
 use crate::playback::Changes;
+#[cfg(test)]
 use crate::reconcile::Health;
-use fsonos_proto::control::{get_group_volume, get_mute, get_volume};
+#[cfg(test)]
+use fsonos_proto::control::get_group_volume;
+use fsonos_proto::control::{get_mute, get_volume};
+#[cfg(test)]
 use fsonos_proto::play_mode::get_play_mode;
 use fsonos_proto::{ProtoError, Transport};
+#[cfg(test)]
 use fsonos_types::PlayerId;
+#[cfg(test)]
 use std::collections::HashSet;
 use std::net::IpAddr;
+#[cfg(test)]
 use std::sync::atomic::Ordering;
 
 pub(in crate::live) fn room_levels<T: Transport + ?Sized>(
@@ -32,6 +42,7 @@ pub(in crate::live) fn room_levels<T: Transport + ?Sized>(
     Ok(Some((volume, mute)))
 }
 
+#[cfg(test)]
 fn record(events: &mut Vec<LiveEvent>, player: &PlayerId, changes: Changes) {
     if !changes.is_empty() {
         events.push(LiveEvent::Playback {
@@ -44,6 +55,7 @@ fn record(events: &mut Vec<LiveEvent>, player: &PlayerId, changes: Changes) {
 /// Room levels belong to each renderer, not just the group's coordinator.
 /// A failed service leaves its old state intact without suppressing successful
 /// observations from other services or rooms. No control writes are issued.
+#[cfg(test)]
 pub(super) fn survey(engine: &Engine, model: &mut Model, events: &mut Vec<LiveEvent>) {
     let stopping = || engine.stop.load(Ordering::Acquire);
     let mut seen = HashSet::new();
