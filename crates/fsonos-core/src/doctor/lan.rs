@@ -49,6 +49,10 @@ pub const NOTIFY_WAIT: Duration = Duration::from_secs(5);
 const LOCAL_NETWORK_REMEDY: &str = "On macOS, allow Local Network access: System Settings > \
      Privacy & Security > Local Network > enable fsonos (or your terminal, or the launchd job's \
      program).";
+const LOCAL_NETWORK_DENIED_REMEDY: &str = "Allow fsonos in System Settings > Privacy & \
+     Security > Local Network. A program that has never asked needs one run from the logged-in \
+     GUI session to get the prompt; a terminal session already has its terminal's permission \
+     (docs/DEPLOY.md).";
 const MULTICAST_REMEDY: &str = "Mesh Wi-Fi and some routers filter multicast: check IGMP \
      snooping / multicast settings, or list the players' addresses in a seeds file \
      (FSONOS_SEEDS).";
@@ -284,7 +288,7 @@ impl Check for LanCheck {
                 let seeds = seed_reads(p);
                 ssdp_result(p.adverts(), &seeds, cfg!(target_os = "macos"))
             }
-            Kind::Seeds => seeds_result(&seed_reads(p)),
+            Kind::Seeds => seeds_result(&seed_reads(p), cfg!(target_os = "macos")),
             Kind::Players => {
                 let reads: Vec<(IpAddr, Result<Duration, String>)> = p
                     .addresses()
@@ -294,7 +298,7 @@ impl Check for LanCheck {
                         (ip, read.description.map(|_| read.took))
                     })
                     .collect();
-                players_result(&reads)
+                players_result(&reads, cfg!(target_os = "macos"))
             }
             Kind::Households => {
                 let homes = household_of(p);
@@ -591,8 +595,38 @@ pub(crate) fn ssdp_result(
     .with_evidence(json!({ "by_household": by_home }))
 }
 
+/// Every one of `reads` failed the way macOS fails a process its Local
+/// Network privacy has not allowed (a launchd job, most often): refused at
+/// once with "No route to host" (EHOSTUNREACH, os error 65). A powered-off
+/// player times out instead; a route down to the speakers' subnet is the
+/// one other cause.
+fn local_network_denied(reads: &[(IpAddr, Result<Duration, String>)], macos: bool) -> bool {
+    macos
+        && !reads.is_empty()
+        && reads
+            .iter()
+            .all(|(_, r)| r.as_ref().is_err_and(|e| e.contains("os error 65")))
+}
+
+/// The verdict on `reads` that [`local_network_denied`] recognizes.
+fn denied_result(reads: &[(IpAddr, Result<Duration, String>)], dead: &[String]) -> CheckResult {
+    CheckResult::fail(
+        format!(
+            "macOS refused all {} connection(s) at once with \"No route to host\": Local \
+             Network privacy has most likely not allowed this process (or there is no route \
+             to the speakers' network)",
+            reads.len()
+        ),
+        LOCAL_NETWORK_DENIED_REMEDY,
+    )
+    .with_detail(dead.join("; "))
+}
+
 /// `lan.seeds`: every configured seed answers.
-pub(crate) fn seeds_result(seeds: &[(IpAddr, Result<Duration, String>)]) -> CheckResult {
+pub(crate) fn seeds_result(
+    seeds: &[(IpAddr, Result<Duration, String>)],
+    macos: bool,
+) -> CheckResult {
     if seeds.is_empty() {
         return CheckResult::skip("no seed addresses configured");
     }
@@ -600,6 +634,9 @@ pub(crate) fn seeds_result(seeds: &[(IpAddr, Result<Duration, String>)]) -> Chec
         .iter()
         .filter_map(|(ip, r)| r.as_ref().err().map(|e| format!("{ip}: {e}")))
         .collect();
+    if local_network_denied(seeds, macos) {
+        return denied_result(seeds, &dead);
+    }
     if dead.is_empty() {
         CheckResult::pass(format!("all {} seed(s) answer", seeds.len()))
     } else {
@@ -613,7 +650,10 @@ pub(crate) fn seeds_result(seeds: &[(IpAddr, Result<Duration, String>)]) -> Chec
 }
 
 /// `lan.players`: every found player serves its description, quickly.
-pub(crate) fn players_result(reads: &[(IpAddr, Result<Duration, String>)]) -> CheckResult {
+pub(crate) fn players_result(
+    reads: &[(IpAddr, Result<Duration, String>)],
+    macos: bool,
+) -> CheckResult {
     if reads.is_empty() {
         return CheckResult::fail(
             "no players were found to read",
@@ -631,6 +671,9 @@ pub(crate) fn players_result(reads: &[(IpAddr, Result<Duration, String>)]) -> Ch
         .iter()
         .filter_map(|(ip, r)| r.as_ref().err().map(|e| format!("{ip}: {e}")))
         .collect();
+    if local_network_denied(reads, macos) {
+        return denied_result(reads, &dead).with_evidence(json!(evidence));
+    }
     if !dead.is_empty() {
         return CheckResult::fail(
             format!("{} of {} player(s) do not answer", dead.len(), reads.len()),
@@ -922,23 +965,55 @@ mod tests {
 
     #[test]
     fn seeds_and_players_name_who_failed() {
-        assert_eq!(seeds_result(&[]).status, Status::Skip);
-        let r = seeds_result(&[
-            (ip("192.0.2.10"), Ok(Duration::from_millis(5))),
-            (ip("192.0.2.99"), Err("connection refused".into())),
-        ]);
+        assert_eq!(seeds_result(&[], true).status, Status::Skip);
+        let r = seeds_result(
+            &[
+                (ip("192.0.2.10"), Ok(Duration::from_millis(5))),
+                (ip("192.0.2.99"), Err("connection refused".into())),
+            ],
+            true,
+        );
         assert_eq!(r.status, Status::Fail);
         assert_eq!(r.detail.as_deref(), Some("192.0.2.99: connection refused"));
 
-        assert_eq!(players_result(&[]).status, Status::Fail);
-        let r = players_result(&[
-            (ip("192.0.2.10"), Ok(Duration::from_millis(5))),
-            (ip("192.0.2.11"), Ok(Duration::from_millis(900))),
-        ]);
+        assert_eq!(players_result(&[], true).status, Status::Fail);
+        let r = players_result(
+            &[
+                (ip("192.0.2.10"), Ok(Duration::from_millis(5))),
+                (ip("192.0.2.11"), Ok(Duration::from_millis(900))),
+            ],
+            true,
+        );
         assert_eq!(r.status, Status::Warn);
         assert_eq!(r.detail.as_deref(), Some("192.0.2.11: 900 ms"));
-        let r = players_result(&[(ip("192.0.2.12"), Err("timed out".into()))]);
+        let r = players_result(&[(ip("192.0.2.12"), Err("timed out".into()))], true);
         assert_eq!(r.status, Status::Fail);
+        assert!(!r.summary.contains("Local Network"), "{r:?}");
+    }
+
+    #[test]
+    fn every_connection_refused_on_macos_names_the_local_network_denial() {
+        let refused = || Err("network: No route to host (os error 65)".to_string());
+        let reads = [(ip("192.0.2.10"), refused()), (ip("192.0.2.11"), refused())];
+        for r in [seeds_result(&reads, true), players_result(&reads, true)] {
+            assert_eq!(r.status, Status::Fail);
+            assert!(r.summary.contains("Local Network privacy"), "{r:?}");
+            assert!(r.summary.contains("all 2 connection(s)"), "{r:?}");
+            assert!(r.remedy.as_deref().unwrap().contains("Privacy & Security"));
+            assert!(r.detail.as_deref().unwrap().contains("192.0.2.11"));
+        }
+        // Not on macOS, or not every read refused that way: the usual verdict.
+        for r in [seeds_result(&reads, false), players_result(&reads, false)] {
+            assert!(!r.summary.contains("Local Network"), "{r:?}");
+        }
+        let mixed = [
+            (ip("192.0.2.10"), refused()),
+            (ip("192.0.2.11"), Err("timed out".into())),
+        ];
+        for r in [seeds_result(&mixed, true), players_result(&mixed, true)] {
+            assert_eq!(r.status, Status::Fail);
+            assert!(!r.summary.contains("Local Network"), "{r:?}");
+        }
     }
 
     fn desc(room: &str, model: &str, sw_gen: Option<u8>) -> DeviceDescription {
