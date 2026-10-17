@@ -108,7 +108,7 @@ impl Step {
     fn checks(self) -> &'static [&'static str] {
         match self {
             Self::Data => &["store."],
-            Self::Discovery => &["lan.ssdp", "lan.seeds", "lan.players"],
+            Self::Discovery => &["lan.ssdp", "lan.seeds", "lan.players", "lan.isolation"],
             Self::Households => &["lan.households", "lan.topology"],
             Self::SpotifyHouseholds => &["spotify."],
             Self::Tailscale => &["tailscale."],

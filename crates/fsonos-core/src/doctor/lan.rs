@@ -32,6 +32,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod isolation;
+pub use isolation::{Neighbors, system_neighbors};
+
 pub const STORE_OPEN: CheckId = CheckId("store.open");
 pub const SSDP: CheckId = CheckId("lan.ssdp");
 pub const SEEDS: CheckId = CheckId("lan.seeds");
@@ -40,6 +43,7 @@ pub const HOUSEHOLDS: CheckId = CheckId("lan.households");
 pub const GENA_ROUNDTRIP: CheckId = CheckId("lan.gena_roundtrip");
 pub const TOPOLOGY: CheckId = CheckId("lan.topology");
 pub const UPDATES: CheckId = CheckId("lan.updates");
+pub const ISOLATION: CheckId = CheckId("lan.isolation");
 
 /// A player read slower than this is a warning.
 pub const SLOW_PLAYER: Duration = Duration::from_millis(500);
@@ -66,6 +70,8 @@ pub struct LanProbe {
     adverts: OnceLock<Result<Vec<Advert>, String>>,
     reads: Mutex<BTreeMap<IpAddr, Read>>,
     survey: OnceLock<Result<Survey, String>>,
+    /// Reads this host's neighbor table ([`system_neighbors`]).
+    neighbors: fn() -> Option<Neighbors>,
 }
 
 /// One player's device description, read once.
@@ -86,7 +92,16 @@ impl LanProbe {
             adverts: OnceLock::new(),
             reads: Mutex::new(BTreeMap::new()),
             survey: OnceLock::new(),
+            neighbors: system_neighbors,
         }
+    }
+
+    /// Read the neighbor table with `neighbors` (tests; the default reads
+    /// this host's).
+    #[must_use]
+    pub fn with_neighbors(mut self, neighbors: fn() -> Option<Neighbors>) -> Self {
+        self.neighbors = neighbors;
+        self
     }
 
     /// How long to listen for SSDP replies (default 3 s).
@@ -168,6 +183,7 @@ pub fn register(runner: &mut Runner, data_dir: PathBuf, probe: &Arc<LanProbe>) {
         Kind::GenaRoundtrip,
         Kind::Topology,
         Kind::Updates,
+        Kind::Isolation,
     ] {
         runner.register(LanCheck {
             kind,
@@ -238,6 +254,7 @@ enum Kind {
     GenaRoundtrip,
     Topology,
     Updates,
+    Isolation,
 }
 
 struct LanCheck {
@@ -255,6 +272,7 @@ impl Check for LanCheck {
             Kind::GenaRoundtrip => GENA_ROUNDTRIP,
             Kind::Topology => TOPOLOGY,
             Kind::Updates => UPDATES,
+            Kind::Isolation => ISOLATION,
         }
     }
 
@@ -267,14 +285,16 @@ impl Check for LanCheck {
             Kind::GenaRoundtrip => "Event callbacks (GENA)",
             Kind::Topology => "Group topology",
             Kind::Updates => "Software updates",
+            Kind::Isolation => "Client isolation",
         }
     }
 
     /// Checks that need some player found wait for discovery. Nothing waits
     /// for lan.players: one dead speaker must not hide the others' results.
+    /// lan.isolation runs most of all when discovery found nothing.
     fn requires(&self) -> &[CheckId] {
         match self.kind {
-            Kind::Ssdp | Kind::Seeds => &[],
+            Kind::Ssdp | Kind::Seeds | Kind::Isolation => &[],
             Kind::Players | Kind::Households | Kind::GenaRoundtrip | Kind::Topology => &[SSDP],
             // The offer arrives only in a topology event.
             Kind::Updates => &[GENA_ROUNDTRIP],
@@ -313,6 +333,14 @@ impl Check for LanCheck {
                 households_result(&found)
             }
             Kind::GenaRoundtrip => gena_result(gena_roundtrip(p, ctx)),
+            Kind::Isolation => {
+                let answer = p
+                    .addresses()
+                    .into_iter()
+                    .any(|ip| p.read(ip).description.is_ok());
+                let neighbors = if answer { None } else { (p.neighbors)() };
+                isolation::result(answer, neighbors.as_ref())
+            }
             Kind::Updates => match p.survey() {
                 Ok(survey) => updates_result(&update_offers(p, &survey.households, ctx)),
                 Err(e) => CheckResult::skip(format!("no household to ask: {e}")),

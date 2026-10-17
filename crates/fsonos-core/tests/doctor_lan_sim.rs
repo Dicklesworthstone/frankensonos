@@ -2,11 +2,11 @@
 //! transport (routed to the virtual players' loopback sockets), healthy and
 //! with faults: swallowed NOTIFYs and a player that went offline.
 
-use fsonos_core::doctor::lan::{self, LanProbe};
+use fsonos_core::doctor::lan::{self, LanProbe, Neighbors};
 use fsonos_core::doctor::{EXIT_FAIL, EXIT_OK, EXIT_WARN, Report, Runner, Status};
 use fsonos_proto::net::Lan;
 use fsonos_sim::{GenaEvent, NotifyDrop, SimHandle, SimHousehold};
-use std::net::{IpAddr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,8 +38,17 @@ fn doctor(sim: &SimHandle, seeds: Vec<IpAddr>) -> Report {
 }
 
 fn doctor_on(lan: Arc<Lan>, seeds: Vec<IpAddr>) -> Report {
+    doctor_with(lan, seeds, lan::system_neighbors)
+}
+
+/// [`doctor_on`], reading the neighbor table with `neighbors`.
+fn doctor_with(lan: Arc<Lan>, seeds: Vec<IpAddr>, neighbors: fn() -> Option<Neighbors>) -> Report {
     let dir = tempfile::tempdir().unwrap();
-    let probe = Arc::new(LanProbe::new(lan, seeds).with_ssdp_wait(Duration::from_secs(1)));
+    let probe = Arc::new(
+        LanProbe::new(lan, seeds)
+            .with_ssdp_wait(Duration::from_secs(1))
+            .with_neighbors(neighbors),
+    );
     let mut runner = Runner::new();
     lan::register(&mut runner, dir.path().join("data"), &probe);
     let report = runner.run().unwrap();
@@ -205,6 +214,39 @@ fn dead_ssdp_without_seeds_fails_and_skips_what_depends_on_it() {
     }
     assert_eq!(status(&report, lan::STORE_OPEN), Status::Pass);
     assert_eq!(report.exit_code(), EXIT_FAIL);
+}
+
+/// A host on guest Wi-Fi: the router is the only neighbor it has reached.
+fn only_the_router() -> Neighbors {
+    let router = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+    Neighbors {
+        gateway: Some(router),
+        interface: Some("en1".into()),
+        hosts: vec![router],
+    }
+}
+
+#[test]
+fn no_player_and_only_the_router_in_reach_warns_of_client_isolation() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let silent = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let report = doctor_with(lan_without_ssdp(&sim, &silent), Vec::new(), || {
+        Some(only_the_router())
+    });
+    // It runs although lan.ssdp failed: that is when it explains most.
+    assert_eq!(status(&report, lan::SSDP), Status::Fail);
+    let isolation = report.get(lan::ISOLATION).expect("lan.isolation ran");
+    assert_eq!(isolation.status, Status::Warn, "{isolation:?}");
+    assert!(
+        isolation
+            .remedy
+            .as_deref()
+            .is_some_and(|r| r.contains("guest Wi-Fi")),
+        "{isolation:?}"
+    );
+    // Players that answer settle it, whatever the table shows.
+    let report = doctor_with(lan_for(&sim), Vec::new(), || Some(only_the_router()));
+    assert_eq!(status(&report, lan::ISOLATION), Status::Pass);
 }
 
 #[test]
