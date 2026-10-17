@@ -206,7 +206,7 @@ const BUSY_ATTEMPTS: u32 = 8;
 
 /// Run `op` again after a transient conflict, backing off from 5 ms and
 /// doubling (with jitter, so two waiting connections do not collide again),
-/// about 1.3 s in all. Other errors return at once.
+/// 0.64 to 0.95 s in all. Other errors return at once.
 fn retrying<T>(mut op: impl FnMut() -> Result<T, FrankenError>) -> Result<T, FrankenError> {
     let mut attempt = 0;
     loop {

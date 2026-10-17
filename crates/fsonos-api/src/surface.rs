@@ -1687,8 +1687,6 @@ fn log_entry(
     (decision, text, before)
 }
 
-/// The coordinators of the groups `command` changes (a join changes both
-/// the member's old group and the one it joins).
 /// Whether `command` changes which rooms play together.
 fn regroups(command: &Command) -> bool {
     matches!(
@@ -1697,6 +1695,8 @@ fn regroups(command: &Command) -> bool {
     )
 }
 
+/// The coordinators of the groups `command` changes (a join changes both
+/// the member's old group and the one it joins).
 fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
     let group_of = |p: &PlayerId| {
         households
