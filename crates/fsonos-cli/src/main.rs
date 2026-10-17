@@ -351,7 +351,13 @@ enum Command {
         action: schedule_cmd::ScheduleCommand,
     },
     /// Serve the MCP tools over stdio (for a local agent).
-    Mcp,
+    Mcp {
+        /// Which tools to offer: `essentials` (the 15 most agent tasks use,
+        /// a much shorter tools/list) or `full` (every tool). The house
+        /// policy applies the same either way.
+        #[arg(long, value_enum, env = "FSONOS_MCP_PROFILE", default_value = "full")]
+        profile: McpProfile,
+    },
     /// Front the daemon with Tailscale Serve (HTTPS on the tailnet, never
     /// Funnel): `setup`, `status`, `teardown`.
     Tailscale(tailscale_cmd::TailscaleArgs),
@@ -499,7 +505,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::PlayMode(args) => play_mode_cmd::run(global, &args),
         Command::Events(args) => events_cmd::run(global, &args),
         Command::Schedule { action } => schedule_cmd::schedule(global, &action),
-        Command::Mcp => run_mcp_stdio(global),
+        Command::Mcp { profile } => run_mcp_stdio(global, profile.into()),
         Command::Tailscale(args) => tailscale_cmd::run(global, &args),
         Command::Scene(args) => scene_cmd::run(global, &args),
         #[cfg(feature = "sim")]
@@ -1030,7 +1036,7 @@ fn plan_for<'a>(
         | Command::Stream(_)
         | Command::Completions { .. }
         | Command::CompleteRooms
-        | Command::Mcp => {
+        | Command::Mcp { .. } => {
             unreachable!("not a control command")
         }
         #[cfg(feature = "sim")]
@@ -1289,7 +1295,23 @@ impl fsonos_mcp::tools::Daemon for StdioDaemon {
 /// [`StdioDaemon`]).
 /// Its `doctor` runs what `fsonos doctor` runs, for the daemon settings in
 /// the environment.
-fn run_mcp_stdio(global: &config::GlobalArgs) -> anyhow::Result<()> {
+/// `fsonos mcp --profile`: see [`fsonos_mcp::Profile`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum McpProfile {
+    Essentials,
+    Full,
+}
+
+impl From<McpProfile> for fsonos_mcp::Profile {
+    fn from(profile: McpProfile) -> Self {
+        match profile {
+            McpProfile::Essentials => Self::Essentials,
+            McpProfile::Full => Self::Full,
+        }
+    }
+}
+
+fn run_mcp_stdio(global: &config::GlobalArgs, profile: fsonos_mcp::Profile) -> anyhow::Result<()> {
     let data_dir = daemon::data_dir(global)?;
     let serve =
         config::ServeArgs::from_env().context("read serve's settings from the environment")?;
@@ -1305,7 +1327,9 @@ fn run_mcp_stdio(global: &config::GlobalArgs) -> anyhow::Result<()> {
     }
     runtime()?.block_on(async {
         let cx = asupersync::Cx::current().context("runtime installs an ambient Cx")?;
-        fsonos_mcp::server().run_stdio_with_cx(&cx).await
+        fsonos_mcp::server_with(Vec::new(), profile)
+            .run_stdio_with_cx(&cx)
+            .await
     })
 }
 

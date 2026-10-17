@@ -63,8 +63,9 @@ pub const ROUTES_REFUSAL: &str = "refused: outside the routes file";
 const INLINE: usize = 2000;
 
 /// The settings the harness controls; any ambient value is removed first.
-const SETTINGS: [&str; 16] = [
+const SETTINGS: [&str; 17] = [
     "FSONOS_ROUTES",
+    "FSONOS_MCP_PROFILE",
     "FSONOS_TAILSCALE_SERVE",
     "FSONOS_EVENTS_PORT",
     "FSONOS_HTTP_ADDR",

@@ -246,6 +246,14 @@ house      save_scene · apply_scene · delete_scene · set_sleep_timer · add_s
 resources  sonos://zones · sonos://zones/{room} · sonos://dj
 ```
 
+An agent that needs only the everyday tools can ask for fewer:
+`fsonos mcp --profile essentials` (or `FSONOS_MCP_PROFILE=essentials`) offers the
+15 most tasks use (`list_zones`, `get_zone_state`, `list_favorites`, `play`,
+`play_favorite`, `search_library`, `pause`, `resume`, `next`, `set_volume`,
+`dj_start`, `dj_steer`, `dj_skip`, `undo_last`, `events`): about 2,800 tokens of
+tool schemas instead of about 10,900 for all 66. The house policy applies the
+same either way.
+
 `events` is how an agent keeps up with the house: call it once for the newest
 event id, then again with `since` and `wait_secs` to hear what changes (a
 track, a volume, a regroup, a player going offline, a logged action, the

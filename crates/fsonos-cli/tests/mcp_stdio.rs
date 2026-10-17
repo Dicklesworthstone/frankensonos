@@ -24,8 +24,19 @@ impl Session {
 
     /// Start `fsonos mcp` with `data_dir` as its data directory.
     fn start_in(data_dir: &Path) -> Self {
+        Self::spawn(data_dir, &[])
+    }
+
+    /// Start `fsonos mcp <args>` with the default data directory.
+    fn start_with(args: &[&str]) -> Self {
+        Self::spawn(&std::env::temp_dir().join("fsonos-mcp-stdio-default"), args)
+    }
+
+    fn spawn(data_dir: &Path, args: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_fsonos"))
             .arg("mcp")
+            .args(args)
+            .env_remove("FSONOS_MCP_PROFILE")
             .env("RUST_LOG", "warn")
             .env("FSONOS_DATA_DIR", data_dir)
             .stdin(Stdio::piped())
@@ -125,6 +136,52 @@ fn initialize(s: &mut Session) {
     }));
     s.response(1);
     s.send(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
+}
+
+/// `--profile essentials` offers just the tools most agent tasks need,
+/// a far shorter tools/list than the full set (both sizes are printed).
+#[test]
+fn the_essentials_profile_offers_only_the_essential_tools() {
+    let list = |args: &[&str]| {
+        let mut s = Session::start_with(args);
+        initialize(&mut s);
+        s.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}));
+        s.response(2)
+    };
+    let names = |list: &Value| -> Vec<String> {
+        let mut names: Vec<String> = list["result"]["tools"]
+            .as_array()
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(|t| t["name"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    };
+    let full = list(&[]);
+    let essentials = list(&["--profile", "essentials"]);
+    let mut want: Vec<String> = fsonos_mcp::ESSENTIALS
+        .iter()
+        .map(|n| (*n).to_owned())
+        .collect();
+    want.sort();
+    assert_eq!(names(&essentials), want, "{essentials}");
+    let every = names(&full);
+    assert!(want.iter().all(|n| every.contains(n)), "{every:?}");
+    let bytes = |list: &Value| list["result"].to_string().len();
+    let (all, few) = (bytes(&full), bytes(&essentials));
+    eprintln!(
+        "tools/list: full {} tools, {all} bytes (~{} tokens); essentials {} tools, {few} bytes \
+         (~{} tokens)",
+        every.len(),
+        all / 4,
+        want.len(),
+        few / 4
+    );
+    assert!(few * 3 < all, "essentials {few} bytes, full {all}");
 }
 
 #[test]

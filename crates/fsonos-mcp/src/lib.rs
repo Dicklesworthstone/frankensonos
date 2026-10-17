@@ -105,6 +105,38 @@ async fn move_in_queue(
     .await
 }
 
+/// Which tools an MCP server offers. Policy applies the same either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Profile {
+    /// The tools most agent tasks need ([`ESSENTIALS`]): a short tools/list
+    /// for agents that pay for every schema in their context.
+    Essentials,
+    /// Every tool.
+    #[default]
+    Full,
+}
+
+/// The tools of [`Profile::Essentials`]: see the zones and what they play,
+/// play (a favorite, a search, a URI), pause, resume, skip, set a volume,
+/// run the DJ, undo, and follow events.
+pub const ESSENTIALS: [&str; 15] = [
+    "list_zones",
+    "get_zone_state",
+    "list_favorites",
+    "play",
+    "play_favorite",
+    "search_library",
+    "pause",
+    "resume",
+    "next",
+    "set_volume",
+    "dj_start",
+    "dj_steer",
+    "dj_skip",
+    "undo_last",
+    "events",
+];
+
 /// Build the FrankenSonos MCP server. `auto` admission accepts both the
 /// 2024-11-05 and 2026-07-28 protocol eras, pinning each connection to the era
 /// its client opened with.
@@ -119,82 +151,98 @@ pub fn server() -> fastmcp::auto::Server {
 /// runs. Empty answers any host.
 #[must_use]
 pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
+    server_with(hosts, Profile::Full)
+}
+
+/// [`server_answering`] offering the tools of `profile`.
+#[must_use]
+pub fn server_with(hosts: Vec<String>, profile: Profile) -> fastmcp::auto::Server {
     let mut http = fastmcp::HttpServerConfig::new();
     http.allowed_hosts = hosts;
     http.handler_config.max_body_size = fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES;
-    http.tool_input_max_bytes.insert(
-        "announce".into(),
-        fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES,
-    );
-    fastmcp::auto::server_builder("fsonos", env!("CARGO_PKG_VERSION"))
+    // announce is a Full tool: a limit naming an unregistered tool refuses
+    // the build.
+    if profile == Profile::Full {
+        http.tool_input_max_bytes.insert(
+            "announce".into(),
+            fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES,
+        );
+    }
+    // The essentials, in ESSENTIALS order.
+    let builder = fastmcp::auto::server_builder("fsonos", env!("CARGO_PKG_VERSION"))
         .http_config(http)
         .request_timeout(fsonos_api::surface::announce::ANNOUNCE_TIMEOUT_SECS)
-        .tool(Echo)
         .tool(tools::ListZones)
-        .tool(tools::ListRooms)
-        .tool(tools::ListPlayers)
         .tool(tools::GetZoneState)
-        .tool(tools::GetZone)
         .tool(tools::ListFavorites)
-        .tool(tools::PlayFavorite)
-        .tool(tools::RecentActions)
-        .tool(tools::UndoLast)
-        .tool(reviewed_undo::PreviewUndo)
-        .tool(reviewed_undo::UndoChecked)
-        .tool(tools::GetPolicy)
-        .tool(tools::Events)
-        .tool(tools::Doctor)
         .tool(tools::Play)
+        .tool(tools::PlayFavorite)
+        .tool(tools::SearchLibrary)
         .tool(tools::Pause)
         .tool(tools::Resume)
         .tool(tools::Next)
-        .tool(tools::Previous)
-        .tool(tools::Seek)
         .tool(tools::SetVolume)
-        .tool(tools::MuteTool)
-        .tool(tools::GetEq)
-        .tool(tools::SetEq)
-        .tool(tools::Group)
-        .tool(tools::Ungroup)
-        .tool(tools::MovePlayback)
-        .tool(tools::GroupAll)
-        .tool(tools::ListScenes)
-        .tool(tools::GetScene)
-        .tool(tools::SaveScene)
-        .tool(tools::ApplyScene)
-        .tool(tools::DeleteScene)
         .tool(tools::DjStart)
-        .tool(tools::DjSkip)
-        .tool(tools::DjStop)
         .tool(tools::DjSteer)
-        .tool(tools::DjStatus)
-        .tool(tools::DjMoods)
-        .tool(tools::SearchLibrary)
-        .tool(library::BrowseLibrary)
-        .tool(tools::SearchAndPlay)
-        .tool(tools::RecentPlays)
-        .tool(tools::GetQueue)
-        .tool(tools::AddToQueue)
-        .tool(PlayQueue)
-        .tool(RemoveFromQueue)
-        .tool(MoveInQueue)
-        .tool(play_mode::GetPlayMode)
-        .tool(play_mode::SetPlayMode)
-        .tool(tools::Announce)
-        .tool(tools::dj_feedback::DjFeedback)
-        .tool(tools::dj_prefs::DjPreferences)
-        .tool(tools::dj_prefs::DjPrefer)
-        .tool(tools::dj_sync::DjSyncStatus)
-        .tool(tools::dj_sync::DjSync)
-        .tool(tools::schedules::FadeVolume)
-        .tool(tools::schedules::FadeAndPause)
-        .tool(tools::schedules::SetSleepTimer)
-        .tool(tools::schedules::ListSleepTimers)
-        .tool(tools::schedules::ListSchedules)
-        .tool(tools::schedules::AddSchedule)
-        .tool(tools::schedules::PauseSchedule)
-        .tool(tools::schedules::ResumeSchedule)
-        .tool(tools::schedules::RemoveSchedule)
+        .tool(tools::DjSkip)
+        .tool(tools::UndoLast)
+        .tool(tools::Events);
+    let builder = match profile {
+        Profile::Essentials => builder,
+        Profile::Full => builder
+            .tool(Echo)
+            .tool(tools::ListRooms)
+            .tool(tools::ListPlayers)
+            .tool(tools::GetZone)
+            .tool(tools::RecentActions)
+            .tool(reviewed_undo::PreviewUndo)
+            .tool(reviewed_undo::UndoChecked)
+            .tool(tools::GetPolicy)
+            .tool(tools::Doctor)
+            .tool(tools::Previous)
+            .tool(tools::Seek)
+            .tool(tools::MuteTool)
+            .tool(tools::GetEq)
+            .tool(tools::SetEq)
+            .tool(tools::Group)
+            .tool(tools::Ungroup)
+            .tool(tools::MovePlayback)
+            .tool(tools::GroupAll)
+            .tool(tools::ListScenes)
+            .tool(tools::GetScene)
+            .tool(tools::SaveScene)
+            .tool(tools::ApplyScene)
+            .tool(tools::DeleteScene)
+            .tool(tools::DjStop)
+            .tool(tools::DjStatus)
+            .tool(tools::DjMoods)
+            .tool(library::BrowseLibrary)
+            .tool(tools::SearchAndPlay)
+            .tool(tools::RecentPlays)
+            .tool(tools::GetQueue)
+            .tool(tools::AddToQueue)
+            .tool(PlayQueue)
+            .tool(RemoveFromQueue)
+            .tool(MoveInQueue)
+            .tool(play_mode::GetPlayMode)
+            .tool(play_mode::SetPlayMode)
+            .tool(tools::Announce)
+            .tool(tools::dj_feedback::DjFeedback)
+            .tool(tools::dj_prefs::DjPreferences)
+            .tool(tools::dj_prefs::DjPrefer)
+            .tool(tools::dj_sync::DjSyncStatus)
+            .tool(tools::dj_sync::DjSync)
+            .tool(tools::schedules::FadeVolume)
+            .tool(tools::schedules::FadeAndPause)
+            .tool(tools::schedules::SetSleepTimer)
+            .tool(tools::schedules::ListSleepTimers)
+            .tool(tools::schedules::ListSchedules)
+            .tool(tools::schedules::AddSchedule)
+            .tool(tools::schedules::PauseSchedule)
+            .tool(tools::schedules::ResumeSchedule)
+            .tool(tools::schedules::RemoveSchedule),
+    };
+    builder
         .resource(resources::ZonesResource)
         .resource(resources::ZoneResource)
         .resource(resources::DjResource)
