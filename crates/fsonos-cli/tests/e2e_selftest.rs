@@ -1,7 +1,8 @@
 //! `fsonos selftest` against the virtual households: every inaudible step
 //! passes on both generations, the report names no room, address or player
-//! id, and the house is exactly as it was afterwards (every room's volume,
-//! mute, transport state and play mode, and the grouping).
+//! id, `fsonos doctor` reports the kept run, and the house is exactly as it
+//! was afterwards (every room's volume, mute, transport state and play mode,
+//! and the grouping).
 
 mod e2e;
 
@@ -83,24 +84,46 @@ fn the_inaudible_selftest_passes_and_changes_nothing() {
 
     // Shareable: no room name, address or player id anywhere in the report.
     let sim = s.sim_handle().expect("the sim");
-    let mut leaks: Vec<String> = ROOMS
+    let secrets: Vec<String> = ROOMS
         .iter()
-        .filter(|room| run.stdout.contains(*room))
         .map(|room| (*room).to_string())
+        .chain(
+            sim.players()
+                .iter()
+                .flat_map(|p| [p.uuid.clone(), p.ip.to_string()]),
+        )
         .collect();
-    for p in sim.players() {
-        for secret in [p.uuid.clone(), p.ip.to_string()] {
-            if run.stdout.contains(&secret) {
-                leaks.push(secret);
-            }
-        }
-    }
+    let leaks = |text: &str| -> Vec<String> {
+        secrets
+            .iter()
+            .filter(|secret| text.contains(secret.as_str()))
+            .cloned()
+            .collect()
+    };
+    let leaked = leaks(&run.stdout);
     s.check(
         "scrubbed",
         "report",
         "the report names no room, address or player id",
-        leaks.is_empty(),
-        leaks.join(", "),
+        leaked.is_empty(),
+        leaked.join(", "),
+    );
+
+    // Kept for doctor, as scrubbed as the printed report.
+    let kept = std::fs::read_to_string(s.dir().join("data/selftest-last.json")).unwrap_or_default();
+    let leaked = leaks(&kept);
+    let doctor = s.cli("doctor", &["doctor", "--json", "--only", "selftest.last"]);
+    let last: Value = serde_json::from_str(&doctor.stdout).unwrap_or(Value::Null);
+    let entry = &last["checks"][0];
+    s.check(
+        "kept",
+        "doctor",
+        "doctor reports the run, kept with no room, address or player id, as passed",
+        !kept.is_empty()
+            && leaked.is_empty()
+            && entry["id"] == "selftest.last"
+            && entry["status"] == "pass",
+        format!("leaked: {leaked:?}\n{}\n{}", doctor.stdout, doctor.stderr),
     );
 
     let after = house(&mut s, "zones-after");

@@ -16,6 +16,8 @@
 //! * `dj.sign_in` ([`sign_in`]): whether that grant still works (one liked
 //!   track read, refreshing the token as serve would);
 //! * `speech.backend`: which local speech executable announcements select;
+//! * `selftest.last` ([`selftest_last`]): how the last full `fsonos selftest`
+//!   on this host went, and when;
 //! * `tailscale.*` ([`tailscale`]): whether the daemon is reachable over the
 //!   tailnet, with the connect URLs, or why not.
 //!
@@ -40,6 +42,7 @@ use std::time::Duration;
 use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::direct::Direct;
 
+pub mod selftest_last;
 pub mod sign_in;
 pub mod tailscale;
 
@@ -303,6 +306,9 @@ pub fn register(runner: &mut Runner, serve: &ServeArgs, data_dir: &Path) {
     });
     runner.register(sign_in::SignInCheck::new(serve, data_dir));
     runner.register(SpeechBackendCheck {
+        data_dir: data_dir.to_path_buf(),
+    });
+    runner.register(selftest_last::LastSelftest {
         data_dir: data_dir.to_path_buf(),
     });
     tailscale::register(runner, serve);
