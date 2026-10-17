@@ -66,7 +66,7 @@ use anyhow::Context as _;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
 use clap::{Parser, Subcommand, ValueEnum};
 use fsonos_api::plan::{self, TransportAction};
-use fsonos_api::surface::queue::{QueueAddRequest, QueueAddedDto, QueueDto};
+use fsonos_api::surface::queue::{QueueAddedDto, QueueDto, QueueRequest};
 use fsonos_api::surface::schedules::{FadePauseRequest, FadeVolumeRequest};
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, HitDto, MoveRequest, MuteRequest, OutcomeDto, PartyRequest,
@@ -194,6 +194,8 @@ enum Command {
     },
     /// Play a source URI, or one of the household's favorites, in a room's
     /// group.
+    // What --next and --queue add: a source URI or a favorite.
+    #[command(group(clap::ArgGroup::new("item").args(["source_uri", "favorite"])))]
     Play {
         /// Room name (`Room@S1` / `Room@S2` picks a household).
         zone: String,
@@ -227,21 +229,13 @@ enum Command {
         /// Title to show for a source URI.
         #[arg(long)]
         title: Option<String>,
-        /// Add the Spotify track, album or playlist to the group's queue,
-        /// right after the track playing, instead of playing it now
-        /// (`fsonos undo` takes it off again).
-        #[arg(
-            long,
-            requires = "source_uri",
-            conflicts_with_all = ["queue", "favorite", "search"]
-        )]
+        /// Add the Spotify track, album or playlist, or the favorite, to the
+        /// group's queue, right after the track playing, instead of playing
+        /// it now (`fsonos undo` takes it off again).
+        #[arg(long, requires = "item", conflicts_with_all = ["queue", "search"])]
         next: bool,
         /// Add it to the end of the group's queue instead.
-        #[arg(
-            long,
-            requires = "source_uri",
-            conflicts_with_all = ["favorite", "search"]
-        )]
+        #[arg(long, requires = "item", conflicts_with = "search")]
         queue: bool,
     },
     /// Pause a room's group.
@@ -569,6 +563,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Play {
             zone,
             favorite: Some(favorite),
+            next: false,
+            queue: false,
             ..
         } => {
             let req = PlayFavoriteRequest { zone, favorite };
@@ -613,8 +609,12 @@ fn rooms(global: &config::GlobalArgs, alias: Option<RoomsCommand>) -> anyhow::Re
 /// A control command, carried out directly under the house policy.
 fn run_control(global: &config::GlobalArgs, control: &Command) -> anyhow::Result<()> {
     let direct = Direct::survey(global)?;
-    if let Some(req) = queue_add_request(control) {
-        return emit(global.json, &direct.queue_add(&req)?, QueueAddedDto::text);
+    if let Some(req) = queue_request(control) {
+        return emit(
+            global.json,
+            &direct.queue_request(&req)?,
+            QueueAddedDto::text,
+        );
     }
     let tool = tool_name(control);
     let outcome = match control {
@@ -651,21 +651,25 @@ fn outcome_text(outcome: &OutcomeDto) -> String {
 }
 
 /// `fsonos play <room> <link> --next|--queue`: what to add to the queue.
-fn queue_add_request(command: &Command) -> Option<QueueAddRequest> {
+fn queue_request(command: &Command) -> Option<QueueRequest> {
     match command {
         Command::Play {
             zone,
-            source_uri: Some(source_uri),
+            source_uri,
+            favorite,
             title,
             next,
             queue,
             ..
-        } if *next || *queue => Some(QueueAddRequest {
-            zone: zone.clone(),
-            source_uri: source_uri.clone(),
-            title: title.clone(),
-            next: *next,
-        }),
+        } if (*next || *queue) && (source_uri.is_some() || favorite.is_some()) => {
+            Some(QueueRequest {
+                zone: zone.clone(),
+                source_uri: source_uri.clone(),
+                favorite: favorite.clone(),
+                title: title.clone(),
+                next: *next,
+            })
+        }
         _ => None,
     }
 }
@@ -1509,18 +1513,23 @@ mod tests {
     }
 
     /// `--next`, `--queue` and `--pick` belong to one way of choosing what
-    /// to play. Paired with another way they must be refused, not dropped:
-    /// `play Den --favorite X --next` used to play X at once, replacing what
-    /// was playing, instead of queueing it.
+    /// to play. Paired with another way they must be refused, not dropped
+    /// (`play Den --favorite X --next` once played X at once, replacing what
+    /// was playing); a favorite is now queued like a source URI.
     #[test]
     fn play_flags_never_ride_along_with_another_source() {
         let refused = |args: &[&str]| {
             Cli::try_parse_from(std::iter::once("fsonos").chain(args.iter().copied())).is_err()
         };
         for flag in ["--next", "--queue"] {
+            let queued = queue_request(&parse(&["play", "Den", "--favorite", "Jazz", flag]));
             assert!(
-                refused(&["play", "Den", "--favorite", "Jazz", flag]),
-                "{flag}"
+                queued
+                    .as_ref()
+                    .is_some_and(|r| r.favorite.as_deref() == Some("Jazz")
+                        && r.source_uri.is_none()
+                        && r.next == (flag == "--next")),
+                "{flag}: {queued:?}"
             );
             assert!(
                 refused(&["play", "Den", "--search", "bwv 988", flag]),

@@ -769,6 +769,8 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
         Command::Play {
             zone,
             favorite: Some(favorite),
+            next: false,
+            queue: false,
             ..
         } => {
             let req = PlayFavoriteRequest {
@@ -779,7 +781,7 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
             emit(json, &outcome, done)?;
         }
         command => {
-            if let Some(req) = crate::queue_add_request(command) {
+            if let Some(req) = crate::queue_request(command) {
                 let added: QueueAddedDto = daemon.post("/queue", &req)?;
                 emit(json, &added, QueueAddedDto::text)?;
                 return Ok(true);
