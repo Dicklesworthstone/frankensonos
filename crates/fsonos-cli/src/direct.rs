@@ -111,10 +111,7 @@ impl Direct {
             ));
         }
         let detail = parts.join("; ");
-        Err(Failure::new(ErrorCode::NotReady, detail).with_hint(
-            "Run fsonos on the speaker LAN, or name players with --seed <ip> or FSONOS_SEEDS; \
-             under launchd, macOS may need Local Network permission (docs/DEPLOY.md).",
-        ))
+        Err(Failure::new(ErrorCode::NotReady, detail).with_hint(NO_PLAYERS_HINT))
     }
 
     /// Plan a command as `tool` and carry it out under the house policy.
@@ -277,11 +274,21 @@ impl Direct {
     }
 }
 
-/// `fsonos discover` as text: one player per line.
+/// What to try when no player answered: where seeds come from, and the
+/// networks no seed gets through.
+pub const NO_PLAYERS_HINT: &str = "Name one speaker per household with --seed <ip> or \
+     FSONOS_SEEDS (the Sonos app shows each speaker's address under Settings > System > About \
+     My System); `fsonos setup` saves them, and that is enough across routed subnets, where \
+     discovery does not reach. From a guest or client-isolated Wi-Fi the speakers cannot be \
+     reached at all: join the main network. Under launchd, macOS needs Local Network \
+     permission (docs/DEPLOY.md).";
+
+/// `fsonos discover` as text: one player per line, or, with none, what to
+/// try.
 #[must_use]
 pub fn discover_text(d: &DiscoverDto) -> String {
     if d.players.is_empty() {
-        return "no players found\n".to_string();
+        return format!("no players found\n  hint: {NO_PLAYERS_HINT}\n");
     }
     d.players.iter().fold(String::new(), |mut out, p| {
         let generation = &p.generation;
@@ -536,6 +543,8 @@ mod tests {
             players: Vec::new(),
             ..d
         };
-        assert_eq!(discover_text(&empty), "no players found\n");
+        let none = discover_text(&empty);
+        assert!(none.starts_with("no players found\n  hint: "), "{none}");
+        assert!(none.contains("--seed <ip>") && none.contains("About My System"));
     }
 }
