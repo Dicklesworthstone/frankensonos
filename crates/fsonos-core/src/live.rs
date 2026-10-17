@@ -513,6 +513,7 @@ impl Engine {
                 if m.sink.is_some() {
                     pump::turn(&self, &mut m);
                 } else {
+                    self.poll_renewals(&mut m);
                     progress::recover(&self, &mut m);
                 }
             } else {
@@ -658,28 +659,74 @@ impl Engine {
         }
     }
 
-    /// Renew the subscriptions that are due.
+    /// Admit bounded lease maintenance without waiting for speaker I/O.
     fn renew(&self, m: &mut Model, now: Instant) {
         let Some(s) = &m.sink else { return };
         let callback = |service: Service| s.callback_url(service.tag());
-        let report = m.rec.subscriptions.renew_due(&self.via(), callback, now);
-        m.rec.health.record(&report, now);
+        let provider: Arc<dyn Subscriber + Send + Sync> = self.lan.clone();
+        let reports = m.rec.subscriptions.renew_background(
+            &provider,
+            callback,
+            &self.stop,
+            now,
+        );
+        self.lease_reports(m, reports);
+    }
+
+    fn poll_renewals(&self, m: &mut Model) {
+        let reports = m
+            .rec
+            .subscriptions
+            .poll_renewals(self.stop.load(Ordering::Acquire));
+        self.lease_reports(m, reports);
+    }
+
+    fn lease_reports(&self, m: &mut Model, reports: Vec<(crate::events::Report, Instant)>) {
+        if reports.is_empty() {
+            return;
+        }
+        for (mut report, started) in reports {
+            // A late failure must not overwrite an event heard while the
+            // network call was pending. Subscription cursors stay model-owned.
+            let current = |player: &PlayerId| {
+                m.rec
+                    .health
+                    .of(player)
+                    .and_then(|h| h.last_ok)
+                    .is_none_or(|at| at <= started)
+            };
+            report.answered.retain(current);
+            report.failed.retain(|(player, _, _)| current(player));
+            report.unanswered.retain(|(player, _)| current(player));
+            m.rec.health.record(&report, Instant::now());
+        }
+        progress::invalidate(m);
+        self.publish(m, Vec::new());
     }
 
     /// Wait (briefly) for one NOTIFY and fold it in. `None` when none came;
     /// otherwise the playback change it made, if any.
     fn next_event(&self, m: &mut Model, max_wait: Duration) -> Option<Vec<LiveEvent>> {
+        self.poll_renewals(m);
+        let early = m.rec.subscriptions.take_early();
         let s = m.sink.as_ref()?;
         // A due survey may already be in flight. Its unchanged deadline must
         // not turn this receive into a busy loop; the outer loop checks the
         // schedule at least once per bounded TICK either way.
-        let n = match s.recv_or_closed(max_wait) {
-            Ok(n) => n?,
-            Err(e) => {
-                self.relisten(m, &format!("the event listener stopped: {e}"));
-                return Some(Vec::new());
+        let n = if let Some(early) = early {
+            early
+        } else {
+            match s.recv_or_closed(max_wait) {
+                Ok(n) => n?,
+                Err(e) => {
+                    self.relisten(m, &format!("the event listener stopped: {e}"));
+                    return Some(Vec::new());
+                }
             }
         };
+        if m.rec.subscriptions.hold_early(&n) {
+            return Some(Vec::new());
+        }
         let callback = |service: Service| s.callback_url(service.tag());
         let from = m
             .rec

@@ -23,7 +23,10 @@ use fsonos_proto::topology::parse_zone_group_state;
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+mod maintenance;
 
 /// The subscription timeout requested; renewals happen halfway through
 /// whatever the player grants.
@@ -137,6 +140,8 @@ impl Subscriber for Lan {
 
 #[derive(Debug, Clone)]
 struct Active {
+    /// Identity of this installed lease, independent of its event cursor.
+    epoch: Arc<()>,
     want: Want,
     sid: String,
     renew_at: Instant,
@@ -188,6 +193,8 @@ pub struct Subscriptions {
     pending: Vec<(Want, Instant)>,
     /// The last `BootSeq` each player reported in a topology.
     boot_seqs: HashMap<PlayerId, u32>,
+    pending_epoch: Arc<()>,
+    maintenance: maintenance::Workers,
 }
 
 impl Subscriptions {
@@ -214,6 +221,7 @@ impl Subscriptions {
         callback_url: impl Fn(Service) -> String,
         now: Instant,
     ) -> Report {
+        self.pending_epoch = Arc::new(());
         let mut report = Report::default();
         let (keep, drop): (Vec<Active>, Vec<Active>) = std::mem::take(&mut self.active)
             .into_iter()
@@ -246,6 +254,7 @@ impl Subscriptions {
                 }
             }
         }
+        self.invalidate_renewals();
         report
     }
 
@@ -260,6 +269,7 @@ impl Subscriptions {
         callback_url: impl Fn(Service) -> String,
         now: Instant,
     ) -> Report {
+        self.pending_epoch = Arc::new(());
         let mut report = Report::default();
         for a in &mut self.active {
             if a.next_due() > now {
@@ -347,6 +357,7 @@ impl Subscriptions {
                 }
             }
         }
+        self.invalidate_renewals();
         report
     }
 
@@ -388,6 +399,7 @@ impl Subscriptions {
         };
         a.last_seq = Some(n.seq);
         a.initial_misses = 0;
+        self.invalidate_renewals();
         gap
     }
 
@@ -411,6 +423,7 @@ impl Subscriptions {
             return report;
         }
         refresh_active(s, a, &callback_url, now, &mut report);
+        self.invalidate_renewals();
         report
     }
 
@@ -437,9 +450,11 @@ impl Subscriptions {
     /// and has already forgotten them); the next [`Subscriptions::sync`]
     /// subscribes afresh. Returns how many were dropped.
     pub fn forget(&mut self, player: &PlayerId) -> usize {
+        self.pending_epoch = Arc::new(());
         let before = self.active.len();
         self.active.retain(|a| a.want.player != *player);
         self.pending.retain(|(w, _)| w.player != *player);
+        self.invalidate_renewals();
         before - self.active.len()
     }
 
@@ -454,6 +469,7 @@ impl Subscriptions {
         callback_url: impl Fn(Service) -> String,
         now: Instant,
     ) -> Report {
+        self.pending_epoch = Arc::new(());
         let mut report = Report::default();
         let (replace, keep): (Vec<Active>, Vec<Active>) = std::mem::take(&mut self.active)
             .into_iter()
@@ -475,11 +491,14 @@ impl Subscriptions {
                 }
             }
         }
+        self.invalidate_renewals();
         report
     }
 
     /// Unsubscribe everything (daemon shutdown). Best effort.
     pub fn unsubscribe_all<S: Subscriber + ?Sized>(&mut self, s: &S) {
+        self.maintenance.cancel_all();
+        self.pending_epoch = Arc::new(());
         self.pending.clear();
         for a in self.active.drain(..) {
             let _ = s.unsubscribe(&a.want, &a.sid);
@@ -575,6 +594,7 @@ fn sequence_gap(last: Option<u32>, seq: u32) -> Option<bool> {
 fn active(want: Want, sub: Subscription, now: Instant) -> Active {
     let half = Duration::from_secs(u64::from(sub.timeout_secs.max(2) / 2));
     Active {
+        epoch: Arc::new(()),
         want,
         sid: sub.sid,
         renew_at: now + half,
