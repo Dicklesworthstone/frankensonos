@@ -270,6 +270,27 @@ fn unshared_data_dir(global: &GlobalArgs) -> anyhow::Result<(PathBuf, std::fs::F
     }
 }
 
+/// Run the bind guard over the HTTP API's and the MCP server's planned
+/// addresses: warn about the ones it allows with a warning, refuse to start
+/// on one it refuses.
+fn vet_binds(
+    args: &ServeArgs,
+    tailnet: &fsonos_tailscale::TailnetStatus,
+    [http, mcp]: [&fsonos_tailscale::BindPlan; 2],
+) -> anyhow::Result<()> {
+    let ours = config::own_tailnet_addrs(tailnet);
+    for (listener, plan) in [("HTTP API", http), ("MCP server", mcp)] {
+        for &addr in &plan.addrs {
+            match config::check_control_bind(listener, addr, args.allow_unsafe_bind, &ours) {
+                Ok(None) => {}
+                Ok(Some(warning)) => tracing::warn!("{warning}"),
+                Err(refusal) => return Err(refusal.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Vet the configuration, start both servers, report readiness, and run
 /// until SIGINT / SIGTERM.
 pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> anyhow::Result<()> {
@@ -277,15 +298,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     let tailnet = args.tailnet();
     let http_plan = args.http_plan(&tailnet);
     let mcp_plan = args.mcp_plan(&tailnet);
-    for (listener, plan) in [("HTTP API", &http_plan), ("MCP server", &mcp_plan)] {
-        for &addr in &plan.addrs {
-            match config::check_control_bind(listener, addr, args.allow_unsafe_bind) {
-                Ok(None) => {}
-                Ok(Some(warning)) => tracing::warn!("{warning}"),
-                Err(refusal) => return Err(refusal.into()),
-            }
-        }
-    }
+    vet_binds(args, &tailnet, [&http_plan, &mcp_plan])?;
     let (data_dir, _lock) = unshared_data_dir(global)?;
     // GET /doctor and the MCP doctor run what `fsonos doctor` runs: the
     // store, the LAN (discovery, each player, a GENA round trip) and the

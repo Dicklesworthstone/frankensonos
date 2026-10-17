@@ -77,8 +77,11 @@ variables. The environment form is what launchd uses.
 **Bind guard**: `serve` refuses a wildcard
 (`0.0.0.0`, `::`) or public bind address for the API or MCP server unless you
 pass `--allow-unsafe-bind`. It logs a warning for a private-LAN address.
-Loopback and tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) addresses are
-accepted silently.
+Loopback addresses, and this Mac's own tailnet addresses as the `tailscale`
+CLI reports them, are accepted silently. Another address in the tailnet
+ranges (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`), or any of them while the CLI
+does not answer, gets a warning: carrier-grade NAT (a phone hotspot, some
+ISPs) hands out addresses from the same IPv4 block.
 
 ## 3. Build and install
 

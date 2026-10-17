@@ -399,18 +399,54 @@ fn v6_scope(ip: Ipv6Addr) -> BindScope {
     }
 }
 
-/// Vet a control-surface (API/MCP) bind address. `Ok(None)`: fine.
+/// This host's own tailnet addresses in `status`, IPv4 first, as the
+/// Tailscale CLI reported them. None when no tailnet was found, or when it
+/// was only inferred from addresses in the tailnet ranges on this host's
+/// interfaces: a carrier-grade NAT address there looks the same.
+#[must_use]
+pub fn own_tailnet_addrs(status: &fsonos_tailscale::TailnetStatus) -> Vec<IpAddr> {
+    match status {
+        fsonos_tailscale::TailnetStatus::Available(t)
+            if t.source == fsonos_tailscale::Source::Cli =>
+        {
+            let v4 = t.ipv4.iter().copied().map(IpAddr::V4);
+            v4.chain(t.ipv6.iter().copied().map(IpAddr::V6)).collect()
+        }
+        fsonos_tailscale::TailnetStatus::Available(_)
+        | fsonos_tailscale::TailnetStatus::Unavailable(_) => Vec::new(),
+    }
+}
+
+/// Vet a control-surface (API/MCP) bind address; `ours` are this host's own
+/// tailnet addresses ([`own_tailnet_addrs`]). `Ok(None)`: fine.
 /// `Ok(Some(warning))`: allowed, but log the warning. `Err(failure)`: refuse
 /// to start (`INVALID_ARGUMENT`, exit 2).
 pub fn check_control_bind(
     listener: &str,
     addr: SocketAddr,
     allow_unsafe: bool,
+    ours: &[IpAddr],
 ) -> Result<Option<String>, Failure> {
     let unauthenticated =
         "it has no authentication, so anyone who can reach it controls the speakers";
     match bind_scope(addr.ip()) {
-        BindScope::Loopback | BindScope::Tailnet => Ok(None),
+        BindScope::Loopback => Ok(None),
+        BindScope::Tailnet if ours.contains(&addr.ip().to_canonical()) => Ok(None),
+        // Carrier-grade NAT (a phone hotspot, some ISPs) hands out addresses
+        // from the same 100.64.0.0/10 block.
+        BindScope::Tailnet => Ok(Some(format!(
+            "{listener} is bound to {addr}, in Tailscale's range but not one of this \
+             machine's tailnet addresses ({}); carrier-grade NAT uses the same range, and \
+             {unauthenticated}",
+            if ours.is_empty() {
+                "Tailscale reported none".to_string()
+            } else {
+                ours.iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        ))),
         BindScope::Lan => Ok(Some(format!(
             "{listener} is bound to LAN address {addr}; {unauthenticated} \
              (prefer loopback behind Tailscale Serve)"
@@ -518,23 +554,75 @@ mod tests {
     fn bind_guard_refuses_wildcard_and_public_by_default() {
         let at = |s: &str| s.parse::<SocketAddr>().unwrap();
         assert_eq!(
-            check_control_bind("api", at("127.0.0.1:8099"), false),
+            check_control_bind("api", at("127.0.0.1:8099"), false, &[]),
             Ok(None)
         );
-        assert_eq!(
-            check_control_bind("api", at("100.70.1.2:8099"), false),
-            Ok(None)
-        );
-        let lan = check_control_bind("api", at("192.168.1.9:8099"), false).unwrap();
+        let lan = check_control_bind("api", at("192.168.1.9:8099"), false, &[]).unwrap();
         assert!(lan.unwrap().contains("LAN address"));
-        let wild = check_control_bind("mcp", at("0.0.0.0:8098"), false).unwrap_err();
+        let wild = check_control_bind("mcp", at("0.0.0.0:8098"), false, &[]).unwrap_err();
         assert!(wild.detail.contains("every interface"), "{wild}");
         assert!(wild.hint.contains("--allow-unsafe-bind"));
         assert_eq!(wild.exit_code(), 2);
-        let public = check_control_bind("mcp", at("[2001:db8::1]:8098"), false).unwrap_err();
+        let public = check_control_bind("mcp", at("[2001:db8::1]:8098"), false, &[]).unwrap_err();
         assert!(public.detail.contains("public address"));
-        let forced = check_control_bind("mcp", at("0.0.0.0:8098"), true).unwrap();
+        let forced = check_control_bind("mcp", at("0.0.0.0:8098"), true, &[]).unwrap();
         assert!(forced.unwrap().contains("no authentication"));
+    }
+
+    #[test]
+    fn a_tailnet_range_address_passes_only_when_it_is_this_hosts_own() {
+        // Synthetic addresses from the 100.64.0.0/10 block.
+        let ours = IpAddr::from([100, 64, 0, 7]);
+        let other = SocketAddr::from(([100, 64, 0, 8], 8099));
+        let own = SocketAddr::new(ours, 8099);
+        assert_eq!(check_control_bind("api", own, false, &[ours]), Ok(None));
+        // Its IPv4-mapped IPv6 form is the same address.
+        let mapped = SocketAddr::new(
+            IpAddr::V6(Ipv4Addr::from([100, 64, 0, 7]).to_ipv6_mapped()),
+            8099,
+        );
+        assert_eq!(check_control_bind("api", mapped, false, &[ours]), Ok(None));
+        // Another address in the block, or any with no tailnet found: allowed,
+        // with a warning that names the host's own.
+        let stray = check_control_bind("api", other, false, &[ours])
+            .unwrap()
+            .unwrap();
+        assert!(
+            stray.contains("not one of this machine's tailnet addresses"),
+            "{stray}"
+        );
+        assert!(stray.contains(&ours.to_string()), "{stray}");
+        assert!(stray.contains("carrier-grade NAT"), "{stray}");
+        let unknown = check_control_bind("mcp", own, false, &[]).unwrap().unwrap();
+        assert!(unknown.contains("(Tailscale reported none)"), "{unknown}");
+    }
+
+    #[test]
+    fn own_tailnet_addrs_are_the_ones_the_tailscale_cli_reported() {
+        use fsonos_tailscale::{Source, Tailnet, TailnetStatus, Unavailable};
+        let v4 = Ipv4Addr::from([100, 64, 0, 7]);
+        let v6: Ipv6Addr = "fd7a:115c:a1e0::7".parse().unwrap();
+        let up = |source| {
+            TailnetStatus::Available(Tailnet {
+                source,
+                backend_state: None,
+                running: true,
+                logged_in: true,
+                ipv4: vec![v4],
+                ipv6: vec![v6],
+                magic_dns_name: None,
+                tailnet: None,
+            })
+        };
+        assert_eq!(
+            own_tailnet_addrs(&up(Source::Cli)),
+            [IpAddr::V4(v4), IpAddr::V6(v6)]
+        );
+        // Found only on an interface: a carrier-grade NAT address looks the
+        // same, so it is not counted as this host's tailnet address.
+        assert!(own_tailnet_addrs(&up(Source::Interfaces)).is_empty());
+        let off = TailnetStatus::Unavailable(Unavailable::Disabled);
+        assert!(own_tailnet_addrs(&off).is_empty());
     }
 
     #[test]
