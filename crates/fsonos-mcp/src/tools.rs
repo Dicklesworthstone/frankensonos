@@ -1390,6 +1390,13 @@ mod tests {
                     "GET /zones/",
                     serde_json::json!({ "zone": "Den", "running": true, "steering": steering }),
                 ),
+                (
+                    "GET /zones",
+                    serde_json::to_value(fsonos_api::zones::zone_views(&house(), |_| {
+                        fsonos_types::TransportState::Unknown
+                    }))
+                    .unwrap(),
+                ),
             ],
             calls: Mutex::new(Vec::new()),
         });
@@ -1411,11 +1418,16 @@ mod tests {
         assert!(!zones.is_empty() && zones.iter().all(|z| z["running"] == true));
         let calls = daemon.calls.lock().unwrap().clone();
         assert_eq!(
-            calls[..3],
-            ["POST /announce", "PUT /scenes/Evening", "GET /dj/moods"]
+            calls[..4],
+            [
+                "POST /announce",
+                "PUT /scenes/Evening",
+                "GET /zones",
+                "GET /dj/moods"
+            ]
         );
         assert!(
-            calls[3..]
+            calls[4..]
                 .iter()
                 .all(|c| c.starts_with("GET /zones/") && c.ends_with("/dj"))
         );

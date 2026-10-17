@@ -6,7 +6,7 @@ use fastmcp_server::{FinalMethodOutcome, ResourceHandler};
 use fsonos_api::{ErrorCode, Failure};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
-use fsonos_mcp::resources::{ZoneResource, ZonesResource};
+use fsonos_mcp::resources::{DjResource, ZoneResource, ZonesResource};
 use fsonos_mcp::tools::{Backend, Daemon, install};
 use fsonos_proto::{ProtoError, Transport};
 use serde_json::{Value, json};
@@ -22,6 +22,7 @@ const WAIT: Duration = Duration::from_secs(5);
 const ROOM: &str = "Room%20%2F%20%26%40S2";
 const ROOM_URI: &str = "sonos://zones/Room%20%2F%20%26%40S2";
 const STATE_PATH: &str = "/zones/Room%20%2F%20%26%40S2/state";
+const DJ_PATH: &str = "/zones/Room%20%2F%20%26%40S2/dj";
 
 struct NoIo;
 
@@ -96,7 +97,11 @@ async fn read(
     params: &HashMap<String, String>,
     modern: bool,
 ) -> McpResult<Value> {
-    let request_cx = asupersync::Cx::for_testing();
+    let runtime = asupersync::runtime::RuntimeBuilder::new()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    let request_cx = runtime.request_cx_with_budget(asupersync::Budget::INFINITE);
     let context = McpContext::new(request_cx.clone(), 1);
     if modern {
         match resource
@@ -145,7 +150,10 @@ fn assert_document(
         HashMap::new()
     };
     drop(read(resource, uri, &params, modern));
-    assert!(matches!(requests.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    assert!(matches!(
+        requests.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
     let mut waiting = Box::pin(read(resource, uri, &params, modern));
     let wake = waker();
     assert!(
@@ -166,7 +174,10 @@ fn assert_document(
     assert_eq!(contents[0]["mimeType"], "application/json");
     let document: Value = serde_json::from_str(contents[0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(&document, expected);
-    assert!(matches!(requests.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    assert!(matches!(
+        requests.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
 }
 
 fn assert_failure(requests: &mpsc::Receiver<Request>, modern: bool, failure: Failure) {
@@ -190,7 +201,10 @@ fn assert_failure(requests: &mpsc::Receiver<Request>, modern: bool, failure: Fai
     let error = finish(waiting).unwrap_err();
     assert_eq!(error.code, expected.code);
     assert_eq!(error.message, expected.message);
-    assert!(matches!(requests.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    assert!(matches!(
+        requests.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
 }
 
 #[test]
@@ -198,7 +212,7 @@ fn resource_reads_yield_and_preserve_documents_and_errors_in_both_protocol_eras(
     let (send, requests) = mpsc::channel();
     let backend = Backend::new(
         Box::new(NoIo),
-        Box::new(|| panic!("a remote resource must not survey the local LAN")),
+        Box::new(|_| panic!("a remote resource must not survey the local LAN")),
         Policy::default(),
         Client::McpStdio,
         Box::new(SystemClock),
@@ -206,6 +220,8 @@ fn resource_reads_yield_and_preserve_documents_and_errors_in_both_protocol_eras(
     .with_daemon(Arc::new(HeldDaemon(send)));
     assert!(install(backend));
     let state = json!({"zone": zone(), "transport_state": "playing", "volume": 37});
+    let moods = json!({"moods": [], "programs": [], "now": {"source": "none"}});
+    let status = json!({"zone": "Room / &@S2", "running": true, "steering": {"source": "none"}});
     for modern in [false, true] {
         assert_document(
             &requests,
@@ -223,6 +239,18 @@ fn resource_reads_yield_and_preserve_documents_and_errors_in_both_protocol_eras(
             vec![(STATE_PATH, state.clone())],
             &state,
         );
+        assert_document(
+            &requests,
+            &DjResource,
+            "sonos://dj",
+            modern,
+            vec![
+                ("/zones", json!([zone()])),
+                ("/dj/moods", moods.clone()),
+                (DJ_PATH, status.clone()),
+            ],
+            &json!({"zones": [status.clone()], "moods": moods.clone()}),
+        );
         for code in [ErrorCode::PolicyDenied, ErrorCode::NotReady] {
             assert_failure(
                 &requests,
@@ -235,6 +263,9 @@ fn resource_reads_yield_and_preserve_documents_and_errors_in_both_protocol_eras(
         let error = finish(read(&ZoneResource, uri, &params, modern)).unwrap_err();
         assert_eq!(error.code, McpError::invalid_params("").code);
         assert!(error.message.contains("percent-encoded UTF-8"));
-        assert!(matches!(requests.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(matches!(
+            requests.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
     }
 }

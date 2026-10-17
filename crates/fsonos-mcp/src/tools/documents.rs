@@ -1,9 +1,10 @@
 //! Resource documents built from more than one surface read.
 
-use fsonos_api::{DjMoodsDto, DjStatusDto, Failure};
+use fsonos_api::{DjMoodsDto, DjStatusDto, ErrorCode, Failure, ZoneDto};
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
-use super::{Backend, from_daemon, json_document, segment};
+use super::{Backend, Daemon, from_daemon, json_document, segment};
 
 /// `sonos://dj`.
 #[derive(Serialize)]
@@ -21,33 +22,32 @@ impl Backend {
     /// a daemon runs, its DJ is the one that plays, so the statuses and moods
     /// are its own (as `dj_status` reads them).
     pub fn dj_document(&self) -> Result<String, Failure> {
-        let zones = self.surface.zones(&self.client)?;
         if let Some(daemon) = &self.daemon
-            && let Some(moods) = daemon.call("GET", "/dj/moods", None)
+            && let Some(zones) = daemon.call("GET", "/zones", None)
         {
-            let moods: DjMoodsDto = from_daemon(moods, "GET", "/dj/moods")?;
+            // The selected daemon owns the topology as well as the DJ. A
+            // stdio agent may be off the speaker LAN, and even on it a local
+            // survey can disagree with the model its next command uses.
+            let zones: Vec<ZoneDto> = from_daemon(zones, "GET", "/zones")?;
+            let moods = daemon_read(&**daemon, "/dj/moods")?;
             let mut statuses = Vec::with_capacity(zones.len());
             for zone in &zones {
-                let path = format!("/zones/{}/dj", segment(&zone.coordinator_room));
-                let answer = daemon.call("GET", &path, None).ok_or_else(|| {
-                    Failure::new(
-                        fsonos_api::ErrorCode::NotReady,
-                        "the daemon stopped answering; read sonos://dj again",
-                    )
-                })?;
-                statuses.push(from_daemon(answer, "GET", &path)?);
+                let room = format!("{}@{}", zone.coordinator_room, zone.household);
+                statuses.push(daemon_read(
+                    &**daemon,
+                    &format!("/zones/{}/dj", segment(&room)),
+                )?);
             }
             return json_document(&DjDocument {
                 zones: statuses,
                 moods,
             });
         }
+        let zones = self.surface.zones(&self.client)?;
         let mut statuses = Vec::with_capacity(zones.len());
         for zone in &zones {
-            statuses.push(
-                self.surface
-                    .dj_status(&self.client, &zone.coordinator_room)?,
-            );
+            let room = format!("{}@{}", zone.coordinator_room, zone.household);
+            statuses.push(self.surface.dj_status(&self.client, &room)?);
         }
         let moods = self.surface.dj_moods(&self.client, None)?;
         json_document(&DjDocument {
@@ -56,3 +56,18 @@ impl Backend {
         })
     }
 }
+
+/// After the first daemon read, every missing, failed or malformed reply is
+/// terminal. A resource must never splice two different houses together.
+fn daemon_read<T: DeserializeOwned>(daemon: &dyn Daemon, path: &str) -> Result<T, Failure> {
+    let answer = daemon.call("GET", path, None).ok_or_else(|| {
+        Failure::new(
+            ErrorCode::NotReady,
+            "the daemon stopped answering; read sonos://dj again",
+        )
+    })?;
+    from_daemon(answer, "GET", path)
+}
+
+#[cfg(test)]
+mod tests;
