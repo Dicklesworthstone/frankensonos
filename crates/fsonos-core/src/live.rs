@@ -38,6 +38,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 mod bootstrap;
 mod delivery;
+mod inventory;
 mod observation;
 mod progress;
 mod pump;
@@ -470,6 +471,7 @@ impl Engine {
             last_error: None,
             route_checked: Instant::now(),
         };
+        let mut surveys = inventory::Surveys::default();
         while !self.stop.load(Ordering::Acquire) {
             // Flush lost-event markers even when the model is quiet. The
             // snapshot was committed before the dropped publication.
@@ -485,25 +487,34 @@ impl Engine {
             }
             m.ticked = (now, wall);
             if self.wake.swap(false, Ordering::AcqRel) {
+                surveys.refresh_soon();
                 m.rec.schedule.due_now(now);
             }
             if now.duration_since(m.route_checked) >= ROUTE_CHECK {
                 m.route_checked = now;
                 self.follow_route(&mut m);
             }
-            if m.rec.schedule.due(now) {
-                let events = self.survey(&mut m, now);
-                self.publish(&m, events);
+            if m.rec.schedule.due(now) && !surveys.busy() {
+                if m.surveyed_at.is_none() {
+                    // Preserve bootstrap's complete readiness snapshot.
+                    let events = self.survey(&mut m, now);
+                    self.publish(&m, events);
+                } else {
+                    surveys.start(&self, &mut m);
+                    self.publish(&m, Vec::new());
+                }
             }
             if m.sink.is_none() {
-                // A callback outage must not suspend bounded read recovery.
-                // There is no callback backlog to drain before publishing.
+                // Neither discovery nor playback reads need a callback sink.
+                surveys.complete(&self, &mut m);
                 progress::recover(&self, &mut m);
                 std::thread::sleep(TICK);
                 continue;
             }
             pump::turn(&self, &mut m);
+            surveys.complete(&self, &mut m);
         }
+        drop(surveys);
         self.release(&mut m);
         self.publish(&m, Vec::new());
     }
@@ -512,6 +523,7 @@ impl Engine {
     /// answer, and just forget those already offline (asking them would
     /// only time out).
     fn release(&self, m: &mut Model) {
+        m.rec.invalidate_inventory();
         let offline: Vec<PlayerId> = m
             .rec
             .health
@@ -640,13 +652,10 @@ impl Engine {
     /// otherwise the playback change it made, if any.
     fn next_event(&self, m: &mut Model, max_wait: Duration) -> Option<Vec<LiveEvent>> {
         let s = m.sink.as_ref()?;
-        let wait = m
-            .rec
-            .schedule
-            .next_at()
-            .saturating_duration_since(Instant::now())
-            .min(max_wait);
-        let n = match s.recv_or_closed(wait) {
+        // A due survey may already be in flight. Its unchanged deadline must
+        // not turn this receive into a busy loop; the outer loop checks the
+        // schedule at least once per bounded TICK either way.
+        let n = match s.recv_or_closed(max_wait) {
             Ok(n) => n?,
             Err(e) => {
                 self.relisten(m, &format!("the event listener stopped: {e}"));

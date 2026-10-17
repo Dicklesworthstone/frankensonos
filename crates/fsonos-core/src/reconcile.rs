@@ -19,10 +19,13 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod discovery;
 mod initial;
+mod survey;
+pub(crate) use survey::InventoryPlan;
 
 /// How a player is doing, from the outcome of the calls made to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +253,8 @@ pub struct Reconciler {
     pub schedule: Refresh,
     /// Last-known discovery hints, independent of the live room model.
     discovery: discovery::Discovery,
+    /// Changes even when accepted topology values return to their old shape.
+    inventory_epoch: Arc<()>,
 }
 
 impl Reconciler {
@@ -264,6 +269,7 @@ impl Reconciler {
             health: HealthBoard::default(),
             schedule: Refresh::new(interval, max_backoff, now),
             discovery: discovery::Discovery::default(),
+            inventory_epoch: Arc::new(()),
         }
     }
 
@@ -314,6 +320,16 @@ impl Reconciler {
         self.discovery.observe(&self.households);
         let surveyed =
             inventory::survey_known(lan, seeds, self.discovery.households(), DISCOVERY_WAIT);
+        self.apply_inventory(surveyed, now)
+    }
+
+    /// Commit one completed survey; both synchronous bootstrap and deferred
+    /// inventory use the same reconciliation, reboot and backoff rules.
+    fn apply_inventory(
+        &mut self,
+        surveyed: Result<inventory::Survey, CoreError>,
+        now: Instant,
+    ) -> Result<RefreshReport, CoreError> {
         let survey = match surveyed {
             Ok(s) if !s.households.is_empty() => s,
             Ok(_) => {
@@ -330,6 +346,7 @@ impl Reconciler {
                 return Err(e);
             }
         };
+        self.invalidate_inventory();
         // A player that rebooted since last seen has forgotten its
         // subscriptions; drop them so the next sync subscribes afresh.
         let rebooted = self
@@ -439,6 +456,9 @@ impl Reconciler {
                 let recovery = self.subscriptions.refresh(lan, &n.sid, &callback_url, now);
                 self.health.record(&recovery, now);
             })?;
+        if service == Service::ZoneGroupTopology {
+            self.invalidate_inventory();
+        }
         self.health.ok(&player, now);
         let missed = self.subscriptions.missed(n);
         let mut report = NotifyReport {
