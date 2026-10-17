@@ -16,6 +16,8 @@
 //! * `dj.sign_in` ([`sign_in`]): whether that grant still works (one liked
 //!   track read, refreshing the token as serve would);
 //! * `speech.backend`: which local speech executable announcements select;
+//! * `selftest.last` ([`selftest_last`]): how the last full `fsonos selftest`
+//!   on this host went, and when;
 //! * `tailscale.*` ([`tailscale`]): whether the daemon is reachable over the
 //!   tailnet, with the connect URLs, or why not.
 //!
@@ -31,7 +33,7 @@ use fsonos_core::policy::Client;
 use fsonos_spotify::client::TokenCache;
 use serde_json::json;
 use std::io::{Read as _, Write as _};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -40,6 +42,7 @@ use std::time::Duration;
 use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::direct::Direct;
 
+pub mod selftest_last;
 pub mod sign_in;
 pub mod tailscale;
 
@@ -61,11 +64,16 @@ const HEALTH: CheckId = CheckId("daemon.health");
 const TASTE: CheckId = CheckId("dj.taste");
 const SPEECH: CheckId = CheckId("speech.backend");
 
+/// This host's own tailnet addresses, asked only when a listener is bound
+/// in the tailnet range.
+type OwnTailnet = Box<dyn Fn() -> Vec<IpAddr> + Send + Sync>;
+
 /// The bind guard's verdict for both control listeners.
 struct BindCheck {
     http: SocketAddr,
     mcp: SocketAddr,
     allow_unsafe: bool,
+    tailnet: OwnTailnet,
 }
 
 impl Check for BindCheck {
@@ -79,9 +87,17 @@ impl Check for BindCheck {
 
     fn run(&self, _: &CheckContext) -> CheckResult {
         let evidence = json!({ "http": self.http.to_string(), "mcp": self.mcp.to_string() });
+        let in_range = [self.http, self.mcp]
+            .iter()
+            .any(|a| config::bind_scope(a.ip()) == config::BindScope::Tailnet);
+        let ours = if in_range {
+            (self.tailnet)()
+        } else {
+            Vec::new()
+        };
         let mut warnings = Vec::new();
         for (listener, addr) in [("HTTP API", self.http), ("MCP server", self.mcp)] {
-            match config::check_control_bind(listener, addr, self.allow_unsafe) {
+            match config::check_control_bind(listener, addr, self.allow_unsafe, &ours) {
                 Ok(None) => {}
                 Ok(Some(warning)) => warnings.push(warning),
                 Err(refusal) => {
@@ -275,10 +291,12 @@ impl Check for SpeechBackendCheck {
 
 /// Register the checks this layer owns for `serve`'s settings.
 pub fn register(runner: &mut Runner, serve: &ServeArgs, data_dir: &Path) {
+    let settings = serve.clone();
     runner.register(BindCheck {
         http: serve.http_local(),
         mcp: serve.mcp_local(),
         allow_unsafe: serve.allow_unsafe_bind,
+        tailnet: Box::new(move || config::own_tailnet_addrs(&settings.tailnet())),
     });
     runner.register(HealthCheck {
         http: serve.http_local(),
@@ -288,6 +306,9 @@ pub fn register(runner: &mut Runner, serve: &ServeArgs, data_dir: &Path) {
     });
     runner.register(sign_in::SignInCheck::new(serve, data_dir));
     runner.register(SpeechBackendCheck {
+        data_dir: data_dir.to_path_buf(),
+    });
+    runner.register(selftest_last::LastSelftest {
         data_dir: data_dir.to_path_buf(),
     });
     tailscale::register(runner, serve);
@@ -392,12 +413,32 @@ mod tests {
         runner.run().unwrap().get(id).cloned().unwrap()
     }
 
-    fn bind(http: &str, mcp: &str) -> CheckResult {
+    /// This host's synthetic tailnet address in the bind tests.
+    const OURS: [u8; 4] = [100, 64, 0, 7];
+
+    fn bind_at(http: SocketAddr, mcp: SocketAddr) -> CheckResult {
         run_one(BindCheck {
-            http: http.parse().unwrap(),
-            mcp: mcp.parse().unwrap(),
+            http,
+            mcp,
             allow_unsafe: false,
+            tailnet: Box::new(|| vec![IpAddr::from(OURS)]),
         })
+    }
+
+    fn bind(http: &str, mcp: &str) -> CheckResult {
+        bind_at(http.parse().unwrap(), mcp.parse().unwrap())
+    }
+
+    #[test]
+    fn a_tailnet_range_bind_passes_only_on_this_hosts_own_address() {
+        let local: SocketAddr = "127.0.0.1:8098".parse().unwrap();
+        assert_eq!(
+            bind_at(SocketAddr::from((OURS, 8099)), local).status,
+            Status::Pass
+        );
+        let stray = bind_at(SocketAddr::from(([100, 64, 0, 8], 8099)), local);
+        assert_eq!(stray.status, Status::Warn);
+        assert!(stray.summary.contains("carrier-grade NAT"), "{stray:?}");
     }
 
     #[test]
@@ -497,7 +538,9 @@ mod tests {
         assert!(r.remedy.unwrap().contains("speech.toml"));
     }
 
-    #[cfg(unix)]
+    // macOS file systems (APFS, HFS+) refuse names that are not UTF-8
+    // (EILSEQ, "Illegal byte sequence"), so no data directory there is one.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn speech_evidence_handles_a_non_utf8_data_directory() {
         use std::ffi::OsString;

@@ -11,7 +11,9 @@
 //!
 //! Every fade is one volume *intent* on its players. A newer intent on any
 //! of them ([`Fader::supersede`], or a volume set through
-//! [`Fader::set_volume`]) stops the fade before its next step; a device-side
+//! [`Fader::set_volume`]) stops the fade before its next step, and waits out
+//! a step (or a device-side ramp's start) already on its way, so that write
+//! cannot land after the newer level; a device-side
 //! ramp is stopped the only way a player allows, by sending SetVolume. The
 //! daemon cancels a fade on Cx cancellation by superseding it. A stopping
 //! daemon finishes its fades at once ([`Fader::finish_all`]).
@@ -23,8 +25,8 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 mod timing;
@@ -75,6 +77,10 @@ pub fn plan_steps(from: u8, to: u8, over: Duration, interval: Duration) -> Vec<u
 #[derive(Debug)]
 pub struct Fader {
     intents: Mutex<HashMap<PlayerId, u64>>,
+    /// Per player, held while a fade checks its intent and writes a step,
+    /// and by [`Self::supersede`]: a newer intent waits for a step in flight,
+    /// so no older fade's write lands after the caller's own.
+    steps: Mutex<HashMap<PlayerId, Arc<Mutex<()>>>>,
     no_device_ramp: Mutex<HashSet<PlayerId>>,
     interval: Duration,
     device_step: Duration,
@@ -106,6 +112,7 @@ impl Fader {
     pub fn with_timing(interval: Duration, device_step: Duration) -> Self {
         Self {
             intents: Mutex::new(HashMap::new()),
+            steps: Mutex::new(HashMap::new()),
             no_device_ramp: Mutex::new(HashSet::new()),
             interval,
             device_step,
@@ -136,9 +143,23 @@ impl Fader {
         Running(&self.running)
     }
 
+    /// `player`'s step lock (see `steps`).
+    fn step(&self, player: &PlayerId) -> Arc<Mutex<()>> {
+        let mut steps = self.steps.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(steps.entry(player.clone()).or_default())
+    }
+
     /// Start a new volume intent on `player`: any fade in flight on it stops
-    /// before its next step. Returns the intent's number.
+    /// before its next step, and a step already on its way has landed when
+    /// this returns. Returns the intent's number.
     pub fn supersede(&self, player: &PlayerId) -> u64 {
+        let step = self.step(player);
+        let _landed = step.lock().unwrap_or_else(PoisonError::into_inner);
+        self.next_intent(player)
+    }
+
+    /// `player`'s next intent number; the caller holds its step lock.
+    fn next_intent(&self, player: &PlayerId) -> u64 {
         let mut intents = self
             .intents
             .lock()
@@ -270,6 +291,8 @@ impl Fader {
                 if left.contains(player) {
                     continue;
                 }
+                let step = self.step(player);
+                let _writing = step.lock().unwrap_or_else(PoisonError::into_inner);
                 if self.current(player) != *intent {
                     left.push((*player).clone());
                     continue;
@@ -309,6 +332,8 @@ impl Fader {
         loop {
             let mut complete = true;
             for (i, (player, host, intent, from, last)) in lanes.iter_mut().enumerate() {
+                let step = self.step(player);
+                let _writing = step.lock().unwrap_or_else(PoisonError::into_inner);
                 if self.current(player) != *intent {
                     return Ok(FadeOutcome::Superseded { at: first_level });
                 }
@@ -344,7 +369,11 @@ impl Fader {
         let host = ip(households, player)?;
         let refused = self.no_device_ramp.lock().is_ok_and(|s| s.contains(player));
         if !refused {
-            self.supersede(player);
+            // The ramp starts under the step lock, as a step is written: a
+            // newer level waits for the start to land, then stops the ramp.
+            let step = self.step(player);
+            let _starting = step.lock().unwrap_or_else(PoisonError::into_inner);
+            self.next_intent(player);
             match soap::ramp_to_volume(t, host, RampType::SleepTimer, to) {
                 Ok(secs) => return Ok(RampOutcome::Device { secs }),
                 Err(ProtoError::SoapFault {
@@ -441,6 +470,130 @@ mod tests {
         assert_eq!(plan_steps(40, 40, MS(500), MS(250)), [40, 40]);
         assert_eq!(plan_steps(0, 100, MS(5000), MS(250)).len(), 20);
         assert_eq!(*plan_steps(0, 100, MS(5000), MS(250)).last().unwrap(), 100);
+    }
+
+    /// A transport that holds the first `action` it is sent until released.
+    struct Held {
+        inner: fsonos_sim::SimLan,
+        action: &'static str,
+        holding: AtomicBool,
+        entered: AtomicBool,
+        release: AtomicBool,
+    }
+
+    impl Held {
+        fn new(inner: fsonos_sim::SimLan, action: &'static str) -> Self {
+            Self {
+                inner,
+                action,
+                holding: AtomicBool::new(true),
+                entered: AtomicBool::new(false),
+                release: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl Transport for Held {
+        fn soap_post(
+            &self,
+            host: IpAddr,
+            path: &str,
+            action: &str,
+            body: &str,
+        ) -> Result<String, ProtoError> {
+            let held = action
+                .trim_matches('"')
+                .ends_with(&format!("#{}", self.action));
+            if held && self.holding.swap(false, Ordering::AcqRel) {
+                self.entered.store(true, Ordering::Release);
+                while !self.release.load(Ordering::Acquire) {
+                    std::thread::sleep(MS(1));
+                }
+            }
+            self.inner.soap_post(host, path, action, body)
+        }
+    }
+
+    /// A simulated Kitchen at volume 40: the sim, its address, its id and
+    /// its household.
+    fn kitchen_at_40() -> (fsonos_sim::SimHandle, IpAddr, PlayerId, Vec<HouseholdState>) {
+        use fsonos_sim::{SimHousehold, SimModel, SimPlayerSpec};
+        let sim = SimHousehold::builder()
+            .s2([SimPlayerSpec::new("Kitchen", SimModel::One)])
+            .spawn()
+            .unwrap();
+        let host = sim.player("Kitchen").unwrap().ip;
+        let player = PlayerId(sim.player("Kitchen").unwrap().uuid.clone());
+        let mut house = HouseholdState::default();
+        house.apply_topology(
+            &fsonos_proto::topology::get_zone_group_state(&sim.lan(), host).unwrap(),
+        );
+        soap::set_volume(&sim.lan(), host, 40).unwrap();
+        (sim, host, player, vec![house])
+    }
+
+    /// Someone sets 50 while `held`'s write is on its way; it is released
+    /// 200 ms later. Returns what `write` returned.
+    fn set_50_meanwhile<R: Send>(
+        fader: &Fader,
+        held: &Held,
+        houses: &[HouseholdState],
+        player: &PlayerId,
+        write: impl FnOnce() -> R + Send,
+    ) -> R {
+        std::thread::scope(|s| {
+            let writing = s.spawn(write);
+            while !held.entered.load(Ordering::Acquire) {
+                std::thread::sleep(MS(1));
+            }
+            let set = s.spawn(|| fader.set_volume(&held.inner, houses, player, 50));
+            std::thread::sleep(MS(200));
+            held.release.store(true, Ordering::Release);
+            set.join().unwrap().unwrap();
+            writing.join().unwrap()
+        })
+    }
+
+    #[test]
+    fn a_newer_level_lands_after_a_fade_step_already_on_its_way() {
+        let (sim, host, player, houses) = kitchen_at_40();
+        let held = Held::new(sim.lan(), "SetVolume");
+        let fader = Fader::with_timing(MS(50), MS(50));
+        let outcome = set_50_meanwhile(&fader, &held, &houses, &player, || {
+            fader.fade(&held, &houses, &player, 0, MS(1000))
+        });
+        assert!(
+            matches!(outcome, Ok(FadeOutcome::Superseded { .. })),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            soap::get_volume(&sim.lan(), host).unwrap(),
+            50,
+            "the newer level stands"
+        );
+        sim.shutdown();
+    }
+
+    #[test]
+    fn a_newer_level_lands_after_a_device_ramp_start_on_its_way() {
+        let (sim, host, player, houses) = kitchen_at_40();
+        let held = Held::new(sim.lan(), "RampToVolume");
+        let fader = Fader::with_timing(MS(50), MS(50));
+        // The sim ramps at once, so a start landing after the newer level
+        // would leave the ramp's 10.
+        let outcome = set_50_meanwhile(&fader, &held, &houses, &player, || {
+            fader.ramp_at_device_speed(&held, &houses, &player, 10)
+        });
+        assert!(
+            matches!(outcome, Ok(RampOutcome::Device { .. })),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            soap::get_volume(&sim.lan(), host).unwrap(),
+            50,
+            "the newer level stands"
+        );
+        sim.shutdown();
     }
 
     #[test]

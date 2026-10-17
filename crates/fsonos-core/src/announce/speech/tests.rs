@@ -699,7 +699,10 @@ fn timeout_terminates_an_engine_spawned_by_a_waiting_wrapper() {
         ],
         None,
     );
-    backend.timeout = Duration::from_secs(1);
+    // Room for the wrapper to start its engine and record both PIDs on a
+    // loaded CI runner: at 1 s it was once killed before writing them
+    // (run 38965255377), which says nothing about the engine surviving.
+    backend.timeout = Duration::from_secs(3);
     let media = dir.path().join("media");
     let result = backend.render("Stop the engine as well as its wrapper", &media);
     let survived = descendant_survived(&pid_file, &proc_pid_file);

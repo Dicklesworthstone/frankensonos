@@ -184,7 +184,7 @@ impl Surface {
             Ok(done) => ("allow".into(), done.done.clone()),
             Err(failure) => {
                 self.notice(failure);
-                ("error".into(), failure.detail.clone())
+                ("allow".into(), format!("failed: {}", failure.detail))
             }
         };
         self.record(

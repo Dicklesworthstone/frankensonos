@@ -2,8 +2,8 @@ name: macOS checks and tests
 
 # The deploy target is a Mac: check every target there, lint the launchd
 # job, render real speech with `say`, and run the workspace tests, as the
-# Linux workflow does on Linux. Informational (continue-on-error) until it
-# has run green on main; then drop continue-on-error so it gates.
+# Linux workflow does on Linux. It gates like the Linux workflow since its
+# first fully green run (38969388807 at 2dbe4e4).
 on:
   push:
     branches: [main]
@@ -29,7 +29,6 @@ jobs:
   macos:
     runs-on: macos-15
     timeout-minutes: 120
-    continue-on-error: true
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_BUILD_JOBS: "2"

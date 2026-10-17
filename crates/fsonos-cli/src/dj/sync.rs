@@ -7,6 +7,8 @@
 //! lacks the newer columns), and checks again every [`CHECK`]: a day after
 //! a success, or at the next check after a failure (a rate limit resumes
 //! where it stopped). Signed out, it waits quietly; `fsonos doctor` says so.
+//! Those days and checks run on the daemon's clock, the one its schedules
+//! use (a test moves it with serve's `--clock-file`).
 //! `fsonos dj sync` (`POST /dj/sync`, the `dj_sync` tool) asks for one now;
 //! `fsonos dj sync --status` (`GET /dj/sync`, `dj_sync_status`) only says
 //! where they stand.
@@ -21,6 +23,7 @@ use asupersync::http::Client;
 use clap::Args;
 use fsonos_api::surface::dj_sync::{LibrarySyncDto, SyncedDto};
 use fsonos_api::{ErrorCode, Failure};
+use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
 use fsonos_spotify::cache::sync_library_detailed;
@@ -30,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use crate::config::{GlobalArgs, ServeArgs};
 use crate::remote::Daemon;
@@ -54,6 +57,8 @@ pub struct LibrarySync {
     state: Mutex<Running>,
     /// A refresh landed since the DJ last rebuilt its pool.
     fresh: AtomicBool,
+    /// When a refresh happens and is due (the system clock by default).
+    clock: Box<dyn Clock>,
 }
 
 #[derive(Default)]
@@ -77,12 +82,36 @@ impl LibrarySync {
             data_dir,
             state: Mutex::new(Running::default()),
             fresh: AtomicBool::new(false),
+            clock: Box::new(SystemClock),
         })
     }
 
-    /// The daemon's: when `serve` names a Spotify app (it says so when not).
+    /// The same refresh on `clock`.
     #[must_use]
-    pub fn for_serve(serve: &ServeArgs, data_dir: &Path) -> Option<Arc<Self>> {
+    pub fn with_clock(self, clock: Box<dyn Clock>) -> Self {
+        Self { clock, ..self }
+    }
+
+    /// Now on its clock, in Unix seconds.
+    #[must_use]
+    pub fn now(&self) -> i64 {
+        self.clock.now().timestamp()
+    }
+
+    /// Seconds on its clock's count that never steps back (see
+    /// [`Clock::elapsed_secs`]): the host's monotonic time, or a test's.
+    fn elapsed_secs(&self) -> i64 {
+        self.clock.elapsed_secs()
+    }
+
+    /// The daemon's, on its `clock`: when `serve` names a Spotify app (it
+    /// says so when not).
+    #[must_use]
+    pub fn for_serve(
+        serve: &ServeArgs,
+        data_dir: &Path,
+        clock: Box<dyn Clock>,
+    ) -> Option<Arc<Self>> {
         let Some(client_id) = serve.spotify_client_id.clone() else {
             tracing::info!(
                 "the DJ's library is not refreshed: no Spotify app client id \
@@ -94,7 +123,7 @@ impl LibrarySync {
             client_id,
             redirect_uri: serve.spotify_redirect_uri.clone(),
         };
-        Self::new(config, data_dir.to_owned()).map(Arc::new)
+        Self::new(config, data_dir.to_owned()).map(|sync| Arc::new(sync.with_clock(clock)))
     }
 
     fn running(&self) -> std::sync::MutexGuard<'_, Running> {
@@ -210,7 +239,7 @@ impl LibrarySync {
             .deferred
             .saturating_add(synced.genres.failed.len());
         Ok(SyncedDto {
-            at: now(),
+            at: self.now(),
             tracks: synced.library.tracks,
             candidates: synced.library.candidates,
             classical: synced.library.classical,
@@ -250,38 +279,38 @@ impl LibrarySync {
     }
 }
 
-/// The daemon's schedule: refresh when due and signed in, checking every
-/// [`CHECK`], on a thread of its own until `stop`. Nothing without `sync`.
+/// The daemon's schedule: refresh when due and signed in, checking again
+/// [`CHECK`] after each check ends, timed on `sync`'s clock (looked at every
+/// half second; a wall-clock step does not move it), on a thread of its own
+/// until `stop`. Nothing without `sync`.
 pub fn watch(sync: Option<Arc<LibrarySync>>, stop: Arc<AtomicBool>) {
     let Some(sync) = sync else {
         return;
     };
+    let every = i64::try_from(CHECK.as_secs()).unwrap_or(i64::MAX);
     let spawned = thread::Builder::new()
         .name("fsonos-library-watch".into())
         .stack_size(STACK)
         .spawn(move || {
+            let mut next = i64::MIN;
             while !stop.load(Ordering::Acquire) {
-                if sync.signed_in() && sync.due(now()) {
-                    match sync.run() {
-                        Ok(synced) => eprintln!("fsonos serve: {}", synced.text()),
-                        Err(f) => tracing::warn!("library refresh: {}", f.detail),
+                if sync.elapsed_secs() >= next {
+                    if sync.signed_in() && sync.due(sync.now()) {
+                        match sync.run() {
+                            Ok(synced) => eprintln!("fsonos serve: {}", synced.text()),
+                            Err(f) => tracing::warn!("library refresh: {}", f.detail),
+                        }
                     }
+                    // From the end of a refresh, however long it took (a
+                    // rate limit can hold one for an hour).
+                    next = sync.elapsed_secs().saturating_add(every);
                 }
-                let until = Instant::now() + CHECK;
-                while Instant::now() < until && !stop.load(Ordering::Acquire) {
-                    thread::sleep(Duration::from_millis(500));
-                }
+                thread::sleep(Duration::from_millis(500));
             }
         });
     if let Err(e) = spawned {
         tracing::warn!("not refreshing the library: {e}");
     }
-}
-
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// The last successful refresh `data_dir`'s [`STAMP`] holds.
@@ -399,7 +428,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "fsonos-library-sync-{}-{name}-{}",
             std::process::id(),
-            now()
+            SystemClock.now().timestamp()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         LibrarySync::new(

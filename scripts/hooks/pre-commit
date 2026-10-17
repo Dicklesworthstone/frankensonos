@@ -1,0 +1,31 @@
+#!/bin/sh
+# Opt-in pre-commit check: refuse a commit whose staged workspace Rust files
+# (crates/) are not rustfmt-formatted. Enable with
+# `git config core.hooksPath scripts/hooks`. rustfmt only formats (it does
+# not compile), so this runs on any machine with the pinned toolchain's
+# rustfmt, including the owner's Mac. vendor/ is left alone: those crates are
+# outside the workspace, so `cargo fmt --check` does not hold them to it.
+#
+# The staged content is checked (not the working tree), through stdin; with
+# stdin `rustfmt --check` exits 0 even on a difference, so its "Diff in"
+# output is what decides. A rustfmt that fails without one (a parse error, a
+# toolchain without its rustfmt component) checked nothing: that refuses too.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+if ! command -v rustfmt >/dev/null 2>&1; then
+    echo "pre-commit: rustfmt not found; skipping the format check" >&2
+    exit 0
+fi
+status=0
+for file in $(git diff --cached --name-only --diff-filter=ACMR -- 'crates/*.rs'); do
+    out=$(git show ":$file" | rustfmt --edition 2024 --check 2>&1)
+    checked=$?
+    if printf '%s\n' "$out" | grep -q '^Diff in'; then
+        echo "pre-commit: $file is not formatted; run: rustfmt --edition 2024 $file" >&2
+        status=1
+    elif [ "$checked" -ne 0 ]; then
+        echo "pre-commit: rustfmt could not check $file:" >&2
+        printf '%s\n' "$out" | head -5 >&2
+        status=1
+    fi
+done
+exit $status

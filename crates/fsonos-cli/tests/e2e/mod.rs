@@ -615,6 +615,11 @@ impl Daemon {
         }
     }
 
+    /// The process has not exited yet.
+    pub fn running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
     /// Send SIGINT and wait up to `timeout` for the exit code.
     pub fn interrupt(&mut self, timeout: Duration) -> Option<i32> {
         let _ = Command::new("kill")

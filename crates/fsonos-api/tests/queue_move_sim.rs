@@ -236,6 +236,17 @@ fn stale_source_destination_revision_and_invalid_ranges_never_move() {
     append(&f.sim.lan(), f.sim.player("Alpha").unwrap().ip, "external");
     assert!(f.surface.queue_move(&Client::Cli, &good).is_err());
     assert_eq!(f.attempts(), 0);
+    // Each refusal is logged as every failed call is: the policy allowed
+    // it, and the result says it failed.
+    let log = f
+        .surface
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
+    assert!(!log.is_empty());
+    for entry in &log {
+        assert_eq!(entry.action.decision, "allow", "{entry:?}");
+        assert!(entry.action.result.starts_with("failed: "), "{entry:?}");
+    }
 }
 
 #[test]

@@ -4,7 +4,8 @@
 //! The cached grant has lapsed, so the daemon's own refresh at start first
 //! renews it; `GET /dj/sync` then reports what it read, `POST /dj/start`
 //! plays one of those tracks in the sim, and a track the owner likes
-//! afterwards reaches the library on the next `POST /dj/sync`.
+//! afterwards reaches the library on the next `POST /dj/sync`. A day later
+//! on the daemon's clock (`--clock-file`), it refreshes on its own.
 
 mod e2e;
 
@@ -14,6 +15,7 @@ use fsonos_sim::SimHousehold;
 use fsonos_spotify::client::{CachedToken, TEST_BASE_ENV, TokenCache, requested_scope};
 use fsonos_spotify::fake_spotify::{CLIENT_ID, FakeSpotify};
 use serde_json::{Value, json};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// `key=value` out of a daemon line.
@@ -85,9 +87,10 @@ fn cache_a_lapsed_grant(s: &Scenario) {
         .unwrap();
 }
 
-/// `fsonos serve` with the Spotify app and the fake at `base`, live: the
-/// daemon and its API.
-fn serve(s: &mut Scenario, base: &str) -> (Daemon, String) {
+/// `fsonos serve` with the Spotify app and the fake at `base`, on the
+/// clock in `clock`, live: the daemon and its API.
+fn serve(s: &mut Scenario, base: &str, clock: &Path) -> (Daemon, String) {
+    let clock = clock.to_string_lossy().into_owned();
     let mut daemon = s.spawn_env(
         "serve",
         &[
@@ -98,6 +101,8 @@ fn serve(s: &mut Scenario, base: &str) -> (Daemon, String) {
             "127.0.0.1:0",
             "--spotify-client-id",
             CLIENT_ID,
+            "--clock-file",
+            &clock,
         ],
         &[(TEST_BASE_ENV, base)],
     );
@@ -154,6 +159,24 @@ fn a_new_like_reaches_the_library(s: &mut Scenario, api: &str, fake: &FakeSpotif
     );
 }
 
+/// A day and an hour later on the daemon's clock, the daemon refreshes the
+/// library on its own (no request), stamped with that time.
+fn a_day_later_the_daemon_refreshes_on_its_own(s: &mut Scenario, api: &str, clock: &Path, t0: i64) {
+    let later = t0 + 25 * 3_600;
+    let at = chrono::DateTime::from_timestamp(later, 0).unwrap_or_default();
+    std::fs::write(clock, at.to_rfc3339()).unwrap();
+    let daily = sync_until(api, Duration::from_secs(30), |v| {
+        v["running"] == false && v["last"]["at"].as_i64() == Some(later)
+    });
+    s.check(
+        "daily",
+        "http",
+        "a day later on the daemon's clock, it refreshes the library on its own",
+        daily["last"]["at"].as_i64() == Some(later) && daily.get("error").is_none(),
+        format!("expected at={later}: {daily}"),
+    );
+}
+
 #[test]
 fn a_signed_in_daemon_reads_spotify_and_the_dj_plays_what_it_read() {
     let fake = FakeSpotify::start();
@@ -165,7 +188,11 @@ fn a_signed_in_daemon_reads_spotify_and_the_dj_plays_what_it_read() {
     let mut s = Scenario::start("dj_sync_fake");
     s.sim(SimHousehold::standard());
     cache_a_lapsed_grant(&s);
-    let (mut daemon, api) = serve(&mut s, &format!("http://{}", fake.addr));
+    let clock = s.dir().join("clock");
+    let t0 = chrono::Utc::now().timestamp();
+    let start = chrono::DateTime::from_timestamp(t0, 0).unwrap_or_default();
+    std::fs::write(&clock, start.to_rfc3339()).unwrap();
+    let (mut daemon, api) = serve(&mut s, &format!("http://{}", fake.addr), &clock);
 
     // Never refreshed: the daemon refreshes on its own as it starts.
     let first = sync_until(&api, Duration::from_secs(30), |v| {
@@ -192,6 +219,7 @@ fn a_signed_in_daemon_reads_spotify_and_the_dj_plays_what_it_read() {
 
     the_dj_plays_what_was_read(&mut s, &api);
     a_new_like_reaches_the_library(&mut s, &api, &fake, tracks);
+    a_day_later_the_daemon_refreshes_on_its_own(&mut s, &api, &clock, t0);
 
     let log = fake.state.lock().unwrap().log.join("\n");
     s.check(

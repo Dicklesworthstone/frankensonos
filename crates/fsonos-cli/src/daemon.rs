@@ -270,6 +270,27 @@ fn unshared_data_dir(global: &GlobalArgs) -> anyhow::Result<(PathBuf, std::fs::F
     }
 }
 
+/// Run the bind guard over the HTTP API's and the MCP server's planned
+/// addresses: warn about the ones it allows with a warning, refuse to start
+/// on one it refuses.
+fn vet_binds(
+    args: &ServeArgs,
+    tailnet: &fsonos_tailscale::TailnetStatus,
+    [http, mcp]: [&fsonos_tailscale::BindPlan; 2],
+) -> anyhow::Result<()> {
+    let ours = config::own_tailnet_addrs(tailnet);
+    for (listener, plan) in [("HTTP API", http), ("MCP server", mcp)] {
+        for &addr in &plan.addrs {
+            match config::check_control_bind(listener, addr, args.allow_unsafe_bind, &ours) {
+                Ok(None) => {}
+                Ok(Some(warning)) => tracing::warn!("{warning}"),
+                Err(refusal) => return Err(refusal.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Vet the configuration, start both servers, report readiness, and run
 /// until SIGINT / SIGTERM.
 pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> anyhow::Result<()> {
@@ -277,21 +298,14 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     let tailnet = args.tailnet();
     let http_plan = args.http_plan(&tailnet);
     let mcp_plan = args.mcp_plan(&tailnet);
-    for (listener, plan) in [("HTTP API", &http_plan), ("MCP server", &mcp_plan)] {
-        for &addr in &plan.addrs {
-            match config::check_control_bind(listener, addr, args.allow_unsafe_bind) {
-                Ok(None) => {}
-                Ok(Some(warning)) => tracing::warn!("{warning}"),
-                Err(refusal) => return Err(refusal.into()),
-            }
-        }
-    }
+    vet_binds(args, &tailnet, [&http_plan, &mcp_plan])?;
     let (data_dir, _lock) = unshared_data_dir(global)?;
     // GET /doctor and the MCP doctor run what `fsonos doctor` runs: the
     // store, the LAN (discovery, each player, a GENA round trip) and the
     // aliases, then serve's own checks.
     let checks = crate::doctor::checks(global, args.clone())?;
-    let (house, library) = (policy(&data_dir)?, LibrarySync::for_serve(args, &data_dir));
+    let library = LibrarySync::for_serve(args, &data_dir, scheduler.clock());
+    let house = policy(&data_dir)?;
     let (surface, live) = live_surface(global, args.events_port, house, library.clone())?;
     let surface = surface
         .with_clock(scheduler.clock())
@@ -332,7 +346,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     eprintln!(
         "fsonos serve: ready http=http://{} mcp=http://{}/mcp data={}",
         http[0].1,
-        mcp[0],
+        mcp[0].1,
         data_dir.display()
     );
     if let Some(&(_, loopback)) = http.iter().find(|(_, a)| a.ip().is_loopback()) {
@@ -383,6 +397,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         tracing::warn!("the scheduler stopped with a panic");
     }
     stop_http(&http);
+    stop_mcp(mcp);
     // Announcements in flight put the music back before the process ends.
     drain_announcements(|| surface.announcements_pending(), ANNOUNCE_DRAIN);
     // The surfaces hold the model weakly: this ends every subscription.
@@ -421,6 +436,30 @@ fn stop_http(http: &[(Arc<TcpServer>, SocketAddr)]) {
             addr,
             Duration::from_millis(250),
         ));
+    }
+}
+
+/// How long a stopping daemon waits for its MCP listeners to close.
+const MCP_STOP: Duration = Duration::from_secs(5);
+
+/// Shut the MCP server's listeners down: cancel each one's context, which
+/// its accept loop checks between accepts, and wait up to [`MCP_STOP`] for
+/// them to close.
+fn stop_mcp(mcp: Vec<(McpStop, SocketAddr)>) {
+    for (listener, _) in &mcp {
+        listener.cx.cancel_with(
+            asupersync::types::CancelKind::Shutdown,
+            Some("fsonos serve is stopping"),
+        );
+    }
+    let deadline = Instant::now() + MCP_STOP;
+    for (listener, addr) in mcp {
+        while !listener.thread.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        if !listener.thread.is_finished() {
+            tracing::warn!("the MCP server on {addr} did not stop within {MCP_STOP:?}");
+        }
     }
 }
 
@@ -467,7 +506,7 @@ fn announce_tailnet(
     tailnet: &fsonos_tailscale::TailnetStatus,
     plan: &fsonos_tailscale::BindPlan,
     http: &[(Arc<TcpServer>, SocketAddr)],
-    mcp: &[SocketAddr],
+    mcp: &[(McpStop, SocketAddr)],
 ) {
     eprintln!("fsonos serve: listening ({})", plan.note);
     // Describe each listener by its tailnet address when it has one.
@@ -486,7 +525,7 @@ fn announce_tailnet(
         },
         fsonos_tailscale::Listener {
             label: "MCP server",
-            bind: pick(mcp.to_vec()),
+            bind: pick(mcp.iter().map(|(_, a)| *a).collect()),
             path: "/mcp",
         },
     ];
@@ -617,21 +656,29 @@ fn listener_runtime() -> anyhow::Result<asupersync::runtime::Runtime> {
         .context("build the listener runtime")
 }
 
+/// How [`stop_mcp`] stops one MCP listener.
+struct McpStop {
+    /// The listener's context: its accept loop ends once this is cancelled.
+    cx: asupersync::Cx,
+    /// The listener's thread, finished once the listener has closed.
+    thread: thread::JoinHandle<()>,
+}
+
 /// Bind the MCP server (streamable HTTP) on its own thread; returns the bound
-/// address once it listens. Like the HTTP API, it admits only its own Host
-/// names (DNS-rebinding defense).
+/// address once it listens, and how to stop it. Like the HTTP API, it admits
+/// only its own Host names (DNS-rebinding defense).
 fn start_mcp(
     surface: &Arc<Surface>,
     addr: SocketAddr,
     names: &[String],
-) -> anyhow::Result<SocketAddr> {
+) -> anyhow::Result<(McpStop, SocketAddr)> {
     let hosts = WebPolicy::for_listener(addr, names).hosts().to_vec();
     let backend = fsonos_mcp::tools::Backend::shared(Arc::clone(surface), listener_client(addr));
     if !fsonos_mcp::tools::install(backend) {
         anyhow::bail!("the MCP backend is already installed");
     }
     let (bound_tx, bound_rx) = mpsc::channel();
-    thread::Builder::new()
+    let thread = thread::Builder::new()
         .name("fsonos-mcp".into())
         .spawn(move || {
             let ready_tx = bound_tx.clone();
@@ -645,7 +692,7 @@ fn start_mcp(
                     let local = bound
                         .local_addr()
                         .map_err(|e| anyhow::anyhow!("MCP address: {e}"))?;
-                    let _ = ready_tx.send(Ok(local));
+                    let _ = ready_tx.send(Ok((local, cx.clone())));
                     bound
                         .serve(&cx)
                         .await
@@ -658,9 +705,10 @@ fn start_mcp(
             }
         })
         .context("start the MCP thread")?;
-    bound_rx
+    let (local, cx) = bound_rx
         .recv_timeout(Duration::from_secs(10))
-        .context("the MCP server did not start within 10 s")?
+        .context("the MCP server did not start within 10 s")??;
+    Ok((McpStop { cx, thread }, local))
 }
 
 #[cfg(test)]

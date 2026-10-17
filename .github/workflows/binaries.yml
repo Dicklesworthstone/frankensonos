@@ -57,6 +57,28 @@ jobs:
           "dist/$name/fsonos" --version
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          echo "FSONOS_BIN=$PWD/dist/$name/fsonos" >> "$GITHUB_ENV"
+      # The packaged binary itself, end to end: its own `fsonos sim`, then a
+      # direct `zones` confined to that sim's routes, which must show both
+      # households.
+      - name: Smoke-test the packaged binary against fsonos sim
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/fsonos-smoke"
+          mkdir -p "$work"
+          export FSONOS_DATA_DIR="$work/data" FSONOS_TAILSCALE=off
+          "$FSONOS_BIN" sim --json --seeds-out "$work/seeds.toml" > "$work/sim.json" 2> "$work/sim.err" &
+          sim=$!
+          for _ in $(seq 1 150); do
+            grep -q '"ready":true' "$work/sim.json" && break
+            sleep 0.2
+          done
+          "$FSONOS_BIN" --direct --seeds "$work/seeds.toml" --routes "$work/routes.toml" zones --json > "$work/zones.json" \
+            || { cat "$work/sim.err"; kill -TERM "$sim"; exit 1; }
+          kill -TERM "$sim"
+          wait "$sim"
+          cat "$work/zones.json"
+          jq -e 'any(.[]; .household == "S1") and any(.[]; .household == "S2")' "$work/zones.json"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: fsonos-${{ matrix.target }}

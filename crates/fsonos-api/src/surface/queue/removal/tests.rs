@@ -2,7 +2,7 @@ use super::*;
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::Policy;
-use fsonos_core::store::MemStore;
+use fsonos_core::store::{ActionFilter, MemStore};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
@@ -312,6 +312,20 @@ fn stale_or_invalid_selections_do_not_write_and_unknown_callers_do_not_read() {
     }
     assert_eq!(attempts.load(Ordering::Acquire), 0);
     assert_eq!(current(&sim).len(), 4);
+    // The CLI's refusals are logged as every failed call is: the policy
+    // allowed them, and the result says each failed.
+    let log = surface
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
+    let refused: Vec<_> = log
+        .iter()
+        .filter(|e| e.action.client == Client::Cli.key())
+        .collect();
+    assert!(!refused.is_empty(), "{log:?}");
+    for entry in refused {
+        assert_eq!(entry.action.decision, "allow", "{entry:?}");
+        assert!(entry.action.result.starts_with("failed: "), "{entry:?}");
+    }
     sim.shutdown();
 }
 
