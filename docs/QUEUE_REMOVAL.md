@@ -85,7 +85,10 @@ edits, failed read-back or a timeout with unchanged reads are **uncertain**:
 what to do next. Do not blindly repeat the request; the original write could
 already have happened or still be finishing.
 
-A stale selection is rejected before removal as `INVALID_ARGUMENT`. Denied
+A stale selection is rejected before removal as `QUEUE_CHANGED` (not
+retryable: read the queue again). A player that refuses the old revision
+(UPnP 1028, a concurrent edit just before ours) is reported the same way,
+since nothing was removed. Denied
 callers receive `POLICY_DENIED`. HTTP retains the normal JSON and Origin
 checks. All outcomes reaching the action are logged; malformed HTTP bodies
 are rejected at the request boundary.

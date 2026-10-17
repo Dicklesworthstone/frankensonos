@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::super::Surface;
 use super::MAX_PAGE;
 use crate::failure::{ErrorCode, Failure};
+use fsonos_proto::queue::STALE_QUEUE_FAULT;
 
 #[cfg(test)]
 use fsonos_core::control::queue_removal::{Snapshot as Queue, removed};
@@ -107,6 +108,15 @@ fn uncertain(detail: impl std::fmt::Display) -> Failure {
 fn removal_failure(error: RemovalError) -> Failure {
     match error {
         RemovalError::Invalid(detail) => Failure::invalid(detail),
+        // The player refuses an old revision (fault 1028): nothing removed.
+        RemovalError::Refused(fsonos_proto::ProtoError::SoapFault {
+            code: STALE_QUEUE_FAULT,
+            ..
+        }) => Failure::new(
+            ErrorCode::QueueChanged,
+            "the queue changed before the removal reached the player, which refused the old revision; nothing was removed",
+        )
+        .with_hint("Read the current queue before selecting a range to remove."),
         RemovalError::Before(cause) | RemovalError::Refused(cause) => {
             Failure::from(CoreError::from(cause))
                 .with_hint("Read the current queue before selecting a range to remove.")
@@ -162,7 +172,8 @@ impl Surface {
         let zone = player.room_name.clone();
         let before = read(&*self.transport, host).map_err(CoreError::from)?;
         if before.uris.get(start..end) != Some(req.expected_uris.as_slice()) {
-            return Err(Failure::invalid(
+            return Err(Failure::new(
+                ErrorCode::QueueChanged,
                 "the queue selection is stale or out of range; nothing was removed",
             )
             .with_hint(
@@ -188,7 +199,8 @@ impl Surface {
                 || usize::try_from(page.total_matches).ok() != Some(before.uris.len())
                 || super::snapshot::revision(&group.coordinator, &page) != *expected
             {
-                return Err(Failure::invalid(
+                return Err(Failure::new(
+                    ErrorCode::QueueChanged,
                     "the queue revision changed since the selection; nothing was removed",
                 )
                 .with_hint(

@@ -157,7 +157,7 @@ fn duplicate_uri_at_the_same_position_does_not_make_an_old_revision_valid() {
     control::set_volume(&sim.lan(), &houses, &id, 90).unwrap();
     let calls = sim.soap_log().len();
     let failure = s.queue_play(&agent(), &req).unwrap_err();
-    assert_eq!(failure.code, ErrorCode::NotReady);
+    assert_eq!(failure.code, ErrorCode::QueueChanged);
     reads_only(&sim, calls);
     assert_eq!(control::volume(&sim.lan(), &houses, &id).unwrap(), 90);
     let log = s
@@ -180,7 +180,7 @@ fn another_coordinators_token_is_rejected_even_with_identical_tracks() {
     let calls = sim.soap_log().len();
     assert_eq!(
         s.queue_play(&Client::Cli, &req).unwrap_err().code,
-        ErrorCode::NotReady
+        ErrorCode::QueueChanged
     );
     reads_only(&sim, calls);
 }
@@ -226,7 +226,7 @@ fn a_valid_token_does_not_skip_the_final_preparation_recheck() {
         s.queue_play(&Client::Cli, &request(&view, 1))
             .unwrap_err()
             .code,
-        ErrorCode::NotReady
+        ErrorCode::QueueChanged
     );
     assert!(topologies.load(Ordering::SeqCst) >= 2);
     assert!(!sim.soap_log()[calls..].iter().any(|e| matches!(
@@ -276,7 +276,7 @@ fn a_valid_revision_does_not_override_a_wrong_expected_uri() {
     let calls = sim.soap_log().len();
     assert_eq!(
         s.queue_play(&Client::Cli, &req).unwrap_err().code,
-        ErrorCode::NotReady
+        ErrorCode::QueueChanged
     );
     reads_only(&sim, calls);
 }

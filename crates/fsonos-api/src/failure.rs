@@ -83,11 +83,14 @@ pub enum ErrorCode {
     UnknownScene,
     /// No schedule has that id.
     UnknownSchedule,
+    /// The queue, or the group playing it, changed since the selection was
+    /// read: nothing was changed.
+    QueueChanged,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -114,6 +117,7 @@ impl ErrorCode {
         Self::NoMatch,
         Self::UnknownScene,
         Self::UnknownSchedule,
+        Self::QueueChanged,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
@@ -146,6 +150,7 @@ impl ErrorCode {
             Self::UnsupportedMediaType => "UNSUPPORTED_MEDIA_TYPE",
             Self::UnknownScene => "UNKNOWN_SCENE",
             Self::UnknownSchedule => "UNKNOWN_SCHEDULE",
+            Self::QueueChanged => "QUEUE_CHANGED",
         }
     }
 
@@ -168,7 +173,8 @@ impl ErrorCode {
             | Self::RenderParamsMissing
             | Self::RenderParamsStale
             | Self::SpotifyAuthRequired
-            | Self::AmbiguousFavorite => 409,
+            | Self::AmbiguousFavorite
+            | Self::QueueChanged => 409,
             Self::PolicyDenied | Self::UntrustedOrigin => 403,
             Self::UnsupportedMediaType => 415,
             Self::UpnpFault => 502,
@@ -205,7 +211,8 @@ impl ErrorCode {
             | Self::RenderParamsStale
             | Self::SpotifyAuthRequired
             | Self::Internal
-            | Self::NotImplemented => 1,
+            | Self::NotImplemented
+            | Self::QueueChanged => 1,
         }
     }
 
@@ -277,6 +284,9 @@ impl ErrorCode {
                 "List the scenes with list_scenes (GET /scenes), or use a suggested name."
             }
             Self::UnknownSchedule => "Use an id that list_schedules (GET /schedules) shows.",
+            Self::QueueChanged => {
+                "Read the queue again (get_queue) and select from its current revision; do not resend."
+            }
         }
     }
 }

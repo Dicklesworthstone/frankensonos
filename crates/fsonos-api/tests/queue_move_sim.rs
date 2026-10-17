@@ -264,13 +264,25 @@ fn lost_or_malformed_replies_are_confirmed_without_a_second_write() {
 }
 
 #[test]
+fn a_move_refused_for_an_edit_just_before_it_is_queue_changed() {
+    for s2 in [false, true] {
+        let f = Fixture::new(s2, &["a", "b", "c", "d", "e"]);
+        let req = f.request(2, 2, 6);
+        f.fault(Fault::EditBefore);
+        let error = f.surface.queue_move(&Client::Cli, &req).unwrap_err();
+        // The player refused the old revision (1028): nothing moved.
+        assert_eq!(error.code, ErrorCode::QueueChanged, "{error:?}");
+        assert!(!error.body().retryable);
+        assert_eq!(f.attempts(), 1);
+        let now = f.current();
+        assert_eq!(now[..5], ["a", "b", "c", "d", "e"].map(uri));
+        assert_eq!(now.len(), 6, "the concurrent edit stays");
+    }
+}
+
+#[test]
 fn unconfirmed_or_concurrently_changed_results_are_nonretryable() {
-    for fault in [
-        Fault::NotSent,
-        Fault::EditBefore,
-        Fault::EditAfter,
-        Fault::ReadAfter,
-    ] {
+    for fault in [Fault::NotSent, Fault::EditAfter, Fault::ReadAfter] {
         let f = Fixture::new(true, &["a", "b", "c", "d", "e"]);
         let req = f.request(2, 2, 6);
         f.fault(fault);

@@ -59,6 +59,7 @@ succeed.
 | `NO_MATCH` | 404 | 3 | no | A library search found nothing to play (`fsonos search`, `fsonos play --search`; the HTTP and MCP searches answer an empty list instead), or a like or dislike found no work from the library playing. | Try fewer or other words: a composer's surname, a performer, or a catalog number (bwv 988). |
 | `UNKNOWN_SCENE` | 404 | 3 | no | No saved scene has that name. | List the scenes with list_scenes (GET /scenes), or use a suggested name. |
 | `UNKNOWN_SCHEDULE` | 404 | 3 | no | No schedule has that id. | Use an id that list_schedules (GET /schedules) shows. |
+| `QUEUE_CHANGED` | 409 | 1 | no | The queue, or the group playing it, changed since the selection was read (`queue-play`, `queue-remove`, `queue-move`), so nothing was changed. Real players refuse an edit carrying an old queue revision with UPnP fault 1028, reported as this code. | Read the queue again (get_queue) and select from its current revision; do not resend. |
 
 ## Notes
 

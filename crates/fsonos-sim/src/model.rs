@@ -4,8 +4,9 @@
 //! Faults follow what real players were observed to return (docs/PROTOCOL.md
 //! §3): 714 for a URI scheme the service will not render (a raw `spotify:`
 //! URI), 800 for a Spotify item whose `desc` / `sid` / `sn` do not match the
-//! household's linked account, and 800 for a coordinator verb sent to a group
-//! member. Standard UPnP codes cover the rest: 401 unknown action, 402 bad
+//! household's linked account, 800 for a coordinator verb sent to a group
+//! member, and 1028 for a queue edit carrying an `UpdateID` that is not the
+//! queue's current one. Standard UPnP codes cover the rest: 401 unknown action, 402 bad
 //! arguments, 701 transition not available, 711 illegal seek target, 701 on
 //! `Browse` of an object that does not exist.
 
@@ -26,6 +27,9 @@ pub(crate) const SONOS_FAILURE: Fault = Fault(800);
 /// What current firmware answers `BecomeCoordinatorOfStandaloneGroup`
 /// (docs/PROTOCOL.md §6).
 pub(crate) const STANDALONE_REFUSED: Fault = Fault(1023);
+/// What a player answers a queue edit whose `UpdateID` is not the queue's
+/// current one (S1 and S2, observed 2026-10-17).
+pub(crate) const STALE_UPDATE_ID: Fault = Fault(fsonos_proto::queue::STALE_QUEUE_FAULT);
 
 /// Out-arguments of a successful action, in wire order.
 pub(crate) type Out = Vec<(&'static str, String)>;
@@ -873,7 +877,7 @@ impl State {
         let count: usize = args.num("NumberOfTracks")?;
         let t = &mut self.players[p].transport;
         if update_id != 0 && update_id != t.queue_update_id {
-            return Err(INVALID_ARGS);
+            return Err(STALE_UPDATE_ID);
         }
         if first == 0 || first + count > t.queue.len() + 1 {
             return Err(INVALID_ARGS);
@@ -1855,7 +1859,7 @@ mod tests {
             )
         };
         let stale = (s.players[0].transport.queue_update_id - 1).to_string();
-        assert_eq!(range(&mut s, &stale, "2", "2"), Err(INVALID_ARGS));
+        assert_eq!(range(&mut s, &stale, "2", "2"), Err(STALE_UPDATE_ID));
         assert_eq!(
             range(&mut s, "0", "4", "2"),
             Err(INVALID_ARGS),

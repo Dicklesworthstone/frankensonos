@@ -37,10 +37,13 @@ fn revision_checks_coordinator_and_counter_even_when_uri_and_size_match() {
         req.check(&PlayerId("test:two".into()), &page)
             .unwrap_err()
             .code,
-        ErrorCode::NotReady
+        ErrorCode::QueueChanged
     );
     page.update_id += 1;
-    assert_eq!(req.check(&id, &page).unwrap_err().code, ErrorCode::NotReady);
+    assert_eq!(
+        req.check(&id, &page).unwrap_err().code,
+        ErrorCode::QueueChanged
+    );
 }
 
 #[test]
@@ -50,7 +53,10 @@ fn revision_does_not_disable_the_independent_renderer_identity_check() {
     let mut req = request();
     req.expected_revision = Some(snapshot::revision(&id, &page));
     req.expected_uri = Some("test:other".into());
-    assert_eq!(req.check(&id, &page).unwrap_err().code, ErrorCode::NotReady);
+    assert_eq!(
+        req.check(&id, &page).unwrap_err().code,
+        ErrorCode::QueueChanged
+    );
 }
 
 #[test]

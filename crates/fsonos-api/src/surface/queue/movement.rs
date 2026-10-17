@@ -5,7 +5,7 @@ use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::policy::Client;
 use fsonos_core::{CoreError, control};
 use fsonos_proto::content::{BrowsePage, QUEUE, browse_snapshot};
-use fsonos_proto::queue::reorder_tracks;
+use fsonos_proto::queue::{STALE_QUEUE_FAULT, reorder_tracks};
 use fsonos_proto::{ProtoError, Transport};
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -157,8 +157,11 @@ fn read<T: Transport + ?Sized>(transport: &T, host: IpAddr) -> Result<Observed, 
 }
 
 fn stale() -> Failure {
-    Failure::invalid("the queue selection or revision changed; no move was sent")
-        .with_hint("Read get_queue again and select source and destination from that revision.")
+    Failure::new(
+        ErrorCode::QueueChanged,
+        "the queue selection or revision changed; no move was sent",
+    )
+    .with_hint("Read get_queue again and select source and destination from that revision.")
 }
 
 fn uncertain(detail: impl std::fmt::Display) -> Failure {
@@ -232,6 +235,15 @@ impl Surface {
                 req.insert_before,
                 after.page.update_id,
             );
+            // The player refuses an old revision (fault 1028): nothing moved.
+            if matches!(&sent, Err(ProtoError::SoapFault { code, .. }) if *code == STALE_QUEUE_FAULT)
+            {
+                return Err(Failure::new(
+                    ErrorCode::QueueChanged,
+                    "the queue changed before the move reached the player, which refused the old revision; nothing was moved",
+                )
+                .with_hint("Read get_queue again and select source and destination from that revision."));
+            }
             let observed = read(&*self.transport, player.ip).map_err(uncertain)?;
             self.queue_group_unchanged(player.ip, &group)
                 .map_err(uncertain)?;

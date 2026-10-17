@@ -83,6 +83,9 @@ modelNumber strings, unrelated to the S1/S2 *generation* split.)
     content-description element does not match the service (`SA_RINCON3079…`
     required for Spotify). Also reported by the community for stale service
     linkage.
+  - **1028** — a queue edit (`RemoveTrackRangeFromQueue`,
+    `ReorderTracksInQueue`) whose `UpdateID` is not the queue's current Browse
+    `UpdateID`: the queue changed, and nothing was done (see §4, queue edits).
 
 
 S2 additionally exposes a cloud-style REST API on **TCP 1443** (TLS,
@@ -192,6 +195,15 @@ returned position, `Play`. Whole-album removal is per-position
 For whole-container removal, `RemoveTrackRangeFromQueue(UpdateID=0,
 StartingIndex=N, NumberOfTracks=M)` deletes a range in ONE call — verified on
 both generations (a 491-track playlist removed atomically; queues restored).
+
+Queue edits and the revision guard (verified live on S1 and S2, 2026-10-17;
+stopped groups, two copies of the last track appended, only the copies
+edited, queue and play mode restored and checked): `RemoveTrackRangeFromQueue`
+and `ReorderTracksInQueue` enforce their `UpdateID` against the queue's Browse
+`UpdateID`. An older value is refused with UPnP **1028** and the queue is
+untouched; the current value is accepted, and each edit bumps the Browse
+`UpdateID` by one; `0` is accepted as a wildcard (no guard). A play-mode change
+(`SetPlayMode`) does not bump the queue's Browse `UpdateID`.
 
 Arbitrary HTTP streams also render directly: `x-rincon-mp3radio://host/path`
 via `SetAVTransportURI` (class `object.item.audioItem.audioBroadcast`) played a

@@ -100,10 +100,24 @@ impl QueuePlayRequest {
 
 fn changed() -> Failure {
     Failure::new(
-        ErrorCode::NotReady,
+        ErrorCode::QueueChanged,
         "the queue changed after the selection was made",
     )
     .with_hint("Read the queue again and pass its current revision, position and URI.")
+}
+
+/// The queue changed while the play was prepared. A request pinned to a
+/// revision or URI was selected from a queue that is gone; one naming only a
+/// position can be sent again as it is.
+fn changed_during(req: &QueuePlayRequest) -> Failure {
+    if req.expected_revision.is_some() || req.expected_uri.is_some() {
+        return changed();
+    }
+    Failure::new(
+        ErrorCode::NotReady,
+        "the queue changed while the play was prepared; nothing was played",
+    )
+    .with_hint("Send it again, or pass the queue's revision to pin the selection.")
 }
 
 impl Surface {
@@ -155,7 +169,7 @@ impl Surface {
         let result = (|| {
             // Invalid or stale selections must not change even the volumes.
             if read()? != selected {
-                return Err(changed());
+                return Err(changed_during(req));
             }
             self.queue_group_unchanged(host, &group)?;
             let notes = self.lower_queue_group(&households, &guard, &coordinator)?;
@@ -163,7 +177,7 @@ impl Surface {
             // shifted slot, or detach a player that became a group member.
             self.queue_group_unchanged(host, &group)?;
             if read()? != selected {
-                return Err(changed());
+                return Err(changed_during(req));
             }
             control::play_queue_from(&*self.transport, &households, &coordinator, req.position)?;
             Ok(OutcomeDto {

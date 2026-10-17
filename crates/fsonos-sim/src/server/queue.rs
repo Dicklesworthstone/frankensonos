@@ -1,7 +1,7 @@
 //! Pure state transition for the native AVTransport queue move. Kept apart
 //! from HTTP framing; the server still applies faults, logging and GENA.
 
-use crate::model::{Fault, INVALID_ARGS, Out, SONOS_FAILURE, State, Transport};
+use crate::model::{Fault, INVALID_ARGS, Out, SONOS_FAILURE, STALE_UPDATE_ID, State, Transport};
 
 pub(super) fn reorder(
     state: &mut State,
@@ -45,12 +45,11 @@ fn apply(
     let end = start.checked_add(count).ok_or(INVALID_ARGS)?;
     let destination =
         usize::try_from(before.checked_sub(1).ok_or(INVALID_ARGS)?).map_err(|_| INVALID_ARGS)?;
-    if count == 0
-        || end > transport.queue.len()
-        || destination > transport.queue.len()
-        || (revision != 0 && revision != transport.queue_update_id)
-    {
+    if count == 0 || end > transport.queue.len() || destination > transport.queue.len() {
         return Err(INVALID_ARGS);
+    }
+    if revision != 0 && revision != transport.queue_update_id {
+        return Err(STALE_UPDATE_ID);
     }
     if (start..=end).contains(&destination) {
         return Ok(Vec::new());
@@ -177,7 +176,9 @@ mod tests {
             (u32::MAX, u32::MAX, 1, 7),
         ] {
             let mut t = queue(3, 2);
-            assert!(apply(&mut t, first, count, before, revision).is_err());
+            let refused = apply(&mut t, first, count, before, revision).unwrap_err();
+            // A stale revision is the players' 1028, not a bad argument.
+            assert_eq!(refused == STALE_UPDATE_ID, revision == 6);
             assert_eq!(t.queue[0].uri, "test:0");
             assert_eq!(t.track, 2);
             assert_eq!(t.queue_update_id, 7);

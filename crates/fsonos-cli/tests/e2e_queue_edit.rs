@@ -116,8 +116,10 @@ fn remove_range(s: &mut Scenario, mode: &str, room: &str, path: &Path) {
     s.check(
         "stale-selection",
         "cli",
-        "an old snapshot cannot remove the item shifted into its position",
-        !stale.ok() && current(s) == [uri("a"), uri("d"), uri("e")],
+        "an old snapshot cannot remove the item shifted into its position: QUEUE_CHANGED",
+        !stale.ok()
+            && stale.stderr.contains("error[QUEUE_CHANGED]")
+            && current(s) == [uri("a"), uri("d"), uri("e")],
         &stale.stderr,
     );
 }
@@ -223,8 +225,10 @@ fn play_snapshot(s: &mut Scenario, mode: &str, room: &str, before: &QueueDto) {
     s.check(
         "stale-playback",
         "cli",
-        "a stale playback snapshot cannot select a different queue entry",
-        !refused.ok() && soap::get_position_info(&s.lan(), s.ip("Lead")).unwrap().uri == uri("d"),
+        "a stale playback snapshot cannot select a different queue entry: QUEUE_CHANGED",
+        !refused.ok()
+            && refused.stderr.contains("error[QUEUE_CHANGED]")
+            && soap::get_position_info(&s.lan(), s.ip("Lead")).unwrap().uri == uri("d"),
         &refused.stderr,
     );
 }

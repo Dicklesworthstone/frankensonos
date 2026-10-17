@@ -163,7 +163,8 @@ fn http_read_remove_and_stale_retry_preserve_unselected_entries_on_s1_and_s2() {
         assert_eq!(done["remaining"], 2);
         assert_eq!(done["undoable"], false);
         let (status, failed) = api.remove(&request);
-        assert_eq!(status, 422, "{failed}");
+        assert_eq!(status, 409, "{failed}");
+        assert_eq!(failed["code"], "QUEUE_CHANGED");
         assert_eq!(failed["retryable"], false);
         let (_, after) = api.get("/zones/Room/queue");
         assert_eq!(after["total"], 2);
@@ -268,7 +269,8 @@ fn http_moves_preserve_queue_playback_and_reject_replaying_old_selections() {
         assert_eq!(done["recovered"], false);
         assert_eq!(done["undoable"], false);
         let (status, failure) = send();
-        assert_eq!(status, 422, "{failure}");
+        assert_eq!(status, 409, "{failure}");
+        assert_eq!(failure["code"], "QUEUE_CHANGED");
         assert_eq!(failure["retryable"], false);
         let (_, after) = api.get("/zones/Room/queue");
         assert_eq!(after["revision"], done["revision"]);

@@ -307,7 +307,7 @@ fn stale_or_invalid_selections_do_not_write_and_unknown_callers_do_not_read() {
     );
     for req in [request(2, &["a"]), request(4, &["d", "a"])] {
         let error = surface.queue_remove(&Client::Cli, &req).unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(error.code, ErrorCode::QueueChanged);
         assert!(!error.code.retryable());
     }
     assert_eq!(attempts.load(Ordering::Acquire), 0);
@@ -372,11 +372,12 @@ fn uncertain_effects_are_reported_not_retried() {
 fn a_native_revision_conflict_preserves_the_concurrent_edit_and_selected_tracks() {
     for s2 in [false, true] {
         let (sim, surface, attempts) = setup(s2, Fault::ConcurrentBefore);
-        assert!(
-            surface
-                .queue_remove(&Client::Cli, &request(2, &["b", "c"]))
-                .is_err()
-        );
+        let error = surface
+            .queue_remove(&Client::Cli, &request(2, &["b", "c"]))
+            .unwrap_err();
+        // The player refused the old revision (1028): QUEUE_CHANGED, final.
+        assert_eq!(error.code, ErrorCode::QueueChanged, "{error:?}");
+        assert!(!error.body().retryable);
         assert_eq!(attempts.load(Ordering::Acquire), 1);
         let now = current(&sim);
         assert_eq!(now[..4], request(1, &["a", "b", "c", "d"]).expected_uris);

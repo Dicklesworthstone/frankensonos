@@ -8,6 +8,12 @@
 use crate::{ProtoError, Transport, soap};
 use std::net::IpAddr;
 
+/// The UPnP fault a Sonos player answers `ReorderTracksInQueue` or
+/// `RemoveTrackRangeFromQueue` with when the `UpdateID` it carries is not the
+/// queue's current Browse `UpdateID`: the queue changed, and nothing was done.
+/// Observed on S1 and S2 players (2026-10-17); `UpdateID` 0 skips the check.
+pub const STALE_QUEUE_FAULT: u16 = 1028;
+
 /// Move `count` consecutive tracks beginning at one-based `first` before
 /// one-based `insert_before` in the original queue. Pass its observed,
 /// nonzero `update_id`: zero is a wildcard, which this wrapper refuses.
