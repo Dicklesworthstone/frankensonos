@@ -39,6 +39,15 @@
 //! Clients are keyed by [`Client::key`]: `cli`, `mcp-stdio`,
 //! `loopback-http`, a tailnet principal (login, `tag:<name>` or node name),
 //! or `unknown`.
+//!
+//! An `allow` or `deny` entry names a tool or a class of tools ([`CLASSES`]:
+//! `volume`, `playback`, `grouping`, `queue`, `sound`, `house-config`,
+//! `announce`, `dj`, `auth`, `undo`, and `read` for every read). A tool that
+//! always carries out another's operation is denied with it: denying
+//! `set_volume` denies `fade_volume` too ([`CARRIES`]). Composite calls
+//! check each operation they would make: a scene applied by a client denied
+//! `set_volume` leaves the volumes as they are, and a scheduled volume change
+//! is refused when it fires.
 
 use crate::rooms::normalize_room;
 use chrono::{DateTime, FixedOffset, NaiveTime};
@@ -50,6 +59,107 @@ use std::path::{Path, PathBuf};
 
 /// The policy file's name inside the data directory.
 pub const FILE_NAME: &str = "policy.toml";
+
+/// What tools do, by class. An `allow` or `deny` entry may name a class
+/// instead of a tool, and then stands for every tool in it
+/// (`deny = ["volume"]`); every read is in [`READ_CLASS`] too.
+pub const CLASSES: [(&str, &[&str]); 10] = [
+    ("volume", &["set_volume", "fade_volume", "mute"]),
+    (
+        "playback",
+        &[
+            "play",
+            "pause",
+            "resume",
+            "next",
+            "previous",
+            "seek",
+            "play_favorite",
+            "play_queue",
+            "set_play_mode",
+            "set_sleep_timer",
+        ],
+    ),
+    (
+        "grouping",
+        &["group", "ungroup", "group_all", "move_playback"],
+    ),
+    (
+        "queue",
+        &["add_to_queue", "remove_from_queue", "move_in_queue"],
+    ),
+    ("sound", &["set_eq"]),
+    (
+        "house-config",
+        &[
+            "save_scene",
+            "delete_scene",
+            "add_schedule",
+            "remove_schedule",
+            "pause_schedule",
+            "resume_schedule",
+        ],
+    ),
+    ("announce", &["announce"]),
+    (
+        "dj",
+        &[
+            "dj_start",
+            "dj_stop",
+            "dj_skip",
+            "dj_steer",
+            "dj_feedback",
+            "dj_prefer",
+            "dj_sync",
+        ],
+    ),
+    ("auth", &["spotify_sign_in"]),
+    ("undo", &["undo_last", "undo_checked"]),
+];
+
+/// The class every read is in.
+pub const READ_CLASS: &str = "read";
+
+/// Tools that always carry out another tool's operation, which an entry
+/// denying that tool (or its class) denies too: a fade is a run of volume
+/// sets.
+pub const CARRIES: [(&str, &str); 1] = [("fade_volume", "set_volume")];
+
+/// The class `tool` is in ([`CLASSES`]), if any.
+#[must_use]
+pub fn class_of(tool: &str) -> Option<&'static str> {
+    CLASSES
+        .iter()
+        .find(|(_, tools)| tools.contains(&tool))
+        .map(|(class, _)| *class)
+}
+
+/// Whether the `allow` or `deny` entry `entry` names `tool`: the tool
+/// itself, its class, or the class of reads for a read.
+fn names(entry: &str, tool: ToolCall<'_>) -> bool {
+    entry == tool.name
+        || class_of(tool.name) == Some(entry)
+        || (tool.read_only && entry == READ_CLASS)
+}
+
+/// What the deny entry `entry` denies of `tool`, for the reason given: the
+/// tool itself, its class (or a read), or an operation it carries out.
+fn denied_by(entry: &str, tool: ToolCall<'_>) -> Option<String> {
+    if entry == tool.name {
+        return Some(entry.to_owned());
+    }
+    if class_of(tool.name) == Some(entry) {
+        return Some(format!("{entry} ({} is a {entry} tool)", tool.name));
+    }
+    if tool.read_only && entry == READ_CLASS {
+        return Some(format!("{entry} ({} is a read)", tool.name));
+    }
+    CARRIES
+        .iter()
+        .filter(|(composite, _)| *composite == tool.name)
+        .find(|(_, op)| *op == entry || class_of(op) == Some(entry))
+        .map(|(_, op)| format!("{entry} ({} carries out {op})", tool.name))
+}
 
 /// Who is asking: the surface and, over the tailnet, the principal. Agents
 /// are never "local" — the agent-safety rules are about them.
@@ -383,6 +493,42 @@ impl Policy {
         self.clients.get(&client.key().to_lowercase())
     }
 
+    /// Denials another tool gets around: a client denied a tool, but not
+    /// the rest of its class, can do the same thing through those. One line
+    /// each, naming the class that would cover them.
+    #[must_use]
+    pub fn open_doors(&self) -> Vec<String> {
+        let mut keys: Vec<&String> = self.clients.keys().collect();
+        keys.sort();
+        let mut out = Vec::new();
+        for key in keys {
+            let deny = &self.clients[key].deny;
+            for entry in deny {
+                let Some(class) = class_of(entry) else {
+                    continue;
+                };
+                if deny.iter().any(|e| e == class) {
+                    continue;
+                }
+                let carried = |tool: &str| CARRIES.contains(&(tool, entry.as_str()));
+                let open: Vec<&str> = CLASSES
+                    .iter()
+                    .filter(|(c, _)| *c == class)
+                    .flat_map(|(_, tools)| tools.iter().copied())
+                    .filter(|&t| t != entry.as_str() && !deny.iter().any(|e| e == t) && !carried(t))
+                    .collect();
+                if !open.is_empty() {
+                    out.push(format!(
+                        "{key}: {entry} is denied, but these {class} tools are not: {}; \
+                         deny \"{class}\" to cover them all",
+                        open.join(", ")
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     /// Do volume caps apply to `client`? Everyone but the CLI by default.
     #[must_use]
     pub fn is_capped(&self, client: &Client) -> bool {
@@ -451,13 +597,13 @@ impl Policy {
     #[must_use]
     pub fn authorize(&self, tool: ToolCall<'_>, client: &Client) -> Decision {
         if let Some(rules) = self.client_rules(client) {
-            if rules.deny.iter().any(|t| t == tool.name) {
+            if let Some(what) = rules.deny.iter().find_map(|entry| denied_by(entry, tool)) {
                 return Decision::Deny {
-                    reason: format!("policy denies {} to {client}", tool.name),
+                    reason: format!("policy denies {what} to {client}"),
                 };
             }
             if let Some(allow) = &rules.allow {
-                return if allow.iter().any(|t| t == tool.name) {
+                return if allow.iter().any(|entry| names(entry, tool)) {
                     Decision::Allow
                 } else {
                     Decision::Deny {
@@ -1060,6 +1206,90 @@ allow = []
             p.authorize(call("list_zones", true), &Client::Tailnet("tag:kiosk".into())),
             Decision::Deny { reason } if reason.ends_with("no tools")
         ));
+    }
+
+    #[test]
+    fn classes_and_carried_operations_are_denied_and_allowed_by_name() {
+        let p = Policy::from_toml(
+            r#"
+[clients.agent]
+deny = ["set_volume"]
+
+[clients.quiet]
+deny = ["volume"]
+
+[clients.reader]
+allow = ["read", "playback"]
+"#,
+        )
+        .unwrap();
+        let call = |name, read_only| ToolCall { name, read_only };
+        let who = |key: &str| Client::Tailnet(key.into());
+        // A tool-name deny: the tool, and a tool that carries it out.
+        let agent = who("agent");
+        assert_eq!(
+            p.authorize(call("set_volume", false), &agent),
+            Decision::Deny {
+                reason: "policy denies set_volume to agent".into()
+            }
+        );
+        assert_eq!(
+            p.authorize(call("fade_volume", false), &agent),
+            Decision::Deny {
+                reason: "policy denies set_volume (fade_volume carries out set_volume) to agent"
+                    .into()
+            }
+        );
+        // ...but not the rest of its class: that is what the class is for.
+        assert_eq!(p.authorize(call("mute", false), &agent), Decision::Allow);
+        assert_eq!(p.authorize(call("play", false), &agent), Decision::Allow);
+        // A class deny covers every tool in it.
+        let quiet = who("quiet");
+        for tool in ["set_volume", "fade_volume", "mute"] {
+            assert!(
+                matches!(p.authorize(call(tool, false), &quiet), Decision::Deny { reason }
+                    if reason == format!("policy denies volume ({tool} is a volume tool) to quiet")),
+                "{tool}"
+            );
+        }
+        assert_eq!(p.authorize(call("pause", false), &quiet), Decision::Allow);
+        // An allow list naming classes: every read, and playback.
+        let reader = who("reader");
+        assert_eq!(
+            p.authorize(call("list_zones", true), &reader),
+            Decision::Allow
+        );
+        assert_eq!(p.authorize(call("pause", false), &reader), Decision::Allow);
+        assert!(matches!(
+            p.authorize(call("set_volume", false), &reader),
+            Decision::Deny { .. }
+        ));
+        assert_eq!(class_of("fade_volume"), Some("volume"));
+        assert_eq!(class_of("list_zones"), None);
+    }
+
+    #[test]
+    fn a_denial_another_tool_of_its_class_gets_around_is_named() {
+        let p = Policy::from_toml(
+            r#"
+[clients.agent]
+deny = ["set_volume", "group"]
+
+[clients.kid]
+deny = ["set_volume", "volume"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            p.open_doors(),
+            [
+                "agent: set_volume is denied, but these volume tools are not: mute; deny \
+                 \"volume\" to cover them all",
+                "agent: group is denied, but these grouping tools are not: ungroup, group_all, \
+                 move_playback; deny \"grouping\" to cover them all",
+            ]
+        );
+        assert!(Policy::default().open_doors().is_empty());
     }
 
     #[test]

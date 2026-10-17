@@ -40,6 +40,17 @@ struct CheckDto {
     exists: bool,
     /// One line for people.
     summary: String,
+    /// Denials another tool of the same class gets around
+    /// ([`Policy::open_doors`]).
+    warnings: Vec<String>,
+}
+
+impl CheckDto {
+    fn text(&self) -> String {
+        std::iter::once(format!("{}\n", self.summary))
+            .chain(self.warnings.iter().map(|w| format!("warning: {w}\n")))
+            .collect()
+    }
 }
 
 /// `fsonos policy show|check`.
@@ -61,7 +72,7 @@ pub fn run(global: &GlobalArgs, action: &PolicyAction) -> anyhow::Result<()> {
                 None => crate::daemon::data_dir(global)?.join(FILE_NAME),
             };
             let checked = check(&path)?;
-            crate::emit(global.json, &checked, |c| format!("{}\n", c.summary))
+            crate::emit(global.json, &checked, CheckDto::text)
         }
     }
 }
@@ -75,6 +86,7 @@ fn check(path: &Path) -> Result<CheckDto, Failure> {
                 path: path.to_owned(),
                 exists: false,
                 summary: format!("no {}: the built-in defaults apply", path.display()),
+                warnings: Vec::new(),
             });
         }
         Err(e) => {
@@ -98,6 +110,7 @@ fn check(path: &Path) -> Result<CheckDto, Failure> {
         path: path.to_owned(),
         exists: true,
         summary: format!("{} is valid: {}", path.display(), counts(&policy)),
+        warnings: policy.open_doors(),
     })
 }
 
@@ -156,6 +169,22 @@ mod tests {
             "{}",
             checked.summary
         );
+    }
+
+    #[test]
+    fn a_denial_another_tool_of_its_class_gets_around_is_a_warning() {
+        let path = scratch("doors", Some("[clients.agent]\ndeny = [\"set_volume\"]\n"));
+        let checked = check(&path).unwrap();
+        assert_eq!(checked.warnings.len(), 1, "{:?}", checked.warnings);
+        let text = checked.text();
+        assert!(
+            text.contains(
+                "\nwarning: agent: set_volume is denied, but these volume tools are not: mute;"
+            ),
+            "{text}"
+        );
+        let covered = scratch("covered", Some("[clients.agent]\ndeny = [\"volume\"]\n"));
+        assert!(check(&covered).unwrap().warnings.is_empty());
     }
 
     #[test]

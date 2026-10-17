@@ -283,11 +283,21 @@ max_volume = 40
 
 [clients."alice@example.com"]   # a person behind Tailscale Serve
 allow = ["list_zones", "get_zone_state", "play", "set_volume"]
+
+[clients."tag:agent"]          # an agent that may do anything but change volume
+deny = ["volume"]
 ```
 
 - One choke point: every mutating call on every surface is authorized,
   snapshotted, carried out under the policy, and logged with who asked, the
   verdict (allow, clamp or deny) and what happened.
+- `allow` and `deny` name tools or whole classes of them: `volume`,
+  `playback`, `grouping`, `queue`, `sound`, `house-config`, `announce`, `dj`,
+  `auth`, `undo`, and `read` for every read. Composite calls are held to each
+  step they would take: a client denied `set_volume` cannot fade a volume,
+  applies a scene with its volumes left as they are (and told so), and its
+  scheduled volume changes are refused when they fire. `fsonos policy check`
+  names a denial another tool of the same class still gets around.
 - Edit `policy.toml` while the daemon runs and its next call obeys the new
   rules, no restart needed. An edit that does not parse is logged and the last
   good policy stays in force (`fsonos policy check` says what is wrong).

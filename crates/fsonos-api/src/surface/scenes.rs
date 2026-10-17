@@ -888,12 +888,54 @@ impl Surface {
         let clients: Vec<&Client> = std::iter::once(client).chain(writer.as_ref()).collect();
         let mut notes = Vec::new();
         for who in &clients {
-            let (bounded, more) = self.bound_volumes(who, households, plan);
+            let (permitted, more) = self.permitted_ops(who, households, plan);
+            notes.extend(more);
+            let (bounded, more) = self.bound_volumes(who, households, permitted);
             plan = bounded;
             notes.extend(more);
         }
         notes.extend(self.lower_scene_rooms(households, &plan, &clients)?);
         Ok((plan, notes))
+    }
+
+    /// `plan` without the steps the house policy denies `client`, each with
+    /// a note: a client denied `set_volume` (or the class `volume`) applies a
+    /// scene with the volumes left as they are. Each step is held to the
+    /// tool it is the work of ([`op_tool`]).
+    fn permitted_ops(
+        &self,
+        client: &Client,
+        households: &[HouseholdState],
+        plan: ScenePlan,
+    ) -> (ScenePlan, Vec<Note>) {
+        let guard = self.guard(client);
+        let mut notes = Vec::new();
+        let mut ops = Vec::with_capacity(plan.ops.len());
+        for op in plan.ops {
+            let tool = op_tool(&op);
+            match guard.authorize(tool, false) {
+                Ok(()) => ops.push(op),
+                Err(denied) => notes.push(Note {
+                    code: if matches!(op, SceneOp::Volume { .. } | SceneOp::Mute { .. }) {
+                        NoteCode::VolumeClamped
+                    } else {
+                        NoteCode::Skipped
+                    },
+                    detail: format!(
+                        "{} left as it is: {}",
+                        op_subject(households, &op),
+                        denied.detail
+                    ),
+                }),
+            }
+        }
+        (
+            ScenePlan {
+                ops,
+                notes: plan.notes,
+            },
+            notes,
+        )
     }
 
     /// `plan` with each volume bounded by the house policy for `client`: a
@@ -954,5 +996,42 @@ impl Surface {
             },
             notes,
         )
+    }
+}
+
+/// The tool a scene step is the work of, under the house policy.
+fn op_tool(op: &SceneOp) -> &'static str {
+    match op {
+        SceneOp::Leave { .. } => "ungroup",
+        SceneOp::Join { .. } => "group",
+        SceneOp::Volume { .. } => "set_volume",
+        SceneOp::Mute { .. } => "mute",
+        SceneOp::Favorite { .. } => "play_favorite",
+        SceneOp::Uri { .. } | SceneOp::Play { .. } => "play",
+        SceneOp::Dj { .. } => "dj_start",
+        SceneOp::Pause { .. } => "pause",
+    }
+}
+
+/// What a scene step changes, in words: "Kitchen's volume".
+fn op_subject(households: &[HouseholdState], op: &SceneOp) -> String {
+    let room_of = |player: &PlayerId| {
+        households
+            .iter()
+            .flat_map(|h| h.rooms.iter())
+            .find(|r| r.primary == *player || r.coordinator == *player)
+            .map_or_else(|| "a room".to_owned(), |r| r.name.clone())
+    };
+    match op {
+        SceneOp::Leave { room, .. } | SceneOp::Join { room, .. } => format!("{room}'s grouping"),
+        SceneOp::Volume { room, .. } => format!("{room}'s volume"),
+        SceneOp::Mute { room, .. } => format!("{room}'s mute"),
+        SceneOp::Dj { coordinator, .. } => format!("the DJ in {}", room_of(coordinator)),
+        SceneOp::Favorite { coordinator, .. }
+        | SceneOp::Uri { coordinator, .. }
+        | SceneOp::Play { coordinator }
+        | SceneOp::Pause { coordinator } => {
+            format!("what {} plays", room_of(coordinator))
+        }
     }
 }

@@ -12,6 +12,7 @@ use fsonos_api::plan::{
     DjAction, TransportAction, plan_group, plan_play, plan_transport, plan_ungroup, plan_volume,
 };
 use fsonos_api::surface::scenes::{SceneApplyRequest, SceneDefinition};
+use fsonos_api::surface::schedules::FadeVolumeRequest;
 use fsonos_api::surface::{Surface, Survey};
 use fsonos_api::{
     ErrorCode, Failure, GroupRequest, NoteCode, OutcomeDto, PlayRequest, VolumeRequest, ZoneRequest,
@@ -323,6 +324,59 @@ fn a_scene_never_sets_a_volume_its_writer_may_not() {
     s.save_scene_from(&cli, "Loud", &loud).unwrap();
     s.apply_scene(&cli, "Loud").unwrap();
     assert_eq!(kitchen(&sim).0, 90);
+}
+
+/// A client denied `set_volume` applies a scene with the volumes left as
+/// they are, each with a note, and the rest done; and cannot fade a volume
+/// either, a fade being a run of volume sets.
+#[test]
+fn a_client_denied_set_volume_applies_a_scene_without_its_volumes_and_cannot_fade() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let policy = Policy::from_toml("[clients.\"tag:agent\"]\ndeny = [\"set_volume\"]\n").unwrap();
+    let s = Surface::new(Box::new(sim.lan()), survey(), policy, Box::new(SystemClock))
+        .with_action_log(Box::new(MemStore::default()), "mcp");
+    volume(&s, &Client::Cli, "Kitchen", 30);
+    let dinner: SceneDefinition = serde_json::from_value(serde_json::json!({
+        "groups": [{
+            "coordinator": "Kitchen",
+            "members": ["Office"],
+            "source": {"kind": "uri", "uri": STREAM}
+        }],
+        "volumes": {"Kitchen": 22}
+    }))
+    .unwrap();
+    s.save_scene_from(&Client::Cli, "Dinner", &dinner).unwrap();
+
+    let applied = s.apply_scene(&agent(), "Dinner").unwrap();
+    let (level, together, state, uri) = kitchen(&sim);
+    assert_eq!(
+        (level, together, state, uri.as_str()),
+        (30, true, TransportState::Playing, STREAM),
+        "{applied:?}"
+    );
+    assert!(
+        applied
+            .notes
+            .iter()
+            .any(|n| n.code == NoteCode::VolumeClamped
+                && n.detail.starts_with("Kitchen's volume left as it is: ")
+                && n.detail.contains("set_volume")),
+        "{applied:?}"
+    );
+
+    let fade = FadeVolumeRequest {
+        zone: "Kitchen".into(),
+        volume: 10,
+        fade_secs: 2,
+    };
+    let denied = s.fade_volume_to(&agent(), &fade).unwrap_err();
+    assert_eq!(denied.code, ErrorCode::PolicyDenied, "{denied:?}");
+    assert!(
+        denied.detail.contains("fade_volume carries out set_volume"),
+        "{denied:?}"
+    );
+    assert_eq!(kitchen(&sim).0, 30);
+    sim.shutdown();
 }
 
 #[test]
