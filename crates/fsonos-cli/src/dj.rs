@@ -33,7 +33,7 @@ use fsonos_api::surface::dj_sync::LibrarySyncDto;
 use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 use fsonos_core::clock::Clock;
 use fsonos_core::playback::PlayerPlayback;
-use fsonos_core::store::Store;
+use fsonos_core::store::{Action, LoggedAction, Store};
 use fsonos_core::{CoreError, control};
 use fsonos_spotify::cache::works_from_store;
 use fsonos_spotify::dj::{DjConfig, PlayRecord, WorkPool};
@@ -182,6 +182,9 @@ struct State {
     plan_retry_at: Option<Instant>,
     /// The feeds as last saved.
     saved: String,
+    /// Action-log rows written since the surface last took them
+    /// ([`DjEngine::take_logged`]).
+    logged: Vec<LoggedAction>,
 }
 
 /// What a pick is planned with right now, beyond the pool.
@@ -400,6 +403,46 @@ fn sent(done: String) -> OutcomeDto {
 
 fn describe(work: &QueuedWork) -> String {
     format!("{}: {}", work.composer, work.title)
+}
+
+/// Log a top-up as the DJ's own action (client and surface `dj`, not
+/// undoable), so `fsonos log` and the event stream show what it queued
+/// where. A log that cannot be written never stops the feed.
+fn record_top_up(
+    logged: &mut Vec<LoggedAction>,
+    store: &mut dyn Store,
+    at: DjSpeakers<'_>,
+    feed: &QueueFeed,
+    result: &Result<usize, FeedError>,
+    now: i64,
+) {
+    let &Ok(queued @ 1..) = result else {
+        return;
+    };
+    let room = at
+        .households
+        .iter()
+        .find_map(|h| h.player(at.coordinator))
+        .map_or_else(|| at.coordinator.0.clone(), |p| p.room_name.clone());
+    let works = feed.queued();
+    let added: Vec<String> = works[works.len().saturating_sub(queued)..]
+        .iter()
+        .map(describe)
+        .collect();
+    let action = Action {
+        at: now,
+        client: "dj".into(),
+        surface: "dj".into(),
+        intent: format!("dj: top up {room}'s queue"),
+        decision: "allow".into(),
+        result: format!("queued {}", added.join("; ")),
+        before_state: None,
+        undo_of: None,
+    };
+    match fsonos_core::actions::record(store, &action) {
+        Ok(id) => logged.push(LoggedAction { id, action }),
+        Err(e) => tracing::warn!(error = %e, "the DJ's top-up was not logged"),
+    }
 }
 
 /// " (mood: evening)", when the pick was steered by a mood.
@@ -686,6 +729,10 @@ impl DjEngine for SpotifyDj {
             .is_some_and(QueueFeed::is_active)
     }
 
+    fn take_logged(&self) -> Vec<LoggedAction> {
+        std::mem::take(&mut self.state().logged)
+    }
+
     fn moving(&self, from: &PlayerId) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.held.insert(from.clone());
@@ -776,6 +823,7 @@ impl DjEngine for SpotifyDj {
             feedback,
             listening,
             problems,
+            logged,
             ..
         } = &mut *state;
         let elsewhere = queued_elsewhere(feeds, at.coordinator, cx.now);
@@ -788,6 +836,7 @@ impl DjEngine for SpotifyDj {
             store,
             playback,
         );
+        record_top_up(logged, store, at, feed, &result, cx.now);
         let trim_error = feed.take_trim_error();
         let observe_listening = settle(
             result,

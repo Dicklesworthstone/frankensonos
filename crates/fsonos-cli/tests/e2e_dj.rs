@@ -190,6 +190,36 @@ fn check_skip_and_stop(s: &mut Scenario, api: &str, first: &str) {
         format!("{skipped}; {first} -> {after}"),
     );
 
+    // The skip reached the next work; the DJ tops the queue up after it
+    // and logs that as its own action.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut rows = Value::Null;
+    let topped = |rows: &Value| {
+        rows.as_array().is_some_and(|rows| {
+            rows.iter().any(|r| {
+                r["client"] == "dj"
+                    && r["intent"] == "dj: top up Living Room's queue"
+                    && r["result"]
+                        .as_str()
+                        .is_some_and(|t| t.starts_with("queued "))
+            })
+        })
+    };
+    while Instant::now() < deadline && !topped(&rows) {
+        std::thread::sleep(Duration::from_millis(200));
+        rows = http(api, "GET", "/actions?client=dj", &[], "")
+            .ok()
+            .and_then(|(_, _, b)| serde_json::from_str(&b).ok())
+            .unwrap_or(Value::Null);
+    }
+    s.check(
+        "top-up-logged",
+        "http",
+        "the DJ's own top-up is in the action log as client dj",
+        topped(&rows),
+        &rows,
+    );
+
     let (status, stopped) = post(api, "/dj/stop", &json!({ "zone": "Living Room" }));
     let state = get_transport_info(&s.lan(), s.ip("Living Room"))
         .map(|t| t.state)

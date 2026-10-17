@@ -16,7 +16,7 @@ use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::Clock;
 use fsonos_core::playback::PlayerPlayback;
-use fsonos_core::store::Store;
+use fsonos_core::store::{LoggedAction, Store};
 use fsonos_proto::Transport;
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
@@ -127,6 +127,13 @@ pub trait DjEngine: Send + Sync {
         playback: &PlayerPlayback,
         clock: &dyn Clock,
     );
+
+    /// The action-log rows the engine wrote since the last call (its own
+    /// top-ups), for the surface to announce on the event stream. The
+    /// default: none.
+    fn take_logged(&self) -> Vec<LoggedAction> {
+        Vec::new()
+    }
 
     /// Seconds from `clock`'s now until the time-of-day program picks
     /// another mood: how long a mood that a schedule or a scene starts the

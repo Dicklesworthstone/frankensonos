@@ -350,6 +350,8 @@ impl Surface {
             self.publish_dj(&**dj, at, store, playback.queue_position);
             Ok(())
         });
+        // The DJ logs its own top-ups; announce them as any action is.
+        self.announce_logged(&dj.take_logged());
         if let Ok(None) = fed {
             tracing::warn!("the DJ needs the daemon's store to record and top up");
         }
@@ -505,15 +507,20 @@ impl Surface {
             Err(_) => Err("action log poisoned".to_string()),
         };
         match written {
-            Ok(id) => {
-                if let Some(bus) = &self.events {
-                    let logged = LoggedAction { id, action };
-                    if let Ok(data) = serde_json::to_value(crate::log::ActionDto::from(&logged)) {
-                        bus.publish("action.logged", data);
-                    }
-                }
-            }
+            Ok(id) => self.announce_logged(&[LoggedAction { id, action }]),
             Err(e) => tracing::warn!("action not logged ({}): {e}", action.intent),
+        }
+    }
+
+    /// Announce logged actions on the event stream (`action.logged`).
+    fn announce_logged(&self, logged: &[LoggedAction]) {
+        let Some(bus) = &self.events else {
+            return;
+        };
+        for row in logged {
+            if let Ok(data) = serde_json::to_value(crate::log::ActionDto::from(row)) {
+                bus.publish("action.logged", data);
+            }
         }
     }
 
