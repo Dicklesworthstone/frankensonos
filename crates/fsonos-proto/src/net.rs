@@ -701,7 +701,10 @@ async fn collect_replies(
     started: Instant,
     wait: Duration,
 ) -> Result<Vec<Vec<u8>>, ProtoError> {
-    let mut buf = vec![0u8; 4096];
+    // Receive whole datagrams: mDNS responses carrying many additional
+    // records legitimately exceed 4096 octets (UDP over IPv4 allows payloads
+    // up to 65507), and a smaller buffer silently truncates them.
+    let mut buf = vec![0u8; 65535];
     let mut datagrams = Vec::new();
     loop {
         let left = wait.saturating_sub(started.elapsed());
@@ -822,8 +825,10 @@ async fn search(
 
 /// Send the mDNS query for `_sonos._tcp.local` out of every LAN interface.
 /// DNS-SD allows PTR, SRV, TXT and A replies in different packets: collect
-/// records for the whole window before resolving players. Malformed packets,
-/// unsolicited queries and TTL-zero goodbyes cannot add players.
+/// records for the whole window before resolving players. Malformed packets
+/// and unsolicited queries cannot add players. TTL-zero goodbyes are kept so
+/// [`mdns::sonos_adverts_from_records`] can apply them: latest record wins,
+/// so a goodbye removes its value and a later alive record restores it.
 async fn mdns_search(
     target: SocketAddr,
     wait: Duration,
@@ -835,12 +840,7 @@ async fn mdns_search(
             && msg.is_response
         {
             let remaining = MAX_RECORDS.saturating_sub(records.len());
-            records.extend(
-                msg.records
-                    .into_iter()
-                    .filter(|r| r.ttl > 0)
-                    .take(remaining),
-            );
+            records.extend(msg.records.into_iter().take(remaining));
         }
     })
     .await?;

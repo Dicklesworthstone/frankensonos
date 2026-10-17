@@ -463,6 +463,10 @@ A selection; each commit message has the details.
   only the one the kernel's multicast route picks, so a multi-homed host
   (speaker VLAN + main LAN + tailnet) finds players on all of them.
   [`6e83b3c`](https://github.com/Dicklesworthstone/frankensonos/commit/6e83b3c)
+- mDNS accepts complete UDP responses, bounds hostile allocations and DNS name
+  expansion, confines RDATA to its declared length, handles non-ASCII instance
+  names without panicking, and applies alive/goodbye records in wire order so
+  departed players and stale addresses disappear until a fresh advertisement.
 - IPv6 listeners answer their own address, and loopback listeners answer
   Tailscale Serve's `ts.net` Host.
   [`11ccf17`](https://github.com/Dicklesworthstone/frankensonos/commit/11ccf17),
