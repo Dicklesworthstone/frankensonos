@@ -75,6 +75,46 @@ const DjSessionRemote = (() => {
         : object(item) ? JSON.stringify(item) : String(item)}`);
   }
 
+  const REHEARSAL_LISTS = ['include_artists', 'exclude_artists', 'include_genres', 'exclude_genres',
+    'include_composers', 'exclude_composers', 'include_keywords', 'exclude_keywords'];
+
+  // Form text uses one entry per line, so commas inside artist/work names
+  // remain literal. Only nonempty constraints replace the group's steering.
+  function rehearsalConstraints(draft = {}) {
+    if (!object(draft)) throw new Error('Temporary filters must be an object.');
+    const allowed = [...REHEARSAL_LISTS, 'min_work_minutes', 'max_work_minutes', 'energy_bias', 'allow_long_works'];
+    if (Object.keys(draft).some((key) => !allowed.includes(key))) throw new Error('Unknown temporary filter.');
+    const result = {};
+    for (const key of REHEARSAL_LISTS) {
+      const value = draft[key] ?? '';
+      if (!text(value) || value.length > 32768) throw new Error(`${LABELS[key]} needs one entry per line.`);
+      const items = value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+      if (items.length > 32 || items.some((item) => [...item].length > 128)) {
+        throw new Error(`${LABELS[key]} takes at most 32 entries of 1–128 characters.`);
+      }
+      if (items.length) result[key] = Object.freeze(items);
+    }
+    for (const key of ['min_work_minutes', 'max_work_minutes']) {
+      const value = draft[key];
+      if (value === undefined || value === '') continue;
+      if (!(typeof value === 'number' || (text(value) && /^\d+$/.test(value))) || !integer(Number(value), 1, 600)) {
+        throw new Error('Work lengths must be whole minutes from 1 to 600, or blank.');
+      }
+      result[key] = Number(value);
+    }
+    if (result.min_work_minutes > result.max_work_minutes) throw new Error('Minimum work length exceeds maximum.');
+    const energy = draft.energy_bias ?? 0;
+    if (!(typeof energy === 'number' || (text(energy) && /^-?\d+$/.test(energy))) || !integer(Number(energy), -2, 2)) {
+      throw new Error('Energy shift must be a whole number from -2 to 2.');
+    }
+    if (Number(energy)) result.energy_bias = Number(energy);
+    if (draft.allow_long_works !== undefined && typeof draft.allow_long_works !== 'boolean') {
+      throw new Error('Long-work permission must be a boolean.');
+    }
+    if (draft.allow_long_works) result.allow_long_works = true;
+    return Object.freeze(result);
+  }
+
   // A rehearsal is a read-only POST, not a plan to enqueue or start later.
   function rehearsalRequest(zone, draft = {}, moods = []) {
     if (!zone || !text(zone.target) || !zone.target.trim() || !object(draft)) {
@@ -86,7 +126,7 @@ const DjSessionRemote = (() => {
           || !integer(Number(value), min, max)) throw new Error(`${label} must be a whole number from ${min} to ${max}.`);
       return Number(value);
     };
-    if (Object.keys(draft).some((key) => !['lengthMode', 'length', 'at', 'mood', 'seed'].includes(key))) {
+    if (Object.keys(draft).some((key) => !['lengthMode', 'length', 'at', 'mood', 'seed', 'filters'].includes(key))) {
       throw new Error('Unknown rehearsal setting.');
     }
     const body = { zone: zone.target };
@@ -106,6 +146,8 @@ const DjSessionRemote = (() => {
       if (!text(draft.mood) || !moods.includes(draft.mood)) throw new Error('Choose a mood returned by this daemon.');
       body.mood = draft.mood;
     }
+    const constraints = rehearsalConstraints(draft.filters);
+    if (Object.keys(constraints).length) body.constraints = constraints;
     return Object.freeze(body);
   }
 
@@ -192,6 +234,12 @@ const DjSessionRemote = (() => {
     function open() { if (!disposed) { state.open = true; publish(); } }
     function close() { ++epoch; state.open = false; publish(); }
     function dispose() { close(); disposed = true; }
+    function edit() {
+      if (!disposed && state.report) {
+        state.message = 'Settings changed. The displayed rehearsal still uses its captured settings; generate again to compare.';
+        publish();
+      }
+    }
     async function generate(draft) {
       if (disposed || !state.open || !state.zone || state.busy) return false;
       let request;
@@ -227,7 +275,7 @@ const DjSessionRemote = (() => {
         state.busy = false; publish();
       }
     }
-    return { state, context, open, close, dispose, loadMoods, generate };
+    return { state, context, open, close, dispose, edit, loadMoods, generate };
   }
 
   function rehearsalPanel({ call, el, workNode }) {
@@ -248,14 +296,38 @@ const DjSessionRemote = (() => {
     const info = el('p', { role: 'status', 'aria-live': 'polite' });
     const moodInfo = el('p', { class: 'by' });
     const output = el('div', { class: 'dj-rehearsal-results' });
+    const filterInputs = Object.fromEntries(REHEARSAL_LISTS.map((key) => [key, el('textarea', {
+      rows: '2', maxLength: '32768', 'aria-label': `Rehearsal ${LABELS[key].toLowerCase()}`,
+      placeholder: 'One entry per line', autocomplete: 'off',
+    })]));
+    const minimum = el('input', { type: 'number', min: '1', max: '600', 'aria-label': 'Rehearsal minimum work minutes' });
+    const maximum = el('input', { type: 'number', min: '1', max: '600', 'aria-label': 'Rehearsal maximum work minutes' });
+    const energy = el('select', { 'aria-label': 'Rehearsal energy shift' },
+      ...[-2, -1, 0, 1, 2].map((n) => el('option', { value: n, text: n === 0 ? 'Neutral' : `${n > 0 ? '+' : ''}${n} · ${n > 0 ? 'more energetic' : 'calmer'}` })));
+    energy.value = '0';
+    const long = el('input', { type: 'checkbox', 'aria-label': 'Rehearsal allow long works' });
+    const filterDraft = () => ({ ...Object.fromEntries(REHEARSAL_LISTS.map((key) => [key, filterInputs[key].value])),
+      min_work_minutes: minimum.value, max_work_minutes: maximum.value, energy_bias: energy.value, allow_long_works: long.checked });
+    const filters = el('details', { class: 'dj-rehearsal-filters' },
+      el('summary', { text: 'Temporary filters · this rehearsal only' }),
+      el('p', { text: 'A mood or any nonempty filter replaces this group’s current steering and time-of-day program for the preview only. Your library preferences still apply. Leave all filters empty and mood unchanged to rehearse the live steering. Names use one entry per line; commas stay in the name.' }),
+      el('div', { class: 'dj-rehearsal-fields' },
+        ...REHEARSAL_LISTS.map((key) => el('label', {}, LABELS[key], filterInputs[key])),
+        el('label', {}, 'Minimum work minutes', minimum), el('label', {}, 'Maximum work minutes', maximum),
+        el('label', {}, 'Energy shift', energy), el('label', {}, 'Allow long works', long)),
+      el('button', { type: 'button', text: 'Clear temporary filters', onclick: () => {
+        for (const input of Object.values(filterInputs)) input.value = '';
+        minimum.value = ''; maximum.value = ''; energy.value = '0'; long.checked = false;
+        control.edit();
+      } }));
     const fields = el('fieldset', {}, el('legend', { text: 'Plan a set, without changing the DJ' }),
       el('div', { class: 'dj-rehearsal-fields' },
         el('label', {}, 'Plan by', mode), el('label', {}, 'Length', length),
         el('label', {}, 'Start (house time)', at), el('label', {}, 'Seed', seed),
-        el('label', {}, 'Steering for this rehearsal only', mood)), reload, submit);
-    const form = el('form', { onsubmit: (event) => {
+        el('label', {}, 'Steering for this rehearsal only', mood)), filters, reload, submit);
+    const form = el('form', { oninput: () => control.edit(), onchange: () => control.edit(), onsubmit: (event) => {
       event.preventDefault();
-      void control.generate({ lengthMode: mode.value, length: length.value, at: at.value, mood: mood.value, seed: seed.value });
+      void control.generate({ lengthMode: mode.value, length: length.value, at: at.value, mood: mood.value, seed: seed.value, filters: filterDraft() });
     } }, fields);
     node.append(el('summary', { text: 'Rehearse a set · hear the plan before you play' }),
       el('p', { text: 'Preview the DJ’s choices from your library, history, and preferences. No playback, queue edits, or saved steering. A time such as 23:00 uses the house’s clock, not this browser’s time zone. Blank starts now.' }),
@@ -266,7 +338,7 @@ const DjSessionRemote = (() => {
       form.setAttribute('aria-busy', String(state.busy));
       reload.disabled = state.loadingMoods;
       const selected = mood.value;
-      mood.replaceChildren(el('option', { value: '', text: 'Current steering and time-of-day programs' }));
+      mood.replaceChildren(el('option', { value: '', text: 'Current steering (unless filters below override it)' }));
       for (const name of state.moods) mood.append(el('option', { value: name, text: name }));
       mood.value = state.moods.includes(selected) ? selected : '';
       moodInfo.textContent = state.loadingMoods ? 'Reading available moods…' : state.moodError;
@@ -279,7 +351,13 @@ const DjSessionRemote = (() => {
       output.append(el('h4', { text: `Rehearsal for ${state.zone.label}` }),
         el('p', { class: 'by', text: `From ${clock(value.from)} · seed ${value.seed}. Snapshot of the library, history and preferences when generated, not a promise of future picks.` }),
         el('p', { text: `${sum.works} works · ${sum.minutes} minutes · ${sum.distinct_artists} artists · ${sum.explicit} explicit works` }));
-      output.append(el('p', { class: 'by', text: `Requested: ${state.request.works == null ? `${state.request.hours} hours (up to 500 works)` : `${state.request.works} works`}; ${state.request.mood ? `mood ${state.request.mood}` : 'current steering and time-of-day programs'}.` }));
+      output.append(el('p', { class: 'by', text: `Requested: ${state.request.works == null ? `${state.request.hours} hours (up to 500 works)` : `${state.request.works} works`}; ${state.request.mood ? `mood ${state.request.mood}` : state.request.constraints ? 'temporary filters without a mood' : 'current steering and time-of-day programs'}.` }));
+      const filters = constraintsText(state.request.constraints);
+      if (filters.length) {
+        const applied = el('ul');
+        for (const line of filters) applied.append(el('li', { text: line }));
+        output.append(el('details', {}, el('summary', { text: 'Temporary filters used for this result (not saved)' }), applied));
+      }
       if (state.request.hours && sum.works === 500) output.append(el('p', { text: 'The 500-work limit was reached. The requested time window may not be fully covered.' }));
       if (state.request.works && sum.works > 0 && sum.works < state.request.works) output.append(el('p', { text: 'The DJ returned fewer works than requested. This is the available set, not a full-length playlist.' }));
       if (!sum.works) output.append(el('p', { text: 'No works matched this rehearsal. Try another mood or sync your library.' }));
@@ -465,7 +543,7 @@ const DjSessionRemote = (() => {
   }
 
   return { model, panel, routes, zonesOf, statusOf, constraintsText,
-    rehearsalRequest, rehearsalTime, rehearsalOf, rehearsalModel, rehearsalPanel };
+    rehearsalRequest, rehearsalTime, rehearsalOf, rehearsalModel, rehearsalPanel, rehearsalConstraints };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = DjSessionRemote;

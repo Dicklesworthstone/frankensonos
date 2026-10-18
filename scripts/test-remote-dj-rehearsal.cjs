@@ -247,3 +247,74 @@ test('real loopback JSON uses the public rehearsal route with literal Unicode ro
   assert.deepEqual(seen[1].body, { zone: `${room}@S2`, works: 2, seed: 42 });
   assert.equal(seen[1].type, 'application/json'); assert.equal(m.state.report.zone, room);
 });
+
+test('temporary constraints preserve comma-containing names and Unicode, with sparse immutable wire values', () => {
+  const filters = { include_artists: ' Earth, Wind & Fire\r\n  Björk \n', exclude_genres: 'ambient\nspoken word',
+    include_composers: 'Example composer', include_keywords: '<Work & title>', min_work_minutes: '3',
+    max_work_minutes: 90, energy_bias: '-2', allow_long_works: true };
+  const body = rehearsalRequest(zone(), { filters });
+  assert.deepEqual(body, { zone: 'Study@S1', works: 12, seed: 1, constraints: {
+    include_artists: ['Earth, Wind & Fire', 'Björk'], exclude_genres: ['ambient', 'spoken word'],
+    include_composers: ['Example composer'], include_keywords: ['<Work & title>'],
+    min_work_minutes: 3, max_work_minutes: 90, energy_bias: -2, allow_long_works: true,
+  } });
+  assert.equal(body.mood, undefined, 'constraints without a mood remain an explicit rehearsal override');
+  filters.include_artists = 'Other';
+  assert.deepEqual(body.constraints.include_artists, ['Earth, Wind & Fire', 'Björk']);
+  assert.equal(Object.isFrozen(body.constraints), true);
+  assert.equal(Object.isFrozen(body.constraints.include_artists), true);
+});
+
+test('blank temporary filters retain the live steering instead of sending an empty override', () => {
+  const body = rehearsalRequest(zone(), { filters: { include_artists: '\n \r\n', exclude_genres: '',
+    min_work_minutes: '', max_work_minutes: '', energy_bias: '0', allow_long_works: false } });
+  assert.deepEqual(body, { zone: 'Study@S1', works: 12, seed: 1 });
+  const mood = rehearsalRequest(zone(), { mood: 'focus', filters: { include_genres: 'jazz' } }, ['focus']);
+  assert.equal(mood.mood, 'focus');
+  assert.deepEqual(mood.constraints, { include_genres: ['jazz'] });
+});
+
+test('temporary filter limits reject truncation, wrong types, unsupported fields and contradictory durations', () => {
+  for (const filters of [null, [], { include_artists: [] }, { include_artists: 'a'.repeat(129) },
+    { include_artists: Array(33).fill('artist').join('\n') }, { include_genres: 'x'.repeat(32769) },
+    { min_work_minutes: 0 }, { max_work_minutes: 601 }, { min_work_minutes: 20, max_work_minutes: 10 },
+    { max_work_minutes: '1e2' }, { min_work_minutes: 1.5 }, { energy_bias: 3 }, { energy_bias: '-1.5' },
+    { energy_bias: false }, { allow_long_works: 'yes' }, { future_constraint: true }, { decades: '1990' }]) {
+    assert.throws(() => rehearsalRequest(zone(), { filters }));
+  }
+  assert.equal(rehearsalRequest(zone(), { filters: { include_artists: '夜'.repeat(128) } }).constraints.include_artists[0].length, 128);
+  assert.equal(rehearsalRequest(zone(), { filters: { include_genres: Array(32).fill('jazz').join('\n') } }).constraints.include_genres.length, 32);
+});
+
+test('what-if constraints are sent once to rehearsal, never saved as live steering', async () => {
+  const { m, calls } = fixture();
+  await m.loadMoods();
+  assert.equal(await m.generate({ mood: 'focus', filters: { exclude_artists: 'Example artist', energy_bias: '2' } }), true);
+  assert.deepEqual(calls.map(([name]) => name), ['sessionMoods', 'sessionZones', 'sessionRehearse', 'sessionZones']);
+  assert.deepEqual(calls[2][1].body, { zone: 'Study@S1', works: 12, seed: 1, mood: 'focus',
+    constraints: { exclude_artists: ['Example artist'], energy_bias: 2 } });
+  assert.equal(m.state.request.constraints.energy_bias, 2);
+});
+
+test('changing a draft labels the displayed snapshot and never silently updates or reruns it', async () => {
+  const { m, calls } = fixture();
+  await m.generate({ filters: { include_genres: 'jazz' } });
+  const before = m.state.report, length = calls.length;
+  m.edit();
+  assert.equal(m.state.report, before);
+  assert.deepEqual(m.state.request.constraints.include_genres, ['jazz']);
+  assert.equal(calls.length, length);
+  assert.match(m.state.message, /captured settings/);
+  assert.equal(await m.generate({}), true);
+  assert.equal(m.state.request.constraints, undefined);
+  assert.match(m.state.message, /Rehearsal complete/);
+});
+
+test('invalid what-if filters fail before any request, retaining the prior result as a labeled snapshot', async () => {
+  const { m, calls } = fixture();
+  await m.generate({}); const before = m.state.report, length = calls.length;
+  assert.equal(await m.generate({ filters: { min_work_minutes: 31, max_work_minutes: 2 } }), false);
+  assert.equal(m.state.report, before);
+  assert.equal(calls.length, length);
+  assert.match(m.state.message, /Minimum work length exceeds maximum/);
+});
