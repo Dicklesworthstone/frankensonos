@@ -518,7 +518,10 @@ impl From<CoreError> for Failure {
             CoreError::Store(_) => Self::new(ErrorCode::Internal, "internal error"),
             CoreError::NoSpotifyFavorite => Self::new(ErrorCode::RenderParamsMissing, detail),
             CoreError::RenderParamsStale => Self::new(ErrorCode::RenderParamsStale, detail),
-            CoreError::NotUndoable(_) => Self::new(ErrorCode::InvalidArgument, detail),
+            // No field to fix: the newest action is past undo's reach.
+            CoreError::NotUndoable(_) => Self::new(ErrorCode::InvalidArgument, detail).with_hint(
+                "Undo reaches back one hour; change the speakers directly if they should differ.",
+            ),
         }
     }
 }
@@ -592,6 +595,17 @@ mod tests {
                 "{code}"
             );
         }
+    }
+
+    #[test]
+    fn an_undo_past_its_hour_says_so_rather_than_to_fix_a_field() {
+        let f = Failure::from(CoreError::NotUndoable(
+            "#30 (group) was 4521 minutes ago; undo goes back at most 60 minutes".into(),
+        ));
+        assert_eq!(f.code, ErrorCode::InvalidArgument);
+        assert!(!f.code.retryable());
+        assert!(f.hint.contains("one hour"), "{}", f.hint);
+        assert_ne!(f.hint, ErrorCode::InvalidArgument.default_hint());
     }
 
     #[test]
