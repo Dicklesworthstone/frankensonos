@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use crate::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto};
-use crate::events::EventBus;
+use crate::events::{EventBus, ResourceChanges};
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
@@ -54,6 +54,8 @@ pub mod house_policy;
 pub mod queue;
 #[cfg(test)]
 mod relocation_tests;
+#[cfg(test)]
+mod resource_changes_tests;
 pub mod scenes;
 pub mod schedules;
 pub mod spotify_auth;
@@ -233,7 +235,26 @@ impl Surface {
     /// daemon's live model has one.
     pub fn events(&self, client: &Client) -> Result<Arc<EventBus>, Failure> {
         self.guard(client).authorize("events", true)?;
-        self.events.clone().ok_or_else(|| {
+        self.event_bus().map(Arc::clone)
+    }
+
+    /// Observe journal activity for an in-process resource publisher, waiting
+    /// at most [`crate::events::MAX_WAIT`]. `None` starts at the current tail.
+    /// The result contains cursor and continuity metadata, never event data.
+    ///
+    /// This is an internal publisher capability, not a client endpoint: the
+    /// publisher must authorize each external subscription and document read
+    /// separately. It does not impersonate a local or remote caller.
+    pub fn resource_changes_after(
+        &self,
+        since: Option<u64>,
+        wait: Duration,
+    ) -> Result<ResourceChanges, Failure> {
+        Ok(self.event_bus()?.resource_changes_after(since, wait))
+    }
+
+    fn event_bus(&self) -> Result<&Arc<EventBus>, Failure> {
+        self.events.as_ref().ok_or_else(|| {
             Failure::new(
                 ErrorCode::NotImplemented,
                 "the event stream needs the daemon's live model",

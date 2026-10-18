@@ -34,7 +34,9 @@ fn fixture(generation: u8) -> (SimHandle, Engine, Model, tempfile::TempDir) {
     let path = media.path().join("clip.wav");
     std::fs::write(&path, CLIP).unwrap();
     let mut config = LiveConfig::new(sim.players().iter().map(|p| p.ip).collect());
-    config.media = Some(Arc::new(move |name| (name == "clip.wav").then(|| path.clone())));
+    config.media = Some(Arc::new(move |name| {
+        (name == "clip.wav").then(|| path.clone())
+    }));
     let now = Instant::now();
     let mut model = Model {
         ticked: (now, SystemTime::now()),
@@ -69,7 +71,10 @@ fn fixture(generation: u8) -> (SimHandle, Engine, Model, tempfile::TempDir) {
 fn wait_for(mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT;
     while !ready() {
-        assert!(Instant::now() < deadline, "callback recovery did not converge");
+        assert!(
+            Instant::now() < deadline,
+            "callback recovery did not converge"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
 }
@@ -130,7 +135,11 @@ fn real_overflow_preserves_media_and_repairs_a_quiet_lost_tail_on_s1_and_s2() {
         let plan = model.rec.inventory_plan(&engine.config.seeds);
         model.last_error = Some("unrelated inventory diagnostic".into());
         let (send, receive) = std::sync::mpsc::sync_channel(64);
-        engine.subscribers.lock().unwrap().push(delivery::Pending::new(send));
+        engine
+            .subscribers
+            .lock()
+            .unwrap()
+            .push(delivery::Pending::new(send));
         media_still_served(addr);
         overload(addr);
         let log_start = sim.gena_log().len();
@@ -150,13 +159,19 @@ fn real_overflow_preserves_media_and_repairs_a_quiet_lost_tail_on_s1_and_s2() {
                 break;
             }
         }
-        assert!(resynced, "a dropped final event must surface without another callback");
+        assert!(
+            resynced,
+            "a dropped final event must surface without another callback"
+        );
         assert_eq!(model.sink.as_ref().unwrap().local_addr(), addr);
         assert_eq!(model.rec.subscriptions.len(), 4);
         assert!(!plan.current(&model.rec));
         assert!(model.rec.schedule.due(Instant::now()));
         assert_eq!(model.playback.of(&id).unwrap().volume, before);
-        assert_eq!(model.last_error.as_deref(), Some("unrelated inventory diagnostic"));
+        assert_eq!(
+            model.last_error.as_deref(),
+            Some("unrelated inventory diagnostic")
+        );
         assert!(receive.try_iter().any(|event| event == LiveEvent::Resync));
         media_still_served(addr);
         // No new speaker mutation or synthetic delta is needed. Read recovery
@@ -166,7 +181,11 @@ fn real_overflow_preserves_media_and_repairs_a_quiet_lost_tail_on_s1_and_s2() {
             model.playback.of(&id).unwrap().volume == Some(expected)
         });
         assert_eq!(model.sink.as_ref().unwrap().local_addr(), addr);
-        assert!(sim.soap_log()[soap_calls..].iter().all(|call| call.action.starts_with("Get")));
+        assert!(
+            sim.soap_log()[soap_calls..]
+                .iter()
+                .all(|call| call.action.starts_with("Get"))
+        );
         media_still_served(addr);
         finish(sim, &engine, &mut model);
     }
@@ -180,8 +199,15 @@ struct HeldRead {
 }
 
 impl Transport for HeldRead {
-    fn soap_post(&self, host: IpAddr, path: &str, action: &str, body: &str) -> Result<String, ProtoError> {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
         let result = self.inner.soap_post(host, path, action, body);
+        let action = action.trim_matches('"');
         if action.ends_with("#GetVolume") && self.armed.swap(false, Ordering::AcqRel) {
             self.entered.store(true, Ordering::Release);
             wait_for(|| self.released.load(Ordering::Acquire));
@@ -228,10 +254,18 @@ fn a_pre_loss_read_cannot_roll_state_back_after_recovery_was_requested() {
         assert_ne!(volume, Some(23), "a cancelled pre-loss sample was adopted");
         volume == Some(47)
     });
-    assert!(sim.soap_log()[calls..].iter().all(|call| call.action.starts_with("Get")));
+    assert!(
+        sim.soap_log()[calls..]
+            .iter()
+            .all(|call| call.action.starts_with("Get"))
+    );
     let next = model.rec.schedule.next_at();
     engine.stop.store(true, Ordering::Release);
     assert!(engine.callback_loss(&mut model).is_empty());
-    assert_eq!(model.rec.schedule.next_at(), next, "shutdown cannot schedule recovery");
+    assert_eq!(
+        model.rec.schedule.next_at(),
+        next,
+        "shutdown cannot schedule recovery"
+    );
     finish(sim, &engine, &mut model);
 }

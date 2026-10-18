@@ -168,7 +168,12 @@ impl Fixture {
     fn apply(&mut self, playback: &mut Playback, notify: &Notify) {
         assert!(self.subs.route(notify).is_some());
         playback
-            .apply(&self.want.player, EventSource::RenderingControl, notify, Instant::now())
+            .apply(
+                &self.want.player,
+                EventSource::RenderingControl,
+                notify,
+                Instant::now(),
+            )
             .unwrap();
         let _ = self.subs.missed(notify);
     }
@@ -202,11 +207,18 @@ impl Fixture {
         let full = self.receive(&repaired_sid);
         assert_eq!(full.seq, 0);
         self.apply(playback, &full);
-        assert_eq!(playback.of(&self.want.player).unwrap().volume, Some(expected));
+        assert_eq!(
+            playback.of(&self.want.player).unwrap().volume,
+            Some(expected)
+        );
         assert!(!self.subs.active[0].refresh_pending);
         assert_eq!(self.provider.subscribed.load(Ordering::Relaxed), calls + 1);
         assert_eq!(self.provider.renewed.load(Ordering::Relaxed), 0);
-        assert_eq!(self.sim.soap_log().len(), soap_calls, "repair never writes playback");
+        assert_eq!(
+            self.sim.soap_log().len(),
+            soap_calls,
+            "repair never writes playback"
+        );
     }
 
     fn finish(mut self) {
@@ -224,7 +236,10 @@ impl Fixture {
 fn wait_for(mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + WAIT;
     while !ready() {
-        assert!(Instant::now() < deadline, "early callback test did not converge");
+        assert!(
+            Instant::now() < deadline,
+            "early callback test did not converge"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -260,7 +275,8 @@ fn an_oversized_tail_is_not_retained_but_still_requests_full_state() {
     assert!(f.subs.hold_early(&initial));
     let before = f.subs.maintenance.early_bytes;
     let mut tail = f.volume(59, &initial.sid);
-    tail.properties.push(("Padding".into(), "x".repeat(EARLY_BYTES)));
+    tail.properties
+        .push(("Padding".into(), "x".repeat(EARLY_BYTES)));
     assert!(!f.subs.hold_early(&tail));
     assert_eq!(f.subs.maintenance.early_bytes, before);
     assert_eq!(f.subs.maintenance.early.len(), 1);
@@ -276,7 +292,7 @@ fn expiry_before_adoption_leaves_loss_evidence_and_frees_space_immediately() {
     let mut f = Fixture::new(2);
     let initial = f.begin();
     assert!(f.subs.hold_early(&initial));
-    f.subs.maintenance.early[0].at = Instant::now() - EARLY_AGE;
+    f.subs.maintenance.early[0].at = Instant::now().checked_sub(EARLY_AGE).unwrap();
     let latest = f.volume(61, &initial.sid);
     // Admission itself expires the initial; no intervening take_early is needed.
     assert!(f.subs.hold_early(&latest));
@@ -301,7 +317,7 @@ fn expiry_after_the_initial_was_applied_still_recovers_a_quiet_lost_tail() {
     let first = f.subs.take_early().unwrap();
     f.apply(&mut playback, &first);
     assert!(!f.subs.active[0].refresh_pending);
-    f.subs.maintenance.early[0].at = Instant::now() - EARLY_AGE;
+    f.subs.maintenance.early[0].at = Instant::now().checked_sub(EARLY_AGE).unwrap();
     assert!(f.subs.take_early().is_none());
     assert_eq!(f.subs.maintenance.early_bytes, 0);
     f.repair(&mut playback, 63);
@@ -314,7 +330,9 @@ fn expired_duplicates_and_unrelated_service_traffic_do_not_request_replacement()
     let initial = f.begin();
     let mut unrelated = initial.clone();
     unrelated.path = "/AVTransport".into();
-    unrelated.properties.push(("Padding".into(), "x".repeat(EARLY_BYTES)));
+    unrelated
+        .properties
+        .push(("Padding".into(), "x".repeat(EARLY_BYTES)));
     for _ in 0..100 {
         assert!(!f.subs.hold_early(&unrelated));
     }
@@ -328,7 +346,7 @@ fn expired_duplicates_and_unrelated_service_traffic_do_not_request_replacement()
     f.apply(&mut playback, &first);
     // A duplicate arrived through normal intake before its stored copy expired.
     f.apply(&mut playback, &tail);
-    f.subs.maintenance.early[0].at = Instant::now() - EARLY_AGE;
+    f.subs.maintenance.early[0].at = Instant::now().checked_sub(EARLY_AGE).unwrap();
     assert!(f.subs.take_early().is_none());
     assert_eq!(f.subs.maintenance.early_bytes, 0);
     assert!(!f.subs.active[0].refresh_pending);
@@ -340,7 +358,9 @@ fn expired_duplicates_and_unrelated_service_traffic_do_not_request_replacement()
 fn losing_an_early_event_cannot_resurrect_a_cancelled_subscription_request() {
     let mut f = Fixture::new(2);
     let mut initial = f.begin();
-    initial.properties.push(("Padding".into(), "x".repeat(EARLY_BYTES)));
+    initial
+        .properties
+        .push(("Padding".into(), "x".repeat(EARLY_BYTES)));
     assert!(!f.subs.hold_early(&initial));
     assert!(f.subs.maintenance.jobs[0].early_loss);
     f.subs.forget(&f.want.player);
@@ -365,7 +385,9 @@ fn unknown_overflow_does_not_turn_a_same_sid_renewal_into_a_replacement() {
     f.start();
     let mut unknown = initial.clone();
     unknown.sid = "uuid:unrelated-early-overflow".into();
-    unknown.properties.push(("Padding".into(), "x".repeat(EARLY_BYTES)));
+    unknown
+        .properties
+        .push(("Padding".into(), "x".repeat(EARLY_BYTES)));
     assert!(!f.subs.hold_early(&unknown));
     assert!(f.subs.maintenance.jobs[0].early_loss);
     f.adopt();

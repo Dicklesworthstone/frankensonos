@@ -48,7 +48,8 @@ impl Workers {
                 break;
             };
             let expired = now.saturating_duration_since(early.at) >= EARLY_AGE;
-            let keep = if let Some(current) = active.iter_mut().find(|a| a.sid == early.notify.sid) {
+            let keep = if let Some(current) = active.iter_mut().find(|a| a.sid == early.notify.sid)
+            {
                 let forward = service_matches(current, &early.notify)
                     && super::super::sequence_gap(current.last_seq, early.notify.seq).is_some();
                 if forward && expired {
@@ -92,10 +93,15 @@ impl Subscriptions {
     /// Preserve a bounded prefix while a matching service's SID is unknown.
     /// Rejected tails leave bounded loss evidence on the outstanding jobs.
     pub(crate) fn hold_early(&mut self, notify: &Notify) -> bool {
-        self.maintenance.prune_early(&mut self.active, Instant::now());
+        self.maintenance
+            .prune_early(&mut self.active, Instant::now());
         self.invalidate_renewals();
         if self.active.iter().any(|a| a.sid == notify.sid)
-            || !self.maintenance.jobs.iter().any(|job| candidate(job, notify))
+            || !self
+                .maintenance
+                .jobs
+                .iter()
+                .any(|job| candidate(job, notify))
         {
             return false;
         }
@@ -120,7 +126,8 @@ impl Subscriptions {
     }
 
     pub(crate) fn take_early(&mut self) -> Option<Notify> {
-        self.maintenance.prune_early(&mut self.active, Instant::now());
+        self.maintenance
+            .prune_early(&mut self.active, Instant::now());
         self.invalidate_renewals();
         let index = self
             .maintenance

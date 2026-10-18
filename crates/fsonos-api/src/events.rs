@@ -101,6 +101,17 @@ pub struct EventsDto {
     pub reset: Option<u64>,
 }
 
+/// Journal cursors for a trusted in-process resource publisher, without
+/// event payloads. External subscriptions and document reads still require
+/// their own caller's authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceChanges {
+    /// The newest cursor, including invalidations with no retained event.
+    pub last_id: u64,
+    /// Continuity was lost before this oldest retained cursor.
+    pub reset: Option<u64>,
+}
+
 impl Surface {
     /// The house's changes after `since` (`events`, read-only; from now when
     /// `None`), waiting up to `wait` (at most [`MAX_WAIT`]) for one.
@@ -324,6 +335,31 @@ impl EventBus {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .last
+    }
+
+    /// Wait for journal activity without copying any event data.
+    pub(crate) fn resource_changes_after(
+        &self,
+        since: Option<u64>,
+        wait: Duration,
+    ) -> ResourceChanges {
+        let deadline = Instant::now() + wait.min(MAX_WAIT);
+        let mut ring = self.ring.lock().unwrap_or_else(PoisonError::into_inner);
+        let since = since.unwrap_or(ring.last);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if since != ring.last || left.is_zero() {
+                return ResourceChanges {
+                    last_id: ring.last,
+                    reset: ring.needs_reset(since).then(|| ring.oldest()),
+                };
+            }
+            ring = self
+                .arrived
+                .wait_timeout(ring, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
     }
 
     /// The retained events after `after`; `Err(oldest)` when some of them

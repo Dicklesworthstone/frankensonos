@@ -11,7 +11,9 @@ impl Engine {
         if self.stop.load(Ordering::Acquire) {
             return Vec::new();
         }
-        tracing::warn!("callback backlog lost state; refreshing without closing the media listener");
+        tracing::warn!(
+            "callback backlog lost state; refreshing without closing the media listener"
+        );
         let now = Instant::now();
         model.rec.subscriptions.callbacks_lost(now);
         model.rec.invalidate_inventory();
