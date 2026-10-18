@@ -307,6 +307,12 @@ pub(super) fn serve(
             }
             match listener.accept() {
                 Ok((mut peer, _)) => {
+                    // On macOS an accepted socket inherits the listener's
+                    // non-blocking mode (not on Linux), where its timeouts
+                    // do nothing and a full send buffer ends the stream.
+                    if peer.set_nonblocking(false).is_err() {
+                        continue;
+                    }
                     if clients.len() >= MAX_CLIENTS {
                         let _ = peer.set_write_timeout(Some(IO_POLL));
                         let _ = peer.write_all(

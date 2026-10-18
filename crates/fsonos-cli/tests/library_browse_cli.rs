@@ -106,6 +106,8 @@ fn through_daemon(args: &[&str], status: u16, body: &Value) -> (Output, Vec<Stri
                 }
                 Err(error) => panic!("accept: {error}"),
             };
+            // macOS hands it the listener's non-blocking mode.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
