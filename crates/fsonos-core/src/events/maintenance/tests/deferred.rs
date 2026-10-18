@@ -10,7 +10,7 @@ fn model(f: &mut Fixture) -> Reconciler {
     rec.subscriptions = std::mem::take(&mut f.subs);
     let _ = rec.subscriptions.poll_renewals(false);
     for active in &mut rec.subscriptions.active {
-        active.renew_at = now + Duration::from_secs(900);
+        active.renew_at = now + Duration::from_mins(15);
     }
     rec
 }
@@ -64,18 +64,33 @@ fn sequence_gaps_request_full_state_without_waiting_and_keep_other_room_events_l
         assert!(rec.subscriptions.hold_early(&initial));
         set_volume(&*f.provider.inner, f.wants[1].host, 29).unwrap();
         let other = f.sink.recv_or_closed(WAIT).unwrap().unwrap();
-        rec.on_notify(&*f.provider, &mut playback, &other, callback, Instant::now())
-            .unwrap()
-            .unwrap();
+        rec.on_notify(
+            &*f.provider,
+            &mut playback,
+            &other,
+            callback,
+            Instant::now(),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(playback.of(&f.wants[1].player).unwrap().volume, Some(29));
         assert!(!f.provider.gate.released.load(Ordering::Acquire));
         f.release();
         let reports = drain(&mut rec);
-        assert_eq!(reports.iter().map(|(r, _)| r.resubscribed).sum::<usize>(), 1);
+        assert_eq!(
+            reports.iter().map(|(r, _)| r.resubscribed).sum::<usize>(),
+            1
+        );
         let initial = rec.subscriptions.take_early().unwrap();
-        rec.on_notify(&*f.provider, &mut playback, &initial, callback, Instant::now())
-            .unwrap()
-            .unwrap();
+        rec.on_notify(
+            &*f.provider,
+            &mut playback,
+            &initial,
+            callback,
+            Instant::now(),
+        )
+        .unwrap()
+        .unwrap();
         assert!(rec.subscriptions.take_early().is_none());
         assert!(rec.subscriptions.route(&gap).is_none());
         assert_eq!(f.provider.renewals.load(Ordering::Relaxed), 0);
@@ -117,9 +132,15 @@ fn malformed_events_coalesce_and_corrected_same_sequence_survives_failed_recover
     set_volume(&*f.provider.inner, f.wants[0].host, 51).unwrap();
     let corrected = f.sink.recv_or_closed(WAIT).unwrap().unwrap();
     assert_eq!(corrected.seq, bad.seq);
-    rec.on_notify(&*f.provider, &mut playback, &corrected, callback, Instant::now())
-        .unwrap()
-        .unwrap();
+    rec.on_notify(
+        &*f.provider,
+        &mut playback,
+        &corrected,
+        callback,
+        Instant::now(),
+    )
+    .unwrap()
+    .unwrap();
     assert!(rec.subscriptions.route(&corrected).is_none());
     assert_eq!(playback.of(&f.wants[0].player).unwrap().volume, Some(51));
     bad.seq = 2;
@@ -167,9 +188,16 @@ fn a_gap_during_an_ordinary_renewal_keeps_its_replacement_request() {
         Instant::now(),
     )
     .unwrap();
-    assert!(rec.subscriptions.maintenance.jobs[0].cancelled.load(Ordering::Acquire));
+    assert!(
+        rec.subscriptions.maintenance.jobs[0]
+            .cancelled
+            .load(Ordering::Acquire)
+    );
     f.release();
-    assert!(drain(&mut rec).is_empty(), "obsolete renewal was not adopted");
+    assert!(
+        drain(&mut rec).is_empty(),
+        "obsolete renewal was not adopted"
+    );
     assert!(rec.subscriptions.active[0].refresh_pending);
     assert_eq!(rec.subscriptions.active[0].last_seq, Some(3));
     begin(&f, &mut rec);
@@ -187,8 +215,8 @@ fn a_delayed_initial_cancels_silent_stream_replacement_even_when_renewal_was_due
     let active = &mut f.subs.active[0];
     let sid = active.sid.clone();
     active.last_seq = None;
-    active.renew_at = now - Duration::from_secs(2);
-    active.initial_deadline = now - Duration::from_secs(1);
+    active.renew_at = now.checked_sub(Duration::from_secs(2)).unwrap();
+    active.initial_deadline = now.checked_sub(Duration::from_secs(1)).unwrap();
     let _ = f.start();
     wait_for(|| f.provider.gate.entered.load(Ordering::Acquire) == 1);
     let replacement = f.sink.recv_or_closed(WAIT).unwrap().unwrap();

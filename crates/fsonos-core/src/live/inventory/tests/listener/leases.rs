@@ -68,10 +68,10 @@ fn event_pump_accepts_notifications_while_lease_io_is_held_on_both_generations()
             let mut f = Fixture::new(generation, Stage::Discovery, true);
             let a = f.sim.player("A").unwrap();
             let a_id = PlayerId(a.uuid.clone());
-            let a_ip = a.ip;
+            let a_player_ip = a.ip;
             let b = f.sim.player("B").unwrap();
             let b_id = PlayerId(b.uuid.clone());
-            let b_ip = b.ip;
+            let b_player_ip = b.ip;
             // Keep the existing, due rendering leases; no private sequence or
             // deadline mutation and no fake event listener are needed here.
             let wants: Vec<_> = wanted(&f.model.rec.households)
@@ -103,16 +103,25 @@ fn event_pump_accepts_notifications_while_lease_io_is_held_on_both_generations()
             drop(provider);
             f.engine.lease_reports(&mut f.model, reports);
             wait_for(|| held.gate.entered.load(Ordering::Acquire));
-            set_volume(&f.sim.lan(), a_ip, 67).unwrap();
-            set_volume(&f.sim.lan(), b_ip, 59).unwrap();
+            set_volume(&f.sim.lan(), a_player_ip, 67).unwrap();
+            set_volume(&f.sim.lan(), b_player_ip, 59).unwrap();
             let before = f.sim.soap_log().len();
             wait_for(|| {
                 pump::turn(&f.engine, &mut f.model);
-                f.model.playback.of(&a_id).is_some_and(|s| s.volume == Some(67))
-                    && f.model.playback.of(&b_id).is_some_and(|s| s.volume == Some(59))
+                f.model
+                    .playback
+                    .of(&a_id)
+                    .is_some_and(|s| s.volume == Some(67))
+                    && f.model
+                        .playback
+                        .of(&b_id)
+                        .is_some_and(|s| s.volume == Some(59))
             });
             assert!(!held.gate.released.load(Ordering::Acquire));
-            assert_eq!(f.model.rec.health.of(&a_id).unwrap().health, Health::Healthy);
+            assert_eq!(
+                f.model.rec.health.of(&a_id).unwrap().health,
+                Health::Healthy
+            );
             drop(release);
             wait_for(|| {
                 pump::turn(&f.engine, &mut f.model);
@@ -125,8 +134,15 @@ fn event_pump_accepts_notifications_while_lease_io_is_held_on_both_generations()
             }
             assert_eq!(f.model.playback.of(&a_id).unwrap().volume, Some(67));
             assert_eq!(f.model.playback.of(&b_id).unwrap().volume, Some(59));
-            assert_eq!(f.model.rec.health.of(&a_id).unwrap().health, Health::Healthy);
-            assert!(f.sim.soap_log()[before..].iter().all(|call| call.action.starts_with("Get")));
+            assert_eq!(
+                f.model.rec.health.of(&a_id).unwrap().health,
+                Health::Healthy
+            );
+            assert!(
+                f.sim.soap_log()[before..]
+                    .iter()
+                    .all(|call| call.action.starts_with("Get"))
+            );
             f.finish(Surveys::default());
         }
     }
