@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use crate::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto};
 use crate::events::EventBus;
@@ -130,24 +130,24 @@ pub struct Surface {
 /// checks, say); registered on each run.
 pub type DoctorChecks = Box<dyn Fn(&mut Runner) + Send + Sync>;
 
-/// `policy.toml` in a data directory, and the size and modification time it
-/// had when last read.
+/// `policy.toml` in a data directory, and its bytes when last read (`None`:
+/// there was no file). Compared whole, so an edit that keeps the file's size
+/// and modification time is still seen; the file is small.
 struct PolicyFile {
     dir: PathBuf,
-    seen: Mutex<Option<(SystemTime, u64)>>,
+    seen: Mutex<Option<Vec<u8>>>,
 }
 
 impl PolicyFile {
-    fn stamp(&self) -> Option<(SystemTime, u64)> {
-        let meta = std::fs::metadata(self.dir.join(fsonos_core::policy::FILE_NAME)).ok()?;
-        Some((meta.modified().ok()?, meta.len()))
+    fn contents(&self) -> Option<Vec<u8>> {
+        std::fs::read(self.dir.join(fsonos_core::policy::FILE_NAME)).ok()
     }
 
     /// Re-read the file into `policy` if it changed since it was last read.
     /// A file that no longer parses is logged and the policy left as it was:
     /// a typo must not lift the owner's caps.
     fn refresh(&self, policy: &RwLock<Arc<Policy>>) {
-        let now = self.stamp();
+        let now = self.contents();
         let mut seen = self.seen.lock().unwrap_or_else(PoisonError::into_inner);
         if *seen == now {
             return;
@@ -262,7 +262,7 @@ impl Surface {
             dir: data_dir,
             seen: Mutex::new(None),
         };
-        *file.seen.lock().unwrap_or_else(PoisonError::into_inner) = file.stamp();
+        *file.seen.lock().unwrap_or_else(PoisonError::into_inner) = file.contents();
         self.policy_file = Some(file);
         self
     }
@@ -2073,6 +2073,40 @@ mod tests {
         // Without the file, the defaults apply.
         std::fs::remove_file(&file).unwrap();
         assert_eq!(*s.policy(), Policy::default());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_edit_keeping_the_size_and_modification_time_still_takes_hold() {
+        let dir = std::env::temp_dir().join(format!("fsonos-policy-same-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(fsonos_core::policy::FILE_NAME);
+        std::fs::write(&file, "[defaults]\nmax_volume = 55\n").unwrap();
+        let stamp = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let survey: Survey = Box::new(|_| Ok(households()));
+        let s = Surface::new(
+            Box::new(super::testing::Canned {
+                out_args: "",
+                sent: Arc::new(Mutex::new(Vec::new())),
+            }),
+            survey,
+            Policy::load(&dir).unwrap(),
+            Box::new(fsonos_core::clock::SystemClock),
+        )
+        .with_policy_file(dir.clone());
+        assert_eq!(s.policy().defaults.max_volume, 55);
+
+        // An edit of the same length, with the old modification time put
+        // back (as a quick save within the same second can leave it).
+        std::fs::write(&file, "[defaults]\nmax_volume = 40\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(stamp)
+            .unwrap();
+        assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), stamp);
+        assert_eq!(s.policy().defaults.max_volume, 40);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
