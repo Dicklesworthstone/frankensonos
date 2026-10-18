@@ -142,9 +142,10 @@ fn cached_only_startup_finds_both_households_and_receives_live_events() {
         let (sim, transport, config) = fixture(fail);
         assert!(config.seeds.is_empty());
         let live = start(&transport, config);
-        let snapshot = wait_for(&live, |s| s.households.len() == 2);
+        // The live controller subscribes in the background once the survey
+        // has published the households: wait for both, not just the first.
+        let snapshot = wait_for(&live, |s| s.households.len() == 2 && s.subscriptions > 0);
         assert!(snapshot.callback.is_some());
-        assert!(snapshot.subscriptions > 0);
         assert!(snapshot.last_error.is_none());
         proves_event_updates(&live, &sim, &transport);
         live.stop();
