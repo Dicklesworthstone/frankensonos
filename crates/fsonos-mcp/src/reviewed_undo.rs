@@ -10,7 +10,7 @@ use fastmcp::{CompleteResult, FinalCallToolResult};
 )]
 async fn preview_undo(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
-    worker::run(Backend::preview_undo).await
+    worker::run(ctx, Backend::preview_undo).await
 }
 
 #[tool(
