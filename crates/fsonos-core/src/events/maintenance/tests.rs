@@ -174,12 +174,14 @@ impl Fixture {
     fn start(&mut self) -> Vec<(Report, Instant)> {
         let sink = &self.sink;
         let provider: Provider = self.provider.clone();
-        self.subs.renew_background(
+        let reports = self.subs.poll_renewals(self.stop.load(Ordering::Acquire));
+        self.subs.start_renewals(
             &provider,
             |s| sink.callback_url(s.tag()),
             &self.stop,
             Instant::now(),
-        )
+        );
+        reports
     }
 
     fn release(&self) {
@@ -256,7 +258,7 @@ fn renewal_does_not_block_event_cursors_and_preserves_initial_evidence_on_s1_and
 }
 
 #[test]
-fn replacement_initials_arriving_before_subscribe_returns_are_replayed_once() {
+fn replacement_initials_without_old_stream_progress_are_replayed_once() {
     for generation in [1, 2] {
         let mut f = Fixture::new(generation, Stage::Subscribe, 1);
         f.provider.fail_renew.store(true, Ordering::Release);
@@ -277,7 +279,9 @@ fn replacement_initials_arriving_before_subscribe_returns_are_replayed_once() {
                 assert!(f.subs.hold_early(&n));
                 break;
             }
-            assert!(!f.subs.missed(&n));
+            // Deliberately drop the old stream's counterpart here. The
+            // separate regression covers accepting it before the cutover.
+            assert_eq!(n.sid, old);
         }
         f.release();
         let reports = f.drain();
@@ -457,6 +461,179 @@ fn stopping_during_renewal_prevents_replacement_and_does_not_publish_failure() {
     assert_eq!(f.provider.subscriptions.load(Ordering::Relaxed), 1);
     assert_eq!(f.subs.active[0].renew_at, before.renew_at);
     f.finish();
+}
+
+#[test]
+fn replacement_cannot_replay_an_initial_older_than_an_accepted_old_stream_event() {
+    use crate::playback::{EventSource, Playback};
+
+    for generation in [1, 2] {
+        let mut f = Fixture::new(generation, Stage::Subscribe, 1);
+        f.provider.fail_renew.store(true, Ordering::Release);
+        let old = f.subs.active[0].sid.clone();
+        let player = f.wants[0].player.clone();
+        let _ = f.start();
+        wait_for(|| f.provider.gate.entered.load(Ordering::Acquire) == 1);
+        let initial = f.sink.recv_or_closed(WAIT).unwrap().unwrap();
+        assert_ne!(initial.sid, old);
+        assert_eq!(initial.seq, 0);
+        assert!(f.subs.hold_early(&initial));
+
+        set_volume(&*f.provider.inner, f.wants[0].host, 43).unwrap();
+        let mut playback = Playback::default();
+        let mut old_seen = false;
+        let mut new_dropped = false;
+        while !old_seen || !new_dropped {
+            let n = f.sink.recv_or_closed(WAIT).unwrap().unwrap();
+            if n.sid == old {
+                assert!(f.subs.route(&n).is_some());
+                playback
+                    .apply(&player, EventSource::RenderingControl, &n, Instant::now())
+                    .unwrap();
+                assert!(!f.subs.missed(&n));
+                old_seen = true;
+            } else {
+                assert_eq!(n.sid, initial.sid);
+                assert_eq!(n.seq, 1);
+                // Lose the new stream's delta: its held initial is now older
+                // than the volume the live model accepted from the old SID.
+                new_dropped = true;
+            }
+        }
+        let current = f.subs.active[0].clone();
+        assert_eq!(playback.of(&player).unwrap().volume, Some(43));
+        let released = Instant::now();
+        f.release();
+        assert!(f.drain().is_empty());
+        let retained = &f.subs.active[0];
+        assert_eq!(retained.sid, old);
+        assert_eq!(retained.last_seq, current.last_seq);
+        assert_eq!(retained.initial_deadline, current.initial_deadline);
+        assert_eq!(retained.initial_misses, current.initial_misses);
+        assert!(Arc::ptr_eq(&retained.epoch, &current.epoch));
+        assert!(retained.refresh_pending);
+        assert!(retained.renew_at >= released + RETRY);
+        assert!(f.subs.take_early().is_none());
+        assert_eq!(f.subs.maintenance.early_bytes, 0);
+        assert!(f.subs.route(&initial).is_none());
+        assert!(f.subs.route(&notify(&initial.sid, 2)).is_none());
+        assert_eq!(playback.of(&player).unwrap().volume, Some(43));
+        assert_eq!(
+            f.provider.retired.lock().unwrap().as_slice(),
+            [initial.sid.clone()]
+        );
+        for _ in 0..100 {
+            assert!(f.start().is_empty());
+        }
+        assert_eq!(f.provider.renewals.load(Ordering::Relaxed), 1);
+        assert_eq!(f.provider.subscriptions.load(Ordering::Relaxed), 2);
+
+        // Advance the retained lease's retry deadline without sleeping. The
+        // retry must SUBSCRIBE for new full state, not renew the old stream.
+        f.subs.active[0].renew_at = Instant::now();
+        let _ = f.start();
+        assert_eq!(
+            f.drain().iter().map(|(r, _)| r.resubscribed).sum::<usize>(),
+            1
+        );
+        assert_eq!(f.provider.renewals.load(Ordering::Relaxed), 1);
+        assert_eq!(f.provider.subscriptions.load(Ordering::Relaxed), 3);
+        let recovered = f.sink.recv_or_closed(WAIT).unwrap().unwrap();
+        assert_ne!(recovered.sid, old);
+        assert_ne!(recovered.sid, initial.sid);
+        assert_eq!(recovered.seq, 0);
+        assert!(f.subs.route(&recovered).is_some());
+        playback
+            .apply(
+                &player,
+                EventSource::RenderingControl,
+                &recovered,
+                Instant::now(),
+            )
+            .unwrap();
+        assert!(!f.subs.missed(&recovered));
+        assert_eq!(playback.of(&player).unwrap().volume, Some(43));
+        set_volume(&*f.provider.inner, f.wants[0].host, 44).unwrap();
+        let later = f.sink.recv_or_closed(WAIT).unwrap().unwrap();
+        assert_eq!(later.sid, recovered.sid);
+        assert_eq!(later.seq, 1);
+        assert!(f.subs.route(&later).is_some());
+        playback
+            .apply(
+                &player,
+                EventSource::RenderingControl,
+                &later,
+                Instant::now(),
+            )
+            .unwrap();
+        assert!(!f.subs.missed(&later));
+        assert!(f.subs.route(&later).is_none());
+        assert_eq!(playback.of(&player).unwrap().volume, Some(44));
+        f.finish();
+    }
+}
+
+#[test]
+fn lease_admission_does_not_adopt_a_ready_result_ahead_of_buffered_callbacks() {
+    for generation in [1, 2] {
+        let mut f = Fixture::new(generation, Stage::Renew, 1);
+        let before = f.subs.active[0].clone();
+        let _ = f.start();
+        wait_for(|| f.provider.gate.entered.load(Ordering::Acquire) == 1);
+        f.release();
+        // Establish that a real renewal result is ready for adoption, then
+        // restore it without letting the test's barrier change model state.
+        let mut completed = None;
+        wait_for(|| {
+            completed = f.subs.maintenance.jobs[0]
+                .output
+                .lock()
+                .unwrap()
+                .try_recv()
+                .ok();
+            completed.is_some()
+        });
+        let (send, receive) = sync_channel(1);
+        assert!(send.send(completed.unwrap()).is_ok());
+        f.subs.maintenance.jobs[0].output = Mutex::new(receive);
+        set_volume(&*f.provider.inner, f.wants[0].host, 29).unwrap();
+        wait_for(|| {
+            f.sim.gena_log().iter().any(|entry| {
+                matches!(
+                    entry.event,
+                    fsonos_sim::GenaEvent::Delivered {
+                        seq: 1,
+                        status: 200,
+                        ..
+                    }
+                )
+            })
+        });
+        let provider: Provider = f.provider.clone();
+        for _ in 0..100 {
+            let sink = &f.sink;
+            f.subs.start_renewals(
+                &provider,
+                |service| sink.callback_url(service.tag()),
+                &f.stop,
+                Instant::now(),
+            );
+        }
+        assert_eq!(f.subs.maintenance.jobs.len(), 1);
+        assert!(!f.subs.maintenance.jobs[0].finalized);
+        assert_eq!(f.subs.active[0].renew_at, before.renew_at);
+        assert_eq!(f.provider.renewals.load(Ordering::Relaxed), 1);
+        // Only the caller's explicit poll after callback intake may adopt.
+        let event = f.sink.recv_or_closed(WAIT).unwrap().unwrap();
+        assert_eq!(event.sid, before.sid);
+        assert_eq!(event.seq, 1);
+        assert!(!f.subs.missed(&event));
+        let reports = f.drain();
+        assert_eq!(reports.iter().map(|(r, _)| r.renewed).sum::<usize>(), 1);
+        assert!(f.subs.active[0].renew_at > before.renew_at);
+        assert_eq!(f.subs.active[0].last_seq, Some(1));
+        f.finish();
+    }
 }
 
 mod deferred;

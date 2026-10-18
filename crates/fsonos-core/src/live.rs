@@ -668,11 +668,9 @@ impl Engine {
         let Some(s) = &m.sink else { return };
         let callback = |service: Service| s.callback_url(service.tag());
         let provider: Arc<dyn Subscriber + Send + Sync> = self.lan.clone();
-        let reports = m
-            .rec
+        m.rec
             .subscriptions
-            .renew_background(&provider, callback, &self.stop, now);
-        self.lease_reports(m, reports);
+            .start_renewals(&provider, callback, &self.stop, now);
     }
 
     fn poll_renewals(&self, m: &mut Model) {
@@ -709,23 +707,41 @@ impl Engine {
     /// Wait (briefly) for one NOTIFY and fold it in. `None` when none came;
     /// otherwise the playback change it made, if any.
     fn next_event(&self, m: &mut Model, max_wait: Duration) -> Option<Vec<LiveEvent>> {
-        self.poll_renewals(m);
-        let early = m.rec.subscriptions.take_early();
-        let s = m.sink.as_ref()?;
-        // A due survey may already be in flight. Its unchanged deadline must
-        // not turn this receive into a busy loop; the outer loop checks the
-        // schedule at least once per bounded TICK either way.
-        let n = if let Some(early) = early {
+        m.rec.subscriptions.defer_event_refresh();
+        let n = if let Some(early) = m.rec.subscriptions.take_early() {
+            // Once a SID is adopted, its retained prefix precedes newer raw
+            // callbacks from that same stream.
             early
         } else {
-            match s.recv_or_closed(max_wait) {
-                Ok(n) => n?,
-                Err(e) => {
-                    self.relisten(m, &format!("the event listener stopped: {e}"));
+            let buffered = match m.sink.as_ref()?.recv_or_closed(Duration::ZERO) {
+                Ok(notify) => notify,
+                Err(error) => {
+                    self.relisten(m, &format!("the event listener stopped: {error}"));
                     return Some(Vec::new());
+                }
+            };
+            if let Some(notify) = buffered {
+                // Consume already-buffered old-SID evidence before deciding
+                // whether a replacement subscription can be adopted.
+                notify
+            } else {
+                self.poll_renewals(m);
+                if let Some(early) = m.rec.subscriptions.take_early() {
+                    early
+                } else {
+                    // The outer loop checks its schedule every bounded TICK;
+                    // a due in-flight survey must not turn this into a spin.
+                    match m.sink.as_ref()?.recv_or_closed(max_wait) {
+                        Ok(notify) => notify?,
+                        Err(error) => {
+                            self.relisten(m, &format!("the event listener stopped: {error}"));
+                            return Some(Vec::new());
+                        }
+                    }
                 }
             }
         };
+        let s = m.sink.as_ref()?;
         if m.rec.subscriptions.hold_early(&n) {
             return Some(Vec::new());
         }

@@ -371,6 +371,21 @@ fn adopt(
             .position(|a| Arc::ptr_eq(&a.epoch, &before.epoch)),
         Baseline::Pending { .. } => None,
     };
+    if let Baseline::Active(before) = &plan.baseline
+        && let Some(index) = old
+        && let Some(next) = &result.next
+        && next.sid != before.sid
+        && subs.active[index].last_seq != before.last_seq
+    {
+        // The replacement's initial snapshot can predate an accepted event
+        // from the old stream. Their sequence spaces cannot order each other.
+        // Keep the observed stream and ask for fresh full state after backoff.
+        let current = &mut subs.active[index];
+        current.refresh_pending = true;
+        current.renew_at = result.completed + super::RETRY;
+        let cleanup = orphan.filter(|(_, sid)| !subs.active.iter().any(|a| a.sid == *sid));
+        return (None, cleanup);
+    }
     if let Some(next) = &mut result.next {
         let fresh = match &plan.baseline {
             Baseline::Active(before) => !Arc::ptr_eq(&before.epoch, &next.epoch),
@@ -452,6 +467,11 @@ impl Subscriber for Cancellable<'_> {
 }
 
 impl Subscriptions {
+    /// Enable event-loss recovery without performing or adopting network work.
+    pub(crate) fn defer_event_refresh(&mut self) {
+        self.deferred_refresh = true;
+    }
+
     /// A malformed event or a sequence gap requests a fresh full-state
     /// stream, but must not make the live event handler do network I/O.
     /// Coalesce repeats without resetting a failed request's backoff.
@@ -470,23 +490,26 @@ impl Subscriptions {
         true
     }
 
-    pub(crate) fn renew_background(
+    pub(crate) fn start_renewals(
         &mut self,
         provider: &Provider,
         callback: impl Fn(Service) -> String,
         stop: &Arc<AtomicBool>,
         now: Instant,
-    ) -> Vec<(Report, Instant)> {
-        self.deferred_refresh = true;
+    ) {
+        self.defer_event_refresh();
         let mut workers = std::mem::take(&mut self.maintenance);
-        let reports = workers.reap(self, stop.load(Ordering::Acquire));
-        workers.start(self, provider, &callback, stop, now);
+        workers.invalidate(self);
+        if stop.load(Ordering::Acquire) {
+            workers.cancel_all();
+        } else {
+            workers.start(self, provider, &callback, stop, now);
+        }
         self.maintenance = workers;
-        reports
     }
 
     pub(crate) fn poll_renewals(&mut self, stopping: bool) -> Vec<(Report, Instant)> {
-        self.deferred_refresh = true;
+        self.defer_event_refresh();
         let mut workers = std::mem::take(&mut self.maintenance);
         let reports = workers.reap(self, stopping);
         self.maintenance = workers;

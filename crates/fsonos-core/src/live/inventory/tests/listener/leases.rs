@@ -94,14 +94,13 @@ fn event_pump_accepts_notifications_while_lease_io_is_held_on_both_generations()
                 reply,
             });
             let provider: Arc<dyn Subscriber + Send + Sync> = held.clone();
-            let reports = f.model.rec.subscriptions.renew_background(
+            f.model.rec.subscriptions.start_renewals(
                 &provider,
                 |s| sink.callback_url(s.tag()),
                 &f.engine.stop,
                 Instant::now(),
             );
             drop(provider);
-            f.engine.lease_reports(&mut f.model, reports);
             wait_for(|| held.gate.entered.load(Ordering::Acquire));
             set_volume(&f.sim.lan(), a_player_ip, 67).unwrap();
             set_volume(&f.sim.lan(), b_player_ip, 59).unwrap();

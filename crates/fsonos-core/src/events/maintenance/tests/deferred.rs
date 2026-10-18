@@ -8,7 +8,7 @@ fn model(f: &mut Fixture) -> Reconciler {
     let now = Instant::now();
     let mut rec = Reconciler::new(RETRY, RETRY, now);
     rec.subscriptions = std::mem::take(&mut f.subs);
-    let _ = rec.subscriptions.poll_renewals(false);
+    rec.subscriptions.defer_event_refresh();
     for active in &mut rec.subscriptions.active {
         active.renew_at = now + Duration::from_mins(15);
     }
@@ -17,7 +17,7 @@ fn model(f: &mut Fixture) -> Reconciler {
 
 fn begin(f: &Fixture, rec: &mut Reconciler) {
     let provider: Provider = f.provider.clone();
-    let _ = rec.subscriptions.renew_background(
+    rec.subscriptions.start_renewals(
         &provider,
         |s| f.sink.callback_url(s.tag()),
         &f.stop,
