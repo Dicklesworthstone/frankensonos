@@ -80,8 +80,8 @@ const ScenesRemote = (() => {
     const names = new Set();
     return Object.freeze(v.map((row) => {
       const scene = sceneOf(row);
-      if (names.has(scene.name)) throw new Error('The scene list contains duplicate names.');
-      names.add(scene.name);
+      if (names.has(nameKey(scene.name))) throw new Error('The scene list contains duplicate names.');
+      names.add(nameKey(scene.name));
       return scene;
     }));
   }
@@ -113,6 +113,177 @@ const ScenesRemote = (() => {
     return lines.join('\n') || 'This scene keeps all unspecified house state.';
   }
 
+  // Scene names are case-insensitive in the daemon, using ASCII folding.
+  const nameKey = (name) => name.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const freeze = (value) => {
+    if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+      for (const child of Object.values(value)) freeze(child);
+      Object.freeze(value);
+    }
+    return value;
+  };
+
+  function roomsOf(zones) {
+    if (!Array.isArray(zones) || zones.length > 512) throw new Error('The room list is unreadable.');
+    const rooms = [], seen = new Set();
+    for (const z of zones) {
+      if (!plain(z) || !text(z.household) || !text(z.coordinator_room)
+          || !Array.isArray(z.members) || !z.members.length || z.members.length > 512
+          || !z.members.every((r) => text(r)) || !z.members.includes(z.coordinator_room)) {
+        throw new Error('The room list is incomplete.');
+      }
+      const shape = JSON.stringify([z.household, z.coordinator_room, [...z.members].sort()]);
+      for (const room of z.members) {
+        const target = `${room}@${z.household}`;
+        if (!text(target) || seen.has(nameKey(target)) || rooms.length === 512) {
+          throw new Error('The room list contains ambiguous or too many destinations.');
+        }
+        seen.add(nameKey(target));
+        rooms.push(Object.freeze({ target, room, household: z.household, shape }));
+      }
+    }
+    return Object.freeze(rooms);
+  }
+
+  // Match the public source normalizer without resolving links over a network.
+  function sourceUri(raw) {
+    const uri = raw.trim();
+    if (!uri || new TextEncoder().encode(uri).length > 2048 || /[\s\x00-\x1f\x7f-\x9f]/u.test(uri)) {
+      throw new Error('Use one music URI, at most 2048 bytes, without whitespace.');
+    }
+    const parts = /^([a-z][a-z0-9+.-]*):(.+)$/i.exec(uri);
+    if (!parts) throw new Error('The music URI needs a scheme.');
+    const scheme = parts[1].toLowerCase(), rest = parts[2];
+    const spotify = (kind, id) => {
+      kind = kind.toLowerCase();
+      if (!['track', 'album', 'playlist'].includes(kind) || !/^[a-z0-9]{22}$/i.test(id)) {
+        throw new Error('A scene plays a Spotify track, album or playlist with a complete 22-character ID.');
+      }
+      return `spotify:${kind}:${id}`;
+    };
+    if (scheme === 'spotify') {
+      const p = rest.split(':');
+      if (p.length === 2) return spotify(p[0], p[1]);
+      if (p.length === 4 && p[0].toLowerCase() === 'user' && p[2].toLowerCase() === 'playlist') return spotify('playlist', p[3]);
+      throw new Error('The Spotify URI is incomplete.');
+    }
+    if (['http', 'https'].includes(scheme) && rest.startsWith('//')) {
+      const slash = rest.indexOf('/', 2);
+      const host = rest.slice(2, slash < 0 ? undefined : slash).toLowerCase();
+      if (host === 'spotify.link' || host.endsWith('.spotify.link')) throw new Error('Open the short Spotify link and paste its full destination.');
+      if (['open.spotify.com', 'play.spotify.com'].includes(host)) {
+        const p = (slash < 0 ? '' : rest.slice(slash + 1)).split(/[?#]/)[0].split('/').filter(Boolean);
+        if (p[0]?.startsWith('intl-')) p.shift();
+        if (p[0] === 'embed') p.shift();
+        if (p.length === 2) return spotify(p[0], p[1]);
+        if (p.length === 4 && p[0] === 'user' && p[2] === 'playlist') return spotify('playlist', p[3]);
+        throw new Error('The Spotify link is incomplete.');
+      }
+    }
+    return uri;
+  }
+
+  function definition(draft, rooms, name) {
+    name = name.trim();
+    if (!text(name, 64)) throw new Error('Use a scene name of 1 to 64 characters.');
+    const byTarget = new Map(rooms.map((r) => [r.target, r]));
+    const room = (target) => {
+      if (!byTarget.has(target)) throw new Error('Choose a currently listed room for every target.');
+      return byTarget.get(target);
+    };
+    const used = new Set();
+    const groups = draft.groups.map((g) => {
+      const leader = room(g.coordinator);
+      for (const target of [g.coordinator, ...g.members]) {
+        if (used.has(target)) throw new Error('Each room can belong to only one group in the scene.');
+        if (room(target).household !== leader.household) throw new Error('Rooms in different households cannot share a group.');
+        used.add(target);
+      }
+      if (!['keep', 'favorite', 'uri', 'dj'].includes(g.kind)
+          || !['keep', 'play', 'pause'].includes(g.playing)
+          || (g.kind !== 'keep' && g.playing === 'keep')) throw new Error('Choose a source and explicit playback setting.');
+      const source = { kind: g.kind };
+      if (g.kind === 'uri') source.uri = sourceUri(g.value);
+      if (g.kind === 'favorite') {
+        if (!text(g.value.trim())) throw new Error('Name a favorite by its exact title or ID.');
+        source.name = g.value.trim();
+      }
+      if (g.kind === 'dj' && g.value.trim()) {
+        if (!text(g.value.trim(), 128)) throw new Error('The DJ mood name is too long.');
+        source.mood = g.value.trim();
+      }
+      return { coordinator: leader.target, members: [...g.members], source,
+        ...(g.playing === 'keep' ? {} : { playing: g.playing === 'play' }) };
+    });
+    const volumes = Object.create(null), mutes = Object.create(null);
+    for (const [target, value] of Object.entries(draft.volumes)) {
+      if (value === '') continue;
+      room(target);
+      if (!/^(?:0|[1-9]\d{0,2})$/.test(value) || Number(value) > 100) throw new Error('Room volumes must be whole numbers from 0 to 100, or blank to leave unchanged.');
+      volumes[target] = Number(value);
+    }
+    for (const [target, value] of Object.entries(draft.mutes)) {
+      if (value === 'keep') continue;
+      room(target);
+      if (!['muted', 'unmuted'].includes(value)) throw new Error('Choose muted, unmuted, or unchanged.');
+      mutes[target] = value === 'muted';
+    }
+    // An empty object means CAPTURE to PUT /scenes/{name}, not an empty scene.
+    if (!groups.length && !Object.keys(volumes).length && !Object.keys(mutes).length) {
+      throw new Error('Define at least one group, volume or mute; an empty definition is not a custom scene.');
+    }
+    return { name, body: { groups, volumes, mutes } };
+  }
+
+  // The daemon enriches favorite sources with a renderer URI that the
+  // read-only FavoriteDto deliberately does not expose. Compare every authored
+  // field while leaving that server-learned field out of the save check.
+  function authoredSignature(scene) {
+    return signature({ ...scene, groups: scene.groups.map((g) => g.source.kind === 'favorite'
+      ? { ...g, source: { ...g.source, uri: null } } : g) });
+  }
+
+  async function prepareDefinition(draft, rooms, name, call, active = () => true) {
+    const prepared = definition(draft, rooms, name);
+    const preview = structuredClone(prepared.body);
+    const dependencies = [];
+    for (let i = 0; i < prepared.body.groups.length; i++) {
+      if (!active()) return null;
+      const group = prepared.body.groups[i], source = group.source;
+      if (source.kind === 'favorite') {
+        const values = await call('favorites', { query: { zone: group.coordinator } });
+        if (!active()) return null;
+        if (!Array.isArray(values) || values.length > 10000
+            || !values.every((f) => plain(f) && text(f.id) && text(f.title))) throw new Error('The favorite list is unreadable.');
+        const ids = values.filter((f) => f.id === source.name);
+        const matches = ids.length ? ids : values.filter((f) => nameKey(f.title) === nameKey(source.name));
+        if (matches.length !== 1 || !['track', 'stream', 'container'].includes(matches[0].kind)) throw new Error('Choose one playable favorite by its exact title or unique ID.');
+        const f = matches[0];
+        // Saved scenes retain a favorite's title, not its ID. An ambiguous
+        // title cannot later be applied reliably, even if an ID selected it.
+        if (values.filter((v) => nameKey(v.title) === nameKey(f.title)).length !== 1) {
+          throw new Error('That favorite title is ambiguous. Give it a unique title before saving a scene.');
+        }
+        dependencies.push({ zone: group.coordinator, id: f.id, title: f.title, kind: f.kind,
+          description: f.description ?? null, art_uri: f.art_uri ?? null });
+        source.name = f.id;
+        preview.groups[i].source = { kind: 'favorite', name: f.title };
+      } else if (source.kind === 'dj' && source.mood) {
+        const values = await call('moods', { query: { zone: group.coordinator } });
+        if (!active()) return null;
+        if (!plain(values) || !Array.isArray(values.moods) || values.moods.length > 512
+            || !values.moods.every((m) => plain(m) && text(m.name, 128))) throw new Error('The DJ mood list is unreadable.');
+        const matches = values.moods.filter((m) => nameKey(m.name) === nameKey(source.mood));
+        if (matches.length !== 1) throw new Error('Choose a currently listed DJ mood, or leave it blank for automatic.');
+        source.mood = preview.groups[i].source.mood = matches[0].name;
+      }
+    }
+    const targets = new Set(prepared.body.groups.flatMap((g) => [g.coordinator, ...g.members])
+      .concat(Object.keys(prepared.body.volumes), Object.keys(prepared.body.mutes)));
+    return freeze({ ...prepared, dependencies, preview: sceneOf({ name: prepared.name, saved: 0, ...preview }),
+      rooms: rooms.filter((r) => targets.has(r.target)) });
+  }
+
   // SceneApplyDto omits empty optional lists. Missing is valid; null or a
   // malformed list is not evidence that all steps succeeded.
   function appliedOf(value, name) {
@@ -142,7 +313,7 @@ const ScenesRemote = (() => {
     let epoch = 0;
     let disposed = false;
     const state = { open: false, rows: [], loaded: false, loading: false, writing: false,
-      pending: null, name: '', fade: '0', message: '', result: null };
+      pending: null, name: '', fade: '0', message: '', result: null, draft: null, rooms: null, saved: null };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) {} } };
     const current = (version) => !disposed && state.open && epoch === version;
     const invalidate = () => { ++epoch; state.pending = null; state.loaded = false; state.loading = false; };
@@ -151,6 +322,7 @@ const ScenesRemote = (() => {
       if (disposed || state.writing) return false;
       state.open = true;
       invalidate();
+      state.draft = state.rooms = null;
       const version = epoch;
       state.loading = true;
       state.message = '';
@@ -180,10 +352,11 @@ const ScenesRemote = (() => {
 
     function review(action, name = null) {
       if (disposed || !state.open || !state.loaded || state.loading || state.writing || state.pending) return false;
+      if (state.draft) return false;
       if (!['capture', 'apply', 'delete'].includes(action)) return false;
       const asked = action === 'capture' ? state.name.trim() : name;
       if (!text(asked, action === 'capture' ? 64 : 512)) return false;
-      const row = state.rows.find((r) => r.name === asked) || null;
+      const row = state.rows.find((r) => nameKey(r.name) === nameKey(asked)) || null;
       if (action !== 'capture' && !row) return false;
       let fadeSecs = null;
       if (action === 'apply') {
@@ -195,6 +368,85 @@ const ScenesRemote = (() => {
       state.pending = Object.freeze({ action, name: asked, row, fadeSecs });
       publish();
       return true;
+    }
+
+    let groupId = 0;
+    const editable = () => !disposed && state.open && state.loaded && !state.loading && !state.writing;
+    async function beginDefinition() {
+      if (!editable() || state.pending) return false;
+      const version = ++epoch;
+      state.loading = true;
+      state.message = '';
+      publish();
+      try {
+        const rooms = roomsOf(await call('zones'));
+        if (!current(version)) return false;
+        if (!rooms.length) throw new Error('No rooms are available for a custom scene.');
+        state.rooms = rooms;
+        state.draft = freeze({ groups: [], volumes: {}, mutes: {} });
+        return true;
+      } catch (e) {
+        if (current(version)) state.message = errorText(e);
+        return false;
+      } finally {
+        if (current(version)) { state.loading = false; publish(); }
+      }
+    }
+    function changeDraft(next) {
+      ++epoch;
+      state.pending = null;
+      state.draft = freeze(next);
+      state.message = '';
+      publish();
+      return true;
+    }
+    function addGroup() {
+      if (!editable() || !state.draft || state.draft.groups.length >= 32) return false;
+      return changeDraft({ ...state.draft, groups: [...state.draft.groups,
+        { id: ++groupId, coordinator: '', members: [], kind: 'keep', value: '', playing: 'keep' }] });
+    }
+    function editGroup(group, key, value) {
+      if (!editable() || !state.draft?.groups.includes(group)
+          || !['coordinator', 'members', 'kind', 'value', 'playing'].includes(key)) return false;
+      if (key === 'members' ? !Array.isArray(value) || !value.every((v) => typeof v === 'string') : typeof value !== 'string') return false;
+      let next = { ...group, [key]: key === 'members' ? [...value] : value };
+      if (key === 'coordinator') next = { ...next, members: [], kind: 'keep', value: '', playing: 'keep' };
+      if (key === 'kind') next = { ...next, value: '', playing: value === 'keep' ? 'keep' : 'play' };
+      return changeDraft({ ...state.draft, groups: state.draft.groups.map((g) => g === group ? next : g) });
+    }
+    function removeGroup(group) {
+      if (!editable() || !state.draft?.groups.includes(group)) return false;
+      return changeDraft({ ...state.draft, groups: state.draft.groups.filter((g) => g !== group) });
+    }
+    function editRoom(target, field, value) {
+      if (!editable() || !state.draft || !['volumes', 'mutes'].includes(field)
+          || typeof value !== 'string' || !state.rooms.some((r) => r.target === target)) return false;
+      return changeDraft({ ...state.draft, [field]: { ...state.draft[field], [target]: value } });
+    }
+    function discardDefinition() {
+      if (disposed || state.writing) return false;
+      ++epoch; state.pending = null; state.loading = false; state.draft = state.rooms = null;
+      publish();
+      return true;
+    }
+    async function reviewDefinition() {
+      if (!editable() || !state.draft || state.pending) return false;
+      const version = ++epoch;
+      state.loading = true;
+      state.message = '';
+      publish();
+      try {
+        const prepared = await prepareDefinition(state.draft, state.rooms, state.name, call, () => current(version));
+        if (!current(version) || !prepared) return false;
+        state.pending = Object.freeze({ action: 'define', name: prepared.name, prepared,
+          draft: state.draft, row: state.rows.find((r) => nameKey(r.name) === nameKey(prepared.name)) || null });
+        return true;
+      } catch (e) {
+        if (current(version)) state.message = errorText(e);
+        return false;
+      } finally {
+        if (current(version)) { state.loading = false; publish(); }
+      }
     }
 
     function cancel() {
@@ -215,16 +467,41 @@ const ScenesRemote = (() => {
       try {
         const latest = scenesOf(await call('scenes'));
         if (!current(version)) return false;
-        const now = latest.find((r) => r.name === reviewed.name) || null;
-        if (reviewed.action === 'capture') {
+        const now = latest.find((r) => nameKey(r.name) === nameKey(reviewed.name)) || null;
+        if (reviewed.action === 'capture' || reviewed.action === 'define') {
           if ((reviewed.row == null) !== (now == null)
               || (reviewed.row && signature(reviewed.row) !== signature(now))) {
             throw new Error('That scene changed while you reviewed the capture. Refresh and review again.');
           }
+          let prepared = null;
+          if (reviewed.action === 'define') {
+            const rooms = roomsOf(await call('zones'));
+            if (!current(version)) return false;
+            for (const room of reviewed.prepared.rooms) {
+              if (!rooms.some((r) => r.target === room.target && r.shape === room.shape)) {
+                throw new Error('A selected room or its group changed. Reload the editor and review again.');
+              }
+            }
+            prepared = await prepareDefinition(reviewed.draft, rooms, reviewed.name, call, () => current(version));
+            if (!current(version) || !prepared) return false;
+            if (signature(prepared.preview) !== signature(reviewed.prepared.preview)
+                || JSON.stringify(prepared.body) !== JSON.stringify(reviewed.prepared.body)
+                || JSON.stringify(prepared.dependencies) !== JSON.stringify(reviewed.prepared.dependencies)) {
+              throw new Error('The selected source changed. Reload the editor and review again.');
+            }
+          }
           sent = true;
-          const saved = sceneOf(await call('sceneSave', { params: { name: reviewed.name }, body: {} }));
+          const saved = sceneOf(await call('sceneSave', { params: { name: reviewed.name }, body: prepared ? prepared.body : {} }));
+          if (prepared && authoredSignature(saved) !== authoredSignature(prepared.preview)) {
+            throw new Error('The reply did not confirm the reviewed custom scene definition.');
+          }
           if (saved.name !== reviewed.name) throw new Error('The reply did not confirm the reviewed scene name.');
-          if (!disposed) state.message = `Captured the current house as “${saved.name}”. Refresh before another scene change.`;
+          if (!disposed) {
+            state.saved = saved;
+            state.draft = state.rooms = null;
+            state.message = prepared ? `Saved custom scene “${saved.name}”. No playback was changed. Refresh and review it before applying.`
+              : `Captured the current house as “${saved.name}”. Refresh before another scene change.`;
+          }
           return true;
         }
         if (!now || signature(now) !== signature(reviewed.row)) {
@@ -272,7 +549,8 @@ const ScenesRemote = (() => {
     }
 
     return { state, refresh, editName, editFade, review, cancel, confirm,
-      close() { state.open = false; invalidate(); publish(); },
+      beginDefinition, addGroup, editGroup, removeGroup, editRoom, discardDefinition, reviewDefinition,
+      close() { state.open = false; invalidate(); state.draft = state.rooms = null; publish(); },
       dispose() { disposed = true; ++epoch; } };
   }
 
@@ -284,21 +562,92 @@ const ScenesRemote = (() => {
     const button = (label, key, work, disabled = false) => el('button', {
       type: 'button', text: label, 'data-scene-focus': key, disabled, onclick: work,
     });
+    function definitionForm(s) {
+      const form = el('section', { class: 'scene-definition', 'aria-label': 'Custom scene definition' },
+        el('h3', { text: 'Build a custom scene' }),
+        el('p', { text: 'Only save a definition here; no speaker is changed. Declare exact groups, or leave groups empty for a volume/mute-only scene. Unlisted members of a declared group will detach when it is applied.' }));
+      const busy = !s.loaded || s.loading || s.writing || !!s.pending;
+      const select = (label, key, value, choices, work) => {
+        const node = el('select', { 'aria-label': label, 'data-scene-focus': key, disabled: busy,
+          onchange: (e) => work(e.target.value) });
+        for (const [v, label] of choices) node.append(el('option', { value: v, text: label }));
+        node.value = value;
+        return el('label', {}, label, node);
+      };
+      for (const [i, g] of s.draft.groups.entries()) {
+        const lead = s.rooms.find((r) => r.target === g.coordinator);
+        const field = el('fieldset', {}, el('legend', { text: `Group ${i + 1}` }));
+        field.append(select(`Group ${i + 1} coordinator`, `leader-${g.id}`, g.coordinator,
+          [['', 'Choose a room…'], ...s.rooms.map((r) => [r.target, r.target])],
+          (v) => control.editGroup(g, 'coordinator', v)));
+        const members = el('div', { class: 'scene-members' });
+        for (const r of s.rooms.filter((r) => lead && r.household === lead.household && r.target !== lead.target)) {
+          members.append(el('label', {}, el('input', { type: 'checkbox', checked: g.members.includes(r.target),
+            'aria-label': `Group ${i + 1} member ${r.target}`, 'data-scene-focus': `member-${g.id}-${r.target}`, disabled: busy,
+            onchange: (e) => control.editGroup(g, 'members', e.target.checked
+              ? [...g.members, r.target] : g.members.filter((v) => v !== r.target)) }), r.target));
+        }
+        field.append(members, select(`Group ${i + 1} source`, `source-${g.id}`, g.kind,
+          [['keep', 'Keep the current source'], ['favorite', 'Sonos favorite'], ['uri', 'Music URI or Spotify link'], ['dj', 'DJ']],
+          (v) => control.editGroup(g, 'kind', v)));
+        if (g.kind !== 'keep') {
+          const label = g.kind === 'favorite' ? 'Exact favorite title or ID' : g.kind === 'uri' ? 'Music URI or Spotify link' : 'DJ mood (blank for automatic)';
+          field.append(el('label', {}, label, el('input', { type: 'text', value: g.value,
+            maxlength: 2048, 'aria-label': `Group ${i + 1} ${label}`, 'data-scene-focus': `value-${g.id}`, disabled: busy,
+            oninput: (e) => control.editGroup(g, 'value', e.target.value) })));
+        }
+        field.append(select(`Group ${i + 1} playback`, `playing-${g.id}`, g.playing,
+          [...(g.kind === 'keep' ? [['keep', 'Leave playback unchanged']] : []), ['play', 'Playing'], ['pause', 'Paused']],
+          (v) => control.editGroup(g, 'playing', v)),
+          button('Remove group', `remove-group-${g.id}`, () => control.removeGroup(g), busy));
+        form.append(field);
+      }
+      form.append(button('Add group', 'add-group', () => control.addGroup(), busy || s.draft.groups.length >= 32),
+        el('h3', { text: 'Optional room settings' }),
+        el('p', { text: 'Blank volume and unchanged mute leave those settings alone. Saved levels remain subject to the house policy when applied.' }));
+      const settings = el('div', { class: 'scene-room-settings' });
+      for (const room of s.rooms) {
+        settings.append(el('fieldset', {}, el('legend', { text: room.target }),
+          el('label', {}, 'Volume (blank = unchanged)', el('input', { type: 'number', min: 0, max: 100, step: 1,
+            value: s.draft.volumes[room.target] ?? '', 'aria-label': `Volume for ${room.target}`,
+            'data-scene-focus': `level-${room.target}`, disabled: busy,
+            oninput: (e) => control.editRoom(room.target, 'volumes', e.target.value) })),
+          select(`Mute for ${room.target}`, `mute-${room.target}`, s.draft.mutes[room.target] ?? 'keep',
+            [['keep', 'Leave unchanged'], ['muted', 'Muted'], ['unmuted', 'Unmuted']],
+            (v) => control.editRoom(room.target, 'mutes', v))));
+      }
+      form.append(settings, el('div', { class: 'row' },
+        button('Cancel custom scene', 'discard-definition', () => control.discardDefinition(), s.writing),
+        button('Review custom scene', 'review-definition', () => reviewCustom(), busy)));
+      return form;
+    }
     let reviewFocus = null;
+    async function reviewCustom() {
+      const active = document.activeElement;
+      reviewFocus = active?.getAttribute('data-scene-focus');
+      const reviewed = await control.reviewDefinition();
+      if (reviewed && control.state.pending?.action === 'define'
+          && (document.activeElement === active || document.activeElement === document.body)) {
+        body.querySelector('[data-scene-focus="cancel"]')?.focus({ preventScroll: true });
+      }
+    }
     function render(s) {
       const active = document.activeElement;
       const focus = body.contains(active) ? active.getAttribute('data-scene-focus') : null;
-      const caret = focus === 'name' ? active.selectionStart : null;
+      const caret = focus && active.type === 'text' ? active.selectionStart : null;
       if (s.pending && focus && focus !== 'cancel') reviewFocus = focus;
       body.replaceChildren();
       body.setAttribute('aria-busy', String(s.loading || s.writing));
       body.append(el('p', { text: 'Scenes are daemon-saved house states. Capture is storage-only; apply can regroup rooms and change sources, volume and mute. Action history can attempt undo, but cannot reconstruct replaced queues.' }),
-        el('div', { class: 'row' }, button('Refresh scenes', 'refresh', () => control.refresh(), s.loading || s.writing)));
+        el('div', { class: 'row' }, button('Refresh scenes', 'refresh', () => control.refresh(), s.loading || s.writing),
+          button('New custom scene', 'new-definition', () => control.beginDefinition(), !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft)));
       const name = el('input', { type: 'text', maxlength: 128, value: s.name,
         placeholder: 'Scene name', 'aria-label': 'Scene name', 'data-scene-focus': 'name',
         disabled: s.loading || s.writing, oninput: (e) => control.editName(e.target.value) });
       body.append(el('div', { class: 'scene-capture' }, name,
-        button('Review capture', 'capture', () => control.review('capture'), !s.loaded || s.loading || s.writing || !!s.pending)));
+        button('Review capture', 'capture', () => control.review('capture'), !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft)));
+      if (s.draft) body.append(definitionForm(s));
+      if (s.saved) body.append(el('details', {}, el('summary', { text: `Last saved scene: ${s.saved.name}` }), el('pre', { text: detail(s.saved) })));
       if (s.message) body.append(el('p', { role: 'status', text: s.message }));
       if (s.result) {
         const result = s.result;
@@ -315,20 +664,23 @@ const ScenesRemote = (() => {
       if (s.writing) body.append(el('p', { role: 'status', text: 'Checking and sending the reviewed scene change. Do not repeat it from another tab.' }));
       if (s.pending) {
         const p = s.pending;
-        const title = p.action === 'capture'
+        const title = p.action === 'define' ? `${p.row ? 'Replace' : 'Create'} custom scene “${p.name}”?` : p.action === 'capture'
           ? `${p.row ? 'Replace' : 'Create'} scene “${p.name}” from the house as it is now?`
           : p.action === 'apply' ? `Apply scene “${p.name}”?` : `Delete scene “${p.name}”?`;
         const review = el('section', { class: 'scene-review', 'aria-label': 'Review scene change' },
           el('h3', { text: title }));
-        if (p.row) review.append(el('pre', { text: detail(p.row) }));
-        review.append(el('p', { text: p.action === 'capture'
+        if (p.prepared) review.append(el('pre', { text: detail(p.prepared.preview) }));
+        if (p.row) review.append(el('details', {}, el('summary', { text: 'Existing saved definition' }), el('pre', { text: detail(p.row) })));
+        review.append(el('p', { text: p.action === 'define'
+          ? 'Saving does not play or regroup anything. Apply the saved scene separately. The daemon resolves favorites and moods by name; later edits can change them. This preview is not an atomic lock on another client’s edits.'
+          : p.action === 'capture'
           ? 'Capture reads the current house when confirmed and replaces this saved name. The definition is checked before sending, not locked; another client can still edit it between that read and the save.'
           : p.action === 'delete'
             ? 'Deleting forgets only the saved scene. It does not change speakers and speaker undo cannot restore the saved definition.'
             : p.fadeSecs ? `Volumes ramp for ${p.fadeSecs} second(s). The definition is checked again before the speaker write, but another controller can still change the house concurrently.`
               : 'The definition is checked again before the speaker write, but another controller can still change the house concurrently.' }));
         review.append(el('div', { class: 'row' }, button('Cancel', 'cancel', () => control.cancel()),
-          button(p.action === 'capture' ? 'Capture scene' : p.action === 'apply' ? 'Apply scene' : 'Delete scene',
+          button(p.action === 'define' ? 'Save custom scene' : p.action === 'capture' ? 'Capture scene' : p.action === 'apply' ? 'Apply scene' : 'Delete scene',
             'confirm', () => control.confirm(p), s.writing)));
         body.append(review);
       }
@@ -336,13 +688,13 @@ const ScenesRemote = (() => {
       for (const row of s.rows) {
         const fade = el('input', { type: 'number', min: 0, max: 60, step: 1, value: s.fade,
           'aria-label': `Fade seconds for ${row.name}`, 'data-scene-focus': `fade-${row.name}`,
-          disabled: !s.loaded || s.loading || s.writing || !!s.pending, oninput: (e) => control.editFade(e.target.value) });
+          disabled: !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft, oninput: (e) => control.editFade(e.target.value) });
         body.append(el('article', { class: 'scene-card' },
           el('h3', { text: row.name }), el('pre', { text: detail(row) }),
           el('div', { class: 'scene-fade' }, el('label', { text: 'Apply fade (0–60 s)' }), fade),
           el('div', { class: 'row' },
-            button('Review apply', `apply-${row.name}`, () => control.review('apply', row.name), !s.loaded || s.loading || s.writing || !!s.pending),
-            button('Review delete', `delete-${row.name}`, () => control.review('delete', row.name), !s.loaded || s.loading || s.writing || !!s.pending))));
+            button('Review apply', `apply-${row.name}`, () => control.review('apply', row.name), !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft),
+            button('Review delete', `delete-${row.name}`, () => control.review('delete', row.name), !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft))));
       }
       // Keep keyboard review usable without stealing focus from elsewhere.
       const key = focus && (s.pending ? 'cancel' : focus === 'cancel' ? reviewFocus : focus === 'confirm' ? 'refresh' : focus);
@@ -350,7 +702,7 @@ const ScenesRemote = (() => {
         .find((e) => e.getAttribute('data-scene-focus') === key);
       if (next && !next.disabled) {
         next.focus({ preventScroll: true });
-        if (key === 'name' && Number.isInteger(caret)) next.setSelectionRange(caret, caret);
+        if (next.type === 'text' && Number.isInteger(caret)) next.setSelectionRange(caret, caret);
       }
     }
     node.addEventListener('toggle', () => { if (node.open) void control.refresh(); else control.close(); });
@@ -358,7 +710,7 @@ const ScenesRemote = (() => {
     return { node, dispose: control.dispose };
   }
 
-  return { routes, sceneOf, scenesOf, signature, detail, appliedOf, model, panel };
+  return { routes, sceneOf, scenesOf, signature, detail, appliedOf, roomsOf, sourceUri, definition, prepareDefinition, model, panel };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = ScenesRemote;

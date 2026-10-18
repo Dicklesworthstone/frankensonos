@@ -390,3 +390,356 @@ test('map key order alone does not change a reviewed scene definition', () => {
     mutes: { 'Kitchen@S2': false, 'Living Room@S2': false } }));
   assert.equal(Scenes.signature(a), Scenes.signature(b));
 });
+
+const topology = () => [
+  { household: 'S1', coordinator_room: 'Den', members: ['Den', 'Hall'] },
+  { household: 'S2', coordinator_room: 'Den', members: ['Den', 'Studio'] },
+];
+const SPOTIFY_ID = '0123456789ABCDEFabcdef';
+function editorFixture(initial = []) {
+  const f = { rows: structuredClone(initial), zones: topology(), writes: [], reads: [],
+    favorites: [{ id: 'FV:2/1', title: 'Dinner', kind: 'container', description: 'Owner mix' }],
+    moods: { moods: [{ name: 'focus' }] }, hook: null };
+  f.call = async (name, options = {}) => {
+    if (f.hook) {
+      const result = await f.hook(name, options);
+      if (result !== undefined) return result;
+    }
+    f.reads.push({ name, ...structuredClone(options) });
+    if (name === 'scenes') return structuredClone(f.rows);
+    if (name === 'zones') return structuredClone(f.zones);
+    if (name === 'favorites') return structuredClone(f.favorites);
+    if (name === 'moods') return structuredClone(f.moods);
+    assert.equal(name, 'sceneSave', 'custom scene creation must never send a speaker command');
+    f.writes.push({ name, ...structuredClone(options) });
+    const saved = { name: options.params.name, saved: 1_900_000_001, ...structuredClone(options.body) };
+    for (const g of saved.groups) if (g.source.kind === 'favorite') {
+      const favorite = f.favorites.find((v) => v.id === g.source.name);
+      g.source.name = favorite.title;
+      g.source.uri = 'x-file:server-learned-favorite';
+    }
+    f.rows = [...f.rows.filter((r) => r.name.toLowerCase() !== saved.name.toLowerCase()), saved];
+    return saved;
+  };
+  f.control = Scenes.model({ call: f.call });
+  return f;
+}
+async function editor(f = editorFixture()) {
+  await f.control.refresh();
+  assert.equal(await f.control.beginDefinition(), true);
+  f.control.editName('Morning');
+  return f;
+}
+function group(f, coordinator, kind = 'keep', value = '', members = []) {
+  const c = f.control;
+  c.addGroup();
+  const index = c.state.draft.groups.length - 1;
+  const set = (field, value) => c.editGroup(c.state.draft.groups[index], field, value);
+  set('coordinator', coordinator);
+  set('kind', kind);
+  set('value', value);
+  set('members', members);
+  return index;
+}
+async function saveDefinition(f) {
+  assert.equal(await f.control.reviewDefinition(), true, f.control.state.message);
+  assert.equal(await f.control.confirm(f.control.state.pending), true, f.control.state.message);
+  return f.writes[0].body;
+}
+
+test('custom editor is lazy, reads household-qualified choices, and does not preselect groups', async () => {
+  const f = editorFixture();
+  assert.deepEqual(f.reads, []);
+  assert.equal(await f.control.beginDefinition(), false);
+  await editor(f);
+  assert.deepEqual(f.control.state.draft.groups, []);
+  assert.deepEqual(f.control.state.rooms.map((r) => r.target), ['Den@S1', 'Hall@S1', 'Den@S2', 'Studio@S2']);
+  assert.deepEqual(f.writes, []);
+});
+
+test('volume and mute only scenes preserve zero and false and never become a capture', async () => {
+  const f = await editor();
+  f.control.editRoom('Den@S1', 'volumes', '0');
+  f.control.editRoom('Den@S2', 'volumes', '100');
+  f.control.editRoom('Hall@S1', 'mutes', 'unmuted');
+  f.control.editRoom('Studio@S2', 'mutes', 'muted');
+  const body = await saveDefinition(f);
+  assert.deepEqual(body, { groups: [], volumes: { 'Den@S1': 0, 'Den@S2': 100 },
+    mutes: { 'Hall@S1': false, 'Studio@S2': true } });
+  assert.equal(f.writes.length, 1);
+  assert.match(f.control.state.message, /No playback was changed/);
+  assert.equal(f.control.state.saved.name, 'Morning');
+});
+
+test('one scene can define independent S1 and S2 groups with different sources', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'uri', `spotify:playlist:${SPOTIFY_ID}`, ['Hall@S1']);
+  group(f, 'Studio@S2', 'dj', '', ['Den@S2']);
+  f.control.editRoom('Studio@S2', 'volumes', '25');
+  const body = await saveDefinition(f);
+  assert.deepEqual(body.groups, [
+    { coordinator: 'Den@S1', members: ['Hall@S1'], source: { kind: 'uri', uri: `spotify:playlist:${SPOTIFY_ID}` }, playing: true },
+    { coordinator: 'Studio@S2', members: ['Den@S2'], source: { kind: 'dj' }, playing: true },
+  ]);
+  assert.equal(f.writes.length, 1);
+});
+
+test('favorite scenes resolve exact household favorites and accept server-learned URI metadata', async () => {
+  for (const value of ['Dinner', 'FV:2/1']) {
+    const f = await editor();
+    group(f, 'Hall@S1', 'favorite', value);
+    const body = await saveDefinition(f);
+    assert.deepEqual(body.groups[0].source, { kind: 'favorite', name: 'FV:2/1' });
+    assert.equal(f.control.state.saved.groups[0].source.name, 'Dinner');
+    assert.equal(f.reads.filter((r) => r.name === 'favorites').length, 2);
+    assert.ok(f.reads.filter((r) => r.name === 'favorites').every((r) => r.query.zone === 'Hall@S1'));
+  }
+});
+
+test('named DJ moods are resolved through the destination rather than guessed or silently defaulted', async () => {
+  const f = await editor();
+  group(f, 'Studio@S2', 'dj', 'FOCUS');
+  const body = await saveDefinition(f);
+  assert.deepEqual(body.groups[0].source, { kind: 'dj', mood: 'focus' });
+  assert.ok(f.reads.filter((r) => r.name === 'moods').every((r) => r.query.zone === 'Studio@S2'));
+});
+
+test('Spotify share links and legacy URIs normalize to the same saved source without link fetches', () => {
+  for (const [raw, kind] of [[`Spotify:Album:${SPOTIFY_ID}`, 'album'],
+    [`https://open.spotify.com/intl-fr/embed/track/${SPOTIFY_ID}?si=abc#fragment`, 'track'],
+    [`https://play.spotify.com/user/me/playlist/${SPOTIFY_ID}`, 'playlist'],
+    [`spotify:user:me:playlist:${SPOTIFY_ID}`, 'playlist']]) {
+    assert.equal(Scenes.sourceUri(raw), `spotify:${kind}:${SPOTIFY_ID}`);
+  }
+  assert.equal(Scenes.sourceUri('x-file-cifs:owner/music.flac'), 'x-file-cifs:owner/music.flac');
+  for (const value of ['Spotify:artist:' + SPOTIFY_ID, 'spotify:track:short',
+    'https://spotify.link/short', 'not a URI', 'x-file:a b', 'x-file:\u0000', 'x-file:' + 'é'.repeat(1100)]) {
+    assert.throws(() => Scenes.sourceUri(value), value);
+  }
+});
+
+test('empty custom definitions cannot trigger the PUT endpoint implicit capture behavior', async () => {
+  const f = await editor();
+  assert.equal(await f.control.reviewDefinition(), false);
+  assert.match(f.control.state.message, /at least one/);
+  assert.deepEqual(f.writes, []);
+  assert.equal(f.control.review('capture'), false, 'capture is a different explicit workflow');
+});
+
+test('cross-household and overlapping group definitions fail before saving', async () => {
+  for (const [leader, members] of [['Den@S1', ['Den@S2']], ['Den@S1', ['Den@S1']]]) {
+    const f = await editor();
+    group(f, leader, 'keep', '', members);
+    assert.equal(await f.control.reviewDefinition(), false);
+    assert.deepEqual(f.writes, []);
+  }
+  const f = await editor();
+  group(f, 'Den@S1', 'keep', '', ['Hall@S1']);
+  group(f, 'Hall@S1');
+  assert.equal(await f.control.reviewDefinition(), false);
+  assert.match(f.control.state.message, /only one group/);
+});
+
+test('unknown targets, bad volumes and bad mute choices never become inferred settings', async () => {
+  const f = await editor();
+  assert.equal(f.control.editRoom('Not in the house', 'volumes', '20'), false);
+  for (const [field, value] of [['volumes', '101'], ['volumes', '-1'], ['volumes', '0x20'],
+    ['volumes', '1.5'], ['mutes', 'false']]) {
+    await f.control.beginDefinition();
+    f.control.editRoom('Den@S1', field, value);
+    assert.equal(await f.control.reviewDefinition(), false, `${field}/${value}`);
+  }
+  assert.deepEqual(f.writes, []);
+});
+
+test('new source modes clear obsolete fields and require intentional playback semantics', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'uri', `spotify:album:${SPOTIFY_ID}`);
+  let g = f.control.state.draft.groups[0];
+  f.control.editGroup(g, 'kind', 'keep');
+  g = f.control.state.draft.groups[0];
+  assert.equal(g.value, '');
+  assert.equal(g.playing, 'keep');
+  f.control.editGroup(g, 'playing', 'pause');
+  const body = await saveDefinition(f);
+  assert.deepEqual(body.groups[0], { coordinator: 'Den@S1', members: [], source: { kind: 'keep' }, playing: false });
+});
+
+test('case variants of a saved scene are reviewed as replacements instead of new names', async () => {
+  const f = await editor(editorFixture([row()]));
+  f.control.editName('EVENING');
+  f.control.editRoom('Den@S1', 'volumes', '20');
+  assert.equal(await f.control.reviewDefinition(), true);
+  assert.equal(f.control.state.pending.row.name, 'Evening');
+  f.rows[0].volumes['Living Room@S2'] = 80;
+  assert.equal(await f.control.confirm(f.control.state.pending), false);
+  assert.deepEqual(f.writes, []);
+  const capture = fixture();
+  await capture.control.refresh();
+  capture.control.editName('EVENING');
+  capture.control.review('capture');
+  assert.equal(capture.control.state.pending.row.name, 'Evening');
+});
+
+test('favorite changes after review invalidate the prepared source without saving it', async () => {
+  for (const patch of [{ title: 'Different favorite' }, { kind: 'track' }, { description: 'Changed contents' }]) {
+    const f = await editor();
+    group(f, 'Den@S1', 'favorite', 'FV:2/1');
+    assert.equal(await f.control.reviewDefinition(), true);
+    Object.assign(f.favorites[0], patch);
+    assert.equal(await f.control.confirm(f.control.state.pending), false);
+    assert.deepEqual(f.writes, []);
+  }
+});
+
+test('shortcuts, ambiguous favorite titles and unknown moods are not saved as playable sources', async () => {
+  for (const source of ['favorite', 'dj']) {
+    const f = await editor();
+    group(f, 'Den@S1', source, source === 'favorite' ? 'FV:2/1' : 'unknown mood');
+    if (source === 'favorite') f.favorites[0].kind = 'unplayable';
+    assert.equal(await f.control.reviewDefinition(), false);
+    assert.deepEqual(f.writes, []);
+  }
+  const f = await editor();
+  f.favorites.push({ id: 'FV:2/2', title: 'Dinner', kind: 'track' });
+  group(f, 'Den@S1', 'favorite', 'FV:2/1');
+  assert.equal(await f.control.reviewDefinition(), false);
+  assert.match(f.control.state.message, /ambiguous/);
+});
+
+test('group changes after review are refused while harmless topology ordering is allowed', async () => {
+  const f = await editor();
+  group(f, 'Den@S1');
+  await f.control.reviewDefinition();
+  f.zones[0].members.push('New room');
+  assert.equal(await f.control.confirm(f.control.state.pending), false);
+  assert.deepEqual(f.writes, []);
+  const unchanged = await editor();
+  group(unchanged, 'Den@S1');
+  await unchanged.control.reviewDefinition();
+  unchanged.zones.reverse();
+  unchanged.zones[1].members.reverse();
+  assert.equal(await unchanged.control.confirm(unchanged.control.state.pending), true);
+});
+
+test('editing a draft invalidates the old review and detached group handlers cannot change replacements', async () => {
+  const f = await editor();
+  group(f, 'Den@S1');
+  await f.control.reviewDefinition();
+  const old = f.control.state.pending, g = f.control.state.draft.groups[0];
+  f.control.editGroup(g, 'playing', 'play');
+  assert.equal(await f.control.confirm(old), false);
+  assert.equal(f.control.editGroup(g, 'playing', 'pause'), false, 'obsolete group object');
+  f.control.removeGroup(f.control.state.draft.groups[0]);
+  group(f, 'Den@S2');
+  assert.equal(f.control.editGroup(g, 'coordinator', 'Hall@S1'), false);
+  assert.deepEqual(f.writes, []);
+});
+
+test('closing during favorite preflight cancels custom creation before the storage write', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'favorite', 'Dinner');
+  await f.control.reviewDefinition();
+  const entered = deferred(), wait = deferred();
+  f.hook = async (name) => { if (name === 'favorites') { entered.resolve(); return wait.promise; } };
+  const work = f.control.confirm(f.control.state.pending);
+  await entered.promise;
+  f.control.close();
+  wait.resolve(f.favorites);
+  assert.equal(await work, false);
+  assert.deepEqual(f.writes, []);
+});
+
+test('lost custom-save responses keep the draft read-only and never resubmit the storage mutation', async () => {
+  const f = await editor();
+  f.control.editRoom('Den@S1', 'volumes', '10');
+  await f.control.reviewDefinition();
+  let attempts = 0;
+  f.hook = async (name) => { if (name === 'sceneSave') { attempts++; throw new Error('Connection lost'); } };
+  const pending = f.control.state.pending;
+  assert.equal(await f.control.confirm(pending), false);
+  assert.equal(await f.control.confirm(pending), false);
+  assert.equal(await f.control.reviewDefinition(), false);
+  assert.equal(attempts, 1);
+  assert.match(f.control.state.message, /uncertain/);
+});
+
+test('saved custom-scene acknowledgement must match all authored fields', async () => {
+  const f = await editor();
+  f.control.editRoom('Den@S1', 'volumes', '10');
+  await f.control.reviewDefinition();
+  f.hook = async (name) => name === 'sceneSave'
+    ? { name: 'Morning', saved: 1900000001, groups: [], volumes: { 'Den@S1': 99 }, mutes: {} } : undefined;
+  assert.equal(await f.control.confirm(f.control.state.pending), false);
+  assert.match(f.control.state.message, /did not confirm/);
+  assert.equal(f.control.state.saved, null);
+});
+
+test('scene names count Unicode characters just like the daemon and are bounded to 64', async () => {
+  const f = await editor();
+  f.control.editRoom('Den@S1', 'mutes', 'muted');
+  f.control.editName('🎵'.repeat(65));
+  assert.equal(await f.control.reviewDefinition(), false);
+  f.control.editName('🎵'.repeat(64));
+  assert.equal(await f.control.reviewDefinition(), true);
+});
+
+test('malformed topology and late editor reads cannot invent rooms or resurrect a closed draft', async () => {
+  for (const zones of [{}, [{ household: 'S1', coordinator_room: 'A', members: [] }],
+    [{ household: 'S1', coordinator_room: 'A', members: ['A', 'A'] }]]) {
+    assert.throws(() => Scenes.roomsOf(zones));
+  }
+  const f = editorFixture();
+  await f.control.refresh();
+  const wait = deferred();
+  f.hook = async (name) => name === 'zones' ? wait.promise : undefined;
+  const work = f.control.beginDefinition();
+  f.control.close();
+  wait.resolve(topology());
+  assert.equal(await work, false);
+  assert.equal(f.control.state.draft, null);
+});
+
+test('custom definitions cross a real localhost JSON endpoint with exact encoded names and no playback route', async (t) => {
+  const http = require('node:http');
+  const { once } = require('node:events');
+  const requests = [];
+  const server = http.createServer(async (req, res) => {
+    let input = '';
+    for await (const chunk of req) input += chunk;
+    requests.push({ method: req.method, path: req.url, body: input ? JSON.parse(input) : null });
+    const reply = req.url === '/scenes' ? [] : req.url === '/zones' ? topology()
+      : { name: decodeURIComponent(req.url.slice('/scenes/'.length)), saved: 1900000001, ...JSON.parse(input) };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(reply));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
+  const routes = { scenes: ['GET', '/scenes'], zones: ['GET', '/zones'], ...Scenes.routes };
+  const call = async (name, { params = {}, body } = {}) => {
+    const [method, template] = routes[name];
+    const path = template.replace(/\{(\w+)\}/g, (_, key) => encodeURIComponent(params[key]));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
+      method, headers: { 'content-type': 'application/json' },
+      ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const control = Scenes.model({ call });
+  await control.refresh();
+  await control.beginDefinition();
+  const name = 'Dinner / ? # % & 二';
+  control.editName(name);
+  control.editRoom('Den@S1', 'volumes', '0');
+  control.editRoom('Den@S2', 'mutes', 'unmuted');
+  await control.reviewDefinition();
+  const pending = control.state.pending;
+  const first = control.confirm(pending);
+  assert.equal(await control.confirm(pending), false);
+  assert.equal(await first, true, control.state.message);
+  assert.deepEqual(requests.filter((r) => r.method !== 'GET'), [{ method: 'PUT',
+    path: `/scenes/${encodeURIComponent(name)}`,
+    body: { groups: [], volumes: { 'Den@S1': 0 }, mutes: { 'Den@S2': false } } }]);
+});
