@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+mod topology;
+
 const MAX_WORKERS: usize = 4;
 const EARLY_COUNT: usize = 128;
 const EARLY_BYTES: usize = 2 * 1024 * 1024;
@@ -147,6 +149,7 @@ pub(super) struct Workers {
     jobs: Vec<Job>,
     early: VecDeque<Early>,
     early_bytes: usize,
+    retire: topology::Retirements,
 }
 
 impl std::fmt::Debug for Workers {
@@ -155,6 +158,7 @@ impl std::fmt::Debug for Workers {
             .field("jobs", &self.jobs.len())
             .field("early_events", &self.early.len())
             .field("early_bytes", &self.early_bytes)
+            .field("retire", &self.retire)
             .finish()
     }
 }
@@ -166,8 +170,12 @@ impl Workers {
         }
     }
 
+    pub(super) fn retirement_due(&self) -> Option<Instant> {
+        self.retire.due()
+    }
+
     fn busy(&self, player: &PlayerId) -> bool {
-        self.jobs.iter().any(|job| job.plan.want.player == *player)
+        self.jobs.iter().any(|job| job.plan.want.player == *player) || self.retire.busy(player)
     }
 
     fn invalidate(&self, subs: &Subscriptions) {
@@ -179,6 +187,7 @@ impl Workers {
     }
 
     fn reap(&mut self, subs: &mut Subscriptions, stopping: bool) -> Vec<(Report, Instant)> {
+        self.retire.reap();
         self.invalidate(subs);
         if stopping {
             self.cancel_all();
@@ -261,7 +270,7 @@ impl Workers {
                 .then_with(|| a.want.player.0.cmp(&b.want.player.0))
         });
         for plan in plans {
-            if self.jobs.len() >= MAX_WORKERS || stop.load(Ordering::Acquire) {
+            if self.jobs.len() + self.retire.len() >= MAX_WORKERS || stop.load(Ordering::Acquire) {
                 break;
             }
             if self.busy(&plan.want.player) {
@@ -269,6 +278,7 @@ impl Workers {
             }
             self.spawn(subs, plan, provider, callback, stop);
         }
+        self.retire.start(subs, &self.jobs, provider, stop);
     }
 
     fn spawn(

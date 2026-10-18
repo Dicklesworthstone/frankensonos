@@ -197,6 +197,8 @@ pub struct Subscriptions {
     maintenance: maintenance::Workers,
     /// The live pump queues event-loss recovery; standalone callers stay synchronous.
     deferred_refresh: bool,
+    /// The live controller also queues new roles, reboots and obsolete-SID cleanup.
+    deferred_sync: bool,
 }
 
 impl Subscriptions {
@@ -223,6 +225,9 @@ impl Subscriptions {
         callback_url: impl Fn(Service) -> String,
         now: Instant,
     ) -> Report {
+        if self.deferred_sync {
+            return self.sync_deferred(wanted, now);
+        }
         self.pending_epoch = Arc::new(());
         let mut report = Report::default();
         let (keep, drop): (Vec<Active>, Vec<Active>) = std::mem::take(&mut self.active)
@@ -370,6 +375,7 @@ impl Subscriptions {
             .iter()
             .map(Active::next_due)
             .chain(self.pending.iter().map(|(_, at)| *at))
+            .chain(self.maintenance.retirement_due())
             .min()
     }
 
@@ -474,6 +480,9 @@ impl Subscriptions {
         callback_url: impl Fn(Service) -> String,
         now: Instant,
     ) -> Report {
+        if self.deferred_sync {
+            return self.resubscribe_deferred(player, now);
+        }
         self.pending_epoch = Arc::new(());
         let mut report = Report::default();
         let (replace, keep): (Vec<Active>, Vec<Active>) = std::mem::take(&mut self.active)
