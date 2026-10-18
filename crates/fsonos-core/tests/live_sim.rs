@@ -219,12 +219,14 @@ fn the_live_model_follows_the_speakers() {
         "back on: no longer listed as vanished"
     );
 
-    // Stopping ends every active subscription.
+    // Stopping hands every active subscription to bounded background cleanup.
     let active = live.snapshot().subscriptions;
     assert!(active > 0);
     let before = unsubscribes(&sim);
     live.stop();
-    assert_eq!(unsubscribes(&sim) - before, active);
+    assert!(eventually(Duration::from_secs(5), || {
+        unsubscribes(&sim) - before == active
+    }));
 }
 
 #[test]
