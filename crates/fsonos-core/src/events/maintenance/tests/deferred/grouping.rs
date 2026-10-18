@@ -217,3 +217,5 @@ fn slow_retirement_shares_the_four_worker_limit_and_keeps_its_player_exclusion()
     assert_eq!(f.subs.next_due(), None);
     f.finish();
 }
+
+mod release;

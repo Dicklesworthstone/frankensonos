@@ -12,8 +12,8 @@
 //! [`Live::snapshot`]) without waiting on the network. [`Live::refresh_soon`]
 //! asks for a survey now, after a command found a player gone, say.
 //! [`Live::subscribe`] pushes each change ([`LiveEvent`]) as it happens, for
-//! an event stream. [`Live::stop`] (or dropping the handle) ends every
-//! subscription.
+//! an event stream. [`Live::stop`] (or dropping the handle) withdraws local
+//! subscriptions and arranges best-effort network cleanup.
 
 use crate::HouseholdState;
 use crate::events::{Service, Subscriber, Want};
@@ -172,9 +172,9 @@ pub struct Live {
     thread: Option<JoinHandle<()>>,
 }
 
-/// How long [`Live::stop`] waits for the loop to end its subscriptions. A
-/// pass stuck on players that time out is left to finish on its own; the
-/// players expire whatever it could not end.
+/// How long [`Live::stop`] waits for the live loop to exit and hand off lease
+/// cleanup. Network retirement is bounded and best effort; unreachable players
+/// expire whatever could not be ended. An unfinished network call is not joined.
 pub const STOP_WAIT: Duration = Duration::from_secs(3);
 
 impl Live {
@@ -297,13 +297,13 @@ impl Live {
         rx
     }
 
-    /// End every subscription and stop the loop.
+    /// Stop the live loop and arrange best-effort retirement of its leases.
     pub fn stop(mut self) {
         self.halt();
     }
 
-    /// Ask the loop to stop and wait up to [`STOP_WAIT`] for it to end its
-    /// subscriptions; a loop still busy after that is left to finish.
+    /// Ask the loop to stop and wait up to [`STOP_WAIT`] for its cleanup
+    /// handoff. Remote subscription expiry is the fallback for failed cleanup.
     fn halt(&mut self) {
         self.stop.store(true, Ordering::Release);
         let Some(thread) = self.thread.take() else {
@@ -538,9 +538,9 @@ impl Engine {
         self.publish(&m, Vec::new());
     }
 
-    /// End every subscription: UNSUBSCRIBE the players that may still
-    /// answer, and just forget those already offline (asking them would
-    /// only time out).
+    /// Withdraw every lease immediately, forgetting offline players without
+    /// calling them. The running controller retires the rest off-thread; a
+    /// sleep or route change keeps the same bounded maintenance slots.
     fn release(&self, m: &mut Model) {
         m.rec.invalidate_inventory();
         let offline: Vec<PlayerId> = m
@@ -553,7 +553,10 @@ impl Engine {
         for id in &offline {
             m.rec.subscriptions.forget(id);
         }
-        m.rec.subscriptions.unsubscribe_all(&self.via());
+        let provider: Arc<dyn Subscriber + Send + Sync> = self.lan.clone();
+        m.rec
+            .subscriptions
+            .release_background(provider, self.stop.load(Ordering::Acquire));
     }
 
     /// Drop the event listener and every subscription that points at it, so

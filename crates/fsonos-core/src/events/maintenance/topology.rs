@@ -9,6 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
+mod shutdown;
+
 /// A pathological regrouping burst must not retain unlimited obsolete leases.
 /// Retirement is best effort; a lease not retained here expires at the player.
 const MAX_RETIRED: usize = 256;
