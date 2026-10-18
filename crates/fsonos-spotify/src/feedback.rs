@@ -189,29 +189,37 @@ impl<S: Store + ?Sized> FeedbackSource for StoreFeedback<'_, S> {
     }
 }
 
-/// Whether a track the owner stopped at `skipped_at` (unix seconds) was
-/// skipped early: within 30 s of starting, and before it would have ended.
+/// Whether `heard_secs` of a movement `duration_secs` long is most of it:
+/// 90%, the share a full listen needs. An unknown or zero length never is.
 #[must_use]
-pub fn early_skip(started_at: i64, skipped_at: i64, duration_secs: Option<u32>) -> bool {
-    let heard = skipped_at - started_at;
-    (0..EARLY_SKIP_SECS).contains(&heard) && duration_secs.is_none_or(|d| heard < i64::from(d))
+pub fn mostly_heard(heard_secs: u64, duration_secs: Option<u32>) -> bool {
+    duration_secs
+        .filter(|&seconds| seconds > 0)
+        .is_some_and(|d| heard_secs.saturating_mul(10) >= u64::from(d) * 9)
 }
 
-/// The implicit signal a track's end gives: an early skip, a full listen
-/// (it ended on its own, or 90% of it was heard), or nothing.
+/// The implicit signal a movement's end gives, judged for its work: a full
+/// listen when the work's `last` movement was mostly heard after every
+/// earlier one played in order (`prefix_complete`); an early skip when a
+/// movement that `started` playing was left within [`EARLY_SKIP_SECS`]
+/// without being mostly heard; otherwise nothing. The daemon's listening
+/// (fsonos-cli `dj::feedback`) asks this once per movement end.
 #[must_use]
-pub fn listen_signal(
-    started_at: i64,
-    ended_at: i64,
+pub fn movement_signal(
+    heard_secs: u64,
     duration_secs: Option<u32>,
-    skipped: bool,
+    last: bool,
+    prefix_complete: bool,
+    started: bool,
 ) -> Option<Signal> {
-    if skipped && early_skip(started_at, ended_at, duration_secs) {
-        return Some(Signal::EarlySkip);
+    let most = mostly_heard(heard_secs, duration_secs);
+    if most && last && prefix_complete {
+        Some(Signal::FullListen)
+    } else if !most && started && heard_secs < EARLY_SKIP_SECS.unsigned_abs() {
+        Some(Signal::EarlySkip)
+    } else {
+        None
     }
-    let heard = ended_at - started_at;
-    let most = duration_secs.is_some_and(|d| heard * 10 >= i64::from(d) * 9);
-    (!skipped || most).then_some(Signal::FullListen)
 }
 
 /// The work's performers: its credited artists other than the composer,
@@ -600,33 +608,40 @@ mod tests {
     }
 
     #[test]
-    fn early_skips_and_full_listens_are_detected() {
-        assert!(early_skip(MIDNIGHT, MIDNIGHT + 10, Some(240)));
-        assert!(early_skip(MIDNIGHT, MIDNIGHT + 29, None));
-        assert!(early_skip(MIDNIGHT, MIDNIGHT, Some(240)));
-        assert!(
-            !early_skip(MIDNIGHT, MIDNIGHT + 30, Some(240)),
+    fn a_work_heard_through_is_a_full_listen_and_a_movement_left_early_a_skip() {
+        assert!(mostly_heard(216, Some(240)), "90% of four minutes");
+        assert!(!mostly_heard(215, Some(240)));
+        assert!(!mostly_heard(400, None), "an unknown length never is");
+        assert!(!mostly_heard(10, Some(0)));
+
+        // The last movement, mostly heard, after every earlier one in order.
+        assert_eq!(
+            movement_signal(230, Some(240), true, true, true),
+            Some(Signal::FullListen)
+        );
+        // Not the last movement yet, or a work joined midway: nothing.
+        assert_eq!(movement_signal(230, Some(240), false, true, true), None);
+        assert_eq!(movement_signal(230, Some(240), true, false, true), None);
+        // Left within 30 s of starting, not mostly heard: an early skip.
+        assert_eq!(
+            movement_signal(12, Some(240), false, true, true),
+            Some(Signal::EarlySkip)
+        );
+        assert_eq!(
+            movement_signal(29, None, false, false, true),
+            Some(Signal::EarlySkip)
+        );
+        assert_eq!(
+            movement_signal(30, Some(240), false, true, true),
+            None,
             "30 s heard"
         );
-        assert!(
-            !early_skip(MIDNIGHT, MIDNIGHT + 20, Some(15)),
-            "it had ended"
-        );
-        assert!(!early_skip(MIDNIGHT, MIDNIGHT - 5, Some(240)), "clock skew");
-
-        let listen = |heard: i64, skipped: bool| {
-            listen_signal(MIDNIGHT, MIDNIGHT + heard, Some(240), skipped)
-        };
-        assert_eq!(listen(12, true), Some(Signal::EarlySkip));
-        assert_eq!(listen(240, false), Some(Signal::FullListen));
-        assert_eq!(listen(216, true), Some(Signal::FullListen), "90% heard");
-        assert_eq!(listen(215, true), None);
-        assert_eq!(listen(100, true), None);
-        assert_eq!(
-            listen_signal(MIDNIGHT, MIDNIGHT + 400, None, true),
-            None,
-            "a late skip of a track of unknown length says nothing"
-        );
+        // A movement it did not see start (a resumed one) is no skip.
+        assert_eq!(movement_signal(5, Some(240), false, true, false), None);
+        // A short movement mostly heard within 30 s is no skip either.
+        assert_eq!(movement_signal(14, Some(15), false, true, true), None);
+        // A late stop of a movement of unknown length says nothing.
+        assert_eq!(movement_signal(400, None, true, true, true), None);
     }
 
     #[test]

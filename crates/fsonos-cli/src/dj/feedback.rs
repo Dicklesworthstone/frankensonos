@@ -16,7 +16,7 @@ use fsonos_core::store::{Store, StoreError};
 use fsonos_spotify::dj::WorkPool;
 use fsonos_spotify::feed::QueueFeed;
 use fsonos_spotify::feedback::{
-    EARLY_SKIP_SECS, FeedbackModel, FeedbackSignal, Signal, StoreFeedback,
+    FeedbackModel, FeedbackSignal, Signal, StoreFeedback, mostly_heard, movement_signal,
 };
 use fsonos_spotify::works::Work;
 use fsonos_types::TransportState;
@@ -71,9 +71,7 @@ impl Movement {
     }
 
     fn mostly_heard(&self, heard: u64) -> bool {
-        self.duration_secs
-            .filter(|&seconds| seconds > 0)
-            .is_some_and(|d| heard.saturating_mul(10) >= u64::from(d) * 9)
+        mostly_heard(heard, self.duration_secs)
     }
 }
 
@@ -161,14 +159,13 @@ impl Listening {
         });
         self.current = playing.map(|movement| (movement, 0));
         let (movement, heard) = previous?;
-        let most = movement.mostly_heard(heard);
-        let signal = if most && movement.last && prefix {
-            Signal::FullListen
-        } else if !most && movement.started && heard < EARLY_SKIP_SECS.unsigned_abs() {
-            Signal::EarlySkip
-        } else {
-            return None;
-        };
+        let signal = movement_signal(
+            heard,
+            movement.duration_secs,
+            movement.last,
+            prefix,
+            movement.started,
+        )?;
         let mut evidence = movement.evidence;
         evidence.signal = signal;
         self.finished = Some(evidence);
