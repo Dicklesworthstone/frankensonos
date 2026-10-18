@@ -272,9 +272,13 @@ impl Direct {
     }
 
     /// Undo the newest logged action (only the CLI's own with `own_only`).
-    pub fn undo(&self, own_only: bool) -> Result<UndoDto, Failure> {
+    pub fn undo(&self, own_only: bool, force: bool) -> Result<UndoDto, Failure> {
         self.households()?;
-        Ok(UndoDto::from(self.surface.undo(&Client::Cli, own_only)?))
+        Ok(UndoDto::from(self.surface.undo_forced(
+            &Client::Cli,
+            own_only,
+            force,
+        )?))
     }
 
     /// The CLI's own newest undoable action, without touching the speakers.

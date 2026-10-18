@@ -13,6 +13,12 @@
 //! it queued off again, and logs the undo
 //! itself, which is never undoable (no redo).
 //!
+//! The row also keeps each touched room's state just after the action
+//! ([`RoomAfter`]: its volume, mute, group and what the group plays). Undo
+//! puts a zone back only while its rooms are still that way: one someone
+//! changed since (the Sonos app, another caller) is left as it is and named,
+//! unless the undo is forced ([`undo_last_vetted`]).
+//!
 //! The surfaces own the flow (authorize, plan, bound by the policy, capture,
 //! execute, [`record`]); this module owns the parts every surface shares, so
 //! they all log and undo alike. Retention keeps the newest [`KEEP_ACTIONS`]
@@ -101,6 +107,132 @@ pub struct BeforeState {
     pub tones: Vec<ToneBefore>,
     #[serde(default)]
     pub queued: Vec<QueuedBefore>,
+    /// The touched rooms just after the action ([`with_after`]); none in
+    /// rows logged before undo checked for changes.
+    #[serde(default)]
+    pub after: Vec<RoomAfter>,
+}
+
+/// A room as an action left it: what undo compares against before it
+/// puts the room's zone back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomAfter {
+    /// The room's primary player.
+    pub player: PlayerId,
+    pub volume: u8,
+    pub mute: bool,
+    /// The coordinator of the group it played in.
+    pub coordinator: PlayerId,
+    /// What that group played: its AVTransport URI (a queue, a stream, a
+    /// track), or empty for nothing.
+    pub source: String,
+}
+
+/// The state of `rooms` (primaries, duplicates ignored) now, read from the
+/// players: a room that does not answer is left out, and undo then does not
+/// check it.
+pub fn rooms_after<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    rooms: &[PlayerId],
+) -> Vec<RoomAfter> {
+    let mut seen: Vec<&PlayerId> = Vec::new();
+    let mut after = Vec::new();
+    for room in rooms {
+        if seen.contains(&room) {
+            continue;
+        }
+        seen.push(room);
+        let Some(household) = households.iter().find(|h| h.player(room).is_some()) else {
+            continue;
+        };
+        let coordinator = household.coordinator_of(room).unwrap_or(room).clone();
+        let (Some(at), Some(lead)) = (household.player(room), household.player(&coordinator))
+        else {
+            continue;
+        };
+        let read = || -> Result<RoomAfter, fsonos_proto::ProtoError> {
+            Ok(RoomAfter {
+                player: room.clone(),
+                volume: fsonos_proto::control::get_volume(t, at.ip)?,
+                mute: fsonos_proto::control::get_mute(t, at.ip)?,
+                coordinator: coordinator.clone(),
+                source: fsonos_proto::control::get_media_info(t, lead.ip)?.uri,
+            })
+        };
+        if let Ok(room) = read() {
+            after.push(room);
+        }
+    }
+    after
+}
+
+/// `before` (an action's before-state) with the touched rooms' state after
+/// it, `after`, for undo to compare against. Without a before-state there
+/// is nothing to undo; without rooms, or with a before-state that does not
+/// parse, it is returned as it was.
+#[must_use]
+pub fn with_after(before: Option<String>, after: &[RoomAfter]) -> Option<String> {
+    let before = before?;
+    if after.is_empty() {
+        return Some(before);
+    }
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&before) else {
+        return Some(before);
+    };
+    if value.is_array() {
+        value = serde_json::json!({ "zones": value });
+    }
+    let Some(fields) = value.as_object_mut() else {
+        return Some(before);
+    };
+    fields.insert("after".into(), serde_json::json!(after));
+    Some(value.to_string())
+}
+
+/// What changed since the action in the rooms of `snap`'s zone, which undo
+/// would put back: each room's volume, mute, group and source against
+/// `after`, read again now. `None` when nothing did (or nothing was kept).
+fn drift<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    after: &[RoomAfter],
+    snap: &ZoneSnapshot,
+) -> Option<String> {
+    let kept: Vec<&RoomAfter> = after
+        .iter()
+        .filter(|room| snap.members.contains(&room.player))
+        .collect();
+    let players: Vec<PlayerId> = kept.iter().map(|room| room.player.clone()).collect();
+    let now = rooms_after(t, households, &players);
+    let name = |id: &PlayerId| {
+        households
+            .iter()
+            .find_map(|h| h.player(id))
+            .map_or_else(|| id.0.clone(), |p| p.room_name.clone())
+    };
+    let mut changes = Vec::new();
+    for was in kept {
+        let Some(is) = now.iter().find(|room| room.player == was.player) else {
+            continue;
+        };
+        let room = name(&was.player);
+        if is.volume != was.volume {
+            changes.push(format!("{room}'s volume {} -> {}", was.volume, is.volume));
+        }
+        if is.mute != was.mute {
+            changes.push(format!(
+                "{room} {}",
+                if is.mute { "muted" } else { "unmuted" }
+            ));
+        }
+        if is.coordinator != was.coordinator {
+            changes.push(format!("{room} regrouped"));
+        } else if is.source != was.source {
+            changes.push(format!("{room}'s group plays something else"));
+        }
+    }
+    (!changes.is_empty()).then(|| changes.join(", "))
 }
 
 impl BeforeState {
@@ -263,7 +395,7 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
     surface: &str,
     at: i64,
 ) -> Result<Option<UndoReport>, CoreError> {
-    undo_last_vetted(t, households, store, only, by, surface, at, &|op| {
+    undo_last_vetted(t, households, store, only, by, surface, at, false, &|op| {
         Ok(op.clone())
     })
 }
@@ -278,7 +410,9 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
 /// [`UNDO_MAX_AGE_SECS`] is refused instead ([`CoreError::NotUndoable`], see
 /// [`undo_target`]): the house has moved on since.
 /// Each zone step passes through `vet` first ([`snapshot::restore_vetted`]).
-#[allow(clippy::too_many_arguments)] // undo_last's arguments, and the vet
+/// A zone whose rooms someone changed since the action (see [`RoomAfter`])
+/// is not put back, and the report names what changed, unless `force`.
+#[allow(clippy::too_many_arguments)] // undo_last's arguments, force and the vet
 pub fn undo_last_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -287,12 +421,13 @@ pub fn undo_last_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     by: &Client,
     surface: &str,
     at: i64,
+    force: bool,
     vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> Result<Option<UndoReport>, CoreError> {
     let Some(target) = undo_target(store, only, at)? else {
         return Ok(None);
     };
-    restore_target_vetted(t, households, store, target, by, surface, at, vet).map(Some)
+    restore_target_vetted(t, households, store, target, by, surface, at, force, vet).map(Some)
 }
 
 /// A reviewed undo refused before restoring, or failed during restoration.
@@ -320,6 +455,7 @@ pub fn undo_last_vetted_checked<T: Transport + ?Sized, S: Store + ?Sized>(
     surface: &str,
     at: i64,
     expected: i64,
+    force: bool,
     vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> Result<UndoReport, CheckedUndoError> {
     let target = undo_target(store, only, at)?;
@@ -328,8 +464,39 @@ pub fn undo_last_vetted_checked<T: Transport + ?Sized, S: Store + ?Sized>(
         return Err(CheckedUndoError::TargetChanged { expected, actual });
     };
     Ok(restore_target_vetted(
-        t, households, store, target, by, surface, at, vet,
+        t, households, store, target, by, surface, at, force, vet,
     )?)
+}
+
+/// What [`restore_zones`] put back per zone, and the zones it did not,
+/// with why.
+type ZoneOutcomes = (Vec<(PlayerId, RestoreReport)>, Vec<(PlayerId, String)>);
+
+/// Put back each zone of `before` (see [`undo_last_vetted`]), unless its
+/// rooms changed since and the undo is not forced.
+fn restore_zones<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    before: &BeforeState,
+    force: bool,
+    vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
+) -> ZoneOutcomes {
+    let mut zones = Vec::new();
+    let mut failures = Vec::new();
+    for snap in &before.zones {
+        if !force && let Some(changes) = drift(t, households, &before.after, snap) {
+            failures.push((
+                snap.coordinator.clone(),
+                format!("changed since ({changes}); left as it is"),
+            ));
+            continue;
+        }
+        match snapshot::restore_vetted(t, households, snap, &snapshot::Aspect::ALL, vet) {
+            Ok(report) => zones.push((snap.coordinator.clone(), report)),
+            Err(e) => failures.push((snap.coordinator.clone(), e.to_string())),
+        }
+    }
+    (zones, failures)
 }
 
 #[allow(clippy::too_many_arguments)] // the selected row replaces undo_last's filter
@@ -341,6 +508,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     by: &Client,
     surface: &str,
     at: i64,
+    force: bool,
     vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> Result<UndoReport, CoreError> {
     let before = BeforeState::parse(target.action.before_state.as_deref().unwrap_or("[]"))
@@ -359,14 +527,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
         .collect();
     let now_sessions = capture_sessions(store, &steered)?;
 
-    let mut zones = Vec::new();
-    let mut failures = Vec::new();
-    for snap in &before.zones {
-        match snapshot::restore_vetted(t, households, snap, &snapshot::Aspect::ALL, vet) {
-            Ok(report) => zones.push((snap.coordinator.clone(), report)),
-            Err(e) => failures.push((snap.coordinator.clone(), e.to_string())),
-        }
-    }
+    let (zones, failures) = restore_zones(t, households, &before, force, vet);
     let mut sessions = Vec::new();
     let mut session_failures = Vec::new();
     for session in &before.dj_sessions {
@@ -623,6 +784,31 @@ mod tests {
         ) -> Result<String, fsonos_proto::ProtoError> {
             panic!("undo touched a speaker before refusing")
         }
+    }
+
+    #[test]
+    fn the_rooms_after_join_the_before_state_and_parse_back() {
+        let after = [RoomAfter {
+            player: PlayerId("RINCON_A".into()),
+            volume: 30,
+            mute: false,
+            coordinator: PlayerId("RINCON_A".into()),
+            source: "x-rincon-queue:RINCON_A#0".into(),
+        }];
+        assert_eq!(with_after(None, &after), None, "nothing to undo stays so");
+        let zones = before_state(&[snap("RINCON_A")]);
+        assert_eq!(with_after(zones.clone(), &[]), zones, "no rooms: as it was");
+        let joined = with_after(zones, &after).unwrap();
+        let parsed = BeforeState::parse(&joined).unwrap();
+        assert_eq!(parsed.zones, [snap("RINCON_A")]);
+        assert_eq!(parsed.after, after);
+        // Rows logged before the after-state parse with none.
+        assert!(
+            BeforeState::parse(&before_state(&[snap("RINCON_A")]).unwrap())
+                .unwrap()
+                .after
+                .is_empty()
+        );
     }
 
     #[test]

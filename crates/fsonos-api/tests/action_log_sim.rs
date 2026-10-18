@@ -129,18 +129,22 @@ fn an_agent_undoes_only_its_own_action_and_only_up_to_its_cap() {
     let sim = sim();
     let lan = sim.lan();
     let houses = now(&sim);
-    let kitchen = id(&houses, "Kitchen");
+    let (kitchen, office) = (id(&houses, "Kitchen"), id(&houses, "Office"));
     control::set_volume(&lan, &houses, &kitchen, 90).unwrap();
     let s = surface(&sim);
-    let set = |client: &Client, level: i64| {
+    let set = |client: &Client, room: &str, level: i64| {
         s.control(client, "set_volume", |h| {
-            plan_volume(h, &volume_req("Kitchen", level))
+            plan_volume(h, &volume_req(room, level))
         })
         .unwrap()
     };
-    // The agent turns the Kitchen down from 90; then the owner sets 60.
-    set(&agent(), 10);
-    set(&Client::Cli, 60);
+    // The agent turns the Kitchen down from 90 to 55 (decreases are always
+    // allowed; 55 is within a max_step of its cap, so the cap is what bounds
+    // the way back); then the owner sets the Office to 60. (A change to the
+    // Kitchen itself would leave the agent's undo nothing to put back there:
+    // see undo_leaves_a_room_changed_since_unless_the_owner_forces_it.)
+    set(&agent(), "Kitchen", 55);
+    set(&Client::Cli, "Office", 60);
     // Asking for anyone's newest, the agent still undoes only its own, and
     // the 90 before it comes back only as far as its cap (70), not past it.
     let report = s
@@ -149,6 +153,7 @@ fn an_agent_undoes_only_its_own_action_and_only_up_to_its_cap() {
         .expect("the agent's own action");
     assert!(report.intent.starts_with("set_volume"), "{report:?}");
     assert_eq!(control::volume(&lan, &houses, &kitchen).unwrap(), 70);
+    assert_eq!(control::volume(&lan, &houses, &office).unwrap(), 60);
     sim.shutdown();
 }
 
@@ -314,6 +319,55 @@ fn a_set_skips_a_room_the_policy_refuses_and_the_rest_stays_undoable() {
     let denied = all_to(85).unwrap_err();
     assert_eq!(denied.code, ErrorCode::PolicyDenied, "{denied:?}");
     assert_eq!((volume(&kitchen), volume(&office)), (70, 70));
+    sim.shutdown();
+}
+
+/// p7vq.3: undo puts a zone back only while its rooms are as the action
+/// left them; one someone changed since (the Sonos app, here) is left as it
+/// is and named, unless the owner forces it.
+#[test]
+fn undo_leaves_a_room_changed_since_unless_the_owner_forces_it() {
+    let sim = sim();
+    let lan = sim.lan();
+    let houses = now(&sim);
+    let (kitchen, office) = (id(&houses, "Kitchen"), id(&houses, "Office"));
+    control::set_volume(&lan, &houses, &kitchen, 40).unwrap();
+    control::set_volume(&lan, &houses, &office, 40).unwrap();
+    let s = surface(&sim);
+    let volume = |p: &PlayerId| control::volume(&lan, &houses, p).unwrap();
+    let all_to = |level| {
+        s.control_set(&Client::Cli, "set_volume", |h| {
+            plan_volume_set(h, &volume_req("all", level))
+        })
+        .unwrap()
+    };
+
+    all_to(20);
+    // The Sonos app moves Kitchen afterwards.
+    control::set_volume(&lan, &houses, &kitchen, 55).unwrap();
+    let report = s
+        .undo(&Client::Cli, false)
+        .unwrap()
+        .expect("the set to undo");
+    assert_eq!((volume(&kitchen), volume(&office)), (55, 40), "{report:?}");
+    assert!(
+        report.failures.iter().any(|(_, why)| {
+            why.contains("changed since") && why.contains("Kitchen's volume 20 -> 55")
+        }),
+        "{report:?}"
+    );
+
+    // An agent may not force; the owner's CLI may.
+    all_to(25);
+    control::set_volume(&lan, &houses, &kitchen, 60).unwrap();
+    let refused = s.undo_forced(&agent(), false, true).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::PolicyDenied, "{refused:?}");
+    let report = s
+        .undo_forced(&Client::Cli, false, true)
+        .unwrap()
+        .expect("the second set to undo");
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert_eq!((volume(&kitchen), volume(&office)), (55, 40));
     sim.shutdown();
 }
 

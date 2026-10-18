@@ -739,7 +739,7 @@ impl Surface {
         if let Err(f) = &result {
             self.notice(f);
         }
-        let before = actions::before_state_with(&snaps, &sessions);
+        let before = self.with_after(actions::before_state_with(&snaps, &sessions), &snaps, &[]);
         let (decision, text, before) = log_entry(&result, before, missed.len());
         self.record(client, intent, decision, text, before);
         result
@@ -829,10 +829,35 @@ impl Surface {
         if let Err(f) = &result {
             self.notice(f);
         }
-        let before = actions::before_state_with(&snaps, &[]);
+        let before = self.with_after(actions::before_state_with(&snaps, &[]), &snaps, &[]);
         let (decision, text, before) = log_entry(&result, before, missed.len());
         self.record(client, intent, decision, text, before);
         result
+    }
+
+    /// `before`, an undoable action's before-state, with the touched rooms
+    /// (every member of `snaps`' zones) as the action left them, so undo
+    /// can tell whether someone changed them since. `levels` stands in for
+    /// a room's volume while its speaker still ramps there itself (a fade
+    /// with no length): read now, it is mid-ramp.
+    fn with_after(
+        &self,
+        before: Option<String>,
+        snaps: &[fsonos_core::snapshot::ZoneSnapshot],
+        levels: &[(PlayerId, u8)],
+    ) -> Option<String> {
+        before.as_ref()?;
+        let rooms: Vec<PlayerId> = snaps.iter().flat_map(|s| s.members.clone()).collect();
+        let Ok(households) = self.households() else {
+            return before;
+        };
+        let mut after = actions::rooms_after(&*self.transport, &households, &rooms);
+        for room in &mut after {
+            if let Some(&(_, level)) = levels.iter().find(|(p, _)| *p == room.player) {
+                room.volume = level;
+            }
+        }
+        actions::with_after(before, &after)
     }
 
     /// Run each command of a set and fold the outcomes into one: the
@@ -896,6 +921,23 @@ impl Surface {
     /// `own_only` — and log the undo. `Ok(None)` when there is nothing to
     /// undo.
     pub fn undo(&self, client: &Client, own_only: bool) -> Result<Option<UndoReport>, Failure> {
+        self.undo_forced(client, own_only, false)
+    }
+
+    /// [`Self::undo`], putting back even the zones someone changed since
+    /// the action when `force`: the owner's CLI alone may.
+    pub fn undo_forced(
+        &self,
+        client: &Client,
+        own_only: bool,
+        force: bool,
+    ) -> Result<Option<UndoReport>, Failure> {
+        if force && *client != Client::Cli {
+            return Err(Failure::new(
+                ErrorCode::PolicyDenied,
+                "only the owner's CLI may force an undo",
+            ));
+        }
         let Some(log) = &self.log else {
             return Err(Failure::new(
                 ErrorCode::NotImplemented,
@@ -943,6 +985,7 @@ impl Surface {
             client,
             &log.surface,
             self.now(),
+            force,
             &vet,
         );
         self.invalidate();

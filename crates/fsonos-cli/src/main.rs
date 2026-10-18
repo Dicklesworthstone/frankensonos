@@ -195,6 +195,11 @@ enum Command {
         /// otherwise nothing is restored (INVALID_ARGUMENT).
         #[arg(long, value_name = "ID")]
         id: Option<i64>,
+        /// Put the zones back even where someone changed them since the
+        /// action (in the Sonos app, or another caller); by default those
+        /// are left as they are, and named.
+        #[arg(long, conflicts_with_all = ["preview", "id"])]
+        force: bool,
     },
     /// The house policy: what is in effect (show), and whether policy.toml
     /// can be used (check).
@@ -562,7 +567,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let actions = direct::actions(global, &query)?;
             emit(global.json, &actions, |a| direct::actions_text(a))
         }
-        Command::Undo { mine, preview, id } => undo(global, mine, preview, id),
+        Command::Undo {
+            mine,
+            preview,
+            id,
+            force,
+        } => undo(global, mine, preview, id, force),
         Command::Dj { action } if action.is_read() => dj_cmd::read(global, &action),
         Command::Policy { action } => policy_cmd::run(global, &action),
         Command::Play {
@@ -692,6 +702,7 @@ fn undo(
     mine: bool,
     preview: bool,
     id: Option<i64>,
+    force: bool,
 ) -> anyhow::Result<()> {
     let house = Direct::survey(global)?;
     if preview {
@@ -702,7 +713,7 @@ fn undo(
     }
     let undone = match id {
         Some(id) => house.undo_checked(id)?,
-        None => house.undo(mine)?,
+        None => house.undo(mine, force)?,
     };
     emit(global.json, &undone, |u: &fsonos_api::UndoDto| {
         format!("{}\n", u.summary)

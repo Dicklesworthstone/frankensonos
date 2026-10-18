@@ -846,7 +846,7 @@ impl Surface {
             format!("{tool}: {}", scene.name),
             decision,
             logged,
-            actions::before_state_with(&snaps, &sessions),
+            self.with_after(actions::before_state_with(&snaps, &sessions), &snaps, &[]),
         );
         Ok(applied)
     }

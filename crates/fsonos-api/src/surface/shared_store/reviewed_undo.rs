@@ -73,6 +73,7 @@ impl Surface {
             &log.surface,
             self.now(),
             expected_id,
+            false,
             &vet,
         );
         self.invalidate();

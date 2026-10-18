@@ -41,6 +41,7 @@ fn checked(store: &mut MemStore, expected: i64) -> Result<UndoReport, CheckedUnd
         "test",
         100,
         expected,
+        false,
         &|op| Ok(op.clone()),
     )
 }

@@ -1427,6 +1427,9 @@ impl Surface {
             .map(|command| guard.bound(&*self.transport, &households, command))
             .collect::<Result<Vec<_>, Failure>>();
         let pace = pace_of(over);
+        // The rooms whose speakers still ramp themselves when the call
+        // answers, and the level each reaches.
+        let mut ramping: Vec<(PlayerId, u8)> = Vec::new();
         let ramped = bounded.and_then(|bounded| {
             let (mut lanes, mut notes) = (Vec::new(), Vec::new());
             for (command, noted) in bounded {
@@ -1452,6 +1455,11 @@ impl Surface {
             } else {
                 let (left, secs) = ramp_each(fader, &*self.transport, &households, &lanes)
                     .map_err(Failure::from)?;
+                ramping = lanes
+                    .iter()
+                    .filter(|(player, _)| !left.contains(player))
+                    .cloned()
+                    .collect();
                 let about = about(secs);
                 (
                     left,
@@ -1469,7 +1477,11 @@ impl Surface {
                 notes,
             })
         });
-        let before = fsonos_core::actions::before_state_with(&snaps, &[]);
+        let before = self.with_after(
+            fsonos_core::actions::before_state_with(&snaps, &[]),
+            &snaps,
+            &ramping,
+        );
         let (decision, text, before) = super::log_entry(&ramped, before, missed.len());
         let intent = format!("set_volume: {room} to {level} {pace}");
         self.record(client, intent, decision, text, before);

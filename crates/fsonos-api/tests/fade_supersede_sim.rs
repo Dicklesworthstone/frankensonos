@@ -99,8 +99,9 @@ fn an_undo_during_a_ramp_keeps_the_level_it_puts_back() {
     set(&s, 40);
     let level = during_a_ramp(&s, &sim, || {
         // The newest logged action is the set to 40 (the ramp logs when it
-        // ends): undo puts the 10 back.
-        s.undo(&Client::Cli, false)
+        // ends): undo puts the 10 back. Forced: the ramp has moved the
+        // Kitchen since the set, so a plain undo would leave it as it is.
+        s.undo_forced(&Client::Cli, false, true)
             .unwrap()
             .expect("an action to undo");
     });

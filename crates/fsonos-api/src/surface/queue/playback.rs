@@ -193,7 +193,7 @@ impl Surface {
         if let Err(failure) = &result {
             self.notice(failure);
         }
-        let before = actions::before_state_with(&snaps, &[]);
+        let before = self.with_after(actions::before_state_with(&snaps, &[]), &snaps, &[]);
         let (decision, text, before) = log_entry(&result, before, missed.len());
         self.record(
             client,
