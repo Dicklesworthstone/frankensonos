@@ -58,6 +58,7 @@ pub mod schedules;
 pub mod spotify_auth;
 
 pub mod announce;
+mod intents;
 mod outside;
 mod playback_caps;
 pub mod players;
@@ -722,7 +723,7 @@ impl Surface {
             }
             return result;
         }
-        let intent = format!("{tool}: {command:?}");
+        let intent = intents::of(tool, &households, std::slice::from_ref(&command));
         let (snaps, missed) = actions::capture_zones(
             &*self.transport,
             &households,
@@ -807,7 +808,7 @@ impl Surface {
             }
             return outcome;
         }
-        let intent = format!("{tool}: {commands:?}");
+        let intent = intents::of(tool, &households, &commands);
         // One before-state across every affected zone, so one undo restores
         // the whole set.
         let mut targets: Vec<PlayerId> = Vec::new();

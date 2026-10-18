@@ -98,7 +98,12 @@ fn clamped_volume_is_logged_with_its_note_and_undone() {
         (a.client.as_str(), a.surface.as_str()),
         ("tag:agent", "mcp")
     );
-    assert!(a.intent.starts_with("set_volume: Volume"), "{}", a.intent);
+    // In room terms, not debug output.
+    assert!(
+        a.intent.starts_with("set_volume: Kitchen to "),
+        "{}",
+        a.intent
+    );
     assert!(a.decision.starts_with("clamp: "), "{}", a.decision);
     assert!(a.before_state.is_some());
 
@@ -314,7 +319,9 @@ fn a_set_of_rooms_acts_on_each_room_and_undoes_as_one() {
     assert_eq!(log.len(), 2, "one action per set: {log:?}");
     let newest = &log[0].action;
     assert!(
-        newest.intent.starts_with("set_volume: [Volume"),
+        newest.intent.starts_with("set_volume: ")
+            && newest.intent.contains("Kitchen to 20")
+            && newest.intent.contains("Office to 20"),
         "{}",
         newest.intent
     );
