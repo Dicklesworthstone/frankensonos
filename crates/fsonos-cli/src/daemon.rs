@@ -367,7 +367,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             tracing::warn!("the CLI will not find this daemon: {e}");
         }
     }
-    announce_tailnet(&tailnet, &http_plan, &http, &mcp);
+    announce_tailnet(&tailnet, &http_plan, &http, &mcp, args.tailscale_serve);
     if !matches!(
         tailnet,
         fsonos_tailscale::TailnetStatus::Unavailable(fsonos_tailscale::Unavailable::Disabled)
@@ -507,6 +507,7 @@ fn announce_tailnet(
     plan: &fsonos_tailscale::BindPlan,
     http: &[(Arc<TcpServer>, SocketAddr)],
     mcp: &[(McpStop, SocketAddr)],
+    fronted: bool,
 ) {
     eprintln!("fsonos serve: listening ({})", plan.note);
     // Describe each listener by its tailnet address when it has one.
@@ -522,11 +523,13 @@ fn announce_tailnet(
             label: "HTTP API",
             bind: pick(http.iter().map(|(_, a)| *a).collect()),
             path: "",
+            fronted,
         },
         fsonos_tailscale::Listener {
             label: "MCP server",
             bind: pick(mcp.iter().map(|(_, a)| *a).collect()),
             path: "/mcp",
+            fronted,
         },
     ];
     for line in fsonos_tailscale::describe(tailnet, &listeners).lines() {

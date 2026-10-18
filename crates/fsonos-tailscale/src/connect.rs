@@ -82,12 +82,17 @@ pub fn reach(status: &TailnetStatus, bind: SocketAddr, path: &str) -> Reach {
     Reach::Tailnet { urls, hint }
 }
 
-/// A listener to describe: its label, bound address, and URL path.
+/// A listener to describe: its label, bound address and URL path, and
+/// whether Tailscale Serve fronts it.
 #[derive(Debug, Clone, Copy)]
 pub struct Listener<'a> {
     pub label: &'a str,
     pub bind: SocketAddr,
     pub path: &'a str,
+    /// Tailscale Serve fronts it (`FSONOS_TAILSCALE_SERVE`): bound to this
+    /// machine only, it is still reached from the tailnet, over HTTPS on
+    /// this host's MagicDNS name.
+    pub fronted: bool,
 }
 
 /// The tailnet block `fsonos serve`, `fsonos status` and `fsonos doctor`
@@ -133,6 +138,16 @@ pub fn describe(status: &TailnetStatus, listeners: &[Listener<'_>]) -> String {
                 if let Some(hint) = hint {
                     let _ = writeln!(out, "  {:<width$} {hint}", "");
                 }
+            }
+            Reach::NotOnTailnet { .. } if l.fronted => {
+                let _ = writeln!(
+                    out,
+                    "  {label:<width$} through Tailscale Serve, over HTTPS on {}; bound to this \
+                     machine only.",
+                    t.magic_dns_name
+                        .as_deref()
+                        .unwrap_or("this host's MagicDNS name")
+                );
             }
             Reach::NotOnTailnet { hint } | Reach::NoTailnet { hint } => {
                 let _ = writeln!(
@@ -348,11 +363,13 @@ mod tests {
                 label: "HTTP API",
                 bind: at("100.101.102.103:8099"),
                 path: "",
+                fronted: false,
             },
             Listener {
                 label: "MCP server",
                 bind: at("100.101.102.103:8098"),
                 path: "/mcp",
+                fronted: false,
             },
         ];
         assert_eq!(
@@ -370,10 +387,25 @@ Tailnet: sonos-host.example-tailnet.ts.net (100.101.102.103, fd7a:115c:a1e0::650
             label: "HTTP API",
             bind: at("127.0.0.1:8099"),
             path: "",
+            fronted: false,
         }];
         let text = describe(&up(true), &local);
         assert!(
             text.contains("HTTP API: not reachable from the tailnet. Bound to this machine only."),
+            "{text}"
+        );
+        // Behind Tailscale Serve, the same loopback listener is reached
+        // from the tailnet: no advice to set up what is set up.
+        let fronted = [Listener {
+            fronted: true,
+            ..local[0]
+        }];
+        let text = describe(&up(true), &fronted);
+        assert!(
+            text.contains(
+                "HTTP API: through Tailscale Serve, over HTTPS on \
+                 sonos-host.example-tailnet.ts.net; bound to this machine only."
+            ) && !text.contains("not reachable"),
             "{text}"
         );
         assert_eq!(

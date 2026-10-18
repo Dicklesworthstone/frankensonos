@@ -342,11 +342,13 @@ pub(crate) fn connect_block(status: &TailnetStatus, serve: &ServeArgs, http: Soc
                 label: "HTTP API",
                 bind: http,
                 path: "",
+                fronted: serve.tailscale_serve,
             },
             Listener {
                 label: "MCP server",
                 bind: mcp,
                 path: "/mcp",
+                fronted: serve.tailscale_serve,
             },
         ],
     )
