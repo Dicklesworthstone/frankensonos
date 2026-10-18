@@ -33,7 +33,7 @@ use std::time::Duration;
 use super::Surface;
 use crate::dj::{DjSpeakers, DjSteer, SteerConstraints};
 use crate::failure::{ErrorCode, Failure, NoteCode};
-use crate::guard::Note;
+use crate::guard::{Guard, Note};
 use crate::plan::{Command, DjAction, VolumeScope};
 use crate::request::VolumeChange;
 use crate::source::normalize_source_uri;
@@ -100,7 +100,8 @@ pub struct SceneApplyDto {
     /// Rooms the scene names that are not in the house now.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<String>,
-    /// Volumes the house policy lowered or left alone (`VOLUME_CLAMPED`).
+    /// Volumes the house policy bounded (`VOLUME_CLAMPED`) and steps or fades
+    /// it left out (`SKIPPED`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Note>,
 }
@@ -772,7 +773,7 @@ impl Surface {
         let (snaps, missed) =
             actions::capture_zones(&*self.transport, &households, &zones, self.now());
         let plan = scenes::plan_apply(&scene, &households, &snaps).map_err(scene_failure)?;
-        let (plan, notes) = self.bound_scene(client, &scene, &households, plan)?;
+        let (plan, notes, fade) = self.bound_scene(client, &scene, &households, plan, fade)?;
         if plan.ops.is_empty() {
             return Ok(SceneApplyDto {
                 scene: scene.name.clone(),
@@ -872,30 +873,50 @@ impl Surface {
     /// or a schedule made from it, applies it): each of its volumes bounded
     /// ([`Self::bound_volumes`]), then each room it starts music in that
     /// stands above a cap now lowered to it first, as a play does
-    /// ([`Self::lower_scene_rooms`]).
+    /// ([`Self::lower_scene_rooms`]). A fade also sets volumes implicitly,
+    /// including rooms with no Volume op, so both clients must be allowed
+    /// `fade_volume` before it is enabled.
     fn bound_scene(
         &self,
         client: &Client,
         scene: &Scene,
         households: &[HouseholdState],
         mut plan: ScenePlan,
-    ) -> Result<(ScenePlan, Vec<Note>), Failure> {
+        fade: Option<Duration>,
+    ) -> Result<(ScenePlan, Vec<Note>, Option<Duration>), Failure> {
         let writer = scene
             .writer
             .as_deref()
             .map(super::schedules::client_of)
             .filter(|writer| writer != client);
         let clients: Vec<&Client> = std::iter::once(client).chain(writer.as_ref()).collect();
+        // All step and fade permissions for both identities use one policy.
+        let policy = self.policy();
         let mut notes = Vec::new();
+        let mut allowed_fade = fade;
         for who in &clients {
-            let (permitted, more) = self.permitted_ops(who, households, plan);
+            let guard = Guard {
+                policy: policy.clone(),
+                client: who,
+                clock: &*self.clock,
+            };
+            let (permitted, more) = Self::permitted_ops(&guard, households, plan);
             notes.extend(more);
-            let (bounded, more) = self.bound_volumes(who, households, permitted);
+            let (bounded, more) = self.bound_volumes(&guard, households, permitted);
             plan = bounded;
             notes.extend(more);
+            if fade.is_some()
+                && let Err(denied) = guard.authorize("fade_volume", false)
+            {
+                allowed_fade = None;
+                notes.push(Note {
+                    code: NoteCode::Skipped,
+                    detail: format!("scene fade omitted: {}", denied.detail),
+                });
+            }
         }
         notes.extend(self.lower_scene_rooms(households, &plan, &clients)?);
-        Ok((plan, notes))
+        Ok((plan, notes, allowed_fade))
     }
 
     /// `plan` without the steps the house policy denies `client`, each with
@@ -903,12 +924,10 @@ impl Surface {
     /// scene with the volumes left as they are. Each step is held to the
     /// tool it is the work of ([`op_tool`]).
     fn permitted_ops(
-        &self,
-        client: &Client,
+        guard: &Guard<'_>,
         households: &[HouseholdState],
         plan: ScenePlan,
     ) -> (ScenePlan, Vec<Note>) {
-        let guard = self.guard(client);
         let mut notes = Vec::new();
         let mut ops = Vec::with_capacity(plan.ops.len());
         for op in plan.ops {
@@ -943,11 +962,10 @@ impl Surface {
     /// left out; each with a `VOLUME_CLAMPED` note.
     fn bound_volumes(
         &self,
-        client: &Client,
+        guard: &Guard<'_>,
         households: &[HouseholdState],
         plan: ScenePlan,
     ) -> (ScenePlan, Vec<Note>) {
-        let guard = self.guard(client);
         let mut notes = Vec::new();
         let mut ops = Vec::with_capacity(plan.ops.len());
         for op in plan.ops {
