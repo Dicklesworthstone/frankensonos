@@ -10,6 +10,7 @@
 //! (`fsonos_api::request`) and share its validation, planning, execution and
 //! house policy, so both surfaces answer alike.
 
+mod identity;
 mod library;
 mod play_mode;
 mod resource_updates;
@@ -47,7 +48,7 @@ async fn play_queue(
     expected_revision: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
-    worker::run(move |backend| {
+    worker::run(ctx, move |backend| {
         backend.play_queue(&fsonos_api::surface::queue::QueuePlayRequest {
             zone,
             position,
@@ -70,7 +71,7 @@ async fn remove_from_queue(
     expected_revision: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
-    worker::run(move |backend| {
+    worker::run(ctx, move |backend| {
         backend.remove_from_queue(&fsonos_api::surface::queue::QueueRemoveRequest {
             zone,
             position,
@@ -94,7 +95,7 @@ async fn move_in_queue(
     expected_revision: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
-    worker::run(move |backend| {
+    worker::run(ctx, move |backend| {
         backend.move_in_queue(&fsonos_api::surface::queue::QueueMoveRequest {
             zone,
             position,
@@ -160,6 +161,13 @@ pub fn server_answering(hosts: Vec<String>) -> fastmcp_server::Server {
 pub fn server_with(hosts: Vec<String>, profile: Profile) -> fastmcp_server::Server {
     let mut http = fastmcp::HttpServerConfig::new();
     http.allowed_hosts = hosts;
+    configured_server(http, profile)
+}
+
+fn configured_server(
+    mut http: fastmcp::HttpServerConfig,
+    profile: Profile,
+) -> fastmcp_server::Server {
     http.handler_config.max_body_size = fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES;
     // announce is a Full tool: a limit naming an unregistered tool refuses
     // the build.
@@ -177,6 +185,7 @@ pub fn server_with(hosts: Vec<String>, profile: Profile) -> fastmcp_server::Serv
     )
     .expect("the pinned MCP server supports both protocol eras")
     .http_config(http)
+    .middleware(identity::ResourcePolicy)
     .request_timeout(fsonos_api::surface::announce::ANNOUNCE_TIMEOUT_SECS)
     .tool(tools::ListZones)
     .tool(tools::GetZoneState)

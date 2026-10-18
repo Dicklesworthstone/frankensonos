@@ -42,14 +42,14 @@ impl Backend {
     description = "Where the DJ's library refresh from Spotify stands: whether one is running, when the last one finished and what it found (tracks, how many the DJ can play, how many classical), and why the latest attempt failed if it did. The daemon refreshes daily on its own.",
     annotations(read_only, idempotent)
 )]
-fn dj_sync_status(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(Backend::dj_sync_status)
+fn dj_sync_status(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(ctx, Backend::dj_sync_status)
 }
 
 #[tool(
     description = "Refresh the DJ's library from the owner's Spotify now (read-only on Spotify), in the background: new saves and likes, their artists' genres, and the taste signals the sign-in allows. Use it after the owner saves new music; the DJ plays from what it finds from its next pick. Answers at once; call dj_sync_status to see when it is done. Starting one while one runs changes nothing.",
     annotations(idempotent)
 )]
-async fn dj_sync(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(Backend::dj_sync).await
+async fn dj_sync(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::dj_sync).await
 }

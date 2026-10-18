@@ -140,7 +140,7 @@ impl Backend {
     description = "Ramp the volume over time: every room `zone` names (a room, one of your aliases, or `all`/`everywhere`) goes to `volume` (0-100) over `seconds` (1-60), each room kept within your caps; answers when the ramp is done, and undo_last puts the volumes back. Leave `seconds` out to let each speaker ramp itself at its own pace (about 0.8 s a step); that answers once each speaker has started (one that can't ramp itself is stepped there first). A manual change to a room meanwhile wins there. For a long fade out at bedtime, use set_sleep_timer."
 )]
 async fn fade_volume(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     volume: i64,
     seconds: Option<u32>,
@@ -150,14 +150,14 @@ async fn fade_volume(
         volume,
         fade_secs: seconds.unwrap_or(0),
     };
-    with_backend_off_thread(move |b| b.fade_volume(&req)).await
+    with_backend_off_thread(ctx, move |b| b.fade_volume(&req)).await
 }
 
 #[tool(
     description = "Fade the group a room plays in out over `seconds` (1-60), pause it, and put its volumes back, so the next play starts at the old level; answers when done. `zone` is a room name (Room@S1 / Room@S2 picks a household; aliases work)."
 )]
 async fn fade_and_pause(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     seconds: u32,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -165,14 +165,14 @@ async fn fade_and_pause(
         zone,
         fade_secs: seconds,
     };
-    with_backend_off_thread(move |b| b.fade_and_pause(&req)).await
+    with_backend_off_thread(ctx, move |b| b.fade_and_pause(&req)).await
 }
 
 #[tool(
     description = "Sleep timer: pause the group a room plays in after `duration` ('45m', '1h30m', '90s', or minutes as '45'; at most 23h), fading it out over the last two minutes when the daemon runs. With `extend` true, push the running timer `duration` later instead; with `cancel` true (and no duration), cancel it. `zone` is a room name (Room@S1 / Room@S2 picks a household; aliases work)."
 )]
 fn set_sleep_timer(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     duration: Option<String>,
     extend: Option<bool>,
@@ -184,7 +184,7 @@ fn set_sleep_timer(
         extend: extend.unwrap_or(false),
         cancel: cancel.unwrap_or(false),
     };
-    with_backend(move |b| b.set_sleep_timer(&req))
+    with_backend(ctx, move |b| b.set_sleep_timer(&req))
 }
 
 #[tool(
@@ -192,18 +192,18 @@ fn set_sleep_timer(
     annotations(read_only, idempotent)
 )]
 fn list_sleep_timers(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.list_sleep_timers(zone.as_deref()))
+    with_backend(ctx, move |b| b.list_sleep_timers(zone.as_deref()))
 }
 
 #[tool(
     description = "List the schedules: what each does, when (`when`), who added it, whether it is paused, and its next run.",
     annotations(read_only, idempotent)
 )]
-fn list_schedules(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(Backend::list_schedules)
+fn list_schedules(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(ctx, Backend::list_schedules)
 }
 
 #[tool(
@@ -211,7 +211,7 @@ fn list_schedules(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolRe
 )]
 #[allow(clippy::too_many_arguments)] // one optional field per action
 fn add_schedule(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     when: String,
     action: String,
     zone: Option<String>,
@@ -229,26 +229,26 @@ fn add_schedule(
         volume,
         fade_secs,
     };
-    with_backend(move |b| b.add_schedule(&req))
+    with_backend(ctx, move |b| b.add_schedule(&req))
 }
 
 #[tool(
     description = "Pause a schedule by its id (from list_schedules): it does not run until resumed.",
     annotations(idempotent)
 )]
-fn pause_schedule(_ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.pause_schedule(id, true))
+fn pause_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(ctx, move |b| b.pause_schedule(id, true))
 }
 
 #[tool(
     description = "Resume a paused schedule by its id (from list_schedules); runs missed while it was paused are not made up.",
     annotations(idempotent)
 )]
-fn resume_schedule(_ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.pause_schedule(id, false))
+fn resume_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(ctx, move |b| b.pause_schedule(id, false))
 }
 
 #[tool(description = "Remove a schedule by its id (from list_schedules).")]
-fn remove_schedule(_ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.remove_schedule(id))
+fn remove_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(ctx, move |b| b.remove_schedule(id))
 }

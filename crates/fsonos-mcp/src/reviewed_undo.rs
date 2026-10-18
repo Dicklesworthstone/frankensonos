@@ -21,7 +21,7 @@ async fn undo_checked(
     expected_id: i64,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
-    worker::run(move |backend| backend.undo_checked(expected_id)).await
+    worker::run(ctx, move |backend| backend.undo_checked(expected_id)).await
 }
 
 #[cfg(test)]

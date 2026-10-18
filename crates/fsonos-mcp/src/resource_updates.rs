@@ -1,6 +1,7 @@
 //! One weakly owned event worker per MCP server, independent of request lifetimes.
-//! It reads the already-authorized daemon stream only while Sonos resources
-//! have subscribers; it never surveys speakers or replays a control operation.
+//! It follows journal continuity only while authorized Sonos resources have
+//! subscribers; it never reads local event payloads, surveys speakers or
+//! replays a control operation. A stdio bridge retains its daemon identity.
 
 use fastmcp::McpResult;
 use fastmcp::common_types::AbsoluteUri;
@@ -9,7 +10,7 @@ use fastmcp_server::{
     ResourceUpdates,
 };
 use fsonos_api::Failure;
-use fsonos_api::events::EventsDto;
+use fsonos_api::events::ResourceChanges;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -19,14 +20,14 @@ const WAIT_SECS: u64 = 2;
 
 pub(crate) fn start(updates: ResourceUpdates) {
     spawn(updates, |since, wait| {
-        crate::tools::backend()?.events_answer(since, wait)
+        crate::tools::backend()?.resource_changes_answer(since, wait)
     })
     .expect("start the MCP resource event worker");
 }
 
 fn spawn(
     updates: ResourceUpdates,
-    read: impl Fn(Option<u64>, u64) -> Result<EventsDto, Failure> + Send + 'static,
+    read: impl Fn(Option<u64>, u64) -> Result<ResourceChanges, Failure> + Send + 'static,
 ) -> std::io::Result<JoinHandle<()>> {
     thread::Builder::new()
         .name("mcp-resource-events".into())
@@ -69,7 +70,7 @@ impl Feed {
     fn poll(
         &mut self,
         updates: &ResourceUpdates,
-        read: &impl Fn(Option<u64>, u64) -> Result<EventsDto, Failure>,
+        read: &impl Fn(Option<u64>, u64) -> Result<ResourceChanges, Failure>,
     ) -> Duration {
         if sonos(updates.subscriptions()).uris.is_empty() {
             *self = Self::default();
@@ -95,8 +96,7 @@ impl Feed {
             || self.dirty
             || self.selected.subscribers != selected.subscribers
             || answer.reset.is_some()
-            || self.since.is_some_and(|since| answer.last_id < since)
-            || !answer.events.is_empty();
+            || self.since.is_some_and(|since| answer.last_id != since);
         // Establish the tail before the first invalidation. Any event racing
         // that initial notification remains visible to the next long poll.
         self.since = Some(answer.last_id);

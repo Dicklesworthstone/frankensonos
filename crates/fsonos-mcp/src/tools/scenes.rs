@@ -141,19 +141,19 @@ impl Backend {
     description = "List the saved scenes: named house states, each with how the rooms group, what each group plays (a favorite, a stream, the DJ in a mood, or whatever it has) and whether it plays, and each room's volume and mute. Put the house in one with apply_scene.",
     annotations(read_only, idempotent)
 )]
-fn list_scenes(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(Backend::list_scenes)
+fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(ctx, Backend::list_scenes)
 }
 
 #[tool(
     description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind dj with an optional mood, uri with a stream uri or a Spotify track, album or playlist link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. Its rooms must be in the house now, and its favorites in their group's household. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes."
 )]
 fn save_scene(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     name: String,
     scene: Option<serde_json::Value>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| match &scene {
+    with_backend(ctx, move |b| match &scene {
         Some(scene) => b.save_scene_from(&name, scene),
         None => b.save_scene(&name),
     })
@@ -164,26 +164,29 @@ fn save_scene(
     annotations(idempotent)
 )]
 async fn apply_scene(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     name: String,
     fade_secs: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.apply_scene(&name, &SceneApplyRequest { fade_secs })).await
+    with_backend_off_thread(ctx, move |b| {
+        b.apply_scene(&name, &SceneApplyRequest { fade_secs })
+    })
+    .await
 }
 
 #[tool(
     description = "Show one saved scene by `name` (case ignored; list_scenes names the saved ones): how its rooms group, what each group plays and whether it plays, and each room's volume and mute. Nothing on the speakers changes; put the house in it with apply_scene.",
     annotations(read_only, idempotent)
 )]
-fn get_scene(_ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.get_scene(&name))
+fn get_scene(ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(ctx, move |b| b.get_scene(&name))
 }
 
 #[tool(
     description = "Forget the saved scene `name` (case ignored; list_scenes names the saved ones). Only the saved scene is removed; nothing on the speakers changes. An unknown name is an error."
 )]
-fn delete_scene(_ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.delete_scene(&name))
+fn delete_scene(ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(ctx, move |b| b.delete_scene(&name))
 }
 
 #[cfg(test)]

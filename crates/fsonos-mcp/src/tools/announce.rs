@@ -29,7 +29,7 @@ impl Backend {
     description = "Requires the daemon's media listener (fsonos serve). Give exactly one of `text` (local offline speech backend, at most 1000 characters; optional `voice`), `chime` (bell, beep, rise), or `wav_base64` (16-bit PCM WAV bytes as standard padded base64, at most 16 MiB decoded and five minutes; never a file path). Play it in `rooms` (names, aliases or 'all'; every room when omitted), then restore grouping, source, position, volumes and mute. `volume` 0-100, default 35, capped per room by the house policy. Waits until the clip has played and the music is back. Not undoable: there is nothing left to undo."
 )]
 async fn announce(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     text: Option<String>,
     chime: Option<String>,
     wav_base64: Option<String>,
@@ -45,5 +45,5 @@ async fn announce(
         rooms: rooms.unwrap_or_default(),
         volume: volume.map(i64::from),
     };
-    with_backend_off_thread(move |b| b.announce(&req)).await
+    with_backend_off_thread(ctx, move |b| b.announce(&req)).await
 }

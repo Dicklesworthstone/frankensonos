@@ -21,5 +21,8 @@ fastmcp = { workspace = true }
 fastmcp-server = { workspace = true } # `#[tool]` expansion needs it by name
 asupersync = { workspace = true }
 
+[dev-dependencies]
+fsonos-sim = { workspace = true }
+
 [lints]
 workspace = true

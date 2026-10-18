@@ -1320,6 +1320,7 @@ dependencies = [
  "fsonos-api",
  "fsonos-core",
  "fsonos-proto",
+ "fsonos-sim",
  "fsonos-types",
  "serde",
  "serde_json",

@@ -76,14 +76,14 @@ impl Backend {
     description = "Add to a room's group queue without starting or replacing playback. Give exactly one of source_uri (a Spotify track, album or playlist URI/link) or favorite (a native Sonos favorite id, numbered position or unambiguous title from that room's household). Native tracks, albums and playlists retain their original service metadata and need no Spotify library sign-in; stations and browse shortcuts cannot be queued. next=true inserts after the playing queue track, otherwise appends. title is for Spotify sources only. Uses the running daemon's policy and undo log when available; an uncertain request is never automatically repeated. zone is a room, Room@S1 / Room@S2, or an alias."
 )]
 fn add_to_queue(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     source_uri: Option<String>,
     title: Option<String>,
     next: Option<bool>,
     favorite: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| {
+    with_backend(ctx, move |b| {
         b.queue_request(&QueueRequest {
             zone,
             source_uri,

@@ -30,7 +30,7 @@ impl Backend {
 )]
 #[allow(clippy::too_many_arguments)] // dj_steer's steering fields, as agents call them
 async fn dj_rehearse(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     works: Option<u32>,
     hours: Option<u32>,
@@ -80,5 +80,5 @@ async fn dj_rehearse(
         },
         seed,
     };
-    with_backend_off_thread(move |b| b.dj_rehearse(&req)).await
+    with_backend_off_thread(ctx, move |b| b.dj_rehearse(&req)).await
 }

@@ -4,12 +4,12 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult, ResultMeta};
-use fsonos_api::events::{EventDto, EventsDto, MAX_WAIT};
+use fsonos_api::events::{EventDto, EventsDto, MAX_WAIT, ResourceChanges};
 use fsonos_api::off_thread::off_thread;
 use fsonos_api::{ErrorCode, Failure};
 use std::time::Duration;
 
-use super::{Backend, backend, from_daemon, respond};
+use super::{Backend, backend_for, from_daemon, respond};
 use crate::tool_error;
 
 /// One line per event: its id, kind and details.
@@ -18,6 +18,26 @@ fn event_line(e: &EventDto) -> String {
 }
 
 impl Backend {
+    /// The resource publisher needs only journal continuity, never event
+    /// payloads or an invented client identity. A stdio bridge still asks the
+    /// selected daemon with its existing authenticated policy identity.
+    pub(crate) fn resource_changes_answer(
+        &self,
+        since: Option<u64>,
+        wait_secs: u64,
+    ) -> Result<ResourceChanges, Failure> {
+        if self.daemon.is_some() {
+            return self
+                .events_answer(since, wait_secs)
+                .map(|answer| ResourceChanges {
+                    last_id: answer.last_id,
+                    reset: answer.reset,
+                });
+        }
+        self.surface
+            .resource_changes_after(since, Duration::from_secs(wait_secs))
+    }
+
     /// The `events` tool. The stream is the daemon's: from the stdio server,
     /// the running daemon answers (`GET /events?wait=`).
     pub fn events(&self, since: Option<u64>, wait_secs: u64) -> McpResult<FinalCallToolResult> {
@@ -66,11 +86,12 @@ impl Backend {
     annotations(read_only)
 )]
 async fn events(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     since: Option<u64>,
     wait_secs: Option<u64>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    let b = backend().map_err(|f| tool_error(&f))?;
+    ctx.checkpoint()?;
+    let b = backend_for(ctx).map_err(|f| tool_error(&f))?;
     let wait_secs = wait_secs.unwrap_or(0).min(MAX_WAIT.as_secs());
     let answer = match off_thread(move || b.events_answer(since, wait_secs)) {
         Ok(waiting) => waiting.await.unwrap_or_else(|| {

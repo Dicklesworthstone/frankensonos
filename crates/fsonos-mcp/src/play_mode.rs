@@ -15,7 +15,7 @@ async fn get_play_mode(
     zone: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
-    worker::run(move |backend| backend.get_play_mode(&zone)).await
+    worker::run(ctx, move |backend| backend.get_play_mode(&zone)).await
 }
 
 #[tool(
@@ -28,7 +28,7 @@ async fn set_play_mode(
     expected_mode: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     ctx.checkpoint()?;
-    worker::run(move |backend| {
+    worker::run(ctx, move |backend| {
         backend.set_play_mode(&PlayModeRequest {
             zone,
             mode,

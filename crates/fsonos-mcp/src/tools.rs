@@ -61,7 +61,9 @@ pub use events::Events;
 pub use fsonos_api::surface::Survey;
 
 /// What the tools act on: the shared [`Surface`] (LAN, households, house
-/// policy) and the identity this server's callers have under the policy.
+/// policy) and a caller's identity. Stdio retains its installed identity;
+/// native HTTP requests clone the shared surface with their admitted caller.
+#[derive(Clone)]
 pub struct Backend {
     surface: Arc<Surface>,
     client: Client,
@@ -88,6 +90,49 @@ pub trait Daemon: Send + Sync {
 }
 
 impl Backend {
+    /// Keep each admitted request's caller with the work it schedules. Native
+    /// HTTP authentication is sealed by the transport; tool arguments cannot
+    /// choose the client, and concurrent requests never mutate shared identity.
+    pub(crate) fn for_request(&self, ctx: &McpContext) -> Result<Self, Failure> {
+        let Some(auth) = ctx.auth() else {
+            return Ok(self.clone());
+        };
+        if self.daemon.is_some() {
+            return Err(Failure::new(
+                ErrorCode::NotReady,
+                "a named MCP HTTP caller cannot use the stdio daemon bridge",
+            ));
+        }
+        Ok(Self {
+            surface: Arc::clone(&self.surface),
+            client: crate::identity::client(auth.subject.as_deref()),
+            daemon: None,
+        })
+    }
+
+    /// Authorize a subscription against one policy snapshot, so a concurrent
+    /// reload cannot combine event access and document access from two rules.
+    pub(crate) fn authorize_reads(&self, tools: &[&str]) -> Result<(), Failure> {
+        use fsonos_core::policy::{Decision, ToolCall};
+
+        let policy = self.surface.policy();
+        for tool in tools {
+            if let Decision::Deny { reason } = policy.authorize(
+                ToolCall {
+                    name: tool,
+                    read_only: true,
+                },
+                &self.client,
+            ) {
+                return Err(Failure::new(
+                    ErrorCode::PolicyDenied,
+                    format!("{} may not use {tool}: {reason}", self.client),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn new(
         transport: Box<dyn Transport + Send + Sync>,
@@ -657,11 +702,18 @@ pub(crate) fn backend() -> Result<&'static Backend, Failure> {
     })
 }
 
+/// Resolve a caller before moving the owned backend into a worker.
+pub(crate) fn backend_for(ctx: &McpContext) -> Result<Backend, Failure> {
+    backend()?.for_request(ctx)
+}
+
 fn with_backend(
+    ctx: &McpContext,
     run: impl FnOnce(&Backend) -> McpResult<FinalCallToolResult>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    let backend = backend().map_err(|f| tool_error(&f))?;
-    Ok(CompleteResult::new(run(backend)?, ResultMeta::empty()))
+    ctx.checkpoint()?;
+    let backend = backend_for(ctx).map_err(|f| tool_error(&f))?;
+    Ok(CompleteResult::new(run(&backend)?, ResultMeta::empty()))
 }
 
 /// [`with_backend`] for a tool that can take long (an announcement that
@@ -669,10 +721,12 @@ fn with_backend(
 /// work runs on a thread of its own, so the server answers every other call
 /// meanwhile (`fsonos_api::off_thread`).
 async fn with_backend_off_thread(
+    ctx: &McpContext,
     run: impl FnOnce(&Backend) -> McpResult<FinalCallToolResult> + Send + 'static,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    let backend = backend().map_err(|f| tool_error(&f))?;
-    let done = fsonos_api::off_thread::off_thread(move || run(backend))
+    ctx.checkpoint()?;
+    let backend = backend_for(ctx).map_err(|f| tool_error(&f))?;
+    let done = fsonos_api::off_thread::off_thread(move || run(&backend))
         .map_err(|busy| tool_error(&busy))?
         .await
         .ok_or_else(|| {
@@ -689,7 +743,7 @@ async fn with_backend_off_thread(
     annotations(read_only, idempotent)
 )]
 async fn search_library(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     query: String,
     zone: Option<String>,
     limit: Option<u32>,
@@ -699,14 +753,14 @@ async fn search_library(
         zone,
         limit: limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
     };
-    with_backend_off_thread(move |b| b.search_library(&req)).await
+    with_backend_off_thread(ctx, move |b| b.search_library(&req)).await
 }
 
 #[tool(
     description = "Search the owner's library plus the target room's household Sonos favorites and immediately play one ranked match. `pick` is one-based and defaults to 1; use search_library first when you want to inspect choices. The selected hit is played through the same guarded play/play_favorite path, so volume policy, action logging, undo, history and household-specific Spotify rendering still apply. Do not retry automatically after an uncertain playback error."
 )]
 async fn search_and_play(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     query: String,
     pick: Option<u32>,
@@ -716,7 +770,7 @@ async fn search_and_play(
         query,
         pick: pick.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
     };
-    with_backend_off_thread(move |b| b.search_and_play(&req)).await
+    with_backend_off_thread(ctx, move |b| b.search_and_play(&req)).await
 }
 
 #[tool(
@@ -724,14 +778,14 @@ async fn search_and_play(
     annotations(read_only, idempotent)
 )]
 async fn recent_plays(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: Option<String>,
     limit: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let limit = limit.map_or(20, |n| {
         usize::try_from(n).unwrap_or(usize::MAX).clamp(1, 200)
     });
-    with_backend_off_thread(move |b| b.recent_plays(zone.as_deref(), limit)).await
+    with_backend_off_thread(ctx, move |b| b.recent_plays(zone.as_deref(), limit)).await
 }
 
 #[tool(
@@ -739,29 +793,29 @@ async fn recent_plays(
     annotations(read_only, idempotent)
 )]
 async fn get_queue(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     offset: Option<u32>,
     limit: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let limit = limit.map_or(50, |n| n.clamp(1, 100));
-    with_backend_off_thread(move |b| b.queue(&zone, offset.unwrap_or(0), limit)).await
+    with_backend_off_thread(ctx, move |b| b.queue(&zone, offset.unwrap_or(0), limit)).await
 }
 
 #[tool(
     description = "List every room: its household (S1/S2), the zone (group) it plays in, and the owner's aliases for it. Any tool's `zone` accepts a room name, Room@S1 / Room@S2, or one of these aliases.",
     annotations(read_only, idempotent)
 )]
-async fn list_rooms(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(Backend::list_rooms).await
+async fn list_rooms(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::list_rooms).await
 }
 
 #[tool(
     description = "List the zone groups: which rooms play together, in which household (S1/S2), and whether each group is playing, paused or stopped.",
     annotations(read_only, idempotent)
 )]
-async fn list_zones(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(Backend::list_zones).await
+async fn list_zones(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::list_zones).await
 }
 
 #[tool(
@@ -769,10 +823,10 @@ async fn list_zones(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallTool
     annotations(read_only, idempotent)
 )]
 async fn get_zone_state(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.zone_state(&zone)).await
+    with_backend_off_thread(ctx, move |b| b.zone_state(&zone)).await
 }
 
 #[tool(
@@ -780,10 +834,10 @@ async fn get_zone_state(
     annotations(read_only, idempotent)
 )]
 async fn get_zone(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.zone(&zone)).await
+    with_backend_off_thread(ctx, move |b| b.zone(&zone)).await
 }
 
 #[tool(
@@ -791,29 +845,29 @@ async fn get_zone(
     annotations(read_only, idempotent)
 )]
 async fn list_favorites(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.list_favorites(&zone)).await
+    with_backend_off_thread(ctx, move |b| b.list_favorites(&zone)).await
 }
 
 #[tool(
     description = "Play one of the household's Sonos favorites in the group a room plays in. `favorite` is its title (case, accents and punctuation ignored; a unique prefix or all its words in any order will do), its number from list_favorites, or its FV:2/<n> id. Albums and playlists replace the queue. `zone` is a room name."
 )]
 async fn play_favorite(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     favorite: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.play_favorite(zone, favorite)).await
+    with_backend_off_thread(ctx, move |b| b.play_favorite(zone, favorite)).await
 }
 
 #[tool(
     description = "Diagnose the setup: can the daemon reach the speakers, is Spotify linked in each household, are the listeners bound safely. Each check says pass, warn or fail, what was seen, and what to do about it. Read-only; nothing changes.",
     annotations(read_only, idempotent)
 )]
-async fn doctor(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(Backend::doctor).await
+async fn doctor(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::doctor).await
 }
 
 #[tool(
@@ -821,7 +875,7 @@ async fn doctor(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResu
     annotations(read_only, idempotent)
 )]
 async fn recent_actions(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     limit: Option<u32>,
     since: Option<i64>,
     client: Option<String>,
@@ -831,26 +885,26 @@ async fn recent_actions(
         since,
         limit: limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
     };
-    with_backend_off_thread(move |b| b.recent_actions(&query)).await
+    with_backend_off_thread(ctx, move |b| b.recent_actions(&query)).await
 }
 
 #[tool(
     description = "Undo your own most recent action: restore the volumes, grouping and what was playing in the zones it changed. The reply says what could not be restored."
 )]
-async fn undo_last(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(Backend::undo_last).await
+async fn undo_last(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::undo_last).await
 }
 
 #[tool(
     description = "Play something in the group a room plays in. `source_uri` is a Spotify track, album or playlist (spotify:track:<id>, spotify:album:<id>, spotify:playlist:<id>, or an open.spotify.com link; rendered through the household's own Spotify link, and an album or playlist replaces the group's queue), or a radio/HTTP stream or Sonos favorite URI. Optional `title` is shown on the speaker. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household)."
 )]
 async fn play(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     source_uri: String,
     title: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| {
+    with_backend_off_thread(ctx, move |b| {
         b.play(&PlayRequest {
             zone,
             source_uri,
@@ -861,55 +915,56 @@ async fn play(
 }
 
 async fn transport(
+    ctx: &McpContext,
     zone: String,
     action: TransportAction,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.transport(&ZoneRequest { zone }, action)).await
+    with_backend_off_thread(ctx, move |b| b.transport(&ZoneRequest { zone }, action)).await
 }
 
 #[tool(
     description = "Pause the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room.",
     annotations(idempotent)
 )]
-async fn pause(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    transport(zone, TransportAction::Pause).await
+async fn pause(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    transport(ctx, zone, TransportAction::Pause).await
 }
 
 #[tool(
     description = "Resume (or start) playback in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room.",
     annotations(idempotent)
 )]
-async fn resume(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    transport(zone, TransportAction::Resume).await
+async fn resume(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    transport(ctx, zone, TransportAction::Resume).await
 }
 
 #[tool(
     description = "Skip to the next track in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
-async fn next(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    transport(zone, TransportAction::Next).await
+async fn next(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    transport(ctx, zone, TransportAction::Next).await
 }
 
 #[tool(
     description = "Go back a track in the group a room plays in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
 async fn previous(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    transport(zone, TransportAction::Previous).await
+    transport(ctx, zone, TransportAction::Previous).await
 }
 
 #[tool(
     description = "Move within the track the group a room plays in is on. Give exactly one of `to_secs` (seconds from its start; 0 starts it over) or `by_secs` (seconds from where it is now: 30 skips ahead, -15 goes back; kept within the track). A radio stream has no position to move in. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household) or one of your aliases."
 )]
 async fn seek(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     to_secs: Option<u32>,
     by_secs: Option<i64>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| {
+    with_backend_off_thread(ctx, move |b| {
         b.seek(&fsonos_api::SeekRequest {
             zone,
             to_secs,
@@ -923,13 +978,13 @@ async fn seek(
     description = "Change a room's volume: give exactly one of `volume` (0-100, absolute) or `delta` (-100..100, relative; e.g. +5 for 'a bit louder'). With `group` true the change applies to the room's whole group. The house policy may lower a loud request; the reply then says so. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to act on every room."
 )]
 async fn set_volume(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     volume: Option<i64>,
     delta: Option<i64>,
     group: Option<bool>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| {
+    with_backend_off_thread(ctx, move |b| {
         b.set_volume(&VolumeRequest {
             zone,
             volume,
@@ -946,11 +1001,11 @@ async fn set_volume(
     annotations(idempotent)
 )]
 async fn mute_tool(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     mute: Option<bool>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| {
+    with_backend_off_thread(ctx, move |b| {
         b.mute(&MuteRequest {
             zone,
             mute: mute.unwrap_or(true),
@@ -964,29 +1019,26 @@ async fn mute_tool(
     annotations(idempotent)
 )]
 async fn group(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     to: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.group(&GroupRequest { zone, to })).await
+    with_backend_off_thread(ctx, move |b| b.group(&GroupRequest { zone, to })).await
 }
 
 #[tool(
     description = "Take a room out of its group so it plays on its own. `zone` is a room name (case-insensitive; Room@S1 / Room@S2 picks a household), one of your aliases, or `all`/`everywhere` to break every group up (each group's leading room plays on).",
     annotations(idempotent)
 )]
-async fn ungroup(
-    _ctx: &McpContext,
-    zone: String,
-) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.ungroup(&ZoneRequest { zone })).await
+async fn ungroup(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, move |b| b.ungroup(&ZoneRequest { zone })).await
 }
 
 #[tool(
     description = "Move the music a room plays to another room, as if it followed you: in one household the group is handed over (or regrouped) without a gap; between households (S1 and S2 never group) set `copy` true to replay the same track, at the same position, there and stop it here. `zone` is the room the music is in, `to` the room it goes to (names case-insensitive; Room@S1 / Room@S2 picks a household; aliases work)."
 )]
 async fn move_playback(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     to: String,
     copy: Option<bool>,
@@ -996,7 +1048,7 @@ async fn move_playback(
         to,
         copy: copy.unwrap_or(false),
     };
-    with_backend_off_thread(move |b| b.move_playback(&req)).await
+    with_backend_off_thread(ctx, move |b| b.move_playback(&req)).await
 }
 
 #[tool(
@@ -1004,27 +1056,28 @@ async fn move_playback(
     annotations(idempotent)
 )]
 async fn group_all(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: Option<String>,
     household: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let req = PartyRequest { zone, household };
-    with_backend_off_thread(move |b| b.group_all(&req)).await
+    with_backend_off_thread(ctx, move |b| b.group_all(&req)).await
 }
 
 async fn dj(
+    ctx: &McpContext,
     zone: String,
     tool: &'static str,
     action: DjAction,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.dj_action(tool, zone, action)).await
+    with_backend_off_thread(ctx, move |b| b.dj_action(tool, zone, action)).await
 }
 
 #[tool(
     description = "Start the DJ in the group a room plays in: it plays from the owner's own library, in any genre, to their taste (songs one at a time, classical works whole, every movement in order) and keeps the queue topped up. `zone` is a room name. Optional `mood` starts it steered (dj_moods lists the moods), for `for_minutes` (omit: until cleared)."
 )]
 async fn dj_start(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     mood: Option<String>,
     for_minutes: Option<u32>,
@@ -1034,7 +1087,7 @@ async fn dj_start(
         mood,
         for_secs: for_minutes.map(|m| u64::from(m) * 60),
     };
-    with_backend_off_thread(move |b| b.dj_start(&req)).await
+    with_backend_off_thread(ctx, move |b| b.dj_start(&req)).await
 }
 
 #[tool(
@@ -1042,7 +1095,7 @@ async fn dj_start(
 )]
 #[allow(clippy::too_many_arguments)] // one optional argument per steering field, as agents call it
 async fn dj_steer(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     mood: Option<String>,
     include_composers: Option<Vec<String>>,
@@ -1088,7 +1141,7 @@ async fn dj_steer(
         for_secs: for_minutes.map(|m| u64::from(m) * 60),
         clear: clear.unwrap_or(false),
     };
-    with_backend_off_thread(move |b| b.dj_steer(&req)).await
+    with_backend_off_thread(ctx, move |b| b.dj_steer(&req)).await
 }
 
 #[tool(
@@ -1096,10 +1149,10 @@ async fn dj_steer(
     annotations(read_only, idempotent)
 )]
 async fn dj_status(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.dj_status(&zone)).await
+    with_backend_off_thread(ctx, move |b| b.dj_status(&zone)).await
 }
 
 #[tool(
@@ -1107,29 +1160,26 @@ async fn dj_status(
     annotations(read_only, idempotent)
 )]
 async fn dj_moods(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(move |b| b.dj_moods(zone.as_deref())).await
+    with_backend_off_thread(ctx, move |b| b.dj_moods(zone.as_deref())).await
 }
 
 #[tool(
     description = "Skip the DJ's current piece in the group a room plays in. `zone` is a room name."
 )]
-async fn dj_skip(
-    _ctx: &McpContext,
-    zone: String,
-) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    dj(zone, "dj_skip", DjAction::Skip).await
+async fn dj_skip(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    dj(ctx, zone, "dj_skip", DjAction::Skip).await
 }
 
 #[tool(description = "Stop the DJ in the group a room plays in. `zone` is a room name.")]
-async fn dj_stop(
-    _ctx: &McpContext,
-    zone: String,
-) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    dj(zone, "dj_stop", DjAction::Stop).await
+async fn dj_stop(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    dj(ctx, zone, "dj_stop", DjAction::Stop).await
 }
+
+#[cfg(test)]
+mod identity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1724,7 +1774,8 @@ mod tests {
     #[test]
     fn without_a_backend_tools_say_not_ready() {
         // The process-wide backend is never installed in unit tests.
-        let Err(err) = with_backend(|_| unreachable!()) else {
+        let ctx = McpContext::new(fastmcp::Cx::for_testing(), 1);
+        let Err(err) = with_backend(&ctx, |_| unreachable!()) else {
             panic!("expected NOT_READY")
         };
         assert!(err.message.starts_with("NOT_READY: "), "{}", err.message);

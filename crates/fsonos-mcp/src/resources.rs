@@ -21,7 +21,7 @@
 use fastmcp::prelude::*;
 use fsonos_api::{ErrorCode, Failure};
 
-use crate::tools::backend;
+use crate::tools::backend_for;
 
 /// A failure as a resource read error: the caller's mistakes as invalid
 /// parameters, the rest as an error carrying the same text.
@@ -54,7 +54,7 @@ async fn document(
 #[resource(uri = "sonos://zones", mime_type = "application/json")]
 async fn zones(ctx: &McpContext) -> McpResult<String> {
     ctx.checkpoint()?;
-    let backend = backend().map_err(|failure| read_error(&failure))?;
+    let backend = backend_for(ctx).map_err(|failure| read_error(&failure))?;
     document(move || backend.zones_document()).await
 }
 
@@ -66,7 +66,7 @@ async fn zone(ctx: &McpContext, room: String) -> McpResult<String> {
     let room = fsonos_api::http::percent_decode(&room).ok_or_else(move || {
         McpError::invalid_params(format!("room {room:?} is not valid percent-encoded UTF-8"))
     })?;
-    let backend = backend().map_err(|failure| read_error(&failure))?;
+    let backend = backend_for(ctx).map_err(|failure| read_error(&failure))?;
     document(move || backend.zone_document(&room)).await
 }
 
@@ -76,6 +76,6 @@ async fn zone(ctx: &McpContext, room: String) -> McpResult<String> {
 #[resource(uri = "sonos://dj", mime_type = "application/json")]
 async fn dj(ctx: &McpContext) -> McpResult<String> {
     ctx.checkpoint()?;
-    let backend = backend().map_err(|failure| read_error(&failure))?;
+    let backend = backend_for(ctx).map_err(|failure| read_error(&failure))?;
     document(move || backend.dj_document()).await
 }

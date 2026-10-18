@@ -6,10 +6,12 @@ use fastmcp::{CompleteResult, FinalCallToolResult, ResultMeta};
 use fsonos_api::{ErrorCode, Failure};
 
 pub(crate) async fn run(
+    ctx: &McpContext,
     call: impl FnOnce(&tools::Backend) -> McpResult<FinalCallToolResult> + Send + 'static,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    let backend = tools::backend().map_err(|failure| tool_error(&failure))?;
-    let done = perform(move || call(backend)).await?;
+    ctx.checkpoint()?;
+    let backend = tools::backend_for(ctx).map_err(|failure| tool_error(&failure))?;
+    let done = perform(move || call(&backend)).await?;
     Ok(CompleteResult::new(done, ResultMeta::empty()))
 }
 

@@ -4,7 +4,7 @@ use crate::tools::{Backend, Daemon};
 use fastmcp::{RequestId, SubscriptionFilter};
 use fastmcp_server::{NotificationSender, Server, ServerBuilder, SubscriptionListenHandle};
 use fsonos_api::ErrorCode;
-use fsonos_api::events::EventDto;
+use fsonos_api::events::{EventDto, EventsDto};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_proto::{ProtoError, Transport};
@@ -82,6 +82,13 @@ fn take(received: &mpsc::Receiver<String>, expected: &[&str]) {
 fn tail(last_id: u64) -> EventsDto {
     EventsDto {
         events: Vec::new(),
+        last_id,
+        reset: None,
+    }
+}
+
+fn cursor(last_id: u64) -> ResourceChanges {
+    ResourceChanges {
         last_id,
         reset: None,
     }
@@ -196,7 +203,7 @@ fn an_idle_subscription_follows_the_selected_daemon_and_stops_after_unsubscribe(
     let updates = server.resource_updates();
     let (backend, requests) = event_backend();
     let worker = spawn(updates.clone(), move |since, wait| {
-        backend.events_answer(since, wait)
+        backend.resource_changes_answer(since, wait)
     })
     .unwrap();
     assert!(
@@ -230,7 +237,7 @@ fn closing_a_server_during_a_daemon_read_cannot_publish_or_start_another_read() 
     let (_listen, received) = selected(&server, &[ZONES]);
     let (backend, requests) = event_backend();
     let worker = spawn(updates.clone(), move |since, wait| {
-        backend.events_answer(since, wait)
+        backend.resource_changes_answer(since, wait)
     })
     .unwrap();
     let pending = request(&requests, "/events?wait=0");
@@ -251,11 +258,11 @@ fn quiet_polls_stay_quiet_but_loss_restart_and_recovery_invalidate_all_resources
     let updates = server.resource_updates();
     let (_listen, received) = selected(&server, &[ZONES, ROOM, DJ]);
     let mut feed = Feed::default();
-    assert_eq!(feed.poll(&updates, &|_, _| Ok(tail(7))), IDLE);
+    assert_eq!(feed.poll(&updates, &|_, _| Ok(cursor(7))), IDLE);
     take(&received, &[ZONES, ROOM, DJ]);
     feed.poll(&updates, &|since, wait| {
         assert_eq!((since, wait), (Some(7), WAIT_SECS));
-        Ok(tail(7))
+        Ok(cursor(7))
     });
     assert!(received.try_recv().is_err());
     assert_eq!(
@@ -269,20 +276,20 @@ fn quiet_polls_stay_quiet_but_loss_restart_and_recovery_invalidate_all_resources
     assert_eq!(feed.since, Some(7));
 
     // Recovery with no new event still invalidates potentially stale documents.
-    feed.poll(&updates, &|_, _| Ok(tail(7)));
+    feed.poll(&updates, &|_, _| Ok(cursor(7)));
     take(&received, &[ZONES, ROOM, DJ]);
     feed.poll(&updates, &|_, _| {
-        Ok(EventsDto {
+        Ok(ResourceChanges {
             reset: Some(9),
-            ..tail(8)
+            ..cursor(8)
         })
     });
     take(&received, &[ZONES, ROOM, DJ]);
     // Also handle a restarted remote daemon that omitted its reset marker.
-    feed.poll(&updates, &|_, _| Ok(tail(1)));
+    feed.poll(&updates, &|_, _| Ok(cursor(1)));
     take(&received, &[ZONES, ROOM, DJ]);
     assert_eq!(feed.since, Some(1));
-    feed.poll(&updates, &|_, _| Ok(changed(3)));
+    feed.poll(&updates, &|_, _| Ok(cursor(3)));
     take(&received, &[ZONES, ROOM, DJ]);
 }
 
@@ -292,12 +299,12 @@ fn a_subscription_joining_during_a_long_poll_gets_its_exact_qualified_uri() {
     let updates = server.resource_updates();
     let (_zones, zones) = selected(&server, &[ZONES]);
     let mut feed = Feed::default();
-    feed.poll(&updates, &|_, _| Ok(tail(4)));
+    feed.poll(&updates, &|_, _| Ok(cursor(4)));
     take(&zones, &[ZONES]);
     let joined = RefCell::new(None);
     feed.poll(&updates, &|_, _| {
         *joined.borrow_mut() = Some(listen(&server, 2, vec![ROOM.into()]));
-        Ok(tail(4))
+        Ok(cursor(4))
     });
     let (_room, room) = joined.into_inner().unwrap();
     take(&zones, &[ZONES]);
@@ -320,7 +327,7 @@ fn invalid_or_unrelated_subscriptions_do_not_poll_or_poison_valid_updates() {
     let mut feed = Feed::default();
     feed.poll(&updates, &|_, _| panic!("no valid Sonos subscription"));
     let (_good, good_received) = listen(&server, 2, vec![ROOM.into()]);
-    feed.poll(&updates, &|_, _| Ok(tail(4)));
+    feed.poll(&updates, &|_, _| Ok(cursor(4)));
     take(&good_received, &[ROOM]);
     assert!(bad_received.try_recv().is_err());
     drop(bad);
@@ -336,7 +343,7 @@ fn large_subscription_sets_fit_both_publication_budgets_without_losing_rooms() {
     uris.extend((0..3).map(|i| format!("sonos://zones/{i}{}%40S2", "x".repeat(32 * 1024))));
     let (_listen, received) = listen(&server, 1, uris.clone());
     let mut feed = Feed::default();
-    feed.poll(&updates, &|_, _| Ok(changed(3)));
+    feed.poll(&updates, &|_, _| Ok(cursor(3)));
     take(
         &received,
         &uris.iter().map(String::as_str).collect::<Vec<_>>(),

@@ -551,7 +551,9 @@ mod tests {
         // The API's existing local CLI and stdio behavior remains available.
         assert_eq!(identity.of(&with_token(token)), Client::Cli);
         let mut stdio = with_token(token);
-        stdio.headers_mut().insert(LOCAL_CLIENT, b"mcp-stdio".to_vec());
+        stdio
+            .headers_mut()
+            .insert(LOCAL_CLIENT, b"mcp-stdio".to_vec());
         assert_eq!(identity.of(&stdio), Client::McpStdio);
     }
 }

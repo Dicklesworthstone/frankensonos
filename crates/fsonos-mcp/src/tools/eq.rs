@@ -28,8 +28,8 @@ impl Backend {
     description = "A room's tone: bass and treble from -10 to 10 (0 is flat), and whether loudness compensation (more bass and treble at low volume) is on. `zone` is a room name, Room@S1 / Room@S2, or one of your aliases.",
     annotations(read_only, idempotent)
 )]
-fn get_eq(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| b.get_eq(&zone))
+fn get_eq(ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(ctx, move |b| b.get_eq(&zone))
 }
 
 #[tool(
@@ -37,13 +37,13 @@ fn get_eq(_ctx: &McpContext, zone: String) -> McpResult<CompleteResult<FinalCall
     annotations(idempotent)
 )]
 fn set_eq(
-    _ctx: &McpContext,
+    ctx: &McpContext,
     zone: String,
     bass: Option<i64>,
     treble: Option<i64>,
     loudness: Option<bool>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(move |b| {
+    with_backend(ctx, move |b| {
         b.set_eq(&EqRequest {
             zone,
             bass,

@@ -26,7 +26,10 @@ async fn browse_library(
         offset: offset.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
         limit: limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
     };
-    worker::run(move |backend| backend.browse_library(&query, expected_revision.as_deref())).await
+    worker::run(ctx, move |backend| {
+        backend.browse_library(&query, expected_revision.as_deref())
+    })
+    .await
 }
 
 #[cfg(test)]

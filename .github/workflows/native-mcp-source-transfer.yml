@@ -11,7 +11,7 @@ permissions:
 jobs:
   transfer:
     if: github.repository == 'Dicklesworthstone/frankensonos' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Upload the exact reviewed source blobs

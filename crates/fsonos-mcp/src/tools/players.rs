@@ -51,6 +51,6 @@ impl Backend {
     description = "List every Sonos player of every household: its room, household (S1/S2), model, generation, and IP address. This is the device inventory `fsonos discover` shows; use list_zones for how they group and list_rooms for room aliases.",
     annotations(read_only, idempotent)
 )]
-fn list_players(_ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(Backend::list_players)
+fn list_players(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend(ctx, Backend::list_players)
 }
