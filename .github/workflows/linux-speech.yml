@@ -55,6 +55,7 @@ on:
       - "scripts/test-dashboard-queue.cjs"
       - "scripts/test-dashboard-session.cjs"
       - "scripts/test-dashboard-workspace.cjs"
+      - "scripts/test-vendored-mcp.py"
       - "vendor/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -146,6 +147,9 @@ jobs:
       - name: MCP tool input boundary regressions
         if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         run: cargo test --locked -p fastmcp-protocol --lib tool_input_limit
+      - name: MCP idle resource subscription regressions
+        if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        run: python3 scripts/test-vendored-mcp.py
       - name: Regression, simulator, and real Linux speech tests
         if: ${{ !cancelled() && steps.check.outcome == 'success' }}
         # e2e_stream drives `fsonos stream` with the FFmpeg installed above.

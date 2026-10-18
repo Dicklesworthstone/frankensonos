@@ -526,7 +526,7 @@ fn replacement_cannot_replay_an_initial_older_than_an_accepted_old_stream_event(
         assert_eq!(playback.of(&player).unwrap().volume, Some(43));
         assert_eq!(
             f.provider.retired.lock().unwrap().as_slice(),
-            [initial.sid.clone()]
+            std::slice::from_ref(&initial.sid)
         );
         for _ in 0..100 {
             assert!(f.start().is_empty());

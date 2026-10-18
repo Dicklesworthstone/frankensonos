@@ -9,11 +9,14 @@
 //! * `sonos://dj`: the DJ in every zone (each zone's `dj_status`), with its
 //!   moods and time-of-day program (`dj_moods`).
 //!
-//! Change notifications are not sent yet: fastmcp_rust (at the pinned
-//! revision) publishes `notifications/resources/updated` only from inside a
-//! live request, and the daemon's changes arrive from its event bus with no
-//! request in flight. HTTP clients can follow the same changes on
-//! `GET /events`.
+//! Subscribed clients receive resource invalidations from the same authorized
+//! event stream as the `events` tool, including while no resource read is in
+//! flight. Both protocol eras are supported. Updates preserve the exact URI
+//! subscribed, including percent-encoded, household-qualified room names.
+//! A missed-event reset or recovery invalidates every subscribed Sonos resource;
+//! clients read the documents again to obtain current state. Event delivery
+//! needs the daemon's live model, locally or through the selected daemon URL.
+//! No event polling or speaker reads are started without a Sonos subscriber.
 
 use fastmcp::prelude::*;
 use fsonos_api::{ErrorCode, Failure};

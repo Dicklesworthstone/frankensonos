@@ -42,7 +42,11 @@ impl Backend {
         })
     }
 
-    fn events_answer(&self, since: Option<u64>, wait_secs: u64) -> Result<EventsDto, Failure> {
+    pub(crate) fn events_answer(
+        &self,
+        since: Option<u64>,
+        wait_secs: u64,
+    ) -> Result<EventsDto, Failure> {
         if let Some(daemon) = &self.daemon {
             let path = match since {
                 Some(since) => format!("/events?wait={wait_secs}&since={since}"),

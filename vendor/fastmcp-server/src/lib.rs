@@ -93,6 +93,7 @@ pub mod providers;
 #[cfg(feature = "proxy")]
 mod proxy;
 pub mod rate_limiting;
+mod resource_updates;
 mod router;
 mod session;
 #[cfg(feature = "tasks")]
@@ -107,8 +108,7 @@ pub use auth::{
     TokenVerifier,
 };
 pub use builder::{
-    RefusedRegistration, RegistrationKind, ServerBuildError, ServerBuilder,
-    ServerLaunchPolicyError,
+    RefusedRegistration, RegistrationKind, ServerBuildError, ServerBuilder, ServerLaunchPolicyError,
 };
 pub use extensions::{
     ExtensionHandler, ExtensionHandlerInvocationError, ExtensionHandlerKey,
@@ -116,6 +116,9 @@ pub use extensions::{
 };
 pub use fastmcp_console::config::{BannerStyle, ConsoleConfig, TrafficVerbosity};
 pub use fastmcp_console::stats::{ServerStats, StatsSnapshot};
+use fastmcp_protocol::{
+    MAX_CLIENT_REGISTRATION_BYTES, SecurityDocumentKind, admit_security_document,
+};
 /// Cancellation-aware server-side WebSocket message adapter.
 ///
 /// [`BoundWebSocketServer`] owns the listener and HTTP Upgrade boundary; this
@@ -132,17 +135,14 @@ pub use handler::{
     create_context_with_progress_and_senders, promote_legacy_prompt_messages,
     promote_legacy_resource_contents, promote_legacy_tool_content,
 };
-pub use middleware::{Middleware, MiddlewareDecision};
 pub use middleware::continuation_replay::{
     ContinuationReplayAuthority, ContinuationReplayLimits, ContinuationReplayMiddleware,
 };
+pub use middleware::{Middleware, MiddlewareDecision};
 use oauth::{
     AuthorizationRequest, CodeChallengeMethod, NativePublicClientRegistrationRequest, OAuthError,
     OAuthHttpRoutes, OAuthParameterAdmission, OAuthParameterEndpoint, OAuthParameterName,
     TokenRequest,
-};
-use fastmcp_protocol::{
-    MAX_CLIENT_REGISTRATION_BYTES, SecurityDocumentKind, admit_security_document,
 };
 #[cfg(feature = "proxy")]
 pub use proxy::{
@@ -155,6 +155,10 @@ pub use proxy::{
 use proxy::{ProxyCatalogListener, ProxyCatalogListenerEvent, ProxyFinalTaskRelay};
 #[cfg(all(feature = "proxy", feature = "tasks"))]
 pub use proxy::{ProxyFinalTaskListener, ProxyFinalTaskListenerEvent};
+pub use resource_updates::{
+    MAX_RESOURCE_UPDATE_BATCH, MAX_RESOURCE_UPDATE_BATCH_BYTES, ResourceSubscriptions,
+    ResourceUpdates,
+};
 pub use router::{
     InboundRequestContext, InboundRequestTransport, ModernConnection, MountResult,
     NotificationSender, Router, TagFilters,
@@ -1348,6 +1352,7 @@ struct LiveLegacy2024ConnectionRuntime {
     supports_roots: Arc<AtomicBool>,
     client_info: Arc<Mutex<Option<fastmcp_protocol::ClientInfo>>>,
     resource_subscriptions: Arc<Mutex<Vec<String>>>,
+    resource_updates: Arc<resource_updates::LegacySubscriber>,
     log_level: Arc<Mutex<Option<LogLevel>>>,
     logging_ceiling: LevelFilter,
 }
@@ -1396,7 +1401,13 @@ impl LiveLegacy2024ConnectionRuntime {
         notification_sender: NotificationSender,
         request_sender: Option<RequestSender>,
         logging_ceiling: LevelFilter,
+        updates: &resource_updates::Registry,
     ) -> Self {
+        let resource_subscriptions = Arc::new(Mutex::new(Vec::new()));
+        let resource_updates = updates.register(
+            Arc::clone(&resource_subscriptions),
+            Arc::clone(&notification_sender),
+        );
         Self {
             session_state,
             notification_sender,
@@ -1404,7 +1415,8 @@ impl LiveLegacy2024ConnectionRuntime {
             supports_sampling: Arc::new(AtomicBool::new(false)),
             supports_roots: Arc::new(AtomicBool::new(false)),
             client_info: Arc::new(Mutex::new(None)),
-            resource_subscriptions: Arc::new(Mutex::new(Vec::new())),
+            resource_subscriptions,
+            resource_updates,
             log_level: Arc::new(Mutex::new(None)),
             logging_ceiling,
         }
@@ -8159,6 +8171,7 @@ impl ServerHttpEndpoint {
             notification_sender,
             Some(legacy_request_sender),
             self.server.logging.level,
+            &self.server.resource_updates,
         );
         Ok(ServerHttpSession {
             server: Arc::clone(&self.server),
@@ -8812,6 +8825,7 @@ impl ServerHttpSession {
     /// the mutable transport session and could publish into the fresh body.
     #[cfg(any(feature = "legacy-2024-11-05", test))]
     fn install_legacy_generation(&mut self, cx: &Cx) {
+        self.legacy_runtime.resource_updates.close();
         self.legacy_admissions.cancel_all();
         self.legacy_pending_requests.cancel_all();
         *self
@@ -8872,6 +8886,7 @@ impl ServerHttpSession {
             notification_sender,
             Some(request_sender),
             self.server.logging.level,
+            &self.server.resource_updates,
         );
     }
 
@@ -9493,6 +9508,8 @@ impl ServerHttpSession {
             return Vec::new();
         }
         self.closed = true;
+        #[cfg(any(feature = "legacy-2024-11-05", test))]
+        self.legacy_runtime.resource_updates.close();
         if !self.modern_connection.is_ephemeral() {
             self.modern_connection.disconnect();
         }
@@ -10157,7 +10174,8 @@ fn dispatch_oauth_h1_request(
         if let Err(response) = oauth_json_content_type(request) {
             return oauth_http_no_store(response);
         }
-        if admit_security_document(SecurityDocumentKind::ClientRegistration, &request.body).is_err() {
+        if admit_security_document(SecurityDocumentKind::ClientRegistration, &request.body).is_err()
+        {
             return oauth_http_invalid_request();
         }
         let registration =
@@ -10166,9 +10184,9 @@ fn dispatch_oauth_h1_request(
                 Err(_) => return oauth_http_invalid_request(),
             };
         return match routes.server().register_native_public_client(registration) {
-            Ok(response) => oauth_http_no_store(
-                HttpResponse::new(HttpStatus(201)).with_json(&response),
-            ),
+            Ok(response) => {
+                oauth_http_no_store(HttpResponse::new(HttpStatus(201)).with_json(&response))
+            }
             Err(error) => oauth_http_error(error),
         };
     }
@@ -12544,9 +12562,18 @@ pub struct Server {
     final_task_relay: Option<Arc<ProxyFinalTaskRelay>>,
     /// Request-owned final subscription streams shared by stdio and HTTP.
     final_subscriptions: Arc<FinalSubscriptionRegistry>,
+    /// Weak application publishers and connection-owned legacy subscriptions.
+    resource_updates: resource_updates::Owner,
 }
 
 impl Server {
+    /// A weak, resource-only publisher for application-owned event workers.
+    /// Obtain it before moving the server into its HTTP or stdio lifecycle.
+    #[must_use]
+    pub fn resource_updates(&self) -> ResourceUpdates {
+        self.resource_updates.publisher()
+    }
+
     /// Returns the local subscription/notification delivery state for unit
     /// tests that prove a rejected request produced no local side effect.
     #[cfg(test)]
@@ -16488,6 +16515,7 @@ impl Server {
             notification_sender,
             Some(legacy_request_sender),
             server.logging.level,
+            &server.resource_updates,
         );
         let modern_connection = ModernConnection::new();
         let worker_modern_connection = modern_connection.request_context();
@@ -17671,6 +17699,7 @@ impl Server {
             }
         }
 
+        legacy_runtime.resource_updates.close();
         // Elect graceful final-subscription completion while the writer and
         // dispatch worker still own their response path. The election sends
         // its correlated stdio control, then wakes the listen future by
@@ -17821,6 +17850,7 @@ impl Server {
             Arc::clone(&notification_sender),
             None,
             server.logging.level,
+            &server.resource_updates,
         );
         let modern_connection = ModernConnection::new();
 
@@ -18228,6 +18258,7 @@ impl Server {
                 }
             }
         })();
+        legacy_runtime.resource_updates.close();
         let cleanup = server.graceful_shutdown_returning();
         // A worker can finish its response attempt during the shutdown drain.
         // Read its failure after ownership retirement, including on clean EOF.
@@ -27289,11 +27320,9 @@ mod lib_unit_tests {
         let inbound =
             InboundRequestContext::new(Cx::for_testing(), 81, InboundRequestTransport::Memory);
 
-        let admitted = block_on(server.dispatch_stateless(
-            &inbound,
-            &final_task_creating_tool_request(true),
-        ))
-        .expect("declared final Tasks tool request must respond");
+        let admitted =
+            block_on(server.dispatch_stateless(&inbound, &final_task_creating_tool_request(true)))
+                .expect("declared final Tasks tool request must respond");
         assert!(admitted.error.is_none());
         assert_eq!(
             admitted.result.as_ref().map(|result| &result["resultType"]),
@@ -27328,11 +27357,9 @@ mod lib_unit_tests {
             "the admitted request publishes exactly one durable task transition"
         );
 
-        let rejected = block_on(server.dispatch_stateless(
-            &inbound,
-            &final_task_creating_tool_request(false),
-        ))
-        .expect("missing-capability final tool request must respond");
+        let rejected =
+            block_on(server.dispatch_stateless(&inbound, &final_task_creating_tool_request(false)))
+                .expect("missing-capability final tool request must respond");
         let error = rejected
             .error
             .expect("removing only the Tasks declaration must reject task creation");
@@ -28407,23 +28434,25 @@ mod lib_unit_tests {
         assert!(ping.error.is_none());
 
         assert!(
-            block_on(server.dispatch_request(
-                &Cx::for_testing(),
-                &mut session,
-                JsonRpcRequest::notification(
-                    "notifications/cancelled",
-                    Some(
-                        serde_json::to_value(CancelledParams {
-                            request_id: RequestId::Number(999),
-                            reason: None,
-                            meta: None,
-                        })
-                        .expect("serialize cancellation"),
+            block_on(
+                server.dispatch_request(
+                    &Cx::for_testing(),
+                    &mut session,
+                    JsonRpcRequest::notification(
+                        "notifications/cancelled",
+                        Some(
+                            serde_json::to_value(CancelledParams {
+                                request_id: RequestId::Number(999),
+                                reason: None,
+                                meta: None,
+                            })
+                            .expect("serialize cancellation"),
+                        ),
                     ),
-                ),
-                &notification_sender,
-                &request_sender,
-            ))
+                    &notification_sender,
+                    &request_sender,
+                )
+            )
             .is_none()
         );
 
@@ -52684,10 +52713,9 @@ mod lib_unit_tests {
             "text/*;q=0, */*;q=1",
             "text/event-stream, text/event-stream;q=0, application/json",
         ] {
-            let response = block_on(
-                session.handle_async(&cx, request.clone().with_header("accept", accept)),
-            )
-            .expect("zero-quality SSE request must be rejected before dispatch");
+            let response =
+                block_on(session.handle_async(&cx, request.clone().with_header("accept", accept)))
+                    .expect("zero-quality SSE request must be rejected before dispatch");
             assert!(matches!(
                 response,
                 ServerHttpEndpointResponse::Immediate(response)
@@ -52712,7 +52740,9 @@ mod lib_unit_tests {
         };
         let progress = sse.recv_event(&cx).expect("progress frame must be queued");
         let log = sse.recv_event(&cx).expect("log frame must be queued");
-        let terminal = sse.recv_event(&cx).expect("terminal response must be queued");
+        let terminal = sse
+            .recv_event(&cx)
+            .expect("terminal response must be queued");
         assert!(matches!(
             Codec::new().decode_complete_message(progress.data.as_bytes()),
             Ok(JsonRpcMessage::Request(notification))
@@ -53571,7 +53601,9 @@ mod lib_unit_tests {
                     Ok(Some(_)) => received += 1,
                     Ok(None) if Instant::now() < deadline => thread::yield_now(),
                     Ok(None) => {
-                        return Err(format!("only {received} of {COMMITS} commits were observed"));
+                        return Err(format!(
+                            "only {received} of {COMMITS} commits were observed"
+                        ));
                     }
                     Err(error) => {
                         return Err(format!(

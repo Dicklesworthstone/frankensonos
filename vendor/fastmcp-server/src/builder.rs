@@ -2778,8 +2778,7 @@ impl ServerBuilder {
     /// No server is built.
     pub fn try_build(mut self) -> Result<Server, ServerBuildError> {
         for (name, maximum) in self.http_config.tool_input_max_bytes.clone() {
-            let reason = if maximum == 0
-                || maximum > self.http_config.handler_config.max_body_size
+            let reason = if maximum == 0 || maximum > self.http_config.handler_config.max_body_size
             {
                 Some("tool input limit must be nonzero and fit the HTTP body budget")
             } else if self.router.get_tool(&name).is_none() {
@@ -2788,7 +2787,11 @@ impl ServerBuilder {
                 None
             };
             if let Some(reason) = reason {
-                self.refuse(RegistrationKind::Tool, name, McpError::invalid_params(reason));
+                self.refuse(
+                    RegistrationKind::Tool,
+                    name,
+                    McpError::invalid_params(reason),
+                );
             }
         }
         if !self.refused_registrations.is_empty() {
@@ -2921,6 +2924,7 @@ impl ServerBuilder {
             final_task_runtime: self.final_task_runtime,
             #[cfg(all(feature = "proxy", feature = "tasks"))]
             final_task_relay,
+            resource_updates: crate::resource_updates::Owner::new(&final_subscriptions),
             final_subscriptions,
         }
     }
@@ -6238,8 +6242,8 @@ mod tests {
                 &request_sender,
             ))
             .expect("the public exact-2024 completion path returns a response")
-                .result
-                .expect("the exact-2024 completion response has a result payload");
+            .result
+            .expect("the exact-2024 completion response has a result payload");
             assert_eq!(
                 legacy["completion"]["values"],
                 serde_json::json!(["legacy-staging"])

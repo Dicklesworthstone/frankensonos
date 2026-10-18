@@ -12,8 +12,7 @@ fn selected_failure(s: &mut Scenario, label: &str, args: &[&str], detail: &str) 
     let mut session = s.mcp_with(args);
     let initialized = session.initialize();
     assert_eq!(
-        initialized["result"]["protocolVersion"],
-        "2024-11-05",
+        initialized["result"]["protocolVersion"], "2024-11-05",
         "{initialized}"
     );
     for uri in ["sonos://zones", "sonos://zones/Kitchen%40S1", "sonos://dj"] {

@@ -12,6 +12,7 @@
 
 mod library;
 mod play_mode;
+mod resource_updates;
 mod reviewed_undo;
 mod worker;
 
@@ -141,7 +142,7 @@ pub const ESSENTIALS: [&str; 15] = [
 /// 2024-11-05 and 2026-07-28 protocol eras, pinning each connection to the era
 /// its client opened with.
 #[must_use]
-pub fn server() -> fastmcp::auto::Server {
+pub fn server() -> fastmcp_server::Server {
     server_answering(Vec::new())
 }
 
@@ -150,13 +151,13 @@ pub fn server() -> fastmcp::auto::Server {
 /// own DNS name onto the listener's address is refused (403) before any tool
 /// runs. Empty answers any host.
 #[must_use]
-pub fn server_answering(hosts: Vec<String>) -> fastmcp::auto::Server {
+pub fn server_answering(hosts: Vec<String>) -> fastmcp_server::Server {
     server_with(hosts, Profile::Full)
 }
 
 /// [`server_answering`] offering the tools of `profile`.
 #[must_use]
-pub fn server_with(hosts: Vec<String>, profile: Profile) -> fastmcp::auto::Server {
+pub fn server_with(hosts: Vec<String>, profile: Profile) -> fastmcp_server::Server {
     let mut http = fastmcp::HttpServerConfig::new();
     http.allowed_hosts = hosts;
     http.handler_config.max_body_size = fsonos_api::surface::announce::MAX_ANNOUNCE_REQUEST_BYTES;
@@ -169,24 +170,29 @@ pub fn server_with(hosts: Vec<String>, profile: Profile) -> fastmcp::auto::Serve
         );
     }
     // The essentials, in ESSENTIALS order.
-    let builder = fastmcp::auto::server_builder("fsonos", env!("CARGO_PKG_VERSION"))
-        .http_config(http)
-        .request_timeout(fsonos_api::surface::announce::ANNOUNCE_TIMEOUT_SECS)
-        .tool(tools::ListZones)
-        .tool(tools::GetZoneState)
-        .tool(tools::ListFavorites)
-        .tool(tools::Play)
-        .tool(tools::PlayFavorite)
-        .tool(tools::SearchLibrary)
-        .tool(tools::Pause)
-        .tool(tools::Resume)
-        .tool(tools::Next)
-        .tool(tools::SetVolume)
-        .tool(tools::DjStart)
-        .tool(tools::DjSteer)
-        .tool(tools::DjSkip)
-        .tool(tools::UndoLast)
-        .tool(tools::Events);
+    let builder = fastmcp_server::ServerBuilder::try_new_with_fixed_protocol_policy(
+        "fsonos",
+        env!("CARGO_PKG_VERSION"),
+        fastmcp::ProtocolPolicy::Auto,
+    )
+    .expect("the pinned MCP server supports both protocol eras")
+    .http_config(http)
+    .request_timeout(fsonos_api::surface::announce::ANNOUNCE_TIMEOUT_SECS)
+    .tool(tools::ListZones)
+    .tool(tools::GetZoneState)
+    .tool(tools::ListFavorites)
+    .tool(tools::Play)
+    .tool(tools::PlayFavorite)
+    .tool(tools::SearchLibrary)
+    .tool(tools::Pause)
+    .tool(tools::Resume)
+    .tool(tools::Next)
+    .tool(tools::SetVolume)
+    .tool(tools::DjStart)
+    .tool(tools::DjSteer)
+    .tool(tools::DjSkip)
+    .tool(tools::UndoLast)
+    .tool(tools::Events);
     let builder = match profile {
         Profile::Essentials => builder,
         Profile::Full => builder
@@ -243,11 +249,13 @@ pub fn server_with(hosts: Vec<String>, profile: Profile) -> fastmcp::auto::Serve
             .tool(tools::schedules::ResumeSchedule)
             .tool(tools::schedules::RemoveSchedule),
     };
-    builder
+    let server = builder
         .resource(resources::ZonesResource)
         .resource(resources::ZoneResource)
         .resource(resources::DjResource)
-        .build()
+        .build();
+    resource_updates::start(server.resource_updates());
+    server
 }
 
 /// The tool error for `failure`: the `CODE: detail. Hint: ...` text an agent
