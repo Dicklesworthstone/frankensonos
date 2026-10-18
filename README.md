@@ -252,7 +252,7 @@ An agent that needs only the everyday tools can ask for fewer:
 15 most tasks use (`list_zones`, `get_zone_state`, `list_favorites`, `play`,
 `play_favorite`, `search_library`, `pause`, `resume`, `next`, `set_volume`,
 `dj_start`, `dj_steer`, `dj_skip`, `undo_last`, `events`): about 2,800 tokens of
-tool schemas instead of about 11,200 for all 67. The house policy applies the
+tool schemas instead of about 11,500 for all 67. The house policy applies the
 same either way.
 
 `events` is how an agent keeps up with the house: call it once for the newest

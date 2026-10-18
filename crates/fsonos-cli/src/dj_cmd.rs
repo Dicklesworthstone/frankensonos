@@ -65,7 +65,7 @@ pub enum DjAction {
     /// The set the DJ would play in a room's group from a given time, with
     /// why it would pick each work and how varied each hour is. Plays,
     /// queues and records nothing.
-    Rehearse(rehearse::RehearseArgs),
+    Rehearse(Box<rehearse::RehearseArgs>),
     /// The moods and time-of-day programs, and the steering in effect now.
     Moods {
         /// A room: its steering, rather than the house's program.
@@ -96,6 +96,32 @@ pub struct SteerArgs {
     /// moods.toml.
     #[arg(long)]
     mood: Option<String>,
+    #[command(flatten)]
+    constraints: ConstraintArgs,
+    /// How long: 2h, 90m, 1h30m [default: until cleared].
+    #[arg(long = "for", value_name = "SPAN", value_parser = parse_span)]
+    for_secs: Option<u64>,
+    /// Clear the steering: back to the time-of-day program.
+    #[arg(long)]
+    clear: bool,
+}
+
+impl SteerArgs {
+    fn request(&self) -> DjSteerRequest {
+        DjSteerRequest {
+            zone: self.zone.clone(),
+            mood: self.mood.clone(),
+            constraints: self.constraints.constraints(),
+            for_secs: self.for_secs,
+            clear: self.clear,
+        }
+    }
+}
+
+/// The constraints of `dj_steer`, as flags: shared by `fsonos dj steer` and
+/// `fsonos dj rehearse`.
+#[derive(clap::Args)]
+pub struct ConstraintArgs {
     /// Only this composer (repeat for more).
     #[arg(long = "composer", value_name = "NAME")]
     include_composers: Vec<String>,
@@ -155,42 +181,31 @@ pub struct SteerArgs {
     /// Let long works (operas, Passions) in.
     #[arg(long)]
     allow_long: bool,
-    /// How long: 2h, 90m, 1h30m [default: until cleared].
-    #[arg(long = "for", value_name = "SPAN", value_parser = parse_span)]
-    for_secs: Option<u64>,
-    /// Clear the steering: back to the time-of-day program.
-    #[arg(long)]
-    clear: bool,
 }
 
-impl SteerArgs {
-    fn request(&self) -> DjSteerRequest {
+impl ConstraintArgs {
+    #[must_use]
+    pub fn constraints(&self) -> SteerConstraints {
         let step = |n: u8| i8::try_from(n).unwrap_or(i8::MAX);
-        DjSteerRequest {
-            zone: self.zone.clone(),
-            mood: self.mood.clone(),
-            constraints: SteerConstraints {
-                include_composers: self.include_composers.clone(),
-                exclude_composers: self.exclude_composers.clone(),
-                include_artists: self.include_artists.clone(),
-                exclude_artists: self.exclude_artists.clone(),
-                include_genres: self.include_genres.clone(),
-                exclude_genres: self.exclude_genres.clone(),
-                periods: self.periods.clone(),
-                exclude_periods: self.exclude_periods.clone(),
-                decades: self.decades.clone(),
-                exclude_decades: self.exclude_decades.clone(),
-                include_keywords: self.include_keywords.clone(),
-                exclude_keywords: self.exclude_keywords.clone(),
-                min_work_minutes: self.min_work_minutes,
-                max_work_minutes: self.max_work_minutes,
-                energy_bias: self
-                    .energy
-                    .unwrap_or_else(|| step(self.brighter).saturating_sub(step(self.calmer))),
-                allow_long_works: self.allow_long,
-            },
-            for_secs: self.for_secs,
-            clear: self.clear,
+        SteerConstraints {
+            include_composers: self.include_composers.clone(),
+            exclude_composers: self.exclude_composers.clone(),
+            include_artists: self.include_artists.clone(),
+            exclude_artists: self.exclude_artists.clone(),
+            include_genres: self.include_genres.clone(),
+            exclude_genres: self.exclude_genres.clone(),
+            periods: self.periods.clone(),
+            exclude_periods: self.exclude_periods.clone(),
+            decades: self.decades.clone(),
+            exclude_decades: self.exclude_decades.clone(),
+            include_keywords: self.include_keywords.clone(),
+            exclude_keywords: self.exclude_keywords.clone(),
+            min_work_minutes: self.min_work_minutes,
+            max_work_minutes: self.max_work_minutes,
+            energy_bias: self
+                .energy
+                .unwrap_or_else(|| step(self.brighter).saturating_sub(step(self.calmer))),
+            allow_long_works: self.allow_long,
         }
     }
 }

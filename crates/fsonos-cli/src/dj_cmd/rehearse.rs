@@ -1,7 +1,8 @@
 //! `fsonos dj rehearse`: the set the DJ would play (`dj_rehearse`).
 
-use fsonos_api::dj::SteerConstraints;
 use fsonos_api::surface::dj_rehearse::DjRehearseRequest;
+
+use super::ConstraintArgs;
 
 /// `fsonos dj rehearse`: the fields of `dj_rehearse`.
 #[derive(clap::Args)]
@@ -19,9 +20,12 @@ pub struct RehearseArgs {
     #[arg(long)]
     at: Option<String>,
     /// Rehearse as if the group were steered by this mood (fsonos dj moods
-    /// lists them).
+    /// lists them), with any constraints below laid over it, in place of
+    /// its steering and the time-of-day program.
     #[arg(long)]
     mood: Option<String>,
+    #[command(flatten)]
+    constraints: ConstraintArgs,
     /// The same number rehearses the same set [default: 1]. (`--seed` names
     /// a player address for discovery.)
     #[arg(long = "pick-seed", value_name = "N")]
@@ -37,7 +41,7 @@ impl RehearseArgs {
             hours: self.hours,
             at: self.at.clone(),
             mood: self.mood.clone(),
-            constraints: SteerConstraints::default(),
+            constraints: self.constraints.constraints(),
             seed: self.pick_seed,
         }
     }

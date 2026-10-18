@@ -281,6 +281,7 @@ fn a_rehearsal_plans_the_djs_set_alike_on_every_surface_and_writes_nothing() {
     );
 
     check_spans(&mut s, &api);
+    check_constraints(&mut s, &mcp);
     s.check(
         "wrote-nothing",
         "http",
@@ -289,6 +290,50 @@ fn a_rehearsal_plans_the_djs_set_alike_on_every_surface_and_writes_nothing() {
         format!("{before}\n{}", untouched(&api)),
     );
     s.finish();
+}
+
+/// Constraints named for the rehearsal, as `dj steer` takes them, over
+/// the CLI and MCP alike.
+fn check_constraints(s: &mut Scenario, mcp: &str) {
+    let run = s.cli(
+        "rehearse-composer-cli",
+        &[
+            "dj",
+            "rehearse",
+            "Living Room",
+            "--works",
+            "2",
+            "--at",
+            AT,
+            "--composer",
+            "Brahms",
+            "--json",
+            "--daemon",
+        ],
+    );
+    let set: Value = serde_json::from_str(&run.stdout).unwrap_or(Value::Null);
+    let brahms = |set: &Value| {
+        let works = picks(set);
+        works.len() == 2 && works.iter().all(|w| w.1.contains("Brahms"))
+    };
+    s.check(
+        "rehearse-composer-cli",
+        "cli",
+        "--composer Brahms rehearses only Brahms",
+        run.ok() && brahms(&set),
+        format!("{}{}", run.stdout, run.stderr),
+    );
+    let body = json!({
+        "zone": "Living Room", "works": 2, "at": AT, "include_composers": ["Brahms"]
+    });
+    let result = mcp_call(mcp, "dj_rehearse", &body);
+    s.check(
+        "rehearse-composer-mcp",
+        "mcp-http",
+        "dj_rehearse's include_composers does the same",
+        brahms(&result["structuredContent"]),
+        &result,
+    );
 }
 
 /// An hours span, a hypothetical mood, and a bad request.
