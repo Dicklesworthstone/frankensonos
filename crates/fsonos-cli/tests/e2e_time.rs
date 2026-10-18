@@ -37,8 +37,22 @@ fn eventually(within: Duration, mut probe: impl FnMut() -> bool) -> bool {
     }
 }
 
-/// Playback writes the daemon made of any player. Read-only recovery is
-/// expected; a second play/pause/seek is not.
+/// Reads of playback state the daemon made of any player.
+fn reads(s: &Scenario) -> usize {
+    s.sim_handle().map_or(0, |sim| {
+        sim.soap_log()
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.action.as_str(),
+                    "GetVolume" | "GetTransportInfo" | "GetPositionInfo" | "GetMediaInfo"
+                )
+            })
+            .count()
+    })
+}
+
+/// Playback writes the daemon made of any player.
 fn writes(s: &Scenario) -> usize {
     s.sim_handle().map_or(0, |sim| {
         sim.soap_log()
@@ -123,7 +137,8 @@ fn serve_follows_an_album_as_sim_time_plays_it_through() {
         format!("{now:?}"),
     );
     let first_uri = now.2.clone();
-    let polled = writes(&s);
+    let initial_reads = reads(&s);
+    let initial_writes = writes(&s);
 
     // Three minutes and a second later: the next track, from its event.
     if let Some(sim) = s.sim_handle() {
@@ -156,13 +171,21 @@ fn serve_follows_an_album_as_sim_time_plays_it_through() {
         ended,
         format!("{now:?}"),
     );
-    let asked = writes(&s) - polled;
+    let asked = reads(&s) - initial_reads;
+    s.check(
+        "events-only",
+        "sim",
+        "no player was asked: each change came from its event",
+        asked == 0,
+        format!("{asked} Get* calls to players while time passed"),
+    );
+    let written = writes(&s) - initial_writes;
     s.check(
         "no-unexpected-writes",
         "sim",
-        "no playback writes after the initial play; read-only recovery is allowed",
-        asked == 0,
-        format!("{asked} playback writes while time passed"),
+        "no playback writes after the initial play",
+        written == 0,
+        format!("{written} playback writes while time passed"),
     );
 
     let code = daemon.interrupt(Duration::from_secs(10));

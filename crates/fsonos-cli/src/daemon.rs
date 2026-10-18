@@ -12,8 +12,9 @@
 //! The live model ([`Live`]) surveys in the background and keeps the zones
 //! current from the players' GENA events, which arrive on the events port
 //! (`--events-port`). A second line, `fsonos serve: live ...`, says when its
-//! first survey found the households and where events arrive. Stopping the
-//! daemon ends every subscription.
+//! first inventory and initial playback read attempts have finished, and
+//! where events arrive. Stopping the daemon withdraws local subscriptions
+//! and starts best-effort network cleanup.
 //!
 //! Unconfigured, the HTTP API listens on loopback plus this host's tailnet
 //! addresses (ts-autobind) and MCP on loopback; a third line,
@@ -37,7 +38,7 @@ use fsonos_api::surface::schedules::Scheduler;
 use fsonos_api::web::ServeOrigin;
 use fsonos_api::{Failure, Identity, Surface, WebPolicy};
 use fsonos_core::clock::SystemClock;
-use fsonos_core::live::{Live, LiveConfig, LiveEvent};
+use fsonos_core::live::{Live, LiveConfig};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::SqliteStore;
 use std::net::SocketAddr;
@@ -173,8 +174,8 @@ pub fn live_surface(
     Ok((surface, live))
 }
 
-/// Print `fsonos serve: live ...` once the model's first survey has found
-/// the households (at once if it already has). Ends with the model.
+/// Print `fsonos serve: live ...` once the first inventory and initial
+/// playback read attempts have finished. Ends with the model.
 fn announce_live(live: &Arc<Live>) {
     // Subscribe before looking, so a survey finishing in between is seen.
     let changes = live.subscribe();
@@ -184,21 +185,24 @@ fn announce_live(live: &Arc<Live>) {
     let live: Weak<Live> = Arc::downgrade(live);
     let _ = thread::Builder::new()
         .name("fsonos-live-ready".into())
-        .spawn(move || {
-            while let Ok(change) = changes.recv() {
-                if change != LiveEvent::Topology {
-                    continue;
-                }
-                let Some(live) = live.upgrade() else { return };
-                if announce_if_found(&live) {
-                    return;
-                }
+        .spawn(move || loop {
+            // Readiness can follow the last change, so recheck after a short wait too.
+            match changes.recv_timeout(Duration::from_millis(100)) {
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+            let Some(live) = live.upgrade() else { return };
+            if announce_if_found(&live) {
+                return;
             }
         });
 }
 
-/// The live line, if the model has found players; whether it was printed.
+/// The live line, if the model is ready with players; whether it was printed.
 fn announce_if_found(live: &Live) -> bool {
+    if !live.wait_ready(Duration::ZERO) {
+        return false;
+    }
     let snapshot = live.snapshot();
     let players: usize = snapshot.households.iter().map(|h| h.players.len()).sum();
     if players > 0 {

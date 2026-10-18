@@ -324,8 +324,19 @@ fn a_failed_topology_witness_is_not_retried_when_the_member_confirms_the_join() 
     let result = s.apply_scene(&Client::Cli, "Layout").unwrap();
     assert!(result.complete, "{result:?}");
     let calls = sim.soap_log();
+    let calls = &calls[mark..];
+    let source = calls
+        .iter()
+        .position(|e| {
+            e.player == a.0
+                && e.action == "SetAVTransportURI"
+                && e.args.iter().any(|(k, v)| k == "CurrentURI" && v == NEW)
+        })
+        .expect("the confirmed group starts the requested source");
+    // Undo's after-state surveys again after the scene has finished. Only
+    // the transition's reads, before it changes source, are witnesses.
     assert_eq!(
-        calls[mark..]
+        calls[..source]
             .iter()
             .filter(|e| e.player == a.0 && e.action == "GetZoneGroupState")
             .count(),
