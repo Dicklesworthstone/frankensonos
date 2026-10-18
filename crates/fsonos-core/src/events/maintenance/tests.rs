@@ -1,5 +1,6 @@
 use super::*;
 use crate::events::RETRY;
+use crate::playback::{EventSource, Playback};
 use fsonos_proto::control::set_volume;
 use fsonos_proto::net::{EventSink, Lan};
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
@@ -182,6 +183,17 @@ impl Fixture {
             Instant::now(),
         );
         reports
+    }
+
+    /// Accept a routed rendering event into playback and its sequence cursor.
+    fn accept_volume(&mut self, playback: &mut Playback, event: &Notify, volume: u8) {
+        let player = &self.wants[0].player;
+        assert!(self.subs.route(event).is_some());
+        playback
+            .apply(player, EventSource::RenderingControl, event, Instant::now())
+            .unwrap();
+        assert!(!self.subs.missed(event));
+        assert_eq!(playback.of(player).unwrap().volume, Some(volume));
     }
 
     fn release(&self) {
@@ -465,8 +477,6 @@ fn stopping_during_renewal_prevents_replacement_and_does_not_publish_failure() {
 
 #[test]
 fn replacement_cannot_replay_an_initial_older_than_an_accepted_old_stream_event() {
-    use crate::playback::{EventSource, Playback};
-
     for generation in [1, 2] {
         let mut f = Fixture::new(generation, Stage::Subscribe, 1);
         f.provider.fail_renew.store(true, Ordering::Release);
@@ -486,11 +496,7 @@ fn replacement_cannot_replay_an_initial_older_than_an_accepted_old_stream_event(
         while !old_seen || !new_dropped {
             let n = f.sink.recv_or_closed(WAIT).unwrap().unwrap();
             if n.sid == old {
-                assert!(f.subs.route(&n).is_some());
-                playback
-                    .apply(&player, EventSource::RenderingControl, &n, Instant::now())
-                    .unwrap();
-                assert!(!f.subs.missed(&n));
+                f.accept_volume(&mut playback, &n, 43);
                 old_seen = true;
             } else {
                 assert_eq!(n.sid, initial.sid);
@@ -542,31 +548,12 @@ fn replacement_cannot_replay_an_initial_older_than_an_accepted_old_stream_event(
         assert_ne!(recovered.sid, old);
         assert_ne!(recovered.sid, initial.sid);
         assert_eq!(recovered.seq, 0);
-        assert!(f.subs.route(&recovered).is_some());
-        playback
-            .apply(
-                &player,
-                EventSource::RenderingControl,
-                &recovered,
-                Instant::now(),
-            )
-            .unwrap();
-        assert!(!f.subs.missed(&recovered));
-        assert_eq!(playback.of(&player).unwrap().volume, Some(43));
+        f.accept_volume(&mut playback, &recovered, 43);
         set_volume(&*f.provider.inner, f.wants[0].host, 44).unwrap();
         let later = f.sink.recv_or_closed(WAIT).unwrap().unwrap();
         assert_eq!(later.sid, recovered.sid);
         assert_eq!(later.seq, 1);
-        assert!(f.subs.route(&later).is_some());
-        playback
-            .apply(
-                &player,
-                EventSource::RenderingControl,
-                &later,
-                Instant::now(),
-            )
-            .unwrap();
-        assert!(!f.subs.missed(&later));
+        f.accept_volume(&mut playback, &later, 44);
         assert!(f.subs.route(&later).is_none());
         assert_eq!(playback.of(&player).unwrap().volume, Some(44));
         f.finish();

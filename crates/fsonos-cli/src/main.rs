@@ -1270,10 +1270,11 @@ impl fsonos_mcp::tools::Daemon for StdioDaemon {
         path: &str,
         body: Option<&serde_json::Value>,
     ) -> Option<Result<serde_json::Value, Failure>> {
-        let daemon = remote::Daemon::find(&self.0, false)
-            .ok()
-            .flatten()?
-            .for_stdio_mcp();
+        let daemon = match remote::Daemon::find(&self.0, self.0.daemon) {
+            Ok(Some(daemon)) => daemon.for_stdio_mcp(),
+            Ok(None) => return None,
+            Err(failure) => return Some(Err(failure)),
+        };
         Some(daemon.forward(method, path, body))
     }
 }

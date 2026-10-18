@@ -328,13 +328,18 @@ impl Scenario {
 
     /// Start `fsonos mcp` (stdio) with the isolation environment.
     pub fn mcp(&mut self) -> McpSession {
+        self.mcp_with(&[])
+    }
+
+    /// Start `fsonos mcp <args>` with the same isolation environment.
+    pub fn mcp_with(&mut self, args: &[&str]) -> McpSession {
         let mut cmd = self.command();
-        cmd.arg("mcp");
+        cmd.arg("mcp").args(args).env_remove("FSONOS_DAEMON_URL");
         let session = McpSession::spawn(cmd, &self.refusals);
         self.record(
             "mcp-spawn",
             "mcp",
-            "fsonos mcp",
+            &format!("fsonos mcp {}", args.join(" ")),
             None,
             "",
             "",
