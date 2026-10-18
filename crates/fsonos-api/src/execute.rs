@@ -18,6 +18,7 @@ use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::{Command, DjAction, TransportAction, VolumeScope};
 use crate::request::VolumeChange;
+use crate::source::validate_playable_source;
 
 /// The result of a command, for every surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -301,6 +302,7 @@ fn play<T: Transport + ?Sized>(
     source_uri: &str,
     title: Option<&str>,
 ) -> Result<(), Failure> {
+    validate_playable_source(source_uri)?;
     let title = title.unwrap_or(source_uri);
     if source_uri.starts_with("spotify:track:") {
         return control::play_spotify_track(transport, households, coordinator, source_uri, title)
@@ -316,15 +318,6 @@ fn play<T: Transport + ?Sized>(
             title,
         )
         .map_err(spotify_failure);
-    }
-    if source_uri.starts_with("spotify:") {
-        return Err(Failure::new(
-            ErrorCode::NotImplemented,
-            format!(
-                "Spotify tracks, albums and playlists play so far; {source_uri} is none of them"
-            ),
-        )
-        .with_hint("Play one of its tracks, albums or playlists for now."));
     }
     control::play_uri(transport, households, coordinator, source_uri, "")?;
     Ok(())

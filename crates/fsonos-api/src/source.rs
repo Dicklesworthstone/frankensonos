@@ -8,7 +8,9 @@
 //! with a clear message, and passes any other well-formed URI through
 //! unchanged for the core and the speaker to judge.
 
-use crate::failure::Failure;
+use fsonos_proto::didl::SpotifyContainer;
+
+use crate::failure::{ErrorCode, Failure};
 
 /// Longest `source_uri` accepted, in bytes.
 pub const MAX_SOURCE_URI_LEN: usize = 2048;
@@ -55,6 +57,24 @@ pub fn normalize_source_uri(raw: &str) -> Result<String, Failure> {
         },
         _ => Ok(uri.to_string()),
     }
+}
+
+/// Refuse source kinds the playback path cannot render, before a surface
+/// captures undo state, cancels fades or lowers any room to its volume cap.
+/// URI normalization is separate: other operations have their own source
+/// capabilities and error contracts.
+pub(crate) fn validate_playable_source(source_uri: &str) -> Result<(), Failure> {
+    if !source_uri.starts_with("spotify:")
+        || source_uri.starts_with("spotify:track:")
+        || SpotifyContainer::of(source_uri).is_some()
+    {
+        return Ok(());
+    }
+    Err(Failure::new(
+        ErrorCode::NotImplemented,
+        format!("Spotify tracks, albums and playlists play so far; {source_uri} is none of them"),
+    )
+    .with_hint("Play one of its tracks, albums or playlists for now."))
 }
 
 /// `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` (RFC 3986 §3.1).

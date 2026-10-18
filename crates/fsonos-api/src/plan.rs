@@ -20,6 +20,7 @@ use crate::request::{
     DjStartRequest, DjSteerRequest, GroupRequest, MoveRequest, MuteRequest, PartyRequest,
     PlayFavoriteRequest, PlayRequest, VolumeChange, VolumeRequest, ZoneRequest,
 };
+use crate::source::validate_playable_source;
 
 /// Pause, resume, skip or seek on a group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,6 +260,7 @@ pub fn resolve<'a>(rooms: impl Into<Rooms<'a>>, room: &str) -> Result<ControlTar
 pub fn plan_play<'a>(rooms: impl Into<Rooms<'a>>, req: &PlayRequest) -> Result<Command, Failure> {
     let req = req.normalized()?;
     let target = resolve(rooms, &req.zone)?;
+    validate_playable_source(&req.source_uri)?;
     Ok(Command::Play {
         coordinator: target.coordinator.id.clone(),
         source_uri: req.source_uri,
