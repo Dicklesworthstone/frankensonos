@@ -15,6 +15,7 @@ use fsonos_mcp::tools::{Backend, install};
 use fsonos_proto::topology::parse_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use serde_json::{Value, json};
+use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::sync::Arc;
@@ -134,7 +135,7 @@ impl Reply {
             body.len()
         );
         for (name, value) in headers {
-            request.push_str(&format!("{name}: {value}\r\n"));
+            write!(request, "{name}: {value}\r\n").unwrap();
         }
         request.push_str("\r\n");
         request.push_str(body);
@@ -264,7 +265,7 @@ impl Reply {
                 let mut data = Vec::new();
                 for line in text.lines() {
                     if let Some(value) = line.strip_prefix("event:") {
-                        kind = value.trim_start().to_owned();
+                        value.trim_start().clone_into(&mut kind);
                     }
                     if let Some(value) = line.strip_prefix("data:") {
                         data.push(value.strip_prefix(' ').unwrap_or(value));
@@ -301,7 +302,9 @@ impl Reply {
 }
 
 fn request(id: i64, method: &str, params: Value) -> Value {
-    json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params})
+    let mut call = json!({"jsonrpc":"2.0", "id":id, "method":method});
+    call["params"] = params;
+    call
 }
 
 fn modern(
@@ -459,6 +462,39 @@ fn forged_identity() -> Value {
     })
 }
 
+fn modern_local_headers_do_not_elevate(address: SocketAddr) {
+    for local_client in ["cli", "mcp-stdio"] {
+        let local = [(CLI_TOKEN, TOKEN), (LOCAL_CLIENT, local_client)];
+        denied(
+            &modern(
+                address,
+                15,
+                "tools/call",
+                json!({"name":"list_zones","arguments":{}}),
+                &local,
+            )
+            .message(),
+            "loopback-http",
+        );
+        let forged_bob = [
+            (SERVE_LOGIN, BOB),
+            (CLI_TOKEN, TOKEN),
+            (LOCAL_CLIENT, local_client),
+        ];
+        denied(
+            &modern(
+                address,
+                16,
+                "tools/call",
+                json!({"name":"list_zones","arguments":{}}),
+                &forged_bob,
+            )
+            .message(),
+            BOB,
+        );
+    }
+}
+
 fn exercise_modern(address: SocketAddr, reads: &AtomicUsize) {
     let alice = [(SERVE_LOGIN, ALICE)];
     let bob = [(SERVE_LOGIN, BOB)];
@@ -501,36 +537,7 @@ fn exercise_modern(address: SocketAddr, reads: &AtomicUsize) {
         .message(),
         BOB,
     );
-    for local_client in ["cli", "mcp-stdio"] {
-        let local = [(CLI_TOKEN, TOKEN), (LOCAL_CLIENT, local_client)];
-        denied(
-            &modern(
-                address,
-                15,
-                "tools/call",
-                json!({"name":"list_zones","arguments":{}}),
-                &local,
-            )
-            .message(),
-            "loopback-http",
-        );
-        let forged_bob = [
-            (SERVE_LOGIN, BOB),
-            (CLI_TOKEN, TOKEN),
-            (LOCAL_CLIENT, local_client),
-        ];
-        denied(
-            &modern(
-                address,
-                16,
-                "tools/call",
-                json!({"name":"list_zones","arguments":{}}),
-                &forged_bob,
-            )
-            .message(),
-            BOB,
-        );
-    }
+    modern_local_headers_do_not_elevate(address);
     let filter = json!({"notifications":{"resourceSubscriptions":[ZONES]}});
     denied(
         &modern(address, 17, "subscriptions/listen", filter.clone(), &bob).message(),
