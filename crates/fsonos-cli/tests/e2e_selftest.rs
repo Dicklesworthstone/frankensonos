@@ -2,7 +2,8 @@
 //! passes on both generations, the report names no room, address or player
 //! id, `fsonos doctor` reports the kept run, and the house is exactly as it
 //! was afterwards (every room's volume, mute, transport state and play mode,
-//! and the grouping).
+//! and the grouping). `--transcript` keeps every exchange raw in a local
+//! file while the report stays scrubbed.
 
 mod e2e;
 
@@ -145,6 +146,79 @@ fn the_inaudible_selftest_passes_and_changes_nothing() {
         "SetVolume, SetPlayMode and Pause reached the players",
         writes >= ROOMS.len(),
         format!("{writes}"),
+    );
+    s.finish();
+}
+
+/// `--transcript`: every exchange of the run, raw, in a local JSON-lines
+/// file (SOAP and GENA alike, as the players sent them), while the printed
+/// report stays scrubbed; with no path it lands in the data directory.
+#[test]
+fn a_transcript_keeps_every_exchange_raw_while_the_report_stays_scrubbed() {
+    let mut s = Scenario::start("selftest-transcript");
+    s.sim(SimHousehold::standard());
+    let path = s.dir().join("transcript.jsonl");
+    let path_arg = path.to_string_lossy().into_owned();
+    let run = s.cli(
+        "selftest",
+        &["selftest", "--json", "--transcript", &path_arg],
+    );
+    let raw = std::fs::read_to_string(&path).unwrap_or_default();
+    let lines: Vec<Value> = raw
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
+    let soap = |action: &str| {
+        lines.iter().any(|x| {
+            x["method"] == "POST" && x["headers"].to_string().contains(action) && x["status"] == 200
+        })
+    };
+    s.check(
+        "transcript",
+        "cli",
+        "the run passes; its transcript has SOAP reads and writes and GENA subscriptions, answered",
+        run.ok()
+            && soap("GetZoneGroupState")
+            && soap("SetVolume")
+            && lines
+                .iter()
+                .any(|x| x["method"] == "SUBSCRIBE" && x["status"] == 200)
+            && lines.iter().any(|x| x["method"] == "UNSUBSCRIBE")
+            && run.stderr.contains("not scrubbed"),
+        format!("{} lines\n{}", lines.len(), run.stderr),
+    );
+    let printed = leaks(&s, &run.stdout);
+    s.check(
+        "transcript-raw",
+        "cli",
+        "the transcript is raw (ids and rooms as sent); the printed report still names none",
+        !leaks(&s, &raw).is_empty() && printed.is_empty(),
+        printed.join(", "),
+    );
+    let bare = s.cli(
+        "selftest-default",
+        &["selftest", "--transcript", "--only", "selftest.house"],
+    );
+    let kept: Vec<String> = std::fs::read_dir(s.dir().join("data"))
+        .map(|dir| {
+            dir.filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension().is_some_and(|x| x == "jsonl")
+                        && p.file_name().is_some_and(|n| {
+                            n.to_string_lossy().starts_with("selftest-transcript-")
+                        })
+                })
+                .map(|p| p.display().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    s.check(
+        "transcript-default",
+        "cli",
+        "with no path, the transcript lands in the data directory",
+        bare.ok() && kept.len() == 1,
+        format!("{kept:?}\n{}", bare.stderr),
     );
     s.finish();
 }

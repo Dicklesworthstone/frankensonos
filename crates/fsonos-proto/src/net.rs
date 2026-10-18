@@ -56,10 +56,37 @@ const DISCOVERY: &str = "discovery";
 /// The lane route lookups run on.
 const ROUTE: &str = "route";
 
+/// One HTTP exchange of a [`Lan`] (SOAP, a description GET, GENA), as a
+/// [`Lan::tap`] sees it: raw, with the players' addresses, ids and replies
+/// as they were sent.
+#[derive(Debug, Clone)]
+pub struct Exchange {
+    pub method: String,
+    pub url: String,
+    pub headers: Vec<(String, String)>,
+    pub request: String,
+    /// The reply, or why there was none.
+    pub reply: Result<Answer, String>,
+    pub elapsed: Duration,
+}
+
+/// A player's reply in an [`Exchange`].
+#[derive(Debug, Clone)]
+pub struct Answer {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
+/// Sees each exchange once it is answered (see [`Lan::tap`]).
+pub type Tap = Box<dyn Fn(&Exchange) + Send + Sync>;
+
 /// A handle to the LAN workers. Cheap to share by reference; dropping it
 /// stops every lane after any request in flight.
 pub struct Lan {
     lanes: Mutex<HashMap<String, Lane>>,
+    /// Sees every HTTP exchange, while set ([`Lan::tap`]).
+    tap: Mutex<Option<Tap>>,
     timeout: Duration,
     routes: Vec<(IpAddr, SocketAddr)>,
     ssdp_target: SocketAddr,
@@ -181,6 +208,7 @@ impl Lan {
         let discovery = Lane::start(DISCOVERY)?;
         Ok(Self {
             lanes: Mutex::new(HashMap::from([(DISCOVERY.to_owned(), discovery)])),
+            tap: Mutex::new(None),
             timeout,
             routes: Vec::new(),
             ssdp_target: SocketAddr::from(([239, 255, 255, 250], 1900)),
@@ -283,6 +311,17 @@ impl Lan {
         answer.recv().map_err(|e| network("LAN worker", e))?
     }
 
+    /// Show every HTTP exchange from now on to `tap`, until [`Self::untap`]
+    /// (`fsonos selftest --transcript`). Without one, nothing is copied.
+    pub fn tap(&self, tap: Tap) {
+        *self.tap.lock().unwrap_or_else(PoisonError::into_inner) = Some(tap);
+    }
+
+    /// Stop showing exchanges; the tap is dropped.
+    pub fn untap(&self) {
+        *self.tap.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
     fn http(
         &self,
         method: Method,
@@ -292,14 +331,48 @@ impl Lan {
     ) -> Result<Reply, ProtoError> {
         let timeout = self.timeout;
         let lane = lane_of(&url).to_owned();
-        self.submit(&lane, |reply| Job::Http {
+        let tapped = self
+            .tap
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some();
+        let asked = tapped.then(|| {
+            (
+                method.as_str().to_owned(),
+                url.clone(),
+                headers.clone(),
+                String::from_utf8_lossy(&body).into_owned(),
+                Instant::now(),
+            )
+        });
+        let reply = self.submit(&lane, |reply| Job::Http {
             method,
             url,
             headers,
             body,
             timeout,
             reply,
-        })
+        });
+        if let Some((method, url, headers, request, started)) = asked
+            && let Some(tap) = &*self.tap.lock().unwrap_or_else(PoisonError::into_inner)
+        {
+            tap(&Exchange {
+                method,
+                url,
+                headers,
+                request,
+                reply: match &reply {
+                    Ok(r) => Ok(Answer {
+                        status: r.status,
+                        headers: r.headers.clone(),
+                        body: String::from_utf8_lossy(&r.body).into_owned(),
+                    }),
+                    Err(e) => Err(e.to_string()),
+                },
+                elapsed: started.elapsed(),
+            });
+        }
+        reply
     }
 
     /// The local address this host uses to reach `player`: the address to
