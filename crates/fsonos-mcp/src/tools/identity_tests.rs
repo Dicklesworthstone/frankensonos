@@ -2,7 +2,7 @@
 //! Each test owns its backend and simulator; none installs the global backend.
 
 use super::{Backend, Daemon, Survey};
-use asupersync::Cx;
+use asupersync::runtime::{Runtime, RuntimeBuilder};
 use fastmcp::prelude::{McpContext, McpResult};
 use fastmcp::{AuthContext, FinalCallToolResult};
 use fsonos_api::{ActionDto, ActionsQuery, ErrorCode, Failure, Surface, UndoDto, VolumeRequest};
@@ -78,14 +78,21 @@ allow = ["list_zones"]
     (sim, Backend::shared(Arc::new(surface), Client::Unknown))
 }
 
-fn request(id: u64, subject: &str) -> McpContext {
-    let context = McpContext::new(Cx::for_testing(), id);
+fn runtime() -> Runtime {
+    RuntimeBuilder::new().worker_threads(1).build().unwrap()
+}
+
+fn request(runtime: &Runtime, id: u64, subject: &str) -> McpContext {
+    let context = anonymous(runtime, id);
     assert!(context.set_auth(AuthContext::with_subject(subject)));
     context
 }
 
-fn anonymous(id: u64) -> McpContext {
-    McpContext::new(Cx::for_testing(), id)
+fn anonymous(runtime: &Runtime, id: u64) -> McpContext {
+    McpContext::new(
+        runtime.request_cx_with_budget(asupersync::Budget::INFINITE),
+        id,
+    )
 }
 
 fn volume_request(room: &str, volume: i64) -> VolumeRequest {
@@ -125,12 +132,13 @@ fn undo(backend: &Backend) -> UndoDto {
 
 #[test]
 fn named_callers_keep_their_own_caps_actions_and_undo_on_shared_speakers() {
+    let runtime = runtime();
     let (sim, backend) = fixture();
     // Hold all three request backends before any action. Deriving a later
     // caller must not change the identity used by an earlier request.
-    let alice = backend.for_request(&request(1, ALICE)).unwrap();
-    let bob = backend.for_request(&request(2, BOB)).unwrap();
-    let carol = backend.for_request(&request(3, CAROL)).unwrap();
+    let alice = backend.for_request(&request(&runtime, 1, ALICE)).unwrap();
+    let bob = backend.for_request(&request(&runtime, 2, BOB)).unwrap();
+    let carol = backend.for_request(&request(&runtime, 3, CAROL)).unwrap();
     assert_eq!(backend.client, Client::Unknown);
 
     let zones = output(bob.list_zones());
@@ -204,18 +212,19 @@ fn named_callers_keep_their_own_caps_actions_and_undo_on_shared_speakers() {
 
 #[test]
 fn named_requests_do_not_change_anonymous_or_stdio_authority() {
+    let runtime = runtime();
     let (sim, backend) = fixture();
-    let alice = backend.for_request(&request(10, ALICE)).unwrap();
+    let alice = backend.for_request(&request(&runtime, 10, ALICE)).unwrap();
     output(alice.set_volume(&volume_request("Kitchen", 20)));
 
-    let unknown = backend.for_request(&anonymous(11)).unwrap();
+    let unknown = backend.for_request(&anonymous(&runtime, 11)).unwrap();
     assert_eq!(unknown.client, Client::Unknown);
     denied(unknown.set_volume(&volume_request("Kitchen", 25)));
     assert_eq!(volume(&sim, "Kitchen"), 20);
     output(unknown.list_zones());
 
     let stdio = Backend::shared(Arc::clone(&backend.surface), Client::McpStdio);
-    let local = stdio.for_request(&anonymous(12)).unwrap();
+    let local = stdio.for_request(&anonymous(&runtime, 12)).unwrap();
     assert_eq!(local.client, Client::McpStdio);
     output(local.set_volume(&volume_request("Kitchen", 25)));
     assert_eq!(volume(&sim, "Kitchen"), 25);
@@ -226,14 +235,14 @@ fn named_requests_do_not_change_anonymous_or_stdio_authority() {
     );
 
     for subject in ["cli", "CLI", "mcp-stdio", " CLI ", "unknown", ""] {
-        let caller = stdio.for_request(&request(13, subject)).unwrap();
+        let caller = stdio.for_request(&request(&runtime, 13, subject)).unwrap();
         assert_eq!(caller.client, Client::Unknown, "{subject:?}");
         denied(caller.set_volume(&volume_request("Kitchen", 90)));
         assert_eq!(volume(&sim, "Kitchen"), 25);
     }
     // An authenticated context without a subject is also unknown; it must
     // not inherit the fixed stdio backend's authority.
-    let unnamed = anonymous(14);
+    let unnamed = anonymous(&runtime, 14);
     let mut auth = AuthContext::with_subject(ALICE);
     auth.subject = None;
     assert!(unnamed.set_auth(auth));
@@ -241,7 +250,9 @@ fn named_requests_do_not_change_anonymous_or_stdio_authority() {
     assert_eq!(caller.client, Client::Unknown);
     denied(caller.set_volume(&volume_request("Kitchen", 90)));
 
-    let blocked = backend.for_request(&request(15, BLOCKED)).unwrap();
+    let blocked = backend
+        .for_request(&request(&runtime, 15, BLOCKED))
+        .unwrap();
     for read in [
         "events",
         "list_zones",
@@ -257,7 +268,7 @@ fn named_requests_do_not_change_anonymous_or_stdio_authority() {
     }
     denied(blocked.list_zones());
     let zones_only = backend
-        .for_request(&request(16, "zone-reader@example.com"))
+        .for_request(&request(&runtime, 16, "zone-reader@example.com"))
         .unwrap();
     output(zones_only.list_zones());
     zones_only.authorize_reads(&["list_zones"]).unwrap();
@@ -296,19 +307,20 @@ impl Daemon for RecordingDaemon {
 
 #[test]
 fn a_named_request_cannot_be_forwarded_as_the_fixed_stdio_daemon_client() {
+    let runtime = runtime();
     let (sim, backend) = fixture();
     let daemon = Arc::new(RecordingDaemon::default());
     let stdio =
         Backend::shared(Arc::clone(&backend.surface), Client::McpStdio).with_daemon(daemon.clone());
 
-    let local = stdio.for_request(&anonymous(20)).unwrap();
+    let local = stdio.for_request(&anonymous(&runtime, 20)).unwrap();
     assert_eq!(local.client, Client::McpStdio);
     assert_eq!(output(local.list_zones())["zones"], json!([]));
     assert_eq!(daemon.calls.load(Ordering::SeqCst), 1);
 
     for subject in [ALICE, BOB, "unknown", "mcp-stdio"] {
         let error = stdio
-            .for_request(&request(21, subject))
+            .for_request(&request(&runtime, 21, subject))
             .err()
             .expect("an auth-bearing HTTP request cannot borrow the stdio bridge");
         assert_eq!(error.code, ErrorCode::NotReady, "{subject}");

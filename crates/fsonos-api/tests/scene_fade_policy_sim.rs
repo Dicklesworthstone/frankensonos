@@ -8,7 +8,7 @@ use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::MemStore;
 use fsonos_core::{HouseholdState, control, inventory, resolve_room};
-use fsonos_proto::soap;
+use fsonos_proto::control::get_mute;
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
 use fsonos_types::TransportState;
 use std::time::Duration;
@@ -74,7 +74,7 @@ fn assert_applied(sim: &SimHandle, houses: &[HouseholdState], unmute: bool) {
         control::volume(&lan, houses, &target.player.id).unwrap(),
         LEVEL
     );
-    assert!(!soap::get_mute(&lan, target.player.ip).unwrap());
+    assert!(!get_mute(&lan, target.player.ip).unwrap());
     let playing = control::playback(&lan, houses, &target.coordinator.id).unwrap();
     assert_eq!(playing.transport.state, TransportState::Playing);
     assert_eq!(playing.position.uri, if unmute { BEFORE } else { SCENE });

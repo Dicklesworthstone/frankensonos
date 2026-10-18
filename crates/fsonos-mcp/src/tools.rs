@@ -1774,7 +1774,14 @@ mod tests {
     #[test]
     fn without_a_backend_tools_say_not_ready() {
         // The process-wide backend is never installed in unit tests.
-        let ctx = McpContext::new(fastmcp::Cx::for_testing(), 1);
+        let runtime = asupersync::runtime::RuntimeBuilder::new()
+            .worker_threads(1)
+            .build()
+            .unwrap();
+        let ctx = McpContext::new(
+            runtime.request_cx_with_budget(asupersync::Budget::INFINITE),
+            1,
+        );
         let Err(err) = with_backend(&ctx, |_| unreachable!()) else {
             panic!("expected NOT_READY")
         };
