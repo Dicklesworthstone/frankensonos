@@ -1,4 +1,5 @@
-//! Who an HTTP request comes from, for the house policy and the action log.
+//! Who an HTTP or MCP transport request comes from, for the house policy and
+//! the action log.
 //!
 //! A listener's callers are its [`Client`]: `loopback-http` on loopback (local
 //! processes, and Tailscale Serve, which forwards to loopback), `unknown`
@@ -37,7 +38,7 @@
 use fastapi::Request;
 use fastapi::core::middleware::RemoteAddr;
 use fsonos_core::policy::Client;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 /// The header Tailscale Serve sets to the requesting user's login name.
@@ -152,29 +153,56 @@ impl Identity {
     /// The caller of `req`.
     #[must_use]
     pub fn of(&self, req: &Request) -> Client {
+        let peer = req.get_extension::<RemoteAddr>().map(|RemoteAddr(ip)| *ip);
+        self.resolve(peer, |name| req.headers().get(name), true)
+    }
+
+    /// The caller of a transport request, from its actual socket peer and
+    /// parsed HTTP headers. Forwarded addresses are never used. This is the
+    /// MCP listener's identity path: local CLI credentials are never accepted,
+    /// even if this identity has a configured CLI token. Only [`Self::of`]
+    /// admits those credentials on the daemon's HTTP API.
+    #[must_use]
+    pub fn of_http_parts(&self, peer: SocketAddr, headers: &[(String, String)]) -> Client {
+        self.resolve(
+            Some(peer.ip()),
+            |name| {
+                let mut values = headers
+                    .iter()
+                    .filter(|(key, _)| key.eq_ignore_ascii_case(name));
+                let (_, value) = values.next()?;
+                // Ambiguous identity headers cannot name a caller.
+                values.next().is_none().then_some(value.as_bytes())
+            },
+            false,
+        )
+    }
+
+    fn resolve<'a>(
+        &self,
+        peer: Option<IpAddr>,
+        header: impl Fn(&str) -> Option<&'a [u8]>,
+        local_credentials: bool,
+    ) -> Client {
         if self.listener == Client::Unknown
-            && let Some(RemoteAddr(peer)) = req.get_extension::<RemoteAddr>()
-            && self.own.contains(peer)
+            && let Some(peer) = peer
+            && self.own.contains(&peer)
         {
             return Client::LoopbackHttp;
         }
         if self.listener == Client::Unknown
             && let Some(namer) = &self.tailnet
-            && let Some(RemoteAddr(peer)) = req.get_extension::<RemoteAddr>()
-            && let Some(name) = namer(*peer).filter(|n| plausible(n))
+            && let Some(peer) = peer
+            && let Some(name) = namer(peer).filter(|n| plausible(n))
         {
             return Client::Tailnet(name);
         }
-        if self.listener == Client::LoopbackHttp
+        if local_credentials
+            && self.listener == Client::LoopbackHttp
             && let Some(token) = &self.cli_token
-            && req
-                .headers()
-                .get(CLI_TOKEN)
-                .is_some_and(|sent| same_secret(sent, token.as_bytes()))
+            && header(CLI_TOKEN).is_some_and(|sent| same_secret(sent, token.as_bytes()))
         {
-            let stdio = req
-                .headers()
-                .get(LOCAL_CLIENT)
+            let stdio = header(LOCAL_CLIENT)
                 .and_then(|v| std::str::from_utf8(v).ok())
                 .is_some_and(|v| v.trim() == "mcp-stdio");
             return if stdio { Client::McpStdio } else { Client::Cli };
@@ -182,8 +210,7 @@ impl Identity {
         if !self.serve_headers || self.listener != Client::LoopbackHttp {
             return self.listener.clone();
         }
-        req.headers()
-            .get(SERVE_LOGIN)
+        header(SERVE_LOGIN)
             .and_then(|v| std::str::from_utf8(v).ok())
             .map(str::trim)
             .filter(|login| plausible(login))
@@ -202,7 +229,7 @@ const RESERVED: [&str; 4] = ["cli", "mcp-stdio", "loopback-http", "unknown"];
 /// A name a caller can go by: not empty, bounded, no control characters,
 /// and none of [`RESERVED`].
 fn plausible(name: &str) -> bool {
-    !name.is_empty()
+    !name.trim().is_empty()
         && name.len() <= MAX_LOGIN
         && !name.chars().any(char::is_control)
         && !RESERVED
@@ -382,5 +409,149 @@ mod tests {
         );
         let tailnet = Identity::fixed(Client::Unknown).with_cli_token(token.into());
         assert_eq!(tailnet.of(&claiming(token, "mcp-stdio")), Client::Unknown);
+    }
+
+    fn headers(values: &[(&str, &str)]) -> Vec<(String, String)> {
+        values
+            .iter()
+            .map(|(name, value)| ((*name).into(), (*value).into()))
+            .collect()
+    }
+
+    #[test]
+    fn transport_parts_and_http_requests_share_real_peer_resolution() {
+        let own: [IpAddr; 2] = [
+            "100.64.0.5".parse().unwrap(),
+            "fd7a:115c:a1e0::5".parse().unwrap(),
+        ];
+        let identity = Identity::behind_serve(Client::Unknown)
+            .with_tailnet(|peer| match peer.to_string().as_str() {
+                "100.64.0.7" => Some("grace@example.com".into()),
+                "fd7a:115c:a1e0::7" => Some("tag:agent".into()),
+                "100.64.0.5" | "fd7a:115c:a1e0::5" => {
+                    panic!("the host's own address must not be named as its owner")
+                }
+                _ => None,
+            })
+            .with_own_addresses(own);
+        let headers = headers(&[
+            ("Tailscale-User-Login", "forged@example.com"),
+            ("Forwarded", "for=100.64.0.7"),
+            ("X-Forwarded-For", "100.64.0.7"),
+            ("X-Real-IP", "100.64.0.7"),
+            (LOCAL_CLIENT, "cli"),
+        ]);
+        for (peer, expected) in [
+            (
+                "100.64.0.7:40000",
+                Client::Tailnet("grace@example.com".into()),
+            ),
+            (
+                "[fd7a:115c:a1e0::7]:40000",
+                Client::Tailnet("tag:agent".into()),
+            ),
+            ("100.64.0.5:40000", Client::LoopbackHttp),
+            ("[fd7a:115c:a1e0::5]:40000", Client::LoopbackHttp),
+            ("100.64.0.8:40000", Client::Unknown),
+        ] {
+            let peer: SocketAddr = peer.parse().unwrap();
+            let mut req = request(None);
+            req.insert_extension(RemoteAddr(peer.ip()));
+            for (name, value) in &headers {
+                req.headers_mut().insert(name, value.as_bytes().to_vec());
+            }
+            assert_eq!(identity.of_http_parts(peer, &headers), expected, "{peer}");
+            assert_eq!(identity.of(&req), expected, "HTTP peer {peer}");
+        }
+    }
+
+    #[test]
+    fn transport_serve_identity_requires_opt_in_and_a_loopback_listener() {
+        let headers = headers(&[("TaIlScAlE-UsEr-LoGiN", " ada@example.com ")]);
+        for peer in ["127.0.0.1:40000", "[::1]:40000"] {
+            let peer = peer.parse().unwrap();
+            assert_eq!(
+                Identity::behind_serve(Client::LoopbackHttp).of_http_parts(peer, &headers),
+                Client::Tailnet("ada@example.com".into())
+            );
+            assert_eq!(
+                Identity::fixed(Client::LoopbackHttp).of_http_parts(peer, &headers),
+                Client::LoopbackHttp
+            );
+        }
+        assert_eq!(
+            Identity::behind_serve(Client::Unknown)
+                .of_http_parts("100.64.0.7:40000".parse().unwrap(), &headers),
+            Client::Unknown
+        );
+        assert_eq!(
+            Identity::behind_serve(Client::LoopbackHttp)
+                .of_http_parts("127.0.0.1:40000".parse().unwrap(), &[]),
+            Client::LoopbackHttp,
+            "tagged Serve devices without login headers remain local callers"
+        );
+    }
+
+    #[test]
+    fn transport_identity_rejects_reserved_malformed_and_duplicate_names() {
+        let loopback = "127.0.0.1:40000".parse().unwrap();
+        let tailnet = "100.64.0.7:40000".parse().unwrap();
+        let serve = Identity::behind_serve(Client::LoopbackHttp);
+        for name in [
+            "",
+            "  ",
+            "cli",
+            " CLI ",
+            "mcp-stdio",
+            "loopback-http",
+            "unknown",
+            "bad\nname",
+        ] {
+            assert_eq!(
+                serve.of_http_parts(loopback, &headers(&[(SERVE_LOGIN, name)])),
+                Client::LoopbackHttp,
+                "Serve {name:?}"
+            );
+            let name = name.to_string();
+            let whois = Identity::fixed(Client::Unknown).with_tailnet(move |_| Some(name.clone()));
+            assert_eq!(whois.of_http_parts(tailnet, &[]), Client::Unknown);
+        }
+        let too_long = "a".repeat(MAX_LOGIN + 1);
+        assert_eq!(
+            serve.of_http_parts(loopback, &headers(&[(SERVE_LOGIN, &too_long)])),
+            Client::LoopbackHttp
+        );
+        assert_eq!(
+            serve.of_http_parts(
+                loopback,
+                &headers(&[
+                    ("Tailscale-User-Login", "ada@example.com"),
+                    (SERVE_LOGIN, "grace@example.com"),
+                ]),
+            ),
+            Client::LoopbackHttp,
+            "a parser-dependent duplicate header must not choose the principal"
+        );
+    }
+
+    #[test]
+    fn transport_never_accepts_cli_or_stdio_credentials() {
+        let peer = "127.0.0.1:40000".parse().unwrap();
+        let token = "0123456789abcdef0123456789abcdef";
+        let identity = Identity::behind_serve(Client::LoopbackHttp).with_cli_token(token.into());
+        for client in ["cli", "mcp-stdio", "owner@example.com"] {
+            let mut sent = headers(&[(CLI_TOKEN, token), (LOCAL_CLIENT, client)]);
+            assert_eq!(identity.of_http_parts(peer, &sent), Client::LoopbackHttp);
+            sent.push((SERVE_LOGIN.into(), "ada@example.com".into()));
+            assert_eq!(
+                identity.of_http_parts(peer, &sent),
+                Client::Tailnet("ada@example.com".into())
+            );
+        }
+        // The API's existing local CLI and stdio behavior remains available.
+        assert_eq!(identity.of(&with_token(token)), Client::Cli);
+        let mut stdio = with_token(token);
+        stdio.headers_mut().insert(LOCAL_CLIENT, b"mcp-stdio".to_vec());
+        assert_eq!(identity.of(&stdio), Client::McpStdio);
     }
 }
