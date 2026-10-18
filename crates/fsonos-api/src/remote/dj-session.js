@@ -200,15 +200,16 @@ const DjSessionRemote = (() => {
   }
 
   function rehearsalModel({ call, changed = () => {}, now = Date.now }) {
-    let epoch = 0, disposed = false;
+    let epoch = 0, disposed = false, completed = null;
     const state = { zone: null, open: false, busy: false, loadingMoods: false, moods: [],
-      report: null, request: null, generatedAt: null, message: '', moodError: '' };
+      report: null, request: null, generatedAt: null, edited: false, message: '', moodError: '' };
     const publish = () => { if (!disposed) changed(state); };
     const current = (version) => !disposed && state.open && state.zone && version === epoch;
     function context(zone) {
       if (disposed || (zone?.signature === state.zone?.signature && zone?.target === state.zone?.target)) return;
       ++epoch;
       state.zone = zone ? Object.freeze({ ...zone }) : null;
+      completed = null; state.edited = false;
       state.report = null; state.request = null; state.generatedAt = null; state.message = '';
       publish();
     }
@@ -235,18 +236,31 @@ const DjSessionRemote = (() => {
     function close() { ++epoch; state.open = false; publish(); }
     function dispose() { close(); disposed = true; }
     function edit() {
-      if (!disposed && state.report) {
-        state.message = 'Settings changed. The displayed rehearsal still uses its captured settings; generate again to compare.';
-        publish();
-      }
+      if (disposed) return;
+      state.edited = true;
+      if (state.report) state.message = 'Settings changed. The displayed rehearsal still uses its captured settings; generate again to compare.';
+      publish();
+    }
+    function handoff() {
+      if (disposed || !state.open || state.busy || state.edited || !completed
+          || state.report !== completed.report || state.request !== completed.request
+          || state.zone !== completed.zone || !completed.report.works.length) return null;
+      const { zone, request } = completed;
+      if (!request.mood && !Object.keys(request.constraints || {}).length) return null;
+      // These canonical fields were captured before planning and are frozen.
+      // Never infer settings from the picks, relaxed filters, or current form.
+      const settings = Object.freeze({ ...(request.mood ? { mood: request.mood } : {}),
+        constraints: request.constraints || Object.freeze({}) });
+      return Object.freeze({ target: zone.target, signature: zone.signature, settings });
     }
     async function generate(draft) {
       if (disposed || !state.open || !state.zone || state.busy) return false;
+      completed = null; state.edited = true;
       let request;
       try { request = rehearsalRequest(state.zone, draft, state.moods); }
       catch (error) { state.message = message(error); publish(); return false; }
       const zone = state.zone, version = ++epoch;
-      state.busy = true; state.message = ''; state.report = null; state.generatedAt = null;
+      state.busy = true; state.edited = false; state.message = ''; state.report = null; state.generatedAt = null;
       state.request = request; publish();
       const verify = async () => {
         const zones = zonesOf(await call('sessionZones'));
@@ -262,6 +276,7 @@ const DjSessionRemote = (() => {
         if (!current(version)) return false;
         const report = rehearsalOf(result, zone, request);
         if (!await verify()) return false;
+        completed = { zone, request, report };
         state.report = report; state.generatedAt = now();
         state.message = 'Rehearsal complete. Nothing was played, queued, or saved to listening history.';
         return true;
@@ -275,10 +290,10 @@ const DjSessionRemote = (() => {
         state.busy = false; publish();
       }
     }
-    return { state, context, open, close, dispose, edit, loadMoods, generate };
+    return { state, context, open, close, dispose, edit, loadMoods, generate, handoff };
   }
 
-  function rehearsalPanel({ call, el, workNode }) {
+  function rehearsalPanel({ call, el, workNode, onedit = null }) {
     let control, rendered = null;
     const node = el('details', { class: 'dj-rehearsal' });
     const mode = el('select', { 'aria-label': 'Rehearsal length type' },
@@ -296,6 +311,12 @@ const DjSessionRemote = (() => {
     const info = el('p', { role: 'status', 'aria-live': 'polite' });
     const moodInfo = el('p', { class: 'by' });
     const output = el('div', { class: 'dj-rehearsal-results' });
+    const transfer = el('button', { type: 'button', text: 'Review these settings for live DJ', onclick: () => {
+      const draft = control.handoff();
+      if (draft && onedit) onedit(draft);
+    } });
+    const transferHint = el('p', { class: 'by' });
+    const transferBox = el('div', { class: 'dj-rehearsal-actions', hidden: true }, transfer, transferHint);
     const filterInputs = Object.fromEntries(REHEARSAL_LISTS.map((key) => [key, el('textarea', {
       rows: '2', maxLength: '32768', 'aria-label': `Rehearsal ${LABELS[key].toLowerCase()}`,
       placeholder: 'One entry per line', autocomplete: 'off',
@@ -331,7 +352,7 @@ const DjSessionRemote = (() => {
     } }, fields);
     node.append(el('summary', { text: 'Rehearse a set · hear the plan before you play' }),
       el('p', { text: 'Preview the DJ’s choices from your library, history, and preferences. No playback, queue edits, or saved steering. A time such as 23:00 uses the house’s clock, not this browser’s time zone. Blank starts now.' }),
-      form, moodInfo, info, output);
+      form, moodInfo, info, transferBox, output);
     const clock = (value) => value.replace('T', ' '); // Keep the response's date and offset, including midnight.
     function render(state) {
       fields.disabled = !state.zone || state.busy || !state.open;
@@ -344,6 +365,13 @@ const DjSessionRemote = (() => {
       moodInfo.textContent = state.loadingMoods ? 'Reading available moods…' : state.moodError;
       info.textContent = state.busy ? 'Planning the set… No music is being changed.' : state.message
         || (state.zone ? `For ${state.zone.label}.` : 'Choose a freshly observed group above.');
+      transferBox.hidden = !onedit || !state.report;
+      transfer.disabled = !control.handoff();
+      transferHint.textContent = state.edited ? 'Generate the edited settings again before copying them to live steering.'
+        : !state.report?.works.length ? 'An empty rehearsal has no tested set of choices to review.'
+          : !state.request?.mood && !state.request?.constraints
+            ? 'This preview inherited current steering. Use “Steer this group” to edit it; no temporary settings were created.'
+            : 'Opens the existing steering editor with this result’s requested mood and filters. Choose an expiry and review before saving. The exact set, seed, start time and any filter relaxations are not copied.';
       if (rendered === state.report) return;
       rendered = state.report; output.replaceChildren();
       if (!state.report) return;
@@ -471,7 +499,7 @@ const DjSessionRemote = (() => {
     } });
     const status = el('p', { class: 'dj-session-message', role: 'status', 'aria-live': 'polite' });
     const observation = el('div', { class: 'dj-session-observation' });
-    const rehearsal = rehearsalPanel({ call, el, workNode });
+    const rehearsal = rehearsalPanel({ call, el, workNode, onedit });
     const body = el('div', { class: 'dj-session-body' },
       el('p', { text: 'Inspect the DJ’s current and upcoming works, why they were chosen, and what steers the next pick. Refresh for a new observation.' }),
       el('div', { class: 'row' }, destination, refresh, steerAction), status, rehearsal.node, observation);
@@ -550,7 +578,8 @@ if (typeof module !== 'undefined' && module.exports) module.exports = DjSessionR
 else {
   Object.assign(ROUTES, DjSessionRemote.routes);
   const sessionPanel = DjSessionRemote.panel({ call, el, onedit: (zone) =>
-    document.dispatchEvent(new CustomEvent('fsonos:dj-edit', { detail: { target: zone.target, signature: zone.signature }, cancelable: true })) });
+    document.dispatchEvent(new CustomEvent('fsonos:dj-edit', { detail: { target: zone.target,
+      signature: zone.signature, ...(zone.settings ? { settings: zone.settings } : {}) }, cancelable: true })) });
   document.addEventListener('fsonos:dj-changed', (event) => { void sessionPanel.observeChange(event.detail?.zone); });
   const sessionRoot = el('section', { class: 'scenes', 'aria-label': 'DJ session' }, sessionPanel.node);
   document.getElementById('households')?.before(sessionRoot);
