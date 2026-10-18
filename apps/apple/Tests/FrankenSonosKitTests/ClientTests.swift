@@ -18,6 +18,10 @@ actor RecordingTransport: DaemonTransport {
     init(_ json: String = "{}", status: Int = 200, failure: Bool = false) {
         replies = [HTTPReply(data: Data(json.utf8), status: status)]; self.failure = failure
     }
+    init(jsons: [String]) {
+        replies = jsons.map { HTTPReply(data: Data($0.utf8), status: 200) }
+        failure = false
+    }
     func send(_ request: URLRequest) async throws -> HTTPReply {
         requests.append(request)
         if failure { throw URLError(.networkConnectionLost) }
@@ -223,4 +227,88 @@ func client(_ transport: RecordingTransport) throws -> DaemonClient {
     try URLSessionTransport.append(1, to: &data)
     #expect(data.count == URLSessionTransport.maxReplyBytes)
     #expect(throws: ClientError.self) { try URLSessionTransport.append(2, to: &data) }
+}
+
+
+@Test func houseLayoutCommandsUseQualifiedRoomsAndExactRoutes() throws {
+    let zone = try testZone()
+    let kitchen = RoomID(household: "S2", room: "Kitchen")
+    let join = try NativeCommand.join(room: "Hall", to: kitchen).payload(in: zone)
+    #expect(join.path == ["group"])
+    #expect(join.body == ["zone": .string("Hall@S2"), "to": .string("Kitchen@S2")])
+    let leave = try NativeCommand.leave(room: "Hall").payload(in: zone)
+    #expect(leave.path == ["ungroup"])
+    #expect(leave.body == ["zone": .string("Hall@S2")])
+    let party = try NativeCommand.party.payload(in: zone)
+    #expect(party.path == ["party"])
+    #expect(party.body == ["zone": .string("Studio@S2")])
+    let move = try NativeCommand.move(to: kitchen, copy: false).payload(in: zone)
+    #expect(move.path == ["move"])
+    #expect(move.body == ["zone": .string("Studio@S2"), "to": .string("Kitchen@S2"), "copy": .bool(false)])
+    let replay = try NativeCommand.move(to: RoomID(household: "S1", room: "Kitchen"), copy: true).payload(in: zone)
+    #expect(replay.body["copy"] == .bool(true))
+    #expect(throws: ContractError.self) {
+        try NativeCommand.join(room: "Hall", to: RoomID(household: "S1", room: "Kitchen")).payload(in: zone)
+    }
+    #expect(throws: ContractError.self) {
+        try NativeCommand.move(to: RoomID(household: "S1", room: "Kitchen"), copy: false).payload(in: zone)
+    }
+    #expect(throws: ContractError.self) { try NativeCommand.move(to: zone.id, copy: false).payload(in: zone) }
+}
+
+@Test func topologyPreflightRejectsChangedMissingAndAlreadySatisfiedLayouts() throws {
+    let reviewed = try testZone()
+    let kitchen = Zone(household: "S2", coordinatorRoom: "Kitchen", members: ["Kitchen"], transportState: "stopped")
+    try NativeCommand.join(room: "Hall", to: kitchen.id).validateTopology(reviewed: reviewed, current: [reviewed, kitchen])
+    try NativeCommand.move(to: kitchen.id, copy: false).validateTopology(reviewed: reviewed, current: [reviewed, kitchen])
+    try NativeCommand.party.validateTopology(reviewed: reviewed, current: [reviewed, kitchen])
+
+    let changed = Zone(household: "S2", coordinatorRoom: "Studio", members: ["Studio"], transportState: "playing")
+    #expect(throws: ContractError.self) {
+        try NativeCommand.join(room: "Hall", to: kitchen.id).validateTopology(reviewed: reviewed, current: [changed, kitchen])
+    }
+    #expect(throws: ContractError.self) {
+        try NativeCommand.join(room: "Hall", to: RoomID(household: "S2", room: "Missing"))
+            .validateTopology(reviewed: reviewed, current: [reviewed, kitchen])
+    }
+    #expect(throws: ContractError.self) {
+        try NativeCommand.join(room: "Hall", to: RoomID(household: "S2", room: "Studio"))
+            .validateTopology(reviewed: reviewed, current: [reviewed])
+    }
+    #expect(throws: ContractError.self) {
+        try NativeCommand.party.validateTopology(reviewed: reviewed, current: [reviewed])
+    }
+}
+
+@Test func houseLayoutWriteGetsOneFreshTopologyReadAndOneWrite() async throws {
+    let reviewed = try testZone()
+    let kitchen = #"{"household":"S2","coordinator_room":"Kitchen","members":["Kitchen"],"transport_state":"stopped"}"#
+    let outcome = #"{"done":"Hall joined Kitchen","changed":true}"#
+    let transport = RecordingTransport(jsons: ["[\(zoneJSON),\(kitchen)]", outcome])
+    let receipt = try await client(transport).perform(
+        .join(room: "Hall", to: RoomID(household: "S2", room: "Kitchen")),
+        in: reviewed
+    )
+    let requests = await transport.requests
+    #expect(requests.count == 2)
+    #expect(requests[0].httpMethod == "GET")
+    #expect(requests[0].url?.path == "/zones")
+    #expect(requests[1].httpMethod == "POST")
+    #expect(requests[1].url?.path == "/group")
+    #expect(receipt.title == "Hall joined Kitchen")
+}
+
+@Test func staleTopologyStopsBeforeAnyHouseLayoutWrite() async throws {
+    let changed = #"{"household":"S2","coordinator_room":"Studio","members":["Studio"],"transport_state":"playing"}"#
+    let kitchen = #"{"household":"S2","coordinator_room":"Kitchen","members":["Kitchen"],"transport_state":"stopped"}"#
+    let transport = RecordingTransport(jsons: ["[\(changed),\(kitchen)]"])
+    await #expect(throws: ContractError.self) {
+        try await client(transport).perform(
+            .join(room: "Hall", to: RoomID(household: "S2", room: "Kitchen")),
+            in: testZone()
+        )
+    }
+    let requests = await transport.requests
+    #expect(requests.count == 1)
+    #expect(requests[0].httpMethod == "GET")
 }

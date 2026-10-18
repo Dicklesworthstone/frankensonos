@@ -19,6 +19,7 @@ public enum NativeCommand: Equatable, Sendable {
     case queueRemove(QueueItem, revision: String)
     case djStart(mood: String?), djStop, djSkip, djFeedback(like: Bool)
     case djSteer(mood: String, seconds: UInt32), djClear
+    case join(room: String, to: RoomID), leave(room: String), party, move(to: RoomID, copy: Bool)
     case scene(Scene)
 
     public var title: String {
@@ -42,6 +43,10 @@ public enum NativeCommand: Equatable, Sendable {
         case .djFeedback(let like): like ? "Like this DJ selection" : "Dislike this DJ selection"
         case .djSteer(let mood, _): "Shift to \(mood)"
         case .djClear: "Follow the time-of-day program"
+        case .join(let room, let to): "Join \(room) to \(to.room)"
+        case .leave(let room): "Separate \(room)"
+        case .party: "Group this household"
+        case .move(let to, let copy): copy ? "Replay on \(to.room)" : "Move music to \(to.room)"
         case .scene(let scene): "Apply \(scene.name)"
         }
     }
@@ -55,6 +60,12 @@ public enum NativeCommand: Equatable, Sendable {
         case .djSteer, .djClear: "Affects future DJ picks, not works already queued. Standing taste preferences stay unchanged."
         case .djFeedback: "Teaches the DJ about its current selection. It does not send a playback command."
         case .djStop: "Stops DJ queue feeding. This is distinct from pausing the speakers."
+        case .join: "Moves one room into another room’s group. Its current audio is replaced by that group’s music."
+        case .leave: "Separates one room from its current group. The remaining rooms may elect a new coordinator."
+        case .party: "Groups every room in this household around the selected group. The other household remains independent."
+        case .move(_, let copy): copy
+            ? "Replays the selected group’s current source at the destination and stops the source group. Cross-household playback is not synchronized."
+            : "Moves playback to the destination by regrouping when possible. Other source-group rooms can keep playing."
         case .scene: "May regroup rooms, replace sources, start or pause music, and change levels and mutes. Review all listed scene settings. Partial outcomes are shown individually."
         case .seek: "Checks the current track before seeking. Does not resume paused music."
         case .playSource, .playFavorite, .djStart: "Replaces what this group plays and can change its queue. The daemon applies playback volume caps."
@@ -68,6 +79,9 @@ public enum NativeCommand: Equatable, Sendable {
         }
     }
     public var isQueueAdd: Bool { if case .queueAdd = self { true } else { false } }
+    public var requiresFreshTopology: Bool {
+        switch self { case .join, .leave, .party, .move: true; default: false }
+    }
     public var room: String? {
         switch self { case .volume(_, let room): room; case .mute(_, let room): room; default: nil }
     }
@@ -81,7 +95,7 @@ public enum NativeCommand: Equatable, Sendable {
     func payload(in zone: Zone) throws -> Payload {
         _ = try zone.validated()
         var path: [String] = [], body: [String: JSONValue] = ["zone": .string(zone.id.address)]
-        let timeout: TimeInterval = requiresDJ || savedScene != nil || isQueueAdd ? 600 : 120
+        let timeout: TimeInterval = requiresDJ || savedScene != nil || isQueueAdd || requiresFreshTopology ? 600 : 120
         func require(_ flag: Bool, _ message: String) throws { if !flag { throw ContractError.invalid(message) } }
         func source(_ value: String) throws -> String {
             let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -120,6 +134,26 @@ public enum NativeCommand: Equatable, Sendable {
             try require((60...604_800).contains(seconds), "Choose a steering duration from one minute to one week.")
             path = ["dj", "steer"]; body["mood"] = .string(try source(mood)); body["for_secs"] = .integer(Int64(seconds))
         case .djClear: path = ["dj", "steer"]; body["clear"] = .bool(true)
+        case .join(let room, let to):
+            try require(zone.members.contains(room), "The room no longer belongs to this group.")
+            try require(to.household == zone.household, "Rooms in different households cannot share a group.")
+            path = ["group"]
+            body["zone"] = .string(RoomID(household: zone.household, room: room).address)
+            body["to"] = .string(to.address)
+        case .leave(let room):
+            try require(zone.members.contains(room), "The room no longer belongs to this group.")
+            try require(zone.members.count > 1, "This room already plays on its own.")
+            path = ["ungroup"]
+            body["zone"] = .string(RoomID(household: zone.household, room: room).address)
+        case .party:
+            path = ["party"]
+        case .move(let to, let copy):
+            try require(copy || to.household == zone.household,
+                        "Different households cannot share a group. Replay there instead.")
+            try require(to != zone.id, "Choose a different destination room.")
+            path = ["move"]
+            body["to"] = .string(to.address)
+            body["copy"] = .bool(copy)
         case .scene(let scene):
             try require(!scene.name.isEmpty, "The scene has no name.")
             path = ["scenes", scene.name, "apply"]; body = [:]
@@ -135,7 +169,8 @@ public enum NativeCommand: Equatable, Sendable {
         case .volume: matches = before.volume != nil && before.volume == current.volume
         case .groupVolume: matches = before.groupVolume != nil && before.groupVolume == current.groupVolume
         case .mute: matches = before.mute != nil && before.mute == current.mute
-        case .queuePlay, .queueRemove, .scene: matches = true // Native queue revision/URI checks remain mandatory.
+        case .queuePlay, .queueRemove, .join, .leave, .party, .move, .scene:
+            matches = true // Native queue checks and fresh topology validation remain mandatory.
         case .queueAdd(_, let next): matches = !next || before.samePlayback(as: current)
         default: matches = before.samePlayback(as: current)
         }
@@ -147,6 +182,58 @@ public enum NativeCommand: Equatable, Sendable {
             }
         }
     }
+    /// Re-read topology immediately before a house-layout mutation. This closes
+    /// stale-review mistakes, not the unavoidable race with another controller
+    /// between this read and the daemon's write.
+    public func validateTopology(reviewed: Zone, current: [Zone]) throws {
+        guard requiresFreshTopology else { return }
+        let current = try Zone.validate(current)
+        guard let source = current.first(where: {
+            $0.household == reviewed.household && $0.members.contains(reviewed.coordinatorRoom)
+        }), source.sameGroup(as: reviewed) else {
+            throw ContractError.invalid("The selected group changed. Refresh the house and review this action again.")
+        }
+        func destination(_ id: RoomID) throws -> Zone {
+            guard let target = current.first(where: {
+                $0.household == id.household && $0.members.contains(id.room)
+            }) else {
+                throw ContractError.invalid("The destination room is no longer in the house.")
+            }
+            return target
+        }
+        switch self {
+        case .join(let room, let to):
+            guard source.members.contains(room) else {
+                throw ContractError.invalid("The room no longer belongs to the selected group.")
+            }
+            let target = try destination(to)
+            guard source.household == target.household else {
+                throw ContractError.invalid("Rooms in different households cannot share a group.")
+            }
+            guard !source.sameGroup(as: target) else {
+                throw ContractError.invalid("These rooms already share a group.")
+            }
+        case .leave(let room):
+            guard source.members.contains(room), source.members.count > 1 else {
+                throw ContractError.invalid("This room no longer needs to be separated from this group.")
+            }
+        case .party:
+            guard current.filter({ $0.household == source.household }).count > 1 else {
+                throw ContractError.invalid("This household already has one group.")
+            }
+        case .move(let to, let copy):
+            let target = try destination(to)
+            guard copy || source.household == target.household else {
+                throw ContractError.invalid("Different households cannot share a group. Replay there instead.")
+            }
+            guard !source.sameGroup(as: target) else {
+                throw ContractError.invalid("Choose a destination outside the selected group.")
+            }
+        default:
+            break
+        }
+    }
+
     func receipt(_ data: Data) throws -> CommandReceipt {
         switch self {
         case .scene(let scene):

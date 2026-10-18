@@ -210,6 +210,12 @@ public struct DaemonClient: Sendable {
     /// No command is retried, redirected, queued offline, or replayed after reconnect.
     public func perform(_ command: NativeCommand, in zone: Zone) async throws -> CommandReceipt {
         let payload = try command.payload(in: zone)
+        // Grouping/move/party depend on current topology. Re-read immediately
+        // before the write; failures here are definite because nothing has
+        // been sent yet. The daemon remains authoritative for the final race.
+        if command.requiresFreshTopology {
+            try command.validateTopology(reviewed: zone, current: try await zones())
+        }
         var request = URLRequest(url: try endpoint.resource(payload.path), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: payload.timeout)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
