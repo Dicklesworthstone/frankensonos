@@ -4,11 +4,13 @@
 //! `Tailscale-User-*` headers set), and both the HTTP API and the MCP
 //! endpoint answer. The daemon runs with Tailscale detection off, as one
 //! started at boot before Tailscale is up does: Serve must not depend on the
-//! daemon having seen the tailnet. A foreign Host is still refused.
+//! daemon having seen the tailnet. A foreign Host is still refused. The MCP
+//! listener names its callers as the API does: behind `--tailscale-serve`,
+//! Serve's login header names the tailnet user, whose own policy applies.
 
 mod e2e;
 
-use e2e::{Scenario, http};
+use e2e::{Daemon, Scenario, http};
 use fsonos_sim::SimHousehold;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -147,20 +149,18 @@ fn check_mcp(s: &mut Scenario, mcp: &str) {
     );
 }
 
-#[test]
-fn requests_forwarded_by_tailscale_serve_reach_the_api_and_mcp() {
-    let mut s = Scenario::start("behind_serve");
-    s.sim(SimHousehold::standard());
-    let mut daemon = s.spawn(
+/// `fsonos serve` on loopback with `extra` flags, up and live: the daemon,
+/// its API address and its MCP address.
+fn serve(s: &mut Scenario, step: &str, extra: &[&str]) -> (Daemon, String, String) {
+    let mut args = vec![
         "serve",
-        &[
-            "serve",
-            "--http",
-            "127.0.0.1:0",
-            "--mcp-http",
-            "127.0.0.1:0",
-        ],
-    );
+        "--http",
+        "127.0.0.1:0",
+        "--mcp-http",
+        "127.0.0.1:0",
+    ];
+    args.extend_from_slice(extra);
+    let mut daemon = s.spawn(step, &args);
     let ready = daemon
         .wait_line("fsonos serve: ready", Duration::from_secs(20))
         .unwrap_or_default();
@@ -175,12 +175,20 @@ fn requests_forwarded_by_tailscale_serve_reach_the_api_and_mcp() {
         .to_owned();
     let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
     s.check(
-        "ready",
+        &format!("{step}-ready"),
         "daemon",
         "serve is up on loopback and found the households",
         api.starts_with("127.0.0.1:") && mcp.starts_with("127.0.0.1:") && live.is_some(),
         daemon.seen.join("\n"),
     );
+    (daemon, api, mcp)
+}
+
+#[test]
+fn requests_forwarded_by_tailscale_serve_reach_the_api_and_mcp() {
+    let mut s = Scenario::start("behind_serve");
+    s.sim(SimHousehold::standard());
+    let (mut daemon, api, mcp) = serve(&mut s, "serve", &[]);
 
     check_api(&mut s, &api);
     check_browser_defenses(&mut s, &api);
@@ -191,6 +199,161 @@ fn requests_forwarded_by_tailscale_serve_reach_the_api_and_mcp() {
         "stop",
         "daemon",
         "SIGINT stops serve cleanly (exit 0)",
+        code == Some(0),
+        format!("exit {code:?}"),
+    );
+    s.finish();
+}
+
+/// A `set_volume` MCP call as Serve forwards it to `mcp` (Host with the 8443
+/// port), from `login` (a user-owned device; `None` for a tagged one),
+/// sending `authorization` if the caller puts one in: the HTTP answer.
+fn set_volume_through_serve(
+    mcp: &str,
+    login: Option<&str>,
+    authorization: Option<&str>,
+) -> std::io::Result<e2e::HttpAnswer> {
+    let host = format!("{NAME}:8443");
+    let call = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {
+            "name": "set_volume",
+            "arguments": { "zone": "Kitchen", "volume": 15 },
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
+        }
+    });
+    let mut headers: Vec<(&str, &str)> = forwarded(&host)
+        .into_iter()
+        .filter(|(name, _)| !name.starts_with("Tailscale-User-"))
+        .collect();
+    if let Some(login) = login {
+        headers.push(("Tailscale-User-Login", login));
+    }
+    if let Some(authorization) = authorization {
+        headers.push(("Authorization", authorization));
+    }
+    headers.extend([
+        ("Content-Type", "application/json"),
+        ("Accept", "application/json"),
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", "tools/call"),
+        ("Mcp-Name", "set_volume"),
+    ]);
+    http(mcp, "POST", "/mcp", &headers, &call.to_string())
+}
+
+/// Whether an MCP answer is a refusal under the house policy.
+fn policy_denied(answer: &std::io::Result<e2e::HttpAnswer>) -> bool {
+    answer.as_ref().is_ok_and(|(_, _, body)| {
+        let reply = rpc(body);
+        reply["result"]["isError"] == true && body.contains("POLICY_DENIED")
+    })
+}
+
+/// Whether an MCP answer is a tool success.
+fn succeeded(answer: &std::io::Result<e2e::HttpAnswer>) -> bool {
+    answer.as_ref().is_ok_and(|(_, _, body)| {
+        let reply = rpc(body);
+        reply["result"].is_object() && reply["result"]["isError"] != true
+    })
+}
+
+/// The newest logged action's client and decision.
+fn newest_action(api: &str) -> (String, String) {
+    let listed = http(api, "GET", "/actions?limit=1", &[], "");
+    let newest = listed
+        .ok()
+        .and_then(|(_, _, body)| serde_json::from_str::<Value>(&body).ok())
+        .and_then(|v| v.as_array().and_then(|a| a.first().cloned()))
+        .unwrap_or(Value::Null);
+    (
+        newest["client"].as_str().unwrap_or_default().to_owned(),
+        newest["decision"].as_str().unwrap_or_default().to_owned(),
+    )
+}
+
+/// p7vq.12: the MCP listener names each caller as the HTTP API does, so the
+/// owner's `[clients."<login>"]` rules reach MCP agents and the log names
+/// them. Without `--tailscale-serve` the login header is ignored; behind it,
+/// the login is the caller, and a call without one (a tagged device) is
+/// `loopback-http`. An `Authorization` header a caller sends gains nothing.
+#[test]
+fn the_mcp_listener_names_each_caller_as_the_api_does() {
+    let mut s = Scenario::start("behind_serve_mcp_identity");
+    s.sim(SimHousehold::standard());
+    let written = std::fs::write(
+        s.dir().join("data").join("policy.toml"),
+        "[clients.\"ada@example.com\"]\ndeny = [\"set_volume\"]\n",
+    );
+    s.check(
+        "policy",
+        "store",
+        "a policy.toml denying set_volume to ada@example.com",
+        written.is_ok(),
+        format!("{written:?}"),
+    );
+
+    let (mut daemon, api, mcp) = serve(&mut s, "plain", &[]);
+    let answer = set_volume_through_serve(&mcp, Some("ada@example.com"), None);
+    let logged = newest_action(&api);
+    s.check(
+        "plain-ignores-login",
+        "mcp-http",
+        "without --tailscale-serve, a login header names no one: set_volume goes through as loopback-http",
+        succeeded(&answer) && logged.0 == "loopback-http",
+        format!("{answer:?} logged {logged:?}"),
+    );
+    let code = daemon.interrupt(Duration::from_secs(10));
+    s.check(
+        "plain-stop",
+        "daemon",
+        "SIGINT stops serve (exit 0)",
+        code == Some(0),
+        format!("exit {code:?}"),
+    );
+
+    let (mut daemon, api, mcp) = serve(&mut s, "behind", &["--tailscale-serve"]);
+    let answer = set_volume_through_serve(&mcp, Some("ada@example.com"), None);
+    let logged = newest_action(&api);
+    s.check(
+        "login-denied",
+        "mcp-http",
+        "behind --tailscale-serve, Serve's login is the caller: its own policy refuses set_volume, and the log names it",
+        policy_denied(&answer)
+            && logged.0 == "ada@example.com"
+            && logged.1.starts_with("deny"),
+        format!("{answer:?} logged {logged:?}"),
+    );
+    let answer = set_volume_through_serve(
+        &mcp,
+        Some("ada@example.com"),
+        Some("Bearer fsonos.guess.636c69"),
+    );
+    let logged = newest_action(&api);
+    s.check(
+        "authorization-gains-nothing",
+        "mcp-http",
+        "an Authorization header the caller sends (a bearer claiming the CLI) gains nothing: the call is refused, and nothing is logged as the CLI",
+        !succeeded(&answer) && logged.0 != "cli",
+        format!("{answer:?} logged {logged:?}"),
+    );
+    let answer = set_volume_through_serve(&mcp, None, None);
+    let logged = newest_action(&api);
+    s.check(
+        "tagged-is-loopback",
+        "mcp-http",
+        "a call with no login (a tagged device) is loopback-http: set_volume goes through and is logged so",
+        succeeded(&answer) && logged.0 == "loopback-http",
+        format!("{answer:?} logged {logged:?}"),
+    );
+    let code = daemon.interrupt(Duration::from_secs(10));
+    s.check(
+        "behind-stop",
+        "daemon",
+        "SIGINT stops serve (exit 0)",
         code == Some(0),
         format!("exit {code:?}"),
     );
