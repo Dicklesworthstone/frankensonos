@@ -11,3 +11,13 @@
 .dj-session-observation details { margin: .6rem 0; }
 .dj-session-warning { padding: .7rem; border-left: .25rem solid currentColor; font-weight: 600; }
 .dj-session-observation ul { padding-left: 1.4rem; }
+.dj-rehearsal { border-top: 1px solid var(--line); margin: .8rem 0; padding-top: .8rem; }
+.dj-rehearsal > summary { cursor: pointer; font-weight: 650; }
+.dj-rehearsal fieldset { min-width: 0; margin: 1rem 0; border: 1px solid var(--line); border-radius: .6rem; }
+.dj-rehearsal-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: .8rem; }
+.dj-rehearsal-fields label { display: grid; gap: .35rem; min-width: 0; }
+.dj-rehearsal-fields input, .dj-rehearsal-fields select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 40px; font: inherit; }
+.dj-rehearsal fieldset > button { margin: .8rem .5rem 0 0; max-width: 100%; white-space: normal; }
+.dj-rehearsal-results h4 { overflow-wrap: anywhere; }
+.dj-rehearsal-results ul { padding-left: 1.4rem; }
+.dj-rehearsal-results details { margin: .6rem 0; }
