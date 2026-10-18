@@ -48,10 +48,7 @@ impl Workers {
                 break;
             };
             let expired = now.saturating_duration_since(early.at) >= EARLY_AGE;
-            let keep = if let Some(current) = active
-                .iter_mut()
-                .find(|a| a.sid == early.notify.sid)
-            {
+            let keep = if let Some(current) = active.iter_mut().find(|a| a.sid == early.notify.sid) {
                 let forward = service_matches(current, &early.notify)
                     && super::super::sequence_gap(current.last_seq, early.notify.seq).is_some();
                 if forward && expired {
@@ -76,6 +73,22 @@ impl Workers {
 }
 
 impl Subscriptions {
+    /// The shared callback inbox lost events without knowing which SID was
+    /// affected. Keep live cursors and leases, but request full state for every
+    /// service. A pending SUBSCRIBE may have sent its initial before the loss.
+    pub(crate) fn callbacks_lost(&mut self, now: Instant) {
+        self.defer_event_refresh();
+        for active in &mut self.active {
+            repair(active, now);
+        }
+        for job in &mut self.maintenance.jobs {
+            if !job.finalized && !job.cancelled.load(Ordering::Acquire) {
+                job.early_loss = true;
+            }
+        }
+        self.invalidate_renewals();
+    }
+
     /// Preserve a bounded prefix while a matching service's SID is unknown.
     /// Rejected tails leave bounded loss evidence on the outstanding jobs.
     pub(crate) fn hold_early(&mut self, notify: &Notify) -> bool {

@@ -22,7 +22,7 @@ use crate::playback::{Changes, Playback, PlayerPlayback};
 use crate::reconcile::{Health, HealthBoard, Reconciler};
 use fsonos_proto::gena::Subscription;
 use fsonos_proto::mdns::SonosAdvert;
-use fsonos_proto::net::{EventSink, Lan, MediaFiles};
+use fsonos_proto::net::{CallbackEvent, EventSink, Lan, MediaFiles};
 use fsonos_proto::ssdp::Advert;
 use fsonos_proto::topology::{VanishedDevice, host_of_location};
 use fsonos_proto::{Discovered, HttpBody, ProtoError, Transport};
@@ -37,6 +37,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 mod bootstrap;
+mod callback;
 mod delivery;
 mod inventory;
 mod observation;
@@ -713,8 +714,12 @@ impl Engine {
             // callbacks from that same stream.
             early
         } else {
-            let buffered = match m.sink.as_ref()?.recv_or_closed(Duration::ZERO) {
-                Ok(notify) => notify,
+            let buffered = match m.sink.as_ref()?.recv_event(Duration::ZERO) {
+                Ok(Some(CallbackEvent::Notify(notify))) => Some(notify),
+                Ok(Some(CallbackEvent::ResyncRequired)) => {
+                    return Some(self.callback_loss(m));
+                }
+                Ok(None) => None,
                 Err(error) => {
                     self.relisten(m, &format!("the event listener stopped: {error}"));
                     return Some(Vec::new());
@@ -731,8 +736,12 @@ impl Engine {
                 } else {
                     // The outer loop checks its schedule every bounded TICK;
                     // a due in-flight survey must not turn this into a spin.
-                    match m.sink.as_ref()?.recv_or_closed(max_wait) {
-                        Ok(notify) => notify?,
+                    match m.sink.as_ref()?.recv_event(max_wait) {
+                        Ok(Some(CallbackEvent::Notify(notify))) => notify,
+                        Ok(Some(CallbackEvent::ResyncRequired)) => {
+                            return Some(self.callback_loss(m));
+                        }
+                        Ok(None) => return None,
                         Err(error) => {
                             self.relisten(m, &format!("the event listener stopped: {error}"));
                             return Some(Vec::new());

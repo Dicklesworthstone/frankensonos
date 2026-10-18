@@ -376,3 +376,50 @@ fn unknown_overflow_does_not_turn_a_same_sid_renewal_into_a_replacement() {
     assert_eq!(f.provider.renewed.load(Ordering::Relaxed), 1);
     f.finish();
 }
+
+#[test]
+fn global_callback_loss_marks_in_flight_initials_and_recovers_without_a_later_gap() {
+    for generation in [1, 2] {
+        let mut f = Fixture::new(generation);
+        let initial = f.begin();
+        assert!(f.subs.hold_early(&initial));
+        let tail = f.volume(73, &initial.sid);
+        assert_eq!(tail.seq, 1);
+        // The raw inbox lost this tail before it could reach hold_early.
+        f.subs.callbacks_lost(Instant::now());
+        assert!(f.subs.maintenance.jobs[0].early_loss);
+        f.adopt();
+        let mut playback = Playback::default();
+        f.replay(&mut playback);
+        f.repair(&mut playback, 73);
+        f.finish();
+    }
+}
+
+#[test]
+fn global_loss_preserves_live_cursors_and_existing_failed_replacement_backoff() {
+    let mut f = Fixture::new(2);
+    let initial = f.begin();
+    assert!(f.subs.hold_early(&initial));
+    f.adopt();
+    let mut playback = Playback::default();
+    f.replay(&mut playback);
+    let now = Instant::now();
+    f.subs.callbacks_lost(now);
+    let deadline = f.subs.active[0].renew_at;
+    assert_eq!(deadline, now + RETRY);
+    assert_eq!(f.subs.active[0].sid, initial.sid);
+    assert_eq!(f.subs.active[0].last_seq, Some(0));
+    for _ in 0..100 {
+        f.subs.callbacks_lost(Instant::now());
+        f.start();
+        assert_eq!(f.subs.active[0].renew_at, deadline);
+    }
+    // A failed request may impose a later retry than this local loss cooldown.
+    f.subs.active[0].renew_at = now + RETRY * 2;
+    f.subs.callbacks_lost(Instant::now());
+    assert_eq!(f.subs.active[0].renew_at, now + RETRY * 2);
+    assert_eq!(f.provider.subscribed.load(Ordering::Relaxed), 1);
+    assert_eq!(f.provider.renewed.load(Ordering::Relaxed), 0);
+    f.finish();
+}
