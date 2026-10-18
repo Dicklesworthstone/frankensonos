@@ -24,7 +24,7 @@ use fsonos_core::store::{AlbumTrack, Store, StoreError};
 use fsonos_types::Track;
 
 use crate::SpotifyError;
-use crate::classical::{ClassicalTrack, estimate_energy, split_title};
+use crate::classical::{ClassicalTrack, energy_from_title, split_title};
 use crate::client::{SimplifiedTrack, renderable, secs};
 use crate::dj::DjConfig;
 use crate::library::{Origin, Page};
@@ -330,6 +330,7 @@ pub fn expand_work(work: &Work, album: &[AlbumTrack]) -> Option<Work> {
 /// work, album and performers; its own title, position and energy.
 fn filled_in(template: &ClassicalTrack, t: &AlbumTrack) -> ClassicalTrack {
     let parts = split_title(&t.title);
+    let (energy, energy_basis) = energy_from_title(parts.movement, parts.work);
     ClassicalTrack {
         track: Track {
             title: t.title.clone(),
@@ -355,7 +356,8 @@ fn filled_in(template: &ClassicalTrack, t: &AlbumTrack) -> ClassicalTrack {
         disc_number: Some(t.disc_number),
         track_number: Some(t.track_number),
         movement: parts.movement.map(str::to_owned),
-        energy: estimate_energy(parts.movement, parts.work),
+        energy,
+        energy_basis,
         // Neutral: from the album, not the owner's own saving or liking.
         origin: Origin::SavedAlbum,
         expanded: true,

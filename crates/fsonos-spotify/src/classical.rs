@@ -800,6 +800,19 @@ const ENERGY_TABLE: &[(&str, u8)] = &[
 /// `ma non troppo` pulls toward the middle, `molto`/`assai` push outward.
 #[must_use]
 pub fn estimate_energy(movement: Option<&str>, work: &str) -> u8 {
+    marked_energy(movement, work).unwrap_or(NEUTRAL_ENERGY)
+}
+
+/// [`estimate_energy`], with what it rests on: a marking, or nothing.
+pub(crate) fn energy_from_title(movement: Option<&str>, work: &str) -> (u8, EnergyBasis) {
+    match marked_energy(movement, work) {
+        Some(energy) => (energy, EnergyBasis::Marking),
+        None => (NEUTRAL_ENERGY, EnergyBasis::Unknown),
+    }
+}
+
+/// [`estimate_energy`]; `None` when the title says nothing.
+fn marked_energy(movement: Option<&str>, work: &str) -> Option<u8> {
     let from = |text: &str| -> Option<i32> {
         let mut norm = normalize(text);
         let mut matched = Vec::new();
@@ -819,8 +832,8 @@ pub fn estimate_energy(movement: Option<&str>, work: &str) -> u8 {
         }
         Some(energy)
     };
-    let energy = movement.and_then(from).or_else(|| from(work)).unwrap_or(50);
-    u8::try_from(energy.clamp(5, 95)).unwrap_or(50)
+    let energy = movement.and_then(from).or_else(|| from(work))?;
+    u8::try_from(energy.clamp(5, 95)).ok()
 }
 
 fn find_phrase(norm: &str, phrase: &str) -> Option<usize> {
@@ -833,10 +846,23 @@ fn find_phrase(norm: &str, phrase: &str) -> Option<usize> {
 
 // ── Analysis + the candidate pool ──────────────────────────────────────────
 
+/// What a track's energy rests on, and so how far the DJ trusts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnergyBasis {
+    /// Its movement's tempo or character marking (`Adagio`, `Presto`), or its
+    /// work's form (`Nocturne`): read from the music.
+    Marking,
+    /// A song's genre tags (usually its artist's, so the same for all their
+    /// songs), or a version note in its title (`- Acoustic`): a rough guess.
+    Genre,
+    /// Nothing says: the energy is the neutral 50, and the DJ leaves it out.
+    Unknown,
+}
+
 /// A library track as the DJ sees it: who wrote it, when, which work it
 /// belongs to, and how energetic it is. A song (not judged classical) is
 /// its own work: `composer` is its lead artist, its period is unknown and its
-/// energy neutral.
+/// energy a guess from its genre, when it has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // independent facts, not a state machine
 pub struct ClassicalTrack {
@@ -875,6 +901,8 @@ pub struct ClassicalTrack {
     /// The movement part of the title (`"II. Adagio"`), if any.
     pub movement: Option<String>,
     pub energy: u8,
+    /// What `energy` rests on.
+    pub energy_basis: EnergyBasis,
     pub origin: Origin,
     /// A movement the library doesn't hold, filled in from its album's track
     /// list to complete a work (see `crate::expand`); never counts as liked.
@@ -900,6 +928,7 @@ pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
     };
     let composer_key = normalize(&name);
     let parts = split_title(&item.title);
+    let (energy, energy_basis) = energy_from_title(parts.movement, parts.work);
     ClassicalTrack {
         track: item.to_track(),
         work: parts.work.to_owned(),
@@ -918,7 +947,8 @@ pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
         disc_number: item.disc_number,
         track_number: item.track_number,
         movement: parts.movement.map(str::to_owned),
-        energy: estimate_energy(parts.movement, parts.work),
+        energy,
+        energy_basis,
         origin: item.origin,
         expanded: false,
     }
@@ -926,9 +956,10 @@ pub fn analyze(item: &LibraryItem) -> ClassicalTrack {
 
 /// Analyse one library item as a song: its own work, titled without version
 /// notes (`- Remastered 2011`), credited to its lead artist, of unknown
-/// period, with its energy from its genre tags ([`genre_energy`]; neutral
-/// without them). Pop, jazz, hip-hop and every other genre take this path;
-/// nothing in a song's title is read as a movement or a tempo.
+/// period, with its energy from a version note naming one (`- Acoustic`,
+/// [`version_energy`]), else its genre tags ([`genre_energy`]); unknown
+/// without either. Pop, jazz, hip-hop and every other genre take this path;
+/// nothing else in a song's title is read as a movement or a tempo.
 #[must_use]
 pub fn analyze_song(item: &LibraryItem) -> ClassicalTrack {
     let artist = item
@@ -939,6 +970,11 @@ pub fn analyze_song(item: &LibraryItem) -> ClassicalTrack {
         .unwrap_or_default();
     let artist_key = normalize(&artist);
     let title = strip_version_suffix(&item.title);
+    let (energy, energy_basis) =
+        match version_energy(&item.title).or_else(|| genre_energy(&item.genres)) {
+            Some(energy) => (energy, EnergyBasis::Genre),
+            None => (NEUTRAL_ENERGY, EnergyBasis::Unknown),
+        };
     ClassicalTrack {
         track: item.to_track(),
         work: title.to_owned(),
@@ -957,7 +993,8 @@ pub fn analyze_song(item: &LibraryItem) -> ClassicalTrack {
         disc_number: item.disc_number,
         track_number: item.track_number,
         movement: None,
-        energy: genre_energy(&item.genres).unwrap_or(NEUTRAL_ENERGY),
+        energy,
+        energy_basis,
         origin: item.origin,
         expanded: false,
     }
@@ -1020,6 +1057,43 @@ const GENRE_ENERGY: &[(&str, u8)] = &[
     ("ambient", 15),
     ("sleep", 10),
 ];
+
+/// Version notes that say how a recording sits, energy-wise, whatever its
+/// artist's genre: a rock band's acoustic take is calm, a club mix is not.
+const VERSION_ENERGY: &[(&str, u8)] = &[
+    ("acoustic", 34),
+    ("unplugged", 36),
+    ("stripped", 36),
+    ("piano", 32),
+    ("club mix", 80),
+    ("remix", 72),
+];
+
+/// A song's energy from a version note closing its title (`(Acoustic)`,
+/// `- Club Mix`, behind any other notes), when one names it
+/// ([`VERSION_ENERGY`]): this recording's, where a genre speaks for the
+/// artist. A featured artist's name is not a version note.
+#[must_use]
+pub fn version_energy(title: &str) -> Option<u8> {
+    let mut rest = title.trim();
+    loop {
+        let (head, note) = if let Some(open) = trailing_bracket(rest) {
+            (&rest[..open], &rest[open..])
+        } else {
+            let dash = rest.rfind(" - ")?;
+            (&rest[..dash], &rest[dash + 3..])
+        };
+        let note = normalize(note);
+        if !(note.starts_with("feat") || note.starts_with("with "))
+            && let Some(&(_, energy)) = VERSION_ENERGY
+                .iter()
+                .find(|(phrase, _)| has_phrase(&note, phrase))
+        {
+            return Some(energy);
+        }
+        rest = head.trim_end();
+    }
+}
 
 /// A song's energy from its genre tags: the mean of the tags any
 /// [`GENRE_ENERGY`] phrase names; `None` when none does.
@@ -1549,8 +1623,28 @@ mod tests {
         let mut calm = item("Low Light", &["Juniper Vale"], Some("Paper Moons"));
         calm.genres = tags(&["ambient", "new age"]);
         assert_eq!(analyze_song(&calm).energy, 17);
+        assert_eq!(analyze_song(&calm).energy_basis, EnergyBasis::Genre);
         let plain = item("Low Light", &["Juniper Vale"], Some("Paper Moons"));
-        assert_eq!(analyze_song(&plain).energy, 50, "no genre: neutral");
+        let plain = analyze_song(&plain);
+        assert_eq!(
+            (plain.energy, plain.energy_basis),
+            (50, EnergyBasis::Unknown),
+            "no genre: unknown"
+        );
+        // A version note speaks for the recording, over its artist's genre.
+        let mut take = item(
+            "Low Light - Acoustic (2019 Remaster)",
+            &["Juniper Vale"],
+            Some("Paper Moons"),
+        );
+        take.genres = tags(&["hard rock"]);
+        let take = analyze_song(&take);
+        assert_eq!((take.energy, take.energy_basis), (34, EnergyBasis::Genre));
+        assert_eq!(version_energy("Low Light (Club Mix)"), Some(80));
+        assert_eq!(version_energy("Low Light - Remix"), Some(72));
+        assert_eq!(version_energy("Low Light (feat. Piano Man)"), None);
+        assert_eq!(version_energy("Piano Man"), None, "a title, not a note");
+        assert_eq!(version_energy("Low Light - Live at the Forum"), None);
     }
 
     #[test]
@@ -1591,9 +1685,11 @@ mod tests {
             assert_eq!(t.classical, !song, "{}", t.track.title);
             if song {
                 // A song: its own title, its lead artist, its energy from its
-                // genre, nothing read into its title.
+                // genre (or an acoustic take's version note), nothing else
+                // read into its title.
                 assert_eq!(t.movement, None, "{}", t.track.title);
-                let energy = genre_energy(std::slice::from_ref(&genre_of(t)));
+                let energy = version_energy(&t.track.title)
+                    .or_else(|| genre_energy(std::slice::from_ref(&genre_of(t))));
                 assert_eq!((t.period, Some(t.energy)), (Period::Unknown, energy));
                 assert!(!t.known_composer);
                 let artist = t.track.artist.as_deref().unwrap_or_default();
@@ -1611,6 +1707,7 @@ mod tests {
         );
         let acoustic = pool.get("spotify:track:song-1-4").unwrap();
         assert_eq!(acoustic.work, "Harbor Lights", "version notes dropped");
+        assert_eq!(acoustic.energy, 34, "an acoustic take, calmer than pop");
         let lullaby = pool.get("spotify:track:song-0-3").unwrap();
         assert_eq!(
             lullaby.energy, 60,

@@ -15,7 +15,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::classical::{ClassicalTrack, Period};
+use crate::classical::{ClassicalTrack, EnergyBasis, Period};
 use crate::library::Origin;
 
 /// Whether a work holds every one of its movements.
@@ -64,10 +64,18 @@ impl Work {
     }
 
     /// The work's energy: its first movement's, what the listener hears
-    /// first.
+    /// first (the neutral 50 when nothing says; see [`Self::energy_basis`]).
     #[must_use]
     pub fn energy(&self) -> u8 {
         self.movements.first().map_or(50, |m| m.energy)
+    }
+
+    /// What [`Self::energy`] rests on: its first movement's.
+    #[must_use]
+    pub fn energy_basis(&self) -> EnergyBasis {
+        self.movements
+            .first()
+            .map_or(EnergyBasis::Unknown, |m| m.energy_basis)
     }
 
     /// Whether it is a classical work (analysed into movements), not a song.

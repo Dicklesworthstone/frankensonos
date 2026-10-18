@@ -245,6 +245,68 @@ pub(crate) fn mixed_items() -> Vec<LibraryItem> {
     items
 }
 
+/// A broad song library, as a mainstream listener's might be: 24 artists of
+/// four songs each, mostly pop, rock, hip-hop and dance, a few calm ones,
+/// and two whose genres Spotify doesn't know. Artists are named for their
+/// genre ("Dance Pop B").
+pub(crate) fn broad_song_items() -> Vec<LibraryItem> {
+    const ARTISTS: &[(&str, &str)] = &[
+        ("Dance Pop A", "dance pop"),
+        ("Dance Pop B", "dance pop"),
+        ("Pop A", "pop"),
+        ("Pop B", "pop"),
+        ("Pop C", "pop"),
+        ("Rock A", "rock"),
+        ("Rock B", "rock"),
+        ("Hard Rock A", "hard rock"),
+        ("Hip Hop A", "hip hop"),
+        ("Hip Hop B", "hip hop"),
+        ("Rap A", "rap"),
+        ("EDM A", "edm"),
+        ("House A", "house"),
+        ("Indie A", "indie"),
+        ("Indie B", "indie"),
+        ("R&B A", "r&b"),
+        ("Soul A", "soul"),
+        ("Country A", "country"),
+        ("Jazz A", "jazz"),
+        ("Indie Folk A", "indie folk"),
+        ("Songwriter A", "singer-songwriter"),
+        ("Chill A", "chill"),
+        ("Untagged A", ""),
+        ("Untagged B", ""),
+    ];
+    let mut items = Vec::new();
+    for (a, &(artist, genre)) in ARTISTS.iter().enumerate() {
+        for t in 1..=4 {
+            items.push(LibraryItem {
+                source_uri: format!("spotify:track:broad-{a}-{t}"),
+                title: format!("{artist} Song {t}"),
+                artists: vec![artist.into()],
+                artist_id: None,
+                album: Some(format!("{artist} Album")),
+                album_uri: Some(format!("spotify:album:broad-{a}")),
+                album_artists: vec![artist.into()],
+                disc_number: Some(1),
+                track_number: Some(t),
+                added_at: None,
+                genres: if genre.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![genre.into()]
+                },
+                release_year: Some(2015),
+                taste_pm: None,
+                label: None,
+                duration_secs: Some(200),
+                explicit: false,
+                origin: Origin::SavedAlbum,
+            });
+        }
+    }
+    items
+}
+
 /// A two-hour opera: 24 scenes.
 pub(crate) fn opera() -> Vec<LibraryItem> {
     (1..=24)

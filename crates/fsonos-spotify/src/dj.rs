@@ -26,9 +26,12 @@
 //!   prolific artists and composers are damped (weight ∝ 1/√works) so a
 //!   shelf of Bach cantatas doesn't drown out three Fauré pieces.
 //! * **Energy.** A work's energy is its first movement's. Prefer works near
-//!   the time-of-day target and avoid jarring jumps from one work to the
-//!   next (a finale's Presto into a quiet opening is the concert norm, so the
-//!   step is measured between the works' characters, not their edges).
+//!   the time-of-day target (closely for a tempo marking, loosely for a
+//!   song's genre, which only guesses; where nothing says, as well as the
+//!   other candidates fit on average) and
+//!   avoid jarring jumps from one work to the next (a finale's Presto into a
+//!   quiet opening is the concert norm, so the step is measured between the
+//!   works' characters, not their edges).
 //! * **Shape.** Works longer than [`DjConfig::max_work_minutes`] (full operas,
 //!   Passions) are left out unless allowed; works missing movements still play
 //!   — what the library has, in order — at reduced weight; works the owner
@@ -53,7 +56,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::classical::{CandidatePool, ClassicalTrack, Period};
+use crate::classical::{CandidatePool, ClassicalTrack, EnergyBasis, Period};
 use crate::feedback::FeedbackModel;
 use crate::prefs::{Preferences, Verdict};
 use crate::steer::{Moods, Relaxation, Steer, admit_among, haystack, names};
@@ -515,10 +518,11 @@ pub fn pick_next<'p>(
         config.allow_long_works || steer.is_some_and(|s| s.constraints.allow_long_works);
     let target = energy_target(pool, ctx);
     let eligible = eligible(pool, admitted, allow_long, &recency, ctx, config);
+    let aim = target.map(|energy| Aim::over(pool, &eligible.works, energy));
     let weights: Vec<u64> = eligible
         .works
         .iter()
-        .map(|&w| weigh(pool, w, &recency, target, config, ctx.feedback, None))
+        .map(|&w| weigh(pool, w, &recency, aim, config, ctx.feedback, None))
         .collect();
     let chosen = eligible.works[draw(&weights, rng)];
 
@@ -527,7 +531,7 @@ pub fn pick_next<'p>(
         pool,
         chosen,
         &recency,
-        target,
+        aim,
         config,
         ctx.feedback,
         Some(&mut factors),
@@ -630,7 +634,8 @@ struct Recency<'p> {
     genre_run: Option<(Option<&'p str>, usize)>,
     /// Genres of the last `period_memory` work plays.
     recent_genres: Vec<Option<&'p str>>,
-    /// Energy of the previous work, if it was a pool work.
+    /// Energy of the previous work, if it was a pool work whose energy is
+    /// known.
     last_energy: Option<u8>,
 }
 
@@ -657,7 +662,10 @@ impl<'p> Recency<'p> {
             }
             current = Some(work);
             if row == 0 {
-                seen.last_energy = work.map(|w| pool.works[w].energy());
+                seen.last_energy = work
+                    .map(|w| &pool.works[w])
+                    .filter(|w| w.energy_basis() != EnergyBasis::Unknown)
+                    .map(Work::energy);
             }
             let Some(w) = work else {
                 continue;
@@ -823,7 +831,7 @@ fn weigh(
     pool: &WorkPool,
     w: usize,
     recency: &Recency<'_>,
-    target: Option<u8>,
+    aim: Option<Aim>,
     config: &DjConfig,
     feedback: Option<&FeedbackModel>,
     mut factors: Option<&mut Vec<(Factor, i32)>>,
@@ -880,8 +888,11 @@ fn weigh(
         let (genre_factor, genre) = genre_pm(work.genre(), recency);
         apply(genre_factor, genre);
     }
-    if let Some(target) = target {
-        apply(Factor::EnergyFit, energy_fit_pm(work.energy(), target));
+    if let Some(aim) = aim {
+        apply(
+            Factor::EnergyFit,
+            known_fit(work, aim.energy).unwrap_or(aim.unknown_pm),
+        );
     }
     if let Some(last) = recency.last_energy {
         apply(Factor::EnergyJump, energy_jump_pm(work.energy(), last));
@@ -967,15 +978,65 @@ fn genre_pm(genre: Option<&str>, recency: &Recency<'_>) -> (Factor, u64) {
     }
 }
 
-/// Closeness to the energy target: 1000 on target, 810 at ±10, 360 at ±20,
-/// and the floor of 30 from ±30 out, so nothing is ever impossible. Steep on
-/// purpose: most works sit mid-range, and a gentler curve lets the spacing
-/// factors wash out the time of day (a late-night set drifting to 35 against
-/// a target of 25).
+/// What the energy fit aims for: the target, and the fit of a work whose
+/// energy is unknown.
+#[derive(Clone, Copy)]
+struct Aim {
+    energy: u8,
+    /// The mean fit of the candidates whose energy is known: a work nothing
+    /// says the energy of fits as well as the others do on average, neither
+    /// as if it were mid-energy nor as if it fit perfectly.
+    unknown_pm: u64,
+}
+
+impl Aim {
+    /// Aim at `energy` among `candidates`.
+    fn over(pool: &WorkPool, candidates: &[usize], energy: u8) -> Self {
+        let fits: Vec<u64> = candidates
+            .iter()
+            .filter_map(|&w| known_fit(&pool.works[w], energy))
+            .collect();
+        let unknown_pm = match as_u64(fits.len()) {
+            0 => 1000,
+            n => fits.iter().sum::<u64>() / n,
+        };
+        Self { energy, unknown_pm }
+    }
+}
+
+/// How well `work`'s energy fits `target`, per mille, by what it rests on;
+/// `None` when nothing says.
+fn known_fit(work: &Work, target: u8) -> Option<u64> {
+    match work.energy_basis() {
+        EnergyBasis::Marking => Some(energy_fit_pm(work.energy(), target)),
+        EnergyBasis::Genre => Some(rough_energy_fit_pm(work.energy(), target)),
+        EnergyBasis::Unknown => None,
+    }
+}
+
+/// Closeness of a marked energy to the target: 1000 on target, 810 at ±10,
+/// 360 at ±20, and the floor of 30 from ±30 out, so nothing is ever
+/// impossible. Steep on purpose: most works sit mid-range, and a gentler
+/// curve lets the spacing factors wash out the time of day (a late-night set
+/// drifting to 35 against a target of 25).
 fn energy_fit_pm(energy: u8, target: u8) -> u64 {
     let d = u64::from(energy.abs_diff(target));
     let near = 1000u64.saturating_sub(d * d);
     (near * near / 1000).max(30)
+}
+
+/// How far either side of the target a genre's guess counts as on it.
+const ROUGH_ENERGY_BAND: u8 = 10;
+
+/// Closeness of a genre's guess to the target: 1000 within
+/// ±[`ROUGH_ENERGY_BAND`], then a smooth falloff (500 twelve further out, 200
+/// at twenty-four) to a floor of 100. A genre speaks for a whole artist and
+/// is good to ±15 at best; the steep marking curve sorted artists, not songs
+/// (at 23:00 it left a pop artist 4% of a folk one's weight, and a night set
+/// to the library's few calm artists).
+fn rough_energy_fit_pm(energy: u8, target: u8) -> u64 {
+    let out = u64::from(energy.abs_diff(target).saturating_sub(ROUGH_ENERGY_BAND));
+    (144_000 / (144 + out * out)).max(100)
 }
 
 /// Penalize jarring jumps between consecutive works (a fiery Allegro
@@ -1393,6 +1454,100 @@ mod tests {
         );
     }
 
+    /// sp4f.3: a late-night set in a broad library reaches beyond its few
+    /// calm artists. Each artist's even share of a fresh pick is 1/24; one is
+    /// reachable when it gets at least half that. And no genre takes over
+    /// three hours.
+    #[test]
+    fn a_night_set_reaches_most_of_a_broad_library() {
+        let pool = works_of(&broad_song_items());
+        let config = DjConfig::default();
+        let recency = Recency::scan(&pool, &[], &config);
+        let all: Vec<usize> = (0..pool.len()).collect();
+        let aim = Some(Aim::over(&pool, &all, energy_target_for_hour(23)));
+        let mut by_artist: BTreeMap<&str, u64> = BTreeMap::new();
+        for (w, work) in pool.works().iter().enumerate() {
+            *by_artist.entry(work.composer_key()).or_default() +=
+                weigh(&pool, w, &recency, aim, &config, None, None);
+        }
+        let total: u64 = by_artist.values().sum();
+        let artists = as_u64(by_artist.len());
+        let reachable = by_artist
+            .values()
+            .filter(|&&weight| weight * artists * 2 >= total)
+            .count();
+        let shares: Vec<(&str, u64)> = by_artist
+            .iter()
+            .map(|(&artist, &weight)| (artist, weight * 1000 / total))
+            .collect();
+        eprintln!("23:00: {reachable} of {artists} artists reachable; shares per mille {shares:?}");
+        assert!(
+            reachable * 10 >= by_artist.len() * 4,
+            "{reachable} of {artists} reachable: {shares:?}"
+        );
+
+        // Three hours from 23:00 (54 songs of 200 s): no genre over half.
+        for seed in 1..=3 {
+            let picks = simulate(&pool, &config, seed, 54, Some(23));
+            let mut genres: BTreeMap<&str, usize> = BTreeMap::new();
+            for p in &picks {
+                *genres.entry(p.work.genre().unwrap_or("none")).or_default() += 1;
+            }
+            eprintln!("seed {seed}, 3 h from 23:00: {genres:?}");
+            let top = genres.values().copied().max().unwrap_or(0);
+            assert!(
+                top * 2 <= picks.len(),
+                "seed {seed}: {genres:?}\n{}",
+                transcript(seed, &pool, &picks)
+            );
+        }
+    }
+
+    /// sp4f.3: a song nothing says the energy of fits as well as the
+    /// other candidates do on average (not as a mid-energy song, nor as a
+    /// perfect fit); a genre's guess still follows the time of day.
+    #[test]
+    fn an_unknown_energy_fits_as_well_as_the_others_do() {
+        let mut items = song_items();
+        for item in &mut items {
+            if item.artists[0] == "Juniper Vale" {
+                item.genres.clear();
+            }
+        }
+        let pool = works_of(&items);
+        let config = DjConfig::default();
+        let recency = Recency::scan(&pool, &[], &config);
+        let all: Vec<usize> = (0..pool.len()).collect();
+        let fit = |w: usize, hour: u8| {
+            let aim = Some(Aim::over(&pool, &all, energy_target_for_hour(hour)));
+            let mut factors = Vec::new();
+            weigh(&pool, w, &recency, aim, &config, None, Some(&mut factors));
+            factors
+                .iter()
+                .find(|(f, _)| *f == Factor::EnergyFit)
+                .map_or(1000, |&(_, pm)| u64::try_from(pm).unwrap())
+        };
+        let by = |artist: &str| {
+            pool.works()
+                .iter()
+                .position(|w| w.composer == artist)
+                .expect("the artist's songs")
+        };
+        let (untagged, hip_hop) = (by("Juniper Vale"), by("MC Halcyon"));
+        for hour in [1, 10, 23] {
+            let target = energy_target_for_hour(hour);
+            let known: Vec<u64> = pool
+                .works()
+                .iter()
+                .filter(|w| w.energy_basis() != EnergyBasis::Unknown)
+                .map(|w| rough_energy_fit_pm(w.energy(), target))
+                .collect();
+            let mean = known.iter().sum::<u64>() / as_u64(known.len());
+            assert_eq!(fit(untagged, hour), mean, "{hour}:00");
+        }
+        assert!(fit(hip_hop, 23) < fit(hip_hop, 10));
+    }
+
     #[test]
     fn empty_pool_yields_nothing() {
         let pool = WorkPool::default();
@@ -1561,23 +1716,39 @@ mod tests {
             .into_iter()
             .flat_map(|seed| uniform(&pool, seed, 24, 5))
             .collect();
-        let miss = |picks: &[&Work], hour| {
-            let target = energy_target_for_hour(hour);
+        // The miss counts the works whose energy is known: the shelf's
+        // Impromptus and Fratres carry no marking, so the DJ leaves their
+        // energy out of the fit (sp4f.3) and there is no miss to measure.
+        let known = |picks: &[&'_ Work]| -> Vec<u8> {
             picks
                 .iter()
-                .map(|w| f64::from(w.energy().abs_diff(target)))
-                .sum::<f64>()
-                / picks.len() as f64
+                .filter(|w| w.energy_basis() != EnergyBasis::Unknown)
+                .map(|w| w.energy())
+                .collect()
         };
+        let miss = |picks: &[&Work], hour| {
+            let target = energy_target_for_hour(hour);
+            let energies = known(picks);
+            energies
+                .iter()
+                .map(|&e| f64::from(e.abs_diff(target)))
+                .sum::<f64>()
+                / energies.len() as f64
+        };
+        let unknown = |picks: &[&Work]| picks.len() - known(picks).len();
         eprintln!(
             "work energy: night {:.1}, morning {:.1}; target miss night {:.1} (uniform {:.1}), \
-             morning {:.1} (uniform {:.1})",
+             morning {:.1} (uniform {:.1}); unknown energy: night {}, morning {}, uniform {} of {}",
             mean_energy(&night),
             mean_energy(&morning),
             miss(&night, 23),
             miss(&base, 23),
             miss(&morning, 10),
-            miss(&base, 10)
+            miss(&base, 10),
+            unknown(&night),
+            unknown(&morning),
+            unknown(&base),
+            base.len()
         );
         assert!(mean_energy(&night) + 10.0 < mean_energy(&morning));
         assert!(miss(&night, 23) < 0.7 * miss(&base, 23));
@@ -2011,6 +2182,10 @@ mod tests {
         assert_eq!(energy_fit_pm(60, 50), 810);
         assert_eq!(energy_fit_pm(70, 50), 360);
         assert_eq!(energy_fit_pm(90, 10), 30);
+        assert_eq!(rough_energy_fit_pm(35, 25), 1000, "inside the band");
+        assert_eq!(rough_energy_fit_pm(47, 25), 500);
+        assert_eq!(rough_energy_fit_pm(59, 25), 200);
+        assert_eq!(rough_energy_fit_pm(90, 10), 100, "the floor");
         assert_eq!(energy_jump_pm(20, 55), 1000);
         assert_eq!(energy_jump_pm(10, 60), 550);
         assert_eq!(energy_jump_pm(5, 95), 150);
