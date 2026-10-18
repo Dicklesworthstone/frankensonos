@@ -231,6 +231,9 @@ pub struct Planning<'a> {
 pub enum FeedError {
     #[error("the DJ has nothing to play: the library cache holds no tracks it can play")]
     EmptyPool,
+    /// The library has works, but the preferences keep every one out.
+    #[error("the DJ may play nothing in the library: {0}")]
+    NothingAllowed(String),
     #[error(
         "this household can't play Spotify yet: add any Spotify track to its Sonos \
          favorites so FrankenSonos can learn how this household plays Spotify"
@@ -1019,8 +1022,12 @@ impl QueueFeed {
                 steer: plan.steer,
                 feedback: plan.feedback,
             };
-            let pick = pick_next(plan.pool, &ctx, &self.config, &mut self.rng)
-                .ok_or(FeedError::EmptyPool)?;
+            let pick =
+                pick_next(plan.pool, &ctx, &self.config, &mut self.rng).ok_or_else(|| {
+                    plan.pool
+                        .why_nothing_plays(plan.steer, Some(plan.now))
+                        .map_or(FeedError::EmptyPool, FeedError::NothingAllowed)
+                })?;
             let mut work = QueuedWork {
                 title: pick.work.title.clone(),
                 composer: pick.work.composer.clone(),
@@ -2729,6 +2736,19 @@ mod tests {
         assert!(
             !feed.is_active() && feed.snapshot().is_none(),
             "a start that queued nothing lets go"
+        );
+        // A library of explicit songs only, with explicit tracks off: not an
+        // empty library, so the DJ says what keeps the works out.
+        let explicit: Vec<_> = song_items().into_iter().filter(|i| i.explicit).collect();
+        let kept_out = works_of(&explicit);
+        assert!(!kept_out.is_empty());
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 3);
+        let err = feed
+            .start(&rig.speakers(&lan), plan(&kept_out, MIDNIGHT), &mut store)
+            .unwrap_err();
+        assert!(
+            matches!(&err, FeedError::NothingAllowed(why) if why.contains("explicit")),
+            "{err}"
         );
 
         // A household that never had a Spotify favorite to learn from.

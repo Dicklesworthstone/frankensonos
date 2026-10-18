@@ -431,6 +431,35 @@ impl WorkPool {
         }
     }
 
+    /// Why no work may play though the library has some: each is banned, or
+    /// explicit while explicit tracks are off (`steer`, active at `now`,
+    /// lets what it names back in). `None` when a work may play, or the
+    /// library is empty.
+    #[must_use]
+    pub fn why_nothing_plays(&self, steer: Option<&Steer>, now: Option<i64>) -> Option<String> {
+        let steer = steer.filter(|s| s.constraints.is_active(now));
+        if self.is_empty() || !self.allowed(steer).0.is_empty() {
+            return None;
+        }
+        let named = |w: usize| steer.is_some_and(|s| names(&self.works[w], &s.constraints));
+        let banned = (0..self.len())
+            .filter(|&w| self.verdicts[w].banned && !named(w))
+            .count();
+        let explicit = self.len() - banned;
+        let mut why = Vec::new();
+        if banned > 0 {
+            why.push(format!("{banned} banned"));
+        }
+        if explicit > 0 {
+            why.push(format!("{explicit} explicit while explicit tracks are off"));
+        }
+        Some(format!(
+            "your preferences keep all {} works out: {}",
+            self.len(),
+            why.join(", ")
+        ))
+    }
+
     #[must_use]
     pub fn works(&self) -> &[Work] {
         &self.works

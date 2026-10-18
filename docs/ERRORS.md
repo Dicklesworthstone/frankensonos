@@ -60,6 +60,7 @@ succeed.
 | `UNKNOWN_SCENE` | 404 | 3 | no | No saved scene has that name. | List the scenes with list_scenes (GET /scenes), or use a suggested name. |
 | `UNKNOWN_SCHEDULE` | 404 | 3 | no | No schedule has that id. | Use an id that list_schedules (GET /schedules) shows. |
 | `QUEUE_CHANGED` | 409 | 1 | no | The queue, or the group playing it, changed since the selection was read (`queue-play`, `queue-remove`, `queue-move`), so nothing was changed. Real players refuse an edit carrying an old queue revision with UPnP fault 1028, reported as this code. | Read the queue again (get_queue) and select from its current revision; do not resend. |
+| `DJ_POOL_EMPTY` | 409 | 1 | no | The DJ's library has works, but the owner's preferences keep every one out: banned, or explicit while explicit tracks are off. (A library with no works at all is `SPOTIFY_AUTH_REQUIRED`: sign in and sync.) | Lift a ban or allow explicit tracks: fsonos dj prefs show lists them. |
 
 ## Notes
 

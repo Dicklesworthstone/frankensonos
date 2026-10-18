@@ -86,11 +86,14 @@ pub enum ErrorCode {
     /// The queue, or the group playing it, changed since the selection was
     /// read: nothing was changed.
     QueueChanged,
+    /// The DJ's library has works, but the owner's preferences keep every
+    /// one out (bans, explicit tracks off).
+    DjPoolEmpty,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -118,6 +121,7 @@ impl ErrorCode {
         Self::UnknownScene,
         Self::UnknownSchedule,
         Self::QueueChanged,
+        Self::DjPoolEmpty,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
@@ -151,6 +155,7 @@ impl ErrorCode {
             Self::UnknownScene => "UNKNOWN_SCENE",
             Self::UnknownSchedule => "UNKNOWN_SCHEDULE",
             Self::QueueChanged => "QUEUE_CHANGED",
+            Self::DjPoolEmpty => "DJ_POOL_EMPTY",
         }
     }
 
@@ -174,7 +179,8 @@ impl ErrorCode {
             | Self::RenderParamsStale
             | Self::SpotifyAuthRequired
             | Self::AmbiguousFavorite
-            | Self::QueueChanged => 409,
+            | Self::QueueChanged
+            | Self::DjPoolEmpty => 409,
             Self::PolicyDenied | Self::UntrustedOrigin => 403,
             Self::UnsupportedMediaType => 415,
             Self::UpnpFault => 502,
@@ -212,7 +218,8 @@ impl ErrorCode {
             | Self::SpotifyAuthRequired
             | Self::Internal
             | Self::NotImplemented
-            | Self::QueueChanged => 1,
+            | Self::QueueChanged
+            | Self::DjPoolEmpty => 1,
         }
     }
 
@@ -286,6 +293,9 @@ impl ErrorCode {
             Self::UnknownSchedule => "Use an id that list_schedules (GET /schedules) shows.",
             Self::QueueChanged => {
                 "Read the queue again (get_queue) and select from its current revision; do not resend."
+            }
+            Self::DjPoolEmpty => {
+                "Lift a ban or allow explicit tracks: fsonos dj prefs show lists them."
             }
         }
     }

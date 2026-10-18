@@ -774,6 +774,18 @@ albums = ["Starfall (Original Soundtrack)"]
         let banned = WorkPool::from_works(works.clone()).with_preferences(banning, &moods);
         let ctx = PickContext::default();
         assert!(pick_next(&banned, &ctx, &config, &mut Rng::new(1)).is_none());
+        // It says why (the bans), rather than calling the library empty.
+        let why = banned.why_nothing_plays(None, None).unwrap_or_default();
+        assert!(
+            why.contains("keep all") && why.contains("banned"),
+            "{why:?}"
+        );
+        assert!(
+            WorkPool::from_works(works.clone())
+                .why_nothing_plays(None, None)
+                .is_none(),
+            "a library something may play from has nothing to explain"
+        );
         // An avoid relaxes rather than play nothing, and says so.
         let avoiding = Preferences {
             avoid: Taste {

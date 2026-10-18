@@ -466,6 +466,11 @@ fn failure(err: FeedError) -> Failure {
         FeedError::EmptyPool => Failure::new(ErrorCode::SpotifyAuthRequired, detail).with_hint(
             "Sign in to Spotify and sync the library: fsonos setup does both, and running it again re-reads a library cached before the DJ played every genre.",
         ),
+        FeedError::NothingAllowed(_) => Failure::new(ErrorCode::DjPoolEmpty, detail).with_hint(
+            "fsonos dj prefs show lists the bans and the explicit setting; fsonos dj prefs unset \
+             ban.artists (or ban.albums, ban.tracks) or fsonos dj prefs set explicit true lets \
+             works back in.",
+        ),
         FeedError::NoRenderParams => Failure::new(ErrorCode::RenderParamsMissing, detail),
         FeedError::Inactive => Failure::new(ErrorCode::NoDjSession, detail),
         FeedError::UncertainEnqueue(_) => Failure::new(ErrorCode::Internal, detail).with_hint(
