@@ -102,8 +102,7 @@ impl Retirements {
                     if !stopping.load(Ordering::Acquire) {
                         let _ = subscriber.unsubscribe(&want, &sid);
                     }
-                })
-            {
+                }) {
                 Ok(thread) => self.active.push(Retiring { lease, thread }),
                 Err(error) => {
                     tracing::warn!(%error, "cannot retire old lease; subscription will expire");

@@ -40,10 +40,18 @@ fn released_leases_can_be_recreated_while_their_old_sids_wait_for_cleanup() {
             let player = player.clone();
             assert!(!old.contains(&event.sid));
             playback
-                .apply(&player, EventSource::RenderingControl, &event, Instant::now())
+                .apply(
+                    &player,
+                    EventSource::RenderingControl,
+                    &event,
+                    Instant::now(),
+                )
                 .unwrap();
             assert!(!f.subs.missed(&event));
-            if playback.of(&f.wants[0].player).is_some_and(|p| p.volume == Some(59)) {
+            if playback
+                .of(&f.wants[0].player)
+                .is_some_and(|p| p.volume == Some(59))
+            {
                 break;
             }
         }

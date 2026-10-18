@@ -5,7 +5,7 @@ use super::super::*;
 fn deferred(f: &mut Fixture) {
     f.subs.defer_network();
     for active in &mut f.subs.active {
-        active.renew_at = Instant::now() + Duration::from_secs(900);
+        active.renew_at = Instant::now() + Duration::from_mins(15);
     }
 }
 
@@ -52,11 +52,7 @@ fn changed_roles_queue_new_leases_and_retire_old_sids_without_blocking() {
         assert!(f.subs.hold_early(&initial));
         for _ in 0..100 {
             assert_eq!(sync(&mut f, &wants, at), Report::default());
-            assert!(
-                !f.subs.maintenance.jobs[0]
-                    .cancelled
-                    .load(Ordering::Acquire)
-            );
+            assert!(!f.subs.maintenance.jobs[0].cancelled.load(Ordering::Acquire));
         }
         assert_eq!(f.subs.pending.len(), 1);
         assert_eq!(f.provider.subscriptions.load(Ordering::Relaxed), 3);
@@ -95,11 +91,7 @@ fn removed_and_readded_requests_cannot_adopt_an_old_subscribe_response() {
     let _ = sync(&mut f, &[], at);
     let _ = sync(&mut f, std::slice::from_ref(&new), at);
     // Same Want, same deadline, same pending epoch: cancellation is permanent.
-    assert!(
-        f.subs.maintenance.jobs[0]
-            .cancelled
-            .load(Ordering::Acquire)
-    );
+    assert!(f.subs.maintenance.jobs[0].cancelled.load(Ordering::Acquire));
     for _ in 0..20 {
         let _ = f.start();
     }
@@ -134,11 +126,7 @@ fn a_reboot_forgets_old_sids_and_queues_replacement_behind_an_inflight_renewal()
         assert!(at.elapsed() < Duration::from_secs(1));
         assert_eq!(report, Report::default());
         assert!(f.subs.route(&notify(&old.sid, 1)).is_none());
-        assert!(
-            f.subs.maintenance.jobs[0]
-                .cancelled
-                .load(Ordering::Acquire)
-        );
+        assert!(f.subs.maintenance.jobs[0].cancelled.load(Ordering::Acquire));
         let wants = f.wants.clone();
         for _ in 0..100 {
             let _ = sync(&mut f, &wants, at);
