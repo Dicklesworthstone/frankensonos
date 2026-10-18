@@ -153,19 +153,36 @@ const DjSteeringRemote = (() => {
     return Object.freeze(body);
   }
 
+  // Import explicit taste settings only, never a preview's start time, seed,
+  // length or a command. A blank preview inherited live steering, not a draft.
+  function settingsOf(value) {
+    if (!object(value) || Object.keys(value).some((key) => !['mood', 'constraints'].includes(key))) {
+      fail('A rehearsal draft can contain only a mood and temporary filters.');
+    }
+    if (value.mood !== undefined && !word(value.mood)) fail('The rehearsal mood is unreadable.');
+    const constraints = constraintsOf(value.constraints);
+    if (Object.values(constraints).some((items) => Array.isArray(items)
+        && items.some((item) => typeof item === 'string' && /[\r\n]/.test(item)))) {
+      fail('A filter name containing a line break cannot be edited without changing its meaning.');
+    }
+    if (!value.mood && !Object.keys(constraints).length) fail('This rehearsal inherited live steering; there are no temporary settings to copy.');
+    return Object.freeze({ ...(value.mood ? { mood: value.mood } : {}), constraints });
+  }
+
   // A decreasing countdown and changing tracks do not mean steering changed.
   const signatureOf = (s) => JSON.stringify([s.source, s.mood, s.constraints, s.added, s.expires_at]);
 
   function model({ call, changed = () => {} }) {
     let epoch = 0, disposed = false;
     const state = { open: false, loading: false, busy: false, ready: false, zones: [], moods: [],
-      target: '', status: null, pending: null, message: '' };
+      target: '', status: null, pending: null, imported: null, edited: false, message: '' };
     const publish = () => { if (!disposed) changed(state); };
     const current = (v) => !disposed && state.open && v === epoch;
     const destination = () => state.zones.find((z) => z.target === state.target);
-    const invalidate = () => { ++epoch; state.pending = null; state.status = null; state.ready = false; state.loading = false; };
+    const invalidate = () => { ++epoch; state.pending = null; state.status = null; state.imported = null;
+      state.edited = false; state.ready = false; state.loading = false; };
 
-    async function load(preferred = null) {
+    async function load(preferred = null, settings = null) {
       if (disposed) return false;
       state.open = true;
       if (state.busy) { publish(); return false; }
@@ -178,7 +195,7 @@ const DjSteeringRemote = (() => {
         state.zones = zones; state.moods = moods;
         state.target = old && zones.some((z) => z.signature === old.signature) ? old.target : '';
         state.loading = false;
-        if (state.target) return await select(state.target);
+        if (state.target) return await select(state.target, settings);
         state.message = preferred ? 'The inspected group changed. Choose its current grouping before editing.'
           : zones.length ? 'Choose a group to read its DJ.' : 'No rooms discovered yet. Refresh after discovery.';
         return true;
@@ -188,23 +205,35 @@ const DjSteeringRemote = (() => {
       } finally { if (current(v)) { state.loading = false; publish(); } }
     }
 
-    async function openFor(zone) {
+    async function openFor(zone, settings = null) {
       if (disposed || state.busy || !zone || !word(zone.target) || !text(zone.signature)) return false;
+      if (settings !== null && state.open && (state.edited || state.pending)) {
+        state.message = 'The steering editor has an unfinished draft. Close it or refresh DJ rooms to discard that draft before importing another.';
+        publish(); return false;
+      }
+      let imported = null;
+      try { if (settings !== null) imported = settingsOf(settings); }
+      catch (error) { state.message = message(error); publish(); return false; }
       const requested = { target: zone.target, signature: zone.signature };
-      if (!await load(requested)) return false;
+      if (!await load(requested, imported)) return false;
       return state.open && state.ready && state.target === requested.target
         && destination()?.signature === requested.signature;
     }
 
-    async function select(target) {
+    async function select(target, settings = null) {
       if (disposed || !state.open || state.busy || !state.zones.some((z) => z.target === target)) return false;
       invalidate(); state.target = target; const v = epoch, zone = destination();
       state.loading = true; state.message = ''; publish();
       try {
+        // Validate against this refresh's mood catalog, and copy before I/O.
+        const imported = settings === null ? null : settingsOf(settings);
+        if (imported) requestOf(target, imported, state.moods);
         const status = statusOf(await call('djSteeringStatus', { params: { room: target } }), zone);
         if (!current(v)) return false;
-        state.status = status; state.ready = true;
-        state.message = 'Last observed DJ state. Refresh to read changes from other controllers.';
+        state.status = status; state.imported = imported; state.ready = true;
+        state.message = imported
+          ? 'Rehearsal settings loaded as an unsaved draft. Choose an expiry and review before saving. This does not reproduce the exact rehearsed playlist.'
+          : 'Last observed DJ state. Refresh to read changes from other controllers.';
         return true;
       } catch (error) { if (current(v)) state.message = message(error); return false; }
       finally { if (current(v)) { state.loading = false; publish(); } }
@@ -257,6 +286,7 @@ const DjSteeringRemote = (() => {
         }
         acknowledged = true;
         if (disposed) return true;
+        state.imported = null; state.edited = false;
         receipt = [answer.done, ...(answer.notes ?? []).map((n) => n.detail)].join(' ');
         state.message = receipt;
         if (current(v)) {
@@ -276,9 +306,14 @@ const DjSteeringRemote = (() => {
       }
     }
     function cancel() { if (!disposed && !state.busy) { state.pending = null; publish(); } }
+    function edit() {
+      if (!disposed && state.ready && !state.busy && !state.loading) {
+        state.edited = true; state.pending = null; publish();
+      }
+    }
     function close() { if (!disposed) { invalidate(); state.open = false; publish(); } }
     function dispose() { close(); disposed = true; ++epoch; }
-    return { state, load, openFor, select, review, confirm, cancel, close, dispose };
+    return { state, load, openFor, select, review, confirm, cancel, edit, close, dispose };
   }
 
   let nextId = 0;
@@ -292,6 +327,8 @@ const DjSteeringRemote = (() => {
     const refresh = button('Refresh DJ rooms', () => { void editor.load(); });
     const target = el('select', { id: `${id}-target` });
     const facts = el('div', { class: 'dj-direction-facts' });
+    const importedNote = el('p', { class: 'dj-direction-warning', hidden: true,
+      text: 'Unsaved rehearsal draft: only its mood and filters are copied. Choose an expiry, then review. The seed, start time and work list are not sent. Live choices may differ; nothing starts playing.' });
     const mood = el('select', { id: `${id}-mood` });
     const minutes = el('input', { id: `${id}-minutes`, type: 'number', min: 1, max: 10080, step: 1, placeholder: 'Until cleared' });
     const expiry = el('select', { id: `${id}-expiry` },
@@ -330,7 +367,7 @@ const DjSteeringRemote = (() => {
     });
     const clear = button('Review return to program', () => editor.review({ clear: true }));
     controls.push(review, clear);
-    let observed = null, displayedZones = null, displayedMoods = null, reviewed = null;
+    let observed = null, displayedZones = null, displayedMoods = null, reviewed = null, imported = null;
     const editor = model({ call, changed: render });
 
     function describe(c) {
@@ -388,6 +425,19 @@ const DjSteeringRemote = (() => {
           for (const [key, input] of Object.entries(filters)) input.value = (c[key] || []).join('\n');
         }
       }
+      importedNote.hidden = !state.imported;
+      if (imported !== state.imported) {
+        imported = state.imported;
+        if (imported) {
+          const c = imported.constraints;
+          mood.value = imported.mood || '';
+          energy.value = String(c.energy_bias || 0); long.checked = c.allow_long_works || false;
+          min.value = c.min_work_minutes ?? ''; max.value = c.max_work_minutes ?? '';
+          for (const [key, input] of Object.entries(filters)) input.value = (c[key] || []).join('\n');
+          // Preview hours are not a live expiry. Require an explicit choice.
+          expiry.value = 'duration'; minutes.value = '';
+        }
+      }
       minutes.disabled = !state.ready || state.busy || state.loading || expiry.value !== 'duration';
       reviewBox.hidden = !state.pending;
       if (reviewed !== state.pending) {
@@ -405,25 +455,27 @@ const DjSteeringRemote = (() => {
     }
     target.addEventListener('change', () => { void editor.select(target.value); });
     for (const input of [mood, expiry, minutes, energy, long, min, max, ...Object.values(filters)]) {
-      input.addEventListener('input', () => editor.cancel()); input.addEventListener('change', () => editor.cancel());
+      input.addEventListener('input', () => editor.edit()); input.addEventListener('change', () => editor.edit());
     }
     const field = (name, input) => el('div', {}, el('label', { for: input.id, text: name }), input);
     box.append(el('h2', { text: 'Direct this group’s DJ' }),
       el('div', { class: 'row' }, refresh, button('Close', () => { editor.close(); toggle.focus(); })),
-      field('DJ group', target), status, facts,
+      field('DJ group', target), status, importedNote, facts,
       el('p', { text: 'Edit the session below. Saving replaces its mood and extra filters. Keep the existing deadline, choose a new duration, or keep the session until cleared. Clearing returns to the program. Use DJ taste for persistent preferences across all groups.' }),
       el('div', { class: 'dj-direction-grid' }, field('Mood', mood), field('Expiry', expiry), field('New duration in minutes', minutes),
         field('Energy shift', energy), field('Allow long works', long), field('Minimum work minutes', min), field('Maximum work minutes', max)),
       filterBox, el('div', { class: 'row' }, review, clear), reviewBox);
     render(editor.state);
     return { node: el('div', { class: 'dj-direction' }, toggle, box), model: editor,
-      openFor: async (zone) => {
-        const opened = await editor.openFor(zone);
-        if (editor.state.open) { target.focus(); box.scrollIntoView({ block: 'start' }); }
+      openFor: async (zone, settings = null) => {
+        const opened = await editor.openFor(zone, settings);
+        if (editor.state.open && !editor.state.busy) {
+          (opened && settings !== null ? expiry : target).focus(); box.scrollIntoView({ block: 'start' });
+        }
         return opened;
       }, dispose: editor.dispose };
   }
-  return { routes, lists: Object.freeze(lists), zonesOf, constraintsOf, moodsOf, steeringOf, workOf, statusOf, requestOf, signatureOf, model, panel };
+  return { routes, lists: Object.freeze(lists), zonesOf, constraintsOf, moodsOf, steeringOf, workOf, statusOf, requestOf, settingsOf, signatureOf, model, panel };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = DjSteeringRemote;
@@ -442,7 +494,7 @@ if (typeof document !== 'undefined' && typeof ROUTES !== 'undefined') {
     directionRoot.append(directionPanel.node);
     document.addEventListener('fsonos:dj-edit', (event) => {
       event.preventDefault();
-      void directionPanel.openFor(event.detail);
+      void directionPanel.openFor(event.detail, event.detail?.settings ?? null);
     });
     directionMain.before(directionRoot);
   }
