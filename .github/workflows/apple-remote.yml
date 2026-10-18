@@ -1,0 +1,41 @@
+name: Native Mac remote
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/apple/**'
+      - '.github/workflows/apple-remote.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-mac-remote-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Test the full native package on Apple SDKs
+        run: swift test --package-path apps/apple -Xswiftc -warnings-as-errors
+      - name: Build and package the SwiftUI application
+        run: bash apps/apple/package-remote.sh "$RUNNER_TEMP/FrankenSonosRemote.app"
+      - name: Archive the native app and integration notes
+        run: |
+          mkdir -p "$RUNNER_TEMP/native-remote"
+          cp -R "$RUNNER_TEMP/FrankenSonosRemote.app" "$RUNNER_TEMP/native-remote/"
+          cp docs/APPLE_REMOTE.md "$RUNNER_TEMP/native-remote/"
+          uname -m > "$RUNNER_TEMP/native-remote/architecture.txt"
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/native-remote" "$RUNNER_TEMP/FrankenSonosRemote-macOS.zip"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: FrankenSonosRemote-macOS
+          path: ${{ runner.temp }}/FrankenSonosRemote-macOS.zip
+          retention-days: 14
