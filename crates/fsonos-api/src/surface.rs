@@ -836,10 +836,13 @@ impl Surface {
 
     /// Run each command of a set and fold the outcomes into one: the
     /// sentences joined, the notes merged, and `changed` true if any room
-    /// changed. A room or group whose speaker fails ([`speaker_side`]) is
-    /// noted as SKIPPED and the rest go ahead, so one offline or idle group
-    /// does not stop `pause everywhere`; the call fails when none went
-    /// ahead, or at the first failure of any other kind.
+    /// changed. A room or group whose speaker fails ([`speaker_side`]), or
+    /// that the policy refuses (a raise of a room already at its cap), is
+    /// noted as SKIPPED and the rest go ahead: one offline or idle group
+    /// does not stop `pause everywhere`, and a room at its cap does not turn
+    /// another room's change into a "denied" call that undo cannot reach.
+    /// The call fails when none went ahead, or at the first failure of any
+    /// other kind.
     fn execute_set(
         &self,
         households: &[HouseholdState],
@@ -856,7 +859,10 @@ impl Surface {
         for command in commands {
             let outcome = match self.execute_following(households, guard, command) {
                 Ok(outcome) => outcome,
-                Err(failure) if commands.len() > 1 && speaker_side(&failure) => {
+                Err(failure)
+                    if commands.len() > 1
+                        && (speaker_side(&failure) || failure.code == ErrorCode::PolicyDenied) =>
+                {
                     let room = command
                         .addressed()
                         .and_then(|id| households.iter().find_map(|h| h.player(id)))

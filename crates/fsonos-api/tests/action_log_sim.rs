@@ -7,7 +7,7 @@ use fsonos_api::plan::{
     plan_volume_set,
 };
 use fsonos_api::surface::{Surface, Survey};
-use fsonos_api::{GroupRequest, PlayRequest, VolumeRequest, ZoneRequest};
+use fsonos_api::{ErrorCode, GroupRequest, NoteCode, PlayRequest, VolumeRequest, ZoneRequest};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{ActionFilter, MemStore};
@@ -265,6 +265,55 @@ fn denied_calls_are_logged_and_not_undoable() {
     assert!(log[0].action.decision.starts_with("deny: "));
     assert_eq!(log[0].action.before_state, None);
     assert_eq!(s.undo(&Client::Cli, false).unwrap(), None);
+    sim.shutdown();
+}
+
+/// Found by guard_invariants_sim: a set the policy refuses for one room
+/// must not fail after another room changed, or that change is logged as a
+/// denial with nothing to undo.
+#[test]
+fn a_set_skips_a_room_the_policy_refuses_and_the_rest_stays_undoable() {
+    let sim = sim();
+    let lan = sim.lan();
+    let houses = now(&sim);
+    let (kitchen, office) = (id(&houses, "Kitchen"), id(&houses, "Office"));
+    // Kitchen left above the agent's cap (70), Office already at it.
+    control::set_volume(&lan, &houses, &kitchen, 90).unwrap();
+    control::set_volume(&lan, &houses, &office, 70).unwrap();
+    let s = surface(&sim);
+    let volume = |p: &PlayerId| control::volume(&lan, &houses, p).unwrap();
+    let all_to = |level| {
+        s.control_set(&agent(), "set_volume", |h| {
+            plan_volume_set(h, &volume_req("all", level))
+        })
+    };
+
+    // Kitchen comes down to the cap; Office, which may not rise, is skipped.
+    let outcome = all_to(85).unwrap();
+    assert_eq!((volume(&kitchen), volume(&office)), (70, 70));
+    assert!(
+        outcome
+            .notes
+            .iter()
+            .any(|n| n.code == NoteCode::Skipped && n.detail.starts_with("Office skipped")),
+        "{outcome:?}"
+    );
+    let log = s
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(log[0].action.decision.starts_with("clamp: "), "{log:?}");
+    assert!(log[0].action.before_state.is_some(), "{log:?}");
+    s.undo(&Client::Cli, false)
+        .unwrap()
+        .expect("Kitchen's lowering to undo");
+    assert_eq!((volume(&kitchen), volume(&office)), (90, 70));
+
+    // Every room refused: the call is denied and changes nothing.
+    control::set_volume(&lan, &houses, &kitchen, 70).unwrap();
+    let denied = all_to(85).unwrap_err();
+    assert_eq!(denied.code, ErrorCode::PolicyDenied, "{denied:?}");
+    assert_eq!((volume(&kitchen), volume(&office)), (70, 70));
     sim.shutdown();
 }
 
