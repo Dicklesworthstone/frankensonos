@@ -253,3 +253,140 @@ test('late list reads cannot resurrect a closed panel', async () => {
   assert.equal(await work, false);
   assert.equal(control.state.loaded, false);
 });
+
+// This is the actual successful SceneApplyDto wire shape: serde omits empty
+// failed/skipped/notes, rather than sending the arrays in the old fixtures.
+const applied = (extra = {}) => ({ scene: 'Evening', done: 'applied scene Evening (1 step(s))',
+  changed: true, complete: true, steps: ['Living Room plays'], ...extra });
+function responder(reply) {
+  const writes = [];
+  const control = Scenes.model({ call: async (name, options) => {
+    if (name === 'scenes') return [row()];
+    if (name === 'scene') return row();
+    writes.push({ name, ...options });
+    return structuredClone(reply);
+  } });
+  return { control, writes };
+}
+async function applyReply(reply) {
+  const f = responder(reply);
+  await f.control.refresh();
+  f.control.review('apply', 'Evening');
+  const ok = await f.control.confirm(f.control.state.pending);
+  return { ...f, ok };
+}
+
+test('production success and no-op payloads with omitted empty lists are acknowledged', async () => {
+  for (const reply of [applied(), applied({ changed: false, steps: [], done: 'Already matches' })]) {
+    const f = await applyReply(reply);
+    assert.equal(f.ok, true);
+    assert.equal(f.writes.length, 1);
+    assert.equal(f.control.state.result.done, reply.done);
+    assert.deepEqual(f.control.state.result.failed, []);
+    assert.deepEqual(f.control.state.result.skipped, []);
+    assert.deepEqual(f.control.state.result.notes, []);
+  }
+});
+
+test('partial results retain failed steps, skipped rooms and policy notes verbatim', async () => {
+  const reply = applied({ complete: false, failed: [{ step: '<room> joins', error: 'Speaker offline' }],
+    skipped: ['Missing room left alone'], notes: [{ code: 'VOLUME_CLAMPED', detail: 'Volume capped at 30' }] });
+  const f = await applyReply(reply);
+  assert.equal(f.ok, false);
+  assert.equal(f.writes.length, 1);
+  assert.deepEqual(f.control.state.result, reply);
+  assert.match(f.control.state.message, /in part/);
+  assert.equal(Object.isFrozen(f.control.state.result.failed[0]), true);
+});
+
+test('malformed and contradictory apply acknowledgements remain uncertain, never replayed', async () => {
+  for (const patch of [{ scene: 'Elsewhere' }, { done: '' }, { steps: [42] }, { failed: null },
+    { failed: {} }, { skipped: [null] }, { notes: [{ code: 'X' }] },
+    { complete: false }, { complete: true, failed: [{ step: 'Join', error: 'Offline' }] },
+    { failed: [{ step: 'Join', error: {} }] }, { changed: false }]) {
+    const f = await applyReply(applied(patch));
+    assert.equal(f.ok, false, JSON.stringify(patch));
+    assert.equal(f.control.state.result, null);
+    assert.match(f.control.state.message, /uncertain/i);
+    assert.equal(f.control.review('apply', 'Evening'), false);
+    assert.equal(f.writes.length, 1);
+  }
+});
+
+test('closing or disposing during the exact-scene read prevents both apply and deletion', async () => {
+  for (const action of ['apply', 'delete']) for (const end of ['close', 'dispose']) {
+    const entered = deferred(), wait = deferred();
+    let writes = 0;
+    const control = Scenes.model({ call: async (name) => {
+      if (name === 'scenes') return [row()];
+      if (name === 'scene') { entered.resolve(); return wait.promise; }
+      writes++;
+      return action === 'apply' ? applied() : { deleted: 'Evening', done: 'deleted' };
+    } });
+    await control.refresh();
+    control.review(action, 'Evening');
+    const work = control.confirm(control.state.pending);
+    await entered.promise;
+    control[end]();
+    wait.resolve(row());
+    assert.equal(await work, false, `${action}/${end}`);
+    assert.equal(writes, 0, `${action}/${end}`);
+    assert.equal(control.state.writing, false);
+  }
+});
+
+test('closing after dispatch retains the result and cannot overlap a second write', async () => {
+  const entered = deferred(), wait = deferred();
+  let writes = 0;
+  const control = Scenes.model({ call: async (name) => {
+    if (name === 'scenes') return [row()];
+    if (name === 'scene') return row();
+    writes++;
+    entered.resolve();
+    return wait.promise;
+  } });
+  await control.refresh();
+  control.review('apply', 'Evening');
+  const pending = control.state.pending;
+  const work = control.confirm(pending);
+  await entered.promise;
+  control.close();
+  assert.equal(await control.refresh(), false);
+  assert.equal(await control.confirm(pending), false);
+  wait.resolve(applied());
+  assert.equal(await work, true);
+  assert.equal(control.state.result.done, applied().done);
+  assert.equal(writes, 1);
+  await control.refresh();
+  assert.equal(control.state.result.done, applied().done, 'refresh does not erase the last outcome');
+});
+
+test('blank fade and numeric coercion syntax do not silently authorize an immediate apply', async () => {
+  const f = fixture();
+  await f.control.refresh();
+  for (const value of ['', ' ', '0x10', '1e1', '+2', '00']) {
+    f.control.editFade(value);
+    assert.equal(f.control.review('apply', 'Evening'), false, value);
+  }
+  assert.deepEqual(f.writes, []);
+});
+
+test('draft edits and cancellation cannot strand an active scene-list read', async () => {
+  const wait = deferred();
+  const control = Scenes.model({ call: () => wait.promise });
+  const work = control.refresh();
+  control.editName('New name');
+  control.editFade('5');
+  control.cancel();
+  wait.resolve([row()]);
+  assert.equal(await work, true);
+  assert.equal(control.state.loading, false);
+  assert.equal(control.state.loaded, true);
+});
+
+test('map key order alone does not change a reviewed scene definition', () => {
+  const a = Scenes.sceneOf(row());
+  const b = Scenes.sceneOf(row({ volumes: { 'Kitchen@S2': 24, 'Living Room@S2': 28 },
+    mutes: { 'Kitchen@S2': false, 'Living Room@S2': false } }));
+  assert.equal(Scenes.signature(a), Scenes.signature(b));
+});
