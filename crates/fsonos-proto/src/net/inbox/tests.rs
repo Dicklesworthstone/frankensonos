@@ -20,17 +20,32 @@ fn overflow_keeps_the_prefix_then_reports_loss_without_another_notification() {
     assert_eq!(send.send(notify(0)), Ok(()));
     assert_eq!(send.send(notify(1)), Ok(()));
     assert_eq!(send.send(notify(2)), Err(SendError::Full));
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::Notify(notify(0))));
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Ok(CallbackEvent::Notify(notify(0)))
+    );
     // Even with one free slot, do not let newer events cross the loss marker.
     for seq in 3..1003 {
         assert_eq!(send.send(notify(seq)), Err(SendError::Full));
     }
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::Notify(notify(1))));
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::ResyncRequired));
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Err(RecvTimeoutError::Timeout));
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Ok(CallbackEvent::Notify(notify(1)))
+    );
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Ok(CallbackEvent::ResyncRequired)
+    );
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Err(RecvTimeoutError::Timeout)
+    );
     assert_eq!(receive.0.state.lock().unwrap().bytes, 0);
     assert_eq!(send.send(notify(1003)), Ok(()));
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::Notify(notify(1003))));
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Ok(CallbackEvent::Notify(notify(1003)))
+    );
 }
 
 #[test]
@@ -41,15 +56,24 @@ fn byte_limits_count_allocations_and_space_is_reclaimed_after_receive() {
     send.send(n).unwrap();
     assert_eq!(receive.0.state.lock().unwrap().bytes, bytes);
     assert_eq!(send.send(notify(1)), Err(SendError::Full));
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::Notify(notify(0))));
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::ResyncRequired));
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Ok(CallbackEvent::Notify(notify(0)))
+    );
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Ok(CallbackEvent::ResyncRequired)
+    );
     send.send(notify(2)).unwrap();
     let _ = receive.recv_timeout(Duration::ZERO).unwrap();
     // A tiny string backed by a large allocation must not evade the cap.
     let mut large = notify(3);
     large.properties[0].1.reserve(bytes * 2);
     assert_eq!(send.send(large), Err(SendError::Full));
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::ResyncRequired));
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Ok(CallbackEvent::ResyncRequired)
+    );
     assert_eq!(receive.0.state.lock().unwrap().bytes, 0);
 }
 
@@ -78,9 +102,18 @@ fn closure_drains_prefix_and_loss_before_reporting_disconnection() {
     send.send(notify(0)).unwrap();
     assert_eq!(send.send(notify(1)), Err(SendError::Full));
     drop(send);
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::Notify(notify(0))));
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::ResyncRequired));
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Err(RecvTimeoutError::Disconnected));
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Ok(CallbackEvent::Notify(notify(0)))
+    );
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Ok(CallbackEvent::ResyncRequired)
+    );
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Err(RecvTimeoutError::Disconnected)
+    );
     let (send, receive) = channel(1, EVENT_BACKLOG_BYTES);
     send.send(notify(0)).unwrap();
     drop(receive);
@@ -106,10 +139,19 @@ fn concurrent_producers_share_one_count_and_byte_budget() {
     assert!(state.bytes <= EVENT_BACKLOG_BYTES);
     drop(state);
     for _ in 0..32 {
-        assert!(matches!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::Notify(_))));
+        assert!(matches!(
+            receive.recv_timeout(Duration::ZERO),
+            Ok(CallbackEvent::Notify(_))
+        ));
     }
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Ok(CallbackEvent::ResyncRequired));
-    assert_eq!(receive.recv_timeout(Duration::ZERO), Err(RecvTimeoutError::Timeout));
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Ok(CallbackEvent::ResyncRequired)
+    );
+    assert_eq!(
+        receive.recv_timeout(Duration::ZERO),
+        Err(RecvTimeoutError::Timeout)
+    );
 }
 
 fn post(addr: SocketAddr, seq: u32) -> String {
@@ -130,13 +172,9 @@ fn post(addr: SocketAddr, seq: u32) -> String {
 
 #[test]
 fn real_http_overload_is_refused_and_the_open_listener_delivers_a_loss_marker() {
-    let sink = EventSink::start_with_limits(
-        "127.0.0.1:0".parse().unwrap(),
-        None,
-        2,
-        EVENT_BACKLOG_BYTES,
-    )
-    .unwrap();
+    let sink =
+        EventSink::start_with_limits("127.0.0.1:0".parse().unwrap(), None, 2, EVENT_BACKLOG_BYTES)
+            .unwrap();
     for seq in 0..2 {
         assert!(post(sink.local_addr(), seq).contains(" 200 "));
     }
@@ -145,22 +183,29 @@ fn real_http_overload_is_refused_and_the_open_listener_delivers_a_loss_marker() 
         let event = sink.recv_event(Duration::ZERO).unwrap().unwrap();
         assert_eq!(event, CallbackEvent::Notify(notify(seq)));
     }
-    assert_eq!(sink.recv_event(Duration::ZERO).unwrap(), Some(CallbackEvent::ResyncRequired));
+    assert_eq!(
+        sink.recv_event(Duration::ZERO).unwrap(),
+        Some(CallbackEvent::ResyncRequired)
+    );
     assert!(sink.recv_event(Duration::ZERO).unwrap().is_none());
     assert!(post(sink.local_addr(), 3).contains(" 200 "));
-    assert_eq!(sink.recv_or_closed(Duration::ZERO).unwrap(), Some(notify(3)));
+    assert_eq!(
+        sink.recv_or_closed(Duration::ZERO).unwrap(),
+        Some(notify(3))
+    );
 }
 
 #[test]
 fn legacy_receivers_get_an_error_for_loss_rather_than_a_silent_empty_result() {
-    let sink = EventSink::start_with_limits(
-        "127.0.0.1:0".parse().unwrap(),
-        None,
-        0,
-        EVENT_BACKLOG_BYTES,
-    )
-    .unwrap();
+    let sink =
+        EventSink::start_with_limits("127.0.0.1:0".parse().unwrap(), None, 0, EVENT_BACKLOG_BYTES)
+            .unwrap();
     assert!(post(sink.local_addr(), 0).contains(" 503 "));
-    assert!(sink.recv_or_closed(Duration::ZERO).unwrap_err().to_string().contains("overflow"));
+    assert!(
+        sink.recv_or_closed(Duration::ZERO)
+            .unwrap_err()
+            .to_string()
+            .contains("overflow")
+    );
     assert!(sink.recv_or_closed(Duration::ZERO).unwrap().is_none());
 }
