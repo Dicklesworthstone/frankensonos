@@ -234,7 +234,7 @@ public enum NativeCommand: Equatable, Sendable {
         }
     }
 
-    func receipt(_ data: Data) throws -> CommandReceipt {
+    func receipt(_ data: Data, in zone: Zone? = nil) throws -> CommandReceipt {
         switch self {
         case .scene(let scene):
             let report = try DaemonClient.decode(SceneReport.self, from: data)
@@ -244,6 +244,14 @@ public enum NativeCommand: Equatable, Sendable {
                 (report.skipped ?? []).map { "Skipped: \($0)" } + (report.notes ?? []).map(\.detail)
             return CommandReceipt(title: report.complete ? report.done : "Scene partially applied",
                                   detail: ([report.done] + lines).joined(separator: "\n"), partial: !report.complete)
+        case .djFeedback(let like):
+            // DjFeedbackDto is not OutcomeDto: it has no `changed` field.
+            struct Feedback: Decodable { let zone: String; let work: String; let composer: String; let signal: String; let done: String }
+            let report = try DaemonClient.decode(Feedback.self, from: data)
+            guard !report.done.isEmpty, !report.work.isEmpty, !report.zone.isEmpty,
+                  report.signal == (like ? "like" : "dislike"),
+                  zone == nil || report.zone == zone?.coordinatorRoom else { throw ClientError.unreadable }
+            return CommandReceipt(title: report.done, detail: report.work + "\n" + report.done)
         case .queueAdd:
             let report = try DaemonClient.decode(QueueAdded.self, from: data)
             guard report.first > 0 else { throw ClientError.unreadable }

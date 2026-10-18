@@ -209,6 +209,7 @@ public struct DaemonClient: Sendable {
     }
     /// No command is retried, redirected, queued offline, or replayed after reconnect.
     public func perform(_ command: NativeCommand, in zone: Zone) async throws -> CommandReceipt {
+        try Task.checkCancellation()
         let payload = try command.payload(in: zone)
         // Grouping/move/party depend on current topology. Re-read immediately
         // before the write; failures here are definite because nothing has
@@ -221,10 +222,11 @@ public struct DaemonClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(payload.body)
+        try Task.checkCancellation()
         do {
             let reply = try await transport.send(request)
             try Self.check(reply)
-            return try command.receipt(reply.data)
+            return try command.receipt(reply.data, in: zone)
         } catch {
             // Once handed to URLSession, even cancellation is not evidence of no effect.
             throw ClientError.uncertain(error.localizedDescription)
