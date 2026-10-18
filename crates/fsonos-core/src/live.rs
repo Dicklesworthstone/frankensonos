@@ -480,6 +480,7 @@ impl Engine {
             last_error: None,
             route_checked: Instant::now(),
         };
+        m.rec.subscriptions.defer_network();
         let mut surveys = inventory::Surveys::default();
         while !self.stop.load(Ordering::Acquire) {
             // Flush lost-event markers even when the model is quiet. The

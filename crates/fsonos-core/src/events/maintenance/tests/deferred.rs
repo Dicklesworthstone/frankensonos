@@ -252,3 +252,5 @@ fn dropping_the_owner_retires_unadopted_new_leases_without_joining() {
     );
     f.finish();
 }
+
+mod grouping;
