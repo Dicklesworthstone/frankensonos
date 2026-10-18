@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+mod early;
 mod topology;
 
 const MAX_WORKERS: usize = 4;
@@ -135,6 +136,8 @@ struct Job {
     output: Mutex<Receiver<Completion>>,
     cleanup: SyncSender<Option<Lease>>,
     finalized: bool,
+    /// An early callback for this service was dropped before SID adoption.
+    early_loss: bool,
     thread: JoinHandle<()>,
 }
 
@@ -188,6 +191,9 @@ impl Workers {
 
     fn reap(&mut self, subs: &mut Subscriptions, stopping: bool) -> Vec<(Report, Instant)> {
         self.retire.reap();
+        if !stopping {
+            self.prune_early(&mut subs.active, Instant::now());
+        }
         self.invalidate(subs);
         if stopping {
             self.cancel_all();
@@ -214,7 +220,21 @@ impl Workers {
                 };
                 if let Some(result) = result {
                     let valid = !stopping && !job.cancelled.load(Ordering::Acquire);
+                    let lossy = if job.early_loss {
+                        result.orphan(&job.plan)
+                    } else {
+                        None
+                    };
                     let (report, cleanup) = adopt(subs, &job.plan, result, valid);
+                    if report.is_some()
+                        && let Some((want, sid)) = lossy
+                        && let Some(active) = subs
+                            .active
+                            .iter_mut()
+                            .find(|active| active.want == want && active.sid == sid)
+                    {
+                        early::repair(active, Instant::now());
+                    }
                     if let Some(report) = report {
                         reports.push(report);
                     }
@@ -332,6 +352,7 @@ impl Workers {
                 output: Mutex::new(output),
                 cleanup,
                 finalized: false,
+                early_loss: false,
                 thread,
             }),
             Err(error) => {
@@ -518,61 +539,6 @@ impl Subscriptions {
 
     pub(crate) fn invalidate_renewals(&self) {
         self.maintenance.invalidate(self);
-    }
-
-    /// A new subscription can send its initial event before SUBSCRIBE returns.
-    /// Retain a bounded prefix until the corresponding SID is adopted. Known
-    /// duplicate/replayed SIDs never enter this queue.
-    pub(crate) fn hold_early(&mut self, notify: &Notify) -> bool {
-        if self.active.iter().any(|a| a.sid == notify.sid)
-            || !self.maintenance.jobs.iter().any(|job| !job.finalized)
-        {
-            return false;
-        }
-        let bytes = notify.properties.iter().fold(
-            notify.sid.len() + notify.path.len(),
-            |size, (key, value)| size.saturating_add(key.len()).saturating_add(value.len()),
-        );
-        let workers = &mut self.maintenance;
-        if workers.early.len() >= EARLY_COUNT
-            || bytes > EARLY_BYTES.saturating_sub(workers.early_bytes)
-        {
-            return false;
-        }
-        workers.early.push_back(Early {
-            notify: notify.clone(),
-            at: Instant::now(),
-            bytes,
-        });
-        workers.early_bytes += bytes;
-        true
-    }
-
-    pub(crate) fn take_early(&mut self) -> Option<Notify> {
-        let now = Instant::now();
-        let waiting = self.maintenance.jobs.iter().any(|job| !job.finalized);
-        let active = &self.active;
-        let workers = &mut self.maintenance;
-        let mut removed = 0;
-        workers.early.retain(|early| {
-            let known = active.iter().find(|a| a.sid == early.notify.sid);
-            let retain = now.saturating_duration_since(early.at) < EARLY_AGE
-                && known.map_or(waiting, |a| {
-                    super::sequence_gap(a.last_seq, early.notify.seq).is_some()
-                });
-            if !retain {
-                removed += early.bytes;
-            }
-            retain
-        });
-        workers.early_bytes -= removed;
-        let index = workers
-            .early
-            .iter()
-            .position(|early| active.iter().any(|a| a.sid == early.notify.sid))?;
-        let early = workers.early.remove(index)?;
-        workers.early_bytes -= early.bytes;
-        Some(early.notify)
     }
 }
 
