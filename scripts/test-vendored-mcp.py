@@ -44,10 +44,16 @@ def main():
         raise RuntimeError(f"vendor tests changed existing dependency pins: {sorted(missing)}")
     if (root / "Cargo.toml").read_bytes() != original_manifest or (root / "Cargo.lock").read_bytes() != original_lock:
         raise RuntimeError("the original workspace manifest or lockfile changed")
-    subprocess.run(
-        ["cargo", "test", "--locked", "-p", "fastmcp-server", "--lib", "resource_updates::tests"],
-        cwd=work, env=env, check=True,
-    )
+    for test_args in (
+        ["--lib", "resource_updates::tests"],
+        ["--lib", "http_identity::tests"],
+        ["--test", "http_native_identity"],
+        ["--no-default-features", "--test", "http_native_identity"],
+    ):
+        subprocess.run(
+            ["cargo", "test", "--locked", "-p", "fastmcp-server", *test_args],
+            cwd=work, env=env, check=True,
+        )
 
 
 if __name__ == "__main__":

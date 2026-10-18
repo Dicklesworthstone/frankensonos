@@ -21,9 +21,11 @@
 //! `fsonos serve: listening (...)`, and the connect URLs follow the ready
 //! line.
 //!
-//! Callers are identified per listener. A loopback listener's callers are
-//! local processes (`loopback-http`, which is how Tailscale Serve arrives);
-//! on any other bind (the tailnet), Tailscale names each caller by its
+//! HTTP and MCP callers are identified for each request. A loopback
+//! listener's callers are local processes (`loopback-http`). With
+//! `--tailscale-serve`, Serve's login header names a tailnet user on loopback;
+//! tagged devices without that header stay `loopback-http`. On other binds
+//! (the tailnet), Tailscale names each caller by its
 //! address (WhoIs: a login, `tag:<name>` or node name, which the house
 //! policy's `[clients]` tables apply to), and a caller it can't name is
 //! `unknown`, which the default policy keeps read-only.
@@ -185,15 +187,17 @@ fn announce_live(live: &Arc<Live>) {
     let live: Weak<Live> = Arc::downgrade(live);
     let _ = thread::Builder::new()
         .name("fsonos-live-ready".into())
-        .spawn(move || loop {
-            // Readiness can follow the last change, so recheck after a short wait too.
-            match changes.recv_timeout(Duration::from_millis(100)) {
-                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            }
-            let Some(live) = live.upgrade() else { return };
-            if announce_if_found(&live) {
-                return;
+        .spawn(move || {
+            loop {
+                // Readiness can follow the last change, so recheck after a short wait too.
+                match changes.recv_timeout(Duration::from_millis(100)) {
+                    Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+                let Some(live) = live.upgrade() else { return };
+                if announce_if_found(&live) {
+                    return;
+                }
             }
         });
 }
@@ -332,6 +336,13 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     // The local CLI's proof that it is the CLI (see crate::remote).
     let cli_token = fsonos_core::announce::clip::clip_id().context("make the CLI token")?;
     let names = tailnet_names(&tailnet);
+    // The tools share one surface across every MCP listener. The transport
+    // names each request; an absent identity must retain read-only defaults.
+    let backend = fsonos_mcp::tools::Backend::shared(Arc::clone(&surface), Client::Unknown);
+    anyhow::ensure!(
+        fsonos_mcp::tools::install(backend),
+        "the MCP backend is already installed"
+    );
     let serve = ServeOrigin::default();
     let http = start_all("HTTP API", &http_plan, |addr| {
         start_http(
@@ -344,7 +355,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         )
     })?;
     let mcp = start_all("MCP server", &mcp_plan, |addr| {
-        start_mcp(&surface, addr, &names)
+        start_mcp(addr, &names, args.tailscale_serve)
     })?;
     // One value per key: the e2e harness and scripts parse this line.
     eprintln!(
@@ -557,6 +568,30 @@ fn tailnet_names(status: &fsonos_tailscale::TailnetStatus) -> Vec<String> {
         .collect()
 }
 
+/// The same peer and Serve identity rules for the HTTP API and MCP. Each
+/// listener retains a short WhoIs cache. Local CLI credentials belong only
+/// to the HTTP API, which adds them separately in [`start_http`].
+fn listener_identity(addr: SocketAddr, names: &[String], behind_serve: bool) -> Identity {
+    let identity = if behind_serve {
+        Identity::behind_serve(listener_client(addr))
+    } else {
+        Identity::fixed(listener_client(addr))
+    };
+    if addr.ip().is_loopback() {
+        identity
+    } else {
+        let whois = fsonos_tailscale::WhoIs::default();
+        // A process on this host reaching its tailnet address is local.
+        let own = names
+            .iter()
+            .filter_map(|n| n.parse().ok())
+            .chain([addr.ip()]);
+        identity
+            .with_tailnet(move |peer| whois.resolve(peer).map(|id| id.principal()))
+            .with_own_addresses(own)
+    }
+}
+
 /// Bind the HTTP API on its own thread; returns the server and the bound
 /// address once it listens. Only the listener's own Host names are admitted
 /// (DNS-rebinding defense), and every route applies the browser rules for
@@ -572,28 +607,8 @@ fn start_http(
 ) -> anyhow::Result<(Arc<TcpServer>, SocketAddr)> {
     // Host names do not depend on the port.
     let hosts = WebPolicy::for_listener(addr, names).hosts().to_vec();
-    // Behind Tailscale Serve, its login header names the tailnet user.
-    let identity = if behind_serve {
-        Identity::behind_serve(listener_client(addr))
-    } else {
-        Identity::fixed(listener_client(addr))
-    }
-    .with_cli_token(cli_token.to_string());
-    // On the tailnet, Tailscale names each caller (see the module docs);
-    // each listener keeps its own short WhoIs cache.
-    let identity = if addr.ip().is_loopback() {
-        identity
-    } else {
-        let whois = fsonos_tailscale::WhoIs::default();
-        // A process on this host reaching its tailnet address is local.
-        let own = names
-            .iter()
-            .filter_map(|n| n.parse().ok())
-            .chain([addr.ip()]);
-        identity
-            .with_tailnet(move |peer| whois.resolve(peer).map(|id| id.principal()))
-            .with_own_addresses(own)
-    };
+    let identity =
+        listener_identity(addr, names, behind_serve).with_cli_token(cli_token.to_string());
     let (surface, names, serve) = (Arc::clone(surface), names.to_vec(), serve.clone());
     let mut config = ServerConfig::new(addr.to_string())
         .with_allowed_hosts(hosts)
@@ -675,15 +690,12 @@ struct McpStop {
 /// address once it listens, and how to stop it. Like the HTTP API, it admits
 /// only its own Host names (DNS-rebinding defense).
 fn start_mcp(
-    surface: &Arc<Surface>,
     addr: SocketAddr,
     names: &[String],
+    behind_serve: bool,
 ) -> anyhow::Result<(McpStop, SocketAddr)> {
     let hosts = WebPolicy::for_listener(addr, names).hosts().to_vec();
-    let backend = fsonos_mcp::tools::Backend::shared(Arc::clone(surface), listener_client(addr));
-    if !fsonos_mcp::tools::install(backend) {
-        anyhow::bail!("the MCP backend is already installed");
-    }
+    let identity = listener_identity(addr, names, behind_serve);
     let (bound_tx, bound_rx) = mpsc::channel();
     let thread = thread::Builder::new()
         .name("fsonos-mcp".into())
@@ -692,10 +704,12 @@ fn start_mcp(
             let result = listener_runtime().and_then(|rt| {
                 rt.block_on(async move {
                     let cx = asupersync::Cx::current().context("ambient Cx")?;
-                    let bound = fsonos_mcp::server_answering(hosts)
-                        .bind_http(&cx, addr.to_string())
-                        .await
-                        .map_err(|e| anyhow::anyhow!("bind the MCP server on {addr}: {e}"))?;
+                    let bound = fsonos_mcp::server_answering_as(hosts, move |peer, headers| {
+                        identity.of_http_parts(peer, headers)
+                    })
+                    .bind_http(&cx, addr.to_string())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("bind the MCP server on {addr}: {e}"))?;
                     let local = bound
                         .local_addr()
                         .map_err(|e| anyhow::anyhow!("MCP address: {e}"))?;
@@ -765,5 +779,50 @@ mod tests {
         assert_eq!(listener_client(at("127.0.0.1:8099")), Client::LoopbackHttp);
         assert_eq!(listener_client(at("[::1]:8099")), Client::LoopbackHttp);
         assert_eq!(listener_client(at("100.70.1.2:8099")), Client::Unknown);
+    }
+
+    #[test]
+    fn both_control_surfaces_share_serve_and_own_address_identity() {
+        let sent = vec![("Tailscale-User-Login".into(), "ada@example.com".into())];
+        for bind in ["127.0.0.1:8099", "[::1]:8099"] {
+            let addr = bind.parse().unwrap();
+            assert_eq!(
+                listener_identity(addr, &[], false).of_http_parts(addr, &sent),
+                Client::LoopbackHttp
+            );
+            assert_eq!(
+                listener_identity(addr, &[], true).of_http_parts(addr, &sent),
+                Client::Tailnet("ada@example.com".into())
+            );
+        }
+        let names = vec![
+            "controller.example.ts.net".into(),
+            "100.64.0.5".into(),
+            "fd7a:115c:a1e0::5".into(),
+        ];
+        for bind in ["100.64.0.5:8099", "[fd7a:115c:a1e0::5]:8099"] {
+            let identity = listener_identity(bind.parse().unwrap(), &names, true);
+            for peer in ["100.64.0.5:40000", "[fd7a:115c:a1e0::5]:40000"] {
+                assert_eq!(
+                    identity.of_http_parts(peer.parse().unwrap(), &sent),
+                    Client::LoopbackHttp,
+                    "local traffic to the host's own tailnet address stays local"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn multiple_mcp_listeners_bind_and_stop_independently() {
+        let first = start_mcp("127.0.0.1:0".parse().unwrap(), &[], false)
+            .expect("the first MCP listener binds");
+        let second = start_mcp("127.0.0.1:0".parse().unwrap(), &[], true)
+            .expect("a second listener does not reinstall the shared backend");
+        assert_ne!(first.1, second.1);
+        let addresses = [first.1, second.1];
+        stop_mcp(vec![first, second]);
+        for addr in addresses {
+            std::net::TcpListener::bind(addr).expect("the stopped MCP listener releases its port");
+        }
     }
 }

@@ -9,7 +9,6 @@ use fsonos_core::policy::Client;
 use crate::{tool_error, tools};
 
 /// Native MCP never grants the owner's uncapped CLI or stdio-bridge identity.
-#[cfg(test)]
 pub(crate) fn auth(caller: Client) -> AuthContext {
     let caller = match caller {
         Client::Cli | Client::McpStdio => Client::Unknown,

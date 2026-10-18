@@ -82,6 +82,7 @@ pub mod caching;
 pub mod extensions;
 mod handler;
 pub mod http_admission;
+mod http_identity;
 #[cfg(feature = "legacy-2024-11-05")]
 pub mod legacy_2024;
 #[cfg(all(not(feature = "legacy-2024-11-05"), test))]
@@ -135,6 +136,7 @@ pub use handler::{
     create_context_with_progress_and_senders, promote_legacy_prompt_messages,
     promote_legacy_resource_contents, promote_legacy_tool_content,
 };
+pub use http_identity::HttpIdentityResolver;
 pub use middleware::continuation_replay::{
     ContinuationReplayAuthority, ContinuationReplayLimits, ContinuationReplayMiddleware,
 };
@@ -3750,6 +3752,10 @@ pub struct HttpServerConfig {
     /// before anything else runs, which defeats DNS rebinding. Empty (the
     /// default) answers any host.
     pub allowed_hosts: Vec<String>,
+    /// Optional identity authority for this native listener. Raw headers and
+    /// peer addresses remain at admission; handlers receive `ctx.auth()`.
+    /// Cannot be combined with a bearer `AuthProvider` on an HTTP endpoint.
+    pub identity_resolver: Option<HttpIdentityResolver>,
     /// GET path for the exact MCP 2024-11-05 SSE stream.
     #[cfg(any(feature = "legacy-2024-11-05", test))]
     pub legacy_sse_path: String,
@@ -3820,6 +3826,7 @@ impl Default for HttpServerConfig {
             tool_input_max_bytes: HashMap::new(),
             request_capacity: 64,
             allowed_hosts: Vec::new(),
+            identity_resolver: None,
             #[cfg(any(feature = "legacy-2024-11-05", test))]
             legacy_sse_path: "/sse".to_string(),
             #[cfg(any(feature = "legacy-2024-11-05", test))]
@@ -3833,6 +3840,25 @@ impl HttpServerConfig {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Identify native HTTP callers from their accepted peer and validated
+    /// headers, before any session or handler is admitted.
+    ///
+    /// The callback's returned `AuthContext` binds both protocol eras' session
+    /// ownership. Resolver errors, malformed facts, bearer headers and JSON
+    /// credentials are refused without identity fallback. MCP requests from
+    /// in-process HTTP embeddings without native peer custody are refused.
+    #[must_use]
+    pub fn identity_resolver(
+        mut self,
+        resolve: impl Fn(SocketAddr, &[(String, String)]) -> McpResult<AuthContext>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.identity_resolver = Some(HttpIdentityResolver::new(resolve));
+        self
     }
 
     /// Sets the MCP endpoint path.
@@ -3971,6 +3997,11 @@ pub struct ServerHttpEndpoint {
 fn validate_server_http_route_configuration(
     server: &Server,
 ) -> Result<(), ServerHttpEndpointError> {
+    if server.http_config.identity_resolver.is_some() && server.auth_provider.is_some() {
+        return Err(ServerHttpEndpointError::InvalidConfiguration(
+            "native HTTP identity resolver and bearer auth provider are mutually exclusive".into(),
+        ));
+    }
     let Some(routes) = server.oauth_http_routes.as_ref() else {
         return Ok(());
     };
@@ -6062,6 +6093,15 @@ impl HttpLegacyCancellationControl {
     }
 
     fn handle(&self, cx: &Cx, request: &HttpRequest) -> Option<HttpResponse> {
+        self.handle_with_transport_authorization(cx, request, None)
+    }
+
+    fn handle_with_transport_authorization(
+        &self,
+        cx: &Cx,
+        request: &HttpRequest,
+        transport_authorization: Option<&TransportAuthorization>,
+    ) -> Option<HttpResponse> {
         let mut notification = match admit_legacy_2024_http_post(
             request,
             &self.legacy_message_path,
@@ -6087,7 +6127,9 @@ impl HttpLegacyCancellationControl {
                             .inner
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let authorization = match transport_authorization_from_http_request(request)
+                        let authorization = match transport_authorization
+                            .cloned()
+                            .map_or_else(|| transport_authorization_from_http_request(request), Ok)
                         {
                             Ok(authorization) => authorization,
                             Err(response) => return response,
@@ -7095,7 +7137,7 @@ impl BoundHttpServer {
                     Ok(accepted) => accepted,
                     Err(_) => continue,
                 };
-                let (stream, _peer_addr) = match accepted {
+                let (stream, peer_addr) = match accepted {
                     Ok(connection) => connection,
                     Err(_error) if cx.checkpoint().is_err() => break Ok(()),
                     Err(error) => {
@@ -7130,6 +7172,7 @@ impl BoundHttpServer {
                             > = Box::pin(serve_http_connection(
                                 &connection_cx,
                                 stream,
+                                peer_addr,
                                 endpoint,
                                 legacy_sessions,
                                 modern_sessions,
@@ -7141,6 +7184,7 @@ impl BoundHttpServer {
                         serve_modern_http_connection(
                             &connection_cx,
                             stream,
+                            peer_addr,
                             endpoint,
                             modern_sessions,
                             listener_shutdown,
@@ -11409,7 +11453,7 @@ fn admit_live_http_legacy_request(
         return Ok(LiveHttpLegacyIngress::Immediate(
             session
                 .cancellation
-                .handle(cx, request)
+                .handle_with_transport_authorization(cx, request, Some(transport_authorization))
                 .unwrap_or_else(HttpResponse::bad_request),
         ));
     }
@@ -11858,6 +11902,7 @@ async fn dispatch_http_request_async(
 async fn serve_http_connection(
     cx: &Cx,
     stream: AsyncTcpStream,
+    peer_addr: SocketAddr,
     endpoint: Arc<ServerHttpEndpoint>,
     legacy_sessions: LiveHttpSessionRegistry,
     modern_sessions: LiveModernHttpSessionRegistry,
@@ -11910,6 +11955,11 @@ async fn serve_http_connection(
     let transport_authorization = match h1_transport_authorization(&request) {
         Ok(authorization) => authorization,
         Err(response) => {
+            let response = if endpoint.server.http_config.identity_resolver.is_some() {
+                http_identity::rejected()
+            } else {
+                response
+            };
             let _ = send_h1_response(cx, &listener_shutdown, &mut framed, response).await;
             return;
         }
@@ -11935,6 +11985,18 @@ async fn serve_http_connection(
     }
     let request = match h1_request_to_transport(&request) {
         Ok(request) => request,
+        Err(response) => {
+            let _ = send_h1_response(cx, &listener_shutdown, &mut framed, response).await;
+            return;
+        }
+    };
+
+    let transport_authorization = match endpoint.server.resolve_native_http_identity(
+        peer_addr,
+        &request,
+        transport_authorization,
+    ) {
+        Ok(authorization) => authorization,
         Err(response) => {
             let _ = send_h1_response(cx, &listener_shutdown, &mut framed, response).await;
             return;
@@ -12192,7 +12254,17 @@ async fn serve_http_connection(
         }
     };
     let session_id = session.legacy_session_id().to_owned();
-    let response = match session.handle_async(cx, request).await {
+    let response = match session
+        .handle_with_modern_request_cancellation_and_transport_authorization_async(
+            cx,
+            request,
+            transport_authorization,
+            None,
+            false,
+            None,
+        )
+        .await
+    {
         Ok(ServerHttpEndpointResponse::LegacySse(response)) => response,
         Ok(response) => {
             let _ = send_h1_response(
@@ -12263,6 +12335,7 @@ async fn serve_http_connection(
 async fn serve_modern_http_connection(
     cx: &Cx,
     stream: AsyncTcpStream,
+    peer_addr: SocketAddr,
     endpoint: Arc<ServerHttpEndpoint>,
     modern_sessions: LiveModernHttpSessionRegistry,
     listener_shutdown: HttpListenerShutdown,
@@ -12312,6 +12385,11 @@ async fn serve_modern_http_connection(
     let transport_authorization = match h1_transport_authorization(&request) {
         Ok(authorization) => authorization,
         Err(response) => {
+            let response = if endpoint.server.http_config.identity_resolver.is_some() {
+                http_identity::rejected()
+            } else {
+                response
+            };
             let _ = send_h1_response(cx, &listener_shutdown, &mut framed, response).await;
             return;
         }
@@ -12343,6 +12421,17 @@ async fn serve_modern_http_connection(
     let is_modern_sse = request.method == HttpMethod::Post
         && request.path == endpoint.server.http_config.handler_config.base_path
         && http_request_accepts_sse(&request);
+    let transport_authorization = match endpoint.server.resolve_native_http_identity(
+        peer_addr,
+        &request,
+        transport_authorization,
+    ) {
+        Ok(authorization) => authorization,
+        Err(response) => {
+            let _ = send_h1_response(cx, &listener_shutdown, &mut framed, response).await;
+            return;
+        }
+    };
     if is_modern_sse {
         if request.header("mcp-session-id").is_some() {
             let _ = send_h1_response(
@@ -19431,7 +19520,11 @@ impl Server {
             request_id_to_u64(request.id.as_ref()),
         );
         if auth_request.has_in_band_credential_source() {
-            return Err(native_http_credential_location_rejection());
+            return Err(if self.http_config.identity_resolver.is_some() {
+                http_identity::rejected()
+            } else {
+                native_http_credential_location_rejection()
+            });
         }
         if self.auth_provider.is_some() && auth_request.transport_authorization.is_none() {
             return Err(native_http_authentication_rejection());
@@ -19444,7 +19537,18 @@ impl Server {
                 .with_budget_ceiling(budget)
                 .begin_request_scope()
                 .ok_or_else(native_http_authentication_rejection)?;
-        let admitted = self.authenticate_request_without_commit(&request_ctx, auth_request);
+        let admitted = if self.http_config.identity_resolver.is_some() {
+            if self.auth_provider.is_some() || transport_authorization.has_header() {
+                return Err(http_identity::rejected());
+            }
+            let identity = transport_authorization
+                .identity()
+                .ok_or_else(http_identity::rejected)?;
+            auth::principal_fingerprint(Some(identity))
+                .map(|fingerprint| (fingerprint, Some(identity.clone())))
+        } else {
+            self.authenticate_request_without_commit(&request_ctx, auth_request)
+        };
         Self::enforce_request_context(&request_ctx)
             .map_err(|_| native_http_authentication_rejection())?;
         admitted

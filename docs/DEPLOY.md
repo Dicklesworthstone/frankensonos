@@ -278,12 +278,13 @@ tailscale serve status
   `tailscale serve reset` clears **all** Serve config on the machine.
 - For requests from user-owned devices, Serve adds `Tailscale-User-Login` and
   `Tailscale-User-Name` headers. With `FSONOS_TAILSCALE_SERVE` set, the HTTP
-  API takes `Tailscale-User-Login` on its loopback listeners as the caller:
+  API and MCP take `Tailscale-User-Login` on their loopback listeners as the caller:
   a `[clients."<login>"]` table in `policy.toml` applies to that person, and
   the action log names them. Requests from tagged devices carry no login and
   stay `loopback-http`. Any process on the Mac that can reach the loopback
   port could send the header too, so grant a login no more than you trust
-  the Mac's own processes with. MCP over Serve is still `loopback-http`.
+  the Mac's own processes with. MCP tools, resources, subscriptions, action
+  history, and undo use that caller's policy and ownership.
 
 ### Alternative: listen on the tailnet directly
 
@@ -300,7 +301,9 @@ plain HTTP inside WireGuard. Two things to know:
   Tailscale can't name is `unknown`, which the default policy keeps
   read-only. A process on the Mac itself that calls the Mac's own tailnet
   address is `loopback-http`, as over loopback, never the owner's login.
-  Serve traffic arrives on loopback and has full control.
+  Serve traffic arrives on loopback and uses `loopback-http` unless
+  `FSONOS_TAILSCALE_SERVE` enables the caller headers described above.
+  The house policy and volume caps still apply.
 - The tailnet addresses are read once, at startup. If the daemon starts
   before Tailscale is up, it listens on loopback only and logs why; restart it
   (`launchctl kickstart -k`) once Tailscale is up. Serve avoids this.
@@ -311,9 +314,12 @@ plain HTTP inside WireGuard. Two things to know:
   daemon names Serve's callers (`FSONOS_TAILSCALE_SERVE`); it reads Serve's
   config and sends nothing through it.
 
-The MCP server stays on loopback unless `FSONOS_MCP_HTTP_ADDR` is set: one MCP
-backend serves every MCP listener with a single caller identity, so a direct
-tailnet MCP listener would share loopback's rights. Use Serve for MCP.
+The MCP server stays on loopback unless `FSONOS_MCP_HTTP_ADDR` is set.
+An explicitly configured direct tailnet MCP listener resolves each connection's
+peer through the same WhoIs rules as the HTTP API. Multiple MCP listeners share
+the live house state, while each request uses its own caller identity and MCP
+sessions remain bound to that identity. A CLI token never grants native MCP
+requests the local CLI or stdio caller's rights.
 
 ### Restrict who can reach it (tailnet policy)
 

@@ -206,14 +206,17 @@ fsonos doctor --only tailscale   # Tailscale up, the MagicDNS name, the daemon a
   `--dry-run`).
 - Run the daemon with `--tailscale-serve` (or `FSONOS_TAILSCALE_SERVE=1`)
   behind Serve: it sets Serve up at startup and trusts the login Serve passes
-  along, so each HTTP caller is named by their Tailscale login, a
+  along, so each HTTP and MCP caller is named by their Tailscale login, a
   `[clients."alice@example.com"]` table in `policy.toml` sets what that
   person's devices may do, and the action log records who did what. Without the
-  flag, HTTP callers arriving through Serve get the daemon's own loopback rights
-  (`loopback-http`), and `fsonos doctor --only tailscale` warns about it. MCP
-  through Serve (`:8443`) is always one client, `loopback-http`: narrow it with
-  `[clients."loopback-http"]`. Callers on the daemon's direct tailnet address
-  are named by Tailscale either way.
+  flag, HTTP and MCP callers arriving through Serve get the daemon's own
+  loopback rights (`loopback-http`), and `fsonos doctor --only tailscale` warns
+  about it. Direct tailnet listeners identify the actual socket peer with
+  Tailscale WhoIs. Each MCP request, session and resource subscription retains
+  its admitted caller, so concurrent agents have their own policy, action
+  history and undo ownership. Multiple MCP listeners share the same live
+  house. Native MCP never accepts the HTTP API's local CLI token as an
+  uncapped CLI or stdio identity.
 - Point an agent at it from any tailnet machine:
 
 ```bash
@@ -448,12 +451,13 @@ learned at runtime and kept locally. The full boundary is in
   sets the speaker's own timer, which pauses without a fade.
 - Spotify artists, podcast episodes and shows don't play yet; tracks, albums
   and playlists do.
-- The API and MCP server have no authentication of their own: Tailscale is the
-  boundary, and it names the HTTP API's callers (Tailscale's WhoIs on a direct
-  tailnet listener, or the login header behind Serve when the daemon runs with
-  `FSONOS_TAILSCALE_SERVE`) for the house policy's `[clients]` tables. A caller
-  Tailscale can't name, and any MCP caller off loopback, is
-  read-only.
+- The API and MCP server take their remote caller identity from Tailscale:
+  WhoIs on a direct tailnet listener, or the login header behind Serve when
+  the daemon runs with `FSONOS_TAILSCALE_SERVE`. Both apply the house policy's
+  `[clients]` tables to that caller. A peer Tailscale cannot name uses
+  `unknown` and is read-only by default. MCP resource subscriptions require
+  `events` plus the permissions needed to read the selected document; resource
+  reads apply the caller's current policy.
 
 ## FAQ
 

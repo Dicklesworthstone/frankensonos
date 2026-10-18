@@ -164,6 +164,24 @@ pub fn server_with(hosts: Vec<String>, profile: Profile) -> fastmcp_server::Serv
     configured_server(http, profile)
 }
 
+/// Build a native HTTP server whose trusted listener resolves each actual
+/// socket peer and admitted HTTP headers to a house-policy caller. The
+/// transport binds that caller to requests, sessions and subscriptions.
+/// Neither tool arguments nor JSON metadata may supply an identity.
+#[must_use]
+pub fn server_answering_as(
+    hosts: Vec<String>,
+    resolver: impl Fn(std::net::SocketAddr, &[(String, String)]) -> fsonos_core::policy::Client
+    + Send
+    + Sync
+    + 'static,
+) -> fastmcp_server::Server {
+    let mut http = fastmcp::HttpServerConfig::new()
+        .identity_resolver(move |peer, headers| Ok(identity::auth(resolver(peer, headers))));
+    http.allowed_hosts = hosts;
+    configured_server(http, Profile::Full)
+}
+
 fn configured_server(
     mut http: fastmcp::HttpServerConfig,
     profile: Profile,

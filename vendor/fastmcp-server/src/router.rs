@@ -105,19 +105,38 @@ pub enum InboundRequestTransport {
     Memory,
 }
 
-/// Opaque custody for one transport's singleton `Authorization` field.
+/// Opaque custody for one transport's authentication facts.
 ///
 /// This deliberately has no `Debug` implementation and no raw-value getter.
 /// Only server admission can convert it into an [`AuthRequest`], so extension
 /// middleware and handlers cannot observe a native transport credential.
 #[derive(Clone, Default)]
-pub(crate) struct TransportAuthorization(Option<String>);
+pub(crate) struct TransportAuthorization {
+    header: Option<String>,
+    identity: Option<fastmcp_core::AuthContext>,
+}
 
 impl TransportAuthorization {
     /// Captures an already cardinality-validated native authorization field.
     #[must_use]
     pub(crate) fn from_singleton_header(value: Option<&str>) -> Self {
-        Self(value.map(ToOwned::to_owned))
+        Self {
+            header: value.map(ToOwned::to_owned),
+            identity: None,
+        }
+    }
+
+    pub(crate) fn has_header(&self) -> bool {
+        self.header.is_some()
+    }
+
+    pub(crate) fn with_identity(mut self, identity: fastmcp_core::AuthContext) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    pub(crate) fn identity(&self) -> Option<&fastmcp_core::AuthContext> {
+        self.identity.as_ref()
     }
 
     pub(crate) fn auth_request<'a>(
@@ -129,7 +148,7 @@ impl TransportAuthorization {
         AuthRequest {
             method,
             params,
-            transport_authorization: self.0.as_deref(),
+            transport_authorization: self.header.as_deref(),
             request_id,
         }
     }
