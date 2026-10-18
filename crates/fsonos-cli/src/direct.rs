@@ -2,6 +2,7 @@
 //! acts through the same [`Surface`] the daemon's HTTP API and MCP server
 //! use, as the house policy's `cli` client.
 
+use fsonos_api::surface::dj_rehearse::{DjRehearsalDto, DjRehearseRequest};
 use fsonos_api::surface::eq::{EqDto, EqRequest, EqSetDto};
 use fsonos_api::surface::players::{PlayerDto, player_views};
 use fsonos_api::surface::queue::{QueueAddedDto, QueueDto, QueueRequest};
@@ -221,6 +222,13 @@ impl Direct {
     pub fn dj_status(&self, zone: &str) -> Result<DjStatusDto, Failure> {
         self.households()?;
         self.surface.dj_status(&Client::Cli, zone)
+    }
+
+    /// The set the DJ would play in `req.zone`'s group (`dj_rehearse`),
+    /// planned from the library, history and steering in the data directory.
+    pub fn dj_rehearse(&self, req: &DjRehearseRequest) -> Result<DjRehearsalDto, Failure> {
+        self.households()?;
+        self.surface.dj_rehearse(&Client::Cli, req)
     }
 
     /// The DJ's moods and programs, and the steering now (`dj_moods`).

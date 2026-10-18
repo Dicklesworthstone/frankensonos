@@ -79,7 +79,7 @@ can drive:
 | **Control** | Play a Spotify link (a track, album or playlist), a source URI, a Sonos favorite or a library search (your tracks, saved albums and playlists), or add a Spotify link to the queue instead, next or at the end (`fsonos play Kitchen <link> --next`); seek within a track (`fsonos seek Kitchen +30`, `0` starts it over); play a track already on the queue where it is (`fsonos queue-play Kitchen 5`); pause, resume, next, previous; room or group volume (set or ±N); mute; ungroup — these on one room, an alias or `everywhere` at once (`fsonos pause everywhere`; `fsonos ungroup everywhere` breaks every group up), logged and undone as one action; fades on demand (`fsonos volume Kitchen 20 --fade 10s` ramps, `--fade auto` lets each speaker ramp itself at its own pace, `fsonos pause Den --fade 30s` fades out first); group; a room's tone, bass, treble and loudness (`fsonos eq Kitchen --bass 2`); **move** the music to another room (handing the group over, or `--copy` across households); **party** mode for a whole household. Group commands always go to the group's coordinator |
 | **Live state** | GENA subscriptions keep a live model of every zone (transport, track, volume, shuffle and repeat), so reads need no polling, and `GET /events` streams the changes as server-sent events (`fsonos events` prints them as they happen); `fsonos queue Kitchen` lists what is queued and what plays, `fsonos history` what played |
 | **Self-healing** | A player that moved to a new address, or a group whose coordinator changed under a command, is found again and the command retried once (the answer notes `HEALED`); the live model resurveys and resubscribes on its own |
-| **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, genre, decade, keywords (which also match genres), work length or energy, and for classical music by composers and periods, any of them left out too (`--not-decade 80s`, `--not-genre pop`), for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
+| **DJ** | `dj start` (optionally `--mood`), `skip`, `stop`; picks from your Spotify liked tracks and saved albums, in any genre; a song plays on its own, and a classical work plays whole, every movement in order; varied by artist (or composer), era and time-of-day energy; `dj steer` by mood, artists, genre, decade, keywords (which also match genres), work length or energy, and for classical music by composers and periods, any of them left out too (`--not-decade 80s`, `--not-genre pop`), for a while or until cleared; `dj prefs` sets your standing favorites, avoids, default energy and pins or bans; `dj status` and `dj why` explain the pick factor by factor; `dj rehearse` plans the set it would play from any hour, with each pick's reasons and how varied each hour is, without playing anything; `dj moods` and your own `moods.toml` programs; `dj like` / `dislike`, early skips and full listens shape later picks |
 | **Scenes** | `scene save dinner` captures grouping, volumes, mutes and what each group plays, or `--from dinner.toml` writes one out (a favorite, a stream, a Spotify link or the DJ in a mood per group); `scene apply dinner` sends only the steps the house needs, `--fade 20s` ramps the volumes there, and `fsonos undo` puts it back |
 | **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright` (the mood lasts until the time-of-day program changes, then the program takes over), or a pause, a volume or a scene (ramped over the policy's fade), at times or after delays; runs with the rights of whoever added it; a restarted daemon picks its sleep timers up again |
 | **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` with offline Linux speech (FrankenTTS, espeak-ng or Piper) or macOS `say`; `chime bell`; `announce --file clip.wav`. Policy-capped playback restores the previous music and speaker state |
@@ -101,6 +101,7 @@ fsonos group Office Kitchen                       # Office joins Kitchen's group
 fsonos move "Living Room" Bedroom                 # the music follows you
 fsonos dj start "Living Room" --mood calm         # the DJ, from your own Spotify taste
 fsonos dj why "Living Room"                       # why it chose this pick
+fsonos dj rehearse "Living Room" --at 23:00       # what it would play at 23:00, and why
 fsonos scene save dinner && fsonos scene apply dinner
 fsonos sleep Bedroom 45m                          # fade out, then pause
 fsonos schedule add "weekdays 07:30" dj start Kitchen --mood bright
@@ -232,7 +233,7 @@ running `serve`):
 ```text
 reads      list_zones · list_rooms · list_players · get_zone · get_zone_state · list_favorites
            search_library · get_queue · get_play_mode · recent_plays · recent_actions · get_policy · doctor
-           dj_status · dj_moods · events · echo
+           dj_status · dj_moods · dj_rehearse · events · echo
            list_scenes · get_scene · list_sleep_timers · list_schedules · get_eq
 control    play · play_favorite · add_to_queue · play_queue · remove_from_queue · move_in_queue
            set_play_mode · pause · resume · next · previous
@@ -251,7 +252,7 @@ An agent that needs only the everyday tools can ask for fewer:
 15 most tasks use (`list_zones`, `get_zone_state`, `list_favorites`, `play`,
 `play_favorite`, `search_library`, `pause`, `resume`, `next`, `set_volume`,
 `dj_start`, `dj_steer`, `dj_skip`, `undo_last`, `events`): about 2,800 tokens of
-tool schemas instead of about 10,900 for all 66. The house policy applies the
+tool schemas instead of about 11,200 for all 67. The house policy applies the
 same either way.
 
 `events` is how an agent keeps up with the house: call it once for the newest

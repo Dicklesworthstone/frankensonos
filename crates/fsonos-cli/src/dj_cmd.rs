@@ -15,6 +15,7 @@ use clap::{ArgAction, Subcommand};
 use fsonos_api::dj::{DjMoodsDto, DjStatusDto, SteerConstraints};
 use fsonos_api::plan::{self, DjAction as PlanDj, Rooms};
 use fsonos_api::surface::dj_feedback::DjFeedback;
+use fsonos_api::surface::dj_rehearse::{DjRehearsalDto, DjRehearseRequest};
 use fsonos_api::{
     Command, DjStartRequest, DjSteerRequest, ErrorCode, Failure, ZoneDto, ZoneRequest,
 };
@@ -26,6 +27,7 @@ use crate::direct::Direct;
 use crate::remote::{Daemon, pct as encode};
 
 mod browse;
+mod rehearse;
 
 #[derive(Subcommand)]
 pub enum DjAction {
@@ -60,6 +62,10 @@ pub enum DjAction {
     Status { zone: Option<String> },
     /// Why the DJ chose the work playing: every factor and relaxation.
     Why { zone: String },
+    /// The set the DJ would play in a room's group from a given time, with
+    /// why it would pick each work and how varied each hour is. Plays,
+    /// queues and records nothing.
+    Rehearse(rehearse::RehearseArgs),
     /// The moods and time-of-day programs, and the steering in effect now.
     Moods {
         /// A room: its steering, rather than the house's program.
@@ -198,6 +204,7 @@ impl DjAction {
             self,
             Self::Status { .. }
                 | Self::Why { .. }
+                | Self::Rehearse(_)
                 | Self::Moods { .. }
                 | Self::Like { .. }
                 | Self::Dislike { .. }
@@ -216,6 +223,7 @@ impl DjAction {
             Self::Stop { .. } => "dj_stop",
             Self::Steer(_) => "dj_steer",
             Self::Status { .. } | Self::Why { .. } => "dj_status",
+            Self::Rehearse(_) => "dj_rehearse",
             Self::Moods { .. } => "dj_moods",
             Self::Like { .. } | Self::Dislike { .. } => "dj_feedback",
             Self::Prefs {
@@ -250,6 +258,7 @@ impl DjAction {
             Self::Steer(args) => ("/dj/steer", serde_json::to_value(args.request())),
             Self::Status { .. }
             | Self::Why { .. }
+            | Self::Rehearse(_)
             | Self::Moods { .. }
             | Self::Like { .. }
             | Self::Dislike { .. }
@@ -281,6 +290,7 @@ impl DjAction {
             Self::Steer(args) => plan::plan_dj_steer(rooms, &args.request()),
             Self::Status { .. }
             | Self::Why { .. }
+            | Self::Rehearse(_)
             | Self::Moods { .. }
             | Self::Like { .. }
             | Self::Dislike { .. }
@@ -311,6 +321,10 @@ pub fn read(global: &GlobalArgs, action: &DjAction) -> anyhow::Result<()> {
             let status = Source::find(global)?.status(zone)?;
             let text = why_text(&status)?;
             crate::emit(global.json, &status, |_| text.clone())
+        }
+        DjAction::Rehearse(args) => {
+            let set = Source::find(global)?.rehearse(&args.request())?;
+            crate::emit(global.json, &set, DjRehearsalDto::text)
         }
         DjAction::Moods { zone } => {
             let moods = Source::find(global)?.moods(zone.as_deref())?;
@@ -364,6 +378,13 @@ impl Source {
             .iter()
             .map(|z| self.status(&format!("{}@{}", z.coordinator_room, z.household)))
             .collect()
+    }
+
+    fn rehearse(&self, req: &DjRehearseRequest) -> Result<DjRehearsalDto, Failure> {
+        match self {
+            Self::Daemon(daemon) => daemon.post("/dj/rehearse", req),
+            Self::Direct(direct) => direct.dj_rehearse(req),
+        }
     }
 
     fn moods(&self, zone: Option<&str>) -> Result<DjMoodsDto, Failure> {

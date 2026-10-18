@@ -29,6 +29,7 @@ use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
 use fsonos_api::plan::DjAction;
 use fsonos_api::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
 use fsonos_api::surface::dj_prefs::{PrefChange, PreferencesDto, PreferredDto};
+use fsonos_api::surface::dj_rehearse::{DjRehearsal, DjRehearsalDto};
 use fsonos_api::surface::dj_sync::LibrarySyncDto;
 use fsonos_api::{ErrorCode, Failure, OutcomeDto};
 use fsonos_core::clock::Clock;
@@ -53,6 +54,7 @@ mod handover;
 pub(crate) mod prefs;
 #[cfg(test)]
 mod problem_tests;
+mod rehearsal;
 mod retry;
 pub(crate) mod saved;
 pub(crate) mod sync;
@@ -692,6 +694,23 @@ impl DjEngine for SpotifyDj {
             steering,
             state.problems.get(at.coordinator).cloned(),
         ))
+    }
+
+    fn rehearse(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        rehearsal: &DjRehearsal,
+        clock: &dyn Clock,
+    ) -> Result<DjRehearsalDto, Failure> {
+        let mut state = self.state();
+        // The pool a start builds, when no start has built it yet.
+        if state.planned {
+            state.reload_moods(self.moods_file.as_ref())?;
+        } else {
+            state.reload(store, self.moods_file.as_ref(), clock.now().timestamp())?;
+        }
+        rehearsal::rehearse(&state, at, store, rehearsal, clock)
     }
 
     fn moods(

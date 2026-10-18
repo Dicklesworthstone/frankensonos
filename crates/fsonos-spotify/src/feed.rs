@@ -36,6 +36,8 @@
 
 use std::net::IpAddr;
 
+use chrono::{DateTime, FixedOffset};
+
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::{Store, StoreError};
 use fsonos_core::{CoreError, HouseholdState, control, moving};
@@ -50,6 +52,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dj::{DjConfig, PickContext, PickReason, PlayRecord, Rng, WorkPool, pick_next};
 use crate::feedback::FeedbackModel;
+use crate::rehearse::{Rehearsed, Span, rehearse};
 use crate::steer::Steer;
 
 mod enqueue;
@@ -1149,6 +1152,55 @@ impl QueueFeed {
             })
             .map(|m| PlayRecord::at(m.uri.clone(), now))
             .collect()
+    }
+
+    /// What this feed would play from `start` over `span`, writing nothing
+    /// ([`crate::rehearse`]): planned from what a top-up reads (this
+    /// group's history with the works queued ahead counted as heard, and the
+    /// house's plays), with the steering `steering` answers at each pick's
+    /// time in place of `plan.steer`. A pool that is empty, or that the
+    /// steering and preferences keep every work of, is the error a top-up
+    /// gives.
+    pub fn rehearse<'p, S: Store + ?Sized>(
+        &self,
+        store: &S,
+        plan: Planning<'p>,
+        start: DateTime<FixedOffset>,
+        span: Span,
+        steering: &dyn Fn(DateTime<FixedOffset>) -> Option<Steer>,
+        seed: u64,
+    ) -> Result<Vec<Rehearsed<'p>>, FeedError> {
+        if plan.pool.is_empty() {
+            return Err(FeedError::EmptyPool);
+        }
+        let history = self.history(store, plan.now)?;
+        let elsewhere = self.elsewhere(store, &plan)?;
+        let ctx = PickContext {
+            history: &history,
+            elsewhere: &elsewhere,
+            now: Some(plan.now),
+            local_hour: plan.local_hour,
+            energy_target: None,
+            steer: None,
+            feedback: plan.feedback,
+        };
+        let set = rehearse(
+            plan.pool,
+            &ctx,
+            &self.config,
+            start,
+            span,
+            steering,
+            &mut Rng::new(seed),
+        );
+        if set.is_empty() {
+            let steer = steering(start);
+            return Err(plan
+                .pool
+                .why_nothing_plays(steer.as_ref(), Some(start.timestamp()))
+                .map_or(FeedError::EmptyPool, FeedError::NothingAllowed));
+        }
+        Ok(set)
     }
 
     /// What the house's other rooms played (the store's plays under other

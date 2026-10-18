@@ -1,7 +1,7 @@
 //! Spotify Web API client + the DJ engine, for whatever music the owner
 //! keeps (classical works are played whole).
 //!
-//! Fourteen concerns:
+//! Fifteen concerns:
 //!
 //! * [`client`] — a Spotify Web API client (OAuth Authorization Code + PKCE)
 //!   used **only to read the user's own library**: saved albums and liked
@@ -53,6 +53,10 @@
 //!   work for pleasant variety (spread across artists, composers, periods
 //!   and works, fit the time of day, avoid recent repeats). Pure logic,
 //!   fully testable without any network.
+//!
+//! * [`rehearse`] — the set the DJ would play from a given time, planned
+//!   offline with each work's reason and an hour-by-hour summary, writing
+//!   nothing.
 
 pub mod cache;
 pub mod classical;
@@ -69,6 +73,7 @@ pub mod genre_guess;
 pub mod genres;
 pub mod library;
 pub mod prefs;
+pub mod rehearse;
 pub mod session;
 pub mod steer;
 pub mod taste;

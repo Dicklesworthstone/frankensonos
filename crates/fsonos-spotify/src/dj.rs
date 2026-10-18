@@ -513,11 +513,7 @@ pub fn pick_next<'p>(
     }
     let allow_long =
         config.allow_long_works || steer.is_some_and(|s| s.constraints.allow_long_works);
-    let base_target = ctx
-        .energy_target
-        .or(pool.preferences.energy)
-        .or_else(|| ctx.local_hour.map(energy_target_for_hour));
-    let target = steer.map_or(base_target, |s| s.constraints.biased_target(base_target));
+    let target = energy_target(pool, ctx);
     let eligible = eligible(pool, admitted, allow_long, &recency, ctx, config);
     let weights: Vec<u64> = eligible
         .works
@@ -567,6 +563,21 @@ pub fn pick_next<'p>(
             summary,
         },
     })
+}
+
+/// The energy [`pick_next`] aims for under `ctx`: an explicit target, else
+/// the owner's preferred energy, else the time of day's, with an active
+/// mood's bias on top.
+#[must_use]
+pub fn energy_target(pool: &WorkPool, ctx: &PickContext<'_>) -> Option<u8> {
+    let base = ctx
+        .energy_target
+        .or(pool.preferences.energy)
+        .or_else(|| ctx.local_hour.map(energy_target_for_hour));
+    match ctx.steer.filter(|s| s.constraints.is_active(ctx.now)) {
+        Some(s) => s.constraints.biased_target(base),
+        None => base,
+    }
 }
 
 /// Plan `count` works ahead (to keep a queue fed); each pick sees the earlier

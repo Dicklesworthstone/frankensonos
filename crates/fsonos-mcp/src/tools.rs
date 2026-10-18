@@ -27,6 +27,7 @@ use crate::tool_error;
 
 pub mod dj_feedback;
 pub mod dj_prefs;
+pub mod dj_rehearse;
 pub mod dj_sync;
 pub mod schedules;
 

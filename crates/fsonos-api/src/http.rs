@@ -83,6 +83,7 @@ use crate::request::{
     PlayFavoriteRequest, PlayRequest, SearchPlayRequest, SearchRequest, VolumeRequest, ZoneRequest,
 };
 use crate::surface::Surface;
+use crate::surface::dj_rehearse::{DjRehearsalDto, DjRehearseRequest};
 use crate::web::WebPolicy;
 use crate::{ApiError, HealthDto, OutcomeDto, ZoneDto};
 
@@ -228,6 +229,17 @@ fn dj(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         )
         .query_schema::<DjMoodsQuery>(false)
         .response_schema::<DjMoodsDto>(200, "The moods and programs"),
+        cx.route(
+            &Op::post(
+                "/dj/rehearse",
+                "dj_rehearse",
+                DJ,
+                "The set the DJ would play in a room's zone from a given time, with each work's reason; it plays and records nothing",
+            ),
+            |s, c, req| answer(body::<DjRehearseRequest>(req).and_then(|b| s.dj_rehearse(c, &b))),
+        )
+        .request_schema::<DjRehearseRequest>(true)
+        .response_schema::<DjRehearsalDto>(200, "The rehearsed set and its hours"),
     ];
     for (path, id, summary, action) in [
         (

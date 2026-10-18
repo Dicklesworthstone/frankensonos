@@ -12,7 +12,7 @@ use fsonos_core::clock::Clock;
 use fsonos_core::store::Store;
 use fsonos_spotify::SpotifyError;
 use fsonos_spotify::classical::composer_matches;
-use fsonos_spotify::dj::{Factor, PickReason, WorkPool};
+use fsonos_spotify::dj::{Factor, PickReason, PlannedWork, WorkPool};
 use fsonos_spotify::feed::{QueueFeed, QueuedWork};
 use fsonos_spotify::library::split_artists;
 use fsonos_spotify::steer::{DjConstraints, DjSession, Moods, steering};
@@ -236,6 +236,30 @@ fn work(pool: &WorkPool, queued: &QueuedWork, queue_position: Option<u32>) -> Dj
             .filter(|&secs| secs > 0)
             .map(|secs| secs.div_ceil(60)),
         reason: reason(&queued.reason),
+    }
+}
+
+/// A work the DJ would pick (a rehearsal's), as `dj_status` shows one.
+pub fn planned(planned: &PlannedWork<'_>) -> DjWorkDto {
+    let track = planned.movements.first().map(|m| &m.track);
+    let performers = track
+        .and_then(|t| t.artist.as_deref())
+        .map_or_default(split_artists)
+        .into_iter()
+        .filter(|artist| !composer_matches(artist, &planned.work.composer))
+        .collect();
+    DjWorkDto {
+        composer: planned.work.composer.clone(),
+        title: planned.work.title.clone(),
+        performers,
+        album: track.and_then(|t| t.album.clone()),
+        movements: count(planned.movements.len()),
+        movement: None,
+        movement_title: None,
+        minutes: Some(planned.work.total_secs)
+            .filter(|&secs| secs > 0)
+            .map(|secs| secs.div_ceil(60)),
+        reason: reason(&planned.reason),
     }
 }
 

@@ -215,6 +215,7 @@ fn control_tools_are_advertised_with_their_arguments() {
         "dj_steer",
         "dj_status",
         "dj_moods",
+        "dj_rehearse",
         "announce",
     ] {
         let t = tool(name);
@@ -267,6 +268,15 @@ fn control_tools_are_advertised_with_their_arguments() {
         true,
         "{list}"
     );
+    let rehearse = tool("dj_rehearse");
+    assert_eq!(rehearse["annotations"]["readOnlyHint"], true, "{rehearse}");
+    for arg in ["zone", "works", "hours", "at", "mood", "seed"] {
+        assert!(
+            rehearse["inputSchema"]["properties"].get(arg).is_some(),
+            "dj_rehearse lacks {arg}: {rehearse}"
+        );
+    }
+    assert_eq!(rehearse["inputSchema"]["required"], json!(["zone"]));
 }
 
 #[test]

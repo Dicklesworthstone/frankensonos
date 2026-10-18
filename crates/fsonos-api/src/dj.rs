@@ -27,6 +27,7 @@ use crate::failure::{ErrorCode, Failure};
 use crate::plan::DjAction;
 use crate::surface::dj_feedback::{DjFeedback, DjFeedbackDto};
 use crate::surface::dj_prefs::{PrefChange, PreferencesDto, PreferredDto};
+use crate::surface::dj_rehearse::{DjRehearsal, DjRehearsalDto};
 use crate::surface::dj_sync::LibrarySyncDto;
 
 /// The speakers a DJ command acts on.
@@ -73,6 +74,24 @@ pub trait DjEngine: Send + Sync {
         queue_position: Option<u32>,
         clock: &dyn Clock,
     ) -> Result<DjStatusDto, Failure>;
+
+    /// The set the DJ would play in the group `at.coordinator` leads, from
+    /// `rehearsal.start` ([`crate::surface::dj_rehearse`]): planned offline
+    /// from the group's history, the house's plays and the steering at each
+    /// pick's time. It plays, queues and records nothing.
+    fn rehearse(
+        &self,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
+        rehearsal: &DjRehearsal,
+        clock: &dyn Clock,
+    ) -> Result<DjRehearsalDto, Failure> {
+        let _ = (at, store, rehearsal, clock);
+        Err(Failure::new(
+            ErrorCode::NotImplemented,
+            "this DJ cannot rehearse",
+        ))
+    }
 
     /// Every mood and time-of-day program, and the steering in effect now:
     /// in the group `at` names, else the house's program.

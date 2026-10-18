@@ -230,6 +230,7 @@ pub fn server_with(hosts: Vec<String>, profile: Profile) -> fastmcp::auto::Serve
             .tool(tools::dj_feedback::DjFeedback)
             .tool(tools::dj_prefs::DjPreferences)
             .tool(tools::dj_prefs::DjPrefer)
+            .tool(tools::dj_rehearse::DjRehearse)
             .tool(tools::dj_sync::DjSyncStatus)
             .tool(tools::dj_sync::DjSync)
             .tool(tools::schedules::FadeVolume)
