@@ -90,7 +90,7 @@ jobs:
       - name: Install the local test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes espeak-ng nodejs
+          sudo apt-get install --yes espeak-ng nodejs ffmpeg
       - name: Web shared reads and request lifecycle regressions
         run: node --test scripts/test-remote-read-requests.cjs scripts/test-remote-request-lifecycle.cjs scripts/test-remote-requests.cjs scripts/test-remote-http.cjs
       - name: Web queue client regressions
@@ -148,4 +148,7 @@ jobs:
         run: cargo test --locked -p fastmcp-protocol --lib tool_input_limit
       - name: Regression, simulator, and real Linux speech tests
         if: ${{ !cancelled() && steps.check.outcome == 'success' }}
+        # e2e_stream drives `fsonos stream` with the FFmpeg installed above.
+        env:
+          FSONOS_E2E_FFMPEG: require
         run: cargo test --locked --workspace --no-fail-fast
