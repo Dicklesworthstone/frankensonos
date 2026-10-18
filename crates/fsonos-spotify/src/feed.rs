@@ -647,9 +647,16 @@ impl QueueFeed {
     /// play on past it: seen now ([`Self::ran_dry`]), or before and the
     /// group still stopped with the queue as the feed left it, so a try that
     /// failed part-way (a top-up cut short, a play refused) is tried again.
+    /// The feed's own top-up past that end, seen part-way (a work's
+    /// movements are added one by one, and their events can arrive after
+    /// the try failed), is still the queue as the feed left it.
     fn dry(&mut self, playback: &PlayerPlayback) -> Option<u32> {
         let stopped = playback.transport == Some(fsonos_types::TransportState::Stopped);
-        let kept = playback.queue_length.is_some() && playback.queue_length == self.left_at();
+        let left = self.left_at();
+        let kept = playback.queue_length.is_some_and(|n| {
+            Some(n) == left
+                || (self.dry_end.is_some_and(|end| end < n) && left.is_some_and(|left| n < left))
+        });
         if !(stopped && kept) {
             self.dry_end = None;
         }
@@ -1896,20 +1903,35 @@ mod tests {
 
     #[test]
     fn a_dry_queue_plays_on_after_a_try_that_failed_part_way() {
+        plays_on_after_a_refused_play(&works_of(&shelf_items(1)));
+    }
+
+    /// The same when the top-up past the end is a work of several movements:
+    /// they are added one by one, and the events of those adds can reach the
+    /// feed after the player refused to play, each showing the queue part
+    /// way to its new end. They are the feed's own top-up, not a change to
+    /// the queue, and must not cost the retry.
+    #[test]
+    fn a_dry_queue_plays_on_after_a_whole_work_was_queued_but_not_played() {
+        plays_on_after_a_refused_play(&multi_movement_pool());
+    }
+
+    /// The queue runs dry while adds fail; the top-up then works but the
+    /// player refuses to play; at the next event the DJ plays on.
+    fn plays_on_after_a_refused_play(pool: &WorkPool) {
         let mut rig = Rig::new();
         let lan = rig.lan.clone();
-        let pool = works_of(&shelf_items(1));
         let mut store = MemStore::default();
         let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
-        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+        feed.start(&rig.speakers(&lan), plan(pool, MIDNIGHT), &mut store)
             .unwrap();
-        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+        rig.pump(&lan, &mut feed, plan(pool, MIDNIGHT), &mut store)
             .unwrap();
         rig.sim.upnp_fault(ROOM, "AddURIToQueue", 800).unwrap();
         let end = u32::try_from(rig.queue().len()).unwrap();
         while rig.position() < end {
             rig.next();
-            let _ = rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store);
+            let _ = rig.pump(&lan, &mut feed, plan(pool, MIDNIGHT), &mut store);
         }
         // The last track (3 minutes) ends; a longer jump would let the
         // rig's event subscription (10 minutes) lapse before the retry.
@@ -1917,13 +1939,13 @@ mod tests {
         rig.sim.clear_faults(ROOM).unwrap();
         // The top-up works this time, but the player refuses to play.
         rig.sim.upnp_fault(ROOM, "Play", 800).unwrap();
-        let _ = rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store);
+        let _ = rig.pump(&lan, &mut feed, plan(pool, MIDNIGHT), &mut store);
         assert!(
             rig.queue().len() > usize::try_from(end).unwrap(),
             "topped up"
         );
         rig.sim.clear_faults(ROOM).unwrap();
-        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+        rig.pump(&lan, &mut feed, plan(pool, MIDNIGHT), &mut store)
             .unwrap();
         let playback = control::playback(&lan, &rig.houses, &rig.coordinator).unwrap();
         assert_eq!(
