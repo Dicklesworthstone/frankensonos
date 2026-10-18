@@ -57,6 +57,16 @@ struct Fixture {
 
 impl Fixture {
     fn new(generation: u8, count: u32) -> Self {
+        let mut uris = vec![uri(999)];
+        uris.extend((1..=count).map(uri));
+        // The identical second copy is the owner's, not the DJ's to remove.
+        uris.extend((1..=count).map(uri));
+        uris.extend([uri(count + 1), uri(count + 2)]);
+        Self::queued(generation, uris, 2 * count + 2, count)
+    }
+
+    /// A room playing `uris` from its queue, at position `playing`.
+    fn queued(generation: u8, uris: Vec<String>, playing: u32, count: u32) -> Self {
         let builder = SimHousehold::builder();
         let builder = if generation == 1 {
             builder.s1([SimPlayerSpec::new("Room", SimModel::Play5Gen1)])
@@ -70,11 +80,6 @@ impl Fixture {
         let mut house = HouseholdState::default();
         house.apply_topology(&get_zone_group_state(&lan, host).unwrap());
         let params = sim.render_params(generation).unwrap();
-        let mut uris = vec![uri(999)];
-        uris.extend((1..=count).map(uri));
-        // The identical second copy is the owner's, not the DJ's to remove.
-        uris.extend((1..=count).map(uri));
-        uris.extend([uri(count + 1), uri(count + 2)]);
         for uri in &uris {
             soap::add_uri_to_queue(
                 &lan,
@@ -86,7 +91,7 @@ impl Fixture {
             .unwrap();
         }
         soap::play_from_queue(&lan, host, &coordinator).unwrap();
-        soap::seek_track(&lan, host, 2 * count + 2).unwrap();
+        soap::seek_track(&lan, host, playing).unwrap();
         soap::play(&lan, host).unwrap();
         Self {
             sim,
@@ -274,6 +279,33 @@ fn cleanup_uses_the_observed_revision_and_preserves_the_owners_copy() {
                 .state,
             TransportState::Playing
         );
+    }
+}
+
+/// The owner's copy of a song ahead of the DJ's played copy of it (9wgs).
+/// The queue alone can't tell which is the DJ's: the same queue results when
+/// the owner queues the song after the DJ's and tracks ahead come off. So a
+/// resync lets the claim go, and the trim takes off neither copy.
+#[test]
+fn a_resync_never_moves_a_played_claim_onto_the_owners_earlier_copy() {
+    for generation in [1, 2] {
+        let song = uri(1);
+        let uris = vec![song.clone(), uri(2), song.clone(), uri(3), uri(4)];
+        let f = Fixture::queued(generation, uris.clone(), 4, 1);
+        let lan = f.sim.lan();
+        let mut feed = QueueFeed::new(&f.coordinator, config(), 7);
+        feed.active = true;
+        feed.played = vec![work(3, std::slice::from_ref(&song))];
+        feed.queued = vec![work(4, &[uri(3)]), work(5, &[uri(4)])];
+        feed.playing = Some(4);
+        feed.recorded = Some((4, uri(3)));
+        feed.queue_len = Some(5);
+
+        feed.resync(&f.speakers(&lan)).unwrap();
+        feed.trim(&f.speakers(&lan)).unwrap();
+        assert_eq!(f.queue(), uris, "S{generation}: both copies stay put");
+        assert!(feed.played.is_empty(), "S{generation}: the claim is let go");
+        assert_eq!(feed.recorded, Some((4, uri(3))));
     }
 }
 

@@ -57,8 +57,11 @@ This does not make cleanup transactional with other controllers. Queue
 revisions protect the queue edit, not a concurrent source/seek change after
 preflight. Saved claims identify URI/position occurrences, not permanent queue
 item identities; identical replacements before observation cannot always be
-distinguished. Cleanup never gains permission to search another coordinator's
-queue for the same songs.
+distinguished. A played work whose tracks resynchronization finds more than
+once at or before its saved position (the owner queued the same song) loses its
+claim rather than guessing which copy is the DJ's, so cleanup leaves both.
+Cleanup never gains permission to search another coordinator's queue for the
+same songs.
 
 Seven simulator tests cover shared-verifier integration and the deliberately
 false acknowledgement fixture. Seven pure batching tests and seven additional

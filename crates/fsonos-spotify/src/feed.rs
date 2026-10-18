@@ -805,8 +805,10 @@ impl QueueFeed {
     /// back where they still are, so a copy of a movement the owner queued
     /// ahead can't capture it; a movement no longer there (removed by the
     /// owner) loses its position, and a work with nothing left on the queue
-    /// is dropped. The recorded play moves with its track. Returns the queue
-    /// as read: each item's Spotify track, if it is one.
+    /// is dropped. A played work found more than once at or before its place
+    /// lets its claim go: the other copy may be the owner's. The recorded
+    /// play moves with its track. Returns the queue as read: each item's
+    /// Spotify track, if it is one.
     fn resync<T: Transport + ?Sized>(
         &mut self,
         at: &Speakers<'_, T>,
@@ -857,12 +859,23 @@ impl QueueFeed {
                 .filter(|m| m.added)
                 .map(|m| m.uri.clone())
                 .collect();
-            let run = (cursor..queue.len()).find(|&start| {
+            let mut runs = (cursor..queue.len()).filter(|&start| {
                 start < latest
                     && added.iter().enumerate().all(|(k, uri)| {
                         queue.get(start + k).and_then(Option::as_deref) == Some(uri.as_str())
                     })
             });
+            let run = runs.next();
+            // A played work found twice at or before its place may be sitting
+            // on the owner's own copy, queued earlier (or queued later, with
+            // tracks taken off ahead since). The queue can't tell which is
+            // the DJ's, so the claim is let go and no trim takes either.
+            if played && run.is_some() && runs.next().is_some() {
+                for m in &mut work.movements {
+                    m.position = None;
+                }
+                continue;
+            }
             if let Some(start) = run {
                 for (k, m) in work.movements.iter_mut().filter(|m| m.added).enumerate() {
                     m.position = Some(place(start + k));
@@ -874,13 +887,15 @@ impl QueueFeed {
             // inserted mid-work): each where it is next found.
             for m in work.movements.iter_mut().filter(|m| m.added) {
                 let end = by(m.position).min(queue.len());
-                let found = queue
+                let mut copies = queue
                     .get(cursor..end)
-                    .and_then(|rest| {
-                        rest.iter()
-                            .position(|q| q.as_deref() == Some(m.uri.as_str()))
-                    })
-                    .map(|i| cursor + i);
+                    .unwrap_or_default()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, q)| q.as_deref() == Some(m.uri.as_str()))
+                    .map(|(i, _)| cursor + i);
+                // A played movement found twice is ambiguous the same way.
+                let found = copies.next().filter(|_| !played || copies.next().is_none());
                 m.position = found.map(place);
                 if let Some(i) = found {
                     cursor = i + 1;
