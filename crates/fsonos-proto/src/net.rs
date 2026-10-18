@@ -38,6 +38,9 @@ use std::task::Poll;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+mod inbox;
+pub use inbox::{CallbackEvent, EVENT_BACKLOG, EVENT_BACKLOG_BYTES};
+
 /// The port every player serves its UPnP control and description on.
 pub const PLAYER_PORT: u16 = 1400;
 
@@ -891,8 +894,9 @@ pub type MediaFiles = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 ///
 /// It listens on an address the players can reach (this host's LAN address,
 /// see [`Lan::local_address_toward`]; not loopback) and, like every listener
-/// here, accepts only requests whose Host is that address. Each NOTIFY is
-/// answered 200 and queued for [`EventSink::recv_timeout`]. Bind a specific
+/// here, accepts only requests whose Host is that address. Accepted NOTIFYs
+/// are answered 200; overload is answered 503 and reported by
+/// [`EventSink::recv_event`] after the retained prefix. Bind a specific
 /// address, not the wildcard: it is also the Host the players will send.
 ///
 /// Started with [`MediaFiles`] ([`EventSink::start_serving`]), it also
@@ -900,7 +904,7 @@ pub type MediaFiles = Arc<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
 /// the address they already send events to.
 pub struct EventSink {
     addr: SocketAddr,
-    events: mpsc::Receiver<Notify>,
+    events: inbox::Receiver,
     shutdown: ShutdownSignal,
     server: Option<JoinHandle<()>>,
 }
@@ -914,7 +918,16 @@ impl EventSink {
     /// [`Self::start`], also serving `media` at `GET /media/<name>` when
     /// given. Without it, a GET is refused (405) like any other non-NOTIFY.
     pub fn start_serving(bind: SocketAddr, media: Option<MediaFiles>) -> Result<Self, ProtoError> {
-        let (queue, events) = mpsc::channel::<Notify>();
+        Self::start_with_limits(bind, media, EVENT_BACKLOG, EVENT_BACKLOG_BYTES)
+    }
+
+    fn start_with_limits(
+        bind: SocketAddr,
+        media: Option<MediaFiles>,
+        count_limit: usize,
+        byte_limit: usize,
+    ) -> Result<Self, ProtoError> {
+        let (queue, events) = inbox::channel(count_limit, byte_limit);
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(SocketAddr, ShutdownSignal), String>>();
         let server = thread::Builder::new()
             .name("fsonos-gena-sink".into())
@@ -989,15 +1002,31 @@ impl EventSink {
         format!("http://{}/{}", self.addr, tag.trim_start_matches('/'))
     }
 
-    /// The next NOTIFY, waiting up to `wait`.
+    /// The next NOTIFY, waiting up to `wait`. Like a closed listener, overflow
+    /// returns `None`; stateful consumers should use [`Self::recv_event`].
     #[must_use]
     pub fn recv_timeout(&self, wait: Duration) -> Option<Notify> {
-        self.events.recv_timeout(wait).ok()
+        self.recv_or_closed(wait).ok().flatten()
     }
 
-    /// The next NOTIFY within `wait` (`Ok(None)`: none came), or an error
-    /// once the listener has stopped and will deliver nothing more.
+    /// The next NOTIFY within `wait` (`Ok(None)`: none came). A stopped
+    /// listener or overflow is an error; overflow requires full-state recovery.
+    /// Use [`Self::recv_event`] to distinguish loss without closing the sink.
     pub fn recv_or_closed(&self, wait: Duration) -> Result<Option<Notify>, ProtoError> {
+        match self.recv_event(wait)? {
+            Some(CallbackEvent::Notify(notify)) => Ok(Some(notify)),
+            Some(CallbackEvent::ResyncRequired) => Err(network(
+                "GENA sink",
+                "notification backlog overflow; full-state recovery required",
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Receive a notification or an ordered loss marker. The marker does not
+    /// close the listener and requires no subsequent network event to arrive.
+    /// Intake is bounded by [`EVENT_BACKLOG`] and [`EVENT_BACKLOG_BYTES`].
+    pub fn recv_event(&self, wait: Duration) -> Result<Option<CallbackEvent>, ProtoError> {
         match self.events.recv_timeout(wait) {
             Ok(n) => Ok(Some(n)),
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
@@ -1038,7 +1067,7 @@ fn serve_media(files: &MediaFiles, uri: &str) -> Response {
     }
 }
 
-fn accept_notify(req: &Request, queue: &mpsc::Sender<Notify>) -> Response {
+fn accept_notify(req: &Request, queue: &inbox::Sender) -> Response {
     if !matches!(&req.method, Method::Extension(m) if m.eq_ignore_ascii_case("NOTIFY")) {
         return Response::new(405, "Method Not Allowed", Vec::new());
     }
@@ -1054,15 +1083,16 @@ fn accept_notify(req: &Request, queue: &mpsc::Sender<Notify>) -> Response {
     };
     let seq = header("SEQ").and_then(|s| s.parse().ok()).unwrap_or(0);
     match gena::parse_propertyset(&String::from_utf8_lossy(&req.body)) {
-        Ok(properties) => {
-            let _ = queue.send(Notify {
-                sid,
-                seq,
-                path: req.uri.clone(),
-                properties,
-            });
-            Response::new(200, "OK", Vec::new())
-        }
+        Ok(properties) => match queue.send(Notify {
+            sid,
+            seq,
+            path: req.uri.clone(),
+            properties,
+        }) {
+            Ok(()) => Response::new(200, "OK", Vec::new()),
+            Err(_) => Response::new(503, "Service Unavailable", Vec::new())
+                .with_header("Retry-After", "1"),
+        },
         Err(_) => Response::new(400, "Bad Request", Vec::new()),
     }
 }
