@@ -183,3 +183,117 @@ test('diagnostics are embedded before navigation and searchable in Activity with
     for (const forbidden of ['authorization', 'password', 'cookie', 'http://', 'https://', 'innerhtml', 'eval(']) assert.ok(!source.includes(forbidden), forbidden);
   }
 });
+
+const policy = (extra = {}) => ({ you: 'listener@example.test', you_are_capped: true, quiet_hours_now: true,
+  defaults: { max_volume: 70, max_step: 20, fade_secs: 0 },
+  quiet_hours: { start: '22:00', end: '07:00', max_volume: 25 },
+  rooms: [{ room: 'Study@S1', max_volume: 40 }, { room: 'Study@S2', max_step: 0 }],
+  clients: [{ client: 'listener@example.test', allow: ['read', 'set_volume'], deny: ['dj_start'], capped: true },
+    { client: 'no-tools', allow: [], deny: [] }, { client: 'default-rules', deny: [], capped: false }], ...extra });
+
+test('policy snapshots keep authoritative caller and house-clock flags without browser inference', () => {
+  const raw = policy({ you: 'cli', you_are_capped: true });
+  const checked = D.policyOf(raw); assert.equal(checked.you_are_capped, true, 'CLI name does not imply uncapped');
+  assert.equal(checked.quiet_hours_now, true); assert.equal(checked.quiet_hours.start, '22:00');
+  raw.rooms[0].max_volume = 99; raw.clients[0].allow.push('later');
+  assert.equal(checked.rooms[0].max_volume, 40); assert.equal(checked.clients[0].allow.length, 2);
+  assert.throws(() => checked.clients[0].deny.push('mutated'));
+  assert.equal(D.policyOf(policy({ you: 'mcp-stdio', you_are_capped: false })).you_are_capped, false);
+});
+
+test('missing and explicitly empty allow lists remain distinct and optional caps inherit', () => {
+  const checked = D.policyOf(policy());
+  assert.deepEqual(checked.clients[1].allow, []); assert.equal(checked.clients[1].capped, null);
+  assert.equal(checked.clients[2].allow, null); assert.equal(checked.clients[2].capped, false);
+  assert.equal(checked.rooms[0].max_step, null); assert.equal(checked.rooms[1].max_step, 0);
+  const quietless = policy({ quiet_hours_now: false }); delete quietless.quiet_hours;
+  assert.equal(D.policyOf(quietless).quiet_hours, null);
+});
+
+test('policy admits future tool names and compatible extra fields without interpreting rules', () => {
+  const raw = policy({ future_property: { anything: true }, clients: [
+    { client: 'future', allow: ['new-tool', 'future-class'], deny: ['future-denial'] }] });
+  const result = D.policyOf(raw);
+  assert.deepEqual(result.clients[0].allow, ['new-tool', 'future-class']);
+  assert.equal(result.future_property, undefined);
+  assert.deepEqual(D.policyOf(policy({ clients: [], rooms: [] })).rooms, []);
+});
+
+test('invalid or contradictory policy responses never imply unrestricted access', () => {
+  for (const bad of [null, {}, [], policy({ you: '' }), policy({ you_are_capped: 'false' }),
+    policy({ quiet_hours_now: 1 }), policy({ quiet_hours: null }),
+    policy({ defaults: { max_volume: 101, max_step: 20, fade_secs: 0 } }),
+    policy({ defaults: { max_volume: 70, max_step: -1, fade_secs: 0 } }),
+    policy({ defaults: { max_volume: 70, max_step: 20, fade_secs: 0x100000000 } }),
+    policy({ clients: [{ client: 'a', allow: 'all', deny: [] }] }),
+    policy({ clients: [{ client: 'a', deny: null }] }), policy({ clients: [{ client: 'a', deny: [], capped: 0 }] }),
+    policy({ clients: [{ client: 'a', deny: [] }, { client: 'A', deny: [] }] }),
+    policy({ rooms: [{ room: 'a', max_volume: '30' }] }), policy({ rooms: [{ room: 'a' }, { room: 'a' }] }),
+    policy({ quiet_hours: { start: '24:00', end: '07:00', max_volume: 25 } })]) assert.throws(() => D.policyOf(bad));
+});
+
+test('policy limits admit zero caps and full-day windows but bound display work', () => {
+  const checked = D.policyOf(policy({ defaults: { max_volume: 0, max_step: 0, fade_secs: 0xffffffff },
+    quiet_hours: { start: '00:00', end: '00:00', max_volume: 0 } }));
+  assert.equal(checked.defaults.max_volume, 0); assert.equal(checked.quiet_hours.max_volume, 0);
+  for (const bad of [policy({ rooms: Array(2049).fill({ room: 'x' }) }),
+    policy({ clients: Array(2049).fill({ client: 'x', deny: [] }) }),
+    policy({ clients: [{ client: 'x', allow: Array(2049).fill('tool'), deny: [] }] }),
+    policy({ clients: [{ client: 'x', allow: Array(2048).fill('x'.repeat(2048)), deny: [] }] })]) assert.throws(() => D.policyOf(bad));
+});
+
+test('policy view is lazy and independent of pending or failed hardware diagnostics', async () => {
+  const pending = deferred(), calls = [];
+  const checks = D.model({ read: () => { calls.push('doctor'); return pending.promise; } });
+  const limits = D.policyModel({ read: async () => { calls.push('policy'); return policy(); } });
+  checks.open(); limits.open(); assert.deepEqual(calls, []);
+  const work = checks.run(); assert.equal(checks.state.busy, true);
+  assert.equal(await limits.run(), true); assert.equal(checks.state.busy, true);
+  assert.equal(limits.state.report.you, 'listener@example.test'); assert.match(limits.state.message, /permissions were changed/);
+  pending.reject(new Error('No callback')); assert.equal(await work, false);
+  assert.equal(limits.state.stale, false); assert.deepEqual(calls, ['doctor', 'policy']);
+});
+
+test('policy failures retain a clearly stale last observation, then recover the actual changed caller', async () => {
+  let answer = policy(); const control = D.policyModel({ read: async () => { if (answer instanceof Error) throw answer; return answer; } });
+  control.open(); await control.run(); const before = control.state.report;
+  answer = Object.assign(new Error('Policy unavailable'), { hint: 'Ask the owner to allow get_policy.' });
+  assert.equal(await control.run(), false); assert.equal(control.state.report, before); assert.equal(control.state.stale, true);
+  assert.match(control.state.message, /get_policy/);
+  answer = policy({ you: 'unknown', quiet_hours_now: false });
+  assert.equal(await control.run(), true); assert.equal(control.state.report.you, 'unknown'); assert.equal(control.state.stale, false);
+});
+
+test('malformed policy refresh never replaces the last verified identity or limits', async () => {
+  let answer = policy(); const control = D.policyModel({ read: async () => answer }); control.open(); await control.run();
+  const before = control.state.report; answer = { you: 'new', you_are_capped: false };
+  assert.equal(await control.run(), false); assert.equal(control.state.report, before); assert.equal(control.state.stale, true);
+});
+
+for (const event of ['close', 'dispose']) test(`policy ${event} cannot adopt stale identity or dispatch an overlapping read`, async () => {
+  const pending = deferred(); let calls = 0, signal;
+  const control = D.policyModel({ read: s => { signal = s; calls++; return pending.promise; } }); control.open();
+  const work = control.run(); assert.equal(await control.run(), false);
+  control[event](); assert.equal(signal.aborted, true); control.open(); assert.equal(await control.run(), false);
+  pending.resolve(policy()); assert.equal(await work, false); assert.equal(control.state.report, null); assert.equal(calls, 1);
+});
+
+test('real localhost policy GET uses the existing route without selecting a caller or sending a body', async t => {
+  const calls = [];
+  const server = http.createServer(async (req, res) => { let body = ''; for await (const part of req) body += part;
+    calls.push([req.method, req.url, body]); res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(policy())); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const [method, route] = D.routes.diagnosticsPolicy;
+  const control = D.policyModel({ read: async signal => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}${route}`, { method, signal }); return response.json();
+  } }); control.open(); assert.equal(await control.run(), true);
+  assert.deepEqual(calls, [['GET', '/policy', '']]); assert.equal(control.state.report.quiet_hours_now, true);
+});
+
+test('policy is discoverable by denied commands, quiet hours and volume caps without a selected room', () => {
+  const tool = Studio.identify({ id: '', getAttribute: () => 'House policy and volume caps', querySelector: () => ({ textContent: 'Why volume is capped or a command is denied' }) });
+  assert.equal(tool.id, 'house-policy'); assert.equal(tool.workspace, 'activity');
+  for (const query of ['policy', 'quiet hours', 'denied', 'volume caps', 'client']) assert.equal(Studio.search(query, [tool]).length, 1);
+  assert.deepEqual(D.routes.diagnosticsPolicy, ['GET', '/policy']);
+});
