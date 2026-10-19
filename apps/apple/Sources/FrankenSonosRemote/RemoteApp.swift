@@ -15,6 +15,7 @@ import FrankenSonosKit
 
 @MainActor final class RemoteBridge: ObservableObject {
     let model: RemoteModel
+    let activity: ActivityModel
     let spotify: SpotifySetupModel
     let endpoint: String
     init(endpoint: DaemonEndpoint) {
@@ -22,6 +23,8 @@ import FrankenSonosKit
         let client = DaemonClient(endpoint: endpoint)
         model = RemoteModel(client: client)
         spotify = SpotifySetupModel(client: client)
+        activity = ActivityModel(client: client)
+        activity.onChange = { [weak self] in self?.objectWillChange.send() }
         model.onChange = { [weak self] in self?.objectWillChange.send() }
         spotify.onChange = { [weak self] in self?.objectWillChange.send() }
     }
@@ -34,17 +37,28 @@ import FrankenSonosKit
     @State private var bridge: RemoteBridge?
     @State private var problem: String?
     @State private var showSpotify = false
+    @State private var showActivity = false
+    @State private var pendingReplay: ActivityReplaySelection?
+    @State private var replayProblem: String?
 
     var body: some View {
         Group {
             if let bridge {
                 RemoteScreen(bridge: bridge) {
-                    bridge.spotify.stop(); bridge.model.stop()
-                    showSpotify = false
+                    bridge.spotify.stop(); bridge.activity.stop(); bridge.model.stop()
+                    showSpotify = false; showActivity = false; pendingReplay = nil
                     self.bridge = nil
                 }
-                .toolbar { SpotifySetupButton(bridge: bridge, isPresented: $showSpotify) }
+                .toolbar {
+                    SpotifySetupButton(bridge: bridge, isPresented: $showSpotify)
+                    ActivityButton(bridge: bridge, isPresented: $showActivity)
+                }
                 .sheet(isPresented: $showSpotify) { SpotifyPanel(bridge: bridge) }
+                .sheet(isPresented: $showActivity, onDismiss: { finishReplay(in: bridge) }) {
+                    ActivityPanel(bridge: bridge) { selection in
+                        pendingReplay = selection; showActivity = false
+                    }
+                }
             } else {
                 VStack(alignment: .leading, spacing: 20) {
                     Label("FrankenSonos", systemImage: "hifispeaker.2.fill").font(.largeTitle.bold())
@@ -65,13 +79,35 @@ import FrankenSonosKit
         }
         .frame(minWidth: 820, minHeight: 620)
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { bridge?.model.suspend(); bridge?.spotify.suspend() }
+            if phase == .background {
+                pendingReplay = nil
+                bridge?.model.suspend(); bridge?.spotify.suspend(); bridge?.activity.suspend()
+            }
             else if phase == .active {
                 bridge?.model.resume()
                 if showSpotify { bridge?.spotify.resume() }
+                if showActivity { bridge?.activity.resume() }
             }
         }
-        .onDisappear { bridge?.spotify.stop(); bridge?.model.stop() }
+        .onDisappear { pendingReplay = nil; bridge?.spotify.stop(); bridge?.activity.stop(); bridge?.model.stop() }
+        .alert("Replay was not started", isPresented: Binding(get: { replayProblem != nil }, set: { if !$0 { replayProblem = nil } })) {
+            Button("OK") { replayProblem = nil }
+        } message: { Text(replayProblem ?? "") }
+    }
+
+    private func finishReplay(in bridge: RemoteBridge) {
+        guard let selected = pendingReplay else { return }
+        pendingReplay = nil
+        do {
+            guard bridge.model.canSchedule else {
+                throw ContractError.invalid("The remote is suspended or another command is active. Review the source again.")
+            }
+            _ = try selected.validated(against: bridge.model.house?.snapshot?.zones ?? [])
+            // Wait for Activity dismissal before opening the existing review
+            // sheet. Selection is explicit and fresh command reads still run.
+            bridge.model.select(selected.zone.id)
+            bridge.model.prepare(selected.command, in: selected.zone)
+        } catch { replayProblem = error.localizedDescription }
     }
 
     private func connect() {

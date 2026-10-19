@@ -293,3 +293,62 @@ private func activityWaitForGate(_ transport: ActivityTransport) async throws {
         #expect(url.query?.contains("+") == false)
     }
 }
+
+@Test @MainActor func activityReplayRequiresAnExplicitCurrentGroup() async throws {
+    let transport = ActivityTransport(), model = try ActivityModel(client: activityClient(transport)); defer { model.stop() }
+    model.resume(); try await activityEventually { !model.loading }
+    let id = try #require(model.history.first?.id)
+    #expect(throws: ContractError.self) { try model.selectForReplay(id, as: .play, target: nil, current: [activityZone()]) }
+    #expect(throws: ContractError.self) { try model.selectForReplay(id, as: .play, target: activityZone(), current: []) }
+    #expect(await transport.writes().isEmpty)
+}
+@Test @MainActor func activityReplaySameNamedHouseholdIsChosenNotInferred() async throws {
+    let transport = ActivityTransport(), model = try ActivityModel(client: activityClient(transport)); defer { model.stop() }
+    model.resume(); try await activityEventually { !model.loading }
+    let other = Zone(household: "TEST-B", coordinatorRoom: "Studio", members: ["Studio"], transportState: "stopped")
+    let picked = try model.selectForReplay(#require(model.history.first?.id), as: .queueNext, target: other, current: [activityZone(), other])
+    #expect(picked.zone.household == "TEST-B")
+    #expect(try picked.command.payload(in: picked.zone).body["zone"] == .string("Studio@TEST-B"))
+    #expect(await transport.writes().isEmpty)
+}
+@Test @MainActor func activityReplayHandoffRejectsChangedGroupWithoutRetargeting() async throws {
+    let transport = ActivityTransport(), model = try ActivityModel(client: activityClient(transport)); defer { model.stop() }
+    model.resume(); try await activityEventually { !model.loading }
+    let picked = try model.selectForReplay(#require(model.history.first?.id), as: .play, target: activityZone(), current: [activityZone()])
+    let changed = Zone(household: "TEST-A", coordinatorRoom: "Hall", members: ["Studio", "Hall"], transportState: "playing")
+    #expect(throws: ContractError.self) { try picked.validated(against: [changed]) }
+    #expect(throws: ContractError.self) { try picked.validated(against: []) }
+    #expect(await transport.writes().isEmpty)
+}
+@Test @MainActor func activityReplayHandoffAllowsPlaybackProgressButNotMembershipChanges() async throws {
+    let transport = ActivityTransport(), model = try ActivityModel(client: activityClient(transport)); defer { model.stop() }
+    model.resume(); try await activityEventually { !model.loading }
+    let picked = try model.selectForReplay(#require(model.history.first?.id), as: .play, target: activityZone(), current: [activityZone()])
+    let paused = Zone(household: "TEST-A", coordinatorRoom: "Studio", members: ["Hall", "Studio"], transportState: "paused")
+    #expect(try picked.validated(against: [paused]).zone.sameGroup(as: paused))
+    let expanded = Zone(household: "TEST-A", coordinatorRoom: "Studio", members: ["Studio", "Hall", "Deck"], transportState: "playing")
+    #expect(throws: ContractError.self) { try picked.validated(against: [expanded]) }
+}
+@Test @MainActor func activityReplayCannotUseAStaleOrForeignSelection() async throws {
+    let transport = ActivityTransport(), model = try ActivityModel(client: activityClient(transport)); defer { model.stop() }
+    model.resume(); try await activityEventually { !model.loading }
+    #expect(throws: ContractError.self) { try model.selectForReplay(UUID(), as: .play, target: activityZone(), current: [activityZone()]) }
+    let id = try #require(model.history.first?.id)
+    model.apply(ActivityQuery(limit: 100)); try await activityEventually { !model.loading }
+    #expect(throws: ContractError.self) { try model.selectForReplay(id, as: .play, target: activityZone(), current: [activityZone()]) }
+}
+@Test @MainActor func activityAllReplayModesUseTheExistingSingleDispatchSession() async throws {
+    for mode in ActivityModel.Replay.allCases {
+        let transport = ActivityTransport(), client = try activityClient(transport), model = ActivityModel(client: client)
+        defer { model.stop() }
+        model.resume(); try await activityEventually { !model.loading }
+        let picked = try model.selectForReplay(#require(model.history.first?.id), as: mode, target: activityZone(), current: [activityZone()])
+        let session = CommandReviewSession(client: client)
+        let reviewed = try await session.prepare(picked.command, in: picked.zone)
+        #expect(await transport.writes().isEmpty)
+        _ = try await session.execute(reviewed)
+        await #expect(throws: ContractError.self) { try await session.execute(reviewed) }
+        let writes = await transport.writes()
+        #expect(writes.count == 1 && writes[0].url!.path == (mode == .play ? "/play" : "/queue"))
+    }
+}
