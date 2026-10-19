@@ -28,6 +28,15 @@ const ListeningHistoryRemote = (() => {
       || [row.title, row.artist, row.room, row.source_uri].some((s) => s?.toLocaleLowerCase().includes(needle))));
   }
 
+  function replayOf(row, parseSource) {
+    if (typeof parseSource !== 'function') throw new Error('Source replay is unavailable in this client.');
+    const item = parseSource(row.source_uri);
+    const payload = { source_uri: item.uri };
+    // Metadata is optional; never rewrite the actual source to fit a title.
+    if (row.title && [...row.title].length <= 256 && !/[\p{Cc}]/u.test(row.title)) payload.title = row.title;
+    return Object.freeze(payload);
+  }
+
   function model({ call, changed = () => {}, now = Date.now }) {
     let epoch = 0, disposed = false, active = null;
     const state = { open: false, loading: false, loaded: false, stale: false, rows: Object.freeze([]),
@@ -68,10 +77,14 @@ const ListeningHistoryRemote = (() => {
       invalidate(); state.open = false; state.stale = state.loaded; publish();
     }
     function dispose() { close(); disposed = true; }
-    return { state, refresh, window, search, close, dispose };
+    function pick(row) {
+      return !disposed && state.open && state.loaded && !state.loading && !state.stale
+        && visible(state.rows, state.query, state.room).includes(row) ? row : null;
+    }
+    return { state, refresh, window, search, close, dispose, pick };
   }
 
-  function panel({ call, el, document: doc = document }) {
+  function panel({ call, el, source = null, onreplay = null, document: doc = document }) {
     const search = el('input', { type: 'search', maxlength: 2048, 'aria-label': 'Find in loaded listening history',
       placeholder: 'Title, artist, room or source' });
     const room = el('select', { 'aria-label': 'Recorded room label' });
@@ -86,6 +99,7 @@ const ListeningHistoryRemote = (() => {
       el('div', { class: 'row' }, el('label', {}, 'Window ', limit), refresh),
       el('div', { class: 'row' }, el('label', {}, 'Find in loaded plays ', search), el('label', {}, 'Recorded room label ', room)),
       el('p', { class: 'by', text: 'Times use this browser’s local time. A recorded room label does not identify its household or today’s group. It never chooses a playback destination.' }),
+      el('p', { class: 'by', text: 'Replay uses only the recorded source: a track is not automatically expanded into its album or whole work. Choose Play now, Queue next or Queue at end in the source editor, then review the current destination. Old streams may no longer be reachable.' }),
       status, error, list);
     const details = el('details', { class: 'listening-history' }, el('summary', { text: 'Recently played · find music again' }), body);
     // The studio already categorizes music-library tools into Music & DJ.
@@ -108,10 +122,22 @@ const ListeningHistoryRemote = (() => {
       list.replaceChildren();
       for (const row of shown) {
         const when = new Date(row.played_at * 1000);
-        list.append(el('li', {}, el('strong', { text: row.title || '(Title unavailable)' }),
-          el('p', { class: 'by', text: [row.artist, row.room || 'Room no longer identified'].filter(Boolean).join(' · ') }),
+        const entry = el('li', {}, el('strong', { text: row.title || '(Title unavailable)' }),
+          el('p', { class: 'by', text: [row.artist, row.room || 'Room no longer identified'].filter(Boolean).join(' · ')}),
           el('time', { datetime: when.toISOString(), text: when.toLocaleString() }),
-          el('details', {}, el('summary', { text: 'Recorded source' }), el('code', { text: row.source_uri }))));
+          el('details', {}, el('summary', { text: 'Recorded source' }), el('code', { text: row.source_uri })));
+        if (onreplay) {
+          let payload, reason = '';
+          try { payload = replayOf(row, source); } catch (e) { reason = message(e); }
+          const review = el('button', { type: 'button', text: 'Review replay or queue',
+            disabled: !payload || !control.pick(row), onclick: () => {
+              if (!control.pick(row) || !payload) return;
+              if (onreplay(payload) === false) error.textContent = 'The source editor did not open. Use Play a link or stream.';
+            } });
+          entry.append(review);
+          if (reason) entry.append(el('p', { class: 'by', text: `Replay unavailable here: ${reason}` }));
+        }
+        list.append(entry);
       }
       if (state.loaded && !shown.length) list.append(el('li', { text: state.rows.length
         ? 'No loaded plays match these filters. A larger window may include more music.'
@@ -131,11 +157,16 @@ const ListeningHistoryRemote = (() => {
     render(control.state);
     return { node, model: control, dispose: () => { doc.removeEventListener('visibilitychange', closeWhenHidden); control.dispose(); } };
   }
-  return { routes, limits, playsOf, visible, model, panel };
+  return { routes, limits, playsOf, visible, replayOf, model, panel };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = ListeningHistoryRemote;
 else {
   Object.assign(ROUTES, ListeningHistoryRemote.routes);
-  const listeningPanel = ListeningHistoryRemote.panel({ call, el });
+  const listeningPanel = ListeningHistoryRemote.panel({ call, el,
+    source: SourcePlayerRemote.source,
+    onreplay: (payload) => !document.dispatchEvent(new CustomEvent('fsonos:source-review', {
+      detail: payload, cancelable: true,
+    })),
+  });
   document.getElementById('households')?.before(listeningPanel.node);
 }

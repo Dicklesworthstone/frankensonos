@@ -52,6 +52,21 @@ const SourcePlayerRemote = (() => {
     return Object.freeze({ uri, kind: 'stream', container: false });
   }
 
+  // Import only a source and an optional display title. A historical room,
+  // queue position or action must never implicitly select the next command.
+  function offeredSource(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.keys(value).some((key) => !['source_uri', 'title'].includes(key))) {
+      throw new Error('The source handoff is incomplete or contains a playback destination.');
+    }
+    const item = source(value.source_uri);
+    if (value.title !== undefined && (typeof value.title !== 'string'
+        || [...value.title].length > MAX_TITLE || /[\p{Cc}]/u.test(value.title))) {
+      throw new Error('The source display title is invalid.');
+    }
+    return Object.freeze({ input: item.uri, title: value.title?.trim() || '' });
+  }
+
   function groups(value) {
     if (!Array.isArray(value)) throw new Error('The room list is unreadable. Refresh rooms.');
     const seen = new Set();
@@ -152,6 +167,31 @@ const SourcePlayerRemote = (() => {
       invalidate(); state[field] = value; state.message = ''; publish(); return true;
     }
 
+    async function offer(value) {
+      if (disposed) return false;
+      let incoming;
+      try { incoming = offeredSource(value); }
+      catch (error) { state.message = problem(error); publish(); return false; }
+      state.open = true;
+      if (state.writing || state.reading || state.pending || state.input.trim() || state.title.trim()) {
+        state.message = 'Finish the current source action, or explicitly clear its draft before importing another source.';
+        publish(); return false;
+      }
+      invalidate(); state.input = incoming.input; state.title = incoming.title;
+      state.target = ''; state.mode = 'play';
+      // Refresh only the selectable destinations. Review and confirmation remain
+      // separate user actions, and share the existing write coordination lane.
+      return refresh();
+    }
+
+    function clearDraft() {
+      if (disposed || state.writing) return false;
+      invalidate(); state.input = ''; state.title = ''; state.target = ''; state.mode = 'play';
+      state.message = 'Source draft cleared. No playback command was sent.';
+      // A previous uncertain outcome is still useful evidence, not erased here.
+      publish(); return true;
+    }
+
     async function inspect(group, mode) {
       const fresh = groups(await call('zones'));
       if (!fresh.some((entry) => entry.signature === group.signature)) throw new Error('The destination group changed. Refresh rooms and review again.');
@@ -224,7 +264,7 @@ const SourcePlayerRemote = (() => {
       return accepted;
     }
 
-    return { state, refresh, edit, review, confirm,
+    return { state, refresh, edit, review, confirm, offer, clearDraft,
       cancel() { if (!state.writing && !disposed) { invalidate(); state.message = ''; publish(); } },
       close() { state.open = false; invalidate(); state.message = ''; publish(); },
       dispose() { disposed = true; state.open = false; invalidate(); },
@@ -240,13 +280,14 @@ const SourcePlayerRemote = (() => {
     const title = el('input', { type: 'text', 'aria-label': 'Optional display title', placeholder: 'Optional display title', maxlength: MAX_TITLE });
     const refresh = el('button', { type: 'button', text: 'Refresh rooms' });
     const review = el('button', { type: 'button', text: 'Review playback' });
+    const clear = el('button', { type: 'button', text: 'Clear source draft' });
     const message = el('p', { role: 'status', 'aria-live': 'polite' });
     const result = el('p', { role: 'status', 'aria-live': 'polite' });
     const consent = el('div', { class: 'source-review', hidden: true });
     const details = el('details', { class: 'zone source-player' }, el('summary', { text: 'Play a link or stream' }),
       el('div', {}, el('p', { text: 'Play a Spotify track, album or playlist without syncing it first, or send a direct audio stream to the speakers.' }),
         el('label', {}, 'Destination ', target), el('label', {}, 'Source ', input), el('label', {}, 'Title ', title), el('label', {}, 'Action ', mode),
-        el('div', { class: 'row' }, refresh, review), message, consent, result));
+        el('div', { class: 'row' }, refresh, review, clear), message, consent, result));
     const node = el('section', { class: 'scenes', 'aria-label': 'Play a link or stream' }, details);
     let shownGroups = null, shownReview = null, confirmButton = null;
     const control = model({ call, execute, changed: render });
@@ -261,6 +302,7 @@ const SourcePlayerRemote = (() => {
       review.textContent = state.mode === 'play' ? 'Review playback' : 'Review queue addition';
       for (const [field, element] of [['input', input], ['title', title]]) if (element.value !== state[field]) element.value = state[field];
       for (const element of [target, input, title, mode]) element.disabled = state.writing;
+      clear.disabled = state.writing;
       refresh.disabled = busy; review.disabled = busy || !state.target || !state.input.trim();
       message.textContent = state.message || (state.reading ? 'Reading the destination…' : '');
       result.textContent = state.result?.detail || '';
@@ -295,7 +337,12 @@ const SourcePlayerRemote = (() => {
     mode.addEventListener('change', () => control.edit('mode', mode.value));
     refresh.addEventListener('click', () => { void control.refresh(); });
     review.addEventListener('click', () => { void control.review(); });
-    details.addEventListener('toggle', () => { if (details.open) void control.refresh(); else control.close(); });
+    clear.addEventListener('click', () => control.clearDraft());
+    details.addEventListener('toggle', (event) => {
+      if (event && event.target !== details) return;
+      if (!details.open) control.close();
+      else if (!control.state.open) void control.refresh();
+    });
     const hide = () => { if (doc.hidden) control.close(); else if (details.open) void control.refresh(); };
     const win = doc.defaultView;
     const pagehide = () => control.close();
@@ -304,7 +351,15 @@ const SourcePlayerRemote = (() => {
     win?.addEventListener('pagehide', pagehide);
     win?.addEventListener('pageshow', pageshow);
     render(control.state);
-    return { node, ...control, dispose() {
+    return { node, ...control, openSource(value) {
+      const offered = control.offer(value);
+      if (control.state.open) {
+        details.open = true;
+        target.focus({ preventScroll: true });
+        node.scrollIntoView({ block: 'start' });
+      }
+      return offered;
+    }, dispose() {
       doc.removeEventListener('visibilitychange', hide);
       win?.removeEventListener('pagehide', pagehide);
       win?.removeEventListener('pageshow', pageshow);
@@ -312,22 +367,29 @@ const SourcePlayerRemote = (() => {
     } };
   }
 
-  return { source, groups, playback, queue, queued, model, panel, routes, modes, MAX_BYTES, MAX_TITLE };
+  return { source, offeredSource, groups, playback, queue, queued, model, panel, routes, modes, MAX_BYTES, MAX_TITLE };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = SourcePlayerRemote;
 else {
   Object.assign(ROUTES, SourcePlayerRemote.routes);
   const host = document.getElementById('households');
-  if (host) host.before(SourcePlayerRemote.panel({ call, el,
-    async execute(group, work) {
-      let parts = [...house.cards.values()].find((card) => groupShape(card.zone) === group.signature);
-      if (!parts) {
-        await loadZones();
-        parts = [...house.cards.values()].find((card) => groupShape(card.zone) === group.signature);
-      }
-      if (!parts || !beginAction(parts)) throw new Error('The destination changed or another playback action is busy. Refresh rooms and review again.');
-      try { return await work(); } finally { endAction(parts); }
-    },
-  }).node);
+  if (host) {
+    const sourcePanel = SourcePlayerRemote.panel({ call, el,
+      async execute(group, work) {
+        let parts = [...house.cards.values()].find((card) => groupShape(card.zone) === group.signature);
+        if (!parts) {
+          await loadZones();
+          parts = [...house.cards.values()].find((card) => groupShape(card.zone) === group.signature);
+        }
+        if (!parts || !beginAction(parts)) throw new Error('The destination changed or another playback action is busy. Refresh rooms and review again.');
+        try { return await work(); } finally { endAction(parts); }
+      },
+    });
+    host.before(sourcePanel.node);
+    document.addEventListener('fsonos:source-review', (event) => {
+      event.preventDefault();
+      void sourcePanel.openSource(event.detail);
+    });
+  }
 }
