@@ -24,6 +24,7 @@ import FrankenSonosKit
             case .favorites: favoritesPanel
             case .dj: djPanel
             case .library: libraryPanel
+            case .scenes: ScenePanel(bridge: bridge)
             }
         }
     }

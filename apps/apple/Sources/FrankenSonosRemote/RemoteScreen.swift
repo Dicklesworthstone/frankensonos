@@ -41,7 +41,7 @@ import FrankenSonosKit
                                     Spacer()
                                     Button("Dismiss") { model.dismissResult() }
                                 }
-                                Text("\(result.kind.rawValue.capitalized) • \(result.target.address)").font(.caption)
+                                Text("\(result.kind.rawValue.capitalized) • \(result.scene.map { "Scene: " + $0 + " (saved house scope)" } ?? result.target.address)").font(.caption)
                                 Text(result.detail).textSelection(.enabled)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -106,8 +106,7 @@ import FrankenSonosKit
             GroupBox("Now playing") {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(state.track?.displayTitle ?? "No reported track").font(.title2)
-                    Text([state.track?.creator, state.track?.album].compactMap { $0 }.joined(separator: " • "))
-                        .foregroundStyle(.secondary)
+                    Text([state.track?.creator, state.track?.album].compactMap { $0 }.joined(separator: " • ")).foregroundStyle(.secondary)
                     HStack {
                         Text(state.transportState.capitalized)
                         Spacer()
@@ -222,14 +221,18 @@ import FrankenSonosKit
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(review.command.title).font(.title.bold())
-            Text("\(review.zone.title) • \(review.zone.household)").font(.headline)
-            Text(review.command.explanation)
-            requestDetails
-            Divider()
-            Text("Observed: \(review.state.transportState) • \(review.state.track?.displayTitle ?? "No reported track")")
-            if let volume = review.state.volume { Text("Room level: \(volume)") }
-            if let favorite = review.favorite { Text("Favorite: \(favorite.title)") }
-            if let work = review.dj?.now { Text("DJ selection: \(work.composer) — \(work.title)") }
+            Text(review.command.savedScene != nil ? "Saved house scene — not limited to this group" : "\(review.zone.title) • \(review.zone.household)").font(.headline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(review.command.explanation)
+                    requestDetails
+                    Divider()
+                    Text("Observed: \(review.state.transportState) • \(review.state.track?.displayTitle ?? "No reported track")")
+                    if let volume = review.state.volume { Text("Room level: \(volume)") }
+                    if let favorite = review.favorite { Text("Favorite: \(favorite.title)") }
+                    if let work = review.dj?.now { Text("DJ selection: \(work.composer) — \(work.title)") }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxHeight: 360)
             Text("The current state will be checked again before sending. This review is not a reservation against another controller. A lost acknowledgement will not be retried.")
                 .font(.callout).foregroundStyle(.secondary)
             HStack {
@@ -255,6 +258,7 @@ import FrankenSonosKit
             Text("Entry \(item.position): \(item.title)")
             Text(item.uri ?? "").font(.caption.monospaced()).textSelection(.enabled)
         case .djSteer(_, let seconds): Text("Duration: \(seconds / 60) minutes")
+        case .scene(let scene): SceneDetails(scene: scene)
         default: EmptyView()
         }
     }
