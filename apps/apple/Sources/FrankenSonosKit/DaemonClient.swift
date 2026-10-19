@@ -263,3 +263,46 @@ extension DaemonClient {
         }
     }
 }
+
+extension DaemonClient {
+    /// These operations affect daemon sign-in/cache state, never speaker
+    /// playback. No redirects, retries or credentials are added by the client.
+    public func beginSpotifySignIn() async throws -> SpotifyConsent {
+        try await spotifyPost(SpotifyConsent.self, path: ["auth", "spotify", "begin"], body: [:]) {
+            _ = try $0.authorizationURL(); return $0
+        }
+    }
+
+    public func completeSpotifySignIn(_ callback: String, consent: SpotifyConsent) async throws -> SpotifySignIn {
+        let redirect = try consent.callback(callback)
+        return try await spotifyPost(SpotifySignIn.self, path: ["auth", "spotify", "complete"], body: ["redirect": redirect]) {
+            let result = try $0.validated()
+            guard result.signedIn, !result.pending, result.redirectUri == consent.redirectUri else { throw ClientError.unreadable }
+            return result
+        }
+    }
+
+    public func startSpotifyLibrarySync() async throws -> SpotifyLibrarySync {
+        try await spotifyPost(SpotifyLibrarySync.self, path: ["dj", "sync"], body: [:]) { try $0.validated() }
+    }
+
+    private func spotifyPost<T: Decodable & Sendable>(_ type: T.Type, path: [String], body: [String: String],
+                                                     validate: (T) throws -> T) async throws -> T {
+        try Task.checkCancellation()
+        var request = URLRequest(url: try endpoint.resource(path), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        try Task.checkCancellation()
+        do {
+            let reply = try await transport.send(request)
+            try Self.check(reply)
+            return try validate(Self.decode(type, from: reply.data))
+        } catch {
+            // A transport/API error may echo the callback address, code or
+            // consent state. Never publish its text, and never repeat the POST.
+            throw SpotifySetupError.uncertain
+        }
+    }
+}
