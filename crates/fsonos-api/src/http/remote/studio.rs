@@ -7,6 +7,7 @@ use super::{Ctx, Op, REMOTE, asset};
 const SCRIPT: &str = include_str!("../../remote/studio.js");
 const INSIGHTS_SCRIPT: &str = include_str!("../../remote/studio-insights.js");
 const INSIGHTS_STYLE: &str = include_str!("../../remote/studio-insights.css");
+const DIAGNOSTICS_SCRIPT: &str = include_str!("../../remote/studio-diagnostics.js");
 const STYLE: &str = include_str!("../../remote/studio.css");
 
 pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
@@ -21,7 +22,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             |_, _, _| {
                 asset(
                     "text/javascript; charset=utf-8",
-                    &format!("{SCRIPT}\n{INSIGHTS_SCRIPT}"),
+                    &format!("{DIAGNOSTICS_SCRIPT}\n{SCRIPT}\n{INSIGHTS_SCRIPT}"),
                 )
             },
         )
@@ -50,7 +51,13 @@ mod tests {
 
     #[test]
     fn studio_assets_keep_the_remote_privacy_boundary() {
-        for source in [SCRIPT, STYLE, INSIGHTS_SCRIPT, INSIGHTS_STYLE] {
+        for source in [
+            SCRIPT,
+            STYLE,
+            INSIGHTS_SCRIPT,
+            INSIGHTS_STYLE,
+            DIAGNOSTICS_SCRIPT,
+        ] {
             let lower = source.to_ascii_lowercase();
             for forbidden in [
                 "authorization",

@@ -45,6 +45,7 @@ on:
       - "scripts/test-remote-dj-steering.cjs"
       - "scripts/test-remote-history.cjs"
       - "scripts/test-remote-listening-history.cjs"
+      - "scripts/test-remote-diagnostics.cjs"
       - "scripts/test-remote-studio.cjs"
       - "scripts/test-remote-studio-insights.cjs"
       - "scripts/test-remote-requests.cjs"
@@ -132,7 +133,7 @@ jobs:
       - name: Web action history regressions
         run: node --test scripts/test-remote-history.cjs scripts/test-remote-listening-history.cjs
       - name: Listening studio and DJ insight regressions
-        run: node --test scripts/test-remote-studio.cjs scripts/test-remote-studio-insights.cjs
+        run: node --test scripts/test-remote-studio.cjs scripts/test-remote-studio-insights.cjs scripts/test-remote-diagnostics.cjs
       - name: Listening room dashboard regressions
         run: node --test scripts/test-dashboard.cjs scripts/test-dashboard-audio.cjs scripts/test-dashboard-http.cjs scripts/test-dashboard-queue.cjs scripts/test-dashboard-session.cjs scripts/test-dashboard-workspace.cjs
       - name: Install the pinned Rust toolchain
