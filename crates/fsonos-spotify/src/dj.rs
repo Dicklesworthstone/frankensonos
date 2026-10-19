@@ -894,7 +894,9 @@ fn weigh(
             known_fit(work, aim.energy).unwrap_or(aim.unknown_pm),
         );
     }
-    if let Some(last) = recency.last_energy {
+    if let Some(last) = recency.last_energy
+        && work.energy_basis() != EnergyBasis::Unknown
+    {
         apply(Factor::EnergyJump, energy_jump_pm(work.energy(), last));
     }
     if work.is_liked() {
@@ -1534,6 +1536,27 @@ mod tests {
                 .expect("the artist's songs")
         };
         let (untagged, hip_hop) = (by("Juniper Vale"), by("MC Halcyon"));
+        // Nor does it pay for the step from the last work: its energy is
+        // not known.
+        let after_hip_hop = [PlayRecord::new(
+            pool.works()[hip_hop].movements[0].track.source_uri.clone(),
+        )];
+        let recency_after = Recency::scan(&pool, &after_hip_hop, &config);
+        let mut factors = Vec::new();
+        let aim = Some(Aim::over(&pool, &all, energy_target_for_hour(23)));
+        weigh(
+            &pool,
+            untagged,
+            &recency_after,
+            aim,
+            &config,
+            None,
+            Some(&mut factors),
+        );
+        assert!(
+            factors.iter().all(|(f, _)| *f != Factor::EnergyJump),
+            "{factors:?}"
+        );
         for hour in [1, 10, 23] {
             let target = energy_target_for_hour(hour);
             let known: Vec<u64> = pool

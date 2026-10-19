@@ -550,8 +550,12 @@ impl QueueFeed {
         if !mode::maintain(self, at, playback)? {
             return Ok(0);
         }
-        if let Some(end) = self.dry(playback) {
-            return self.play_on_past_the_end(at, plan, store, end);
+        if let Some((end, part_way)) = self.dry(playback) {
+            if !part_way || self.topped_up_past(at, end)? {
+                return self.play_on_past_the_end(at, plan, store, end);
+            }
+            // Someone else's edit, not the feed's own top-up: theirs.
+            self.dry_end = None;
         }
         let mut position = playback.queue_position.filter(|&p| p > 0);
         let uri = playback
@@ -647,23 +651,58 @@ impl QueueFeed {
     /// play on past it: seen now ([`Self::ran_dry`]), or before and the
     /// group still stopped with the queue as the feed left it, so a try that
     /// failed part-way (a top-up cut short, a play refused) is tried again.
-    /// The feed's own top-up past that end, seen part-way (a work's
-    /// movements are added one by one, and their events can arrive after
-    /// the try failed), is still the queue as the feed left it.
-    fn dry(&mut self, playback: &PlayerPlayback) -> Option<u32> {
+    /// A length between that end and the feed's own new end may be its
+    /// top-up seen part-way (a work's movements are added one by one, and
+    /// their events can arrive after the try failed), or an edit of someone
+    /// else's: such an end comes with `true`, and the caller reads the queue
+    /// before playing on ([`Self::topped_up_past`]).
+    fn dry(&mut self, playback: &PlayerPlayback) -> Option<(u32, bool)> {
         let stopped = playback.transport == Some(fsonos_types::TransportState::Stopped);
         let left = self.left_at();
-        let kept = playback.queue_length.is_some_and(|n| {
-            Some(n) == left
-                || (self.dry_end.is_some_and(|end| end < n) && left.is_some_and(|left| n < left))
-        });
-        if !(stopped && kept) {
+        let exact = playback.queue_length.is_some() && playback.queue_length == left;
+        let part_way = !exact
+            && playback.queue_length.is_some_and(|n| {
+                self.dry_end.is_some_and(|end| end < n) && left.is_some_and(|left| n < left)
+            });
+        if !(stopped && (exact || part_way)) {
             self.dry_end = None;
         }
         if self.dry_end.is_none() && self.ran_dry(playback) {
             self.dry_end = self.left_at();
         }
-        self.dry_end
+        self.dry_end.map(|end| (end, part_way))
+    }
+
+    /// Whether the queue, read now, ends where the feed left it and holds
+    /// exactly the movements it put past `end`: its own top-up, all of it,
+    /// not an edit of someone else's.
+    fn topped_up_past<T: Transport + ?Sized>(
+        &self,
+        at: &Speakers<'_, T>,
+        end: u32,
+    ) -> Result<bool, FeedError> {
+        let queue: Vec<Option<String>> = browse_all(at.transport, host_of(at)?, QUEUE)?
+            .iter()
+            .map(|o| {
+                o.res
+                    .as_ref()
+                    .and_then(|r| spotify_uri_from_renderer_uri(&r.uri))
+            })
+            .collect();
+        let ends = u32::try_from(queue.len()).ok() == self.left_at();
+        let ours = self
+            .queued
+            .iter()
+            .flat_map(|work| &work.movements)
+            .filter_map(|m| Some((m.position.filter(|&p| p > end)?, m.uri.as_str())))
+            .all(|(position, uri)| {
+                usize::try_from(position - 1)
+                    .ok()
+                    .and_then(|i| queue.get(i))
+                    .and_then(Option::as_deref)
+                    == Some(uri)
+            });
+        Ok(ends && ours)
     }
 
     /// Where the queue ends as the feed left it: its length when the feed
@@ -1914,6 +1953,48 @@ mod tests {
     #[test]
     fn a_dry_queue_plays_on_after_a_whole_work_was_queued_but_not_played() {
         plays_on_after_a_refused_play(&multi_movement_pool());
+    }
+
+    /// While the retry waits, the owner takes the new work's first movement
+    /// off in the Sonos app. The queue past the end is no longer the feed's
+    /// top-up, so the DJ does not replay the Play (it would start the work
+    /// on its second movement) and leaves the owner's queue be.
+    #[test]
+    fn a_dry_queue_retry_leaves_an_owner_edit_be() {
+        let mut rig = Rig::new();
+        let lan = rig.lan.clone();
+        let pool = multi_movement_pool();
+        let mut store = MemStore::default();
+        let mut feed = QueueFeed::new(&rig.coordinator, DjConfig::default(), 7);
+        feed.start(&rig.speakers(&lan), plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store)
+            .unwrap();
+        rig.sim.upnp_fault(ROOM, "AddURIToQueue", 800).unwrap();
+        let end = u32::try_from(rig.queue().len()).unwrap();
+        while rig.position() < end {
+            rig.next();
+            let _ = rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store);
+        }
+        rig.sim.advance(Duration::from_secs(200));
+        rig.sim.clear_faults(ROOM).unwrap();
+        rig.sim.upnp_fault(ROOM, "Play", 800).unwrap();
+        let _ = rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store);
+        assert!(
+            rig.queue().len() > usize::try_from(end).unwrap() + 1,
+            "a whole work topped up past the end"
+        );
+        // UpdateID 0: the owner's app, whatever the queue's revision.
+        fsonos_proto::control::remove_track_range_from_queue(&lan, rig.host(), 0, end + 1, 1)
+            .unwrap();
+        rig.sim.clear_faults(ROOM).unwrap();
+        let _ = rig.pump(&lan, &mut feed, plan(&pool, MIDNIGHT), &mut store);
+        let playback = control::playback(&lan, &rig.houses, &rig.coordinator).unwrap();
+        assert_ne!(
+            playback.transport.state,
+            fsonos_types::TransportState::Playing,
+            "no Play of a work from its middle"
+        );
     }
 
     /// The queue runs dry while adds fail; the top-up then works but the

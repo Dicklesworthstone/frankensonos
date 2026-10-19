@@ -1060,11 +1060,12 @@ const GENRE_ENERGY: &[(&str, u8)] = &[
 
 /// Version notes that say how a recording sits, energy-wise, whatever its
 /// artist's genre: a rock band's acoustic take is calm, a club mix is not.
+/// "Piano" counts only as a piano version, not a venue or a guest's name.
 const VERSION_ENERGY: &[(&str, u8)] = &[
     ("acoustic", 34),
     ("unplugged", 36),
     ("stripped", 36),
-    ("piano", 32),
+    ("piano version", 32),
     ("club mix", 80),
     ("remix", 72),
 ];
@@ -1084,7 +1085,7 @@ pub fn version_energy(title: &str) -> Option<u8> {
             (&rest[..dash], &rest[dash + 3..])
         };
         let note = normalize(note);
-        if !(note.starts_with("feat") || note.starts_with("with "))
+        if !(note.starts_with("feat") || note.starts_with("ft ") || note.starts_with("with "))
             && let Some(&(_, energy)) = VERSION_ENERGY
                 .iter()
                 .find(|(phrase, _)| has_phrase(&note, phrase))
@@ -1643,6 +1644,9 @@ mod tests {
         assert_eq!(version_energy("Low Light (Club Mix)"), Some(80));
         assert_eq!(version_energy("Low Light - Remix"), Some(72));
         assert_eq!(version_energy("Low Light (feat. Piano Man)"), None);
+        assert_eq!(version_energy("Low Light (ft. Club Mix)"), None, "ft. too");
+        assert_eq!(version_energy("Low Light - Live at the Piano Bar"), None);
+        assert_eq!(version_energy("Low Light (Piano Version)"), Some(32));
         assert_eq!(version_energy("Piano Man"), None, "a title, not a note");
         assert_eq!(version_energy("Low Light - Live at the Forum"), None);
     }
