@@ -48,6 +48,19 @@
 //! check each operation they would make: a scene applied by a client denied
 //! `set_volume` leaves the volumes as they are, and a scheduled volume change
 //! is refused when it fires.
+//!
+//! Starting a Spotify sign-in (`spotify_sign_in`) is the owner's: whoever
+//! signs in chooses whose library and taste the DJ follows. Only the CLI and
+//! the owner's own devices (the login of the daemon host's tailnet node,
+//! [`Policy::with_owner`]) may start one, unless a client's `grant` names it
+//! or its class (`auth`), or its `allow` list does ([`OWNER_ONLY`]). A
+//! `grant` adds to what a client may use, where `allow` limits it to the
+//! tools named:
+//!
+//! ```toml
+//! [clients."alice@example.com"]
+//! grant = ["auth"]
+//! ```
 
 use crate::rooms::normalize_room;
 use chrono::{DateTime, FixedOffset, NaiveTime};
@@ -113,7 +126,7 @@ pub const CLASSES: [(&str, &[&str]); 10] = [
             "dj_sync",
         ],
     ),
-    ("auth", &["spotify_sign_in"]),
+    ("auth", &["spotify_sign_in", "spotify_sign_in_complete"]),
     ("undo", &["undo_last", "undo_checked"]),
 ];
 
@@ -123,7 +136,23 @@ pub const READ_CLASS: &str = "read";
 /// Tools that always carry out another tool's operation, which an entry
 /// denying that tool (or its class) denies too: a fade is a run of volume
 /// sets.
-pub const CARRIES: [(&str, &str); 1] = [("fade_volume", "set_volume")];
+pub const CARRIES: [(&str, &str); 2] = [
+    ("fade_volume", "set_volume"),
+    ("spotify_sign_in_complete", "spotify_sign_in"),
+];
+
+/// Tools that finish what another starts: an `allow` or `grant` entry naming
+/// the starter names its finish too, so a client that may start a Spotify
+/// sign-in may also finish it. (A `deny` covers it through [`CARRIES`].)
+const FINISHES: [(&str, &str); 1] = [("spotify_sign_in_complete", "spotify_sign_in")];
+
+/// Tools only the owner may use (the CLI, or the daemon host's own tailnet
+/// login, [`Policy::with_owner`]), unless a client's `grant` (or its `allow`
+/// list) names them or their class: starting a Spotify sign-in
+/// chooses whose library and taste the DJ follows. Finishing one
+/// (`spotify_sign_in_complete`, the browser's way back) is not among them:
+/// it needs the waiting sign-in's state, which only its starter saw.
+pub const OWNER_ONLY: [&str; 1] = ["spotify_sign_in"];
 
 /// The class `tool` is in ([`CLASSES`]), if any.
 #[must_use]
@@ -140,6 +169,9 @@ fn names(entry: &str, tool: ToolCall<'_>) -> bool {
     entry == tool.name
         || class_of(tool.name) == Some(entry)
         || (tool.read_only && entry == READ_CLASS)
+        || FINISHES
+            .iter()
+            .any(|(finish, start)| *finish == tool.name && *start == entry)
 }
 
 /// What the deny entry `entry` denies of `tool`, for the reason given: the
@@ -298,6 +330,8 @@ struct RoomLimits {
 struct ClientRules {
     allow: Option<Vec<String>>,
     deny: Vec<String>,
+    /// [`OWNER_ONLY`] tools (or classes) this client may use too.
+    grant: Vec<String>,
     capped: Option<bool>,
 }
 
@@ -310,6 +344,9 @@ pub struct Policy {
     rooms: HashMap<String, RoomLimits>,
     /// Keyed by lowercased [`Client::key`].
     clients: HashMap<String, ClientRules>,
+    /// The login of the daemon host's tailnet node: the owner's own devices
+    /// reach the daemon as it ([`Self::with_owner`]). Never from the file.
+    owner: Option<String>,
 }
 
 /// The effective policy, for showing: see [`Policy::view`].
@@ -343,13 +380,16 @@ pub struct RoomView {
 }
 
 /// A client's own rules: `allow` (only these tools) when given, `deny`
-/// always, and whether volume caps apply when set.
+/// always, `grant` ([`OWNER_ONLY`] tools it may use too), and whether volume
+/// caps apply when set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientView {
     pub client: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow: Option<Vec<String>>,
     pub deny: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grant: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capped: Option<bool>,
 }
@@ -449,7 +489,36 @@ impl Policy {
             quiet_hours: raw.quiet_hours.map(|q| q.0),
             rooms,
             clients,
+            owner: None,
         })
+    }
+
+    /// This policy with `login` as the owner's: the login of the daemon
+    /// host's tailnet node, so the owner's own devices (the Apple and web
+    /// remotes through Tailscale) may use the [`OWNER_ONLY`] tools as the
+    /// CLI does. `None` (off the tailnet, a tagged node) leaves the CLI alone.
+    #[must_use]
+    pub fn with_owner(mut self, login: Option<String>) -> Self {
+        self.owner = login.filter(|l| !l.trim().is_empty());
+        self
+    }
+
+    /// The owner's tailnet login, when known ([`Self::with_owner`]).
+    #[must_use]
+    pub fn owner(&self) -> Option<&str> {
+        self.owner.as_deref()
+    }
+
+    /// Whether `client` is the owner: the CLI, or the owner's login.
+    fn is_owner(&self, client: &Client) -> bool {
+        match client {
+            Client::Cli => true,
+            Client::Tailnet(login) => self
+                .owner
+                .as_deref()
+                .is_some_and(|owner| owner.eq_ignore_ascii_case(login)),
+            _ => false,
+        }
     }
 
     /// The policy as people read it (`fsonos policy show`, `GET /policy`):
@@ -473,6 +542,7 @@ impl Policy {
                 client: key.clone(),
                 allow: c.allow.clone(),
                 deny: c.deny.clone(),
+                grant: c.grant.clone(),
                 capped: c.capped,
             })
             .collect();
@@ -625,6 +695,23 @@ impl Policy {
                     "unidentified callers may only use read-only tools, not {}; give this \
                      caller a [clients] entry in {FILE_NAME}",
                     tool.name
+                ),
+            };
+        }
+        if !tool.read_only
+            && !self.is_owner(client)
+            && OWNER_ONLY.contains(&tool.name)
+            && !self
+                .client_rules(client)
+                .is_some_and(|rules| rules.grant.iter().any(|entry| names(entry, tool)))
+        {
+            return Decision::Deny {
+                reason: format!(
+                    "{} is the owner's: only the CLI or the owner's own tailnet login may use \
+                     it, unless {FILE_NAME} grants it to {client} (grant = [\"auth\"] under \
+                     [clients.\"{}\"])",
+                    tool.name,
+                    client.key()
                 ),
             };
         }
@@ -791,6 +878,8 @@ struct RawClient {
     allow: Option<Vec<String>>,
     #[serde(default)]
     deny: Vec<String>,
+    #[serde(default)]
+    grant: Vec<String>,
     capped: Option<bool>,
 }
 
@@ -799,6 +888,7 @@ impl From<RawClient> for ClientRules {
         Self {
             allow: raw.allow,
             deny: raw.deny,
+            grant: raw.grant,
             capped: raw.capped,
         }
     }
@@ -1206,6 +1296,110 @@ allow = []
             p.authorize(call("list_zones", true), &Client::Tailnet("tag:kiosk".into())),
             Decision::Deny { reason } if reason.ends_with("no tools")
         ));
+    }
+
+    #[test]
+    fn starting_a_sign_in_is_the_owners_unless_granted() {
+        let p = Policy::from_toml(
+            r#"
+[clients."alice@example.com"]
+grant = ["auth"]
+
+[clients."tag:kiosk"]
+allow = ["read", "spotify_sign_in"]
+
+[clients.mcp-stdio]
+grant = ["spotify_sign_in"]
+deny = ["auth"]
+"#,
+        )
+        .unwrap();
+        let call = |name, read_only| ToolCall { name, read_only };
+        let start = call("spotify_sign_in", false);
+        let status = call("spotify_sign_in", true);
+        let finish = call("spotify_sign_in_complete", false);
+        // The CLI may; another caller is told the key that would let it.
+        assert_eq!(p.authorize(start, &Client::Cli), Decision::Allow);
+        // So may the owner's own login (the daemon host's tailnet node), in
+        // any case, and no other login.
+        let owned = Policy::default().with_owner(Some("owner@example.com".into()));
+        assert_eq!(owned.owner(), Some("owner@example.com"));
+        assert_eq!(
+            owned.authorize(start, &Client::Tailnet("Owner@Example.com".into())),
+            Decision::Allow
+        );
+        assert!(matches!(
+            owned.authorize(start, &Client::Tailnet("bob@example.com".into())),
+            Decision::Deny { .. }
+        ));
+        assert!(matches!(
+            owned.authorize(start, &Client::LoopbackHttp),
+            Decision::Deny { .. }
+        ));
+        assert_eq!(Policy::default().with_owner(Some(" ".into())).owner(), None);
+        assert_eq!(
+            Policy::default().authorize(start, &Client::Cli),
+            Decision::Allow
+        );
+        for other in [
+            Client::Tailnet("bob@example.com".into()),
+            Client::LoopbackHttp,
+        ] {
+            assert!(
+                matches!(p.authorize(start, &other), Decision::Deny { reason }
+                    if reason.contains(&format!("grant = [\"auth\"] under [clients.\"{}\"]", other.key()))),
+                "{other}"
+            );
+            // Its status stays readable.
+            assert_eq!(p.authorize(status, &other), Decision::Allow, "{other}");
+        }
+        // An unidentified caller is told what would identify it; a grant
+        // could not help it.
+        assert!(matches!(
+            p.authorize(start, &Client::Unknown),
+            Decision::Deny { reason } if reason.starts_with("unidentified callers")
+        ));
+        assert_eq!(p.authorize(status, &Client::Unknown), Decision::Allow);
+        // Finishing a waiting sign-in is not the owner's alone: the browser
+        // brings the redirect back as whoever it is.
+        assert_eq!(p.authorize(finish, &Client::LoopbackHttp), Decision::Allow);
+        // A grant adds to what a client may use; an allow list naming the
+        // tool allows it too, and still limits the client to what it names.
+        let alice = Client::Tailnet("alice@example.com".into());
+        assert_eq!(p.authorize(start, &alice), Decision::Allow);
+        assert_eq!(p.authorize(call("play", false), &alice), Decision::Allow);
+        let kiosk = Client::Tailnet("tag:kiosk".into());
+        assert_eq!(p.authorize(start, &kiosk), Decision::Allow);
+        // Allowed to start one by name, it may finish it too.
+        assert_eq!(p.authorize(finish, &kiosk), Decision::Allow);
+        assert!(matches!(
+            p.authorize(call("play", false), &kiosk),
+            Decision::Deny { .. }
+        ));
+        // A denial beats a grant, and denying the start denies finishing.
+        assert!(matches!(
+            p.authorize(start, &Client::McpStdio),
+            Decision::Deny { reason } if reason.contains("policy denies auth")
+        ));
+        let by_name = Policy::from_toml("[clients.agent]\ndeny = [\"spotify_sign_in\"]\n").unwrap();
+        let agent = Client::Tailnet("agent".into());
+        assert!(matches!(
+            by_name.authorize(finish, &agent),
+            Decision::Deny { .. }
+        ));
+        assert!(
+            by_name.open_doors().is_empty(),
+            "{:?}",
+            by_name.open_doors()
+        );
+        assert_eq!(
+            p.view()
+                .clients
+                .iter()
+                .find(|c| c.client == "alice@example.com")
+                .map(|c| c.grant.clone()),
+            Some(vec!["auth".to_owned()])
+        );
     }
 
     #[test]

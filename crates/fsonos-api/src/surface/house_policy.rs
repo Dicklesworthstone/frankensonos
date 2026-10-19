@@ -80,6 +80,9 @@ impl PolicyDto {
             if !client.deny.is_empty() {
                 rules.push(format!("never {}", client.deny.join(", ")));
             }
+            if !client.grant.is_empty() {
+                rules.push(format!("granted {}", client.grant.join(", ")));
+            }
             match client.capped {
                 Some(true) => rules.push("capped".to_owned()),
                 Some(false) => rules.push("uncapped".to_owned()),

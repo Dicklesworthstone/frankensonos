@@ -18,6 +18,12 @@ use crate::failure::{ErrorCode, Failure};
 /// The tool every sign-in call is authorized as.
 pub const SIGN_IN_TOOL: &str = "spotify_sign_in";
 
+/// The policy name of finishing a waiting sign-in (the callback, or a pasted
+/// address). Unlike starting one, it is not the owner's alone
+/// ([`fsonos_core::policy::OWNER_ONLY`]): the browser comes back as whoever
+/// it is, and only the sign-in's starter saw the state it must carry.
+pub const SIGN_IN_COMPLETE_TOOL: &str = "spotify_sign_in_complete";
+
 /// Runs the owner's Spotify sign-in; see the module docs.
 pub trait SpotifyAuth: Send + Sync {
     /// Whether the owner is signed in, and whether a sign-in waits for the
@@ -110,7 +116,7 @@ impl Surface {
         client: &Client,
         redirect: &str,
     ) -> Result<SignInDto, Failure> {
-        self.authorize_logged(client, SIGN_IN_TOOL)?;
+        self.authorize_logged(client, SIGN_IN_COMPLETE_TOOL)?;
         // Never the redirect itself: it carries the authorization code.
         let engine = self.sign_in_engine()?;
         let done = engine.complete(redirect).map(|()| engine.status());

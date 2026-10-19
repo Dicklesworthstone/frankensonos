@@ -65,6 +65,46 @@ fn call(
     http(api, method, path, headers, &text).unwrap_or((0, Vec::new(), String::new()))
 }
 
+/// The CLI's token, as the running daemon wrote it to `daemon.json`.
+fn cli_token(s: &Scenario) -> String {
+    std::fs::read_to_string(s.dir().join("data").join("daemon.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|file| file["cli_token"].as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Start a sign-in. It is the owner's: a plain loopback caller is refused,
+/// with the policy key that would let it; the CLI starts it, as `fsonos
+/// setup` does, with the token serve wrote. The CLI's answer.
+fn begin(s: &mut Scenario, api: &str) -> (u16, String) {
+    let (status, _, body) = call(api, "POST", "/auth/spotify/begin", Some(&json!({})));
+    s.check(
+        "begin-refused",
+        "http",
+        "a caller that is not the CLI may not start a sign-in (POLICY_DENIED, naming grant)",
+        status == 403
+            && json_of(&body)["code"] == "POLICY_DENIED"
+            && json_of(&body)["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("grant = [\"auth\"]")),
+        &body,
+    );
+    let token = cli_token(s);
+    let (status, _, body) = http(
+        api,
+        "POST",
+        "/auth/spotify/begin",
+        &[
+            ("Content-Type", "application/json"),
+            ("X-Fsonos-Cli-Token", token.as_str()),
+        ],
+        "{}",
+    )
+    .unwrap_or((0, Vec::new(), String::new()));
+    (status, body)
+}
+
 fn json_of(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or(Value::Null)
 }
@@ -105,7 +145,7 @@ fn the_daemon_holds_the_sign_in_and_refuses_a_forged_redirect() {
         &body,
     );
 
-    let (status, _, body) = call(&api, "POST", "/auth/spotify/begin", Some(&json!({})));
+    let (status, body) = begin(&mut s, &api);
     let url = json_of(&body)["url"]
         .as_str()
         .unwrap_or_default()

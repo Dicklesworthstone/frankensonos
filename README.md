@@ -303,6 +303,12 @@ deny = ["volume"]
   own top-ups (client `dj`), `fsonos setup --test-play`'s short test play,
   the restore at the end of `fsonos stream`, and each step of a Spotify
   sign-in (never its code); none of these is undoable.
+- Starting a Spotify sign-in is the owner's: the CLI on the daemon's host
+  (`fsonos setup`) and the owner's own devices (the tailnet login the
+  daemon's host is logged in as, as the Apple and web remotes are through
+  Tailscale) may; anyone else only when `policy.toml` grants it
+  (`grant = ["auth"]` under the caller's `[clients."<login>"]`), since whoever
+  signs in chooses whose library and taste the DJ follows.
 - `allow` and `deny` name tools or whole classes of them: `volume`,
   `playback`, `grouping`, `queue`, `sound`, `house-config`, `announce`, `dj`,
   `auth`, `undo`, and `read` for every read. Composite calls are held to each
