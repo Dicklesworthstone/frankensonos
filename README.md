@@ -141,10 +141,15 @@ only on the LAN interface used to reach that player. There is no public
 audio service or cloud relay. `--daemon-url` is not supported for live capture:
 the computer running `stream` must reach the players and be reachable by them.
 
-**Video lip-sync is not implemented:** Sonos normally buffers HTTP-radio
-playback by seconds; the precise delay also drifts. This command is for live
-listening rather than in-sync video audio. Automatic calibration and player
-delay correction remain tracked in issue #2.
+**Video lip-sync is experimental:** Sonos buffers HTTP-radio playback by
+seconds, and the delay drifts. Plain `stream` is for listening, not for
+in-sync video audio. `--latency-wav` measures the delay from a time-aligned
+reference/microphone recording, and `--sync-mpv <socket> --sync-input <source>`
+keeps mpv's `audio-delay` corrected from a live paired reference/microphone
+source while streaming. Both need a capture setup described in
+[Acoustic calibration](docs/AUDIO_CALIBRATION.md) and are not yet qualified on
+real speakers; startup calibration chirps and automatic source pairing remain
+tracked in issue #2.
 
 ### Offline speech and WAV announcements
 
