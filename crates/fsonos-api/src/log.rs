@@ -74,12 +74,16 @@ impl ActionsQuery {
 }
 
 /// `POST /undo` body. `own_only` (default `true`) undoes the caller's own
-/// newest action; `false` undoes the newest action of anyone.
+/// newest action; `false` undoes the newest action of anyone. `force`
+/// (default `false`) puts the zones back even where someone changed them
+/// since: the owner's CLI alone may (anyone else is POLICY_DENIED).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct UndoRequest {
     #[serde(default = "yes")]
     pub own_only: bool,
+    #[serde(default)]
+    pub force: bool,
 }
 
 fn yes() -> bool {
@@ -171,6 +175,26 @@ mod tests {
         let undo = ActionDto::from(&logged(Some("{}"), Some(6)));
         assert!(!undo.undoable);
         assert_eq!(serde_json::to_value(&undo).unwrap()["undo_of"], 6);
+    }
+
+    #[test]
+    fn an_undo_request_forces_only_when_asked() {
+        let req = |v| serde_json::from_value::<UndoRequest>(v);
+        assert_eq!(
+            req(serde_json::json!({})).unwrap(),
+            UndoRequest {
+                own_only: true,
+                force: false
+            }
+        );
+        assert_eq!(
+            req(serde_json::json!({ "own_only": false, "force": true })).unwrap(),
+            UndoRequest {
+                own_only: false,
+                force: true
+            }
+        );
+        assert!(req(serde_json::json!({ "forced": true })).is_err());
     }
 
     #[test]

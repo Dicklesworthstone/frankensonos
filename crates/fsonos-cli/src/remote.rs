@@ -753,8 +753,14 @@ pub fn run(global: &GlobalArgs, command: &Command) -> anyhow::Result<bool> {
                 daemon.post("/undo/checked", &serde_json::json!({ "expected_id": id }))?;
             emit(json, &undone, |u: &UndoDto| format!("{}\n", u.summary))?;
         }
-        Command::Undo { mine, .. } => {
-            let undone: UndoDto = daemon.post("/undo", &serde_json::json!({ "own_only": mine }))?;
+        Command::Undo { mine, force, .. } => {
+            // `force` goes only when asked, so a plain undo still reaches a
+            // daemon that predates it.
+            let mut body = serde_json::json!({ "own_only": mine });
+            if *force {
+                body["force"] = serde_json::Value::Bool(true);
+            }
+            let undone: UndoDto = daemon.post("/undo", &body)?;
             emit(json, &undone, |u: &UndoDto| format!("{}\n", u.summary))?;
         }
         Command::Play {

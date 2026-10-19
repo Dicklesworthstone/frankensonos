@@ -9,7 +9,9 @@ local applications, not a unique browser session.
 `POST /undo/checked` accepts exactly `{"expected_id": <positive action id>}`.
 It uses the existing `undo_last` permission and only the caller's own scope,
 even for CLI identities. Unknown fields such as `own_only`, `client` or a
-supplied before-state are refused. The legacy `POST /undo` is unchanged.
+supplied before-state are refused. The legacy `POST /undo` is separate: it
+takes `own_only`, and `force` (the owner's CLI alone; anyone else is
+`POLICY_DENIED`) to put back rooms someone changed since.
 
 The daemon serializes selection and restoration with all other undo calls.
 It selects once, checks the id before restoration, and keeps the selected row;

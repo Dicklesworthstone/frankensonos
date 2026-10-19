@@ -476,8 +476,12 @@ fn house(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         cx.route(
             &Op::post("/undo", "undo_last", LOG, "Undo the newest undoable action"),
             |s, c, req| {
-                let undone = body_or_default::<UndoRequest>(req, UndoRequest { own_only: true })
-                    .and_then(|r| s.undo(c, r.own_only));
+                let plain = UndoRequest {
+                    own_only: true,
+                    force: false,
+                };
+                let undone = body_or_default::<UndoRequest>(req, plain)
+                    .and_then(|r| s.undo_forced(c, r.own_only, r.force));
                 answer(undone.map(UndoDto::from))
             },
         )
