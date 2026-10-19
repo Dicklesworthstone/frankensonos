@@ -44,6 +44,7 @@ on:
       - "scripts/test-remote-scenes.cjs"
       - "scripts/test-remote-dj-steering.cjs"
       - "scripts/test-remote-history.cjs"
+      - "scripts/test-remote-listening-history.cjs"
       - "scripts/test-remote-studio.cjs"
       - "scripts/test-remote-studio-insights.cjs"
       - "scripts/test-remote-requests.cjs"
@@ -129,7 +130,7 @@ jobs:
       - name: Web scene regressions
         run: node --test scripts/test-remote-scenes.cjs
       - name: Web action history regressions
-        run: node --test scripts/test-remote-history.cjs
+        run: node --test scripts/test-remote-history.cjs scripts/test-remote-listening-history.cjs
       - name: Listening studio and DJ insight regressions
         run: node --test scripts/test-remote-studio.cjs scripts/test-remote-studio-insights.cjs
       - name: Listening room dashboard regressions

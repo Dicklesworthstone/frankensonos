@@ -1,0 +1,12 @@
+.listening-history { border: 1px solid var(--line); border-radius: .8rem; background: var(--card); }
+.listening-history > summary { padding: .8rem 1rem; cursor: pointer; font-weight: 650; }
+.listening-history-body { padding: 0 1rem 1rem; }
+.listening-history-body .row { flex-wrap: wrap; margin: .6rem 0; }
+.listening-history-body label { display: grid; gap: .35rem; min-width: 0; max-width: 100%; }
+.listening-history input, .listening-history select { font: inherit; min-width: 0; max-width: 100%; min-height: 40px; color: var(--text); background: var(--card); }
+.listening-history-list { padding-left: 1.5rem; }
+.listening-history-list > li { border-top: 1px solid var(--line); padding: .8rem 0; }
+.listening-history-list p { margin: .3rem 0; }
+.listening-history-list details { margin: .5rem 0; }
+.listening-history-list code, .listening-history p, .listening-history strong { overflow-wrap: anywhere; white-space: pre-wrap; }
+.listening-history summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }

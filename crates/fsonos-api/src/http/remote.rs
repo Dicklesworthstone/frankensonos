@@ -52,6 +52,8 @@ const STEERING_SCRIPT: &str = include_str!("../remote/dj-steering.js");
 const STEERING_STYLE: &str = include_str!("../remote/dj-steering.css");
 const HISTORY_SCRIPT: &str = include_str!("../remote/history.js");
 const HISTORY_STYLE: &str = include_str!("../remote/history.css");
+const LISTENING_SCRIPT: &str = include_str!("../remote/listening-history.js");
+const LISTENING_STYLE: &str = include_str!("../remote/listening-history.css");
 const SYNC_SCRIPT: &str = include_str!("../remote/library-sync.js");
 const SYNC_STYLE: &str = include_str!("../remote/library-sync.css");
 const CONNECT_SCRIPT: &str = include_str!("../remote/spotify-connect.js");
@@ -101,7 +103,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
+                        "{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{LISTENING_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
                     ),
                 )
             },
@@ -118,7 +120,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/css; charset=utf-8",
                     &format!(
-                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}\n{PLAYBACK_STYLE}\n{EQ_STYLE}\n{SOUND_COPY_STYLE}\n{SOURCE_PLAYER_STYLE}\n{FADES_STYLE}\n{GROUP_VOLUME_STYLE}\n{ROUTINES_STYLE}"
+                        "{STYLE}\n{LIBRARY_STYLE}\n{GROUPS_STYLE}\n{TIMERS_STYLE}\n{SCHEDULES_STYLE}\n{SCENES_STYLE}\n{MODE_STYLE}\n{ANNOUNCEMENTS_STYLE}\n{PREFERENCES_STYLE}\n{SESSION_STYLE}\n{STEERING_STYLE}\n{HISTORY_STYLE}\n{SYNC_STYLE}\n{CONNECT_STYLE}\n{PLAYBACK_STYLE}\n{EQ_STYLE}\n{SOUND_COPY_STYLE}\n{SOURCE_PLAYER_STYLE}\n{LISTENING_STYLE}\n{FADES_STYLE}\n{GROUP_VOLUME_STYLE}\n{ROUTINES_STYLE}"
                     ),
                 )
             },
@@ -327,6 +329,8 @@ mod tests {
             ("dj-steering.css", STEERING_STYLE),
             ("history.js", HISTORY_SCRIPT),
             ("history.css", HISTORY_STYLE),
+            ("listening-history.js", LISTENING_SCRIPT),
+            ("listening-history.css", LISTENING_STYLE),
             ("library-sync.js", SYNC_SCRIPT),
             ("library-sync.css", SYNC_STYLE),
             ("spotify-connect.js", CONNECT_SCRIPT),
