@@ -18,6 +18,7 @@ on:
       - "scripts/test-remote-library-browse.cjs"
       - "scripts/test-remote-library-sync.cjs"
       - "scripts/test-remote-spotify-connect.cjs"
+      - "scripts/test-remote-room-sets.cjs"
       - "scripts/test-remote-groups.cjs"
       - "scripts/test-remote-transfers.cjs"
       - "scripts/test-remote-read-requests.cjs"
@@ -109,7 +110,7 @@ jobs:
       - name: Web library client regressions
         run: node --test scripts/test-remote-library.cjs scripts/test-remote-library-browse.cjs scripts/test-remote-library-sync.cjs scripts/test-remote-spotify-connect.cjs
       - name: Web room grouping regressions
-        run: node --test scripts/test-remote-groups.cjs scripts/test-remote-transfers.cjs
+        run: node --test scripts/test-remote-groups.cjs scripts/test-remote-transfers.cjs scripts/test-remote-room-sets.cjs
       - name: Live remote recovery regressions
         run: node --test scripts/test-remote-live.cjs scripts/test-remote-state.cjs scripts/test-remote-invalidation.cjs scripts/test-remote-playback.cjs scripts/test-remote-catalogs.cjs
       - name: Web seek recovery regressions

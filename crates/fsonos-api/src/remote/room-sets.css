@@ -1,0 +1,8 @@
+.room-set-controls > div { display: grid; gap: .75rem; padding-top: .75rem; }
+.room-set-controls label { display: grid; gap: .4rem; }
+.room-set-controls input, .room-set-controls select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; font: inherit; padding: .6rem; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: .5rem; }
+.room-set-controls p, .room-set-controls li, .room-set-controls h3 { overflow-wrap: anywhere; }
+.room-set-controls p { margin: 0; }
+.room-set-review { display: grid; gap: .6rem; border: 1px solid var(--line); border-radius: .5rem; padding: .75rem; min-width: 0; }
+.room-set-controls [hidden] { display: none; }
+.room-set-controls [role="status"]:empty { display: none; }

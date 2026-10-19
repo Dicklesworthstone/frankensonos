@@ -9,6 +9,7 @@ const StudioRemote = (() => {
     activity: ['CONFIDENCE, NOT GUESSWORK.', 'Know what changed.', 'Stay in control.', 'Review the action history and recovery details. Undo is offered only where the daemon supports it.'],
   });
   const tools = Object.freeze([
+    { id: 'room-sets', workspace: 'house', match: /room.set|household controls/i, title: 'Control room sets and households', description: 'Resolve aliases and review collective pause, resume, mute and per-room volume.', keywords: 'alias here all everywhere household multiple collective pause resume mute lower raise volume' },
     { id: 'house-policy', workspace: 'activity', match: /house.policy|policy and volume caps/i, title: 'Understand volume caps and command limits', description: 'Read your caller identity, configured limits, quiet hours, and tool rules.', keywords: 'policy quiet hours denied capped rights permissions client why volume' },
     { id: 'diagnostics', workspace: 'activity', match: /diagnostic/i, title: 'Diagnose missing rooms or silence', description: 'Read setup checks, evidence, and concrete remedies without changing playback.', keywords: 'doctor setup troubleshoot failure wifi network callback tailscale spotify silence missing rooms' },
     { id: 'dj-steering', workspace: 'music', match: /steer|dj direction/i, title: 'Shape the next DJ pick', description: 'Mood, energy, artists, genres, eras, and whole-work constraints.', keywords: 'whole work classical composer focus dinner next mood' },
