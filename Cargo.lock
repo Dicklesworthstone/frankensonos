@@ -1261,6 +1261,7 @@ dependencies = [
  "fsonos-types",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tracing",
 ]

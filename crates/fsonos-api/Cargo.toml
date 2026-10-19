@@ -27,6 +27,8 @@ asupersync = { workspace = true }
 [dev-dependencies]
 # Action-log and undo tests drive virtual players.
 fsonos-sim = { workspace = true }
+# The room-target tests write a scratch data directory.
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
