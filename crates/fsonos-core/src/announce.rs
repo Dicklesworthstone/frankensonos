@@ -19,8 +19,9 @@
 //! household takes one announcement at a time; later ones wait their turn,
 //! in order.
 //!
-//! The players learn the clip's end from their transport state, polled over
-//! SOAP. [`clip`] makes and stores the clips; the daemon serves them
+//! The daemon follows the clip's accepted GENA events, with bounded SOAP
+//! checks when callbacks are missing. Direct callers watch over SOAP.
+//! [`clip`] makes and stores the clips; the daemon serves them
 //! read-only at `/media/<id>.wav` on its GENA listener. A newer source,
 //! pause, or group change prevents restoring an obsolete snapshot; changed
 //! room levels are preserved and reported instead of overwritten.
@@ -37,6 +38,7 @@ mod watch;
 use recovery::Effects;
 
 use crate::control;
+use crate::live::Live;
 use crate::snapshot::{self, RestoreReport};
 use crate::{ControlTarget, CoreError, HouseholdState, Room};
 use fsonos_proto::Transport;
@@ -232,6 +234,13 @@ impl Default for Announcer {
     }
 }
 
+/// The clip and optional live observer shared by one announcement.
+#[derive(Clone, Copy)]
+struct Playback<'a> {
+    clip: &'a Clip,
+    live: Option<&'a Live>,
+}
+
 /// A household's turn; the next waiting announcement goes when it drops.
 struct Turn<'a> {
     announcer: &'a Announcer,
@@ -319,6 +328,23 @@ impl Announcer {
         volume: u8,
         cap: &(dyn Fn(&Room) -> u8 + Sync),
     ) -> Result<AnnounceReport, AnnounceError> {
+        self.announce_with_live(t, targets, clip, volume, cap, None)
+    }
+
+    /// Announce using the daemon's accepted playback events when available.
+    /// The observer is captured before installing each household's clip;
+    /// missing callbacks fall back to bounded reads. Restoration still checks
+    /// current source and grouping before changing the speakers.
+    pub fn announce_with_live<T: Transport + Sync + ?Sized>(
+        &self,
+        t: &T,
+        targets: &[ControlTarget<'_>],
+        clip: &Clip,
+        volume: u8,
+        cap: &(dyn Fn(&Room) -> u8 + Sync),
+        live: Option<&Live>,
+    ) -> Result<AnnounceReport, AnnounceError> {
+        let playback = Playback { clip, live };
         let mut by_household: Vec<(&HouseholdState, Vec<&Room>)> = Vec::new();
         for target in targets {
             match by_household
@@ -342,7 +368,7 @@ impl Announcer {
                 .map(|(household, rooms)| {
                     s.spawn(move || {
                         let _turn = self.turn(turn_key(household));
-                        self.announce_in(t, household, rooms, clip, volume, cap)
+                        self.announce_in(t, household, rooms, &playback, volume, cap)
                     })
                 })
                 .collect();
@@ -360,7 +386,7 @@ impl Announcer {
         t: &T,
         household: &HouseholdState,
         rooms: &[&Room],
-        clip: &Clip,
+        playback: &Playback<'_>,
         volume: u8,
         cap: &(dyn Fn(&Room) -> u8 + Sync),
     ) -> HouseholdAnnouncement {
@@ -416,7 +442,7 @@ impl Announcer {
                 }
             }
         }
-        let (outcome, effects) = self.play(t, hs, &plan, rooms, &report.levels, clip);
+        let (outcome, effects) = self.play(t, hs, &plan, rooms, &report.levels, playback);
         report.outcome = outcome;
         let give_up = std::time::Instant::now() + self.patience;
         recovery::put_back(t, household, &plan, &snaps, &effects, give_up, &mut report);
@@ -431,9 +457,11 @@ impl Announcer {
         plan: &GroupPlan,
         rooms: &[&Room],
         levels: &[(String, u8)],
-        clip: &Clip,
+        playback: &Playback<'_>,
     ) -> (Result<Ending, String>, Effects) {
+        let clip = playback.clip;
         let mut effects = Effects::default();
+        let mut events = None;
         let prepared: Result<(), CoreError> = (|| {
             // A join can start audio immediately. Bound all levels before
             // regrouping, and never unmute a room at its old, possibly loud level.
@@ -459,6 +487,7 @@ impl Announcer {
             effects.before_clip = Some(soap::get_media_info(t, host)?.uri);
             effects.sources.push(plan.lead.clone());
             effects.clip = Some(clip.url.clone());
+            events = playback.live.map(Live::subscribe);
             control::play_uri(t, hs, &plan.lead, &clip.url, &clip.didl())?;
             effects.installed = true;
             Ok(())
@@ -471,6 +500,7 @@ impl Announcer {
                 clip,
                 clip.duration + self.stop_grace,
                 self.poll,
+                events.as_ref(),
             );
             result.map_err(|interrupted| match interrupted {
                 watch::Interrupted::LeaveAlone(why) => {

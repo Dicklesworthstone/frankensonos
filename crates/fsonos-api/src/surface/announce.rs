@@ -359,9 +359,15 @@ impl Surface {
             }
             policy.max_volume(&room.name, client, now)
         };
-        let announced = with
-            .announcer
-            .announce(&*self.transport, &targets, &clip, volume, &cap);
+        let live = self.live();
+        let announced = with.announcer.announce_with_live(
+            &*self.transport,
+            &targets,
+            &clip,
+            volume,
+            &cap,
+            live.as_deref(),
+        );
         let sleeping = sleeping
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
