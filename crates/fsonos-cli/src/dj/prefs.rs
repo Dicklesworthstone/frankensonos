@@ -30,7 +30,7 @@ pub enum PrefsAction {
 }
 
 /// Where the preferences live: beside `moods.toml`.
-fn file(moods_file: Option<&PathBuf>) -> Option<PathBuf> {
+pub(super) fn file(moods_file: Option<&PathBuf>) -> Option<PathBuf> {
     moods_file.map(|m| m.with_file_name(PREFERENCES_FILE))
 }
 

@@ -43,6 +43,7 @@ use fsonos_spotify::feedback::{FeedbackModel, StoreFeedback};
 use fsonos_spotify::steer::{DjSession, Moods, Steer, steering};
 use fsonos_types::PlayerId;
 use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -51,6 +52,8 @@ use crate::dj_view::{self, steer_failure, store_failure};
 
 pub(crate) mod feedback;
 mod handover;
+#[cfg(test)]
+mod plan_cache_tests;
 pub(crate) mod prefs;
 #[cfg(test)]
 mod problem_tests;
@@ -67,7 +70,8 @@ const PLAN_RETRY: Duration = Duration::from_secs(30);
 
 /// See the module docs.
 pub struct SpotifyDj {
-    /// `moods.toml`, read on each start and skip; `None`: the built-ins.
+    /// `moods.toml`, checked on each start and skip (an edit rebuilds the
+    /// pool); `None`: the built-ins.
     moods_file: Option<PathBuf>,
     state: Mutex<State>,
     /// Refreshes the library cache (the daemon's, with a Spotify app).
@@ -180,6 +184,10 @@ struct State {
     /// The current library and preferences were rebuilt successfully.
     /// False keeps a failed refresh pending while the last good plan plays.
     planned: bool,
+    /// What the plan was built from beyond the library cache: a hash of
+    /// moods.toml and preferences.toml as they read then (see
+    /// [`State::refresh`]).
+    plan_inputs: Option<u64>,
     /// When a failed plan rebuild can retry, independent of speaker backoff.
     plan_retry_at: Option<Instant>,
     /// The feeds as last saved.
@@ -205,6 +213,7 @@ impl State {
         moods_file: Option<&PathBuf>,
         now: i64,
     ) -> Result<(), Failure> {
+        let inputs = plan_inputs(moods_file);
         let candidate = (|| -> Result<Self, Failure> {
             // Complete partly-held works from cached album tracks, then
             // validate the owner's constraints before publishing the pool.
@@ -227,6 +236,7 @@ impl State {
                 self.feedback = next.feedback;
                 self.moods = next.moods;
                 self.planned = true;
+                self.plan_inputs = Some(inputs);
                 self.plan_retry_at = None;
                 self.refill_retries.clear();
                 Ok(())
@@ -239,6 +249,26 @@ impl State {
                 Err(error)
             }
         }
+    }
+
+    /// Bring the plan up to date for a start or skip. The pool is rebuilt
+    /// only when what it is built from changed: a library sync (`planned`
+    /// false), or an edit to moods.toml or preferences.toml. Otherwise it is
+    /// kept and only the feedback, which moves with every listen, is read
+    /// again. A rebuild reads the whole library cache under the DJ's lock:
+    /// seconds, for a library of tens of thousands of tracks.
+    fn refresh(
+        &mut self,
+        store: &dyn Store,
+        moods_file: Option<&PathBuf>,
+        now: i64,
+    ) -> Result<(), Failure> {
+        if self.planned && self.plan_inputs == Some(plan_inputs(moods_file)) {
+            // Feedback only weights the picks; without it the DJ still plays.
+            self.feedback = FeedbackModel::load(&StoreFeedback(store), now).ok();
+            return Ok(());
+        }
+        self.reload(store, moods_file, now)
     }
 
     fn reload_due(&self, now: Instant) -> bool {
@@ -285,6 +315,17 @@ impl State {
             local_hour: u8::try_from(local.hour()).unwrap_or(0),
         })
     }
+}
+
+/// A hash of what the plan is built from beyond the library cache:
+/// moods.toml and preferences.toml as they read now (an absent file hashes
+/// as absent).
+fn plan_inputs(moods_file: Option<&PathBuf>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for path in [moods_file.cloned(), prefs::file(moods_file)] {
+        path.and_then(|p| std::fs::read(p).ok()).hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn plan<'a>(
@@ -548,6 +589,14 @@ fn steer(
 }
 
 impl SpotifyDj {
+    /// A library sync since the last look makes the plan due for a rebuild.
+    fn take_library_fresh(&self, state: &mut State) {
+        if self.library.as_ref().is_some_and(|l| l.take_fresh()) {
+            state.planned = false;
+            state.plan_retry_at = None;
+        }
+    }
+
     /// A start, skip or stop (see [`DjEngine::act`]).
     fn carry_out(
         &self,
@@ -562,7 +611,8 @@ impl SpotifyDj {
         let now = clock.now().timestamp();
         match action {
             DjAction::Start => {
-                state.reload(store, self.moods_file.as_ref(), now)?;
+                self.take_library_fresh(state);
+                state.refresh(store, self.moods_file.as_ref(), now)?;
                 let cx = state.context(store, at.coordinator, clock)?;
                 let State {
                     feeds,
@@ -603,7 +653,8 @@ impl SpotifyDj {
                 {
                     return Err(no_session(&room));
                 }
-                state.reload(store, self.moods_file.as_ref(), now)?;
+                self.take_library_fresh(state);
+                state.refresh(store, self.moods_file.as_ref(), now)?;
                 let cx = state.context(store, at.coordinator, clock)?;
                 let State {
                     feeds,
@@ -812,11 +863,7 @@ impl DjEngine for SpotifyDj {
         }
         // Keep a failed rebuild pending even after consuming the library's
         // freshness notification. A repaired plan can unblock a failed feed.
-        let fresh = self.library.as_ref().is_some_and(|l| l.take_fresh());
-        if fresh {
-            state.planned = false;
-            state.plan_retry_at = None;
-        }
+        self.take_library_fresh(&mut state);
         if state.reload_due(Instant::now())
             && let Err(f) = state.reload(store, self.moods_file.as_ref(), clock.now().timestamp())
         {
