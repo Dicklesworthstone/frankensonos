@@ -15,6 +15,7 @@ use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
 use fsonos_types::{PlayerId, TransportState};
+use std::net::IpAddr;
 
 const STREAM: &str = "x-rincon-mp3radio://stream.example.invalid/first.mp3";
 const OTHER: &str = "x-rincon-mp3radio://stream.example.invalid/other.mp3";
@@ -55,6 +56,69 @@ fn now(sim: &SimHandle) -> Vec<HouseholdState> {
     let mut st = HouseholdState::default();
     st.apply_topology(&get_zone_group_state(&lan, sim.player("Kitchen").unwrap().ip).unwrap());
     vec![st]
+}
+fn household_seeds(sim: &SimHandle) -> Vec<IpAddr> {
+    [1, 2]
+        .into_iter()
+        .filter_map(|generation| {
+            sim.players()
+                .iter()
+                .find(|player| player.generation == generation && !player.hidden)
+                .map(|player| player.ip)
+        })
+        .collect()
+}
+
+fn multi_surface(sim: &SimHandle) -> Surface {
+    let seeds = household_seeds(sim);
+    Surface::new(
+        Box::new(sim.lan()),
+        Box::new(move |t| {
+            seeds
+                .iter()
+                .map(|&ip| {
+                    let mut state = HouseholdState::default();
+                    state.apply_topology(
+                        &get_zone_group_state(t, ip).map_err(fsonos_core::CoreError::from)?,
+                    );
+                    Ok(state)
+                })
+                .collect()
+        }),
+        Policy::default(),
+        Box::new(SystemClock),
+    )
+    .with_action_log(Box::new(MemStore::default()), "mcp")
+}
+
+fn multi_now(sim: &SimHandle) -> Vec<HouseholdState> {
+    let lan = sim.lan();
+    household_seeds(sim)
+        .into_iter()
+        .map(|ip| {
+            let mut state = HouseholdState::default();
+            state.apply_topology(&get_zone_group_state(&lan, ip).unwrap());
+            state
+        })
+        .collect()
+}
+
+fn id_in(houses: &[HouseholdState], generation: u16, room: &str) -> PlayerId {
+    houses
+        .iter()
+        .find(|house| {
+            house
+                .generation()
+                .is_some_and(|house_gen| house_gen as u16 == generation)
+        })
+        .and_then(|house| {
+            house
+                .rooms
+                .iter()
+                .find(|candidate| candidate.name.eq_ignore_ascii_case(room))
+                .map(|candidate| candidate.primary.clone())
+        })
+        .unwrap()
 }
 
 fn id(houses: &[HouseholdState], room: &str) -> PlayerId {
@@ -401,6 +465,53 @@ fn undo_refuses_after_a_room_joined_the_group_since() {
         Some(kitchen),
         "the Office stays grouped"
     );
+    sim.shutdown();
+}
+/// Room names are household-local. An S1 Kitchen having been touched must
+/// not hide an S2 Kitchen joining a group since: undo must refuse rather
+/// than take the S2 Kitchen back out.
+#[test]
+fn undo_sees_a_joined_duplicate_room_name_across_households() {
+    let sim = SimHousehold::builder()
+        .s1([
+            SimPlayerSpec::new("Kitchen", SimModel::Play5Gen1),
+            SimPlayerSpec::new("Office", SimModel::Play5Gen1),
+        ])
+        .s2([
+            SimPlayerSpec::new("Living Room", SimModel::One),
+            SimPlayerSpec::new("Kitchen", SimModel::One),
+        ])
+        .spawn()
+        .unwrap();
+    let lan = sim.lan();
+    let houses = multi_now(&sim);
+    let s1_kitchen = id_in(&houses, 1, "Kitchen");
+    let (s2_living, s2_kitchen) = (
+        id_in(&houses, 2, "Living Room"),
+        id_in(&houses, 2, "Kitchen"),
+    );
+    let surface = multi_surface(&sim);
+    surface
+        .control(&agent(), "set_volume", |house| {
+            plan_volume(house, &volume_req("Kitchen@S1", 30))
+        })
+        .unwrap();
+
+    control::join(&lan, &houses, &s2_kitchen, &s2_living).unwrap();
+    let refused = surface.undo(&agent(), false).unwrap_err();
+    assert!(
+        refused.detail.contains("Kitchen joined the group"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        multi_now(&sim)
+            .iter()
+            .find_map(|house| house.coordinator_of(&s2_kitchen))
+            .cloned(),
+        Some(s2_living),
+        "the S2 Kitchen stays grouped"
+    );
+    let _ = s1_kitchen;
     sim.shutdown();
 }
 

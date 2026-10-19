@@ -229,14 +229,15 @@ fn room_name(households: &[HouseholdState], id: &PlayerId) -> String {
 /// What changed since the action in the rooms of `snap`'s zone, which undo
 /// would put back: each room's volume, mute, group and source against
 /// `after`, read again now, and any room grouped in since that is not one
-/// of `touched` (the action's rooms, by name), which the restore would take
-/// out again. `None` when nothing did (or nothing was kept).
+/// of `touched` (the action's rooms, resolved in the same household), which
+/// the restore would take out again. `None` when nothing did (or nothing
+/// was kept).
 fn drift<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     after: &[RoomAfter],
     snap: &ZoneSnapshot,
-    touched: &[String],
+    touched: &[PlayerId],
 ) -> Option<String> {
     let kept: Vec<&RoomAfter> = after
         .iter()
@@ -265,13 +266,26 @@ fn drift<T: Transport + ?Sized>(
             changes.push(format!("{room}'s group plays something else"));
         }
     }
+
+    // A group member can be a satellite; resolve it to its logical room in
+    // this household before asking whether that room was touched. Player ids
+    // are global, while the same room name can exist in both households.
     let mut joined: Vec<String> = Vec::new();
-    let groups = households.iter().flat_map(|h| &h.groups);
-    for group in groups.filter(|g| kept.iter().any(|was| was.coordinator == g.coordinator)) {
-        for member in &group.members {
-            let room = room_name(households, member);
-            if !touched.contains(&room) && !joined.contains(&room) {
-                joined.push(room);
+    for household in households {
+        for group in household
+            .groups
+            .iter()
+            .filter(|g| kept.iter().any(|was| was.coordinator == g.coordinator))
+        {
+            for member in &group.members {
+                let room = room_name(households, member);
+                let was_touched = household.rooms.iter().any(|room| {
+                    room.players.contains(member)
+                        && room.players.iter().any(|player| touched.contains(player))
+                });
+                if !was_touched && !joined.contains(&room) {
+                    joined.push(room);
+                }
             }
         }
     }
@@ -295,12 +309,12 @@ fn refuse_if_changed<T: Transport + ?Sized>(
     if before.after.is_empty() {
         return Ok(());
     }
-    let touched: Vec<String> = before
+    let touched: Vec<PlayerId> = before
         .zones
         .iter()
-        .flat_map(|snap| &snap.members)
+        .flat_map(|snap| snap.members.iter())
         .chain(before.after.iter().map(|room| &room.player))
-        .map(|id| room_name(households, id))
+        .cloned()
         .collect();
     let changes: Vec<String> = before
         .zones
