@@ -15,7 +15,7 @@ public struct RemoteResult: Identifiable, Sendable {
 /// lifecycle paths run in package tests. Selection is a household-qualified
 /// room anchor; it follows a coordinator change without retargeting a review.
 @MainActor public final class RemoteModel {
-    public enum Panel: String, CaseIterable, Sendable { case queue, favorites, dj, library, scenes, sleep }
+    public enum Panel: String, CaseIterable, Sendable { case queue, favorites, dj, library, scenes, sleep, schedules }
     public enum ActionPhase: String, Sendable { case idle, preparing, confirming }
 
     /// A single UI adapter may observe state changes on the main actor. No
@@ -43,6 +43,16 @@ public struct RemoteResult: Identifiable, Sendable {
     public private(set) var result: RemoteResult? { willSet { onChange?() } }
     public private(set) var actionPhase: ActionPhase = .idle { willSet { onChange?() } }
 
+    public private(set) var schedules: [SavedSchedule] = [] { willSet { onChange?() } }
+    public private(set) var schedulesObservedAt: Date? { willSet { onChange?() } }
+    public private(set) var scheduleScenes: [Scene] = [] { willSet { onChange?() } }
+    public private(set) var scheduleScenesProblem: String? { willSet { onChange?() } }
+    public private(set) var scheduleForm = ScheduleForm() { willSet { onChange?() } }
+    public private(set) var scheduleFormProblem: String? { willSet { onChange?() } }
+    public private(set) var scheduleReview: ScheduleReview? { willSet { onChange?() } }
+    public private(set) var scheduleResult: RemoteScheduleResult? { willSet { onChange?() } }
+    private var scheduleAction = false
+
     private let client: DaemonClient
     private let live: LiveHouse
     private let commands: CommandReviewSession
@@ -65,7 +75,9 @@ public struct RemoteResult: Identifiable, Sendable {
         guard let zone = selectedZone else { return nil }
         return house?.snapshot?.states[zone.id]
     }
-    public var canPrepare: Bool { active && !stopped && selectedZone != nil && actionPhase == .idle && review == nil }
+    public var canPrepare: Bool { canSchedule && selectedZone != nil }
+    public var canSchedule: Bool { active && !stopped && actionPhase == .idle && review == nil && scheduleReview == nil }
+    public var canManageSchedules: Bool { canSchedule && panel == .schedules && schedulesObservedAt != nil && !panelLoading }
 
     public init(client: DaemonClient) {
         self.client = client
@@ -118,6 +130,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func show(_ panel: Panel) {
         guard self.panel != panel else { return }
+        if self.panel == .schedules { cancelReview() }
         self.panel = panel
         invalidatePanel(); refreshPanel()
     }
@@ -191,7 +204,7 @@ public struct RemoteResult: Identifiable, Sendable {
     }
 
     public func cancelReview() {
-        epoch &+= 1; review = nil
+        epoch &+= 1; review = nil; scheduleReview = nil
         actionTask?.cancel()
         let previous = cancellation, commands = commands
         cancellation = Task { await previous?.value; await commands.cancel() }
@@ -200,7 +213,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func dismissResult() { result = nil }
 
-    private func actionFinished() { actionTask = nil; actionPhase = .idle }
+    private func actionFinished() { actionTask = nil; scheduleAction = false; actionPhase = .idle }
 
     private func receive(_ value: LiveHouseView) {
         guard !stopped else { return }
@@ -217,7 +230,7 @@ public struct RemoteResult: Identifiable, Sendable {
             // A grouping command can emit its topology event before its HTTP
             // acknowledgement. Do not cancel that very write on its own event.
             // Explicit selection changes and suspension still cancel requests.
-            if actionPhase != .confirming { cancelReview() }
+            if actionPhase != .confirming && !scheduleAction && scheduleReview == nil { cancelReview() }
             queueOffset = 0
             invalidatePanel(); refreshPanel()
         } else if active && value.isFresh && (!wasFresh || oldState.map { old in selectedState.map { !old.samePlayback(as: $0) } ?? true } == true) {
@@ -229,6 +242,7 @@ public struct RemoteResult: Identifiable, Sendable {
         panelEpoch &+= 1
         panelTask?.cancel(); panelPending = false
         queue = nil; favorites = []; dj = nil; moods = []; hits = []; scenes = []; sleepTimer = nil; sleepObservedAt = nil
+        schedules = []; schedulesObservedAt = nil; scheduleScenes = []; scheduleScenesProblem = nil
         panelProblem = nil
         // Keep a cancelled request's slot until it drains, including a
         // transport that ignores cancellation. Never publish its stale data.
@@ -236,37 +250,53 @@ public struct RemoteResult: Identifiable, Sendable {
     }
 
     public func refreshPanel() {
-        guard active && !stopped && selectedZone != nil else { return }
+        guard active && !stopped && (panel == .schedules || selectedZone != nil) else { return }
         panelPending = true
         startPanelRead()
     }
 
     private func startPanelRead() {
-        guard active && !stopped && panelPending && panelTask == nil, let zone = selectedZone else { return }
+        guard active && !stopped && panelPending && panelTask == nil,
+              panel == .schedules || selectedZone != nil else { return }
+        let zone = selectedZone
         panelPending = false; panelLoading = true; panelProblem = nil
         let token = panelEpoch, panel = panel, offset = queueOffset, query = query, client = client
         panelTask = Task { [weak self] in
             do {
                 let answer: PanelAnswer
-                switch panel {
-                case .queue: answer = .queue(try await client.queue(zone, offset: offset))
-                case .favorites: answer = .favorites(try await client.favorites(zone))
-                case .scenes: answer = .scenes(try await client.scenes())
-                case .sleep: answer = .sleep(try await client.sleepTimer(zone))
-                case .dj:
-                    let status = try await client.dj(zone)
+                if panel == .schedules {
+                    let values = try await client.schedules()
                     do {
-                        let moods = try await client.get(MoodCatalog.self, ["dj", "moods"], query: [URLQueryItem(name: "zone", value: zone.id.address)])
-                        answer = .dj(status, moods.moods, nil)
+                        answer = .schedules(values, try await client.scenes(), nil)
                     } catch {
                         try Task.checkCancellation()
-                        answer = .dj(status, [], "Mood catalog unavailable: " + error.localizedDescription)
+                        answer = .schedules(values, [], "Scene catalog unavailable: " + error.localizedDescription)
                     }
-                case .library: answer = .library(query.isEmpty ? [] : try await client.search(query, in: zone))
-                }
+                } else if let zone {
+                    switch panel {
+                    case .schedules: throw ContractError.invalid("The schedule read was not selected.")
+                    case .queue: answer = .queue(try await client.queue(zone, offset: offset))
+                    case .favorites: answer = .favorites(try await client.favorites(zone))
+                    case .scenes: answer = .scenes(try await client.scenes())
+                    case .sleep: answer = .sleep(try await client.sleepTimer(zone))
+                    case .dj:
+                        let status = try await client.dj(zone)
+                        do {
+                            let moods = try await client.get(MoodCatalog.self, ["dj", "moods"], query: [URLQueryItem(name: "zone", value: zone.id.address)])
+                            answer = .dj(status, moods.moods, nil)
+                        } catch {
+                            try Task.checkCancellation()
+                            answer = .dj(status, [], "Mood catalog unavailable: " + error.localizedDescription)
+                        }
+                    case .library: answer = .library(query.isEmpty ? [] : try await client.search(query, in: zone))
+                    }
+                } else { throw ContractError.invalid("Select a room for this panel.") }
                 try Task.checkCancellation()
                 if let self, self.active && self.panelEpoch == token {
                     switch answer {
+                    case .schedules(let values, let scenes, let problem):
+                        self.schedules = values; self.schedulesObservedAt = Date()
+                        self.scheduleScenes = scenes; self.scheduleScenesProblem = problem
                     case .queue(let value): self.queue = value
                     case .favorites(let value): self.favorites = value
                     case .scenes(let value): self.scenes = value
@@ -278,6 +308,8 @@ public struct RemoteResult: Identifiable, Sendable {
             } catch {
                 if let self, self.active && self.panelEpoch == token && !Task.isCancelled {
                     self.queue = nil; self.favorites = []; self.dj = nil; self.moods = []; self.hits = []; self.scenes = []; self.sleepTimer = nil; self.sleepObservedAt = nil
+                    self.schedules = []; self.schedulesObservedAt = nil
+                    self.scheduleScenes = []; self.scheduleScenesProblem = nil
                     self.panelProblem = error.localizedDescription
                 }
             }
@@ -286,9 +318,76 @@ public struct RemoteResult: Identifiable, Sendable {
         }
     }
 
+    /// Edits only the unsent form. Selection and refresh never rewrite it.
+    public func updateScheduleForm(_ value: ScheduleForm) {
+        guard active && !stopped && actionPhase == .idle && review == nil else { return }
+        if scheduleReview != nil { cancelReview() }
+        scheduleForm = value; scheduleFormProblem = nil
+    }
+
+    public func prepareScheduleDraft() {
+        guard canManageSchedules else { return }
+        do {
+            let draft = try scheduleForm.draft(zones: house?.snapshot?.zones ?? [], scenes: scheduleScenes)
+            scheduleFormProblem = nil
+            prepareSchedule(.add(draft))
+        } catch { scheduleFormProblem = error.localizedDescription }
+    }
+
+    public func prepareSchedule(_ command: ScheduleCommand) {
+        guard canManageSchedules else { return }
+        if case .change(let expected, _) = command {
+            guard schedules.contains(where: { expected.sameDefinition(as: $0) }) else {
+                scheduleFormProblem = "This schedule is not in the current list. Refresh schedules."
+                return
+            }
+        }
+        actionPhase = .preparing; scheduleAction = true
+        let token = epoch, barrier = cancellation, commands = commands
+        actionTask = Task { [weak self] in
+            defer { self?.actionFinished() }
+            await barrier?.value
+            do {
+                try Task.checkCancellation()
+                let observed = try await commands.prepare(command)
+                guard let self, self.active && self.epoch == token && !Task.isCancelled else { return }
+                self.scheduleReview = observed
+            } catch {
+                if let self, self.epoch == token && !Task.isCancelled {
+                    self.scheduleResult = RemoteScheduleResult(command: command, receipt: nil, title: "Nothing sent",
+                        detail: error.localizedDescription, kind: .notSent)
+                }
+            }
+        }
+    }
+
+    public func confirmSchedule(_ id: UUID) {
+        guard active, actionPhase == .idle, let reviewed = scheduleReview, reviewed.id == id else { return }
+        scheduleReview = nil; actionPhase = .confirming; scheduleAction = true
+        let commands = commands
+        actionTask = Task { [weak self] in
+            do {
+                let receipt = try await commands.execute(reviewed)
+                self?.scheduleResult = RemoteScheduleResult(command: reviewed.command, receipt: receipt,
+                    title: receipt.title, detail: receipt.detail, kind: .confirmed)
+            } catch {
+                let uncertain: Bool
+                if case ClientError.uncertain = error { uncertain = true } else { uncertain = false }
+                self?.scheduleResult = RemoteScheduleResult(command: reviewed.command, receipt: nil,
+                    title: uncertain ? "Schedule outcome uncertain — not repeated" : "Nothing sent",
+                    detail: error.localizedDescription, kind: uncertain ? .uncertain : .notSent)
+            }
+            self?.actionFinished()
+            self?.refreshPanel()
+        }
+    }
+
+    public func dismissScheduleResult() { scheduleResult = nil }
+
     deinit { observer?.cancel(); panelTask?.cancel(); actionTask?.cancel() }
 }
 
 private enum PanelAnswer: Sendable {
+    case schedules([SavedSchedule], [Scene], String?)
     case queue(QueuePage), favorites([Favorite]), dj(DJStatus, [MoodCatalog.Mood], String?), library([LibraryHit]), scenes([Scene]), sleep(SleepTimer?)
 }

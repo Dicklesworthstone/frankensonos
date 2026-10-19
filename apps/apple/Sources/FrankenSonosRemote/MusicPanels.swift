@@ -26,6 +26,7 @@ import FrankenSonosKit
             case .library: libraryPanel
             case .scenes: ScenePanel(bridge: bridge)
             case .sleep: SleepPanel(bridge: bridge)
+            case .schedules: SchedulesPanel(bridge: bridge)
             }
         }
     }

@@ -47,6 +47,20 @@ import FrankenSonosKit
                         }
                         .accessibilityElement(children: .contain)
                     }
+                    if let result = model.scheduleResult {
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text(result.title).font(.headline)
+                                    Spacer()
+                                    Button("Dismiss schedule result") { model.dismissScheduleResult() }
+                                }
+                                Text(result.kind.rawValue.capitalized).font(.caption)
+                                Text(result.command.detail).font(.callout).textSelection(.enabled)
+                                Text(result.detail).textSelection(.enabled)
+                            }.frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
                     if model.actionPhase != .idle {
                         HStack {
                             ProgressView().controlSize(.small)
@@ -62,13 +76,15 @@ import FrankenSonosKit
                         playback(zone)
                         levels(zone)
                         layout(zone)
-                        Picker("Browse", selection: Binding(get: { model.panel }, set: { model.show($0) })) {
-                            ForEach(RemoteModel.Panel.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
-                        }.pickerStyle(.segmented)
-                        MusicPanels(bridge: bridge)
                     } else {
                         ContentUnavailableView("Select a room", systemImage: "hifispeaker.2",
                                                description: Text("Rooms appear after the daemon can describe the house. A disconnected room never becomes a different target."))
+                    }
+                    Picker("Browse", selection: Binding(get: { model.panel }, set: { model.show($0) })) {
+                        ForEach(RemoteModel.Panel.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                    }.pickerStyle(.menu)
+                    if model.panel == .schedules || model.selectedZone != nil {
+                        MusicPanels(bridge: bridge)
                     }
                 }
                 .padding(24).frame(maxWidth: 1_100, alignment: .leading)
@@ -84,6 +100,9 @@ import FrankenSonosKit
         }
         .sheet(item: Binding(get: { model.review }, set: { if $0 == nil && model.review != nil { model.cancelReview() } })) { review in
             ReviewSheet(review: review, confirm: { model.confirm(review.id) }, cancel: { model.cancelReview() })
+        }
+        .sheet(item: Binding(get: { model.scheduleReview }, set: { if $0 == nil && model.scheduleReview != nil { model.cancelReview() } })) { review in
+            ScheduleReviewSheet(review: review, confirm: { model.confirmSchedule(review.id) }, cancel: { model.cancelReview() })
         }
     }
 

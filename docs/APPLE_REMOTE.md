@@ -77,6 +77,13 @@ acknowledgement that playback paused. Timers continue on the daemon/speaker when
 the remote closes; no offline command queue or local alarm is created. See
 `docs/APPLE_SLEEP.md` in the repository.
 
+The Schedules panel creates weekly or explicit-offset one-time schedules for
+DJ starts, faded pauses, room volumes and saved scenes. It also lists, pauses,
+resumes and removes existing definitions, including when speakers cannot be
+read. Draft targets are explicit, never borrowed from a changing playback
+selection. The daemon owns run times, persistence and creator permissions; the
+remote adds no scheduler. See `docs/APPLE_SCHEDULES.md` in the repository.
+
 ## Commands and lifetime
 
 Every mutation goes through `RemoteModel` and `CommandReviewSession`: read,
@@ -125,9 +132,15 @@ The scene and sleep workflows add twelve scene tests and twenty-two sleep tests
 using the production codecs, command actors and screen controller with controlled
 daemon responses. They also run in the full package on the native Mac workflow.
 
+Schedules add twenty-one client/command tests and seventeen form/screen tests.
+These cover all four action types, store management without speaker reads,
+house-local and offset-explicit times, shared playback command locking, cancelled
+reads, and uncertain acknowledgements that must not be replayed. Schedule-list
+observations are not evidence that a scheduled action actually ran.
+
 Local Linux execution does not validate SwiftUI rendering, macOS application
 launch, Apple URLSession streaming, Tailscale reachability or physical Sonos.
 Those remain separate Mac/workflow and owner-LAN acceptance checks. This remote
-does not yet expose every daemon feature: scene editing, schedules,
+does not yet expose every daemon feature: scene editing,
 announcements, EQ, Spotify sign-in/sync and action-log undo remain on the CLI/web
 surfaces. It is a runnable Mac target, not an iOS installation or App Store release.
