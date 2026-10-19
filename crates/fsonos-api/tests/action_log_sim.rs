@@ -322,11 +322,13 @@ fn a_set_skips_a_room_the_policy_refuses_and_the_rest_stays_undoable() {
     sim.shutdown();
 }
 
-/// p7vq.3: undo puts a zone back only while its rooms are as the action
-/// left them; one someone changed since (the Sonos app, here) is left as it
-/// is and named, unless the owner forces it.
+/// p7vq.3: undo puts an action back only while its rooms are as it left
+/// them. A room someone changed since (the Sonos app, here) makes the undo
+/// refuse, naming the change, and puts nothing back; the action stays
+/// undoable, so the owner's forced undo puts back that same action (an
+/// agent may not force).
 #[test]
-fn undo_leaves_a_room_changed_since_unless_the_owner_forces_it() {
+fn undo_refuses_a_set_someone_changed_since_until_the_owner_forces_it() {
     let sim = sim();
     let lan = sim.lan();
     let houses = now(&sim);
@@ -345,29 +347,60 @@ fn undo_leaves_a_room_changed_since_unless_the_owner_forces_it() {
     all_to(20);
     // The Sonos app moves Kitchen afterwards.
     control::set_volume(&lan, &houses, &kitchen, 55).unwrap();
-    let report = s
-        .undo(&Client::Cli, false)
-        .unwrap()
-        .expect("the set to undo");
-    assert_eq!((volume(&kitchen), volume(&office)), (55, 40), "{report:?}");
+    let refused = s.undo(&Client::Cli, false).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InvalidArgument, "{refused:?}");
     assert!(
-        report.failures.iter().any(|(_, why)| {
-            why.contains("changed since") && why.contains("Kitchen's volume 20 -> 55")
-        }),
-        "{report:?}"
+        refused.detail.contains("Kitchen's volume 20 -> 55") && refused.detail.contains("--force"),
+        "{refused:?}"
+    );
+    assert_eq!(
+        (volume(&kitchen), volume(&office)),
+        (55, 20),
+        "nothing put back"
     );
 
-    // An agent may not force; the owner's CLI may.
-    all_to(25);
-    control::set_volume(&lan, &houses, &kitchen, 60).unwrap();
-    let refused = s.undo_forced(&agent(), false, true).unwrap_err();
-    assert_eq!(refused.code, ErrorCode::PolicyDenied, "{refused:?}");
+    // An agent may not force; the owner's CLI may, and it puts back that
+    // same set (the refusal did not use it up).
+    let denied = s.undo_forced(&agent(), false, true).unwrap_err();
+    assert_eq!(denied.code, ErrorCode::PolicyDenied, "{denied:?}");
     let report = s
         .undo_forced(&Client::Cli, false, true)
         .unwrap()
-        .expect("the second set to undo");
+        .expect("the refused set, still undoable");
     assert!(report.failures.is_empty(), "{report:?}");
-    assert_eq!((volume(&kitchen), volume(&office)), (55, 40));
+    assert_eq!((volume(&kitchen), volume(&office)), (40, 40));
+    sim.shutdown();
+}
+
+/// A room grouped into the action's zone since is a change too: putting the
+/// zone back would take that room out of its group again.
+#[test]
+fn undo_refuses_after_a_room_joined_the_group_since() {
+    let sim = sim();
+    let lan = sim.lan();
+    let houses = now(&sim);
+    let (kitchen, office) = (id(&houses, "Kitchen"), id(&houses, "Office"));
+    let s = surface(&sim);
+    s.control(&agent(), "set_volume", |h| {
+        plan_volume(h, &volume_req("Kitchen", 30))
+    })
+    .unwrap();
+    // The Sonos app groups the Office into the Kitchen.
+    control::join(&lan, &houses, &office, &kitchen).unwrap();
+    let refused = s.undo(&agent(), false).unwrap_err();
+    assert!(
+        refused.detail.contains("Office joined the group"),
+        "{refused:?}"
+    );
+    let grouped = now(&sim);
+    assert_eq!(
+        grouped
+            .iter()
+            .find_map(|h| h.coordinator_of(&office))
+            .cloned(),
+        Some(kitchen),
+        "the Office stays grouped"
+    );
     sim.shutdown();
 }
 

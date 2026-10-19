@@ -126,6 +126,11 @@ pub struct RoomAfter {
     /// What that group played: its AVTransport URI (a queue, a stream, a
     /// track), or empty for nothing.
     pub source: String,
+    /// For a room whose speaker was still ramping to `volume` when this was
+    /// taken (a fade at its own pace): the level it ramped from. Any level
+    /// between the two is the ramp, not a change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ramp_from: Option<u8>,
 }
 
 /// The state of `rooms` (primaries, duplicates ignored) now, read from the
@@ -137,6 +142,8 @@ pub fn rooms_after<T: Transport + ?Sized>(
     rooms: &[PlayerId],
 ) -> Vec<RoomAfter> {
     let mut seen: Vec<&PlayerId> = Vec::new();
+    // One read per group: its members play what its coordinator plays.
+    let mut sources: Vec<(PlayerId, String)> = Vec::new();
     let mut after = Vec::new();
     for room in rooms {
         if seen.contains(&room) {
@@ -151,13 +158,24 @@ pub fn rooms_after<T: Transport + ?Sized>(
         else {
             continue;
         };
+        let source = match sources.iter().find(|(c, _)| *c == coordinator) {
+            Some((_, uri)) => uri.clone(),
+            None => match fsonos_proto::control::get_media_info(t, lead.ip) {
+                Ok(info) => {
+                    sources.push((coordinator.clone(), info.uri.clone()));
+                    info.uri
+                }
+                Err(_) => continue,
+            },
+        };
         let read = || -> Result<RoomAfter, fsonos_proto::ProtoError> {
             Ok(RoomAfter {
                 player: room.clone(),
                 volume: fsonos_proto::control::get_volume(t, at.ip)?,
                 mute: fsonos_proto::control::get_mute(t, at.ip)?,
                 coordinator: coordinator.clone(),
-                source: fsonos_proto::control::get_media_info(t, lead.ip)?.uri,
+                source: source.clone(),
+                ramp_from: None,
             })
         };
         if let Ok(room) = read() {
@@ -190,14 +208,35 @@ pub fn with_after(before: Option<String>, after: &[RoomAfter]) -> Option<String>
     Some(value.to_string())
 }
 
+/// Whether a room's volume `now` differs from what the action left: for a
+/// room still ramping there, a level short of the target on the way from
+/// where it ramped from is the ramp, not a change.
+fn volume_moved(was: &RoomAfter, now: u8) -> bool {
+    let ramping = was
+        .ramp_from
+        .is_some_and(|from| (from.min(was.volume)..=from.max(was.volume)).contains(&now));
+    now != was.volume && !ramping
+}
+
+/// A room's name, or its player id when the households no longer know it.
+fn room_name(households: &[HouseholdState], id: &PlayerId) -> String {
+    households
+        .iter()
+        .find_map(|h| h.player(id))
+        .map_or_else(|| id.0.clone(), |p| p.room_name.clone())
+}
+
 /// What changed since the action in the rooms of `snap`'s zone, which undo
 /// would put back: each room's volume, mute, group and source against
-/// `after`, read again now. `None` when nothing did (or nothing was kept).
+/// `after`, read again now, and any room grouped in since that is not one
+/// of `touched` (the action's rooms, by name), which the restore would take
+/// out again. `None` when nothing did (or nothing was kept).
 fn drift<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     after: &[RoomAfter],
     snap: &ZoneSnapshot,
+    touched: &[String],
 ) -> Option<String> {
     let kept: Vec<&RoomAfter> = after
         .iter()
@@ -205,19 +244,13 @@ fn drift<T: Transport + ?Sized>(
         .collect();
     let players: Vec<PlayerId> = kept.iter().map(|room| room.player.clone()).collect();
     let now = rooms_after(t, households, &players);
-    let name = |id: &PlayerId| {
-        households
-            .iter()
-            .find_map(|h| h.player(id))
-            .map_or_else(|| id.0.clone(), |p| p.room_name.clone())
-    };
     let mut changes = Vec::new();
-    for was in kept {
+    for was in &kept {
         let Some(is) = now.iter().find(|room| room.player == was.player) else {
             continue;
         };
-        let room = name(&was.player);
-        if is.volume != was.volume {
+        let room = room_name(households, &was.player);
+        if volume_moved(was, is.volume) {
             changes.push(format!("{room}'s volume {} -> {}", was.volume, is.volume));
         }
         if is.mute != was.mute {
@@ -232,7 +265,57 @@ fn drift<T: Transport + ?Sized>(
             changes.push(format!("{room}'s group plays something else"));
         }
     }
+    let mut joined: Vec<String> = Vec::new();
+    let groups = households.iter().flat_map(|h| &h.groups);
+    for group in groups.filter(|g| kept.iter().any(|was| was.coordinator == g.coordinator)) {
+        for member in &group.members {
+            let room = room_name(households, member);
+            if !touched.contains(&room) && !joined.contains(&room) {
+                joined.push(room);
+            }
+        }
+    }
+    changes.extend(
+        joined
+            .into_iter()
+            .map(|room| format!("{room} joined the group")),
+    );
     (!changes.is_empty()).then(|| changes.join(", "))
+}
+
+/// Refuse to undo `target` when someone changed its zones since (see
+/// [`drift`]): nothing is put back and nothing is logged, so the action
+/// stays undoable and a forced undo still puts back this same action.
+fn refuse_if_changed<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    target: &LoggedAction,
+    before: &BeforeState,
+) -> Result<(), CoreError> {
+    if before.after.is_empty() {
+        return Ok(());
+    }
+    let touched: Vec<String> = before
+        .zones
+        .iter()
+        .flat_map(|snap| &snap.members)
+        .chain(before.after.iter().map(|room| &room.player))
+        .map(|id| room_name(households, id))
+        .collect();
+    let changes: Vec<String> = before
+        .zones
+        .iter()
+        .filter_map(|snap| drift(t, households, &before.after, snap, &touched))
+        .collect();
+    if changes.is_empty() {
+        return Ok(());
+    }
+    Err(CoreError::NotUndoable(format!(
+        "#{} ({}) is left as it is: since it, {}; `fsonos undo --force` puts it back anyway",
+        target.id,
+        target.action.intent,
+        changes.join("; ")
+    )))
 }
 
 impl BeforeState {
@@ -410,8 +493,10 @@ pub fn undo_last<T: Transport + ?Sized, S: Store + ?Sized>(
 /// [`UNDO_MAX_AGE_SECS`] is refused instead ([`CoreError::NotUndoable`], see
 /// [`undo_target`]): the house has moved on since.
 /// Each zone step passes through `vet` first ([`snapshot::restore_vetted`]).
-/// A zone whose rooms someone changed since the action (see [`RoomAfter`])
-/// is not put back, and the report names what changed, unless `force`.
+/// When someone changed the action's rooms since (see [`RoomAfter`]),
+/// nothing is put back and the undo is refused, naming the changes
+/// ([`CoreError::NotUndoable`]); the action stays undoable. `force` puts it
+/// back anyway.
 #[allow(clippy::too_many_arguments)] // undo_last's arguments, force and the vet
 pub fn undo_last_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     t: &T,
@@ -472,25 +557,16 @@ pub fn undo_last_vetted_checked<T: Transport + ?Sized, S: Store + ?Sized>(
 /// with why.
 type ZoneOutcomes = (Vec<(PlayerId, RestoreReport)>, Vec<(PlayerId, String)>);
 
-/// Put back each zone of `before` (see [`undo_last_vetted`]), unless its
-/// rooms changed since and the undo is not forced.
+/// Put back each zone of `before` (see [`undo_last_vetted`]).
 fn restore_zones<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     before: &BeforeState,
-    force: bool,
     vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> ZoneOutcomes {
     let mut zones = Vec::new();
     let mut failures = Vec::new();
     for snap in &before.zones {
-        if !force && let Some(changes) = drift(t, households, &before.after, snap) {
-            failures.push((
-                snap.coordinator.clone(),
-                format!("changed since ({changes}); left as it is"),
-            ));
-            continue;
-        }
         match snapshot::restore_vetted(t, households, snap, &snapshot::Aspect::ALL, vet) {
             Ok(report) => zones.push((snap.coordinator.clone(), report)),
             Err(e) => failures.push((snap.coordinator.clone(), e.to_string())),
@@ -518,6 +594,9 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
                 target.id
             ))
         })?;
+    if !force {
+        refuse_if_changed(t, households, &target, &before)?;
+    }
     let coordinators: Vec<PlayerId> = before.zones.iter().map(|s| s.coordinator.clone()).collect();
     let (now, _) = capture_zones(t, households, &coordinators, at);
     let steered: Vec<PlayerId> = before
@@ -527,7 +606,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
         .collect();
     let now_sessions = capture_sessions(store, &steered)?;
 
-    let (zones, failures) = restore_zones(t, households, &before, force, vet);
+    let (zones, failures) = restore_zones(t, households, &before, vet);
     let mut sessions = Vec::new();
     let mut session_failures = Vec::new();
     for session in &before.dj_sessions {
@@ -794,6 +873,7 @@ mod tests {
             mute: false,
             coordinator: PlayerId("RINCON_A".into()),
             source: "x-rincon-queue:RINCON_A#0".into(),
+            ramp_from: None,
         }];
         assert_eq!(with_after(None, &after), None, "nothing to undo stays so");
         let zones = before_state(&[snap("RINCON_A")]);
@@ -809,6 +889,38 @@ mod tests {
                 .after
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_room_still_ramping_to_its_level_has_not_moved() {
+        let was = |ramp_from| RoomAfter {
+            player: PlayerId("RINCON_A".into()),
+            volume: 10,
+            mute: false,
+            coordinator: PlayerId("RINCON_A".into()),
+            source: String::new(),
+            ramp_from,
+        };
+        assert!(!volume_moved(&was(None), 10));
+        assert!(
+            volume_moved(&was(None), 25),
+            "no ramp: any other level moved"
+        );
+        // Fading 50 -> 10 at the speaker's own pace: 25 is on the way.
+        assert!(!volume_moved(&was(Some(50)), 25));
+        assert!(!volume_moved(&was(Some(50)), 50), "not started yet");
+        assert!(
+            volume_moved(&was(Some(50)), 60),
+            "above where it ramped from"
+        );
+        assert!(volume_moved(&was(Some(50)), 5), "past its target");
+        // And up: 10 -> 40.
+        let up = RoomAfter {
+            volume: 40,
+            ..was(Some(10))
+        };
+        assert!(!volume_moved(&up, 30));
+        assert!(volume_moved(&up, 45));
     }
 
     #[test]

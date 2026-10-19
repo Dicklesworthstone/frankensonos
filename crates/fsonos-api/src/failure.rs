@@ -528,9 +528,11 @@ impl From<CoreError> for Failure {
             CoreError::Store(_) => Self::new(ErrorCode::Internal, "internal error"),
             CoreError::NoSpotifyFavorite => Self::new(ErrorCode::RenderParamsMissing, detail),
             CoreError::RenderParamsStale => Self::new(ErrorCode::RenderParamsStale, detail),
-            // No field to fix: the newest action is past undo's reach.
+            // No field to fix: the newest action is past undo's reach, or
+            // someone changed its speakers since.
             CoreError::NotUndoable(_) => Self::new(ErrorCode::InvalidArgument, detail).with_hint(
-                "Undo reaches back one hour; change the speakers directly if they should differ.",
+                "Undo reaches back one hour and leaves speakers changed since; the owner's \
+                 `fsonos undo --force` puts them back anyway.",
             ),
         }
     }

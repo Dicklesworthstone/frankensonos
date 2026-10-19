@@ -312,8 +312,9 @@ deny = ["volume"]
   zones the newest action changed (`--mine`: your own newest), and says what it
   could not. The `undo_last` tool and `POST /undo` undo the caller's own newest.
   Undo goes back at most an hour: past that, the house has moved on. It also
-  leaves a zone someone changed since (in the Sonos app, say) as it is, and
-  names what changed; `fsonos undo --force` puts it back anyway.
+  refuses an action whose speakers someone changed since (in the Sonos app,
+  say), naming what changed and putting nothing back; `fsonos undo --force`
+  puts it back anyway.
 - Callers the daemon cannot identify get read-only tools; the API and MCP
   listeners refuse wildcard and public binds (unless you pass
   `--allow-unsafe-bind`); the HTTP API checks Host and Origin and accepts POST

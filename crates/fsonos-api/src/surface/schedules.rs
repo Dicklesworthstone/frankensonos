@@ -1477,12 +1477,9 @@ impl Surface {
                 notes,
             })
         });
-        let before = self.with_after(
-            fsonos_core::actions::before_state_with(&snaps, &[]),
-            &snaps,
-            &ramping,
-        );
+        let before = fsonos_core::actions::before_state_with(&snaps, &[]);
         let (decision, text, before) = super::log_entry(&ramped, before, missed.len());
+        let before = self.with_after(before, &snaps, &ramping);
         let intent = format!("set_volume: {room} to {level} {pace}");
         self.record(client, intent, decision, text, before);
         ramped

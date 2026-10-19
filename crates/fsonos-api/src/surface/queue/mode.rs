@@ -269,6 +269,8 @@ impl Surface {
             return Err(uncertain("the requested setting was not confirmed"));
         }
         let recovered = sent.is_err();
+        // Undo compares the rooms with how this change left them.
+        *undo = self.with_after(undo.take(), &snaps, &[]);
         let detail = if recovered {
             " (confirmed by read-back)"
         } else {

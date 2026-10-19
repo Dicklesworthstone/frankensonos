@@ -760,8 +760,9 @@ impl Surface {
         if let Err(f) = &result {
             self.notice(f);
         }
-        let before = self.with_after(actions::before_state_with(&snaps, &sessions), &snaps, &[]);
+        let before = actions::before_state_with(&snaps, &sessions);
         let (decision, text, before) = log_entry(&result, before, missed.len());
+        let before = self.with_after(before, &snaps, &[]);
         self.record(client, intent, decision, text, before);
         result
     }
@@ -850,8 +851,9 @@ impl Surface {
         if let Err(f) = &result {
             self.notice(f);
         }
-        let before = self.with_after(actions::before_state_with(&snaps, &[]), &snaps, &[]);
+        let before = actions::before_state_with(&snaps, &[]);
         let (decision, text, before) = log_entry(&result, before, missed.len());
+        let before = self.with_after(before, &snaps, &[]);
         self.record(client, intent, decision, text, before);
         result
     }
@@ -860,13 +862,17 @@ impl Surface {
     /// (every member of `snaps`' zones) as the action left them, so undo
     /// can tell whether someone changed them since. `levels` stands in for
     /// a room's volume while its speaker still ramps there itself (a fade
-    /// with no length): read now, it is mid-ramp.
+    /// with no length): read now, it is mid-ramp, so the level it ramps
+    /// from is kept too. No reads without an action log or a before-state.
     fn with_after(
         &self,
         before: Option<String>,
         snaps: &[fsonos_core::snapshot::ZoneSnapshot],
         levels: &[(PlayerId, u8)],
     ) -> Option<String> {
+        if self.log.is_none() {
+            return before;
+        }
         before.as_ref()?;
         let rooms: Vec<PlayerId> = snaps.iter().flat_map(|s| s.members.clone()).collect();
         let Ok(households) = self.households() else {
@@ -875,6 +881,11 @@ impl Surface {
         let mut after = actions::rooms_after(&*self.transport, &households, &rooms);
         for room in &mut after {
             if let Some(&(_, level)) = levels.iter().find(|(p, _)| *p == room.player) {
+                room.ramp_from = snaps
+                    .iter()
+                    .flat_map(|s| &s.levels)
+                    .find(|l| l.player == room.player)
+                    .map(|l| l.volume);
                 room.volume = level;
             }
         }

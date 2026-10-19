@@ -193,8 +193,9 @@ impl Surface {
         if let Err(failure) = &result {
             self.notice(failure);
         }
-        let before = self.with_after(actions::before_state_with(&snaps, &[]), &snaps, &[]);
+        let before = actions::before_state_with(&snaps, &[]);
         let (decision, text, before) = log_entry(&result, before, missed.len());
+        let before = self.with_after(before, &snaps, &[]);
         self.record(
             client,
             format!("{PLAY}: {zone} position {}", req.position),
