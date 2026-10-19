@@ -311,3 +311,5 @@ fn legacy_opener_identity_owns_posts_reverse_responses_and_cancellation() {
         assert_eq!(cancellation.is_cancel_requested(), subject == "alice");
     }
 }
+
+mod bounded;

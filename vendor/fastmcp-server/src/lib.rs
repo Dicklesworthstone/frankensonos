@@ -11991,11 +11991,11 @@ async fn serve_http_connection(
         }
     };
 
-    let transport_authorization = match endpoint.server.resolve_native_http_identity(
-        peer_addr,
-        &request,
-        transport_authorization,
-    ) {
+    let transport_authorization = match endpoint
+        .server
+        .resolve_native_http_identity_async(cx, peer_addr, &request, transport_authorization)
+        .await
+    {
         Ok(authorization) => authorization,
         Err(response) => {
             let _ = send_h1_response(cx, &listener_shutdown, &mut framed, response).await;
@@ -12421,11 +12421,11 @@ async fn serve_modern_http_connection(
     let is_modern_sse = request.method == HttpMethod::Post
         && request.path == endpoint.server.http_config.handler_config.base_path
         && http_request_accepts_sse(&request);
-    let transport_authorization = match endpoint.server.resolve_native_http_identity(
-        peer_addr,
-        &request,
-        transport_authorization,
-    ) {
+    let transport_authorization = match endpoint
+        .server
+        .resolve_native_http_identity_async(cx, peer_addr, &request, transport_authorization)
+        .await
+    {
         Ok(authorization) => authorization,
         Err(response) => {
             let _ = send_h1_response(cx, &listener_shutdown, &mut framed, response).await;
