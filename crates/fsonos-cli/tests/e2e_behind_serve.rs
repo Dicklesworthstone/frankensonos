@@ -206,12 +206,12 @@ fn requests_forwarded_by_tailscale_serve_reach_the_api_and_mcp() {
 }
 
 /// A `set_volume` MCP call as Serve forwards it to `mcp` (Host with the 8443
-/// port), from `login` (a user-owned device; `None` for a tagged one),
-/// sending `authorization` if the caller puts one in: the HTTP answer.
+/// port), from `login` (a user-owned device; `None` for a tagged one), with
+/// whatever `extra` headers the caller adds: the HTTP answer.
 fn set_volume_through_serve(
     mcp: &str,
     login: Option<&str>,
-    authorization: Option<&str>,
+    extra: &[(&str, &str)],
 ) -> std::io::Result<e2e::HttpAnswer> {
     let host = format!("{NAME}:8443");
     let call = json!({
@@ -232,9 +232,7 @@ fn set_volume_through_serve(
     if let Some(login) = login {
         headers.push(("Tailscale-User-Login", login));
     }
-    if let Some(authorization) = authorization {
-        headers.push(("Authorization", authorization));
-    }
+    headers.extend_from_slice(extra);
     headers.extend([
         ("Content-Type", "application/json"),
         ("Accept", "application/json"),
@@ -261,8 +259,8 @@ fn succeeded(answer: &std::io::Result<e2e::HttpAnswer>) -> bool {
     })
 }
 
-/// The newest logged action's client and decision.
-fn newest_action(api: &str) -> (String, String) {
+/// The newest logged action's id, client and decision.
+fn newest_action(api: &str) -> (i64, String, String) {
     let listed = http(api, "GET", "/actions?limit=1", &[], "");
     let newest = listed
         .ok()
@@ -270,16 +268,27 @@ fn newest_action(api: &str) -> (String, String) {
         .and_then(|v| v.as_array().and_then(|a| a.first().cloned()))
         .unwrap_or(Value::Null);
     (
+        newest["id"].as_i64().unwrap_or_default(),
         newest["client"].as_str().unwrap_or_default().to_owned(),
         newest["decision"].as_str().unwrap_or_default().to_owned(),
     )
+}
+
+/// The CLI's token, as the running daemon wrote it to `daemon.json`.
+fn cli_token(s: &Scenario) -> String {
+    std::fs::read_to_string(s.dir().join("data").join("daemon.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|file| file["cli_token"].as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 /// p7vq.12: the MCP listener names each caller as the HTTP API does, so the
 /// owner's `[clients."<login>"]` rules reach MCP agents and the log names
 /// them. Without `--tailscale-serve` the login header is ignored; behind it,
 /// the login is the caller, and a call without one (a tagged device) is
-/// `loopback-http`. An `Authorization` header a caller sends gains nothing.
+/// `loopback-http`. An `Authorization` header a caller sends is refused, and
+/// the CLI's own token over MCP is never the CLI.
 #[test]
 fn the_mcp_listener_names_each_caller_as_the_api_does() {
     let mut s = Scenario::start("behind_serve_mcp_identity");
@@ -297,13 +306,13 @@ fn the_mcp_listener_names_each_caller_as_the_api_does() {
     );
 
     let (mut daemon, api, mcp) = serve(&mut s, "plain", &[]);
-    let answer = set_volume_through_serve(&mcp, Some("ada@example.com"), None);
+    let answer = set_volume_through_serve(&mcp, Some("ada@example.com"), &[]);
     let logged = newest_action(&api);
     s.check(
         "plain-ignores-login",
         "mcp-http",
         "without --tailscale-serve, a login header names no one: set_volume goes through as loopback-http",
-        succeeded(&answer) && logged.0 == "loopback-http",
+        succeeded(&answer) && logged.1 == "loopback-http",
         format!("{answer:?} logged {logged:?}"),
     );
     let code = daemon.interrupt(Duration::from_secs(10));
@@ -316,37 +325,53 @@ fn the_mcp_listener_names_each_caller_as_the_api_does() {
     );
 
     let (mut daemon, api, mcp) = serve(&mut s, "behind", &["--tailscale-serve"]);
-    let answer = set_volume_through_serve(&mcp, Some("ada@example.com"), None);
+    let answer = set_volume_through_serve(&mcp, Some("ada@example.com"), &[]);
     let logged = newest_action(&api);
     s.check(
         "login-denied",
         "mcp-http",
         "behind --tailscale-serve, Serve's login is the caller: its own policy refuses set_volume, and the log names it",
         policy_denied(&answer)
-            && logged.0 == "ada@example.com"
-            && logged.1.starts_with("deny"),
+            && logged.1 == "ada@example.com"
+            && logged.2.starts_with("deny"),
         format!("{answer:?} logged {logged:?}"),
     );
     let answer = set_volume_through_serve(
         &mcp,
         Some("ada@example.com"),
-        Some("Bearer fsonos.guess.636c69"),
+        &[("Authorization", "Bearer fsonos.guess.636c69")],
     );
+    let after = newest_action(&api);
+    s.check(
+        "authorization-refused",
+        "mcp-http",
+        "an Authorization header the caller sends is refused before any tool runs: nothing is logged",
+        !succeeded(&answer) && after.0 == logged.0,
+        format!("{answer:?} logged {after:?} (before {logged:?})"),
+    );
+    // The CLI's own token, sent over MCP, never makes a caller the CLI: a
+    // login stays that login, and no login stays loopback-http.
+    let token = cli_token(&s);
+    let as_cli = [
+        ("X-Fsonos-Cli-Token", token.as_str()),
+        ("X-Fsonos-Client", "cli"),
+    ];
+    let answer = set_volume_through_serve(&mcp, Some("ada@example.com"), &as_cli);
     let logged = newest_action(&api);
     s.check(
-        "authorization-gains-nothing",
+        "cli-token-is-not-the-cli",
         "mcp-http",
-        "an Authorization header the caller sends (a bearer claiming the CLI) gains nothing: the call is refused, and nothing is logged as the CLI",
-        !succeeded(&answer) && logged.0 != "cli",
+        "the CLI's real token over MCP leaves a Serve login that login: still refused, and logged by name",
+        !token.is_empty() && policy_denied(&answer) && logged.1 == "ada@example.com",
         format!("{answer:?} logged {logged:?}"),
     );
-    let answer = set_volume_through_serve(&mcp, None, None);
+    let answer = set_volume_through_serve(&mcp, None, &as_cli);
     let logged = newest_action(&api);
     s.check(
         "tagged-is-loopback",
         "mcp-http",
-        "a call with no login (a tagged device) is loopback-http: set_volume goes through and is logged so",
-        succeeded(&answer) && logged.0 == "loopback-http",
+        "a call with no login (a tagged device), even with the CLI's token, is loopback-http: set_volume goes through and is logged so",
+        succeeded(&answer) && logged.1 == "loopback-http",
         format!("{answer:?} logged {logged:?}"),
     );
     let code = daemon.interrupt(Duration::from_secs(10));

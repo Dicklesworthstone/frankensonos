@@ -285,12 +285,16 @@ fn a_subscribed_agent_hears_a_speaker_change_until_it_unsubscribes() {
     session.settle(Duration::from_secs(2));
     let set = set_volume(&lan, kitchen, 21);
     let after = session.wait(Duration::from_secs(5), updated(ZONES));
+    // The session is still alive (a ping answers on the same stream), and
+    // the change reached the player: the quiet is the unsubscribe's.
+    let alive = session.call(4, "ping", &json!({}));
+    let level = fsonos_proto::control::get_volume(&lan, kitchen);
     s.check(
         "stopped",
         "mcp-sse",
-        "after unsubscribing, a further change sends no notification",
-        set.is_ok() && after.is_none(),
-        format!("set {set:?}; heard {after:?}"),
+        "after unsubscribing, a further change sends no notification, on a session that still answers",
+        set.is_ok() && after.is_none() && alive.is_some() && matches!(level, Ok(21)),
+        format!("set {set:?}; heard {after:?}; ping {alive:?}; level {level:?}"),
     );
 
     let code = daemon.interrupt(Duration::from_secs(10));

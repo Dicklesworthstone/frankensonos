@@ -621,6 +621,16 @@ fn exercise_legacy(address: SocketAddr, reads: &AtomicUsize) {
         400,
         "a forged identity in a legacy envelope is refused before dispatch"
     );
+    // App-defined metadata alone passes the envelope and is dispatched: it
+    // names no one, so the caller is still bob, and denied.
+    denied(
+        &bob.call(
+            22,
+            "tools/call",
+            json!({"name":"list_zones","arguments":{},"_meta":{"subject":ALICE,"client":"cli"}}),
+        ),
+        BOB,
+    );
     for local_client in ["cli", "mcp-stdio"] {
         let mut local = Legacy::open(
             address,
