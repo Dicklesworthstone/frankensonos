@@ -6,6 +6,7 @@ use fsonos_api::plan::{
     TransportAction, VolumeScope, plan_group, plan_play, plan_transport_set, plan_ungroup_set,
     plan_volume, plan_volume_set,
 };
+use fsonos_api::surface::schedules::{FadePauseRequest, SleepRequest};
 use fsonos_api::surface::{Surface, Survey};
 use fsonos_api::{
     Command, ErrorCode, GroupRequest, NoteCode, PlayRequest, VolumeChange, VolumeRequest,
@@ -432,6 +433,74 @@ fn undo_refuses_a_set_someone_changed_since_until_the_owner_forces_it() {
         .expect("the refused set, still undoable");
     assert!(report.failures.is_empty(), "{report:?}");
     assert_eq!((volume(&kitchen), volume(&office)), (40, 40));
+    sim.shutdown();
+}
+
+/// A sleep timer is a change undo cannot put back: undo stops at it rather
+/// than undo the volume set before it. Cancelling a timer where there is
+/// none changes nothing and is no obstacle.
+#[test]
+fn undo_stops_at_a_sleep_timer_or_a_fade_out_but_not_at_cancelling_none() {
+    let sim = sim();
+    let lan = sim.lan();
+    let houses = now(&sim);
+    let kitchen = id(&houses, "Kitchen");
+    control::set_volume(&lan, &houses, &kitchen, 40).unwrap();
+    let s = surface(&sim);
+    let volume = || control::volume(&lan, &houses, &kitchen).unwrap();
+    let to_30 = || {
+        s.control(&Client::Cli, "set_volume", |h| {
+            plan_volume(h, &volume_req("Kitchen", 30))
+        })
+        .unwrap()
+    };
+    let sleep = |duration: Option<&str>| SleepRequest {
+        zone: "Kitchen".into(),
+        duration: duration.map(str::to_owned),
+        extend: false,
+        cancel: duration.is_none(),
+    };
+
+    to_30();
+    let none = s.set_sleep_timer(&Client::Cli, &sleep(None)).unwrap();
+    assert!(!none.changed, "{none:?}");
+    let report = s
+        .undo(&Client::Cli, true)
+        .unwrap()
+        .expect("the volume set, past the cancel that changed nothing");
+    assert!(report.failures.is_empty(), "{report:?}");
+    assert_eq!(volume(), 40);
+
+    to_30();
+    s.set_sleep_timer(&Client::Cli, &sleep(Some("45m")))
+        .unwrap();
+    let refused = s.undo(&Client::Cli, true).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InvalidArgument, "{refused:?}");
+    assert!(refused.detail.contains("sleep timer"), "{refused:?}");
+    assert_eq!(volume(), 30, "the volume set before the timer stays");
+
+    // A fade-out pauses the music: undo stops there too, not at the play.
+    s.control(&Client::Cli, "play", |h| {
+        plan_play(
+            h,
+            &PlayRequest {
+                zone: "Kitchen".into(),
+                source_uri: STREAM.into(),
+                title: None,
+            },
+        )
+    })
+    .unwrap();
+    s.fade_out(
+        &Client::Cli,
+        &FadePauseRequest {
+            zone: "Kitchen".into(),
+            fade_secs: 1,
+        },
+    )
+    .unwrap();
+    let refused = s.undo(&Client::Cli, true).unwrap_err();
+    assert!(refused.detail.contains("fade-out"), "{refused:?}");
     sim.shutdown();
 }
 

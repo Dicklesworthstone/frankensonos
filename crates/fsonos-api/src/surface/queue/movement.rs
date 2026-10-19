@@ -164,18 +164,32 @@ fn stale() -> Failure {
     .with_hint("Read get_queue again and select source and destination from that revision.")
 }
 
+/// How an uncertain move's failure begins ([`uncertain`], [`wrote`]).
+const UNCERTAIN: &str = "queue move outcome is uncertain";
+
 fn uncertain(detail: impl std::fmt::Display) -> Failure {
     Failure::new(
         ErrorCode::UpnpFault,
-        format!("queue move outcome is uncertain: {detail}; the write was not replayed"),
+        format!("{UNCERTAIN}: {detail}; the write was not replayed"),
     )
     .with_hint("Read the queue before choosing another move; never blindly retry this request.")
+}
+
+/// Whether a move changed the queue, or may have: a kept order and a
+/// refusal wrote nothing, but an uncertain outcome may have moved tracks.
+fn wrote(result: &Result<QueueMovedDto, Failure>) -> bool {
+    match result {
+        Ok(done) => done.changed,
+        Err(failure) => failure.detail.starts_with(UNCERTAIN),
+    }
 }
 
 impl Surface {
     /// Rearrange a selected block without changing any playback settings.
     /// The action is logged but not advertised as undoable: a zone snapshot
     /// does not retain enough queue identity to reverse a later edit safely.
+    /// A move that changed the queue, or may have (an uncertain outcome),
+    /// stops undo from reaching past it.
     pub fn queue_move(
         &self,
         client: &Client,
@@ -198,7 +212,7 @@ impl Surface {
             ),
             decision,
             text,
-            None,
+            wrote(&result).then(|| fsonos_core::actions::before_state_not_undoable("queue edit")),
         );
         result
     }

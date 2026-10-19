@@ -137,6 +137,8 @@ impl Surface {
         let zone = zone.trim();
         let query = favorite.trim();
         let intent = format!("{ADD}: {zone} favorite {query:?} next={next}");
+        // Whether the add failed after tracks may have been queued.
+        let uncertain = std::cell::Cell::new(false);
         let result = (|| {
             let (households, group) = self.queue_households(client, zone)?;
             let coordinator = group.coordinator.clone();
@@ -161,6 +163,7 @@ impl Surface {
                 next,
             )
             .map_err(|error| {
+                uncertain.set(favorite_queue::is_uncertain(&error));
                 Failure::from(error).with_hint(
                     "Read the queue before another add; the favorite was not automatically retried.",
                 )
@@ -201,12 +204,17 @@ impl Surface {
             }
             Err(failure) => {
                 self.notice(&failure);
+                // An add with an uncertain outcome may have queued tracks no
+                // undo range records: undo stops at it.
+                let kept = uncertain
+                    .get()
+                    .then(|| actions::before_state_not_undoable("queue edit"));
                 self.record(
                     client,
                     intent,
                     "allow".into(),
                     format!("failed: {}", failure.detail),
-                    None,
+                    kept,
                 );
                 Err(failure)
             }

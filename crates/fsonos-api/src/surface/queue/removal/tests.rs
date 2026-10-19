@@ -282,10 +282,59 @@ fn removes_ranges_through_a_member_without_rebuilding_or_starting_playback() {
                     || entry.action == "RemoveTrackRangeFromQueue"
             }));
             assert_eq!(current(&sim), request(1, &left).expected_uris);
-            assert!(surface.undo(&Client::Cli, true).unwrap().is_none());
+            let refused = surface.undo(&Client::Cli, true).unwrap_err();
+            assert!(refused.detail.contains("queue edit"), "{refused:?}");
+            assert_eq!(current(&sim), request(1, &left).expected_uris);
             sim.shutdown();
         }
     }
+}
+
+/// A removal undo cannot put back stops undo there: the volume set before
+/// it stays, even forced, and the log says which of the two is undoable.
+#[test]
+fn undo_stops_at_a_removal_and_leaves_the_earlier_volume_be() {
+    let (sim, surface, _) = setup(false, Fault::None);
+    let alpha = sim.player("Alpha").unwrap().ip;
+    let level = || fsonos_proto::control::get_volume(&sim.lan(), alpha).unwrap();
+    // Within one policy step of where it was, so the set is exact.
+    let was = level();
+    let set = if was >= 50 { was - 5 } else { was + 5 };
+    let req = crate::VolumeRequest {
+        zone: "Alpha".into(),
+        volume: Some(i64::from(set)),
+        delta: None,
+        group: false,
+    };
+    surface
+        .control(&Client::Cli, "set_volume", |rooms| {
+            crate::plan::plan_volume(rooms, &req)
+        })
+        .unwrap();
+    surface
+        .queue_remove(&Client::Cli, &request(2, &["b"]))
+        .unwrap();
+
+    for force in [false, true] {
+        let refused = surface.undo_forced(&Client::Cli, false, force).unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidArgument, "{refused:?}");
+        assert!(
+            refused.detail.contains(REMOVE) && refused.detail.contains("queue edit"),
+            "{refused:?}"
+        );
+        assert!(refused.hint.contains("queue edit"), "{refused:?}");
+    }
+    assert_eq!(level(), set, "the volume set before the removal stays");
+    assert_eq!(current(&sim), request(1, &["a", "c", "d"]).expected_uris);
+    let log = surface
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
+    let undoable: Vec<bool> = log
+        .iter()
+        .map(|row| fsonos_core::actions::undoable(row.action.before_state.as_deref()))
+        .collect();
+    assert_eq!(undoable, [false, true], "{log:?}");
+    sim.shutdown();
 }
 
 #[test]
@@ -363,6 +412,9 @@ fn uncertain_effects_are_reported_not_retried() {
             assert!(error.detail.contains("uncertain"));
             assert_eq!(attempts.load(Ordering::Acquire), 1);
             assert_eq!(current(&sim).len(), remaining);
+            // The removal may have happened: undo stops at it.
+            let refused = surface.undo(&Client::Cli, true).unwrap_err();
+            assert!(refused.detail.contains("queue edit"), "{refused:?}");
             sim.shutdown();
         }
     }

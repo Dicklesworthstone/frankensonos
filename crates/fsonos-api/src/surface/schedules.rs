@@ -957,11 +957,29 @@ impl Surface {
         result: &Result<T, Failure>,
         done: impl FnOnce(&T) -> String,
     ) {
-        let text = match result {
-            Ok(value) => done(value),
-            Err(f) => format!("failed: {}", f.detail),
+        self.log_kept_write(client, intent, result, done, None);
+    }
+
+    /// [`Self::log_write`] for a write that changes the speakers in a way
+    /// undo cannot put back, `kept` naming it (a sleep timer, a fade-out)
+    /// when it changed something: once it went through, undo stops at it
+    /// rather than reach past it. A no-op passes `None`.
+    pub(super) fn log_kept_write<T>(
+        &self,
+        client: &Client,
+        intent: String,
+        result: &Result<T, Failure>,
+        done: impl FnOnce(&T) -> String,
+        kept: Option<&str>,
+    ) {
+        let (text, before) = match result {
+            Ok(value) => (
+                done(value),
+                kept.map(fsonos_core::actions::before_state_not_undoable),
+            ),
+            Err(f) => (format!("failed: {}", f.detail), None),
         };
-        self.record(client, intent, "allow".into(), text, None);
+        self.record(client, intent, "allow".into(), text, before);
     }
 
     /// Check `zone` names a room, or a set of rooms (`all`, `everywhere`, a
@@ -1010,7 +1028,12 @@ impl Surface {
             sleep.save();
         }
         let intent = format!("set_sleep_timer: {}'s group {change}", zone.room);
-        self.log_write(client, intent, &result, |d| d.done.clone());
+        // Cancelling a timer there is none of changes nothing.
+        let kept = result
+            .as_ref()
+            .is_ok_and(|d| d.changed)
+            .then_some("sleep timer");
+        self.log_kept_write(client, intent, &result, |d| d.done.clone(), kept);
         result
     }
 
@@ -1523,7 +1546,13 @@ impl Surface {
                 notes: Vec::new(),
             });
         let intent = format!("pause: {}'s group after a {} fade", zone.room, span(over));
-        self.log_write(client, intent, &result, |o| o.done.clone());
+        self.log_kept_write(
+            client,
+            intent,
+            &result,
+            |o| o.done.clone(),
+            Some("fade-out"),
+        );
         result
     }
 

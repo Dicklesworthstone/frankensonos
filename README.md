@@ -326,7 +326,9 @@ deny = ["volume"]
   Undo goes back at most an hour: past that, the house has moved on. It also
   refuses an action whose speakers someone changed since (in the Sonos app,
   say), naming what changed and putting nothing back; `fsonos undo --force`
-  puts it back anyway.
+  puts it back anyway. And it stops at a newer change it cannot put back (a
+  queue edit, a sleep timer, a fade-out) rather than reach past it and roll
+  back an older action instead.
 - Callers the daemon cannot identify get read-only tools; the API and MCP
   listeners refuse wildcard and public binds (unless you pass
   `--allow-unsafe-bind`); the HTTP API checks Host and Origin and accepts POST
