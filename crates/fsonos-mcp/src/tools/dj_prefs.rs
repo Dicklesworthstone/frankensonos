@@ -5,7 +5,7 @@ use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::dj_prefs::{DjPreferRequest, PreferencesDto, PreferredDto};
 
-use super::{Backend, respond, with_backend};
+use super::{Backend, respond, with_backend_off_thread};
 
 impl Backend {
     /// The `dj_preferences` tool, read from the running daemon when there is
@@ -39,14 +39,14 @@ impl Backend {
     description = "The owner's standing DJ preferences, which hold for every group's DJ until changed: genres, artists, eras and moods to favor or avoid, a default energy, whether explicit tracks may play, and artists, albums or tracks to pin or ban. Steering a group (dj_steer) outranks them; they outrank likes and dislikes.",
     annotations(read_only, idempotent)
 )]
-fn dj_preferences(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, Backend::dj_preferences)
+async fn dj_preferences(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::dj_preferences).await
 }
 
 #[tool(
     description = "Set or unset one standing DJ preference; it holds for every group until changed and applies from the DJ's next pick. Turn the owner's words into `key` and `value`. List keys add one item: favor.genres / avoid.genres (\"jazz\" finds \"cool jazz\"), favor.artists / avoid.artists, favor.eras / avoid.eras (a decade \"1960s\" or a classical period \"baroque\"), favor.moods / avoid.moods (dj_moods lists them), pin.artists / pin.albums / pin.tracks (always welcome, favored most) and ban.artists / ban.albums / ban.tracks (never; albums and tracks by Spotify URI or exact title). Plain keys: energy (0-100, in place of the time-of-day curve) and explicit (true or false). Examples: 'more jazz' is favor.genres \"jazz\"; 'never play Nickelback' is ban.artists \"Nickelback\"; 'go easy on the 80s' is avoid.eras \"1980s\"; 'keep it mellow' is energy \"30\". `unset` true removes `value` from a list (no value: the whole list; energy and explicit go back to their defaults). An avoid gives way only when nothing else is left; a ban never does."
 )]
-fn dj_prefer(
+async fn dj_prefer(
     ctx: &McpContext,
     key: String,
     value: Option<String>,
@@ -57,5 +57,5 @@ fn dj_prefer(
         value,
         unset: unset.unwrap_or(false),
     };
-    with_backend(ctx, move |b| b.dj_prefer(&req))
+    with_backend_off_thread(ctx, move |b| b.dj_prefer(&req)).await
 }

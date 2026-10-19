@@ -707,19 +707,8 @@ pub(crate) fn backend_for(ctx: &McpContext) -> Result<Backend, Failure> {
     backend()?.for_request(ctx)
 }
 
-fn with_backend(
-    ctx: &McpContext,
-    run: impl FnOnce(&Backend) -> McpResult<FinalCallToolResult>,
-) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    ctx.checkpoint()?;
-    let backend = backend_for(ctx).map_err(|f| tool_error(&f))?;
-    Ok(CompleteResult::new(run(&backend)?, ResultMeta::empty()))
-}
-
-/// [`with_backend`] for a tool that can take long (an announcement that
-/// plays, a fade, the DJ asking Spotify, the doctor probing the LAN): the
-/// work runs on a thread of its own, so the server answers every other call
-/// meanwhile (`fsonos_api::off_thread`).
+/// Run tool I/O on bounded workers, so waiting on the daemon, speakers, or
+/// Spotify leaves the MCP request runtime free to serve other requests.
 async fn with_backend_off_thread(
     ctx: &McpContext,
     run: impl FnOnce(&Backend) -> McpResult<FinalCallToolResult> + Send + 'static,
@@ -1782,9 +1771,10 @@ mod tests {
             runtime.request_cx_with_budget(asupersync::Budget::INFINITE),
             1,
         );
-        let Err(err) = with_backend(&ctx, |_| unreachable!()) else {
+        let Err(failure) = backend_for(&ctx) else {
             panic!("expected NOT_READY")
         };
+        let err = tool_error(&failure);
         assert!(err.message.starts_with("NOT_READY: "), "{}", err.message);
     }
 }

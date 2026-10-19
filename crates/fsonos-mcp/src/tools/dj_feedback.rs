@@ -4,7 +4,7 @@ use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::dj_feedback::{DjFeedbackDto, DjFeedbackRequest};
 
-use super::{Backend, respond, with_backend};
+use super::{Backend, respond, with_backend_off_thread};
 
 impl Backend {
     /// The `dj_feedback` tool: on the running daemon when there is one, whose
@@ -25,11 +25,11 @@ impl Backend {
 #[tool(
     description = "Tell the DJ the owner likes or dislikes what plays now: `signal` is 'like' or 'dislike'. It nudges the song or work, its artist or composer, and its performer (decaying over weeks), so the DJ plays them more or less; two dislikes of a work keep it out for 180 days. `zone` is a room of the group it plays in (left out: the group the DJ plays in, when it plays in just one). Skips within 30 s and works heard to the end are noted on their own."
 )]
-fn dj_feedback(
+async fn dj_feedback(
     ctx: &McpContext,
     signal: String,
     zone: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let req = DjFeedbackRequest { zone, signal };
-    with_backend(ctx, move |b| b.dj_feedback(&req))
+    with_backend_off_thread(ctx, move |b| b.dj_feedback(&req)).await
 }

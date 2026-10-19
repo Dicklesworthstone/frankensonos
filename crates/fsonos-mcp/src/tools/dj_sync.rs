@@ -5,7 +5,7 @@ use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::dj_sync::LibrarySyncDto;
 
-use super::{Backend, respond, with_backend, with_backend_off_thread};
+use super::{Backend, respond, with_backend_off_thread};
 
 /// A library refresh's state, said.
 fn done(state: &LibrarySyncDto) -> String {
@@ -42,8 +42,8 @@ impl Backend {
     description = "Where the DJ's library refresh from Spotify stands: whether one is running, when the last one finished and what it found (tracks, how many the DJ can play, how many classical), and why the latest attempt failed if it did. The daemon refreshes daily on its own.",
     annotations(read_only, idempotent)
 )]
-fn dj_sync_status(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, Backend::dj_sync_status)
+async fn dj_sync_status(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::dj_sync_status).await
 }
 
 #[tool(
