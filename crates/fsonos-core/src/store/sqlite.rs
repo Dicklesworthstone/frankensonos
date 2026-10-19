@@ -18,6 +18,7 @@ use fsqlite::{AsyncConnection, FrankenError, Row, SqliteValue};
 use std::fmt::Display;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// One schema step. Append new steps to [`MIGRATIONS`]; never edit or
@@ -190,7 +191,17 @@ fn split_genres(joined: Option<String>) -> Vec<String> {
 #[derive(Debug)]
 pub struct SqliteStore {
     conn: AsyncConnection,
+    /// Writes since the WAL was last checkpointed ([`Self::wrote`]); `None`
+    /// for an in-memory database, which has no WAL.
+    writes: Option<AtomicU32>,
 }
+
+/// How many writes the store commits between checkpoints of its own.
+/// fsqlite's automatic checkpoints never shrink the WAL file, so a daemon's
+/// months of small writes grew it without bound (about 1 MB an hour on a
+/// live house). Every this many writes, the store folds the WAL into the
+/// database and truncates it.
+const CHECKPOINT_EVERY: u32 = 256;
 
 fn backend(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
@@ -242,6 +253,7 @@ impl SqliteStore {
     fn open_migrated(path: &str, migrations: &[Migration]) -> Result<Self, StoreError> {
         let store = Self {
             conn: retrying(|| AsyncConnection::open_sync(path)).map_err(backend)?,
+            writes: (path != ":memory:").then_some(AtomicU32::new(0)),
         };
         store.migrate(migrations)?;
         Ok(store)
@@ -336,6 +348,32 @@ impl SqliteStore {
             }
         })
         .map_err(backend)
+        .inspect(|_| self.wrote())
+    }
+
+    /// Count a committed write, and every [`CHECKPOINT_EVERY`]th fold the
+    /// WAL into the database and truncate it. A checkpoint that another
+    /// connection holds up (a transaction open in `fsonos mcp`, say) answers
+    /// busy, changes nothing, and is tried again a round later.
+    fn wrote(&self) {
+        let Some(writes) = &self.writes else {
+            return;
+        };
+        if writes.fetch_add(1, Ordering::Relaxed) + 1 < CHECKPOINT_EVERY {
+            return;
+        }
+        writes.store(0, Ordering::Relaxed);
+        match self.conn.query_sync("PRAGMA wal_checkpoint(TRUNCATE)") {
+            Ok(rows)
+                if rows
+                    .first()
+                    .is_some_and(|r| int(r, 0).is_ok_and(|busy| busy != 0)) =>
+            {
+                tracing::debug!("WAL checkpoint deferred: another connection is busy");
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("WAL checkpoint failed: {e}"),
+        }
     }
 
     fn query(&self, sql: &str, params: &[SqliteValue]) -> Result<Vec<Row>, StoreError> {
@@ -346,6 +384,7 @@ impl SqliteStore {
         retrying(|| self.conn.execute_with_params_sync(sql, params))
             .map(drop)
             .map_err(backend)
+            .inspect(|()| self.wrote())
     }
 }
 
@@ -1297,6 +1336,7 @@ mod tests {
         // migrated: it reaches migration 1 although it is applied.
         let second = SqliteStore {
             conn: AsyncConnection::open_sync(path.as_str()).unwrap(),
+            writes: None,
         };
         second.apply(&MIGRATIONS[0], 0).unwrap();
         assert_eq!(

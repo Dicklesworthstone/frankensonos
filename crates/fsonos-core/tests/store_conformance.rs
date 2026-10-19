@@ -779,6 +779,35 @@ fn sqlite_in_memory_conforms() {
     s.close().unwrap();
 }
 
+/// A long-running store keeps its WAL small: fsqlite's own checkpoints never
+/// shrink the file, so the store truncates it itself every so many writes.
+/// Nothing written is lost on the way.
+#[test]
+fn a_long_running_store_keeps_its_wal_small() {
+    const WRITES: i64 = 3000;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fsonos.db");
+    let wal = || std::fs::metadata(dir.path().join("fsonos.db-wal")).map_or(0, |m| m.len());
+    let mut s = SqliteStore::open(&path).unwrap();
+    let mut largest = 0;
+    for i in 0..WRITES {
+        let at = 1_700_000_000 + i;
+        s.record_action(&act(at, "cli", Some("[]"), None)).unwrap();
+        largest = largest.max(wal());
+    }
+    assert!(largest < 4 << 20, "the WAL grew to {largest} bytes");
+    assert_eq!(
+        s.recent_actions(&ActionFilter::default()).unwrap().len(),
+        usize::try_from(WRITES).unwrap()
+    );
+    s.close().unwrap();
+    let s = SqliteStore::open(&path).unwrap();
+    assert_eq!(
+        recent(&s, None, None, 0).len(),
+        usize::try_from(WRITES).unwrap()
+    );
+}
+
 #[test]
 fn sqlite_file_survives_close_and_reopen() {
     let dir = tempfile::tempdir().unwrap();
