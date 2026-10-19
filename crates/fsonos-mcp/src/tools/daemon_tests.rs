@@ -275,3 +275,5 @@ fn resource_reads_use_daemon_state_and_propagate_failure() {
         [json!(["GET", "/zones/Room%20%2F%20%26%40S2/state", null])]
     );
 }
+
+mod extensions;

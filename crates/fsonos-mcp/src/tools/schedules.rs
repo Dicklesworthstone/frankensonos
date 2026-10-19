@@ -11,7 +11,7 @@ use fsonos_api::surface::schedules::{
 use serde::Serialize;
 
 use super::{
-    Backend, from_daemon, respond, said, segment, sentence, with_backend, with_backend_off_thread,
+    Backend, from_daemon, respond, said, segment, sentence, with_backend_off_thread,
 };
 
 /// `list_sleep_timers` structured content.
@@ -97,7 +97,7 @@ impl Backend {
     /// The `list_schedules` tool.
     pub fn list_schedules(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let schedules = self.surface.schedules(&self.client)?;
+            let schedules = self.read("/schedules", || self.surface.schedules(&self.client))?;
             let text = if schedules.is_empty() {
                 "no schedules".to_string()
             } else {
@@ -113,6 +113,19 @@ impl Backend {
 
     /// The `add_schedule` tool.
     pub fn add_schedule(&self, req: &ScheduleRequest) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::to_value(req).map_err(|error| {
+            crate::tool_error(&fsonos_api::Failure::new(
+                fsonos_api::ErrorCode::Internal,
+                error.to_string(),
+            ))
+        })?;
+        if let Some(answer) =
+            self.on_daemon("POST", "/schedules", Some(&body), |added: &ScheduleDto| {
+                format!("added {}", added.line())
+            })
+        {
+            return answer;
+        }
         respond(|| {
             let added = self.surface.add_schedule(&self.client, req)?;
             Ok((format!("added {}", added.line()), added))
@@ -121,6 +134,15 @@ impl Backend {
 
     /// The `pause_schedule` / `resume_schedule` tools.
     pub fn pause_schedule(&self, id: i64, paused: bool) -> McpResult<FinalCallToolResult> {
+        let path = if paused {
+            "/schedules/pause"
+        } else {
+            "/schedules/resume"
+        };
+        let body = serde_json::json!({ "id": id });
+        if let Some(answer) = self.on_daemon("POST", path, Some(&body), ScheduleDto::line) {
+            return answer;
+        }
         respond(|| {
             let schedule = self.surface.pause_schedule(&self.client, id, paused)?;
             Ok((schedule.line(), schedule))
@@ -129,6 +151,15 @@ impl Backend {
 
     /// The `remove_schedule` tool.
     pub fn remove_schedule(&self, id: i64) -> McpResult<FinalCallToolResult> {
+        let body = serde_json::json!({ "id": id });
+        if let Some(answer) = self.on_daemon(
+            "POST",
+            "/schedules/remove",
+            Some(&body),
+            |removed: &ScheduleDto| format!("removed {}", removed.line()),
+        ) {
+            return answer;
+        }
         respond(|| {
             let removed = self.surface.remove_schedule(&self.client, id)?;
             Ok((format!("removed {}", removed.line()), removed))
@@ -171,7 +202,7 @@ async fn fade_and_pause(
 #[tool(
     description = "Sleep timer: pause the group a room plays in after `duration` ('45m', '1h30m', '90s', or minutes as '45'; at most 23h), fading it out over the last two minutes when the daemon runs. With `extend` true, push the running timer `duration` later instead; with `cancel` true (and no duration), cancel it. `zone` is a room name (Room@S1 / Room@S2 picks a household; aliases work)."
 )]
-fn set_sleep_timer(
+async fn set_sleep_timer(
     ctx: &McpContext,
     zone: String,
     duration: Option<String>,
@@ -184,33 +215,33 @@ fn set_sleep_timer(
         extend: extend.unwrap_or(false),
         cancel: cancel.unwrap_or(false),
     };
-    with_backend(ctx, move |b| b.set_sleep_timer(&req))
+    with_backend_off_thread(ctx, move |b| b.set_sleep_timer(&req)).await
 }
 
 #[tool(
     description = "List the sleep timers that run: when each group pauses and whether it fades out first. Give `zone` for one room's group only.",
     annotations(read_only, idempotent)
 )]
-fn list_sleep_timers(
+async fn list_sleep_timers(
     ctx: &McpContext,
     zone: Option<String>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, move |b| b.list_sleep_timers(zone.as_deref()))
+    with_backend_off_thread(ctx, move |b| b.list_sleep_timers(zone.as_deref())).await
 }
 
 #[tool(
     description = "List the schedules: what each does, when (`when`), who added it, whether it is paused, and its next run.",
     annotations(read_only, idempotent)
 )]
-fn list_schedules(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, Backend::list_schedules)
+async fn list_schedules(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::list_schedules).await
 }
 
 #[tool(
     description = "Schedule something, once or every week; the daemon runs it with your rights. `when`: 'in 45m', an RFC 3339 time, 'daily 22:30', 'weekdays 07:30', 'weekends 09:00', 'sat,sun 09:00', 'mon-fri 07:00' (house local time). `action`: 'dj_start' (zone), 'pause' (zone; optional fade_secs up to 600 to fade out first), 'volume' (zone and volume 0-100), or 'apply_scene' (scene). A run missed by more than 10 minutes is skipped."
 )]
 #[allow(clippy::too_many_arguments)] // one optional field per action
-fn add_schedule(
+async fn add_schedule(
     ctx: &McpContext,
     when: String,
     action: String,
@@ -229,26 +260,26 @@ fn add_schedule(
         volume,
         fade_secs,
     };
-    with_backend(ctx, move |b| b.add_schedule(&req))
+    with_backend_off_thread(ctx, move |b| b.add_schedule(&req)).await
 }
 
 #[tool(
     description = "Pause a schedule by its id (from list_schedules): it does not run until resumed.",
     annotations(idempotent)
 )]
-fn pause_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, move |b| b.pause_schedule(id, true))
+async fn pause_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, move |b| b.pause_schedule(id, true)).await
 }
 
 #[tool(
     description = "Resume a paused schedule by its id (from list_schedules); runs missed while it was paused are not made up.",
     annotations(idempotent)
 )]
-fn resume_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, move |b| b.pause_schedule(id, false))
+async fn resume_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, move |b| b.pause_schedule(id, false)).await
 }
 
 #[tool(description = "Remove a schedule by its id (from list_schedules).")]
-fn remove_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, move |b| b.remove_schedule(id))
+async fn remove_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, move |b| b.remove_schedule(id)).await
 }

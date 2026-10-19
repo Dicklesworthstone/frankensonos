@@ -3,13 +3,13 @@
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
 
-use super::{Backend, respond, with_backend};
+use super::{Backend, respond, with_backend_off_thread};
 
 impl Backend {
     /// The `get_policy` tool.
     pub fn get_policy(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let policy = self.surface.policy_view(&self.client)?;
+            let policy = self.read("/policy", || self.surface.policy_view(&self.client))?;
             Ok((policy.text(), policy))
         })
     }
@@ -19,6 +19,6 @@ impl Backend {
     description = "The house policy in effect, and who you are under it: the default room volume cap and the largest single increase, the quiet-hours window and its lower cap, rooms with caps of their own, and clients with tool rules (only these tools, never these) or caps switched on or off. Check it before a volume change that might be clamped, or when a tool answers POLICY_DENIED.",
     annotations(read_only, idempotent)
 )]
-fn get_policy(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, Backend::get_policy)
+async fn get_policy(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::get_policy).await
 }

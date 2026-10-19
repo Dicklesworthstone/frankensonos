@@ -3,10 +3,12 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
-use fsonos_api::surface::scenes::{SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDto};
+use fsonos_api::surface::scenes::{
+    SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDeletedDto, SceneDto,
+};
 use serde::{Deserialize as _, Serialize};
 
-use super::{Backend, respond, segment, with_backend, with_backend_off_thread};
+use super::{Backend, respond, segment, with_backend_off_thread};
 
 /// `list_scenes` structured content (MCP wants an object).
 #[derive(Serialize)]
@@ -63,7 +65,7 @@ impl Backend {
     /// The `list_scenes` tool.
     pub fn list_scenes(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let scenes = self.surface.scenes(&self.client)?;
+            let scenes = self.read("/scenes", || self.surface.scenes(&self.client))?;
             let text = if scenes.is_empty() {
                 "No scenes saved yet; save one with save_scene.".to_string()
             } else {
@@ -94,9 +96,16 @@ impl Backend {
         name: &str,
         scene: &serde_json::Value,
     ) -> McpResult<FinalCallToolResult> {
+        let def = SceneDefinition::deserialize(scene).map_err(|error| {
+            crate::tool_error(&fsonos_api::Failure::invalid(format!("scene: {error}")))
+        })?;
+        let path = format!("/scenes/{}", segment(name));
+        if let Some(answer) = self.on_daemon("PUT", &path, Some(scene), |saved: &SceneDto| {
+            format!("Saved {}", scene_line(saved))
+        }) {
+            return answer;
+        }
         respond(|| {
-            let def = SceneDefinition::deserialize(scene)
-                .map_err(|e| fsonos_api::Failure::invalid(format!("scene: {e}")))?;
             let saved = self.surface.save_scene_from(&self.client, name, &def)?;
             Ok((format!("Saved {}", scene_line(&saved)), saved))
         })
@@ -123,13 +132,22 @@ impl Backend {
     /// The `get_scene` tool.
     pub fn get_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let scene = self.surface.scene(&self.client, name)?;
+            let path = format!("/scenes/{}", segment(name));
+            let scene = self.read(&path, || self.surface.scene(&self.client, name))?;
             Ok((scene_line(&scene), scene))
         })
     }
 
     /// The `delete_scene` tool.
     pub fn delete_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
+        let path = format!("/scenes/{}", segment(name));
+        if let Some(answer) =
+            self.on_daemon("DELETE", &path, None, |deleted: &SceneDeletedDto| {
+                deleted.done.clone()
+            })
+        {
+            return answer;
+        }
         respond(|| {
             let deleted = self.surface.delete_scene(&self.client, name)?;
             Ok((deleted.done.clone(), deleted))
@@ -141,22 +159,23 @@ impl Backend {
     description = "List the saved scenes: named house states, each with how the rooms group, what each group plays (a favorite, a stream, the DJ in a mood, or whatever it has) and whether it plays, and each room's volume and mute. Put the house in one with apply_scene.",
     annotations(read_only, idempotent)
 )]
-fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, Backend::list_scenes)
+async fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::list_scenes).await
 }
 
 #[tool(
     description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind dj with an optional mood, uri with a stream uri or a Spotify track, album or playlist link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. Its rooms must be in the house now, and its favorites in their group's household. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes."
 )]
-fn save_scene(
+async fn save_scene(
     ctx: &McpContext,
     name: String,
     scene: Option<serde_json::Value>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, move |b| match &scene {
+    with_backend_off_thread(ctx, move |b| match &scene {
         Some(scene) => b.save_scene_from(&name, scene),
         None => b.save_scene(&name),
     })
+    .await
 }
 
 #[tool(
@@ -178,15 +197,15 @@ async fn apply_scene(
     description = "Show one saved scene by `name` (case ignored; list_scenes names the saved ones): how its rooms group, what each group plays and whether it plays, and each room's volume and mute. Nothing on the speakers changes; put the house in it with apply_scene.",
     annotations(read_only, idempotent)
 )]
-fn get_scene(ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, move |b| b.get_scene(&name))
+async fn get_scene(ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, move |b| b.get_scene(&name)).await
 }
 
 #[tool(
     description = "Forget the saved scene `name` (case ignored; list_scenes names the saved ones). Only the saved scene is removed; nothing on the speakers changes. An unknown name is an error."
 )]
-fn delete_scene(ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, move |b| b.delete_scene(&name))
+async fn delete_scene(ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, move |b| b.delete_scene(&name)).await
 }
 
 #[cfg(test)]

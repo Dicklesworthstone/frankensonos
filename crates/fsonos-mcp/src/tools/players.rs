@@ -6,7 +6,7 @@ use fastmcp::{CompleteResult, FinalCallToolResult};
 use fsonos_api::surface::players::PlayerDto;
 use serde::Serialize;
 
-use super::{Backend, respond, with_backend};
+use super::{Backend, respond, with_backend_off_thread};
 
 /// `list_players` structured content (MCP wants an object).
 #[derive(Serialize)]
@@ -36,7 +36,7 @@ impl Backend {
     /// The `list_players` tool.
     pub fn list_players(&self) -> McpResult<FinalCallToolResult> {
         respond(|| {
-            let players = self.surface.players(&self.client)?;
+            let players = self.read("/players", || self.surface.players(&self.client))?;
             let text = players
                 .iter()
                 .map(player_line)
@@ -51,6 +51,6 @@ impl Backend {
     description = "List every Sonos player of every household: its room, household (S1/S2), model, generation, and IP address. This is the device inventory `fsonos discover` shows; use list_zones for how they group and list_rooms for room aliases.",
     annotations(read_only, idempotent)
 )]
-fn list_players(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend(ctx, Backend::list_players)
+async fn list_players(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::list_players).await
 }
