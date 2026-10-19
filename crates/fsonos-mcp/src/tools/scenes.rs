@@ -99,6 +99,14 @@ impl Backend {
         let def = SceneDefinition::deserialize(scene).map_err(|error| {
             crate::tool_error(&fsonos_api::Failure::invalid(format!("scene: {error}")))
         })?;
+        if def == SceneDefinition::default() {
+            return Err(crate::tool_error(
+                &fsonos_api::Failure::invalid(
+                    "the scene written out names no group, volume or mute",
+                )
+                .with_hint("Name at least one, or leave the scene out to save the house as it is."),
+            ));
+        }
         let path = format!("/scenes/{}", segment(name));
         if let Some(answer) = self.on_daemon("PUT", &path, Some(scene), |saved: &SceneDto| {
             format!("Saved {}", scene_line(saved))
@@ -141,11 +149,9 @@ impl Backend {
     /// The `delete_scene` tool.
     pub fn delete_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
         let path = format!("/scenes/{}", segment(name));
-        if let Some(answer) =
-            self.on_daemon("DELETE", &path, None, |deleted: &SceneDeletedDto| {
-                deleted.done.clone()
-            })
-        {
+        if let Some(answer) = self.on_daemon("DELETE", &path, None, |deleted: &SceneDeletedDto| {
+            deleted.done.clone()
+        }) {
             return answer;
         }
         respond(|| {
@@ -197,14 +203,20 @@ async fn apply_scene(
     description = "Show one saved scene by `name` (case ignored; list_scenes names the saved ones): how its rooms group, what each group plays and whether it plays, and each room's volume and mute. Nothing on the speakers changes; put the house in it with apply_scene.",
     annotations(read_only, idempotent)
 )]
-async fn get_scene(ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+async fn get_scene(
+    ctx: &McpContext,
+    name: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, move |b| b.get_scene(&name)).await
 }
 
 #[tool(
     description = "Forget the saved scene `name` (case ignored; list_scenes names the saved ones). Only the saved scene is removed; nothing on the speakers changes. An unknown name is an error."
 )]
-async fn delete_scene(ctx: &McpContext, name: String) -> McpResult<CompleteResult<FinalCallToolResult>> {
+async fn delete_scene(
+    ctx: &McpContext,
+    name: String,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, move |b| b.delete_scene(&name)).await
 }
 

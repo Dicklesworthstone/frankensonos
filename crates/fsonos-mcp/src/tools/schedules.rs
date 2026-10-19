@@ -10,9 +10,7 @@ use fsonos_api::surface::schedules::{
 };
 use serde::Serialize;
 
-use super::{
-    Backend, from_daemon, respond, said, segment, sentence, with_backend_off_thread,
-};
+use super::{Backend, from_daemon, respond, said, segment, sentence, with_backend_off_thread};
 
 /// `list_sleep_timers` structured content.
 #[derive(Serialize)]
@@ -267,7 +265,10 @@ async fn add_schedule(
     description = "Pause a schedule by its id (from list_schedules): it does not run until resumed.",
     annotations(idempotent)
 )]
-async fn pause_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
+async fn pause_schedule(
+    ctx: &McpContext,
+    id: i64,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, move |b| b.pause_schedule(id, true)).await
 }
 
@@ -275,11 +276,17 @@ async fn pause_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<F
     description = "Resume a paused schedule by its id (from list_schedules); runs missed while it was paused are not made up.",
     annotations(idempotent)
 )]
-async fn resume_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
+async fn resume_schedule(
+    ctx: &McpContext,
+    id: i64,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, move |b| b.pause_schedule(id, false)).await
 }
 
 #[tool(description = "Remove a schedule by its id (from list_schedules).")]
-async fn remove_schedule(ctx: &McpContext, id: i64) -> McpResult<CompleteResult<FinalCallToolResult>> {
+async fn remove_schedule(
+    ctx: &McpContext,
+    id: i64,
+) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, move |b| b.remove_schedule(id)).await
 }

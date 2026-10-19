@@ -172,9 +172,7 @@ fn invoke(backend: &Backend, case: &Case) -> McpResult<FinalCallToolResult> {
         "list_players" => backend.list_players(),
         "get_policy" => backend.get_policy(),
         "get_eq" => backend.get_eq(ROOM),
-        "set_eq" => {
-            backend.set_eq(&serde_json::from_value(case.body.clone().unwrap()).unwrap())
-        }
+        "set_eq" => backend.set_eq(&serde_json::from_value(case.body.clone().unwrap()).unwrap()),
         "list_scenes" => backend.list_scenes(),
         "get_scene" => backend.get_scene(NAME),
         "save_scene" => backend.save_scene_from(NAME, case.body.as_ref().unwrap()),
@@ -195,10 +193,9 @@ fn saved_state_inventory_and_policy_reads_use_the_selected_daemon() {
     for case in reads() {
         let (backend, reply) = fixture(Some(Ok(case.answer.clone())));
         let result = invoke(&backend, &case).unwrap();
-        let expected = case.envelope.map_or_else(
-            || case.answer.clone(),
-            |key| json!({(key): case.answer}),
-        );
+        let expected = case
+            .envelope
+            .map_or_else(|| case.answer.clone(), |key| json!({(key): case.answer}));
         assert_eq!(result.structured_content, Some(expected), "{}", case.tool);
         assert_eq!(
             *reply.calls.lock().unwrap(),
@@ -214,11 +211,17 @@ fn house_edits_use_the_daemon_store_scheduler_and_action_log_once() {
     for case in writes() {
         let (backend, reply) = fixture(Some(Ok(case.answer.clone())));
         let result = invoke(&backend, &case).unwrap();
-        assert_eq!(result.structured_content, Some(case.answer), "{}", case.tool);
+        assert_eq!(
+            result.structured_content,
+            Some(case.answer),
+            "{}",
+            case.tool
+        );
         assert_eq!(
             *reply.calls.lock().unwrap(),
             [json!([case.method, case.path, case.body])],
-            "{}", case.tool,
+            "{}",
+            case.tool,
         );
         assert!(!text(&result).is_empty());
     }
@@ -228,7 +231,10 @@ fn house_edits_use_the_daemon_store_scheduler_and_action_log_once() {
 fn denied_lost_and_malformed_daemon_replies_never_try_local_state() {
     for case in reads().into_iter().chain(writes()) {
         for answer in [
-            Err(Failure::new(ErrorCode::PolicyDenied, "daemon policy denied")),
+            Err(Failure::new(
+                ErrorCode::PolicyDenied,
+                "daemon policy denied",
+            )),
             Err(Failure::new(ErrorCode::PlayerUnreachable, "reply lost")),
             Ok(json!({"not_the_expected_document": true})),
         ] {
@@ -254,11 +260,15 @@ fn no_selected_daemon_keeps_standalone_house_edits_subject_to_local_policy() {
 }
 
 #[test]
-fn a_malformed_explicit_scene_is_rejected_before_any_daemon_save() {
-    let (backend, reply) = fixture(Some(Ok(scene())));
-    let error = backend
-        .save_scene_from(NAME, &json!({"unknown_field": true}))
-        .unwrap_err();
-    assert!(error.message.contains("INVALID_ARGUMENT"), "{error:?}");
-    assert!(reply.calls.lock().unwrap().is_empty());
+fn a_malformed_or_empty_explicit_scene_is_rejected_before_any_daemon_save() {
+    for definition in [
+        json!({"unknown_field": true}),
+        json!({}),
+        json!({"groups": [], "volumes": {}, "mutes": {}}),
+    ] {
+        let (backend, reply) = fixture(Some(Ok(scene())));
+        let error = backend.save_scene_from(NAME, &definition).unwrap_err();
+        assert!(error.message.contains("INVALID_ARGUMENT"), "{error:?}");
+        assert!(reply.calls.lock().unwrap().is_empty());
+    }
 }
