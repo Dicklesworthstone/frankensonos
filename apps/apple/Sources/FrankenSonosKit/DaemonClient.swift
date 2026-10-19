@@ -41,6 +41,9 @@ public struct DaemonEndpoint: Hashable, Sendable {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
         c.percentEncodedPath = "/" + segments.map { $0.addingPercentEncoding(withAllowedCharacters: allowed)! }.joined(separator: "/")
         c.queryItems = query.isEmpty ? nil : query
+        // The daemon decodes query values as form data: a literal plus must
+        // be escaped, not interpreted as a space in a room or client name.
+        c.percentEncodedQuery = c.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
         guard let result = c.url else { throw ContractError.invalid("The resource address is invalid.") }
         return result
     }
