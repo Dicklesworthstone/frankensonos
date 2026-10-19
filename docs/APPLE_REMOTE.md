@@ -1,8 +1,8 @@
 # Native Mac remote
 
 `FrankenSonosRemote` is a SwiftUI macOS application over the existing daemon
-API. It does not launch another daemon, talk directly to speakers, learn new
-Spotify credentials, or implement a second DJ. Its connection screen accepts an
+API. It does not launch another daemon, talk directly to speakers, store
+Spotify account tokens, or implement a second DJ. Its connection screen accepts an
 HTTPS daemon origin, including your Tailscale Serve origin. Local HTTP requires
 an explicit toggle and the same local-address validation as `DaemonClient`.
 Only that origin and toggle are saved in the app's preferences.
@@ -84,10 +84,19 @@ read. Draft targets are explicit, never borrowed from a changing playback
 selection. The daemon owns run times, persistence and creator permissions; the
 remote adds no scheduler. See `docs/APPLE_SCHEDULES.md` in the repository.
 
+The **Spotify & Library** toolbar opens daemon sign-in and cache refresh without
+a selected speaker. Browser consent is opened explicitly, completion is sent
+once, and credentials stay on the daemon. Cached sign-in, job acknowledgement,
+completed imports and missing-data notes are shown separately. The setup panel
+owns no playback commands; its pending-job observations are GET-only. See
+`docs/APPLE_SPOTIFY.md` in the repository.
+
 ## Commands and lifetime
 
-Every mutation goes through `RemoteModel` and `CommandReviewSession`: read,
-show a one-use review, explicitly confirm, read again, then dispatch once.
+Playback and schedule mutations go through `RemoteModel` and
+`CommandReviewSession`: read, show a one-use review, explicitly confirm, read
+again, then dispatch once. Spotify account/cache operations use an independent
+single-shot setup worker and never send speaker commands.
 The confirmation shows the source household, group, requested target or URI,
 current playback, and the relevant favorite or DJ selection. Room and group
 levels, queue entries, playback identity, DJ steering, and affected group layouts
@@ -138,9 +147,14 @@ house-local and offset-explicit times, shared playback command locking, cancelle
 reads, and uncertain acknowledgements that must not be replayed. Schedule-list
 observations are not evidence that a scheduled action actually ran.
 
+Spotify setup adds twenty-eight client/workflow tests for read-only consent,
+callback binding, explicit browser opening, partial imports, read isolation,
+lifecycle cancellation and uncertain requests without replay. They use synthetic
+daemon replies, not a real Spotify account grant.
+
 Local Linux execution does not validate SwiftUI rendering, macOS application
 launch, Apple URLSession streaming, Tailscale reachability or physical Sonos.
 Those remain separate Mac/workflow and owner-LAN acceptance checks. This remote
 does not yet expose every daemon feature: scene editing,
-announcements, EQ, Spotify sign-in/sync and action-log undo remain on the CLI/web
+announcements, EQ and action-log undo remain on the CLI/web
 surfaces. It is a runnable Mac target, not an iOS installation or App Store release.

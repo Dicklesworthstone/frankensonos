@@ -15,11 +15,15 @@ import FrankenSonosKit
 
 @MainActor final class RemoteBridge: ObservableObject {
     let model: RemoteModel
+    let spotify: SpotifySetupModel
     let endpoint: String
     init(endpoint: DaemonEndpoint) {
         self.endpoint = endpoint.url.absoluteString
-        model = RemoteModel(client: DaemonClient(endpoint: endpoint))
+        let client = DaemonClient(endpoint: endpoint)
+        model = RemoteModel(client: client)
+        spotify = SpotifySetupModel(client: client)
         model.onChange = { [weak self] in self?.objectWillChange.send() }
+        spotify.onChange = { [weak self] in self?.objectWillChange.send() }
     }
 }
 
@@ -29,14 +33,18 @@ import FrankenSonosKit
     @AppStorage("frankensonos.localHTTP") private var allowHTTP = false
     @State private var bridge: RemoteBridge?
     @State private var problem: String?
+    @State private var showSpotify = false
 
     var body: some View {
         Group {
             if let bridge {
                 RemoteScreen(bridge: bridge) {
-                    bridge.model.stop()
+                    bridge.spotify.stop(); bridge.model.stop()
+                    showSpotify = false
                     self.bridge = nil
                 }
+                .toolbar { SpotifySetupButton(bridge: bridge, isPresented: $showSpotify) }
+                .sheet(isPresented: $showSpotify) { SpotifyPanel(bridge: bridge) }
             } else {
                 VStack(alignment: .leading, spacing: 20) {
                     Label("FrankenSonos", systemImage: "hifispeaker.2.fill").font(.largeTitle.bold())
@@ -57,10 +65,13 @@ import FrankenSonosKit
         }
         .frame(minWidth: 820, minHeight: 620)
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { bridge?.model.suspend() }
-            else if phase == .active { bridge?.model.resume() }
+            if phase == .background { bridge?.model.suspend(); bridge?.spotify.suspend() }
+            else if phase == .active {
+                bridge?.model.resume()
+                if showSpotify { bridge?.spotify.resume() }
+            }
         }
-        .onDisappear { bridge?.model.stop() }
+        .onDisappear { bridge?.spotify.stop(); bridge?.model.stop() }
     }
 
     private func connect() {

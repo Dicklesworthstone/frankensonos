@@ -6,7 +6,7 @@ import Testing
 @testable import FrankenSonosKit
 
 private let testRedirect = "http://127.0.0.1:8099/auth/spotify/callback"
-private let testState = "SYNTHETIC-state"
+private let spotifyFixtureState = "SYNTHETIC-state"
 private let testCode = "SYNTHETIC-code"
 private func jsonReply(_ object: Any, status: Int = 200) throws -> HTTPReply {
     HTTPReply(data: try JSONSerialization.data(withJSONObject: object), status: status)
@@ -14,7 +14,7 @@ private func jsonReply(_ object: Any, status: Int = 200) throws -> HTTPReply {
 private func consentObject(redirect: String = testRedirect) -> [String: String] {
     var c = URLComponents(string: "https://accounts.spotify.com/authorize")!
     c.queryItems = [URLQueryItem(name: "client_id", value: "SYNTHETIC"), URLQueryItem(name: "response_type", value: "code"),
-                   URLQueryItem(name: "redirect_uri", value: redirect), URLQueryItem(name: "state", value: testState),
+                   URLQueryItem(name: "redirect_uri", value: redirect), URLQueryItem(name: "state", value: spotifyFixtureState),
                    URLQueryItem(name: "scope", value: "user-library-read user-top-read"),
                    URLQueryItem(name: "code_challenge_method", value: "S256"),
                    URLQueryItem(name: "code_challenge", value: String(repeating: "A", count: 43))]
@@ -26,7 +26,7 @@ private func consent(_ object: [String: String] = consentObject()) throws -> Spo
 }
 private func callback(code: String = testCode) -> String {
     var c = URLComponents(string: testRedirect)!
-    c.queryItems = [URLQueryItem(name: "code", value: code), URLQueryItem(name: "state", value: testState)]
+    c.queryItems = [URLQueryItem(name: "code", value: code), URLQueryItem(name: "state", value: spotifyFixtureState)]
     return c.string!
 }
 
@@ -122,8 +122,8 @@ private func gate(_ stub: SpotifyStub) async throws {
 @Test func spotifyConsentAcceptsOnlyTheExistingReadOnlyPKCEFlow() throws {
     let c = try consent()
     #expect(try c.authorizationURL().host == "accounts.spotify.com")
-    #expect(!String(describing: c).contains(testState))
-    #expect(!String(reflecting: c).contains(testState))
+    #expect(!String(describing: c).contains(spotifyFixtureState))
+    #expect(!String(reflecting: c).contains(spotifyFixtureState))
     var object = consentObject()
     object["url"] = object["url"]!.replacingOccurrences(of: "%20", with: "+")
     #expect(try consent(object).authorizationURL().host == "accounts.spotify.com")
@@ -147,7 +147,7 @@ private func gate(_ stub: SpotifyStub) async throws {
 @Test func spotifyCallbackBindsStateOriginAndExactPathWithoutVisitingIt() throws {
     let c = try consent()
     #expect(try c.callback(callback()) == callback())
-    let malformed = ["?code=x&state=" + testState, callback().replacingOccurrences(of: testState, with: "other"),
+    let malformed = ["?code=x&state=" + spotifyFixtureState, callback().replacingOccurrences(of: spotifyFixtureState, with: "other"),
                      callback().replacingOccurrences(of: "127.0.0.1", with: "evil.test"),
                      callback().replacingOccurrences(of: "/callback", with: "/different"),
                      callback() + "&code=extra", callback() + "#access_token=secret", callback() + "&error=denied",
@@ -159,10 +159,10 @@ private func gate(_ stub: SpotifyStub) async throws {
 
 @Test func spotifyCallbackPreservesPercentEncodedPlusAndDoesNotEchoCodes() throws {
     let c = try consent()
-    let value = testRedirect + "?code=SYNTHETIC%2Bcode%2Fvalue&state=" + testState
+    let value = testRedirect + "?code=SYNTHETIC%2Bcode%2Fvalue&state=" + spotifyFixtureState
     #expect(try c.callback(value) == value)
     do { _ = try c.callback(callback() + "&state=other") }
-    catch { #expect(!error.localizedDescription.contains(testCode)); #expect(!error.localizedDescription.contains(testState)) }
+    catch { #expect(!error.localizedDescription.contains(testCode)); #expect(!error.localizedDescription.contains(spotifyFixtureState)) }
     let redirect = "https://daemon.example.test/auth/a+b"
     #expect(try consent(consentObject(redirect: redirect)).authorizationURL().host == "accounts.spotify.com")
 }
@@ -219,7 +219,7 @@ private func gate(_ stub: SpotifyStub) async throws {
         do { _ = try await client.completeSpotifySignIn(callback(), consent: consent()); Issue.record("Expected uncertainty") }
         catch {
             #expect(error as? SpotifySetupError == .uncertain)
-            #expect(!error.localizedDescription.contains(testCode) && !error.localizedDescription.contains(testState))
+            #expect(!error.localizedDescription.contains(testCode) && !error.localizedDescription.contains(spotifyFixtureState))
         }
         #expect(await stub.writes().count == 1)
     }
@@ -414,4 +414,60 @@ private func gate(_ stub: SpotifyStub) async throws {
     #expect(!model.active && model.consent == nil)
     try await Task.sleep(for: .milliseconds(40))
     #expect(await stub.writes().count == 1)
+}
+
+@Test @MainActor func spotifyBrowserOpensOnlyAfterAnExplicitActionAndNeverReceivesACallback() async throws {
+    let stub = SpotifyStub(), model = try await ready(stub)
+    defer { model.stop() }
+    var opened = [URL]()
+    model.openConsent { opened.append($0); return true }
+    #expect(opened.isEmpty)
+    model.beginSignIn()
+    try await eventually { model.canComplete }
+    #expect(opened.isEmpty)
+    model.openConsent { opened.append($0); return true }
+    #expect(opened.count == 1 && opened[0].host == "accounts.spotify.com" && opened[0].path == "/authorize")
+    #expect(!opened[0].absoluteString.contains(testCode))
+    #expect(await stub.writes().count == 1)
+}
+
+@Test @MainActor func spotifyBrowserFailureRetainsTheLinkAndDoesNotRestartSignIn() async throws {
+    let stub = SpotifyStub(), model = try await ready(stub)
+    defer { model.stop() }
+    model.beginSignIn()
+    try await eventually { model.canComplete }
+    model.openConsent { _ in false }
+    #expect(model.browserProblem != nil && model.consent != nil)
+    model.openConsent { _ in true }
+    #expect(model.browserProblem == nil)
+    #expect(await stub.writes().count == 1)
+}
+
+@Test @MainActor func spotifySuspendedSetupCannotLaunchTheBrowserAndCanResumeItsPendingFlow() async throws {
+    let stub = SpotifyStub(), model = try await ready(stub)
+    defer { model.stop() }
+    model.beginSignIn()
+    try await eventually { model.canComplete }
+    model.suspend()
+    var opens = 0
+    model.openConsent { _ in opens += 1; return true }
+    #expect(opens == 0)
+    model.resume()
+    try await eventually { model.canComplete }
+    model.openConsent { _ in opens += 1; return true }
+    #expect(opens == 1)
+    #expect(await stub.writes().count == 1)
+}
+
+@Test @MainActor func spotifyBrowserActionDoesNotEraseAnUncertainLibraryRequest() async throws {
+    let stub = SpotifyStub(), model = try await ready(stub)
+    defer { model.stop() }
+    model.beginSignIn()
+    try await eventually { model.canComplete }
+    await stub.loseWrites()
+    model.syncLibrary()
+    try await eventually { model.activity == .idle && model.result?.uncertain == true }
+    model.openConsent { _ in true }
+    #expect(model.result?.uncertain == true)
+    #expect(await stub.writes().count == 2)
 }

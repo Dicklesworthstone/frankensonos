@@ -21,6 +21,7 @@ public struct SpotifySetupResult: Sendable {
     public private(set) var libraryProblem: String? { willSet { onChange?() } }
     public private(set) var observedAt: Date? { willSet { onChange?() } }
     public private(set) var result: SpotifySetupResult? { willSet { onChange?() } }
+    public private(set) var browserProblem: String? { willSet { onChange?() } }
     public var canBegin: Bool { active && activity == .idle && signIn != nil }
     public var canComplete: Bool { canBegin && consent != nil && signIn?.pending == true }
     public var canSync: Bool { active && activity == .idle && library != nil && library?.running == false }
@@ -60,6 +61,16 @@ public struct SpotifySetupResult: Sendable {
         startRead()
     }
     public func dismissResult() { result = nil }
+
+    /// Browser opening is a separate explicit UI action, never an automatic
+    /// consequence of a reply or reconnect. Opening is not an authentication ACK.
+    public func openConsent(using open: (URL) -> Bool) {
+        guard active, activity == .idle, signIn?.pending == true, let consent else { return }
+        do {
+            let url = try consent.authorizationURL()
+            browserProblem = open(url) ? nil : "The browser did not accept the request. Try Open Spotify again; no new sign-in was started."
+        } catch { browserProblem = SpotifySetupError.unsafeConsent.localizedDescription }
+    }
 
     public func beginSignIn(replacePending: Bool = false) {
         guard canBegin, let reviewed = signIn else { return }
