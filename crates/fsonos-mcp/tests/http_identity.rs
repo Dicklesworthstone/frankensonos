@@ -396,6 +396,19 @@ impl Legacy {
         while reply.chunk().is_some() {}
     }
 
+    /// POST `body` and answer the HTTP status, dispatched or not.
+    fn post_status(&self, body: &Value) -> u16 {
+        let mut reply = Reply::open(
+            self.address,
+            "POST",
+            &self.path,
+            &self.headers,
+            &body.to_string(),
+        );
+        while reply.chunk().is_some() {}
+        reply.status
+    }
+
     fn call(&mut self, id: i64, method: &str, params: Value) -> Value {
         self.post(&request(id, method, params));
         // Each request has its own deadline even though the SSE socket persists.
@@ -596,13 +609,17 @@ fn exercise_legacy(address: SocketAddr, reads: &AtomicUsize) {
         BOB,
     );
     denied(&bob.call(13, "resources/read", json!({"uri":ZONES})), BOB);
-    denied(
-        &bob.call(
+    // The exact 2024-11-05 envelope refuses the forged identity metadata
+    // (its modern-era keys) at admission, before any dispatch: the forgery
+    // gains nothing, as under the modern era where it is denied as bob.
+    assert_eq!(
+        bob.post_status(&request(
             14,
             "tools/call",
             json!({"name":"list_zones","arguments":{},"_meta":forged_identity()}),
-        ),
-        BOB,
+        )),
+        400,
+        "a forged identity in a legacy envelope is refused before dispatch"
     );
     for local_client in ["cli", "mcp-stdio"] {
         let mut local = Legacy::open(
