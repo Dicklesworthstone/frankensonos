@@ -21,6 +21,7 @@ public enum NativeCommand: Equatable, Sendable {
     case djSteer(mood: String, seconds: UInt32), djClear
     case join(room: String, to: RoomID), leave(room: String), party, move(to: RoomID, copy: Bool)
     case scene(Scene)
+    case sleep(SleepChange)
 
     public var title: String {
         switch self {
@@ -48,6 +49,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .party: "Group this household"
         case .move(let to, let copy): copy ? "Replay on \(to.room)" : "Move music to \(to.room)"
         case .scene(let scene): "Apply \(scene.name)"
+        case .sleep(let change): change.title
         }
     }
     public var explanation: String {
@@ -67,6 +69,7 @@ public enum NativeCommand: Equatable, Sendable {
             ? "Replays the selected group’s current source at the destination and stops the source group. Cross-household playback is not synchronized."
             : "Moves playback to the destination by regrouping when possible. Other source-group rooms can keep playing."
         case .scene: "May regroup rooms, replace sources, start or pause music, and change levels and mutes. Review all listed scene settings. Partial outcomes are shown individually."
+        case .sleep: "Changes this group’s sleep timer, not the remote’s lifetime. The daemon or speaker owns the deadline; its reply says whether a fade is available. Cancellation does not resume playback."
         case .seek: "Checks the current track before seeking. Does not resume paused music."
         case .playSource, .playFavorite, .djStart: "Replaces what this group plays and can change its queue. The daemon applies playback volume caps."
         default: "Controls the selected group's coordinator. Other households remain independent."
@@ -86,6 +89,8 @@ public enum NativeCommand: Equatable, Sendable {
         switch self { case .volume(_, let room): room; case .mute(_, let room): room; default: nil }
     }
     public var savedScene: Scene? { if case .scene(let scene) = self { scene } else { nil } }
+
+    public var sleepChange: SleepChange? { if case .sleep(let change) = self { change } else { nil } }
 
     struct Payload {
         let path: [String]
@@ -154,6 +159,8 @@ public enum NativeCommand: Equatable, Sendable {
             path = ["move"]
             body["to"] = .string(to.address)
             body["copy"] = .bool(copy)
+        case .sleep(let change):
+            path = ["sleep"]; body.merge(try change.fields()) { _, new in new }
         case .scene(let scene):
             try require(!scene.name.isEmpty, "The scene has no name.")
             path = ["scenes", scene.name, "apply"]; body = [:]
@@ -169,7 +176,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .volume: matches = before.volume != nil && before.volume == current.volume
         case .groupVolume: matches = before.groupVolume != nil && before.groupVolume == current.groupVolume
         case .mute: matches = before.mute != nil && before.mute == current.mute
-        case .queuePlay, .queueRemove, .join, .leave, .party, .move, .scene:
+        case .queuePlay, .queueRemove, .join, .leave, .party, .move, .scene, .sleep:
             matches = true // Native queue checks and fresh topology validation remain mandatory.
         case .queueAdd(_, let next): matches = !next || before.samePlayback(as: current)
         default: matches = before.samePlayback(as: current)
@@ -236,6 +243,7 @@ public enum NativeCommand: Equatable, Sendable {
 
     func receipt(_ data: Data, in zone: Zone? = nil) throws -> CommandReceipt {
         switch self {
+        case .sleep(let change): return try change.receipt(data, in: zone)
         case .scene(let scene):
             let report = try DaemonClient.decode(SceneReport.self, from: data)
             guard report.scene == scene.name, !report.done.isEmpty,

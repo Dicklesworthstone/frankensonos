@@ -15,7 +15,7 @@ public struct RemoteResult: Identifiable, Sendable {
 /// lifecycle paths run in package tests. Selection is a household-qualified
 /// room anchor; it follows a coordinator change without retargeting a review.
 @MainActor public final class RemoteModel {
-    public enum Panel: String, CaseIterable, Sendable { case queue, favorites, dj, library, scenes }
+    public enum Panel: String, CaseIterable, Sendable { case queue, favorites, dj, library, scenes, sleep }
     public enum ActionPhase: String, Sendable { case idle, preparing, confirming }
 
     /// A single UI adapter may observe state changes on the main actor. No
@@ -33,6 +33,9 @@ public struct RemoteResult: Identifiable, Sendable {
     public private(set) var moods: [MoodCatalog.Mood] = [] { willSet { onChange?() } }
     public private(set) var hits: [LibraryHit] = [] { willSet { onChange?() } }
     public private(set) var scenes: [Scene] = [] { willSet { onChange?() } }
+    public private(set) var sleepTimer: SleepTimer? { willSet { onChange?() } }
+    /// Nil means unread/failed, not a successful report of no timer.
+    public private(set) var sleepObservedAt: Date? { willSet { onChange?() } }
     public private(set) var query = "" { willSet { onChange?() } }
     public private(set) var panelLoading = false { willSet { onChange?() } }
     public private(set) var panelProblem: String? { willSet { onChange?() } }
@@ -218,14 +221,14 @@ public struct RemoteResult: Identifiable, Sendable {
             queueOffset = 0
             invalidatePanel(); refreshPanel()
         } else if active && value.isFresh && (!wasFresh || oldState.map { old in selectedState.map { !old.samePlayback(as: $0) } ?? true } == true) {
-            if panel == .queue || panel == .dj { refreshPanel() }
+            if panel == .queue || panel == .dj || panel == .sleep { refreshPanel() }
         }
     }
 
     private func invalidatePanel() {
         panelEpoch &+= 1
         panelTask?.cancel(); panelPending = false
-        queue = nil; favorites = []; dj = nil; moods = []; hits = []; scenes = []
+        queue = nil; favorites = []; dj = nil; moods = []; hits = []; scenes = []; sleepTimer = nil; sleepObservedAt = nil
         panelProblem = nil
         // Keep a cancelled request's slot until it drains, including a
         // transport that ignores cancellation. Never publish its stale data.
@@ -249,6 +252,7 @@ public struct RemoteResult: Identifiable, Sendable {
                 case .queue: answer = .queue(try await client.queue(zone, offset: offset))
                 case .favorites: answer = .favorites(try await client.favorites(zone))
                 case .scenes: answer = .scenes(try await client.scenes())
+                case .sleep: answer = .sleep(try await client.sleepTimer(zone))
                 case .dj:
                     let status = try await client.dj(zone)
                     do {
@@ -266,13 +270,14 @@ public struct RemoteResult: Identifiable, Sendable {
                     case .queue(let value): self.queue = value
                     case .favorites(let value): self.favorites = value
                     case .scenes(let value): self.scenes = value
+                    case .sleep(let value): self.sleepTimer = value; self.sleepObservedAt = Date()
                     case .dj(let value, let moods, let problem): self.dj = value; self.moods = moods; self.panelProblem = problem
                     case .library(let value): self.hits = value
                     }
                 }
             } catch {
                 if let self, self.active && self.panelEpoch == token && !Task.isCancelled {
-                    self.queue = nil; self.favorites = []; self.dj = nil; self.moods = []; self.hits = []; self.scenes = []
+                    self.queue = nil; self.favorites = []; self.dj = nil; self.moods = []; self.hits = []; self.scenes = []; self.sleepTimer = nil; self.sleepObservedAt = nil
                     self.panelProblem = error.localizedDescription
                 }
             }
@@ -285,5 +290,5 @@ public struct RemoteResult: Identifiable, Sendable {
 }
 
 private enum PanelAnswer: Sendable {
-    case queue(QueuePage), favorites([Favorite]), dj(DJStatus, [MoodCatalog.Mood], String?), library([LibraryHit]), scenes([Scene])
+    case queue(QueuePage), favorites([Favorite]), dj(DJStatus, [MoodCatalog.Mood], String?), library([LibraryHit]), scenes([Scene]), sleep(SleepTimer?)
 }

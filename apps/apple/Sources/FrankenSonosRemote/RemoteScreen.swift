@@ -259,6 +259,11 @@ import FrankenSonosKit
             Text(item.uri ?? "").font(.caption.monospaced()).textSelection(.enabled)
         case .djSteer(_, let seconds): Text("Duration: \(seconds / 60) minutes")
         case .scene(let scene): SceneDetails(scene: scene)
+        case .sleep:
+            if let timer = review.sleepTimer {
+                Text("Existing timer: \(timer.done)")
+                if let ends = timer.ends { Text("Existing pause deadline: \(ends)") }
+            } else { Text("No existing timer was reported for this group.") }
         default: EmptyView()
         }
     }

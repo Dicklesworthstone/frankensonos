@@ -10,6 +10,7 @@ public struct CommandReview: Identifiable, Sendable {
     public let state: ZoneState
     public let dj: DJStatus?
     public let favorite: Favorite?
+    public let sleepTimer: SleepTimer?
     public let observedAt: Date
     fileprivate let observation: CommandObservation
 }
@@ -42,7 +43,7 @@ public actor CommandReviewSession {
         try check(token)
         let review = CommandReview(id: UUID(), command: command, zone: zone,
                                    state: try observed.state(for: command, in: zone),
-                                   dj: observed.dj, favorite: observed.favorite,
+                                   dj: observed.dj, favorite: observed.favorite, sleepTimer: observed.sleepTimer,
                                    observedAt: Date(), observation: observed)
         pending = review.id
         return review
@@ -72,6 +73,7 @@ fileprivate struct CommandObservation: Sendable {
     let dj: DJStatus?
     let favorite: Favorite?
     let scene: Scene?
+    let sleepTimer: SleepTimer?
 
     func state(for command: NativeCommand, in zone: Zone) throws -> ZoneState {
         let id = RoomID(household: zone.household, room: command.room ?? zone.coordinatorRoom)
@@ -104,6 +106,8 @@ fileprivate struct CommandObservation: Sendable {
                 .map { "\($0.key.address): \($0.value)" }.joined(separator: "\n")
             throw ContractError.invalid("Some affected rooms could not be read. Nothing was sent.\n" + failures)
         }
+        let sleepTimer = command.sleepChange != nil ? try await client.sleepTimer(zone) : nil
+        try command.sleepChange?.validate(timer: sleepTimer)
         let dj = command.requiresDJ ? try await client.dj(zone) : nil
         var favorite: Favorite?
         if case .playFavorite(let key) = command {
@@ -135,7 +139,7 @@ fileprivate struct CommandObservation: Sendable {
         default: break
         }
         try Task.checkCancellation()
-        let result = Self(house: house, dj: dj, favorite: favorite, scene: scene)
+        let result = Self(house: house, dj: dj, favorite: favorite, scene: scene, sleepTimer: sleepTimer)
         let state = try result.state(for: command, in: zone)
         try command.validate(before: state, current: state)
         return result
@@ -143,6 +147,13 @@ fileprivate struct CommandObservation: Sendable {
 
     func validate(_ current: Self, command: NativeCommand, zone: Zone) throws {
         try command.validate(before: state(for: command, in: zone), current: current.state(for: command, in: zone))
+        if command.sleepChange != nil {
+            switch (sleepTimer, current.sleepTimer) {
+            case (nil, nil): break
+            case (.some(let before), .some(let after)) where before.sameTimer(as: after): break
+            default: throw ContractError.invalid("The reviewed sleep timer changed. Review its current deadline again.")
+            }
+        }
         if let dj, current.dj.map({ dj.sameSession(as: $0) }) != true {
             throw ContractError.invalid("The DJ selection or steering changed. Review the DJ again.")
         }

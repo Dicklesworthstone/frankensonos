@@ -25,6 +25,7 @@ import FrankenSonosKit
             case .dj: djPanel
             case .library: libraryPanel
             case .scenes: ScenePanel(bridge: bridge)
+            case .sleep: SleepPanel(bridge: bridge)
             }
         }
     }

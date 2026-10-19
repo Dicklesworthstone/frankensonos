@@ -65,6 +65,18 @@ on a reachable room. Panels refresh on selection, explicit refresh, relevant
 live-state transitions and completed commands; they are observations, not an
 independent event log.
 
+The Scenes panel browses and applies stored house definitions with a full
+settings review and explicit house-wide scope. Its results preserve failed
+steps, skipped rooms and policy notes; creating and editing scenes remains on
+the CLI/web. See `docs/APPLE_SCENES.md` in the repository.
+
+The Sleep panel reads the selected group's timer and supports setting a new
+one, extending its existing deadline, and cancelling it. It distinguishes daemon
+fades from speaker-only timers. The displayed countdown is an estimate, not an
+acknowledgement that playback paused. Timers continue on the daemon/speaker when
+the remote closes; no offline command queue or local alarm is created. See
+`docs/APPLE_SLEEP.md` in the repository.
+
 ## Commands and lifetime
 
 Every mutation goes through `RemoteModel` and `CommandReviewSession`: read,
@@ -109,9 +121,13 @@ sessions. The two client regressions were also reproduced against the original
 source: real feedback was incorrectly decoded as an Outcome, and cancellation
 inside the final topology read could still send a POST.
 
+The scene and sleep workflows add twelve scene tests and twenty-two sleep tests
+using the production codecs, command actors and screen controller with controlled
+daemon responses. They also run in the full package on the native Mac workflow.
+
 Local Linux execution does not validate SwiftUI rendering, macOS application
 launch, Apple URLSession streaming, Tailscale reachability or physical Sonos.
 Those remain separate Mac/workflow and owner-LAN acceptance checks. This remote
-does not yet expose every daemon feature: scene editing, schedules, sleep timers,
+does not yet expose every daemon feature: scene editing, schedules,
 announcements, EQ, Spotify sign-in/sync and action-log undo remain on the CLI/web
 surfaces. It is a runnable Mac target, not an iOS installation or App Store release.
