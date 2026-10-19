@@ -197,3 +197,33 @@ fileprivate struct CommandObservation: Sendable {
         }
     }
 }
+
+// Schedules use this same actor, pending-review slot and write gate as playback.
+// Their separate observation type avoids fabricating playback for store-only
+// actions or requiring a reachable speaker to pause a future scheduled action.
+extension CommandReviewSession {
+    public func prepare(_ command: ScheduleCommand) async throws -> ScheduleReview {
+        guard !busy else { throw ContractError.invalid("An action is still being checked or sent.") }
+        busy = true
+        defer { busy = false }
+        generation &+= 1; pending = nil
+        let token = generation
+        let current = try await command.preflight(client)
+        try check(token)
+        let review = ScheduleReview(command: command, current: current)
+        pending = review.id
+        return review
+    }
+
+    public func execute(_ review: ScheduleReview) async throws -> ScheduleReceipt {
+        guard !busy, pending == review.id else {
+            throw ContractError.invalid("This review is no longer current. Review the action again.")
+        }
+        pending = nil; busy = true
+        defer { busy = false }
+        let token = generation
+        _ = try await review.command.preflight(client)
+        try check(token)
+        return try await client.perform(review.command)
+    }
+}

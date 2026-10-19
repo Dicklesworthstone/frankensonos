@@ -239,3 +239,27 @@ public struct DaemonClient: Sendable {
         }
     }
 }
+
+
+extension DaemonClient {
+    /// The low-level schedule write, like perform(NativeCommand). UI callers
+    /// use CommandReviewSession for one-use review and fresh preflight. Once
+    /// sent, even a failed receipt can mean a schedule was stored: never retry.
+    public func perform(_ command: ScheduleCommand) async throws -> ScheduleReceipt {
+        try Task.checkCancellation()
+        let payload = try command.payload()
+        var request = URLRequest(url: try endpoint.resource(payload.path), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(payload.body)
+        try Task.checkCancellation()
+        do {
+            let reply = try await transport.send(request)
+            try Self.check(reply)
+            return try command.receipt(reply.data)
+        } catch {
+            throw ClientError.uncertain(error.localizedDescription)
+        }
+    }
+}
