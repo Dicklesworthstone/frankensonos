@@ -206,6 +206,45 @@ pub fn find<'a>(favorites: &'a [Favorite], query: &str) -> Result<&'a Favorite, 
     })
 }
 
+/// Load `favorite` in the group `coordinator` leads without playing it:
+/// the group is paused first if it plays, then the favorite is selected,
+/// ready to resume (an album or playlist replaces the queue, as
+/// [`play`] does). No sound starts.
+pub fn load<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    favorite: &Favorite,
+) -> Result<(), FavoriteError> {
+    let Some(uri) = favorite.uri.as_deref() else {
+        return Err(FavoriteError::Unplayable {
+            title: favorite.title.clone(),
+        });
+    };
+    match favorite.kind {
+        FavoriteKind::Unplayable => Err(FavoriteError::Unplayable {
+            title: favorite.title.clone(),
+        }),
+        FavoriteKind::Track | FavoriteKind::Stream => {
+            control::pause_confirmed(t, households, coordinator)?;
+            Ok(control::load_uri(
+                t,
+                households,
+                coordinator,
+                uri,
+                &favorite.metadata,
+            )?)
+        }
+        FavoriteKind::Container => Ok(queue_source::load(
+            t,
+            households,
+            coordinator,
+            uri,
+            &favorite.metadata,
+        )?),
+    }
+}
+
 /// Play `favorite` in the group `coordinator` leads.
 pub fn play<T: Transport + ?Sized>(
     t: &T,

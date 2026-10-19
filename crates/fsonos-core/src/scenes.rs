@@ -163,16 +163,20 @@ pub enum SceneOp {
         player: PlayerId,
         mute: bool,
     },
-    /// Play the favorite titled `name` (this starts playback).
+    /// Play the favorite titled `name` (this starts playback), or with
+    /// `start` false load it paused, ready to resume, without a sound.
     Favorite {
         coordinator: PlayerId,
         name: String,
+        start: bool,
     },
-    /// Play `uri` (this starts playback).
+    /// Play `uri` (this starts playback), or with `start` false load it
+    /// paused, ready to resume, without a sound.
     Uri {
         coordinator: PlayerId,
         uri: String,
         metadata: String,
+        start: bool,
     },
     /// Start (or steer) the DJ.
     Dj {
@@ -185,6 +189,23 @@ pub enum SceneOp {
     Pause {
         coordinator: PlayerId,
     },
+}
+
+impl SceneOp {
+    /// Whether this step starts the group's sound: a Play, the DJ, or a
+    /// source played rather than loaded.
+    #[must_use]
+    pub fn starts(&self) -> bool {
+        match self {
+            Self::Favorite { start, .. } | Self::Uri { start, .. } => *start,
+            Self::Dj { .. } | Self::Play { .. } => true,
+            Self::Leave { .. }
+            | Self::Join { .. }
+            | Self::Volume { .. }
+            | Self::Mute { .. }
+            | Self::Pause { .. } => false,
+        }
+    }
 }
 
 /// The ops that apply a scene, and what was left out, with why.
@@ -412,12 +433,23 @@ fn plan_sources(
             _ => None,
         });
         let coordinator = lead.primary.clone();
+        let playing_now = now.is_some_and(|s| s.transport_state == TransportState::Playing);
+        // A group that leads but whose state was not read may be playing:
+        // its source takes the old path. One that does not lead yet will
+        // leave its group, which stops it.
+        let maybe_playing = playing_now || (now.is_none() && leads(lead));
+        // A silent group the scene wants paused gets its source loaded
+        // without a sound: played and then paused, it would sound for a
+        // moment. One that plays now is played and then paused, as ever, so
+        // a source that fails leaves its music playing as it was.
+        let start = g.playing != Some(false) || maybe_playing;
         let source = match &g.source {
             SceneSource::Keep => None,
             SceneSource::Favorite { name, uri } => (uri.is_none() || on_now != uri.as_deref())
                 .then(|| SceneOp::Favorite {
                     coordinator: coordinator.clone(),
                     name: name.clone(),
+                    start,
                 }),
             SceneSource::Uri { uri, metadata } => {
                 // A Spotify track renders as x-sonos-spotify: the same track.
@@ -430,6 +462,7 @@ fn plan_sources(
                     coordinator: coordinator.clone(),
                     uri: uri.clone(),
                     metadata: metadata.clone(),
+                    start,
                 })
             }
             SceneSource::Dj { mood } => Some(SceneOp::Dj {
@@ -437,8 +470,8 @@ fn plan_sources(
                 mood: mood.clone(),
             }),
         };
-        let starts = source.is_some();
-        let playing = !starts && now.is_some_and(|s| s.transport_state == TransportState::Playing);
+        let starts = source.as_ref().is_some_and(SceneOp::starts);
+        let playing = source.is_none() && playing_now;
         plan.ops.extend(source);
         match g.playing {
             Some(true) if !starts && !playing => plan.ops.push(SceneOp::Play { coordinator }),
@@ -479,8 +512,16 @@ fn silence_starting<T: Transport + ?Sized>(
     for op in &plan.ops {
         match op {
             SceneOp::Play { coordinator } => starts.push(coordinator),
-            SceneOp::Favorite { coordinator, .. }
-            | SceneOp::Uri { coordinator, .. }
+            SceneOp::Favorite {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::Uri {
+                coordinator,
+                start: true,
+                ..
+            }
             | SceneOp::Dj { coordinator, .. } => {
                 let idle = control::playback(t, households, coordinator)
                     .is_ok_and(|now| now.transport.state != TransportState::Playing);
@@ -632,6 +673,25 @@ fn play_source<T: Transport + ?Sized>(
     control::play_uri(t, households, coordinator, uri, metadata)
 }
 
+/// [`play_source`] without the Play: the group is paused first if it
+/// plays, then `uri` is selected, ready to resume, and no sound starts.
+fn load_source<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    uri: &str,
+    metadata: &str,
+) -> Result<(), CoreError> {
+    control::pause_confirmed(t, households, coordinator)?;
+    if uri.starts_with("spotify:track:") {
+        return control::load_spotify_track(t, households, coordinator, uri, uri);
+    }
+    if let Some(kind) = fsonos_proto::didl::SpotifyContainer::of(uri) {
+        return control::load_spotify_container(t, households, coordinator, kind, uri, uri);
+    }
+    control::load_uri(t, households, coordinator, uri, metadata)
+}
+
 fn run<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -653,7 +713,11 @@ fn run<T: Transport + ?Sized>(
         SceneOp::Mute { player, mute, .. } => {
             control::set_mute(t, households, player, *mute).map_err(s)
         }
-        SceneOp::Favorite { coordinator, name } => {
+        SceneOp::Favorite {
+            coordinator,
+            name,
+            start,
+        } => {
             let house = households
                 .iter()
                 .position(|h| h.player(coordinator).is_some())
@@ -668,13 +732,25 @@ fn run<T: Transport + ?Sized>(
                 Some(f) => f,
                 None => favorites::find(list, name).map_err(|e| e.to_string())?,
             };
-            favorites::play(t, households, coordinator, favorite).map_err(|e| e.to_string())
+            let done = if *start {
+                favorites::play(t, households, coordinator, favorite)
+            } else {
+                favorites::load(t, households, coordinator, favorite)
+            };
+            done.map_err(|e| e.to_string())
         }
         SceneOp::Uri {
             coordinator,
             uri,
             metadata,
+            start: true,
         } => play_source(t, households, coordinator, uri, metadata).map_err(s),
+        SceneOp::Uri {
+            coordinator,
+            uri,
+            metadata,
+            start: false,
+        } => load_source(t, households, coordinator, uri, metadata).map_err(s),
         SceneOp::Dj { coordinator, mood } => options.hooks.start_dj(coordinator, mood.as_deref()),
         SceneOp::Play { coordinator } => control::resume(t, households, coordinator).map_err(s),
         // A stream that cannot pause stops (control::pause_at).
@@ -1008,6 +1084,7 @@ mod tests {
                 SceneOp::Favorite {
                     coordinator: pid("A"),
                     name: "Radio A".into(),
+                    start: true,
                 },
             ]
         );
@@ -1030,6 +1107,67 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_silent_group_the_scene_pauses_gets_its_new_source_loaded_not_played() {
+        // C is to be paused on station b; it has paused (or stopped on)
+        // station a.
+        let h = house(&[&[&["A", "B"], &["C"]]]);
+        let mut scene = evening();
+        let b = "x-rincon-mp3radio://radio.example/b";
+        scene.groups[1].source = SceneSource::Uri {
+            uri: b.into(),
+            metadata: String::new(),
+        };
+        let uri = |start| SceneOp::Uri {
+            coordinator: pid("C"),
+            uri: b.into(),
+            metadata: String::new(),
+            start,
+        };
+        let snaps = |now| {
+            let mut snaps = evening_snaps();
+            snaps[1].transport_state = now;
+            snaps[1].source = radio();
+            snaps
+        };
+        for now in [TransportState::Paused, TransportState::Stopped] {
+            let plan = plan_apply(&scene, &h, &snaps(now)).unwrap();
+            assert!(!uri(false).starts());
+            assert_eq!(
+                plan.ops,
+                [uri(false)],
+                "{now:?}: no Play, and no Pause after"
+            );
+        }
+        // One that plays now is played and paused, as before: a source that
+        // fails leaves its music playing.
+        let plan = plan_apply(&scene, &h, &snaps(TransportState::Playing)).unwrap();
+        assert_eq!(
+            plan.ops,
+            [
+                uri(true),
+                SceneOp::Pause {
+                    coordinator: pid("C")
+                }
+            ]
+        );
+        // One whose state was not read may be playing: the same old path.
+        let plan = plan_apply(&scene, &h, &evening_snaps()[..1]).unwrap();
+        assert!(
+            plan.ops.contains(&uri(true))
+                && plan.ops.contains(&SceneOp::Pause {
+                    coordinator: pid("C")
+                }),
+            "{:?}",
+            plan.ops
+        );
+        // To play, it is played.
+        scene.groups[1].playing = Some(true);
+        let plan = plan_apply(&scene, &h, &evening_snaps()).unwrap();
+        assert_eq!(plan.ops, [uri(true)]);
+        assert!(uri(true).starts());
     }
 
     #[test]
