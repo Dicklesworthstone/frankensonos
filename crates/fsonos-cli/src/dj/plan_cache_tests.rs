@@ -1,6 +1,6 @@
-//! sp4f.5: a start or skip keeps the built pool while nothing it is built
-//! from changed, and rebuilds it after a library sync or an edit to
-//! moods.toml or preferences.toml.
+//! sp4f.5: a skip keeps the built pool while nothing it is built from
+//! changed, and rebuilds it after a library sync or an edit to moods.toml or
+//! preferences.toml. (A start always rebuilds.)
 
 use super::State;
 use fsonos_core::store::MemStore;
@@ -57,9 +57,9 @@ fn the_pool_is_rebuilt_only_after_a_sync_or_an_edit_to_moods_or_preferences() {
         ..State::default()
     };
     state.refresh(&store, moods, 0).unwrap();
-    assert_eq!(state.pool.len(), 2, "the first start builds the pool");
+    assert_eq!(state.pool.len(), 2, "the first refresh builds the pool");
 
-    // The cache grows, but nothing says so: the next start keeps the pool.
+    // The cache grows, but nothing says so: the next skip keeps the pool.
     items.push(song(3, "Artist Three"));
     apply_library_read(&mut store, &items).unwrap();
     state.refresh(&store, moods, 0).unwrap();

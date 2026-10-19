@@ -56,7 +56,7 @@ fn dto(prefs: &Preferences) -> PreferencesDto {
         .unwrap_or_default()
 }
 
-/// Lay the preferences on the DJ's pool (on each start and skip).
+/// Lay the preferences on the DJ's pool (on each rebuild of it).
 pub(super) fn apply(state: &mut State, moods_file: Option<&PathBuf>) -> Result<(), Failure> {
     let Some(path) = file(moods_file) else {
         return Ok(());

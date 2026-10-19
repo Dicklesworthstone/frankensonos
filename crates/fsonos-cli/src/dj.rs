@@ -3,8 +3,11 @@
 //!
 //! A start builds the DJ's pool from the library cache (songs and classical works)
 //! and the owner's feedback, queues the first works and plays them. The pool
-//! is kept for the playback events that follow, and rebuilt on each start or
-//! skip so a library sync in between is picked up.
+//! is kept for the playback events that follow. Each start rebuilds it, so a
+//! library `fsonos setup` read in another process is picked up. A skip
+//! rebuilds it only when a library sync, preferences.toml or moods.toml
+//! changed since (the rebuild reads the whole library cache: seconds, for a
+//! large library).
 //!
 //! Every pick is steered: the zone's DJ session (from the store) names a
 //! mood and constraints, or, with no session or no mood, the time-of-day
@@ -70,8 +73,8 @@ const PLAN_RETRY: Duration = Duration::from_secs(30);
 
 /// See the module docs.
 pub struct SpotifyDj {
-    /// `moods.toml`, checked on each start and skip (an edit rebuilds the
-    /// pool); `None`: the built-ins.
+    /// `moods.toml`, read on each start and checked on each skip (an edit
+    /// rebuilds the pool); `None`: the built-ins.
     moods_file: Option<PathBuf>,
     state: Mutex<State>,
     /// Refreshes the library cache (the daemon's, with a Spotify app).
@@ -251,12 +254,12 @@ impl State {
         }
     }
 
-    /// Bring the plan up to date for a start or skip. The pool is rebuilt
-    /// only when what it is built from changed: a library sync (`planned`
-    /// false), or an edit to moods.toml or preferences.toml. Otherwise it is
-    /// kept and only the feedback, which moves with every listen, is read
-    /// again. A rebuild reads the whole library cache under the DJ's lock:
-    /// seconds, for a library of tens of thousands of tracks.
+    /// Bring the plan up to date for a skip. The pool is rebuilt only when
+    /// what it is built from changed: a library sync (`planned` false), or an
+    /// edit to moods.toml or preferences.toml. Otherwise it is kept and only
+    /// the feedback, which moves with every listen, is read again. A rebuild
+    /// reads the whole library cache under the DJ's lock: seconds, for a
+    /// library of tens of thousands of tracks. A start always rebuilds.
     fn refresh(
         &mut self,
         store: &dyn Store,
@@ -611,8 +614,10 @@ impl SpotifyDj {
         let now = clock.now().timestamp();
         match action {
             DjAction::Start => {
+                // Always: a library written by another process (`fsonos
+                // setup`) raises no notice here.
                 self.take_library_fresh(state);
-                state.refresh(store, self.moods_file.as_ref(), now)?;
+                state.reload(store, self.moods_file.as_ref(), now)?;
                 let cx = state.context(store, at.coordinator, clock)?;
                 let State {
                     feeds,
