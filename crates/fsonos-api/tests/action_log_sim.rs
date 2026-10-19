@@ -490,10 +490,11 @@ fn undo_sees_a_joined_duplicate_room_name_across_households() {
         id_in(&houses, 2, "Living Room"),
         id_in(&houses, 2, "Kitchen"),
     );
+    assert_ne!(s1_kitchen, s2_kitchen, "the names match; the rooms do not");
     let surface = multi_surface(&sim);
     surface
-        .control(&agent(), "set_volume", |house| {
-            plan_volume(house, &volume_req("Kitchen@S1", 30))
+        .control_set(&agent(), "set_volume", |house| {
+            plan_volume_set(house, &volume_req("all", 30))
         })
         .unwrap();
 
@@ -511,7 +512,7 @@ fn undo_sees_a_joined_duplicate_room_name_across_households() {
         Some(s2_living),
         "the S2 Kitchen stays grouped"
     );
-    let _ = s1_kitchen;
+
     sim.shutdown();
 }
 
