@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use super::Surface;
 use crate::failure::{ErrorCode, Failure};
 
+pub mod targets;
+
 /// The tool name the players read is authorized as.
 pub const TOOL: &str = "list_players";
 
