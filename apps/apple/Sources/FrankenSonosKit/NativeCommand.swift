@@ -20,6 +20,7 @@ public enum NativeCommand: Equatable, Sendable {
     case queueMove(QueueMove)
     case djStart(mood: String?), djStop, djSkip, djFeedback(like: Bool)
     case djSteer(mood: String, seconds: UInt32), djClear
+    case djFilters(DJSteeringChange)
     case join(room: String, to: RoomID), leave(room: String), party, move(to: RoomID, copy: Bool)
     case scene(Scene, fadeSeconds: UInt32? = nil)
     case sleep(SleepChange)
@@ -47,6 +48,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .djSkip: "Skip this whole work"
         case .djFeedback(let like): like ? "Like this DJ selection" : "Dislike this DJ selection"
         case .djSteer(let mood, _): "Shift to \(mood)"
+        case .djFilters(let change): change.title
         case .djClear: "Follow the time-of-day program"
         case .join(let room, let to): "Join \(room) to \(to.room)"
         case .leave(let room): "Separate \(room)"
@@ -68,6 +70,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .groupVolume: "Changes every member of this group. The daemon's per-room caps and quiet hours remain authoritative."
         case .volume, .mute: "Changes only the named room. The group's music and membership are unchanged."
         case .djSkip: "Advances to the DJ's next whole work, not merely the next movement."
+        case .djFilters(let change): change.explanation
         case .djSteer, .djClear: "Affects future DJ picks, not works already queued. Standing taste preferences stay unchanged."
         case .djFeedback: "Teaches the DJ about its current selection. It does not send a playback command."
         case .djStop: "Stops DJ queue feeding. This is distinct from pausing the speakers."
@@ -86,10 +89,11 @@ public enum NativeCommand: Equatable, Sendable {
     }
     public var requiresDJ: Bool {
         switch self {
-        case .djStart, .djStop, .djSkip, .djFeedback, .djSteer, .djClear: true
+        case .djStart, .djStop, .djSkip, .djFeedback, .djSteer, .djClear, .djFilters: true
         default: false
         }
     }
+    public var steeringChange: DJSteeringChange? { if case .djFilters(let change) = self { change } else { nil } }
     public var isAnnouncement: Bool { if case .announce = self { true } else { false } }
     public var isQueueAdd: Bool { if case .queueAdd = self { true } else { false } }
     public var requiresFreshTopology: Bool {
@@ -160,6 +164,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .djSteer(let mood, let seconds):
             try require((60...604_800).contains(seconds), "Choose a steering duration from one minute to one week.")
             path = ["dj", "steer"]; body["mood"] = .string(try source(mood)); body["for_secs"] = .integer(Int64(seconds))
+        case .djFilters(let change): path = ["dj", "steer"]; body = try change.fields(in: zone)
         case .djClear: path = ["dj", "steer"]; body["clear"] = .bool(true)
         case .join(let room, let to):
             try require(zone.members.contains(room), "The room no longer belongs to this group.")
@@ -208,6 +213,9 @@ public enum NativeCommand: Equatable, Sendable {
         case .mute: matches = before.mute != nil && before.mute == current.mute
         case .queuePlay, .queueRemove, .queueMove, .join, .leave, .party, .move, .scene, .sleep:
             matches = true // Native queue checks and fresh topology validation remain mandatory.
+        case .djFilters:
+            // Stored steering, not the current track, is compared separately.
+            matches = true
         case .listeningSettings:
             // Tone is per speaker; order applies to the queue, not its current
             // track. The setting/source/DJ preflight is checked separately.

@@ -139,6 +139,16 @@ fileprivate struct CommandObservation: Sendable {
         let sleepTimer = command.sleepChange != nil ? try await client.sleepTimer(zone) : nil
         try command.sleepChange?.validate(timer: sleepTimer)
         let dj = command.requiresDJ ? try await client.dj(zone) : nil
+        if let change = command.steeringChange {
+            guard let dj else { throw ContractError.invalid("The DJ steering could not be read.") }
+            try change.validate(dj)
+            if change.mood != nil {
+                let catalog = try await client.get(MoodCatalog.self, ["dj", "moods"], query: [
+                    URLQueryItem(name: "zone", value: zone.id.address)
+                ])
+                try change.validateMoods(catalog.moods)
+            }
+        }
         var favorite: Favorite?
         if case .playFavorite(let key) = command {
             let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -188,7 +198,10 @@ fileprivate struct CommandObservation: Sendable {
             default: throw ContractError.invalid("The reviewed sleep timer changed. Review its current deadline again.")
             }
         }
-        if let dj, current.dj.map({ dj.sameSession(as: $0) }) != true {
+        if let change = command.steeringChange {
+            guard let dj = current.dj else { throw ContractError.invalid("The DJ steering could not be read.") }
+            try change.validate(dj)
+        } else if let dj, current.dj.map({ dj.sameSession(as: $0) }) != true {
             throw ContractError.invalid("The DJ selection or steering changed. Review the DJ again.")
         }
         guard favorite == current.favorite, scene == current.scene else {
