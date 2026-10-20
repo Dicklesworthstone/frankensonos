@@ -76,8 +76,8 @@
   const reduced = matchMedia('(prefers-reduced-motion: reduce)');
   let active = !document.hidden, disposed = false, immersive = false, lastFocus = null, motionPaused = reduced.matches;
   let artKey = '', visualKey = '', roomKey = '', mapKey = '', sessionKey = '', sceneKey = '', reviewed = null, selectedKey = '';
-  let workspace, controller, session, timer = null, clockTimer = null, source = null, runningRead = false, pending = false, explicit = false;
-  let timerDue = 0, reviewReading = false, retryAt = 0, wait = 15000, searchTimer = null, historyVersion = 0, historyRunning = false;
+  let workspace, controller, session, live, clockTimer = null;
+  let reviewReading = false, searchTimer = null, historyVersion = 0, historyRunning = false, catalogsDirty = true;
   const renderer = DashboardVisualizer.create($('visualizer'), { reduced: reduced.matches });
   const audio = DashboardAudio.create({ changed(s) {
     $('microphone').textContent = s.status === 'live' ? 'Stop microphone' : s.status === 'requesting' ? 'Cancel microphone' : 'Use microphone';
@@ -162,7 +162,7 @@
       b.disabled = !can || !hasTrack;
       if (b.dataset.command === 'toggle') { b.querySelector('use').setAttribute('href', playing ? '#i-pause' : '#i-play'); b.setAttribute('aria-label', $('play').getAttribute('aria-label')); const label = b.querySelector('[data-transport-label]'); if (label) label.textContent = playing ? 'Pause' : 'Play'; }
     }
-    const d = session?.state, sessionReady = d?.dj && d.target === controller.state.selected && !d.loading && active && (demo || can);
+    const d = session?.state, sessionReady = d?.dj && d.target === controller.state.selected && !d.loading && !reviewReading && active && (demo || can);
     for (const id of ['like', 'dislike', 'skip-work']) $(id).disabled = !sessionReady || !d.dj.running || !d.dj.now;
     $('dj-start-stop').disabled = !sessionReady; $('dj-clear').disabled = !sessionReady || !d.dj.running;
     for (const b of document.querySelectorAll('.mood-chip')) b.disabled = !sessionReady;
@@ -312,10 +312,19 @@
     }
     renderSearch(); renderReview(state.pending); controls();
   }
-  function review(kind, args) {
-    const r = session.review(kind, args);
-    if (!r) { $('outcome').hidden = false; $('outcome').textContent = 'Read a fresh group and DJ session before choosing this action. Use Refresh.'; }
-    return r;
+  async function review(kind, args) {
+    if (reviewReading || !active || (!demo && !controller.canControl())) return null;
+    const target = controller.state.selected;
+    reviewReading = true; controls();
+    try {
+      // A quiet live connection does not poll the DJ. Read it on demand before
+      // constructing a review, rather than letting its age disable controls.
+      if (kind !== 'play' && !await session.load()) return null;
+      if (!active || target !== controller.state.selected) return null;
+      const r = session.review(kind, args);
+      if (!r) { $('outcome').hidden = false; $('outcome').textContent = 'Read a fresh group and DJ session before choosing this action. Use Refresh.'; }
+      return r;
+    } finally { reviewReading = false; controls(); }
   }
   function renderReview(r) {
     const dialog = $('review-dialog');
@@ -396,55 +405,46 @@
     $('duration').textContent = C.clock(duration); $('progress').max = duration > 0 ? duration : 1; $('progress').value = at !== null && duration > 0 ? at : 0;
     $('progress').setAttribute('aria-label', at === null ? 'Position unavailable' : `Estimated track position ${C.clock(at)} of ${C.clock(duration)}`);
   }
-  function schedule(delay = 350, user = false) {
-    if (!active || disposed) return;
-    explicit ||= user;
-    if (runningRead) { pending = true; return; }
-    if (!Number.isFinite(retryAt)) return;
-    const pause = Math.min(60000, Math.max(delay, retryAt - Date.now(), 0)), due = Date.now() + pause;
-    // Preserve the earlier deadline through a continuous burst of events.
-    if (timer !== null && timerDue <= due) return;
-    if (timer !== null) clearTimeout(timer);
-    timerDue = due;
-    timer = setTimeout(async () => {
-      timer = null; if (!active || disposed) return;
-      if (Date.now() < retryAt) { schedule(Math.min(60000, retryAt - Date.now())); return; }
-      runningRead = true; pending = false; const requested = explicit; explicit = false;
-      const ok = await controller.refresh(requested); runningRead = false;
-      if (!active || disposed) return;
-      retryAt = Date.now() + Math.max(0, controller.state.retryAfter);
-      wait = ok ? 15000 : Math.min(60000, wait * 2);
-      if (ok && !session.state.loading && !session.state.pending) void session.load();
-      const changedDuringRead = pending; pending = false;
-      schedule(changedDuringRead ? 500 : wait);
-    }, pause);
-  }
-  function connect() {
-    if (!active || demo || source || typeof EventSource === 'undefined') return;
-    const feed = new EventSource('/events'); source = feed;
-    const current = () => active && source === feed;
-    feed.onopen = () => { if (current()) { controller.connection(true); kick(); } };
-    feed.onerror = () => { if (current()) controller.connection(false); };
-    for (const name of C.EVENTS) feed.addEventListener(name, () => { if (current()) kick(); });
-  }
-  function kick(user = false) { workspace?.invalidate(); schedule(user ? 0 : 350, user); }
+  live = DashboardLive.create({
+    demo,
+    connect: () => typeof RemoteEventFeed !== 'undefined' ? RemoteEventFeed.open('/events')
+      : typeof EventSource !== 'undefined' ? new EventSource('/events') : null,
+    reload: (user) => controller.refresh(user),
+    blocked: () => controller.state.busy || controller.state.loading,
+    retryAfter: () => controller.state.retryAfter,
+    connection: (value) => controller.connection(value),
+    invalidate(hard) {
+      controller.invalidate(); workspace?.invalidate();
+      if (hard) {
+        ++historyVersion; catalogsDirty = true;
+        session.suspend();
+        if (active) session.resume();
+        request.cancelReads();
+      }
+    },
+    observed() {
+      if (!session.state.loading && !session.state.pending) void session.load();
+      if (catalogsDirty) { catalogsDirty = false; void session.catalog(); void history(); }
+    },
+  });
+  function kick(user = false) { if (user) catalogsDirty = true; live.refresh(user); }
   function suspend() {
     active = false; ++historyVersion;
-    clearTimeout(timer); timer = null; clearTimeout(clockTimer); clockTimer = null; clearTimeout(searchTimer); searchTimer = null;
-    pending = explicit = false; if (source) source.close(); source = null;
+    clearTimeout(clockTimer); clockTimer = null; clearTimeout(searchTimer); searchTimer = null;
+    live.suspend(); request.cancelReads();
     audio.stop('Microphone stopped while hidden. Enable it again explicitly to resume.');
     workspace?.suspend(); session.suspend(); controller.suspend(); renderer.visible(false);
   }
   function clockLoop() { if (!active || disposed) return; timing(); controls(); clockTimer = setTimeout(clockLoop, 1000); }
   function resume() {
     if (document.hidden || disposed) return;
-    active = true; workspace?.resume(); controller.resume(); session.resume(); renderer.visible(true); connect(); kick();
-    if (clockTimer === null) clockLoop(); void session.catalog(); void history();
+    active = true; catalogsDirty = true; workspace?.resume(); controller.resume(); session.resume(); renderer.visible(true); live.resume();
+    if (clockTimer === null) clockLoop();
   }
   document.addEventListener('visibilitychange', () => document.hidden ? suspend() : resume());
   window.addEventListener('pagehide', suspend); window.addEventListener('pageshow', () => { if (!active) resume(); });
-  window.addEventListener('online', () => { if (active) { connect(); kick(); } });
-  $('refresh').addEventListener('click', () => { kick(true); void session.catalog(); void session.load(); void history(); });
+  window.addEventListener('online', () => { if (active) kick(); });
+  $('refresh').addEventListener('click', () => kick(true));
   $('history-refresh').addEventListener('click', () => void history());
   const native = async (verb, args) => { await controller.command(verb, args); if (active) void session.load(); };
   $('play').addEventListener('click', () => void native(controller.selected()?.state?.transport_state === 'playing' ? 'pause' : 'resume'));

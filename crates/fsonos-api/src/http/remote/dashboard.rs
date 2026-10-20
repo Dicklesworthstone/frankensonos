@@ -8,6 +8,8 @@ use super::{Ctx, Op, REMOTE, asset};
 
 const PAGE: &str = include_str!("../../remote/dashboard.html");
 const STYLE: &str = include_str!("../../remote/dashboard.css");
+const EVENTS: &str = include_str!("../../remote/event-feed.js");
+const LIVE: &str = include_str!("../../remote/dashboard-live.js");
 const CORE: &str = include_str!("../../remote/dashboard-core.js");
 const VISUALIZER: &str = include_str!("../../remote/dashboard-visualizer.js");
 const AUDIO: &str = include_str!("../../remote/dashboard-audio.js");
@@ -56,7 +58,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{CORE}\n{VISUALIZER}\n{AUDIO}\n{SESSION}\n{QUEUE}\n{WORKSPACE}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SESSION}\n{QUEUE}\n{WORKSPACE}\n{SCRIPT}"
                     ),
                 )
             },

@@ -5,7 +5,7 @@ const DashboardLive = (() => {
   const EVENTS = ['zone.state', 'topology.changed', 'player.health', 'action.logged', 'dj.status'];
   function create({ connect = null, reload, invalidate = () => {}, connection = () => {},
     blocked = () => false, retryAfter = () => 0, observed = () => {}, demo = false,
-    schedule = setTimeout, cancel = clearTimeout, now = Date.now }) {
+    schedule = setTimeout, cancel = clearTimeout, now = () => globalThis.performance?.now() ?? Date.now() }) {
     let active = false, disposed = false, busy = false, connected = false;
     let pending = false, explicit = false, failed = false, generation = 0, lifetime = 0;
     let feed = null, timer = null, timerAt = 0, wait = FALLBACK, notBefore = 0, retryAt = 0;
@@ -60,6 +60,7 @@ const DashboardLive = (() => {
       open();
       const version = generation, life = lifetime, user = explicit;
       explicit = pending = false; busy = true;
+      notify(connection, false);
       let ok = false, minimum = 0;
       try { ok = await reload(user) === true; minimum = retryAfter(); }
       catch (error) { minimum = error?.retryAfter || 0; }
