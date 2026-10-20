@@ -81,7 +81,8 @@ pub enum Manager {
 }
 
 impl Manager {
-    fn here() -> anyhow::Result<Self> {
+    /// This platform's.
+    pub(crate) fn here() -> anyhow::Result<Self> {
         if cfg!(target_os = "macos") {
             Ok(Self::Launchd)
         } else if cfg!(target_os = "linux") {
@@ -292,15 +293,24 @@ fn quoted(s: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+/// This user's home, when HOME names one.
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| h.is_absolute())
+}
+
+/// Where `manager` keeps this user's service file.
+pub(crate) fn service_path(manager: Manager) -> Option<PathBuf> {
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    home().map(|home| manager.path(&home, xdg.as_deref()))
+}
+
 /// `fsonos service`.
 pub fn run(global: &GlobalArgs, args: &ServiceArgs) -> anyhow::Result<()> {
     let manager = Manager::here()?;
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|h| h.is_absolute())
-        .context("HOME is unset or not absolute")?;
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    let path = manager.path(&home, xdg.as_deref());
+    let home = home().context("HOME is unset or not absolute")?;
+    let path = service_path(manager).context("HOME is unset or not absolute")?;
     match &args.action {
         Action::Install {
             serve,
@@ -318,8 +328,8 @@ pub fn run(global: &GlobalArgs, args: &ServiceArgs) -> anyhow::Result<()> {
     }
 }
 
-/// What a file at the service's path is.
-fn ours(path: &Path) -> anyhow::Result<Option<bool>> {
+/// Whether `install` wrote the file at `path`; `None` when there is none.
+pub(crate) fn ours(path: &Path) -> anyhow::Result<Option<bool>> {
     match std::fs::read_to_string(path) {
         Ok(found) => Ok(Some(found.contains(MARKER))),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -566,7 +576,7 @@ fn status(global: &GlobalArgs, manager: Manager, path: &Path) -> ServiceStatus {
 }
 
 /// Whether the manager runs the job, and its pid.
-fn manager_state(manager: Manager) -> anyhow::Result<(Option<bool>, Option<u32>)> {
+pub(crate) fn manager_state(manager: Manager) -> anyhow::Result<(Option<bool>, Option<u32>)> {
     let field = |text: &str, key: &str| -> Option<String> {
         text.lines()
             .map(str::trim)
