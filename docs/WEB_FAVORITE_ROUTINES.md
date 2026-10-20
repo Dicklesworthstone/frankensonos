@@ -27,6 +27,32 @@ source mode changes only the form and, when needed, its read-only choices.
 The supported URI subset is checked locally, then validated again by the daemon;
 saving a scene is not a playback or reachability test.
 
+## Start with music you found
+
+In **Music & DJ → Music library**, choose **Create routine** on a supported
+Spotify track, album or playlist, or a playable Sonos favorite. The action also
+works on cached browse results and supported recent-listening entries. It opens
+**Routines → Music routines** with a readable music summary and a suggested name,
+so you do not need to copy a URI. Cached Spotify music can be chosen before a
+destination is selected; the composer then asks you to choose a current group.
+
+Importing music only reads current choices. It does not save a scene, schedule
+anything, or start playback. A group is preselected only when its coordinator
+and exact household-qualified membership still match. Favorites are checked
+against their original household, ID, title and description; a changed or
+ambiguous favorite needs a new explicit choice. An identical favorite ID in a
+different household is never treated as the same music.
+
+An existing unsent draft gets an incoming-music card with **Use this music** and
+**Keep current draft**. Using Spotify music preserves the draft's chosen group,
+name, timing and sound settings. Using a favorite explicitly selects that
+favorite's checked household group. Leaving and reopening the panel preserves
+the draft in this page; unsent drafts are not promised to survive a reload.
+An active review or partial setup remains intact, and imported music cannot
+replace it. Finish or inspect that setup first; after completion, **New routine
+with this music** starts a separate draft. Every new routine still requires
+the normal source/group/timing review and explicit save below.
+
 This connects existing capabilities rather than introducing another scheduler
 or player. It saves a dedicated scene, then creates an enabled `apply_scene`
 schedule. Manage its future runs in **Routines** and its saved scene in **Scenes**.
@@ -123,15 +149,27 @@ before recreating an uncertain attempt in a new tab.
 ## Validation
 
 ```sh
-node --test scripts/test-favorite-routines.cjs scripts/test-favorite-routines-panel.cjs scripts/test-music-routines.cjs
+node --test scripts/test-favorite-routines.cjs scripts/test-favorite-routines-panel.cjs scripts/test-music-routines.cjs scripts/test-music-routines-handoff.cjs
 python scripts/test-favorite-routines-component.py --chromium /path/to/chromium
+FSONOS_ROUTINE_CHROMIUM=/path/to/chromium node --test scripts/test-remote-library-routine-browser.cjs
 ```
 
-The 78 passing Node tests include 35 existing favorite/panel regressions and
-43 music-source tests: canonicalization, positive Spotify/radio setup, exact
+The 93 passing Node tests include 35 existing favorite/panel regressions,
+43 music-source tests and 15 library-handoff tests: canonicalization, positive Spotify/radio setup, exact
 levels, immutable reviews, changed membership/sources, duplicate dispatch,
 lost replies, version-1/2 recovery, journal failures, static asset checks and
-real loopback HTTP fixtures. The existing workflow runs all three Node suites.
+real loopback HTTP fixtures. Handoff cases exercise Spotify and household
+favorites, retained draft groups, changed/ambiguous choices, superseded reads,
+partial setup preservation, and discovery through confirmed scene/schedule writes.
+
+The optional Node browser test uses Playwright and the actual Studio navigation,
+library and composer. It covers the complete Create routine flow at 320, 390,
+768 and 1440 pixels in both themes, keyboard activation, unsent drafts,
+cross-household favorite IDs, interrupted setup and late reads. It skips cleanly
+when `FSONOS_ROUTINE_CHROMIUM` is unset, so ordinary Node suites need no browser
+dependency. Set `FSONOS_ROUTINE_SCREENSHOTS` to a directory to capture its phone
+and desktop library, composer and review states. Together with the existing
+library suites, 157 Node tests pass; the browser check is an explicit opt-in.
 
 The 22 passing Chromium component cases include the original 12 cases and
 10 additional cases covering each Spotify content type, radio, source-mode

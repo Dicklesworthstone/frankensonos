@@ -10,6 +10,6 @@
 .library-hits li { padding: 12px 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; overflow-wrap: anywhere; }
 .library-hits .by { color: var(--muted); }
 .library-review { border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-wrap: anywhere; }
-.library button { max-width: 100%; white-space: normal; }
+.library .library-body button { min-height: 44px; max-width: 100%; white-space: normal; }
 .library summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .library-body [hidden] { display: none; }

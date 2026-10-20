@@ -30,6 +30,7 @@ const LibraryRemote = (() => {
       if (seen.has(target)) throw new Error('The destination is ambiguous. Refresh rooms.');
       seen.add(target);
       return Object.freeze({ target, label: `${zone.members.join(' + ')} (${zone.household})`,
+        household: zone.household, members: Object.freeze(zone.members.map((room) => `${room}@${zone.household}`).sort()),
         signature: JSON.stringify([zone.household, zone.coordinator_room, [...zone.members].sort()]) });
     });
   }
@@ -71,6 +72,17 @@ const LibraryRemote = (() => {
         subtitle: typeof record.artist === 'string' ? record.artist : '',
         source: match ? record.source_uri : null, favorite: null, playedAt: record.played_at });
     });
+  }
+
+  function routineSourceOf(hit, zone = null) {
+    const bounded = (value) => typeof value === 'string' && value.length <= 2048 && !/[\x00-\x1f\x7f]/.test(value);
+    if (!hit || !bounded(hit.title) || !bounded(hit.subtitle)) return null;
+    const group = zone ? Object.freeze({ target: zone.target, members: zone.members }) : null;
+    if (hit.favorite && zone && hit.title.trim()) return Object.freeze({ kind: 'favorite',
+      favorite: hit.favorite, title: hit.title, subtitle: hit.subtitle, household: zone.household, group });
+    if (!/^spotify:(track|album|playlist):[A-Za-z0-9]{22}$/.test(hit.source || '')) return null;
+    return Object.freeze({ kind: 'spotify', source_uri: hit.source, title: hit.title.trim() || `Spotify ${hit.kind}`,
+      subtitle: hit.subtitle, household: zone?.household || null, group });
   }
 
   const categories = Object.freeze({ tracks: 'track', albums: 'album', playlists: 'playlist' });
@@ -282,6 +294,12 @@ const LibraryRemote = (() => {
       return true;
     }
 
+    function routine(index, expected = state.hits[index]) {
+      const hit = state.hits[index];
+      return disposed || !state.open || state.loading || state.writing || state.pending || !state.loaded || !hit || hit !== expected
+        ? null : routineSourceOf(hit, destination());
+    }
+
     function cancel() {
       if (disposed || state.writing) return;
       state.pending = null;
@@ -348,7 +366,7 @@ const LibraryRemote = (() => {
     }
 
     return { state, refreshRooms, target, query, search, recent, browse, openAlbum, refresh,
-      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, cancel, confirm,
+      next: (page) => turn(true, page), previous: (page) => turn(false, page), choose, routine, cancel, confirm,
       close() { state.open = false; invalidate(); publish(); },
       dispose() { disposed = true; invalidate(); } };
   }
@@ -376,6 +394,14 @@ const LibraryRemote = (() => {
     let reviewFocus = null;
     const status = el('p', { role: 'status', 'aria-live': 'polite' });
     const results = el('div', { class: 'library-results' });
+    function createRoutine(index, expected) {
+      const selection = control.routine(index, expected);
+      if (!selection || document.hidden || node.closest('[hidden], [inert]')) return;
+      const event = new CustomEvent('fsonos:routine-source', { cancelable: true, detail: selection });
+      status.textContent = document.dispatchEvent(event)
+        ? 'Music routines are not available on this page. Open the full remote to create a routine.'
+        : 'Music routines opened. Check the music, group and timing there before saving.';
+    }
     destination.addEventListener('change', () => control.target(destination.value));
     input.addEventListener('input', () => control.query(input.value));
     input.addEventListener('keydown', (event) => {
@@ -469,6 +495,9 @@ const LibraryRemote = (() => {
           if (hit.source || hit.favorite) actions.append(button('Play now', () => select('play'), locked, `play-${index}`));
           if (hit.source || hit.favorite) actions.append(button('Add to end', () => select('append'), locked, `append-${index}`),
             button('Queue next', () => select('next'), locked, `next-${index}`));
+          if (routineSourceOf(hit, state.zones.find((zone) => zone.target === state.target))) {
+            actions.append(button('Create routine', () => createRoutine(index, hit), state.loading || state.writing, `routine-${index}`));
+          }
           if (!hit.source && !hit.favorite) actions.append(el('span', { text: 'Read-only: unsupported item.' }));
           row.append(actions);
           list.append(row);
@@ -486,7 +515,7 @@ const LibraryRemote = (() => {
     return { node, dispose: control.dispose };
   }
 
-  return { model, panel, routes, LIMIT, MAX_QUERY };
+  return { model, panel, routes, LIMIT, MAX_QUERY, routineSourceOf };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = LibraryRemote;

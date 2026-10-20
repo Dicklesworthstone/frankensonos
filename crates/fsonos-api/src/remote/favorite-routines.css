@@ -6,9 +6,14 @@
 .favorite-routine-form label { display: grid; gap: .3rem; min-width: 0; }
 .favorite-routine-form input, .favorite-routine-form select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; font: inherit; }
 .favorite-routine-content .row { display: flex; flex-wrap: wrap; gap: .5rem; }
-.favorite-routine-content button { white-space: normal; min-height: 2.75rem; max-width: 100%; overflow-wrap: anywhere; }
+.favorite-routines .favorite-routine-content button { white-space: normal; min-height: 44px; max-width: 100%; overflow-wrap: anywhere; }
 .favorite-routine-review { border: 2px solid currentColor; border-radius: .4rem; padding: .8rem; margin-block: 1rem; }
 .favorite-routine-identity { overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
 .favorite-routines :focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
-.favorite-routine-form .favorite-routine-unmute { display: flex; align-items: center; gap: .6rem; min-height: 2.75rem; }
+.favorite-routine-form .favorite-routine-unmute { display: flex; align-items: center; gap: .6rem; min-height: 44px; }
 .favorite-routine-unmute input[type="checkbox"] { flex: 0 0 auto; width: 1.2rem; height: 1.2rem; }
+.routine-library-offer, .routine-library-selected { display: grid; gap: .4rem; min-width: 0; margin: 1rem 0; padding: .9rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--card); overflow-wrap: anywhere; }
+.routine-library-offer { border-width: 2px; border-color: var(--accent); }
+.routine-library-offer h3 { margin: 0; }
+.routine-library-selected { border-left: 3px solid var(--accent); background: var(--bg); }
+.routine-library-eyebrow { font-size: .8rem; color: var(--muted); }

@@ -54,6 +54,47 @@ const FavoriteRoutines = (() => {
     }).filter((f) => f.kind !== 'unplayable');
   }
 
+  // A library handoff is music and an observed destination, never a schedule,
+  // saved scene, sound setting, or authority to submit either setup request.
+  function librarySourceOf(value) {
+    if (!object(value) || Object.keys(value).some((key) => !['kind', 'title', 'subtitle', 'source_uri', 'favorite', 'household', 'group'].includes(key))
+        || !['spotify', 'favorite'].includes(value.kind) || !text(value.title, 2048)
+        || typeof value.subtitle !== 'string' || value.subtitle.length > 2048 || /[\x00-\x1f\x7f]/.test(value.subtitle)) {
+      fail('The selected library music is incomplete. Choose it again in the library.');
+    }
+    let group = null, household = null;
+    if (value.group != null) {
+      if (!object(value.group) || Object.keys(value.group).some((key) => !['target', 'members'].includes(key))
+          || !text(value.household, 128) || !text(value.group.target, 512)
+          || !Array.isArray(value.group.members) || !value.group.members.length || value.group.members.length > 512
+          || !value.group.members.every((room) => text(room, 512) && room.endsWith(`@${value.household}`))
+          || !value.group.members.includes(value.group.target)
+          || new Set(value.group.members).size !== value.group.members.length) fail('The library destination is incomplete. Choose its group again.');
+      group = { target: value.group.target, members: sorted(value.group.members) };
+      household = value.household;
+    } else if (value.household != null) fail('The library household has no observed group.');
+    if (value.kind === 'favorite') {
+      if (!group || value.source_uri != null || typeof value.favorite !== 'string' || !/^FV:2\/\d+$/.test(value.favorite)) {
+        fail('A library favorite needs its original household and favorite ID.');
+      }
+      return freeze({ kind: 'favorite', title: value.title, subtitle: value.subtitle, favorite: value.favorite,
+        source_uri: null, group, household });
+    }
+    if (value.favorite != null) fail('Choose one music source.');
+    const source = sourceOf({ source_kind: 'spotify', source_uri: value.source_uri });
+    return freeze({ kind: 'spotify', title: value.title, subtitle: value.subtitle, source_uri: source.uri,
+      favorite: null, group, household });
+  }
+
+  function libraryFavorite(selection, favorites, group) {
+    if (selection?.kind !== 'favorite' || !group
+        || !group.members.every((room) => room.endsWith(`@${selection.household}`))) return null;
+    const found = favorites.find((f) => f.id === selection.favorite && f.title === selection.title
+      && (f.description || '') === selection.subtitle);
+    const key = (name) => name.replace(/[A-Z]/g, (c) => c.toLowerCase());
+    return found && favorites.filter((f) => key(f.title) === key(found.title)).length === 1 ? found : null;
+  }
+
   function whenOf(draft) {
     if (draft.cadence === 'delay') {
       if (typeof draft.minutes !== 'string' || !/^\d+$/.test(draft.minutes)
@@ -305,6 +346,34 @@ const FavoriteRoutines = (() => {
         catch (e) { if (present(version)) state.message = message(e); }
         finally { state.busy = false; publish(); }
       },
+      resumeDraft() {
+        if (disposed) return false;
+        state.open = true; publish(); return true;
+      },
+      async importSource(payload, { keepGroup = false, current = () => true } = {}) {
+        if (disposed || state.busy || state.pending || state.attempt || !state.open || !active() || state.phase === 'blocked') return null;
+        const selection = librarySourceOf(payload);
+        const previous = keepGroup && selection.kind === 'spotify' ? state.group : null;
+        const expected = previous || selection.group;
+        const version = ++epoch;
+        state.busy = true; publish();
+        try {
+          const groups = groupsOf(await call('routineZones'));
+          if (!present(version) || !current()) return null;
+          const group = expected && groups.find((g) => g.target === expected.target && same(g.members, expected.members)) || null;
+          const favorites = group && selection.kind === 'favorite' ? await listFavorites(group.target) : [];
+          if (!present(version) || !current()) return null;
+          const favorite = libraryFavorite(selection, favorites, group);
+          state.groups = groups; state.group = group; state.favorites = favorites; state.phase = 'choosing';
+          state.message = expected && !group ? 'The group shown in the library changed. Choose a current group below.'
+            : selection.kind === 'favorite' && !favorite ? 'The selected favorite changed or its title is ambiguous. Choose a current favorite below.'
+              : 'Music filled in from your library. Choose the timing and review before saving.';
+          return freeze({ source_kind: selection.kind, source_uri: selection.source_uri || '', favorite: favorite?.id || '', selection });
+        } catch (e) {
+          if (present(version) && current()) state.message = message(e);
+          return null;
+        } finally { state.busy = false; publish(); }
+      },
       review(draft) {
         if (state.busy || state.attempt || !state.open || !active() || state.phase === 'blocked') return;
         try {
@@ -381,6 +450,7 @@ const FavoriteRoutines = (() => {
       dispose() { ++epoch; disposed = true; state.open = false; state.pending = null; },
     };
   }
-  return { routes, groupsOf, favoritesOf, whenOf, sourceOf, settingsOf, sourceLabel, planOf, sceneOf, scheduleOf, journalOf, model };
+  return { routes, groupsOf, favoritesOf, librarySourceOf, libraryFavorite, whenOf, sourceOf, settingsOf, sourceLabel,
+    planOf, sceneOf, scheduleOf, journalOf, model };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = FavoriteRoutines;

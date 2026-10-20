@@ -37,6 +37,7 @@ const FavoriteRoutinePanel = (() => {
       source_kind: 'favorite', source_uri: '', favorite: '', volume: '', unmute: false });
     let draft = defaults();
     let lastPending = null, resumeFocus = 'review', wasBusy = false;
+    let incoming = null, imported = null, importing = false, offerMessage = '', skipOpenToggle = false, disposed = false;
     const control = core.model({ call, journal, ...(nonce ? { nonce } : {}),
       active: () => node.open && node.isConnected && !doc.hidden && !node.closest('[hidden], [inert]'),
       changed: (state) => render(state) });
@@ -44,6 +45,8 @@ const FavoriteRoutinePanel = (() => {
       type: 'button', text: label, disabled, 'data-routine-focus': key, onclick: handler,
     });
     const paragraph = (text) => el('p', { text });
+    const hasDraft = () => !!control.state.group || Object.entries(defaults()).some(([key, value]) => draft[key] !== value);
+    const visible = () => !disposed && node.open && node.isConnected && !doc.hidden && !node.closest('[hidden], [inert]');
     const phaseText = {
       idle: 'Choose a music routine', choosing: 'Choose a music routine', checking: 'Checking the reviewed group and music source',
       scene_sending: 'Saving the scene', schedule_sending: 'Creating the routine',
@@ -60,12 +63,15 @@ const FavoriteRoutinePanel = (() => {
 
     function field(label, key, attrs, disabled) {
       const input = el('input', { ...attrs, value: draft[key], disabled, 'data-routine-focus': key,
-        oninput: (event) => { draft[key] = event.target.value; } });
+        oninput: (event) => {
+          draft[key] = event.target.value;
+          if (key === 'source_uri' && imported) { imported = null; render(control.state); }
+        } });
       return el('label', {}, label, input);
     }
 
     function form(state) {
-      const disabled = state.busy || !!state.pending || !state.open;
+      const disabled = state.busy || importing || !!state.pending || !state.open;
       const formNode = el('form', { class: 'favorite-routine-form', onsubmit: (event) => {
         event.preventDefault(); control.review({ ...draft });
       } });
@@ -73,18 +79,24 @@ const FavoriteRoutinePanel = (() => {
         field('Routine name', 'label', { type: 'text', maxlength: 80, autocomplete: 'off', required: true }, disabled),
         select('Music source', 'source_kind', draft.source_kind, [['favorite', 'Sonos favorite'],
           ['spotify', 'Spotify track, album or playlist'], ['stream', 'Radio stream URL']], (value) => {
+          imported = null;
           draft.source_kind = value; draft.favorite = '';
           void control.choose(state.group?.target || '', value);
         }, disabled),
         select('Group to save', 'group', state.group?.target || '', [['', 'Choose a current group…'],
-          ...state.groups.map((g) => [g.target, g.label])], (target) => {
-          draft.favorite = ''; void control.choose(target, draft.source_kind);
+          ...state.groups.map((g) => [g.target, g.label])], async (target) => {
+          const selection = imported;
+          draft.favorite = ''; await control.choose(target, draft.source_kind);
+          if (visible() && imported === selection && draft.source_kind === 'favorite' && selection) {
+            draft.favorite = core.libraryFavorite(selection, control.state.favorites, control.state.group)?.id || '';
+            render(control.state);
+          }
         }, disabled),
       );
       if (draft.source_kind === 'favorite') formNode.append(
         select('Playable favorite', 'favorite', draft.favorite, [['', 'Choose a favorite…'],
           ...state.favorites.map((f) => [f.id, `${f.title} · ${f.kind}${f.description ? ` · ${f.description}` : ''}`])],
-        (value) => { draft.favorite = value; }, disabled || !state.group || !state.favorites.length),
+        (value) => { draft.favorite = value; imported = null; render(control.state); }, disabled || !state.group || !state.favorites.length),
       );
       else formNode.append(
         field(draft.source_kind === 'spotify' ? 'Spotify URI or full share link' : 'Radio stream URL', 'source_uri',
@@ -118,11 +130,95 @@ const FavoriteRoutinePanel = (() => {
       );
       if (draft.source_kind === 'favorite' && state.group && !state.busy && !state.favorites.length) formNode.append(paragraph('No playable favorites were read for this group. Add one in its household, then refresh the choices.'));
       formNode.append(el('div', { class: 'row' },
-        button('Refresh choices', 'refresh', () => { draft.favorite = ''; void control.refresh(); }, state.busy || !!state.pending),
+        button('Refresh choices', 'refresh', () => { draft.favorite = ''; void control.refresh(); }, state.busy || importing || !!state.pending),
         button('Review music routine', 'review', () => control.review({ ...draft }),
           disabled || !state.group || (draft.source_kind === 'favorite' && !state.favorites.length)),
       ));
       return formNode;
+    }
+
+    async function useIncoming(expected, keepGroup = true) {
+      const state = control.state;
+      if (incoming !== expected || importing || state.busy || state.pending || state.attempt || state.phase === 'blocked' || !visible()) return false;
+      importing = true; offerMessage = ''; render(state);
+      let result = null;
+      try {
+        result = await control.importSource(expected, { keepGroup, current: () => incoming === expected && visible() });
+        if (!result || incoming !== expected || !visible()) return false;
+        draft = { ...draft, source_kind: result.source_kind, source_uri: result.source_uri,
+          favorite: result.favorite, label: draft.label.trim() ? draft.label : expected.title.slice(0, 80) };
+        imported = result.selection; incoming = null;
+        return true;
+      } finally {
+        importing = false;
+        if (!result && incoming === expected) offerMessage = control.state.message || 'Music could not be filled in yet. Try again when the composer is available.';
+        if (!disposed) render(control.state);
+        if (result && !incoming && visible()) {
+          content.querySelector(`[data-routine-focus="${control.state.group ? 'cadence' : 'group'}"]`)?.focus({ preventScroll: true });
+        }
+      }
+    }
+
+    function offerSource(payload) {
+      if (disposed || doc.hidden || !root.isConnected) return false;
+      let selection;
+      try { selection = core.librarySourceOf(payload); } catch (_) { return false; }
+      const fresh = !hasDraft() && !control.state.pending && !control.state.attempt && control.state.phase !== 'blocked';
+      // Reuse the Studio's own navigation so hidden workspaces and accessible
+      // navigation state stay synchronized; standalone remote panels also work.
+      const workspace = root.closest('[data-studio-workspace]');
+      if (workspace?.hidden) {
+        [...doc.querySelectorAll('#studio-nav [data-workspace]')]
+          .find((button) => button.dataset.workspace === workspace.dataset.studioWorkspace)?.click();
+      }
+      if (root.closest('[hidden], [inert]')) return false;
+      incoming = selection; offerMessage = '';
+      if (!node.open) { skipOpenToggle = true; node.open = true; }
+      control.resumeDraft();
+      node.scrollIntoView({ block: 'start', behavior: 'auto' });
+      heading.focus({ preventScroll: true });
+      if (fresh && !control.state.busy) void useIncoming(selection, false);
+      return true;
+    }
+
+    function libraryMusic(state) {
+      if (incoming) {
+        const expected = incoming;
+        const waiting = state.attempt || state.phase === 'blocked';
+        const section = el('section', { class: 'routine-library-offer', 'aria-label': 'Music from library' },
+          el('span', { class: 'routine-library-eyebrow', text: 'From your library' }),
+          el('h3', { text: expected.title }),
+          ...(expected.subtitle ? [paragraph(expected.subtitle)] : []),
+          paragraph(expected.kind === 'favorite' ? `Sonos favorite · ${expected.household}` : `Spotify ${expected.source_uri.split(':')[1]}`));
+        if (expected.kind === 'favorite') section.append(paragraph(`Favorite group: ${expected.group.target}. Its household and favorite are checked before filling the form.`));
+        section.append(paragraph(importing ? 'Reading current rooms and checking this music…'
+          : waiting ? 'Your saved setup is kept intact. Inspect or finish it before starting another routine.'
+            : state.pending ? 'Your review is kept intact. Cancel that review before changing its music.'
+              : 'Your current draft is kept below. Use this music when ready; your routine name, timing and sound settings stay the same.'));
+        if (offerMessage) section.append(el('p', { role: 'alert', text: offerMessage }));
+        const actions = el('div', { class: 'row' });
+        if (state.attempt && state.phase === 'complete') actions.append(button('New routine with this music', 'library-new', async () => {
+          if (incoming !== expected || state.busy) return;
+          await control.newRoutine();
+          if (!control.state.attempt && control.state.phase !== 'blocked' && incoming === expected) {
+            draft = defaults(); imported = null;
+            await useIncoming(expected, false);
+          }
+        }, state.busy || importing));
+        else actions.append(button(expected.kind === 'favorite' ? 'Use this favorite and group' : 'Use this music', 'library-use',
+          () => useIncoming(expected), state.busy || importing || !!state.pending || !!waiting));
+        actions.append(button(state.attempt ? 'Keep current setup' : 'Keep current draft', 'library-dismiss', () => {
+          if (incoming === expected && !importing) { incoming = null; offerMessage = ''; render(control.state); }
+        }, importing));
+        section.append(actions);
+        return section;
+      }
+      if (!imported || state.attempt) return null;
+      const section = el('section', { class: 'routine-library-selected', 'aria-label': 'Selected library music' },
+        el('span', { class: 'routine-library-eyebrow', text: 'Music from your library' }),
+        el('strong', { text: imported.title }), ...(imported.subtitle ? [paragraph(imported.subtitle)] : []));
+      if (imported.kind === 'favorite' && !draft.favorite) section.append(paragraph(`Choose a current group and matching favorite in ${imported.household}.`));
+      return section;
     }
 
     function review(plan, state) {
@@ -131,6 +227,8 @@ const FavoriteRoutinePanel = (() => {
       const container = plan.favorite?.kind === 'container' || /^spotify:(album|playlist):/.test(plan.source?.uri || '');
       const section = el('section', { class: 'favorite-routine-review', 'aria-label': 'Review music routine' },
         el('h3', { text: continuing ? 'Schedule this saved scene?' : 'Save this scene and create an enabled routine?' }),
+        ...(imported && (plan.favorite?.id === imported.favorite || plan.source?.uri === imported.source_uri)
+          ? [paragraph(imported.title)] : []),
         paragraph(core.sourceLabel(plan)),
         paragraph(`When: ${plan.when}${plan.when.startsWith('in ') ? ' after daemon acceptance' : ' in the house’s time zone'}`),
         paragraph(`Coordinator: ${plan.group.target}`),
@@ -173,6 +271,8 @@ const FavoriteRoutinePanel = (() => {
         paragraph('Choose a favorite, Spotify music or a radio stream, then let the daemon play it on schedule. Setup saves a dedicated scene and a routine; it does not play music now.'),
         el('p', { role: 'status', 'aria-live': 'polite', text: `${phaseText[state.phase] || 'Routine setup'}${state.message ? ` — ${state.message}` : ''}` }),
       );
+      const library = libraryMusic(state);
+      if (library) content.append(library);
       if (state.busy) content.append(paragraph('A reviewed step is in progress. Do not repeat setup from another tab. A lost response will be inspected, never automatically resubmitted.'));
       if (!state.attempt && state.phase !== 'blocked') content.append(form(state));
       if (state.attempt) {
@@ -184,7 +284,7 @@ const FavoriteRoutinePanel = (() => {
         const actions = el('div', { class: 'row' }, button('Inspect saved state', 'inspect', () => { void control.recover(); }, state.busy || !!state.pending));
         if (state.phase === 'scene_ready') actions.append(button('Review scheduling saved scene', 'review-continue', () => control.reviewContinue(), state.busy || !!state.pending));
         if (state.phase === 'complete') actions.append(button('New music routine', 'new', () => {
-          draft = defaults();
+          draft = defaults(); imported = null;
           void control.newRoutine();
         }, state.busy));
         content.append(actions, paragraph('Manage, pause or remove the saved routine in Routines. The dedicated scene is retained in Scenes; removing a routine does not delete its scene.'));
@@ -196,9 +296,16 @@ const FavoriteRoutinePanel = (() => {
         next.focus({ preventScroll: true });
         if (next.type === 'text' && Number.isInteger(caret)) next.setSelectionRange(caret, caret);
       }
+      if (newReview && node.open) content.querySelector('.favorite-routine-review')?.scrollIntoView({ block: 'start', behavior: 'auto' });
     }
 
-    const toggle = () => { if (node.open && !doc.hidden) void control.refresh(); else control.close(); };
+    const toggle = () => {
+      if (node.open && !doc.hidden) {
+        if (skipOpenToggle) { skipOpenToggle = false; return; }
+        if (hasDraft() || control.state.attempt || control.state.pending) control.resumeDraft();
+        else void control.refresh();
+      } else { skipOpenToggle = false; control.close(); }
+    };
     const hide = () => { if (doc.hidden) { node.open = false; control.close(); } };
     const pagehide = () => { node.open = false; control.close(); };
     const workspaceChanged = () => {
@@ -209,17 +316,21 @@ const FavoriteRoutinePanel = (() => {
         event.preventDefault(); control.cancel();
       }
     };
+    const fromLibrary = (event) => { if (offerSource(event.detail)) event.preventDefault(); };
     node.addEventListener('toggle', toggle);
     node.addEventListener('keydown', escape);
     doc.addEventListener('visibilitychange', hide);
     doc.addEventListener('fsonos:studio-selection', workspaceChanged);
+    doc.addEventListener('fsonos:routine-source', fromLibrary);
     doc.defaultView?.addEventListener('pagehide', pagehide);
     render(control.state);
-    return { node: root, dispose() {
+    return { node: root, offerSource, dispose() {
+      disposed = true;
       node.removeEventListener('toggle', toggle);
       node.removeEventListener('keydown', escape);
       doc.removeEventListener('visibilitychange', hide);
       doc.removeEventListener('fsonos:studio-selection', workspaceChanged);
+      doc.removeEventListener('fsonos:routine-source', fromLibrary);
       doc.defaultView?.removeEventListener('pagehide', pagehide);
       control.dispose();
     } };
