@@ -138,6 +138,8 @@ fileprivate struct CommandObservation: Sendable {
             }
         case .queueMove(let move):
             try move.validate(await client.queue(zone, offset: move.item.position - 1))
+        case .listeningSettings(let change):
+            try await change.preflight(client, in: zone)
         default: break
         }
         try Task.checkCancellation()

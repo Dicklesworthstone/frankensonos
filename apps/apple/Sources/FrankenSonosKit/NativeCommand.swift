@@ -23,6 +23,7 @@ public enum NativeCommand: Equatable, Sendable {
     case join(room: String, to: RoomID), leave(room: String), party, move(to: RoomID, copy: Bool)
     case scene(Scene)
     case sleep(SleepChange)
+    case listeningSettings(ListeningSettingsChange)
 
     public var title: String {
         switch self {
@@ -52,6 +53,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .move(let to, let copy): copy ? "Replay on \(to.room)" : "Move music to \(to.room)"
         case .scene(let scene): "Apply \(scene.name)"
         case .sleep(let change): change.title
+        case .listeningSettings(let change): change.title
         }
     }
     public var explanation: String {
@@ -59,6 +61,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueAdd: "Adds music without starting playback. The daemon resolves the source and applies its queue rules."
         case .queueRemove: "Removes this exact revision-bound entry. This cannot be undone; removing the current entry can advance or stop playback."
         case .queueMove(let move): move.explanation
+        case .listeningSettings(let change): change.explanation
         case .groupVolume: "Changes every member of this group. The daemon's per-room caps and quiet hours remain authoritative."
         case .volume, .mute: "Changes only the named room. The group's music and membership are unchanged."
         case .djSkip: "Advances to the DJ's next whole work, not merely the next movement."
@@ -89,7 +92,12 @@ public enum NativeCommand: Equatable, Sendable {
         switch self { case .join, .leave, .party, .move: true; default: false }
     }
     public var room: String? {
-        switch self { case .volume(_, let room): room; case .mute(_, let room): room; default: nil }
+        switch self {
+        case .volume(_, let room): room
+        case .mute(_, let room): room
+        case .listeningSettings(.speaker(let change)): change.target.room
+        default: nil
+        }
     }
     public var savedScene: Scene? { if case .scene(let scene) = self { scene } else { nil } }
 
@@ -168,6 +176,8 @@ public enum NativeCommand: Equatable, Sendable {
             path = ["move"]
             body["to"] = .string(to.address)
             body["copy"] = .bool(copy)
+        case .listeningSettings(let change):
+            path = change.path; body = try change.fields(in: zone)
         case .sleep(let change):
             path = ["sleep"]; body.merge(try change.fields()) { _, new in new }
         case .scene(let scene):
@@ -187,6 +197,10 @@ public enum NativeCommand: Equatable, Sendable {
         case .mute: matches = before.mute != nil && before.mute == current.mute
         case .queuePlay, .queueRemove, .queueMove, .join, .leave, .party, .move, .scene, .sleep:
             matches = true // Native queue checks and fresh topology validation remain mandatory.
+        case .listeningSettings:
+            // Tone is per speaker; order applies to the queue, not its current
+            // track. The setting/source/DJ preflight is checked separately.
+            matches = true
         case .queueAdd(_, let next): matches = !next || before.samePlayback(as: current)
         default: matches = before.samePlayback(as: current)
         }
@@ -253,6 +267,7 @@ public enum NativeCommand: Equatable, Sendable {
     func receipt(_ data: Data, in zone: Zone? = nil) throws -> CommandReceipt {
         switch self {
         case .sleep(let change): return try change.receipt(data, in: zone)
+        case .listeningSettings(let change): return try change.receipt(data)
         case .scene(let scene):
             let report = try DaemonClient.decode(SceneReport.self, from: data)
             guard report.scene == scene.name, !report.done.isEmpty,
