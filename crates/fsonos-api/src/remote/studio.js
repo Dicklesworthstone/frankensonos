@@ -43,19 +43,131 @@ const StudioRemote = (() => {
     return zones.some(zone => key(zone) === selected) ? selected
       : zones.length ? key(zones.find(zone => zone.transport_state === 'playing') || zones[0]) : null;
   }
+  function matchingZones(zones, query) {
+    const normalize = value => String(value).normalize('NFKD').replace(/\p{M}/gu, '').toLocaleLowerCase();
+    const words = normalize(query).trim().split(/\s+/).filter(Boolean);
+    return zones.filter(zone => words.every(word => normalize([zone.household, ...zone.members].join(' ')).includes(word)));
+  }
+  function selectedCard(house, selected) {
+    const zone = house.zones.find(each => key(each) === selected), parts = house.cards.get(selected);
+    if (!zone || !parts || parts.disposed || key(parts.zone) !== selected
+        || JSON.stringify([...parts.zone.members].sort()) !== JSON.stringify([...zone.members].sort())) return null;
+    return parts;
+  }
+  function playbackAvailable(parts) {
+    const state = parts?.lastState;
+    return !!state?.zone && !parts.writing && key(state.zone) === key(parts.zone)
+      && Array.isArray(state.zone.members)
+      && JSON.stringify([...state.zone.members].sort()) === JSON.stringify([...parts.zone.members].sort())
+      && state.transport_state === parts.zone.transport_state
+      && ['playing', 'paused', 'stopped'].includes(state.transport_state);
+  }
+  // Reuse the original control's command ownership and outcome handling. The
+  // dock cannot send or repeat an HTTP request of its own.
+  function activate(house, selected, control) {
+    if (!['play', 'previous', 'next'].includes(control)) return false;
+    const parts = selectedCard(house, selected);
+    if (!playbackAvailable(parts) || !parts[control] || parts[control].disabled) return false;
+    parts[control].click(); return true;
+  }
 
   function mount({ document: doc, window: win, house, register, el,
     schedule = callback => win.requestAnimationFrame(callback), cancel = id => win.cancelAnimationFrame(id) }) {
     const $ = id => doc.getElementById(id);
     if (!$('studio-content') || !$('households')) return null;
     const native = $('studio-native'), rail = $('studio-room-rail');
-    const panels = new Map(), roomButtons = new Map(), decorated = new WeakSet();
+    const panels = new Map(), roomButtons = new Map(), roomChoices = new Map(), decorated = new WeakSet();
     let workspace = 'listen', selected = null, frame = null, disposed = false, opener = null;
+    let roomOpener = null;
     const on = [];
     const listen = (node, event, fn) => { node.addEventListener(event, fn); on.push(() => node.removeEventListener(event, fn)); };
     const text = (node, value) => { if (node && node.textContent !== value) node.textContent = value; };
     const hidden = (node, value) => { if (node && node.hidden !== value) node.hidden = value; };
     function enqueue() { if (!disposed && frame === null) frame = schedule(() => { frame = null; reconcile(); }); }
+    function roomPicker() {
+      const dialog = $('studio-rooms');
+      if (!dialog || dialog.open) return;
+      roomOpener = doc.activeElement;
+      $('studio-room-search').value = '';
+      renderRoomChoices(); dialog.showModal(); $('studio-room-search').focus();
+    }
+    function renderRoomChoices() {
+      if (!$('studio-room-choices')) return;
+      const matches = matchingZones(house.zones, $('studio-room-search').value);
+      const present = new Set(house.zones.map(key));
+      for (const [id, button] of roomChoices) if (!present.has(id)) { button.remove(); roomChoices.delete(id); }
+      for (const zone of house.zones) {
+        const id = key(zone), name = zone.members.join(' + ');
+        let button = roomChoices.get(id);
+        if (!button) {
+          button = el('button', { type: 'button' }, el('span', { class: 'studio-room-choice-icon', text: '◉', 'aria-hidden': 'true' }),
+            el('span', {}, el('strong'), el('small')), el('span', { class: 'studio-room-choice-state', 'aria-hidden': 'true' }));
+          button.addEventListener('click', () => {
+            if (!house.zones.some(each => key(each) === id)) return;
+            selected = id; reconcile(); $('studio-rooms').close();
+          });
+          roomChoices.set(id, button); $('studio-room-choices').append(button);
+        }
+        const state = house.cards.get(id)?.lastState, status = state?.transport_state || 'Awaiting update';
+        text(button.children[1].children[0], name);
+        text(button.children[1].children[1], `${zone.household} · ${state?.track?.title || status}`);
+        text(button.children[2], id === selected ? 'Selected' : 'Choose');
+        button.setAttribute('aria-pressed', String(id === selected));
+        button.setAttribute('aria-label', `${name}, household ${zone.household}, ${status}`);
+        hidden(button, !matches.includes(zone));
+      }
+      text($('studio-room-result'), matches.length ? `${matches.length} listening ${matches.length === 1 ? 'group' : 'groups'}`
+        : house.zones.length ? 'No rooms match. Try a different room or household.' : 'Waiting for your speakers to connect.');
+    }
+    function revealControl(selector) {
+      const parts = selectedCard(house, selected);
+      if (!parts) return;
+      const node = parts.node.querySelector(selector);
+      if (!node) return;
+      navigate('listen', false);
+      if (node.matches('details')) node.open = true;
+      schedule(() => {
+        if (disposed || selectedCard(house, selected) !== parts) return;
+        node.scrollIntoView({ block: 'center', behavior: 'instant' });
+        node.querySelector('summary,input:not(:disabled),button:not(:disabled)')?.focus({ preventScroll: true });
+      });
+    }
+    function renderPlayer() {
+      const dock = $('studio-player');
+      if (!dock) return;
+      const parts = selectedCard(house, selected);
+      hidden(dock, !parts); doc.body.classList.toggle('studio-has-player', !!parts);
+      if (!parts) return;
+      const state = parts.lastState, playing = state?.transport_state === 'playing';
+      const target = `${parts.zone.members.join(' + ')} · ${parts.zone.household}`;
+      const title = parts.title.textContent || 'Your next listen is waiting';
+      text($('studio-player-title'), title);
+      text($('studio-player-target'), target + (!state ? ' · Updating…' : ''));
+      $('studio-player-room').setAttribute('aria-label', `${title}. Listening in ${target}. Choose a listening group`);
+      $('studio-player-room').title = `${title}\n${target}`;
+      const status = parts.writing ? 'Updating playback…' : !state ? 'Waiting for a live update'
+        : ({ playing: 'Now playing', paused: 'Paused', stopped: 'Ready to play', transitioning: 'Connecting to music…' })[state.transport_state] || 'Playback unavailable';
+      text($('studio-player-state'), status); dock.dataset.playing = String(playing);
+      for (const [id, control, verb] of [['studio-player-play', 'play', playing ? 'Pause' : 'Play'],
+        ['studio-player-previous', 'previous', 'Previous track in'], ['studio-player-next', 'next', 'Next track in']]) {
+        $(id).disabled = !playbackAvailable(parts) || !parts[control] || parts[control].disabled;
+        $(id).setAttribute('aria-label', `${verb} ${target}${!state ? '. Waiting for a live update' : ''}`);
+      }
+      const src = parts.art?.getAttribute('src'), art = $('studio-player-art');
+      // Only mirror the daemon art URL already chosen by the native card.
+      const accepted = src?.startsWith('/art?') ? src : null;
+      if (accepted !== art.getAttribute('src')) {
+        hidden(art, true);
+        if (accepted) art.setAttribute('src', accepted); else art.removeAttribute('src');
+      }
+      const clock = parts.panelHost?.querySelector('.playback-clock'), progress = clock?.querySelector('progress');
+      text($('studio-player-time'), clock?.querySelector('.playback-time')?.children[0]?.textContent || status);
+      hidden($('studio-player-progress'), !state || !progress || progress.hidden);
+      if (progress) { $('studio-player-progress').max = progress.max; $('studio-player-progress').value = progress.value; }
+      $('studio-player-position').disabled = !clock;
+      $('studio-player-volume').disabled = !parts.node.querySelector('.group-volume,.volumes');
+      $('studio-player-queue').disabled = !parts.node.querySelector('.queue');
+    }
     function decorate(parts) {
       if (decorated.has(parts.node)) return;
       decorated.add(parts.node);
@@ -113,6 +225,8 @@ const StudioRemote = (() => {
       for (const button of doc.querySelectorAll('[data-tool]')) {
         button.disabled = ![...panels].some(([node, tool]) => tool.id === button.dataset.tool && !node.hidden);
       }
+      renderPlayer();
+      if ($('studio-rooms')?.open) renderRoomChoices();
       doc.dispatchEvent(new win.CustomEvent('fsonos:studio-selection', { detail: { key: selected, workspace } }));
     }
     function navigate(next, focus = true) {
@@ -180,13 +294,40 @@ const StudioRemote = (() => {
     listen($('studio-palette-close'), 'click', () => $('studio-palette').close());
     listen($('studio-palette'), 'close', () => { opener?.focus?.({ preventScroll: true }); });
     listen($('studio-search'), 'input', results);
+    if ($('studio-player')) {
+      listen($('studio-player-room'), 'click', roomPicker);
+      listen($('studio-rooms-close'), 'click', () => $('studio-rooms').close());
+      listen($('studio-rooms'), 'close', () => { (roomOpener?.isConnected ? roomOpener : $('studio-player-room')).focus({ preventScroll: true }); });
+      listen($('studio-room-search'), 'input', renderRoomChoices);
+      listen($('studio-player-art'), 'load', () => hidden($('studio-player-art'), false));
+      listen($('studio-player-art'), 'error', () => hidden($('studio-player-art'), true));
+      for (const control of ['play', 'previous', 'next']) {
+        listen($('studio-player-' + control), 'click', () => { activate(house, selected, control); renderPlayer(); });
+      }
+      listen($('studio-player-position'), 'click', () => revealControl('.playback-clock'));
+      listen($('studio-player-volume'), 'click', () => revealControl('.group-volume,.volumes'));
+      listen($('studio-player-queue'), 'click', () => revealControl('.queue'));
+    }
     listen(doc, 'keydown', event => {
+      if ($('studio-rooms')?.open) {
+        if (event.key === 'Escape') { event.preventDefault(); $('studio-rooms').close(); return; }
+        if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+        const buttons = [...$('studio-room-choices').querySelectorAll('button:not([hidden])')];
+        if (!buttons.length) return;
+        event.preventDefault(); const at = buttons.indexOf(doc.activeElement);
+        buttons[at < 0 ? (event.key === 'ArrowDown' ? 0 : buttons.length - 1)
+          : (at + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length].focus();
+        return;
+      }
+      if (doc.querySelector('dialog[open]') && !$('studio-palette').open) return;
       if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'k') { event.preventDefault(); palette(); }
+      if ($('studio-palette').open && event.key === 'Escape') { event.preventDefault(); $('studio-palette').close(); return; }
       if (!$('studio-palette').open || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
       const buttons = [...$('studio-results').querySelectorAll('button')];
       if (!buttons.length) return;
       event.preventDefault(); const at = buttons.indexOf(doc.activeElement);
-      buttons[(at + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length].focus();
+      buttons[at < 0 ? (event.key === 'ArrowDown' ? 0 : buttons.length - 1)
+        : (at + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length].focus();
     });
     function theme(value) {
       doc.body.dataset.theme = value === 'light' ? 'light' : 'dark';
@@ -200,13 +341,20 @@ const StudioRemote = (() => {
     const observer = new win.MutationObserver(enqueue);
     observer.observe(native, { childList: true, subtree: true, characterData: true });
     observer.observe($('live'), { childList: true, characterData: true, subtree: true });
+    // Mobile navigation can grow when labels wrap or text is enlarged. Its
+    // measured height already includes the device's safe-area inset.
+    const sidebar = doc.querySelector('.studio-sidebar');
+    const layoutObserver = sidebar && win.ResizeObserver ? new win.ResizeObserver(() => {
+      doc.body.style.setProperty('--studio-navigation-height', `${Math.ceil(sidebar.getBoundingClientRect().height)}px`);
+    }) : null;
+    layoutObserver?.observe(sidebar);
     register(() => ({ node: el('span', { hidden: true }), observe: enqueue, stale: enqueue, block: enqueue, dispose: enqueue }));
     reconcile();
     navigate(win.location.hash.startsWith('#studio/') ? win.location.hash.slice(8) : 'listen', false);
     return { reconcile, navigate, openTool, available, selected: () => selected,
-      dispose() { disposed = true; observer.disconnect(); if (frame !== null) cancel(frame); for (const off of on) off(); } };
+      dispose() { disposed = true; observer.disconnect(); layoutObserver?.disconnect(); if (frame !== null) cancel(frame); for (const off of on) off(); } };
   }
-  return { mount, identify, search, choose, key, tools, workspaces };
+  return { mount, identify, search, choose, key, tools, workspaces, matchingZones, selectedCard, activate };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = StudioRemote;
 else if (typeof house !== 'undefined' && typeof registerCardPanel === 'function') {

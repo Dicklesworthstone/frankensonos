@@ -10,6 +10,21 @@ player, queue, per-room levels, reviewed group volume, and DJ controls forward.
 Same-name rooms remain separate by household. A removed group cannot leave an
 invisible stale card selected; the rail follows current topology.
 
+A persistent **Now playing** bar keeps the selected group's artwork, track and
+playback controls available in every workspace. Its room button opens a searchable
+chooser, including household names and grouped members. Search ignores case and
+accents; arrow keys choose a result and Escape closes the sheet and restores
+focus. Choosing a group preserves the current workspace and does not move music.
+On larger screens the bar also opens that group's existing queue, volume and
+position controls. On phones it sits above the workspace navigation, accounting
+for wrapped labels and the device's safe area. The appearance button remains
+reachable even on a 320-pixel screen.
+
+The bar invokes the original native transport buttons. Pending writes, stale
+observations, changed membership, and disagreement between displayed and native
+transport state disable its playback actions. It mirrors the native artwork URL
+and playback clock; it owns no extra state polling, timer or command requests.
+
 Album art still comes from the daemon's same-origin art endpoint. When art is
 unavailable, an explicitly labelled record-sleeve graphic is the fallback. The
 studio does not fetch artwork, fonts, or scripts from a third-party origin.
@@ -82,6 +97,18 @@ and API observations** at 320, 390, 768, 960, 1280 and 1440 pixels, in both them
 It checks control-node identity, original listener dispatch, preserved drafts,
 qualified selection, late-mounted panels, scoped DJ reads, failure recovery,
 text safety, and overflow. Screenshots label their synthetic fixture data.
+
+The persistent-player interaction check uses Node Playwright and Chromium:
+
+```sh
+node scripts/test-studio-player-browser.cjs
+```
+
+It accepts the same browser and screenshot environment variables. With synthetic
+native controls, it exercises all five workspaces at 320, 390, 700, 768, 960 and
+1440 pixels in both appearances. It verifies native transport dispatch, preserved
+drafts, household-qualified room search, focus return, stale-state recovery,
+empty-house removal, and separation of the mobile player and navigation.
 
 These are not full-native-remote, HTTP asset-delivery/CSP, Rust-daemon, real GENA,
 or physical Sonos acceptance tests. The full existing JavaScript suite and Rust

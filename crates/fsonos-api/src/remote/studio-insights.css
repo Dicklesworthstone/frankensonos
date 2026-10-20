@@ -44,7 +44,6 @@
   .studio .studio-top-actions { gap: 5px; }
   .studio .group-volume .row button { min-height: 44px; }
 }
-@media (max-width: 350px) { .studio #studio-theme { position: fixed; bottom: calc(81px + env(safe-area-inset-bottom)); right: 14px; z-index: 8; background: var(--studio-subtle); } }
 
 .studio-story :is(h3,p,small,span) { overflow-wrap: anywhere; }
 .studio-story-content > .studio-story-problem { margin-bottom: 0; }

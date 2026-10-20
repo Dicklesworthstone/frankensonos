@@ -177,7 +177,9 @@ test('diagnostics are embedded before navigation and searchable in Activity with
   for (const query of ['doctor', 'silence', 'setup', 'missing rooms', 'tailscale']) assert.ok(Studio.search(query, [tool]).length);
   const root = path.join(__dirname, '..');
   const rust = fs.readFileSync(path.join(root, 'crates/fsonos-api/src/http/remote/studio.rs'), 'utf8');
-  assert.match(rust, /\{DIAGNOSTICS_SCRIPT\}\\n\{SCRIPT\}/);
+  // Other native panels may be bundled between diagnostics and navigation.
+  // Diagnostics must still initialize first within the same asset expression.
+  assert.match(rust, /\{DIAGNOSTICS_SCRIPT\}[^"\r\n]*\\n\{SCRIPT\}/);
   for (const file of ['studio-diagnostics.js']) {
     const source = fs.readFileSync(path.join(root, 'crates/fsonos-api/src/remote', file), 'utf8').toLowerCase();
     for (const forbidden of ['authorization', 'password', 'cookie', 'http://', 'https://', 'innerhtml', 'eval(']) assert.ok(!source.includes(forbidden), forbidden);

@@ -47,6 +47,23 @@
   <section id="studio-activity" data-studio-workspace="activity" class="studio-tool-grid" aria-label="Activity and recovery" hidden></section>
   <footer class="studio-footer"><span>YOUR SPEAKERS. YOUR RULES.</span><a href="/dashboard">Less screen. More listening. ↗</a></footer>
 </div>
+<section id="studio-player" class="studio-player" aria-label="Now playing controls" hidden>
+  <button id="studio-player-room" class="studio-player-room" type="button" aria-haspopup="dialog" aria-controls="studio-rooms" aria-label="Choose a listening group">
+    <span class="studio-player-art" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 18V5l11-2v13M9 8l11-2"/><ellipse cx="6" cy="18" rx="3" ry="2.5"/><ellipse cx="17" cy="16" rx="3" ry="2.5"/></svg><img id="studio-player-art" alt="" hidden></span>
+    <span class="studio-player-metadata"><strong id="studio-player-title">Your next listen is waiting</strong><span id="studio-player-target">Choose a group</span></span>
+    <svg class="studio-player-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m8 14 4-4 4 4"/></svg>
+  </button>
+  <div class="studio-player-center">
+    <div class="studio-player-transport" role="group" aria-label="Selected group playback">
+      <button id="studio-player-previous" type="button" aria-label="Previous track" disabled><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M5 5h2v14H5zm14 0v14L8 12z"/></svg></button>
+      <button id="studio-player-play" class="studio-player-play" type="button" aria-label="Play selected group" disabled><svg class="studio-play-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m8 4 13 8-13 8z"/></svg><svg class="studio-pause-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg></button>
+      <button id="studio-player-next" type="button" aria-label="Next track" disabled><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17 5h2v14h-2zM5 5l11 7-11 7z"/></svg></button>
+    </div>
+    <button id="studio-player-position" class="studio-player-position" type="button" aria-label="Open playback position controls"><span id="studio-player-time"></span><progress id="studio-player-progress" value="0" max="1" aria-label="Observed playback progress" hidden></progress></button>
+  </div>
+  <div class="studio-player-accessories"><span id="studio-player-state" class="studio-player-state"></span><button id="studio-player-volume" type="button" aria-label="Open group volume controls"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m11 4-6 5H2v6h3l6 5zM15 8a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg><span>Sound</span></button><button id="studio-player-queue" type="button" aria-label="Open selected group queue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M3 12h10M3 18h8m6-5 5 4-5 4z"/></svg><span>Queue</span></button></div>
+</section>
+<dialog id="studio-rooms" class="studio-palette studio-rooms" aria-labelledby="studio-rooms-title"><header><div><p class="studio-kicker">THE MUSIC STARTS HERE</p><h2 id="studio-rooms-title">Where are we listening?</h2></div><button id="studio-rooms-close" type="button" aria-label="Close room chooser">✕</button></header><label for="studio-room-search">Find a room or household</label><input id="studio-room-search" type="search" placeholder="Search your rooms…" autocomplete="off" maxlength="256"><div id="studio-room-choices" class="studio-room-choices" role="group" aria-label="Listening groups"></div><p id="studio-room-result" class="studio-room-result" role="status"></p><p>Choose the group you control. To move music or bring rooms together, open House &amp; sound.</p></dialog>
 <dialog id="studio-palette" class="studio-palette" aria-labelledby="studio-palette-title"><header><h2 id="studio-palette-title">What would you like to do?</h2><button type="button" id="studio-palette-close" aria-label="Close control finder">✕</button></header><label for="studio-search">Find a feature</label><input id="studio-search" type="search" placeholder="Try “quiet hours”, “whole work”, or “move music”…" autocomplete="off"><div id="studio-results" class="studio-results"></div><p>Opens a control. Never sends a speaker command.</p></dialog>
 <p id="toast" class="toast" role="status" aria-live="polite" hidden></p>
 <noscript><p class="banner">The studio needs JavaScript. The same controls are available through the CLI and HTTP API.</p></noscript>
