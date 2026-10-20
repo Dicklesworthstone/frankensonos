@@ -1,14 +1,15 @@
 # Queue shuffle and repeat
 
-HTTP and MCP can read and set the current group's queue play mode without
-starting the queue, replaying the track, seeking, or changing volumes. A room
-name or alias is resolved through fresh topology to its group's coordinator.
-A paused queue stays paused. These controls do not add, remove or reorder the
-stored queue entries.
+HTTP, MCP, the CLI and the web remote can read and set the current group's
+queue play mode without starting the queue, replaying the track, seeking, or
+changing volumes. A room name or alias is resolved through fresh topology to
+its group's coordinator. A paused queue stays paused. These controls do not
+add, remove or reorder the stored queue entries.
 
 ## Read before changing
 
-Read `GET /zones/{room}/play-mode` or call MCP `get_play_mode` with `zone`.
+Read `GET /zones/{room}/play-mode`, call MCP `get_play_mode` with `zone`, run
+`fsonos play-mode ROOM`, or open the web remote's **Shuffle & repeat** panel.
 The response includes the coordinator's room (`zone`), `mode`, `queue_active`,
 and `dj_active`. `queue_active` means the group's own queue is selected,
 including while paused or stopped; it is not a claim that sound is playing.
@@ -28,8 +29,9 @@ means shuffle **and** repeat; `SHUFFLE_NOREPEAT` is shuffle without repetition.
 
 ## Change the mode
 
-Send JSON with `Content-Type: application/json` to `POST /play-mode`, or call
-MCP `set_play_mode` with the same fields:
+Send JSON with `Content-Type: application/json` to `POST /play-mode`, call
+MCP `set_play_mode` with the same fields, or run
+`fsonos play-mode Room SHUFFLE_NOREPEAT --expected-mode NORMAL`:
 
 ```json
 {
@@ -50,7 +52,8 @@ line-in, or other source the call refuses rather than replacing that source.
 Select an existing entry with `play_queue` first only when that is intended.
 The running daemon rejects non-NORMAL modes while its DJ feeds the group:
 whole works depend on sequential playback. Stop that DJ before changing order.
-MCP prefers the running daemon so it sees that ownership and shares the log.
+The CLI and MCP prefer the running daemon so they see that ownership and share
+the log; the web remote always talks to the daemon.
 
 The result includes `done`, the observed `state`, `changed`, and `recovered`.
 `recovered: true` means SetPlayMode's reply failed but a subsequent read on the
@@ -79,8 +82,8 @@ These are bounded read-before-write safeguards, not an atomic transaction or
 lock shared with other controllers. A DJ can start or an owner can change the
 source after the final preflight. Native modes and continuity on physical
 S1/S2 firmware still require live acceptance; simulator coverage is not that
-evidence. The implementation environment lacked Rust tools, so Rust format,
-compile, Clippy and runtime-test results were not established here.
+evidence.
 
-The new controls are HTTP and MCP operations. There is not yet a dedicated
-CLI play-mode subcommand or a browser toggle for them.
+The same controls are exposed by `fsonos play-mode`
+([`CLI_PLAY_MODE.md`](CLI_PLAY_MODE.md)) and the web remote's
+**Shuffle & repeat** panel; every surface uses the semantics above.
