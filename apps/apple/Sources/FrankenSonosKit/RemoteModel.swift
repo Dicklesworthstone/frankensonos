@@ -72,6 +72,8 @@ public struct RemoteResult: Identifiable, Sendable {
     public private(set) var undoResult: RemoteUndoResult? { willSet { onChange?() } }
     private var undoAction = false
 
+    public let preferences: DJPreferencesWorkflow
+
     private let client: DaemonClient
     private let live: LiveHouse
     private let commands: CommandReviewSession
@@ -108,7 +110,7 @@ public struct RemoteResult: Identifiable, Sendable {
         return client.artworkURL(in: zone, track: selectedState?.track)
     }
     public var canPrepare: Bool { canSchedule && selectedZone != nil }
-    public var canSchedule: Bool { active && !stopped && actionPhase == .idle && review == nil && scheduleReview == nil && undoReview == nil && sceneMutationReview == nil }
+    public var canSchedule: Bool { active && !stopped && !preferences.isEngaged && actionPhase == .idle && review == nil && scheduleReview == nil && undoReview == nil && sceneMutationReview == nil }
     public var canManageSchedules: Bool { canSchedule && panel == .schedules && schedulesObservedAt != nil && !panelLoading }
     public var canManageScenes: Bool { canSchedule && panel == .scenes && scenesObservedAt != nil && !panelLoading }
     public var undoInProgress: Bool { undoAction }
@@ -117,6 +119,13 @@ public struct RemoteResult: Identifiable, Sendable {
         self.client = client
         live = LiveHouse(client: client)
         commands = CommandReviewSession(client: client)
+        preferences = DJPreferencesWorkflow(client: client, commands: commands)
+        preferences.canBegin = { [weak self] in self?.canSchedule == true }
+        preferences.awaitBarrier = { [weak self] in
+            let barrier = self?.cancellation
+            await barrier?.value
+        }
+        preferences.onChange = { [weak self] in self?.onChange?() }
     }
 
     public func resume() {
@@ -140,6 +149,7 @@ public struct RemoteResult: Identifiable, Sendable {
         guard !stopped else { return }
         if timelineFrozenAt == nil { timelineFrozenAt = Date() }
         active = false
+        preferences.suspend()
         cancelReview()
         invalidatePanel()
         invalidateSceneChoices()
@@ -150,6 +160,7 @@ public struct RemoteResult: Identifiable, Sendable {
     public func stop() {
         guard !stopped else { return }
         suspend(); stopped = true
+        preferences.stop()
         observer?.cancel(); observer = nil
         let previous = lifecycle, live = live
         lifecycle = Task { await previous?.value; await live.stop() }
@@ -168,6 +179,7 @@ public struct RemoteResult: Identifiable, Sendable {
         guard self.panel != panel else { return }
         if self.panel == .schedules || self.panel == .scenes { cancelReview() }
         if self.panel == .scenes { invalidateSceneChoices() }
+        if self.panel == .dj { preferences.suspend() }
         self.panel = panel
         invalidatePanel(); refreshPanel()
     }
@@ -241,6 +253,7 @@ public struct RemoteResult: Identifiable, Sendable {
     }
 
     public func cancelReview() {
+        preferences.cancel()
         epoch &+= 1; review = nil; scheduleReview = nil; undoReview = nil; sceneMutationReview = nil
         actionTask?.cancel()
         let previous = cancellation, commands = commands
@@ -269,7 +282,7 @@ public struct RemoteResult: Identifiable, Sendable {
             // A grouping command can emit its topology event before its HTTP
             // acknowledgement. Do not cancel that very write on its own event.
             // Explicit selection changes and suspension still cancel requests.
-            if actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil && !sceneMutationAction && sceneMutationReview == nil { cancelReview() }
+            if !preferences.isEngaged && actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil && !sceneMutationAction && sceneMutationReview == nil { cancelReview() }
             queueOffset = 0
             invalidatePanel(); refreshPanel()
         } else if active && value.isFresh && (!wasFresh || oldState.map { old in selectedState.map { !old.samePlayback(as: $0) } ?? true } == true) {
@@ -361,7 +374,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     /// Edits only the unsent form. Selection and refresh never rewrite it.
     public func updateScheduleForm(_ value: ScheduleForm) {
-        guard active && !stopped && actionPhase == .idle && review == nil && undoReview == nil && sceneMutationReview == nil else { return }
+        guard active && !stopped && !preferences.isEngaged && actionPhase == .idle && review == nil && undoReview == nil && sceneMutationReview == nil else { return }
         if scheduleReview != nil { cancelReview() }
         scheduleForm = value; scheduleFormProblem = nil
     }

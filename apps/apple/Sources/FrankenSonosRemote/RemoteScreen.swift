@@ -117,6 +117,7 @@ import FrankenSonosKit
                     if model.panel == .library || model.selectedZone != nil { MusicPanels(bridge: bridge) }
                     else { noRoom }
                 case .dj:
+                    DJPreferencesPanel(bridge: bridge)
                     if model.selectedZone != nil { MusicPanels(bridge: bridge) }
                     else { noRoom }
                 case .house:
@@ -155,7 +156,7 @@ import FrankenSonosKit
                     Button("Activity & history", systemImage: "clock.arrow.circlepath", action: openActivity)
                         .disabled(!model.canSchedule)
                     Button("Connection details", systemImage: "network") { showConnection = true }
-                        .disabled(model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
+                        .disabled(model.preferences.isEngaged || model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
                 } label: {
                     Image(systemName: "ellipsis.circle").frame(minWidth: 44, minHeight: 44)
                 }.accessibilityLabel("House options")
@@ -187,7 +188,7 @@ import FrankenSonosKit
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).disabled(model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
+        .buttonStyle(.plain).disabled(model.preferences.isEngaged || model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
         .accessibilityHint("Choose a room or group to control.")
     }
 
