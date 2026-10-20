@@ -215,6 +215,7 @@ daemon serves the data directory:
 fsonos service install --tailscale-serve --dry-run   # print it; change nothing
 fsonos service install --tailscale-serve --load      # write it and start it
 fsonos service start                                 # start it as installed, or restart it
+fsonos service install --tailscale-serve --selftest-daily 04:30 --load  # and a daily self-test
 fsonos service status                                # installed, running, pid, answering
 fsonos service uninstall                             # stop it and remove only its file
 ```
@@ -222,6 +223,14 @@ fsonos service uninstall                             # stop it and remove only i
 The file holds the flags given when it was written, and nothing else: to
 change one setting (adding `--spotify-client-id`, say), install again with
 every flag you want and `--load`.
+
+`--selftest-daily HH:MM` adds a second job that runs the inaudible `fsonos
+selftest` at that local time each day (launchd: at the next wake when the
+Mac slept through it), logging to `selftest.log` beside `fsonos.log`. Each
+report is kept in the data directory (the newest 14 under `selftest/`), and
+`fsonos doctor` warns (`selftest.last`) when the newest is a failure, or is
+over two days old while the daily run is scheduled. Pick a time the Mac is usually awake: a run
+launchd makes up at wake can start before the Wi-Fi is back.
 
 On Linux the same commands write and manage a systemd user unit,
 `~/.config/systemd/user/fsonos.service` (`loginctl enable-linger` keeps it

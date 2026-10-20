@@ -92,6 +92,7 @@ fn install_status_start_and_uninstall_a_user_unit() {
     let home = Home::new();
     install_writes_the_unit_and_starts_nothing(&home);
     start_restarts_its_own_daemon_and_no_other(&home);
+    a_daily_self_test_comes_and_goes(&home);
     uninstall_removes_only_its_own_unit(&home);
 }
 
@@ -210,6 +211,58 @@ fn start_restarts_its_own_daemon_and_no_other(home: &Home) {
     assert_eq!(
         home.calls(),
         format!("{show}{show}{show}{show}{show}{load}{load}")
+    );
+}
+
+/// `--selftest-daily` writes the self-test's run and timer beside the
+/// unit, start starts the timer too, and installing again without it
+/// removes them.
+fn a_daily_self_test_comes_and_goes(home: &Home) {
+    let dir = home.unit().parent().unwrap().to_path_buf();
+    let (run, timer) = (
+        dir.join("fsonos-selftest.service"),
+        dir.join("fsonos-selftest.timer"),
+    );
+    let bad = home.fsonos(&["service", "install", "--selftest-daily", "25:00"]);
+    assert!(!bad.status.success());
+    assert!(!timer.exists());
+
+    let installed = home.fsonos(&["service", "install", "--selftest-daily", "04:30"]);
+    assert!(installed.status.success());
+    let unit = fs::read_to_string(&run).unwrap();
+    assert!(
+        unit.contains("\" \"selftest\"\n") && unit.contains("Type=oneshot"),
+        "{unit}"
+    );
+    let schedule = fs::read_to_string(&timer).unwrap();
+    assert!(schedule.contains("OnCalendar=*-*-* 04:30:00"), "{schedule}");
+    let before = home.calls().len();
+    let status = home.fsonos(&["--json", "service", "status"]);
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["selftest_daily"], true);
+    let started = home.fsonos(&["service", "start"]);
+    assert!(
+        stdout(&started).contains("with its daily self-test"),
+        "{}",
+        stdout(&started)
+    );
+    assert_eq!(
+        &home.calls()[before..],
+        "--user show fsonos.service -p ActiveState -p MainPID\n\
+         --user daemon-reload\n--user enable fsonos.service\n--user restart fsonos.service\n\
+         --user enable fsonos-selftest.timer\n--user restart fsonos-selftest.timer\n"
+    );
+
+    let again = home.fsonos(&["service", "install"]);
+    assert!(
+        stdout(&again).contains("removed the daily self-test"),
+        "{}",
+        stdout(&again)
+    );
+    assert!(!run.exists() && !timer.exists());
+    assert!(
+        home.calls()
+            .ends_with("--user disable --now fsonos-selftest.timer\n--user daemon-reload\n")
     );
 }
 

@@ -11,6 +11,8 @@
 //!   Installing again rewrites the file it wrote, with the flags given then.
 //! * `start`: start the installed job as its file says, or restart it, so
 //!   it picks up a file installed since.
+//! * `--selftest-daily HH:MM` (install) adds a second job that runs the
+//!   inaudible `fsonos selftest` each day ([`daily`]).
 //! * `status`: whether the job is installed and running, its pid, and
 //!   whether a daemon answers.
 //! * `uninstall`: stop the job and remove its file, only a file `install`
@@ -31,6 +33,7 @@ use std::time::{Duration, Instant};
 use crate::config::{EVENTS_PORT, GlobalArgs, SPOTIFY_REDIRECT_URI, ServeArgs, TailscaleMode};
 use crate::remote::{DirLock, lock_data_dir, read_daemon_file};
 
+pub(crate) mod daily;
 #[cfg(test)]
 mod tests;
 
@@ -64,6 +67,11 @@ pub enum Action {
         /// data directory.
         #[arg(long)]
         load: bool,
+        /// Also run the inaudible `fsonos selftest` every day at HH:MM, local
+        /// time, as a second job; `fsonos doctor` reads each report
+        /// (`selftest.last`). Installing again without it removes that job.
+        #[arg(long, value_name = "HH:MM", value_parser = daily::parse_at)]
+        selftest_daily: Option<daily::At>,
     },
     /// Start the installed service as its file says, or restart it.
     Start,
@@ -239,6 +247,26 @@ fn text(path: &Path) -> anyhow::Result<String> {
 #[must_use]
 pub fn plist(job: &Job) -> String {
     let string = |s: &str| format!("<string>{}</string>", xml(s));
+    let log = job.log.to_string_lossy();
+    let mut out = plist_head(LABEL, job);
+    let _ = write!(
+        out,
+        "\t<key>RunAtLoad</key>\n\t<true/>\n\
+         \t<key>KeepAlive</key>\n\t<true/>\n\
+         \t<key>ThrottleInterval</key>\n\t<integer>10</integer>\n\
+         \t<key>ExitTimeOut</key>\n\t<integer>{stop}</integer>\n\t<key>ProcessType</key>\n\
+         \t<string>Standard</string>\n\t<key>StandardOutPath</key>\n\t{log}\n\
+         \t<key>StandardErrorPath</key>\n\t{log}\n</dict>\n</plist>\n",
+        stop = job.stop_secs,
+        log = string(&log),
+    );
+    out
+}
+
+/// A plist for the job `label` running `job`, up to its working directory:
+/// what the service's and the daily self-test's have in common.
+fn plist_head(label: &str, job: &Job) -> String {
+    let string = |s: &str| format!("<string>{}</string>", xml(s));
     let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD \
          PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n",
@@ -248,7 +276,7 @@ pub fn plist(job: &Job) -> String {
         "<!-- {MARKER}; `fsonos service uninstall` removes it. Edit by installing again. -->"
     );
     out.push_str("<plist version=\"1.0\">\n<dict>\n");
-    let _ = writeln!(out, "\t<key>Label</key>\n\t{}", string(LABEL));
+    let _ = writeln!(out, "\t<key>Label</key>\n\t{}", string(label));
     out.push_str("\t<key>ProgramArguments</key>\n\t<array>\n");
     for arg in &job.program {
         let _ = writeln!(out, "\t\t{}", string(arg));
@@ -258,18 +286,10 @@ pub fn plist(job: &Job) -> String {
         let _ = writeln!(out, "\t\t<key>{}</key>\n\t\t{}", xml(key), string(value));
     }
     let home = job.home.to_string_lossy();
-    let log = job.log.to_string_lossy();
-    let _ = write!(
+    let _ = writeln!(
         out,
-        "\t</dict>\n\t<key>WorkingDirectory</key>\n\t{home}\n\t<key>RunAtLoad</key>\n\t<true/>\n\
-         \t<key>KeepAlive</key>\n\t<true/>\n\
-         \t<key>ThrottleInterval</key>\n\t<integer>10</integer>\n\
-         \t<key>ExitTimeOut</key>\n\t<integer>{stop}</integer>\n\t<key>ProcessType</key>\n\
-         \t<string>Standard</string>\n\t<key>StandardOutPath</key>\n\t{log}\n\
-         \t<key>StandardErrorPath</key>\n\t{log}\n</dict>\n</plist>\n",
-        home = string(&home),
-        stop = job.stop_secs,
-        log = string(&log),
+        "\t</dict>\n\t<key>WorkingDirectory</key>\n\t{}",
+        string(&home)
     );
     out
 }
@@ -284,6 +304,18 @@ fn xml(s: &str) -> String {
 /// the daemon's drain takes.
 #[must_use]
 pub fn unit(job: &Job) -> String {
+    let mut out = unit_head(job, "FrankenSonos daemon (fsonos serve)");
+    let _ = write!(
+        out,
+        "Restart=always\nRestartSec=10\nTimeoutStopSec={}\n\n[Install]\nWantedBy=default.target\n",
+        job.stop_secs
+    );
+    out
+}
+
+/// A systemd unit running `job`, up to its `[Service]` settings: what the
+/// service's and the daily self-test's have in common.
+fn unit_head(job: &Job, description: &str) -> String {
     let exec: Vec<String> = job
         .program
         .iter()
@@ -291,7 +323,7 @@ pub fn unit(job: &Job) -> String {
         .collect();
     let mut out = format!(
         "# {MARKER}; `fsonos service uninstall` removes it. Edit by installing again.\n\
-         [Unit]\nDescription=FrankenSonos daemon (fsonos serve)\n\n[Service]\nExecStart={}\n\
+         [Unit]\nDescription={description}\n\n[Service]\nExecStart={}\n\
          WorkingDirectory={}\n",
         exec.join(" "),
         job.home.to_string_lossy().replace('%', "%%"),
@@ -299,11 +331,6 @@ pub fn unit(job: &Job) -> String {
     for (key, value) in &job.env {
         let _ = writeln!(out, "Environment={}", quoted(&format!("{key}={value}")));
     }
-    let _ = write!(
-        out,
-        "Restart=always\nRestartSec=10\nTimeoutStopSec={}\n\n[Install]\nWantedBy=default.target\n",
-        job.stop_secs
-    );
     out
 }
 
@@ -330,6 +357,23 @@ pub(crate) fn service_path(manager: Manager) -> Option<PathBuf> {
     home().map(|home| manager.path(&home, xdg.as_deref()))
 }
 
+/// When `install --selftest-daily` scheduled the self-test for this user
+/// (its job file's modification time, Unix seconds); `None` when it did not.
+pub(crate) fn selftest_scheduled() -> Option<u64> {
+    let manager = Manager::here().ok()?;
+    let paths = daily::paths(manager, &service_path(manager)?);
+    if !daily::installed(&paths) {
+        return None;
+    }
+    let written = std::fs::metadata(paths.first()?).ok()?.modified().ok()?;
+    Some(
+        written
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
+}
+
 /// `fsonos service`.
 pub fn run(global: &GlobalArgs, args: &ServiceArgs) -> anyhow::Result<()> {
     let manager = Manager::here()?;
@@ -340,9 +384,18 @@ pub fn run(global: &GlobalArgs, args: &ServiceArgs) -> anyhow::Result<()> {
             serve,
             dry_run,
             load,
+            selftest_daily,
         } => {
             let job = job(global, serve, &home)?;
-            install(global, manager, &path, &job, *dry_run, *load)
+            install(
+                global,
+                manager,
+                &path,
+                &job,
+                *selftest_daily,
+                *dry_run,
+                *load,
+            )
         }
         Action::Start => {
             match ours(&path)? {
@@ -388,20 +441,37 @@ fn install(
     manager: Manager,
     path: &Path,
     job: &Job,
+    at: Option<daily::At>,
     dry_run: bool,
     load: bool,
 ) -> anyhow::Result<()> {
     let file = manager.render(job);
+    let daily_paths = daily::paths(manager, path);
+    let daily_files = at.map(|at| daily::files(manager, job, at));
     if dry_run {
         println!("# would write {}", path.display());
         print!("{file}");
+        for (path, file) in daily_paths.iter().zip(daily_files.iter().flatten()) {
+            println!("# would write {}", path.display());
+            print!("{file}");
+        }
+        if daily_files.is_none() && daily::installed(&daily_paths) {
+            println!("# would remove the daily self-test (--selftest-daily HH:MM keeps it)");
+        }
         return Ok(());
     }
-    if ours(path)? == Some(false) {
-        bail!(
-            "{} exists and `fsonos service install` did not write it; move it away first",
-            path.display()
-        );
+    let mine = |path: &Path| -> anyhow::Result<()> {
+        if ours(path)? == Some(false) {
+            bail!(
+                "{} exists and `fsonos service install` did not write it; move it away first",
+                path.display()
+            );
+        }
+        Ok(())
+    };
+    mine(path)?;
+    if daily_files.is_some() {
+        daily_paths.iter().try_for_each(|path| mine(path))?;
     }
     // A refused --load changes nothing.
     let replacing = if load {
@@ -420,6 +490,18 @@ fn install(
     }
     std::fs::write(path, &file).with_context(|| format!("writing {}", path.display()))?;
     println!("wrote {}", path.display());
+    if let Some(files) = &daily_files {
+        for (path, file) in daily_paths.iter().zip(files) {
+            std::fs::write(path, file).with_context(|| format!("writing {}", path.display()))?;
+            println!("wrote {}", path.display());
+        }
+    } else if daily::installed(&daily_paths) {
+        daily::remove(manager, &daily_paths)?;
+        println!(
+            "removed the daily self-test: it was not asked for this time (--selftest-daily HH:MM \
+             keeps it)"
+        );
+    }
     if manager == Manager::Launchd
         && Path::new("/Library/LaunchDaemons")
             .join(format!("{LABEL}.plist"))
@@ -464,9 +546,19 @@ fn start(manager: Manager, path: &Path, replacing: bool) -> anyhow::Result<()> {
             run_step(&["systemctl", "--user", "restart", UNIT], false)?;
         }
     }
+    let daily = daily::paths(manager, path);
+    let scheduled = daily::installed(&daily);
+    if scheduled {
+        daily::start(manager, &daily)?;
+    }
     println!(
-        "{}; `fsonos service status` shows it",
-        if replacing { "restarted" } else { "started" }
+        "{}{}; `fsonos service status` shows it",
+        if replacing { "restarted" } else { "started" },
+        if scheduled {
+            ", with its daily self-test"
+        } else {
+            ""
+        }
     );
     Ok(())
 }
@@ -591,18 +683,31 @@ fn uninstall(manager: Manager, path: &Path, dry_run: bool) -> anyhow::Result<()>
         ),
         Some(true) => {}
     }
-    let steps = unload_steps(manager)?;
+    let mut steps = unload_steps(manager)?;
+    let daily = daily::paths(manager, path);
+    let scheduled = daily::installed(&daily);
+    if scheduled {
+        steps.extend(daily::stop_steps(manager)?);
+    }
     if dry_run {
         for step in &steps {
             println!("would run: {}", step.join(" "));
         }
         println!("would remove {}", path.display());
+        if scheduled {
+            for path in &daily {
+                println!("would remove {}", path.display());
+            }
+        }
         return Ok(());
     }
     // Stopping is best effort: a job that isn't loaded, or a session with
     // no user manager, has nothing to stop; the file goes either way.
     for step in &steps {
         run_step(step.as_slice(), true)?;
+    }
+    if scheduled {
+        daily::remove_files(&daily)?;
     }
     if manager == Manager::Systemd {
         run_step(&["systemctl", "--user", "daemon-reload"], true)?;
@@ -614,6 +719,7 @@ fn uninstall(manager: Manager, path: &Path, dry_run: bool) -> anyhow::Result<()>
 
 /// `fsonos service status`.
 #[derive(Debug, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // separate facts of one report
 pub struct ServiceStatus {
     pub manager: Manager,
     pub path: PathBuf,
@@ -629,6 +735,8 @@ pub struct ServiceStatus {
     pub daemon_pid: Option<u32>,
     /// It answered `GET /health`.
     pub daemon_answers: bool,
+    /// `install --selftest-daily` scheduled the self-test.
+    pub selftest_daily: bool,
     /// What could not be checked.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
@@ -662,6 +770,7 @@ fn status(global: &GlobalArgs, manager: Manager, path: &Path) -> ServiceStatus {
         pid,
         daemon_pid,
         daemon_answers,
+        selftest_daily: daily::installed(&daily::paths(manager, path)),
         notes,
     }
 }
@@ -743,6 +852,9 @@ fn status_text(s: &ServiceStatus) -> String {
         (false, _) => "none answers".to_owned(),
     };
     let _ = writeln!(out, "daemon: {daemon}");
+    if s.selftest_daily {
+        let _ = writeln!(out, "daily self-test: scheduled");
+    }
     for note in &s.notes {
         let _ = writeln!(out, "note: {note}");
     }

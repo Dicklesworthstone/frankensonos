@@ -13,6 +13,20 @@ pub const LAST: CheckId = CheckId("selftest.last");
 /// The kept run, in the data directory.
 pub const FILE: &str = "selftest-last.json";
 
+/// Each kept run is also copied, as `<at>.json`, into this directory in the
+/// data directory, which holds the newest [`KEEP`].
+pub const RUNS: &str = "selftest";
+
+/// How many runs [`RUNS`] holds.
+pub const KEEP: usize = 14;
+
+/// Past this age the newest run of a daily self-test is overdue.
+pub const OVERDUE_SECS: u64 = 48 * 3_600;
+
+const OVERDUE_REMEDY: &str = "Its schedule is not running: `fsonos service status` says whether \
+     it is installed, and `fsonos service start` starts it; its log is selftest.log beside the \
+     service's.";
+
 /// Seconds since the Unix epoch, now.
 #[must_use]
 pub fn unix_now() -> u64 {
@@ -33,7 +47,29 @@ pub fn save(data_dir: &Path, report: &Report, at: u64) -> std::io::Result<()> {
     });
     let partial = data_dir.join(format!("{FILE}.partial"));
     std::fs::write(&partial, kept.to_string())?;
-    std::fs::rename(&partial, data_dir.join(FILE))
+    std::fs::rename(&partial, data_dir.join(FILE))?;
+    let runs = data_dir.join(RUNS);
+    std::fs::create_dir_all(&runs)?;
+    std::fs::write(runs.join(format!("{at}.json")), kept.to_string())?;
+    prune(&runs)
+}
+
+/// Keep the newest [`KEEP`] runs in `runs` (by the time each is named for).
+fn prune(runs: &Path) -> std::io::Result<()> {
+    let mut kept: Vec<(u64, PathBuf)> = std::fs::read_dir(runs)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter_map(|path| {
+            let at = path.file_stem()?.to_str()?.parse().ok()?;
+            (path.extension()? == "json").then_some((at, path))
+        })
+        .collect();
+    kept.sort_unstable();
+    let over = kept.len().saturating_sub(KEEP);
+    for (_, path) in kept.into_iter().take(over) {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
 }
 
 /// See the module docs.
@@ -51,15 +87,30 @@ impl Check for LastSelftest {
     }
 
     fn run(&self, _: &CheckContext) -> CheckResult {
-        verdict(&self.data_dir.join(FILE), unix_now())
+        let daily = crate::service_cmd::selftest_scheduled();
+        verdict(&self.data_dir.join(FILE), unix_now(), daily)
     }
 }
 
-/// The verdict on the run kept at `path`, `now` being Unix seconds.
-fn verdict(path: &Path, now: u64) -> CheckResult {
+/// The verdict on the run kept at `path`, `now` being Unix seconds;
+/// `daily`, when `fsonos service install --selftest-daily` scheduled it,
+/// is when that was (Unix seconds): then no run, or none for
+/// [`OVERDUE_SECS`], means the schedule is not running.
+fn verdict(path: &Path, now: u64, daily: Option<u64>) -> CheckResult {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(since) = daily
+                && now.saturating_sub(since) > OVERDUE_SECS
+            {
+                return CheckResult::warn(
+                    format!(
+                        "the daily self-test was scheduled {} ago and has not run once",
+                        age(now - since)
+                    ),
+                    OVERDUE_REMEDY,
+                );
+            }
             return CheckResult::skip("no self-test recorded yet (run `fsonos selftest`)");
         }
         Err(e) => return unreadable(path, &e.to_string()),
@@ -80,6 +131,13 @@ fn verdict(path: &Path, now: u64) -> CheckResult {
         "exit_code": code,
         "counts": report["counts"],
     });
+    if daily.is_some() && now.saturating_sub(at) > OVERDUE_SECS {
+        return CheckResult::warn(
+            format!("the daily self-test last ran {ago} ago (fsonos {version})"),
+            OVERDUE_REMEDY,
+        )
+        .with_evidence(evidence);
+    }
     if code == 0 {
         let skipped = match count("skip") {
             0 => String::new(),
@@ -180,7 +238,7 @@ mod tests {
             ("selftest.events", CheckResult::skip("no callback")),
         ]);
         save(&dir, &passed, at).unwrap();
-        let ok = verdict(&dir.join(FILE), at + 3 * 3_600);
+        let ok = verdict(&dir.join(FILE), at + 3 * 3_600, None);
         assert_eq!(ok.status, Status::Pass, "{ok:?}");
         assert!(
             ok.summary
@@ -201,7 +259,7 @@ mod tests {
             ),
         ]);
         save(&dir, &warned, at).unwrap();
-        let not = verdict(&dir.join(FILE), at + 40);
+        let not = verdict(&dir.join(FILE), at + 40, None);
         assert_eq!(not.status, Status::Warn, "{not:?}");
         assert!(not.summary.contains("40 s ago"), "{not:?}");
         let named = not.summary.split("did not pass: ").nth(1).unwrap_or("");
@@ -215,13 +273,61 @@ mod tests {
     fn no_record_is_a_skip_and_a_broken_one_a_warning() {
         let dir = scratch("broken");
         let path = dir.join(FILE);
-        assert_eq!(verdict(&path, 0).status, Status::Skip);
+        assert_eq!(verdict(&path, 0, None).status, Status::Skip);
         std::fs::write(&path, "{ half").unwrap();
-        let broken = verdict(&path, 0);
+        let broken = verdict(&path, 0, None);
         assert_eq!(broken.status, Status::Warn);
         assert!(broken.detail.unwrap().contains("not JSON"));
         std::fs::write(&path, r#"{"report": {}}"#).unwrap();
-        assert_eq!(verdict(&path, 0).status, Status::Warn);
+        assert_eq!(verdict(&path, 0, None).status, Status::Warn);
+    }
+
+    /// A daily self-test's newest run past two days old is overdue, and so
+    /// is a schedule two days old that has never run; a run by hand never.
+    #[test]
+    fn a_daily_run_past_two_days_is_overdue() {
+        let dir = scratch("overdue");
+        let at = 1_700_000_000;
+        save(
+            &dir,
+            &report(vec![("selftest.house", CheckResult::pass("ok"))]),
+            at,
+        )
+        .unwrap();
+        let path = dir.join(FILE);
+        assert_eq!(
+            verdict(&path, at + OVERDUE_SECS, Some(at)).status,
+            Status::Pass
+        );
+        let overdue = verdict(&path, at + OVERDUE_SECS + 1, Some(at));
+        assert_eq!(overdue.status, Status::Warn, "{overdue:?}");
+        assert!(overdue.summary.contains("last ran 2 d ago"), "{overdue:?}");
+        assert_eq!(verdict(&path, at + 30 * 86_400, None).status, Status::Pass);
+
+        // Scheduled, and never run: overdue too, once two days have passed.
+        let never = scratch("never").join(FILE);
+        assert_eq!(verdict(&never, at + 3_600, Some(at)).status, Status::Skip);
+        let lapsed = verdict(&never, at + OVERDUE_SECS + 1, Some(at));
+        assert_eq!(lapsed.status, Status::Warn, "{lapsed:?}");
+        assert!(lapsed.summary.contains("has not run once"), "{lapsed:?}");
+    }
+
+    /// Each run is kept, the newest KEEP of them.
+    #[test]
+    fn the_newest_runs_are_kept() {
+        let dir = scratch("kept");
+        let passed = report(vec![("selftest.house", CheckResult::pass("ok"))]);
+        for at in 1..=16 {
+            save(&dir, &passed, at * 86_400).unwrap();
+        }
+        let mut kept: Vec<String> = std::fs::read_dir(dir.join(RUNS))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        kept.sort_unstable_by_key(|name| name.trim_end_matches(".json").parse::<u64>().unwrap());
+        assert_eq!(kept.len(), KEEP);
+        assert_eq!(kept[0], format!("{}.json", 3 * 86_400));
+        assert_eq!(kept[KEEP - 1], format!("{}.json", 16 * 86_400));
     }
 
     #[test]

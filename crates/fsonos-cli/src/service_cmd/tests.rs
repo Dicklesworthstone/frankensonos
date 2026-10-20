@@ -101,6 +101,80 @@ fn the_installed_data_directory_reads_back_from_either_file() {
     assert_eq!(installed_data_dir("[Service]\nExecStart=/bin/true\n"), None);
 }
 
+/// `--selftest-daily` takes a 24-hour HH:MM and nothing else.
+#[test]
+fn a_daily_time_is_hh_mm() {
+    assert_eq!(
+        daily::parse_at("04:30"),
+        Ok(daily::At {
+            hour: 4,
+            minute: 30
+        })
+    );
+    assert_eq!(
+        daily::parse_at("23:59").map(|at| (at.hour, at.minute)),
+        Ok((23, 59))
+    );
+    for bad in ["24:00", "4:30", "04:60", "0430", "04:3x", ""] {
+        assert!(daily::parse_at(bad).is_err(), "{bad}");
+    }
+}
+
+/// The daily self-test runs `fsonos selftest` with the service's binary,
+/// seeds, environment and home, at the time given, beside the service's
+/// file.
+#[test]
+fn the_daily_self_test_runs_beside_the_service() {
+    let at = daily::At { hour: 4, minute: 5 };
+    let service = PathBuf::from("/home/u/.config/systemd/user/fsonos.service");
+    assert_eq!(
+        daily::paths(Manager::Systemd, &service),
+        [
+            PathBuf::from("/home/u/.config/systemd/user/fsonos-selftest.service"),
+            PathBuf::from("/home/u/.config/systemd/user/fsonos-selftest.timer"),
+        ]
+    );
+    let units = daily::files(Manager::Systemd, &job(), at);
+    assert!(
+        units[0].contains(
+            "ExecStart=\"/Users/u/My Tools/fsonos\" \"selftest\" \"--seed\" \"192.0.2.10\"\n"
+        ) && units[0].contains("Type=oneshot\n")
+            && units[0].contains("Environment=\"HOME=/Users/u\"")
+            && !units[0].contains("Restart="),
+        "{}",
+        units[0]
+    );
+    assert!(
+        units[1].contains("OnCalendar=*-*-* 04:05:00\n") && units[1].contains(MARKER),
+        "{}",
+        units[1]
+    );
+
+    let agent = PathBuf::from("/Users/u/Library/LaunchAgents/x.plist");
+    assert_eq!(
+        daily::paths(Manager::Launchd, &agent),
+        [PathBuf::from(format!(
+            "/Users/u/Library/LaunchAgents/{}.plist",
+            daily::LABEL
+        ))]
+    );
+    let plist = &daily::files(Manager::Launchd, &job(), at)[0];
+    for line in [
+        format!("<string>{}</string>", daily::LABEL),
+        "<string>selftest</string>\n\t\t<string>--seed</string>\n\t\t<string>192.0.2.10</string>"
+            .to_owned(),
+        "<key>Hour</key>\n\t\t<integer>4</integer>".to_owned(),
+        "<key>Minute</key>\n\t\t<integer>5</integer>".to_owned(),
+        "<string>/Users/u/Library/Logs/fsonos/selftest.log</string>".to_owned(),
+    ] {
+        assert!(plist.contains(&line), "{line} in {plist}");
+    }
+    assert!(
+        !plist.contains("KeepAlive") && !plist.contains("serve"),
+        "{plist}"
+    );
+}
+
 /// The job keeps this shell's PATH (launchd's has no Homebrew, say), less
 /// any relative directory, which would resolve in the job's HOME.
 #[test]
