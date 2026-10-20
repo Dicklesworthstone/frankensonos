@@ -2,7 +2,7 @@
 'use strict';
 const DashboardCore = (() => {
   const STATES = ['playing', 'paused', 'stopped', 'transitioning', 'unknown'];
-  const EVENTS = ['zone.state', 'topology.changed', 'player.health', 'action.logged', 'dj.status', 'reset'];
+  const EVENTS = ['zone.state', 'topology.changed', 'player.health', 'action.logged', 'dj.status', 'events.reset', 'reset'];
   const text = (v) => typeof v === 'string' && v.trim() !== '' && v.length <= 4096;
   const level = (v) => Number.isInteger(v) && v >= 0 && v <= 100;
   const seconds = (v) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
@@ -63,22 +63,31 @@ const DashboardCore = (() => {
     }));
   }
   function request({ fetcher = (...a) => fetch(...a), schedule = setTimeout, cancel = clearTimeout } = {}) {
-    return async (url, body) => {
+    const readers = new Set();
+    const send = async (url, body) => {
       const write = body !== undefined, abort = new AbortController();
       const budget = write && (url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)) ? 600000 : write ? 120000 : 10000;
-      let timer;
-      const timeout = new Promise((_, reject) => {
-        timer = schedule(() => { reject(new Error(write
-          ? 'No command confirmation arrived. It may still complete; refresh before another action.'
-          : 'The daemon did not answer in time.')); abort.abort(); }, budget);
-      });
+      let timer, finished = false, stopped = null, rejectStopped;
+      const timeout = new Promise((_, reject) => { rejectStopped = reject; });
+      const stop = (error) => {
+        if (finished) return;
+        finished = true; stopped = error;
+        rejectStopped(error); abort.abort();
+      };
+      const cancelRead = () => stop(Object.assign(new Error('The obsolete state request was cancelled.'), { code: 'DASHBOARD_READ_CANCELLED' }));
+      if (!write) readers.add(cancelRead);
+      timer = schedule(() => stop(new Error(write
+        ? 'No command confirmation arrived. It may still complete; refresh before another action.'
+        : 'The daemon did not answer in time.')), budget);
       try {
         return await Promise.race([timeout, (async () => {
           const response = await fetcher(url, { method: write ? 'POST' : 'GET',
             headers: { Accept: 'application/json', ...(write ? { 'Content-Type': 'application/json' } : {}) },
             ...(write ? { body: JSON.stringify(body) } : {}), signal: abort.signal,
             credentials: 'same-origin', redirect: 'error', cache: 'no-store' });
+          if (finished) throw stopped;
           const raw = await response.text();
+          if (finished) throw stopped;
           let data;
           try { data = JSON.parse(raw); } catch (_) { throw new Error('The daemon returned an unreadable response.'); }
           if (!response.ok) {
@@ -86,25 +95,29 @@ const DashboardCore = (() => {
             e.hint = data?.hint; e.status = response.status;
             const retry = response.headers?.get('retry-after');
             e.retryAfter = retry && /^\d+$/.test(retry) ? Number(retry) * 1000
-              : retry && Number.isFinite(Date.parse(retry)) ? Math.max(0, Date.parse(retry) - Date.now()) : 0;
+              : retry && !/^[+-]?[0-9.]+$/.test(retry) && Number.isFinite(Date.parse(retry)) ? Math.max(0, Date.parse(retry) - Date.now()) : 0;
             throw e;
           }
           return data;
         })()]);
-      } finally { cancel(timer); }
+      } finally { finished = true; cancel(timer); readers.delete(cancelRead); }
     };
+    // Stream/lifecycle recovery cancels observations, never submitted commands.
+    send.cancelReads = () => { for (const cancelRead of [...readers]) cancelRead(); };
+    return send;
   }
   function model({ call, changed = () => {}, now = () => performance.now(), demo = false }) {
     const state = { items: [], selected: '', loading: false, busy: false, error: '', message: '',
       uncertain: false, connected: false, active: true, initialized: false, retryAfter: 0 };
-    let epoch = 0, disposed = false;
+    let epoch = 0, disposed = false, reading = null;
     const emit = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const selected = () => state.items.find((i) => key(i.zone) === state.selected);
     const canControl = () => !!(!demo && !disposed && state.active && !state.busy && !state.loading
-      && !state.uncertain && selected()?.fresh && now() - selected().at < 30000);
+      && !state.uncertain && selected()?.fresh && (state.connected || now() - selected().at < 30000));
     async function refresh(explicit = false) {
-      if (disposed || !state.active || state.loading || state.busy) return false;
-      const version = ++epoch;
+      if (disposed || !state.active || reading || state.busy) return false;
+      const version = ++epoch, observation = {};
+      reading = observation;
       state.loading = true; state.error = ''; state.retryAfter = 0; emit();
       const current = () => !disposed && state.active && version === epoch;
       try {
@@ -119,7 +132,10 @@ const DashboardCore = (() => {
           try {
             item.state = playback(await call(`/zones/${encodeURIComponent(key(item.zone))}/state`), item.zone);
             item.at = now(); item.fresh = true;
-          } catch (e) { failed = true; item.error = problem(e); state.retryAfter = Math.max(state.retryAfter, e.retryAfter || 0); }
+          } catch (e) {
+            failed = true; item.error = problem(e);
+            if (current()) state.retryAfter = Math.max(state.retryAfter, e.retryAfter || 0);
+          }
         });
         if (!current()) return false;
         state.items = items;
@@ -135,7 +151,9 @@ const DashboardCore = (() => {
           for (const item of state.items) item.fresh = false;
         }
         return false;
-      } finally { if (current()) { state.loading = false; emit(); } }
+      } finally {
+        if (reading === observation) { reading = null; state.loading = false; emit(); }
+      }
     }
     function select(target) {
       if (disposed || state.busy || !state.items.some((i) => key(i.zone) === target)) return false;
@@ -189,13 +207,21 @@ const DashboardCore = (() => {
         return send(`/${verb}`, { zone: target, ...(verb === 'volume' ? { delta: change.delta, group: true } : {}) });
       });
     }
-    function suspend() {
-      ++epoch; state.active = false; state.loading = false; state.connected = false;
-      for (const i of state.items) i.fresh = false;
+    function invalidate() {
+      ++epoch;
+      for (const item of state.items) item.fresh = false;
       emit();
     }
-    return { state, refresh, select, selected, canControl, command, mutate, suspend,
-      connection(value) { state.connected = value; emit(); },
+    function suspend() {
+      state.active = false; state.connected = false;
+      invalidate();
+    }
+    return { state, refresh, select, selected, canControl, command, mutate, suspend, invalidate,
+      connection(value) {
+        const lost = state.connected && !value;
+        state.connected = value;
+        if (lost) invalidate(); else emit();
+      },
       resume() { if (!disposed) { state.active = true; emit(); } },
       dispose() { disposed = true; suspend(); } };
   }
