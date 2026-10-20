@@ -22,6 +22,7 @@ use fsonos_types::{HouseholdId, PlayMode, PlayerId, TransportState};
 use std::net::IpAddr;
 
 mod play_mode;
+mod read;
 mod source;
 
 /// One member room's own levels (addressed through the room's primary).
@@ -134,65 +135,15 @@ pub struct RestoreReport {
     pub skipped: Vec<(Aspect, String)>,
 }
 
-/// Capture what the group `coordinator` leads is doing now.
+/// Capture stable playback for the group `coordinator` leads. Changing
+/// playback is sampled again, at most three times; reads never change a player.
 pub fn capture<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     coordinator: &PlayerId,
     captured_at: i64,
 ) -> Result<ZoneSnapshot, CoreError> {
-    let household = households
-        .iter()
-        .find(|h| h.player(coordinator).is_some())
-        .ok_or_else(|| CoreError::UnknownPlayer(coordinator.0.clone()))?;
-    let host = ip(household, coordinator)?;
-    let members = member_rooms(household, coordinator);
-    let transport = soap::get_transport_info(t, host)?;
-    let position = soap::get_position_info(t, host)?;
-    let media = soap::get_media_info(t, host)?;
-    let source = if media.uri.starts_with("x-rincon-queue:") {
-        SnapshotSource::Queue {
-            track: position.track,
-            position_secs: position.position_secs.unwrap_or(0),
-            update_id: queue_update_id(t, host)?,
-        }
-    } else if media.uri.is_empty() {
-        SnapshotSource::Nothing
-    } else {
-        let has_duration = position.duration_secs.is_some_and(|d| d > 0);
-        SnapshotSource::Uri {
-            uri: media.uri,
-            metadata: media.uri_metadata,
-            position_secs: position.position_secs.filter(|_| has_duration),
-        }
-    };
-    let levels = members
-        .iter()
-        .map(|m| {
-            let at = ip(household, m)?;
-            Ok(MemberLevel {
-                player: m.clone(),
-                volume: soap::get_volume(t, at)?,
-                mute: soap::get_mute(t, at)?,
-            })
-        })
-        .collect::<Result<_, CoreError>>()?;
-    let play_mode = if matches!(source, SnapshotSource::Queue { .. }) {
-        fsonos_proto::play_mode::get_play_mode(t, host).ok()
-    } else {
-        None
-    };
-    Ok(ZoneSnapshot {
-        household: household.id.clone(),
-        coordinator: coordinator.clone(),
-        members,
-        levels,
-        group_volume: soap::get_group_volume(t, host).ok(),
-        transport_state: transport.state,
-        play_mode,
-        source,
-        captured_at,
-    })
+    read::capture(t, households, coordinator, captured_at)
 }
 
 /// The primary of each room in the group `coordinator` leads, its own first.
