@@ -811,11 +811,14 @@ fn a_long_running_store_keeps_its_wal_small() {
 /// A WAL an earlier process left large (one stopped before it checkpointed,
 /// or a build that never trimmed it) is trimmed when a store opens, not after
 /// that store's own writes: the live daemon's 16 MB WAL outlived a restart.
+/// The database is migrated first, as the daemon's is, so opening it writes
+/// nothing that would trim the WAL anyway.
 #[test]
 fn a_large_wal_left_behind_is_trimmed_at_open() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("fsonos.db");
     let wal = || std::fs::metadata(dir.path().join("fsonos.db-wal")).map_or(0, |m| m.len());
+    SqliteStore::open(&path).unwrap().close().unwrap();
     let mut raw = fsqlite::AsyncConnection::open_sync(path.to_string_lossy()).unwrap();
     raw.execute_sync("CREATE TABLE filler (body TEXT NOT NULL)")
         .unwrap();

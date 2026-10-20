@@ -1942,7 +1942,7 @@ mod tests {
         let pool = works_of(&items);
         let (ctx, config) = (PickContext::default(), DjConfig::default());
         let mut rng = Rng::new(8);
-        let liked = (0..4000)
+        let liked = (0..40_000)
             .filter(|_| {
                 pick_next(&pool, &ctx, &config, &mut rng)
                     .unwrap()
@@ -1950,8 +1950,12 @@ mod tests {
                     .is_liked()
             })
             .count();
-        // Expected 1.3 : 1 → ~56.5% liked.
-        assert!((2140..2380).contains(&liked), "liked picked {liked}/4000");
+        // Expected LIKED_PM 1.1 : 1 → ~20,952 liked (sd ~100); without the
+        // boost ~20,000, well below the band.
+        assert!(
+            (20_450..=21_450).contains(&liked),
+            "liked picked {liked}/40000"
+        );
     }
 
     /// Six works: two Brahms symphonies and four from other eras.

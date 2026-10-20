@@ -674,20 +674,21 @@ impl Policy {
                 };
             }
             if let Some(allow) = &rules.allow {
-                return if allow
+                let named: Vec<&str> = allow
                     .iter()
                     .chain(&rules.grant)
-                    .any(|entry| names(entry, tool))
-                {
+                    .map(String::as_str)
+                    .collect();
+                return if named.iter().any(|entry| names(entry, tool)) {
                     Decision::Allow
                 } else {
                     Decision::Deny {
                         reason: format!(
                             "{client} may only use: {}",
-                            if allow.is_empty() {
+                            if named.is_empty() {
                                 "no tools".to_owned()
                             } else {
-                                allow.join(", ")
+                                named.join(", ")
                             }
                         ),
                     }
@@ -1320,9 +1321,10 @@ allow = []
                 "{tool}"
             );
         }
+        // The refusal names what the grant adds, too.
         assert!(matches!(
             panel.authorize(call("set_volume", false), &tag_panel),
-            Decision::Deny { .. }
+            Decision::Deny { reason } if reason.ends_with("may only use: read, playback, auth")
         ));
     }
 

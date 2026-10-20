@@ -424,7 +424,7 @@ like this (fsonos refuses unknown body fields, so rename them):
 | `GET /health` | `GET /health` | | `{status, version}` instead of `{ok, devices}`; `GET /players` lists the players |
 | `GET /zones` | `GET /zones` | `list_zones` | an array of zones (coordinator, members, room names) |
 | `GET /status?zone=R` | `GET /zones/R/state` | `get_zone_state` | `transport_state` is lowercase (`playing`, `paused`, `stopped`); `mute` not `muted`; the track sits under `track` (`title`, `creator` for artist, `album`, `position_secs`, `duration_secs` in seconds, not `H:MM:SS`) |
-| `GET /mediainfo?zone=R` | `GET /zones/R/state` | `get_zone_state` | `track.uri` is the current URI; the raw DIDL metadata is not exposed |
+| `GET /mediainfo?zone=R` | `GET /zones/R/state` | `get_zone_state` | `track.uri` is the playing track's URI, where the bridge gave the transport's (`x-rincon-queue:…` while the queue plays); the raw DIDL metadata is not exposed |
 | `GET /favorites?zone=R` | `GET /favorites?zone=R` | `list_favorites` | an array of `{id, title, kind, ...}`; play one by title with `POST /play/favorite {zone, favorite}` (`play_favorite`), no URI or metadata to round-trip |
 | `POST /play {zone, uri, title}` | `POST /play {zone, source_uri, title}` | `play` | `uri` becomes `source_uri`: a `spotify:<kind>:<id>` URI, an `open.spotify.com` link or a renderer URI (a stream, say) |
 | `POST /pause`, `/resume`, `/next`, `/previous` `{zone}` | the same routes, `{zone}` | `pause`, `resume`, `next`, `previous` | answers `{done, changed, notes}` instead of `{ok, zone}` |

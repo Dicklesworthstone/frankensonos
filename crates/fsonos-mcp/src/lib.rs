@@ -4,7 +4,7 @@
 //! — anything speaking MCP) as well-described tools for reading the house,
 //! playback, volume, grouping, the DJ, scenes, schedules and announcements
 //! (the README's "For agents" lists them). Served over stdio and streamable HTTP via
-//! `fastmcp_rust`. [`server`] builds the server; [`tools`] holds the tools and
+//! `fastmcp_rust`. [`server_with`] builds the server; [`tools`] holds the tools and
 //! the [`tools::Backend`] of speakers they act on, installed once per process
 //! with [`tools::install`]; [`resources`] serves the zones as documents. The tools take the HTTP API's request bodies
 //! (`fsonos_api::request`) and share its validation, planning, execution and
