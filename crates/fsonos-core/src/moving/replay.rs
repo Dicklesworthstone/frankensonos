@@ -12,11 +12,12 @@ use fsonos_proto::didl::{
     spotify_track_uri, spotify_uri_from_renderer_uri, xml_escape,
 };
 use fsonos_proto::{ProtoError, Transport};
-use fsonos_types::{PlayerId, TransportState};
+use fsonos_types::{PlayMode, PlayerId, TransportState};
 use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::time::Instant;
 
+mod mode;
 mod verify;
 
 struct Item {
@@ -40,6 +41,8 @@ enum Source {
 pub(super) struct Prepared {
     source: Source,
     transport: TransportState,
+    /// Unknown and direct-source settings are not replaced with NORMAL.
+    play_mode: Option<PlayMode>,
 }
 
 impl Prepared {
@@ -96,6 +99,7 @@ impl Prepared {
                     return Ok(Self {
                         source: Source::Nothing,
                         transport: snap.transport_state,
+                        play_mode: None,
                     });
                 }
                 if track
@@ -115,9 +119,15 @@ impl Prepared {
                 }
             }
         };
+        let play_mode = if matches!(source, Source::Queue { .. }) {
+            snap.play_mode
+        } else {
+            None
+        };
         let mut prepared = Self {
             source,
             transport: snap.transport_state,
+            play_mode,
         };
         prepared.confirm_source(t, households, snap)?;
         Ok(prepared)
@@ -135,6 +145,13 @@ impl Prepared {
                 SnapshotSource::Queue { update_id, .. } => Some(update_id),
                 _ => None,
             };
+            if let Some(expected) = self.play_mode
+                && fsonos_proto::play_mode::get_play_mode(t, host)? != expected
+            {
+                return Err(MoveError::SourceChanged(
+                    "the source queue's play mode changed during preparation".into(),
+                ));
+            }
             let position = verify::source(t, host, &snap.coordinator, &self.source, revision)
                 .map_err(|e| match e {
                     MoveError::Core(crate::CoreError::Proto(ProtoError::Malformed(msg))) => {
@@ -179,6 +196,11 @@ impl Prepared {
         if self.is_empty() {
             return Ok(());
         }
+        // Prove the destination can report the setting before stopping it or
+        // clearing its queue. Unsupported reads must not leave half a move.
+        if self.play_mode.is_some() {
+            fsonos_proto::play_mode::get_play_mode(t, host)?;
+        }
         // A paused source must never start an audible Play/Pause round trip.
         // Stop before loading, then leave it ready to resume at its position.
         soap::stop(t, host)?;
@@ -210,6 +232,9 @@ impl Prepared {
                 (*track, *position)
             }
         };
+        if let (Some(mode), Some(revision)) = (self.play_mode, revision) {
+            mode::apply(t, host, target, revision, mode)?;
+        }
         if track > 0 {
             soap::seek_track(t, host, track)?;
         }
@@ -224,6 +249,9 @@ impl Prepared {
             TransportState::Stopped
         };
         verify::transport(t, host, state)?;
+        if let (Some(mode), Some(revision)) = (self.play_mode, revision) {
+            mode::confirm(t, host, target, revision, mode)?;
+        }
         verify::playback(t, host, target, self, revision, started.elapsed())
     }
 }
