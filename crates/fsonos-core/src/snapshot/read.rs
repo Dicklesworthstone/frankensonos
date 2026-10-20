@@ -12,6 +12,8 @@ use fsonos_types::{PlayMode, PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+mod group;
+
 const ATTEMPTS: usize = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -154,9 +156,10 @@ impl Playback {
             && self.position.track == after.position.track
             && same_track(&self.position.uri, &after.position.uri)
             && self.position.duration_secs == after.position.duration_secs
+            // Browse is authoritative for queue length. GetMediaInfo can omit
+            // NrTracks (the protocol reader represents it as zero).
             && self.queue.is_none_or(|q| {
-                q.tracks == after.media.tracks
-                    && after.position.track <= q.tracks
+                after.position.track <= q.tracks
                     && (after.state != TransportState::Playing || after.position.track > 0)
             })
             && progresses(
@@ -219,8 +222,10 @@ pub(super) fn capture<T: Transport + ?Sized>(
         .iter()
         .find(|h| h.player(coordinator).is_some())
         .ok_or_else(|| CoreError::UnknownPlayer(coordinator.0.clone()))?;
-    let host = ip(household, coordinator)?;
     for _ in 0..ATTEMPTS {
+        let (fresh, group) = group::Group::begin(t, household, coordinator)?;
+        let household = &fresh;
+        let host = ip(household, coordinator)?;
         let started = Instant::now();
         let before = Playback::begin(t, host, coordinator)?;
         let members = member_rooms(household, coordinator);
@@ -236,8 +241,9 @@ pub(super) fn capture<T: Transport + ?Sized>(
             })
             .collect::<Result<Vec<_>, CoreError>>()?;
         let group_volume = soap::get_group_volume(t, host).ok();
+        let group_unchanged = group.unchanged(t, host)?;
         let (after, selection_matches) = before.finish(t, host)?;
-        if selection_matches && before.agrees(&after, started.elapsed()) {
+        if group_unchanged && selection_matches && before.agrees(&after, started.elapsed()) {
             return Ok(ZoneSnapshot {
                 household: household.id.clone(),
                 coordinator: coordinator.clone(),
