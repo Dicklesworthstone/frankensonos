@@ -4,7 +4,10 @@
 //! joins the source's group (the move waits, up to [`JOIN_DEADLINE`], for the
 //! topology to show it), then the source leaves. When the source leads
 //! the group, coordination is first handed to the target with AVTransport
-//! `DelegateGroupCoordinationTo` (playback moves with it). A player that does
+//! `DelegateGroupCoordinationTo` (playback moves with it). Lost replies are
+//! reconciled against the exact transferred membership and loaded source,
+//! never by repeating the handoff or clearing a possibly transferred queue.
+//! A player that does
 //! not offer that action (UPnP 401) gets the fallback: the source's playback
 //! is replayed on the target (its queue copied, Spotify items re-rendered
 //! for the target's household) at the same track and position, and the
@@ -21,13 +24,13 @@ use crate::snapshot;
 use crate::store::{Store, StoreError};
 use crate::{CoreError, HouseholdState, control, grouping, resolve_room};
 use fsonos_proto::control as soap;
-use fsonos_proto::soap::{AV_TRANSPORT, args_xml, call};
 use fsonos_proto::topology::{ZoneGroupState, get_zone_group_state};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+mod delegation;
 mod replay;
 mod session;
 
@@ -175,21 +178,14 @@ pub fn move_playback_within<T: Transport + ?Sized>(
             }
             MoveStep::Delegate => {
                 let host = ip(households, &coordinator)?;
-                let args = args_xml(&[
-                    ("InstanceID", "0"),
-                    ("NewCoordinator", &to.player.id.0),
-                    ("RejoinGroup", "0"),
-                ]);
-                let handed =
-                    match call(t, host, &AV_TRANSPORT, "DelegateGroupCoordinationTo", &args) {
-                        // Grouping verbs can answer success and do nothing
-                        // (docs/PROTOCOL.md §6): the topology must show it.
-                        Ok(_) => leads_within(t, host, &to.player.id, join_deadline)?,
-                        // Refused (401 where the player lacks it, or any other
-                        // fault): the target is in the group, so copy instead.
-                        Err(ProtoError::SoapFault { .. }) => false,
-                        Err(e) => return Err(e.into()),
-                    };
+                let handed = delegation::handoff(
+                    t,
+                    host,
+                    ip(households, &to.player.id)?,
+                    &coordinator,
+                    &to.player.id,
+                    join_deadline,
+                )?;
                 if handed {
                     report.method = MoveMethod::Delegated;
                     report.new_coordinator = to.player.id.clone();
@@ -219,19 +215,6 @@ fn joined_within<T: Transport + ?Sized>(
         zgs.groups
             .iter()
             .any(|g| g.coordinator == *coordinator && g.members.iter().any(|m| m.uuid == *member))
-    })
-}
-
-/// Whether `leader` leads a group, checking the topology until it does or
-/// `deadline` has passed.
-fn leads_within<T: Transport + ?Sized>(
-    t: &T,
-    host: IpAddr,
-    leader: &PlayerId,
-    deadline: Duration,
-) -> Result<bool, ProtoError> {
-    topology_within(t, host, deadline, |zgs| {
-        zgs.groups.iter().any(|g| g.coordinator == *leader)
     })
 }
 
