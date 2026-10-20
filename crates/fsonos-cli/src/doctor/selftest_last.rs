@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const LAST: CheckId = CheckId("selftest.last");
 
 /// The kept run, in the data directory.
-pub const FILE: &str = "selftest-last.json";
+pub const FILE: &str = fsonos_core::selftest::LAST_FILE;
 
 /// Each kept run is also copied, as `<at>.json`, into this directory in the
 /// data directory, which holds the newest [`KEEP`].
@@ -328,6 +328,22 @@ mod tests {
         assert_eq!(kept.len(), KEEP);
         assert_eq!(kept[0], format!("{}.json", 3 * 86_400));
         assert_eq!(kept[KEEP - 1], format!("{}.json", 16 * 86_400));
+    }
+
+    /// What doctor reads, `GET /health` reads too.
+    #[test]
+    fn the_core_reads_the_kept_run_back() {
+        let dir = scratch("core");
+        assert_eq!(fsonos_core::selftest::last_run(&dir), None);
+        let warned = report(vec![(
+            "selftest.reads",
+            CheckResult::warn("slow", "check the Wi-Fi"),
+        )]);
+        save(&dir, &warned, 42).unwrap();
+        assert_eq!(fsonos_core::selftest::last_run(&dir), Some((42, false)));
+        let passed = report(vec![("selftest.reads", CheckResult::pass("ok"))]);
+        save(&dir, &passed, 43).unwrap();
+        assert_eq!(fsonos_core::selftest::last_run(&dir), Some((43, true)));
     }
 
     #[test]

@@ -315,10 +315,13 @@ fn reads(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             "/health",
             "health",
             DAEMON,
-            "Whether the daemon is up, and its version",
+            "Whether the daemon is up, its version, and how its last self-test went",
         )
         .inline()
-        .entry(cx.web, Box::new(|_| health()))
+        .entry(cx.web, {
+            let surface = Arc::clone(cx.surface);
+            Box::new(move |_| health(surface.data_dir()))
+        })
         .response_schema::<HealthDto>(200, "The daemon answers"),
         cx.route(
             &Op::get(
@@ -742,10 +745,13 @@ fn error_answers(mut entry: RouteEntry, write: bool) -> RouteEntry {
     entry
 }
 
-fn health() -> Response {
+fn health(data_dir: Option<&std::path::Path>) -> Response {
     let body = HealthDto {
         status: "ok".into(),
         version: env!("CARGO_PKG_VERSION").into(),
+        selftest: data_dir
+            .and_then(fsonos_core::selftest::last_run)
+            .map(|(at, passed)| crate::SelftestHealth { at, passed }),
     };
     Response::json(&body).expect("HealthDto serializes")
 }

@@ -43,6 +43,21 @@ use std::time::{Duration, Instant};
 mod events;
 pub use events::EVENTS;
 
+/// The file in the data directory that keeps the last full run (`fsonos
+/// selftest` writes it, `fsonos doctor` and `GET /health` read it).
+pub const LAST_FILE: &str = "selftest-last.json";
+
+/// The last full run kept in `data_dir`: when it ended (Unix seconds) and
+/// whether it passed (exit code 0). `None` without a readable one.
+#[must_use]
+pub fn last_run(data_dir: &std::path::Path) -> Option<(u64, bool)> {
+    let text = std::fs::read_to_string(data_dir.join(LAST_FILE)).ok()?;
+    let kept: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let at = kept["at"].as_u64()?;
+    let code = kept["report"]["exit_code"].as_u64()?;
+    Some((at, code == 0))
+}
+
 pub const HOUSE: CheckId = CheckId("selftest.house");
 pub const READS: CheckId = CheckId("selftest.reads");
 pub const BROWSE: CheckId = CheckId("selftest.browse");

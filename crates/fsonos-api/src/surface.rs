@@ -30,7 +30,7 @@ use fsonos_proto::Transport;
 use fsonos_types::{PlayerId, TransportState};
 use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -280,6 +280,13 @@ impl Surface {
     pub fn with_aliases_file(mut self, path: PathBuf) -> Self {
         self.aliases_file = Some(path);
         self
+    }
+
+    /// The data directory this surface follows `policy.toml` in
+    /// ([`Self::with_policy_file`]): the daemon's.
+    #[must_use]
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.policy_file.as_ref().map(|file| file.dir.as_path())
     }
 
     /// Follow `policy.toml` in `data_dir`: each call reads the policy anew

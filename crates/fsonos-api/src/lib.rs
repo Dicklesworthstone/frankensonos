@@ -75,6 +75,19 @@ use serde::{Deserialize, Serialize};
 pub struct HealthDto {
     pub status: String,
     pub version: String,
+    /// The last full `fsonos selftest` run kept in the daemon's data
+    /// directory (the daily one, when scheduled), without its details.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selftest: Option<SelftestHealth>,
+}
+
+/// The last self-test, in `GET /health`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SelftestHealth {
+    /// When it ended, in Unix seconds.
+    pub at: u64,
+    /// Every check passed (`fsonos doctor` names any that did not).
+    pub passed: bool,
 }
 
 /// The API's error body (FastAPI-style `detail`, plus the stable code). See

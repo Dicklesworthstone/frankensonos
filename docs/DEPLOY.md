@@ -229,7 +229,8 @@ selftest` at that local time each day (launchd: at the next wake when the
 Mac slept through it), logging to `selftest.log` beside `fsonos.log`. Each
 report is kept in the data directory (the newest 14 under `selftest/`), and
 `fsonos doctor` warns (`selftest.last`) when the newest is a failure, or is
-over two days old while the daily run is scheduled. Pick a time the Mac is usually awake: a run
+over two days old while the daily run is scheduled; `GET /health` carries
+the newest's time and verdict. Pick a time the Mac is usually awake: a run
 launchd makes up at wake can start before the Wi-Fi is back.
 
 On Linux the same commands write and manage a systemd user unit,
