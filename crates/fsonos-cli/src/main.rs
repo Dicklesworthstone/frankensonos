@@ -55,6 +55,7 @@ mod rooms_cmd;
 mod scene_cmd;
 mod schedule_cmd;
 mod selftest_cmd;
+mod service_cmd;
 mod setup_cmd;
 mod setup_spotify;
 #[cfg(feature = "sim")]
@@ -366,6 +367,9 @@ enum Command {
     /// Front the daemon with Tailscale Serve (HTTPS on the tailnet, never
     /// Funnel): `setup`, `status`, `teardown`.
     Tailscale(tailscale_cmd::TailscaleArgs),
+    /// Run `fsonos serve` as a service of your user (a LaunchAgent on macOS,
+    /// a systemd user unit on Linux): `install`, `status`, `uninstall`.
+    Service(service_cmd::ServiceArgs),
     /// Run a virtual Sonos house on loopback to try FrankenSonos without
     /// speakers.
     #[cfg(feature = "sim")]
@@ -512,6 +516,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Schedule { action } => schedule_cmd::schedule(global, &action),
         Command::Mcp { profile } => run_mcp_stdio(global, profile.into()),
         Command::Tailscale(args) => tailscale_cmd::run(global, &args),
+        Command::Service(args) => service_cmd::run(global, &args),
         Command::Scene(args) => scene_cmd::run(global, &args),
         #[cfg(feature = "sim")]
         Command::Sim(args) => sim::run(&args, global.json),
@@ -1015,6 +1020,7 @@ fn plan_for<'a>(
         | Command::Sleep(_)
         | Command::Schedule { .. }
         | Command::Tailscale(_)
+        | Command::Service(_)
         | Command::Rooms { .. }
         | Command::Scene(_)
         | Command::Setup(_)

@@ -447,6 +447,10 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
 /// How long a stopping daemon waits for announcements in flight to put the
 /// music back (a clip plays for at most five minutes; most take seconds).
 const ANNOUNCE_DRAIN: Duration = Duration::from_secs(60);
+/// Seconds a service manager should give a stopping daemon before killing
+/// it: the drain, then time to cancel its event subscriptions (launchd's
+/// `ExitTimeOut`, systemd's `TimeoutStopSec`; see `fsonos service`).
+pub const STOP_SECS: u64 = ANNOUNCE_DRAIN.as_secs() + 30;
 
 /// Wait until no announcement is pending (`pending` says how many), at most
 /// `wait`. Answers whether they all finished.

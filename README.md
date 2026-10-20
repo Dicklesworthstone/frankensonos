@@ -112,6 +112,7 @@ fsonos stream Kitchen --input alsa_output.example.monitor  # Linux desktop audio
 fsonos undo                                       # put the newest action back
 fsonos serve                                      # the daemon: HTTP API on loopback + tailnet, MCP on loopback
 fsonos tailscale setup                            # HTTPS for the tailnet via Tailscale Serve (never Funnel)
+fsonos service install --tailscale-serve --load   # serve as a login service that survives restarts
 fsonos doctor                                     # what is wrong, and how to fix it
 fsonos selftest                                   # live checks on your players; nothing you can hear changes
 ```

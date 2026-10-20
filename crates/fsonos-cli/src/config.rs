@@ -240,17 +240,13 @@ pub struct ServeArgs {
     pub spotify_client_id: Option<String>,
 
     /// Spotify OAuth redirect URI; must be registered with the Spotify app.
-    #[arg(
-        long,
-        env = "FSONOS_SPOTIFY_REDIRECT_URI",
-        default_value = "http://127.0.0.1:8099/auth/spotify/callback"
-    )]
+    #[arg(long, env = "FSONOS_SPOTIFY_REDIRECT_URI", default_value = SPOTIFY_REDIRECT_URI)]
     pub spotify_redirect_uri: String,
 
     /// Port the players deliver their state-change events (GENA) to, on the
     /// address facing them. Fixed so a firewall rule can name it; 0 picks
     /// any free port.
-    #[arg(long, env = "FSONOS_EVENTS_PORT", default_value_t = 8097)]
+    #[arg(long, env = "FSONOS_EVENTS_PORT", default_value_t = EVENTS_PORT)]
     pub events_port: u16,
 
     /// Allow binding the API or MCP server to a wildcard or public address.
@@ -271,6 +267,10 @@ pub enum TailscaleMode {
 
 /// The HTTP API's port when no address is configured.
 pub const HTTP_PORT: u16 = 8099;
+/// `serve`'s Spotify redirect URI when none is configured.
+pub const SPOTIFY_REDIRECT_URI: &str = "http://127.0.0.1:8099/auth/spotify/callback";
+/// The port the players deliver events to when none is configured.
+pub const EVENTS_PORT: u16 = 8097;
 /// The MCP server's port when no address is configured.
 pub const MCP_PORT: u16 = 8098;
 

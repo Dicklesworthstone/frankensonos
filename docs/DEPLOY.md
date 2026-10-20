@@ -205,7 +205,23 @@ speaker's own timer was cancelled meanwhile (from the Sonos app, say).
 ### Alternative: a LaunchAgent
 
 Use a LaunchAgent if you want the daemon to run only while you are logged in.
-Delete the `UserName` key from the filled-in plist, put it in
+`fsonos service install` writes one for you, with this binary's absolute
+path, your data directory, the log, and the flags and environment you give
+it (the same as `serve`'s), and `--load` starts it unless a daemon already
+serves the data directory:
+
+```bash
+fsonos service install --tailscale-serve --dry-run   # print it; change nothing
+fsonos service install --tailscale-serve --load      # write it and start it
+fsonos service status                                # installed, running, pid, answering
+fsonos service uninstall                             # stop it and remove only its file
+```
+
+On Linux the same commands write and manage a systemd user unit,
+`~/.config/systemd/user/fsonos.service` (`loginctl enable-linger` keeps it
+running when you are logged out).
+
+By hand instead: delete the `UserName` key from the filled-in plist, put it in
 `~/Library/LaunchAgents/`, and manage it in the `gui/$(id -u)` domain:
 
 ```bash
