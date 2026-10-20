@@ -3,6 +3,8 @@
 
 const QueueRemote = (() => {
   const PAGE_SIZE = 25;
+  // Match the existing native move/remove request limit, never split a write.
+  const MAX_SELECTION = 100;
   const MAX_INDEX = 4294967295;
   const nonblank = (value) => typeof value === 'string' && value.trim() !== '';
   const identity = (value) => nonblank(value) && value !== 'NOT_IMPLEMENTED';
@@ -11,9 +13,9 @@ const QueueRemote = (() => {
   const positionOf = (value) => typeof value === 'string' && /^[0-9]{1,10}$/.test(value)
     && index(Number(value)) && Number(value) > 0 ? Number(value) : null;
 
-  function pageOf(value, offset) {
+  function pageOf(value, offset, limit = PAGE_SIZE) {
     if (!value || !index(value.total) || !Array.isArray(value.items)
-        || value.items.length > PAGE_SIZE
+        || value.items.length > limit
         || value.items.length > Math.max(0, value.total - offset)
         || (!value.items.length && value.total > offset)) {
       throw new Error('The queue response is incomplete. Refresh to read it again.');
@@ -41,15 +43,22 @@ const QueueRemote = (() => {
     let disposed = false;
     let visible = false, active = true, reconciliation = null;
     const reads = new Set();
+    const selectedItems = new Map();
+    let selectionRevision = null, selectionTotal = null;
     const state = { offset: 0, page: null, loading: false, writing: false, message: '',
       stale: true, updating: false, uncertain: false,
-      selected: new Set(), pending: null, source: '', destination: '' };
-    const clearSelection = () => { state.selected.clear(); state.pending = null; state.destination = ''; };
+      selected: new Set(), pending: null, source: '', destination: '',
+      selecting: false, rangeStart: '', rangeEnd: '' };
+    const clearSelection = () => {
+      state.selected.clear(); selectedItems.clear();
+      selectionRevision = selectionTotal = null;
+      state.pending = null; state.destination = '';
+    };
     const publish = () => {
       if (!disposed && current()) { try { changed(state); } catch (_) { /* View only. */ } }
     };
     const ready = () => !disposed && current() && visible && active && !blocked()
-      && !state.stale && !state.uncertain && !state.loading && !state.writing && state.page;
+      && !state.stale && !state.uncertain && !state.loading && !state.writing && !state.selecting && state.page;
 
     // Live reads share the household's coalesced refresh, not a second stream
     // or per-card polling loop. A snapshot is never edited while it is stale.
@@ -118,7 +127,7 @@ const QueueRemote = (() => {
     }
 
     async function load(offset = state.offset, keepMessage = false) {
-      if (disposed || !current() || !active) return false;
+      if (disposed || !current() || !active || state.selecting) return false;
       if (!index(offset) || offset > MAX_INDEX - PAGE_SIZE) return false;
       visible = true;
       if (!available()) return false;
@@ -127,7 +136,7 @@ const QueueRemote = (() => {
 
     function reconcile() {
       if (reconciliation) return reconciliation;
-      if (!available() || state.uncertain || !state.stale) return Promise.resolve(false);
+      if (!available() || state.selecting || state.uncertain || !state.stale) return Promise.resolve(false);
       // Wait for manual reads too. Live notifications can supersede a sample,
       // but must not multiply concurrent queue requests while it is pending.
       const running = (async () => {
@@ -135,7 +144,7 @@ const QueueRemote = (() => {
           await Promise.allSettled([...reads]);
           if (!available()) return false;
         }
-        if (!available() || state.uncertain || !state.stale) return false;
+        if (!available() || state.selecting || state.uncertain || !state.stale) return false;
         return readPage(state.offset, true, false);
       })();
       reconciliation = running;
@@ -215,8 +224,17 @@ const QueueRemote = (() => {
       const item = page && page.items.find((each) => each.position === position);
       if (!item || !identity(item.uri) || !page.revision) return false;
       state.pending = null;
-      if (checked) state.selected.add(position);
-      else state.selected.delete(position);
+      if (checked && !state.selected.has(position) && state.selected.size >= MAX_SELECTION) {
+        state.message = `Select at most ${MAX_SELECTION} entries for one native edit.`;
+        publish(); return false;
+      }
+      selectionRevision = page.revision; selectionTotal = page.total;
+      if (checked) {
+        state.selected.add(position);
+        selectedItems.set(position, Object.freeze({ ...item }));
+      } else {
+        state.selected.delete(position); selectedItems.delete(position);
+      }
       state.message = '';
       publish();
       return true;
@@ -224,11 +242,79 @@ const QueueRemote = (() => {
 
     function removable() {
       const page = ready();
-      if (!page || !page.revision || !state.selected.size) return null;
-      const items = page.items.filter((item) => state.selected.has(item.position));
-      if (items.length !== state.selected.size || items.some((item, i) =>
-        !identity(item.uri) || item.position !== items[0].position + i)) return null;
+      if (!page || !page.revision || !state.selected.size || state.selected.size > MAX_SELECTION
+          || selectionRevision !== page.revision || selectionTotal !== page.total) return null;
+      const items = [...state.selected].sort((a, b) => a - b).map(at => selectedItems.get(at));
+      if (items.some((item, i) => !item || !identity(item.uri)
+          || item.position !== items[0].position + i)) return null;
       return items;
+    }
+
+    function clearSelected() {
+      if (disposed || !current() || state.writing || state.selecting) return false;
+      clearSelection(); publish(); return true;
+    }
+
+    function editRange(first, last) {
+      if (!ready() || typeof first !== 'string' || typeof last !== 'string') return false;
+      clearSelection();
+      state.rangeStart = first; state.rangeEnd = last;
+      state.message = 'Range changed; read and select it before reviewing an edit.';
+      publish(); return true;
+    }
+
+    async function selectRange(first, last) {
+      const page = ready();
+      if (!page || !page.revision || state.pending || reads.size) return false;
+      clearSelection();
+      const count = last - first + 1;
+      if (!index(first) || first < 1 || !index(last) || last < first || last > page.total
+          || count > MAX_SELECTION) {
+        state.message = `Choose consecutive positions within this queue, at most ${MAX_SELECTION} entries. No command was sent.`;
+        publish(); return false;
+      }
+      const version = ++epoch;
+      const valid = () => available() && version === epoch && !state.stale && state.page === page;
+      // Retain this slot through stale/close/suspend until the read settles.
+      // A late range can neither select another queue nor start another read.
+      state.selecting = true;
+      state.rangeStart = String(first); state.rangeEnd = String(last);
+      state.message = `Reading positions ${first}–${last} from the observed queue…`;
+      publish();
+      let flight;
+      try {
+        if (!valid()) return false;
+        flight = (async () => call('queue', {
+          params: { room: zone }, query: { offset: first - 1, limit: count },
+        }))();
+        reads.add(flight);
+        const response = await flight;
+        if (!valid()) return false;
+        const range = pageOf(response, first - 1, count);
+        if (range.revision !== page.revision || range.total !== page.total
+            || range.items.length !== count || range.items.some(item => !identity(item.uri))
+            || page.items.some(item => item.position >= first && item.position <= last
+              && item.uri !== range.items[item.position - first].uri)) {
+          throw new Error('The queue changed or the range is incomplete. Refresh and select it again.');
+        }
+        selectionRevision = range.revision; selectionTotal = range.total;
+        for (const item of range.items) {
+          state.selected.add(item.position);
+          selectedItems.set(item.position, Object.freeze({ ...item }));
+        }
+        state.message = `${count} entries selected at positions ${first}–${last}. Review before moving or removing them; nothing was changed.`;
+        return true;
+      } catch (error) {
+        if (valid()) {
+          clearSelection(); state.stale = true;
+          state.message = `${error.message}${error.hint ? ` ${error.hint}` : ''} No queue command was sent.`;
+        }
+        return false;
+      } finally {
+        if (flight) reads.delete(flight);
+        state.selecting = false;
+        publish();
+      }
     }
 
     function reviewRemoval() {
@@ -329,7 +415,7 @@ const QueueRemote = (() => {
       publish();
     }
 
-    return { state, load, play, add, select, removable, reviewRemoval, cancelRemoval, remove,
+    return { state, load, play, add, select, selectRange, editRange, clearSelected, removable, reviewRemoval, cancelRemoval, remove,
       reviewMove, move, block, stale, reconcile, close,
       suspend() { active = false; stale('Queue updates paused while this page is hidden.'); },
       resume() { if (!disposed) { active = true; stale(); } },
@@ -361,8 +447,8 @@ const QueueRemote = (() => {
 
     function draw(state) {
       body.replaceChildren();
-      body.setAttribute('aria-busy', String(state.loading || state.updating || state.writing || blocked()));
-      const busy = state.loading || state.writing || blocked();
+      body.setAttribute('aria-busy', String(state.loading || state.updating || state.writing || state.selecting || blocked()));
+      const busy = state.loading || state.writing || state.selecting || blocked();
       const deciding = Boolean(state.pending);
       const untrusted = state.stale || state.uncertain || state.updating;
       body.append(el('div', { class: 'row' }, button('Refresh queue', () => control.load(), busy)));
@@ -392,6 +478,28 @@ const QueueRemote = (() => {
       const last = page.items[page.items.length - 1];
       const range = first ? `${first.position}–${last.position} of ${page.total}` : `No entries at this position (${page.total} total)`;
       body.append(el('p', { text: `${range}. ${page.playing ? `Queue position ${page.playing} is current.` : 'Not playing from this queue.'}` }));
+      if (page.revision) {
+        const disabled = busy || untrusted;
+        const firstInput = el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: 10,
+          class: 'queue-position', value: state.rangeStart, disabled,
+          'aria-label': 'First range position', 'data-focus': 'range-first' });
+        const lastInput = el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: 10,
+          class: 'queue-position', value: state.rangeEnd, disabled,
+          'aria-label': 'Last range position', 'data-focus': 'range-last' });
+        const edit = () => { if (ownsPage()) control.editRange(firstInput.value, lastInput.value); };
+        firstInput.addEventListener('input', edit); lastInput.addEventListener('input', edit);
+        const from = positionOf(state.rangeStart), to = positionOf(state.rangeEnd);
+        body.append(el('div', { class: 'queue-range', role: 'group', 'aria-label': 'Select across queue pages' },
+          el('p', { text: `Select up to ${MAX_SELECTION} consecutive entries, including across pages. Choose the boundaries yourself; titles do not establish a whole work.` }),
+          el('div', { class: 'row' }, el('label', {}, 'First ', firstInput), el('label', {}, 'Last ', lastInput),
+            button('Read and select range', () => { if (ownsPage()) return control.selectRange(from, to); },
+              !editable || from === null || to === null || from > to || to > page.total || to - from + 1 > MAX_SELECTION))));
+      }
+      if (state.selected.size) {
+        const elsewhere = [...state.selected].filter(at => !page.items.some(item => item.position === at)).length;
+        body.append(el('p', { text: `${state.selected.size} selected; ${elsewhere} outside this page. The confirmation lists every selected title.` }),
+          button('Clear selection', () => control.clearSelected(), busy));
+      }
       const list = el('ol', { class: 'queue-items', start: state.offset + 1 });
       for (const item of page.items) {
         const title = item.title || 'Untitled track';
@@ -432,7 +540,7 @@ const QueueRemote = (() => {
                 !editable || !control.removable() || page.total === MAX_INDEX)));
         }
         if (state.selected.size && !control.removable()) {
-          body.append(el('p', { text: 'Select consecutive entries on this page to move or remove them together.' }));
+          body.append(el('p', { text: 'Select consecutive entries to move or remove them together. A stale queue needs a fresh read.' }));
         }
       }
       if (state.pending) {
@@ -481,5 +589,5 @@ const QueueRemote = (() => {
     };
   }
 
-  return { model, panel, PAGE_SIZE };
+  return { model, panel, PAGE_SIZE, MAX_SELECTION };
 })();
