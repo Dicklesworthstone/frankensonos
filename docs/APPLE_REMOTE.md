@@ -38,7 +38,8 @@ xcodebuild -project apps/apple/FrankenSonosRemote.xcodeproj \
   -scheme FrankenSonos-iOS -configuration Debug \
   -destination 'generic/platform=iOS Simulator' \
   -derivedDataPath apps/apple/.build/ios \
-  CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build
+  CODE_SIGNING_ALLOWED=NO SWIFT_SUPPRESS_WARNINGS=NO \
+  SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build
 ```
 
 The resulting app is
@@ -201,7 +202,8 @@ swift build --package-path apps/apple --product FrankenSonosRemote -Xswiftc -war
 xcodebuild -project apps/apple/FrankenSonosRemote.xcodeproj \
   -scheme FrankenSonos-iOS -configuration Debug \
   -destination 'generic/platform=iOS Simulator' \
-  CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build
+  CODE_SIGNING_ALLOWED=NO SWIFT_SUPPRESS_WARNINGS=NO \
+  SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build
 ```
 
 Nineteen command-session tests and thirteen screen-controller tests execute the

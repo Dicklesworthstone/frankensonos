@@ -54,7 +54,8 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "$RUNNER_TEMP/fsonos-ios" \
             -resultBundlePath "$RUNNER_TEMP/fsonos-ios.xcresult" \
-            CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build
+            CODE_SIGNING_ALLOWED=NO SWIFT_SUPPRESS_WARNINGS=NO \
+            SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build
       - name: Launch the connection screen on an iPhone simulator
         run: |
           xcrun simctl list devices available --json > "$RUNNER_TEMP/fsonos-simulators.json"
