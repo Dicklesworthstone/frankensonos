@@ -21,6 +21,10 @@
 //!   automatically: a difference means a player misbehaved or someone used
 //!   the house meanwhile, and only the owner can tell which.
 //!
+//! [`audible`] is the audible tier (`fsonos selftest --audible`): steps
+//! that make sound in rooms the owner names, with the owner listening, every
+//! room put back at the end.
+//!
 //! The report is scrubbed so the owner can share it: households are `H1`,
 //! `H2` and rooms `R1..Rn`; no address, serial, household id, uuid or room name
 //! appears in a summary or the evidence.
@@ -40,6 +44,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+pub mod audible;
 mod events;
 pub use events::EVENTS;
 
@@ -134,6 +139,34 @@ impl Labeled {
     #[must_use]
     pub fn room(&self, player: &PlayerId) -> &str {
         self.rooms.get(player).map_or("R?", String::as_str)
+    }
+
+    /// `text` with every address replaced by `<ip>`, and every player id and
+    /// room name of the house by its room's label: what a step's own error
+    /// text names stays out of the shareable report.
+    #[must_use]
+    pub fn scrub(&self, text: &str) -> String {
+        let mut names: Vec<(&str, &str)> = Vec::new();
+        for house in &self.houses {
+            for room in &house.rooms {
+                let label = self.room(&room.primary);
+                names.push((room.name.as_str(), label));
+                names.extend(room.players.iter().map(|p| (p.0.as_str(), label)));
+            }
+            names.extend(
+                house
+                    .players
+                    .iter()
+                    .map(|p| (p.id.0.as_str(), self.room(&p.id))),
+            );
+        }
+        // The longest first, so a name inside another is not cut in two.
+        names.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+        let mut out = scrub_ip(text);
+        for (name, label) in names.into_iter().filter(|(name, _)| !name.is_empty()) {
+            out = out.replace(name, label);
+        }
+        out
     }
 
     /// Household `i`'s label.
@@ -679,6 +712,32 @@ mod tests {
         );
         assert_eq!(scrub_ip("198.51.100.7."), "<ip>.");
         assert_eq!(scrub_ip("no address here 1.2.3"), "no address here 1.2.3");
+    }
+
+    #[test]
+    fn a_labeled_house_scrubs_its_names_and_ids() {
+        let houses = vec![HouseholdState {
+            players: vec![fsonos_types::Player {
+                id: PlayerId("RINCON_A1400".into()),
+                room_name: "Den".into(),
+                ip: "192.0.2.10".parse().unwrap(),
+                model: "Play:5".into(),
+                generation: fsonos_types::Generation::S1,
+            }],
+            rooms: vec![crate::Room {
+                name: "Den".into(),
+                primary: PlayerId("RINCON_A1400".into()),
+                players: vec![PlayerId("RINCON_A1400".into())],
+                missing: Vec::new(),
+                coordinator: PlayerId("RINCON_A1400".into()),
+            }],
+            ..HouseholdState::default()
+        }];
+        let labeled = Labeled::new(houses);
+        assert_eq!(
+            labeled.scrub("Den did not join: RINCON_A1400 at 192.0.2.10 refused"),
+            "R1 did not join: R1 at <ip> refused"
+        );
     }
 
     #[test]

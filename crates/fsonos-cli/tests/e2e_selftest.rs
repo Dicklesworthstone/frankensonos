@@ -9,8 +9,45 @@ mod e2e;
 
 use e2e::Scenario;
 use fsonos_proto::{control, play_mode};
-use fsonos_sim::{NotifyDrop, SimHousehold};
+use fsonos_sim::{NotifyDrop, SimClock, SimHousehold};
 use serde_json::Value;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
+
+/// Runs the sim's clock while it lives, so a clip the players play (the
+/// audible tier's chime) reaches its end, as e2e_announce does.
+struct Ticker {
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Ticker {
+    fn start(clock: SimClock) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&stop);
+        let thread = thread::spawn(move || {
+            while !done.load(Ordering::SeqCst) {
+                clock.advance(Duration::from_millis(10));
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+        Self {
+            stop,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for Ticker {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
 
 /// The standard virtual house's rooms (the bridge plays nothing).
 const ROOMS: [&str; 4] = ["Kitchen", "Office", "Living Room", "Bedroom"];
@@ -339,6 +376,129 @@ fn a_faulty_house_fails_the_selftest_with_evidence_and_is_left_as_it_was() {
         "sim",
         "every room and group is exactly as before",
         cleared && before == after,
+        format!("before {before:?}\nafter {after:?}"),
+    );
+    s.finish();
+}
+
+/// The audible tier on two rooms of one household: every step passes (a
+/// favorite plays; volume, a fade and a ramp land; tone and a sleep timer
+/// come and go; the rooms group and the music moves), each says what it
+/// will do first, the report names no room, address or player id, and the
+/// house is exactly as it was afterwards.
+#[test]
+fn the_audible_selftest_plays_and_puts_the_house_back() {
+    let mut s = Scenario::start("selftest-audible");
+    let clock = s.sim(SimHousehold::standard()).clock().clone();
+    let before = house(&mut s, "zones-before");
+    let ticking = Ticker::start(clock);
+    let run = s.cli(
+        "audible",
+        &[
+            "selftest",
+            "--audible",
+            "--room",
+            "Kitchen",
+            "--room",
+            "Office",
+            "--yes",
+            "--json",
+        ],
+    );
+    drop(ticking);
+    let report: Value = serde_json::from_str(&run.stdout).unwrap_or(Value::Null);
+    let checks = report["checks"].as_array().cloned().unwrap_or_default();
+    let unpassed: Vec<String> = checks
+        .iter()
+        .filter(|c| c["status"] != "pass")
+        .map(|c| format!("{} {} {}", c["id"], c["status"], c["summary"]))
+        .collect();
+    s.check(
+        "audible",
+        "cli",
+        "all ten audible steps ran and passed (exit 0)",
+        run.ok() && checks.len() == 10 && unpassed.is_empty(),
+        format!("{unpassed:?}\n{}\n{}", run.stdout, run.stderr),
+    );
+    let fact = |id: &str, key: &str| {
+        checks
+            .iter()
+            .find(|c| c["id"] == id)
+            .map_or(Value::Null, |c| c["evidence"][key].clone())
+    };
+    s.check(
+        "facts",
+        "report",
+        "the steps report what they saw: a stream favorite, the music back after a chime, a \
+         join time, the track carried",
+        fact("selftest.audible.favorite", "favorite.kind") == "stream"
+            && fact("selftest.audible.announce", "announce.source_back") == true
+            && fact("selftest.audible.group", "group.join_ms").is_u64()
+            && fact("selftest.audible.handover", "handover.track_carried") == true,
+        run.stdout.clone(),
+    );
+    s.check(
+        "said",
+        "cli",
+        "each step said what it would do, the put-back last",
+        run.stderr.find("fsonos selftest: R1: a 5 s fade")
+            < run
+                .stderr
+                .find("fsonos selftest: putting the rooms back as they were")
+            && run.stderr.contains("fsonos selftest: R1: a 5 s fade"),
+        run.stderr.clone(),
+    );
+    let leaked = leaks(&s, &run.stdout);
+    s.check(
+        "scrubbed",
+        "report",
+        "the report names no room, address or player id",
+        leaked.is_empty(),
+        leaked.join(", "),
+    );
+    let after = house(&mut s, "zones-after");
+    s.check(
+        "restored",
+        "sim",
+        "every room and group is exactly as before",
+        before == after,
+        format!("before {before:?}\nafter {after:?}"),
+    );
+    s.finish();
+}
+
+/// Ctrl-C during the audible tier ends its steps, and the rooms are still
+/// put back.
+#[test]
+fn ctrl_c_during_the_audible_selftest_still_puts_the_house_back() {
+    let mut s = Scenario::start("selftest-audible-interrupt");
+    let clock = s.sim(SimHousehold::standard()).clock().clone();
+    let before = house(&mut s, "zones-before");
+    let ticking = Ticker::start(clock);
+    let mut run = s.spawn(
+        "audible",
+        &["selftest", "--audible", "--room", "Kitchen", "--yes"],
+    );
+    let fading = run.wait_line("a 5 s fade", Duration::from_secs(60));
+    let code = run.interrupt(Duration::from_secs(120));
+    drop(ticking);
+    let lines = run.seen.join("\n");
+    s.check(
+        "interrupted",
+        "cli",
+        "Ctrl-C mid-fade ends the run after the rooms are put back",
+        fading.is_some()
+            && code.is_some()
+            && lines.contains("putting the rooms back as they were")
+            && !lines.contains("a 1-minute sleep timer"),
+        format!("exit {code:?}\n{lines}"),
+    );
+    let after = house(&mut s, "zones-after");
+    s.check(
+        "restored",
+        "sim",
+        "every room and group is exactly as before",
+        before == after,
         format!("before {before:?}\nafter {after:?}"),
     );
     s.finish();

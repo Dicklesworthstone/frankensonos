@@ -115,6 +115,7 @@ fsonos tailscale setup                            # HTTPS for the tailnet via Ta
 fsonos service install --tailscale-serve --load   # serve as a login service that survives restarts
 fsonos doctor                                     # what is wrong, and how to fix it
 fsonos selftest                                   # live checks on your players; nothing you can hear changes
+fsonos selftest --audible --room Kitchen --room Office  # with you listening: play, fade, group, hand over; all put back
 ```
 
 No speakers handy? Run `fsonos sim` in one terminal; it prints the `--seeds` and
