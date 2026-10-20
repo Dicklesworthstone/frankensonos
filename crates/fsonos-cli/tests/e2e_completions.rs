@@ -1,7 +1,8 @@
 //! Shell completion end to end: `fsonos completions zsh|bash|fish` writes
 //! each shell's script with its room hook, a command that lists the rooms
 //! fills the room cache, `fsonos __complete-rooms` prints it, and, where bash
-//! is installed, bash completes `fsonos status Liv` to the cached room.
+//! is installed, bash completes `fsonos status Liv` and `fsonos dj start Liv`
+//! to the cached room, quoted as one word.
 
 mod e2e;
 
@@ -55,15 +56,26 @@ fn completion_scripts_complete_room_names_from_the_cache() {
     let script = s.cli("script-bash-file", &["completions", "bash"]).stdout;
     let file = s.dir().join("fsonos.bash");
     std::fs::write(&file, &script).expect("write the bash script");
-    match bash_completes(&file, &s.dir().join("data"), &["fsonos", "status", "Liv"]) {
-        Some(words) => s.check(
-            "bash-completes",
-            "bash",
-            "bash completes `fsonos status Liv` to the cached Living Room",
-            words.iter().any(|w| w == "Living Room") && !words.iter().any(|w| w.starts_with('<')),
-            words.join(" | "),
-        ),
-        None => s.pending("bash-completes", "bash is not installed here"),
+    // A two-word room comes back quoted, so bash keeps it one argument, for
+    // a command and for a subcommand alike.
+    for (step, line) in [
+        ("bash-completes", &["fsonos", "status", "Liv"][..]),
+        ("bash-completes-dj", &["fsonos", "dj", "start", "Liv"]),
+    ] {
+        match bash_completes(&file, &s.dir().join("data"), line) {
+            Some(words) => s.check(
+                step,
+                "bash",
+                &format!(
+                    "bash completes `{}` to the cached Living\\ Room",
+                    line.join(" ")
+                ),
+                words.iter().any(|w| w == "Living\\ Room")
+                    && !words.iter().any(|w| w.starts_with('<')),
+                words.join(" | "),
+            ),
+            None => s.pending(step, "bash is not installed here"),
+        }
     }
     s.finish();
 }

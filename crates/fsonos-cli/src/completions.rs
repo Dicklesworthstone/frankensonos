@@ -22,28 +22,31 @@ pub enum Shell {
     Fish,
 }
 
-/// Subcommands whose positional arguments name rooms.
-const ROOM_COMMANDS: [&str; 19] = [
-    "zones",
-    "status",
-    "favorites",
-    "queue",
-    "eq",
-    "history",
-    "play",
-    "pause",
-    "resume",
-    "next",
-    "previous",
-    "seek",
-    "volume",
-    "mute",
-    "group",
-    "ungroup",
-    "move",
-    "party",
-    "sleep",
-];
+/// The ids of the arguments that name rooms (a positional `zone`, `room`,
+/// `to` or `target`; `rooms` as a list or an option).
+const ROOM_ARGS: [&str; 5] = ["zone", "room", "to", "target", "rooms"];
+
+/// The commands (one word, or a command and its subcommand) with a
+/// positional argument that names rooms, read from `cmd` itself so a new
+/// one completes rooms too.
+#[must_use]
+pub fn room_commands(cmd: &clap::Command) -> Vec<String> {
+    let takes_rooms = |c: &clap::Command| {
+        c.get_positionals()
+            .any(|a| ROOM_ARGS.contains(&a.get_id().as_str()))
+    };
+    let mut paths = Vec::new();
+    for sub in cmd.get_subcommands() {
+        if takes_rooms(sub) {
+            paths.push(sub.get_name().to_owned());
+        }
+        for nested in sub.get_subcommands().filter(|c| takes_rooms(c)) {
+            paths.push(format!("{} {}", sub.get_name(), nested.get_name()));
+        }
+    }
+    paths.sort();
+    paths
+}
 
 /// Remember `rooms` (names, deduplicated and sorted) for completion. A
 /// cache that cannot be written only means stale completions.
@@ -115,30 +118,28 @@ pub fn script(shell: Shell, cmd: &mut clap::Command) -> String {
         Shell::Bash => clap_complete::Shell::Bash,
         Shell::Fish => clap_complete::Shell::Fish,
     };
+    let commands = room_commands(cmd);
     clap_complete::generate(generator, cmd, "fsonos", &mut out);
     let generated = String::from_utf8_lossy(&out).into_owned();
     match shell {
         Shell::Zsh => zsh(&generated),
-        Shell::Bash => bash(generated),
-        Shell::Fish => fish(generated),
+        Shell::Bash => bash(generated, &commands),
+        Shell::Fish => fish(generated, &commands),
     }
 }
 
 /// zsh: room arguments complete with `_fsonos_rooms` instead of files.
 fn zsh(generated: &str) -> String {
+    // A positional is `':zone`, `'::zone` (optional) or `'*::rooms` (a
+    // list), for each name in ROOM_ARGS.
     let rooms = |line: &str| {
         let t = line.trim_start();
-        [
-            "'zone",
-            "':zone",
-            "'::zone",
-            "':to",
-            "':target",
-            "'::target",
-        ]
-        .iter()
-        .any(|p| t.starts_with(p))
-            || t.contains("--rooms=")
+        ROOM_ARGS.iter().any(|id| {
+            ["'", "':", "'::", "'*:", "'*::"].iter().any(|open| {
+                t.starts_with(&format!("{open}{id} ")) || t.starts_with(&format!("{open}{id}:"))
+            })
+        }) || t.contains("--rooms=")
+            || t.contains("--room=")
     };
     let body: Vec<String> = generated
         .lines()
@@ -164,43 +165,70 @@ fn zsh(generated: &str) -> String {
 }
 
 /// bash: after clap's completion, offer the cached rooms for a room-taking
-/// subcommand's non-flag words (and drop clap's `<ZONE>`-style placeholders).
-fn bash(mut generated: String) -> String {
+/// command's non-flag words and after `--rooms`/`--room` (and drop clap's
+/// `<ZONE>`-style placeholders), each quoted, so `Living Room` stays one
+/// word.
+fn bash(mut generated: String, commands: &[String]) -> String {
+    let words = |two: bool| -> Vec<&str> {
+        commands
+            .iter()
+            .filter(|c| c.contains(' ') == two)
+            .map(String::as_str)
+            .collect()
+    };
+    let (one, two) = (words(false), words(true));
     let _ = write!(
         generated,
         r#"
 _fsonos_with_rooms() {{
     _fsonos "$@"
-    local cur="${{COMP_WORDS[COMP_CWORD]}}"
+    local cur="${{COMP_WORDS[COMP_CWORD]}}" prev="${{COMP_WORDS[COMP_CWORD-1]}}"
     local keep=() word
     for word in "${{COMPREPLY[@]}}"; do
         [[ $word == \<*\> ]] || keep+=("$word")
     done
     COMPREPLY=("${{keep[@]}}")
-    if [[ $COMP_CWORD -ge 2 && $cur != -* ]]; then
-        case " {commands} " in
-            *" ${{COMP_WORDS[1]}} "*)
-                local IFS=$'\n'
-                COMPREPLY+=($(compgen -W "$(fsonos __complete-rooms 2>/dev/null)" -- "$cur"))
-                ;;
-        esac
+    [[ $cur == -* ]] && return
+    local rooms=
+    if [[ $prev == --rooms || $prev == --room ]]; then
+        rooms=1
+    elif [[ $COMP_CWORD -ge 3 && "|{two}|" == *"|${{COMP_WORDS[1]}} ${{COMP_WORDS[2]}}|"* ]]; then
+        rooms=1
+    elif [[ $COMP_CWORD -ge 2 && " {one} " == *" ${{COMP_WORDS[1]}} "* ]]; then
+        rooms=1
+    fi
+    if [[ -n $rooms ]]; then
+        local IFS=$'\n' room
+        for room in $(compgen -W "$(fsonos __complete-rooms 2>/dev/null)" -- "$cur"); do
+            COMPREPLY+=("$(printf '%q' "$room")")
+        done
     fi
 }}
 complete -F _fsonos_with_rooms -o bashdefault -o default fsonos
 "#,
-        commands = ROOM_COMMANDS.join(" ")
+        one = one.join(" "),
+        two = two.join("|"),
     );
     generated
 }
 
-/// fish: room-taking subcommands, and `--rooms`, complete with the cached
-/// rooms.
-fn fish(mut generated: String) -> String {
-    let _ = write!(
-        generated,
-        "\ncomplete -c fsonos -n \"__fish_seen_subcommand_from {}\" -f -a \"(fsonos __complete-rooms)\"\n\
-         complete -c fsonos -n \"__fish_seen_subcommand_from say chime announce\" -l rooms -f -r -a \"(fsonos __complete-rooms)\"\n",
-        ROOM_COMMANDS.join(" ")
+/// fish: room-taking commands (and their subcommands), and `--rooms`,
+/// complete with the cached rooms.
+fn fish(mut generated: String, commands: &[String]) -> String {
+    for command in commands {
+        let condition = command
+            .split(' ')
+            .map(|word| format!("__fish_seen_subcommand_from {word}"))
+            .collect::<Vec<_>>()
+            .join("; and ");
+        let _ = writeln!(
+            generated,
+            "complete -c fsonos -n \"{condition}\" -f -a \"(fsonos __complete-rooms)\""
+        );
+    }
+    generated.push_str(
+        "complete -c fsonos -n \"__fish_seen_subcommand_from say chime announce\" -l rooms -f -r \
+         -a \"(fsonos __complete-rooms)\"\n",
     );
     generated
 }
@@ -222,6 +250,35 @@ mod tests {
         // fsonos status <zone>, fsonos move <zone> <to>.
         assert!(script.matches(":_fsonos_rooms'").count() >= 10, "{script}");
         assert!(script.contains("':to"), "{script}");
+    }
+
+    /// The room-taking commands are read from the command line itself, one
+    /// or two words deep (8hhv.2: a hand-kept list had missed `dj start`,
+    /// `eq`, `stream` and more).
+    #[test]
+    fn the_room_commands_come_from_the_command_line() {
+        let commands = room_commands(&crate::Cli::command());
+        for wanted in ["status", "play", "move", "dj start", "eq", "stream"] {
+            assert!(
+                commands.iter().any(|c| c == wanted),
+                "{wanted}: {commands:?}"
+            );
+        }
+        assert!(!commands.iter().any(|c| c == "dj"), "{commands:?}");
+        let bash = generated(Shell::Bash);
+        assert!(
+            bash.contains("|dj start|") || bash.contains("dj start|"),
+            "{bash}"
+        );
+        assert!(
+            bash.contains("printf '%q'"),
+            "multi-word rooms stay one word"
+        );
+        let fish = generated(Shell::Fish);
+        assert!(
+            fish.contains("__fish_seen_subcommand_from dj; and __fish_seen_subcommand_from start"),
+            "{fish:.300}"
+        );
     }
 
     #[test]
