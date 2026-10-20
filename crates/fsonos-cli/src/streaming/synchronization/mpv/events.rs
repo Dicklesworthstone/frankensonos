@@ -52,7 +52,7 @@ impl PlaybackEvents {
             return Ok(());
         };
         let identity_changed = match event {
-            "queue-overflow" => {
+            "event-queue-overflow" => {
                 self.overflowed = true;
                 return self.check();
             }
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn lost_events_are_a_sticky_error_not_a_new_baseline() {
         let mut events = PlaybackEvents::default();
-        assert!(events.observe(&json!({"event": "queue-overflow"})).is_err());
+        assert!(events.observe(&json!({"event": "event-queue-overflow"})).is_err());
         events.seed(&original());
         assert!(events.check().is_err());
     }

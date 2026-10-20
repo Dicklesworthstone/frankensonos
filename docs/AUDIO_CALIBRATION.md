@@ -187,6 +187,20 @@ pause hold the last good setting, clear pending confidence, and require fresh
 agreement. A correction also clears prior measurement confidence. This is
 conservative drift correction, not a startup chirp or an immediate calibration.
 
+Continuous correction observes mpv's pause, speed, source, output and delay
+properties on the same IPC connection. Delivered seeks, playback restarts and
+audio reconfiguration invalidate the current capture and any earlier agreement.
+A pause/resume cycle reported during a capture cannot turn that old window into
+fresh evidence merely because mpv is playing again when capture ends. The loop
+waits for three new uninterrupted windows before changing the delay. Events
+arriving during estimation are checked again before the write.
+
+A file reload (even the same path), a delivered source/output identity change,
+or mpv's `event-queue-overflow` stops correction rather than carrying authority
+into a different playback instance. Trailing and fragmented notifications are
+processed under byte and time bounds. Property notifications can be coalesced
+by mpv; this detects delivered events, not every possible transient change.
+
 The target is **`sync_base_delay - measured_lag`**, never the current correction
 minus another measured lag. `--sync-base-delay` defaults to zero. Set it only
 for an intentional, uncorrected media-specific offset, for example
@@ -209,6 +223,22 @@ back for cleanup without replaying it. An external setting is not deliberately
 overwritten. mpv read-before-write checks are not an atomic transaction with
 other controllers; a concurrent change between a check and a write remains
 possible. Failed or skipped cleanup is reported, never called a full rollback.
+
+Both continuous correction and one-shot measurement verify the original Sonos
+household, coordinator, room membership and stream URI before and after each
+capture window. Continuous correction checks once more before applying a lag.
+These reads use the existing stream supervisor and transport, not a second
+connection or a fast polling loop. A different source/group, a paused/stopped
+speaker, or a failed read stops correction and further measurement captures;
+it does not send Play, rejoin rooms, or adopt the new source. A source change
+inside a capture is noticed at the next window check, not instantaneously.
+
+The correction worker waits at most 60 seconds for each supervisor verdict and
+can abandon that wait on cancellation. Late verdicts cannot authorize a later
+window. This does not interrupt a speaker request already executing on the
+supervisor; its own transport timeout still applies. Source checks and the mpv
+write are separate operations, so a concurrent owner change can still race them.
+Ordinary streaming without microphone measurement does not add these reads.
 
 Ctrl-C, encoder failure and normal shutdown stop the measurement worker, reap
 the direct capture process, and attempt ownership-checked mpv cleanup before
@@ -244,6 +274,15 @@ cargo test -p fsonos-cli --bin fsonos streaming::recovery::measurement_tests
 cargo test -p fsonos-cli --bin fsonos real_ffmpeg_capture_feeds -- --ignored
 cargo test -p fsonos-cli --bin fsonos deadline_interrupts_and_reaps -- --ignored
 ```
+
+The continuous-correction regressions use real Unix socket pairs to exercise
+IPC framing and event handling. Generated PCM passes through the production
+loop, decoder and estimator to check successful correction, fresh agreement
+after a seek, rejected room evidence and cancellation before a write. Separate
+channel tests cover supervisor verdicts, deadlines, cancellation and late replies.
+The socket peer and room-verification callback are controlled fixtures, not a
+real mpv process or physical Sonos. These new Rust tests were source-reviewed
+but not executed in the toolchain-less implementation environment.
 
 The two ignored tests additionally exercise the production capture process:
 one feeds generated delayed noise through the collector, the other checks

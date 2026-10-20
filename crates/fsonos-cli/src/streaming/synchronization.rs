@@ -15,6 +15,7 @@ mod capture;
 mod input;
 mod measurement;
 mod mpv;
+mod ownership;
 
 pub use measurement::Measurement;
 
@@ -129,11 +130,14 @@ impl Prepared {
             stream,
             deadline: None,
         };
+        let (checks, requests) = ownership::channel();
         let worker = thread::Builder::new()
             .name("fsonos-audio-sync".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_loop(&mut controller, &options, &stop)
+                    run_loop(&mut controller, &options, &stop, |settled| {
+                        checks.verify(settled, &stop)
+                    })
                 }))
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("audio sync worker panicked")));
                 let restored = controller.restore();
@@ -148,6 +152,7 @@ impl Prepared {
         Ok(Session {
             stop: session,
             worker: Some(worker),
+            requests,
         })
     }
 }
@@ -155,6 +160,7 @@ impl Prepared {
 pub struct Session {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<anyhow::Result<()>>>,
+    requests: ownership::Requests,
 }
 
 impl Session {
@@ -178,7 +184,8 @@ impl Drop for Session {
 }
 
 /// Measurement finishes automatically; ordinary streaming and mpv correction
-/// retain their existing Ctrl-C lifetime. Only measurement calls `verify`.
+/// retain their existing Ctrl-C lifetime. Both capture modes verify the original
+/// room/source; ordinary streaming does not add speaker observations.
 pub fn wait(
     stream: &mut super::broadcast::LiveStream,
     prepared: Option<Prepared>,
@@ -206,8 +213,20 @@ pub fn wait(
         }
         other => other,
     };
-    let mut session = prepared.map(|prepared| prepared.start(stop)).transpose()?;
-    let result = stream.wait_until_stopped().map_err(anyhow::Error::from);
+    let mut session = prepared
+        .map(|prepared| prepared.start(Arc::clone(&stop)))
+        .transpose()?;
+    let result = match &session {
+        Some(session) => (|| -> anyhow::Result<()> {
+            while !stop.load(Ordering::Acquire) {
+                stream.check()?;
+                session.requests.service(&mut verify);
+                thread::sleep(Duration::from_millis(100));
+            }
+            Ok(())
+        })(),
+        None => stream.wait_until_stopped().map_err(anyhow::Error::from),
+    };
     let stopped = session.as_mut().map(Session::shutdown).transpose();
     result?;
     stopped?;
@@ -246,6 +265,19 @@ fn run_loop(
     controller: &mut mpv::Controller,
     options: &Options,
     stop: &Stop,
+    verify: impl FnMut(bool) -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    run_with_capture(controller, options.max_lag_ms, stop, verify, || {
+        capture::record(options, stop)
+    })
+}
+
+fn run_with_capture(
+    controller: &mut mpv::Controller,
+    max_lag_ms: u32,
+    stop: &Stop,
+    mut verify: impl FnMut(bool) -> anyhow::Result<bool>,
+    mut record: impl FnMut() -> anyhow::Result<Option<Vec<u8>>>,
 ) -> anyhow::Result<()> {
     let mut stable = StableLag::default();
     let mut last_rejection = None;
@@ -261,10 +293,16 @@ fn run_loop(
         if last_window != Some(window) {
             stable.clear();
         }
-        let Some(bytes) = capture::record(options, stop)? else {
+        if !verify(false)? || stop.requested() {
+            break;
+        }
+        let Some(bytes) = record()? else {
             break;
         };
         if stop.requested() {
+            break;
+        }
+        if !verify(true)? || stop.requested() {
             break;
         }
         if !controller.finish_window(window)? {
@@ -275,7 +313,7 @@ fn run_loop(
         last_window = Some(window);
         let (reference, microphone) =
             calibration::decode_pcm(&bytes).map_err(anyhow::Error::msg)?;
-        let max_lag = usize::try_from(options.max_lag_ms)? * (latency::SAMPLE_RATE / 1_000);
+        let max_lag = usize::try_from(max_lag_ms)? * (latency::SAMPLE_RATE / 1_000);
         let measured = match latency::estimate(&reference, &microphone, max_lag) {
             Ok(measured) => {
                 last_rejection = None;
@@ -294,6 +332,10 @@ fn run_loop(
             break;
         }
         if let Some(lag) = stable.observe(measured.seconds()) {
+            // The room may have changed while the estimator was computing.
+            if !verify(true)? || stop.requested() {
+                break;
+            }
             if controller.apply(lag, window)? {
                 eprintln!("fsonos sync: acoustic lag {lag:.3} s; mpv correction confirmed");
             }

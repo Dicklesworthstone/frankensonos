@@ -368,7 +368,7 @@ fn event_loss_disables_correction_instead_of_reusing_partial_evidence() {
         .lock()
         .unwrap()
         .events
-        .push(json!({"event": "queue-overflow"}));
+        .push(json!({"event": "event-queue-overflow"}));
     assert!(controller.apply(3.0, window).is_err());
     assert!(controller.begin_window().is_err());
     assert!(state.lock().unwrap().writes.is_empty());
@@ -391,5 +391,149 @@ fn fragmented_events_are_completed_before_authorizing_a_window() {
     client.drain_events().unwrap();
     assert_eq!(client.events.revision(), 1);
     release.send(()).unwrap();
+    worker.join().unwrap();
+}
+
+fn stop_sync() -> super::super::Stop {
+    super::super::Stop {
+        session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        stream: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        deadline: Some(Instant::now() + Duration::from_secs(20)),
+    }
+}
+
+fn pcm_window() -> Vec<u8> {
+    let mut seed = 0xF50A_u32;
+    let samples: Vec<i16> = (0..32_000)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            i16::try_from((seed >> 16) & 0x3fff).unwrap() - 8_192
+        })
+        .collect();
+    let mut pcm = Vec::with_capacity(samples.len() * 4);
+    for (index, sample) in samples.iter().enumerate() {
+        let delayed = index.checked_sub(3_200).map_or(0, |at| samples[at]);
+        pcm.extend(sample.to_le_bytes());
+        pcm.extend(delayed.to_le_bytes());
+    }
+    pcm
+}
+
+#[test]
+fn continuous_loop_rechecks_the_room_before_correction_and_restores_after_success() {
+    let (client, state, worker) = server();
+    let mut controller = Controller::new(client, 0.0).unwrap();
+    let stop = stop_sync();
+    let captures = std::cell::Cell::new(0);
+    let phases = std::cell::RefCell::new(Vec::new());
+    let pcm = pcm_window();
+    super::super::run_with_capture(
+        &mut controller,
+        1_000,
+        &stop,
+        |settled| {
+            phases.borrow_mut().push(settled);
+            Ok(settled || captures.get() < 3)
+        },
+        || {
+            captures.set(captures.get() + 1);
+            Ok(Some(pcm.clone()))
+        },
+    )
+    .unwrap();
+    assert_eq!(captures.get(), 3);
+    assert_eq!(
+        *phases.borrow(),
+        [false, true, false, true, false, true, true, false]
+    );
+    assert_eq!(state.lock().unwrap().writes.len(), 1);
+    assert!((state.lock().unwrap().delay + 0.4).abs() < 1e-9);
+    controller.restore().unwrap();
+    assert_eq!(state.lock().unwrap().writes.len(), 2);
+    assert!((state.lock().unwrap().delay - 0.1).abs() < 1e-9);
+    drop(controller);
+    worker.join().unwrap();
+}
+
+#[test]
+fn a_changed_room_after_capture_stops_the_loop_without_correcting_or_recapturing() {
+    let (client, state, worker) = server();
+    let mut controller = Controller::new(client, 0.0).unwrap();
+    let captures = std::cell::Cell::new(0);
+    let error = super::super::run_with_capture(
+        &mut controller,
+        1_000,
+        &stop_sync(),
+        |settled| {
+            anyhow::ensure!(!settled, "original room group changed");
+            Ok(true)
+        },
+        || {
+            captures.set(captures.get() + 1);
+            Ok(Some(pcm_window()))
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("room group changed"));
+    assert_eq!(captures.get(), 1);
+    assert!(state.lock().unwrap().writes.is_empty());
+    drop(controller);
+    worker.join().unwrap();
+}
+
+#[test]
+fn seek_discarded_capture_requires_three_new_complete_windows() {
+    let (client, state, worker) = server();
+    let mut controller = Controller::new(client, 0.0).unwrap();
+    let captures = std::cell::Cell::new(0);
+    let pcm = pcm_window();
+    super::super::run_with_capture(
+        &mut controller,
+        1_000,
+        &stop_sync(),
+        |settled| Ok(settled || captures.get() < 6),
+        || {
+            captures.set(captures.get() + 1);
+            assert!(state.lock().unwrap().writes.is_empty());
+            if captures.get() == 3 {
+                state.lock().unwrap().events.push(json!({"event": "seek"}));
+            }
+            Ok(Some(pcm.clone()))
+        },
+    )
+    .unwrap();
+    assert_eq!(captures.get(), 6);
+    assert_eq!(state.lock().unwrap().writes.len(), 1);
+    assert!((state.lock().unwrap().delay + 0.4).abs() < 1e-9);
+    drop(controller);
+    worker.join().unwrap();
+}
+
+#[test]
+fn cancellation_during_final_room_verification_prevents_the_delay_write() {
+    let (client, state, worker) = server();
+    let mut controller = Controller::new(client, 0.0).unwrap();
+    let stop = stop_sync();
+    let settled_reads = std::cell::Cell::new(0);
+    let pcm = pcm_window();
+    super::super::run_with_capture(
+        &mut controller,
+        1_000,
+        &stop,
+        |settled| {
+            if settled {
+                settled_reads.set(settled_reads.get() + 1);
+                if settled_reads.get() == 4 {
+                    stop.stream.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+            Ok(true)
+        },
+        || Ok(Some(pcm.clone())),
+    )
+    .unwrap();
+    assert_eq!(settled_reads.get(), 4);
+    assert!(state.lock().unwrap().writes.is_empty());
+    drop(controller);
     worker.join().unwrap();
 }
