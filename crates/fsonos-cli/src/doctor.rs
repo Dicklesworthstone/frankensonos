@@ -43,6 +43,7 @@ use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::direct::Direct;
 
 pub mod selftest_last;
+pub mod service;
 pub mod sign_in;
 pub mod tailscale;
 
@@ -311,6 +312,7 @@ pub fn register(runner: &mut Runner, serve: &ServeArgs, data_dir: &Path) {
     runner.register(selftest_last::LastSelftest {
         data_dir: data_dir.to_path_buf(),
     });
+    runner.register(service::ServiceCheck);
     tailscale::register(runner, serve);
 }
 

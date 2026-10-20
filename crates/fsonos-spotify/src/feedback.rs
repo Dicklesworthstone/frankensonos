@@ -33,9 +33,10 @@ pub const HALF_LIFE_SECS: i64 = 30 * 86_400;
 pub const EXCLUSION_SECS: i64 = 180 * 86_400;
 /// A skip within this many seconds of a track starting is an early skip.
 pub const EARLY_SKIP_SECS: i64 = 30;
-/// Multipliers stay within [MIN, MAX] (per-mille).
+/// Multipliers stay within [MIN, MAX] (per-mille). The most is a rung
+/// below a favor's ×2 with the account's ×1.25 on top (see `crate::dj`).
 const MIN_PM: u64 = 250;
-const MAX_PM: u64 = 2000;
+pub const MAX_PM: u64 = 1600;
 /// Decayed score that doubles (or halves) a weight.
 const SCORE_PER_DOUBLING: f64 = 6.0;
 /// How much of a genre's score a work in it takes: genres are broad.
@@ -323,7 +324,7 @@ impl FeedbackModel {
 
     /// The weight multiplier for `work`, per-mille: the product of its work,
     /// composer or artist, performer and album multipliers, each — and the
-    /// product — clamped to [250, 2000]. A work none of those keys reach
+    /// product — clamped to [250, 1600]. A work none of those keys reach
     /// takes [`GENRE_SHARE`] of its genres' mean score instead.
     #[must_use]
     pub fn multiplier_pm(&self, work: &Work) -> u64 {
@@ -372,9 +373,10 @@ impl FeedbackModel {
 /// A decayed score as a multiplier: ×2 per +6, ×½ per −6, clamped.
 fn score_pm(score: f64) -> u64 {
     let factor = (score / SCORE_PER_DOUBLING).exp2() * 1000.0;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped first
-    let pm = factor.clamp(250.0, 2000.0).round() as u64;
-    pm
+    // `as` saturates, and the clamp follows.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let pm = factor.round() as u64;
+    pm.clamp(MIN_PM, MAX_PM)
 }
 
 #[cfg(test)]
@@ -421,15 +423,17 @@ mod tests {
             &[FeedbackSignal::about(liked, Signal::Like, MIDNIGHT)],
             MIDNIGHT,
         );
-        // The song, its artist and its album: ×√2 each, clamped at ×2.
-        assert_eq!(model.multiplier_pm(liked), 2000);
+        // The song, its artist and its album: ×√2 each, clamped at ×1.6.
+        assert_eq!(model.multiplier_pm(liked), MAX_PM);
         let signal = FeedbackSignal::about(liked, Signal::Like, MIDNIGHT);
         assert_eq!(signal.artist_key.as_deref(), Some("juniper vale"));
         assert_eq!(signal.album_key.as_deref(), Some("spotify:album:songs-0"));
         assert_eq!(signal.composer_key, None, "a song has no composer key");
+        // Her other songs on that album: her artist's ×√2 and the album's,
+        // clamped at ×1.6 too.
         assert_eq!(
             model.multiplier_pm(song("Summer Static")),
-            1999,
+            MAX_PM,
             "her other songs on that album"
         );
         assert_eq!(
@@ -526,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn multipliers_are_clamped_to_a_quarter_and_double() {
+    fn multipliers_are_clamped_to_a_quarter_and_eight_fifths() {
         let pool = works_of(&shelf_items(1));
         let work = by(&pool, "Brahms")[0];
         assert_eq!(performers(work), ["test ensemble"]);
@@ -537,12 +541,13 @@ mod tests {
         };
         // Work, composer and performer each at the cap: the product is too.
         let loved = FeedbackModel::from_signals(&five(Signal::Like), MIDNIGHT);
-        assert_eq!(loved.multiplier_pm(work), 2000);
+        assert_eq!(loved.multiplier_pm(work), MAX_PM);
         let hated = FeedbackModel::from_signals(&five(Signal::Dislike), MIDNIGHT);
         assert_eq!(hated.multiplier_pm(work), 250);
 
         // Each factor is clamped before multiplying: +15 on the work counts
-        // as ×2, so a −3 on the composer brings it to ×1.414 (not ×4 → ×2).
+        // as ×1.6, so a −3 on the composer brings it to ×1.131 (not ×4 →
+        // ×1.6).
         let key = Some(work.work_key.as_str());
         let mut signals: Vec<FeedbackSignal> = (0..5)
             .map(|_| signal(key, None, Signal::Like, MIDNIGHT))
@@ -554,7 +559,7 @@ mod tests {
             MIDNIGHT,
         ));
         let model = FeedbackModel::from_signals(&signals, MIDNIGHT);
-        assert_eq!(model.multiplier_pm(work), 1414);
+        assert_eq!(model.multiplier_pm(work), 1131);
         // The composer's other works carry its multiplier alone, and a
         // shared performer's feedback reaches every work they play.
         assert_eq!(model.multiplier_pm(by(&pool, "Brahms")[1]), 707);
@@ -772,13 +777,15 @@ mod tests {
             }
         }
         // Composer spacing still holds (a composer is rarely back within four
-        // works), so doubling the weight shifts the share by about a third.
+        // works), so the most feedback gives (×1.6) shifts the share by about
+        // a quarter, and halving the weight cuts it by about a third: 16 of
+        // 23 picks in these seeds, so the bound leaves room for the draw.
         assert!(
             more * 4 >= base * 5,
             "liked Mozart: {more} picks vs {base} without feedback\n{log}"
         );
         assert!(
-            less * 3 <= base * 2,
+            less * 4 <= base * 3,
             "disliked Mozart: {less} picks vs {base} without feedback\n{log}"
         );
     }

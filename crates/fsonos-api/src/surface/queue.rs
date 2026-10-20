@@ -17,6 +17,7 @@ use std::fmt::Write as _;
 use super::{Surface, resolve, room_view};
 use crate::execute::spotify_failure;
 use crate::failure::Failure;
+use crate::heal::Observed;
 use crate::request::PlayRequest;
 
 mod input;
@@ -202,8 +203,9 @@ impl Surface {
         let title = asked.title.as_deref().unwrap_or(&uri);
         let where_ = if req.next { " next" } else { "" };
         let intent = format!("{ADD}: {zone} {uri}{where_}");
+        let watch = Observed::new(&*self.transport);
         let queued = match control::enqueue_spotify(
-            &*self.transport,
+            &watch,
             &households,
             &coordinator,
             &uri,
@@ -212,13 +214,15 @@ impl Surface {
         ) {
             Ok(queued) => queued,
             Err(error) => {
-                // A lost reply, or a read-back that failed or did not match,
-                // may follow tracks that were queued: undo then stops at this
-                // add rather than reach past it. A refusal queued nothing.
-                let maybe = matches!(
-                    &error,
-                    CoreError::Proto(ProtoError::Network { .. } | ProtoError::Malformed(_))
-                );
+                // Once the add went out, a lost reply, or a read-back that
+                // failed or did not match, may follow tracks that were
+                // queued: undo then stops at this add rather than reach past
+                // it. A failure before the add, or a refusal, queued nothing.
+                let maybe = watch.wrote()
+                    && matches!(
+                        &error,
+                        CoreError::Proto(ProtoError::Network { .. } | ProtoError::Malformed(_))
+                    );
                 let failure = spotify_failure(error);
                 self.notice(&failure);
                 self.record(

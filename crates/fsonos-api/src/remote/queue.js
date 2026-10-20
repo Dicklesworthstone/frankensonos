@@ -621,7 +621,10 @@ const QueueRemote = (() => {
     function render(state) {
       const active = document.activeElement;
       const focus = body.contains(active) ? active.getAttribute('data-focus') : null;
-      const caret = focus === 'queue-search' && typeof active.selectionStart === 'number'
+      // Every redraw rebuilds the panel's inputs: put the caret back where
+      // it was in whichever one had focus, or the next digit typed into a
+      // range position can land in front of the last ("2", "4" -> "42").
+      const caret = focus !== null && typeof active.selectionStart === 'number'
         ? [active.selectionStart, active.selectionEnd] : null;
       const found = state.found !== null && state.found !== shownFound;
       shownFound = state.found;
@@ -638,7 +641,9 @@ const QueueRemote = (() => {
         .find((each) => each.getAttribute('data-focus') === key);
       if (target && !target.disabled) {
         target.focus({ preventScroll: true });
-        if (caret && key === 'queue-search') target.setSelectionRange(...caret);
+        if (caret && key === focus && typeof target.setSelectionRange === 'function') {
+          target.setSelectionRange(...caret);
+        }
         if (found) target.scrollIntoView({ block: 'nearest', behavior: 'instant' });
       } else if (focus === 'Cancel queue search') summary.focus({ preventScroll: true });
     }

@@ -43,15 +43,19 @@ use crate::session::Session;
 mod paging;
 
 /// A top track's weight (per mille).
-pub const TOP_TRACK_PM: u32 = 1300;
+pub const TOP_TRACK_PM: u32 = 1080;
 /// The weight of a track by an artist the owner follows or plays most.
-pub const ARTIST_PM: u32 = 1150;
+pub const ARTIST_PM: u32 = 1050;
 /// The weight of a track on one of the owner's own playlists.
-pub const PLAYLIST_PM: u32 = 1100;
+pub const PLAYLIST_PM: u32 = 1030;
 /// The weight of a recently played track.
-pub const RECENT_PM: u32 = 1100;
-/// No track weighs more than this from account signals alone.
-pub const MAX_TASTE_PM: u32 = 1800;
+pub const RECENT_PM: u32 = 1030;
+/// No track weighs more than this from account signals alone: with a liked
+/// track's ×1.1 ([`crate::dj::LIKED_PM`]) the account's rung stays within
+/// ×1.25 ([`crate::dj::ACCOUNT_MAX_PM`]), under learned feedback.
+pub const MAX_TASTE_PM: u32 = 1136;
+// A top track by a followed artist, the most a track gets, fits.
+const _: () = assert!(TOP_TRACK_PM * ARTIST_PM <= MAX_TASTE_PM * 1000);
 /// Bounds on one sync's reads, so a daily sync stays cheap: pages of a
 /// list (followed artists, playlists), playlists read, and pages per
 /// playlist (its first 200 tracks speak for it).

@@ -41,7 +41,10 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ProtoError {
-    #[error("transport not yet wired (FND-DEPS): {0}")]
+    /// The transport cannot do this (one built for tests has no discovery,
+    /// say), or the request was cancelled or its worker failed before any
+    /// answer: `{0}` says which.
+    #[error("not available: {0}")]
     NotWired(&'static str),
     #[error("soap fault {code}: {reason}")]
     SoapFault { code: u16, reason: String },

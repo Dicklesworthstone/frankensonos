@@ -7,7 +7,7 @@ use std::time::Duration;
 
 /// A fresh observer per command attempt, never shared with another request.
 /// A later failure must not restart earlier writes that may have taken effect.
-pub(super) struct Observed<'a, T: Transport + ?Sized> {
+pub(crate) struct Observed<'a, T: Transport + ?Sized> {
     inner: &'a T,
     writes: Cell<usize>,
     preceding: Cell<usize>,
@@ -15,13 +15,19 @@ pub(super) struct Observed<'a, T: Transport + ?Sized> {
 }
 
 impl<'a, T: Transport + ?Sized> Observed<'a, T> {
-    pub(super) fn new(inner: &'a T) -> Self {
+    pub(crate) fn new(inner: &'a T) -> Self {
         Self {
             inner,
             writes: Cell::new(0),
             preceding: Cell::new(0),
             accepted: Cell::new(false),
         }
+    }
+
+    /// Whether a write went out that may have taken effect: one refused
+    /// with UPnP 800 did not.
+    pub(crate) fn wrote(&self) -> bool {
+        self.writes.get() > 0
     }
 
     fn begin(&self) {

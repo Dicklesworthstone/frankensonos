@@ -430,13 +430,6 @@ impl Failure {
         self.code.retryable()
     }
 
-    /// Whether the caller's input is at fault (a 4xx), as opposed to the
-    /// daemon or a speaker (a 5xx).
-    #[must_use]
-    pub fn is_client_error(&self) -> bool {
-        (400..500).contains(&self.status())
-    }
-
     /// The JSON body both the API and MCP structured content carry.
     #[must_use]
     pub fn body(&self) -> ApiError {

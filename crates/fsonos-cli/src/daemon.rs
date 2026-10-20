@@ -284,10 +284,22 @@ fn unshared_data_dir(global: &GlobalArgs) -> anyhow::Result<(PathBuf, std::fs::F
 /// for a tagged node (which has no owning login), or when Tailscale cannot
 /// say.
 fn owner_login(tailnet: &fsonos_tailscale::TailnetStatus) -> Option<String> {
-    let ip = tailnet.running()?.ipv4.first().copied()?;
-    fsonos_tailscale::WhoIs::default()
-        .resolve(IpAddr::V4(ip))?
-        .login
+    let login = tailnet
+        .running()
+        .and_then(|t| t.ipv4.first().copied())
+        .and_then(|ip| fsonos_tailscale::WhoIs::default().resolve(IpAddr::V4(ip)))
+        .and_then(|identity| identity.login);
+    match &login {
+        Some(login) => eprintln!(
+            "fsonos serve: a Spotify sign-in may be started by the CLI and by {login}, \
+             this host's tailnet login"
+        ),
+        None => eprintln!(
+            "fsonos serve: a Spotify sign-in may be started by the CLI only (no tailnet login \
+             names this host); policy.toml can grant it to others"
+        ),
+    }
+    login
 }
 
 /// Run the bind guard over the HTTP API's and the MCP server's planned
@@ -435,6 +447,10 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
 /// How long a stopping daemon waits for announcements in flight to put the
 /// music back (a clip plays for at most five minutes; most take seconds).
 const ANNOUNCE_DRAIN: Duration = Duration::from_secs(60);
+/// Seconds a service manager should give a stopping daemon before killing
+/// it: the drain, then time to cancel its event subscriptions (launchd's
+/// `ExitTimeOut`, systemd's `TimeoutStopSec`; see `fsonos service`).
+pub const STOP_SECS: u64 = ANNOUNCE_DRAIN.as_secs() + 30;
 
 /// Wait until no announcement is pending (`pending` says how many), at most
 /// `wait`. Answers whether they all finished.

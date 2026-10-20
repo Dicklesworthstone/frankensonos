@@ -330,7 +330,8 @@ struct RoomLimits {
 struct ClientRules {
     allow: Option<Vec<String>>,
     deny: Vec<String>,
-    /// [`OWNER_ONLY`] tools (or classes) this client may use too.
+    /// Tools (or classes) this client may use besides: the [`OWNER_ONLY`]
+    /// ones need it, and with an `allow` list it adds to what that names.
     grant: Vec<String>,
     capped: Option<bool>,
 }
@@ -380,8 +381,8 @@ pub struct RoomView {
 }
 
 /// A client's own rules: `allow` (only these tools) when given, `deny`
-/// always, `grant` ([`OWNER_ONLY`] tools it may use too), and whether volume
-/// caps apply when set.
+/// always, `grant` (tools it may use too: the [`OWNER_ONLY`] ones need it,
+/// and it adds to an `allow` list), and whether volume caps apply when set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientView {
     pub client: String,
@@ -673,7 +674,11 @@ impl Policy {
                 };
             }
             if let Some(allow) = &rules.allow {
-                return if allow.iter().any(|entry| names(entry, tool)) {
+                return if allow
+                    .iter()
+                    .chain(&rules.grant)
+                    .any(|entry| names(entry, tool))
+                {
                     Decision::Allow
                 } else {
                     Decision::Deny {
@@ -1295,6 +1300,29 @@ allow = []
         assert!(matches!(
             p.authorize(call("list_zones", true), &Client::Tailnet("tag:kiosk".into())),
             Decision::Deny { reason } if reason.ends_with("no tools")
+        ));
+    }
+
+    /// A grant adds to an allow list too: starting and finishing a sign-in,
+    /// and nothing else the list leaves out.
+    #[test]
+    fn a_grant_adds_to_an_allow_list() {
+        let panel = Policy::from_toml(
+            "[clients.\"tag:panel\"]\nallow = [\"read\", \"playback\"]\ngrant = [\"auth\"]\n",
+        )
+        .unwrap();
+        let call = |name, read_only| ToolCall { name, read_only };
+        let tag_panel = Client::Tailnet("tag:panel".into());
+        for tool in ["spotify_sign_in", "spotify_sign_in_complete", "pause"] {
+            assert_eq!(
+                panel.authorize(call(tool, false), &tag_panel),
+                Decision::Allow,
+                "{tool}"
+            );
+        }
+        assert!(matches!(
+            panel.authorize(call("set_volume", false), &tag_panel),
+            Decision::Deny { .. }
         ));
     }
 

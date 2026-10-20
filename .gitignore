@@ -50,7 +50,7 @@ Thumbs.db
 *.profdata
 lcov.info
 
-# Beads local working files (the JSONL export IS tracked; the db is not)
+# Beads local working files: the db, and (below) its exports
 .beads/*.db
 .beads/*.db-wal
 .beads/*.db-shm

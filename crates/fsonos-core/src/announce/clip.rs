@@ -112,12 +112,6 @@ impl MediaStore {
         }
     }
 
-    #[must_use]
-    pub fn with_ttl(mut self, ttl: Duration) -> Self {
-        self.ttl = ttl;
-        self
-    }
-
     /// Use an explicit configuration instead of loading the owner's file and
     /// environment. Useful to embedders and deterministic integration tests.
     #[must_use]
@@ -148,8 +142,9 @@ impl MediaStore {
         Ok(StoredClip { id, duration })
     }
 
-    /// Copy the WAV file at `path` into the store. CLI only: never reachable
-    /// from HTTP or MCP (see the module docs).
+    /// Copy the WAV file at `path` into the store, for local code: nothing
+    /// reachable from HTTP or MCP calls it, and the CLI reads its file with
+    /// [`read_wav`] and uploads the bytes (see the module docs).
     pub fn import_wav(&self, path: &Path) -> Result<StoredClip, ClipError> {
         self.put(&read_wav(path)?)
     }

@@ -17,8 +17,7 @@ use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
 use fsqlite::{AsyncConnection, FrankenError, Row, SqliteValue};
 use std::fmt::Display;
 use std::ops::Range;
-use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// One schema step. Append new steps to [`MIGRATIONS`]; never edit or
@@ -191,17 +190,19 @@ fn split_genres(joined: Option<String>) -> Vec<String> {
 #[derive(Debug)]
 pub struct SqliteStore {
     conn: AsyncConnection,
-    /// Writes since the WAL was last checkpointed ([`Self::wrote`]); `None`
-    /// for an in-memory database, which has no WAL.
-    writes: Option<AtomicU32>,
+    /// The database's WAL file ([`Self::wrote`]); `None` for an in-memory
+    /// database, which has none.
+    wal: Option<PathBuf>,
 }
 
-/// How many writes the store commits between checkpoints of its own.
-/// fsqlite's automatic checkpoints never shrink the WAL file, so a daemon's
-/// months of small writes grew it without bound (about 1 MB an hour on a
-/// live house). Every this many writes, the store folds the WAL into the
-/// database and truncates it.
-const CHECKPOINT_EVERY: u32 = 256;
+/// The WAL size past which the store folds the WAL into the database and
+/// truncates it. fsqlite's automatic checkpoints never shrink the WAL file,
+/// so a daemon's months of small writes grew it without bound (about 1 MB an
+/// hour on a live house). It is the file's size that counts, whoever wrote
+/// it: a daemon keeps several stores open (one per surface, and the
+/// remembered players), and a count of each one's own writes left a 16 MB
+/// WAL a restart inherited in place for hours.
+const WAL_LIMIT: u64 = 1 << 20;
 
 fn backend(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
@@ -253,9 +254,12 @@ impl SqliteStore {
     fn open_migrated(path: &str, migrations: &[Migration]) -> Result<Self, StoreError> {
         let store = Self {
             conn: retrying(|| AsyncConnection::open_sync(path)).map_err(backend)?,
-            writes: (path != ":memory:").then_some(AtomicU32::new(0)),
+            wal: (path != ":memory:").then(|| PathBuf::from(format!("{path}-wal"))),
         };
         store.migrate(migrations)?;
+        // A WAL an earlier process left large is trimmed now, not after this
+        // store's own writes.
+        store.wrote();
         Ok(store)
     }
 
@@ -351,18 +355,18 @@ impl SqliteStore {
         .inspect(|_| self.wrote())
     }
 
-    /// Count a committed write, and every [`CHECKPOINT_EVERY`]th fold the
-    /// WAL into the database and truncate it. A checkpoint that another
-    /// connection holds up (a transaction open in `fsonos mcp`, say) answers
-    /// busy, changes nothing, and is tried again a round later.
+    /// After a write, and at open: once the WAL has grown past
+    /// [`WAL_LIMIT`], fold it into the database and truncate it. A
+    /// checkpoint that another connection holds up (a transaction open in
+    /// `fsonos mcp`, say) answers busy, changes nothing, and is tried again
+    /// after the next write.
     fn wrote(&self) {
-        let Some(writes) = &self.writes else {
+        let Some(wal) = &self.wal else {
             return;
         };
-        if writes.fetch_add(1, Ordering::Relaxed) + 1 < CHECKPOINT_EVERY {
+        if std::fs::metadata(wal).map_or(0, |m| m.len()) <= WAL_LIMIT {
             return;
         }
-        writes.store(0, Ordering::Relaxed);
         match self.conn.query_sync("PRAGMA wal_checkpoint(TRUNCATE)") {
             Ok(rows)
                 if rows
@@ -1336,7 +1340,7 @@ mod tests {
         // migrated: it reaches migration 1 although it is applied.
         let second = SqliteStore {
             conn: AsyncConnection::open_sync(path.as_str()).unwrap(),
-            writes: None,
+            wal: None,
         };
         second.apply(&MIGRATIONS[0], 0).unwrap();
         assert_eq!(

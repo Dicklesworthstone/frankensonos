@@ -719,7 +719,10 @@ albums = ["Starfall (Original Soundtrack)"]
                 .map_or(1000, |&(_, pm)| i64::from(pm))
         };
         let account = factors(&plain);
-        assert_eq!(pm(&account, Factor::Liked), 1300);
+        assert_eq!(
+            pm(&account, Factor::Liked),
+            i64::try_from(crate::dj::LIKED_PM).unwrap()
+        );
         assert!(
             pm(&account, Factor::Liked) * pm(&account, Factor::Feedback) < 1000 * 1000,
             "feedback outweighs the like: {account:?}"
