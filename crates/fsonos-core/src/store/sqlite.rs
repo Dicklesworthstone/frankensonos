@@ -193,7 +193,19 @@ pub struct SqliteStore {
     /// The database's WAL file ([`Self::wrote`]); `None` for an in-memory
     /// database, which has none.
     wal: Option<PathBuf>,
+    /// Plays recorded through this handle, for [`PRUNE_EVERY`].
+    plays: u32,
 }
+
+/// How far back plays and feedback are kept, before the newest of each: a
+/// year. Feedback halves every 30 days, so a year-old signal weighs 1/4096,
+/// and the DJ reads plays by count (its newest 2,000), never by age. The
+/// rest is pruned when a store opens and after every [`PRUNE_EVERY`]th
+/// play, so a daemon that runs for months keeps a bounded store.
+pub const LISTENING_RETENTION_SECS: i64 = 365 * 86_400;
+
+/// Plays a store records between two prunes.
+const PRUNE_EVERY: u32 = 512;
 
 /// The WAL size past which the store folds the WAL into the database and
 /// truncates it. fsqlite's automatic checkpoints never shrink the WAL file,
@@ -255,8 +267,12 @@ impl SqliteStore {
         let store = Self {
             conn: retrying(|| AsyncConnection::open_sync(path)).map_err(backend)?,
             wal: (path != ":memory:").then(|| PathBuf::from(format!("{path}-wal"))),
+            plays: 0,
         };
         store.migrate(migrations)?;
+        if let Err(e) = store.prune_listening() {
+            tracing::warn!("old plays and feedback not pruned: {e}");
+        }
         // A WAL an earlier process left large is trimmed now, not after this
         // store's own writes.
         store.wrote();
@@ -353,6 +369,28 @@ impl SqliteStore {
         })
         .map_err(backend)
         .inspect(|_| self.wrote())
+    }
+
+    /// Forget plays and feedback more than [`LISTENING_RETENTION_SECS`]
+    /// older than the newest of each: measured from the newest record, not
+    /// the clock, so a store kept under a simulated clock keeps what it was
+    /// told. How many rows went.
+    fn prune_listening(&self) -> Result<usize, StoreError> {
+        let mut gone = 0;
+        for (table, column) in [("play_history", "played_at"), ("feedback", "at")] {
+            let newest = self.query(&format!("SELECT MAX({column}) FROM {table}"), &[])?;
+            let Some(newest) = newest.first().map(|r| opt_int(r, 0)).transpose()?.flatten() else {
+                continue;
+            };
+            let cutoff = newest.saturating_sub(LISTENING_RETENTION_SECS);
+            gone += self.in_transaction(|c| {
+                c.execute_with_params_sync(
+                    &format!("DELETE FROM {table} WHERE {column} < ?1"),
+                    &[cutoff.into()],
+                )
+            })?;
+        }
+        Ok(gone)
     }
 
     /// After a write, and at open: once the WAL has grown past
@@ -456,7 +494,14 @@ impl Store for SqliteStore {
         self.execute(
             "INSERT INTO play_history (zone, source_uri, played_at) VALUES (?1, ?2, ?3)",
             &[zone.into(), source_uri.into(), played_at.into()],
-        )
+        )?;
+        self.plays = self.plays.wrapping_add(1);
+        if self.plays.is_multiple_of(PRUNE_EVERY)
+            && let Err(e) = self.prune_listening()
+        {
+            tracing::warn!("old plays and feedback not pruned: {e}");
+        }
+        Ok(())
     }
 
     fn recent_plays(
@@ -1367,6 +1412,7 @@ mod tests {
         let second = SqliteStore {
             conn: AsyncConnection::open_sync(path.as_str()).unwrap(),
             wal: None,
+            plays: 0,
         };
         second.apply(&MIGRATIONS[0], 0).unwrap();
         assert_eq!(

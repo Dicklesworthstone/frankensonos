@@ -13,7 +13,7 @@
 
 mod sqlite;
 
-pub use sqlite::SqliteStore;
+pub use sqlite::{LISTENING_RETENTION_SECS, SqliteStore};
 
 /// The database file's name inside the data directory.
 pub const FILE_NAME: &str = "fsonos.db";

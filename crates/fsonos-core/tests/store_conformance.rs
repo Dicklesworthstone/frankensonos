@@ -859,6 +859,50 @@ fn a_large_wal_left_behind_is_trimmed_at_open() {
     );
 }
 
+/// Plays and feedback a year older than the newest of each go when a store
+/// opens, and after every 512th play (co55.4): the store stays bounded over
+/// months. What is younger stays, whatever the clock says.
+#[test]
+fn listening_older_than_a_year_is_pruned() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fsonos.db");
+    let year = fsonos_core::store::LISTENING_RETENTION_SECS;
+    let now = 2_000_000_000;
+    let mut s = SqliteStore::open(&path).unwrap();
+    for at in [now - year - 10, now - year + 10, now] {
+        s.record_play("RINCON_Z", &format!("x-test:{at}"), at)
+            .unwrap();
+        s.record_feedback(&fb(at, Some("w"), "c", None, 1)).unwrap();
+    }
+    s.close().unwrap();
+    let mut s = SqliteStore::open(&path).unwrap();
+    let played = |s: &SqliteStore| -> Vec<i64> {
+        s.recent_plays(None, 1_000)
+            .unwrap()
+            .iter()
+            .map(|p| p.played_at)
+            .collect()
+    };
+    assert_eq!(played(&s), [now - year + 10, now]);
+    let kept: Vec<i64> = s
+        .feedback_between(0..i64::MAX)
+        .unwrap()
+        .iter()
+        .map(|f| f.at)
+        .collect();
+    assert_eq!(kept, [now - year + 10, now]);
+
+    // A daemon that never reopens prunes as it plays.
+    let later = now + 2 * year;
+    for i in 0..512 {
+        s.record_play("RINCON_Z", "x-test:later", later + i)
+            .unwrap();
+    }
+    let played = played(&s);
+    assert_eq!(played.len(), 512, "{:?}", &played[512.min(played.len())..]);
+    assert!(played.iter().all(|at| *at >= later));
+}
+
 #[test]
 fn sqlite_file_survives_close_and_reopen() {
     let dir = tempfile::tempdir().unwrap();
