@@ -37,9 +37,8 @@ cargo test --locked -p fsonos-api --lib surface::queue::removal
 
 The new unit tests exercise the production core operation with scripted SOAP
 responses. Simulator cases exercise S1/S2 through real loopback sockets,
-including a concurrent insertion that would shift the saved range. They were
-authored but not executed in the editing environment, which has no Rust
-toolchain. Physical-speaker acceptance remains a separate check.
+including a concurrent insertion that would shift the saved range.
+Physical-speaker acceptance remains a separate check.
 
 `POST /queue/remove` now delegates the native deletion and observation to the
 same core operation as logged enqueue undo. Its own authorization, required

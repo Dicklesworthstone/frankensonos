@@ -57,5 +57,6 @@ cargo test -p fsonos-cli --bin fsonos play_mode_cmd
 cargo test -p fsonos-cli --test e2e_play_mode
 ```
 
-Simulator coverage is not physical-speaker qualification. Check the matching
-CI result for evidence of execution, not merely the presence of these tests.
+Simulator coverage is not physical-speaker qualification. A committed test is
+not evidence of a passing run; inspect a recorded verifying run or run the
+commands above.

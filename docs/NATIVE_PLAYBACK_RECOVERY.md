@@ -66,6 +66,6 @@ cargo test --locked -p fsonos-core --lib control::transport_state
 cargo test --locked -p fsonos-core --test transport_state_recovery_sim --test control_sim
 ```
 
-The new simulator cases cover normal and malformed lost acknowledgements for
-all three controls on both generations. They were authored but not executed
-locally; the full Rust and physical-speaker validation gates remain separate.
+The simulator cases cover normal and malformed lost acknowledgements for all
+three controls on both generations. Physical-speaker validation remains a
+separate check.

@@ -61,6 +61,6 @@ immediate reads remain available. They use synthetic event publication, not
 physical Sonos speakers or a full deployed tailnet.
 
 Run `cargo test -p fsonos-api --lib events` and
-`cargo test -p fsonos-api --test event_delivery_http`. Test source and a
-successful build are not evidence that these tests have executed; inspect
-the matching CI result or run the commands above.
+`cargo test -p fsonos-api --test event_delivery_http`. A committed test is not
+evidence of a passing run; inspect a recorded verifying run or run the commands
+above.

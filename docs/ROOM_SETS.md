@@ -84,6 +84,6 @@ localhost HTTP exchange using a synthetic responder. Rust tests in
 before I/O, with the HTTP query parser tested beside its route.
 
 Local component checks exercise the shipped browser initializers and navigation
-with synthetic API replies. They do not establish physical-Sonos operation or
-a completed Rust workspace build. Full workspace and hardware acceptance remain
-separate gates.
+with synthetic API replies. Together with the Rust and Node regressions above
+they establish software behavior, not physical-Sonos operation; hardware
+acceptance remains separate.

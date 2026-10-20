@@ -99,4 +99,5 @@ cargo test -p fsonos-cli --test e2e_queue_edit
 ```
 
 These tests use the virtual-household harness, not physical Sonos hardware.
-A committed test is not evidence of a passing run; inspect the matching CI.
+A committed test is not evidence of a passing run; inspect a recorded verifying
+run or run the commands above.

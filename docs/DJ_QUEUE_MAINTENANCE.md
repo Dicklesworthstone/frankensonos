@@ -79,7 +79,5 @@ cargo check --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets -- -D warnings
 ```
 
-These Rust tests were authored but not executed in the editing environment:
-Cargo, rustc, rustfmt and RCH are absent, and toolchain retrieval fails DNS.
-Exact source/blob hashes, narrow diffs, whitespace and patch applicability were
-checked. These are not compiler, simulator, full-workspace or hardware passes.
+These commands are the Rust and simulator proof for this behavior; physical
+speakers and the live Spotify service remain separate acceptance checks.

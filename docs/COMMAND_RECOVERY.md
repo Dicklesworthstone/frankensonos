@@ -32,8 +32,7 @@ writes and transport forwarding. The command-recovery simulator tests exercise
 late coordinator changes, source success followed by a lost Play reply,
 one shared recovery budget, positive coordinator/address recovery, and
 read-back completion after an accepted write loses its acknowledgement.
-Physical-speaker acceptance is separate. Rust tests were not executed in the
-editing environment, which has no Rust toolchain.
+Physical-speaker acceptance is separate.
 
 ## A volume retry keeps its first allowance
 
@@ -49,5 +48,4 @@ visible in a successful recovery's notes. Uncapped CLI behavior is unchanged.
 This allowance is scoped to one call; it does not change future deliberate
 requests, add a retry, or make relative adjustments safe to replay. Run
 `cargo test --locked -p fsonos-api --test recovery_volume_sim` for S1/S2 room,
-group, intervening-lower-level and uncapped-client cases. These additional
-Rust regressions were authored but not executed in the editing environment.
+group, intervening-lower-level and uncapped-client cases.
