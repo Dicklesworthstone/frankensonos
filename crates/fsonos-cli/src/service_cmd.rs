@@ -7,8 +7,10 @@
 //!   Linux: a systemd user unit, `~/.config/systemd/user/fsonos.service`)
 //!   with this binary's absolute path, the data directory, the log, and the
 //!   flags and environment `serve` would get here. `--dry-run` prints it;
-//!   `--load` starts it, unless a daemon already serves the data directory.
-//!   Installing again rewrites the file it wrote.
+//!   `--load` starts it, unless another daemon serves the data directory.
+//!   Installing again rewrites the file it wrote, with the flags given then.
+//! * `start`: start the installed job as its file says, or restart it, so
+//!   it picks up a file installed since.
 //! * `status`: whether the job is installed and running, its pid, and
 //!   whether a daemon answers.
 //! * `uninstall`: stop the job and remove its file, only a file `install`
@@ -24,6 +26,7 @@ use serde::Serialize;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use crate::config::{EVENTS_PORT, GlobalArgs, SPOTIFY_REDIRECT_URI, ServeArgs, TailscaleMode};
 use crate::remote::{DirLock, lock_data_dir, read_daemon_file};
@@ -57,10 +60,13 @@ pub enum Action {
         /// Print the file and where it would go; change nothing.
         #[arg(long)]
         dry_run: bool,
-        /// Start it now, unless a daemon already serves the data directory.
+        /// Start it now (or restart it), unless another daemon serves the
+        /// data directory.
         #[arg(long)]
         load: bool,
     },
+    /// Start the installed service as its file says, or restart it.
+    Start,
     /// Whether the service is installed and running, and whether a daemon
     /// answers.
     Status,
@@ -162,6 +168,17 @@ fn job(global: &GlobalArgs, serve: &ServeArgs, home: &Path) -> anyhow::Result<Jo
             text(&std::path::absolute(seeds)?)?,
         ));
     }
+    // launchd starts a job with PATH=/usr/bin:/bin:/usr/sbin:/sbin, and a
+    // systemd user manager with its own: keep this shell's, so a program
+    // serve finds by name (a speech engine) is found there too.
+    if let Some(path) = search_path(&std::env::var("PATH").unwrap_or_default()) {
+        env.push(("PATH".to_owned(), path));
+    }
+    for key in ["FSONOS_TTS_BACKEND", "FSONOS_TTS_COMMAND"] {
+        if let Ok(value) = std::env::var(key) {
+            env.push((key.to_owned(), value));
+        }
+    }
     env.extend(serve_env(serve));
     Ok(Job {
         program,
@@ -202,6 +219,13 @@ pub fn serve_env(serve: &ServeArgs) -> Vec<(String, String)> {
         set("FSONOS_EVENTS_PORT", serve.events_port.to_string());
     }
     env
+}
+
+/// `path`'s absolute directories, in order; `None` when it has none. A
+/// relative one (`.`) would name a program in the job's working directory.
+fn search_path(path: &str) -> Option<String> {
+    let dirs: Vec<&str> = path.split(':').filter(|d| d.starts_with('/')).collect();
+    (!dirs.is_empty()).then(|| dirs.join(":"))
 }
 
 fn text(path: &Path) -> anyhow::Result<String> {
@@ -320,6 +344,28 @@ pub fn run(global: &GlobalArgs, args: &ServiceArgs) -> anyhow::Result<()> {
             let job = job(global, serve, &home)?;
             install(global, manager, &path, &job, *dry_run, *load)
         }
+        Action::Start => {
+            match ours(&path)? {
+                Some(true) => {}
+                Some(false) => bail!(
+                    "{} was not written by `fsonos service install`; leaving it alone",
+                    path.display()
+                ),
+                None => bail!(
+                    "not installed: no {}; `fsonos service install --load` writes and starts it",
+                    path.display()
+                ),
+            }
+            // The directory the service will serve: the one its file names.
+            let file = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            let data_dir = match installed_data_dir(&file) {
+                Some(dir) => dir,
+                None => crate::daemon::data_dir(global)?,
+            };
+            let replacing = serving(&data_dir, manager)?;
+            start(manager, &path, replacing)
+        }
         Action::Status => {
             let status = status(global, manager, &path);
             crate::emit(global.json, &status, status_text)
@@ -357,6 +403,12 @@ fn install(
             path.display()
         );
     }
+    // A refused --load changes nothing.
+    let replacing = if load {
+        Some(serving(&crate::daemon::data_dir(global)?, manager)?)
+    } else {
+        None
+    };
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
@@ -378,66 +430,108 @@ fn install(
              remove it) so only one daemon serves the data directory."
         );
     }
-    if !load {
-        println!(
-            "start it with `fsonos service install --load` (or: {})",
-            load_hint(manager)
-        );
-        return Ok(());
+    if let Some(replacing) = replacing {
+        start(manager, path, replacing)
+    } else {
+        println!("`fsonos service start` starts it with this file (or restarts it)");
+        Ok(())
     }
-    let data_dir = crate::daemon::data_dir(global)?;
-    match lock_data_dir(&data_dir).with_context(|| format!("checking {}", data_dir.display()))? {
-        DirLock::Held(lock) => drop(lock),
-        DirLock::Busy(daemon) => bail!(
-            "a daemon{} already serves {}: stop it, then `fsonos service install --load`",
-            daemon
-                .map(|d| format!(" (pid {})", d.pid))
-                .unwrap_or_default(),
-            data_dir.display()
-        ),
+}
+
+/// Start the job at `path`, or restart it (`replacing`: the service runs).
+fn start(manager: Manager, path: &Path, replacing: bool) -> anyhow::Result<()> {
+    match manager {
+        Manager::Launchd => {
+            let domain = format!("gui/{}", uid()?);
+            let target = format!("{domain}/{LABEL}");
+            run_step(&["launchctl", "bootout", target.as_str()], true)?;
+            // bootout can return while the old copy still drains, and
+            // bootstrap fails until launchd has let go of it.
+            let deadline = Instant::now() + Duration::from_secs(crate::daemon::STOP_SECS + 5);
+            while launchd_has(&target) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            let file = text(path)?;
+            run_step(
+                &["launchctl", "bootstrap", domain.as_str(), file.as_str()],
+                false,
+            )?;
+        }
+        Manager::Systemd => {
+            run_step(&["systemctl", "--user", "daemon-reload"], false)?;
+            run_step(&["systemctl", "--user", "enable", UNIT], false)?;
+            // Restart, not start: a running unit picks up the new file.
+            run_step(&["systemctl", "--user", "restart", UNIT], false)?;
+        }
     }
-    for step in load_steps(manager, path)? {
-        run_step(&step, false)?;
-    }
-    println!("started; `fsonos service status` shows it");
+    println!(
+        "{}; `fsonos service status` shows it",
+        if replacing { "restarted" } else { "started" }
+    );
     Ok(())
 }
 
-fn load_hint(manager: Manager) -> String {
-    match manager {
-        Manager::Launchd => {
-            format!("launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{LABEL}.plist")
+/// Whether this user's service serves the data directory now; an error when
+/// another daemon does (one started by hand, say), which would keep the
+/// service's from starting.
+fn serving(data_dir: &Path, manager: Manager) -> anyhow::Result<bool> {
+    match lock_data_dir(data_dir).with_context(|| format!("checking {}", data_dir.display()))? {
+        DirLock::Held(lock) => {
+            drop(lock);
+            Ok(false)
         }
-        Manager::Systemd => format!("systemctl --user enable --now {UNIT}"),
+        DirLock::Busy(daemon) => {
+            let pid = daemon.map(|d| d.pid);
+            let service = match manager_state(manager) {
+                Ok((Some(true), pid)) => pid,
+                _ => None,
+            };
+            if pid.is_some() && pid == service {
+                return Ok(true);
+            }
+            bail!(
+                "a daemon{} already serves {}, and the service's could not start beside it: \
+                 stop that one first",
+                pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default(),
+                data_dir.display()
+            )
+        }
     }
 }
 
-/// The service manager's commands that start the job at `path`, replacing a
-/// copy already loaded.
-fn load_steps(manager: Manager, path: &Path) -> anyhow::Result<Vec<Vec<String>>> {
-    Ok(match manager {
-        Manager::Launchd => {
-            let domain = format!("gui/{}", uid()?);
-            vec![
-                vec![
-                    "launchctl".into(),
-                    "bootout".into(),
-                    format!("{domain}/{LABEL}"),
-                ],
-                vec!["launchctl".into(), "bootstrap".into(), domain, text(path)?],
-            ]
+/// The data directory a service file `install` wrote names (its
+/// `FSONOS_DATA_DIR`), as the plist or the unit escapes it.
+fn installed_data_dir(file: &str) -> Option<PathBuf> {
+    if let Some((_, rest)) = file.split_once("<key>FSONOS_DATA_DIR</key>") {
+        let value = rest.split_once("<string>")?.1.split_once("</string>")?.0;
+        let value = value
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&");
+        return Some(PathBuf::from(value));
+    }
+    let quoted = file
+        .lines()
+        .find_map(|line| line.strip_prefix("Environment=\"FSONOS_DATA_DIR="))?
+        .strip_suffix('"')?;
+    // quoted() escaped `\` and `"` with a backslash and doubled `%`.
+    let mut value = String::new();
+    let mut chars = quoted.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' | '%' => value.extend(chars.next()),
+            c => value.push(c),
         }
-        Manager::Systemd => vec![
-            vec!["systemctl".into(), "--user".into(), "daemon-reload".into()],
-            vec![
-                "systemctl".into(),
-                "--user".into(),
-                "enable".into(),
-                "--now".into(),
-                UNIT.into(),
-            ],
-        ],
-    })
+    }
+    Some(PathBuf::from(value))
+}
+
+/// Whether launchd still has `target` (`gui/<uid>/<label>`).
+fn launchd_has(target: &str) -> bool {
+    Command::new("launchctl")
+        .args(["print", target])
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
 /// The commands that stop the job and forget it.
@@ -466,19 +560,19 @@ fn uid() -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
-/// Run one step. A `launchctl bootout` of a job that isn't loaded fails;
-/// that is fine, and so is any step marked `best_effort`.
-fn run_step(step: &[String], best_effort: bool) -> anyhow::Result<()> {
-    let (program, args) = step.split_first().context("an empty step")?;
+/// Run one step. A failure is an error unless the step is `best_effort`
+/// (stopping a job that isn't loaded fails, and that is fine).
+fn run_step<S: AsRef<str>>(step: &[S], best_effort: bool) -> anyhow::Result<()> {
+    let words: Vec<&str> = step.iter().map(AsRef::as_ref).collect();
+    let (program, args) = words.split_first().context("an empty step")?;
     let out = Command::new(program)
         .args(args)
         .output()
         .with_context(|| format!("running {program}"))?;
-    let unloading = program == "launchctl" && args.first().is_some_and(|a| a == "bootout");
-    if !out.status.success() && !unloading && !best_effort {
+    if !out.status.success() && !best_effort {
         bail!(
             "`{}` failed: {}",
-            step.join(" "),
+            words.join(" "),
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -508,13 +602,10 @@ fn uninstall(manager: Manager, path: &Path, dry_run: bool) -> anyhow::Result<()>
     // Stopping is best effort: a job that isn't loaded, or a session with
     // no user manager, has nothing to stop; the file goes either way.
     for step in &steps {
-        run_step(step, true)?;
+        run_step(step.as_slice(), true)?;
     }
     if manager == Manager::Systemd {
-        run_step(
-            &["systemctl".into(), "--user".into(), "daemon-reload".into()],
-            true,
-        )?;
+        run_step(&["systemctl", "--user", "daemon-reload"], true)?;
     }
     std::fs::remove_file(path).with_context(|| format!("removing {}", path.display()))?;
     println!("stopped and removed {}", path.display());

@@ -66,7 +66,7 @@ fn verdict(
             .with_evidence(json!({ "path": path, "pid": pid })),
             Ok((Some(false), _)) => CheckResult::warn(
                 format!("installed ({path}) but not running"),
-                "Start it with `fsonos service install --load`; its log says why it stopped.",
+                "Start it with `fsonos service start`; its log says why it stopped.",
             ),
             Ok((None, _)) => CheckResult::pass(format!("installed ({path})")),
             Err(e) => CheckResult::pass(format!("installed ({path})"))

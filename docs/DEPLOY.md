@@ -206,16 +206,22 @@ speaker's own timer was cancelled meanwhile (from the Sonos app, say).
 
 Use a LaunchAgent if you want the daemon to run only while you are logged in.
 `fsonos service install` writes one for you, with this binary's absolute
-path, your data directory, the log, and the flags and environment you give
-it (the same as `serve`'s), and `--load` starts it unless a daemon already
-serves the data directory:
+path, your data directory, the log, your shell's `PATH` (so the service finds
+the programs you do), and the flags and environment you give it (the same as
+`serve`'s). `--load` starts it, or restarts it if it runs, unless another
+daemon serves the data directory:
 
 ```bash
 fsonos service install --tailscale-serve --dry-run   # print it; change nothing
 fsonos service install --tailscale-serve --load      # write it and start it
+fsonos service start                                 # start it as installed, or restart it
 fsonos service status                                # installed, running, pid, answering
 fsonos service uninstall                             # stop it and remove only its file
 ```
+
+The file holds the flags given when it was written, and nothing else: to
+change one setting (adding `--spotify-client-id`, say), install again with
+every flag you want and `--load`.
 
 On Linux the same commands write and manage a systemd user unit,
 `~/.config/systemd/user/fsonos.service` (`loginctl enable-linger` keeps it

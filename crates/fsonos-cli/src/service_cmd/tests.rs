@@ -84,6 +84,35 @@ fn the_service_gets_the_settings_serve_would_get_here() {
     );
 }
 
+/// `start` reads back the data directory install wrote, however either
+/// manager's file escapes it.
+#[test]
+fn the_installed_data_directory_reads_back_from_either_file() {
+    let odd = "/Users/u/A&B <x> \"q\" 100% \\ dir";
+    let mut job = job();
+    job.env[1].1 = odd.to_owned();
+    for manager in [Manager::Launchd, Manager::Systemd] {
+        assert_eq!(
+            installed_data_dir(&manager.render(&job)),
+            Some(PathBuf::from(odd)),
+            "{manager:?}"
+        );
+    }
+    assert_eq!(installed_data_dir("[Service]\nExecStart=/bin/true\n"), None);
+}
+
+/// The job keeps this shell's PATH (launchd's has no Homebrew, say), less
+/// any relative directory, which would resolve in the job's HOME.
+#[test]
+fn the_job_searches_only_absolute_directories() {
+    assert_eq!(
+        search_path("/opt/homebrew/bin:.:bin::/usr/bin").as_deref(),
+        Some("/opt/homebrew/bin:/usr/bin")
+    );
+    assert_eq!(search_path(".:"), None);
+    assert_eq!(search_path(""), None);
+}
+
 #[test]
 fn the_launch_agent_runs_the_binary_with_its_environment() {
     let plist = plist(&job());
