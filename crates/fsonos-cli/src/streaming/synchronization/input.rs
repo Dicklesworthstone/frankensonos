@@ -26,14 +26,31 @@ impl Input {
     pub(super) fn from_args(args: &StreamArgs) -> anyhow::Result<Option<Self>> {
         let paired = args.sync.sync_input.as_deref();
         let microphone = args.sync.sync_microphone.as_deref();
+        ensure!(
+            !(args.sync.measure_latency && args.sync.sync_mpv.is_some()),
+            "choose measurement-only or mpv correction, not both"
+        );
+        ensure!(
+            args.sync.measure_timeout.is_none_or(|seconds| {
+                args.sync.measure_latency && (10..=600).contains(&seconds)
+            }),
+            "--measure-timeout requires measurement-only and 10..600 seconds"
+        );
+        ensure!(
+            !args.sync.measure_latency || args.sync.sync_base_delay == 0.0,
+            "measurement-only does not accept an mpv baseline"
+        );
         if paired.is_none() && microphone.is_none() {
             ensure!(
-                args.sync.sync_mpv.is_none(),
-                "--sync-mpv requires --sync-input or --sync-microphone"
+                args.sync.sync_mpv.is_none() && !args.sync.measure_latency,
+                "measurement or correction requires --sync-input or --sync-microphone"
             );
             return Ok(None);
         }
-        ensure!(args.sync.sync_mpv.is_some(), "capture requires --sync-mpv");
+        ensure!(
+            args.sync.sync_mpv.is_some() || args.sync.measure_latency,
+            "capture requires --sync-mpv or --measure-latency"
+        );
         ensure!(
             args.latency_wav.is_none(),
             "live capture conflicts with --latency-wav"
@@ -268,5 +285,91 @@ mod tests {
         assert!(PULSE_PAIR_FILTER.contains("map=0.0-FL|1.0-FR"));
         assert!(!PULSE_PAIR_FILTER.contains("PTS-STARTPTS"));
         assert_eq!(&args[args.len() - 2..], ["-map", "[paired]"]);
+    }
+
+    #[test]
+    fn measurement_only_preflight_never_connects_to_a_video_player() {
+        let cli = Cli::try_parse_from([
+            "stream",
+            "Room",
+            "--measure-latency",
+            "--sync-input",
+            "paired",
+            "--measure-timeout",
+            "120",
+            "--ffmpeg",
+            "/not-launched-in-preflight",
+        ])
+        .unwrap();
+        let prepared = super::super::Prepared::from_args(&cli.args)
+            .unwrap()
+            .unwrap();
+        assert!(prepared.controller.is_none());
+        assert_eq!(prepared.measurement_timeout.as_secs(), 120);
+    }
+
+    #[test]
+    fn measurement_requires_capture_and_cannot_also_correct_or_read_a_file() {
+        for flags in [
+            vec!["--measure-latency"],
+            vec!["--measure-timeout", "120"],
+            vec![
+                "--measure-latency",
+                "--sync-input",
+                "paired",
+                "--measure-timeout",
+                "9",
+            ],
+            vec![
+                "--measure-latency",
+                "--sync-input",
+                "paired",
+                "--measure-timeout",
+                "601",
+            ],
+            vec![
+                "--measure-latency",
+                "--sync-input",
+                "paired",
+                "--sync-mpv",
+                "/tmp/test-mpv",
+            ],
+            vec![
+                "--measure-latency",
+                "--sync-input",
+                "paired",
+                "--latency-wav",
+                "aligned.wav",
+            ],
+            vec![
+                "--measure-latency",
+                "--sync-input",
+                "paired",
+                "--sync-base-delay",
+                "0.2",
+            ],
+        ] {
+            let mut argv = vec!["stream", "Room"];
+            argv.extend(flags);
+            assert!(Cli::try_parse_from(argv).is_err());
+        }
+    }
+
+    #[test]
+    fn measurement_retains_linux_pairing_restrictions() {
+        let cli = Cli::try_parse_from([
+            "stream",
+            "Room",
+            "--measure-latency",
+            "--input",
+            "movie.monitor",
+            "--sync-microphone",
+            "room_mic",
+        ])
+        .unwrap();
+        assert_eq!(Input::from_args(&cli.args).is_ok(), cfg!(target_os = "linux"));
+        let mut invalid = cli.args;
+        invalid.input = "@DEFAULT_MONITOR@".into();
+        assert!(Input::from_args(&invalid).is_err());
     }
 }

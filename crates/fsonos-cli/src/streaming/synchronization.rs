@@ -1,10 +1,10 @@
-//! Explicit local acoustic feedback for mpv; ordinary streaming never records.
+//! Explicit local acoustic measurement and mpv feedback; ordinary streaming never records.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use clap::Args;
@@ -13,20 +13,39 @@ use super::{StreamArgs, calibration, latency};
 
 mod capture;
 mod input;
+mod measurement;
 mod mpv;
 
-// The field names are the flags (--sync-mpv, --sync-input, ...).
+pub use measurement::Measurement;
+
+// Most field names are flags (--sync-mpv, --sync-input, ...).
 #[allow(clippy::struct_field_names)]
 #[derive(Debug, Clone, Default, Args)]
 pub struct SyncArgs {
     /// Opt in to local microphone feedback and correction through this mpv Unix socket.
-    #[arg(long, requires = "sync_capture", conflicts_with = "latency_wav")]
+    #[arg(
+        long,
+        group = "capture_action",
+        requires = "sync_capture",
+        conflicts_with_all = ["measure_latency", "latency_wav"]
+    )]
     pub sync_mpv: Option<PathBuf>,
+    /// Measure live acoustic lag, then stop streaming and attempt playback restoration; no mpv writes.
+    #[arg(
+        long,
+        group = "capture_action",
+        requires = "sync_capture",
+        conflicts_with_all = ["sync_mpv", "latency_wav"]
+    )]
+    pub measure_latency: bool,
+    /// Measurement phase deadline in seconds (default 180), excluding playback setup and restoration.
+    #[arg(long, requires = "measure_latency", value_parser = clap::value_parser!(u64).range(10..=600))]
+    pub measure_timeout: Option<u64>,
     /// One time-aligned stereo capture: left=dry reference, right=room microphone.
     #[arg(
         long,
         group = "sync_capture",
-        requires = "sync_mpv",
+        requires = "capture_action",
         conflicts_with_all = ["sync_microphone", "latency_wav"]
     )]
     pub sync_input: Option<String>,
@@ -34,7 +53,7 @@ pub struct SyncArgs {
     #[arg(
         long,
         group = "sync_capture",
-        requires = "sync_mpv",
+        requires = "capture_action",
         conflicts_with_all = ["sync_input", "latency_wav"]
     )]
     pub sync_microphone: Option<String>,
@@ -43,6 +62,7 @@ pub struct SyncArgs {
         long,
         default_value_t = 0.0,
         requires = "sync_mpv",
+        conflicts_with = "measure_latency",
         allow_negative_numbers = true
     )]
     pub sync_base_delay: f64,
@@ -57,32 +77,37 @@ struct Options {
 struct Stop {
     session: Arc<AtomicBool>,
     stream: Arc<AtomicBool>,
+    deadline: Option<Instant>,
 }
 
 impl Stop {
     fn requested(&self) -> bool {
-        self.session.load(Ordering::Acquire) || self.stream.load(Ordering::Acquire)
+        self.session.load(Ordering::Acquire)
+            || self.stream.load(Ordering::Acquire)
+            || self.deadline.is_some_and(|at| Instant::now() >= at)
     }
 }
 
 pub struct Prepared {
-    controller: mpv::Controller,
+    controller: Option<mpv::Controller>,
     options: Options,
+    measurement_timeout: Duration,
 }
 
 impl Prepared {
-    /// Read-only preflight before any speaker mutation. Never starts mpv itself.
+    /// Read-only preflight before any speaker mutation. Measurement never connects to mpv.
     pub fn from_args(args: &StreamArgs) -> anyhow::Result<Option<Self>> {
         let Some(input) = input::Input::from_args(args)? else {
             return Ok(None);
         };
-        let path = args
+        let controller = args
             .sync
             .sync_mpv
             .as_deref()
-            .context("capture requires --sync-mpv")?;
-        let controller =
-            mpv::Controller::new(mpv::Client::connect(path)?, args.sync.sync_base_delay)?;
+            .map(|path| {
+                mpv::Controller::new(mpv::Client::connect(path)?, args.sync.sync_base_delay)
+            })
+            .transpose()?;
         Ok(Some(Self {
             controller,
             options: Options {
@@ -90,23 +115,23 @@ impl Prepared {
                 input,
                 max_lag_ms: args.max_lag_ms,
             },
+            measurement_timeout: Duration::from_secs(args.sync.measure_timeout.unwrap_or(180)),
         }))
     }
 
     /// Start only after Sonos accepted playback; a failed Play never records.
     pub fn start(self, stream: Arc<AtomicBool>) -> anyhow::Result<Session> {
+        let mut controller = self.controller.context("measurement has no mpv controller")?;
+        let options = self.options;
         let session = Arc::new(AtomicBool::new(false));
         let stop = Stop {
             session: Arc::clone(&session),
             stream,
+            deadline: None,
         };
         let worker = thread::Builder::new()
             .name("fsonos-audio-sync".into())
             .spawn(move || {
-                let Self {
-                    mut controller,
-                    options,
-                } = self;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run_loop(&mut controller, &options, &stop)
                 }))
@@ -152,18 +177,41 @@ impl Drop for Session {
     }
 }
 
-/// Own the worker until streaming stops, including encoder failure and Ctrl-C.
+/// Measurement finishes automatically; ordinary streaming and mpv correction
+/// retain their existing Ctrl-C lifetime. Only measurement calls `verify`.
 pub fn wait(
     stream: &mut super::broadcast::LiveStream,
     prepared: Option<Prepared>,
     stop: Arc<AtomicBool>,
-) -> anyhow::Result<()> {
+    mut verify: impl FnMut(bool) -> anyhow::Result<()>,
+) -> anyhow::Result<Option<Measurement>> {
+    let prepared = match prepared {
+        Some(prepared) if prepared.controller.is_none() => {
+            let stop = Stop {
+                session: Arc::new(AtomicBool::new(false)),
+                stream: stop,
+                deadline: Some(Instant::now() + prepared.measurement_timeout),
+            };
+            return measurement::collect(prepared.options.max_lag_ms, &stop, || {
+                stream.check()?;
+                verify(false)?;
+                let bytes = capture::record(&prepared.options, &stop)?;
+                stream.check()?;
+                if bytes.is_some() && !stop.requested() {
+                    verify(true)?;
+                }
+                Ok(bytes)
+            })
+            .map(Some);
+        }
+        other => other,
+    };
     let mut session = prepared.map(|prepared| prepared.start(stop)).transpose()?;
     let result = stream.wait_until_stopped().map_err(anyhow::Error::from);
     let stopped = session.as_mut().map(Session::shutdown).transpose();
     result?;
     stopped?;
-    Ok(())
+    Ok(None)
 }
 
 #[derive(Default)]

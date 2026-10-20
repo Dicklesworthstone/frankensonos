@@ -109,7 +109,7 @@ fn restore_if_still_streaming(
     source: &str,
     snapshot: &ZoneSnapshot,
     started: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let direct = Direct::survey(global)?;
     let network = global.network()?;
     let restored = recovery::restore(
@@ -139,7 +139,7 @@ fn restore_if_still_streaming(
             report.skipped
         );
     }
-    Ok(())
+    Ok(report.skipped.is_empty())
 }
 
 fn report_measurement(
@@ -172,6 +172,34 @@ fn report_measurement(
             )
         },
     )
+}
+
+/// Only the finite measurement path uses these reads; steady-state streaming
+/// stays event/push driven. Recheck identity across the transport-state read.
+#[cfg(unix)]
+fn verify_live_measurement<T: fsonos_proto::Transport + ?Sized>(
+    transport: &T,
+    host: std::net::IpAddr,
+    source: &str,
+    require_playing: bool,
+) -> anyhow::Result<()> {
+    use fsonos_proto::control as soap;
+    use fsonos_types::TransportState;
+    anyhow::ensure!(
+        soap::get_media_info(transport, host)?.uri == source,
+        "stream source changed; live latency measurement stopped"
+    );
+    let state = soap::get_transport_info(transport, host)?.state;
+    anyhow::ensure!(
+        state == TransportState::Playing
+            || (!require_playing && state == TransportState::Transitioning),
+        "stream is no longer playing; live latency measurement stopped"
+    );
+    anyhow::ensure!(
+        soap::get_media_info(transport, host)?.uri == source,
+        "stream source changed during observation; live latency measurement stopped"
+    );
+    Ok(())
 }
 
 pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
@@ -249,7 +277,14 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
                 args.room
             );
             #[cfg(unix)]
-            let result = synchronization::wait(&mut stream, sync, Arc::clone(&stop));
+            let result = synchronization::wait(
+                &mut stream,
+                sync,
+                Arc::clone(&stop),
+                |settled| {
+                    verify_live_measurement(&*network.transport, coordinator.ip, &source, settled)
+                },
+            );
             #[cfg(not(unix))]
             let result = stream.wait_until_stopped().map_err(anyhow::Error::from);
             result
@@ -259,14 +294,28 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
 
     // Keep capture available while checking ownership and restoring playback.
     // Cancellation does not close the audio sockets before this observation.
-    if attempted
-        && let Err(error) = restore_if_still_streaming(global, &source, &previous, was_started)
-    {
-        eprintln!("fsonos stream: could not restore prior playback: {error:#}");
-    }
+    let playback_restored = attempted
+        && match restore_if_still_streaming(global, &source, &previous, was_started) {
+            Ok(restored) => restored,
+            Err(error) => {
+                eprintln!("fsonos stream: could not restore prior playback: {error:#}");
+                false
+            }
+        };
     let stopped = stream.shutdown();
-    result?;
-    stopped.context("stop the live MP3 stream")
+    #[cfg(unix)]
+    let measured = result?;
+    #[cfg(not(unix))]
+    {
+        result?;
+        let _ = playback_restored;
+    }
+    stopped.context("stop the live MP3 stream")?;
+    #[cfg(unix)]
+    if let Some(measured) = measured {
+        measured.emit(global.json, &args.room, playback_restored)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
