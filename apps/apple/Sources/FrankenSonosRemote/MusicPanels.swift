@@ -119,6 +119,7 @@ import FrankenSonosKit
                 Button("Play now", systemImage: "play") {
                     if let revision = page.revision { model.prepare(.queuePlay(item, revision: revision)) }
                 }
+                queueMoveMenu(item, page: page)
                 Button("Remove from queue", systemImage: "minus.circle", role: .destructive) {
                     if let revision = page.revision { model.prepare(.queueRemove(item, revision: revision)) }
                 }
@@ -128,6 +129,32 @@ import FrankenSonosKit
         }
         .padding(14).background(current ? RemoteStyle.accent.opacity(0.10) : RemoteStyle.surface,
                                 in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private func queueMoveMenu(_ item: QueueItem, page: QueuePage) -> some View {
+        let zone = model.selectedZone
+        return Menu("Move in queue", systemImage: "arrow.up.arrow.down") {
+            ForEach(QueueMoveDestination.allCases, id: \.self) { destination in
+                let move = try? QueueMove(item, in: page, to: destination)
+                Button(destination.title, systemImage: queueMoveSymbol(destination)) {
+                    // A menu belongs to this exact page and selected group.
+                    // Fresh preflight also checks the source and destination.
+                    guard ready, model.panel == .queue, model.queue == page,
+                          let move, let zone else { return }
+                    model.prepare(.queueMove(move), in: zone)
+                }.disabled(move == nil)
+            }
+        }
+    }
+
+    private func queueMoveSymbol(_ destination: QueueMoveDestination) -> String {
+        switch destination {
+        case .earlier: "arrow.up"
+        case .later: "arrow.down"
+        case .afterCurrent: "text.line.first.and.arrowtriangle.forward"
+        case .start: "arrow.up.to.line"
+        case .end: "arrow.down.to.line"
+        }
     }
 
     @ViewBuilder private var favoritesPanel: some View {

@@ -116,9 +116,14 @@ they never send while dragged. Grouping menus join or separate rooms, group a
 household, move playback, or request a cross-household replay with the existing
 backend's semantics (not synchronized playback).
 
-The queue is paged in groups of 25. Playing or removing an entry carries its
-exact URI and revision through fresh preflight and the daemon's native queue
-checks. Pages are not concatenated across revisions. A missing revision leaves
+The queue is paged in groups of 25. Playing, removing or moving an entry carries
+its exact URI and revision through fresh preflight and the daemon's native queue
+checks. Each entry's menu can move that queued copy earlier, later, after the
+current entry, to the start or to the end. Review names the original occurrence
+and resulting position; a changed queue or current-entry destination requires a
+new review. Native reordering preserves the playing source and does not start or
+restart music. Queue moves and removals cannot be undone.
+Pages are not concatenated across revisions. A missing revision leaves
 the page readable but not editable. Source URIs and library results can be
 played, queued next or appended; adding to the queue does not start playback.
 Favorites are read from the selected household and reviewed by their stable ID.

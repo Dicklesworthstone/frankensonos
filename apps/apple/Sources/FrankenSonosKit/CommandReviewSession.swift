@@ -136,6 +136,8 @@ fileprivate struct CommandObservation: Sendable {
                   found.position == item.position, found.uri == item.uri, found.playable else {
                 throw ContractError.invalid("The reviewed queue entry changed. Refresh the queue.")
             }
+        case .queueMove(let move):
+            try move.validate(await client.queue(zone, offset: move.item.position - 1))
         default: break
         }
         try Task.checkCancellation()

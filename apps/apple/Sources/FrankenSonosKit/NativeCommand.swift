@@ -17,6 +17,7 @@ public enum NativeCommand: Equatable, Sendable {
     case queueAdd(String, next: Bool)
     case queuePlay(QueueItem, revision: String)
     case queueRemove(QueueItem, revision: String)
+    case queueMove(QueueMove)
     case djStart(mood: String?), djStop, djSkip, djFeedback(like: Bool)
     case djSteer(mood: String, seconds: UInt32), djClear
     case join(room: String, to: RoomID), leave(room: String), party, move(to: RoomID, copy: Bool)
@@ -38,6 +39,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueAdd(_, let next): next ? "Queue next" : "Add to queue"
         case .queuePlay(let item, _): "Play \(item.title)"
         case .queueRemove: "Remove queue entry"
+        case .queueMove(let move): move.destination.title
         case .djStart: "Start your DJ"
         case .djStop: "Stop the DJ"
         case .djSkip: "Skip this whole work"
@@ -56,6 +58,7 @@ public enum NativeCommand: Equatable, Sendable {
         switch self {
         case .queueAdd: "Adds music without starting playback. The daemon resolves the source and applies its queue rules."
         case .queueRemove: "Removes this exact revision-bound entry. This cannot be undone; removing the current entry can advance or stop playback."
+        case .queueMove(let move): move.explanation
         case .groupVolume: "Changes every member of this group. The daemon's per-room caps and quiet hours remain authoritative."
         case .volume, .mute: "Changes only the named room. The group's music and membership are unchanged."
         case .djSkip: "Advances to the DJ's next whole work, not merely the next movement."
@@ -131,6 +134,12 @@ public enum NativeCommand: Equatable, Sendable {
             body["position"] = .integer(Int64(item.position)); body["expected_revision"] = .string(revision)
             if case .queuePlay = self { path = ["queue", "play"]; body["expected_uri"] = .string(item.uri!) }
             else { path = ["queue", "remove"]; body["expected_uris"] = .array([.string(item.uri!)]) }
+        case .queueMove(let move):
+            path = ["queue", "move"]
+            body["position"] = .integer(Int64(move.item.position))
+            body["insert_before"] = .integer(Int64(move.insertBefore))
+            body["expected_uris"] = .array([.string(move.sourceURI)])
+            body["expected_revision"] = .string(move.revision)
         case .djStart(let mood): path = ["dj", "start"]; if let mood { body["mood"] = .string(try source(mood)) }
         case .djStop: path = ["dj", "stop"]
         case .djSkip: path = ["dj", "skip"]
@@ -176,7 +185,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .volume: matches = before.volume != nil && before.volume == current.volume
         case .groupVolume: matches = before.groupVolume != nil && before.groupVolume == current.groupVolume
         case .mute: matches = before.mute != nil && before.mute == current.mute
-        case .queuePlay, .queueRemove, .join, .leave, .party, .move, .scene, .sleep:
+        case .queuePlay, .queueRemove, .queueMove, .join, .leave, .party, .move, .scene, .sleep:
             matches = true // Native queue checks and fresh topology validation remain mandatory.
         case .queueAdd(_, let next): matches = !next || before.samePlayback(as: current)
         default: matches = before.samePlayback(as: current)
@@ -269,6 +278,7 @@ public enum NativeCommand: Equatable, Sendable {
             let r = try DaemonClient.decode(Removed.self, from: data)
             guard r.position == item.position, r.count == 1, !r.undoable else { throw ClientError.unreadable }
             return CommandReceipt(title: r.done, detail: "\(r.remaining) queue entries remain. This removal cannot be undone.")
+        case .queueMove(let move): return try move.receipt(data, in: zone)
         default:
             let report = try DaemonClient.decode(Outcome.self, from: data)
             guard !report.done.isEmpty else { throw ClientError.unreadable }
