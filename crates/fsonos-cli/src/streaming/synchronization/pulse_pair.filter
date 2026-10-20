@@ -1,0 +1,1 @@
+[0:a]aresample=8000:async=100:first_pts=0,aformat=channel_layouts=mono[reference];[1:a]aresample=8000:async=100:first_pts=0,aformat=channel_layouts=mono[microphone];[reference][microphone]join=inputs=2:channel_layout=stereo:map=0.0-FL|1.0-FR[paired]

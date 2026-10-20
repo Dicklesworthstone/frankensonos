@@ -1,4 +1,4 @@
-//! Finite, memory-bounded stereo capture from one owner-configured local source.
+//! Finite, memory-bounded capture of a paired source or timestamp-aligned Pulse inputs.
 
 use std::io::Read as _;
 use std::process::{Child, Command, Stdio};
@@ -12,15 +12,14 @@ use super::super::latency::SAMPLE_RATE;
 use super::{Options, Stop};
 
 fn arguments(options: &Options, seconds: u32) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "-hide_banner".into(),
         "-loglevel".into(),
         "error".into(),
         "-nostdin".into(),
-        "-f".into(),
-        options.format.clone(),
-        "-i".into(),
-        options.input.clone(),
+    ];
+    args.extend(options.input.arguments());
+    args.extend([
         "-t".into(),
         seconds.to_string(),
         "-vn".into(),
@@ -33,7 +32,8 @@ fn arguments(options: &Options, seconds: u32) -> Vec<String> {
         "-f".into(),
         "s16le".into(),
         "pipe:1".into(),
-    ]
+    ]);
+    args
 }
 
 struct Capture {
@@ -126,21 +126,25 @@ pub(super) fn record(options: &Options, stop: &Stop) -> anyhow::Result<Option<Ve
 
 #[cfg(test)]
 mod tests {
+    use super::super::input::Input;
     use super::*;
 
     #[test]
     fn capture_is_one_stereo_device_with_a_finite_raw_pcm_output() {
+        let source = "paired source; not a shell";
         let options = Options {
             ffmpeg: "ffmpeg".into(),
-            format: "pulse".into(),
-            input: "paired source; not a shell".into(),
+            input: Input::Paired {
+                format: "pulse".into(),
+                source: source.into(),
+            },
             max_lag_ms: 8_000,
         };
         let args = arguments(&options, 20);
         assert_eq!(args.iter().filter(|arg| *arg == "-i").count(), 1);
         assert_eq!(args.last().unwrap(), "pipe:1");
         for (option, value) in [
-            ("-i", options.input.as_str()),
+            ("-i", source),
             ("-t", "20"),
             ("-ac", "2"),
             ("-ar", "8000"),

@@ -6,12 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use anyhow::{Context as _, ensure};
+use anyhow::Context as _;
 use clap::Args;
 
 use super::{StreamArgs, calibration, latency};
 
 mod capture;
+mod input;
 mod mpv;
 
 // The field names are the flags (--sync-mpv, --sync-input, ...).
@@ -19,11 +20,24 @@ mod mpv;
 #[derive(Debug, Clone, Default, Args)]
 pub struct SyncArgs {
     /// Opt in to local microphone feedback and correction through this mpv Unix socket.
-    #[arg(long, requires = "sync_input", conflicts_with = "latency_wav")]
+    #[arg(long, requires = "sync_capture", conflicts_with = "latency_wav")]
     pub sync_mpv: Option<PathBuf>,
     /// One time-aligned stereo capture: left=dry reference, right=room microphone.
-    #[arg(long, requires = "sync_mpv", conflicts_with = "latency_wav")]
+    #[arg(
+        long,
+        group = "sync_capture",
+        requires = "sync_mpv",
+        conflicts_with_all = ["sync_microphone", "latency_wav"]
+    )]
     pub sync_input: Option<String>,
+    /// Linux pulse: pair this named microphone with the exact .monitor named by --input.
+    #[arg(
+        long,
+        group = "sync_capture",
+        requires = "sync_mpv",
+        conflicts_with_all = ["sync_input", "latency_wav"]
+    )]
+    pub sync_microphone: Option<String>,
     /// Uncorrected media-specific mpv delay in seconds, not the last correction.
     #[arg(
         long,
@@ -36,8 +50,7 @@ pub struct SyncArgs {
 
 struct Options {
     ffmpeg: String,
-    format: String,
-    input: String,
+    input: input::Input,
     max_lag_ms: u32,
 }
 
@@ -60,30 +73,21 @@ pub struct Prepared {
 impl Prepared {
     /// Read-only preflight before any speaker mutation. Never starts mpv itself.
     pub fn from_args(args: &StreamArgs) -> anyhow::Result<Option<Self>> {
-        let Some(path) = &args.sync.sync_mpv else {
+        let Some(input) = input::Input::from_args(args)? else {
             return Ok(None);
         };
-        let input = args
+        let path = args
             .sync
-            .sync_input
+            .sync_mpv
             .as_deref()
-            .context("--sync-mpv requires --sync-input")?;
-        ensure!(
-            !input.trim().is_empty(),
-            "--sync-input must name a paired local capture source"
-        );
-        ensure!(
-            matches!(args.format.as_str(), "pulse" | "avfoundation" | "alsa"),
-            "live synchronization supports local pulse, avfoundation or alsa capture"
-        );
+            .context("capture requires --sync-mpv")?;
         let controller =
             mpv::Controller::new(mpv::Client::connect(path)?, args.sync.sync_base_delay)?;
         Ok(Some(Self {
             controller,
             options: Options {
                 ffmpeg: args.ffmpeg.clone(),
-                format: args.format.clone(),
-                input: input.to_owned(),
+                input,
                 max_lag_ms: args.max_lag_ms,
             },
         }))
