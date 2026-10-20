@@ -145,6 +145,45 @@ const ScenesRemote = (() => {
     return Object.freeze(rooms);
   }
 
+  const SOURCE_PAGE_SIZE = 6;
+  const favoriteChoice = (f) => Object.freeze({ id: f.id, title: f.title, kind: f.kind,
+    description: f.description ?? null, art_uri: f.art_uri ?? null });
+
+  // A scene retains a favorite's title. An ID alone cannot make a duplicate
+  // title safe to offer, because the scene engine resolves that title later.
+  function sourceChoicesOf(kind, value) {
+    if (kind === 'favorite') {
+      if (!Array.isArray(value) || value.length > 10000 || !value.every((f) => plain(f)
+          && text(f.id) && text(f.title) && ['track', 'stream', 'container', 'unplayable'].includes(f.kind)
+          && (f.description == null || (typeof f.description === 'string' && f.description.length <= 8192))
+          && (f.art_uri == null || (typeof f.art_uri === 'string' && f.art_uri.length <= 8192)))) {
+        throw new Error('The favorite list is unreadable.');
+      }
+      if (new Set(value.map((f) => f.id)).size !== value.length) throw new Error('The favorite list repeats an ID.');
+      const titles = new Map();
+      for (const f of value) titles.set(nameKey(f.title), (titles.get(nameKey(f.title)) || 0) + 1);
+      const playable = value.filter((f) => f.kind !== 'unplayable');
+      return freeze({ items: playable.filter((f) => titles.get(nameKey(f.title)) === 1).map(favoriteChoice),
+        ambiguous: playable.filter((f) => titles.get(nameKey(f.title)) > 1).length });
+    }
+    if (kind !== 'dj' || !plain(value) || !Array.isArray(value.moods) || value.moods.length > 512
+        || !value.moods.every((m) => plain(m) && text(m.name, 128))) throw new Error('The DJ mood list is unreadable.');
+    if (new Set(value.moods.map((m) => nameKey(m.name))).size !== value.moods.length) {
+      throw new Error('The DJ mood list repeats a name.');
+    }
+    return freeze({ items: value.moods.map((m) => ({ id: m.name, title: m.name, kind: 'dj' })), ambiguous: 0 });
+  }
+
+  function sourcePage(choices) {
+    const query = choices.query.trim().toLocaleLowerCase();
+    const matches = choices.items.filter((item) => !query
+      || [item.title, item.description || ''].join(' ').toLocaleLowerCase().includes(query));
+    const page = Math.min(choices.page, Math.max(0, Math.ceil(matches.length / SOURCE_PAGE_SIZE) - 1));
+    const offset = page * SOURCE_PAGE_SIZE;
+    return { items: matches.slice(offset, offset + SOURCE_PAGE_SIZE), total: matches.length, page, offset,
+      previous: page > 0, next: offset + SOURCE_PAGE_SIZE < matches.length };
+  }
+
   // Match the public source normalizer without resolving links over a network.
   function sourceUri(raw) {
     const uri = raw.trim();
@@ -264,6 +303,10 @@ const ScenesRemote = (() => {
         if (values.filter((v) => nameKey(v.title) === nameKey(f.title)).length !== 1) {
           throw new Error('That favorite title is ambiguous. Give it a unique title before saving a scene.');
         }
+        if (draft.groups[i].choice
+            && JSON.stringify(draft.groups[i].choice) !== JSON.stringify(favoriteChoice(f))) {
+          throw new Error('The selected favorite changed. Refresh the choices and select it again.');
+        }
         dependencies.push({ zone: group.coordinator, id: f.id, title: f.title, kind: f.kind,
           description: f.description ?? null, art_uri: f.art_uri ?? null });
         source.name = f.id;
@@ -312,8 +355,10 @@ const ScenesRemote = (() => {
   function model({ call, changed = () => {}, applied = () => {} }) {
     let epoch = 0;
     let disposed = false;
+    let sourceRequest = 0;
     const state = { open: false, rows: [], loaded: false, loading: false, writing: false,
-      pending: null, name: '', fade: '0', message: '', result: null, draft: null, rooms: null, saved: null };
+      pending: null, name: '', fade: '0', message: '', result: null, draft: null, rooms: null, saved: null,
+      sourceChoices: Object.create(null) };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) {} } };
     const current = (version) => !disposed && state.open && epoch === version;
     const invalidate = () => { ++epoch; state.pending = null; state.loaded = false; state.loading = false; };
@@ -323,6 +368,7 @@ const ScenesRemote = (() => {
       state.open = true;
       invalidate();
       state.draft = state.rooms = null;
+      state.sourceChoices = Object.create(null);
       const version = epoch;
       state.loading = true;
       state.message = '';
@@ -377,6 +423,7 @@ const ScenesRemote = (() => {
       const version = ++epoch;
       state.loading = true;
       state.message = '';
+      state.sourceChoices = Object.create(null);
       publish();
       try {
         const rooms = roomsOf(await call('zones'));
@@ -396,6 +443,11 @@ const ScenesRemote = (() => {
       ++epoch;
       state.pending = null;
       state.draft = freeze(next);
+      for (const [id, choices] of Object.entries(state.sourceChoices)) {
+        if (!next.groups.some((g) => String(g.id) === id && g.coordinator === choices.coordinator && g.kind === choices.kind)) {
+          delete state.sourceChoices[id];
+        }
+      }
       state.message = '';
       publish();
       return true;
@@ -410,8 +462,64 @@ const ScenesRemote = (() => {
           || !['coordinator', 'members', 'kind', 'value', 'playing'].includes(key)) return false;
       if (key === 'members' ? !Array.isArray(value) || !value.every((v) => typeof v === 'string') : typeof value !== 'string') return false;
       let next = { ...group, [key]: key === 'members' ? [...value] : value };
+      if (['coordinator', 'kind', 'value'].includes(key)) delete next.choice;
       if (key === 'coordinator') next = { ...next, members: [], kind: 'keep', value: '', playing: 'keep' };
       if (key === 'kind') next = { ...next, value: '', playing: value === 'keep' ? 'keep' : 'play' };
+      return changeDraft({ ...state.draft, groups: state.draft.groups.map((g) => g === group ? next : g) });
+    }
+
+    function choicesFor(group) {
+      const choices = state.sourceChoices[group.id];
+      return choices?.coordinator === group.coordinator && choices.kind === group.kind ? choices : null;
+    }
+    async function loadSources(group) {
+      if (!editable() || state.pending || !state.draft?.groups.includes(group)
+          || !['favorite', 'dj'].includes(group.kind) || !state.rooms.some((r) => r.target === group.coordinator)) return false;
+      const previous = choicesFor(group);
+      if (previous?.phase === 'loading') return false;
+      const request = ++sourceRequest;
+      state.sourceChoices[group.id] = { coordinator: group.coordinator, kind: group.kind,
+        request, phase: 'loading', items: [], ambiguous: 0, query: previous?.query || '', page: 0, error: '' };
+      const owns = () => !disposed && state.open && state.sourceChoices[group.id]?.request === request
+        && state.draft?.groups.some((g) => g.id === group.id && g.coordinator === group.coordinator && g.kind === group.kind);
+      publish();
+      try {
+        const value = await call(group.kind === 'favorite' ? 'favorites' : 'moods', { query: { zone: group.coordinator } });
+        if (!owns()) return false;
+        const choices = sourceChoicesOf(group.kind, value);
+        state.sourceChoices[group.id] = { ...state.sourceChoices[group.id], ...choices, phase: 'ready' };
+        return true;
+      } catch (e) {
+        if (owns()) state.sourceChoices[group.id] = { ...state.sourceChoices[group.id], phase: 'error', error: errorText(e) };
+        return false;
+      } finally { if (owns()) publish(); }
+    }
+    function filterSources(group, query) {
+      if (!editable() || state.pending || !state.draft?.groups.includes(group) || typeof query !== 'string') return false;
+      const choices = choicesFor(group);
+      if (!choices) return false;
+      state.sourceChoices[group.id] = { ...choices, query: query.slice(0, 256), page: 0 };
+      publish();
+      return true;
+    }
+    function pageSources(group, direction) {
+      if (!editable() || state.pending || !state.draft?.groups.includes(group) || ![-1, 1].includes(direction)) return false;
+      const choices = choicesFor(group);
+      if (choices?.phase !== 'ready') return false;
+      const page = sourcePage(choices);
+      if (direction === -1 ? !page.previous : !page.next) return false;
+      state.sourceChoices[group.id] = { ...choices, page: page.page + direction };
+      publish();
+      return true;
+    }
+    function chooseSource(group, choice) {
+      if (!editable() || state.pending || !state.draft?.groups.includes(group)
+          || !['favorite', 'dj'].includes(group.kind)) return false;
+      const choices = choicesFor(group);
+      // Automatic DJ needs no catalog. Every named choice must be the exact
+      // item displayed for this draft group's currently selected destination.
+      if (choice === null ? group.kind !== 'dj' : choices?.phase !== 'ready' || !choices.items.includes(choice)) return false;
+      const next = { ...group, value: choice?.id || '', choice };
       return changeDraft({ ...state.draft, groups: state.draft.groups.map((g) => g === group ? next : g) });
     }
     function removeGroup(group) {
@@ -426,6 +534,7 @@ const ScenesRemote = (() => {
     function discardDefinition() {
       if (disposed || state.writing) return false;
       ++epoch; state.pending = null; state.loading = false; state.draft = state.rooms = null;
+      state.sourceChoices = Object.create(null);
       publish();
       return true;
     }
@@ -499,6 +608,7 @@ const ScenesRemote = (() => {
           if (!disposed) {
             state.saved = saved;
             state.draft = state.rooms = null;
+            state.sourceChoices = Object.create(null);
             state.message = prepared ? `Saved custom scene “${saved.name}”. No playback was changed. Refresh and review it before applying.`
               : `Captured the current house as “${saved.name}”. Refresh before another scene change.`;
           }
@@ -550,7 +660,8 @@ const ScenesRemote = (() => {
 
     return { state, refresh, editName, editFade, review, cancel, confirm,
       beginDefinition, addGroup, editGroup, removeGroup, editRoom, discardDefinition, reviewDefinition,
-      close() { state.open = false; invalidate(); state.draft = state.rooms = null; publish(); },
+      choicesFor, loadSources, filterSources, pageSources, chooseSource,
+      close() { state.open = false; invalidate(); state.draft = state.rooms = null; state.sourceChoices = Object.create(null); publish(); },
       dispose() { disposed = true; ++epoch; } };
   }
 
@@ -562,13 +673,94 @@ const ScenesRemote = (() => {
     const button = (label, key, work, disabled = false) => el('button', {
       type: 'button', text: label, 'data-scene-focus': key, disabled, onclick: work,
     });
+    const sourceKindLabel = (kind) => ({ track: 'Track', stream: 'Radio / stream', container: 'Album / playlist', dj: 'DJ mood' })[kind];
+    function sourceChooser(g, index, busy) {
+      const favorites = g.kind === 'favorite', noun = favorites ? 'favorites' : 'moods';
+      const choices = control.choicesFor(g);
+      const group = `Group ${index + 1}`;
+      const section = el('section', { class: 'scene-music-picker', 'aria-label': `${group} music choices` });
+      const selected = g.choice || choices?.items.find((item) => item.id === g.value);
+      const selectedName = favorites ? selected?.title || g.value : g.value || 'Automatic DJ';
+      if (selectedName) {
+        const summary = el('div', { class: 'scene-source-selected', 'aria-label': `${group} selected source` },
+          el('span', { class: 'scene-source-eyebrow', text: favorites ? 'Selected favorite' : 'Selected DJ mood' }),
+          el('strong', { text: selectedName }));
+        if (selected?.description) summary.append(el('span', { text: selected.description }));
+        if (!favorites && !g.value) summary.append(el('span', { text: 'Follow current steering and the house’s time-of-day program.' }));
+        if (choices?.phase === 'ready' && g.value && !choices.items.some((item) => item.id === g.value
+            && (!g.choice || JSON.stringify(item) === JSON.stringify(g.choice)))) {
+          summary.append(el('p', { class: 'scene-source-error', role: 'status',
+            text: 'This selection changed or is no longer available. Choose a current source before saving.' }));
+        }
+        section.append(summary);
+      }
+      if (!favorites) {
+        const automatic = button('Automatic DJ', `automatic-${g.id}`, () => control.chooseSource(g, null), busy);
+        automatic.classList.add('scene-source-automatic');
+        automatic.setAttribute('aria-pressed', String(!g.value));
+        section.append(automatic);
+      }
+      const label = favorites ? 'Sonos favorites' : 'Named DJ moods';
+      section.append(el('div', { class: 'scene-source-heading' },
+        el('div', {}, el('strong', { text: label }), el('p', { text: `For ${g.coordinator}` })),
+        button(choices?.phase === 'error' ? `Retry ${noun}` : choices ? `Refresh ${noun}` : `Load ${noun}`,
+          `sources-reload-${g.id}`, () => control.loadSources(g), busy || choices?.phase === 'loading')));
+      if (!choices || choices.phase === 'loading') {
+        section.append(el('p', { role: 'status', text: choices ? `Reading ${noun} for this group…` : `Load this group’s ${noun} to choose its music.` }));
+        return section;
+      }
+      if (choices.phase === 'error') {
+        section.append(el('p', { class: 'scene-source-error', role: 'alert', text: choices.error }));
+        return section;
+      }
+      if (choices.ambiguous) section.append(el('p', { class: 'scene-source-note',
+        text: `${choices.ambiguous} favorite${choices.ambiguous === 1 ? ' has' : 's have'} a duplicate title. Rename ${choices.ambiguous === 1 ? 'it' : 'them'} in Sonos to use ${choices.ambiguous === 1 ? 'it' : 'them'} in a scene.` }));
+      if (!choices.items.length) {
+        section.append(el('p', { role: 'status', text: favorites
+          ? 'No uniquely named playable favorites are available for this group. Add a favorite in its Sonos household, then refresh.'
+          : 'No named moods are available. Automatic DJ is still available.' }));
+        return section;
+      }
+      section.append(el('label', {}, favorites ? 'Find a favorite' : 'Find a mood', el('input', {
+        type: 'search', value: choices.query, maxlength: 256, autocomplete: 'off',
+        placeholder: favorites ? 'Title or description' : 'Mood name',
+        'aria-label': `${group} find ${favorites ? 'a favorite' : 'a mood'}`,
+        'data-scene-focus': `sources-search-${g.id}`, disabled: busy,
+        oninput: (e) => control.filterSources(g, e.target.value),
+      })));
+      const page = sourcePage(choices);
+      section.append(el('p', { class: 'scene-source-count', role: 'status', tabindex: -1,
+        'data-scene-focus': `sources-count-${g.id}`, text: page.total
+          ? `${page.offset + 1}–${page.offset + page.items.length} of ${page.total} ${noun}${choices.query.trim() ? ' matching your search' : ''}`
+          : `No ${noun} match “${choices.query.trim()}”. Try another search.` }));
+      const list = el('ul', { class: 'scene-source-options', 'aria-label': `${group} available ${noun}` });
+      for (const item of page.items) {
+        const pick = el('button', { type: 'button', class: 'scene-source-option', disabled: busy,
+          'aria-pressed': String(g.value === item.id), 'data-scene-focus': `source-${g.id}-${item.id}`,
+          onclick: () => control.chooseSource(g, item) },
+          el('span', { class: 'scene-source-kind', text: sourceKindLabel(item.kind) }),
+          el('strong', { text: item.title }),
+          ...(item.description ? [el('span', { class: 'scene-source-description', text: item.description })] : []));
+        list.append(el('li', {}, pick));
+      }
+      section.append(list);
+      if (page.previous || page.next) {
+        const move = (direction) => {
+          if (control.pageSources(g, direction)) body.querySelector(`[data-scene-focus="sources-count-${g.id}"]`)?.focus({ preventScroll: true });
+        };
+        section.append(el('div', { class: 'row scene-source-pages' },
+          button('Previous choices', `sources-previous-${g.id}`, () => move(-1), busy || !page.previous),
+          button('Next choices', `sources-next-${g.id}`, () => move(1), busy || !page.next)));
+      }
+      return section;
+    }
     function definitionForm(s) {
       const form = el('section', { class: 'scene-definition', 'aria-label': 'Custom scene definition' },
         el('h3', { text: 'Build a custom scene' }),
         el('p', { text: 'Only save a definition here; no speaker is changed. Declare exact groups, or leave groups empty for a volume/mute-only scene. Unlisted members of a declared group will detach when it is applied.' }));
       const busy = !s.loaded || s.loading || s.writing || !!s.pending;
-      const select = (label, key, value, choices, work) => {
-        const node = el('select', { 'aria-label': label, 'data-scene-focus': key, disabled: busy,
+      const select = (label, key, value, choices, work, unavailable = false) => {
+        const node = el('select', { 'aria-label': label, 'data-scene-focus': key, disabled: busy || unavailable,
           onchange: (e) => work(e.target.value) });
         for (const [v, label] of choices) node.append(el('option', { value: v, text: label }));
         node.value = value;
@@ -589,13 +781,18 @@ const ScenesRemote = (() => {
         }
         field.append(members, select(`Group ${i + 1} source`, `source-${g.id}`, g.kind,
           [['keep', 'Keep the current source'], ['favorite', 'Sonos favorite'], ['uri', 'Music URI or Spotify link'], ['dj', 'DJ']],
-          (v) => control.editGroup(g, 'kind', v)));
-        if (g.kind !== 'keep') {
-          const label = g.kind === 'favorite' ? 'Exact favorite title or ID' : g.kind === 'uri' ? 'Music URI or Spotify link' : 'DJ mood (blank for automatic)';
+          (v) => {
+            if (control.editGroup(g, 'kind', v) && ['favorite', 'dj'].includes(v)) {
+              void control.loadSources(control.state.draft.groups.find((next) => next.id === g.id));
+            }
+          }, !lead));
+        if (g.kind === 'uri') {
+          const label = 'Music URI or Spotify link';
           field.append(el('label', {}, label, el('input', { type: 'text', value: g.value,
             maxlength: 2048, 'aria-label': `Group ${i + 1} ${label}`, 'data-scene-focus': `value-${g.id}`, disabled: busy,
             oninput: (e) => control.editGroup(g, 'value', e.target.value) })));
         }
+        if (lead && ['favorite', 'dj'].includes(g.kind)) field.append(sourceChooser(g, i, busy));
         field.append(select(`Group ${i + 1} playback`, `playing-${g.id}`, g.playing,
           [...(g.kind === 'keep' ? [['keep', 'Leave playback unchanged']] : []), ['play', 'Playing'], ['pause', 'Paused']],
           (v) => control.editGroup(g, 'playing', v)),
@@ -628,13 +825,14 @@ const ScenesRemote = (() => {
       const reviewed = await control.reviewDefinition();
       if (reviewed && control.state.pending?.action === 'define'
           && (document.activeElement === active || document.activeElement === document.body)) {
+        body.querySelector('.scene-review')?.scrollIntoView({ block: 'start', behavior: 'auto' });
         body.querySelector('[data-scene-focus="cancel"]')?.focus({ preventScroll: true });
       }
     }
     function render(s) {
       const active = document.activeElement;
       const focus = body.contains(active) ? active.getAttribute('data-scene-focus') : null;
-      const caret = focus && active.type === 'text' ? active.selectionStart : null;
+      const caret = focus && ['text', 'search'].includes(active.type) ? active.selectionStart : null;
       if (s.pending && focus && focus !== 'cancel') reviewFocus = focus;
       body.replaceChildren();
       body.setAttribute('aria-busy', String(s.loading || s.writing));
@@ -702,7 +900,7 @@ const ScenesRemote = (() => {
         .find((e) => e.getAttribute('data-scene-focus') === key);
       if (next && !next.disabled) {
         next.focus({ preventScroll: true });
-        if (next.type === 'text' && Number.isInteger(caret)) next.setSelectionRange(caret, caret);
+        if (['text', 'search'].includes(next.type) && Number.isInteger(caret)) next.setSelectionRange(caret, caret);
       }
     }
     node.addEventListener('toggle', () => { if (node.open) void control.refresh(); else control.close(); });
@@ -710,7 +908,8 @@ const ScenesRemote = (() => {
     return { node, dispose: control.dispose };
   }
 
-  return { routes, sceneOf, scenesOf, signature, detail, appliedOf, roomsOf, sourceUri, definition, prepareDefinition, model, panel };
+  return { routes, sceneOf, scenesOf, signature, detail, appliedOf, roomsOf, sourceUri, definition, prepareDefinition,
+    sourceChoicesOf, sourcePage, model, panel };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = ScenesRemote;

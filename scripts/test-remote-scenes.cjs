@@ -704,22 +704,29 @@ test('custom definitions cross a real localhost JSON endpoint with exact encoded
   const http = require('node:http');
   const { once } = require('node:events');
   const requests = [];
+  const favorites = [{ id: 'FV:2/1', title: 'Dinner mix', kind: 'container', description: 'Fixture playlist' }];
   const server = http.createServer(async (req, res) => {
     let input = '';
     for await (const chunk of req) input += chunk;
     requests.push({ method: req.method, path: req.url, body: input ? JSON.parse(input) : null });
     const reply = req.url === '/scenes' ? [] : req.url === '/zones' ? topology()
+      : req.url.startsWith('/favorites?') ? favorites
       : { name: decodeURIComponent(req.url.slice('/scenes/'.length)), saved: 1900000001, ...JSON.parse(input) };
+    if (req.method === 'PUT') for (const g of reply.groups) if (g.source.kind === 'favorite') {
+      g.source.name = favorites.find((f) => f.id === g.source.name).title;
+      g.source.uri = 'x-file:fixture-server-metadata';
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify(reply));
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
-  const routes = { scenes: ['GET', '/scenes'], zones: ['GET', '/zones'], ...Scenes.routes };
-  const call = async (name, { params = {}, body } = {}) => {
+  const routes = { scenes: ['GET', '/scenes'], zones: ['GET', '/zones'], favorites: ['GET', '/favorites'], ...Scenes.routes };
+  const call = async (name, { params = {}, query = {}, body } = {}) => {
     const [method, template] = routes[name];
-    const path = template.replace(/\{(\w+)\}/g, (_, key) => encodeURIComponent(params[key]));
+    const path = template.replace(/\{(\w+)\}/g, (_, key) => encodeURIComponent(params[key]))
+      + (Object.keys(query).length ? `?${new URLSearchParams(query)}` : '');
     const response = await fetch(`http://127.0.0.1:${server.address().port}${path}`, {
       method, headers: { 'content-type': 'application/json' },
       ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
@@ -732,6 +739,9 @@ test('custom definitions cross a real localhost JSON endpoint with exact encoded
   await control.beginDefinition();
   const name = 'Dinner / ? # % & 二';
   control.editName(name);
+  group({ control }, 'Hall@S1', 'favorite');
+  assert.equal(await control.loadSources(control.state.draft.groups[0]), true);
+  assert.equal(control.chooseSource(control.state.draft.groups[0], control.choicesFor(control.state.draft.groups[0]).items[0]), true);
   control.editRoom('Den@S1', 'volumes', '0');
   control.editRoom('Den@S2', 'mutes', 'unmuted');
   await control.reviewDefinition();
@@ -741,5 +751,224 @@ test('custom definitions cross a real localhost JSON endpoint with exact encoded
   assert.equal(await first, true, control.state.message);
   assert.deepEqual(requests.filter((r) => r.method !== 'GET'), [{ method: 'PUT',
     path: `/scenes/${encodeURIComponent(name)}`,
-    body: { groups: [], volumes: { 'Den@S1': 0 }, mutes: { 'Den@S2': false } } }]);
+    body: { groups: [{ coordinator: 'Hall@S1', members: [], source: { kind: 'favorite', name: 'FV:2/1' }, playing: true }],
+      volumes: { 'Den@S1': 0 }, mutes: { 'Den@S2': false } } }]);
+  assert.equal(requests.filter((r) => r.path === '/favorites?zone=Hall%40S1').length, 3,
+    'browse, review and confirmation all read the exact household-qualified source');
+});
+
+test('scene music choices offer playable unique-title favorites and preserve useful descriptions', () => {
+  const choices = Scenes.sourceChoicesOf('favorite', [
+    { id: 'FV:2/1', title: 'Dinner', kind: 'container', description: 'Owner playlist' },
+    { id: 'FV:2/2', title: 'Radio', kind: 'stream' },
+    { id: 'FV:2/3', title: 'Recording', kind: 'track' },
+    { id: 'FV:2/4', title: 'Shortcut', kind: 'unplayable' },
+    { id: 'FV:2/5', title: 'Duplicate', kind: 'track' },
+    { id: 'FV:2/6', title: 'DUPLICATE', kind: 'container' },
+  ]);
+  assert.deepEqual(choices.items.map((f) => f.id), ['FV:2/1', 'FV:2/2', 'FV:2/3']);
+  assert.equal(choices.items[0].description, 'Owner playlist');
+  assert.equal(choices.ambiguous, 2);
+  assert.ok(Object.isFrozen(choices.items[0]));
+  const conflict = Scenes.sourceChoicesOf('favorite', [
+    { id: 'FV:2/1', title: 'Radio', kind: 'stream' },
+    { id: 'FV:2/2', title: 'radio', kind: 'unplayable' },
+  ]);
+  assert.deepEqual(conflict.items, [], 'a nonplayable duplicate still makes the saved title ambiguous');
+});
+
+test('unreadable and ambiguous catalogs never become selectable music', () => {
+  for (const value of [null, {}, [{ id: 'FV:2/1', title: 'A' }],
+    [{ id: 'FV:2/1', title: 'A', kind: 'track', description: {} }],
+    [{ id: 'FV:2/1', title: 'A', kind: 'track' }, { id: 'FV:2/1', title: 'B', kind: 'track' }]]) {
+    assert.throws(() => Scenes.sourceChoicesOf('favorite', value));
+  }
+  for (const value of [null, {}, { moods: [{ name: '' }] }, { moods: [{ name: 'focus' }, { name: 'FOCUS' }] }]) {
+    assert.throws(() => Scenes.sourceChoicesOf('dj', value));
+  }
+  assert.deepEqual(Scenes.sourceChoicesOf('favorite', []).items, []);
+  assert.deepEqual(Scenes.sourceChoicesOf('dj', { moods: [] }).items, []);
+});
+
+test('favorite browsing and selecting is read-only until the existing custom-scene confirmation', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'favorite');
+  let g = f.control.state.draft.groups[0];
+  assert.equal(await f.control.loadSources(g), true);
+  const choice = f.control.choicesFor(g).items[0];
+  assert.equal(f.control.chooseSource(g, choice), true);
+  g = f.control.state.draft.groups[0];
+  assert.equal(g.value, choice.id);
+  assert.equal(g.choice.title, 'Dinner');
+  assert.deepEqual(f.writes, []);
+  assert.equal(await f.control.reviewDefinition(), true);
+  assert.equal(f.control.state.pending.prepared.preview.groups[0].source.name, 'Dinner');
+  assert.deepEqual(f.writes, []);
+  assert.equal(await f.control.confirm(f.control.state.pending), true);
+  assert.equal(f.writes.length, 1);
+  assert.deepEqual(f.writes[0].body.groups[0].source, { kind: 'favorite', name: 'FV:2/1' });
+});
+
+test('favorite search, paging and no-result filters retain the chosen music without another request', async () => {
+  const f = await editor();
+  f.favorites = Array.from({ length: 15 }, (_, i) => ({ id: `FV:2/${i + 1}`, title: `Favorite ${i + 1}`,
+    kind: 'track', description: i === 12 ? 'Evening cello recording' : 'Piano' }));
+  group(f, 'Den@S1', 'favorite');
+  let g = f.control.state.draft.groups[0];
+  await f.control.loadSources(g);
+  f.control.chooseSource(g, f.control.choicesFor(g).items[0]);
+  g = f.control.state.draft.groups[0];
+  const reads = f.reads.length;
+  assert.equal(f.control.pageSources(g, 1), true);
+  assert.equal(Scenes.sourcePage(f.control.choicesFor(g)).items[0].title, 'Favorite 7');
+  assert.equal(f.control.pageSources(g, 1), true);
+  assert.equal(Scenes.sourcePage(f.control.choicesFor(g)).items.length, 3);
+  assert.equal(f.control.pageSources(g, 1), false);
+  assert.equal(f.control.filterSources(g, 'CELLO'), true);
+  assert.deepEqual(Scenes.sourcePage(f.control.choicesFor(g)).items.map((item) => item.title), ['Favorite 13']);
+  assert.equal(f.control.filterSources(g, 'No match'), true);
+  assert.equal(Scenes.sourcePage(f.control.choicesFor(g)).total, 0);
+  assert.equal(g.choice.title, 'Favorite 1');
+  assert.equal(f.reads.length, reads);
+  assert.deepEqual(f.writes, []);
+});
+
+test('each group browses its own household and cannot select another group catalog item', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'favorite');
+  group(f, 'Den@S2', 'favorite');
+  f.hook = async (route, options) => route === 'favorites'
+    ? [{ id: 'FV:2/1', title: `${options.query.zone} collection`, kind: 'container' }] : undefined;
+  const [a, b] = f.control.state.draft.groups;
+  await Promise.all([f.control.loadSources(a), f.control.loadSources(b)]);
+  const choiceA = f.control.choicesFor(a).items[0], choiceB = f.control.choicesFor(b).items[0];
+  assert.equal(choiceA.title, 'Den@S1 collection');
+  assert.equal(choiceB.title, 'Den@S2 collection');
+  assert.equal(f.control.chooseSource(b, choiceA), false);
+  assert.equal(f.control.chooseSource(b, choiceB), true);
+  assert.equal(f.control.state.draft.groups[1].choice.title, 'Den@S2 collection');
+  assert.equal(f.control.state.draft.groups[0].value, '');
+});
+
+test('source reads cannot repopulate a changed destination, source kind, removed group or discarded draft', async () => {
+  for (const change of ['coordinator', 'kind', 'remove', 'discard', 'close', 'new draft', 'dispose']) {
+    const f = await editor();
+    group(f, 'Den@S1', 'favorite');
+    const g = f.control.state.draft.groups[0], wait = deferred();
+    f.hook = async (name) => name === 'favorites' ? wait.promise : undefined;
+    const loading = f.control.loadSources(g);
+    if (change === 'coordinator') f.control.editGroup(g, 'coordinator', 'Den@S2');
+    if (change === 'kind') f.control.editGroup(g, 'kind', 'dj');
+    if (change === 'remove') f.control.removeGroup(g);
+    if (change === 'discard') f.control.discardDefinition();
+    if (change === 'close') f.control.close();
+    if (change === 'new draft') await f.control.beginDefinition();
+    if (change === 'dispose') f.control.dispose();
+    wait.resolve(f.favorites);
+    assert.equal(await loading, false, change);
+    assert.notEqual(f.control.choicesFor(g)?.phase, 'ready', change);
+    assert.deepEqual(f.writes, []);
+  }
+});
+
+test('an earlier request cannot replace a new catalog even after returning to the same coordinator and kind', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'favorite');
+  let g = f.control.state.draft.groups[0];
+  const old = deferred();
+  f.hook = async (name) => name === 'favorites' ? old.promise : undefined;
+  const first = f.control.loadSources(g);
+  assert.equal(await f.control.loadSources(g), false, 'same read does not overlap itself');
+  f.control.editGroup(g, 'kind', 'keep');
+  g = f.control.state.draft.groups[0];
+  f.control.editGroup(g, 'kind', 'favorite');
+  g = f.control.state.draft.groups[0];
+  f.hook = null;
+  f.favorites[0].title = 'Current collection';
+  assert.equal(await f.control.loadSources(g), true);
+  old.resolve([{ id: 'FV:2/1', title: 'Old collection', kind: 'container' }]);
+  assert.equal(await first, false);
+  assert.equal(f.control.choicesFor(g).items[0].title, 'Current collection');
+});
+
+test('editing room settings during a read retains its correct source catalog', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'favorite');
+  const g = f.control.state.draft.groups[0], wait = deferred();
+  f.hook = async (name) => name === 'favorites' ? wait.promise : undefined;
+  const loading = f.control.loadSources(g);
+  f.control.editName('Different scene name');
+  f.control.editRoom('Hall@S1', 'volumes', '0');
+  f.control.editGroup(g, 'members', ['Hall@S1']);
+  wait.resolve(f.favorites);
+  assert.equal(await loading, true);
+  assert.equal(f.control.choicesFor(f.control.state.draft.groups[0]).items[0].title, 'Dinner');
+  assert.equal(f.control.state.draft.volumes['Hall@S1'], '0');
+});
+
+test('retrying a failed catalog read keeps selected music and authored settings', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'favorite');
+  let g = f.control.state.draft.groups[0];
+  await f.control.loadSources(g);
+  f.control.chooseSource(g, f.control.choicesFor(g).items[0]);
+  g = f.control.state.draft.groups[0];
+  f.control.editRoom('Hall@S1', 'mutes', 'unmuted');
+  f.hook = async (name) => { if (name === 'favorites') throw new Error('Fixture temporarily unavailable'); };
+  assert.equal(await f.control.loadSources(g), false);
+  assert.equal(f.control.choicesFor(g).phase, 'error');
+  assert.match(f.control.choicesFor(g).error, /temporarily unavailable/);
+  assert.equal(g.choice.title, 'Dinner');
+  f.hook = null;
+  assert.equal(await f.control.loadSources(g), true);
+  assert.equal(f.control.choicesFor(g).phase, 'ready');
+  assert.equal(f.control.state.draft.mutes['Hall@S1'], 'unmuted');
+  assert.deepEqual(f.writes, []);
+});
+
+test('a browsed favorite changed before review must be chosen again instead of silently adopting new content', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'favorite');
+  let g = f.control.state.draft.groups[0];
+  await f.control.loadSources(g);
+  const oldChoice = f.control.choicesFor(g).items[0];
+  f.control.chooseSource(g, oldChoice);
+  f.favorites[0].title = 'Changed collection';
+  assert.equal(await f.control.reviewDefinition(), false);
+  assert.match(f.control.state.message, /selected favorite changed/);
+  assert.deepEqual(f.writes, []);
+  g = f.control.state.draft.groups[0];
+  await f.control.loadSources(g);
+  assert.equal(f.control.chooseSource(g, oldChoice), false, 'detached catalog item cannot be selected after refresh');
+  assert.equal(f.control.chooseSource(g, f.control.choicesFor(g).items[0]), true);
+  assert.equal(await f.control.reviewDefinition(), true);
+  assert.equal(f.control.state.pending.prepared.preview.groups[0].source.name, 'Changed collection');
+});
+
+test('named and automatic DJ choices use the same reviewed scene source contract', async () => {
+  for (const automatic of [false, true]) {
+    const f = await editor();
+    group(f, 'Studio@S2', 'dj');
+    let g = f.control.state.draft.groups[0];
+    await f.control.loadSources(g);
+    assert.equal(f.control.chooseSource(g, f.control.choicesFor(g).items[0]), true);
+    if (automatic) {
+      g = f.control.state.draft.groups[0];
+      assert.equal(f.control.chooseSource(g, null), true);
+    }
+    const body = await saveDefinition(f);
+    assert.deepEqual(body.groups[0].source, automatic ? { kind: 'dj' } : { kind: 'dj', mood: 'focus' });
+    assert.ok(f.reads.filter((r) => r.name === 'moods').every((r) => r.query.zone === 'Studio@S2'));
+  }
+});
+
+test('automatic DJ remains available when named moods cannot be read', async () => {
+  const f = await editor();
+  group(f, 'Studio@S2', 'dj');
+  f.hook = async (name) => { if (name === 'moods') throw new Error('Fixture mood service unavailable'); };
+  const g = f.control.state.draft.groups[0];
+  assert.equal(await f.control.loadSources(g), false);
+  assert.equal(f.control.chooseSource(g, null), true);
+  const body = await saveDefinition(f);
+  assert.deepEqual(body.groups[0].source, { kind: 'dj' });
 });
