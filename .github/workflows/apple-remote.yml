@@ -1,4 +1,4 @@
-name: Native Mac remote
+name: Native Apple remotes
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-mac-remote-${{ github.ref }}
+  group: native-apple-remotes-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -38,4 +38,58 @@ jobs:
         with:
           name: FrankenSonosRemote-macOS
           path: ${{ runner.temp }}/FrankenSonosRemote-macOS.zip
+          retention-days: 14
+
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build the real iPhone and iPad app without signing credentials
+        run: |
+          xcodebuild -project apps/apple/FrankenSonosRemote.xcodeproj \
+            -scheme FrankenSonos-iOS -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/fsonos-ios" \
+            -resultBundlePath "$RUNNER_TEMP/fsonos-ios.xcresult" \
+            CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build
+      - name: Launch the connection screen on an iPhone simulator
+        run: |
+          xcrun simctl list devices available --json > "$RUNNER_TEMP/fsonos-simulators.json"
+          device=$(python3 - "$RUNNER_TEMP/fsonos-simulators.json" <<'PYTHON'
+          import json, sys
+          devices = json.load(open(sys.argv[1]))['devices']
+          iphones = [device for runtime, group in devices.items()
+                     if '.iOS-' in runtime for device in group
+                     if device['name'].startswith('iPhone') and device['isAvailable']]
+          if not iphones:
+              raise SystemExit('No installed iPhone simulator runtime is available.')
+          print(next((device for device in iphones if device['state'] == 'Booted'), iphones[0])['udid'])
+          PYTHON
+          )
+          if ! xcrun simctl list devices booted --json | python3 -c 'import json,sys; data=json.load(sys.stdin); sys.exit(not any(d["udid"]==sys.argv[1] for group in data["devices"].values() for d in group))' "$device"; then
+            xcrun simctl boot "$device"
+          fi
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl install "$device" "$RUNNER_TEMP/fsonos-ios/Build/Products/Debug-iphonesimulator/FrankenSonos.app"
+          xcrun simctl launch "$device" io.github.dicklesworthstone.frankensonos.remote
+          sleep 3
+          xcrun simctl io "$device" screenshot "$RUNNER_TEMP/FrankenSonos-iPhone.png"
+      - name: Archive the simulator application
+        run: |
+          mkdir -p "$RUNNER_TEMP/ios-remote"
+          cp -R "$RUNNER_TEMP/fsonos-ios/Build/Products/Debug-iphonesimulator/FrankenSonos.app" "$RUNNER_TEMP/ios-remote/"
+          cp docs/APPLE_REMOTE.md "$RUNNER_TEMP/ios-remote/"
+          cp "$RUNNER_TEMP/FrankenSonos-iPhone.png" "$RUNNER_TEMP/ios-remote/"
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/ios-remote" "$RUNNER_TEMP/FrankenSonos-iOS-Simulator.zip"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: always()
+        with:
+          name: FrankenSonos-iOS-Simulator
+          path: |
+            ${{ runner.temp }}/FrankenSonos-iOS-Simulator.zip
+            ${{ runner.temp }}/FrankenSonos-iPhone.png
+            ${{ runner.temp }}/fsonos-ios.xcresult
           retention-days: 14

@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
 import SwiftUI
 import FrankenSonosKit
 
@@ -9,23 +9,23 @@ import FrankenSonosKit
     var body: some View {
         let zone = model.selectedZone
         VStack(alignment: .leading, spacing: 16) {
-            Text("Scenes act on all the rooms in their saved definition, not just the selected group. Review the complete layout, sources and levels before applying.")
+            Text("Bring saved rooms, music and levels together. Each scene affects all the rooms in its saved definition.")
                 .font(.callout).foregroundStyle(.secondary)
             if model.scenes.isEmpty && !model.panelLoading && model.panelProblem == nil {
-                Text("No saved scenes. Save a house scene with the CLI or web remote, then refresh here.")
+                EmptyMusicState(title: "A scene for every moment", systemImage: "sparkles",
+                                detail: "Save a house scene in the web remote or CLI, then find it here.")
             }
             ForEach(model.scenes) { scene in
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text(scene.name).font(.headline)
-                            Spacer()
-                            Button("Review scene") { model.prepare(.scene(scene), in: zone) }
-                                .disabled(!model.canPrepare || model.panelLoading)
-                        }
-                        DisclosureGroup("Saved layout and settings") { SceneDetails(scene: scene) }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(scene.name).font(.title3.bold())
+                    Label("Saved house scene", systemImage: "house")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Review scene", systemImage: "play.fill") { model.prepare(.scene(scene), in: zone) }
+                        .buttonStyle(.borderedProminent).foregroundStyle(RemoteStyle.accentInk)
+                        .disabled(!model.canPrepare || model.panelLoading)
+                    DisclosureGroup("Rooms, music and levels") { SceneDetails(scene: scene).padding(.top, 12) }
+                        .font(.callout)
+                }.remoteCard()
             }
         }
     }

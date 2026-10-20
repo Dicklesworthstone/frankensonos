@@ -287,7 +287,8 @@ private func activityWaitForGate(_ transport: ActivityTransport) async throws {
     for path in [["actions"], ["history"], ["library", "search"], ["sleep"]] {
         let value = "Test+Music & More/%2B=日本語"
         let url = try endpoint.resource(path, query: [URLQueryItem(name: "q", value: value)])
-        let raw = try #require(url.query?.split(separator: "&").first)
+        let query = try #require(url.query)
+        let raw = try #require(query.split(separator: "&").first)
         let decoded = String(raw.dropFirst(2)).replacingOccurrences(of: "+", with: " ").removingPercentEncoding
         #expect(decoded == value)
         #expect(url.query?.contains("+") == false)

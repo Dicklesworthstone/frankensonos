@@ -46,9 +46,16 @@ public struct PlaybackTimeline: Equatable, Sendable {
     /// The daemon accepts positions strictly before the track's end. Sliding
     /// all the way right therefore chooses its last second, never a bad seek.
     public func seekPosition(fraction: Double) -> UInt32? {
-        guard canSeek, let duration, fraction.isFinite else { return nil }
+        guard let duration, fraction.isFinite else { return nil }
         let progress = min(1, max(0, fraction))
-        return min(duration - 1, UInt32((TimeInterval(duration) * progress).rounded(.down)))
+        return seekPosition(seconds: TimeInterval(duration) * progress)
+    }
+
+    /// Keep a seconds-based slider's selected value exact. Converting it to a
+    /// fraction and back can otherwise round an integer down to the prior second.
+    public func seekPosition(seconds: TimeInterval) -> UInt32? {
+        guard canSeek, let duration, seconds.isFinite else { return nil }
+        return UInt32(min(TimeInterval(duration - 1), max(0, seconds)).rounded(.down))
     }
 
     public static func format(_ seconds: TimeInterval) -> String {

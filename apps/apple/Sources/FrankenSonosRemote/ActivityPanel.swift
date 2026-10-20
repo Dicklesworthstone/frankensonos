@@ -1,4 +1,4 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
 import SwiftUI
 import FrankenSonosKit
 
@@ -14,6 +14,7 @@ import FrankenSonosKit
 
 @MainActor struct ActivityPanel: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var bridge: RemoteBridge
     let replay: (ActivityReplaySelection) -> Void
     @State private var tab = 0
@@ -40,46 +41,63 @@ import FrankenSonosKit
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Activity & History").font(.title.bold())
+                Text("Activity & History").font(.title2.bold())
                 Spacer()
                 if model.loading { ProgressView().controlSize(.small) }
-                Button("Refresh") { selectedPlay = nil; model.refresh() }.disabled(!model.active || model.loading)
-                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button { selectedPlay = nil; model.refresh() } label: { Image(systemName: "arrow.clockwise").frame(width: 44, height: 44) }
+                    .buttonStyle(.plain).disabled(!model.active || model.loading).accessibilityLabel("Refresh activity and history")
+                Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Close activity and history")
             }
-            Text("\(bridge.endpoint) • Latest records, not a complete archive. Times are displayed in this Mac’s time zone.")
-                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            filters
-            if let problem = model.filterProblem { Text(problem).foregroundStyle(.red) }
-            Picker("Records", selection: $tab) {
-                Text("Action log").tag(0)
-                Text("Listening history").tag(1)
-            }.pickerStyle(.segmented)
-            TextField("Search the loaded records (does not make a request)", text: $search).textFieldStyle(.roundedBorder)
-                .onChange(of: search) { _, _ in selectedPlay = nil }
-            if tab == 0 {
-                freshness(model.actionsObservedAt, stale: model.actionsStale, problem: model.actionsProblem)
-                Text("Active filter: \(model.query.client ?? "all clients"); \(model.query.since.map { "from unix second " + String($0) } ?? "all recorded times").")
-                    .font(.caption)
+            ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(actions) { row in actionRow(row) }
-                        if actions.isEmpty { empty(model.actionsObservedAt, problem: model.actionsProblem) }
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("\(bridge.endpoint) • Latest records, not a complete archive. Times are displayed in this device’s time zone.")
+                            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        filters
+                        if let problem = model.filterProblem { Text(problem).foregroundStyle(.red) }
+                        Picker("Records", selection: $tab) {
+                            Text("Action log").tag(0)
+                            Text("Listening history").tag(1)
+                        }.pickerStyle(.segmented)
+                        TextField("Search the loaded records (does not make a request)", text: $search).textFieldStyle(.roundedBorder)
+                            .onChange(of: search) { _, _ in selectedPlay = nil }
+                        if tab == 0 {
+                            freshness(model.actionsObservedAt, stale: model.actionsStale, problem: model.actionsProblem)
+                            Text("Active filter: \(model.query.client ?? "all clients"); \(model.query.since.map { "from unix second " + String($0) } ?? "all recorded times").")
+                                .font(.caption)
+                            LazyVStack(alignment: .leading, spacing: 12) {
+                                ForEach(actions) { row in actionRow(row) }
+                                if actions.isEmpty { empty(model.actionsObservedAt, problem: model.actionsProblem) }
+                            }
+                        } else {
+                            freshness(model.historyObservedAt, stale: model.historyStale, problem: model.historyProblem)
+                            Text("Active filter: \(model.query.historyRoom?.address ?? "all recorded groups"). Room labels may be absent or ambiguous across households. A recorded play is not proof of a full listen.")
+                                .font(.caption)
+                            LazyVStack(alignment: .leading, spacing: 12) {
+                                ForEach(history) { entry in historyRow(entry) }
+                                if history.isEmpty { empty(model.historyObservedAt, problem: model.historyProblem) }
+                            }
+                            replayControls.id("activity-replay")
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
-            } else {
-                freshness(model.historyObservedAt, stale: model.historyStale, problem: model.historyProblem)
-                Text("Active filter: \(model.query.historyRoom?.address ?? "all recorded groups"). Room labels may be absent or ambiguous across households. A recorded play is not proof of a full listen.")
-                    .font(.caption)
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(history) { entry in historyRow(entry) }
-                        if history.isEmpty { empty(model.historyObservedAt, problem: model.historyProblem) }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
+                .onChange(of: selectedPlay) { _, selected in
+                    if selected != nil {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                            proxy.scrollTo("activity-replay", anchor: .bottom)
+                        }
+                    }
                 }
-                replayControls
             }
         }
-        .padding(24).frame(minWidth: 680, idealWidth: 780, maxWidth: 1_100, minHeight: 550, idealHeight: 740)
+        .padding(20).frame(maxWidth: 1_100)
+        .background(RemoteStyle.background)
+        #if os(macOS)
+        .frame(minWidth: 680, idealWidth: 780, minHeight: 550, idealHeight: 740)
+        #endif
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
         .onAppear {
             clientFilter = model.query.client ?? ""; historyRoom = model.query.historyRoom; limit = model.query.limit
             useStart = model.query.since != nil
@@ -98,9 +116,9 @@ import FrankenSonosKit
         DisclosureGroup("Read filters (apply explicitly)") {
             VStack(alignment: .leading, spacing: 10) {
                 TextField("Exact action-log client; blank means all", text: $clientFilter).textFieldStyle(.roundedBorder)
-                HStack {
+                VStack(alignment: .leading, spacing: 8) {
                     Toggle("Action log from", isOn: $useStart)
-                    DatePicker("This Mac’s local time", selection: $start, displayedComponents: [.date, .hourAndMinute])
+                    DatePicker("This device’s local time", selection: $start, displayedComponents: [.date, .hourAndMinute])
                         .disabled(!useStart)
                 }
                 Picker("Listening-history group", selection: $historyRoom) {
@@ -110,7 +128,7 @@ import FrankenSonosKit
                         Text("\(historyRoom.address) (not currently listed)").tag(Optional(historyRoom))
                     }
                 }
-                HStack {
+                VStack(alignment: .leading, spacing: 8) {
                     Picker("Maximum rows per feed", selection: $limit) {
                         ForEach([25, 50, 100, 200], id: \.self) { Text(String($0)).tag($0) }
                     }
@@ -172,7 +190,7 @@ import FrankenSonosKit
                     Text("Choose a group and household").tag(Optional<RoomID>.none)
                     ForEach(zones) { zone in Text("\(zone.title) [\(zone.household)]").tag(Optional(zone.id)) }
                 }
-                HStack {
+                VStack(alignment: .leading, spacing: 12) {
                     Picker("Action", selection: $mode) {
                         Text("Play now").tag(ActivityModel.Replay.play)
                         Text("Queue next").tag(ActivityModel.Replay.queueNext)
@@ -184,7 +202,7 @@ import FrankenSonosKit
                             let selection = try model.selectForReplay(selectedPlay, as: mode, target: target, current: zones)
                             replay(selection)
                         } catch { selectionProblem = error.localizedDescription }
-                    }.buttonStyle(.borderedProminent)
+                    }.buttonStyle(.borderedProminent).foregroundStyle(RemoteStyle.accentInk)
                         .disabled(selected == nil || target == nil || model.loading || model.historyStale || !model.active || !bridge.model.canSchedule)
                 }
                 Text("Nothing plays yet. This closes Activity, selects the chosen current group, and opens its ordinary command review. Play replaces its source; queue actions do not start music. Historical labels never select the destination.")

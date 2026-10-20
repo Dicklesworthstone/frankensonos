@@ -1,11 +1,52 @@
-# Native Mac remote
+# Native iPhone, iPad and Mac remote
 
-`FrankenSonosRemote` is a SwiftUI macOS application over the existing daemon
-API. It does not launch another daemon, talk directly to speakers, store
-Spotify account tokens, or implement a second DJ. Its connection screen accepts an
-HTTPS daemon origin, including your Tailscale Serve origin. Local HTTP requires
-an explicit toggle and the same local-address validation as `DaemonClient`.
-Only that origin and toggle are saved in the app's preferences.
+`FrankenSonosRemote` is a SwiftUI application for iOS/iPadOS 17 and macOS 14
+over the existing daemon API. The iOS app and Mac executable use the same
+application sources and the local `FrankenSonosKit` package, including one
+command-review model and live-state connection. Its connection screen accepts
+an HTTPS daemon origin, including your Tailscale Serve origin. Local HTTP
+requires an explicit toggle and the same local-address validation as
+`DaemonClient`. Only that origin and toggle are saved in the app's preferences.
+A saved valid daemon address reconnects automatically on launch by reading
+state; opening the app never starts music or replays a previous command.
+
+## Run on an iPhone or iPad
+
+Open the checked-in app project with Xcode 16 or later:
+
+```sh
+open apps/apple/FrankenSonosRemote.xcodeproj
+```
+
+Choose the **FrankenSonos-iOS** scheme and an iPhone or iPad simulator, then
+Run. The app target links the `FrankenSonosKit` product from `apps/apple`;
+there is no second copy of the networking or control code to synchronize.
+No project generator or third-party package dependency is needed.
+
+To install on your own iPhone or iPad, select it as the run destination and
+choose your Apple development team under the app target's **Signing &
+Capabilities**. Xcode manages the development provisioning. Keep your signing
+team and provisioning files local. On your device, connect to the same tailnet
+as the daemon and enter its Tailscale Serve HTTPS origin. A simulator's
+`localhost` means the Mac running the simulator; on a physical phone it means
+the phone itself.
+
+For an unsigned simulator build from the repository root:
+
+```sh
+xcodebuild -project apps/apple/FrankenSonosRemote.xcodeproj \
+  -scheme FrankenSonos-iOS -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  -derivedDataPath apps/apple/.build/ios \
+  CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build
+```
+
+The resulting app is
+`apps/apple/.build/ios/Build/Products/Debug-iphonesimulator/FrankenSonos.app`.
+It is a simulator build; device installation uses Xcode development signing.
+The checked-in icon and adaptive launch background are included in the app.
+The app supports portrait, landscape and iPad resizing, and uses the system's
+light or dark appearance.
 
 ## Run on a Mac
 
@@ -29,14 +70,39 @@ the local network and permits local networking through App Transport Security;
 the client still rejects public HTTP, embedded credentials and redirects. No
 system-wide security setting is changed.
 
-The **Native Mac remote** workflow separately tests the full Swift package on a
-macOS runner, builds the real SwiftUI product in release mode, and uploads an
-application archive with these notes and its architecture. It does not wait for
-the Rust release build. A successful Linux build is not evidence of this Mac
-build: the Linux executable only explains that the UI requires macOS and exits
-with status 1.
+The **Native Apple remotes** workflow tests the full Swift package on a macOS
+runner and packages the Mac product in release mode. Its independent iOS job
+builds the actual app target with Apple SDKs and warnings as errors, launches
+its connection screen on an available iPhone simulator, and saves a screenshot,
+the simulator app and the Xcode result bundle. The connection screen needs no
+daemon or speaker. These jobs run independently of the Rust release build.
+
+### Local network access
+
+Both app bundles declare the reason for local network access. Their App
+Transport Security settings permit local names and the same loopback/private
+IPv4 ranges accepted by `DaemonEndpoint`, plus IPv6 loopback. This lets the
+explicit local HTTP choice work on iOS 17 and macOS 14, where numeric hosts
+require [address or CIDR exceptions](https://developer.apple.com/documentation/bundleresources/information-property-list/nsapptransportsecurity/nsallowslocalnetworking).
+Public HTTP remains rejected by the client; HTTPS is the tailnet connection
+path. No multicast entitlement is required because discovery stays on the
+daemon and the app connects to the origin you provide.
 
 ## What the screen connects
+
+The app has four destinations: **Listen** for artwork, playback and room levels;
+**Music** for favorites, library search and the queue; **Your DJ** for the current
+whole work, explanations and steering; and **House** for scenes, sleep timers,
+schedules, grouping, Spotify setup and activity. A mini player remains above the
+tab bar while browsing. The Mac keeps a room sidebar; the iPhone and iPad use a
+searchable room chooser. Both retain household names when room names overlap.
+
+Artwork loads through the selected daemon's art endpoint. Playback progress uses
+the selected room's own observation timestamp, so an unrelated room update cannot
+reset its clock. The estimate stops advancing when the connection is stale and
+unknown durations remain explicit. Seek and volume sliders build a draft; the
+app presents the existing command review before sending any change. Reviews
+scroll independently of their persistent confirmation controls on small screens.
 
 Rooms are grouped by household. Selection anchors to a household-qualified room
 and follows its group if a coordinator changes. The screen shows playback,
@@ -84,12 +150,19 @@ read. Draft targets are explicit, never borrowed from a changing playback
 selection. The daemon owns run times, persistence and creator permissions; the
 remote adds no scheduler. See `docs/APPLE_SCHEDULES.md` in the repository.
 
-The **Spotify & Library** toolbar opens daemon sign-in and cache refresh without
+The **Spotify & Library** panel opens daemon sign-in and cache refresh without
 a selected speaker. Browser consent is opened explicitly, completion is sent
 once, and credentials stay on the daemon. Cached sign-in, job acknowledgement,
 completed imports and missing-data notes are shown separately. The setup panel
 owns no playback commands; its pending-job observations are GET-only. See
 `docs/APPLE_SPOTIFY.md` in the repository.
+
+The **Activity** panel keeps action history and listening history available,
+including filtering and observed-state freshness. A historical play can be
+selected for replay or queueing into an explicitly chosen current group;
+playback still goes through the ordinary command review. Historical room names
+never silently choose the destination, and browsing history sends no playback
+commands.
 
 ## Commands and lifetime
 
@@ -125,6 +198,10 @@ SwiftUI, Combine or Observation runtime dependency.
 ```sh
 swift test --package-path apps/apple -Xswiftc -warnings-as-errors
 swift build --package-path apps/apple --product FrankenSonosRemote -Xswiftc -warnings-as-errors
+xcodebuild -project apps/apple/FrankenSonosRemote.xcodeproj \
+  -scheme FrankenSonos-iOS -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  CODE_SIGNING_ALLOWED=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=YES build
 ```
 
 Nineteen command-session tests and thirteen screen-controller tests execute the
@@ -152,9 +229,10 @@ callback binding, explicit browser opening, partial imports, read isolation,
 lifecycle cancellation and uncertain requests without replay. They use synthetic
 daemon replies, not a real Spotify account grant.
 
-Local Linux execution does not validate SwiftUI rendering, macOS application
+Local Linux execution does not validate SwiftUI rendering, Apple application
 launch, Apple URLSession streaming, Tailscale reachability or physical Sonos.
-Those remain separate Mac/workflow and owner-LAN acceptance checks. This remote
-does not yet expose every daemon feature: scene editing,
-announcements, EQ and action-log undo remain on the CLI/web
-surfaces. It is a runnable Mac target, not an iOS installation or App Store release.
+The Apple workflow's app builds and iPhone connection-screen launch cover the
+SDK and packaging boundaries; connected playback and visual acceptance on
+physical devices remain separate checks. This remote does not yet expose every
+daemon feature: scene editing, announcements, EQ and action-log undo remain on
+the CLI/web surfaces. App Store/TestFlight distribution is not configured.

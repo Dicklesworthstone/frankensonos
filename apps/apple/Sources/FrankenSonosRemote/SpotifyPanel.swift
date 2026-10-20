@@ -1,5 +1,4 @@
-#if os(macOS)
-import AppKit
+#if os(macOS) || os(iOS)
 import SwiftUI
 import FrankenSonosKit
 
@@ -16,8 +15,11 @@ import FrankenSonosKit
 @MainActor struct SpotifyPanel: View {
     @ObservedObject var bridge: RemoteBridge
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var callback = ""
     @State private var replacePending = false
+    @State private var browserFailure: String?
+    @State private var browserRequest = UUID()
     private var model: SpotifySetupModel { bridge.spotify }
 
     var body: some View {
@@ -25,7 +27,8 @@ import FrankenSonosKit
             HStack {
                 Label("Spotify & your DJ library", systemImage: "music.note.list").font(.title2.bold())
                 Spacer()
-                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                    .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Close Spotify setup")
             }
             Text(bridge.endpoint).font(.caption).textSelection(.enabled)
             ScrollView {
@@ -55,9 +58,15 @@ import FrankenSonosKit
             Text("Closing this panel stops its requests, not a library job already running on the daemon. A sent sign-in request may still take effect.")
                 .font(.caption).foregroundStyle(.secondary)
         }
-        .padding(24).frame(width: 700).frame(minHeight: 420, idealHeight: 600, maxHeight: 700)
+        .padding(20).frame(maxWidth: 760)
+        .background(RemoteStyle.background)
+        #if os(macOS)
+        .frame(width: 700, height: 640)
+        #endif
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
         .onAppear { model.resume() }
-        .onDisappear { callback = ""; model.suspend() }
+        .onDisappear { browserRequest = UUID(); callback = ""; model.suspend() }
         .onChange(of: model.active) { _, active in if !active { callback = "" } }
         .onChange(of: model.consent) { _, consent in if consent == nil { callback = "" } }
         .onChange(of: callback) { _, text in if text.utf8.count > 16_384 { callback = "" } }
@@ -78,27 +87,31 @@ import FrankenSonosKit
                     Text("Cached sign-in alone does not verify token validity or a completed library import.").font(.caption).foregroundStyle(.secondary)
                     Text("Registered return address: \(state.redirectUri)").font(.caption).textSelection(.enabled)
                     if state.pending { Text("A consent flow is waiting for the browser to return.") }
-                    HStack {
+                    VStack(alignment: .leading, spacing: 12) {
                         Button(state.pending ? "Replace pending sign-in…" : (state.signedIn ? "Reconnect Spotify" : "Begin Spotify sign-in")) {
                             if state.pending { replacePending = true }
                             else { callback = ""; model.beginSignIn() }
                         }.disabled(!model.canBegin)
                         if model.consent != nil {
-                            Button("Open Spotify in browser") { model.openConsent { NSWorkspace.shared.open($0) } }
-                                .buttonStyle(.borderedProminent).disabled(!model.canComplete)
+                            Button("Open Spotify in browser", action: openSpotify)
+                                .buttonStyle(.borderedProminent).foregroundStyle(RemoteStyle.accentInk).disabled(!model.canComplete)
                         }
                     }
                     if model.consent != nil {
-                        Text("Authorize read-only access in Spotify, then return here. If the return address cannot be reached from this Mac, paste the complete address the browser landed on below. Do not share that address: it contains a one-time code.")
+                        Text("Authorize read-only access in Spotify, then return here. If the return address cannot be reached from this device, paste the complete address the browser landed on below. Do not share that address: it contains a one-time code.")
                             .font(.callout)
                         SecureField("Paste the complete callback address", text: $callback)
                             .textFieldStyle(.roundedBorder).accessibilityLabel("Spotify callback address, kept only until submission or closing")
+                            #if os(iOS)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            #endif
                         Button("Complete sign-in once") {
                             let text = callback; callback = ""; model.completeSignIn(text)
                         }.disabled(!model.canComplete || callback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        if let problem = model.browserProblem { Text(problem).font(.callout) }
+                        if let problem = browserFailure ?? model.browserProblem { Text(problem).font(.callout) }
                     } else if state.pending {
-                        Text("This window has no usable consent link. Complete the existing flow in its original browser, or explicitly replace it above.").font(.callout)
+                        Text("This panel has no usable consent link. Complete the existing flow in its original browser, or explicitly replace it above.").font(.callout)
                     }
                 } else {
                     Text(model.signInProblem ?? "Reading the daemon's sign-in status…").textSelection(.enabled)
@@ -136,6 +149,22 @@ import FrankenSonosKit
                 Text("The daemon reads your own Spotify library and updates its local cache. Future DJ picks use the refreshed pool; accepting a refresh request is not proof that it finished.")
                     .font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
+        }
+    }
+
+    private func openSpotify() {
+        let request = UUID()
+        browserRequest = request; browserFailure = nil
+        model.openConsent { url in
+            openURL(url) { accepted in
+                Task { @MainActor in
+                    guard browserRequest == request && model.active else { return }
+                    if !accepted {
+                        browserFailure = "The browser could not open Spotify. Try again; no new sign-in was started."
+                    }
+                }
+            }
+            return true
         }
     }
 

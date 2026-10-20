@@ -98,6 +98,25 @@ private func timelineTrack(duration: UInt32? = 240, position: UInt32? = 30, uri:
     #expect(PlaybackTimeline.format(TimeInterval(UInt32.max) + 1) == "1193046:28:15")
 }
 
+@Test func timelineSeekingPreservesTheSecondChosenByThePlayer() {
+    // These durations lose an integer second when a seconds-based slider is
+    // converted to a fraction and then multiplied and rounded down again.
+    for (duration, second): (UInt32, UInt32) in [(22, 15), (49, 1), (50, 29), (UInt32.max, UInt32.max - 1)] {
+        let timeline = PlaybackTimeline(track: timelineTrack(duration: duration), isPlaying: true,
+                                        observedAt: timelineDate, isFresh: true)
+        #expect(timeline.seekPosition(seconds: Double(second)) == second)
+        #expect(timeline.seekPosition(seconds: Double(duration)) == duration - 1)
+        #expect(timeline.seekPosition(seconds: -1) == 0)
+        #expect(timeline.seekPosition(seconds: .nan) == nil)
+        #expect(timeline.seekPosition(seconds: .infinity) == nil)
+    }
+    let stale = PlaybackTimeline(track: timelineTrack(), isPlaying: true, observedAt: timelineDate, isFresh: false)
+    #expect(stale.seekPosition(seconds: 15) == nil)
+    let unknown = PlaybackTimeline(track: timelineTrack(duration: nil), isPlaying: true,
+                                   observedAt: timelineDate, isFresh: true)
+    #expect(unknown.seekPosition(seconds: 15) == nil)
+}
+
 @Test func artworkUsesOnlyTheDaemonOriginAndHouseholdQualifiedRoom() throws {
     let client = DaemonClient(endpoint: try DaemonEndpoint("https://music.example.test:8443"))
     let zone = Zone(household: "TEST-A", coordinatorRoom: "Music & Study/One", members: ["Music & Study/One"], transportState: "playing")
