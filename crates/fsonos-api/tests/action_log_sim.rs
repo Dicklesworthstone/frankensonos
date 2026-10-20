@@ -3,18 +3,21 @@
 //! sockets, the way the HTTP API and MCP tools drive it.
 
 use fsonos_api::plan::{
-    TransportAction, plan_group, plan_play, plan_transport_set, plan_ungroup_set, plan_volume,
-    plan_volume_set,
+    TransportAction, VolumeScope, plan_group, plan_play, plan_transport_set, plan_ungroup_set,
+    plan_volume, plan_volume_set,
 };
 use fsonos_api::surface::{Surface, Survey};
-use fsonos_api::{ErrorCode, GroupRequest, NoteCode, PlayRequest, VolumeRequest, ZoneRequest};
+use fsonos_api::{
+    Command, ErrorCode, GroupRequest, NoteCode, PlayRequest, VolumeChange, VolumeRequest,
+    ZoneRequest,
+};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{ActionFilter, MemStore};
 use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
-use fsonos_types::{PlayerId, TransportState};
+use fsonos_types::{Generation, PlayerId, TransportState};
 use std::net::IpAddr;
 
 const STREAM: &str = "x-rincon-mp3radio://stream.example.invalid/first.mp3";
@@ -103,14 +106,10 @@ fn multi_now(sim: &SimHandle) -> Vec<HouseholdState> {
         .collect()
 }
 
-fn id_in(houses: &[HouseholdState], generation: u16, room: &str) -> PlayerId {
+fn id_in(houses: &[HouseholdState], generation: Generation, room: &str) -> PlayerId {
     houses
         .iter()
-        .find(|house| {
-            house
-                .generation()
-                .is_some_and(|house_gen| house_gen as u16 == generation)
-        })
+        .find(|house| house.generation() == Some(generation))
         .and_then(|house| {
             house
                 .rooms
@@ -118,7 +117,7 @@ fn id_in(houses: &[HouseholdState], generation: u16, room: &str) -> PlayerId {
                 .find(|candidate| candidate.name.eq_ignore_ascii_case(room))
                 .map(|candidate| candidate.primary.clone())
         })
-        .unwrap()
+        .expect("the requested household and room")
 }
 
 fn id(houses: &[HouseholdState], room: &str) -> PlayerId {
@@ -485,16 +484,27 @@ fn undo_sees_a_joined_duplicate_room_name_across_households() {
         .unwrap();
     let lan = sim.lan();
     let houses = multi_now(&sim);
-    let s1_kitchen = id_in(&houses, 1, "Kitchen");
+    let s1_kitchen = id_in(&houses, Generation::S1, "Kitchen");
     let (s2_living, s2_kitchen) = (
-        id_in(&houses, 2, "Living Room"),
-        id_in(&houses, 2, "Kitchen"),
+        id_in(&houses, Generation::S2, "Living Room"),
+        id_in(&houses, Generation::S2, "Kitchen"),
     );
     assert_ne!(s1_kitchen, s2_kitchen, "the names match; the rooms do not");
     let surface = multi_surface(&sim);
     surface
-        .control_set(&agent(), "set_volume", |house| {
-            plan_volume_set(house, &volume_req("all", 30))
+        .control_set(&agent(), "set_volume", |_| {
+            Ok(vec![
+                Command::Volume {
+                    target: s1_kitchen.clone(),
+                    scope: VolumeScope::Room,
+                    change: VolumeChange::Set(30),
+                },
+                Command::Volume {
+                    target: s2_living.clone(),
+                    scope: VolumeScope::Room,
+                    change: VolumeChange::Set(30),
+                },
+            ])
         })
         .unwrap();
 
@@ -512,7 +522,6 @@ fn undo_sees_a_joined_duplicate_room_name_across_households() {
         Some(s2_living),
         "the S2 Kitchen stays grouped"
     );
-
     sim.shutdown();
 }
 
