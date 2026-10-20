@@ -604,5 +604,5 @@ mod tests {
                 && none.contains("Local Network permission"),
             "{none}"
         );
-}
+    }
 }
