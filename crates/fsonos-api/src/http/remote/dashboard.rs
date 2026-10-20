@@ -17,6 +17,7 @@ const CORE: &str = include_str!("../../remote/dashboard-core.js");
 const VISUALIZER: &str = include_str!("../../remote/dashboard-visualizer.js");
 const AUDIO: &str = include_str!("../../remote/dashboard-audio.js");
 const SESSION: &str = include_str!("../../remote/dashboard-session.js");
+const QUEUE_STYLE: &str = include_str!("../../remote/dashboard-queue.css");
 const QUEUE: &str = include_str!("../../remote/dashboard-queue.js");
 const WORKSPACE: &str = include_str!("../../remote/dashboard-workspace.js");
 const SCRIPT: &str = include_str!("../../remote/dashboard.js");
@@ -47,7 +48,12 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 REMOTE,
                 "The listening dashboard's style sheet",
             ),
-            |_, _, _| document("text/css; charset=utf-8", &format!("{STYLE}\n{LIBRARY_STYLE}")),
+            |_, _, _| {
+                document(
+                    "text/css; charset=utf-8",
+                    &format!("{STYLE}\n{LIBRARY_STYLE}\n{QUEUE_STYLE}"),
+                )
+            },
         )
         .response_schema::<String>(200, "The dashboard style sheet (text/css)"),
         cx.route(

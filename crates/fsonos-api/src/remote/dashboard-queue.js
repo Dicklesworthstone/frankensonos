@@ -37,7 +37,7 @@ const DashboardQueue = (() => {
   // Selection authority belongs to a specific visible page and model lifetime,
   // not just to a URI (the same song can occur at several queue positions).
   function choiceOf(value) {
-    if (!value || !choices.get(value)?.()) throw unavailable();
+    if (!value || !choices.get(value)?.current()) throw unavailable();
     return value;
   }
 
@@ -84,6 +84,10 @@ const DashboardQueue = (() => {
         || JSON.stringify(read.items.slice(offset, offset + rows.length)) !== JSON.stringify(rows)) {
       throw new Error('The queue or selected entries changed since review. Refresh and select again.');
     }
+  }
+
+  function submitted(operation) {
+    if (plans.has(operation)) choices.get(operation.choice)?.retire();
   }
 
   // An acknowledgement is checked against the submitted operation, even when
@@ -156,8 +160,14 @@ const DashboardQueue = (() => {
       const zone = { household: original.household, coordinator_room: original.coordinator_room, members: [...original.members] };
       const choice = frozen({ zone, target: address(zone), signature: group(zone), page: expected, rows });
       const version = generation;
-      choices.set(choice, () => current(version) && selected?.fresh && !state.stale && !state.loading
-        && state.page === expected && state.selection === choice && group(selected.zone) === choice.signature);
+      choices.set(choice, {
+        current: () => current(version) && selected?.fresh && !state.stale && !state.loading
+          && state.page === expected && state.selection === choice && group(selected.zone) === choice.signature,
+        retire() {
+          if (state.selection !== choice) return;
+          state.selection = null; state.stale = true; dirty = true; publish();
+        },
+      });
       state.selection = choice; publish(); return choice;
     }
     return { state, read, select,
@@ -189,6 +199,117 @@ const DashboardQueue = (() => {
       dispose() { disposed = true; active = false; ++generation; },
     };
   }
-  return { LIMIT, decode, model, choiceOf, plan, verify, receipt };
+  // Reuse the page's shared session review; this component never sends a write.
+  function editor({ queue, controller, session, el }) {
+    const node = el('details', 'queue-editor');
+    node.append(el('summary', '', 'Arrange this queue'));
+    const status = el('p', 'queue-edit-status'); status.setAttribute('role', 'status');
+    const fields = el('div', 'queue-edit-fields'), actions = el('div', 'queue-edit-actions');
+    const inputs = {};
+    for (const [key, label] of [['first', 'First position'], ['last', 'Last position on this page'], ['before', 'Move before original position']]) {
+      const field = el('label', 'queue-edit-field', label), input = el('input');
+      input.type = 'text'; input.inputMode = 'numeric'; input.maxLength = 10;
+      input.setAttribute('aria-label', label); input.dataset.queueField = key;
+      field.append(input); fields.append(field); inputs[key] = input;
+    }
+    const hint = el('p', 'small-note', 'Select one entry or a consecutive range on this page. Moving uses original queue positions; length + 1 means the end. Edits can disrupt a DJ work. All changes need review.');
+    node.append(hint, fields, actions, status);
+    let shownPage = null, first = '', last = '', before = '', notice = '', rows = [], buttons = [];
+    const integer = (value) => /^[1-9][0-9]{0,9}$/.test(value) && uint(Number(value)) ? Number(value) : null;
+    const allowed = () => !document.hidden && queue.state.open && !queue.state.stale && !queue.state.loading
+      && !!queue.state.page?.items.length && revisionOf(queue.state.page.revision) && controller.canControl();
+    const choose = (position, count, page) => {
+      if (!allowed() || session.state.pending || page !== queue.state.page) return null;
+      first = String(position); last = String(position + count - 1); notice = '';
+      return queue.select(position, count, page);
+    };
+    function review(action, destination) {
+      if (!allowed() || session.state.pending) return;
+      const choice = queue.state.selection;
+      const result = session.reviewQueue(choice, action, destination);
+      notice = result ? '' : session.state.error || 'Refresh the queue and select the entries again.';
+      update();
+    }
+    const button = (label, key, run, enabled) => {
+      const b = el('button', 'outline-button', label); b.type = 'button'; b.dataset.queueEdit = key;
+      b.addEventListener('click', () => { if (allowed() && !session.state.pending && enabled()) run(); });
+      buttons.push({ node: b, enabled }); actions.append(b); return b;
+    };
+    const selection = () => queue.state.selection;
+    button('Play selected', 'play', () => review('play'), () => selection()?.rows.length === 1);
+    button('Remove selected', 'remove', () => review('remove'), () => !!selection());
+    button('Move up', 'up', () => review('move', selection().rows[0].position - 1), () => selection()?.rows[0].position > 1);
+    button('Move down', 'down', () => review('move', selection().rows.at(-1).position + 2),
+      () => !!selection() && selection().rows.at(-1).position < queue.state.page.total && selection().rows.at(-1).position < 0xfffffffe);
+    button('Move to start', 'start', () => review('move', 1), () => selection()?.rows[0].position > 1);
+    button('Move to end', 'end', () => review('move', queue.state.page.total + 1),
+      () => !!selection() && selection().rows.at(-1).position < queue.state.page.total && queue.state.page.total < 0xffffffff);
+    button('Review move', 'move', () => review('move', integer(before)), () => {
+      const at = integer(before), choice = selection();
+      return !!choice && at !== null && at <= choice.page.total + 1
+        && (at < choice.rows[0].position || at > choice.rows.at(-1).position + 1);
+    });
+    button('Clear selection', 'clear', () => { first = last = before = ''; notice = ''; queue.clearSelection(); }, () => !!selection() || !!first || !!last);
+    for (const key of ['first', 'last']) inputs[key].addEventListener('input', () => {
+      if (!allowed() || session.state.pending) return;
+      first = inputs.first.value; last = inputs.last.value; notice = '';
+      const from = integer(first), to = integer(last);
+      // Invalid partial text must retire an older valid range, not fall back to it.
+      if (from === null || to === null || to < from || !queue.select(from, to - from + 1, shownPage)) {
+        queue.clearSelection();
+      }
+      update();
+    });
+    inputs.before.addEventListener('input', () => { before = inputs.before.value; notice = ''; update(); });
+    inputs.before.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.isComposing) {
+        event.preventDefault(); if (allowed()) review('move', integer(before));
+      }
+    });
+    function update() {
+      const state = queue.state, p = state.page;
+      if (shownPage !== p || state.stale) { shownPage = p; first = last = before = ''; notice = ''; }
+      const choice = state.selection, enabled = allowed();
+      for (const [key, value] of Object.entries({ first, last, before })) {
+        if (inputs[key].value !== value) inputs[key].value = value;
+        inputs[key].disabled = !enabled;
+      }
+      for (const key of ['first', 'last']) inputs[key].setAttribute('aria-invalid', String(!!(first || last) && !choice));
+      const destination = integer(before);
+      inputs.before.setAttribute('aria-invalid', String(!!before && (destination === null || !p || destination > p.total + 1)));
+      for (const b of buttons) b.node.disabled = !enabled || !b.enabled();
+      for (const entry of rows) {
+        const usable = enabled && entry.page === p && playable(entry.row);
+        entry.select.disabled = entry.play.disabled = !usable;
+        const selected = !!choice?.rows.some((r) => r.position === entry.row.position);
+        entry.select.setAttribute('aria-pressed', String(selected));
+        entry.node.dataset.selected = String(selected);
+      }
+      status.textContent = notice || (!p ? 'Read the queue to select entries.' : !revisionOf(p.revision)
+        ? 'The speaker did not provide a usable queue revision. This page is read-only.'
+        : state.stale ? 'Queue observation is stale. Refresh before selecting.'
+        : !p.items.length ? 'The queue is empty. Add music from your library.'
+        : controller.state.busy ? 'Waiting for the current command to finish.'
+        : !controller.canControl() ? 'Refresh the selected group before changing its queue.'
+        : choice ? `Selected #${choice.rows[0].position}–#${choice.rows.at(-1).position}: ${choice.rows.length} entry/entries. No change sent.`
+          : `Choose consecutive positions ${p.offset + 1}–${p.offset + p.items.length} on this page. No change sent.`);
+    }
+    function rowControls(row, page) {
+      const wrap = el('div', 'queue-entry-actions'), select = el('button', 'outline-button', 'Select'), play = el('button', 'outline-button', 'Play');
+      select.type = play.type = 'button';
+      select.setAttribute('aria-label', `Select queue entry ${row.position}`);
+      play.setAttribute('aria-label', `Review playing queue entry ${row.position}`);
+      select.dataset.queueFocus = `select-${row.position}`; play.dataset.queueFocus = `play-${row.position}`;
+      select.addEventListener('click', () => {
+        if (choose(row.position, 1, page)) { node.open = true; inputs.last.focus({ preventScroll: true }); }
+      });
+      play.addEventListener('click', () => { if (choose(row.position, 1, page)) review('play'); });
+      wrap.append(select, play); rows.push({ row, page, node: wrap, select, play }); return wrap;
+    }
+    update();
+    return { node, update, rowControls, resetRows() { rows = []; } };
+  }
+
+  return { LIMIT, decode, model, choiceOf, plan, verify, receipt, submitted, editor };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardQueue;

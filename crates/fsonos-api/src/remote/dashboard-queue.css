@@ -1,0 +1,17 @@
+/* Queue controls remain usable with long metadata and on phone-width pages. */
+#queue-items > li { display: grid; grid-template-columns: 2em minmax(0, 1fr); align-items: start; }
+#queue-items > li > div { min-width: 0; }
+#queue-items > li strong, #queue-items > li small { overflow-wrap: anywhere; }
+#queue-items .queue-entry-actions { grid-column: 2; display: flex; flex-wrap: wrap; gap: .4rem; }
+.queue-entry-actions button { min-height: 2.75rem; padding: .35rem .7rem; }
+.queue-entry-actions[data-selected="true"] [aria-pressed="true"] { border-color: currentColor; font-weight: 700; }
+.queue-editor { min-width: 0; margin-block: .8rem; border-top: 1px solid var(--border, #777); padding-top: .5rem; }
+.queue-editor summary { cursor: pointer; padding-block: .5rem; min-height: 2.75rem; }
+.queue-edit-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(10rem, 100%), 1fr)); gap: .7rem; margin-block: .8rem; }
+.queue-edit-field { display: grid; gap: .3rem; min-width: 0; font-size: .85rem; }
+.queue-edit-field input { box-sizing: border-box; width: 100%; min-width: 0; min-height: 2.75rem; border: 1px solid var(--border, #777); border-radius: .4rem; padding: .5rem; background: var(--surface, transparent); color: inherit; font: inherit; }
+.queue-edit-field input[aria-invalid="true"] { border-width: 2px; border-style: dashed; }
+.queue-edit-actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+.queue-edit-actions button { min-height: 2.75rem; white-space: normal; }
+.queue-edit-status, .queue-editor .small-note, #review-description { overflow-wrap: anywhere; }
+.queue-editor button:focus-visible, .queue-entry-actions button:focus-visible, .queue-edit-field input:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }

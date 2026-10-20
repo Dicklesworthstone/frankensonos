@@ -62,6 +62,8 @@ on:
       - "scripts/test-dashboard-audio.cjs"
       - "scripts/test-dashboard-http.cjs"
       - "scripts/test-dashboard-queue.cjs"
+      - "scripts/test-dashboard-queue-actions.cjs"
+      - "scripts/test-dashboard-queue-session.cjs"
       - "scripts/test-dashboard-session.cjs"
       - "scripts/test-dashboard-library.cjs"
       - "scripts/test-dashboard-library-actions.cjs"
@@ -147,6 +149,8 @@ jobs:
         run: node --test scripts/test-remote-studio.cjs scripts/test-remote-studio-insights.cjs scripts/test-remote-diagnostics.cjs
       - name: Listening room dashboard regressions
         run: node --test scripts/test-dashboard.cjs scripts/test-dashboard-audio.cjs scripts/test-dashboard-http.cjs scripts/test-dashboard-queue.cjs scripts/test-dashboard-session.cjs scripts/test-dashboard-workspace.cjs
+      - name: Listening room queue editing regressions
+        run: node --test scripts/test-dashboard-queue-actions.cjs scripts/test-dashboard-queue-session.cjs
       - name: Listening room cached library regressions
         run: node --test scripts/test-dashboard-library.cjs scripts/test-dashboard-library-actions.cjs
       - name: Listening room live recovery regressions

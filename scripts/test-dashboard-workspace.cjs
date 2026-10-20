@@ -32,7 +32,18 @@ test('the delivered dashboard and preview embed the queue/workspace before the a
   const rust = fs.readFileSync(path.join(root, 'crates/fsonos-api/src/http/remote/dashboard.rs'), 'utf8');
   const preview = fs.readFileSync(path.join(root, 'scripts/dashboard-preview.py'), 'utf8');
   for (const source of ['dashboard-queue.js', 'dashboard-workspace.js']) { assert.ok(rust.includes(source)); assert.ok(preview.includes(source)); }
-  assert.ok(rust.includes('{SESSION}\\n{QUEUE}\\n{WORKSPACE}\\n{SCRIPT}'));
+  const order = ['EVENTS', 'CORE', 'LIVE', 'VISUALIZER', 'AUDIO', 'LIBRARY', 'SESSION', 'QUEUE', 'LIBRARY_PANEL', 'WORKSPACE', 'SCRIPT'];
+  const names = ['event-feed.js', 'dashboard-core.js', 'dashboard-live.js', 'dashboard-visualizer.js',
+    'dashboard-audio.js', 'dashboard-library.js', 'dashboard-session.js', 'dashboard-queue.js',
+    'dashboard-library-panel.js', 'dashboard-workspace.js', 'dashboard.js'];
+  let at = -1, previewAt = -1;
+  for (const [i, name] of order.entries()) {
+    const next = rust.indexOf(`{${name}}`), p = preview.indexOf(`"${names[i]}"`);
+    assert.ok(next > at, `shipped script order: ${name}`); at = next;
+    assert.ok(p > previewAt, `preview script order: ${names[i]}`); previewAt = p;
+  }
+  assert.ok(rust.includes('{STYLE}\\n{LIBRARY_STYLE}\\n{QUEUE_STYLE}'));
+  assert.ok(preview.includes('"dashboard-queue.css"'));
 });
 test('all named controls exist once; no remote fonts, executable metadata or inline handlers', () => {
   const root = path.join(__dirname, '../crates/fsonos-api/src/remote');

@@ -2,6 +2,8 @@
 'use strict';
 const DashboardSession = (() => {
   const C = typeof DashboardCore !== 'undefined' ? DashboardCore : require('./dashboard-core.js');
+  const queueApi = () => typeof DashboardQueue !== 'undefined' ? DashboardQueue
+    : typeof require === 'function' ? require('./dashboard-queue.js') : null;
   const libraryApi = () => typeof DashboardLibrary !== 'undefined' ? DashboardLibrary
     : typeof require === 'function' ? require('./dashboard-library.js') : null;
   const text = (v, max = 4096) => typeof v === 'string' && v.trim() !== '' && v.length <= max;
@@ -189,6 +191,24 @@ const DashboardSession = (() => {
         body: { zone: target, source_uri: source.source_uri, title: name, ...(action === 'play' ? {} : { next: action === 'next' }) } });
       emit(); return state.pending;
     }
+    function reviewQueue(value, action, insertBefore) {
+      const Q = queueApi();
+      if (!Q || !ready() || state.pending) return null;
+      const item = selection(); if (!item) return null;
+      let operation;
+      try {
+        operation = Q.plan(value, action, insertBefore);
+        if (operation.choice.target !== C.key(item.zone) || operation.choice.signature !== C.shape(item.zone)) {
+          fail('The selected group changed. Read its queue and select again.');
+        }
+      } catch (error) { state.error = C.problem(error); emit(); return null; }
+      const entries = operation.choice.rows.map((row) => `#${row.position}: ${(row.title || 'Untitled track').slice(0, 300)}${row.title.length > 300 ? '…' : ''}`).join('; ');
+      ++intent; state.result = null; state.error = '';
+      state.pending = freeze({ kind: 'queue', target: C.key(item.zone), label: item.zone.members.join(' + '),
+        playback: playbackIdentity(item), queueEdit: operation, title: operation.title,
+        detail: `${operation.detail} Selected entries: ${entries}.`, url: operation.url, body: operation.body });
+      emit(); return state.pending;
+    }
     async function reviewScene(name) {
       if (!ready() || !state.scenes.some((s) => s.name === name)) return null;
       cancel(); const v = intent, target = controller.state.selected;
@@ -216,7 +236,9 @@ const DashboardSession = (() => {
           const fresh = C.playback(await call(`/zones/${encodeURIComponent(target)}/state`), item.zone);
           valid(check);
           if (playbackIdentity({ zone: item.zone, state: fresh }) !== r.playback) fail('Playback changed since review. Choose the action again.');
-          if (r.dj) {
+          if (r.queueEdit) {
+            await queueApi().verify(call, r.queueEdit, () => valid(check));
+          } else if (r.dj) {
             const current = dj(await call(`/zones/${encodeURIComponent(target)}/dj`), item.zone);
             valid(check);
             if (djIdentity(current) !== r.dj) fail('The DJ session or current work changed. Review it again.');
@@ -244,7 +266,11 @@ const DashboardSession = (() => {
           }
         }
         valid(check);
-        const result = await send(r.url, r.body);
+        if (r.queueEdit) queueApi().choiceOf(r.queueEdit.choice);
+        const delivery = send(r.url, r.body);
+        if (r.queueEdit) queueApi().submitted(r.queueEdit);
+        const result = await delivery;
+        if (r.queueEdit) return queueApi().receipt(result, r.queueEdit);
         if (r.kind === 'like' || r.kind === 'dislike') {
           if (!result || result.zone !== item.zone.coordinator_room || result.signal !== r.kind || !text(result.work)
               || result.composer !== r.work.composer || result.work !== `${r.work.composer}: ${r.work.title}` || !text(result.done)) fail('The feedback acknowledgement was incomplete.');
@@ -270,7 +296,7 @@ const DashboardSession = (() => {
       });
       emit(); if (ok && active && !disposed) await load(); return ok;
     }
-    return { state, load, catalog, search, review, reviewLibrary, reviewScene, confirm, cancel,
+    return { state, load, catalog, search, review, reviewLibrary, reviewQueue, reviewScene, confirm, cancel,
       suspend() { active = false; ++version; ++searchVersion; ++catalogVersion; state.loading = state.searching = false; cancel(); },
       resume() { if (!disposed) active = true; },
       dispose() { disposed = true; active = false; ++version; ++intent; ++searchVersion; ++catalogVersion; },

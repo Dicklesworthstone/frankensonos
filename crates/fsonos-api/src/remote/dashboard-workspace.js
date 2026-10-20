@@ -19,10 +19,14 @@ const DashboardWorkspace = (() => {
     const $ = (id) => document.getElementById(id);
     let active = true, immersive = false, chosenTab = 'picks', roomKey = '';
     const queue = DashboardQueue.model({ call, changed: paintQueue });
+    const queueEditor = DashboardQueue.editor({ queue, controller, session, el });
+    $('queue-items').after(queueEditor.node);
     const library = typeof DashboardLibraryPanel !== 'undefined'
       ? DashboardLibraryPanel.create({ call, controller, session }) : null;
     function paintQueue(state) {
       const p = state.page, container = $('queue-items'), scroll = container.scrollTop;
+      const focus = container.contains(document.activeElement) ? document.activeElement?.dataset?.queueFocus : null;
+      queueEditor.resetRows();
       container.replaceChildren(); container.setAttribute('aria-busy', String(state.loading));
       $('queue-status').textContent = state.error || (state.loading ? 'Reading the speaker queue…'
         : !p ? 'Waiting for a fresh listening group.' : state.stale ? 'Last observation · refresh to update'
@@ -31,14 +35,20 @@ const DashboardWorkspace = (() => {
         const li = el('li');
         if (p.playing === row.position) li.setAttribute('aria-current', 'true');
         const copy = el('div'); copy.append(el('strong', '', row.title || 'Untitled track'), el('small', '', row.creator || row.album));
-        li.append(el('span', 'queue-position', p.playing === row.position ? '▶' : row.position), copy); container.append(li);
+        li.append(el('span', 'queue-position', p.playing === row.position ? '▶' : row.position), copy, queueEditor.rowControls(row, p)); container.append(li);
       }
       if (p && !p.total) container.append(el('li', 'empty', 'The speaker queue is empty. Choose music from your collection.'));
+      queueEditor.update();
+      if (focus) [...container.querySelectorAll('[data-queue-focus]')].find((n) => n.dataset.queueFocus === focus && !n.disabled)?.focus({ preventScroll: true });
       container.scrollTop = scroll;
       $('queue-page').textContent = p?.total ? `${p.offset + 1}–${p.offset + p.items.length} of ${p.total}` : '';
-      $('queue-prev').disabled = !p || state.stale || state.loading || !p.offset;
-      $('queue-next').disabled = !p || state.stale || state.loading || p.offset + p.items.length >= p.total;
-      $('queue-refresh').disabled = state.loading || !controller.selected()?.fresh;
+      queueNavigation();
+    }
+    function queueNavigation() {
+      const state = queue.state, p = state.page;
+      $('queue-prev').disabled = controller.state.busy || !p || state.stale || state.loading || !p.offset;
+      $('queue-next').disabled = controller.state.busy || !p || state.stale || state.loading || p.offset + p.items.length >= p.total;
+      $('queue-refresh').disabled = controller.state.busy || state.loading || !controller.selected()?.fresh;
     }
     function tab(name, focus = false) {
       if (!['picks', 'queue'].includes(name)) return;
@@ -138,6 +148,8 @@ const DashboardWorkspace = (() => {
     return {
       observe(state) {
         queue.observe(controller.selected());
+        queueEditor.update();
+        queueNavigation();
         library?.observe();
         const next = JSON.stringify([state.selected, state.busy, state.items.map((i) => [i.zone, i.fresh, i.state?.transport_state])]);
         if (next !== roomKey) { roomKey = next; paintRooms(); }

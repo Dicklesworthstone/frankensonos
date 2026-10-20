@@ -11,7 +11,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 ASSETS = Path(__file__).resolve().parents[1] / "crates/fsonos-api/src/remote"
-SCRIPTS = ["dashboard-core.js", "dashboard-visualizer.js", "dashboard-audio.js", "dashboard-session.js", "dashboard-queue.js", "dashboard-workspace.js", "dashboard.js"]
+SCRIPTS = ["event-feed.js", "dashboard-core.js", "dashboard-live.js", "dashboard-visualizer.js",
+           "dashboard-audio.js", "dashboard-library.js", "dashboard-session.js", "dashboard-queue.js",
+           "dashboard-library-panel.js", "dashboard-workspace.js", "dashboard.js"]
+STYLES = ["dashboard.css", "dashboard-library.css", "dashboard-queue.css"]
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
@@ -26,7 +29,7 @@ class Preview(BaseHTTPRequestHandler):
                 return
             kind, body = "text/html", (ASSETS / "dashboard.html").read_bytes().replace(b"<body>", b'<body data-preview="true">')
         elif target.path == "/dashboard.css":
-            kind, body = "text/css", (ASSETS / "dashboard.css").read_bytes()
+            kind, body = "text/css", b"\n".join((ASSETS / p).read_bytes() for p in STYLES)
         elif target.path == "/dashboard.js":
             kind, body = "text/javascript", b"\n".join((ASSETS / p).read_bytes() for p in SCRIPTS)
         else:
