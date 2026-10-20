@@ -7,6 +7,7 @@ public struct Announcement: Equatable, Sendable {
     public enum Source: Equatable, Sendable {
         case speech(String)
         case chime(Chime)
+        case wav(AnnouncementWav)
     }
     public static let maximumSpeechScalars = 1_000
     public static let timeout: TimeInterval = 1_200
@@ -32,19 +33,24 @@ public struct Announcement: Equatable, Sendable {
                 throw ContractError.invalid("Enter speech of 1 to 1000 Unicode characters, without a null character.")
             }
             self.source = .speech(text)
-        case .chime: self.source = source
+        case .chime, .wav: self.source = source
         }
         self.rooms = rooms; self.volume = volume; self.group = group
     }
 
     public var title: String {
-        switch source { case .speech: "Speak an announcement"; case .chime(let chime): "Play the \(chime.rawValue) chime" }
+        switch source {
+        case .speech: "Speak an announcement"
+        case .chime(let chime): "Play the \(chime.rawValue) chime"
+        case .wav: "Play an audio announcement"
+        }
     }
     public var explanation: String {
         let clip: String
         switch source {
         case .speech(let text): clip = "Speak exactly:\n\(text)"
         case .chime(let chime): clip = "Chime: \(chime.rawValue)"
+        case .wav(let wav): clip = "Upload exactly this WAV:\n\(wav.summary)\nThe reviewed bytes are retained; the file will not be reopened when you confirm."
         }
         let targets = rooms.map { RoomID(household: group.household, room: $0).address }.joined(separator: ", ")
         return "\(clip)\n\nOnly in: \(targets)\nRequested volume: \(volume) (house caps still apply).\n\nThe daemon temporarily interrupts these rooms and may regroup them, then attempts to restore the original music, groups and levels. Other members of their group may also be affected during restoration. Speech is generated on the daemon with its configured voice. This is not undoable. Closing the remote does not recall a sent announcement."
@@ -64,6 +70,7 @@ public struct Announcement: Equatable, Sendable {
         switch source {
         case .speech(let text): body["text"] = .string(text)
         case .chime(let chime): body["chime"] = .string(chime.rawValue)
+        case .wav(let wav): body["wav_base64"] = .string(wav.base64)
         }
         return body
     }
