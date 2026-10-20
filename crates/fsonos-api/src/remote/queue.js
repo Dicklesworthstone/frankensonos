@@ -655,7 +655,8 @@ const QueueRemote = (() => {
     const summary = el('summary', { text: 'Queue' });
     const body = el('div', { class: 'queue-body' });
     const node = el('details', { class: 'queue' }, summary, body);
-    let shownFound = null, previousReview = null, reviewFocus = null;
+    let shownFound = null, shownOffset = null, previousReview = null, reviewFocus = null;
+    const openTools = new Map();
     const control = model({ zone, call, played, execute, blocked, current, changed: render });
     const button = (text, action, disabled = false) => el('button', {
       type: 'button', text, disabled, onclick: action, 'data-focus': text,
@@ -672,14 +673,25 @@ const QueueRemote = (() => {
         ? [active.selectionStart, active.selectionEnd] : null;
       const found = state.found !== null && state.found !== shownFound;
       shownFound = state.found;
+      const changedPage = state.page && state.offset !== shownOffset;
+      if (state.page) shownOffset = state.offset;
       const scroll = body.querySelector('.queue-items')?.scrollTop || 0;
       const searchScroll = body.querySelector('.queue-search-results')?.scrollTop || 0;
       const leavingReview = previousReview && !state.pending;
+      const enteringReview = state.pending && !previousReview;
       if (state.pending && !previousReview) reviewFocus = returnFocus || focus;
       previousReview = state.pending;
+      // Keep native disclosure state through live updates and input redraws.
+      for (const tool of body.querySelectorAll('[data-queue-tool]')) {
+        const key = tool.getAttribute('data-queue-tool');
+        // An untouched loading-state placeholder must not override a useful
+        // empty-queue default when the first real snapshot arrives.
+        if (tool.open || openTools.has(key)) openTools.set(key, tool.open);
+      }
+      if (found) openTools.set('search', false);
       draw(state);
       const list = body.querySelector('.queue-items');
-      if (list) list.scrollTop = scroll;
+      if (list) list.scrollTop = changedPage ? 0 : scroll;
       const results = body.querySelector('.queue-search-results');
       if (results) results.scrollTop = searchScroll;
       const key = found ? `found-${state.found}`
@@ -688,12 +700,28 @@ const QueueRemote = (() => {
       const target = [...body.querySelectorAll('[data-focus]')]
         .find((each) => each.getAttribute('data-focus') === key);
       if (target && !target.disabled) {
+        const tool = leavingReview ? target.closest?.('[data-queue-tool]') : null;
+        if (tool && !tool.open) tool.open = true;
         target.focus({ preventScroll: true });
         if (caret && key === focus && typeof target.setSelectionRange === 'function') {
           target.setSelectionRange(...caret);
         }
         if (found) target.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+        if (leavingReview) target.scrollIntoView?.({ block: 'nearest', behavior: 'instant' });
+        if (enteringReview) body.querySelector('.queue-review')?.scrollIntoView?.({ block: 'nearest', behavior: 'instant' });
+      } else if (focus === 'Previous page' || focus === 'Next page') {
+        body.querySelector('[data-focus="queue-location"]')?.focus({ preventScroll: true });
       } else if (leavingReview || returnFocus || focus === 'Cancel queue search') summary.focus({ preventScroll: true });
+    }
+
+    function disclosure(key, title, content, initiallyOpen = false) {
+      const toggle = el('summary', { text: title, 'data-focus': `tool-${key}` });
+      const tool = el('details', { class: 'queue-tool', 'data-queue-tool': key,
+        open: openTools.get(key) ?? initiallyOpen }, toggle, content);
+      tool.addEventListener('toggle', () => {
+        if (body.contains(tool)) openTools.set(key, tool.open);
+      });
+      return tool;
     }
 
     function moveButtons(position, disabled, returnFocus) {
@@ -739,12 +767,22 @@ const QueueRemote = (() => {
       const busy = state.loading || state.writing || state.selecting || state.navigating || state.searching || blocked();
       const deciding = Boolean(state.pending);
       const untrusted = state.stale || state.uncertain || state.updating;
-      body.append(el('div', { class: 'row' }, button('Refresh queue', () => control.load(), busy)));
-      if (state.message) body.append(el('p', { role: 'status', 'aria-live': 'polite', text: state.message }));
+      if (state.message) body.append(el('p', { class: 'queue-notice', role: 'status', 'aria-live': 'polite', text: state.message }));
       if (state.loading) body.append(el('p', { text: 'Reading queue…' }));
       const page = state.page;
       const editable = page && page.revision && !busy && !untrusted && !deciding;
       const ownsPage = () => state.page === page && !state.stale && !state.uncertain;
+      const first = page?.items[0];
+      const last = page?.items[page.items.length - 1];
+      const range = first ? `${first.position}–${last.position} of ${page.total}` : page ? `${page.total} entries` : 'Queue';
+      const overview = el('div', { class: 'queue-overview' },
+        el('div', {}, el('strong', { text: range, tabindex: -1, 'data-focus': 'queue-location' }),
+          ...(page ? [el('p', { text: page.playing ? `Current entry: ${page.playing}` : 'Not playing from this queue' })] : [])),
+        el('div', { class: 'row' },
+          button('Refresh queue', () => control.load(), busy),
+          ...(page?.total ? [button('Show current entry', () => control.showCurrent(), busy || untrusted)] : [])));
+      body.append(overview);
+      if (page && !page.revision) body.append(el('p', { class: 'queue-notice', text: 'Read-only: this daemon did not return a queue revision.' }));
       const source = el('input', { type: 'text', value: state.source, disabled: !editable,
         placeholder: 'Spotify track, album or playlist', 'aria-label': 'Spotify link or URI',
         'data-focus': 'source', class: 'queue-source' });
@@ -755,27 +793,24 @@ const QueueRemote = (() => {
         state.source = source.value;
         append.disabled = next.disabled = !editable || !nonblank(source.value);
       });
-      body.append(el('label', {}, 'Add music from Spotify', source), el('div', { class: 'row' }, append, next));
+      const sourceTools = disclosure('source', `Add music${state.source.trim() ? ' · Draft' : ''}`,
+        el('div', { class: 'queue-tool-content' }, el('label', {}, 'Spotify track, album or playlist', source),
+          el('div', { class: 'row' }, append, next)), Boolean(page && !page.total));
+      if (page?.total) body.append(drawSearch(state, page, busy, untrusted));
+      body.append(sourceTools);
       if (!page) return;
-      if (!page.revision) body.append(el('p', { text: 'Read-only: this daemon did not return a queue revision.' }));
       if (!page.total) {
         body.append(el('p', { class: 'empty', text: 'The queue is empty.' }));
         return;
       }
-      drawSearch(state, page, busy, untrusted);
-      const first = page.items[0];
-      const last = page.items[page.items.length - 1];
-      const range = first ? `${first.position}–${last.position} of ${page.total}` : `No entries at this position (${page.total} total)`;
-      body.append(el('p', { text: `${range}. ${page.playing ? `Queue position ${page.playing} is current.` : 'Not playing from this queue.'}` }));
+      const advanced = el('div', { class: 'queue-tool-content' });
       const position = el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: 10,
         class: 'queue-position', value: state.jump, disabled: busy || untrusted,
         'aria-label': 'Queue position to show', 'data-focus': 'jump' });
       const canJump = () => !busy && !untrusted && positionOf(position.value) !== null && positionOf(position.value) <= page.total;
       const jump = button('Go to position', () => { if (ownsPage()) return control.jumpTo(positionOf(state.jump)); }, !canJump());
       position.addEventListener('input', () => { state.jump = position.value; jump.disabled = !canJump(); });
-      body.append(el('div', { class: 'row' }, el('label', {}, 'Show position ', position), jump,
-        button('Show current entry', () => control.showCurrent(), busy || untrusted),
-        button('Show selection start', () => control.jumpTo(Math.min(...state.selected)), busy || untrusted || !state.selected.size)));
+      advanced.append(el('div', { class: 'row' }, el('label', {}, 'Show position ', position), jump));
       if (page.revision) {
         const disabled = busy || untrusted;
         const firstInput = el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: 10,
@@ -787,22 +822,31 @@ const QueueRemote = (() => {
         const edit = () => { if (ownsPage()) control.editRange(firstInput.value, lastInput.value); };
         firstInput.addEventListener('input', edit); lastInput.addEventListener('input', edit);
         const from = positionOf(state.rangeStart), to = positionOf(state.rangeEnd);
-        body.append(el('div', { class: 'queue-range', role: 'group', 'aria-label': 'Select across queue pages' },
-          el('p', { text: `Select up to ${MAX_SELECTION} consecutive entries, including across pages. Choose the boundaries yourself; titles do not establish a whole work.` }),
+        advanced.append(el('div', { class: 'queue-range', role: 'group', 'aria-label': 'Select across queue pages' },
+          el('p', { text: `Select up to ${MAX_SELECTION} consecutive entries across pages. Choose the first and last entry of the music you want to keep together.` }),
           el('div', { class: 'row' }, el('label', {}, 'First ', firstInput), el('label', {}, 'Last ', lastInput),
             button('Read and select range', () => { if (ownsPage()) return control.selectRange(from, to); },
               !editable || from === null || to === null || from > to || to > page.total || to - from + 1 > MAX_SELECTION))));
       }
       if (state.selected.size) {
         const elsewhere = [...state.selected].filter(at => !page.items.some(item => item.position === at)).length;
-        body.append(el('p', { text: `${state.selected.size} selected; ${elsewhere} outside this page. The confirmation lists every selected title.` }),
-          button('Clear selection', () => control.clearSelected(), busy));
+        const selection = el('section', { class: 'queue-selection-moves', 'aria-label': 'Selected queue entries' },
+          el('div', { class: 'row queue-selection-heading' },
+            el('strong', { text: `${state.selected.size} selected${elsewhere ? ` · ${elsewhere} outside this page` : ''}` }),
+            button('Clear selection', () => control.clearSelected(), busy)),
+          el('div', { class: 'row' },
+            button('Show selection start', () => control.jumpTo(Math.min(...state.selected)), busy || untrusted),
+            button('Review removal', () => control.reviewRemoval(), busy || deciding || !control.removable())));
         const moves = moveButtons(null, !editable);
-        if (moves.length) body.append(el('section', { class: 'queue-selection-moves',
+        if (moves.length) selection.append(el('div', {
           'aria-label': 'Move selected queue entries' },
           el('strong', { text: state.selected.size === 1 ? 'Move selected entry' : `Move ${state.selected.size} entries together` }),
           el('div', { class: 'row' }, ...moves)));
+        if (!control.removable()) selection.append(el('p', {
+          text: untrusted ? 'Refresh the queue before editing this selection.' : 'Select consecutive entries to move or remove them together.' }));
+        body.append(selection);
       }
+      const queueContent = el('div', { class: 'queue-content' });
       const list = el('ol', { class: 'queue-items', start: state.offset + 1 });
       for (const item of page.items) {
         const title = item.title || 'Untitled track';
@@ -826,10 +870,8 @@ const QueueRemote = (() => {
           el('div', { class: 'row queue-entry-actions' }, el('label', { class: 'queue-select' }, select, 'Select'), play, moves.toggle),
           moves.actions));
       }
-      body.append(list);
+      queueContent.append(list);
       if (page.revision) {
-        body.append(el('div', { class: 'row' },
-          button('Review removal', () => control.reviewRemoval(), busy || deciding || !control.removable())));
         if (state.selected.size) {
           const destination = el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: 10,
             size: 8, class: 'queue-position', value: state.destination, disabled: !editable,
@@ -842,11 +884,8 @@ const QueueRemote = (() => {
             state.destination = destination.value;
             reviewMove.disabled = !canMove();
           });
-          body.append(el('label', {}, 'Before original position ', destination),
+          advanced.append(el('label', {}, 'Move selected entries before original position ', destination),
             el('div', { class: 'row' }, reviewMove));
-        }
-        if (state.selected.size && !control.removable()) {
-          body.append(el('p', { text: 'Select consecutive entries to move or remove them together. A stale queue needs a fresh read.' }));
         }
       }
       if (state.pending) {
@@ -870,10 +909,12 @@ const QueueRemote = (() => {
             () => moving ? control.move(pending) : control.remove(pending), busy)));
         body.append(review);
       }
-      body.append(el('div', { class: 'row' },
+      queueContent.append(el('div', { class: 'row queue-pagination', 'aria-label': 'Queue pages' },
         button('Previous page', () => control.browse(Math.max(0, state.offset - PAGE_SIZE)), busy || untrusted || state.offset === 0),
         button('Next page', () => control.browse(last.position), busy || untrusted || !last || last.position >= page.total)));
-      body.append(el('p', { class: 'empty', text: 'Browsing keeps up to 100 selected identities only while the queue revision agrees. Refresh queue clears the selection; navigation cancels any earlier confirmation.' }));
+      body.append(queueContent);
+      advanced.append(el('p', { class: 'empty', text: 'Page navigation keeps an unchanged selection. Refresh queue clears it. Moving or removing entries always requires a new review.' }));
+      body.append(disclosure('advanced', 'Position & range tools', advanced));
     }
 
     function drawSearch(state, page, busy, untrusted) {
@@ -892,11 +933,9 @@ const QueueRemote = (() => {
       query.addEventListener('keydown', event => {
         if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); run(); }
       });
-      const search = el('section', { class: 'queue-search', role: 'search', 'aria-label': 'Find music in this queue' },
-        el('strong', { text: 'Find music in this queue' }),
-        el('p', { text: 'Search every word across titles, artists and albums, ignoring case and accents. This inspects queued music; it does not add or play anything.' }),
+      const search = el('section', { class: 'queue-search queue-tool-content', role: 'search', 'aria-label': 'Find music in this queue' },
         query, el('div', { class: 'row' }, submit,
-          button('Cancel queue search', () => control.cancelSearch(), !state.searching || !state.search)));
+          ...(state.searching ? [button('Cancel queue search', () => control.cancelSearch(), !state.search)] : [])));
       const result = state.search;
       if (result) {
         const coverage = result.scanned > result.start
@@ -924,8 +963,10 @@ const QueueRemote = (() => {
         if (!result.running && !result.complete) search.append(button('Search next section',
           () => { void control.search(result.query, result); }, !usable));
       }
-      search.append(el('p', { class: 'empty', text: `Each request examines at most ${SEARCH_REQUESTS * SEARCH_PAGE} entries in ${SEARCH_REQUESTS} page reads and keeps ${SEARCH_MATCHES} matches. Show position rechecks that exact occurrence before opening the ordinary queue controls.` }));
-      body.append(search);
+      if (!result) search.append(el('p', { class: 'empty', text: 'Find titles, artists or albums. Searching leaves the queue order unchanged.' }));
+      const suffix = result ? result.running ? ' · Searching…'
+        : ` · ${result.matches.length} ${result.matches.length === 1 ? 'match' : 'matches'}` : state.query.trim() ? ' · Draft' : '';
+      return disclosure('search', `Find in queue${suffix}`, search);
     }
 
     node.addEventListener('toggle', () => { if (node.open) control.load(); else control.close(); });

@@ -140,6 +140,25 @@ input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 32px
 .queue summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .queue-body { overflow-wrap: anywhere; }
 .queue-body p { font-size: 0.9rem; }
+.queue-overview { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.queue-overview strong { display: block; font-size: 1rem; }
+.queue-overview p { margin: 3px 0 0; color: var(--muted); }
+.queue .queue-overview button, .queue .queue-pagination button { min-height: 44px; }
+.queue-notice { padding: 12px; border-left: 3px solid var(--accent); background: var(--bg); border-radius: 0 8px 8px 0; }
+.queue-tool { margin: 8px 0; border: 1px solid var(--line); border-radius: 10px; }
+.queue .queue-tool > summary { min-height: 44px; padding: 10px 12px; font-size: .9rem; }
+.queue-tool[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.queue-tool-content { padding: 0 12px 12px; }
+.queue-tool-content > label { display: grid; gap: 8px; margin-top: 12px; }
+.queue-tool-content > .row { margin-top: 10px; }
+.queue-tool-content p { margin: 10px 0; }
+.queue-tool-content .queue-range { margin-top: 14px; padding-top: 4px; border-top: 1px solid var(--line); }
+.queue-tool .queue-search { margin: 0; padding: 0 12px 12px; border: 0; border-radius: 0; }
+.queue-content { min-width: 0; }
+.queue-pagination { justify-content: space-between; margin: 12px 0; }
+.queue-pagination button { flex: 1 1 120px; }
+.queue-review { padding: 14px; margin: 12px 0; border: 2px solid var(--accent); border-radius: 12px; background: var(--bg); }
+.queue-review > ul { max-height: 200px; overflow-y: auto; padding-left: 24px; }
 .queue-items { max-height: 360px; overflow-y: auto; padding-left: 2.5em; }
 .queue-items li { padding: 8px 0; border-top: 1px solid var(--line); }
 .queue-items li > button { margin-top: 6px; }
@@ -151,6 +170,9 @@ input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 32px
 .queue-move-options p { grid-column: 1 / -1; color: var(--muted); margin: 2px 0 0; }
 .queue-selection-moves { padding: 12px; margin: 12px 0; border: 1px solid var(--line); border-radius: 10px; }
 .queue-selection-moves > .row { margin-top: 10px; }
+.queue-selection-heading strong { flex: 1 1 160px; }
+.queue-selection-moves > div > .row { margin-top: 10px; }
+.queue-selection-moves > [aria-label] { margin-top: 14px; }
 .queue-selection-moves button { flex: 1 1 140px; }
 .queue-items [aria-current="true"]::marker { color: var(--accent); font-weight: 700; }
 .queue-position {

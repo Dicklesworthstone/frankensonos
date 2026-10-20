@@ -25,13 +25,16 @@ uses the current queue position in the observed snapshot; it is unavailable
 when no current entry is known, the selection includes it, or the block is
 already next. Boundary actions are disabled when they would not change order.
 
-For another destination, enter a one-based **Before original position** and
+For another destination, expand **Position & range tools** below the queue,
+enter a one-based **Move selected entries before original position**, and
 choose **Review move**. The destination can be anywhere in the full queue,
 not just the displayed page. The review names
 the room, selected titles, destination, and resulting first position. Only
 **Move entries** sends the request; **Cancel move** leaves the queue alone.
 Cancelling a shortcut review restores keyboard focus to its entry or selection
 control. Choosing any destination prepares a review; it never starts playback.
+The confirmation appears above the queue, outside every collapsible tool, and
+comes into view when a destination is chosen.
 
 The browser keeps exact renderer identities, including duplicate tracks, and
 the observed revision. After success it reads the page containing the moved
