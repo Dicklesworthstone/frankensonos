@@ -476,7 +476,12 @@ from a genre the DJ was built around.
   tracks to pin or ban. Precedence, strongest first: an active `dj steer` on
   the group (until it expires or is cleared), then the persistent preferences,
   then learned feedback (§12.9), then the raw account signals. A hard "avoid"
-  is never outweighed by a learned or account weight.
+  is never outweighed by a learned or account weight. The soft rungs are
+  bounded so each outweighs every rung below it together: the account's
+  signals at most ×1.25 (a liked track ×1.1 times its taste weight), learned
+  feedback ×0.25 – ×1.6 (one fresh dislike, ×0.71 or less, cancels a like and
+  the most taste), a favor ×2 and a pin ×3; a steer's filters decide what may
+  play at all.
 - **Selection is genre-agnostic.** Variety and anti-repeat are keyed by artist,
   album, track and genre tag (and by composer, period and work when the music
   is classical). Time-of-day energy, `PickReason`s, steering and feedback use
@@ -538,8 +543,9 @@ their standing preferences on every surface and in the daemon. What is on
   `playlist-read-private`: owner-authorized, requested at sign-in, listed in
   `docs/SCOPE.md`). Top tracks, the last 50 plays and the owner's own or
   collaborative playlists add their tracks to the pool; those, and the tracks
-  of followed and top artists, weigh more (×1.1 to ×1.3 a signal, at most
-  ×1.8: `Factor::Taste`, the lowest precedence rung). A grant without the
+  of followed and top artists, weigh more (×1.03 to ×1.08 a signal, at most
+  ×1.136, and ×1.25 with a like: `Factor::Taste`, the lowest precedence
+  rung). A grant without the
   extra scopes falls back to library-only taste, and `fsonos doctor` warns
   that it did (never a failure). Background reads halt on a long rate limit
   and resume on the next sync.

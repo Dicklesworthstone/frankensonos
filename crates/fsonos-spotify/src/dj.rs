@@ -38,7 +38,7 @@
 //!   liked are favored.
 //! * **Taste.** With a [`FeedbackModel`] ([`crate::feedback`]), the owner's
 //!   decayed likes, dislikes, skips and full listens scale each work's weight
-//!   (×0.25 – ×2), and twice-disliked works sit out while any other work
+//!   (×0.25 – ×1.6), and twice-disliked works sit out while any other work
 //!   qualifies.
 //! * **Preferences.** Under the owner's standing preferences
 //!   ([`WorkPool::with_preferences`], [`crate::prefs`]), banned and avoided
@@ -46,6 +46,13 @@
 //!   brings it back), explicit ones stay out unless allowed, favored works
 //!   weigh ×2 and pinned ones ×3, and feedback can't push those below
 //!   neutral. A preferred energy replaces the time-of-day curve.
+//! * **Precedence.** Each soft rung outweighs every rung below it together.
+//!   The account's signals, the lowest, are a liked work's ×1.1 times its
+//!   taste weight ([`crate::taste`]), at most ×1.25 together
+//!   ([`ACCOUNT_MAX_PM`]); learned feedback above them is ×0.25 – ×1.6, so
+//!   one fresh dislike (×0.71 or less) cancels a like and the most taste; a
+//!   favor's ×2 is at least the most feedback and the account give together
+//!   (×1.6 × ×1.25); and a steer's filters decide what may play at all.
 //!
 //! Every pick carries a [`PickReason`]. Weights are integer per-mille factors
 //! and every iteration runs in pool or history order, so a seeded [`Rng`]
@@ -158,7 +165,8 @@ pub struct DjConfig {
     pub period_memory: usize,
     /// How many history rows (tracks) to scan; older plays are ignored.
     pub history_horizon: usize,
-    /// Weight for works with a movement the owner individually liked.
+    /// Weight for works with a movement the owner individually liked (at
+    /// most [`ACCOUNT_MAX_PM`], together with the work's taste weight).
     pub liked_boost_pm: u64,
     /// Weight for works missing movements (Partial or Unknown).
     pub incomplete_pm: u64,
@@ -192,7 +200,7 @@ impl Default for DjConfig {
             album_spacing: 3,
             period_memory: 4,
             history_horizon: 2000,
-            liked_boost_pm: 1300,
+            liked_boost_pm: LIKED_PM,
             incomplete_pm: 600,
             max_work_minutes: 75,
             allow_long_works: false,
@@ -826,6 +834,21 @@ fn eligible(
 
 const SCALE: u64 = 1_000_000_000;
 
+/// The account rung, the lowest of the precedence ladder: a liked work's
+/// boost times its taste weight never weighs more than this (per mille), so
+/// learned feedback and the preferences above outweigh it.
+pub const ACCOUNT_MAX_PM: u64 = 1250;
+/// A liked work's weight (per mille): the default
+/// [`DjConfig::liked_boost_pm`].
+pub const LIKED_PM: u64 = 1100;
+
+// The ladder holds by construction: a favor weighs at least the most that
+// feedback and the account together give a work it doesn't favor.
+const _: () = assert!(
+    crate::prefs::FAVOR_PM * 1000 >= crate::feedback::MAX_PM * ACCOUNT_MAX_PM,
+    "a favor must outweigh the most feedback and account taste together"
+);
+
 /// A work's weight; with `factors`, also record every non-neutral factor.
 fn weigh(
     pool: &WorkPool,
@@ -899,10 +922,9 @@ fn weigh(
     {
         apply(Factor::EnergyJump, energy_jump_pm(work.energy(), last));
     }
-    if work.is_liked() {
-        apply(Factor::Liked, config.liked_boost_pm);
-    }
-    apply(Factor::Taste, u64::from(work.taste_pm()));
+    let (liked, taste) = account_pm(work, config);
+    apply(Factor::Liked, liked);
+    apply(Factor::Taste, taste);
     if work.completeness != Completeness::Complete {
         apply(Factor::Incomplete, config.incomplete_pm);
     }
@@ -920,6 +942,19 @@ fn weigh(
         apply(Factor::Feedback, pm);
     }
     weight
+}
+
+/// The account's signals for `work`, per mille: its like boost and its
+/// taste weight, at most [`ACCOUNT_MAX_PM`] together, whatever the config
+/// or a cache an older sync wrote says.
+fn account_pm(work: &Work, config: &DjConfig) -> (u64, u64) {
+    let liked = if work.is_liked() {
+        config.liked_boost_pm.min(ACCOUNT_MAX_PM)
+    } else {
+        1000
+    };
+    let taste = u64::from(work.taste_pm()).min(ACCOUNT_MAX_PM * 1000 / liked.max(1));
+    (liked, taste)
 }
 
 /// A key heard `ago` work plays back keeps ((ago+1)/(spacing+1))² of its
@@ -1226,6 +1261,9 @@ fn surname(name: &str) -> &str {
         last
     }
 }
+
+#[cfg(test)]
+mod ladder_tests;
 
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
