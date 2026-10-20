@@ -612,6 +612,7 @@ const QueueRemote = (() => {
     const summary = el('summary', { text: 'Queue' });
     const body = el('div', { class: 'queue-body' });
     const node = el('details', { class: 'queue' }, summary, body);
+    let shownFound = null;
     const control = model({ zone, call, played, execute, blocked, current, changed: render });
     const button = (text, action, disabled = false) => el('button', {
       type: 'button', text, disabled, onclick: action, 'data-focus': text,
@@ -620,20 +621,32 @@ const QueueRemote = (() => {
     function render(state) {
       const active = document.activeElement;
       const focus = body.contains(active) ? active.getAttribute('data-focus') : null;
+      const caret = focus === 'queue-search' && typeof active.selectionStart === 'number'
+        ? [active.selectionStart, active.selectionEnd] : null;
+      const found = state.found !== null && state.found !== shownFound;
+      shownFound = state.found;
       const scroll = body.querySelector('.queue-items')?.scrollTop || 0;
+      const searchScroll = body.querySelector('.queue-search-results')?.scrollTop || 0;
       draw(state);
       const list = body.querySelector('.queue-items');
       if (list) list.scrollTop = scroll;
-      const key = state.pending ? (state.pending.kind === 'move' ? 'Cancel move' : 'Cancel removal') : focus;
+      const results = body.querySelector('.queue-search-results');
+      if (results) results.scrollTop = searchScroll;
+      const key = found ? `found-${state.found}`
+        : state.pending ? (state.pending.kind === 'move' ? 'Cancel move' : 'Cancel removal') : focus;
       const target = [...body.querySelectorAll('[data-focus]')]
         .find((each) => each.getAttribute('data-focus') === key);
-      if (target && !target.disabled) target.focus({ preventScroll: true });
+      if (target && !target.disabled) {
+        target.focus({ preventScroll: true });
+        if (caret && key === 'queue-search') target.setSelectionRange(...caret);
+        if (found) target.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      } else if (focus === 'Cancel queue search') summary.focus({ preventScroll: true });
     }
 
     function draw(state) {
       body.replaceChildren();
-      body.setAttribute('aria-busy', String(state.loading || state.updating || state.writing || state.selecting || state.navigating || blocked()));
-      const busy = state.loading || state.writing || state.selecting || state.navigating || blocked();
+      body.setAttribute('aria-busy', String(state.loading || state.updating || state.writing || state.selecting || state.navigating || state.searching || blocked()));
+      const busy = state.loading || state.writing || state.selecting || state.navigating || state.searching || blocked();
       const deciding = Boolean(state.pending);
       const untrusted = state.stale || state.uncertain || state.updating;
       body.append(el('div', { class: 'row' }, button('Refresh queue', () => control.load(), busy)));
@@ -659,6 +672,7 @@ const QueueRemote = (() => {
         body.append(el('p', { class: 'empty', text: 'The queue is empty.' }));
         return;
       }
+      drawSearch(state, page, busy, untrusted);
       const first = page.items[0];
       const last = page.items[page.items.length - 1];
       const range = first ? `${first.position}–${last.position} of ${page.total}` : `No entries at this position (${page.total} total)`;
@@ -705,7 +719,11 @@ const QueueRemote = (() => {
           'aria-label': `Select queue position ${item.position}: ${title}`,
           onchange: (event) => { if (ownsPage()) control.select(item.position, event.target.checked); } });
         play.setAttribute('aria-label', `Play queue position ${item.position}: ${title}`);
-        list.append(el('li', { 'aria-current': current ? 'true' : null },
+        list.append(el('li', { 'aria-current': current ? 'true' : null,
+          class: state.found === item.position ? 'queue-found' : null,
+          tabindex: -1, 'data-focus': `found-${item.position}`,
+          'aria-label': state.found === item.position ? `Found queue entry ${item.position}: ${title}` : null },
+          ...(state.found === item.position ? [el('strong', { text: 'Found result' })] : []),
           el('div', { class: 'track' },
             el('div', { class: 'title', text: `${current ? '▶ ' : ''}${title}` }),
             el('div', { class: 'by', text: [item.creator, item.album].filter(Boolean).join(' · ') })),
@@ -762,6 +780,58 @@ const QueueRemote = (() => {
         button('Previous page', () => control.browse(Math.max(0, state.offset - PAGE_SIZE)), busy || untrusted || state.offset === 0),
         button('Next page', () => control.browse(last.position), busy || untrusted || !last || last.position >= page.total)));
       body.append(el('p', { class: 'empty', text: 'Browsing keeps up to 100 selected identities only while the queue revision agrees. Refresh queue clears the selection; navigation cancels any earlier confirmation.' }));
+    }
+
+    function drawSearch(state, page, busy, untrusted) {
+      const usable = Boolean(page.revision && !busy && !untrusted);
+      const query = el('input', { type: 'text', value: state.query, maxlength: 256,
+        disabled: !usable, class: 'queue-source', 'data-focus': 'queue-search',
+        'aria-label': 'Search queue titles, artists or albums', placeholder: 'Title, artist or album' });
+      const run = () => { if (body.contains(query)) void control.search(state.query); };
+      const submit = button('Search queue', run, !usable || !state.query.trim());
+      query.addEventListener('input', event => {
+        if (!event.isComposing && body.contains(query)) control.editSearch(query.value);
+      });
+      query.addEventListener('compositionend', () => {
+        if (body.contains(query)) control.editSearch(query.value);
+      });
+      query.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); run(); }
+      });
+      const search = el('section', { class: 'queue-search', role: 'search', 'aria-label': 'Find music in this queue' },
+        el('strong', { text: 'Find music in this queue' }),
+        el('p', { text: 'Search every word across titles, artists and albums, ignoring case and accents. This inspects queued music; it does not add or play anything.' }),
+        query, el('div', { class: 'row' }, submit,
+          button('Cancel queue search', () => control.cancelSearch(), !state.searching || !state.search)));
+      const result = state.search;
+      if (result) {
+        const coverage = result.scanned > result.start
+          ? `Positions ${result.start + 1}–${result.scanned} of ${result.total} examined in this section.`
+          : 'No entries examined yet.';
+        search.append(el('p', { text: `“${result.query}”: ${result.matches.length} matches. ${coverage}` }));
+        if (!result.running) {
+          const end = result.complete ? (result.start === 0 ? 'The entire observed queue was searched.' : 'This section reached the end of the queue.')
+            : 'More entries remain. Search the next section explicitly; these results are not the whole queue.';
+          search.append(el('p', { text: end }));
+          if (!result.matches.length) search.append(el('p', { text: 'No matches in the examined section.' }));
+        }
+        if (result.matches.length) {
+          const list = el('ol', { class: 'queue-search-results', 'aria-label': 'Matching queue occurrences' });
+          for (const item of result.matches) {
+            const show = button(`Show position ${item.position}`, () => { void control.openMatch(item); },
+              !usable || result.running || !identity(item.uri));
+            show.setAttribute('aria-label', `Show queue position ${item.position}: ${item.title || 'Untitled track'}`);
+            list.append(el('li', { value: item.position }, el('strong', { text: item.title || 'Untitled track' }),
+              el('p', { text: [item.creator, item.album].filter(Boolean).join(' · ') || 'Artist and album unavailable' }), show,
+              ...(!identity(item.uri) ? [el('p', { text: 'No renderer identity was reported; this result cannot open an actionable queue entry.' })] : [])));
+          }
+          search.append(list);
+        }
+        if (!result.running && !result.complete) search.append(button('Search next section',
+          () => { void control.search(result.query, result); }, !usable));
+      }
+      search.append(el('p', { class: 'empty', text: `Each request examines at most ${SEARCH_REQUESTS * SEARCH_PAGE} entries in ${SEARCH_REQUESTS} page reads and keeps ${SEARCH_MATCHES} matches. Show position rechecks that exact occurrence before opening the ordinary queue controls.` }));
+      body.append(search);
     }
 
     node.addEventListener('toggle', () => { if (node.open) control.load(); else control.close(); });

@@ -7,6 +7,7 @@ on:
       - "crates/**"
       - "scripts/test-remote-queue.cjs"
       - "scripts/test-remote-queue-navigation.cjs"
+      - "scripts/test-remote-queue-search.cjs"
       - "scripts/test-remote-queue-coordination.cjs"
       - "scripts/test-remote-queue-live.cjs"
       - "scripts/test-remote-queue-http.cjs"
@@ -101,7 +102,7 @@ jobs:
       - name: Web shared reads and request lifecycle regressions
         run: node --test scripts/test-remote-read-requests.cjs scripts/test-remote-request-lifecycle.cjs scripts/test-remote-requests.cjs scripts/test-remote-http.cjs
       - name: Web queue client regressions
-        run: node --test scripts/test-remote-queue.cjs scripts/test-remote-play-mode.cjs scripts/test-remote-queue-navigation.cjs
+        run: node --test scripts/test-remote-queue.cjs scripts/test-remote-play-mode.cjs scripts/test-remote-queue-navigation.cjs scripts/test-remote-queue-search.cjs
       - name: Live queue and command coordination regressions
         run: node --test scripts/test-remote-queue-coordination.cjs scripts/test-remote-queue-live.cjs scripts/test-remote-queue-http.cjs
       - name: Web direct source playback regressions
