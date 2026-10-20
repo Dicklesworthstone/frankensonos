@@ -597,6 +597,12 @@ mod tests {
         };
         let none = discover_text(&empty);
         assert!(none.starts_with("no players found\n  hint: "), "{none}");
-        assert!(none.contains("--seed <ip>") && none.contains("About My System"));
-    }
+        assert!(
+            none.contains("--seed <ip>")
+                && none.contains("About My System")
+                && none.contains("guest or client-isolated Wi-Fi")
+                && none.contains("Local Network permission"),
+            "{none}"
+        );
+}
 }
