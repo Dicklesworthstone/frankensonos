@@ -1,0 +1,147 @@
+// The Listening Room browses the daemon cache, not a second Spotify client.
+'use strict';
+const DashboardLibrary = (() => {
+  const LIMIT = 50;
+  const KINDS = Object.freeze({ tracks: 'track', albums: 'album', playlists: 'playlist' });
+  const uint = (v) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
+  const text = (v, max = 4096) => typeof v === 'string' && v.length <= max;
+  const uri = (v, kind) => typeof v === 'string' && new RegExp(`^spotify:${kind}:[A-Za-z0-9]{22}$`).test(v);
+  const fail = (detail) => { throw new Error(detail); };
+
+  function queryOf(value = {}) {
+    const { kind = 'albums', q = '', offset = 0, album_uri = null } = value;
+    if (!Object.hasOwn(KINDS, kind) || !text(q, 2048) || [...q.trim()].length > 512 || !uint(offset)
+        || (album_uri !== null && (kind !== 'tracks' || !uri(album_uri, 'album')))) {
+      fail('Choose a library category and a filter of at most 512 characters.');
+    }
+    return Object.freeze({ kind, q: q.trim(), offset, album_uri });
+  }
+
+  function urlOf(value) {
+    const q = queryOf(value), params = new URLSearchParams({ kind: q.kind, offset: q.offset, limit: LIMIT });
+    if (q.q) params.set('q', q.q);
+    if (q.album_uri) params.set('album_uri', q.album_uri);
+    return `/library/browse?${params}`;
+  }
+
+  function itemOf(item, query) {
+    if (!item || item.kind !== KINDS[query.kind] || !uri(item.source_uri, item.kind)
+        || !text(item.title) || !text(item.subtitle ?? '') || typeof item.explicit !== 'boolean'
+        || (query.album_uri && item.album_uri !== query.album_uri)
+        || (query.kind === 'albums' && (!uint(item.cached_tracks) || item.cached_tracks < 1))
+        || [item.disc_number, item.track_number].some((n) => n != null && !uint(n))) {
+      fail('A cached music entry is incomplete. Refresh the listing.');
+    }
+    return Object.freeze({ kind: item.kind, source_uri: item.source_uri, title: item.title,
+      subtitle: item.subtitle ?? '', explicit: item.explicit,
+      album_uri: query.album_uri, cached_tracks: query.kind === 'albums' ? item.cached_tracks : null,
+      disc_number: item.disc_number ?? null, track_number: item.track_number ?? null });
+  }
+
+  function pageOf(value, input) {
+    const query = queryOf(input);
+    if (!value || value.kind !== query.kind || value.offset !== query.offset || value.limit !== LIMIT
+        || value.album_uri !== query.album_uri || value.coverage !== 'cached' || !uint(value.total)
+        || !text(value.revision, 256) || !value.revision.trim() || !Array.isArray(value.items)
+        || value.items.length !== Math.min(LIMIT, Math.max(0, value.total - query.offset))) {
+      fail('The cached library page is incomplete. Refresh the listing.');
+    }
+    const end = query.offset + value.items.length, next = end < value.total ? end : null;
+    if (value.next_offset !== next) fail('The library page positions disagree. Refresh the listing.');
+    const items = value.items.map((item) => itemOf(item, query));
+    if (new Set(items.map((item) => item.source_uri)).size !== items.length) {
+      fail('The library page contains duplicate identities. Refresh the listing.');
+    }
+    return Object.freeze({ query, total: value.total, next, revision: value.revision, items: Object.freeze(items) });
+  }
+
+  function choiceOf(value) {
+    if (!value || !text(value.revision, 256) || !value.revision.trim()) fail('Choose music from a fresh library page.');
+    const query = queryOf(value.query);
+    return Object.freeze({ query, revision: value.revision, item: itemOf(value.item, query) });
+  }
+
+  function model({ call, changed = () => {} }) {
+    const state = { open: false, active: true, kind: 'albums', filter: '', album: null,
+      page: null, loading: false, stale: true, resetRequired: false, error: '' };
+    let disposed = false, epoch = 0, running = null, queued = null;
+    const emit = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
+    const available = () => !disposed && state.active && state.open;
+    const ready = () => available() && !state.loading && !state.stale && !state.resetRequired && state.page;
+    function invalidate() {
+      ++epoch; state.stale = true;
+      if (queued) { queued.resolve(false); queued = null; }
+      state.loading = available() && !!running;
+    }
+    async function pump() {
+      if (running || !queued || !available()) return;
+      const task = queued; queued = null; running = task;
+      const current = () => available() && task.epoch === epoch;
+      let ok = false;
+      try {
+        // The view can close synchronously during its loading notification.
+        await Promise.resolve();
+        if (!current()) return;
+        const page = pageOf(await call(urlOf(task.query)), task.query);
+        if (!current()) return;
+        if (task.revision !== null && page.revision !== task.revision) {
+          state.resetRequired = true;
+          fail('The library changed between pages. Refresh to start at the first page.');
+        }
+        state.page = page; state.stale = false; state.resetRequired = false; ok = true;
+      } catch (error) {
+        if (current()) state.error = [error?.message || 'The library could not be read.', error?.hint].filter(Boolean).join(' ');
+      } finally {
+        running = null;
+        state.loading = available() && !!queued;
+        task.resolve(ok);
+        emit();
+        void pump();
+      }
+    }
+    function request(offset = 0, revision = null) {
+      if (!available()) return Promise.resolve(false);
+      invalidate(); state.error = '';
+      let query;
+      try { query = queryOf({ kind: state.kind, q: state.filter, offset, album_uri: state.album?.uri ?? null }); }
+      catch (error) { state.error = error.message; emit(); return Promise.resolve(false); }
+      const result = new Promise((resolve) => { queued = { query, revision, epoch, resolve }; });
+      state.loading = true; emit(); void pump(); return result;
+    }
+    function refresh() { return request(); }
+    function browse(kind) {
+      if (!available() || !Object.hasOwn(KINDS, kind)) return Promise.resolve(false);
+      state.kind = kind; state.album = null;
+      return refresh();
+    }
+    function edit(filter) {
+      if (!available() || typeof filter !== 'string') return false;
+      invalidate(); state.filter = filter; state.error = ''; emit(); return true;
+    }
+    function turn(forward, expected = state.page) {
+      if (!ready() || expected !== state.page) return Promise.resolve(false);
+      const offset = forward ? expected.next : expected.query.offset > 0 ? Math.max(0, expected.query.offset - LIMIT) : null;
+      return offset === null ? Promise.resolve(false) : request(offset, expected.revision);
+    }
+    function choose(item) {
+      if (!ready() || !state.page.items.includes(item)) return null;
+      return choiceOf({ query: state.page.query, revision: state.page.revision, item });
+    }
+    function album(item) {
+      if (!choose(item) || item.kind !== 'album') return Promise.resolve(false);
+      state.album = Object.freeze({ uri: item.source_uri, title: item.title });
+      state.kind = 'tracks'; state.filter = '';
+      return refresh();
+    }
+    return { state, refresh, browse, edit, choose, album,
+      next: (page) => turn(true, page), previous: (page) => turn(false, page),
+      open() { if (disposed || !state.active) return Promise.resolve(false); state.open = true; return refresh(); },
+      close() { state.open = false; invalidate(); emit(); },
+      suspend() { state.active = false; invalidate(); emit(); },
+      resume() { if (!disposed) { state.active = true; emit(); } },
+      dispose() { disposed = true; state.open = false; invalidate(); },
+    };
+  }
+  return { LIMIT, KINDS, queryOf, urlOf, pageOf, choiceOf, model };
+})();
+if (typeof module !== 'undefined' && module.exports) module.exports = DashboardLibrary;
