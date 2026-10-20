@@ -104,9 +104,10 @@ impl Surface {
 }
 
 /// The rooms `plan` starts music in, grouped as the plan leaves the house:
-/// every room of a group it plays a source in, resumes or starts the DJ in,
-/// and every room it joins to a group (as a join does for
-/// [`Guard::playback_caps`]); not a room the plan sets a level for.
+/// every room of a group it plays a source in (not one it only loads,
+/// paused), resumes or starts the DJ in, and every room it joins to a group
+/// (as a join does for [`Guard::playback_caps`]); not a room the plan sets a
+/// level for.
 fn scene_sounding_rooms<'h>(households: &'h [HouseholdState], plan: &ScenePlan) -> Vec<&'h Room> {
     let rooms = || households.iter().flat_map(|h| h.rooms.iter());
     let mut lead: HashMap<&PlayerId, &PlayerId> =
@@ -128,7 +129,11 @@ fn scene_sounding_rooms<'h>(households: &'h [HouseholdState], plan: &ScenePlan) 
             SceneOp::Favorite { coordinator, .. }
             | SceneOp::Uri { coordinator, .. }
             | SceneOp::Dj { coordinator, .. }
-            | SceneOp::Play { coordinator } => starting.push(coordinator),
+            | SceneOp::Play { coordinator } => {
+                if op.starts() {
+                    starting.push(coordinator);
+                }
+            }
             SceneOp::Volume { player, .. } => leveled.push(player),
             SceneOp::Mute { .. } | SceneOp::Pause { .. } => {}
         }

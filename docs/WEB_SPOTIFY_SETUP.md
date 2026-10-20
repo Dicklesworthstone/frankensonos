@@ -16,6 +16,20 @@ application for it. The existing `fsonos setup` remains available.
 
 ## Sign in, then load music
 
+Starting a sign-in is the owner's, since whoever signs in chooses whose
+library and taste the DJ follows: the CLI on the daemon's host (`fsonos
+setup`) and the tailnet login the daemon's host is logged in as (your own
+devices, through Tailscale) may. To start one from another login, grant it
+the auth class in the daemon's `policy.toml`:
+
+```toml
+[clients."you@example.com"]
+grant = ["auth"]
+```
+
+Status stays readable without it, and a sign-in the CLI started can still be
+finished from the remote.
+
 Open Spotify setup and read the current status. **Review new sign-in** explains
 that starting replaces any pending consent link, not the cached sign-in. Confirm
 only when ready. The link opens Spotify's HTTPS consent page in a separate tab

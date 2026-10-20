@@ -6,9 +6,10 @@
 mod e2e;
 
 use e2e::{Run, Scenario};
-use fsonos_proto::control::get_volume;
+use fsonos_proto::control::{get_volume, set_volume};
 use fsonos_sim::SimHousehold;
 use serde_json::Value;
+use std::time::Duration;
 
 fn json(run: &Run) -> Value {
     serde_json::from_str(&run.stdout).unwrap_or(Value::Null)
@@ -83,6 +84,75 @@ fn the_cli_previews_its_newest_action_and_undoes_exactly_that_one() {
         "--preview and --id together are a usage error",
         run.code == Some(2) && run.stderr.contains("cannot be used with"),
         &run.stderr,
+    );
+    s.finish();
+}
+
+/// Through the running daemon (as on the owner's Mac): `fsonos undo` refuses
+/// an action whose room someone changed since and leaves it, and `fsonos
+/// undo --force` puts it back anyway.
+#[test]
+fn the_owners_forced_undo_reaches_through_the_daemon() {
+    let mut s = Scenario::start("forced_undo_daemon");
+    s.sim(SimHousehold::standard());
+    let kitchen = s.ip("Kitchen");
+    let volume = |s: &Scenario| get_volume(&s.lan(), kitchen).ok();
+    let was = volume(&s).unwrap_or_default();
+    // The action moves the Kitchen one way; the Sonos app then takes it
+    // further, past the action's level, so the change is plainly someone
+    // else's.
+    let level = if was > 30 { was - 10 } else { was + 10 };
+    let app = if level > was { level + 5 } else { level - 5 };
+
+    let mut daemon = s.spawn("serve", &["serve", "--http", "127.0.0.1:0"]);
+    let live = daemon.wait_line("fsonos serve: live", Duration::from_secs(20));
+    s.check(
+        "live",
+        "daemon",
+        "serve is up",
+        live.is_some(),
+        daemon.seen.join("\n"),
+    );
+
+    let set = level.to_string();
+    let run = s.cli("volume", &["--daemon", "volume", "Kitchen", &set]);
+    s.check(
+        "volume",
+        "cli",
+        "the volume goes through the daemon",
+        run.ok() && volume(&s) == Some(level),
+        format!("{run:?} {:?}", volume(&s)),
+    );
+    let moved = set_volume(&s.lan(), kitchen, app);
+    let run = s.cli("refused", &["--daemon", "undo"]);
+    s.check(
+        "refused",
+        "cli",
+        "a plain undo refuses (INVALID_ARGUMENT, exit 2), names the Kitchen's volume change and --force, and leaves the app's level",
+        moved.is_ok()
+            && run.code == Some(2)
+            && run.stderr.contains("INVALID_ARGUMENT")
+            && run.stderr.contains("Kitchen's volume")
+            && run.stderr.contains("--force")
+            && volume(&s) == Some(app),
+        format!("{moved:?} {run:?} {:?}", volume(&s)),
+    );
+    let run = s.cli("forced", &["--daemon", "undo", "--force", "--json"]);
+    s.check(
+        "forced",
+        "cli",
+        "undo --force through the daemon puts the Kitchen back where it was before the action",
+        run.ok() && volume(&s) == Some(was),
+        format!("{run:?} {:?}", volume(&s)),
+    );
+
+    let code = daemon.interrupt(Duration::from_secs(10));
+    s.check(
+        "stop",
+        "daemon",
+        "SIGINT stops serve cleanly (exit 0)",
+        code == Some(0),
+        format!("exit {code:?}"),
     );
     s.finish();
 }

@@ -43,7 +43,7 @@ use fsonos_core::clock::SystemClock;
 use fsonos_core::live::{Live, LiveConfig};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::SqliteStore;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak, mpsc};
@@ -278,6 +278,18 @@ fn unshared_data_dir(global: &GlobalArgs) -> anyhow::Result<(PathBuf, std::fs::F
     }
 }
 
+/// The login this host's tailnet node belongs to (Tailscale's WhoIs of its
+/// own address): the owner's own devices reach the daemon as it, so the
+/// house policy's owner-only tools are theirs too. `None` off the tailnet,
+/// for a tagged node (which has no owning login), or when Tailscale cannot
+/// say.
+fn owner_login(tailnet: &fsonos_tailscale::TailnetStatus) -> Option<String> {
+    let ip = tailnet.running()?.ipv4.first().copied()?;
+    fsonos_tailscale::WhoIs::default()
+        .resolve(IpAddr::V4(ip))?
+        .login
+}
+
 /// Run the bind guard over the HTTP API's and the MCP server's planned
 /// addresses: warn about the ones it allows with a warning, refuse to start
 /// on one it refuses.
@@ -313,7 +325,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     // aliases, then serve's own checks.
     let checks = crate::doctor::checks(global, args.clone())?;
     let library = LibrarySync::for_serve(args, &data_dir, scheduler.clock());
-    let house = policy(&data_dir)?;
+    let house = policy(&data_dir)?.with_owner(owner_login(&tailnet));
     let (surface, live) = live_surface(global, args.events_port, house, library.clone())?;
     let surface = surface
         .with_clock(scheduler.clock())

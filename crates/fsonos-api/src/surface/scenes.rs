@@ -410,12 +410,31 @@ fn describe(households: &[HouseholdState], op: &SceneOp) -> String {
                 if *mute { "muted" } else { "unmuted" }
             )
         }
-        SceneOp::Favorite { coordinator, name } => {
-            format!("{} plays the favorite {name}", room(coordinator))
-        }
+        SceneOp::Favorite {
+            coordinator,
+            name,
+            start: true,
+        } => format!("{} plays the favorite {name}", room(coordinator)),
+        SceneOp::Favorite {
+            coordinator,
+            name,
+            start: false,
+        } => format!(
+            "{} has the favorite {name} ready, paused",
+            room(coordinator)
+        ),
         SceneOp::Uri {
-            coordinator, uri, ..
+            coordinator,
+            uri,
+            start: true,
+            ..
         } => format!("{} plays {uri}", room(coordinator)),
+        SceneOp::Uri {
+            coordinator,
+            uri,
+            start: false,
+            ..
+        } => format!("{} has {uri} ready, paused", room(coordinator)),
         SceneOp::Dj { coordinator, mood } => match mood {
             Some(mood) => format!("{} starts the DJ ({mood})", room(coordinator)),
             None => format!("{} starts the DJ", room(coordinator)),

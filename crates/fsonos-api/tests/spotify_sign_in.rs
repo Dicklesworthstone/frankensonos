@@ -107,6 +107,12 @@ fn serve(surface: Surface) -> SocketAddr {
         .expect("server ready")
 }
 
+/// The policy granting `client` the sign-in (the default allows the CLI
+/// alone to start one).
+fn granted(client: &str) -> Policy {
+    Policy::from_toml(&format!("[clients.\"{client}\"]\ngrant = [\"auth\"]\n")).unwrap()
+}
+
 fn surface(policy: Policy) -> Surface {
     Surface::new(
         Box::new(NoSpeakers),
@@ -120,7 +126,7 @@ fn surface(policy: Policy) -> Surface {
 /// went, never with the browser's redirect (it carries the code).
 #[test]
 fn the_sign_in_is_logged_without_the_redirect() {
-    let s = surface(Policy::default())
+    let s = surface(granted("owner@example.com"))
         .with_action_log(Box::new(MemStore::default()), "http")
         .with_spotify_auth(Box::new(FakeAuth::default()));
     let client = Client::Tailnet("owner@example.com".into());
@@ -218,7 +224,8 @@ fn without_a_spotify_app_the_sign_in_is_not_implemented() {
 
 #[test]
 fn the_browser_comes_back_to_the_daemon_and_signs_in() {
-    let addr = serve(surface(Policy::default()).with_spotify_auth(Box::new(FakeAuth::default())));
+    let addr =
+        serve(surface(granted("loopback-http")).with_spotify_auth(Box::new(FakeAuth::default())));
     let (status, _, body) = call(addr, "/auth/spotify", None);
     assert_eq!(status, 200, "{body}");
     assert_eq!(
@@ -275,7 +282,8 @@ fn the_browser_comes_back_to_the_daemon_and_signs_in() {
 
 #[test]
 fn an_address_pasted_from_another_browser_finishes_the_sign_in() {
-    let addr = serve(surface(Policy::default()).with_spotify_auth(Box::new(FakeAuth::default())));
+    let addr =
+        serve(surface(granted("loopback-http")).with_spotify_auth(Box::new(FakeAuth::default())));
     let complete = |redirect: &str| {
         call(
             addr,
@@ -295,6 +303,52 @@ fn an_address_pasted_from_another_browser_finishes_the_sign_in() {
     assert_eq!(status, 422, "unknown fields are refused: {body}");
 }
 
+/// Starting a sign-in is the owner's: by default only the CLI may, and any
+/// other caller is refused with the policy key that would let it. Its status
+/// stays readable, and a sign-in the CLI started is still finished by the
+/// browser coming back.
+#[test]
+fn only_the_owner_starts_a_sign_in_by_default() {
+    let addr = serve(surface(Policy::default()).with_spotify_auth(Box::new(FakeAuth::default())));
+    let (status, _, body) = call(addr, "/auth/spotify/begin", Some(&json!({})));
+    assert_eq!(status, 403, "{body}");
+    assert_eq!(json_of(&body)["code"], "POLICY_DENIED");
+    assert!(
+        json_of(&body)["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("grant = [\"auth\"]")),
+        "{body}"
+    );
+    let (status, _, body) = call(addr, "/auth/spotify", None);
+    assert_eq!(status, 200, "status stays readable: {body}");
+
+    let s = surface(Policy::default().with_owner(Some("owner@example.com".into())))
+        .with_spotify_auth(Box::new(FakeAuth::default()));
+    let bob = Client::Tailnet("bob@example.com".into());
+    // The owner's own login (the daemon host's tailnet node) may start one,
+    // as the Apple and web remotes do through Tailscale.
+    let owner = Client::Tailnet("owner@example.com".into());
+    assert!(
+        s.spotify_sign_in_begin(&owner)
+            .unwrap()
+            .url
+            .contains("state=good")
+    );
+    let refused = s.spotify_sign_in_begin(&bob).unwrap_err();
+    assert_eq!(
+        refused.code,
+        fsonos_api::ErrorCode::PolicyDenied,
+        "{refused:?}"
+    );
+    s.spotify_sign_in_begin(&Client::Cli).unwrap();
+    let back = "http://127.0.0.1:8099/auth/spotify/callback?code=c&state=good";
+    assert!(
+        s.spotify_sign_in_complete(&Client::LoopbackHttp, back)
+            .unwrap()
+            .signed_in
+    );
+}
+
 #[test]
 fn the_house_policy_can_deny_the_sign_in() {
     let policy =
@@ -303,4 +357,10 @@ fn the_house_policy_can_deny_the_sign_in() {
     let (status, _, body) = call(addr, "/auth/spotify/begin", Some(&json!({})));
     assert_eq!(status, 403, "{body}");
     assert_eq!(json_of(&body)["code"], "POLICY_DENIED");
+    assert!(
+        json_of(&body)["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("policy denies spotify_sign_in")),
+        "the deny itself, not the owner-only default: {body}"
+    );
 }

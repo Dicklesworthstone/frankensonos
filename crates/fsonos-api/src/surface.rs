@@ -159,7 +159,14 @@ impl PolicyFile {
         *seen = now;
         match Policy::load(&self.dir) {
             Ok(fresh) => {
-                *policy.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(fresh);
+                // The owner's login comes from the tailnet, not the file.
+                let owner = policy
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .owner()
+                    .map(str::to_owned);
+                *policy.write().unwrap_or_else(PoisonError::into_inner) =
+                    Arc::new(fresh.with_owner(owner));
                 tracing::info!(
                     "house policy reloaded from {}",
                     fsonos_core::policy::FILE_NAME

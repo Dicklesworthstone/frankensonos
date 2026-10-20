@@ -1,4 +1,4 @@
-//! Reviewed undo endpoints. The existing POST /undo remains unchanged.
+//! Reviewed undo endpoints. The legacy POST /undo is separate.
 
 use crate::http::{Ctx, LOG, Op, answer, body};
 use crate::log::{ActionDto, UndoDto};
