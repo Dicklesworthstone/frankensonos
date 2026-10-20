@@ -407,16 +407,6 @@ pub fn api_error(status: u16, body: &[u8]) -> SpotifyError {
     SpotifyError::Api { status, body }
 }
 
-/// Seconds to wait after a 429, from its `Retry-After` header (Spotify sends
-/// whole seconds): 1 when absent or unparseable, capped at an hour.
-#[must_use]
-pub fn retry_after_secs(header: Option<&str>) -> u64 {
-    header
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(1)
-        .clamp(1, 3600)
-}
-
 // ── Token cache ────────────────────────────────────────────────────────────
 
 /// The on-disk token cache: one JSON file in the daemon's data directory
@@ -1549,16 +1539,6 @@ mod tests {
         let err = cache.load().unwrap_err().to_string();
         assert!(err.contains("token cache"), "{err}");
         fs::remove_dir_all(&data_dir).unwrap();
-    }
-
-    #[test]
-    fn retry_after_header() {
-        assert_eq!(retry_after_secs(Some("7")), 7);
-        assert_eq!(retry_after_secs(Some(" 30 ")), 30);
-        assert_eq!(retry_after_secs(Some("0")), 1);
-        assert_eq!(retry_after_secs(Some("Wed, 21 Oct 2026 07:28:00 GMT")), 1);
-        assert_eq!(retry_after_secs(None), 1);
-        assert_eq!(retry_after_secs(Some("86400")), 3600);
     }
 
     #[test]

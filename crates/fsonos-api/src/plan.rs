@@ -316,7 +316,8 @@ pub fn plan_seek<'a>(
     })
 }
 
-/// `POST /volume` / the `set_volume` tool.
+/// One zone's volume: the single-zone form of [`plan_volume_set`], which
+/// `POST /volume` and the `set_volume` tool use.
 pub fn plan_volume<'a>(
     rooms: impl Into<Rooms<'a>>,
     req: &VolumeRequest,
@@ -335,7 +336,8 @@ pub fn plan_volume<'a>(
     })
 }
 
-/// `POST /mute` / the `mute` tool.
+/// One zone's mute: the single-zone form of [`plan_mute_set`], which
+/// `POST /mute` and the `mute` tool use.
 pub fn plan_mute<'a>(rooms: impl Into<Rooms<'a>>, req: &MuteRequest) -> Result<Command, Failure> {
     let target = resolve(rooms, req.zone()?)?;
     Ok(Command::Mute {
@@ -470,7 +472,8 @@ pub fn plan_group<'a>(rooms: impl Into<Rooms<'a>>, req: &GroupRequest) -> Result
     })
 }
 
-/// `POST /ungroup` / the `ungroup` tool.
+/// One room leaving its group: the single-room form of
+/// [`plan_ungroup_set`], which `POST /ungroup` and the `ungroup` tool use.
 pub fn plan_ungroup<'a>(
     rooms: impl Into<Rooms<'a>>,
     req: &ZoneRequest,

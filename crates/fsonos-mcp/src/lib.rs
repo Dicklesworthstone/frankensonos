@@ -139,24 +139,13 @@ pub const ESSENTIALS: [&str; 15] = [
     "events",
 ];
 
-/// Build the FrankenSonos MCP server. `auto` admission accepts both the
-/// 2024-11-05 and 2026-07-28 protocol eras, pinning each connection to the era
-/// its client opened with.
-#[must_use]
-pub fn server() -> fastmcp_server::Server {
-    server_answering(Vec::new())
-}
-
-/// [`server`], whose HTTP listener answers only requests whose `Host` is one
-/// of `hosts` (`fsonos_api::WebPolicy::hosts`): a web page that rebinds its
-/// own DNS name onto the listener's address is refused (403) before any tool
-/// runs. Empty answers any host.
-#[must_use]
-pub fn server_answering(hosts: Vec<String>) -> fastmcp_server::Server {
-    server_with(hosts, Profile::Full)
-}
-
-/// [`server_answering`] offering the tools of `profile`.
+/// Build the FrankenSonos MCP server offering the tools of `profile`.
+/// `auto` admission accepts both the 2024-11-05 and 2026-07-28 protocol
+/// eras, pinning each connection to the era its client opened with. Its HTTP
+/// listener answers only requests whose `Host` is one of `hosts`
+/// (`fsonos_api::WebPolicy::hosts`): a web page that rebinds its own DNS
+/// name onto the listener's address is refused (403) before any tool runs.
+/// Empty answers any host.
 #[must_use]
 pub fn server_with(hosts: Vec<String>, profile: Profile) -> fastmcp_server::Server {
     let mut http = fastmcp::HttpServerConfig::new();

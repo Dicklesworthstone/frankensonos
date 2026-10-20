@@ -133,13 +133,6 @@ impl Announcements {
             turns: Turns::default(),
         }
     }
-
-    /// Use `announcer` (its own timing, say) instead of the default.
-    #[must_use]
-    pub fn with_announcer(mut self, announcer: Announcer) -> Self {
-        self.announcer = announcer;
-        self
-    }
 }
 
 /// `POST /announce` / the `announce` tool: speak `text`, play a `chime`, or

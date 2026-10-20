@@ -221,25 +221,13 @@ impl Fader {
     }
 
     /// Start a volume intent on each of `players` now, for a fade that
-    /// begins a little later ([`Self::fade_group_claimed`]): a newer intent
+    /// begins a little later ([`Self::fade_group_claimed_until`]): a newer intent
     /// in between (a cancel, say) stops it before its first step.
     pub fn claim(&self, players: &[PlayerId]) -> Vec<(PlayerId, u64)> {
         players
             .iter()
             .map(|p| (p.clone(), self.supersede(p)))
             .collect()
-    }
-
-    /// [`Self::fade_group`] under the intents [`Self::claim`] took.
-    pub fn fade_group_claimed<T: Transport + ?Sized>(
-        &self,
-        t: &T,
-        households: &[HouseholdState],
-        claimed: &[(PlayerId, u64)],
-        to: u8,
-        over: Duration,
-    ) -> Result<FadeOutcome, CoreError> {
-        self.stepped(t, households, claimed, to, Timing::new(over, self.interval))
     }
 
     /// Fade under previously claimed intents, finishing at a fixed monotonic

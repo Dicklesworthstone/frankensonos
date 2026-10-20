@@ -371,24 +371,6 @@ impl EventBus {
             .after(after)
     }
 
-    /// [`Self::after`], waiting up to `timeout` for there to be any.
-    pub fn wait_after(&self, after: u64, timeout: Duration) -> Result<Vec<Event>, u64> {
-        let deadline = Instant::now() + timeout;
-        let mut ring = self.ring.lock().unwrap_or_else(PoisonError::into_inner);
-        loop {
-            let found = ring.after(after);
-            let left = deadline.saturating_duration_since(Instant::now());
-            if !matches!(&found, Ok(events) if events.is_empty()) || left.is_zero() {
-                return found;
-            }
-            ring = self
-                .arrived
-                .wait_timeout(ring, left)
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
-        }
-    }
-
     /// Publish what the live model saw, naming rooms from `households`.
     pub fn publish_live(&self, event: &LiveEvent, households: &[HouseholdState]) {
         match event {
@@ -556,23 +538,6 @@ mod tests {
         let all = bus.after(10).unwrap();
         assert_eq!(all.len(), RING);
         assert_eq!(all[0].id, 11);
-    }
-
-    #[test]
-    fn waiting_returns_as_soon_as_an_event_arrives() {
-        let bus = Arc::new(EventBus::new());
-        let publisher = Arc::clone(&bus);
-        let t = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            publisher.publish("topology.changed", json!({}));
-        });
-        let started = Instant::now();
-        let got = bus.wait_after(0, Duration::from_secs(5)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert!(started.elapsed() < Duration::from_secs(2));
-        t.join().unwrap();
-        // Nothing new: an empty answer once the timeout passes.
-        assert_eq!(bus.wait_after(1, Duration::from_millis(20)), Ok(Vec::new()));
     }
 
     #[test]
