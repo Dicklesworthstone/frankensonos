@@ -51,11 +51,17 @@ test('same revision and exact entry identities preserve selection, source and de
   assert.equal(h.c.state.page.items[1].title,'Improved metadata'); assert.equal(h.c.removable().length,2);
 });
 
-for(const change of [p=>p.revision='q:2',p=>p.items[1].uri='render:replacement',p=>p.total=61,p=>p.revision=null]) {
+for(const [change, contradiction] of [[p=>p.revision='q:2', false], [p=>p.items[1].uri='render:replacement', true],
+  [p=>p.total=61, false], [p=>p.revision=null, false]]) {
   test('a changed revision or inconsistent entry identity retires selected positions', async () => {
     const h=harness(); await h.c.load(); h.c.select(2,true); h.c.state.destination='59'; h.c.state.source='unsent draft';
     h.reply((r,a)=>{const p=page(a.query.offset);change(p);return p;});
-    h.c.stale(); await h.c.reconcile();
+    h.c.stale();
+    if (contradiction) {
+      await assert.rejects(h.c.reconcile(), /Selected entries disagree within this queue revision/);
+      assert.equal(h.c.state.stale, true, 'contradictory identities cannot become an editable snapshot');
+      assert.equal(h.c.reviewReorder('end', 2), false);
+    } else await h.c.reconcile();
     assert.equal(h.c.state.selected.size,0); assert.equal(h.c.state.destination,''); assert.equal(h.c.state.source,'unsent draft');
     assert.equal(h.writes().length,0);
   });

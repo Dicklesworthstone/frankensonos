@@ -143,6 +143,15 @@ input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 32px
 .queue-items { max-height: 360px; overflow-y: auto; padding-left: 2.5em; }
 .queue-items li { padding: 8px 0; border-top: 1px solid var(--line); }
 .queue-items li > button { margin-top: 6px; }
+.queue-entry-actions { margin-top: 10px; }
+.queue .queue-entry-actions button, .queue .queue-move-options button, .queue .queue-selection-moves button { min-height: 44px; }
+.queue-entry-actions .queue-select { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; margin-right: auto; }
+.queue-move-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); gap: 8px; padding: 12px; margin-top: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; }
+.queue-move-options button { text-align: left; white-space: normal; }
+.queue-move-options p { grid-column: 1 / -1; color: var(--muted); margin: 2px 0 0; }
+.queue-selection-moves { padding: 12px; margin: 12px 0; border: 1px solid var(--line); border-radius: 10px; }
+.queue-selection-moves > .row { margin-top: 10px; }
+.queue-selection-moves button { flex: 1 1 140px; }
 .queue-items [aria-current="true"]::marker { color: var(--accent); font-weight: 700; }
 .queue-position {
   font: inherit;

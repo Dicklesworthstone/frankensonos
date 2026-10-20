@@ -111,7 +111,7 @@ async function prepare(h, p, kind) {
     return () => button.emit('click');
   }
   const select = h.control(p, 'select-1'); select.checked = true; select.emit('change');
-  h.click(p, kind === 'remove' ? 'Review removal' : 'To end…');
+  h.click(p, kind === 'remove' ? 'Review removal' : 'move-selection-end');
   const button = h.control(p, kind === 'remove' ? 'Remove permanently' : 'Move entries');
   return () => button.emit('click');
 }
@@ -129,6 +129,41 @@ for (const kind of ['play', 'add', 'next', 'remove', 'move']) {
     assert.equal(h.posts().length, 1); assert.ok(h.control(p, 'play-1'));
   });
 }
+
+test('row movement shortcuts retain exact occurrence, review and native command ownership', async () => {
+  const h = browser(), p = h.parts()[0], waiting = deferred();
+  await h.open(p);
+  h.click(p, 'move-4');
+  assert.equal(h.posts().length, 0, 'opening placement options is read-only');
+  h.click(p, 'move-4-earlier');
+  assert.equal(h.posts().length, 0, 'choosing a destination prepares a review');
+  h.intercept = (route, args) => route === 'queueMove' ? waiting.promise : undefined;
+  const confirmation = h.click(p, 'Move entries');
+  await settle();
+  assert.deepEqual(h.posts().map(([route, args]) => [route, args.body]), [['queueMove', {
+    zone: 'Den@S2', position: 4, insert_before: 3,
+    expected_uris: ['renderer:4'], expected_revision: 'revision 1',
+  }]]);
+  assert.equal(p.writing, true);
+  confirmation.emit('click'); await settle();
+  assert.equal(h.posts().length, 1, 'repeated confirmation cannot dispatch twice');
+  waiting.resolve(result('queueMove', h.posts()[0][1].body)); await settle();
+  assert.equal(p.writing, false);
+});
+
+test('detached contextual move buttons cannot retarget a refreshed queue page', async () => {
+  const h = browser(), p = h.parts()[0];
+  await h.open(p); h.click(p, 'move-4');
+  const old = h.control(p, 'move-4-earlier');
+  await h.refresh(p);
+  old.emit('click'); await settle();
+  assert.equal(h.control(p, 'Move entries'), undefined);
+  assert.equal(h.posts().length, 0);
+  h.click(p, 'move-4'); h.click(p, 'move-4-earlier');
+  assert.ok(h.control(p, 'Move entries'), 'the new snapshot can be deliberately reviewed');
+  h.click(p, 'Cancel move');
+  assert.equal(h.posts().length, 0);
+});
 
 for (const kind of ['play', 'add', 'remove', 'move']) {
   test(`a pending native action retires detached queue ${kind} handlers and reviews`, async () => {

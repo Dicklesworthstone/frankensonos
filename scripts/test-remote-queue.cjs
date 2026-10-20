@@ -385,6 +385,118 @@ test('all blocks and destinations in a small queue retain original-coordinate se
   }
 });
 
+test('row move shortcuts review that exact duplicate occurrence before one native edit', async () => {
+  for (const [action, before, position] of [['earlier', 3, 3], ['later', 6, 5],
+    ['next', 3, 3], ['start', 1, 1], ['end', 9, 8]]) {
+    const { c, entries, calls } = movingQueue(8, { zone: "Shared / room@S1" });
+    entries[1].uri = entries[3].uri = 'renderer:duplicate';
+    await c.load();
+    c.select(6, true); c.select(7, true);
+    assert.equal(c.reviewReorder(action, 4), true, action);
+    assert.equal(calls.length, 1, 'choosing a shortcut is read-only');
+    assert.deepEqual(plain(c.state.pending.body), { zone: 'Shared / room@S1', position: 4,
+      insert_before: before, expected_uris: ['renderer:duplicate'], expected_revision: 'q:before' });
+    assert.equal(c.state.pending.position, position);
+    assert.deepEqual([...c.state.selected], [4], 'row action names only its occurrence');
+    assert.equal(c.reviewReorder('end', 2), false, 'another shortcut cannot replace the review');
+    assert.equal(await c.move(), true);
+    assert.equal(calls.filter(([name]) => name !== 'queue').length, 1);
+    assert.equal(entries[position - 1].title, 'Entry 4');
+    assert.equal(entries.filter(item => item.uri === 'renderer:duplicate').length, 2);
+  }
+});
+
+test('selection shortcuts keep a captured cross-page block together without extra reads', async () => {
+  for (const [action, before, position] of [['earlier', 23, 23], ['later', 32, 25],
+    ['next', 3, 3], ['start', 1, 1], ['end', 61, 54]]) {
+    const { c, entries, calls } = movingQueue();
+    await c.load(); await c.selectRange(24, 30); await c.browse(50);
+    const reads = calls.length;
+    assert.equal(c.reviewReorder(action), true, action);
+    assert.equal(calls.length, reads, 'the observed range needs no lookup by title');
+    assert.equal(c.state.pending.body.position, 24);
+    assert.equal(c.state.pending.body.insert_before, before);
+    assert.equal(c.state.pending.body.expected_uris.length, 7);
+    assert.equal(c.state.pending.position, position);
+    assert.equal(await c.move(), true);
+    assert.deepEqual(entries.slice(position - 1, position + 6).map(item => item.title),
+      Array.from({ length: 7 }, (_, n) => `Entry ${24 + n}`));
+  }
+});
+
+test('move options disable boundaries, structural no-ops, and the current block as next', async () => {
+  const { c, calls } = movingQueue(4);
+  await c.load();
+  const options = at => Object.fromEntries(c.moveOptions(at).map(o => [o.action, o.enabled]));
+  assert.deepEqual(options(1), { earlier: false, later: true, next: true, start: false, end: true });
+  assert.deepEqual(options(2), { earlier: true, later: true, next: false, start: true, end: true });
+  assert.deepEqual(options(3), { earlier: true, later: true, next: false, start: true, end: true });
+  assert.deepEqual(options(4), { earlier: true, later: false, next: true, start: true, end: false });
+  c.select(1, true); c.select(2, true); c.select(3, true); c.select(4, true);
+  assert.equal(c.moveOptions().every(o => !o.enabled), true, 'the whole queue cannot move within itself');
+  for (const action of ['earlier', 'later', 'next', 'start', 'end']) {
+    assert.equal(c.reviewReorder(action), false);
+  }
+  assert.equal(c.state.pending, null);
+  assert.deepEqual([...c.state.selected], [1, 2, 3, 4]);
+  assert.equal(calls.length, 1);
+});
+
+test('after-current placement requires a reported current entry and never starts playback', async () => {
+  for (const playing of [null, undefined, 0, 99]) {
+    let calls = 0;
+    const c = QueueRemote.model({ zone: 'Room', call: async () => { calls++; return { ...page(0, 4), playing }; } });
+    await c.load();
+    assert.equal(c.moveOptions(4).find(o => o.action === 'next').enabled, false);
+    assert.equal(c.reviewReorder('next', 4), false);
+    assert.equal(calls, 1);
+  }
+});
+
+test('shortcuts never overflow the native unsigned destination limit', async () => {
+  const max = 4294967295;
+  const c = QueueRemote.model({ zone: 'Room', call: async (_name, args) => page(args.query.offset, max) });
+  await c.load(max - 25);
+  assert.equal(c.moveOptions(max).find(o => o.action === 'later').enabled, false);
+  assert.equal(c.moveOptions(max - 2).find(o => o.action === 'end').enabled, false);
+  assert.equal(c.reviewReorder('end', max - 2), false);
+  assert.equal(c.reviewReorder('earlier', max), true);
+  assert.equal(c.state.pending.body.insert_before, max - 1);
+});
+
+test('gapped selections, off-page rows and missing identities cannot use a shortcut', async () => {
+  const { c, entries, calls } = movingQueue(); entries[3].uri = 'NOT_IMPLEMENTED';
+  await c.load(); c.select(1, true); c.select(3, true);
+  assert.equal(c.moveOptions().length, 0);
+  for (const position of [undefined, 0, -1, 1.5, '1', NaN, 4, 26]) {
+    assert.equal(c.reviewReorder('end', position), false);
+  }
+  assert.equal(c.reviewReorder('unknown', 1), false);
+  assert.equal(c.state.pending, null); assert.deepEqual([...c.state.selected], [1, 3]);
+  assert.equal(calls.length, 1);
+});
+
+test('row shortcuts retain stale, busy, lifecycle and single-dispatch command guards', async () => {
+  for (const invalidate of [c => c.stale(), c => c.close(), c => c.suspend(), c => c.dispose()]) {
+    const { c, calls } = movingQueue(); await c.load();
+    invalidate(c);
+    assert.equal(c.moveOptions(4).length, 0);
+    assert.equal(c.reviewReorder('end', 4), false);
+    assert.equal(calls.length, 1);
+  }
+  let blocked = false, current = true;
+  const c = QueueRemote.model({ zone: 'Room', blocked: () => blocked, current: () => current, call: async () => page() });
+  await c.load(); blocked = true;
+  assert.equal(c.reviewReorder('end', 4), false);
+  blocked = false; current = false;
+  assert.equal(c.reviewReorder('end', 4), false);
+  current = true;
+  assert.equal(c.reviewReorder('end', 4), true);
+  const review = c.state.pending;
+  c.cancelRemoval();
+  assert.equal(await c.move(review), false, 'cancelled shortcut review cannot be sent later');
+});
+
 test('move to end follows the moved block to its new page without changing playback', async () => {
   const { c, calls } = movingQueue();
   await c.load(); c.select(2, true); c.select(3, true);

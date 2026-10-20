@@ -11,12 +11,27 @@ entry. A move requires both; it will not silently act on a newer observation.
 
 ## Phone remote
 
-Open **Queue** on the room's card and select consecutive entries on the current
-page (up to 25). Choose **To start…**, **To end…**, or enter a one-based
-**Before original position** and choose **Review move**. The destination can
-be anywhere in the full queue, not just the displayed page. The review names
+Open **Queue** on the room's card. Every entry has **Move…**, with **Move earlier**,
+**Move later**, **After current entry**, **To start…**, and **To end…**. A row's
+actions move only that occurrence, including when the same recording appears
+elsewhere. No position arithmetic or checkbox selection is needed. The menu
+works with touch and keyboard; Escape closes it and returns focus to the entry.
+
+Select consecutive entries to get the same choices in **Move selected entries**.
+This keeps the selected block together, including up to 100 entries captured
+across pages with [range selection](QUEUE_RANGES.md). Earlier/later shifts the
+block one place without changing its internal order. **After current entry**
+uses the current queue position in the observed snapshot; it is unavailable
+when no current entry is known, the selection includes it, or the block is
+already next. Boundary actions are disabled when they would not change order.
+
+For another destination, enter a one-based **Before original position** and
+choose **Review move**. The destination can be anywhere in the full queue,
+not just the displayed page. The review names
 the room, selected titles, destination, and resulting first position. Only
 **Move entries** sends the request; **Cancel move** leaves the queue alone.
+Cancelling a shortcut review restores keyboard focus to its entry or selection
+control. Choosing any destination prepares a review; it never starts playback.
 
 The browser keeps exact renderer identities, including duplicate tracks, and
 the observed revision. After success it reads the page containing the moved

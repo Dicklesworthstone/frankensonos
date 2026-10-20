@@ -30,7 +30,7 @@ addition went and whether the group is playing its queue.
 
 ## Remove a range
 
-Select one entry, or consecutive entries on the currently displayed page, then
+Select one entry, or up to 100 consecutive entries across pages, then
 choose **Review removal**. The review lists the exact titles and first position.
 **Cancel removal** sends nothing. **Remove permanently** calls
 `POST /queue/remove` once with every selected renderer URI, in order, and that
@@ -38,9 +38,24 @@ page's revision. Repeated URIs remain repeated entries; titles are display-only.
 
 **Removal cannot be undone.** Removing the current entry may advance or stop
 playback. Removing an entry does not ban it from future DJ picks or stop the DJ.
-The browser limits a selection to one page; the underlying API still supports
-up to 100 consecutive entries. A refresh, page change, edited selection or
-rebuilt room card invalidates the prior confirmation.
+Use **Read and select range** to capture a longer block by its first and last
+positions, or keep selecting while browsing adjacent pages of the same queue
+revision. A refresh, page change, edited selection or rebuilt room card
+invalidates the prior confirmation.
+
+## Reorder without calculating positions
+
+An entry's **Move…** menu offers earlier, later, after the current entry, start,
+and end destinations. It always identifies that one occurrence, even if you
+have other entries selected. The selection toolbar offers the same actions
+for moving a contiguous block together. Touch and keyboard use the same
+controls; Escape closes a row's menu and cancellation returns focus.
+
+Every choice opens the existing move review. Only **Move entries** changes
+queue order, with the exact renderer URIs and revision. Moving does not start
+playback. Unavailable destinations are disabled; arbitrary numeric placement
+remains available. See [queue movement](QUEUE_MOVES.md) for destination and
+conflict behavior.
 
 ## Conflicts and uncertainty
 

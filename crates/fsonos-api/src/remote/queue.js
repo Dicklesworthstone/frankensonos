@@ -561,6 +561,49 @@ const QueueRemote = (() => {
       return true;
     }
 
+    // Everyday destinations use the same original-coordinate move review. A
+    // row always refers to that single occurrence; the selection toolbar keeps
+    // an explicitly selected contiguous block together, including across pages.
+    function moveItems(position = null) {
+      const page = ready();
+      if (!page || !page.revision || state.pending) return null;
+      if (position === null) return removable();
+      const item = page.items.find(each => each.position === position);
+      return item && identity(item.uri) ? [item] : null;
+    }
+
+    function moveOptions(position = null) {
+      const items = moveItems(position);
+      if (!items) return [];
+      const first = items[0].position, after = first + items.length;
+      const playing = state.page.playing;
+      const currentInBlock = playing !== null && playing >= first && playing < after;
+      return [
+        { action: 'earlier', label: 'Move earlier', before: first - 1 },
+        { action: 'later', label: 'Move later', before: after + 1 },
+        { action: 'next', label: 'After current entry', before: playing === null || currentInBlock ? null : playing + 1 },
+        { action: 'start', label: 'To start…', before: 1 },
+        { action: 'end', label: 'To end…', before: state.page.total + 1 },
+      ].map(option => ({ ...option, enabled: index(option.before) && option.before > 0
+        && option.before <= state.page.total + 1 && (option.before < first || option.before > after) }));
+    }
+
+    function reviewReorder(action, position = null) {
+      const items = moveItems(position);
+      const option = moveOptions(position).find(each => each.action === action && each.enabled);
+      if (!items || !option) return false;
+      // Do not publish an intermediate selection. The only visible result is
+      // the ordinary confirmation, bound to the precise source occurrence(s).
+      clearSelection();
+      selectionRevision = state.page.revision; selectionTotal = state.page.total;
+      for (const item of items) {
+        state.selected.add(item.position);
+        selectedItems.set(item.position, Object.freeze({ ...item }));
+      }
+      state.destination = String(option.before);
+      return reviewMove(option.before);
+    }
+
     async function move(pending = state.pending) {
       const page = ready();
       if (!page || !pending || pending !== state.pending || pending.kind !== 'move'
@@ -601,7 +644,7 @@ const QueueRemote = (() => {
     }
 
     return { state, load, browse, jumpTo, showCurrent, play, add, select, selectRange, editRange, clearSelected, removable, reviewRemoval, cancelRemoval, remove,
-      reviewMove, move, search, editSearch, cancelSearch, openMatch, block, stale, reconcile, close,
+      reviewMove, moveOptions, reviewReorder, move, search, editSearch, cancelSearch, openMatch, block, stale, reconcile, close,
       suspend() { active = false; stale('Queue updates paused while this page is hidden.'); },
       resume() { if (!disposed) { active = true; stale(); } },
       dispose() { disposed = true; close(); } };
@@ -612,7 +655,7 @@ const QueueRemote = (() => {
     const summary = el('summary', { text: 'Queue' });
     const body = el('div', { class: 'queue-body' });
     const node = el('details', { class: 'queue' }, summary, body);
-    let shownFound = null;
+    let shownFound = null, previousReview = null, reviewFocus = null;
     const control = model({ zone, call, played, execute, blocked, current, changed: render });
     const button = (text, action, disabled = false) => el('button', {
       type: 'button', text, disabled, onclick: action, 'data-focus': text,
@@ -621,6 +664,7 @@ const QueueRemote = (() => {
     function render(state) {
       const active = document.activeElement;
       const focus = body.contains(active) ? active.getAttribute('data-focus') : null;
+      const returnFocus = focus ? active.getAttribute('data-return-focus') : null;
       // Every redraw rebuilds the panel's inputs: put the caret back where
       // it was in whichever one had focus, or the next digit typed into a
       // range position can land in front of the last ("2", "4" -> "42").
@@ -630,13 +674,17 @@ const QueueRemote = (() => {
       shownFound = state.found;
       const scroll = body.querySelector('.queue-items')?.scrollTop || 0;
       const searchScroll = body.querySelector('.queue-search-results')?.scrollTop || 0;
+      const leavingReview = previousReview && !state.pending;
+      if (state.pending && !previousReview) reviewFocus = returnFocus || focus;
+      previousReview = state.pending;
       draw(state);
       const list = body.querySelector('.queue-items');
       if (list) list.scrollTop = scroll;
       const results = body.querySelector('.queue-search-results');
       if (results) results.scrollTop = searchScroll;
       const key = found ? `found-${state.found}`
-        : state.pending ? (state.pending.kind === 'move' ? 'Cancel move' : 'Cancel removal') : focus;
+        : state.pending ? (state.pending.kind === 'move' ? 'Cancel move' : 'Cancel removal')
+          : leavingReview ? reviewFocus : returnFocus || focus;
       const target = [...body.querySelectorAll('[data-focus]')]
         .find((each) => each.getAttribute('data-focus') === key);
       if (target && !target.disabled) {
@@ -645,7 +693,44 @@ const QueueRemote = (() => {
           target.setSelectionRange(...caret);
         }
         if (found) target.scrollIntoView({ block: 'nearest', behavior: 'instant' });
-      } else if (focus === 'Cancel queue search') summary.focus({ preventScroll: true });
+      } else if (leavingReview || returnFocus || focus === 'Cancel queue search') summary.focus({ preventScroll: true });
+    }
+
+    function moveButtons(position, disabled, returnFocus) {
+      const page = control.state.page;
+      const options = control.moveOptions(position);
+      return options.map(option => {
+        const move = button(option.label, () => {
+          if (control.state.page === page) return control.reviewReorder(option.action, position);
+        }, disabled || !option.enabled);
+        move.setAttribute('data-focus', `move-${position ?? 'selection'}-${option.action}`);
+        if (returnFocus) move.setAttribute('data-return-focus', returnFocus);
+        return move;
+      });
+    }
+
+    function entryMoves(item, editable, ownsPage) {
+      const key = `move-${item.position}`;
+      const actions = el('div', { class: 'queue-move-options', role: 'group', hidden: true,
+        'aria-label': `Move queue position ${item.position}: ${item.title || 'Untitled track'}` },
+        ...moveButtons(item.position, !editable, key),
+        el('p', { text: 'Choose a position, then review the move before the queue changes.' }));
+      const toggle = button('Move…', () => {
+        if (!editable || !ownsPage()) return;
+        actions.hidden = !actions.hidden;
+        toggle.setAttribute('aria-expanded', String(!actions.hidden));
+        if (!actions.hidden) actions.scrollIntoView?.({ block: 'nearest', behavior: 'instant' });
+      }, !editable || !identity(item.uri));
+      toggle.setAttribute('aria-label', `Move queue position ${item.position}: ${item.title || 'Untitled track'}`);
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.setAttribute('data-focus', key);
+      actions.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+          event.preventDefault(); event.stopPropagation();
+          actions.hidden = true; toggle.setAttribute('aria-expanded', 'false'); toggle.focus();
+        }
+      });
+      return { toggle, actions };
     }
 
     function draw(state) {
@@ -712,6 +797,11 @@ const QueueRemote = (() => {
         const elsewhere = [...state.selected].filter(at => !page.items.some(item => item.position === at)).length;
         body.append(el('p', { text: `${state.selected.size} selected; ${elsewhere} outside this page. The confirmation lists every selected title.` }),
           button('Clear selection', () => control.clearSelected(), busy));
+        const moves = moveButtons(null, !editable);
+        if (moves.length) body.append(el('section', { class: 'queue-selection-moves',
+          'aria-label': 'Move selected queue entries' },
+          el('strong', { text: state.selected.size === 1 ? 'Move selected entry' : `Move ${state.selected.size} entries together` }),
+          el('div', { class: 'row' }, ...moves)));
       }
       const list = el('ol', { class: 'queue-items', start: state.offset + 1 });
       for (const item of page.items) {
@@ -724,6 +814,7 @@ const QueueRemote = (() => {
           'aria-label': `Select queue position ${item.position}: ${title}`,
           onchange: (event) => { if (ownsPage()) control.select(item.position, event.target.checked); } });
         play.setAttribute('aria-label', `Play queue position ${item.position}: ${title}`);
+        const moves = entryMoves(item, editable, ownsPage);
         list.append(el('li', { 'aria-current': current ? 'true' : null,
           class: state.found === item.position ? 'queue-found' : null,
           tabindex: -1, 'data-focus': `found-${item.position}`,
@@ -732,7 +823,8 @@ const QueueRemote = (() => {
           el('div', { class: 'track' },
             el('div', { class: 'title', text: `${current ? '▶ ' : ''}${title}` }),
             el('div', { class: 'by', text: [item.creator, item.album].filter(Boolean).join(' · ') })),
-          el('div', { class: 'row' }, el('label', { class: 'queue-select' }, select, 'Select'), play)));
+          el('div', { class: 'row queue-entry-actions' }, el('label', { class: 'queue-select' }, select, 'Select'), play, moves.toggle),
+          moves.actions));
       }
       body.append(list);
       if (page.revision) {
@@ -751,10 +843,7 @@ const QueueRemote = (() => {
             reviewMove.disabled = !canMove();
           });
           body.append(el('label', {}, 'Before original position ', destination),
-            el('div', { class: 'row' }, reviewMove,
-              button('To start…', () => control.reviewMove(1), !editable || !control.removable()),
-              button('To end…', () => control.reviewMove(page.total + 1),
-                !editable || !control.removable() || page.total === MAX_INDEX)));
+            el('div', { class: 'row' }, reviewMove));
         }
         if (state.selected.size && !control.removable()) {
           body.append(el('p', { text: 'Select consecutive entries to move or remove them together. A stale queue needs a fresh read.' }));
