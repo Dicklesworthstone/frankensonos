@@ -48,6 +48,7 @@ import FrankenSonosKit
                     .buttonStyle(.plain).disabled(!model.active || model.loading).accessibilityLabel("Refresh activity and history")
                 Button { dismiss() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
                     .buttonStyle(.plain).keyboardShortcut(.cancelAction).accessibilityLabel("Close activity and history")
+                    .disabled(bridge.model.undoInProgress && bridge.model.actionPhase == .confirming)
             }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -63,6 +64,7 @@ import FrankenSonosKit
                         TextField("Search the loaded records (does not make a request)", text: $search).textFieldStyle(.roundedBorder)
                             .onChange(of: search) { _, _ in selectedPlay = nil }
                         if tab == 0 {
+                            undoSection
                             freshness(model.actionsObservedAt, stale: model.actionsStale, problem: model.actionsProblem)
                             Text("Active filter: \(model.query.client ?? "all clients"); \(model.query.since.map { "from unix second " + String($0) } ?? "all recorded times").")
                                 .font(.caption)
@@ -98,17 +100,74 @@ import FrankenSonosKit
         #endif
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(bridge.model.undoInProgress && bridge.model.actionPhase == .confirming)
+        .sheet(item: Binding(get: { bridge.model.undoReview }, set: { if $0 == nil && bridge.model.undoReview != nil { bridge.model.cancelUndo() } })) { review in
+            UndoReviewSheet(review: review, confirm: { bridge.model.confirmUndo(review.id) }, cancel: { bridge.model.cancelUndo() })
+        }
         .onAppear {
             clientFilter = model.query.client ?? ""; historyRoom = model.query.historyRoom; limit = model.query.limit
             useStart = model.query.since != nil
             if let since = model.query.since { start = Date(timeIntervalSince1970: Double(since)) }
             if bridge.model.active { model.resume() }
         }
-        .onDisappear { model.suspend() }
+        .onDisappear { model.suspend(); bridge.model.cancelUndo() }
+        .onChange(of: bridge.model.undoResult?.id) { _, value in
+            if value != nil && bridge.model.undoResult?.action != nil { model.refresh() }
+        }
         .onChange(of: zones) { _, current in
             if let chosen = target, !current.contains(where: { $0.sameGroup(as: chosen) }) {
                 target = nil; selectionProblem = "The destination group changed. Choose it again."
             }
+        }
+    }
+
+    private var undoSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Recover a recent change", systemImage: "arrow.uturn.backward.circle")
+                    .font(.headline).accessibilityAddTraits(.isHeader)
+                Text("Review the latest action available to undo for this connection. Room selection and log filters do not change which action is eligible.")
+                    .font(.callout).foregroundStyle(.secondary)
+                if bridge.model.undoInProgress {
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text(bridge.model.actionPhase == .confirming ? "Restoring the reviewed action…" : "Checking available undo…")
+                    }.accessibilityElement(children: .combine)
+                } else {
+                    Button { bridge.model.prepareUndo() } label: {
+                        Label("Review available undo", systemImage: "arrow.uturn.backward")
+                            .frame(minHeight: 32)
+                    }.buttonStyle(.bordered).disabled(!bridge.model.canSchedule)
+                }
+                if let result = bridge.model.undoResult {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .top) {
+                            Label(result.title, systemImage: result.kind == .confirmed ? "checkmark.circle.fill" :
+                                    result.kind == .notSent ? "info.circle" : "exclamationmark.triangle")
+                                .font(.headline)
+                            Spacer(minLength: 8)
+                            Button { bridge.model.dismissUndoResult() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                                .buttonStyle(.plain).accessibilityLabel("Dismiss undo result")
+                        }
+                        if let action = result.action {
+                            Text("Action #\(String(action.id)) • \(action.client)").font(.caption)
+                            Text(action.intent).font(.callout)
+                        }
+                        Text(result.detail)
+                        if let failures = result.receipt?.failures, !failures.isEmpty {
+                            Text("Parts that were not restored").font(.subheadline.bold())
+                            ForEach(Array(failures.enumerated()), id: \.offset) { _, failure in
+                                Label(failure, systemImage: "exclamationmark.circle").font(.callout)
+                            }
+                        }
+                        if result.kind == .uncertain {
+                            Text("Check the rooms and refresh Activity to see what happened before reviewing another action.")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                    }.textSelection(.enabled)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -226,5 +285,48 @@ import FrankenSonosKit
             .foregroundStyle(.secondary)
     }
     private func matches(_ fields: [String]) -> Bool { search.isEmpty || fields.contains { $0.localizedStandardContains(search) } }
+}
+
+@MainActor private struct UndoReviewSheet: View {
+    let review: UndoReview
+    let confirm: () -> Void
+    let cancel: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Label("Restore a recent change", systemImage: "arrow.uturn.backward.circle.fill")
+                        .font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                    Text(review.action.intent).font(.title3.weight(.semibold))
+                    GroupBox("Original action") {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("#\(String(review.action.id)) • \(review.action.date.formatted(date: .abbreviated, time: .standard))")
+                                .font(.caption).monospacedDigit()
+                            Text("\(review.action.client) via \(review.action.surface)").font(.callout)
+                            Text(review.action.result)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Text("Undo uses this action’s saved state and may affect more than one room. The currently selected room does not limit its scope.")
+                    Text("Changes made since the original action can prevent parts of its state from being restored. The result will show anything that could not be recovered.")
+                        .foregroundStyle(.secondary)
+                    Divider()
+                    Text("Available when checked at \(review.observedAt.formatted(date: .omitted, time: .standard)). It is checked again before confirmation is sent. If the action changes or expires, review the new state first.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.padding(24).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+            }
+            .navigationTitle("Review undo")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .safeAreaInset(edge: .bottom) { ReviewActions(confirm: confirm, cancel: cancel) }
+        }.frame(maxWidth: 560)
+        #if os(macOS)
+        .frame(width: 560, height: 620)
+        #endif
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled()
+    }
 }
 #endif

@@ -52,6 +52,9 @@ public struct RemoteResult: Identifiable, Sendable {
     public private(set) var scheduleReview: ScheduleReview? { willSet { onChange?() } }
     public private(set) var scheduleResult: RemoteScheduleResult? { willSet { onChange?() } }
     private var scheduleAction = false
+    public private(set) var undoReview: UndoReview? { willSet { onChange?() } }
+    public private(set) var undoResult: RemoteUndoResult? { willSet { onChange?() } }
+    private var undoAction = false
 
     private let client: DaemonClient
     private let live: LiveHouse
@@ -89,8 +92,9 @@ public struct RemoteResult: Identifiable, Sendable {
         return client.artworkURL(in: zone, track: selectedState?.track)
     }
     public var canPrepare: Bool { canSchedule && selectedZone != nil }
-    public var canSchedule: Bool { active && !stopped && actionPhase == .idle && review == nil && scheduleReview == nil }
+    public var canSchedule: Bool { active && !stopped && actionPhase == .idle && review == nil && scheduleReview == nil && undoReview == nil }
     public var canManageSchedules: Bool { canSchedule && panel == .schedules && schedulesObservedAt != nil && !panelLoading }
+    public var undoInProgress: Bool { undoAction }
 
     public init(client: DaemonClient) {
         self.client = client
@@ -218,7 +222,7 @@ public struct RemoteResult: Identifiable, Sendable {
     }
 
     public func cancelReview() {
-        epoch &+= 1; review = nil; scheduleReview = nil
+        epoch &+= 1; review = nil; scheduleReview = nil; undoReview = nil
         actionTask?.cancel()
         let previous = cancellation, commands = commands
         cancellation = Task { await previous?.value; await commands.cancel() }
@@ -227,7 +231,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func dismissResult() { result = nil }
 
-    private func actionFinished() { actionTask = nil; scheduleAction = false; actionPhase = .idle }
+    private func actionFinished() { actionTask = nil; scheduleAction = false; undoAction = false; actionPhase = .idle }
 
     private func receive(_ value: LiveHouseView) {
         guard !stopped else { return }
@@ -246,7 +250,7 @@ public struct RemoteResult: Identifiable, Sendable {
             // A grouping command can emit its topology event before its HTTP
             // acknowledgement. Do not cancel that very write on its own event.
             // Explicit selection changes and suspension still cancel requests.
-            if actionPhase != .confirming && !scheduleAction && scheduleReview == nil { cancelReview() }
+            if actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil { cancelReview() }
             queueOffset = 0
             invalidatePanel(); refreshPanel()
         } else if active && value.isFresh && (!wasFresh || oldState.map { old in selectedState.map { !old.samePlayback(as: $0) } ?? true } == true) {
@@ -336,7 +340,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     /// Edits only the unsent form. Selection and refresh never rewrite it.
     public func updateScheduleForm(_ value: ScheduleForm) {
-        guard active && !stopped && actionPhase == .idle && review == nil else { return }
+        guard active && !stopped && actionPhase == .idle && review == nil && undoReview == nil else { return }
         if scheduleReview != nil { cancelReview() }
         scheduleForm = value; scheduleFormProblem = nil
     }
@@ -399,6 +403,61 @@ public struct RemoteResult: Identifiable, Sendable {
     }
 
     public func dismissScheduleResult() { scheduleResult = nil }
+
+    /// Ask the daemon for this caller's current recovery candidate. Activity
+    /// filters and the selected room never choose or narrow the restore target.
+    public func prepareUndo() {
+        guard canSchedule else { return }
+        actionPhase = .preparing; undoAction = true
+        undoResult = nil
+        let token = epoch, barrier = cancellation, commands = commands
+        actionTask = Task { [weak self] in
+            defer { self?.actionFinished() }
+            await barrier?.value
+            do {
+                try Task.checkCancellation()
+                let observed = try await commands.prepareUndo()
+                guard let self, self.active && self.epoch == token && !Task.isCancelled else { return }
+                self.undoReview = observed
+            } catch {
+                if let self, self.epoch == token && !Task.isCancelled {
+                    self.undoResult = RemoteUndoResult(action: nil, receipt: nil, title: "Nothing sent",
+                        detail: error.localizedDescription, kind: .notSent)
+                }
+            }
+        }
+    }
+
+    public func confirmUndo(_ id: UUID) {
+        guard active, actionPhase == .idle, let reviewed = undoReview, reviewed.id == id else { return }
+        undoReview = nil; actionPhase = .confirming; undoAction = true
+        let commands = commands
+        actionTask = Task { [weak self] in
+            do {
+                let receipt = try await commands.execute(reviewed)
+                self?.undoResult = RemoteUndoResult(action: reviewed.action, receipt: receipt,
+                    title: receipt.failures.isEmpty ? "Undo completed" : "Undo partially completed",
+                    detail: receipt.summary, kind: receipt.failures.isEmpty ? .confirmed : .partial)
+            } catch {
+                let uncertain: Bool
+                if case ClientError.uncertain = error { uncertain = true } else { uncertain = false }
+                self?.undoResult = RemoteUndoResult(action: reviewed.action, receipt: nil,
+                    title: uncertain ? "Undo outcome uncertain — not repeated" : "Nothing sent",
+                    detail: error.localizedDescription, kind: uncertain ? .uncertain : .notSent)
+            }
+            // Keep a late receipt on its original action after a room switch,
+            // dismissal or suspension. A later refresh is never its substitute.
+            self?.actionFinished()
+            self?.refresh()
+        }
+    }
+
+    public func cancelUndo() {
+        guard undoReview != nil || undoAction else { return }
+        cancelReview()
+    }
+
+    public func dismissUndoResult() { undoResult = nil }
 
     deinit { observer?.cancel(); panelTask?.cancel(); actionTask?.cancel() }
 }

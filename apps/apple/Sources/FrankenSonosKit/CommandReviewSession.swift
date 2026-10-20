@@ -227,3 +227,36 @@ extension CommandReviewSession {
         return try await client.perform(review.command)
     }
 }
+
+// Recovery shares playback and schedule ownership. It does not require a
+// selected or reachable speaker: the daemon owns eligibility and restore scope.
+extension CommandReviewSession {
+    public func prepareUndo() async throws -> UndoReview {
+        guard !busy else { throw ContractError.invalid("An action is still being checked or sent.") }
+        busy = true
+        defer { busy = false }
+        generation &+= 1; pending = nil
+        let token = generation
+        guard let action = try await client.undoPreview() else {
+            throw ContractError.invalid("There is no recent action available to undo for this connection.")
+        }
+        try check(token)
+        let review = UndoReview(action: action, observedAt: Date())
+        pending = review.id
+        return review
+    }
+
+    public func execute(_ review: UndoReview) async throws -> UndoReceipt {
+        guard !busy, pending == review.id else {
+            throw ContractError.invalid("This review is no longer current. Review the available undo again.")
+        }
+        pending = nil; busy = true
+        defer { busy = false }
+        let token = generation
+        guard let current = try await client.undoPreview(), current == review.action else {
+            throw ContractError.invalid("The available undo changed. Read and review the current action again. Nothing was sent.")
+        }
+        try check(token)
+        return try await client.perform(review)
+    }
+}

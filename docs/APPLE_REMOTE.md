@@ -175,9 +175,19 @@ playback still goes through the ordinary command review. Historical room names
 never silently choose the destination, and browsing history sends no playback
 commands.
 
+Activity also offers **Review available undo** for the daemon connection's
+authenticated caller. It does not infer eligibility from log rows or use the
+selected room or history filters to choose the target. Review shows the original
+action, caller, time and result before any restore request. Confirmation rereads
+the exact candidate and sends its full-width ID once to `/undo/checked`; the
+daemon controls eligibility, affected rooms, policy and intervening-state checks.
+Partial restores retain every reported failure. An uncertain response is never
+retried, and a late receipt stays associated with its original action across
+room changes or suspension. Undo remains usable without a selected speaker.
+
 ## Commands and lifetime
 
-Playback and schedule mutations go through `RemoteModel` and
+Playback, schedule and undo mutations go through `RemoteModel` and
 `CommandReviewSession`: read, show a one-use review, explicitly confirm, read
 again, then dispatch once. Spotify account/cache operations use an independent
 single-shot setup worker and never send speaker commands.

@@ -264,6 +264,31 @@ public struct DaemonClient: Sendable {
 
 
 extension DaemonClient {
+    /// Only the shared one-use review session dispatches recovery. The caller,
+    /// saved state, force policy and affected rooms are never client supplied.
+    func perform(_ review: UndoReview) async throws -> UndoReceipt {
+        try Task.checkCancellation()
+        try review.action.validateUndoCandidate()
+        var request = URLRequest(url: try endpoint.resource(["undo", "checked"]),
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["expected_id": review.action.id])
+        try Task.checkCancellation()
+        do {
+            let reply = try await transport.send(request)
+            try Self.check(reply)
+            return try Self.decode(UndoReceipt.self, from: reply.data).validated(for: review.action)
+        } catch {
+            // A lost or malformed response is not proof that restoration did
+            // not happen. Keep the original action attribution and never retry.
+            throw ClientError.uncertain(error.localizedDescription)
+        }
+    }
+}
+
+extension DaemonClient {
     /// The low-level schedule write, like perform(NativeCommand). UI callers
     /// use CommandReviewSession for one-use review and fresh preflight. Once
     /// sent, even a failed receipt can mean a schedule was stored: never retry.
