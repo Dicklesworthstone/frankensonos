@@ -5,6 +5,9 @@ const QueueRemote = (() => {
   const PAGE_SIZE = 25;
   // Match the existing native move/remove request limit, never split a write.
   const MAX_SELECTION = 100;
+  // Each explicit search examines one bounded section. Continue is deliberate.
+  const SEARCH_PAGE = 100, SEARCH_REQUESTS = 100, SEARCH_MATCHES = 200;
+  const searchText = value => value.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
   const MAX_INDEX = 4294967295;
   const nonblank = (value) => typeof value === 'string' && value.trim() !== '';
   const identity = (value) => nonblank(value) && value !== 'NOT_IMPLEMENTED';
@@ -48,7 +51,9 @@ const QueueRemote = (() => {
     const state = { offset: 0, page: null, loading: false, writing: false, message: '',
       stale: true, updating: false, uncertain: false,
       selected: new Set(), pending: null, source: '', destination: '',
-      selecting: false, navigating: false, jump: '', rangeStart: '', rangeEnd: '' };
+      selecting: false, navigating: false, jump: '', rangeStart: '', rangeEnd: '',
+      searching: false, query: '', search: null, found: null };
+    const clearSearch = () => { state.search = null; state.found = null; };
     const clearSelection = () => {
       state.selected.clear(); selectedItems.clear();
       selectionRevision = selectionTotal = null;
@@ -58,12 +63,13 @@ const QueueRemote = (() => {
       if (!disposed && current()) { try { changed(state); } catch (_) { /* View only. */ } }
     };
     const ready = () => !disposed && current() && visible && active && !blocked()
-      && !state.stale && !state.uncertain && !state.loading && !state.writing && !state.selecting && !state.navigating && state.page;
+      && !state.stale && !state.uncertain && !state.loading && !state.writing && !state.selecting && !state.navigating && !state.searching && state.page;
 
     // Live reads share the household's coalesced refresh, not a second stream
     // or per-card polling loop. A snapshot is never edited while it is stale.
     function stale(message = 'Queue changed; waiting for a fresh snapshot.') {
-      const notify = !state.stale || state.pending || state.loading || state.updating;
+      const notify = !state.stale || state.pending || state.loading || state.updating || state.search;
+      clearSearch();
       ++epoch;
       state.stale = true;
       state.loading = state.updating = false;
@@ -90,10 +96,11 @@ const QueueRemote = (() => {
       const valid = () => available() && request === epoch;
       if (!preserve) state.offset = offset;
       state.pending = null;
+      state.found = null;
       state.stale = true;
       state.loading = !background;
       state.updating = background;
-      if (!background && !preserve) { clearSelection(); state.page = null; }
+      if (!background && !preserve) { clearSelection(); clearSearch(); state.page = null; }
       // Keep uncertain outcomes until an explicit read actually succeeds.
       if (!keepMessage && !state.uncertain) state.message = '';
       publish();
@@ -112,6 +119,10 @@ const QueueRemote = (() => {
           if (expected && !sameQueue(expected, next)) {
             throw new Error('The queue changed while locating that entry. Refresh before navigating again.');
           }
+          if (expected?.item && !next.items.some(item => item.position === expected.item.position
+              && item.uri === expected.item.uri)) {
+            throw new Error('The found entry no longer agrees with this queue. Search again before using it.');
+          }
           if (offset === 0 || offset < next.total) break;
           if (attempt) throw new Error('The queue changed again while paging. Refresh to read it again.');
           offset = Math.min(MAX_INDEX - PAGE_SIZE, Math.floor(Math.max(0, next.total - 1) / PAGE_SIZE) * PAGE_SIZE);
@@ -123,6 +134,7 @@ const QueueRemote = (() => {
         const retain = preserve ? sameQueue(previous, next) : sameEntries(previous, next);
         const cleared = state.selected.size > 0 && !retain;
         if (!retain) clearSelection();
+        if (state.search && !sameQueue(state.search, next)) clearSearch();
         state.offset = offset;
         state.page = next;
         state.stale = false;
@@ -132,6 +144,7 @@ const QueueRemote = (() => {
       } catch (error) {
         if (!valid()) return false;
         if (preserve) clearSelection();
+        clearSearch();
         state.message = `${state.uncertain ? 'The previous queue command is still unconfirmed. ' : ''}${error.hint ? `${error.message} ${error.hint}` : error.message}`;
         if (background) throw error; // The shared live controller owns backoff.
         return false;
@@ -144,7 +157,7 @@ const QueueRemote = (() => {
     }
 
     async function load(offset = state.offset, keepMessage = false) {
-      if (disposed || !current() || !active || state.selecting || state.navigating) return false;
+      if (disposed || !current() || !active || state.selecting || state.navigating || state.searching) return false;
       if (!index(offset) || offset > MAX_INDEX - PAGE_SIZE) return false;
       visible = true;
       if (!available()) return false;
@@ -207,9 +220,105 @@ const QueueRemote = (() => {
       }
     }
 
+    function editSearch(query) {
+      if (!ready() || typeof query !== 'string' || query.length > 1024) return false;
+      state.query = query; state.pending = null; clearSearch(); publish(); return true;
+    }
+
+    function cancelSearch() {
+      if (disposed || !current() || !state.searching || !state.search) return false;
+      ++epoch; clearSearch();
+      state.message = 'Search cancelled. Waiting for the outstanding read to finish; no queue command was sent.';
+      publish(); return true;
+    }
+
+    async function search(query = state.query, continuation = null) {
+      const page = ready();
+      if (!page || !page.revision || reads.size) return false;
+      if (continuation && (continuation !== state.search || continuation.complete
+          || continuation.running || !sameQueue(continuation, page) || query !== continuation.query)) return false;
+      state.pending = null; clearSearch();
+      const trimmed = typeof query === 'string' && query.length <= 1024 ? query.trim() : '';
+      const terms = trimmed && [...trimmed].length <= 256 ? searchText(trimmed).split(/\s+/).filter(Boolean) : [];
+      if (!terms.length || terms.length > 32) {
+        state.message = 'Search for 1–32 words, at most 256 characters, in titles, artists or albums.';
+        publish(); return false;
+      }
+      state.query = trimmed; state.searching = true;
+      const version = ++epoch, start = continuation ? continuation.scanned : 0;
+      const valid = () => available() && epoch === version && !state.stale && state.page === page;
+      const matches = [];
+      let offset = start, requests = 0, flight;
+      const snapshot = running => Object.freeze({ query: trimmed, revision: page.revision, total: page.total,
+        start, scanned: offset, complete: offset === page.total, running,
+        matches: Object.freeze([...matches]) });
+      state.search = snapshot(true); state.message = 'Searching the observed queue…'; publish();
+      try {
+        while (valid() && offset < page.total && requests < SEARCH_REQUESTS && matches.length < SEARCH_MATCHES) {
+          const limit = Math.min(SEARCH_PAGE, page.total - offset);
+          flight = (async () => call('queue', { params: { room: zone }, query: { offset, limit } }))();
+          reads.add(flight); requests++;
+          let response;
+          try { response = await flight; } finally { reads.delete(flight); }
+          if (!valid()) return false;
+          const next = pageOf(response, offset, limit);
+          if (!sameQueue(page, next) || !agreesWithSelection(next)
+              || page.items.some(item => item.position > offset && item.position <= offset + next.items.length
+                && item.uri !== next.items[item.position - offset - 1].uri)) {
+            throw new Error('The queue changed during search. Refresh and search its new contents.');
+          }
+          for (const item of next.items) {
+            // Limit retained metadata as well as result count. Preserve exact
+            // renderer identity; search normalization is only for matching text.
+            if ([item.title, item.creator, item.album].some(value => value.length > 16384)
+                || (item.uri != null && (typeof item.uri !== 'string' || item.uri.length > 16384))) {
+              throw new Error('A search entry is unreadable or too large. Refresh before searching again.');
+            }
+            const words = searchText([item.title, item.creator, item.album].join(' '));
+            offset = item.position;
+            if (terms.every(term => words.includes(term))) matches.push(Object.freeze({ ...item }));
+            if (matches.length === SEARCH_MATCHES) break;
+          }
+          state.search = snapshot(true);
+          state.message = `Searched ${offset - start} entries; ${matches.length} matches so far. No queue command was sent.`;
+          publish();
+        }
+        if (!valid()) return false;
+        state.search = snapshot(false);
+        state.message = offset === page.total
+          ? 'Search reached the end of the observed queue. Open a result to inspect its current page.'
+          : 'Search stopped at its result or read limit. Continue explicitly to examine the next section.';
+        return true;
+      } catch (error) {
+        if (valid()) {
+          clearSearch(); clearSelection(); state.stale = true;
+          state.message = `${error.message}${error.hint ? ` ${error.hint}` : ''} No queue command was sent.`;
+        }
+        return false;
+      } finally {
+        if (flight) reads.delete(flight);
+        state.searching = false; publish();
+      }
+    }
+
+    async function openMatch(item) {
+      const page = ready(), result = state.search;
+      if (!page || reads.size || !result || result.running || !result.matches.includes(item)
+          || !identity(item.uri) || !sameQueue(page, result) || state.query !== result.query) return false;
+      state.navigating = true;
+      try {
+        const loaded = await readPage(pageOffset(item.position), false, false, true, { ...result, item });
+        if (loaded) {
+          state.found = item.position;
+          state.message = `Found entry ${item.position} is shown below. Inspect or play it with the ordinary queue controls; nothing was changed.`;
+        }
+        return loaded;
+      } finally { state.navigating = false; publish(); }
+    }
+
     function reconcile() {
       if (reconciliation) return reconciliation;
-      if (!available() || state.selecting || state.navigating || state.uncertain || !state.stale) return Promise.resolve(false);
+      if (!available() || state.selecting || state.navigating || state.searching || state.uncertain || !state.stale) return Promise.resolve(false);
       // Wait for manual reads too. Live notifications can supersede a sample,
       // but must not multiply concurrent queue requests while it is pending.
       const running = (async () => {
@@ -217,7 +326,7 @@ const QueueRemote = (() => {
           await Promise.allSettled([...reads]);
           if (!available()) return false;
         }
-        if (!available() || state.selecting || state.navigating || state.uncertain || !state.stale) return false;
+        if (!available() || state.selecting || state.navigating || state.searching || state.uncertain || !state.stale) return false;
         return readPage(state.offset, true, false);
       })();
       reconciliation = running;
@@ -227,6 +336,7 @@ const QueueRemote = (() => {
     }
 
     async function write(route, body, validate, message) {
+      clearSearch();
       state.writing = true;
       state.stale = true;
       state.page = null;
@@ -468,6 +578,7 @@ const QueueRemote = (() => {
       if (blocked() && !state.writing) {
         // A native play/DJ/seek may invalidate this snapshot while a read is pending.
         ++epoch;
+        clearSearch();
         state.loading = false;
         state.page = null;
         state.stale = true;
@@ -480,6 +591,7 @@ const QueueRemote = (() => {
 
     function close() {
       visible = false;
+      clearSearch();
       ++epoch;
       state.stale = true;
       state.loading = state.updating = false;
@@ -489,7 +601,7 @@ const QueueRemote = (() => {
     }
 
     return { state, load, browse, jumpTo, showCurrent, play, add, select, selectRange, editRange, clearSelected, removable, reviewRemoval, cancelRemoval, remove,
-      reviewMove, move, block, stale, reconcile, close,
+      reviewMove, move, search, editSearch, cancelSearch, openMatch, block, stale, reconcile, close,
       suspend() { active = false; stale('Queue updates paused while this page is hidden.'); },
       resume() { if (!disposed) { active = true; stale(); } },
       dispose() { disposed = true; close(); } };
@@ -671,5 +783,5 @@ const QueueRemote = (() => {
     };
   }
 
-  return { model, panel, PAGE_SIZE, MAX_SELECTION };
+  return { model, panel, PAGE_SIZE, MAX_SELECTION, SEARCH_PAGE, SEARCH_REQUESTS, SEARCH_MATCHES };
 })();
