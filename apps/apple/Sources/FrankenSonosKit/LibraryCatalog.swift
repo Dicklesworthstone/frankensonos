@@ -11,12 +11,13 @@ public enum LibraryCategory: String, Codable, CaseIterable, Sendable {
 }
 
 public enum LibraryCatalogError: Error, LocalizedError, Equatable, Sendable {
-    case invalidQuery, invalidPage, changedRevision
+    case invalidQuery, invalidPage, changedRevision, selectionExpired
     public var errorDescription: String? {
         switch self {
         case .invalidQuery: "Use a filter of at most 512 UTF-8 bytes without control characters."
         case .invalidPage: "The cached library page is incomplete or inconsistent. Refresh the listing."
         case .changedRevision: "Your library changed while browsing. Refresh from the beginning; pages from different versions were not combined."
+        case .selectionExpired: "This library selection changed. Choose it again from the refreshed listing."
         }
     }
 }
@@ -108,6 +109,27 @@ public struct LibraryCatalogSelection: Equatable, Sendable {
     fileprivate let pageID: UUID
 }
 
+/// Browsing never sends a playback command. These intents enter the remote's
+/// existing household-qualified command review, just like other music actions.
+public enum LibraryCatalogAction: Sendable, CaseIterable {
+    case playNow, queueNext, queueLast
+
+    fileprivate func command(source: String) -> NativeCommand {
+        switch self {
+        case .playNow: .playSource(source)
+        case .queueNext: .queueAdd(source, next: true)
+        case .queueLast: .queueAdd(source, next: false)
+        }
+    }
+}
+
+extension DaemonClient {
+    public func libraryCatalog(_ request: LibraryBrowseRequest) async throws -> LibraryCatalogPage {
+        try await get(LibraryCatalogPage.self, ["library", "browse"], query: request.queryItems)
+            .validated(for: request)
+    }
+}
+
 /// A bounded, read-only browser. Playback stays with CommandReviewSession.
 /// At most one read runs; an obsolete/cancelled reader must drain before the
 /// newest navigation intent starts. A transport ignoring cancellation cannot
@@ -150,9 +172,19 @@ public struct LibraryCatalogSelection: Equatable, Sendable {
         request = try! LibraryBrowseRequest()
     }
 
+    public convenience init(client: DaemonClient, searchDelay: Duration = .milliseconds(350),
+                            now: @escaping @Sendable () -> Date = { Date() }) {
+        self.init(searchDelay: searchDelay, now: now, read: { try await client.libraryCatalog($0) })
+    }
+
     public var canChoose: Bool { active && !stopped && isFresh && !loading && page != nil && !restartRequired }
+    public var canRefresh: Bool { active && !stopped && !filterInvalid && !loading }
     public var canGoBack: Bool { canChoose && request.offset > 0 }
     public var canGoForward: Bool { canChoose && page?.nextOffset != nil }
+    public var canChooseAlbum: Bool {
+        canChoose && album?.kind == "album" && album?.sourceUri == request.albumUri
+            && page?.albumUri == request.albumUri && request.category == .tracks
+    }
 
     public func resume() {
         guard !active && !stopped else { return }
@@ -218,6 +250,26 @@ public struct LibraryCatalogSelection: Equatable, Sendable {
         guard canChoose, selection.pageID == pageID,
               page?.items.contains(selection.item) == true else { return nil }
         return selection.item
+    }
+
+    public func command(for selection: LibraryCatalogSelection, action: LibraryCatalogAction) throws -> NativeCommand {
+        guard let item = resolve(selection) else { throw LibraryCatalogError.selectionExpired }
+        return action.command(source: item.sourceUri)
+    }
+
+    public func albumSelection() -> LibraryCatalogSelection? {
+        guard canChooseAlbum, let album else { return nil }
+        return LibraryCatalogSelection(item: album, pageID: pageID)
+    }
+
+    /// The album source is authoritative only while its current track page is
+    /// fresh. Capture this selection when showing its menu so an old album
+    /// action cannot silently target a newly opened album or refreshed page.
+    public func command(forAlbum selection: LibraryCatalogSelection, action: LibraryCatalogAction) throws -> NativeCommand {
+        guard canChooseAlbum, selection.pageID == pageID, selection.item == album else {
+            throw LibraryCatalogError.selectionExpired
+        }
+        return action.command(source: selection.item.sourceUri)
     }
 
     public func openAlbum(_ selection: LibraryCatalogSelection) {

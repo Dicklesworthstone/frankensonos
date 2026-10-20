@@ -23,6 +23,7 @@ import AppKit
     let model: RemoteModel
     let activity: ActivityModel
     let spotify: SpotifySetupModel
+    let catalog: LibraryCatalogModel
     let endpoint: String
     init(endpoint: DaemonEndpoint) {
         self.endpoint = endpoint.url.absoluteString
@@ -30,6 +31,8 @@ import AppKit
         model = RemoteModel(client: client)
         spotify = SpotifySetupModel(client: client)
         activity = ActivityModel(client: client)
+        catalog = LibraryCatalogModel(client: client)
+        catalog.onChange = { [weak self] in self?.objectWillChange.send() }
         activity.onChange = { [weak self] in self?.objectWillChange.send() }
         model.onChange = { [weak self] in self?.objectWillChange.send() }
         spotify.onChange = { [weak self] in self?.objectWillChange.send() }
@@ -53,7 +56,7 @@ import AppKit
         Group {
             if let bridge {
                 RemoteScreen(bridge: bridge, openSpotify: { showSpotify = true }, openActivity: { showActivity = true }) {
-                    bridge.spotify.stop(); bridge.activity.stop(); bridge.model.stop()
+                    bridge.spotify.stop(); bridge.activity.stop(); bridge.catalog.stop(); bridge.model.stop()
                     showSpotify = false; showActivity = false; pendingReplay = nil
                     self.bridge = nil
                 }
@@ -133,7 +136,7 @@ import AppKit
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
                 pendingReplay = nil
-                bridge?.model.suspend(); bridge?.spotify.suspend(); bridge?.activity.suspend()
+                bridge?.model.suspend(); bridge?.spotify.suspend(); bridge?.activity.suspend(); bridge?.catalog.suspend()
             }
             else if phase == .active {
                 bridge?.model.resume()
@@ -141,7 +144,10 @@ import AppKit
                 if showActivity { bridge?.activity.resume() }
             }
         }
-        .onDisappear { pendingReplay = nil; bridge?.spotify.stop(); bridge?.activity.stop(); bridge?.model.stop() }
+        .onDisappear {
+            pendingReplay = nil
+            bridge?.spotify.stop(); bridge?.activity.stop(); bridge?.catalog.stop(); bridge?.model.stop()
+        }
         .alert("Replay was not started", isPresented: Binding(get: { replayProblem != nil }, set: { if !$0 { replayProblem = nil } })) {
             Button("OK") { replayProblem = nil }
         } message: { Text(replayProblem ?? "") }

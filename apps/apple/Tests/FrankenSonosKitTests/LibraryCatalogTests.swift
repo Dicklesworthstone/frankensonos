@@ -1,9 +1,17 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Testing
 @testable import FrankenSonosKit
 
 private func catalogPage(_ request: LibraryBrowseRequest, total: UInt32 = 71,
                          revision: String = "catalog:one", mutate: (inout [String: Any]) -> Void = { _ in }) throws -> LibraryCatalogPage {
+    try DaemonClient.decode(LibraryCatalogPage.self, from: Data(catalogJSON(request, total: total, revision: revision, mutate: mutate).utf8))
+}
+
+private func catalogJSON(_ request: LibraryBrowseRequest, total: UInt32 = 71,
+                         revision: String = "catalog:one", mutate: (inout [String: Any]) -> Void = { _ in }) throws -> String {
     let count = min(50, total > request.offset ? total - request.offset : 0)
     let kind = request.category == .tracks ? "track" : request.category == .albums ? "album" : "playlist"
     let items: [[String: Any]] = (0..<count).map { n in
@@ -20,8 +28,7 @@ private func catalogPage(_ request: LibraryBrowseRequest, total: UInt32 = 71,
         "next_offset": end < total ? end as Any : NSNull(), "kind": request.category.rawValue,
         "album_uri": request.albumUri as Any? ?? NSNull(), "revision": revision, "coverage": "cached"]
     mutate(&object)
-    let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
-    return try decoder.decode(LibraryCatalogPage.self, from: JSONSerialization.data(withJSONObject: object))
+    return String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self)
 }
 
 private actor CatalogRig {
@@ -322,4 +329,148 @@ private actor CatalogRig {
         #expect(model.canChoose); model.stop()
     }
 
+}
+
+@Suite("Native library browsing to reviewed playback") @MainActor struct LibraryCatalogPlaybackTests {
+    @Test func productionBrowseAdapterEncodesFiltersAndKeepsMetadataLiteral() async throws {
+        let request = try LibraryBrowseRequest(category: .tracks, query: "Bach & piano + 100% / # ?",
+                                               offset: 50, albumUri: "spotify:album:fixture")
+        let literal = #"<script>music & [a title](https://outside.example.test/art)</script>"#
+        let transport = try RecordingTransport(catalogJSON(request, total: 51) { value in
+            var items = value["items"] as! [[String: Any]]
+            items[0]["title"] = literal; value["items"] = items
+        })
+        let page = try await client(transport).libraryCatalog(request)
+        #expect(page.items.first?.title == literal)
+        let requests = await transport.requests
+        #expect(requests.count == 1)
+        let sent = try #require(requests.first), url = try #require(sent.url)
+        #expect(url.host == "music.example.test"); #expect(url.path == "/library/browse")
+        #expect(sent.httpMethod == "GET"); #expect(sent.httpBody == nil)
+        let fields = Dictionary(uniqueKeysWithValues: (URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []).map { ($0.name, $0.value) })
+        #expect(fields == ["kind": "tracks", "offset": "50", "limit": "50", "q": request.query, "album_uri": request.albumUri])
+        #expect(sent.value(forHTTPHeaderField: "Accept") == "application/json")
+        #expect(sent.value(forHTTPHeaderField: "Authorization") == nil)
+    }
+
+    @Test func productionAdapterRejectsIncompleteServerPage() async throws {
+        let request = try LibraryBrowseRequest()
+        let transport = try RecordingTransport(catalogJSON(request) { $0["items"] = [] })
+        await #expect(throws: LibraryCatalogError.invalidPage) { try await client(transport).libraryCatalog(request) }
+        #expect(await transport.requests.count == 1)
+    }
+
+    @Test func browsingAndOpeningAlbumsNeedsNoRoomAndNeverWrites() async throws {
+        let albums = try LibraryBrowseRequest()
+        let tracks = try LibraryBrowseRequest(category: .tracks, albumUri: "spotify:album:fixture0")
+        let playlists = try LibraryBrowseRequest(category: .playlists)
+        let transport = try RecordingTransport(jsons: [catalogJSON(albums, total: 2),
+                                                       catalogJSON(tracks, total: 4), catalogJSON(playlists, total: 3)])
+        let model = try LibraryCatalogModel(client: client(transport), searchDelay: .zero)
+        model.resume(); try await drain { !model.loading }
+        #expect(model.canChoose)
+        model.openAlbum(try #require(model.selection(for: "spotify:album:fixture0")))
+        #expect(!model.canChooseAlbum)
+        try await drain { !model.loading }
+        #expect(model.canChooseAlbum); #expect(model.page?.items.count == 4)
+        #expect(try model.command(forAlbum: #require(model.albumSelection()), action: .playNow) == .playSource("spotify:album:fixture0"))
+        model.browse(.playlists); try await drain { !model.loading }
+        #expect(model.page?.kind == .playlists); #expect(model.album == nil)
+        let requests = await transport.requests
+        #expect(requests.count == 3)
+        #expect(requests.allSatisfy { $0.httpMethod == "GET" && $0.url?.path == "/library/browse" })
+        #expect(requests.allSatisfy { !(URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []).contains { $0.name == "zone" } })
+        model.stop()
+    }
+
+    @Test(arguments: ["S1", "S2"], [LibraryCatalogAction.playNow, .queueNext, .queueLast])
+    func catalogIntentUsesTheExistingOneUseHouseholdReview(household: String, action: LibraryCatalogAction) async throws {
+        let request = try LibraryBrowseRequest(category: .playlists)
+        let zones = zoneJSON.replacingOccurrences(of: "S2", with: household)
+        let state = stateJSON.replacingOccurrences(of: "S2", with: household)
+        let acknowledgement: String
+        switch action {
+        case .playNow: acknowledgement = #"{"done":"Playing","changed":true}"#
+        case .queueNext, .queueLast: acknowledgement = #"{"done":"Queued","first":3,"count":4,"playing_queue":false}"#
+        }
+        // Initial browse, prepare reads, confirmation reads, and one write.
+        let transport = try RecordingTransport(jsons: [catalogJSON(request, total: 1), "[\(zones)]", state,
+                                                       "[\(zones)]", state, acknowledgement])
+        let daemon = try client(transport)
+        let catalog = LibraryCatalogModel(client: daemon, searchDelay: .zero)
+        catalog.resume(); catalog.browse(.playlists); try await drain { !catalog.loading }
+        let selection = try #require(catalog.selection(for: "spotify:playlist:fixture0"))
+        let command = try catalog.command(for: selection, action: action)
+        let session = CommandReviewSession(client: daemon)
+        let zone = try fixture(Zone.self, zones)
+        let review = try await session.prepare(command, in: zone)
+        #expect(review.zone.id.address == "Studio@\(household)")
+        #expect(await transport.requests.allSatisfy { $0.httpMethod == "GET" })
+        _ = try await session.execute(review)
+        await #expect(throws: ContractError.self) { try await session.execute(review) }
+        let requests = await transport.requests
+        let writes = requests.filter { $0.httpMethod == "POST" }
+        #expect(writes.count == 1)
+        let sent = try #require(writes.first)
+        let body = try JSONDecoder().decode([String: JSONValue].self, from: #require(sent.httpBody))
+        #expect(body["zone"] == .string("Studio@\(household)"))
+        #expect(body["source_uri"] == .string(selection.item.sourceUri))
+        switch action {
+        case .playNow: #expect(sent.url?.path == "/play"); #expect(body["next"] == nil)
+        case .queueNext: #expect(sent.url?.path == "/queue"); #expect(body["next"] == .bool(true))
+        case .queueLast: #expect(sent.url?.path == "/queue"); #expect(body["next"] == .bool(false))
+        }
+        #expect(requests.filter { $0.url?.path == "/zones" }.count == 2)
+        catalog.stop()
+    }
+
+    @Test func expiredMenusCannotCreateACommandEvenForTheSameSource() async throws {
+        let model = try await loaded()
+        let selected = try #require(model.selection(for: "spotify:album:fixture0"))
+        #expect(try model.command(for: selected, action: .queueNext) == .queueAdd(selected.item.sourceUri, next: true))
+        model.refresh()
+        #expect(throws: LibraryCatalogError.selectionExpired) { try model.command(for: selected, action: .playNow) }
+        try await drain { !model.loading }
+        #expect(model.selection(for: selected.item.id) != nil)
+        for action in LibraryCatalogAction.allCases {
+            #expect(throws: LibraryCatalogError.selectionExpired) { try model.command(for: selected, action: action) }
+        }
+        let current = try #require(model.selection(for: selected.item.id))
+        model.suspend()
+        #expect(throws: LibraryCatalogError.selectionExpired) { try model.command(for: current, action: .queueLast) }
+        model.stop()
+    }
+
+    @Test func albumActionsRequireFreshScopedTracksAndRetireOnNavigation() async throws {
+        let rig = CatalogRig(), model = try await loaded(rig)
+        #expect(!model.canChooseAlbum)
+        model.openAlbum(try #require(model.selection(for: "spotify:album:fixture0")))
+        try await drain { !model.loading }
+        let album = try #require(model.albumSelection())
+        #expect(try model.command(forAlbum: album, action: .queueLast) == .queueAdd("spotify:album:fixture0", next: false))
+        await rig.change(revision: "catalog:new")
+        model.nextPage(); try await drain { !model.loading }
+        #expect(model.restartRequired); #expect(!model.canChooseAlbum)
+        #expect(throws: LibraryCatalogError.selectionExpired) { try model.command(forAlbum: album, action: .playNow) }
+        model.refresh(); try await drain { !model.loading }
+        #expect(model.canChooseAlbum)
+        #expect(throws: LibraryCatalogError.selectionExpired) { try model.command(forAlbum: album, action: .queueNext) }
+        let refreshedAlbum = try #require(model.albumSelection())
+        #expect(try model.command(forAlbum: refreshedAlbum, action: .playNow) == .playSource(album.item.sourceUri))
+        model.backToAlbums()
+        #expect(!model.canChooseAlbum)
+        #expect(throws: LibraryCatalogError.selectionExpired) { try model.command(forAlbum: refreshedAlbum, action: .queueNext) }
+        model.stop()
+    }
+
+    @Test func invalidFilterMakesRefreshUnavailableUntilItsVisibleDraftIsCorrected() async throws {
+        let rig = CatalogRig(), model = try await loaded(rig)
+        #expect(model.canRefresh)
+        model.filter(String(repeating: "x", count: 513))
+        #expect(!model.canRefresh)
+        model.suspend(); model.resume(); model.filter(model.request.query)
+        try await drain { !model.loading }
+        #expect(model.canRefresh); #expect(model.canChoose); #expect(await rig.count == 2)
+        model.stop()
+    }
 }

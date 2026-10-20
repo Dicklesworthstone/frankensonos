@@ -92,7 +92,7 @@ daemon and the app connects to the origin you provide.
 ## What the screen connects
 
 The app has four destinations: **Listen** for artwork, playback and room levels;
-**Music** for favorites, library search and the queue; **Your DJ** for the current
+**Music** for favorites, library browsing/search and the queue; **Your DJ** for the current
 whole work, explanations and steering; and **House** for scenes, sleep timers,
 schedules, grouping, Spotify setup and activity. A mini player remains above the
 tab bar while browsing. The Mac keeps a room sidebar; the iPhone and iPad use a
@@ -122,6 +122,16 @@ checks. Pages are not concatenated across revisions. A missing revision leaves
 the page readable but not editable. Source URIs and library results can be
 played, queued next or appended; adding to the queue does not start playback.
 Favorites are read from the selected household and reviewed by their stable ID.
+
+The library browser opens saved albums, tracks and playlists without requiring
+a selected or reachable speaker. Album cards open their saved track lists;
+filters and pagination stay tied to one cache revision. A changed cache requires
+a fresh listing before selection, so old rows cannot silently become new music.
+Play, queue next and append all use the selected household/group's existing
+command review. Album playback uses the full album source; the displayed track
+list describes cached coverage, not a promise that every album track is saved.
+**Search all** keeps the combined cached-library and household-favorites search.
+Spotify sign-in and library synchronization are available from **House**.
 
 The DJ panel shows its current whole work, the upcoming works and the reason for
 its choice. It connects start, stop, whole-work skip, like/dislike, timed mood

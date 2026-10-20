@@ -8,8 +8,11 @@ import FrankenSonosKit
     @State private var source = ""
     @State private var mood = ""
     @State private var minutes = 60
+    @State private var browsingLibrary = true
     private var model: RemoteModel { bridge.model }
     private var ready: Bool { model.canPrepare && !model.panelLoading }
+    private var catalogVisible: Bool { model.panel == .library && browsingLibrary }
+    private var panelLoading: Bool { catalogVisible ? bridge.catalog.loading : model.panelLoading }
     private var panelTitle: String {
         switch model.panel {
         case .queue: "Up next"
@@ -27,14 +30,18 @@ import FrankenSonosKit
             HStack {
                 Text(panelTitle).font(.title2.bold()).accessibilityAddTraits(.isHeader)
                 Spacer()
-                if model.panelLoading { ProgressView().controlSize(.small) }
-                Button { model.refreshPanel() } label: {
+                if panelLoading { ProgressView().controlSize(.small) }
+                Button {
+                    if catalogVisible { bridge.catalog.refresh() }
+                    else { model.refreshPanel() }
+                } label: {
                     Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
                 }
-                .buttonStyle(.plain).disabled(!model.active || model.panelLoading)
+                .buttonStyle(.plain)
+                .disabled(catalogVisible ? !bridge.catalog.canRefresh : !model.active || panelLoading)
                 .accessibilityLabel("Refresh \(panelTitle.lowercased())")
             }
-            if let problem = model.panelProblem {
+            if let problem = model.panelProblem, !catalogVisible {
                 Label(problem, systemImage: "exclamationmark.circle")
                     .font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true).remoteCard()
@@ -246,6 +253,41 @@ import FrankenSonosKit
 
     private var libraryPanel: some View {
         VStack(alignment: .leading, spacing: 16) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    libraryModeDescription
+                    Spacer(minLength: 0)
+                    libraryModeButton
+                }
+                VStack(alignment: .leading, spacing: 10) {
+                    libraryModeDescription
+                    libraryModeButton
+                }
+            }
+            if browsingLibrary { LibraryBrowserPanel(bridge: bridge) }
+            else if model.selectedZone != nil { librarySearchPanel }
+            else {
+                EmptyMusicState(title: "Choose a room to search everything", systemImage: "hifispeaker",
+                                detail: "Search includes favorites from the selected household. You can browse saved albums, tracks and playlists without choosing a room.")
+            }
+            sourceEntry
+        }
+    }
+
+    private var libraryModeDescription: some View {
+        Text(browsingLibrary ? "Albums, tracks and playlists" : "Your library and this household’s favorites")
+            .font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var libraryModeButton: some View {
+        Button(browsingLibrary ? "Search all" : "Browse library",
+               systemImage: browsingLibrary ? "magnifyingglass" : "square.grid.2x2") {
+            browsingLibrary.toggle()
+        }.buttonStyle(.bordered)
+    }
+
+    private var librarySearchPanel: some View {
+        VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary).accessibilityHidden(true)
                 TextField("Artists, albums and tracks", text: $search)
@@ -288,7 +330,6 @@ import FrankenSonosKit
                                 systemImage: "magnifyingglass",
                                 detail: model.query.isEmpty ? "Search the music saved in your library by artist, album or track." : "Try a different title or artist. Results come from the library cached by your daemon.")
             }
-            sourceEntry
         }
         .onAppear { search = model.query }
         .task(id: search) {

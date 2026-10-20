@@ -108,7 +108,7 @@ import FrankenSonosKit
                     } else { noRoom }
                 case .music:
                     panelPicker("Music", selection: $musicPanel, choices: [.favorites, .library, .queue])
-                    if model.selectedZone != nil { MusicPanels(bridge: bridge) }
+                    if model.panel == .library || model.selectedZone != nil { MusicPanels(bridge: bridge) }
                     else { noRoom }
                 case .dj:
                     if model.selectedZone != nil { MusicPanels(bridge: bridge) }
