@@ -1,8 +1,9 @@
 //! The scene routes: `GET /scenes`, `GET|PUT|DELETE /scenes/{name}` and
 //! `POST /scenes/{name}/apply` (see [`crate::surface::scenes`]).
 //!
-//! `PUT` saves the house as it is now, so it takes no body; neither does
-//! `DELETE`. Browsers send an Origin with both, which the listener checks,
+//! `PUT` saves the house as it is now when it has no body, or the scene a
+//! JSON body writes out (any other body is UNSUPPORTED_MEDIA_TYPE); `DELETE`
+//! takes none. Browsers send an Origin with both, which the listener checks,
 //! and never send either cross-origin without a preflight.
 
 use fastapi::core::RouteEntry;

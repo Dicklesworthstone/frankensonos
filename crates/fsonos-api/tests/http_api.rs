@@ -590,6 +590,56 @@ fn the_openapi_document_describes_every_route() {
     assert_eq!(status, 403);
 }
 
+/// http.rs's route table names every route the app serves (8hhv.2): a
+/// route added without its row fails here.
+#[test]
+fn the_route_table_names_every_route() {
+    let web = WebPolicy::for_listener("127.0.0.1:0".parse().unwrap(), &[]);
+    let served = app("", &Arc::default(), &Client::LoopbackHttp, &web);
+    let table: Vec<&str> = include_str!("../src/http.rs")
+        .lines()
+        .take_while(|line| line.starts_with("//!"))
+        .filter(|line| line.starts_with("//! | "))
+        .collect();
+    let documented: Vec<&str> = table
+        .iter()
+        .flat_map(|line| line.split('`'))
+        .flat_map(str::split_whitespace)
+        .filter(|word| word.starts_with('/'))
+        .map(|word| word.split('?').next().unwrap_or(word).trim_end_matches(','))
+        .collect();
+    let missing: Vec<String> = served
+        .routes()
+        .filter(|(_, path)| !documented.contains(path))
+        .map(|(method, path)| format!("{method:?} {path}"))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "rows to add to http.rs's table: {missing:#?}"
+    );
+}
+
+/// A scene PUT with a body sends it as JSON (8hhv.2); one with none saves
+/// the house as it is, and the OpenAPI document says so.
+#[test]
+fn a_scene_body_must_be_json() {
+    let api = Api::start("", &Client::LoopbackHttp);
+    let host = api.host();
+    let (status, body) = api.raw(
+        "PUT",
+        "/scenes/Evening",
+        &[("Host", &host), ("Content-Type", "text/plain")],
+        "{\"groups\": []}",
+    );
+    assert_eq!(status, 415, "{body}");
+    assert!(body.contains("UNSUPPORTED_MEDIA_TYPE"), "{body}");
+    let (_, doc) = api.get("/openapi.json");
+    assert!(
+        doc["paths"]["/scenes/{name}"]["put"]["responses"]["415"].is_object(),
+        "a PUT documents 415"
+    );
+}
+
 #[test]
 fn the_event_stream_needs_the_live_model() {
     // This surface surveys on demand; only `fsonos serve`'s has events.

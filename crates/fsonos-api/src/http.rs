@@ -7,19 +7,29 @@
 //! | `GET /events?since=<id>` | | server-sent events as the house changes ([`crate::events`]); resumes after `Last-Event-ID` or `since` |
 //! | `GET /zones` | | `[ZoneDto]` |
 //! | `GET /players` | | `[PlayerDto]`: every player, by household and room |
+//! | `GET /rooms` | | `[RoomDto]`: every room, its household and zone, and the aliases that name it |
+//! | `GET /rooms/resolve` | | `ResolvedRoomsDto`: the rooms and whole groups a target (a room, an alias, `all`) addresses |
 //! | `GET /zones/{room}` | | [`crate::ZoneDto`] (`room` is percent-decoded) |
 //! | `GET /zones/{room}/state` | | [`crate::ZoneStateDto`] |
 //! | `GET /zones/{room}/queue?offset=<n>&limit=<n>` | | [`crate::surface::queue::QueueDto`] |
 //! | `GET /zones/{room}/eq` | | [`crate::surface::eq::EqDto`]: the room's bass, treble and loudness |
+//! | `GET /zones/{room}/play-mode` | | the group's shuffle and repeat, and whether the DJ owns its queue |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |
 //! | `POST /play/favorite` | [`crate::PlayFavoriteRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /library/play` | [`crate::SearchPlayRequest`] | [`crate::OutcomeDto`] |
+//! | `GET /library/search?q=<text>&zone=<room>&limit=<n>` | | `[HitDto]`: the owner's library, and the room's favorites |
+//! | `GET /library/browse` | | the synced library's tracks, albums or playlists, with no Spotify or speaker request |
+//! | `GET /history?zone=<room>&limit=<n>` | | `[PlayDto]`: what played, newest first |
 //! | `GET /doctor` | | the doctor report (`schema`, `exit_code`, `counts`, `checks`) |
 //! | `GET /actions?client=&since=&limit=` | | `[ActionDto]`, newest first |
 //! | `POST /undo` | [`crate::UndoRequest`] | [`crate::UndoDto`] |
+//! | `GET /undo/preview` | | the `ActionDto` an undo would put back, or `null`; changes nothing |
+//! | `POST /undo/checked` | the previewed action's id | [`crate::UndoDto`]: undoes it only while it is still the newest |
 //! | `GET /policy` | | [`crate::surface::house_policy::PolicyDto`]: the house policy, and the caller under it |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
 //! | `POST /queue` | [`crate::surface::queue::QueueAddRequest`] | [`crate::surface::queue::QueueAddedDto`] |
+//! | `POST /queue/play`, `/queue/remove`, `/queue/move` | the entries, by position and URI, at the queue's revision | play one, remove a run of them (not undoable), or move them, without restarting playback |
+//! | `POST /play-mode` | the zone and its shuffle and repeat | [`crate::OutcomeDto`], undoable |
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /seek` | [`crate::SeekRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /volume` | [`crate::VolumeRequest`] | [`crate::OutcomeDto`] |
@@ -27,6 +37,8 @@
 //! | `POST /volume/fade`, `/pause/fade` | `FadeVolumeRequest`, `FadePauseRequest` | [`crate::OutcomeDto`]: when the fade is done (a ramp with no fade: once each speaker has started) |
 //! | `POST /eq` | [`crate::surface::eq::EqRequest`] | [`crate::surface::eq::EqSetDto`] |
 //! | `POST /group` | [`crate::GroupRequest`] | [`crate::OutcomeDto`] |
+//! | `POST /move` | `MoveRequest` | [`crate::OutcomeDto`]: the music moves to another room |
+//! | `POST /party` | `PartyRequest` | [`crate::OutcomeDto`]: every room of a household in one zone |
 //! | `POST /dj/start` | [`crate::DjStartRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /scenes` | | `[SceneDto]` ([`crate::surface::scenes`]) |
 //! | `GET /scenes/{name}` | | [`crate::surface::scenes::SceneDto`] |
@@ -35,24 +47,32 @@
 //! | `DELETE /scenes/{name}` | | [`crate::surface::scenes::SceneDeletedDto`] |
 //! | `POST /dj/skip`, `/dj/stop` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /dj/steer` | [`crate::DjSteerRequest`] | [`crate::OutcomeDto`] |
+//! | `POST /dj/rehearse` | `DjRehearseRequest` | `DjRehearsalDto`: the set the DJ would play from a time, with each work's reason; plays nothing |
 //! | `GET /zones/{room}/dj` | | [`crate::DjStatusDto`] |
 //! | `GET /dj/moods?zone=<room>` | | [`crate::DjMoodsDto`] (`now` is the room's steering, else the house's program) |
-//! | `GET`/`POST /sleep`, `GET`/`POST /schedules`, `POST /schedules/remove`, `/pause`, `/resume` | | sleep timers and schedules: see [`schedules`] |
+//! | `GET`/`POST /sleep`, `GET`/`POST /schedules`, `POST /schedules/remove`, `/schedules/pause`, `/schedules/resume` | | sleep timers and schedules: see [`schedules`] |
 //! | `POST /announce` | [`crate::surface::announce::AnnounceRequest`] | [`crate::surface::announce::AnnounceDto`] |
 //! | `POST /dj/feedback` | [`crate::surface::dj_feedback::DjFeedbackRequest`] | [`crate::surface::dj_feedback::DjFeedbackDto`] |
 //! | `GET /dj/preferences` | | [`crate::surface::dj_prefs::PreferencesDto`] |
 //! | `POST /dj/preferences` | [`crate::surface::dj_prefs::DjPreferRequest`] | [`crate::surface::dj_prefs::PreferredDto`] |
 //! | `GET /dj/sync` | | [`crate::surface::dj_sync::LibrarySyncDto`]: the DJ's library refresh from Spotify |
 //! | `POST /dj/sync` | `{}` | [`crate::surface::dj_sync::LibrarySyncDto`]: a refresh started in the background |
+//! | `GET /auth/spotify` | | `SignInDto`: whether the daemon is signed in to the owner's Spotify |
+//! | `POST /auth/spotify/begin` | `{}` | `SignInStartDto`: the consent page to open |
+//! | `POST /auth/spotify/complete` | `{redirect}`: the address the browser landed on | `SignInDto` |
+//! | `GET /auth/spotify/callback` | | where Spotify sends the browser back (the registered redirect URI) |
 //! | `GET /` (and `/remote.js`, `/remote.css`) | | the web remote: a page that controls the speakers from a browser ([`remote`]) |
 //! | `GET /art?zone=<room>` | | the album art of what the room's group plays, from its own player (`204` when none) |
+//! | `GET /dashboard` (and `/dashboard.js`, `/dashboard.css`) | | the listening dashboard |
+//! | `GET /studio.js`, `/studio.css` | | the listening studio's script and style |
 //!
 //! Every route first passes the listener's [`WebPolicy`] (a present Origin
 //! must be the daemon's own; POSTs must be JSON); the listener itself admits
 //! only its own Host names. Failures answer with the code's status and an
 //! [`crate::ApiError`] body
-//! (`docs/ERRORS.md`). Each operation id in the OpenAPI document is the
-//! name of the MCP tool that does the same. Every call runs as its caller ([`Identity`]) under the
+//! (`docs/ERRORS.md`). An operation id in the OpenAPI document that names
+//! an MCP tool is that tool's, doing the same (the web pages and Spotify's
+//! browser callback have ids of their own). Every call runs as its caller ([`Identity`]) under the
 //! house policy. Speaker I/O is synchronous inside the handler.
 
 use fastapi::core::{AppConfig, BoxFuture, RouteEntry};
@@ -147,8 +167,8 @@ fn openapi_document(entries: &[RouteEntry]) -> String {
         .version(env!("CARGO_PKG_VERSION"))
         .description(
             "Control the Sonos players of your own households from anywhere on your \
-             tailnet. Failures carry a stable `code` (docs/ERRORS.md); every operation id \
-             matches the MCP tool that does the same.",
+             tailnet. Failures carry a stable `code` (docs/ERRORS.md); an operation id \
+             that names an MCP tool is that tool's, doing the same.",
         );
     let documented = entries
         .iter()
@@ -719,7 +739,7 @@ impl Op {
                 Err(busy) => Box::pin(ready(busy.http_response())) as BoxFuture<'_, Response>,
             }
         });
-        error_answers(entry, write)
+        error_answers(entry, matches!(self.method, Method::Post | Method::Put))
     }
 }
 
@@ -969,9 +989,17 @@ fn actions_query(req: &Request) -> Result<ActionsQuery, Failure> {
 
 /// A JSON body, or `default` when the body is empty.
 fn body_or_default<B: DeserializeOwned>(req: &mut Request, default: B) -> Result<B, Failure> {
+    let json = crate::web::sends_json(req);
     let bytes = req.take_body().into_bytes();
     if bytes.iter().all(u8::is_ascii_whitespace) {
         return Ok(default);
+    }
+    // A POST was held to this already; a PUT with a body is held here.
+    if !json {
+        return Err(Failure::new(
+            ErrorCode::UnsupportedMediaType,
+            "a request body must be sent as Content-Type: application/json",
+        ));
     }
     serde_json::from_slice(&bytes)
         .map_err(|e| Failure::invalid(format!("the request body is not valid for this route: {e}")))

@@ -201,22 +201,25 @@ impl WebPolicy {
                 format!("requests from the web origin {origin:?} are not accepted"),
             ));
         }
-        if write {
-            let json = header("content-type").is_some_and(|value| {
-                value
-                    .split(';')
-                    .next()
-                    .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"))
-            });
-            if !json {
-                return Err(Failure::new(
-                    ErrorCode::UnsupportedMediaType,
-                    "control requests must send Content-Type: application/json",
-                ));
-            }
+        if write && !sends_json(req) {
+            return Err(Failure::new(
+                ErrorCode::UnsupportedMediaType,
+                "control requests must send Content-Type: application/json",
+            ));
         }
         Ok(())
     }
+}
+
+/// Whether `req` says its body is JSON (`Content-Type: application/json`,
+/// any parameters after it).
+pub(crate) fn sends_json(req: &Request) -> bool {
+    req.headers().get("content-type").is_some_and(|value| {
+        String::from_utf8_lossy(value)
+            .split(';')
+            .next()
+            .is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"))
+    })
 }
 
 #[cfg(test)]

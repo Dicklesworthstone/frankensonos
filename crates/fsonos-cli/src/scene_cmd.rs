@@ -57,6 +57,7 @@ enum SceneAction {
     /// A scene's groups, what each plays, and each room's volume.
     Show { name: String },
     /// Forget a scene.
+    #[command(visible_alias = "remove")]
     Rm { name: String },
 }
 

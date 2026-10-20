@@ -422,6 +422,7 @@ enum AliasAction {
         rooms: Vec<String>,
     },
     /// Remove an alias.
+    #[command(visible_alias = "remove")]
     Rm { alias: String },
 }
 
@@ -1354,6 +1355,19 @@ mod tests {
     use fsonos_core::HouseholdState;
     use fsonos_core::Room;
     use fsonos_types::{Generation, Player, PlayerId, ZoneGroup};
+
+    /// `remove` is `rm`, as HTTP and MCP name it (8hhv.2).
+    #[test]
+    fn remove_is_rm() {
+        for args in [
+            &["schedule", "remove", "3"][..],
+            &["scene", "remove", "Evening"],
+            &["rooms", "alias", "remove", "upstairs"],
+        ] {
+            let parsed = Cli::try_parse_from(std::iter::once("fsonos").chain(args.iter().copied()));
+            assert!(parsed.is_ok(), "{args:?}: {:?}", parsed.err());
+        }
+    }
 
     fn parse(args: &[&str]) -> Command {
         Cli::try_parse_from(std::iter::once("fsonos").chain(args.iter().copied()))

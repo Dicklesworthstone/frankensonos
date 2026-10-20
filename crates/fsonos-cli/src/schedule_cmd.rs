@@ -68,6 +68,7 @@ pub enum ScheduleCommand {
     /// List the schedules, with their next runs.
     List,
     /// Remove a schedule by its id.
+    #[command(visible_alias = "remove")]
     Rm { id: i64 },
     /// Pause a schedule until resumed.
     Pause { id: i64 },
