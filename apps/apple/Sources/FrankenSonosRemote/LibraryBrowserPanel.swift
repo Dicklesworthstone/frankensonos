@@ -61,7 +61,7 @@ import FrankenSonosKit
                 pageSummary(page)
                 if page.items.isEmpty && catalog.isFresh { emptyState }
                 else if page.kind == .albums {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: typeSize.isAccessibilitySize ? 250 : 150), spacing: 14)],
+                    LazyVGrid(columns: typeSize.isAccessibilitySize ? [GridItem(.flexible())] : [GridItem(.adaptive(minimum: 150), spacing: 14)],
                               alignment: .leading, spacing: 14) {
                         ForEach(page.items) { albumCard($0) }
                     }
@@ -76,7 +76,7 @@ import FrankenSonosKit
                     .frame(maxWidth: .infinity, minHeight: 180).accessibilityLabel("Loading library")
             }
 
-            Text("Showing music saved to your library. Manage Spotify and sync in House → Spotify & library.")
+            Text("Showing the daemon’s cached music, which can include retired or taste-derived items. Album track counts may be incomplete. Manage Spotify and sync in House → Spotify & library.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .onAppear {
@@ -139,23 +139,24 @@ import FrankenSonosKit
                 HStack(spacing: 12) { albumActions }
                 VStack(alignment: .leading, spacing: 12) { albumActions }
             }
-            Text("Play album plays the full source. The track list below includes the tracks saved in your library.")
+            Text("Play album and Queue album use the full album source. The tracks below are cached in disc/track order and may include only some movements or part of the recording.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }.remoteCard()
     }
 
     @ViewBuilder private var albumActions: some View {
         let selection = catalog.albumSelection()
+        let zone = remote.selectedZone
         Button("Play album", systemImage: "play.fill") {
-            if let selection { chooseAlbum(selection, action: .playNow) }
+            if let selection { chooseAlbum(selection, action: .playNow, in: zone) }
         }
             .buttonStyle(.borderedProminent).foregroundStyle(RemoteStyle.accentInk)
             .disabled(selection == nil || !remote.canPrepare)
             .accessibilityHint("Review playing this album in the selected group.")
         Menu {
             if let selection {
-                Button("Queue next", systemImage: "text.line.first.and.arrowtriangle.forward") { chooseAlbum(selection, action: .queueNext) }
-                Button("Add to end of queue", systemImage: "text.append") { chooseAlbum(selection, action: .queueLast) }
+                Button("Queue next", systemImage: "text.line.first.and.arrowtriangle.forward") { chooseAlbum(selection, action: .queueNext, in: zone) }
+                Button("Add to end of queue", systemImage: "text.append") { chooseAlbum(selection, action: .queueLast, in: zone) }
             }
         } label: { Label("Queue album", systemImage: "text.badge.plus") }
             .buttonStyle(.bordered).disabled(selection == nil || !remote.canPrepare)
@@ -195,6 +196,7 @@ import FrankenSonosKit
 
     private func albumCard(_ item: LibraryCatalogItem) -> some View {
         let selection = catalog.selection(for: item.id)
+        let zone = remote.selectedZone
         return VStack(alignment: .leading, spacing: 8) {
             Button {
                 if let selection {
@@ -207,20 +209,20 @@ import FrankenSonosKit
                         .frame(maxWidth: .infinity).frame(height: 100)
                         .background(RemoteStyle.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
                         .accessibilityHidden(true)
-                    Text(item.title).font(.headline).foregroundStyle(.primary).lineLimit(3)
+                    Text(item.title).font(.headline).foregroundStyle(.primary).lineLimit(typeSize.isAccessibilitySize ? nil : 3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let subtitle = item.subtitle, !subtitle.isEmpty {
-                        Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                        Text(subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(typeSize.isAccessibilitySize ? nil : 2)
                     }
                 }.multilineTextAlignment(.leading).contentShape(Rectangle())
             }.buttonStyle(.plain).disabled(selection == nil)
-                .accessibilityHint("Browse saved tracks on this album.")
+                .accessibilityHint("Browse cached tracks on this album. The list may be incomplete.")
             HStack(spacing: 6) {
                 if item.explicit { explicitBadge }
-                Text("\(item.cachedTracks ?? 0) saved tracks").font(.caption).foregroundStyle(.secondary)
+                Text("\(item.cachedTracks ?? 0) cached tracks").font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
-                itemMenu(selection, title: item.title)
+                itemMenu(selection, title: item.title, in: zone)
             }
         }.padding(12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(RemoteStyle.surface, in: RoundedRectangle(cornerRadius: 20))
@@ -228,9 +230,10 @@ import FrankenSonosKit
 
     private func musicRow(_ item: LibraryCatalogItem) -> some View {
         let selection = catalog.selection(for: item.id)
+        let zone = remote.selectedZone
         return HStack(spacing: 10) {
             Button {
-                if let selection { choose(selection, action: .playNow) }
+                if let selection { choose(selection, action: .playNow, in: zone) }
             } label: {
                 HStack(spacing: 12) {
                     if catalog.album != nil, let track = item.trackNumber {
@@ -256,16 +259,16 @@ import FrankenSonosKit
                 }.frame(minHeight: 44).contentShape(Rectangle())
             }.buttonStyle(.plain).disabled(!canPlay || selection == nil)
                 .accessibilityHint("Review playing this \(item.kind) in the selected group.")
-            itemMenu(selection, title: item.title)
+            itemMenu(selection, title: item.title, in: zone)
         }.padding(12).background(RemoteStyle.surface, in: RoundedRectangle(cornerRadius: 18))
     }
 
-    private func itemMenu(_ selection: LibraryCatalogSelection?, title: String) -> some View {
+    private func itemMenu(_ selection: LibraryCatalogSelection?, title: String, in zone: Zone?) -> some View {
         Menu {
             if let selection {
-                Button("Play now", systemImage: "play") { choose(selection, action: .playNow) }
-                Button("Queue next", systemImage: "text.line.first.and.arrowtriangle.forward") { choose(selection, action: .queueNext) }
-                Button("Add to end of queue", systemImage: "text.append") { choose(selection, action: .queueLast) }
+                Button("Play now", systemImage: "play") { choose(selection, action: .playNow, in: zone) }
+                Button("Queue next", systemImage: "text.line.first.and.arrowtriangle.forward") { choose(selection, action: .queueNext, in: zone) }
+                Button("Add to end of queue", systemImage: "text.append") { choose(selection, action: .queueLast, in: zone) }
             }
         } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
             .disabled(!canPlay || selection == nil).accessibilityLabel("Options for \(title)")
@@ -309,8 +312,8 @@ import FrankenSonosKit
         return "Track \(item.trackNumber ?? 0)"
     }
 
-    private func choose(_ selection: LibraryCatalogSelection, action: LibraryCatalogAction) {
-        prepare { try catalog.command(for: selection, action: action) }
+    private func choose(_ selection: LibraryCatalogSelection, action: LibraryCatalogAction, in zone: Zone?) {
+        prepare(in: zone) { try catalog.command(for: selection, action: action) }
     }
 
     private func resume() {
@@ -320,14 +323,14 @@ import FrankenSonosKit
         catalog.filter(filter)
     }
 
-    private func chooseAlbum(_ selection: LibraryCatalogSelection, action: LibraryCatalogAction) {
-        prepare { try catalog.command(forAlbum: selection, action: action) }
+    private func chooseAlbum(_ selection: LibraryCatalogSelection, action: LibraryCatalogAction, in zone: Zone?) {
+        prepare(in: zone) { try catalog.command(forAlbum: selection, action: action) }
     }
 
-    private func prepare(_ command: () throws -> NativeCommand) {
+    private func prepare(in expectedZone: Zone?, _ command: () throws -> NativeCommand) {
         do {
-            guard remote.canPrepare, let zone = remote.selectedZone else {
-                throw ContractError.invalid("Choose an available room and finish any current action before playing music.")
+            guard remote.canPrepare, let zone = expectedZone, remote.selectedZone?.sameGroup(as: zone) == true else {
+                throw ContractError.invalid("The destination changed or another action is active. Choose the music again for the displayed group.")
             }
             let selected = try command()
             actionProblem = nil

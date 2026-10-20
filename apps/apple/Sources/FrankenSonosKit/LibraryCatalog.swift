@@ -286,7 +286,7 @@ extension DaemonClient {
     }
 
     private func enqueue(_ next: LibraryBrowseRequest, revision: String?, delay: Duration = .zero) {
-        epoch &+= 1; task?.cancel(); pageID = UUID()
+        epoch &+= 1; task?.cancel(); pageID = UUID(); filterInvalid = false
         if request != next { page = nil; observedAt = nil }
         request = next; isFresh = false; loading = true; problem = nil; restartRequired = false
         paginationRevision = revision
