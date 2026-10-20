@@ -21,7 +21,7 @@ use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::scenes::{self, Scene, SceneGroup, SceneSource};
-use fsonos_core::store::{ActionFilter, DjSession, MemStore, Store};
+use fsonos_core::store::{ActionFilter, DjSession, MemStore, Store, StoredScene};
 use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_sim::{SimHandle, SimHousehold};
 use fsonos_types::{PlayerId, TransportState};
@@ -663,4 +663,86 @@ fn a_scene_has_the_dj_where_it_plays_not_where_it_is_only_steered() {
         source("Living Room").is_some_and(|(kind, _)| kind != "dj"),
         "steering alone isn't the DJ playing: {saved:#?}"
     );
+}
+
+/// A scene is its saver's (p7vq.4): another client may neither delete it
+/// nor save over it, and the refusal is logged; its saver, a client
+/// policy.toml lets manage others' and the owner may. A scene saved before
+/// savers were kept is the owner's.
+#[test]
+fn another_clients_scene_is_not_yours_to_change() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let mut store = MemStore::default();
+    let old = Scene {
+        name: "Old".into(),
+        groups: vec![SceneGroup {
+            coordinator: "Kitchen".into(),
+            members: Vec::new(),
+            source: SceneSource::Keep,
+            playing: Some(false),
+        }],
+        volumes: BTreeMap::new(),
+        mutes: BTreeMap::new(),
+        writer: None,
+    };
+    scenes::save(&mut store, &old, 0).unwrap();
+    let policy = Policy::from_toml("[clients.\"tag:keeper\"]\nmanage_others = true\n").unwrap();
+    let s = Surface::new(Box::new(sim.lan()), survey(), policy, Box::new(SystemClock))
+        .with_action_log(Box::new(store), "mcp");
+    let other = Client::Tailnet("tag:other".into());
+    s.save_scene(&agent(), "Mine").unwrap();
+    for (refused, whose) in [
+        (s.delete_scene(&other, "mine").map(drop), "tag:agent's"),
+        (s.save_scene(&other, "MINE").map(drop), "tag:agent's"),
+        (s.delete_scene(&agent(), "Old").map(drop), "the owner's"),
+    ] {
+        let refused = refused.unwrap_err();
+        assert_eq!(refused.code, ErrorCode::PolicyDenied, "{refused:?}");
+        assert!(refused.detail.contains(whose), "{}", refused.detail);
+    }
+    let log = s
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
+    assert!(
+        log[0].action.intent == "delete_scene: the scene \"Old\""
+            && log[0].action.decision.starts_with("deny: "),
+        "{log:?}"
+    );
+    assert_eq!(s.scenes(&Client::Cli).unwrap().len(), 2);
+
+    s.save_scene(&agent(), "Mine").unwrap();
+    s.delete_scene(&Client::Tailnet("tag:keeper".into()), "Mine")
+        .unwrap();
+    s.delete_scene(&Client::Cli, "Old").unwrap();
+    assert!(s.scenes(&Client::Cli).unwrap().is_empty());
+    sim.shutdown();
+}
+
+/// A scene that no longer reads is the owner's to save over or delete, as
+/// its hint says (UNKNOWN is still UNKNOWN_SCENE, before any ownership).
+#[test]
+fn a_scene_that_no_longer_reads_is_still_the_owners_to_replace() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let mut store = MemStore::default();
+    for name in ["Broken", "Gone"] {
+        store
+            .save_scene(&StoredScene {
+                name: name.into(),
+                spec: "{".into(),
+                updated: 0,
+            })
+            .unwrap();
+    }
+    let s = surface(&sim, store);
+    let refused = s.save_scene(&agent(), "broken").unwrap_err();
+    assert_eq!(refused.code, ErrorCode::PolicyDenied, "{refused:?}");
+    let unknown = s.delete_scene(&agent(), "Nowhere").unwrap_err();
+    assert_eq!(unknown.code, ErrorCode::UnknownScene, "{unknown:?}");
+    s.save_scene(&Client::Cli, "broken").unwrap();
+    assert_eq!(s.scene(&Client::Cli, "Broken").unwrap().name, "broken");
+    assert_eq!(
+        s.delete_scene(&Client::Cli, "gone").unwrap().deleted,
+        "Gone"
+    );
+    sim.shutdown();
 }

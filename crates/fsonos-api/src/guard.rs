@@ -58,6 +58,24 @@ impl Guard<'_> {
         }
     }
 
+    /// May the caller change or delete `what` (a scene, a schedule), which
+    /// `saver` saved ([`Policy::may_change`])? Asked after [`Self::authorize`]
+    /// allowed `tool`.
+    pub fn authorize_change(
+        &self,
+        tool: &str,
+        what: &str,
+        saver: Option<&str>,
+    ) -> Result<(), Failure> {
+        match self.policy.may_change(self.client, saver) {
+            Decision::Allow | Decision::Clamp { .. } => Ok(()),
+            Decision::Deny { reason } => Err(denied(format!(
+                "{} may not {tool} {what}: {reason}",
+                self.client
+            ))),
+        }
+    }
+
     /// Bound a planned command by the policy. Only volume changes for capped
     /// callers are affected; for those the current level of every room the
     /// change lands on is read first.

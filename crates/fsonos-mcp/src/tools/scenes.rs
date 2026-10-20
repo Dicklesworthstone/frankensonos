@@ -347,7 +347,15 @@ mod tests {
 
     #[test]
     fn delete_scene_forgets_it() {
-        let b = backend(Client::McpStdio, &[evening()]);
+        // The owner's scene (saved before savers were kept) is not its to
+        // delete; its own is.
+        let theirs = error_text(backend(Client::McpStdio, &[evening()]).delete_scene("Evening"));
+        assert!(theirs.starts_with("POLICY_DENIED: "), "{theirs}");
+        let mine = Scene {
+            writer: Some("mcp-stdio".into()),
+            ..evening()
+        };
+        let b = backend(Client::McpStdio, &[mine]);
         let gone = b.delete_scene("Evening").unwrap();
         assert_eq!(text(&gone), "deleted scene Evening");
         assert!(

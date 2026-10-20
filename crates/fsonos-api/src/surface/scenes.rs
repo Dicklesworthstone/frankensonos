@@ -196,6 +196,17 @@ impl SceneDefinition {
     }
 }
 
+/// The scene called `name` (ignoring case) and who saved it: no one (the
+/// owner's) for one saved before savers were kept, or one that no longer
+/// reads, which its owner may still save over or delete.
+fn saver_of(store: &dyn Store, name: &str) -> Result<(String, Option<String>), SceneError> {
+    match scenes::load(store, name) {
+        Ok(scene) => Ok((scene.name, scene.writer)),
+        Err(SceneError::Corrupt { name, .. }) => Ok((name, None)),
+        Err(e) => Err(e),
+    }
+}
+
 /// Resolve a persisted reference without aliases, prefixes or first-match
 /// fallbacks. This also resolves favorites in their intended household.
 fn scene_room<'a>(
@@ -683,6 +694,19 @@ impl Surface {
             ..scene.clone()
         };
         let now = self.now();
+        // Saving over a scene is changing it: its saver's to do.
+        let existing = self.scene_store(|store| match saver_of(store, &scene.name) {
+            Err(SceneError::Unknown { .. }) => Ok(None),
+            found => found.map(Some),
+        })?;
+        if let Some((name, saver)) = &existing {
+            self.authorize_change(
+                client,
+                tool,
+                &format!("the scene {name:?}"),
+                saver.as_deref(),
+            )?;
+        }
         let replaced = self.scene_store(|store| {
             let replaced = store.scenes()?.iter().find_map(|s| {
                 s.name
@@ -716,10 +740,16 @@ impl Surface {
     pub fn delete_scene(&self, client: &Client, name: &str) -> Result<SceneDeletedDto, Failure> {
         let tool = "delete_scene";
         self.authorize_logged(client, tool)?;
+        let (found, saver) = self.scene_store(|store| saver_of(store, name))?;
+        self.authorize_change(
+            client,
+            tool,
+            &format!("the scene {found:?}"),
+            saver.as_deref(),
+        )?;
         let deleted = self.scene_store(|store| {
-            let scene = scenes::load(store, name)?;
-            scenes::delete(store, &scene.name)?;
-            Ok(scene.name)
+            scenes::delete(store, &found)?;
+            Ok(found.clone())
         })?;
         let done = format!("deleted scene {deleted}");
         self.record(

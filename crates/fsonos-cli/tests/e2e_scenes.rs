@@ -279,6 +279,16 @@ fn http_refusals(s: &mut Scenario, api: &str) {
             .is_ok_and(|(code, _, body)| *code == 403 && body.contains("UNTRUSTED_ORIGIN")),
         format!("{foreign:?}"),
     );
+    let theirs = http(api, "DELETE", "/scenes/Evening", &[], "");
+    s.check(
+        "http-delete-theirs",
+        "http",
+        "loopback HTTP may not delete the CLI's Evening (403 POLICY_DENIED)",
+        theirs
+            .as_ref()
+            .is_ok_and(|(code, _, body)| *code == 403 && body.contains("POLICY_DENIED")),
+        format!("{theirs:?}"),
+    );
     let deleted = http(api, "DELETE", "/scenes/morning%20light", &[], "");
     let gone = http(api, "GET", "/scenes/Morning%20Light", &[], "");
     s.check(

@@ -334,6 +334,9 @@ struct ClientRules {
     /// ones need it, and with an `allow` list it adds to what that names.
     grant: Vec<String>,
     capped: Option<bool>,
+    /// It may change or delete scenes and schedules others saved
+    /// ([`Policy::may_change`]).
+    manage_others: bool,
 }
 
 /// The house policy.
@@ -382,7 +385,8 @@ pub struct RoomView {
 
 /// A client's own rules: `allow` (only these tools) when given, `deny`
 /// always, `grant` (tools it may use too: the [`OWNER_ONLY`] ones need it,
-/// and it adds to an `allow` list), and whether volume caps apply when set.
+/// and it adds to an `allow` list), whether volume caps apply when set, and
+/// whether it may change scenes and schedules others saved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientView {
     pub client: String,
@@ -393,6 +397,8 @@ pub struct ClientView {
     pub grant: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capped: Option<bool>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manage_others: bool,
 }
 
 /// A policy file that cannot be used, with where the problem is.
@@ -545,6 +551,7 @@ impl Policy {
                 deny: c.deny.clone(),
                 grant: c.grant.clone(),
                 capped: c.capped,
+                manage_others: c.manage_others,
             })
             .collect();
         clients.sort_by(|a, b| a.client.cmp(&b.client));
@@ -562,6 +569,34 @@ impl Policy {
 
     fn client_rules(&self, client: &Client) -> Option<&ClientRules> {
         self.clients.get(&client.key().to_lowercase())
+    }
+
+    /// May `client` change or delete a scene or schedule that `saver` (a
+    /// [`Client::key`]) saved: save over it, delete it, pause, resume or
+    /// remove it? Its saver may, and so may the owner (the CLI or the
+    /// owner's tailnet login) and a client whose rules set
+    /// `manage_others = true`. One saved before savers were kept (`None`)
+    /// is the owner's. [`Self::authorize`] decides first whether `client`
+    /// may use the tool at all.
+    #[must_use]
+    pub fn may_change(&self, client: &Client, saver: Option<&str>) -> Decision {
+        if saver.is_some_and(|saver| saver.eq_ignore_ascii_case(client.key()))
+            || self.is_owner(client)
+            || self.client_rules(client).is_some_and(|r| r.manage_others)
+        {
+            return Decision::Allow;
+        }
+        let whose = saver.map_or_else(
+            || "the owner's (saved before fsonos kept who saved what)".to_owned(),
+            |saver| format!("{saver}'s"),
+        );
+        Decision::Deny {
+            reason: format!(
+                "it is {whose}; only its saver or the owner may change it, unless {FILE_NAME} \
+                 sets manage_others = true under [clients.\"{}\"]",
+                client.key()
+            ),
+        }
     }
 
     /// Denials another tool gets around: a client denied a tool, but not
@@ -887,6 +922,8 @@ struct RawClient {
     #[serde(default)]
     grant: Vec<String>,
     capped: Option<bool>,
+    #[serde(default)]
+    manage_others: bool,
 }
 
 impl From<RawClient> for ClientRules {
@@ -896,6 +933,7 @@ impl From<RawClient> for ClientRules {
             deny: raw.deny,
             grant: raw.grant,
             capped: raw.capped,
+            manage_others: raw.manage_others,
         }
     }
 }
@@ -1302,6 +1340,44 @@ allow = []
             p.authorize(call("list_zones", true), &Client::Tailnet("tag:kiosk".into())),
             Decision::Deny { reason } if reason.ends_with("no tools")
         ));
+    }
+
+    /// A scene or schedule is its saver's to change (p7vq.4): the owner's
+    /// too, and a client's with manage_others; one with no saver is the
+    /// owner's.
+    #[test]
+    fn what_a_client_saved_is_its_own_to_change() {
+        let p = Policy::from_toml("[clients.\"tag:Keeper\"]\nmanage_others = true\n")
+            .unwrap()
+            .with_owner(Some("owner@example.com".into()));
+        let tailnet = |login: &str| Client::Tailnet(login.into());
+        let allowed =
+            |client: &Client, saver: Option<&str>| p.may_change(client, saver) == Decision::Allow;
+        assert!(allowed(&tailnet("tag:agent"), Some("tag:agent")));
+        assert!(allowed(
+            &tailnet("Alice@Example.com"),
+            Some("alice@example.com")
+        ));
+        assert!(allowed(&Client::Cli, Some("tag:agent")));
+        assert!(allowed(&tailnet("owner@example.com"), Some("tag:agent")));
+        assert!(allowed(&tailnet("tag:keeper"), Some("cli")));
+        assert!(allowed(&Client::Cli, None));
+        for (client, saver) in [
+            (tailnet("tag:other"), Some("tag:agent")),
+            (Client::McpStdio, Some("cli")),
+            (Client::LoopbackHttp, Some("mcp-stdio")),
+            (tailnet("tag:agent"), None),
+        ] {
+            let Decision::Deny { reason } = p.may_change(&client, saver) else {
+                panic!("{client} may change {saver:?}'s");
+            };
+            assert!(
+                reason.contains(saver.unwrap_or("the owner's"))
+                    && reason.contains(&format!("[clients.\"{}\"]", client.key())),
+                "{reason}"
+            );
+        }
+        assert!(p.view().clients[0].manage_others);
     }
 
     /// A grant adds to an allow list too: starting and finishing a sign-in,

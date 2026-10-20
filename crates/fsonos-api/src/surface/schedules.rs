@@ -948,6 +948,29 @@ impl Surface {
             })
     }
 
+    /// May `client` change `what` (a scene, a schedule), which `saver`
+    /// saved ([`crate::guard::Guard::authorize_change`])? A refusal is logged as
+    /// [`Self::authorize_write`] logs one.
+    pub(super) fn authorize_change(
+        &self,
+        client: &Client,
+        tool: &str,
+        what: &str,
+        saver: Option<&str>,
+    ) -> Result<(), Failure> {
+        self.guard(client)
+            .authorize_change(tool, what, saver)
+            .inspect_err(|denied| {
+                self.record(
+                    client,
+                    format!("{tool}: {what}"),
+                    format!("deny: {}", denied.detail),
+                    denied.detail.clone(),
+                    None,
+                );
+            })
+    }
+
     /// Log a write that went through (or failed): there is no before-state
     /// to undo.
     pub(super) fn log_write<T>(
@@ -1342,8 +1365,15 @@ impl Surface {
 
     /// Remove schedule `id` (`remove_schedule`); answers what it was.
     pub fn remove_schedule(&self, client: &Client, id: i64) -> Result<ScheduleDto, Failure> {
-        self.authorize_write(client, "remove_schedule")?;
+        let tool = "remove_schedule";
+        self.authorize_write(client, tool)?;
         let schedule = self.find_schedule(id)?;
+        self.authorize_change(
+            client,
+            tool,
+            &format!("#{id}"),
+            Some(schedule.creator.as_str()),
+        )?;
         let dto = ScheduleDto::new(&schedule, self.clock.now().to_utc());
         let result = self
             .with_store(|s| s.delete_schedule(id))?
@@ -1370,6 +1400,12 @@ impl Surface {
         };
         self.authorize_write(client, tool)?;
         let mut schedule = self.find_schedule(id)?;
+        self.authorize_change(
+            client,
+            tool,
+            &format!("#{id}"),
+            Some(schedule.creator.as_str()),
+        )?;
         let now = self.clock.now().to_utc();
         let result = self
             .with_store(|s| {
@@ -2418,6 +2454,42 @@ mod tests {
         assert!(s.schedules(&Client::Cli).unwrap().is_empty());
         let gone = s.remove_schedule(&Client::Cli, weekly.id).unwrap_err();
         assert_eq!(gone.code, ErrorCode::UnknownSchedule);
+    }
+
+    /// A schedule is its creator's (p7vq.4): another client may not pause,
+    /// resume or remove it, and the refusal is logged; its creator, a
+    /// client policy.toml lets manage others' and the owner may.
+    #[test]
+    fn another_clients_schedule_is_not_yours_to_change() {
+        let policy = Policy::from_toml("[clients.\"tag:keeper\"]\nmanage_others = true\n").unwrap();
+        let (s, _, _) = surface_with("", policy);
+        let id = add(&s, "daily 07:30", pause_patio()).unwrap().id;
+        let other = Client::Tailnet("tag:other".into());
+        for refused in [
+            s.pause_schedule(&other, id, true),
+            s.pause_schedule(&other, id, false),
+            s.remove_schedule(&other, id),
+        ] {
+            let refused = refused.unwrap_err();
+            assert_eq!(refused.code, ErrorCode::PolicyDenied, "{refused:?}");
+            assert!(refused.detail.contains("tag:agent's"), "{}", refused.detail);
+        }
+        let listed = s.schedules(&Client::Cli).unwrap();
+        assert!(listed.len() == 1 && listed[0].enabled, "{listed:?}");
+        let log = s
+            .recent_actions(&Client::Cli, &fsonos_core::store::ActionFilter::default())
+            .unwrap();
+        assert!(
+            log[0].action.intent == format!("remove_schedule: #{id}")
+                && log[0].action.decision.starts_with("deny: "),
+            "{log:?}"
+        );
+        s.pause_schedule(&Client::Tailnet("tag:agent".into()), id, true)
+            .unwrap();
+        s.pause_schedule(&Client::Tailnet("tag:keeper".into()), id, false)
+            .unwrap();
+        s.remove_schedule(&Client::Cli, id).unwrap();
+        assert!(s.schedules(&Client::Cli).unwrap().is_empty());
     }
 
     #[test]

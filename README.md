@@ -322,6 +322,11 @@ deny = ["volume"]
   applies a scene with its volumes left as they are (and told so), and its
   scheduled volume changes are refused when they fire. `fsonos policy check`
   names a denial another tool of the same class still gets around.
+- A scene or a schedule is its saver's: saving over, deleting, pausing,
+  resuming or removing one another client saved needs the owner (the CLI, or
+  the owner's own tailnet login) or `manage_others = true` under the caller's
+  `[clients."<key>"]`, so an agent cannot drop your wake-up alarm. One saved
+  before fsonos kept who saved it is the owner's.
 - Edit `policy.toml` while the daemon runs and its next call obeys the new
   rules, no restart needed. An edit that does not parse is logged and the last
   good policy stays in force (`fsonos policy check` says what is wrong).

@@ -83,6 +83,9 @@ impl PolicyDto {
             if !client.grant.is_empty() {
                 rules.push(format!("granted {}", client.grant.join(", ")));
             }
+            if client.manage_others {
+                rules.push("may change others' scenes and schedules".to_owned());
+            }
             match client.capped {
                 Some(true) => rules.push("capped".to_owned()),
                 Some(false) => rules.push("uncapped".to_owned()),
