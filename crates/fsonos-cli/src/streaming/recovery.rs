@@ -100,6 +100,46 @@ fn check_queue<T: Transport + ?Sized>(
     Ok(())
 }
 
+/// The measured audio must still belong to the original room group. These
+/// bounded reads run only around finite measurement windows, not continuously.
+/// Accept the same radio/HTTP alias as cleanup, never a different URL or group.
+#[cfg(unix)]
+pub(super) fn verify_measurement<T: Transport + ?Sized>(
+    transport: &T,
+    households: &[HouseholdState],
+    before: &ZoneSnapshot,
+    source: &str,
+    require_playing: bool,
+) -> Result<(), String> {
+    let household = households
+        .iter()
+        .find(|household| household.player(&before.coordinator).is_some())
+        .ok_or_else(|| "stream coordinator disappeared during measurement".to_owned())?;
+    let now = refreshed(transport, household, before)?;
+    let host = now
+        .player(&before.coordinator)
+        .ok_or_else(|| "stream coordinator disappeared during measurement".to_owned())?
+        .ip;
+    let media = soap::get_media_info(transport, host).map_err(|error| error.to_string())?;
+    if !same_source(source, &media.uri) {
+        return Err("stream source changed; live latency measurement stopped".into());
+    }
+    let state = soap::get_transport_info(transport, host)
+        .map_err(|error| error.to_string())?
+        .state;
+    if state != TransportState::Playing
+        && (require_playing || state != TransportState::Transitioning)
+    {
+        return Err("stream is no longer playing; live latency measurement stopped".into());
+    }
+    refreshed(transport, &now, before)?;
+    let media = soap::get_media_info(transport, host).map_err(|error| error.to_string())?;
+    if !same_source(source, &media.uri) {
+        return Err("stream source changed during observation; measurement stopped".into());
+    }
+    Ok(())
+}
+
 /// Encoder startup can take time. Do not displace a new source/group that
 /// appeared after the initial snapshot while capture was warming up.
 pub(super) fn verify_start<T: Transport + ?Sized>(
@@ -205,3 +245,7 @@ pub(super) fn restore<T: Transport + ?Sized>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(unix, test))]
+#[path = "recovery/measurement_tests.rs"]
+mod measurement_tests;

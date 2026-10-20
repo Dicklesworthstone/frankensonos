@@ -244,3 +244,7 @@ mod tests {
         assert_eq!(calls, 1);
     }
 }
+
+#[cfg(test)]
+#[path = "measurement/signal_tests.rs"]
+mod signal_tests;

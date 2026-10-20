@@ -39,11 +39,73 @@ negative mpv `audio-delay` correction: positive mpv values delay audio, negative
 values delay video. This mode reports the correction but does not apply it.
 It reads a bounded local file and never stores or uploads microphone audio.
 
+## Measure live latency without a video player
+
+`--measure-latency` temporarily streams this computer's selected audio into the
+room, measures its acoustic delay, then exits through the existing playback
+restoration path. **It changes what the room plays and explicitly records the
+selected microphone, but it never connects to or changes mpv.** Use ordinary
+varied music or speech on the selected output; this mode does not play a
+calibration chirp. Obtain consent from anyone whose audio may be captured.
+
+For Linux PulseAudio (or PipeWire's PulseAudio-compatible server), substitute
+actual stable source names for these illustrative names:
+
+```sh
+fsonos --direct --json stream Kitchen --format pulse --input movie.monitor \
+  --measure-latency --sync-microphone room_mic --measure-timeout 180
+```
+
+With an existing paired stereo reference/microphone source instead:
+
+```sh
+fsonos --direct --json stream Kitchen --format pulse --input movie.monitor \
+  --measure-latency --sync-input paired-calibration
+```
+
+The paired-source path also supports `alsa` or `avfoundation` with the same
+routing requirements described below. Automatic pairing remains Linux/Pulse
+only. Choose exactly one capture source and one action: `--measure-latency`
+or `--sync-mpv`. Neither may accompany `--latency-wav`; `--sync-base-delay` is
+for mpv correction only. Plain streaming still opens no measurement capture.
+
+Each finite window uses the existing PCM decoder and acoustic estimator. Three
+consecutive confident estimates must agree within 40 ms; the reported lag is
+their median. Silence or ambiguous audio clears the pending agreement. Truncated
+capture, failed speaker reads, changed source/group, or a paused/stopped stream
+ends the measurement without an estimate. Initial buffering may precede a
+window, but the speaker must report Playing afterward. Exact radio/HTTP aliases
+are accepted; a different path, query, coordinator or group is not.
+
+The default measurement-phase budget is 180 seconds; `--measure-timeout` accepts
+10-600 seconds. An independent 64-window ceiling also applies. The deadline
+cancels an active PCM capture through its kill/reap path. It does not include
+initial discovery/playback setup or final restoration, and cannot interrupt an
+already-running speaker request (that request retains its transport timeout).
+Ctrl-C cancels the measurement and follows the same cleanup path.
+
+On success, JSON is emitted only after capture is stopped and playback
+restoration has been attempted. It contains `mode: "live"`, `lag_seconds`,
+`lag_samples`, `sample_rate`, `agreeing_windows: 3`, `windows_read`,
+`spread_samples`, `correlation_min` and `peak_ratio_min` (the lowest confidence
+values among those three windows), and the suggested negative
+`mpv_audio_delay_delta`. `mpv_modified` is always false. `playback_restored`
+separately reports whether cleanup restored all requested playback aspects;
+false is not disguised as a complete rollback. Failed measurement produces
+an error rather than a stale or partial estimate.
+
+As with ordinary streaming, newer owner playback/grouping is preserved by
+read-before-write cleanup checks. These checks are not a transaction with
+other controllers and cannot detect every change between observations.
+Acoustic propagation, capture routing and microphone latency are part of the
+measured lag. Agreement is not a physical lip-sync qualification or proof of
+correct routing. No audio recording is written to disk or uploaded.
+
 ## Correct mpv while streaming
 
 Choose either automatic Linux PulseAudio pairing or an already paired capture
-source. Both require `--sync-mpv`; neither may be combined with `--latency-wav`
-or with the other capture option. Without either option, no microphone capture
+source. For continuous correction, both require `--sync-mpv`; neither may be
+combined with `--latency-wav` or with the other capture option. Without either option, no microphone capture
 starts. Place the microphone near the listening position, with consent from
 anyone whose audio would be captured.
 
@@ -170,6 +232,26 @@ zeros the two inputs and verifies that this changes the measured lag, rather
 than allowing a broken fixture to pass. This checks FFmpeg processing, not Rust
 compilation, CLI execution, or the acoustic estimator. Rust unit tests separately
 cover opt-in, argument generation and source selection.
+
+The live-measurement Rust regressions exercise generated PCM through the real
+decoder, estimator and agreement collector, and source/group checks through
+S1/S2 simulator sockets. Run the focused suites with the pinned Rust toolchain:
+
+```sh
+cargo test -p fsonos-cli --bin fsonos streaming::synchronization
+cargo test -p fsonos-cli --bin fsonos streaming::recovery::measurement_tests
+# Opt-in generated FFmpeg sources, no microphone or speakers:
+cargo test -p fsonos-cli --bin fsonos real_ffmpeg_capture_feeds -- --ignored
+cargo test -p fsonos-cli --bin fsonos deadline_interrupts_and_reaps -- --ignored
+```
+
+The two ignored tests additionally exercise the production capture process:
+one feeds generated delayed noise through the collector, the other checks
+cancellation of a real-time silent source. `FFMPEG` may name an alternate local
+executable. These tests are not physical Sonos, Pulse timing or mpv acceptance.
+At implementation time, their standalone FFmpeg fixture commands were checked
+locally (three 12-second windows retained a known 400 ms delay); the Rust test
+binaries were not run because the local environment lacked a Rust toolchain.
 
 Neither the Rust tests nor synthetic FFmpeg captures establish microphone
 routing, Sonos buffering behavior, mpv display timing, or lip-sync accuracy on

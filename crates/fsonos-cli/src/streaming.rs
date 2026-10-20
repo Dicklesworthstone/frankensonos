@@ -174,34 +174,6 @@ fn report_measurement(
     )
 }
 
-/// Only the finite measurement path uses these reads; steady-state streaming
-/// stays event/push driven. Recheck identity across the transport-state read.
-#[cfg(unix)]
-fn verify_live_measurement<T: fsonos_proto::Transport + ?Sized>(
-    transport: &T,
-    host: std::net::IpAddr,
-    source: &str,
-    require_playing: bool,
-) -> anyhow::Result<()> {
-    use fsonos_proto::control as soap;
-    use fsonos_types::TransportState;
-    anyhow::ensure!(
-        soap::get_media_info(transport, host)?.uri == source,
-        "stream source changed; live latency measurement stopped"
-    );
-    let state = soap::get_transport_info(transport, host)?.state;
-    anyhow::ensure!(
-        state == TransportState::Playing
-            || (!require_playing && state == TransportState::Transitioning),
-        "stream is no longer playing; live latency measurement stopped"
-    );
-    anyhow::ensure!(
-        soap::get_media_info(transport, host)?.uri == source,
-        "stream source changed during observation; live latency measurement stopped"
-    );
-    Ok(())
-}
-
 pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     if global.daemon || global.daemon_url.is_some() {
         bail!("stream needs a direct LAN connection to Sonos; remove --daemon/--daemon-url");
@@ -282,7 +254,14 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
                 sync,
                 Arc::clone(&stop),
                 |settled| {
-                    verify_live_measurement(&*network.transport, coordinator.ip, &source, settled)
+                    recovery::verify_measurement(
+                        &*network.transport,
+                        direct.households()?,
+                        &previous,
+                        &source,
+                        settled,
+                    )
+                    .map_err(anyhow::Error::msg)
                 },
             );
             #[cfg(not(unix))]
