@@ -108,6 +108,9 @@ import FrankenSonosKit
                     } else { noRoom }
                 case .music:
                     panelPicker("Music", selection: $musicPanel, choices: [.favorites, .library, .queue])
+                    if model.panel == .queue, let zone = model.selectedZone {
+                        PlaybackOrderPanel(bridge: bridge, zone: zone)
+                    }
                     if model.panel == .library || model.selectedZone != nil { MusicPanels(bridge: bridge) }
                     else { noRoom }
                 case .dj:
@@ -117,7 +120,10 @@ import FrankenSonosKit
                     panelPicker("House tools", selection: $housePanel, choices: [.scenes, .sleep, .schedules])
                     if model.panel == .schedules || model.selectedZone != nil { MusicPanels(bridge: bridge) }
                     else { noRoom }
-                    if let zone = model.selectedZone { grouping(zone) }
+                    if let zone = model.selectedZone {
+                        grouping(zone)
+                        SpeakerSoundPanel(bridge: bridge, zone: zone)
+                    }
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Your music account and history").font(.headline)
                         Button("Spotify & library", systemImage: "music.note.list", action: openSpotify)

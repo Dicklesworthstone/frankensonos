@@ -24,10 +24,12 @@ import AppKit
     let activity: ActivityModel
     let spotify: SpotifySetupModel
     let catalog: LibraryCatalogModel
+    let settingsReader: ListeningSettingsModel.Reader
     let endpoint: String
     init(endpoint: DaemonEndpoint) {
         self.endpoint = endpoint.url.absoluteString
         let client = DaemonClient(endpoint: endpoint)
+        settingsReader = { try await client.listeningSettings($0) }
         model = RemoteModel(client: client)
         spotify = SpotifySetupModel(client: client)
         activity = ActivityModel(client: client)
