@@ -231,7 +231,15 @@ impl Server {
                 if stream.write_all(head.as_bytes()).is_err() {
                     continue;
                 }
-                thread::sleep(reply.stall);
+                let mut left = reply.stall;
+                while !stopping.load(Ordering::Acquire) && !left.is_zero() {
+                    let nap = left.min(Duration::from_millis(10));
+                    thread::sleep(nap);
+                    left -= nap;
+                }
+                if stopping.load(Ordering::Acquire) {
+                    continue;
+                }
                 let _ = stream.write_all(reply.body.as_bytes());
             }
         });
@@ -450,14 +458,14 @@ fn token_posts_are_not_replayed_after_transient_failures() {
 #[test]
 fn a_stalled_response_body_is_bounded_by_the_total_deadline() {
     let server = Server::start(vec![Reply {
-        stall: Duration::from_millis(300),
+        stall: Duration::from_secs(30),
         ..Reply::status(200)
     }]);
     let (mut session, directory) = server.session();
     runtime().block_on(async move {
         let cx = Cx::current().unwrap();
         let url = format!("{}/me/tracks", session.endpoints.api);
-        let error = get_with_limit(&mut session, &cx, &url, 5, Duration::from_millis(40))
+        let error = get_with_limit(&mut session, &cx, &url, 5, Duration::from_secs(1))
             .await
             .unwrap_err();
         assert!(matches!(error, SpotifyError::Http(_)));
