@@ -404,6 +404,37 @@ does them itself: the DJ queues its first works but nothing tops the queue up,
 and a sleep timer is the speaker's own, without a fade. Reads and the other
 controls answer the same either way.
 
+### Moving an agent off an earlier HTTP bridge
+
+An agent written against a small home-made Sonos bridge (a `soco` script
+answering `GET /status?zone=`, `POST /play {zone, uri}` and the like) moves to
+FrankenSonos route by route. Its calls then go through the house policy, land
+in the action log and can be undone. Simplest is to give the agent the MCP
+endpoint above: the tools take the same room names. Over HTTP, the routes map
+like this (fsonos refuses unknown body fields, so rename them):
+
+| Bridge | FrankenSonos HTTP | MCP tool | Differences |
+|---|---|---|---|
+| `GET /health` | `GET /health` | | `{status, version}` instead of `{ok, devices}`; `GET /players` lists the players |
+| `GET /zones` | `GET /zones` | `list_zones` | an array of zones (coordinator, members, room names) |
+| `GET /status?zone=R` | `GET /zones/R/state` | `get_zone_state` | `transport_state` is lowercase (`playing`, `paused`, `stopped`); `mute` not `muted`; the track sits under `track` (`title`, `creator` for artist, `album`, `position_secs`, `duration_secs` in seconds, not `H:MM:SS`) |
+| `GET /mediainfo?zone=R` | `GET /zones/R/state` | `get_zone_state` | `track.uri` is the current URI; the raw DIDL metadata is not exposed |
+| `GET /favorites?zone=R` | `GET /favorites?zone=R` | `list_favorites` | an array of `{id, title, kind, ...}`; play one by title with `POST /play/favorite {zone, favorite}` (`play_favorite`), no URI or metadata to round-trip |
+| `POST /play {zone, uri, title}` | `POST /play {zone, source_uri, title}` | `play` | `uri` becomes `source_uri`: a `spotify:<kind>:<id>` URI, an `open.spotify.com` link or a renderer URI (a stream, say) |
+| `POST /pause`, `/resume`, `/next`, `/previous` `{zone}` | the same routes, `{zone}` | `pause`, `resume`, `next`, `previous` | answers `{done, changed, notes}` instead of `{ok, zone}` |
+| `POST /volume {zone, level}` | `POST /volume {zone, volume}` | `set_volume` | `level` becomes `volume`; `delta` adjusts instead, `group: true` sets the group's; the policy may clamp it (a note says so) |
+| `POST /mute {zone, muted}` | `POST /mute {zone, mute}` | `mute` | `muted` becomes `mute` |
+| `POST /rediscover` | none | | the daemon keeps its picture of the house current on its own |
+
+Errors come back as `{code, detail, hint, ...}` with the HTTP status
+`docs/ERRORS.md` lists (an unknown room is `UNKNOWN_ROOM`, 404), not
+`{error}`. Give the agent its own identity: reach the daemon through Tailscale
+Serve as its own tailnet login (or tag), and give that a
+`[clients."<login>"]` table in `policy.toml` with the caps it should live
+under. Run both side by side for a while, then stop the old bridge's launchd
+job (`launchctl bootout gui/$(id -u)/<its label>`) and keep its files until
+you are sure.
+
 ### Spotify sign-in (one time, for the DJ)
 
 Run `fsonos setup` once on the Mac: it walks you through linking your own
