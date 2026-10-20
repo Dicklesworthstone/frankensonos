@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, bail, ensure};
 use serde_json::{Value, json};
 
+mod events;
+
+use events::PlaybackEvents;
+
 const LIMIT: usize = 65_536;
 const EPSILON: f64 = 0.001;
 
@@ -17,6 +21,7 @@ pub(super) struct Client {
     pending: Vec<u8>,
     request_id: i64,
     timeout: Duration,
+    events: PlaybackEvents,
 }
 
 impl Client {
@@ -32,6 +37,7 @@ impl Client {
             pending: Vec::new(),
             request_id: 0,
             timeout: Duration::from_secs(2),
+            events: PlaybackEvents::default(),
         })
     }
 
@@ -70,6 +76,10 @@ impl Client {
                 let line: Vec<_> = self.pending.drain(..=end).collect();
                 let response: Value =
                     serde_json::from_slice(&line).context("invalid mpv JSON reply")?;
+                self.events.observe(&response)?;
+                if response.get("event").is_some() {
+                    continue;
+                }
                 if response.get("request_id").and_then(Value::as_i64) == Some(id) {
                     ensure!(
                         response.get("error").and_then(Value::as_str) == Some("success"),
@@ -88,6 +98,52 @@ impl Client {
                     self.pending.extend_from_slice(&buffer[..count]);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
+    fn watch(&mut self) -> anyhow::Result<()> {
+        for (index, property) in events::PROPERTIES.iter().enumerate() {
+            let id = u64::try_from(index)? + 1;
+            self.request(&json!(["observe_property", id, property]))?;
+        }
+        Ok(())
+    }
+
+    /// Process trailing events in the same packet as a reply and events already
+    /// queued in the socket. No wait for new events, and no unbounded drain.
+    fn drain_events(&mut self) -> anyhow::Result<()> {
+        let started = Instant::now();
+        let mut received = self.pending.len();
+        loop {
+            ensure!(
+                started.elapsed() < self.timeout,
+                "mpv event drain deadline exceeded"
+            );
+            if let Some(end) = self.pending.iter().position(|byte| *byte == b'\n') {
+                let line: Vec<_> = self.pending.drain(..=end).collect();
+                let message: Value = serde_json::from_slice(&line).context("invalid mpv event")?;
+                self.events.observe(&message)?;
+                continue;
+            }
+            let mut bytes = [0_u8; 4096];
+            match self.socket.read(&mut bytes) {
+                Ok(0) => bail!("mpv closed while observing playback"),
+                Ok(count) => {
+                    received += count;
+                    ensure!(received <= LIMIT, "mpv reply/event byte limit exceeded");
+                    self.pending.extend_from_slice(&bytes[..count]);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if self.pending.is_empty() {
+                        return self.events.check();
+                    }
+                    // A fragmented event already started. Complete it within the
+                    // same deadline before authorizing a new measurement or write.
                     thread::sleep(Duration::from_millis(5));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
@@ -135,6 +191,7 @@ impl Client {
             self.text("path")? == media && self.text("audio-device")? == output,
             "mpv media/output changed during observation"
         );
+        self.drain_events()?;
         Ok(Snapshot {
             media,
             output,
@@ -156,9 +213,16 @@ struct Snapshot {
     paused: bool,
 }
 
+/// Evidence for one continuous playback generation; not a transaction token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Window {
+    revision: u64,
+}
+
 pub(super) struct Controller {
     client: Client,
     original: Snapshot,
+    original_identity: u64,
     expected: f64,
     attempted: Option<f64>,
     base_delay: f64,
@@ -171,11 +235,15 @@ impl Controller {
             base_delay.is_finite() && base_delay.abs() <= 10.0,
             "--sync-base-delay must be finite and within -10..10 seconds"
         );
+        client.watch()?;
         let original = client.snapshot()?;
+        client.events.seed(&original);
+        let original_identity = client.events.identity();
         Ok(Self {
             expected: original.delay,
             client,
             original,
+            original_identity,
             attempted: None,
             base_delay,
             relinquished: false,
@@ -183,7 +251,13 @@ impl Controller {
     }
 
     fn observed(&mut self) -> anyhow::Result<Snapshot> {
-        let current = self.client.snapshot()?;
+        self.client.events.check()?;
+        let observed = self.client.snapshot();
+        if self.client.events.identity() != self.original_identity {
+            self.relinquished = true;
+            bail!("mpv media/output lifecycle changed; synchronization relinquished");
+        }
+        let current = observed?;
         if current.media != self.original.media || current.output != self.original.output {
             self.relinquished = true;
             bail!("mpv media/output changed; synchronization relinquished");
@@ -196,21 +270,32 @@ impl Controller {
             !self.relinquished,
             "synchronization ownership was relinquished"
         );
+        let revision = self.client.events.revision();
         let current = self.observed()?;
         if (current.delay - self.expected).abs() > EPSILON {
             self.relinquished = true;
             bail!("mpv audio-delay changed outside this session; synchronization relinquished");
         }
-        Ok(!current.paused)
+        Ok(!current.paused && self.client.events.revision() == revision)
+    }
+
+    pub(super) fn begin_window(&mut self) -> anyhow::Result<Option<Window>> {
+        Ok(self.ready()?.then(|| Window {
+            revision: self.client.events.revision(),
+        }))
+    }
+
+    pub(super) fn finish_window(&mut self, window: Window) -> anyhow::Result<bool> {
+        Ok(self.ready()? && self.client.events.revision() == window.revision)
     }
 
     /// Apply an absolute target based on the explicit baseline, never cumulative.
-    pub(super) fn apply(&mut self, lag: f64) -> anyhow::Result<bool> {
+    pub(super) fn apply(&mut self, lag: f64, window: Window) -> anyhow::Result<bool> {
         ensure!(
             lag.is_finite() && (0.02..14.0).contains(&lag),
             "invalid measured lag"
         );
-        if !self.ready()? {
+        if !self.finish_window(window)? {
             return Ok(false);
         }
         let target = self.base_delay - lag;

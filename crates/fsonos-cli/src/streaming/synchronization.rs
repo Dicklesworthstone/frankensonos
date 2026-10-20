@@ -249,15 +249,30 @@ fn run_loop(
 ) -> anyhow::Result<()> {
     let mut stable = StableLag::default();
     let mut last_rejection = None;
+    let mut last_window = None;
     while !stop.requested() {
-        if !controller.ready()? {
+        let Some(window) = controller.begin_window()? else {
             stable.clear();
+            last_window = None;
             thread::sleep(Duration::from_millis(500));
             continue;
+        };
+        // A seek or pause between otherwise valid windows also breaks agreement.
+        if last_window != Some(window) {
+            stable.clear();
         }
         let Some(bytes) = capture::record(options, stop)? else {
             break;
         };
+        if stop.requested() {
+            break;
+        }
+        if !controller.finish_window(window)? {
+            stable.clear();
+            last_window = None;
+            continue;
+        }
+        last_window = Some(window);
         let (reference, microphone) =
             calibration::decode_pcm(&bytes).map_err(anyhow::Error::msg)?;
         let max_lag = usize::try_from(options.max_lag_ms)? * (latency::SAMPLE_RATE / 1_000);
@@ -278,11 +293,12 @@ fn run_loop(
         if stop.requested() {
             break;
         }
-        if let Some(lag) = stable.observe(measured.seconds())
-            && controller.apply(lag)?
-        {
-            eprintln!("fsonos sync: acoustic lag {lag:.3} s; mpv correction confirmed");
-            // Fresh agreement after a correction; do not reuse pre-change windows.
+        if let Some(lag) = stable.observe(measured.seconds()) {
+            if controller.apply(lag, window)? {
+                eprintln!("fsonos sync: acoustic lag {lag:.3} s; mpv correction confirmed");
+            }
+            // This also discards agreement if playback changed during estimation
+            // or final read-back. No prior windows authorize another correction.
             stable.clear();
         }
     }

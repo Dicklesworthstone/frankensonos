@@ -16,6 +16,10 @@ struct State {
     speed: f64,
     writes: Vec<f64>,
     lose_set_reply: bool,
+    events: Vec<Value>,
+    subscriptions: Vec<String>,
+    event_after_final_read: Option<Value>,
+    output_reads: usize,
 }
 
 impl Default for State {
@@ -28,6 +32,10 @@ impl Default for State {
             speed: 1.0,
             writes: Vec::new(),
             lose_set_reply: false,
+            events: Vec::new(),
+            subscriptions: Vec::new(),
+            event_after_final_read: None,
+            output_reads: 0,
         }
     }
 }
@@ -43,13 +51,25 @@ fn server() -> (Client, Arc<Mutex<State>>, thread::JoinHandle<()>) {
         let mut reader = BufReader::new(peer.try_clone().unwrap());
         loop {
             let mut line = String::new();
-            if reader.read_line(&mut line).unwrap() == 0 {
-                break;
+            match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                Err(error) => panic!("read test IPC: {error}"),
             }
             let request: Value = serde_json::from_str(&line).unwrap();
             let command = request["command"].as_array().unwrap();
             let mut state = remote.lock().unwrap();
+            for event in std::mem::take(&mut state.events) {
+                writeln!(peer, "{event}").unwrap();
+            }
             let data = match command[0].as_str().unwrap() {
+                "observe_property" => {
+                    state
+                        .subscriptions
+                        .push(command[2].as_str().unwrap().to_owned());
+                    Value::Null
+                }
                 "get_property" => match command[1].as_str().unwrap() {
                     "path" => json!(state.media),
                     "audio-device" => json!(state.output),
@@ -70,23 +90,48 @@ fn server() -> (Client, Arc<Mutex<State>>, thread::JoinHandle<()>) {
                 }
                 other => panic!("unexpected command {other}"),
             };
+            // Each snapshot reads path and audio-device twice. Inject after the
+            // last reply, in the same packet, to exercise the trailing-event drain.
+            let trailing = if command[0] == "get_property" && command[1] == "audio-device" {
+                state.output_reads += 1;
+                if state.output_reads.is_multiple_of(2) {
+                    state.event_after_final_read.take()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             drop(state);
             let response = json!({
                 "request_id": request["request_id"], "error": "success", "data": data,
             });
-            writeln!(peer, "{response}").unwrap();
+            let packet = trailing.map_or_else(
+                || format!("{response}\n"),
+                |event| format!("{response}\n{event}\n"),
+            );
+            if peer.write_all(packet.as_bytes()).is_err() {
+                break;
+            }
         }
     });
     (Client::from_stream(client).unwrap(), state, worker)
+}
+
+fn apply(controller: &mut Controller, lag: f64) -> anyhow::Result<bool> {
+    let Some(window) = controller.begin_window()? else {
+        return Ok(false);
+    };
+    controller.apply(lag, window)
 }
 
 #[test]
 fn applies_absolute_negative_targets_with_hysteresis_and_restores() {
     let (client, state, worker) = server();
     let mut controller = Controller::new(client, 0.0).unwrap();
-    assert!(controller.apply(3.0).unwrap());
-    assert!(!controller.apply(3.02).unwrap());
-    assert!(controller.apply(3.2).unwrap());
+    assert!(apply(&mut controller, 3.0).unwrap());
+    assert!(!apply(&mut controller, 3.02).unwrap());
+    assert!(apply(&mut controller, 3.2).unwrap());
     controller.restore().unwrap();
     controller.restore().unwrap();
     let writes = state.lock().unwrap().writes.clone();
@@ -103,7 +148,7 @@ fn explicit_baseline_does_not_stack_a_previous_sessions_correction() {
     let (client, state, worker) = server();
     state.lock().unwrap().delay = -3.0;
     let mut controller = Controller::new(client, 0.2).unwrap();
-    controller.apply(3.0).unwrap();
+    apply(&mut controller, 3.0).unwrap();
     assert!((state.lock().unwrap().delay + 2.8).abs() < 1e-9);
     controller.restore().unwrap();
     assert!((state.lock().unwrap().delay + 3.0).abs() < 1e-9);
@@ -116,12 +161,12 @@ fn pause_holds_delay_and_manual_override_prevents_further_writes() {
     let (client, state, worker) = server();
     let mut controller = Controller::new(client, 0.0).unwrap();
     state.lock().unwrap().paused = true;
-    assert!(!controller.apply(3.0).unwrap());
+    assert!(!apply(&mut controller, 3.0).unwrap());
     assert!(state.lock().unwrap().writes.is_empty());
     state.lock().unwrap().paused = false;
-    controller.apply(3.0).unwrap();
+    apply(&mut controller, 3.0).unwrap();
     state.lock().unwrap().delay = 0.7;
-    assert!(controller.apply(3.5).is_err());
+    assert!(apply(&mut controller, 3.5).is_err());
     assert!(controller.restore().is_err());
     assert_eq!(state.lock().unwrap().writes.len(), 1);
     drop(controller);
@@ -133,13 +178,13 @@ fn a_new_media_file_or_output_is_not_corrected_or_restored() {
     for change_output in [false, true] {
         let (client, state, worker) = server();
         let mut controller = Controller::new(client, 0.0).unwrap();
-        controller.apply(3.0).unwrap();
+        apply(&mut controller, 3.0).unwrap();
         if change_output {
             state.lock().unwrap().output = "other".into();
         } else {
             state.lock().unwrap().media = "new.mp4".into();
         }
-        assert!(controller.apply(3.1).is_err());
+        assert!(apply(&mut controller, 3.1).is_err());
         assert!(controller.restore().is_err());
         assert_eq!(state.lock().unwrap().writes.len(), 1);
         drop(controller);
@@ -152,7 +197,7 @@ fn lost_write_acknowledgment_is_never_replayed_or_reconnected() {
     let (client, state, worker) = server();
     let mut controller = Controller::new(client, 0.0).unwrap();
     state.lock().unwrap().lose_set_reply = true;
-    assert!(controller.apply(3.0).is_err());
+    assert!(apply(&mut controller, 3.0).is_err());
     assert!(controller.restore().is_err());
     assert_eq!(state.lock().unwrap().writes.len(), 1);
     drop(controller);
@@ -225,4 +270,126 @@ fn silent_peer_has_a_total_request_deadline() {
     let started = Instant::now();
     assert!(client.get("audio-delay").is_err());
     assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn registers_read_only_observers_before_accepting_measurements() {
+    let (client, state, worker) = server();
+    let mut controller = Controller::new(client, 0.0).unwrap();
+    assert!(controller.begin_window().unwrap().is_some());
+    let state = state.lock().unwrap();
+    assert_eq!(state.subscriptions, super::events::PROPERTIES);
+    assert!(state.writes.is_empty());
+    drop(state);
+    drop(controller);
+    worker.join().unwrap();
+}
+
+#[test]
+fn delivered_pause_resume_during_capture_discards_the_window_but_can_resume() {
+    let (client, state, worker) = server();
+    let mut controller = Controller::new(client, 0.0).unwrap();
+    let window = controller.begin_window().unwrap().unwrap();
+    state.lock().unwrap().events.extend([
+        json!({"event": "property-change", "name": "pause", "data": true}),
+        json!({"event": "property-change", "name": "pause", "data": false}),
+    ]);
+    assert!(!controller.finish_window(window).unwrap());
+    assert!(!controller.apply(3.0, window).unwrap());
+    assert!(state.lock().unwrap().writes.is_empty());
+    let fresh = controller.begin_window().unwrap().unwrap();
+    assert_ne!(fresh, window);
+    assert!(controller.finish_window(fresh).unwrap());
+    assert!(controller.apply(3.0, fresh).unwrap());
+    controller.restore().unwrap();
+    assert_eq!(state.lock().unwrap().writes.len(), 2);
+    drop(controller);
+    worker.join().unwrap();
+}
+
+#[test]
+fn seek_or_audio_restart_after_estimation_blocks_the_pending_write() {
+    for event in ["seek", "playback-restart", "audio-reconfig"] {
+        let (client, state, worker) = server();
+        let mut controller = Controller::new(client, 0.0).unwrap();
+        let window = controller.begin_window().unwrap().unwrap();
+        assert!(controller.finish_window(window).unwrap());
+        state.lock().unwrap().events.push(json!({"event": event}));
+        assert!(!controller.apply(3.0, window).unwrap());
+        assert!(state.lock().unwrap().writes.is_empty());
+        let fresh = controller.begin_window().unwrap().unwrap();
+        assert_ne!(window, fresh);
+        assert!(controller.apply(3.0, fresh).unwrap());
+        drop(controller);
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn same_path_reload_and_temporary_output_changes_relinquish_cleanup() {
+    for events in [
+        vec![json!({"event": "end-file"}), json!({"event": "start-file"})],
+        vec![
+            json!({"event": "property-change", "name": "audio-device", "data": "other"}),
+            json!({"event": "property-change", "name": "audio-device", "data": "auto"}),
+        ],
+    ] {
+        let (client, state, worker) = server();
+        let mut controller = Controller::new(client, 0.0).unwrap();
+        assert!(apply(&mut controller, 3.0).unwrap());
+        let window = controller.begin_window().unwrap().unwrap();
+        state.lock().unwrap().events = events;
+        assert!(controller.finish_window(window).is_err());
+        assert!(controller.restore().is_err());
+        assert_eq!(state.lock().unwrap().writes.len(), 1);
+        drop(controller);
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn an_event_after_a_snapshot_reply_is_not_left_for_the_next_write() {
+    let (client, state, worker) = server();
+    let mut controller = Controller::new(client, 0.0).unwrap();
+    let window = controller.begin_window().unwrap().unwrap();
+    state.lock().unwrap().event_after_final_read = Some(json!({"event": "seek"}));
+    assert!(!controller.apply(3.0, window).unwrap());
+    assert!(state.lock().unwrap().writes.is_empty());
+    drop(controller);
+    worker.join().unwrap();
+}
+
+#[test]
+fn event_loss_disables_correction_instead_of_reusing_partial_evidence() {
+    let (client, state, worker) = server();
+    let mut controller = Controller::new(client, 0.0).unwrap();
+    let window = controller.begin_window().unwrap().unwrap();
+    state
+        .lock()
+        .unwrap()
+        .events
+        .push(json!({"event": "queue-overflow"}));
+    assert!(controller.apply(3.0, window).is_err());
+    assert!(controller.begin_window().is_err());
+    assert!(state.lock().unwrap().writes.is_empty());
+    drop(controller);
+    worker.join().unwrap();
+}
+
+#[test]
+fn fragmented_events_are_completed_before_authorizing_a_window() {
+    let (socket, mut peer) = UnixStream::pair().unwrap();
+    let mut client = Client::from_stream(socket).unwrap();
+    peer.write_all(b"{\"event\":\"se").unwrap();
+    let (release, released) = std::sync::mpsc::channel();
+    let worker = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(20));
+        peer.write_all(b"ek\"}\n").unwrap();
+        // Hold the peer open across the drain; EOF is a failure, not success.
+        released.recv_timeout(Duration::from_secs(2)).unwrap();
+    });
+    client.drain_events().unwrap();
+    assert_eq!(client.events.revision(), 1);
+    release.send(()).unwrap();
+    worker.join().unwrap();
 }
