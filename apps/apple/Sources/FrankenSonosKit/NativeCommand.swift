@@ -21,7 +21,7 @@ public enum NativeCommand: Equatable, Sendable {
     case djStart(mood: String?), djStop, djSkip, djFeedback(like: Bool)
     case djSteer(mood: String, seconds: UInt32), djClear
     case join(room: String, to: RoomID), leave(room: String), party, move(to: RoomID, copy: Bool)
-    case scene(Scene)
+    case scene(Scene, fadeSeconds: UInt32? = nil)
     case sleep(SleepChange)
     case listeningSettings(ListeningSettingsChange)
 
@@ -51,7 +51,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .leave(let room): "Separate \(room)"
         case .party: "Group this household"
         case .move(let to, let copy): copy ? "Replay on \(to.room)" : "Move music to \(to.room)"
-        case .scene(let scene): "Apply \(scene.name)"
+        case .scene(let scene, _): "Apply \(scene.name)"
         case .sleep(let change): change.title
         case .listeningSettings(let change): change.title
         }
@@ -74,7 +74,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .move(_, let copy): copy
             ? "Replays the selected group’s current source at the destination and stops the source group. Cross-household playback is not synchronized."
             : "Moves playback to the destination by regrouping when possible. Other source-group rooms can keep playing."
-        case .scene: "May regroup rooms, replace sources, start or pause music, and change levels and mutes. Review all listed scene settings. Partial outcomes are shown individually."
+        case .scene(_, let fade): "May regroup rooms, replace sources, start or pause music, and change levels and mutes. Review all listed scene settings. Partial outcomes are shown individually." + (fade.map { " Fade scene levels over \($0) seconds where the daemon supports it." } ?? "")
         case .sleep: "Changes this group’s sleep timer, not the remote’s lifetime. The daemon or speaker owns the deadline; its reply says whether a fade is available. Cancellation does not resume playback."
         case .seek: "Checks the current track before seeking. Does not resume paused music."
         case .playSource, .playFavorite, .djStart: "Replaces what this group plays and can change its queue. The daemon applies playback volume caps."
@@ -99,7 +99,7 @@ public enum NativeCommand: Equatable, Sendable {
         default: nil
         }
     }
-    public var savedScene: Scene? { if case .scene(let scene) = self { scene } else { nil } }
+    public var savedScene: Scene? { if case .scene(let scene, _) = self { scene } else { nil } }
 
     public var sleepChange: SleepChange? { if case .sleep(let change) = self { change } else { nil } }
 
@@ -180,9 +180,13 @@ public enum NativeCommand: Equatable, Sendable {
             path = change.path; body = try change.fields(in: zone)
         case .sleep(let change):
             path = ["sleep"]; body.merge(try change.fields()) { _, new in new }
-        case .scene(let scene):
+        case .scene(let scene, let fade):
             try require(!scene.name.isEmpty, "The scene has no name.")
             path = ["scenes", scene.name, "apply"]; body = [:]
+            if let fade {
+                try require((1...60).contains(fade), "Scene fades must be from 1 to 60 seconds.")
+                body["fade_secs"] = .integer(Int64(fade))
+            }
         }
         return Payload(path: path, body: body, timeout: timeout)
     }
@@ -268,7 +272,7 @@ public enum NativeCommand: Equatable, Sendable {
         switch self {
         case .sleep(let change): return try change.receipt(data, in: zone)
         case .listeningSettings(let change): return try change.receipt(data)
-        case .scene(let scene):
+        case .scene(let scene, _):
             let report = try DaemonClient.decode(SceneReport.self, from: data)
             guard report.scene == scene.name, !report.done.isEmpty,
                   !report.complete || (report.failed ?? []).isEmpty else { throw ClientError.unreadable }

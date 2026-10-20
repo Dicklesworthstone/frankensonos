@@ -51,6 +51,9 @@ import FrankenSonosKit
             .sheet(item: Binding(get: { model.scheduleReview }, set: { if $0 == nil && model.scheduleReview != nil { model.cancelReview() } })) { review in
                 ScheduleReviewSheet(review: review, confirm: { model.confirmSchedule(review.id) }, cancel: { model.cancelReview() })
             }
+            .sheet(item: Binding(get: { model.sceneMutationReview }, set: { if $0 == nil && model.sceneMutationReview != nil { model.cancelSceneMutationReview() } })) { review in
+                SceneMutationReviewSheet(review: review, confirm: { model.confirmSceneMutation(review.id) }, cancel: { model.cancelSceneMutationReview() })
+            }
     }
 
     @ViewBuilder private var navigation: some View {
@@ -118,7 +121,7 @@ import FrankenSonosKit
                     else { noRoom }
                 case .house:
                     panelPicker("House tools", selection: $housePanel, choices: [.scenes, .sleep, .schedules])
-                    if model.panel == .schedules || model.selectedZone != nil { MusicPanels(bridge: bridge) }
+                    if model.panel == .schedules || model.panel == .scenes || model.selectedZone != nil { MusicPanels(bridge: bridge) }
                     else { noRoom }
                     if let zone = model.selectedZone {
                         grouping(zone)
@@ -151,7 +154,7 @@ import FrankenSonosKit
                     Button("Activity & history", systemImage: "clock.arrow.circlepath", action: openActivity)
                         .disabled(!model.canSchedule)
                     Button("Connection details", systemImage: "network") { showConnection = true }
-                        .disabled(model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil)
+                        .disabled(model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
                 } label: {
                     Image(systemName: "ellipsis.circle").frame(minWidth: 44, minHeight: 44)
                 }.accessibilityLabel("House options")
@@ -183,7 +186,7 @@ import FrankenSonosKit
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain).disabled(model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil)
+        .buttonStyle(.plain).disabled(model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
         .accessibilityHint("Choose a room or group to control.")
     }
 
@@ -216,6 +219,10 @@ import FrankenSonosKit
         if let result = model.scheduleResult {
             ResultNotice(title: result.title, scope: result.command.detail, detail: result.detail,
                          warning: result.kind != .confirmed, dismiss: { model.dismissScheduleResult() })
+        }
+        if let result = model.sceneMutationResult {
+            ResultNotice(title: result.title, scope: "Saved scene: " + result.command.name, detail: result.detail,
+                         warning: result.kind != .confirmed, dismiss: { model.dismissSceneMutationResult() })
         }
         if model.actionPhase != .idle {
             HStack(spacing: 12) {
@@ -544,7 +551,9 @@ import FrankenSonosKit
             Text("Entry \(item.position): \(item.title)")
             Text(item.uri ?? "").font(.caption.monospaced()).textSelection(.enabled)
         case .djSteer(_, let seconds): Text("Duration: \(seconds / 60) minutes")
-        case .scene(let scene): SceneDetails(scene: scene)
+        case .scene(let scene, let fade):
+            SceneDetails(scene: scene)
+            if let fade { Text("Requested fade: \(fade) seconds") }
         case .sleep:
             if let timer = review.sleepTimer {
                 Text("Existing timer: \(timer.done)")

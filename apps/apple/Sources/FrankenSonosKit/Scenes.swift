@@ -36,7 +36,7 @@ extension Scene {
 extension DaemonClient {
     public func scenes() async throws -> [Scene] {
         let scenes = try await get([Scene].self, ["scenes"])
-        guard scenes.count <= 256, Set(scenes.map(\.name)).count == scenes.count else {
+        guard scenes.count <= 256, Set(scenes.map { SceneName.key($0.name) }).count == scenes.count else {
             throw ContractError.invalid("The scene list is ambiguous or too large. Refresh scenes.")
         }
         return try scenes.map { try $0.validated() }
@@ -44,7 +44,7 @@ extension DaemonClient {
 
     public func scene(named name: String) async throws -> Scene {
         let scene = try await get(Scene.self, ["scenes", name]).validated()
-        guard scene.name == name else { throw ContractError.invalid("The daemon returned a different saved scene.") }
+        guard scene.name.utf8.elementsEqual(name.utf8) else { throw ContractError.invalid("The daemon returned a different saved scene.") }
         return scene
     }
 }

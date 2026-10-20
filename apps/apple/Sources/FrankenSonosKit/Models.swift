@@ -214,7 +214,9 @@ public struct Scene: Codable, Equatable, Sendable, Identifiable {
     public let groups: [Group]
     public let volumes: [String: Int]
     public let mutes: [String: Bool]
-    public var id: String { name }
+    // Keep distinct UTF-8 names distinct in SwiftUI, whose String equality
+    // otherwise merges composed and decomposed Unicode spellings.
+    public var id: String { Data(name.utf8).base64EncodedString() }
     public struct Group: Codable, Equatable, Sendable {
         public let coordinator: String
         public let members: [String]

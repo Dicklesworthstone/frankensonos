@@ -128,6 +128,12 @@ the page readable but not editable. Source URIs and library results can be
 played, queued next or appended; adding to the queue does not start playback.
 Favorites are read from the selected household and reviewed by their stable ID.
 
+**Shuffle & repeat** in Up next reads the selected group's playback order and
+offers a reviewed change. Native controls distinguish shuffle, repeat-all and
+repeat-one, including the daemon's DJ-aware behavior for whole works. These
+settings share playback's command gate and are reread at confirmation; missing
+or changed observations do not become assumed defaults.
+
 The library browser opens saved albums, tracks and playlists without requiring
 a selected or reachable speaker. Album cards open their saved track lists;
 filters and pagination stay tied to one cache revision. A changed cache requires
@@ -147,10 +153,15 @@ on a reachable room. Panels refresh on selection, explicit refresh, relevant
 live-state transitions and completed commands; they are observations, not an
 independent event log.
 
-The Scenes panel browses and applies stored house definitions with a full
-settings review and explicit house-wide scope. Its results preserve failed
-steps, skipped rooms and policy notes; creating and editing scenes remains on
-the CLI/web. See `docs/APPLE_SCENES.md` in the repository.
+The Scenes panel captures the current house, creates custom definitions, reviews
+replacement and deletion, and applies stored house settings with optional fades.
+The guided composer offers exact household-qualified groups, searchable favorites,
+music links, DJ moods, playback settings, room levels and mutes. Unsent drafts
+survive cancelled reviews and navigation. Browsing and deletion work without a
+selected speaker. Custom replacement starts a new definition, preserving captured
+renderer metadata by avoiding an unsafe DTO-to-PUT editing round trip. Apply
+results retain failed steps, skipped rooms and policy notes. See
+`docs/APPLE_SCENES.md` in the repository.
 
 The Sleep panel reads the selected group's timer and supports setting a new
 one, extending its existing deadline, and cancelling it. It distinguishes daemon
@@ -261,5 +272,5 @@ launch, Apple URLSession streaming, Tailscale reachability or physical Sonos.
 The Apple workflow's app builds and iPhone connection-screen launch cover the
 SDK and packaging boundaries; connected playback and visual acceptance on
 physical devices remain separate checks. This remote does not yet expose every
-daemon feature: scene editing, announcements, EQ and action-log undo remain on
-the CLI/web surfaces. App Store/TestFlight distribution is not configured.
+daemon feature: announcements, EQ and lossless editing of captured scene sources
+remain outside the native UI. App Store/TestFlight distribution is not configured.

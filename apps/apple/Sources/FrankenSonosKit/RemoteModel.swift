@@ -33,6 +33,22 @@ public struct RemoteResult: Identifiable, Sendable {
     public private(set) var moods: [MoodCatalog.Mood] = [] { willSet { onChange?() } }
     public private(set) var hits: [LibraryHit] = [] { willSet { onChange?() } }
     public private(set) var scenes: [Scene] = [] { willSet { onChange?() } }
+    public private(set) var scenesObservedAt: Date? { willSet { onChange?() } }
+    public private(set) var sceneDraft = SceneDraft() { willSet { onChange?() } }
+    public private(set) var sceneDraftReplacing: Scene? { willSet { onChange?() } }
+    public private(set) var sceneComposerOpen = false { willSet { onChange?() } }
+    public private(set) var sceneCaptureName = "" { willSet { onChange?() } }
+    public private(set) var sceneDraftProblem: String? { willSet { onChange?() } }
+    public private(set) var sceneMutationReview: SceneMutationReview? { willSet { onChange?() } }
+    public private(set) var sceneMutationResult: RemoteSceneMutationResult? { willSet { onChange?() } }
+    public private(set) var sceneSourceChoices: SceneSourceChoices? { willSet { onChange?() } }
+    public private(set) var sceneChoicesLoading = false { willSet { onChange?() } }
+    public private(set) var sceneChoicesProblem: String? { willSet { onChange?() } }
+    private var sceneMutationAction = false
+    private var sceneChoicesTask: Task<Void, Never>?
+    private var sceneChoicesEpoch: UInt64 = 0
+    private var sceneChoicesPending: UUID?
+    private var sceneChoicesSelection: SceneGroupDraft?
     public private(set) var sleepTimer: SleepTimer? { willSet { onChange?() } }
     /// Nil means unread/failed, not a successful report of no timer.
     public private(set) var sleepObservedAt: Date? { willSet { onChange?() } }
@@ -92,8 +108,9 @@ public struct RemoteResult: Identifiable, Sendable {
         return client.artworkURL(in: zone, track: selectedState?.track)
     }
     public var canPrepare: Bool { canSchedule && selectedZone != nil }
-    public var canSchedule: Bool { active && !stopped && actionPhase == .idle && review == nil && scheduleReview == nil && undoReview == nil }
+    public var canSchedule: Bool { active && !stopped && actionPhase == .idle && review == nil && scheduleReview == nil && undoReview == nil && sceneMutationReview == nil }
     public var canManageSchedules: Bool { canSchedule && panel == .schedules && schedulesObservedAt != nil && !panelLoading }
+    public var canManageScenes: Bool { canSchedule && panel == .scenes && scenesObservedAt != nil && !panelLoading }
     public var undoInProgress: Bool { undoAction }
 
     public init(client: DaemonClient) {
@@ -125,6 +142,7 @@ public struct RemoteResult: Identifiable, Sendable {
         active = false
         cancelReview()
         invalidatePanel()
+        invalidateSceneChoices()
         let previous = lifecycle, live = live
         lifecycle = Task { await previous?.value; await live.suspend() }
     }
@@ -148,7 +166,8 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func show(_ panel: Panel) {
         guard self.panel != panel else { return }
-        if self.panel == .schedules { cancelReview() }
+        if self.panel == .schedules || self.panel == .scenes { cancelReview() }
+        if self.panel == .scenes { invalidateSceneChoices() }
         self.panel = panel
         invalidatePanel(); refreshPanel()
     }
@@ -222,7 +241,7 @@ public struct RemoteResult: Identifiable, Sendable {
     }
 
     public func cancelReview() {
-        epoch &+= 1; review = nil; scheduleReview = nil; undoReview = nil
+        epoch &+= 1; review = nil; scheduleReview = nil; undoReview = nil; sceneMutationReview = nil
         actionTask?.cancel()
         let previous = cancellation, commands = commands
         cancellation = Task { await previous?.value; await commands.cancel() }
@@ -231,7 +250,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func dismissResult() { result = nil }
 
-    private func actionFinished() { actionTask = nil; scheduleAction = false; undoAction = false; actionPhase = .idle }
+    private func actionFinished() { actionTask = nil; scheduleAction = false; undoAction = false; sceneMutationAction = false; actionPhase = .idle }
 
     private func receive(_ value: LiveHouseView) {
         guard !stopped else { return }
@@ -250,7 +269,7 @@ public struct RemoteResult: Identifiable, Sendable {
             // A grouping command can emit its topology event before its HTTP
             // acknowledgement. Do not cancel that very write on its own event.
             // Explicit selection changes and suspension still cancel requests.
-            if actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil { cancelReview() }
+            if actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil && !sceneMutationAction && sceneMutationReview == nil { cancelReview() }
             queueOffset = 0
             invalidatePanel(); refreshPanel()
         } else if active && value.isFresh && (!wasFresh || oldState.map { old in selectedState.map { !old.samePlayback(as: $0) } ?? true } == true) {
@@ -261,7 +280,7 @@ public struct RemoteResult: Identifiable, Sendable {
     private func invalidatePanel() {
         panelEpoch &+= 1
         panelTask?.cancel(); panelPending = false
-        queue = nil; favorites = []; dj = nil; moods = []; hits = []; scenes = []; sleepTimer = nil; sleepObservedAt = nil
+        queue = nil; favorites = []; dj = nil; moods = []; hits = []; scenes = []; scenesObservedAt = nil; sleepTimer = nil; sleepObservedAt = nil
         schedules = []; schedulesObservedAt = nil; scheduleScenes = []; scheduleScenesProblem = nil
         panelProblem = nil
         // Keep a cancelled request's slot until it drains, including a
@@ -270,14 +289,14 @@ public struct RemoteResult: Identifiable, Sendable {
     }
 
     public func refreshPanel() {
-        guard active && !stopped && (panel == .schedules || selectedZone != nil) else { return }
+        guard active && !stopped && (panel == .schedules || panel == .scenes || selectedZone != nil) else { return }
         panelPending = true
         startPanelRead()
     }
 
     private func startPanelRead() {
         guard active && !stopped && panelPending && panelTask == nil,
-              panel == .schedules || selectedZone != nil else { return }
+              panel == .schedules || panel == .scenes || selectedZone != nil else { return }
         let zone = selectedZone
         panelPending = false; panelLoading = true; panelProblem = nil
         let token = panelEpoch, panel = panel, offset = queueOffset, query = query, client = client
@@ -292,6 +311,8 @@ public struct RemoteResult: Identifiable, Sendable {
                         try Task.checkCancellation()
                         answer = .schedules(values, [], "Scene catalog unavailable: " + error.localizedDescription)
                     }
+                } else if panel == .scenes {
+                    answer = .scenes(try await client.scenes())
                 } else if let zone {
                     switch panel {
                     case .schedules: throw ContractError.invalid("The schedule read was not selected.")
@@ -319,7 +340,7 @@ public struct RemoteResult: Identifiable, Sendable {
                         self.scheduleScenes = scenes; self.scheduleScenesProblem = problem
                     case .queue(let value): self.queue = value
                     case .favorites(let value): self.favorites = value
-                    case .scenes(let value): self.scenes = value
+                    case .scenes(let value): self.scenes = value; self.scenesObservedAt = Date()
                     case .sleep(let value): self.sleepTimer = value; self.sleepObservedAt = Date()
                     case .dj(let value, let moods, let problem): self.dj = value; self.moods = moods; self.panelProblem = problem
                     case .library(let value): self.hits = value
@@ -327,7 +348,7 @@ public struct RemoteResult: Identifiable, Sendable {
                 }
             } catch {
                 if let self, self.active && self.panelEpoch == token && !Task.isCancelled {
-                    self.queue = nil; self.favorites = []; self.dj = nil; self.moods = []; self.hits = []; self.scenes = []; self.sleepTimer = nil; self.sleepObservedAt = nil
+                    self.queue = nil; self.favorites = []; self.dj = nil; self.moods = []; self.hits = []; self.scenes = []; self.scenesObservedAt = nil; self.sleepTimer = nil; self.sleepObservedAt = nil
                     self.schedules = []; self.schedulesObservedAt = nil
                     self.scheduleScenes = []; self.scheduleScenesProblem = nil
                     self.panelProblem = error.localizedDescription
@@ -340,7 +361,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     /// Edits only the unsent form. Selection and refresh never rewrite it.
     public func updateScheduleForm(_ value: ScheduleForm) {
-        guard active && !stopped && actionPhase == .idle && review == nil && undoReview == nil else { return }
+        guard active && !stopped && actionPhase == .idle && review == nil && undoReview == nil && sceneMutationReview == nil else { return }
         if scheduleReview != nil { cancelReview() }
         scheduleForm = value; scheduleFormProblem = nil
     }
@@ -404,6 +425,174 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func dismissScheduleResult() { scheduleResult = nil }
 
+    public func updateSceneCaptureName(_ value: String) {
+        guard canSchedule else { return }
+        sceneCaptureName = value; sceneDraftProblem = nil
+    }
+
+    /// Starts explicit new authoring, never an editable copy of a captured DTO.
+    public func beginSceneDraft(replacing scene: Scene? = nil) {
+        guard canManageScenes else { return }
+        var draft = SceneDraft(); draft.name = scene?.name ?? ""
+        sceneDraft = draft; sceneDraftReplacing = scene
+        sceneComposerOpen = true; sceneDraftProblem = nil
+        invalidateSceneChoices()
+    }
+
+    public func openSceneDraft() {
+        guard canSchedule else { return }
+        sceneComposerOpen = true
+    }
+
+    public func closeSceneDraft() {
+        guard canSchedule else { return }
+        sceneComposerOpen = false; invalidateSceneChoices()
+    }
+
+    public func updateSceneDraft(_ value: SceneDraft) {
+        guard canSchedule else { return }
+        sceneDraft = value; sceneDraftProblem = nil
+        if let selected = sceneChoicesSelection,
+           !value.groups.contains(where: { $0.id == selected.id && $0.coordinator == selected.coordinator && $0.source == selected.source }) {
+            invalidateSceneChoices()
+        }
+    }
+
+    public func prepareSceneCapture(replacing scene: Scene? = nil) {
+        guard canManageScenes else { return }
+        do {
+            let name = try SceneName.validated(sceneCaptureName)
+            let previous = try scene ?? sceneReplacement(named: name)
+            sceneDraftProblem = nil
+            prepareSceneMutation(.capture(name: name, replacing: previous))
+        } catch { sceneDraftProblem = error.localizedDescription }
+    }
+
+    public func prepareSceneDraft() {
+        guard canManageScenes else { return }
+        do {
+            let name = try SceneName.validated(sceneDraft.name)
+            let definition = try sceneDraft.definition(zones: house?.snapshot?.zones ?? [])
+            let previous = if let original = sceneDraftReplacing, SceneName.key(original.name) == SceneName.key(name) {
+                original
+            } else { try sceneReplacement(named: name) }
+            sceneDraftProblem = nil
+            prepareSceneMutation(.save(name: name, definition: definition, replacing: previous))
+        } catch { sceneDraftProblem = error.localizedDescription }
+    }
+
+    public func prepareSceneDelete(_ scene: Scene) {
+        guard canManageScenes else { return }
+        guard scenes.contains(scene) else {
+            sceneDraftProblem = "This saved scene is no longer in the current list. Refresh scenes."
+            return
+        }
+        prepareSceneMutation(.delete(scene))
+    }
+
+    private func sceneReplacement(named name: String) throws -> Scene? {
+        let matches = scenes.filter { SceneName.key($0.name) == SceneName.key(name) }
+        guard matches.count <= 1 else { throw ContractError.invalid("This scene name is ambiguous. Refresh scenes.") }
+        return matches.first
+    }
+
+    private func prepareSceneMutation(_ command: SceneMutation) {
+        guard canManageScenes else { return }
+        actionPhase = .preparing; sceneMutationAction = true
+        let token = epoch, barrier = cancellation, commands = commands
+        actionTask = Task { [weak self] in
+            defer { self?.actionFinished() }
+            await barrier?.value
+            do {
+                try Task.checkCancellation()
+                let review = try await commands.prepare(command)
+                guard let self, self.active && self.epoch == token && !Task.isCancelled else { return }
+                self.sceneMutationReview = review
+            } catch {
+                if let self, self.epoch == token && !Task.isCancelled {
+                    self.sceneMutationResult = RemoteSceneMutationResult(command: command, receipt: nil,
+                        title: "Nothing sent", detail: error.localizedDescription, kind: .notSent)
+                }
+            }
+        }
+    }
+
+    public func confirmSceneMutation(_ id: UUID) {
+        guard active, actionPhase == .idle, let reviewed = sceneMutationReview, reviewed.id == id else { return }
+        sceneMutationReview = nil; actionPhase = .confirming; sceneMutationAction = true
+        let commands = commands
+        actionTask = Task { [weak self] in
+            do {
+                let receipt = try await commands.execute(reviewed)
+                self?.sceneMutationResult = RemoteSceneMutationResult(command: reviewed.command, receipt: receipt,
+                    title: receipt.title, detail: receipt.detail, kind: .confirmed)
+                if case .save = reviewed.command { self?.sceneComposerOpen = false }
+            } catch {
+                let uncertain: Bool
+                if case ClientError.uncertain = error { uncertain = true } else { uncertain = false }
+                self?.sceneMutationResult = RemoteSceneMutationResult(command: reviewed.command, receipt: nil,
+                    title: uncertain ? "Scene outcome uncertain — not repeated" : "Nothing sent",
+                    detail: error.localizedDescription, kind: uncertain ? .uncertain : .notSent)
+            }
+            // A late result stays with the original stored scene, even after
+            // suspension, switching panels, or choosing another listening room.
+            self?.actionFinished()
+            self?.refreshPanel()
+        }
+    }
+
+    public func cancelSceneMutationReview() {
+        guard sceneMutationReview != nil || sceneMutationAction else { return }
+        cancelReview()
+    }
+
+    public func dismissSceneMutationResult() { sceneMutationResult = nil }
+
+    /// Read choices for the visible group only. A late reply can never supply
+    /// favorites or moods for a different household or a changed source kind.
+    public func loadSceneChoices(for id: UUID) {
+        guard active && !stopped && panel == .scenes,
+              let group = sceneDraft.groups.first(where: { $0.id == id }), group.coordinator != nil,
+              group.source == .favorite || group.source == .dj else {
+            invalidateSceneChoices(); return
+        }
+        invalidateSceneChoices()
+        sceneChoicesSelection = group; sceneChoicesPending = id
+        startSceneChoicesRead()
+    }
+
+    private func invalidateSceneChoices() {
+        sceneChoicesEpoch &+= 1; sceneChoicesTask?.cancel(); sceneChoicesPending = nil
+        sceneChoicesSelection = nil; sceneSourceChoices = nil; sceneChoicesProblem = nil
+        if sceneChoicesTask == nil { sceneChoicesLoading = false }
+    }
+
+    private func startSceneChoicesRead() {
+        guard active && !stopped && panel == .scenes, sceneChoicesTask == nil,
+              let id = sceneChoicesPending,
+              let group = sceneDraft.groups.first(where: { $0.id == id }), let coordinator = group.coordinator else { return }
+        sceneChoicesPending = nil; sceneChoicesLoading = true
+        let token = sceneChoicesEpoch, client = client
+        sceneChoicesTask = Task { [weak self] in
+            do {
+                let favorites = group.source == .favorite ? try await client.sceneFavorites(coordinator: coordinator.address) : []
+                let moods = group.source == .dj ? try await client.sceneMoods(coordinator: coordinator.address) : []
+                try Task.checkCancellation()
+                if let self, self.active && self.sceneChoicesEpoch == token,
+                   self.sceneDraft.groups.contains(where: { $0.id == id && $0.coordinator == coordinator && $0.source == group.source }) {
+                    self.sceneSourceChoices = SceneSourceChoices(groupID: id, coordinator: coordinator, source: group.source,
+                                                                favorites: favorites, moods: moods)
+                }
+            } catch {
+                if let self, self.active && self.sceneChoicesEpoch == token && !Task.isCancelled {
+                    self.sceneChoicesProblem = error.localizedDescription
+                }
+            }
+            self?.sceneChoicesTask = nil; self?.sceneChoicesLoading = false
+            self?.startSceneChoicesRead()
+        }
+    }
+
     /// Ask the daemon for this caller's current recovery candidate. Activity
     /// filters and the selected room never choose or narrow the restore target.
     public func prepareUndo() {
@@ -459,7 +648,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func dismissUndoResult() { undoResult = nil }
 
-    deinit { observer?.cancel(); panelTask?.cancel(); actionTask?.cancel() }
+    deinit { observer?.cancel(); panelTask?.cancel(); sceneChoicesTask?.cancel(); actionTask?.cancel() }
 }
 
 private enum PanelAnswer: Sendable {

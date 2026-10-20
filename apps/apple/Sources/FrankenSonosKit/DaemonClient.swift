@@ -264,6 +264,34 @@ public struct DaemonClient: Sendable {
 
 
 extension DaemonClient {
+    /// Dispatch only the immutable, one-use scene review. A response lost after
+    /// the PUT/DELETE was handed to transport is uncertain and is never retried.
+    func perform(_ review: SceneMutationReview) async throws -> SceneMutationReceipt {
+        try Task.checkCancellation()
+        var request = URLRequest(url: try endpoint.resource(["scenes", review.name]),
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        request.httpMethod = review.command.isDelete ? "DELETE" : "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if !review.command.isDelete {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let definition = review.observation.definition {
+                request.httpBody = try JSONEncoder().encode(definition)
+            } else {
+                request.httpBody = Data("{}".utf8)
+            }
+        }
+        try Task.checkCancellation()
+        do {
+            let reply = try await transport.send(request)
+            try Self.check(reply)
+            return try review.receipt(reply.data)
+        } catch {
+            throw ClientError.uncertain(error.localizedDescription)
+        }
+    }
+}
+
+extension DaemonClient {
     /// Only the shared one-use review session dispatches recovery. The caller,
     /// saved state, force policy and affected rooms are never client supplied.
     func perform(_ review: UndoReview) async throws -> UndoReceipt {

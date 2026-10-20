@@ -68,6 +68,36 @@ public actor CommandReviewSession {
     }
 }
 
+// Scene store changes share this actor's single pending review and write gate.
+// They are house-scoped and never fabricate a selected playback destination.
+extension CommandReviewSession {
+    public func prepare(_ command: SceneMutation) async throws -> SceneMutationReview {
+        guard !busy else { throw ContractError.invalid("An action is still being checked or sent.") }
+        busy = true
+        defer { busy = false }
+        generation &+= 1; pending = nil
+        let token = generation
+        let observed = try await SceneMutationObservation.read(command, client: client)
+        try check(token)
+        let review = SceneMutationReview(command: command, observation: observed)
+        pending = review.id
+        return review
+    }
+
+    public func execute(_ review: SceneMutationReview) async throws -> SceneMutationReceipt {
+        guard !busy, pending == review.id else {
+            throw ContractError.invalid("This review is no longer current. Review the scene change again.")
+        }
+        pending = nil; busy = true
+        defer { busy = false }
+        let token = generation
+        let current = try await SceneMutationObservation.read(review.command, client: client)
+        try review.observation.validate(current)
+        try check(token)
+        return try await client.perform(review)
+    }
+}
+
 fileprivate struct CommandObservation: Sendable {
     let house: HouseSnapshot
     let dj: DJStatus?
