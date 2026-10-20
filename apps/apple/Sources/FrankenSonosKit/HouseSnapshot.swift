@@ -8,7 +8,16 @@ public struct HouseSnapshot: Sendable {
     public let states: [RoomID: ZoneState]
     public let failures: [RoomID: String]
     public let observedAt: Date
+    /// A targeted refresh must not reset another room's playback clock.
+    public let stateObservedAt: [RoomID: Date]
     public var isComplete: Bool { failures.isEmpty }
+
+    public init(zones: [Zone], states: [RoomID: ZoneState], failures: [RoomID: String],
+                observedAt: Date, stateObservedAt: [RoomID: Date]? = nil) {
+        self.zones = zones; self.states = states; self.failures = failures
+        self.observedAt = observedAt
+        self.stateObservedAt = stateObservedAt ?? states.mapValues { _ in observedAt }
+    }
 
     /// Event room names are unqualified. Refresh every matching group, with
     /// each member addressed through its own household-qualified RoomID.
@@ -37,6 +46,7 @@ extension DaemonClient {
         let targets = all.filter { only == nil || only!.contains($0.1) }
         var states = previous?.states ?? [:]
         var failures = previous?.failures ?? [:]
+        var stateObservedAt = previous?.stateObservedAt ?? [:]
         try await withThrowingTaskGroup(of: RoomRead.self) { group in
             var pending = targets.makeIterator()
             func read(_ target: (Zone, RoomID)) async throws -> RoomRead {
@@ -44,12 +54,12 @@ extension DaemonClient {
                 do {
                     let observed = try await state(target.0, room: target.1.room)
                     try Task.checkCancellation()
-                    return RoomRead(id: target.1, state: observed, failure: nil)
+                    return RoomRead(id: target.1, state: observed, failure: nil, observedAt: Date())
                 } catch {
                     // Cancellation is session lifetime, not a speaker outage.
                     try Task.checkCancellation()
                     if error is CancellationError { throw error }
-                    return RoomRead(id: target.1, state: nil, failure: error.localizedDescription)
+                    return RoomRead(id: target.1, state: nil, failure: error.localizedDescription, observedAt: nil)
                 }
             }
             for _ in 0..<min(4, targets.count) {
@@ -59,11 +69,12 @@ extension DaemonClient {
                 try Task.checkCancellation()
                 states[observed.id] = observed.state
                 failures[observed.id] = observed.failure
+                stateObservedAt[observed.id] = observed.observedAt
                 if let target = pending.next() { group.addTask { try await read(target) } }
             }
         }
         try Task.checkCancellation()
-        return HouseSnapshot(zones: zones, states: states, failures: failures, observedAt: Date())
+        return HouseSnapshot(zones: zones, states: states, failures: failures, observedAt: Date(), stateObservedAt: stateObservedAt)
     }
 }
 
@@ -71,4 +82,5 @@ private struct RoomRead: Sendable {
     let id: RoomID
     let state: ZoneState?
     let failure: String?
+    let observedAt: Date?
 }

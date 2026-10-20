@@ -204,6 +204,25 @@ public struct DaemonClient: Sendable {
             URLQueryItem(name: "limit", value: "25")
         ])
     }
+    /// Artwork always goes through the configured daemon. Track metadata only
+    /// versions its cache key; a speaker or service URL is never loaded by UI.
+    public func artworkURL(in zone: Zone, track: Track?) -> URL? {
+        guard let track, !track.uri.isEmpty, track.uri != "NOT_IMPLEMENTED",
+              (try? zone.validated()) != nil else { return nil }
+        // A small stable cache tag stays within /art's 64-character contract.
+        // Include radio metadata because the URI can stay fixed between songs.
+        var tag: UInt64 = 14_695_981_039_346_656_037
+        for value in [track.uri, track.title ?? "", track.creator ?? "", track.album ?? "",
+                      track.queuePosition.map(String.init) ?? ""] {
+            for byte in "\(value.utf8.count):\(value)".utf8 {
+                tag = (tag ^ UInt64(byte)) &* 1_099_511_628_211
+            }
+        }
+        return try? endpoint.resource(["art"], query: [
+            URLQueryItem(name: "zone", value: zone.id.address),
+            URLQueryItem(name: "v", value: String(tag, radix: 16))
+        ])
+    }
     public func eventStream(after cursor: String?) throws -> AsyncThrowingStream<EventSignal, Error> {
         var request = URLRequest(url: try endpoint.resource(["events"]), cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 45)
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")

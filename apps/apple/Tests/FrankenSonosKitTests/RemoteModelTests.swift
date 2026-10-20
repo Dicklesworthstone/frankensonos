@@ -281,3 +281,23 @@ private final class ScreenTransport: DaemonTransport, Sendable {
     #expect(model.result?.kind == .confirmed)
     #expect(await transport.base.writes().count == 1)
 }
+
+@Test @MainActor func screenTimelineAndArtworkFollowTheSelectedGroupWithoutCommands() async throws {
+    let transport = ScreenTransport(), model = try await screen(transport)
+    defer { model.stop() }
+    try await screenEventually { model.house?.isFresh == true }
+    let timeline = try #require(model.selectedTimeline)
+    #expect(timeline.duration == 240 && timeline.canSeek)
+    #expect(timeline.position(at: timeline.observedAt.addingTimeInterval(10)) == 22)
+    let firstArt = try #require(model.artworkURL)
+    #expect(URLComponents(url: firstArt, resolvingAgainstBaseURL: false)?.queryItems?
+        .first(where: { $0.name == "zone" })?.value == "Studio@TEST-A")
+    model.select(RoomID(household: "TEST-B", room: "Studio"))
+    #expect(model.artworkURL != firstArt)
+    model.suspend()
+    #expect(model.selectedTimeline?.canSeek == false)
+    let stale = try #require(model.selectedTimeline)
+    #expect(stale.position(at: stale.observedAt.addingTimeInterval(10)) ==
+            stale.position(at: stale.observedAt.addingTimeInterval(600)))
+    #expect(await transport.base.writes().isEmpty)
+}

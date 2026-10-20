@@ -55,6 +55,8 @@ private func snapshotClient(_ fixture: SnapshotFixture) throws -> DaemonClient {
     let result = try await snapshotClient(fixture).houseSnapshot()
     #expect(result.zones == groups)
     #expect(result.states.count == 4 && result.isComplete)
+    #expect(Set(result.stateObservedAt.keys) == Set(result.states.keys))
+    #expect(result.stateObservedAt.values.allSatisfy { $0 <= result.observedAt })
     #expect(result.states[RoomID(household: "S1", room: "Den")]?.volume == 11)
     #expect(result.states[RoomID(household: "S2", room: "Den")]?.volume == 22)
     #expect(result.affected(by: ["Den"]).count == 4)
@@ -127,11 +129,27 @@ private func snapshotClient(_ fixture: SnapshotFixture) throws -> DaemonClient {
     await fixture.configure(failed: [id.address])
     let failed = try await client.refresh(before, rooms: [id])
     #expect(failed.states[id] == nil && failed.failures[id] != nil)
+    #expect(failed.stateObservedAt[id] == nil)
     #expect(failed.states[RoomID(household: "S2", room: "Den")] == before.states[RoomID(household: "S2", room: "Den")])
     await fixture.configure()
     let recovered = try await client.refresh(failed, rooms: [id])
     #expect(recovered.isComplete && recovered.states[id] != nil)
+    #expect(recovered.stateObservedAt[id] != nil)
     #expect(await fixture.requests.count == 5)
+}
+
+@Test func snapshotTargetedRefreshPreservesOtherRoomsPlaybackClocks() async throws {
+    let fixture = SnapshotFixture([snapshotZone("S1", ["Den"]), snapshotZone("S2", ["Den"])])
+    let client = try snapshotClient(fixture)
+    let observation = try await client.houseSnapshot()
+    let initialDate = Date(timeIntervalSince1970: 100)
+    let before = HouseSnapshot(zones: observation.zones, states: observation.states, failures: [:], observedAt: initialDate)
+    let changed = RoomID(household: "S1", room: "Den"), unchanged = RoomID(household: "S2", room: "Den")
+    let after = try await client.refresh(before, rooms: [changed])
+    #expect(after.stateObservedAt[unchanged] == initialDate)
+    #expect(try #require(after.stateObservedAt[changed]) > initialDate)
+    #expect(after.stateObservedAt[changed] != after.stateObservedAt[unchanged])
+    #expect(await fixture.requests.count == 4)
 }
 
 @Test func snapshotBoundsTheTotalHouseBeforeDispatching() async throws {

@@ -66,6 +66,7 @@ public struct RemoteResult: Identifiable, Sendable {
     private var panelPending = false
     private var stopped = false
     private var choseInitialRoom = false
+    private var timelineFrozenAt: Date?
 
     public var selectedZone: Zone? {
         guard let selectedRoom else { return nil }
@@ -74,6 +75,18 @@ public struct RemoteResult: Identifiable, Sendable {
     public var selectedState: ZoneState? {
         guard let zone = selectedZone else { return nil }
         return house?.snapshot?.states[zone.id]
+    }
+    public var selectedTimeline: PlaybackTimeline? {
+        guard let zone = selectedZone, let state = selectedState,
+              let observedAt = house?.snapshot?.stateObservedAt[zone.id] else { return nil }
+        return PlaybackTimeline(track: state.track, isPlaying: state.isPlaying, observedAt: observedAt,
+                                isFresh: active && house?.isFresh == true,
+                                allowsSeeking: ["playing", "paused"].contains(state.transportState),
+                                frozenAt: timelineFrozenAt)
+    }
+    public var artworkURL: URL? {
+        guard let zone = selectedZone else { return nil }
+        return client.artworkURL(in: zone, track: selectedState?.track)
     }
     public var canPrepare: Bool { canSchedule && selectedZone != nil }
     public var canSchedule: Bool { active && !stopped && actionPhase == .idle && review == nil && scheduleReview == nil }
@@ -104,6 +117,7 @@ public struct RemoteResult: Identifiable, Sendable {
 
     public func suspend() {
         guard !stopped else { return }
+        if timelineFrozenAt == nil { timelineFrozenAt = Date() }
         active = false
         cancelReview()
         invalidatePanel()
@@ -220,6 +234,8 @@ public struct RemoteResult: Identifiable, Sendable {
         let oldZone = selectedZone
         let oldState = selectedState
         let wasFresh = house?.isFresh == true
+        if active && value.isFresh { timelineFrozenAt = nil }
+        else if timelineFrozenAt == nil { timelineFrozenAt = Date() }
         house = value
         if !choseInitialRoom, let first = value.snapshot?.zones.first {
             choseInitialRoom = true; selectedRoom = first.id
