@@ -309,10 +309,14 @@ deny = ["volume"]
   daemon's host is logged in as, as the Apple and web remotes are through
   Tailscale) may; anyone else only when `policy.toml` grants it
   (`grant = ["auth"]` under the caller's `[clients."<login>"]`), since whoever
-  signs in chooses whose library and taste the DJ follows.
-- `allow` and `deny` name tools or whole classes of them: `volume`,
+  signs in chooses whose library and taste the DJ follows. With
+  `FSONOS_TAILSCALE_SERVE` set the login can come from Serve's header, which
+  any process on the daemon's host could also send, so there this guard is
+  only as strong as local access (see [`docs/DEPLOY.md`](docs/DEPLOY.md)).
+- `allow`, `deny` and `grant` name tools or whole classes of them: `volume`,
   `playback`, `grouping`, `queue`, `sound`, `house-config`, `announce`, `dj`,
-  `auth`, `undo`, and `read` for every read. Composite calls are held to each
+  `auth`, `undo`, and `read` for every read; a `grant` adds to what an `allow`
+  list names, and a `deny` beats both. Composite calls are held to each
   step they would take: a client denied `set_volume` cannot fade a volume,
   applies a scene with its volumes left as they are (and told so), and its
   scheduled volume changes are refused when they fire. `fsonos policy check`

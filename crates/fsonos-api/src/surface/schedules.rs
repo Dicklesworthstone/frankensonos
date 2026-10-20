@@ -962,8 +962,9 @@ impl Surface {
 
     /// [`Self::log_write`] for a write that changes the speakers in a way
     /// undo cannot put back, `kept` naming it (a sleep timer, a fade-out)
-    /// when it changed something: once it went through, undo stops at it
-    /// rather than reach past it. A no-op passes `None`.
+    /// when it changed something, or may have: undo stops at it rather than
+    /// reach past it. A no-op, or a failure that wrote nothing, passes
+    /// `None`.
     pub(super) fn log_kept_write<T>(
         &self,
         client: &Client,
@@ -972,13 +973,11 @@ impl Surface {
         done: impl FnOnce(&T) -> String,
         kept: Option<&str>,
     ) {
-        let (text, before) = match result {
-            Ok(value) => (
-                done(value),
-                kept.map(fsonos_core::actions::before_state_not_undoable),
-            ),
-            Err(f) => (format!("failed: {}", f.detail), None),
+        let text = match result {
+            Ok(value) => done(value),
+            Err(f) => format!("failed: {}", f.detail),
         };
+        let before = kept.map(fsonos_core::actions::before_state_not_undoable);
         self.record(client, intent, "allow".into(), text, before);
     }
 
@@ -1526,8 +1525,9 @@ impl Surface {
             own = Fader::default();
             &own
         };
+        let watch = crate::heal::Observed::new(&*self.transport);
         let result = fader
-            .fade_out_and_pause(&*self.transport, &households, &zone.coordinator, over)
+            .fade_out_and_pause(&watch, &households, &zone.coordinator, over)
             .map_err(Failure::from)
             .map(|outcome| OutcomeDto {
                 done: match outcome {
@@ -1546,13 +1546,9 @@ impl Surface {
                 notes: Vec::new(),
             });
         let intent = format!("pause: {}'s group after a {} fade", zone.room, span(over));
-        self.log_kept_write(
-            client,
-            intent,
-            &result,
-            |o| o.done.clone(),
-            Some("fade-out"),
-        );
+        // One that failed after it wrote may have moved the volumes, or paused.
+        let kept = (result.is_ok() || watch.wrote()).then_some("fade-out");
+        self.log_kept_write(client, intent, &result, |o| o.done.clone(), kept);
         result
     }
 

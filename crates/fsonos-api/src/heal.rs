@@ -20,6 +20,7 @@ use crate::guard::{Guard, Note};
 use crate::plan::Command;
 
 mod attempt;
+pub(crate) use attempt::Observed;
 mod volume;
 
 /// Carry `command` out. `fresh` is used only for an eligible address recovery;

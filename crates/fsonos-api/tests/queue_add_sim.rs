@@ -3,9 +3,10 @@
 //! at the end (its tracks), undo taking the newest addition off, and an undo
 //! that finds the queue changed leaving it alone and saying so.
 
-use fsonos_api::ErrorCode;
+use fsonos_api::plan::plan_volume;
 use fsonos_api::surface::queue::QueueAddRequest;
 use fsonos_api::surface::{Surface, Survey};
+use fsonos_api::{ErrorCode, VolumeRequest};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::MemStore;
@@ -14,6 +15,8 @@ use fsonos_proto::control::remove_all_tracks_from_queue;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan};
 use std::net::IpAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const ROOM: &str = "Living Room";
@@ -170,6 +173,76 @@ fn an_add_with_a_lost_reply_is_logged_and_stops_undo() {
         refused.detail.contains("queue edit"),
         "{refused:?} after {failed:?}"
     );
+    sim.shutdown();
+}
+
+/// Passes everything to the sim, but once armed loses the next
+/// GetMediaInfo reply: the first read a Spotify add makes, before it sends
+/// anything.
+struct LostRead {
+    lan: SimLan,
+    armed: Arc<AtomicBool>,
+}
+
+impl Transport for LostRead {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if action.contains("#GetMediaInfo") && self.armed.swap(false, Ordering::SeqCst) {
+            return Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: "injected lost read".into(),
+            });
+        }
+        self.lan.soap_post(host, path, action, body)
+    }
+}
+
+/// An add that fails before it sends anything queued nothing: it does not
+/// stand in undo's way, and the volume set before it is undone.
+#[test]
+fn an_add_that_fails_before_sending_leaves_undo_alone() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let houses = house(&sim);
+    let host = resolve_room(&houses, ROOM).unwrap().player.ip;
+    let level = || fsonos_proto::control::get_volume(&sim.lan(), host).unwrap();
+    let was = level();
+    let armed = Arc::new(AtomicBool::new(false));
+    let s = Surface::new(
+        Box::new(LostRead {
+            lan: sim.lan(),
+            armed: Arc::clone(&armed),
+        }),
+        Box::new(move |_| Ok(houses.clone())),
+        Policy::default(),
+        Box::new(SystemClock),
+    )
+    .with_action_log(Box::new(MemStore::default()), "mcp");
+    let req = VolumeRequest {
+        zone: ROOM.into(),
+        volume: Some(i64::from(if was >= 50 { was - 5 } else { was + 5 })),
+        delta: None,
+        group: false,
+    };
+    s.control(&Client::Cli, "set_volume", |h| plan_volume(h, &req))
+        .unwrap();
+    armed.store(true, Ordering::SeqCst);
+    let failed = s
+        .queue_add(
+            &Client::Cli,
+            &add("spotify:track:0SimQueueTrack00000009", "Encore", false),
+        )
+        .unwrap_err();
+    let undone = s
+        .undo(&Client::Cli, true)
+        .unwrap()
+        .unwrap_or_else(|| panic!("the volume set is undone past {failed:?}"));
+    assert!(undone.failures.is_empty(), "{undone:?}");
+    assert_eq!(level(), was);
     sim.shutdown();
 }
 

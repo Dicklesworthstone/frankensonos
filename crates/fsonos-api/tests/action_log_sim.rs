@@ -17,9 +17,12 @@ use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{ActionFilter, MemStore};
 use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_proto::topology::get_zone_group_state;
-use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_proto::{ProtoError, Transport};
+use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::{Generation, PlayerId, TransportState};
 use std::net::IpAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const STREAM: &str = "x-rincon-mp3radio://stream.example.invalid/first.mp3";
 const OTHER: &str = "x-rincon-mp3radio://stream.example.invalid/other.mp3";
@@ -39,19 +42,110 @@ fn sim() -> SimHandle {
 }
 
 fn surface(sim: &SimHandle) -> Surface {
+    surface_over(sim, Box::new(sim.lan()))
+}
+
+/// [`surface`] over `transport` instead of the sim's LAN.
+fn surface_over(sim: &SimHandle, transport: Box<dyn Transport + Send + Sync>) -> Surface {
     let kitchen = sim.player("Kitchen").unwrap().ip;
     let survey: Survey = Box::new(move |t| {
         let mut st = HouseholdState::default();
         st.apply_topology(&get_zone_group_state(t, kitchen).map_err(fsonos_core::CoreError::from)?);
         Ok(vec![st])
     });
-    Surface::new(
-        Box::new(sim.lan()),
-        survey,
-        Policy::default(),
-        Box::new(SystemClock),
-    )
-    .with_action_log(Box::new(MemStore::default()), "mcp")
+    Surface::new(transport, survey, Policy::default(), Box::new(SystemClock))
+        .with_action_log(Box::new(MemStore::default()), "mcp")
+}
+
+/// Passes everything to the sim, but once armed loses the next `action`
+/// reply, as a player dropping off would.
+struct LoseOnce {
+    lan: SimLan,
+    action: &'static str,
+    armed: Arc<AtomicBool>,
+}
+
+impl Transport for LoseOnce {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        if action.ends_with(&format!("#{}\"", self.action))
+            && self.armed.swap(false, Ordering::SeqCst)
+        {
+            return Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: format!("injected lost {}", self.action),
+            });
+        }
+        self.lan.soap_post(host, path, action, body)
+    }
+}
+
+/// Kitchen playing at 40, set to 30 through a surface whose transport
+/// loses the next `action` reply once the set is done; then a fade-out
+/// that fails on it. Returns Kitchen's volume after.
+fn fade_out_losing(action: &'static str) -> (SimHandle, Surface, u8) {
+    let sim = sim();
+    let lan = sim.lan();
+    let houses = now(&sim);
+    let kitchen = id(&houses, "Kitchen");
+    control::set_volume(&lan, &houses, &kitchen, 40).unwrap();
+    control::play_uri(&lan, &houses, &kitchen, STREAM, "").unwrap();
+    let armed = Arc::new(AtomicBool::new(false));
+    let s = surface_over(
+        &sim,
+        Box::new(LoseOnce {
+            lan: sim.lan(),
+            action,
+            armed: Arc::clone(&armed),
+        }),
+    );
+    s.control(&Client::Cli, "set_volume", |h| {
+        plan_volume(h, &volume_req("Kitchen", 30))
+    })
+    .unwrap();
+    armed.store(true, Ordering::SeqCst);
+    let fade = FadePauseRequest {
+        zone: "Kitchen".into(),
+        fade_secs: 1,
+    };
+    let failed = s.fade_out(&Client::Cli, &fade).unwrap_err();
+    assert!(failed.detail.contains("injected lost"), "{failed:?}");
+    let ip = sim.player("Kitchen").unwrap().ip;
+    let level = fsonos_proto::control::get_volume(&lan, ip).unwrap();
+    (sim, s, level)
+}
+
+/// A fade-out that fails part way has changed the speakers all the same:
+/// undo stops at it rather than undo the volume set before it.
+#[test]
+fn a_fade_out_that_fails_part_way_still_stops_undo() {
+    let (sim, s, level) = fade_out_losing("Pause");
+    // The fade put the volume back when the pause failed.
+    assert_eq!(level, 30);
+    let refused = s.undo(&Client::Cli, true).unwrap_err();
+    assert!(refused.detail.contains("fade-out"), "{refused:?}");
+    sim.shutdown();
+}
+
+/// One that fails before it writes anything changed nothing: undo reaches
+/// the volume set before it.
+#[test]
+fn a_fade_out_that_fails_before_writing_leaves_undo_alone() {
+    let (sim, s, level) = fade_out_losing("GetVolume");
+    assert_eq!(level, 30);
+    let undone = s.undo(&Client::Cli, true).unwrap().expect("an undo");
+    assert!(undone.failures.is_empty(), "{undone:?}");
+    let ip = sim.player("Kitchen").unwrap().ip;
+    assert_eq!(
+        fsonos_proto::control::get_volume(&sim.lan(), ip).unwrap(),
+        40
+    );
+    sim.shutdown();
 }
 
 /// The households as they are right now (the surface caches its survey).
