@@ -203,7 +203,11 @@ fn moves_a_block_through_a_group_member_without_touching_playback_on_s1_and_s2()
             .unwrap();
         assert_eq!(log.len(), 1);
         assert!(log[0].action.intent.starts_with("move_in_queue"));
-        assert!(log[0].action.before_state.is_none());
+        // Marked: not undoable, and undo stops at it.
+        assert!(log[0].action.before_state.is_some());
+        assert!(!fsonos_core::actions::undoable(
+            log[0].action.before_state.as_deref()
+        ));
     }
 }
 
@@ -218,6 +222,15 @@ fn noop_destinations_never_issue_a_native_write() {
         assert_eq!(done.revision, req.expected_revision);
     }
     assert_eq!(f.attempts(), 0);
+    // A kept order wrote nothing: nothing in the log stands in undo's way.
+    let log = f
+        .surface
+        .recent_actions(&Client::Cli, &ActionFilter::default())
+        .unwrap();
+    assert!(
+        log.iter().all(|row| row.action.before_state.is_none()),
+        "{log:?}"
+    );
 }
 
 #[test]
@@ -290,6 +303,9 @@ fn unconfirmed_or_concurrently_changed_results_are_nonretryable() {
         assert_eq!(error.code, ErrorCode::UpnpFault);
         assert!(!error.body().retryable);
         assert_eq!(f.attempts(), 1);
+        // The move may have happened: undo stops at it.
+        let refused = f.surface.undo(&Client::Cli, true).unwrap_err();
+        assert!(refused.detail.contains("queue edit"), "{refused:?}");
     }
 }
 

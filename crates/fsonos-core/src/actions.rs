@@ -111,6 +111,10 @@ pub struct BeforeState {
     /// rows logged before undo checked for changes.
     #[serde(default)]
     pub after: Vec<RoomAfter>,
+    /// Set on a write undo cannot put back: what it was (a queue edit, a
+    /// sleep timer, a fade-out). See [`before_state_not_undoable`].
+    #[serde(default)]
+    pub not_undoable: Option<String>,
 }
 
 /// A room as an action left it: what undo compares against before it
@@ -411,6 +415,23 @@ pub fn before_state_queued(queued: &[QueuedBefore]) -> Option<String> {
     (!queued.is_empty()).then(|| serde_json::json!({ "queued": queued }).to_string())
 }
 
+/// The before-state of a write that changed the speakers in a way undo
+/// cannot put back, `what` it was ("queue edit"): undo stops at it rather
+/// than reach past it to an older action ([`undo_target`]).
+#[must_use]
+pub fn before_state_not_undoable(what: &str) -> String {
+    serde_json::json!({ "not_undoable": what }).to_string()
+}
+
+/// Whether a logged before-state is one undo can put back: there is one,
+/// and it is not a [`before_state_not_undoable`] marker.
+#[must_use]
+pub fn undoable(before_state: Option<&str>) -> bool {
+    before_state.is_some_and(|json| {
+        !BeforeState::parse(json).is_ok_and(|before| before.not_undoable.is_some())
+    })
+}
+
 /// Log `action`, then apply the retention policy. Returns the action's id.
 pub fn record<S: Store + ?Sized>(store: &mut S, action: &Action) -> Result<i64, CoreError> {
     let id = store.record_action(action).map_err(|e| store_err(&e))?;
@@ -427,7 +448,11 @@ pub const UNDO_MAX_AGE_SECS: i64 = 60 * 60;
 
 /// The action [`undo_last_vetted`] would put back for `only` (or anyone) at
 /// `at`, or `None` when there is nothing to undo; refused
-/// ([`CoreError::NotUndoable`]) when it is older than [`UNDO_MAX_AGE_SECS`].
+/// ([`CoreError::NotUndoable`]) when it is older than [`UNDO_MAX_AGE_SECS`],
+/// or when the newest write is one undo cannot put back
+/// ([`before_state_not_undoable`]): undo never reaches past that to an older
+/// action, which would leave the newer change in place and roll back what
+/// came before it.
 pub fn undo_target<S: Store + ?Sized>(
     store: &S,
     only: Option<&Client>,
@@ -448,6 +473,19 @@ pub fn undo_target<S: Store + ?Sized>(
             target.action.intent,
             age / 60,
             UNDO_MAX_AGE_SECS / 60
+        )));
+    }
+    let not_undoable = target
+        .action
+        .before_state
+        .as_deref()
+        .and_then(|json| BeforeState::parse(json).ok())
+        .and_then(|before| before.not_undoable);
+    if let Some(what) = not_undoable {
+        return Err(CoreError::NotUndoable(format!(
+            "#{} ({}) is a {what} undo can't put back, and undo never reaches past it to an \
+             older action",
+            target.id, target.action.intent
         )));
     }
     Ok(Some(target))
@@ -948,6 +986,29 @@ mod tests {
             matches!(&err, CoreError::NotUndoable(why) if why.contains("60 minutes")),
             "{err}"
         );
+    }
+
+    #[test]
+    fn undo_stops_at_a_write_it_cannot_put_back() {
+        let mut store = MemStore::default();
+        record(&mut store, &action(100, before_state(&[snap("RINCON_A")]))).unwrap();
+        let edit = record(
+            &mut store,
+            &action(110, Some(before_state_not_undoable("queue edit"))),
+        )
+        .unwrap();
+        // A no-op since (nothing changed, nothing to put back) is no write.
+        record(&mut store, &action(115, None)).unwrap();
+        let err =
+            undo_last(&Unreached, &[], &mut store, None, &Client::Cli, "cli", 120).unwrap_err();
+        assert!(
+            matches!(&err, CoreError::NotUndoable(why)
+                if why.starts_with(&format!("#{edit} ")) && why.contains("queue edit")),
+            "{err}"
+        );
+        assert!(!undoable(Some(&before_state_not_undoable("queue edit"))));
+        assert!(undoable(before_state(&[snap("RINCON_A")]).as_deref()));
+        assert!(!undoable(None));
     }
 
     #[test]

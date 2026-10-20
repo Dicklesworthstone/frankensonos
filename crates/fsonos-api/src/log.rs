@@ -2,7 +2,7 @@
 //! `recent_actions` tool, `fsonos log`), and what an undo reports.
 
 use fastapi::{JsonSchema, fastapi_openapi};
-use fsonos_core::actions::UndoReport;
+use fsonos_core::actions::{UndoReport, undoable};
 use fsonos_core::store::{ActionFilter, LoggedAction};
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +40,7 @@ impl From<&LoggedAction> for ActionDto {
             intent: a.intent.clone(),
             decision: a.decision.clone(),
             result: a.result.clone(),
-            undoable: a.before_state.is_some() && a.undo_of.is_none(),
+            undoable: undoable(a.before_state.as_deref()) && a.undo_of.is_none(),
             undo_of: a.undo_of,
         }
     }
@@ -172,6 +172,8 @@ mod tests {
         };
         assert!(ActionDto::from(&logged(Some("{}"), None)).undoable);
         assert!(!ActionDto::from(&logged(None, None)).undoable);
+        let kept = fsonos_core::actions::before_state_not_undoable("queue edit");
+        assert!(!ActionDto::from(&logged(Some(&kept), None)).undoable);
         let undo = ActionDto::from(&logged(Some("{}"), Some(6)));
         assert!(!undo.undoable);
         assert_eq!(serde_json::to_value(&undo).unwrap()["undo_of"], 6);

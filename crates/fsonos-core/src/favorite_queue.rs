@@ -62,10 +62,20 @@ fn inserted<'a>(
     Some(&after.uris[index..end])
 }
 
+/// How an uncertain add's error begins: tracks may have been queued that
+/// no undo range records.
+pub const UNCERTAIN: &str = "favorite enqueue outcome is uncertain";
+
+/// Whether `error` is an add whose outcome is uncertain ([`UNCERTAIN`]):
+/// tracks may have been queued.
+#[must_use]
+pub fn is_uncertain(error: &CoreError) -> bool {
+    matches!(error, CoreError::Proto(ProtoError::Malformed(detail)) if detail.starts_with(UNCERTAIN))
+}
+
 fn uncertain(detail: &str) -> CoreError {
     ProtoError::Malformed(format!(
-        "favorite enqueue outcome is uncertain: {detail}; read the queue before another add; \
-         the request was not repeated"
+        "{UNCERTAIN}: {detail}; read the queue before another add; the request was not repeated"
     ))
     .into()
 }

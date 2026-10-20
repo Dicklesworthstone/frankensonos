@@ -97,10 +97,13 @@ impl QueueRemovedDto {
     }
 }
 
+/// How an uncertain removal's failure begins ([`uncertain`]).
+const UNCERTAIN: &str = "queue removal outcome is uncertain";
+
 fn uncertain(detail: impl std::fmt::Display) -> Failure {
     Failure::new(
         ErrorCode::UpnpFault,
-        format!("queue removal outcome is uncertain: {detail}; the write was not replayed"),
+        format!("{UNCERTAIN}: {detail}; the write was not replayed"),
     )
     .with_hint("Read the queue again before deciding on another removal; do not retry blindly.")
 }
@@ -145,6 +148,13 @@ impl Surface {
         };
         // A zone snapshot does not capture queue contents. Do not claim this
         // edit can be undone by restoring only a source and queue position.
+        // A removal that went through, or may have (an uncertain outcome),
+        // stops undo from reaching past it; a refusal removed nothing.
+        let wrote = match &result {
+            Ok(_) => true,
+            Err(failure) => failure.detail.starts_with(UNCERTAIN),
+        };
+        let kept = wrote.then(|| fsonos_core::actions::before_state_not_undoable("queue edit"));
         self.record(
             client,
             format!(
@@ -155,7 +165,7 @@ impl Surface {
             ),
             decision,
             text,
-            None,
+            kept,
         );
         result
     }

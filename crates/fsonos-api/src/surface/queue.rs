@@ -7,8 +7,9 @@
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, QueuedBefore};
-use fsonos_core::control;
 use fsonos_core::policy::Client;
+use fsonos_core::{CoreError, control};
+use fsonos_proto::ProtoError;
 use fsonos_proto::didl::SpotifyContainer;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -199,16 +200,37 @@ impl Surface {
         let coordinator = target.coordinator.id.clone();
         let zone = target.coordinator.room_name.clone();
         let title = asked.title.as_deref().unwrap_or(&uri);
-        let queued = control::enqueue_spotify(
+        let where_ = if req.next { " next" } else { "" };
+        let intent = format!("{ADD}: {zone} {uri}{where_}");
+        let queued = match control::enqueue_spotify(
             &*self.transport,
             &households,
             &coordinator,
             &uri,
             title,
             req.next,
-        )
-        .map_err(spotify_failure)
-        .inspect_err(|f| self.notice(f))?;
+        ) {
+            Ok(queued) => queued,
+            Err(error) => {
+                // A lost reply, or a read-back that failed or did not match,
+                // may follow tracks that were queued: undo then stops at this
+                // add rather than reach past it. A refusal queued nothing.
+                let maybe = matches!(
+                    &error,
+                    CoreError::Proto(ProtoError::Network { .. } | ProtoError::Malformed(_))
+                );
+                let failure = spotify_failure(error);
+                self.notice(&failure);
+                self.record(
+                    client,
+                    intent,
+                    "allow".into(),
+                    format!("failed: {}", failure.detail),
+                    maybe.then(|| actions::before_state_not_undoable("queue edit")),
+                );
+                return Err(failure);
+            }
+        };
         let count = u32::try_from(queued.uris.len()).unwrap_or(u32::MAX);
         let mut done = format!(
             "queued {count} track(s) of {uri} in {zone}'s group at position {}",
@@ -217,10 +239,9 @@ impl Surface {
         if !queued.playing_queue {
             done.push_str(" (the group isn't playing its queue: they play when it does)");
         }
-        let where_ = if req.next { " next" } else { "" };
         self.record(
             client,
-            format!("{ADD}: {zone} {uri}{where_}"),
+            intent,
             "allow".into(),
             done.clone(),
             actions::before_state_queued(&[QueuedBefore {

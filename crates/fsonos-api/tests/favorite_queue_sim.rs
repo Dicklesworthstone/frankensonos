@@ -300,5 +300,9 @@ fn uncertain_container_adds_are_not_replayed_or_given_a_fabricated_undo_range() 
         .unwrap();
     assert_eq!(log.len(), 1);
     assert!(log[0].action.result.contains("uncertain"));
-    assert!(log[0].action.before_state.is_none());
+    // No fabricated undo range, and undo does not reach past it either.
+    assert!(log[0].action.before_state.is_some());
+    assert!(!fsonos_core::actions::undoable(
+        log[0].action.before_state.as_deref()
+    ));
 }

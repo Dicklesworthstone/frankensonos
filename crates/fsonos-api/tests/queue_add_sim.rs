@@ -11,7 +11,9 @@ use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::MemStore;
 use fsonos_core::{HouseholdState, control, resolve_room};
 use fsonos_proto::control::remove_all_tracks_from_queue;
-use fsonos_sim::{SimHandle, SimHousehold};
+use fsonos_proto::{ProtoError, Transport};
+use fsonos_sim::{SimHandle, SimHousehold, SimLan};
+use std::net::IpAddr;
 use std::time::Duration;
 
 const ROOM: &str = "Living Room";
@@ -116,6 +118,58 @@ fn a_track_goes_next_an_album_to_the_end_and_undo_takes_them_off() {
     );
     s.undo(&Client::Cli, true).unwrap().unwrap();
     assert_eq!(titles(&s), ["I. Allegro", "II. Andante", "III. Presto"]);
+    sim.shutdown();
+}
+
+/// Passes everything to the sim, but loses every queue add's reply: the
+/// tracks are queued all the same.
+struct LostAdd {
+    lan: SimLan,
+}
+
+impl Transport for LostAdd {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        action: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let answer = self.lan.soap_post(host, path, action, body)?;
+        if action.contains("#AddURIToQueue") {
+            return Err(ProtoError::Network {
+                target: host.to_string(),
+                detail: "injected lost add reply".into(),
+            });
+        }
+        Ok(answer)
+    }
+}
+
+/// An add whose reply is lost may have queued its tracks: it is logged as
+/// failed, and undo stops at it rather than reach past it.
+#[test]
+fn an_add_with_a_lost_reply_is_logged_and_stops_undo() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let houses = house(&sim);
+    let s = Surface::new(
+        Box::new(LostAdd { lan: sim.lan() }),
+        Box::new(move |_| Ok(houses.clone())),
+        Policy::default(),
+        Box::new(SystemClock),
+    )
+    .with_action_log(Box::new(MemStore::default()), "mcp");
+    let failed = s
+        .queue_add(
+            &Client::Cli,
+            &add("spotify:track:0SimQueueTrack00000009", "Encore", false),
+        )
+        .unwrap_err();
+    let refused = s.undo(&Client::Cli, true).unwrap_err();
+    assert!(
+        refused.detail.contains("queue edit"),
+        "{refused:?} after {failed:?}"
+    );
     sim.shutdown();
 }
 
