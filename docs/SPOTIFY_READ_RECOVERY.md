@@ -59,10 +59,10 @@ additional cases cover cross-endpoint cooldown, expiration, early-return grant
 checks, dropped waits, last-attempt rate limits and endpoint changes. The
 runtime test futures own their session state, matching the existing test style.
 
-These Rust regressions were authored but **not executed in the editing
-environment**, which has no Rust compiler, Cargo, rustfmt or RCH. Baseline and
-candidate Git blob hashes and whitespace/patch checks were verified. This is
-not a claim of compilation, integration or live Spotify acceptance. Run:
+The focused `session::` filter is the Rust proof for this behavior; live
+Spotify operation and physical-speaker acceptance are separate. The stalled-body
+case uses an interruptible 30-second scripted body against a one-second total
+budget, so loaded-host scheduling cannot turn it into a zero-request race. Run:
 
 ```sh
 cargo test -p fsonos-spotify session::
