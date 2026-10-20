@@ -294,3 +294,32 @@ extension CommandReviewSession {
         return try await client.perform(review)
     }
 }
+
+// Standing taste shares the same one-use review and busy slot as playback,
+// scenes, schedules and undo, but never needs a selected or reachable speaker.
+extension CommandReviewSession {
+    public func prepare(_ command: DJPreferenceCommand) async throws -> DJPreferenceReview {
+        guard !busy else { throw ContractError.invalid("An action is still being checked or sent.") }
+        busy = true
+        defer { busy = false }
+        generation &+= 1; pending = nil
+        let token = generation
+        try command.validate(await client.djPreferences())
+        try check(token)
+        let review = DJPreferenceReview(command: command, observedAt: Date())
+        pending = review.id
+        return review
+    }
+
+    public func execute(_ review: DJPreferenceReview) async throws -> DJPreferenceReceipt {
+        guard !busy, pending == review.id else {
+            throw ContractError.invalid("This review is no longer current. Review standing taste again.")
+        }
+        pending = nil; busy = true
+        defer { busy = false }
+        let token = generation
+        try review.command.validate(await client.djPreferences())
+        try check(token)
+        return try await client.perform(review)
+    }
+}

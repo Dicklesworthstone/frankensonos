@@ -381,3 +381,29 @@ extension DaemonClient {
         }
     }
 }
+
+extension DaemonClient {
+    public func djPreferences() async throws -> DJPreferences {
+        try await get(DJPreferences.self, ["dj", "preferences"])
+    }
+
+    /// Standing preferences are daemon-wide. Do not fabricate a zone, replace
+    /// the entire document, or retry a write whose acknowledgement was lost.
+    func perform(_ review: DJPreferenceReview) async throws -> DJPreferenceReceipt {
+        try Task.checkCancellation()
+        var request = URLRequest(url: try endpoint.resource(["dj", "preferences"]),
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(review.command.change)
+        try Task.checkCancellation()
+        do {
+            let reply = try await transport.send(request)
+            try Self.check(reply)
+            return try Self.decode(DJPreferenceReceipt.self, from: reply.data).validated(for: review.command)
+        } catch {
+            throw ClientError.uncertain(error.localizedDescription)
+        }
+    }
+}
