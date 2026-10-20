@@ -345,12 +345,22 @@ Update mechanism (verified 2026-10-07):
   no auth, CloudFront-fronted, old builds not garbage-collected. Both the
   owner's S1 (`57.23-74170-1-5.upd`, 2.2 MB, Play:5 Gen1) and S2
   (`86.10-80260-1-12.upd`, 7.5 MB, Play:1) images were downloaded and parsed.
-- `.upd` container (fully decoded): a sequence of records
-  `[magic=0x35167F49 LE][type u32][total_len u32][reserved u32][payload]`.
-  Record type 1 = header (major/minor/build u32s, e.g. 57/23/74170);
-  type 21 = plaintext patch-train list (`2021_11_PATCHES:` …);
-  type 22 = certificate bundle (plaintext CA roots); types 3/4/6 = payloads;
-  type 23 = a **plain tar overlay** of the rootfs; type 17 = trailer.
+- `.upd` container (fully decoded, both generations): a sequence of records
+  `[magic=0x35167F49 LE][type u32][total_len u32][reserved u32][payload]`
+  where `total_len` **includes the 16-byte header** (next record is at
+  `off + total_len`, not `off + 16 + total_len`). Record type 1 = header
+  (major/minor/build u32s); type 21 = plaintext patch-train list
+  (`2021_11_PATCHES:` …); type 22 = certificate bundle (Sonos root CAs);
+  type 23 = a **plain tar overlay** of the rootfs; type 17 = the 380-byte
+  `.upd` signature blob (S2); a separate `0xFFFFFFFF` record is the trailer
+  (present in the S1 34.16 image). The S2 content records (types 3/4/6 =
+  install script / rootfs / kernel) are `0x886499ca` encrypted-content
+  blobs and the key/signature blobs (types 22/17) carry a `0x621da74d`
+  header (RSA-2048-OAEP-wrapped per-blob AES-128-CBC key at `[0x32:0x132]`,
+  AES-CBC body, IV = 16 zero bytes, at `0x13A`); the S1 34.16 equivalents
+  are readable (gzip kernel, custom CramFS rootfs, shell script). See
+  `docs/FIRMWARE_PATHS.md` for the per-class layout and the `sonostool`
+  decryption path.
 - S2 86.10 payload (type 23) extracts to `bin/anacapad`: the 3 MB zone
   daemon, ELF 32-bit MSB MIPS32 (the Play:1 is big-endian MIPS), stripped.
   Strings reveal the service architecture (`oc/zone/common/*.cxx`):
@@ -402,12 +412,20 @@ More (2026-10-08): the encryption boundary is between 34.16 (readable) and
 57.19 (encrypted) — 57.19 and 73.0 Play:1 images show high-entropy payloads
 with no structure; both S1-gen platforms' milestone-era rootfs images (Play:5
 Gen1 model 5, Play:1 model 12) are extracted and readable. The S1 controller
-app (x86_64, from the still-served 57.23 DMG) shows the update *orchestration*
-side: `BeginSoftwareUpdate` takes the update URL as an argument (the
-controller picks the channel — `update.sonos.com/firmware/latest/` vs beta
-via `x-sonos-scuri://settings/advanced/beta`), and carries a
-`SCMockUpdateDebugPage` class in its wizard flow. Both S1-gen updaters share
-the debug-path strings, so one trigger would open both lines.
+app (x86_64) shows the update *orchestration* side: `BeginSoftwareUpdate`
+takes the update URL as an argument (the controller picks the channel —
+`update.sonos.com/firmware/latest/` vs beta via
+`x-sonos-scuri://settings/advanced/beta`) and can redirect the fetch
+(`Override AnonymousUpdateURL: %s`). **Private-key hunt (2026-10-20):** the
+still-served 47.2 (v9.3) and 90.0 (v17.2.4) macOS DMGs were pulled and the
+full `Sonos.app` scanned — the devmode *private* key is **not** in either
+controller (the "RSA PRIVATE KEY" strings are just mbedtls PEM parser labels;
+`developerKey` is a SOAP parameter name; none of the three moduli appear).
+The 90.0 build has `SCMockUpdateDebugPage`, but the `SCMock*Page` family is
+the SwiftUI design-system preview set (mock UI, not a functional update
+backdoor). The update **manifest** (`.upm`) is signature-verified against a
+root-CA bundle (`SCRootCerts` / `RootCACertBundleDownloader`). Both S1-gen
+updaters share the debug-path strings, so one trigger would open both lines.
 
 The S1 unlock surface (mapped 2026-10-08 from pristine extracted binaries,
 r2 disassembly, and live GET probes — all reads, no mutations):
