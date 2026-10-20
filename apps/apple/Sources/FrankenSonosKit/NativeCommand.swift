@@ -24,6 +24,7 @@ public enum NativeCommand: Equatable, Sendable {
     case scene(Scene, fadeSeconds: UInt32? = nil)
     case sleep(SleepChange)
     case listeningSettings(ListeningSettingsChange)
+    case announce(Announcement)
 
     public var title: String {
         switch self {
@@ -54,6 +55,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .scene(let scene, _): "Apply \(scene.name)"
         case .sleep(let change): change.title
         case .listeningSettings(let change): change.title
+        case .announce(let announcement): announcement.title
         }
     }
     public var explanation: String {
@@ -62,6 +64,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueRemove: "Removes this exact revision-bound entry. This cannot be undone; removing the current entry can advance or stop playback."
         case .queueMove(let move): move.explanation
         case .listeningSettings(let change): change.explanation
+        case .announce(let announcement): announcement.explanation
         case .groupVolume: "Changes every member of this group. The daemon's per-room caps and quiet hours remain authoritative."
         case .volume, .mute: "Changes only the named room. The group's music and membership are unchanged."
         case .djSkip: "Advances to the DJ's next whole work, not merely the next movement."
@@ -87,9 +90,10 @@ public enum NativeCommand: Equatable, Sendable {
         default: false
         }
     }
+    public var isAnnouncement: Bool { if case .announce = self { true } else { false } }
     public var isQueueAdd: Bool { if case .queueAdd = self { true } else { false } }
     public var requiresFreshTopology: Bool {
-        switch self { case .join, .leave, .party, .move: true; default: false }
+        switch self { case .join, .leave, .party, .move, .announce: true; default: false }
     }
     public var room: String? {
         switch self {
@@ -111,7 +115,8 @@ public enum NativeCommand: Equatable, Sendable {
     func payload(in zone: Zone) throws -> Payload {
         _ = try zone.validated()
         var path: [String] = [], body: [String: JSONValue] = ["zone": .string(zone.id.address)]
-        let timeout: TimeInterval = requiresDJ || savedScene != nil || isQueueAdd || requiresFreshTopology ? 600 : 120
+        let timeout: TimeInterval = isAnnouncement ? Announcement.timeout
+            : requiresDJ || savedScene != nil || isQueueAdd || requiresFreshTopology ? 600 : 120
         func require(_ flag: Bool, _ message: String) throws { if !flag { throw ContractError.invalid(message) } }
         func source(_ value: String) throws -> String {
             let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -176,6 +181,8 @@ public enum NativeCommand: Equatable, Sendable {
             path = ["move"]
             body["to"] = .string(to.address)
             body["copy"] = .bool(copy)
+        case .announce(let announcement):
+            path = ["announce"]; body = try announcement.fields(in: zone)
         case .listeningSettings(let change):
             path = change.path; body = try change.fields(in: zone)
         case .sleep(let change):
@@ -270,6 +277,10 @@ public enum NativeCommand: Equatable, Sendable {
 
     func receipt(_ data: Data, in zone: Zone? = nil) throws -> CommandReceipt {
         switch self {
+        case .announce(let announcement):
+            let report = try DaemonClient.decode(AnnouncementReport.self, from: data).validated(for: announcement)
+            return CommandReceipt(title: report.clean ? report.done : "Announcement needs attention",
+                                  detail: report.detail, partial: !report.clean)
         case .sleep(let change): return try change.receipt(data, in: zone)
         case .listeningSettings(let change): return try change.receipt(data)
         case .scene(let scene, _):
