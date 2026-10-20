@@ -48,7 +48,7 @@ const QueueRemote = (() => {
     const state = { offset: 0, page: null, loading: false, writing: false, message: '',
       stale: true, updating: false, uncertain: false,
       selected: new Set(), pending: null, source: '', destination: '',
-      selecting: false, rangeStart: '', rangeEnd: '' };
+      selecting: false, navigating: false, jump: '', rangeStart: '', rangeEnd: '' };
     const clearSelection = () => {
       state.selected.clear(); selectedItems.clear();
       selectionRevision = selectionTotal = null;
@@ -58,7 +58,7 @@ const QueueRemote = (() => {
       if (!disposed && current()) { try { changed(state); } catch (_) { /* View only. */ } }
     };
     const ready = () => !disposed && current() && visible && active && !blocked()
-      && !state.stale && !state.uncertain && !state.loading && !state.writing && !state.selecting && state.page;
+      && !state.stale && !state.uncertain && !state.loading && !state.writing && !state.selecting && !state.navigating && state.page;
 
     // Live reads share the household's coalesced refresh, not a second stream
     // or per-card polling loop. A snapshot is never edited while it is stale.
@@ -78,15 +78,22 @@ const QueueRemote = (() => {
       && a.total === b.total && a.items.length === b.items.length
       && a.items.every((item, n) => item.position === b.items[n].position && item.uri === b.items[n].uri);
 
-    async function readPage(offset, background, keepMessage) {
-      const previous = background ? state.page : null;
+    const sameQueue = (a, b) => a && b && a.revision && a.revision === b.revision && a.total === b.total;
+    const agreesWithSelection = page => !state.selected.size || (selectionRevision === page.revision
+      && selectionTotal === page.total && page.items.every(item => !selectedItems.has(item.position)
+        || selectedItems.get(item.position).uri === item.uri));
+    const pageOffset = position => Math.min(Math.floor((position - 1) / PAGE_SIZE) * PAGE_SIZE, MAX_INDEX - PAGE_SIZE);
+
+    async function readPage(offset, background, keepMessage, preserve = false, expected = null) {
+      const previous = background || preserve ? state.page : null;
       const request = ++epoch;
       const valid = () => available() && request === epoch;
-      state.offset = offset;
+      if (!preserve) state.offset = offset;
+      state.pending = null;
       state.stale = true;
       state.loading = !background;
       state.updating = background;
-      if (!background) { clearSelection(); state.page = null; }
+      if (!background && !preserve) { clearSelection(); state.page = null; }
       // Keep uncertain outcomes until an explicit read actually succeeds.
       if (!keepMessage && !state.uncertain) state.message = '';
       publish();
@@ -102,19 +109,29 @@ const QueueRemote = (() => {
           try { response = await flight; } finally { reads.delete(flight); }
           if (!valid()) return false;
           next = pageOf(response, offset);
+          if (expected && !sameQueue(expected, next)) {
+            throw new Error('The queue changed while locating that entry. Refresh before navigating again.');
+          }
           if (offset === 0 || offset < next.total) break;
           if (attempt) throw new Error('The queue changed again while paging. Refresh to read it again.');
           offset = Math.min(MAX_INDEX - PAGE_SIZE, Math.floor(Math.max(0, next.total - 1) / PAGE_SIZE) * PAGE_SIZE);
         }
-        if (!sameEntries(previous, next)) clearSelection();
+        if (sameQueue(previous, next) && !agreesWithSelection(next)) {
+          clearSelection();
+          throw new Error('Selected entries disagree within this queue revision. Refresh before editing.');
+        }
+        const retain = preserve ? sameQueue(previous, next) : sameEntries(previous, next);
+        const cleared = state.selected.size > 0 && !retain;
+        if (!retain) clearSelection();
         state.offset = offset;
         state.page = next;
         state.stale = false;
         state.uncertain = false;
-        if (!keepMessage) state.message = '';
+        if (!keepMessage) state.message = cleared ? 'Queue contents changed; the previous selection was cleared.' : '';
         return true;
       } catch (error) {
         if (!valid()) return false;
+        if (preserve) clearSelection();
         state.message = `${state.uncertain ? 'The previous queue command is still unconfirmed. ' : ''}${error.hint ? `${error.message} ${error.hint}` : error.message}`;
         if (background) throw error; // The shared live controller owns backoff.
         return false;
@@ -127,16 +144,72 @@ const QueueRemote = (() => {
     }
 
     async function load(offset = state.offset, keepMessage = false) {
-      if (disposed || !current() || !active || state.selecting) return false;
+      if (disposed || !current() || !active || state.selecting || state.navigating) return false;
       if (!index(offset) || offset > MAX_INDEX - PAGE_SIZE) return false;
       visible = true;
       if (!available()) return false;
       return readPage(offset, false, keepMessage);
     }
 
+    async function browse(offset) {
+      if (!ready() || reads.size || !index(offset) || offset > MAX_INDEX - PAGE_SIZE) return false;
+      state.navigating = true;
+      try { return await readPage(offset, false, false, true); }
+      finally { state.navigating = false; publish(); }
+    }
+
+    function jumpTo(position) {
+      const page = ready();
+      if (!page || !index(position) || position < 1 || position > page.total) return Promise.resolve(false);
+      return browse(pageOffset(position));
+    }
+
+    async function showCurrent() {
+      const previous = ready();
+      if (!previous || reads.size) return false;
+      const version = ++epoch;
+      const valid = () => available() && epoch === version;
+      state.navigating = true; state.pending = null;
+      state.message = 'Locating the current queue entry…'; publish();
+      let flight;
+      try {
+        if (!valid()) return false;
+        flight = (async () => call('queue', { params: { room: zone }, query: { offset: 0, limit: 1 } }))();
+        reads.add(flight);
+        const head = pageOf(await flight, 0, 1);
+        reads.delete(flight);
+        if (!valid()) return false;
+        if (!sameQueue(previous, head)) { clearSelection(); state.stale = true; }
+        else if (!agreesWithSelection(head)) {
+          throw new Error('Selected entries disagree within this queue revision. Refresh before editing.');
+        }
+        if (!head.playing) {
+          if (!state.stale) state.page = { ...previous, playing: null };
+          state.message = 'No current queue entry was reported. Playback may be using another source.';
+          return false;
+        }
+        // Two bounded reads, never a loop chasing an advancing player. The
+        // destination page must belong to the queue reported by the head read.
+        const loaded = await readPage(pageOffset(head.playing), false, false, true, head);
+        if (loaded && state.page.playing && !state.page.items.some(item => item.position === state.page.playing)) {
+          state.message = 'Playback advanced while locating it. Show current entry again to follow it; no playback command was sent.';
+        }
+        return loaded;
+      } catch (error) {
+        if (valid()) {
+          clearSelection(); state.stale = true;
+          state.message = `${error.message}${error.hint ? ` ${error.hint}` : ''} No playback command was sent.`;
+        }
+        return false;
+      } finally {
+        if (flight) reads.delete(flight);
+        state.navigating = false; publish();
+      }
+    }
+
     function reconcile() {
       if (reconciliation) return reconciliation;
-      if (!available() || state.selecting || state.uncertain || !state.stale) return Promise.resolve(false);
+      if (!available() || state.selecting || state.navigating || state.uncertain || !state.stale) return Promise.resolve(false);
       // Wait for manual reads too. Live notifications can supersede a sample,
       // but must not multiply concurrent queue requests while it is pending.
       const running = (async () => {
@@ -144,7 +217,7 @@ const QueueRemote = (() => {
           await Promise.allSettled([...reads]);
           if (!available()) return false;
         }
-        if (!available() || state.selecting || state.uncertain || !state.stale) return false;
+        if (!available() || state.selecting || state.navigating || state.uncertain || !state.stale) return false;
         return readPage(state.offset, true, false);
       })();
       reconciliation = running;
@@ -415,7 +488,7 @@ const QueueRemote = (() => {
       publish();
     }
 
-    return { state, load, play, add, select, selectRange, editRange, clearSelected, removable, reviewRemoval, cancelRemoval, remove,
+    return { state, load, browse, jumpTo, showCurrent, play, add, select, selectRange, editRange, clearSelected, removable, reviewRemoval, cancelRemoval, remove,
       reviewMove, move, block, stale, reconcile, close,
       suspend() { active = false; stale('Queue updates paused while this page is hidden.'); },
       resume() { if (!disposed) { active = true; stale(); } },
@@ -447,8 +520,8 @@ const QueueRemote = (() => {
 
     function draw(state) {
       body.replaceChildren();
-      body.setAttribute('aria-busy', String(state.loading || state.updating || state.writing || state.selecting || blocked()));
-      const busy = state.loading || state.writing || state.selecting || blocked();
+      body.setAttribute('aria-busy', String(state.loading || state.updating || state.writing || state.selecting || state.navigating || blocked()));
+      const busy = state.loading || state.writing || state.selecting || state.navigating || blocked();
       const deciding = Boolean(state.pending);
       const untrusted = state.stale || state.uncertain || state.updating;
       body.append(el('div', { class: 'row' }, button('Refresh queue', () => control.load(), busy)));
@@ -478,6 +551,15 @@ const QueueRemote = (() => {
       const last = page.items[page.items.length - 1];
       const range = first ? `${first.position}–${last.position} of ${page.total}` : `No entries at this position (${page.total} total)`;
       body.append(el('p', { text: `${range}. ${page.playing ? `Queue position ${page.playing} is current.` : 'Not playing from this queue.'}` }));
+      const position = el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: 10,
+        class: 'queue-position', value: state.jump, disabled: busy || untrusted,
+        'aria-label': 'Queue position to show', 'data-focus': 'jump' });
+      const canJump = () => !busy && !untrusted && positionOf(position.value) !== null && positionOf(position.value) <= page.total;
+      const jump = button('Go to position', () => { if (ownsPage()) return control.jumpTo(positionOf(state.jump)); }, !canJump());
+      position.addEventListener('input', () => { state.jump = position.value; jump.disabled = !canJump(); });
+      body.append(el('div', { class: 'row' }, el('label', {}, 'Show position ', position), jump,
+        button('Show current entry', () => control.showCurrent(), busy || untrusted),
+        button('Show selection start', () => control.jumpTo(Math.min(...state.selected)), busy || untrusted || !state.selected.size)));
       if (page.revision) {
         const disabled = busy || untrusted;
         const firstInput = el('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', maxlength: 10,
@@ -565,9 +647,9 @@ const QueueRemote = (() => {
         body.append(review);
       }
       body.append(el('div', { class: 'row' },
-        button('Previous page', () => control.load(Math.max(0, state.offset - PAGE_SIZE)), busy || state.offset === 0),
-        button('Next page', () => control.load(last.position), busy || !last || last.position >= page.total)));
-      body.append(el('p', { class: 'empty', text: 'Live updates refresh this open queue. A changed queue revision clears its selection.' }));
+        button('Previous page', () => control.browse(Math.max(0, state.offset - PAGE_SIZE)), busy || untrusted || state.offset === 0),
+        button('Next page', () => control.browse(last.position), busy || untrusted || !last || last.position >= page.total)));
+      body.append(el('p', { class: 'empty', text: 'Browsing keeps up to 100 selected identities only while the queue revision agrees. Refresh queue clears the selection; navigation cancels any earlier confirmation.' }));
     }
 
     node.addEventListener('toggle', () => { if (node.open) control.load(); else control.close(); });
