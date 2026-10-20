@@ -950,6 +950,13 @@ const LiveRemote = (() => {
       }
     }
 
+    function loseContinuity() {
+      synced = false;
+      ++generation;
+      // Fence observations started on the previous connection, not commands.
+      invalidate(null, true);
+    }
+
     function openFeed() {
       if (!active || stream || !connect) return;
       let feed;
@@ -960,8 +967,7 @@ const LiveRemote = (() => {
       feed.addEventListener('open', () => {
         if (!current()) return;
         connected = true;
-        synced = false;
-        ++generation;
+        loseContinuity();
         backoff = FALLBACK;
         if (retry !== null) cancel(retry);
         retry = null;
@@ -971,10 +977,10 @@ const LiveRemote = (() => {
       });
       feed.addEventListener('error', () => {
         if (!current()) return;
+        if (connected) loseContinuity(); else invalidate();
         connected = false;
-        invalidate();
-        // Let a CONNECTING EventSource retain its own resume cursor. A CLOSED
-        // one will never reconnect itself; replace it only at the retry pace.
+        // A CONNECTING feed owns its resume cursor and reconnect budget. A
+        // CLOSED feed needs replacement, only at the fallback retry pace.
         if (feed.readyState === 2) { feed.close(); stream = null; }
         report();
         armRetry();
@@ -987,16 +993,21 @@ const LiveRemote = (() => {
           request(change && !Array.isArray(change) ? change[field] : null);
         });
       }
-      for (const kind of ['topology.changed', 'player.health', 'events.reset', 'action.logged']) {
+      feed.addEventListener('events.reset', () => {
+        if (!current()) return;
+        loseContinuity();
+        request();
+        report();
+      });
+      for (const kind of ['topology.changed', 'player.health', 'action.logged']) {
         feed.addEventListener(kind, () => { if (current()) request(); });
       }
     }
 
     function suspend() {
-      invalidate();
       active = false;
-      ++generation;
-      connected = synced = false;
+      loseContinuity();
+      connected = false;
       full = false;
       rooms.clear();
       clear();
@@ -1168,9 +1179,18 @@ const catalogs = CatalogRemote.model({
   },
 });
 
+function connectEvents() {
+  if (typeof RemoteEventFeed !== 'undefined' && typeof ReadableStream === 'function'
+      && typeof TextDecoder === 'function' && typeof fetch === 'function') {
+    return RemoteEventFeed.open(path('events'));
+  }
+  // Standalone/older embeds keep native events or the existing read fallback.
+  return 'EventSource' in window ? new EventSource(path('events')) : null;
+}
+
 function listen() {
   const controller = LiveRemote.model({
-    connect: 'EventSource' in window ? () => new EventSource(path('events')) : null,
+    connect: connectEvents,
     reload: loadZones,
     refresh: async (room) => {
       const zones = LiveRemote.affected(house.zones, room);
@@ -1178,10 +1198,17 @@ function listen() {
       else for (const zone of zones) await refreshZone(zone);
     },
     status: (text) => { $('live').textContent = text; },
-    invalidate: (room) => {
+    invalidate: (room, lost = false) => {
+      if (lost) { ++house.readVersion; requestJson.cancelReads(); }
       const matches = typeof room === 'string' ? LiveRemote.affected(house.zones, room) : [];
       for (const parts of house.cards.values()) {
-        if (!matches.length || parts.zone.members.includes(room)) notifyCard(parts, 'stale');
+        if (!matches.length || parts.zone.members.includes(room)) {
+          if (lost) {
+            ++parts.readVersion;
+            for (const entry of parts.sliders.values()) ++entry.readVersion;
+          }
+          notifyCard(parts, 'stale');
+        }
       }
     },
   });

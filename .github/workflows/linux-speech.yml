@@ -26,6 +26,8 @@ on:
       - "scripts/test-remote-read-requests.cjs"
       - "scripts/test-remote-request-lifecycle.cjs"
       - "scripts/test-remote-live.cjs"
+      - "scripts/test-remote-event-feed.cjs"
+      - "scripts/test-remote-event-integration.cjs"
       - "scripts/test-remote-invalidation.cjs"
       - "scripts/test-remote-state.cjs"
       - "scripts/test-remote-playback.cjs"
@@ -115,6 +117,8 @@ jobs:
         run: node --test scripts/test-remote-groups.cjs scripts/test-remote-transfers.cjs scripts/test-remote-room-sets.cjs
       - name: Live remote recovery regressions
         run: node --test scripts/test-remote-live.cjs scripts/test-remote-state.cjs scripts/test-remote-invalidation.cjs scripts/test-remote-playback.cjs scripts/test-remote-catalogs.cjs
+      - name: Web heartbeat and event recovery regressions
+        run: node --test scripts/test-remote-event-feed.cjs scripts/test-remote-event-integration.cjs
       - name: Web seek recovery regressions
         run: node --test scripts/test-remote-seek.cjs scripts/test-remote-seek-http.cjs
       - name: Web transport and volume regressions
