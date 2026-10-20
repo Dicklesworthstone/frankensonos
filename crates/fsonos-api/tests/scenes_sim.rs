@@ -746,3 +746,42 @@ fn a_scene_that_no_longer_reads_is_still_the_owners_to_replace() {
     );
     sim.shutdown();
 }
+
+/// Deleting a scene, or saving over it, can be undone (p7vq.4): undo puts
+/// back exactly the scene that was, and refuses when a scene was saved under
+/// its name since.
+#[test]
+fn a_deleted_or_overwritten_scene_comes_back_on_undo() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let s = surface(&sim, MemStore::default());
+    let scene = |s: &Surface| s.scene(&Client::Cli, "Evening").unwrap();
+    volume(&s, &Client::Cli, "Kitchen", 30);
+    s.save_scene(&Client::Cli, "Evening").unwrap();
+    let first = scene(&s);
+
+    s.delete_scene(&Client::Cli, "Evening").unwrap();
+    assert!(s.scenes(&Client::Cli).unwrap().is_empty());
+    let undone = s.undo(&Client::Cli, true).unwrap().unwrap();
+    assert!(
+        undone.summary.contains("the scene \"Evening\" put back"),
+        "{}",
+        undone.summary
+    );
+    assert_eq!(scene(&s), first);
+
+    volume(&s, &Client::Cli, "Kitchen", 50);
+    s.save_scene(&Client::Cli, "evening").unwrap();
+    assert_ne!(scene(&s).volumes, first.volumes);
+    s.undo(&Client::Cli, true).unwrap().unwrap();
+    assert_eq!(scene(&s), first);
+
+    s.delete_scene(&Client::Cli, "Evening").unwrap();
+    s.save_scene(&Client::Cli, "EVENING").unwrap();
+    let refused = s.undo(&Client::Cli, true).unwrap_err();
+    assert!(
+        refused.detail.contains("a scene \"EVENING\" was saved"),
+        "{refused:?}"
+    );
+    assert_eq!(s.scenes(&Client::Cli).unwrap()[0].name, "EVENING");
+    sim.shutdown();
+}

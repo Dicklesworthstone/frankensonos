@@ -281,6 +281,10 @@ impl Store for SharedStore<'_> {
         self.lock().add_schedule(schedule)
     }
 
+    fn put_schedule(&mut self, schedule: &StoredSchedule) -> Result<bool, StoreError> {
+        self.lock().put_schedule(schedule)
+    }
+
     fn schedules(&self) -> Result<Vec<StoredSchedule>, StoreError> {
         self.lock().schedules()
     }

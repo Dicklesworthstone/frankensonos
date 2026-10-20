@@ -1225,6 +1225,32 @@ impl Store for SqliteStore {
         })
     }
 
+    fn put_schedule(&mut self, schedule: &StoredSchedule) -> Result<bool, StoreError> {
+        self.in_transaction(|c| {
+            let taken = c.query_with_params_sync(
+                "SELECT 1 FROM schedules WHERE id = ?1",
+                &[schedule.id.into()],
+            )?;
+            if !taken.is_empty() {
+                return Ok(false);
+            }
+            c.execute_with_params_sync(
+                "INSERT INTO schedules (id, spec, action, creator, enabled, created, last_fired) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                &[
+                    schedule.id.into(),
+                    schedule.spec.as_str().into(),
+                    schedule.action.as_str().into(),
+                    schedule.creator.as_str().into(),
+                    i64::from(schedule.enabled).into(),
+                    schedule.created.into(),
+                    opt_value(schedule.last_fired),
+                ],
+            )?;
+            Ok(true)
+        })
+    }
+
     fn schedules(&self) -> Result<Vec<StoredSchedule>, StoreError> {
         self.query(
             "SELECT id, spec, action, creator, enabled, created, last_fired FROM schedules \

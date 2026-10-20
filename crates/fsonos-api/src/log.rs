@@ -100,8 +100,9 @@ pub struct UndoDto {
     pub undone: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<String>,
-    /// Zones (and DJ steering, tones and queued tracks) that could not be
-    /// restored, including skipped aspects of otherwise restored zones.
+    /// Zones (and DJ steering, tones, queued tracks, scenes and schedules)
+    /// that could not be restored, including skipped aspects of otherwise
+    /// restored zones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failures: Vec<String>,
 }
@@ -137,6 +138,11 @@ impl From<Option<UndoReport>> for UndoDto {
                         r.unqueue_failures
                             .into_iter()
                             .map(|(zone, why)| format!("{} queue: {why}", zone.0)),
+                    )
+                    .chain(
+                        r.config_failures
+                            .into_iter()
+                            .map(|(what, why)| format!("{what}: {why}")),
                     )
                     .chain(r.zones.into_iter().flat_map(|(zone, report)| {
                         report
@@ -239,6 +245,8 @@ mod tests {
             tone_failures: Vec::new(),
             unqueued: Vec::new(),
             unqueue_failures: Vec::new(),
+            configured: Vec::new(),
+            config_failures: Vec::new(),
             summary: "partial restoration".into(),
         }));
         assert_eq!(dto.failures, ["SYNTHETIC Position: queue changed"]);

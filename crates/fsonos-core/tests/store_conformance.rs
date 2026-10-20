@@ -637,6 +637,24 @@ fn schedules(s: &mut dyn Store) {
     assert!(s.delete_schedule(a).unwrap());
     assert!(!s.delete_schedule(a).unwrap());
     assert_eq!(s.schedules().unwrap().len(), 1);
+    // Put back under its own id (an undo), not over another schedule.
+    let back = StoredSchedule {
+        id: a,
+        last_fired: Some(1_100),
+        ..plan("daily 07:30", "cli", 100)
+    };
+    assert!(s.put_schedule(&back).unwrap());
+    assert!(
+        !s.put_schedule(&StoredSchedule {
+            id: b,
+            ..back.clone()
+        })
+        .unwrap()
+    );
+    let all = s.schedules().unwrap();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0], back);
+    assert_eq!(all[1].creator, "tag:assistant");
 }
 
 fn artist_genres(s: &mut dyn Store) {

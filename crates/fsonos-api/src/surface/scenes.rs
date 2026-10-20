@@ -707,18 +707,18 @@ impl Surface {
                 saver.as_deref(),
             )?;
         }
-        let replaced = self.scene_store(|store| {
-            let replaced = store.scenes()?.iter().find_map(|s| {
-                s.name
-                    .eq_ignore_ascii_case(&scene.name)
-                    .then(|| s.name.clone())
-            });
-            if let Some(old) = replaced.as_deref().filter(|old| *old != scene.name) {
-                store.delete_scene(old)?;
+        // What it saves over, and what it leaves there, so undo can put the
+        // first back.
+        let over = self.scene_store(|store| {
+            let was = actions::scene_row(store, &scene.name)?;
+            if let Some(old) = was.as_ref().filter(|old| old.name != scene.name) {
+                store.delete_scene(&old.name)?;
             }
             scenes::save(store, scene, now)?;
-            Ok(replaced.is_some())
+            let left = actions::scene_row(store, &scene.name)?;
+            Ok(was.map(|was| actions::SceneBefore { was, left }))
         })?;
+        let replaced = over.is_some();
         let rooms = scene.volumes.len();
         let done = format!(
             "{} scene {} ({} group(s), {rooms} room(s))",
@@ -726,12 +726,13 @@ impl Surface {
             scene.name,
             scene.groups.len()
         );
+        let before = over.and_then(|over| actions::before_state_config(&[over], &[]));
         self.record(
             client,
             format!("{tool}: {}", scene.name),
             "allow".into(),
             done,
-            None,
+            before,
         );
         Ok(SceneDto::new(scene, now))
     }
@@ -747,17 +748,22 @@ impl Surface {
             &format!("the scene {found:?}"),
             saver.as_deref(),
         )?;
-        let deleted = self.scene_store(|store| {
+        let was = self.scene_store(|store| {
+            let was = actions::scene_row(store, &found)?;
             scenes::delete(store, &found)?;
-            Ok(found.clone())
+            Ok(was)
         })?;
+        let deleted = found;
         let done = format!("deleted scene {deleted}");
+        let before = was.and_then(|was| {
+            actions::before_state_config(&[actions::SceneBefore { was, left: None }], &[])
+        });
         self.record(
             client,
             format!("{tool}: {deleted}"),
             "allow".into(),
             done.clone(),
-            None,
+            before,
         );
         Ok(SceneDeletedDto { deleted, done })
     }

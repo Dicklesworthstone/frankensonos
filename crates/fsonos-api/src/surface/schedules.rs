@@ -17,6 +17,7 @@
 
 use chrono::{DateTime, FixedOffset, Local, TimeDelta, TimeZone, Utc};
 use fastapi::{JsonSchema, fastapi_openapi};
+use fsonos_core::actions::{self, ScheduleBefore};
 use fsonos_core::clock::Clock;
 use fsonos_core::fade::{FadeOutcome, Fader, RampOutcome};
 use fsonos_core::policy::Client;
@@ -971,6 +972,23 @@ impl Surface {
             })
     }
 
+    /// [`Self::log_write`] for a write undo can put back by `before` (a
+    /// scene or schedule as it was), when it went through.
+    pub(super) fn log_undoable_write<T>(
+        &self,
+        client: &Client,
+        intent: String,
+        result: &Result<T, Failure>,
+        done: impl FnOnce(&T) -> String,
+        before: Option<String>,
+    ) {
+        let (text, before) = match result {
+            Ok(value) => (done(value), before),
+            Err(f) => (format!("failed: {}", f.detail), None),
+        };
+        self.record(client, intent, "allow".into(), text, before);
+    }
+
     /// Log a write that went through (or failed): there is no before-state
     /// to undo.
     pub(super) fn log_write<T>(
@@ -1375,12 +1393,32 @@ impl Surface {
             Some(schedule.creator.as_str()),
         )?;
         let dto = ScheduleDto::new(&schedule, self.clock.now().to_utc());
-        let result = self
-            .with_store(|s| s.delete_schedule(id))?
-            .ok_or_else(no_store)
-            .map(|_| dto);
+        let removed = self
+            .with_store(|s| {
+                let was = actions::schedule_row(s, id)?;
+                s.delete_schedule(id)?;
+                Ok(was)
+            })?
+            .ok_or_else(no_store);
+        // What it removed, so undo can put it back.
+        let before = removed.as_ref().ok().cloned().flatten().and_then(|was| {
+            actions::before_state_config(
+                &[],
+                &[ScheduleBefore {
+                    was,
+                    left_enabled: None,
+                }],
+            )
+        });
+        let result = removed.map(|_| dto);
         let intent = format!("remove_schedule: #{id}");
-        self.log_write(client, intent, &result, |d| format!("removed {}", d.line()));
+        self.log_undoable_write(
+            client,
+            intent,
+            &result,
+            |d| format!("removed {}", d.line()),
+            before,
+        );
         result
     }
 
@@ -1407,27 +1445,39 @@ impl Surface {
             Some(schedule.creator.as_str()),
         )?;
         let now = self.clock.now().to_utc();
-        let result = self
+        let switched = self
             .with_store(|s| {
-                if !paused && schedule.enabled {
-                    return Ok(true);
+                let was = actions::schedule_row(s, id)?;
+                if was.as_ref().is_some_and(|was| was.enabled != paused) {
+                    return Ok(None);
                 }
                 // Resuming skips the runs missed while paused.
                 if !paused {
                     s.mark_schedule_fired(id, now.timestamp())?;
                 }
-                s.set_schedule_enabled(id, !paused)
+                s.set_schedule_enabled(id, !paused)?;
+                Ok(was)
             })?
-            .ok_or_else(no_store)
-            .map(|_| {
-                schedule.enabled = !paused;
-                if !paused {
-                    schedule.last_fired = schedule.last_fired.max(Some(now));
-                }
-                ScheduleDto::new(&schedule, now)
-            });
+            .ok_or_else(no_store);
+        // What it switched, so undo can switch it back; nothing for a no-op.
+        let before = switched.as_ref().ok().cloned().flatten().and_then(|was| {
+            actions::before_state_config(
+                &[],
+                &[ScheduleBefore {
+                    was,
+                    left_enabled: Some(!paused),
+                }],
+            )
+        });
+        let result = switched.map(|_| {
+            schedule.enabled = !paused;
+            if !paused {
+                schedule.last_fired = schedule.last_fired.max(Some(now));
+            }
+            ScheduleDto::new(&schedule, now)
+        });
         let intent = format!("{tool}: #{id}");
-        self.log_write(client, intent, &result, ScheduleDto::line);
+        self.log_undoable_write(client, intent, &result, ScheduleDto::line, before);
         result
     }
 
@@ -2490,6 +2540,42 @@ mod tests {
             .unwrap();
         s.remove_schedule(&Client::Cli, id).unwrap();
         assert!(s.schedules(&Client::Cli).unwrap().is_empty());
+    }
+
+    /// A removed or paused schedule comes back on undo (p7vq.4), and runs
+    /// at its time.
+    #[test]
+    fn a_removed_or_paused_schedule_comes_back_on_undo() {
+        let (s, log, clock) = surface("");
+        let t0 = clock.now().to_utc();
+        let agent = Client::Tailnet("tag:agent".into());
+        let once = add(&s, "in 10m", pause_patio()).unwrap();
+        s.remove_schedule(&agent, once.id).unwrap();
+        let undone = s.undo(&agent, true).unwrap().unwrap();
+        assert!(
+            undone
+                .summary
+                .contains(&format!("schedule #{} put back", once.id)),
+            "{}",
+            undone.summary
+        );
+        let back = s.schedules(&Client::Cli).unwrap();
+        assert_eq!(
+            (back.len(), back[0].id, &back[0].next),
+            (1, once.id, &once.next)
+        );
+
+        s.pause_schedule(&agent, once.id, true).unwrap();
+        assert!(!s.schedules(&Client::Cli).unwrap()[0].enabled);
+        s.undo(&agent, true).unwrap().unwrap();
+        assert!(s.schedules(&Client::Cli).unwrap()[0].enabled);
+
+        let scheduler = Scheduler::new(&s);
+        let at = t0 + TimeDelta::minutes(10);
+        let fired = scheduler.tick_at(at + TimeDelta::seconds(1), &Local);
+        assert_eq!(fired, [Ran::Fired { id: once.id, at }]);
+        assert!(scheduler.wait(Duration::from_secs(5)));
+        assert!(sent(&log).iter().any(|a| a == "Pause"));
     }
 
     #[test]

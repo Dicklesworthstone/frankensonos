@@ -493,6 +493,10 @@ pub trait Store {
     /// Add a schedule; returns its new id.
     fn add_schedule(&mut self, schedule: &StoredSchedule) -> Result<i64, StoreError>;
 
+    /// Put `schedule` back under its own id (an undo of its removal), unless
+    /// a schedule has that id now; whether it did.
+    fn put_schedule(&mut self, schedule: &StoredSchedule) -> Result<bool, StoreError>;
+
     /// Every schedule, by id.
     fn schedules(&self) -> Result<Vec<StoredSchedule>, StoreError>;
 
@@ -897,6 +901,14 @@ impl Store for MemStore {
             },
         );
         Ok(id)
+    }
+
+    fn put_schedule(&mut self, schedule: &StoredSchedule) -> Result<bool, StoreError> {
+        if self.schedules.contains_key(&schedule.id) {
+            return Ok(false);
+        }
+        self.schedules.insert(schedule.id, schedule.clone());
+        Ok(true)
     }
 
     fn schedules(&self) -> Result<Vec<StoredSchedule>, StoreError> {

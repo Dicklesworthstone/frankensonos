@@ -33,6 +33,12 @@ use fsonos_proto::Transport;
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 
+mod house_config;
+pub use house_config::{
+    SceneBefore, SceneRow, ScheduleBefore, ScheduleRow, before_state_config, scene_row,
+    schedule_row,
+};
+
 /// Retention: the newest this many actions are kept…
 pub const KEEP_ACTIONS: usize = 10_000;
 /// …and none older than 30 days.
@@ -115,6 +121,12 @@ pub struct BeforeState {
     /// sleep timer, a fade-out). See [`before_state_not_undoable`].
     #[serde(default)]
     pub not_undoable: Option<String>,
+    /// Scenes it saved over or deleted ([`before_state_config`]).
+    #[serde(default)]
+    pub scenes: Vec<SceneBefore>,
+    /// Schedules it paused, resumed or removed.
+    #[serde(default)]
+    pub schedules: Vec<ScheduleBefore>,
 }
 
 /// A room as an action left it: what undo compares against before it
@@ -340,7 +352,7 @@ impl BeforeState {
     /// Parse a logged before-state in either form: a bare array of zone
     /// snapshots (every row logged before sessions could be undone, and
     /// zones-only rows since) or `{"zones":[…],"dj_sessions":[…],"tones":[…],
-    /// "queued":[…]}` (each part optional).
+    /// "queued":[…],"scenes":[…],"schedules":[…]}` (each part optional).
     ///
     /// # Errors
     /// The JSON is neither form.
@@ -516,6 +528,10 @@ pub struct UndoReport {
     pub unqueued: Vec<PlayerId>,
     /// Queued tracks that could not be taken off, with why.
     pub unqueue_failures: Vec<(PlayerId, String)>,
+    /// Scenes and schedules put back, named for people.
+    pub configured: Vec<String>,
+    /// Scenes and schedules that could not be put back, with why.
+    pub config_failures: Vec<(String, String)>,
     /// One line for people.
     pub summary: String,
 }
@@ -648,6 +664,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
         })?;
     if !force {
         refuse_if_changed(t, households, &target, &before)?;
+        house_config::refuse_if_changed(store, &target, &before)?;
     }
     let coordinators: Vec<PlayerId> = before.zones.iter().map(|s| s.coordinator.clone()).collect();
     let (now, _) = capture_zones(t, households, &coordinators, at);
@@ -674,6 +691,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     }
     let (tones, tone_failures) = put_back_tones(t, households, &before.tones);
     let (unqueued, unqueue_failures) = take_off_queued(t, households, &before.queued);
+    let config = house_config::put_back_config(store, &before, at);
     let mut others = outcome_lines(
         "steering for",
         "put back",
@@ -692,6 +710,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
         &named(households, &unqueued),
         &unqueue_failures,
     ));
+    others.extend(config.lines());
     let summary = summarize(target.id, &target.action.intent, &zones, &failures, &others);
     let undo_id = record(
         store,
@@ -718,6 +737,8 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
         tone_failures,
         unqueued,
         unqueue_failures,
+        configured: config.done,
+        config_failures: config.failed,
         summary,
     })
 }

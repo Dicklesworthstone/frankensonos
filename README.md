@@ -332,7 +332,8 @@ deny = ["volume"]
   good policy stays in force (`fsonos policy check` says what is wrong).
 - `fsonos undo` restores the volumes, grouping and what was playing in the
   zones the newest action changed (`--mine`: your own newest), and says what it
-  could not. The `undo_last` tool and `POST /undo` undo the caller's own newest.
+  could not. A scene deleted or saved over, and a schedule paused, resumed or
+  removed, come back the same way (a schedule runs next at its next time). The `undo_last` tool and `POST /undo` undo the caller's own newest.
   Undo goes back at most an hour: past that, the house has moved on. It also
   refuses an action whose speakers someone changed since (in the Sonos app,
   say), naming what changed and putting nothing back; `fsonos undo --force`
