@@ -49,7 +49,11 @@ import FrankenSonosKit
             switch model.panel {
             case .queue: queuePanel
             case .favorites: favoritesPanel
-            case .dj: djPanel
+            case .dj:
+                djPanel
+                if let zone = model.selectedZone, let status = model.dj {
+                    DJSteeringPanel(bridge: bridge, zone: zone, status: status)
+                }
             case .library: libraryPanel
             case .scenes: ScenePanel(bridge: bridge)
             case .sleep: SleepPanel(bridge: bridge)

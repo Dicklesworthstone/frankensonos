@@ -5,6 +5,16 @@
 	};
 	objectVersion = 56;
 	objects = {
+		B10000000000000000000003 = {
+			isa = PBXBuildFile;
+			fileRef = B20000000000000000000003;
+		};
+		B20000000000000000000003 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = DJSteeringPanel.swift;
+			sourceTree = "<group>";
+		};
 		B10000000000000000000002 = {
 			isa = PBXBuildFile;
 			fileRef = B20000000000000000000002;
@@ -209,6 +219,7 @@
 				A1000000000000000000000F,
 				B10000000000000000000001,
 				B10000000000000000000002,
+				B10000000000000000000003,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -247,6 +258,7 @@
 				A20000000000000000000010,
 				B20000000000000000000001,
 				B20000000000000000000002,
+				B20000000000000000000003,
 			);
 			name = "Shared application";
 			path = Sources/FrankenSonosRemote;
