@@ -1,0 +1,14 @@
+.dashboard-library { margin-block: 1rem; padding-block: .8rem; border-block: 1px solid currentColor; min-width: 0; }
+.dashboard-library > summary { cursor: pointer; font-weight: 650; min-height: 2.75rem; }
+.dashboard-library-body { display: grid; gap: .8rem; min-width: 0; }
+.dashboard-library-tools { display: flex; flex-wrap: wrap; align-items: end; gap: .6rem; }
+.dashboard-library-tools label { display: grid; gap: .3rem; flex: 1 1 9rem; min-width: 0; }
+.dashboard-library-tools input, .dashboard-library-tools select { width: 100%; min-width: 0; box-sizing: border-box; font: inherit; }
+.dashboard-library-items { list-style: none; padding: 0; margin: 0; max-height: min(50dvh, 32rem); overflow-y: auto; scrollbar-gutter: stable; }
+.dashboard-library-item { display: grid; gap: .6rem; padding: .8rem .2rem; border-bottom: 1px solid currentColor; }
+.dashboard-library-item p { margin-block: .3rem; }
+.dashboard-library-body p, .dashboard-library-item strong { overflow-wrap: anywhere; }
+.dashboard-library-actions, .dashboard-library-pages { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.dashboard-library button { min-height: 2.75rem; white-space: normal; max-width: 100%; overflow-wrap: anywhere; }
+.dashboard-library :focus-visible { outline: 2px solid currentColor; outline-offset: 3px; }
+.dashboard-library [hidden] { display: none; }

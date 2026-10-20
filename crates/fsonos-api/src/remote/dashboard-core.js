@@ -66,7 +66,7 @@ const DashboardCore = (() => {
     const readers = new Set();
     const send = async (url, body) => {
       const write = body !== undefined, abort = new AbortController();
-      const budget = write && (url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)) ? 600000 : write ? 120000 : 10000;
+      const budget = write && (url === '/queue' || url.startsWith('/dj/') || /^\/scenes\/[^/]+\/apply$/.test(url)) ? 600000 : write ? 120000 : 10000;
       let timer, finished = false, stopped = null, rejectStopped;
       const timeout = new Promise((_, reject) => { rejectStopped = reject; });
       const stop = (error) => {

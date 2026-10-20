@@ -2,6 +2,8 @@
 'use strict';
 const DashboardSession = (() => {
   const C = typeof DashboardCore !== 'undefined' ? DashboardCore : require('./dashboard-core.js');
+  const libraryApi = () => typeof DashboardLibrary !== 'undefined' ? DashboardLibrary
+    : typeof require === 'function' ? require('./dashboard-library.js') : null;
   const text = (v, max = 4096) => typeof v === 'string' && v.trim() !== '' && v.length <= max;
   const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const uint = (v) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
@@ -165,6 +167,28 @@ const DashboardSession = (() => {
       } else return null;
       ++intent; state.result = null; state.pending = freeze(r); emit(); return state.pending;
     }
+    function reviewLibrary(value, action, destination) {
+      const L = libraryApi();
+      if (!L || !ready() || state.pending || !['play', 'append', 'next'].includes(action)) return null;
+      const item = selection();
+      if (!item || destination?.target !== C.key(item.zone) || destination?.shape !== C.shape(item.zone)) return null;
+      let catalog;
+      try { catalog = L.choiceOf(value); }
+      catch (error) { state.error = error.message; emit(); return null; }
+      const source = catalog.item, target = C.key(item.zone), name = source.title || `Untitled ${source.kind}`;
+      const label = { play: 'Play now', append: 'Add to end', next: 'Queue next' }[action];
+      const effect = action !== 'play' ? 'Adds to the speaker queue without starting playback.'
+        : source.kind === 'track' ? 'Replaces the current source.' : 'Replaces current playback and the group’s queue.';
+      const coverage = source.kind === 'album' ? `Uses the full album source, not just its ${source.cached_tracks} cached tracks.`
+        : source.kind === 'playlist' ? 'Uses the playlist source; its live contents may differ from the cache.' : 'Uses this exact track source.';
+      ++intent; state.result = null; state.error = '';
+      state.pending = freeze({ kind: 'library', target, label: item.zone.members.join(' + '),
+        title: `${label}: ${name}`, detail: `${source.subtitle ? `${source.subtitle}. ` : ''}${effect} ${coverage} Source: ${source.source_uri}. The daemon’s policy and service availability still apply.`,
+        playback: playbackIdentity(item), catalog, libraryAction: action,
+        url: action === 'play' ? '/play' : '/queue',
+        body: { zone: target, source_uri: source.source_uri, title: name, ...(action === 'play' ? {} : { next: action === 'next' }) } });
+      emit(); return state.pending;
+    }
     async function reviewScene(name) {
       if (!ready() || !state.scenes.some((s) => s.name === name)) return null;
       cancel(); const v = intent, target = controller.state.selected;
@@ -205,6 +229,14 @@ const DashboardSession = (() => {
               valid(check);
               if (stable(available.find((m) => m.name === r.mood.name)) !== stable(r.mood)) fail('The mood definition changed. Refresh moods.');
             }
+          } else if (r.catalog) {
+            const L = libraryApi();
+            if (!L) fail('The library browser is unavailable. Refresh the page.');
+            const page = L.pageOf(await call(L.urlOf(r.catalog.query)), r.catalog.query);
+            valid(check);
+            if (page.revision !== r.catalog.revision || !page.items.some((entry) => stable(entry) === stable(r.catalog.item))) {
+              fail('The cached library selection changed. Refresh its listing and review again.');
+            }
           } else if (r.hit) {
             const results = hits(await call(`/library/search?${new URLSearchParams({ q: r.query, zone: target, limit: 8 })}`));
             valid(check);
@@ -217,6 +249,13 @@ const DashboardSession = (() => {
           if (!result || result.zone !== item.zone.coordinator_room || result.signal !== r.kind || !text(result.work)
               || result.composer !== r.work.composer || result.work !== `${r.work.composer}: ${r.work.title}` || !text(result.done)) fail('The feedback acknowledgement was incomplete.');
           return { done: result.done, changed: true };
+        }
+        if (r.catalog && r.libraryAction !== 'play') {
+          if (!result || !text(result.done) || !uint(result.first) || result.first < 1
+              || !uint(result.count) || result.count < 1 || typeof result.playing_queue !== 'boolean') {
+            fail('The queue acknowledgement was incomplete.');
+          }
+          return { done: result.done, changed: true, notes: result.notes };
         }
         if (r.kind === 'scene') {
           if (!result || result.scene !== r.scene.name || typeof result.complete !== 'boolean'
@@ -231,7 +270,7 @@ const DashboardSession = (() => {
       });
       emit(); if (ok && active && !disposed) await load(); return ok;
     }
-    return { state, load, catalog, search, review, reviewScene, confirm, cancel,
+    return { state, load, catalog, search, review, reviewLibrary, reviewScene, confirm, cancel,
       suspend() { active = false; ++version; ++searchVersion; ++catalogVersion; state.loading = state.searching = false; cancel(); },
       resume() { if (!disposed) active = true; },
       dispose() { disposed = true; active = false; ++version; ++intent; ++searchVersion; ++catalogVersion; },

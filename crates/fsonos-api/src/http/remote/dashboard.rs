@@ -8,6 +8,9 @@ use super::{Ctx, Op, REMOTE, asset};
 
 const PAGE: &str = include_str!("../../remote/dashboard.html");
 const STYLE: &str = include_str!("../../remote/dashboard.css");
+const LIBRARY: &str = include_str!("../../remote/dashboard-library.js");
+const LIBRARY_PANEL: &str = include_str!("../../remote/dashboard-library-panel.js");
+const LIBRARY_STYLE: &str = include_str!("../../remote/dashboard-library.css");
 const EVENTS: &str = include_str!("../../remote/event-feed.js");
 const LIVE: &str = include_str!("../../remote/dashboard-live.js");
 const CORE: &str = include_str!("../../remote/dashboard-core.js");
@@ -44,7 +47,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 REMOTE,
                 "The listening dashboard's style sheet",
             ),
-            |_, _, _| document("text/css; charset=utf-8", STYLE),
+            |_, _, _| document("text/css; charset=utf-8", &format!("{STYLE}\n{LIBRARY_STYLE}")),
         )
         .response_schema::<String>(200, "The dashboard style sheet (text/css)"),
         cx.route(
@@ -58,7 +61,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SESSION}\n{QUEUE}\n{WORKSPACE}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{WORKSPACE}\n{SCRIPT}"
                     ),
                 )
             },

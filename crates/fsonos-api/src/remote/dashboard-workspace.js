@@ -19,6 +19,8 @@ const DashboardWorkspace = (() => {
     const $ = (id) => document.getElementById(id);
     let active = true, immersive = false, chosenTab = 'picks', roomKey = '';
     const queue = DashboardQueue.model({ call, changed: paintQueue });
+    const library = typeof DashboardLibraryPanel !== 'undefined'
+      ? DashboardLibraryPanel.create({ call, controller, session }) : null;
     function paintQueue(state) {
       const p = state.page, container = $('queue-items'), scroll = container.scrollTop;
       container.replaceChildren(); container.setAttribute('aria-busy', String(state.loading));
@@ -136,14 +138,15 @@ const DashboardWorkspace = (() => {
     return {
       observe(state) {
         queue.observe(controller.selected());
+        library?.observe();
         const next = JSON.stringify([state.selected, state.busy, state.items.map((i) => [i.zone, i.fresh, i.state?.transport_state])]);
         if (next !== roomKey) { roomKey = next; paintRooms(); }
         for (const b of document.querySelectorAll('[data-open-rooms]')) b.disabled = state.busy;
       },
       invalidate() { queue.invalidate(); },
       immerse(value) { immersive = value; if (value) queue.suspend(); else if (active) { queue.resume(); if (chosenTab === 'queue') queue.open(); } },
-      suspend() { active = false; queue.suspend(); for (const id of ['rooms-dialog', 'shortcuts-dialog']) if ($(id).open) $(id).close(); },
-      resume() { active = true; if (!immersive) queue.resume(); },
+      suspend() { active = false; library?.suspend(); queue.suspend(); for (const id of ['rooms-dialog', 'shortcuts-dialog']) if ($(id).open) $(id).close(); },
+      resume() { active = true; library?.resume(); if (!immersive) queue.resume(); },
     };
   }
   return { create, moveFocus };
