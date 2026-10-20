@@ -125,6 +125,7 @@ import FrankenSonosKit
                     else { noRoom }
                     if let zone = model.selectedZone {
                         grouping(zone)
+                        AnnouncementPanel(bridge: bridge, zone: zone)
                         SpeakerSoundPanel(bridge: bridge, zone: zone)
                     }
                     VStack(alignment: .leading, spacing: 14) {
