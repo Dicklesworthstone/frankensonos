@@ -258,7 +258,23 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     let mut launched = None;
     let result = match play {
         Ok(_) => (|| {
-            stream.check().context("confirm live capture before application launch")?;
+            if launch.is_some() {
+                stream
+                    .wait_for_reader(Duration::from_secs(10))
+                    .context("wait for audio delivery before application launch")?;
+                #[cfg(unix)]
+                recovery::verify_measurement(
+                    &*network.transport,
+                    direct.households()?,
+                    &previous,
+                    &source,
+                    false,
+                )
+                .map_err(anyhow::Error::msg)
+                .context("confirm the original stream group before application launch")?;
+                // The reader may have disconnected while the speaker reads ran.
+                stream.wait_for_reader(Duration::ZERO)?;
+            }
             launched = launch
                 .as_ref()
                 .map(|launch| application::Application::start(launch, Arc::clone(&stop)))

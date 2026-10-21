@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 use std::io::{self, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::process::Child;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -36,6 +36,62 @@ struct State {
 pub(super) struct Audio {
     state: Mutex<State>,
     changed: Condvar,
+    readers: AtomicUsize,
+}
+
+// Count only live GET handlers which successfully wrote a complete frame.
+// A HEAD/probe, pending header or old disconnected reader is not readiness.
+struct Reader<'a> {
+    count: &'a AtomicUsize,
+    delivering: bool,
+}
+
+impl<'a> Reader<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        Self {
+            count,
+            delivering: false,
+        }
+    }
+
+    fn delivered(&mut self) {
+        if !self.delivering {
+            // At most MAX_CLIENTS reader guards can be active.
+            self.count.fetch_add(1, Ordering::AcqRel);
+            self.delivering = true;
+        }
+    }
+}
+
+impl Drop for Reader<'_> {
+    fn drop(&mut self) {
+        if self.delivering {
+            self.count.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
+fn await_reader(
+    count: &AtomicUsize,
+    timeout: Duration,
+    mut check: impl FnMut() -> io::Result<()>,
+) -> io::Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        // Cancellation or a dead encoder wins over stale delivery evidence.
+        check()?;
+        if count.load(Ordering::Acquire) > 0 {
+            return Ok(());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "no live HTTP audio reader before the application startup deadline",
+            ));
+        }
+        thread::sleep(remaining.min(IO_POLL));
+    }
 }
 
 fn poisoned<T>(_: std::sync::PoisonError<T>) -> io::Error {
@@ -281,8 +337,10 @@ fn serve_peer(mut peer: TcpStream, path: &str, audio: &Audio, stop: &AtomicBool)
     if fields[0] == "HEAD" {
         return Ok(());
     }
+    let mut reader = Reader::new(&audio.readers);
     while let Some(frame) = audio.next(&mut cursor, stop)? {
         peer.write_all(&frame)?;
+        reader.delivered();
     }
     Ok(())
 }
@@ -403,6 +461,13 @@ impl LiveStream {
         self.check()
     }
 
+    /// Application launch waits for actual HTTP delivery, not merely Play's
+    /// reply. This proves a live consumer, not acoustic playback or identity.
+    pub(super) fn wait_for_reader(&mut self, timeout: Duration) -> io::Result<()> {
+        let audio = Arc::clone(&self.audio);
+        await_reader(&audio.readers, timeout, || self.check())
+    }
+
     pub(super) fn check(&mut self) -> io::Result<()> {
         if self.cancel.load(Ordering::Acquire) {
             return Err(io::Error::new(
@@ -469,3 +534,6 @@ impl Drop for LiveStream {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod audience_tests;

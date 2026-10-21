@@ -16,10 +16,20 @@ directory, environment and privileges otherwise remain yours; this is not a
 sandbox. Application arguments are not added to the Sonos action log.
 
 The temporary sink is created and verified, capture is warmed up, and Sonos
-must accept playback before the application is launched. A denied or failed
-play request never launches it. Spawn failure goes through the existing
-ownership-checked playback restoration and stream/output cleanup. No automatic
-application restart occurs after a failure or exit.
+must accept playback before the application is launched. The new launch path
+then waits up to ten seconds for a live HTTP GET handler to write a complete
+MP3 frame. HEAD requests, response headers alone, and disconnected readers do
+not authorize launch. It rechecks the original Sonos group and stream source
+(playing or initially buffering), then verifies the reader is still active.
+A missing reader, changed group/source, cancellation, or failed read prevents
+launch and goes through cleanup. A denied or failed play request never launches
+it. Spawn failure goes through the existing ownership-checked playback
+restoration and stream/output cleanup. No automatic
+application restart occurs after a failure or exit. The reader check avoids
+starting the app before the first media connection, but it is not an atomic
+transaction with a remote client and does not prove acoustic playback. A later
+disconnect or an unrelated client fetching the random stream URL cannot be
+ruled out by successful socket writes.
 
 ## Routing is a child-local preference
 
