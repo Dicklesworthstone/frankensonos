@@ -142,7 +142,9 @@ fn a_genuine_exhausted_queue_is_fed_and_starts_the_first_new_work() {
         let mut feed = rig.feed();
         let event = rig.event();
         assert!(feed.ran_dry(&event));
-        assert!(rig.tick(&rig.lan, &mut feed, &event).unwrap() > 0);
+        // The successor is already queued, so recovery starts it without
+        // adding another work. The return value counts newly queued works.
+        assert_eq!(rig.tick(&rig.lan, &mut feed, &event).unwrap(), 0);
         assert_eq!(soap::get_position_info(&rig.lan, rig.host).unwrap().track, 5);
         assert_eq!(soap::get_transport_info(&rig.lan, rig.host).unwrap().state, TransportState::Playing);
         assert!(feed.is_active());

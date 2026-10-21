@@ -37,7 +37,7 @@ impl Destination {
         let mut members: Vec<String> = group
             .members
             .iter()
-            .flat_map(|member| member.bonded_players())
+            .flat_map(fsonos_proto::topology::ZoneMember::bonded_players)
             .map(|player| player.0.clone())
             .collect();
         members.sort();

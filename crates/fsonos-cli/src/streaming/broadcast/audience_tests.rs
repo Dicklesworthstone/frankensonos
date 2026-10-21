@@ -1,7 +1,6 @@
 //! Exact production HTTP delivery and readiness logic over real loopback sockets.
 
 use super::*;
-use std::io::{Read as _, Write as _};
 
 fn frame() -> Vec<u8> {
     let mut bytes = vec![0; frame_len(&[0xff, 0xfb, 0xb0, 0]).unwrap()];

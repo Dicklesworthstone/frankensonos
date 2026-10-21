@@ -66,10 +66,19 @@ impl Transport for Replies {
             target: host.to_string(),
             detail: "injected lost reply".into(),
         };
-        if matches!(self.fault, Fault::LostStart)
-            && ["SetAVTransportURI", "GetMediaInfo"].contains(&name)
-        {
-            return Err(lost());
+        if matches!(self.fault, Fault::LostStart) {
+            // Destination/source preflight now reads GetMediaInfo before any
+            // replacement mutation. Inject uncertainty only once the start
+            // write has actually been attempted, so this test still exercises
+            // the post-commit no-replay path it names.
+            let start_attempted = self
+                .writes
+                .borrow()
+                .iter()
+                .any(|write| write == "SetAVTransportURI");
+            if name == "SetAVTransportURI" || (name == "GetMediaInfo" && start_attempted) {
+                return Err(lost());
+            }
         }
         let response = self.inner.soap_post(host, path, action, body)?;
         if (name == "AddURIToQueue" && matches!(self.fault, Fault::LostAdd))
