@@ -1,0 +1,1 @@
+anoisesrc=r=48000:a=0.025:c=white,highpass=f=250,lowpass=f=3000,aeval='clip(val(0),-0.025,0.025)',afade=t=in:st=0:d=0.1

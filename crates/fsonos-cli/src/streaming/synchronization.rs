@@ -16,6 +16,7 @@ mod input;
 mod measurement;
 mod mpv;
 mod ownership;
+mod probe;
 
 pub use measurement::Measurement;
 
@@ -42,6 +43,13 @@ pub struct SyncArgs {
     /// Measurement phase deadline in seconds (default 180), excluding playback setup and restoration.
     #[arg(long, requires = "measure_latency", value_parser = clap::value_parser!(u64).range(10..=600))]
     pub measure_timeout: Option<u64>,
+    /// Emit bounded low-level test noise into this Pulse sink during measurement (audible).
+    #[arg(
+        long,
+        requires_all = ["measure_latency", "sync_microphone"],
+        conflicts_with_all = ["sync_mpv", "sync_input", "latency_wav"]
+    )]
+    pub measure_probe: Option<String>,
     /// One time-aligned stereo capture: left=dry reference, right=room microphone.
     #[arg(
         long,
@@ -93,11 +101,13 @@ pub struct Prepared {
     controller: Option<mpv::Controller>,
     options: Options,
     measurement_timeout: Duration,
+    probe: Option<probe::Config>,
 }
 
 impl Prepared {
     /// Read-only preflight before any speaker mutation. Measurement never connects to mpv.
     pub fn from_args(args: &StreamArgs) -> anyhow::Result<Option<Self>> {
+        let probe = probe::Config::from_args(args)?;
         let Some(input) = input::Input::from_args(args)? else {
             return Ok(None);
         };
@@ -117,6 +127,7 @@ impl Prepared {
                 max_lag_ms: args.max_lag_ms,
             },
             measurement_timeout: Duration::from_secs(args.sync.measure_timeout.unwrap_or(180)),
+            probe,
         }))
     }
 
@@ -199,10 +210,14 @@ pub fn wait(
                 stream: stop,
                 deadline: Some(Instant::now() + prepared.measurement_timeout),
             };
+            let mut probe = prepared.probe;
             return measurement::collect(prepared.options.max_lag_ms, &stop, || {
                 stream.check()?;
                 verify(false)?;
-                let bytes = capture::record(&prepared.options, &stop)?;
+                if let Some(probe) = &mut probe {
+                    probe.reserve_window()?;
+                }
+                let bytes = capture::record_with_probe(&prepared.options, &stop, probe.as_ref())?;
                 stream.check()?;
                 if bytes.is_some() && !stop.requested() {
                     verify(true)?;
