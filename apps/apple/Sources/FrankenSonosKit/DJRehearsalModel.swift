@@ -1,6 +1,7 @@
 import Foundation
 
-public struct DJRehearsalObservation: Sendable {
+public struct DJRehearsalObservation: Sendable, Identifiable {
+    public let id = UUID()
     public let request: DJRehearsalRequest
     public let report: DJRehearsal
     public let generatedAt: Date
@@ -68,6 +69,19 @@ public struct DJRehearsalObservation: Sendable {
             self?.task = nil; self?.loading = false
         }
     }
+    /// A local handoff from one completed, still-current observation. This
+    /// neither edits the live-session editor nor sends a command. The caller
+    /// chooses a lifetime and uses the existing one-use command review path.
+    public func steeringDraft(from observationID: UUID, in selected: Zone,
+                              status: DJStatus, moods: [MoodCatalog.Mood]) throws -> DJSteeringDraft {
+        guard active, !stopped, !loading, matchesChoices,
+              let observation, observation.id == observationID,
+              zone?.sameGroup(as: selected) == true else {
+            throw ContractError.invalid("This preview is no longer current. Generate again before using its settings.")
+        }
+        return try DJSteeringDraft(rehearsal: observation.request, in: selected, status: status, moods: moods)
+    }
+
     public func cancel() {
         invalidate()
         problem = "Preview cancelled. No music was played or changed."

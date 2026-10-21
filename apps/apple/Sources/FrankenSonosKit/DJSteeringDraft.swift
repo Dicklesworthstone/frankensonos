@@ -19,6 +19,44 @@ public struct DJSteeringDraft: Sendable {
         self.group = group; before = status.steering
         let fields = baseline.source == "session" ? baseline.added.values : [:]
         mood = baseline.source == "session" ? baseline.mood ?? "" : ""
+        loadFilters(fields)
+    }
+
+    /// Copy explicit preview settings into a NEW local draft. The current
+    /// session is the replacement baseline, never the source of extra filters.
+    /// A seed, planned start, set length and predicted queue are not steering.
+    public init(rehearsal: DJRehearsalRequest, in group: Zone, status: DJStatus,
+                moods: [MoodCatalog.Mood]) throws {
+        guard group.sameGroup(as: rehearsal.zone) else {
+            throw ContractError.invalid("The preview belongs to a different group. Generate again for the selected rooms.")
+        }
+        let filters = try DJSteeringFilters(rehearsal.constraints)
+        guard rehearsal.mood != nil || !filters.values.isEmpty else {
+            throw ContractError.invalid("This preview inherited live steering. It has no explicit mood or filters to copy.")
+        }
+        let selected: String
+        if let raw = rehearsal.mood {
+            // The rehearsal engine lowercases a supplied mood before resolving
+            // it. Use that exact canonical name, not fuzzy or Unicode matching.
+            let name = try DJSteeringFilters.word(raw).lowercased()
+            let matches = moods.filter { $0.name.utf8.elementsEqual(name.utf8) }
+            guard matches.count == 1 else {
+                throw ContractError.invalid("The preview mood is missing or ambiguous. Refresh the DJ moods before review.")
+            }
+            _ = try DJSteeringFilters(matches[0].constraints)
+            selected = matches[0].name
+        } else { selected = "" }
+        try self.init(in: group, status: status)
+        loadFilters(filters.values)
+        mood = selected
+        // Preview hours are NOT a session lifetime. Require an explicit new
+        // duration, or the separate until-cleared choice, before review.
+        minutes = ""; untilCleared = false
+    }
+
+    private mutating func loadFilters(_ fields: [String: JSONValue]) {
+        entries = [:]; minimumMinutes = ""; maximumMinutes = ""
+        energyBias = 0; allowLongWorks = false
         for field in DJSteeringField.allCases {
             guard case .array(let values) = fields[field.rawValue] else { continue }
             entries[field] = values.map { value -> String in
