@@ -110,6 +110,13 @@ fn prepare(serve: &ServeArgs, tailnet: &TailnetStatus) -> anyhow::Result<Serving
         };
         bail!("Tailscale is not running here. {hint}");
     };
+    // Found by interface scan: no word on MagicDNS, so no blaming it.
+    if !tailnet.answered() {
+        bail!(
+            "the `tailscale` CLI did not answer `tailscale status`, so Serve was not checked; \
+             `fsonos tailscale status` asks again"
+        );
+    }
     // Serve's HTTPS certificate is issued for the MagicDNS name.
     let name = t.magic_dns_name.clone().context(
         "Tailscale Serve's HTTPS needs MagicDNS and HTTPS certificates: turn both on in the \
@@ -175,9 +182,22 @@ pub fn run(global: &GlobalArgs, args: &TailscaleArgs) -> anyhow::Result<()> {
 /// for the log saying where the daemon is now reachable, or why not.
 ///
 /// # Errors
-/// Tailscale is down or without MagicDNS, Serve refuses (Funnel, a port in
-/// use), or a step fails.
+/// Tailscale is down, silent or without MagicDNS, Serve refuses (Funnel, a
+/// port in use), or a step fails.
 pub fn setup_at_startup(serve: &ServeArgs, tailnet: &TailnetStatus) -> anyhow::Result<String> {
+    // The daemon's first look can miss the CLI's deadline on a busy host;
+    // this runs on a thread of its own, so it asks again, patiently.
+    let asked;
+    let tailnet = if tailnet.answered() {
+        tailnet
+    } else {
+        asked = Probe {
+            timeout: STEP_TIMEOUT,
+            ..Probe::default()
+        }
+        .detect();
+        &asked
+    };
     let Serving {
         name,
         probe,
@@ -383,6 +403,24 @@ mod tests {
         let [api, mcp] = mappings(&parse(&["fsonos", "tailscale", "status"]).unwrap().serve);
         assert_eq!(url(NAME, &api), format!("https://{NAME}/"));
         assert_eq!(url(NAME, &mcp), format!("https://{NAME}:8443/mcp"));
+    }
+
+    /// A tailnet found only by interface scan (the CLI failed or was slow)
+    /// says so, rather than sending the owner to turn on MagicDNS (seen
+    /// live: four daemon starts on a busy host).
+    #[test]
+    fn a_silent_cli_is_not_blamed_on_magicdns() {
+        let serve = parse(&["fsonos", "tailscale", "setup"]).unwrap().serve;
+        let scanned = TailnetStatus::Available(
+            fsonos_tailscale::from_addresses(["100.64.0.10".parse().unwrap()])
+                .expect("a tailnet address"),
+        );
+        let Err(why) = prepare(&serve, &scanned) else {
+            panic!("Serve checked without Tailscale's answer");
+        };
+        let why = why.to_string();
+        assert!(why.contains("did not answer"), "{why}");
+        assert!(!why.contains("MagicDNS"), "{why}");
     }
 
     #[test]

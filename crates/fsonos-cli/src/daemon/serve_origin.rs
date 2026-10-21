@@ -8,7 +8,8 @@
 //! exactly `https://<this host's MagicDNS name>` while Serve proxies that
 //! name's port 443 to the HTTP API, and only while Funnel is off for it
 //! ([`ServeOrigin`]); otherwise none. Never a wildcard, never a name taken
-//! from a request.
+//! from a request. A look Tailscale does not answer changes nothing, for up
+//! to [`UNANSWERED_LIMIT`] looks in a row.
 
 use fsonos_api::web::ServeOrigin;
 use fsonos_tailscale::serve::{self, Mapping, ServeConfig};
@@ -22,6 +23,12 @@ use crate::tailscale_cmd::API_PORT;
 
 /// How often Tailscale is asked.
 pub const INTERVAL: Duration = Duration::from_secs(30);
+/// How long each question may take: this thread waits for nobody.
+const PATIENCE: Duration = Duration::from_secs(10);
+/// Unanswered looks in a row before the origin goes anyway (2 minutes at
+/// [`INTERVAL`]), so Serve turned off while Tailscale is silent is not
+/// trusted for long.
+pub const UNANSWERED_LIMIT: u32 = 4;
 
 /// The MagicDNS name whose Serve origin to admit: this host's, when Serve
 /// proxies its port 443 to `target` (the HTTP API) and Funnel is off there.
@@ -66,19 +73,78 @@ pub fn admit(origin: &ServeOrigin, name: Option<&str>) {
     }
 }
 
+/// One look at Tailscale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Look {
+    /// Tailscale answered both questions: the name whose Serve origin to
+    /// admit, or none.
+    Answered(Option<String>),
+    /// It did not (the CLI failed or missed its deadline), so nothing is
+    /// known about Serve.
+    Unanswered,
+}
+
+/// Ask Tailscale (`tailscale serve status`, then `tailscale status`)
+/// whether Serve fronts `target` on this host's MagicDNS name.
+pub fn look(probe: &Probe, target: &str) -> Look {
+    let Ok(config) = probe.serve_config() else {
+        return Look::Unanswered;
+    };
+    let status = probe.detect();
+    if status.answered() {
+        Look::Answered(serve_name(&status, &config, target))
+    } else {
+        Look::Unanswered
+    }
+}
+
+/// What to act on after `look`, counting unanswered looks in a row in
+/// `unanswered`. One missed answer is not Serve going away (seen live: a
+/// busy host's CLI misses its deadline, and the admitted origin flapped off
+/// and on for 30 s at a time), so what is admitted stays, until
+/// [`UNANSWERED_LIMIT`] looks in a row went unanswered: then nothing is.
+pub fn settle(look: Look, unanswered: &mut u32) -> Look {
+    match look {
+        Look::Answered(_) => *unanswered = 0,
+        Look::Unanswered => {
+            *unanswered = unanswered.saturating_add(1);
+            if *unanswered >= UNANSWERED_LIMIT {
+                return Look::Answered(None);
+            }
+        }
+    }
+    look
+}
+
 /// Keep `origin` current, on a thread of its own, until `stop`. `target`
 /// is what Serve proxies the API's port 443 to.
 pub fn watch(target: String, origin: ServeOrigin, stop: Arc<AtomicBool>) {
     let spawned = thread::Builder::new()
         .name("fsonos-serve-origin".into())
         .spawn(move || {
-            let probe = Probe::default();
+            let probe = Probe {
+                timeout: PATIENCE,
+                ..Probe::default()
+            };
+            let mut unanswered = 0;
             while !stop.load(Ordering::Acquire) {
-                let name = probe
-                    .serve_config()
-                    .ok()
-                    .and_then(|config| serve_name(&probe.detect(), &config, &target));
-                admit(&origin, name.as_deref());
+                match settle(look(&probe, &target), &mut unanswered) {
+                    Look::Answered(name) => {
+                        if unanswered == UNANSWERED_LIMIT && origin.get().is_some() {
+                            tracing::warn!(
+                                "Tailscale has not answered {UNANSWERED_LIMIT} times in a row; \
+                                 not admitting Serve's origin until it does"
+                            );
+                        }
+                        admit(&origin, name.as_deref());
+                    }
+                    Look::Unanswered => {
+                        tracing::debug!(
+                            unanswered,
+                            "Tailscale did not answer; Serve's origin kept"
+                        );
+                    }
+                }
                 let until = Instant::now() + INTERVAL;
                 while Instant::now() < until && !stop.load(Ordering::Acquire) {
                     thread::sleep(Duration::from_millis(200));
@@ -173,6 +239,89 @@ mod tests {
         ] {
             assert_eq!(serve_name(&status, &config, TARGET), None, "{why}");
         }
+    }
+
+    /// A missed answer keeps what is admitted; only a run of them, or an
+    /// answer, changes it.
+    #[test]
+    fn a_missed_answer_is_not_serve_going_away() {
+        let origin = ServeOrigin::default();
+        let mut unanswered = 0;
+        let mut step = |look: Look| {
+            if let Look::Answered(name) = settle(look, &mut unanswered) {
+                admit(&origin, name.as_deref());
+            }
+            origin.get()
+        };
+        let admitted = Some(format!("https://{NAME}"));
+        assert_eq!(step(Look::Answered(Some(NAME.into()))), admitted);
+        for _ in 1..UNANSWERED_LIMIT {
+            assert_eq!(step(Look::Unanswered), admitted);
+        }
+        // An answer starts the count again.
+        assert_eq!(step(Look::Answered(Some(NAME.into()))), admitted);
+        for _ in 1..UNANSWERED_LIMIT {
+            assert_eq!(step(Look::Unanswered), admitted);
+        }
+        assert_eq!(step(Look::Unanswered), None, "too long without an answer");
+        assert_eq!(step(Look::Unanswered), None);
+        assert_eq!(step(Look::Answered(Some(NAME.into()))), admitted);
+        // An answer that Serve is gone counts at once.
+        assert_eq!(step(Look::Answered(None)), None);
+    }
+
+    /// A fake `tailscale`: `serve status --json` prints this host's Serve of
+    /// the API; `status --json` prints a running tailnet with `NAME`, after
+    /// `delay` seconds.
+    #[cfg(unix)]
+    fn fake_cli(delay: u32) -> Probe {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::AtomicUsize;
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "fsonos-serve-origin-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let serve = format!(
+            r#"{{"TCP":{{"443":{{"HTTPS":true}}}},"Web":{{"{NAME}:443":{{"Handlers":{{"/":{{"Proxy":"{TARGET}"}}}}}}}}}}"#
+        );
+        let status = format!(
+            r#"{{"BackendState":"Running","HaveNodeKey":true,"TailscaleIPs":["100.64.0.10"],"Self":{{"DNSName":"{NAME}."}}}}"#
+        );
+        std::fs::write(dir.join("serve.json"), serve).unwrap();
+        std::fs::write(dir.join("status.json"), status).unwrap();
+        let script = dir.join("tailscale");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncd '{}' || exit 1\n\
+                 if [ \"$*\" = 'serve status --json' ]; then cat serve.json; exit 0; fi\n\
+                 if [ \"$*\" = 'status --json' ]; then sleep {delay}; cat status.json; exit 0; fi\n\
+                 exit 1\n",
+                dir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Probe {
+            cli_candidates: vec![script],
+            timeout: Duration::from_secs(1),
+        }
+    }
+
+    /// Only Tailscale's own answer counts: a CLI past its deadline (the
+    /// probe falls back to an interface scan, which has no MagicDNS name)
+    /// is no answer, not "Serve is gone".
+    #[cfg(unix)]
+    #[test]
+    fn a_slow_cli_is_no_answer() {
+        assert_eq!(
+            look(&fake_cli(0), TARGET),
+            Look::Answered(Some(NAME.into()))
+        );
+        assert_eq!(look(&fake_cli(3), TARGET), Look::Unanswered);
     }
 
     #[test]

@@ -80,6 +80,14 @@ impl TailnetStatus {
             _ => None,
         }
     }
+
+    /// Tailscale itself answered (`tailscale status --json`), so its state
+    /// and MagicDNS name are known rather than missing: an interface scan,
+    /// the fallback when the CLI fails or misses its deadline, sees neither.
+    #[must_use]
+    pub fn answered(&self) -> bool {
+        matches!(self, Self::Available(t) if t.source == Source::Cli)
+    }
 }
 
 /// This host's view of its tailnet.
@@ -336,7 +344,10 @@ mod tests {
             cli_candidates: vec![PathBuf::from("/nonexistent/fsonos-test/tailscale")],
             timeout: Duration::from_secs(1),
         };
-        match probe.detect() {
+        let status = probe.detect();
+        // Either way, Tailscale did not answer.
+        assert!(!status.answered(), "{status:?}");
+        match status {
             TailnetStatus::Unavailable(why) => assert_eq!(why, Unavailable::NotInstalled),
             // A host that really is on a tailnet still finds it by interface.
             TailnetStatus::Available(t) => assert_eq!(t.source, Source::Interfaces),
@@ -359,6 +370,7 @@ mod tests {
         let available = TailnetStatus::Available(
             from_addresses([ip("100.101.102.103")]).expect("tailnet address"),
         );
+        assert!(!available.answered());
         let v = serde_json::to_value(&available).unwrap();
         assert_eq!(v["status"], "available");
         assert_eq!(v["source"], "interfaces");
