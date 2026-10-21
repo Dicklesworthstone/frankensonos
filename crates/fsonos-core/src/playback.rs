@@ -221,6 +221,16 @@ impl Playback {
         state.position_requested = false;
         let uri = match info.uri.trim() {
             "" | "NOT_IMPLEMENTED" => None,
+            // Under Spotify Connect a read names the session where events
+            // name the track (seen live): it times that track, the same one.
+            uri if connect_session(uri)
+                && state
+                    .track_uri
+                    .as_deref()
+                    .is_some_and(|t| t.starts_with(CONNECT_TRACK)) =>
+            {
+                state.track_uri.clone()
+            }
             uri => Some(uri.to_string()),
         };
         let slot = (info.track > 0).then_some(info.track);
@@ -252,6 +262,16 @@ impl Playback {
         self.players.remove(player);
         self.observations.forget(player);
     }
+}
+
+/// How a player names a Spotify Connect track: `x-sonos-spotify:` with the
+/// `spotify:` URI unescaped (a queued track's is `spotify%3a…`).
+const CONNECT_TRACK: &str = "x-sonos-spotify:spotify:";
+
+/// The Spotify Connect session (`x-sonos-vli:<player>:2,spotify:<session>`),
+/// which names no track.
+fn connect_session(uri: &str) -> bool {
+    uri.starts_with("x-sonos-vli:") && uri.contains(",spotify:")
 }
 
 fn apply_av_transport(
@@ -603,6 +623,49 @@ mod tests {
             .unwrap();
         assert_eq!(changes.track, None);
         assert_eq!(playback.of(&player()).unwrap().position_at(at), Some(12));
+    }
+
+    /// Seen live under Spotify Connect: events name the track, a read of the
+    /// same moment names the Connect session. The read times the track; it
+    /// does not replace it (each flip was a new track to every consumer).
+    #[test]
+    fn a_connect_read_naming_the_session_keeps_the_track() {
+        let now = Instant::now();
+        let track = "x-sonos-spotify:spotify:track:abc123?sid=12&flags=0&sn=1";
+        let session = "x-sonos-vli:RINCON_TEST01400:2,spotify:0123abcd";
+        let mut playback = Playback::default();
+        playback
+            .apply(
+                &player(),
+                EventSource::AvTransport,
+                &notify(&format!(
+                    "<TransportState val=\"PLAYING\"/><CurrentTrackURI val=\"{}\"/>",
+                    track.replace('&', "&amp;")
+                )),
+                now,
+            )
+            .unwrap();
+        let mut read = position(session, 1, Some(42));
+        read.duration_secs = Some(180);
+        playback.apply_position(&player(), &read, now);
+        let state = playback.of(&player()).unwrap();
+        assert_eq!(state.track_uri.as_deref(), Some(track));
+        assert_eq!(state.position_at(now), Some(42));
+        assert_eq!(state.duration_secs, Some(180));
+
+        // Without a Connect track heard, the session is what the read says.
+        let mut first = Playback::default();
+        first.apply_position(&player(), &position(session, 1, Some(5)), now);
+        assert_eq!(
+            first.of(&player()).unwrap().track_uri.as_deref(),
+            Some(session)
+        );
+        let mut queued = playing(now);
+        queued.apply_position(&player(), &position(session, 1, Some(5)), now);
+        assert_eq!(
+            queued.of(&player()).unwrap().track_uri.as_deref(),
+            Some(session)
+        );
     }
 
     #[test]
