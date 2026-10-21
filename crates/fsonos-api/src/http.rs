@@ -62,7 +62,7 @@
 //! | `POST /auth/spotify/complete` | `{redirect}`: the address the browser landed on | `SignInDto` |
 //! | `GET /auth/spotify/callback` | | where Spotify sends the browser back (the registered redirect URI) |
 //! | `GET /` (and `/remote.js`, `/remote.css`) | | the web remote: a page that controls the speakers from a browser ([`remote`]) |
-//! | `GET /art?zone=<room>` | | the album art of what the room's group plays, from its own player (`204` when none) |
+//! | `GET /art?zone=<room>` | | the album art of what the room's group plays: from its own player, or a `302` to a service's public `https` image (`204` when none) |
 //! | `GET /dashboard` (and `/dashboard.js`, `/dashboard.css`) | | the listening dashboard |
 //! | `GET /studio.js`, `/studio.css` | | the listening studio's script and style |
 //!
