@@ -27,6 +27,7 @@ mod latency;
 mod recovery;
 #[cfg(unix)]
 mod synchronization;
+mod virtual_output;
 
 #[derive(Debug, Clone, Args)]
 pub struct StreamArgs {
@@ -38,6 +39,9 @@ pub struct StreamArgs {
     /// FFmpeg input source (Linux: @DEFAULT_MONITOR@, or a named .monitor).
     #[arg(long, default_value = "@DEFAULT_MONITOR@")]
     pub input: String,
+    /// Linux Pulse: create a temporary output and capture only apps routed to it.
+    #[arg(long, conflicts_with_all = ["input", "latency_wav"])]
+    pub virtual_output: Option<String>,
     /// MP3 bitrate, in kbit/s. Higher rates use more bandwidth.
     #[arg(long, default_value_t = 192, value_parser = clap::value_parser!(u16).range(64..=320))]
     pub bitrate: u16,
@@ -181,6 +185,8 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     if args.ffmpeg.is_empty() || args.format.is_empty() || args.input.is_empty() {
         bail!("--ffmpeg, --format and --input must not be empty");
     }
+    let prepared_args = virtual_output::prepare(args)?;
+    let args = &prepared_args;
     if let Some(path) = &args.latency_wav {
         return report_measurement(global.json, &args.room, path, args.max_lag_ms);
     }
@@ -212,6 +218,7 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
         signal_hook::flag::register(signal, Arc::clone(&stop))?;
     }
+    let mut output = virtual_output::VirtualOutput::start(args.virtual_output.as_deref(), &stop)?;
     let mut stream =
         broadcast::LiveStream::start(launch_encoder(args)?, listener, path, Arc::clone(&stop))
             .context("start live capture and the MP3 listener")?;
@@ -282,6 +289,14 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
             }
         };
     let stopped = stream.shutdown();
+    // Capture and probe processes are stopped before their temporary output.
+    let output_stopped = output
+        .as_mut()
+        .map(virtual_output::VirtualOutput::shutdown)
+        .transpose();
+    if let Err(error) = &output_stopped {
+        eprintln!("fsonos stream: temporary output cleanup was not confirmed: {error:#}");
+    }
     #[cfg(unix)]
     let measured = result?;
     #[cfg(not(unix))]
@@ -290,6 +305,7 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
         let _ = playback_restored;
     }
     stopped.context("stop the live MP3 stream")?;
+    output_stopped.context("remove the temporary output")?;
     #[cfg(unix)]
     if let Some(measured) = measured {
         measured.emit(global.json, &args.room, playback_restored)?;
@@ -358,6 +374,7 @@ mod tests {
         let args = StreamArgs {
             room: "Office".into(),
             input: "sink.monitor".into(),
+            virtual_output: None,
             format: "pulse".into(),
             bitrate: 256,
             ffmpeg: "ffmpeg".into(),
