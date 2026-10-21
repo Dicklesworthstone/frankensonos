@@ -3,10 +3,13 @@
 //! transport so a browser never needs a LAN URL (or mixed content).
 //!
 //! The only URL ever fetched is `http://<the zone's coordinator>:1400/getaa?…`,
-//! built from the art path the coordinator itself reports. Art anywhere
-//! else (a streaming service's CDN, another host or port) is not fetched:
-//! the caller names a room, never a URL, so the daemon cannot be made to
-//! reach anything on a caller's behalf.
+//! built from the art path the coordinator itself reports. Art on a
+//! streaming service's CDN (a public `https://` image, as real players
+//! report most Spotify art) is the browser's to load: `/art` sends it there
+//! ([`AlbumArt::Public`]). Anything else (another host or port, plain
+//! `http`, an address or name on this network) is none. The caller names a
+//! room, never a URL, so the daemon cannot be made to reach anything on a
+//! caller's behalf.
 
 use fsonos_core::control;
 use fsonos_core::policy::Client;
@@ -30,12 +33,22 @@ pub struct Art {
     pub bytes: Vec<u8>,
 }
 
+/// The album art of what a zone plays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlbumArt {
+    /// The image its player served.
+    Served(Art),
+    /// A public image on a service's CDN ([`public_art_url`]), for the
+    /// browser to load; the daemon never fetches it.
+    Public(String),
+}
+
 impl Surface {
-    /// The album art of what `zone` plays, from its coordinator
-    /// (`GET /art`); `Ok(None)` when it plays nothing with art that player
-    /// serves, or the player did not serve it. A read: authorized as
-    /// `get_zone_state`.
-    pub fn album_art(&self, client: &Client, zone: &str) -> Result<Option<Art>, Failure> {
+    /// The album art of what `zone` plays, as its coordinator reports it
+    /// (`GET /art`): the image that player serves, or a public image on a
+    /// service's CDN; `Ok(None)` when it plays nothing with such art, or the
+    /// player did not serve it. A read: authorized as `get_zone_state`.
+    pub fn album_art(&self, client: &Client, zone: &str) -> Result<Option<AlbumArt>, Failure> {
         self.guard(client).authorize("get_zone_state", true)?;
         let households = self.households()?;
         let aliases = self.aliases();
@@ -55,7 +68,13 @@ impl Surface {
                 .metadata
                 .and_then(|m| m.album_art_uri),
         };
-        let Some(url) = reported.and_then(|r| art_url(coordinator.ip, &r)) else {
+        let Some(reported) = reported else {
+            return Ok(None);
+        };
+        if let Some(public) = public_art_url(&reported) {
+            return Ok(Some(AlbumArt::Public(public)));
+        }
+        let Some(url) = art_url(coordinator.ip, &reported) else {
             return Ok(None);
         };
         let fetched = match self.transport.http_get_bytes(&url) {
@@ -74,10 +93,10 @@ impl Surface {
             tracing::debug!("album art for {zone}: not an image of at most {MAX_ART_BYTES} bytes");
             return Ok(None);
         }
-        Ok(Some(Art {
+        Ok(Some(AlbumArt::Served(Art {
             content_type,
             bytes: fetched.body,
-        }))
+        })))
     }
 }
 
@@ -100,6 +119,44 @@ pub fn art_url(player: IpAddr, reported: &str) -> Option<String> {
             .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '#' | '\\'));
     clean.then(|| format!("{own}{path}"))
 }
+
+/// `reported` when it is a public `https://` image (a streaming service's
+/// CDN, such as `https://i.scdn.co/image/…`), which a browser may load
+/// itself; `None` for anything that could point a browser at this network
+/// instead: plain `http`, an address, a port, credentials, or a local or
+/// single-label name.
+#[must_use]
+pub fn public_art_url(reported: &str) -> Option<String> {
+    let reported = reported.trim();
+    let rest = reported.strip_prefix("https://")?;
+    let host = rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())].to_ascii_lowercase();
+    let named = host.contains('.')
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+        && host
+            .rsplit('.')
+            .next()
+            .is_some_and(|tld| tld.chars().any(|c| c.is_ascii_alphabetic()))
+        && !LOCAL_SUFFIXES
+            .iter()
+            .any(|suffix| host.ends_with(suffix) || host == suffix[1..]);
+    let clean = reported.len() <= 2048
+        && !reported
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '\\' | '"' | '<' | '>'));
+    (named && clean).then(|| reported.to_string())
+}
+
+/// Names that stay on this network.
+const LOCAL_SUFFIXES: [&str; 6] = [
+    ".local",
+    ".localhost",
+    ".lan",
+    ".internal",
+    ".home.arpa",
+    ".home",
+];
 
 /// `image/png`, `image/jpeg; …` and the like (not SVG, which can carry
 /// script).
@@ -150,6 +207,41 @@ mod tests {
         }
         let v6 = art_url("fd00::10".parse().unwrap(), "/getaa?s=1&u=x");
         assert_eq!(v6.as_deref(), Some("http://[fd00::10]:1400/getaa?s=1&u=x"));
+    }
+
+    /// Real players report most Spotify art on its CDN: the browser's to
+    /// load. Nothing that could reach this network instead.
+    #[test]
+    fn public_art_is_https_on_a_public_name() {
+        for public in [
+            "https://i.scdn.co/image/ab67616d0000b273abc",
+            " https://is1-ssl.mzstatic.com/image/thumb/a/600x600bb.jpg ",
+            "https://i1.sndcdn.com/artworks-abc-t500x500.jpg?x=1",
+        ] {
+            assert_eq!(
+                public_art_url(public).as_deref(),
+                Some(public.trim()),
+                "{public}"
+            );
+        }
+        for local in [
+            "http://i.scdn.co/image/abc",
+            "/getaa?s=1&u=x",
+            "https://192.0.2.10/cover.jpg",
+            "https://[2001:db8::1]/cover.jpg",
+            "https://art.example:8443/cover.jpg",
+            "https://user@art.example/cover.jpg",
+            "https://printer.local/cover.jpg",
+            "https://localhost/cover.jpg",
+            "https://nas/cover.jpg",
+            "https://router.home.arpa/cover.jpg",
+            "https://art.example/a b.jpg",
+            "https://art.example/a\r\nSet-Cookie: x",
+            "https://art.example/\"onerror=\"x",
+            "https://",
+        ] {
+            assert_eq!(public_art_url(local), None, "{local}");
+        }
     }
 
     #[test]

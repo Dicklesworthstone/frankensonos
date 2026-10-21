@@ -9,8 +9,9 @@
 //!   is withdrawn;
 //! * `GET /art` serves the image the zone's own player reports, fetched
 //!   from that player only: a caller-supplied URL is refused and nothing
-//!   is fetched, art elsewhere is not fetched (204), and another site's
-//!   page gets none.
+//!   is fetched, art on a service's CDN is the browser's to load (302, not
+//!   fetched), art anywhere else is none (204), and another site's page
+//!   gets none.
 
 use asupersync::Cx;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
@@ -260,6 +261,7 @@ fn the_page_is_served_and_kept_to_itself() {
     for directive in [
         "default-src 'none'",
         "script-src 'self'",
+        "img-src 'self' https:",
         "connect-src 'self'",
         "frame-ancestors 'none'",
     ] {
@@ -560,11 +562,22 @@ fn art_comes_only_from_the_zones_own_player() {
         "nothing was fetched"
     );
 
-    // Art the player reports elsewhere (a service's CDN, another player)
-    // is not fetched.
+    // Art on a service's CDN (as real players report most Spotify art) is
+    // the browser's to load: sent there, never fetched.
+    let cdn = "https://art.example.invalid/image/cover.jpg?size=640&x=1";
+    plays_stream_with_art(&sim, "Office", cdn);
+    let sent = get(&remote, "/art?zone=Office&v=t2", &[]);
+    assert_eq!(sent.status, 302, "{}", sent.text());
+    assert_eq!(sent.header("location"), Some(cdn));
+    assert_eq!(remote.fetched(), Vec::<String>::new());
+
+    // Art anywhere else (another player, plain http, this network) is
+    // neither fetched nor sent to.
     for elsewhere in [
-        "https://art.example.invalid/cover.jpg".to_owned(),
         format!("http://{kitchen}:1400/getaa?s=1&u=x"),
+        "http://art.example.invalid/cover.jpg".to_owned(),
+        "https://192.0.2.99/cover.jpg".to_owned(),
+        "https://printer.local/cover.jpg".to_owned(),
     ] {
         plays_stream_with_art(&sim, "Office", &elsewhere);
         let answer = get(&remote, "/art?zone=Office", &[]);

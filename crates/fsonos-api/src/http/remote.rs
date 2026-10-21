@@ -7,16 +7,18 @@
 //! [`crate::surface::art`]).
 //!
 //! The page is static: each asset is embedded at build time and sent with
-//! a Content-Security-Policy that lets it load only itself and talk only to
-//! its own origin, and never be framed. Its control calls are ordinary
-//! same-origin JSON POSTs, which pass the listener's Origin check only from
-//! the daemon's own origins ([`crate::web`]).
+//! a Content-Security-Policy that lets it load only itself (and `https`
+//! images: album art on a service's CDN) and talk only to its own origin,
+//! and never be framed. Its control calls are ordinary same-origin JSON
+//! POSTs, which pass the listener's Origin check only from the daemon's own
+//! origins ([`crate::web`]).
 
 use fastapi::core::RouteEntry;
 use fastapi::{JsonSchema, Request, Response, ResponseBody, StatusCode, fastapi_openapi};
 
 use super::{Ctx, Op, query_param};
 use crate::failure::{ErrorCode, Failure};
+use crate::surface::art::AlbumArt;
 
 mod dashboard;
 mod studio;
@@ -74,11 +76,12 @@ const ROUTINES_PANEL_SCRIPT: &str = include_str!("../remote/favorite-routines-pa
 const ROUTINES_STYLE: &str = include_str!("../remote/favorite-routines.css");
 const STYLE: &str = include_str!("../remote/remote.css");
 
-/// What the remote's documents may do: load only themselves, talk only to
-/// their own origin, never be framed.
-const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
-                   connect-src 'self'; base-uri 'none'; form-action 'none'; \
-                   frame-ancestors 'none'";
+/// What the remote's documents may do: load only themselves (and `https`
+/// images: album art on a service's CDN, see [`art_response`]), talk only
+/// to their own origin, never be framed.
+const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
+                   img-src 'self' https:; connect-src 'self'; base-uri 'none'; \
+                   form-action 'none'; frame-ancestors 'none'";
 
 /// Every remote route.
 pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
@@ -132,27 +135,14 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/art",
                 "album_art",
                 REMOTE,
-                "The album art of what a room's group plays, from its own player (204 when none)",
+                "The album art of what a room's group plays: from its own player, or a \
+                 redirect to a service's public image (204 when none)",
             ),
             |s, c, req| match same_origin(req)
                 .and_then(|()| art_query(req))
                 .and_then(|q| Ok((s.album_art(c, &q.zone)?, q.v.is_some())))
             {
-                // A URL tagged for its track may be kept a while; an
-                // untagged one is asked again each time.
-                Ok((Some(art), tagged)) => hardened(Response::ok())
-                    .header("content-type", art.content_type.into_bytes())
-                    .header(
-                        "cache-control",
-                        if tagged {
-                            "private, max-age=300"
-                        } else {
-                            "private, no-cache"
-                        },
-                    )
-                    .body(ResponseBody::Bytes(art.bytes)),
-                Ok((None, _)) => hardened(Response::with_status(StatusCode::NO_CONTENT))
-                    .header("cache-control", "no-store"),
+                Ok((art, tagged)) => art_response(art, tagged),
                 Err(failure) => failure.http_response(),
             },
         )
@@ -174,6 +164,29 @@ fn hardened(response: Response) -> Response {
         .header("referrer-policy", "no-referrer")
         .header("cross-origin-resource-policy", "same-origin")
         .header("x-frame-options", "DENY")
+}
+
+/// The answer to `GET /art`: the image the player served; a redirect to a
+/// public image on a service's CDN, which the browser loads itself (the
+/// daemon never fetches it); or 204 when there is none. A URL tagged for its
+/// track may be kept a while; an untagged one is asked again each time.
+fn art_response(art: Option<AlbumArt>, tagged: bool) -> Response {
+    let cache = if tagged {
+        "private, max-age=300"
+    } else {
+        "private, no-cache"
+    };
+    match art {
+        Some(AlbumArt::Served(art)) => hardened(Response::ok())
+            .header("content-type", art.content_type.into_bytes())
+            .header("cache-control", cache)
+            .body(ResponseBody::Bytes(art.bytes)),
+        Some(AlbumArt::Public(url)) => hardened(Response::with_status(StatusCode::FOUND))
+            .header("location", url.into_bytes())
+            .header("cache-control", cache),
+        None => hardened(Response::with_status(StatusCode::NO_CONTENT))
+            .header("cache-control", "no-store"),
+    }
 }
 
 /// One embedded asset; browsers check for a newer one on each load.
