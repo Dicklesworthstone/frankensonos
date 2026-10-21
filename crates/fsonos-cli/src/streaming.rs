@@ -21,6 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::config::GlobalArgs;
 use crate::direct::Direct;
 
+mod application;
 mod broadcast;
 mod calibration;
 mod latency;
@@ -42,6 +43,10 @@ pub struct StreamArgs {
     /// Linux Pulse: create a temporary output and capture only apps routed to it.
     #[arg(long, conflicts_with_all = ["input", "latency_wav"])]
     pub virtual_output: Option<String>,
+    /// After --, launch a foreground Pulse app into --virtual-output; Ctrl-C stops it.
+    #[arg(last = true, num_args = 1.., value_name = "COMMAND", requires = "virtual_output")]
+    #[cfg_attr(unix, arg(conflicts_with_all = ["measure_latency", "sync_mpv"]))]
+    pub application: Vec<std::ffi::OsString>,
     /// MP3 bitrate, in kbit/s. Higher rates use more bandwidth.
     #[arg(long, default_value_t = 192, value_parser = clap::value_parser!(u16).range(64..=320))]
     pub bitrate: u16,
@@ -187,6 +192,7 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     }
     let prepared_args = virtual_output::prepare(args)?;
     let args = &prepared_args;
+    let launch = application::Launch::prepare(args)?;
     if let Some(path) = &args.latency_wav {
         return report_measurement(global.json, &args.room, path, args.max_lag_ms);
     }
@@ -249,8 +255,14 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
                 .map_err(anyhow::Error::from)
         });
     let was_started = play.is_ok();
+    let mut launched = None;
     let result = match play {
-        Ok(_) => {
+        Ok(_) => (|| {
+            stream.check().context("confirm live capture before application launch")?;
+            launched = launch
+                .as_ref()
+                .map(|launch| application::Application::start(launch, Arc::clone(&stop)))
+                .transpose()?;
             eprintln!(
                 "fsonos stream: {} listening; press Ctrl-C to stop",
                 args.room
@@ -274,9 +286,24 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
             #[cfg(not(unix))]
             let result = stream.wait_until_stopped().map_err(anyhow::Error::from);
             result
-        }
+        })(),
         Err(error) => Err(error),
     };
+
+    // Stop our foreground application before restoring speakers or removing
+    // its output. Child failure must not skip the existing cleanup sequence.
+    let application_stopped = launched
+        .as_mut()
+        .map(application::Application::shutdown)
+        .transpose();
+    if let Err(error) = &application_stopped {
+        eprintln!("fsonos stream: foreground application ended with an error: {error:#}");
+    }
+    if launched.as_ref().is_some_and(|app| !app.reaped())
+        && let Some(output) = output.as_mut()
+    {
+        output.retain();
+    }
 
     // Keep capture available while checking ownership and restoring playback.
     // Cancellation does not close the audio sockets before this observation.
@@ -305,6 +332,7 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
         let _ = playback_restored;
     }
     stopped.context("stop the live MP3 stream")?;
+    application_stopped.context("finish the foreground application")?;
     output_stopped.context("remove the temporary output")?;
     #[cfg(unix)]
     if let Some(measured) = measured {
@@ -375,6 +403,7 @@ mod tests {
             room: "Office".into(),
             input: "sink.monitor".into(),
             virtual_output: None,
+            application: Vec::new(),
             format: "pulse".into(),
             bitrate: 256,
             ffmpeg: "ffmpeg".into(),

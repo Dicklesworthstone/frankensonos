@@ -252,6 +252,17 @@ impl VirtualOutput {
         Ok(Some(output))
     }
 
+    /// Do not remove the app's destination when its process could not be reaped.
+    /// The owner must inspect the still-loaded output before manual cleanup.
+    pub(super) fn retain(&mut self) {
+        self.lease.attempted = false;
+        eprintln!(
+            "fsonos stream: keeping temporary output {} because application cleanup \
+             was not confirmed; inspect the application before removing the output",
+            self.lease.name
+        );
+    }
+
     pub(super) fn shutdown(&mut self) -> anyhow::Result<()> {
         self.lease.close(|args| self.pactl.run(args, None))
     }
@@ -267,3 +278,23 @@ impl Drop for VirtualOutput {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod application_retention {
+    use super::*;
+
+    #[test]
+    fn uncertain_application_cleanup_disarms_output_removal_without_io() {
+        let mut output = VirtualOutput {
+            lease: Lease::new("movie", "synthetic-token".into()),
+            pactl: Pactl::default(),
+        };
+        output.lease.attempted = true;
+        output.lease.module = Some(42);
+        output.retain();
+        // pactl is never launched; Drop cannot retry output removal either.
+        assert!(!output.lease.attempted);
+        output.shutdown().unwrap();
+        output.shutdown().unwrap();
+    }
+}
