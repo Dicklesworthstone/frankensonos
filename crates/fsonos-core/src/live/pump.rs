@@ -186,6 +186,7 @@ mod tests {
             surveyed_at: Some(started),
             last_error: None,
             route_checked: started,
+            route_moved: None,
         };
         (sim, engine, model, id)
     }

@@ -343,6 +343,26 @@ struct Engine {
     stop: Arc<AtomicBool>,
 }
 
+/// Whether to listen again at `local`, this host's address toward the
+/// players now, rather than at `current`. Only when the look before saw
+/// `local` too (`moved` remembers it): Wi-Fi dropping out for a moment moves
+/// the route to another interface and back within one [`ROUTE_CHECK`], and
+/// following each move re-subscribed every player twice (seen live: 47
+/// re-opens in a week, nearly all in such pairs 5 s apart). A real move (a
+/// new DHCP lease) is followed one look later.
+fn route_settled(current: IpAddr, local: IpAddr, moved: &mut Option<IpAddr>) -> bool {
+    if local == current {
+        *moved = None;
+        return false;
+    }
+    if *moved == Some(local) {
+        *moved = None;
+        return true;
+    }
+    *moved = Some(local);
+    false
+}
+
 /// A player that answered discovery, by SSDP or else by mDNS (on a LAN
 /// that drops SSDP multicast mDNS may be all that answers).
 fn answering(found: &Discovered) -> Result<IpAddr, String> {
@@ -402,6 +422,9 @@ struct Model {
     last_error: Option<String>,
     /// When [`Engine::follow_route`] last looked.
     route_checked: Instant,
+    /// A new address toward the players, seen at the last look and not yet
+    /// followed ([`route_settled`]).
+    route_moved: Option<IpAddr>,
 }
 
 /// Surveys and reads through one transport, GENA through the LAN.
@@ -480,6 +503,7 @@ impl Engine {
             surveyed_at: None,
             last_error: None,
             route_checked: Instant::now(),
+            route_moved: None,
         };
         m.rec.subscriptions.defer_network();
         let mut surveys = inventory::Surveys::default();
@@ -575,24 +599,32 @@ impl Engine {
     /// and back). Renewals would keep succeeding while every NOTIFY went to
     /// the old address, so listen again where they can reach us, and survey
     /// at once ([`Self::relisten`]): checked every [`ROUTE_CHECK`], not only
-    /// at surveys, which back off while the players do not answer.
+    /// at surveys, which back off while the players do not answer. Followed
+    /// once two looks agree ([`route_settled`]).
     fn follow_route(&self, m: &mut Model) {
-        if let Some(s) = &m.sink
-            && let Some(toward) = m
-                .rec
-                .households
-                .iter()
-                .flat_map(|h| &h.players)
-                .map(|p| p.ip)
-                .next()
-            && let Ok(local) = self.lan.local_address_toward(toward)
-            && local != s.local_addr().ip()
-        {
-            let why = format!(
-                "this host now reaches the players from {local}, not {}",
-                s.local_addr().ip()
-            );
+        let Some(s) = &m.sink else {
+            m.route_moved = None;
+            return;
+        };
+        let current = s.local_addr().ip();
+        let Some(toward) = m
+            .rec
+            .households
+            .iter()
+            .flat_map(|h| &h.players)
+            .map(|p| p.ip)
+            .next()
+        else {
+            return;
+        };
+        let Ok(local) = self.lan.local_address_toward(toward) else {
+            return;
+        };
+        if route_settled(current, local, &mut m.route_moved) {
+            let why = format!("this host now reaches the players from {local}, not {current}");
             self.relisten(m, &why);
+        } else if m.route_moved.is_some() {
+            tracing::debug!(%local, %current, "the route toward the players moved; looking again before following it");
         }
     }
 
@@ -1026,6 +1058,30 @@ mod tests {
             !slept((t0, w0 + Duration::from_secs(600)), (t0 + step, w0)),
             "the wall clock set back is no sleep"
         );
+    }
+
+    /// The live pattern: the route leaves for another interface and comes
+    /// back one look later. Nothing to follow; a move that stays is
+    /// followed once, a look later.
+    #[test]
+    fn a_route_that_comes_straight_back_is_not_followed() {
+        let wifi: IpAddr = "192.0.2.10".parse().unwrap();
+        let wired: IpAddr = "198.51.100.20".parse().unwrap();
+        let renewed: IpAddr = "192.0.2.11".parse().unwrap();
+        let mut moved = None;
+        let mut follow = |local| route_settled(wifi, local, &mut moved);
+        assert!(!follow(wifi));
+        // A blip: away for one look, then back.
+        assert!(!follow(wired));
+        assert!(!follow(wifi));
+        assert!(!follow(wired), "the earlier blip does not count");
+        // Away, then somewhere else: still not settled.
+        assert!(!follow(renewed));
+        // The same new address twice in a row: follow it, once.
+        assert!(follow(renewed));
+        assert!(!follow(wifi));
+        assert!(!follow(renewed));
+        assert!(follow(renewed));
     }
 
     #[test]

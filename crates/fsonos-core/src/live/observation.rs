@@ -195,6 +195,7 @@ mod tests {
                 surveyed_at: Some(now),
                 last_error: None,
                 route_checked: now,
+                route_moved: None,
             };
             set_av_transport_uri(&*lan, host, "test:radio", "").unwrap();
             play(&*lan, host).unwrap();

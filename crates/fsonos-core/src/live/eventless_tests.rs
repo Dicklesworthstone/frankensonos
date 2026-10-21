@@ -52,6 +52,7 @@ fn model(config: &LiveConfig) -> Model {
         surveyed_at: None,
         last_error: None,
         route_checked: now,
+        route_moved: None,
     }
 }
 

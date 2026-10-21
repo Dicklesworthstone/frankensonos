@@ -174,6 +174,7 @@ impl Fixture {
             surveyed_at: None,
             last_error: None,
             route_checked: now,
+            route_moved: None,
         };
         let events = engine.survey(&mut model, at);
         engine.publish(&model, events);

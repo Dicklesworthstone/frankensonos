@@ -151,6 +151,7 @@ impl Fixture {
             surveyed_at: Some(now),
             last_error: None,
             route_checked: now,
+            route_moved: None,
         };
         Self {
             _release: Release(gate),

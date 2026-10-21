@@ -48,6 +48,7 @@ fn fixture(generation: u8) -> (SimHandle, Engine, Model, tempfile::TempDir) {
         surveyed_at: None,
         last_error: None,
         route_checked: now,
+        route_moved: None,
     };
     let engine = Engine {
         transport: Arc::new(sim.lan()),
