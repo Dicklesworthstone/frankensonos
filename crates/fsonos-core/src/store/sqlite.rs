@@ -9,8 +9,8 @@
 
 use super::{
     Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback,
-    FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction, PlayRecord, Store, StoreError,
-    StoredScene, StoredSchedule,
+    FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction, PlayName, PlayRecord, Store,
+    StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -170,6 +170,15 @@ const MIGRATIONS: &[Migration] = &[
         name: "the genres a piece of feedback carries, so the DJ nudges them (plan §12.9)",
         sql: "
         ALTER TABLE feedback ADD COLUMN genres TEXT;
+    ",
+    },
+    Migration {
+        version: 13,
+        name: "what the players called what they played, so the history can name it",
+        sql: "
+        CREATE TABLE play_names (
+            source_uri TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT,
+            named_at INTEGER NOT NULL);
     ",
     },
 ];
@@ -371,13 +380,17 @@ impl SqliteStore {
         .inspect(|_| self.wrote())
     }
 
-    /// Forget plays and feedback more than [`LISTENING_RETENTION_SECS`]
-    /// older than the newest of each: measured from the newest record, not
-    /// the clock, so a store kept under a simulated clock keeps what it was
-    /// told. How many rows went.
+    /// Forget plays, their names and feedback more than
+    /// [`LISTENING_RETENTION_SECS`] older than the newest of each: measured
+    /// from the newest record, not the clock, so a store kept under a
+    /// simulated clock keeps what it was told. How many rows went.
     fn prune_listening(&self) -> Result<usize, StoreError> {
         let mut gone = 0;
-        for (table, column) in [("play_history", "played_at"), ("feedback", "at")] {
+        for (table, column) in [
+            ("play_history", "played_at"),
+            ("play_names", "named_at"),
+            ("feedback", "at"),
+        ] {
             let newest = self.query(&format!("SELECT MAX({column}) FROM {table}"), &[])?;
             let Some(newest) = newest.first().map(|r| opt_int(r, 0)).transpose()?.flatten() else {
                 continue;
@@ -533,6 +546,36 @@ impl Store for SqliteStore {
             .collect::<Result<Vec<_>, StoreError>>()?;
         plays.reverse();
         Ok(plays)
+    }
+
+    fn name_play(&mut self, name: &PlayName, at: i64) -> Result<(), StoreError> {
+        self.execute(
+            "INSERT OR REPLACE INTO play_names (source_uri, title, artist, named_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            &[
+                name.source_uri.as_str().into(),
+                name.title.as_str().into(),
+                opt_value(name.artist.as_deref()),
+                at.into(),
+            ],
+        )
+    }
+
+    fn play_names(&self, uris: &[&str]) -> Result<Vec<PlayName>, StoreError> {
+        let mut names = Vec::new();
+        for uri in uris {
+            for r in self.query(
+                "SELECT title, artist FROM play_names WHERE source_uri = ?1",
+                &[(*uri).into()],
+            )? {
+                names.push(PlayName {
+                    source_uri: (*uri).to_string(),
+                    title: text(&r, 0)?,
+                    artist: opt_text(&r, 1)?,
+                });
+            }
+        }
+        Ok(names)
     }
 
     fn save_players(
@@ -1503,7 +1546,7 @@ mod tests {
         let store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1544,7 +1587,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1601,7 +1644,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 2, "no row lost");

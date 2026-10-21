@@ -11,7 +11,7 @@
 
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback,
-    FeedbackKey, LibraryEntry, LoggedAction, PlayRecord, Store, StoreError, StoredScene,
+    FeedbackKey, LibraryEntry, LoggedAction, PlayName, PlayRecord, Store, StoreError, StoredScene,
     StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
@@ -93,6 +93,14 @@ impl Store for SharedStore<'_> {
 
     fn recent_play_count(&self, source_uri: &str, window: usize) -> Result<usize, StoreError> {
         self.lock().recent_play_count(source_uri, window)
+    }
+
+    fn name_play(&mut self, name: &PlayName, at: i64) -> Result<(), StoreError> {
+        self.lock().name_play(name, at)
+    }
+
+    fn play_names(&self, uris: &[&str]) -> Result<Vec<PlayName>, StoreError> {
+        self.lock().play_names(uris)
     }
 
     fn save_players(

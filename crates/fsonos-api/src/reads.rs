@@ -210,8 +210,9 @@ pub(crate) type Named = (Option<String>, Option<String>);
 
 /// What each of `plays` was, by its URI, from what the store holds for the
 /// DJ: a library track's title and artist, an album's name and album
-/// artists, a playlist's name. URIs it doesn't know (streams, favorites)
-/// are left out.
+/// artists, a playlist's name; failing those, what the player called it
+/// while it played (a stream, a track outside the library). URIs nothing
+/// names are left out.
 pub(crate) fn play_names(
     store: &dyn fsonos_core::store::Store,
     plays: &[fsonos_core::store::PlayRecord],
@@ -239,6 +240,14 @@ pub(crate) fn play_names(
         if wanted.contains(uri.as_str()) {
             names.entry(uri).or_insert((Some(name), None));
         }
+    }
+    let unnamed: Vec<&str> = wanted
+        .iter()
+        .filter(|uri| !names.contains_key(**uri))
+        .copied()
+        .collect();
+    for heard in store.play_names(&unnamed)? {
+        names.insert(heard.source_uri, (Some(heard.title), heard.artist));
     }
     Ok(names)
 }

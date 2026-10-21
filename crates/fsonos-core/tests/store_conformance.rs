@@ -4,7 +4,7 @@
 
 use fsonos_core::store::{
     Action, ActionFilter, AlbumTrack, CachedAlbum, DjSession, Feedback, FeedbackKey, LibraryEntry,
-    LibraryOrigin, MemStore, SqliteStore, Store, StoredScene, StoredSchedule,
+    LibraryOrigin, MemStore, PlayName, SqliteStore, Store, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -764,8 +764,46 @@ fn spotify_heard(s: &mut dyn Store) {
     assert!(s.spotify_heard().unwrap().is_empty());
 }
 
+fn name(uri: &str, title: &str, artist: Option<&str>) -> PlayName {
+    PlayName {
+        source_uri: uri.into(),
+        title: title.into(),
+        artist: artist.map(str::to_string),
+    }
+}
+
+fn play_names(s: &mut dyn Store) {
+    let radio = "x-rincon-mp3radio://stream.example.invalid/evening.mp3";
+    assert!(s.play_names(&[radio]).unwrap().is_empty());
+    s.name_play(
+        &name("spotify:track:aria", "Aria", Some("Glenn Gould")),
+        1_000,
+    )
+    .unwrap();
+    s.name_play(&name(radio, "Evening Radio", None), 1_000)
+        .unwrap();
+    // Named again: the newer name stands.
+    s.name_play(
+        &name("spotify:track:aria", "Aria (1981)", Some("Glenn Gould")),
+        2_000,
+    )
+    .unwrap();
+    let mut named = s
+        .play_names(&["spotify:track:aria", radio, "spotify:track:unnamed"])
+        .unwrap();
+    named.sort_by(|a, b| a.source_uri.cmp(&b.source_uri));
+    assert_eq!(
+        named,
+        [
+            name("spotify:track:aria", "Aria (1981)", Some("Glenn Gould")),
+            name(radio, "Evening Radio", None)
+        ]
+    );
+}
+
 fn suite(s: &mut dyn Store) {
     play_history(s);
+    play_names(s);
     inventory_cache(s);
     library_cache(s);
     render_params_and_auth(s);
@@ -792,7 +830,7 @@ fn sqlite_in_memory_conforms() {
     suite(&mut s);
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     );
     s.close().unwrap();
 }
@@ -872,6 +910,8 @@ fn listening_older_than_a_year_is_pruned() {
     for at in [now - year - 10, now - year + 10, now] {
         s.record_play("RINCON_Z", &format!("x-test:{at}"), at)
             .unwrap();
+        s.name_play(&name(&format!("x-test:{at}"), "Named", None), at)
+            .unwrap();
         s.record_feedback(&fb(at, Some("w"), "c", None, 1)).unwrap();
     }
     s.close().unwrap();
@@ -884,6 +924,10 @@ fn listening_older_than_a_year_is_pruned() {
             .collect()
     };
     assert_eq!(played(&s), [now - year + 10, now]);
+    let old = format!("x-test:{}", now - year - 10);
+    let recent = format!("x-test:{now}");
+    let named = s.play_names(&[old.as_str(), recent.as_str()]).unwrap();
+    assert_eq!(named, [name(&recent, "Named", None)], "names go with plays");
     let kept: Vec<i64> = s
         .feedback_between(0..i64::MAX)
         .unwrap()
@@ -916,7 +960,7 @@ fn sqlite_file_survives_close_and_reopen() {
     let s = SqliteStore::open(&path).unwrap();
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     );
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);

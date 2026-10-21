@@ -33,6 +33,17 @@ pub struct PlayRecord {
     pub played_at: i64,
 }
 
+/// What a player called something while it played it (its title, and its
+/// artist when given): how the history names a play the library the DJ
+/// reads does not know (a stream, a track outside the owner's library).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayName {
+    /// As the history keeps it ([`PlayRecord::source_uri`]).
+    pub source_uri: String,
+    pub title: String,
+    pub artist: Option<String>,
+}
+
 /// A player as last seen, for reconnecting without a fresh SSDP pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedPlayer {
@@ -331,6 +342,15 @@ pub trait Store {
             .count())
     }
 
+    /// Keep `name` for its URI, as of `at` (unix seconds), replacing the
+    /// one kept before. Kept as long as plays are
+    /// ([`LISTENING_RETENTION_SECS`] since it was last named).
+    fn name_play(&mut self, name: &PlayName, at: i64) -> Result<(), StoreError>;
+
+    /// The names kept ([`Self::name_play`]) for those of `uris` that have
+    /// one, in no particular order.
+    fn play_names(&self, uris: &[&str]) -> Result<Vec<PlayName>, StoreError>;
+
     /// Insert or update `players` of `household`, stamped `seen_at`.
     /// Players not listed keep their earlier row (and `last_seen`).
     fn save_players(
@@ -554,6 +574,7 @@ pub struct MemStore {
     album_misses: BTreeMap<String, i64>,
     playlists: Vec<(String, String)>,
     spotify_heard: Vec<(String, i64)>,
+    play_names: BTreeMap<String, PlayName>,
     actions: Vec<LoggedAction>,
     scenes: BTreeMap<String, StoredScene>,
     schedules: BTreeMap<i64, StoredSchedule>,
@@ -589,6 +610,19 @@ impl Store for MemStore {
             .collect();
         plays.reverse();
         Ok(plays)
+    }
+
+    fn name_play(&mut self, name: &PlayName, _at: i64) -> Result<(), StoreError> {
+        self.play_names
+            .insert(name.source_uri.clone(), name.clone());
+        Ok(())
+    }
+
+    fn play_names(&self, uris: &[&str]) -> Result<Vec<PlayName>, StoreError> {
+        Ok(uris
+            .iter()
+            .filter_map(|uri| self.play_names.get(*uri).cloned())
+            .collect())
     }
 
     fn save_players(

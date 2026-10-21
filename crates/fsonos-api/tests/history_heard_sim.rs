@@ -2,7 +2,8 @@
 //! it: the daemon's live model records a coordinator's new track once,
 //! with no DJ running. Music that moves to another room, and what a room
 //! plays when the daemon starts, are the plays already recorded. Spotify
-//! Connect's tracks are their `spotify:` URIs. Against `fsonos-sim` over
+//! Connect's tracks are their `spotify:` URIs, and a play the library
+//! doesn't know is named as its player named it. Against `fsonos-sim` over
 //! real loopback sockets.
 
 use chrono::{DateTime, FixedOffset, TimeDelta};
@@ -173,6 +174,32 @@ fn spotify_connect_plays_are_its_tracks() {
         uris,
         ["spotify:track:connectB", "spotify:track:connectA"],
         "newest first"
+    );
+    sim.shutdown();
+}
+
+/// A play the library doesn't know (a stream, here) is named in the history
+/// as its player named it.
+#[test]
+fn a_heard_play_is_named_as_its_player_named_it() {
+    let (sim, lan, live) = house(&["Kitchen"]);
+    let surface = daemon(&sim, &live, MemStore::default(), Box::new(SystemClock));
+    let kitchen = id(&live, "Kitchen");
+    let plays = || surface.recent_plays(&Client::Cli, None, 10).unwrap();
+    let metadata = "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+         xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" \
+         xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">\
+         <item id=\"-1\" parentID=\"-1\" restricted=\"true\">\
+         <dc:title>Evening Radio</dc:title><dc:creator>Example FM</dc:creator>\
+         <upnp:class>object.item.audioItem.audioBroadcast</upnp:class></item></DIDL-Lite>";
+    control::play_uri(&*lan, &live.households(), &kitchen, EVENING, metadata).unwrap();
+    assert!(eventually(|| !plays().is_empty()), "{:?}", plays());
+    let heard = &plays()[0];
+    assert_eq!(heard.source_uri, EVENING);
+    assert_eq!(
+        (heard.title.as_deref(), heard.artist.as_deref()),
+        (Some("Evening Radio"), Some("Example FM")),
+        "{heard:?}"
     );
     sim.shutdown();
 }

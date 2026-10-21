@@ -23,7 +23,9 @@ use fsonos_core::live::{Live, LiveEvent};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::rooms::Aliases;
 use fsonos_core::snapshot::RestoreOp;
-use fsonos_core::store::{Action, ActionFilter, LoggedAction, PlayRecord, Store, StoreError};
+use fsonos_core::store::{
+    Action, ActionFilter, LoggedAction, PlayName, PlayRecord, Store, StoreError,
+};
 use fsonos_core::{HouseholdState, control, moving};
 use fsonos_core::{favorites, search};
 use fsonos_proto::Transport;
@@ -433,8 +435,20 @@ impl Surface {
         if moved {
             return;
         }
+        // What the player calls it, for the history to show when the
+        // library does not know it (a stream, a track outside the library).
+        let name = (playback.now_playing.as_ref())
+            .filter(|n| !n.title.trim().is_empty() && n.title != raw && n.title != uri)
+            .map(|n| PlayName {
+                source_uri: uri.clone(),
+                title: n.title.trim().to_string(),
+                artist: n.creator.clone().filter(|c| !c.trim().is_empty()),
+            });
         let at = self.now();
         let recorded = self.with_store(|s| {
+            if let Some(name) = &name {
+                s.name_play(name, at)?;
+            }
             let same = |p: &PlayRecord| played_uri(&p.source_uri) == uri;
             let left = first && s.recent_plays(Some(player.0.as_str()), 1)?.iter().any(same);
             let just = (s.recent_plays(None, RECENT_PLAYS)?.iter())
