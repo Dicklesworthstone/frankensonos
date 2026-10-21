@@ -1,8 +1,8 @@
 //! Capture changing playback through the production snapshot path on S1/S2.
 //! Only the injected change is synthetic; every read reaches a real socket.
 
-use fsonos_core::{HouseholdState, actions};
 use fsonos_core::snapshot::{self, SnapshotSource, ZoneSnapshot};
+use fsonos_core::{HouseholdState, actions};
 use fsonos_proto::content::{self, BrowseFlag};
 use fsonos_proto::control as soap;
 use fsonos_proto::play_mode::{get_play_mode, set_play_mode};
@@ -124,7 +124,12 @@ fn a_stable_queue_captures_the_selected_track_and_round_trips() {
         let snap = f.capture(&t).unwrap();
         t.assert_read_only();
         assert!(matches!(
-            snap.source, SnapshotSource::Queue { track: 2, position_secs: 37, .. }
+            snap.source,
+            SnapshotSource::Queue {
+                track: 2,
+                position_secs: 37,
+                ..
+            }
         ));
         assert_eq!(snap.play_mode, Some(PlayMode::ShuffleNoRepeat));
         assert_eq!(snap.transport_state, TransportState::Playing);
@@ -132,7 +137,7 @@ fn a_stable_queue_captures_the_selected_track_and_round_trips() {
         let saved = actions::before_state(std::slice::from_ref(&snap)).unwrap();
         assert_eq!(
             actions::BeforeState::parse(&saved).unwrap().zones,
-            [snap.clone()]
+            std::slice::from_ref(&snap)
         );
         f.direct(OTHER);
         let report = snapshot::restore(&f.lan, &f.houses, &snap).unwrap();
@@ -153,8 +158,10 @@ fn a_source_switch_discards_the_old_sources_position() {
             }
         });
         let snap = f.capture(&t).unwrap();
-        assert!(matches!(&snap.source, SnapshotSource::Uri { uri, position_secs: Some(7), .. } if uri == OTHER
-        ));
+        assert!(
+            matches!(&snap.source, SnapshotSource::Uri { uri, position_secs: Some(7), .. } if uri == OTHER
+            )
+        );
         assert_eq!(snap.play_mode, None);
         t.assert_read_only();
     }
@@ -173,7 +180,12 @@ fn a_track_change_during_room_reads_is_recaptured_at_its_own_position() {
         });
         let snap = f.capture(&t).unwrap();
         assert!(matches!(
-            snap.source, SnapshotSource::Queue { track: 1, position_secs: 3, .. }
+            snap.source,
+            SnapshotSource::Queue {
+                track: 1,
+                position_secs: 3,
+                ..
+            }
         ));
         t.assert_read_only();
     }
@@ -236,7 +248,11 @@ fn a_backward_seek_is_not_mistaken_for_the_same_playback_epoch() {
         });
         let snap = f.capture(&t).unwrap();
         assert!(matches!(
-            snap.source, SnapshotSource::Queue { position_secs: 9, .. }
+            snap.source,
+            SnapshotSource::Queue {
+                position_secs: 9,
+                ..
+            }
         ));
         assert_eq!(t.count("GetVolume"), 2);
         t.assert_read_only();
@@ -254,7 +270,11 @@ fn ordinary_clock_progress_does_not_force_another_capture() {
         });
         let snap = f.capture(&t).unwrap();
         assert!(matches!(
-            snap.source, SnapshotSource::Queue { position_secs: 38, .. }
+            snap.source,
+            SnapshotSource::Queue {
+                position_secs: 38,
+                ..
+            }
         ));
         assert_eq!(t.count("GetVolume"), 1);
         t.assert_read_only();
@@ -299,12 +319,15 @@ fn required_reads_fail_without_fabricating_or_retrying_state() {
 fn unsupported_optional_settings_do_not_invent_normal_or_block_capture() {
     for generation in [1, 2] {
         let f = Fixture::new(generation);
-        f.sim.upnp_fault("Room", "GetTransportSettings", 401).unwrap();
+        f.sim
+            .upnp_fault("Room", "GetTransportSettings", 401)
+            .unwrap();
         let t = After::new(&f.lan, |_: &str| {});
         let snap = f.capture(&t).unwrap();
         assert_eq!(snap.play_mode, None);
         assert!(matches!(
-            snap.source, SnapshotSource::Queue { track: 2, .. }
+            snap.source,
+            SnapshotSource::Queue { track: 2, .. }
         ));
         t.assert_read_only();
     }
@@ -335,7 +358,12 @@ fn an_empty_queue_remains_an_empty_queue_without_starting_it() {
         let t = After::new(&f.lan, |_: &str| {});
         let snap = f.capture(&t).unwrap();
         assert!(matches!(
-            snap.source, SnapshotSource::Queue { track: 0, position_secs: 0, .. }
+            snap.source,
+            SnapshotSource::Queue {
+                track: 0,
+                position_secs: 0,
+                ..
+            }
         ));
         assert_eq!(snap.transport_state, TransportState::Stopped);
         assert_eq!(snap.play_mode, Some(get_play_mode(&f.lan, f.host).unwrap()));
