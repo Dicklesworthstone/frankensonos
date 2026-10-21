@@ -18,25 +18,35 @@ pub(super) struct Config {
 impl Config {
     /// Validate before any microphone, mpv connection or speaker mutation.
     pub(super) fn from_args(args: &StreamArgs) -> anyhow::Result<Option<Self>> {
-        let Some(sink) = args.sync.measure_probe.as_deref() else {
-            return Ok(None);
+        let (sink, synchronization) = match (
+            args.sync.measure_probe.as_deref(),
+            args.sync.sync_probe.as_deref(),
+        ) {
+            (None, None) => return Ok(None),
+            (Some(sink), None) => (sink, false),
+            (None, Some(sink)) => (sink, true),
+            (Some(_), Some(_)) => anyhow::bail!("choose either --measure-probe or --sync-probe"),
         };
         ensure!(
             cfg!(target_os = "linux") && args.format == "pulse",
-            "--measure-probe requires Linux --format pulse"
+            "calibration probes require Linux --format pulse"
         );
+        let matching_action = if synchronization {
+            args.sync.sync_mpv.is_some() && !args.sync.measure_latency
+        } else {
+            args.sync.measure_latency && args.sync.sync_mpv.is_none()
+        };
         ensure!(
-            args.sync.measure_latency
-                && args.sync.sync_microphone.is_some()
+            args.sync.sync_microphone.is_some()
                 && args.sync.sync_input.is_none()
-                && args.sync.sync_mpv.is_none()
-                && args.latency_wav.is_none(),
-            "--measure-probe requires measurement-only with --sync-microphone"
+                && args.latency_wav.is_none()
+                && matching_action,
+            "a probe requires --sync-microphone and its matching action: --measure-latency or --sync-mpv"
         );
         Self::named(sink, &args.input).map(Some)
     }
 
-    fn named(sink: &str, reference: &str) -> anyhow::Result<Self> {
+    pub(super) fn named(sink: &str, reference: &str) -> anyhow::Result<Self> {
         ensure!(
             !sink.is_empty()
                 && sink.len() <= 480
@@ -47,7 +57,7 @@ impl Config {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
                 && reference == format!("{sink}.monitor"),
-            "--measure-probe must name the sink whose exact <sink>.monitor is --input; defaults, indices and other sinks are refused"
+            "the calibration probe must name the sink whose exact <sink>.monitor is --input; defaults, indices and other sinks are refused"
         );
         Ok(Self {
             sink: sink.to_owned(),
@@ -153,6 +163,7 @@ mod tests {
         for flags in [
             vec!["stream", "Room"],
             vec!["stream", "Room", "--measure-latency", "--sync-input", "paired"],
+            vec!["stream", "Room", "--sync-mpv", "/not-connected", "--sync-input", "paired"],
         ] {
             let cli = Cli::try_parse_from(flags).unwrap();
             assert!(Config::from_args(&cli.args).unwrap().is_none());
@@ -304,4 +315,49 @@ mod tests {
         assert_eq!(measured.windows_read, 3);
         assert!(measured.estimate.lag_samples.abs_diff(3_200) <= 2);
     }
+
+    #[test]
+    fn startup_probe_requires_its_own_explicit_action_and_microphone() {
+        for flags in [
+            vec!["--sync-probe", "movie"],
+            vec!["--measure-latency", "--sync-microphone", "mic", "--sync-probe", "movie"],
+            vec!["--sync-mpv", "/tmp/test-mpv", "--sync-input", "paired", "--sync-probe", "movie"],
+            vec!["--sync-mpv", "/tmp/test-mpv", "--sync-microphone", "mic", "--sync-probe", "movie", "--measure-probe", "movie"],
+        ] {
+            let mut argv = vec!["stream", "Room"];
+            argv.extend(flags);
+            assert!(Cli::try_parse_from(argv).is_err());
+        }
+    }
+
+    #[test]
+    fn startup_probe_validates_the_named_sink_without_connecting_to_mpv() {
+        for format in ["pulse", "alsa", "avfoundation"] {
+            let mut cli = Cli::try_parse_from([
+                "stream", "Room", "--format", format, "--input", "movie.monitor",
+                "--sync-mpv", "/never-connected", "--sync-microphone", "mic",
+                "--sync-probe", "movie",
+            ]).unwrap();
+            assert_eq!(Config::from_args(&cli.args).is_ok(), cfg!(target_os = "linux") && format == "pulse");
+            cli.args.input = "different.monitor".into();
+            assert!(Config::from_args(&cli.args).is_err());
+        }
+    }
+
+    #[test]
+    fn programmatic_arguments_cannot_bypass_probe_mode_separation() {
+        let mut cli = Cli::try_parse_from([
+            "stream", "Room", "--input", "movie.monitor", "--sync-mpv", "/never-connected",
+            "--sync-microphone", "mic", "--sync-probe", "movie",
+        ]).unwrap();
+        cli.args.sync.measure_probe = Some("movie".into());
+        assert!(Config::from_args(&cli.args).is_err());
+        cli.args.sync.measure_probe = None;
+        cli.args.sync.measure_latency = true;
+        assert!(Config::from_args(&cli.args).is_err());
+        cli.args.sync.measure_latency = false;
+        cli.args.sync.sync_mpv = None;
+        assert!(Config::from_args(&cli.args).is_err());
+    }
+
 }

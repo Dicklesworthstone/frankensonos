@@ -17,6 +17,7 @@ mod measurement;
 mod mpv;
 mod ownership;
 mod probe;
+mod startup;
 
 pub use measurement::Measurement;
 
@@ -50,6 +51,13 @@ pub struct SyncArgs {
         conflicts_with_all = ["sync_mpv", "sync_input", "latency_wav"]
     )]
     pub measure_probe: Option<String>,
+    /// Calibrate mpv once with bounded audible test noise into this Pulse sink, then track passively.
+    #[arg(
+        long,
+        requires_all = ["sync_mpv", "sync_microphone"],
+        conflicts_with_all = ["measure_latency", "measure_probe", "sync_input", "latency_wav"]
+    )]
+    pub sync_probe: Option<String>,
     /// One time-aligned stereo capture: left=dry reference, right=room microphone.
     #[arg(
         long,
@@ -111,7 +119,7 @@ impl Prepared {
         let Some(input) = input::Input::from_args(args)? else {
             return Ok(None);
         };
-        let controller = args
+        let mut controller = args
             .sync
             .sync_mpv
             .as_deref()
@@ -119,6 +127,14 @@ impl Prepared {
                 mpv::Controller::new(mpv::Client::connect(path)?, args.sync.sync_base_delay)
             })
             .transpose()?;
+        if probe.is_some()
+            && let Some(controller) = &mut controller
+        {
+            anyhow::ensure!(
+                controller.ready()?,
+                "start mpv playback before requesting audible startup calibration"
+            );
+        }
         Ok(Some(Self {
             controller,
             options: Options {
@@ -135,6 +151,7 @@ impl Prepared {
     pub fn start(self, stream: Arc<AtomicBool>) -> anyhow::Result<Session> {
         let mut controller = self.controller.context("measurement has no mpv controller")?;
         let options = self.options;
+        let probe = self.probe;
         let session = Arc::new(AtomicBool::new(false));
         let stop = Stop {
             session: Arc::clone(&session),
@@ -146,6 +163,22 @@ impl Prepared {
             .name("fsonos-audio-sync".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if let Some(probe) = probe {
+                        let calibration_stop = Stop {
+                            session: Arc::clone(&stop.session),
+                            stream: Arc::clone(&stop.stream),
+                            deadline: Some(Instant::now() + Duration::from_secs(180)),
+                        };
+                        startup::run(
+                            &mut controller,
+                            &options,
+                            &calibration_stop,
+                            probe,
+                            |settled| checks.verify(settled, &calibration_stop),
+                        )?;
+                    }
+                    // The probe is consumed once. Passive drift tracking starts
+                    // with fresh agreement and can never emit another probe.
                     run_loop(&mut controller, &options, &stop, |settled| {
                         checks.verify(settled, &stop)
                     })

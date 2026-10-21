@@ -88,6 +88,21 @@ pub(super) fn record_with_probe(
     stop: &Stop,
     probe: Option<&probe::Config>,
 ) -> anyhow::Result<Option<Vec<u8>>> {
+    record_guarded(options, stop, probe, || Ok(()))
+}
+
+/// The optional probe remains subject to local playback checks while it emits.
+/// Guard failure drops the output process before reaping the capture process.
+pub(super) fn record_guarded(
+    options: &Options,
+    stop: &Stop,
+    probe: Option<&probe::Config>,
+    mut guard: impl FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    if stop.requested() {
+        return Ok(None);
+    }
+    guard()?;
     if stop.requested() {
         return Ok(None);
     }
@@ -120,6 +135,7 @@ pub(super) fn record_with_probe(
             })?,
     );
     let started = Instant::now();
+    let mut checked = started;
     let deadline = Duration::from_secs(u64::from(seconds) + 10);
     let mut samples = None;
     loop {
@@ -130,10 +146,19 @@ pub(super) fn record_with_probe(
             started.elapsed() < deadline,
             "synchronized capture deadline exceeded"
         );
+        if checked.elapsed() >= Duration::from_millis(250) {
+            guard()?;
+            checked = Instant::now();
+            if stop.requested() {
+                return Ok(None);
+            }
+        }
         if samples.is_none() {
             match receive.recv_timeout(Duration::from_millis(100)) {
                 Ok(Window::Ready) => {
                     if let Some(config) = probe {
+                        guard()?;
+                        checked = Instant::now();
                         if stop.requested() {
                             return Ok(None);
                         }

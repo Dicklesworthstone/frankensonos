@@ -12,6 +12,10 @@ virtual sink with no local acoustic output when measuring the Sonos path, to
 avoid feeding an undelayed local copy into the microphone. Everyone whose audio
 might be captured should know and agree to the measurement.
 
+For an initial calibration that actually corrects mpv and then continues passive
+tracking, use the separate [startup synchronization opt-in](STARTUP_CALIBRATION.md),
+`--sync-probe`. `--measure-probe` remains measurement-only and never changes mpv.
+
 ## Select the output and microphone explicitly
 
 List the available sinks and sources with `pactl list short sinks` and
