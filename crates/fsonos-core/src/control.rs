@@ -9,7 +9,7 @@
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::ProtoError;
 use fsonos_proto::Transport;
-use fsonos_proto::content::{self, QUEUE};
+use fsonos_proto::content;
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
 use fsonos_proto::didl::{
     SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_queue_uri,
@@ -22,6 +22,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 mod loading;
+mod queue_insert;
 pub mod queue_removal;
 mod queue_start;
 mod seek_relative;
@@ -318,7 +319,10 @@ pub struct Queued {
 /// after the track playing (when the group plays its queue; else at the
 /// end too). An album or playlist adds its tracks. Rendered with the
 /// household's own Spotify account, relearned and retried once on UPnP 800
-/// as [`play_spotify_track`] does.
+/// after an unchanged, explicitly refused attempt. A lost track reply is
+/// accepted only when a coherent read shows exactly the requested insertion,
+/// with the original neighbors intact; an uncertain write is never replayed.
+/// Container expansions require an acknowledged range. No playback is started.
 pub fn enqueue_spotify<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -328,14 +332,6 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
     next: bool,
 ) -> Result<Queued, CoreError> {
     let host = addr(households, coordinator)?;
-    let playing_queue = soap::get_media_info(t, host)?
-        .uri
-        .starts_with("x-rincon-queue:");
-    let at = if next && playing_queue {
-        soap::get_position_info(t, host)?.track.saturating_add(1)
-    } else {
-        0
-    };
     let kind = SpotifyContainer::of(spotify_uri);
     let source = |rejected: Option<&(String, String)>| -> Result<(String, String), CoreError> {
         let favorites = content::browse_all(t, host, "FV:2")?;
@@ -354,31 +350,27 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
             spotify_track_didl(spotify_uri, title, &params),
         ))
     };
-    let add = |(uri, didl): &(String, String)| -> Result<soap::Enqueued, CoreError> {
-        Ok(soap::enqueue_uri(t, host, uri, didl, at, next)?)
+    let add = |(uri, metadata): &(String, String)| {
+        queue_insert::enqueue(
+            t,
+            host,
+            coordinator,
+            &queue_insert::Request {
+                source_uri: spotify_uri,
+                uri,
+                metadata,
+                next,
+            },
+        )
     };
     let initial = source(None)?;
-    let added = match add(&initial) {
+    match add(&initial) {
         Err(e) if is_render_800(&e) => match add(&source(Some(&initial))?) {
-            Err(e) if is_render_800(&e) => return Err(CoreError::RenderParamsStale),
-            other => other?,
+            Err(e) if is_render_800(&e) => Err(CoreError::RenderParamsStale),
+            other => other,
         },
-        other => other?,
-    };
-    let uris = queue_uris(t, host, added.first, added.count)?;
-    if usize::try_from(added.count).ok() != Some(uris.len()) {
-        // The mutation already happened. Retry reads only, never enqueue
-        // again to repair a missing or changed read-back.
-        return Err(ProtoError::Malformed(
-            "the enqueued range changed before it could be read back completely".into(),
-        )
-        .into());
+        other => other,
     }
-    Ok(Queued {
-        first: added.first,
-        uris,
-        playing_queue,
-    })
 }
 
 /// Take the recorded tracks off the original coordinator's queue again.
@@ -401,32 +393,6 @@ pub fn unqueue<T: Transport + ?Sized>(
         first,
         uris,
     )?)
-}
-
-/// The URIs of up to `count` queue tracks from position `first` (1-based)
-/// of the coordinator at `host`, all from one observed container revision.
-fn queue_uris<T: Transport + ?Sized>(
-    t: &T,
-    host: IpAddr,
-    first: u32,
-    count: u32,
-) -> Result<Vec<String>, CoreError> {
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-    let offset = first
-        .checked_sub(1)
-        .ok_or_else(|| ProtoError::Malformed("queue positions start at one".into()))?;
-    let snapshot = content::browse_range_snapshot(t, host, QUEUE, offset, count)?;
-    snapshot
-        .objects
-        .into_iter()
-        .map(|object| {
-            object.res.map(|resource| resource.uri).ok_or_else(|| {
-                CoreError::Proto(ProtoError::Malformed("queued track has no URI".into()))
-            })
-        })
-        .collect()
 }
 
 /// Set one room's volume (on the room's own player); returns the new level.
