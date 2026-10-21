@@ -1,0 +1,31 @@
+/* Action provenance stays readable on narrow screens and in either theme. */
+.activity-panel { margin-block: 2rem; min-width: 0; }
+.activity-panel > summary { cursor: pointer; font-size: 1.35rem; font-weight: 700; padding-block: 1rem; }
+.activity-body { display: grid; gap: 1rem; min-width: 0; }
+.activity-tools { display: flex; flex-wrap: wrap; align-items: end; gap: .75rem; }
+.activity-tools label { display: grid; gap: .35rem; flex: 1 1 15rem; min-width: 0; }
+.activity-tools input, .activity-tools select { font: inherit; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: .5rem; padding: .7rem; max-width: 100%; min-width: 0; }
+.activity-tools button, .activity-tools select { min-height: 44px; }
+.activity-list { list-style: none; padding: 0; margin: 0; display: grid; gap: .75rem; max-height: 30rem; overflow: auto; }
+.activity-list li { min-width: 0; }
+.activity-list details { padding: .75rem; border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: .65rem; }
+.activity-list summary { cursor: pointer; min-height: 2rem; }
+.activity-list dl { display: grid; grid-template-columns: minmax(5rem, 1fr) minmax(0, 4fr); gap: .4rem 1rem; margin-block: .75rem; }
+.activity-list dt { font-weight: 600; }
+.activity-list dd { margin: 0; }
+.activity-list time { display: block; margin-top: .5rem; font-size: .85rem; }
+.activity-panel p, .activity-panel strong, .activity-panel summary, .activity-panel dd, .activity-panel li { overflow-wrap: anywhere; white-space: pre-wrap; }
+.activity-undo { display: grid; gap: .65rem; min-width: 0; border-top: 1px solid color-mix(in srgb, currentColor 20%, transparent); padding-top: 1rem; }
+.activity-undo > button { justify-self: start; max-width: 100%; white-space: normal; }
+.activity-review { border: 2px solid currentColor; border-radius: .65rem; padding: 1rem; }
+.activity-review button { margin: .5rem .75rem 0 0; max-width: 100%; white-space: normal; min-height: 44px; }
+.activity-error { font-weight: 600; }
+.activity-panel [hidden] { display: none !important; }
+@media (max-width: 480px) {
+  .activity-tools > button, .activity-tools > select { width: 100%; }
+  .activity-list dl { grid-template-columns: minmax(0, 1fr); }
+  .activity-list dd { margin-bottom: .4rem; }
+}
+.activity-body, .activity-undo { grid-template-columns: minmax(0, 1fr); }
+.activity-undo > *, .activity-review > * { min-width: 0; }
+.activity-panel h3 { overflow-wrap: anywhere; }

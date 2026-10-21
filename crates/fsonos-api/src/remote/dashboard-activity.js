@@ -56,7 +56,7 @@ const DashboardActivity = (() => {
     const readable = () => !disposed && active && state.open && !state.writing
       && !controller.state.busy && !controller.state.loading;
     const canReview = () => readable() && !state.loading && state.previewLoaded
-      && !!state.candidate && controller.canControl();
+      && !!state.candidate && now() >= notBefore && controller.canControl();
     function retire() {
       ++version; dirty = true; state.stale = true; state.previewLoaded = false; state.pending = null;
     }

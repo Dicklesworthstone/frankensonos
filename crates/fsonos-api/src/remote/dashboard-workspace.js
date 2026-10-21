@@ -23,6 +23,8 @@ const DashboardWorkspace = (() => {
     $('queue-items').after(queueEditor.node);
     const library = typeof DashboardLibraryPanel !== 'undefined'
       ? DashboardLibraryPanel.create({ call, controller, session }) : null;
+    const activity = typeof DashboardActivityPanel !== 'undefined'
+      ? DashboardActivityPanel.create({ call, controller, session }) : null;
     function paintQueue(state) {
       const p = state.page, container = $('queue-items'), scroll = container.scrollTop;
       const focus = container.contains(document.activeElement) ? document.activeElement?.dataset?.queueFocus : null;
@@ -151,14 +153,15 @@ const DashboardWorkspace = (() => {
         queueEditor.update();
         queueNavigation();
         library?.observe();
+        activity?.observe();
         const next = JSON.stringify([state.selected, state.busy, state.items.map((i) => [i.zone, i.fresh, i.state?.transport_state])]);
         if (next !== roomKey) { roomKey = next; paintRooms(); }
         for (const b of document.querySelectorAll('[data-open-rooms]')) b.disabled = state.busy;
       },
-      invalidate() { queue.invalidate(); },
-      immerse(value) { immersive = value; if (value) queue.suspend(); else if (active) { queue.resume(); if (chosenTab === 'queue') queue.open(); } },
-      suspend() { active = false; library?.suspend(); queue.suspend(); for (const id of ['rooms-dialog', 'shortcuts-dialog']) if ($(id).open) $(id).close(); },
-      resume() { active = true; library?.resume(); if (!immersive) queue.resume(); },
+      invalidate() { queue.invalidate(); activity?.invalidate(); },
+      immerse(value) { immersive = value; if (value) { queue.suspend(); activity?.suspend(); } else if (active) { queue.resume(); activity?.resume(); if (chosenTab === 'queue') queue.open(); } },
+      suspend() { active = false; library?.suspend(); activity?.suspend(); queue.suspend(); for (const id of ['rooms-dialog', 'shortcuts-dialog']) if ($(id).open) $(id).close(); },
+      resume() { active = true; library?.resume(); if (!immersive) { queue.resume(); activity?.resume(); } },
     };
   }
   return { create, moveFocus };
