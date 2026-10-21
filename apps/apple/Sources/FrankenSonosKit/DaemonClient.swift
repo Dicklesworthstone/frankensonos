@@ -407,3 +407,28 @@ extension DaemonClient {
         }
     }
 }
+
+extension DaemonClient {
+    /// The rehearsal POST is read-only: no playback, steering, queue or history
+    /// mutation. It is deliberately separate from perform and its uncertain-
+    /// write receipts. One explicit request; no automatic retry on failure.
+    public func rehearse(_ choices: DJRehearsalRequest) async throws -> DJRehearsal {
+        try Task.checkCancellation()
+        let current = try await zones()
+        try Task.checkCancellation()
+        guard current.contains(where: { $0.sameGroup(as: choices.zone) }) else {
+            throw ContractError.invalid("The rehearsal group changed. Choose its current grouping and generate again.")
+        }
+        var request = URLRequest(url: try endpoint.resource(["dj", "rehearse"]),
+                                 cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(choices)
+        try Task.checkCancellation()
+        let reply = try await transport.send(request)
+        try Task.checkCancellation()
+        try Self.check(reply)
+        return try Self.decode(DJRehearsal.self, from: reply.data).validated(for: choices)
+    }
+}

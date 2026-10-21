@@ -52,6 +52,7 @@ public struct DJRehearsalObservation: Sendable {
         loading = true; problem = nil; matchesChoices = false
         task = Task { [weak self] in
             do {
+                try Task.checkCancellation()
                 let report = try await read(request).validated(for: request)
                 try Task.checkCancellation()
                 if let self, self.active, !self.stopped, self.epoch == version,
