@@ -12,6 +12,7 @@ import FrankenSonosKit
     @State private var housePanel: RemoteModel.Panel = .scenes
     @State private var showRooms = false
     @State private var showConnection = false
+    @State private var showDiagnostics = false
     private var model: RemoteModel { bridge.model }
 
     private enum Destination: String, CaseIterable {
@@ -45,6 +46,7 @@ import FrankenSonosKit
                 }, close: { showRooms = false })
             }
             .sheet(isPresented: $showConnection) { connectionDetails }
+            .sheet(isPresented: $showDiagnostics) { DiagnosticsPanel(bridge: bridge) }
             .sheet(item: Binding(get: { model.review }, set: { if $0 == nil && model.review != nil { model.cancelReview() } })) { review in
                 ReviewSheet(review: review, confirm: { model.confirm(review.id) }, cancel: { model.cancelReview() })
             }
@@ -121,6 +123,9 @@ import FrankenSonosKit
                     if model.selectedZone != nil { MusicPanels(bridge: bridge) }
                     else { noRoom }
                 case .house:
+                    Button("Setup diagnostics", systemImage: "stethoscope") { showDiagnostics = true }
+                        .buttonStyle(.bordered).disabled(!model.canSchedule)
+                        .accessibilityHint("Inspect setup problems even when no rooms are discovered. Nothing plays.")
                     panelPicker("House tools", selection: $housePanel, choices: [.scenes, .sleep, .schedules])
                     if model.panel == .schedules || model.panel == .scenes || model.selectedZone != nil { MusicPanels(bridge: bridge) }
                     else { noRoom }
@@ -154,6 +159,8 @@ import FrankenSonosKit
                     Button("Spotify & library", systemImage: "music.note.list", action: openSpotify)
                         .disabled(!model.canSchedule)
                     Button("Activity & history", systemImage: "clock.arrow.circlepath", action: openActivity)
+                        .disabled(!model.canSchedule)
+                    Button("Setup diagnostics", systemImage: "stethoscope") { showDiagnostics = true }
                         .disabled(!model.canSchedule)
                     Button("Connection details", systemImage: "network") { showConnection = true }
                         .disabled(model.preferences.isEngaged || model.actionPhase != .idle || model.review != nil || model.scheduleReview != nil || model.undoReview != nil || model.sceneMutationReview != nil)
