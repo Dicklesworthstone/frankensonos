@@ -344,8 +344,12 @@ fn every_route_the_page_calls_exists() {
             "the page calls {method} {path}, which the API lacks"
         );
     }
-    // Every request goes through the table: one fetch, one event stream.
-    assert_eq!(script.matches("fetch(").count(), 1);
+    // Every request goes through the table (one fetch), and the live feed
+    // reads only the event stream (one more fetch, which refuses any other
+    // URL, with EventSource where it cannot run).
+    assert_eq!(script.matches("fetch(").count(), 2);
+    assert!(script.contains("if (url !== '/events') throw"));
+    assert!(script.contains("RemoteEventFeed.open(path('events'))"));
     assert_eq!(script.matches("new EventSource(").count(), 1);
     assert!(script.contains("new EventSource(path('events'))"));
     // Every other path names one of the API's routes (or, ending in "/",
