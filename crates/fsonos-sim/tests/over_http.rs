@@ -239,8 +239,9 @@ fn queue_flow_and_faults_over_http() {
         art,
         "/getaa?s=1&u=x-sonos-spotify%3aspotify%253atrack%253aB%3fsid%3d12%26flags%3d8224%26sn%3d1"
     );
+    // An S1 player names no Content-Type for it (seen live).
     let image = t.http_get_bytes(&format!("{}{art}", t.base_url())).unwrap();
-    assert_eq!(image.content_type.as_deref(), Some("image/png"));
+    assert_eq!(image.content_type.as_deref(), None);
     assert!(image.body.starts_with(b"\x89PNG"));
 
     // Faults arrive as UPnP errors with real players' codes.

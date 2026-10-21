@@ -137,10 +137,15 @@ fn respond(shared: &Arc<Mutex<State>>, index: usize, req: &Request) -> Response 
             )
         }
         // Album art (`docs::art_path`): the same small image for any track.
+        // An S1 player sends it with no Content-Type (seen live, 57.23).
         Method::Get if path == "/getaa" && req.uri.contains("u=") => {
-            Response::new(200, "OK", docs::ART_PNG.to_vec())
-                .with_header("Content-Type", "image/png")
-                .with_header("Server", "Linux UPnP/1.0 Sonos/86.10-80260 (fsonos-sim)")
+            let art = Response::new(200, "OK", docs::ART_PNG.to_vec())
+                .with_header("Server", "Linux UPnP/1.0 Sonos/86.10-80260 (fsonos-sim)");
+            if state.households[state.players[index].household].sw_gen == 1 {
+                art
+            } else {
+                art.with_header("Content-Type", "image/png")
+            }
         }
         Method::Post => match docs::services(model)
             .into_iter()

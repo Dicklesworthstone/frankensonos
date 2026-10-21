@@ -84,10 +84,12 @@ impl Surface {
                 return Ok(None);
             }
         };
-        let content_type = fetched
-            .content_type
-            .filter(|t| is_image(t))
-            .unwrap_or_default();
+        let content_type = match fetched.content_type {
+            Some(declared) => Some(declared).filter(|t| is_image(t)),
+            // An S1 player serves its art with no Content-Type (seen live).
+            None => sniffed_image(&fetched.body).map(str::to_string),
+        }
+        .unwrap_or_default();
         if content_type.is_empty() || fetched.body.is_empty() || fetched.body.len() > MAX_ART_BYTES
         {
             tracing::debug!("album art for {zone}: not an image of at most {MAX_ART_BYTES} bytes");
@@ -157,6 +159,22 @@ const LOCAL_SUFFIXES: [&str; 6] = [
     ".home.arpa",
     ".home",
 ];
+
+/// The raster image `body` is, by its first bytes, when the player named no
+/// type: JPEG, PNG, GIF or WebP.
+fn sniffed_image(body: &[u8]) -> Option<&'static str> {
+    if body.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("image/jpeg")
+    } else if body.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if body.starts_with(b"GIF87a") || body.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if body.starts_with(b"RIFF") && body.get(8..12) == Some(b"WEBP".as_slice()) {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
 
 /// `image/png`, `image/jpeg; …` and the like (not SVG, which can carry
 /// script).
@@ -241,6 +259,26 @@ mod tests {
             "https://",
         ] {
             assert_eq!(public_art_url(local), None, "{local}");
+        }
+    }
+
+    /// Seen live: an S1 player serves its art with no Content-Type.
+    #[test]
+    fn untyped_art_is_named_by_its_first_bytes() {
+        assert_eq!(
+            sniffed_image(&[0xff, 0xd8, 0xff, 0xe0, 0, 0x10]),
+            Some("image/jpeg")
+        );
+        assert_eq!(sniffed_image(b"\x89PNG\r\n\x1a\n\0\0"), Some("image/png"));
+        assert_eq!(sniffed_image(b"GIF89a.."), Some("image/gif"));
+        assert_eq!(sniffed_image(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
+        for other in [
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".as_slice(),
+            b"<html></html>".as_slice(),
+            b"RIFF\0\0\0\0WAVEfmt ".as_slice(),
+            b"".as_slice(),
+        ] {
+            assert_eq!(sniffed_image(other), None);
         }
     }
 
