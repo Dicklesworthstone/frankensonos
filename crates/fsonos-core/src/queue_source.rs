@@ -2,40 +2,19 @@
 //!
 //! The existing queue remains intact until the new source has been accepted
 //! and its complete insertion verified. Native revision checks protect the
-//! subsequent prefix removal against concurrent queue edits.
+//! subsequent prefix removal against concurrent queue edits. The initial
+//! group membership and source remain prerequisites throughout staging;
+//! verification failure never starts a replacement on a different group.
 
+use crate::control::queue_removal::{self, Snapshot as Queue, read};
 use crate::{CoreError, HouseholdState, control};
-use fsonos_proto::content::{QUEUE, browse_snapshot};
 use fsonos_proto::control::{self as soap, Enqueued};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
-use std::net::IpAddr;
 
-#[derive(Debug, PartialEq, Eq)]
-struct Queue {
-    revision: u32,
-    uris: Vec<String>,
-}
+mod destination;
 
-fn read<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<Queue, ProtoError> {
-    let snapshot = browse_snapshot(t, host, QUEUE)?;
-    let uris = snapshot
-        .objects
-        .into_iter()
-        .map(|item| {
-            item.res
-                .map(|res| res.uri)
-                .filter(|uri| !uri.trim().is_empty() && uri != "NOT_IMPLEMENTED")
-                .ok_or_else(|| {
-                    ProtoError::Malformed("queue entry has no verifiable identity".into())
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Queue {
-        revision: snapshot.update_id,
-        uris,
-    })
-}
+use destination::Destination;
 
 fn appended(before: &Queue, after: &Queue, added: Enqueued) -> bool {
     let Ok(old_len) = u32::try_from(before.uris.len()) else {
@@ -102,11 +81,14 @@ fn replace<T: Transport + ?Sized>(
         return Err(ProtoError::Malformed("cannot load an empty source URI".into()).into());
     }
     let host = control::locate(households, coordinator)?.ip;
+    let destination = Destination::read(t, host, coordinator).map_err(unconfirmed)?;
     let before = read(t, host)?;
+    destination.confirm(t, host, coordinator).map_err(unconfirmed)?;
     if !autoplay {
         // This is not a source-parameter refusal: do not retry the whole
         // replacement when pausing or its read-back fails.
         control::pause_confirmed(t, households, coordinator).map_err(unconfirmed)?;
+        destination.confirm(t, host, coordinator).map_err(unconfirmed)?;
     }
     let added = match soap::enqueue_uri(t, host, uri, metadata, 0, false) {
         Ok(added) => added,
@@ -131,6 +113,7 @@ fn replace<T: Transport + ?Sized>(
             "playback resumed while the replacement was staged",
         ));
     }
+    destination.confirm(t, host, coordinator).map_err(unconfirmed)?;
     if !before.uris.is_empty() {
         if staged.revision == 0 {
             return Err(unconfirmed(
@@ -138,19 +121,15 @@ fn replace<T: Transport + ?Sized>(
             ));
         }
         let count = u32::try_from(before.uris.len()).map_err(unconfirmed)?;
-        let removed = soap::remove_track_range_from_queue(t, host, staged.revision, 1, count);
-        let remaining = read(t, host).map_err(unconfirmed)?;
-        if remaining.revision == staged.revision
-            || remaining.uris.as_slice() != &staged.uris[before.uris.len()..]
-        {
-            // A removal's 800 is not a rejected source. Never let it trigger
-            // another append through the caller's render-parameter retry.
-            return Err(unconfirmed(removed.err().map_or_else(
-                || "the old prefix removal did not match read-back".to_string(),
-                |error| error.to_string(),
-            )));
-        }
+        // A refused removal is not a rejected source and cannot authorize
+        // another append through render-parameter recovery. The shared
+        // verifier also fences coordinator changes and lost acknowledgements.
+        queue_removal::remove(t, host, coordinator, &staged, 1, count).map_err(unconfirmed)?;
     }
+    // Empty queues skip removal, but not destination verification. Never
+    // detach an old coordinator or replace a newly selected source merely
+    // because the requested tracks are still visible in its local queue.
+    destination.confirm(t, host, coordinator).map_err(unconfirmed)?;
     if !autoplay {
         // The new queue is committed. Even a definite source-selection
         // refusal must not trigger a second append through account recovery.
@@ -167,3 +146,6 @@ fn replace<T: Transport + ?Sized>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ownership;

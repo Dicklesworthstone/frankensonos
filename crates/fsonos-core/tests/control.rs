@@ -322,6 +322,9 @@ impl Transport for QueueLan {
         self.sent
             .borrow_mut()
             .push((host, action.clone(), body.into()));
+        if action == "GetZoneGroupState" {
+            return Ok(ZGS_S1.to_string());
+        }
         if action == "Browse" {
             return Ok(if body.contains("<ObjectID>Q:0</ObjectID>") {
                 self.queue.browse()
@@ -330,6 +333,7 @@ impl Transport for QueueLan {
             });
         }
         let out = match action.as_str() {
+            "GetMediaInfo" => "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into(),
             "AddURIToQueue" => self.queue.add(),
             "RemoveTrackRangeFromQueue" => self.queue.remove(body),
             _ => String::new(),
@@ -591,11 +595,21 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
         actions,
         [
             "Browse",
+            "GetZoneGroupState",
+            "GetMediaInfo",
             "Browse",
+            "GetZoneGroupState",
+            "GetMediaInfo",
             "AddURIToQueue",
             "Browse",
+            "GetZoneGroupState",
+            "GetMediaInfo",
+            "GetZoneGroupState",
             "RemoveTrackRangeFromQueue",
             "Browse",
+            "GetZoneGroupState",
+            "GetZoneGroupState",
+            "GetMediaInfo",
             "SetAVTransportURI",
             "Seek",
             "Play"
@@ -606,7 +620,7 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
         "all on the coordinator"
     );
     // The household's own album prefix and account, as an album.
-    let add = &sent[2].2;
+    let add = &sent[6].2;
     assert!(
         add.contains(
             "<EnqueuedURI>x-rincon-cpcontainer:1004206cspotify%3aalbum%3a0FixtureSpotify0000201\
@@ -620,7 +634,7 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
         "{add}"
     );
     assert!(
-        sent[7]
+        sent[17]
             .2
             .contains("<Unit>TRACK_NR</Unit><Target>1</Target>")
     );
@@ -638,13 +652,13 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
     .unwrap();
     let sent = t.sent.borrow();
     assert!(
-        sent[2]
+        sent[6]
             .2
             .contains("x-rincon-cpcontainer:1006206cspotify%3aplaylist%3a0FixtureSpotify0000202"),
         "{}",
-        sent[2].2
+        sent[6].2
     );
-    assert!(sent[2].2.contains("object.container.playlistContainer"));
+    assert!(sent[6].2.contains("object.container.playlistContainer"));
 }
 
 #[test]
@@ -718,6 +732,8 @@ impl Transport for ContainerDrift {
             .to_string();
         self.actions.borrow_mut().push(name.clone());
         let out = match name.as_str() {
+            "GetZoneGroupState" => return Ok(ZGS_S1.to_string()),
+            "GetMediaInfo" => "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into(),
             "Browse" => {
                 if body.contains("<ObjectID>Q:0</ObjectID>") {
                     return Ok(self.queue.browse());
