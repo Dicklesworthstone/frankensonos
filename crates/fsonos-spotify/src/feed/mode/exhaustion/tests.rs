@@ -89,14 +89,13 @@ impl Rig {
 
     fn event(&self) -> PlayerPlayback {
         let position = soap::get_position_info(&self.lan, self.host).unwrap();
-        PlayerPlayback {
-            transport: Some(TransportState::Stopped),
-            queue_position: Some(position.track),
-            queue_length: Some(u32::try_from(browse_snapshot(&self.lan, self.host, QUEUE).unwrap().objects.len()).unwrap()),
-            track_uri: Some(position.uri),
-            play_mode: Some("NORMAL".into()),
-            ..PlayerPlayback::default()
-        }
+        let mut event = PlayerPlayback::default();
+        event.transport = Some(TransportState::Stopped);
+        event.queue_position = Some(position.track);
+        event.queue_length = Some(u32::try_from(browse_snapshot(&self.lan, self.host, QUEUE).unwrap().objects.len()).unwrap());
+        event.track_uri = Some(position.uri);
+        event.play_mode = Some("NORMAL".into());
+        event
     }
 
     fn tick<T: Transport + ?Sized>(
@@ -289,7 +288,8 @@ fn unrelated_playback_events_do_not_add_polling() {
     let at = Speakers { transport: &NoIo, households: &[], coordinator: &id };
     let feed = QueueFeed::new(&id, DjConfig::default(), 7);
     for state in [None, Some(TransportState::Playing), Some(TransportState::Paused)] {
-        let event = PlayerPlayback { transport: state, ..PlayerPlayback::default() };
+        let mut event = PlayerPlayback::default();
+        event.transport = state;
         assert!(permits(&feed, &at, &event).unwrap());
     }
 }
