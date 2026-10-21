@@ -42,7 +42,8 @@ private actor TasteTransport: DaemonTransport {
         if holdWrite { await withCheckedContinuation { waiting = $0 } }
         if loseReply { throw URLError(.networkConnectionLost) }
         if let writeReply { return writeReply }
-        let body = try #require(JSONSerialization.jsonObject(with: #require(request.httpBody)) as? [String: Any])
+        let data = try #require(request.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         if body["key"] as? String == "energy" {
             preferences = try tasteData(energy: body["unset"] as? Bool == true ? nil : Int(body["value"] as? String ?? ""))
         }
@@ -84,7 +85,8 @@ private func tasteCommand() throws -> DJPreferenceCommand {
         let calls = await transport.calls
         #expect(calls.map { $0.httpMethod ?? "GET" } == ["GET", "GET", "POST"])
         #expect(calls.allSatisfy { $0.url?.path == "/dj/preferences" })
-        let body = try #require(JSONSerialization.jsonObject(with: #require(calls.last?.httpBody)) as? [String: Any])
+        let data = try #require(calls.last?.httpBody)
+        let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(Set(body.keys) == ["key", "value", "unset"])
         #expect(body["key"] as? String == "energy" && body["value"] as? String == "30")
         await #expect(throws: (any Error).self) { try await session.execute(review) }
@@ -158,7 +160,7 @@ private func tasteCommand() throws -> DJPreferenceCommand {
         let transport = try TasteTransport(), client = try tasteClient(transport)
         let workflow = DJPreferencesWorkflow(client: client, commands: CommandReviewSession(client: client))
         workflow.resume(); try await tasteWait { workflow.canPrepare }
-        workflow.prepare(try DJPreferenceChange(key: .energy, value: "30"), from: #require(workflow.editor.observation))
+        workflow.prepare(try DJPreferenceChange(key: .energy, value: "30"), from: try #require(workflow.editor.observation))
         try await tasteWait { workflow.review != nil }
         #expect(await transport.writes.isEmpty)
         workflow.confirm(try #require(workflow.review).id)
@@ -173,7 +175,7 @@ private func tasteCommand() throws -> DJPreferenceCommand {
         let workflow = DJPreferencesWorkflow(client: client, commands: CommandReviewSession(client: client))
         workflow.resume(); try await tasteWait { workflow.canPrepare }
         workflow.canBegin = { false }
-        workflow.prepare(try DJPreferenceChange(key: .energy, value: "30"), from: #require(workflow.editor.observation))
+        workflow.prepare(try DJPreferenceChange(key: .energy, value: "30"), from: try #require(workflow.editor.observation))
         #expect(!workflow.isEngaged && workflow.review == nil && !workflow.canPrepare)
         #expect(await transport.reads == 1); workflow.stop()
     }
@@ -182,7 +184,7 @@ private func tasteCommand() throws -> DJPreferenceCommand {
         let workflow = DJPreferencesWorkflow(client: client, commands: CommandReviewSession(client: client))
         workflow.resume(); try await tasteWait { workflow.canPrepare }
         try await transport.configure(holdRead: 2)
-        workflow.prepare(try DJPreferenceChange(key: .energy, value: "30"), from: #require(workflow.editor.observation))
+        workflow.prepare(try DJPreferenceChange(key: .energy, value: "30"), from: try #require(workflow.editor.observation))
         try await tasteWait { await transport.reads == 2 }
         workflow.cancel(); #expect(workflow.isEngaged)
         workflow.refresh(); #expect(await transport.reads == 2)
@@ -195,7 +197,7 @@ private func tasteCommand() throws -> DJPreferenceCommand {
         let transport = try TasteTransport(), client = try tasteClient(transport)
         let workflow = DJPreferencesWorkflow(client: client, commands: CommandReviewSession(client: client))
         workflow.resume(); try await tasteWait { workflow.canPrepare }
-        workflow.prepare(try DJPreferenceChange(key: .energy, value: "30"), from: #require(workflow.editor.observation))
+        workflow.prepare(try DJPreferenceChange(key: .energy, value: "30"), from: try #require(workflow.editor.observation))
         try await tasteWait { workflow.review != nil }
         try await transport.configure(holdWrite: true, loseReply: true)
         workflow.confirm(try #require(workflow.review).id)

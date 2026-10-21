@@ -66,7 +66,10 @@ import FrankenSonosKit
             Label("Remember this moment", systemImage: "camera.aperture").font(.title3.bold())
             Text("Save the house’s groups, music, levels and mutes as they are when you confirm. Capturing does not change what is playing.")
                 .font(.callout).foregroundStyle(.secondary)
-            TextField("Scene name, such as Evening", text: Binding(get: { model.sceneCaptureName }, set: model.updateSceneCaptureName))
+            // Keep the actor-isolated call in the closure; passing the method
+            // directly crashes Swift 6.1 IR generation on Apple platforms.
+            TextField("Scene name, such as Evening", text: Binding(
+                get: { model.sceneCaptureName }, set: { model.updateSceneCaptureName($0) }))
                 .textFieldStyle(.roundedBorder).accessibilityLabel("Name for captured scene")
             Button("Review house capture", systemImage: "camera") { model.prepareSceneCapture() }
                 .buttonStyle(.borderedProminent).foregroundStyle(RemoteStyle.accentInk)

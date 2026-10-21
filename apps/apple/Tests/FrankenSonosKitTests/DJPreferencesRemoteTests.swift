@@ -43,7 +43,8 @@ private actor TasteScreenTransport: DaemonTransport {
             if holdingWrite { await withCheckedContinuation { waiter = $0 } }
             if lostReply { throw URLError(.networkConnectionLost) }
             if path == "/dj/preferences" {
-                let body = try #require(JSONSerialization.jsonObject(with: #require(request.httpBody)) as? [String: Any])
+                let data = try #require(request.httpBody)
+                let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
                 energy = Int(body["value"] as? String ?? "")
                 response = ["done": "Preference saved", "changed": true, "preferences": prefs()]
             } else { response = ["done": "Paused", "changed": true] }
@@ -70,7 +71,7 @@ private actor TasteScreenTransport: DaemonTransport {
 }
 @MainActor private func prepareTaste(_ model: RemoteModel) throws {
     model.preferences.prepare(try DJPreferenceChange(key: .energy, value: "30"),
-                              from: #require(model.preferences.editor.observation))
+                              from: try #require(model.preferences.editor.observation))
 }
 
 @Suite("Standing taste in the real native model") @MainActor struct DJPreferencesRemoteTests {
