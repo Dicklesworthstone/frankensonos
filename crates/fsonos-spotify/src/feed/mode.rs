@@ -9,6 +9,8 @@ use fsonos_proto::topology::get_zone_group_state;
 
 use super::{FeedError, QueueFeed, QueuedWork, Speakers, host_of, placed};
 
+mod exhaustion;
+
 /// Some players reject SetPlayMode while a stream, not the queue, is active.
 /// The core starts the queue, sets NORMAL, seeks, then plays; any failed
 /// prerequisite prevents the later stages. Ordinary queue starts are unchanged.
@@ -44,13 +46,17 @@ impl QueueFeed {
 
 /// Repair shuffle/repeat only on a still-owned active queue. A stale event
 /// must not change a stream, a replaced queue, or another group's transport.
-/// NORMAL and absent mode deltas add no reads to the ordinary feed path.
+/// Ordinary NORMAL/absent mode deltas add no reads. An apparent exhausted
+/// queue is separately confirmed before it can authorize automatic playback.
 pub(super) fn maintain<T: Transport + ?Sized>(
     feed: &mut QueueFeed,
     at: &Speakers<'_, T>,
     playback: &PlayerPlayback,
 ) -> Result<bool, FeedError> {
     if !feed.is_active() {
+        return Ok(false);
+    }
+    if !exhaustion::permits(feed, at, playback)? {
         return Ok(false);
     }
     if !requires_order(playback.play_mode.as_deref()) {
