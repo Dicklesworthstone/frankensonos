@@ -22,6 +22,8 @@ public actor LiveHouse {
     private var generation: UInt64 = 0, readID: UInt64 = 0
     private var snapshot: HouseSnapshot?
     private var full = false, names = Set<String>()
+    private var retryPending = false
+    private var retryID: UInt64 = 0
     private var cursor: String?
     private var problem: String?
     private var feedDelay: Duration, readDelay: Duration
@@ -58,7 +60,7 @@ public actor LiveHouse {
         feedTask?.cancel(); feedTask = nil
         flushTask?.cancel(); flushTask = nil
         feedRetry?.cancel(); feedRetry = nil
-        readRetry?.cancel(); readRetry = nil
+        cancelReadRetry()
         // Keep the read slot until its cancelled operation has drained. A
         // rapid resume must not overlap it with another four-member batch.
         readTask?.cancel()
@@ -68,7 +70,7 @@ public actor LiveHouse {
 
     public func refresh() {
         guard active else { return }
-        readRetry?.cancel(); readRetry = nil
+        cancelReadRetry()
         invalidate()
     }
 
@@ -84,16 +86,25 @@ public actor LiveHouse {
     private func invalidate(_ room: String? = nil) {
         guard active else { return }
         if let room, !room.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           room.utf8.count <= 512, names.count < 64, !full {
-            names.insert(room)
+           room.utf8.count <= 512, names.count < 64, !full, let snapshot,
+           snapshot.zones.contains(where: { $0.members.contains(room) }) {
+            // A notification is not evidence that an unavailable room can be
+            // read now. Its retry stays scheduled; healthy group members and
+            // namesakes in other households still receive the notification.
+            if !snapshot.affected(by: [room]).isDisjoint(with: snapshot.states.keys) {
+                names.insert(room)
+            }
         } else { full = true; names.removeAll() }
         publish(problem == nil ? (connected ? .refreshing : .connecting) : .retrying)
         scheduleRead()
     }
 
     private func scheduleRead() {
-        guard active, readTask == nil, flushTask == nil, readRetry == nil,
-              full || !names.isEmpty else { return }
+        guard active, readTask == nil, flushTask == nil,
+              full || retryPending || !names.isEmpty else { return }
+        // An unknown topology blocks targeted reads. A room outage alone does
+        // not: independent healthy updates must not wait for its retry timer.
+        guard !full || readRetry == nil else { return }
         let token = generation, delay = timing.coalesce
         // A fixed first-event deadline, not a debounce that a continuous
         // stream can keep postponing. At most one read batch runs at a time.
@@ -108,20 +119,22 @@ public actor LiveHouse {
     private func beginRead(generation token: UInt64) {
         guard active && generation == token else { return }
         flushTask = nil
-        guard readTask == nil else { return }
-        let all = full, requested = names, previous = snapshot
-        full = false; names.removeAll(); readID &+= 1
+        guard readTask == nil, !full || readRetry == nil else { return }
+        let all = full, retry = retryPending, requested = names, previous = snapshot
+        full = false; retryPending = false; names.removeAll(); readID &+= 1
         let id = readID, client = client
         readTask = Task { [weak self] in
             do {
                 let value: HouseSnapshot
                 if !all, let previous {
                     let rooms = previous.affected(by: requested)
-                    // Unknown names may be a renamed room or a new group.
-                    let known = Set(previous.zones.flatMap(\.members))
-                    if !rooms.isEmpty && requested.isSubset(of: known) {
-                        value = try await client.refresh(previous, rooms: rooms)
-                    } else { value = try await client.houseSnapshot() }
+                    if retry {
+                        value = try await client.recoverHouse(previous, refreshing: rooms)
+                    } else {
+                        // The single read slot also covers recovery. Never
+                        // poll failed members again as a healthy sibling plays.
+                        value = try await client.refresh(previous, rooms: rooms.subtracting(previous.failures.keys))
+                    }
                 } else { value = try await client.houseSnapshot() }
                 try Task.checkCancellation()
                 await self?.readFinished(value, error: nil, id: id, generation: token)
@@ -139,32 +152,46 @@ public actor LiveHouse {
         if let error { problem = error }
         else if value?.isComplete == false { problem = "Some rooms could not be refreshed; retrying." }
         else if connected { problem = nil }
-        if error != nil || value?.isComplete == false {
+        if error != nil {
             full = true; names.removeAll()
             armReadRetry()
-        } else { readDelay = timing.firstRetry }
-        if connected && problem == nil && !full && names.isEmpty {
+        } else if value?.isComplete == false {
+            // A healthy-room refresh retains unrelated failures; it neither
+            // resets their deadline nor consumes another backoff interval.
+            armReadRetry()
+        } else {
+            readDelay = timing.firstRetry
+            cancelReadRetry()
+        }
+        if connected && problem == nil && !full && !retryPending && names.isEmpty {
             feedDelay = timing.firstRetry
             publish(.live)
         } else { publish(problem == nil ? .refreshing : .retrying) }
         scheduleRead()
     }
 
+    private func cancelReadRetry() {
+        retryID &+= 1
+        readRetry?.cancel(); readRetry = nil; retryPending = false
+    }
+
     private func armReadRetry() {
-        guard readRetry == nil else { return }
-        let delay = readDelay, token = generation
+        guard readRetry == nil && !retryPending else { return }
+        retryID &+= 1
+        let delay = readDelay, token = generation, retry = retryID
         readDelay = min(timing.maxRetry, readDelay * 2)
         readRetry = Task { [weak self] in
             do {
                 try await Task.sleep(for: delay)
-                await self?.retryRead(generation: token)
+                await self?.retryRead(generation: token, retry: retry)
             } catch { }
         }
     }
 
-    private func retryRead(generation token: UInt64) {
-        guard active && generation == token else { return }
-        readRetry = nil; invalidate()
+    private func retryRead(generation token: UInt64, retry: UInt64) {
+        guard active && generation == token && retryID == retry else { return }
+        readRetry = nil; retryPending = true
+        scheduleRead()
     }
 
     private func openFeed() {

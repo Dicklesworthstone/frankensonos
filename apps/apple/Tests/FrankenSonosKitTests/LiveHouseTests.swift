@@ -293,10 +293,11 @@ private func eventually(_ condition: @escaping @Sendable () async -> Bool) async
     let rig = try LiveRig()
     await rig.fixture.configure(failing: ["A@S2"]); await rig.session.resume()
     try await eventually { await rig.views.latest?.snapshot?.failures.count == 1 }
-    let before = await rig.fixture.paths.count
+    let before = await rig.fixture.reads("/zones/A@S2/state")
     await rig.fixture.burst("A", count: 500)
     try await Task.sleep(for: .milliseconds(25))
-    #expect(await rig.fixture.paths.count == before)
+    // Healthy group members may refresh, but the failed room stays backed off.
+    #expect(await rig.fixture.reads("/zones/A@S2/state") == before)
     #expect(await rig.views.latest?.isFresh == false)
     await rig.fixture.configure()
     try await eventually { await rig.views.latest?.isFresh == true }
