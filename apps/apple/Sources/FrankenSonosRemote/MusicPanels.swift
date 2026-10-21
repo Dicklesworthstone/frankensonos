@@ -50,6 +50,7 @@ import FrankenSonosKit
             case .queue: queuePanel
             case .favorites: favoritesPanel
             case .dj:
+                DJRehearsalPanel(bridge: bridge)
                 djPanel
                 if let zone = model.selectedZone, let status = model.dj {
                     DJSteeringPanel(bridge: bridge, zone: zone, status: status)
