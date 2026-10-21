@@ -7,6 +7,24 @@ public struct LiveHouseView: Sendable {
     public let snapshot: HouseSnapshot?
     public let phase: Phase
     public let problem: String?
+    /// Connection health is distinct from an individual speaker's availability.
+    public let isConnected: Bool
+    /// Settled observations, excluding known invalidations and in-flight reads.
+    public let freshRooms: Set<RoomID>
+
+    init(snapshot: HouseSnapshot?, phase: Phase, problem: String?,
+         isConnected: Bool? = nil, freshRooms: Set<RoomID>? = nil) {
+        self.snapshot = snapshot; self.phase = phase; self.problem = problem
+        self.isConnected = phase != .suspended && (isConnected ?? (phase == .live))
+        if self.isConnected, let snapshot {
+            let observed = Set(snapshot.states.keys).intersection(snapshot.stateObservedAt.keys)
+                .intersection(snapshot.zones.flatMap(\.rooms)).subtracting(snapshot.failures.keys)
+            self.freshRooms = (freshRooms ?? (phase == .live ? observed : [])).intersection(observed)
+        } else { self.freshRooms = [] }
+    }
+
+    /// Display freshness only, never authority to skip a command's fresh reads.
+    public func isFresh(for room: RoomID) -> Bool { freshRooms.contains(room) }
     public var isFresh: Bool { phase == .live && snapshot?.isComplete == true }
 }
 
@@ -22,6 +40,7 @@ public actor LiveHouse {
     private var generation: UInt64 = 0, readID: UInt64 = 0
     private var snapshot: HouseSnapshot?
     private var full = false, names = Set<String>()
+    private var readingAll = false, readingRooms = Set<RoomID>()
     private var retryPending = false
     private var retryID: UInt64 = 0
     private var cursor: String?
@@ -80,7 +99,13 @@ public actor LiveHouse {
     }
 
     private func publish(_ phase: LiveHouseView.Phase) {
-        output.yield(LiveHouseView(snapshot: snapshot, phase: phase, problem: problem))
+        var fresh = Set<RoomID>()
+        if active && connected && !full && !readingAll, let snapshot {
+            fresh = Set(snapshot.states.keys).subtracting(readingRooms)
+                .subtracting(snapshot.affected(by: names))
+        }
+        output.yield(LiveHouseView(snapshot: snapshot, phase: phase, problem: problem,
+                                  isConnected: active && connected, freshRooms: fresh))
     }
 
     private func invalidate(_ room: String? = nil) {
@@ -122,6 +147,10 @@ public actor LiveHouse {
         guard readTask == nil, !full || readRetry == nil else { return }
         let all = full, retry = retryPending, requested = names, previous = snapshot
         full = false; retryPending = false; names.removeAll(); readID &+= 1
+        // Retain the consumed invalidation until its batch finishes. A later
+        // event must not accidentally label this still-running read as fresh.
+        readingAll = all || previous == nil
+        readingRooms = previous?.affected(by: requested) ?? []
         let id = readID, client = client
         readTask = Task { [weak self] in
             do {
@@ -146,7 +175,7 @@ public actor LiveHouse {
 
     private func readFinished(_ value: HouseSnapshot?, error: String?, id: UInt64, generation token: UInt64) {
         guard readID == id else { return }
-        readTask = nil
+        readTask = nil; readingAll = false; readingRooms.removeAll()
         guard active && generation == token else { scheduleRead(); return }
         if let value { snapshot = value }
         if let error { problem = error }

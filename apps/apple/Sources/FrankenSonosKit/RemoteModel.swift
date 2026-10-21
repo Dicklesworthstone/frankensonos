@@ -97,11 +97,16 @@ public struct RemoteResult: Identifiable, Sendable {
         guard let zone = selectedZone else { return nil }
         return house?.snapshot?.states[zone.id]
     }
+    /// The selected coordinator can remain current while another room is offline.
+    public var selectedPlaybackIsFresh: Bool {
+        guard active, let zone = selectedZone else { return false }
+        return house?.isFresh(for: zone.id) == true
+    }
     public var selectedTimeline: PlaybackTimeline? {
         guard let zone = selectedZone, let state = selectedState,
               let observedAt = house?.snapshot?.stateObservedAt[zone.id] else { return nil }
         return PlaybackTimeline(track: state.track, isPlaying: state.isPlaying, observedAt: observedAt,
-                                isFresh: active && house?.isFresh == true,
+                                isFresh: selectedPlaybackIsFresh,
                                 allowsSeeking: ["playing", "paused"].contains(state.transportState),
                                 frozenAt: timelineFrozenAt)
     }
@@ -171,6 +176,7 @@ public struct RemoteResult: Identifiable, Sendable {
         guard selectedRoom != room else { return }
         cancelReview()
         selectedRoom = room; choseInitialRoom = true
+        timelineFrozenAt = selectedPlaybackIsFresh ? nil : Date()
         queueOffset = 0
         invalidatePanel(); refreshPanel()
     }
@@ -269,15 +275,15 @@ public struct RemoteResult: Identifiable, Sendable {
         guard !stopped else { return }
         let oldZone = selectedZone
         let oldState = selectedState
-        let wasFresh = house?.isFresh == true
-        if active && value.isFresh { timelineFrozenAt = nil }
-        else if timelineFrozenAt == nil { timelineFrozenAt = Date() }
+        let wasFresh = selectedPlaybackIsFresh
         house = value
         if !choseInitialRoom, let first = value.snapshot?.zones.first {
             choseInitialRoom = true; selectedRoom = first.id
         }
         let newZone = selectedZone
         let layoutChanged = oldZone.map { old in newZone.map { !old.sameGroup(as: $0) } ?? true } ?? (newZone != nil)
+        if selectedPlaybackIsFresh { timelineFrozenAt = nil }
+        else if layoutChanged || timelineFrozenAt == nil { timelineFrozenAt = Date() }
         if layoutChanged {
             // A grouping command can emit its topology event before its HTTP
             // acknowledgement. Do not cancel that very write on its own event.
@@ -285,7 +291,7 @@ public struct RemoteResult: Identifiable, Sendable {
             if !preferences.isEngaged && actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil && !sceneMutationAction && sceneMutationReview == nil { cancelReview() }
             queueOffset = 0
             invalidatePanel(); refreshPanel()
-        } else if active && value.isFresh && (!wasFresh || oldState.map { old in selectedState.map { !old.samePlayback(as: $0) } ?? true } == true) {
+        } else if selectedPlaybackIsFresh && (!wasFresh || oldState.map { old in selectedState.map { !old.samePlayback(as: $0) } ?? true } == true) {
             if panel == .queue || panel == .dj || panel == .sleep { refreshPanel() }
         }
     }
@@ -302,7 +308,8 @@ public struct RemoteResult: Identifiable, Sendable {
     }
 
     public func refreshPanel() {
-        guard active && !stopped && (panel == .schedules || panel == .scenes || selectedZone != nil) else { return }
+        guard active else { return }
+        guard !stopped && (panel == .schedules || panel == .scenes || selectedZone != nil) else { return }
         panelPending = true
         startPanelRead()
     }

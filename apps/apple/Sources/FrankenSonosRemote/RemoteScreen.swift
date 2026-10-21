@@ -203,14 +203,14 @@ import FrankenSonosKit
         if !model.active || model.house?.isFresh != true {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 10) {
-                    Image(systemName: model.active ? "wifi.exclamationmark" : "pause.circle")
-                    Text(model.active ? "Reconnecting to your house" : "Connection paused").font(.subheadline.bold())
+                    Image(systemName: !model.active ? "pause.circle" : model.house?.isConnected == true ? "hifispeaker.2" : "wifi.exclamationmark")
+                    Text(houseStatusTitle).font(.subheadline.bold())
                     Spacer()
                     if model.active {
                         Button("Retry") { model.refresh() }.buttonStyle(.bordered)
                     }
                 }
-                Text(model.house?.snapshot == nil ? "Your rooms will appear as soon as the daemon responds." : "Showing the last known state. Controls check the room again before sending a change.")
+                Text(houseStatusDetail)
                     .font(.caption).foregroundStyle(.secondary)
                 if let problem = model.house?.problem {
                     DisclosureGroup("Connection details") { Text(problem).font(.caption).textSelection(.enabled) }
@@ -218,6 +218,22 @@ import FrankenSonosKit
                 }
             }.remoteCard()
         }
+    }
+
+    private var houseStatusTitle: String {
+        if !model.active { return "Connection paused" }
+        if model.house?.isConnected != true { return "Reconnecting to your house" }
+        let unavailable = model.house?.snapshot?.failures.count ?? 0
+        if unavailable > 0 { return "\(unavailable) \(unavailable == 1 ? "room unavailable" : "rooms unavailable")" }
+        return "Refreshing house state"
+    }
+
+    private var houseStatusDetail: String {
+        if model.house?.snapshot == nil { return "Your rooms will appear as soon as the daemon responds." }
+        if model.active && model.house?.isConnected == true && model.house?.freshRooms.isEmpty == false {
+            return "Healthy rooms continue updating. Unavailable or refreshing rooms remain marked. Controls check the room again before sending a change."
+        }
+        return "Showing the last known state. Controls check the room again before sending a change."
     }
 
     @ViewBuilder private var notices: some View {
@@ -275,7 +291,7 @@ import FrankenSonosKit
 
     private func playerDetails(_ state: ZoneState, in zone: Zone) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            Label(model.house?.isFresh == true ? state.transportState.capitalized : "Last known playback",
+            Label(model.selectedPlaybackIsFresh ? state.transportState.capitalized : "Last known playback",
                   systemImage: state.isPlaying ? "waveform" : "music.note")
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 7) {
@@ -350,6 +366,9 @@ import FrankenSonosKit
                 let id = RoomID(household: zone.household, room: room)
                 VStack(alignment: .leading, spacing: 8) {
                     if let state = model.house?.snapshot?.states[id] {
+                        if !model.active || model.house?.isFresh(for: id) != true {
+                            Text("Last known room level").font(.caption).foregroundStyle(.secondary)
+                        }
                         if let volume = state.volume {
                             RoomLevelControl(title: zone.members.count == 1 ? "Volume" : room, level: volume, enabled: model.canPrepare) {
                                 model.prepare(.volume($0, room: room), in: zone)
@@ -437,8 +456,8 @@ import FrankenSonosKit
             Form {
                 Section("Your daemon") {
                     Text(bridge.endpoint).font(.callout).textSelection(.enabled)
-                    Label(model.house?.isFresh == true && model.active ? "Live connection" : "Connection needs attention",
-                          systemImage: model.house?.isFresh == true && model.active ? "checkmark.circle" : "wifi.exclamationmark")
+                    Label(model.house?.isConnected == true && model.active ? "Live connection" : "Connection needs attention",
+                          systemImage: model.house?.isConnected == true && model.active ? "checkmark.circle" : "wifi.exclamationmark")
                     if let date = model.house?.snapshot?.observedAt {
                         LabeledContent("Last update", value: date.formatted(date: .omitted, time: .standard))
                     }
