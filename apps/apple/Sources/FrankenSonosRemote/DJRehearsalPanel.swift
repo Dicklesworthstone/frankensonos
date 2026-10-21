@@ -2,7 +2,8 @@
 import SwiftUI
 import FrankenSonosKit
 
-/// Read-only planning. This view cannot prepare or confirm a playback command.
+/// Generate and export stay read-only. A separate explicit handoff can open
+/// the existing review for temporary settings; it never starts playback.
 @MainActor struct DJRehearsalPanel: View {
     @ObservedObject var bridge: RemoteBridge
     @State private var expanded = false
@@ -159,6 +160,13 @@ import FrankenSonosKit
                 Label("Share this preview as text", systemImage: "square.and.arrow.up")
             }.buttonStyle(.bordered)
                 .accessibilityHint("Exports this generated observation, not the current draft or a playable queue.")
+            if observation.request.overridesSteering {
+                RehearsalSteeringControls(bridge: bridge, observation: observation)
+                    .id(observation.id)
+            } else {
+                Text("This preview inherited the group’s steering. Add explicit preview-only settings and generate again to review a new temporary session.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if report.works.isEmpty {
                 Text("The daemon returned no works for this preview. Change the choices or check your cached library.")
                     .font(.callout)
@@ -253,6 +261,81 @@ import FrankenSonosKit
     private func synchronize() {
         if expanded && remote.active { rehearsal.activate(in: zone) }
         else { rehearsal.suspend() }
+    }
+}
+
+/// This optional handoff is separate from Generate and export. It builds a
+/// local value, then enters the same reviewed writer as the session editor.
+@MainActor private struct RehearsalSteeringControls: View {
+    @ObservedObject var bridge: RemoteBridge
+    let observation: DJRehearsalObservation
+    @State private var minutes = ""
+    @State private var untilCleared = false
+    @State private var problem: String?
+    private var remote: RemoteModel { bridge.model }
+
+    var body: some View {
+        DisclosureGroup("Use these settings for future DJ picks") {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Copy this preview’s explicit mood and filters into a new temporary session for \(observation.request.zone.title) · \(observation.request.zone.household). This replaces all existing temporary settings, not your standing taste preferences.")
+                    .font(.callout)
+                Text("This does not play the preview, queue its works, or start a stopped DJ. The live session uses the current mood definition and may choose different music. The preview seed, start time and length are not copied.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let filters = try? DJSteeringFilters(observation.request.constraints) {
+                    Text("Requested mood: \(observation.request.mood ?? "automatic program")\n\(filters.summary)")
+                        .font(.callout).textSelection(.enabled)
+                }
+                Toggle("Keep until explicitly cleared", isOn: $untilCleared)
+                    .disabled(!remote.canPrepare)
+                if !untilCleared {
+                    TextField("New duration in minutes (1–10080)", text: $minutes)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityLabel("Duration of the new temporary DJ settings in minutes")
+                        .disabled(!remote.canPrepare)
+                        #if os(iOS)
+                        .keyboardType(.numberPad)
+                        #endif
+                }
+                Text("Choose a new lifetime starting when saved. The previous session’s deadline is not preserved. Your separate session-editor draft is left untouched.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let message = validationMessage {
+                    Label(message, systemImage: "info.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Review using these settings", systemImage: "slider.horizontal.3") { review() }
+                    .buttonStyle(.borderedProminent).foregroundStyle(RemoteStyle.accentInk)
+                    .disabled(!remote.canPrepare || validationMessage != nil)
+                    .accessibilityHint("Opens the shared review before replacing temporary steering. Does not start playback.")
+                Button("Refresh current DJ and moods", systemImage: "arrow.clockwise") { remote.refreshPanel() }
+                    .buttonStyle(.bordered).disabled(!remote.canPrepare || remote.panelLoading)
+                if let problem { Text(problem).font(.callout).textSelection(.enabled) }
+            }.padding(.top, 12)
+        }
+        .onChange(of: minutes) { _, _ in problem = nil }
+        .onChange(of: untilCleared) { _, _ in problem = nil }
+    }
+
+    private var validationMessage: String? {
+        do { _ = try proposedChange(); return nil }
+        catch { return error.localizedDescription }
+    }
+    private func proposedChange() throws -> DJSteeringChange {
+        guard remote.active, remote.panel == .dj, !remote.panelLoading,
+              remote.panelProblem == nil, let zone = remote.selectedZone, let status = remote.dj else {
+            throw ContractError.invalid("Refresh the current DJ settings and moods before reviewing a replacement.")
+        }
+        var draft = try bridge.rehearsal.steeringDraft(from: observation.id, in: zone,
+                                                     status: status, moods: remote.moods)
+        draft.minutes = minutes; draft.untilCleared = untilCleared
+        return try draft.change(moods: remote.moods)
+    }
+    private func review() {
+        guard remote.canPrepare else { return }
+        do {
+            let change = try proposedChange()
+            problem = nil
+            remote.prepare(.djFilters(change), in: observation.request.zone)
+        } catch { problem = error.localizedDescription }
     }
 }
 #endif

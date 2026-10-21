@@ -49,6 +49,39 @@ observations, not atomic reservations. Failures retain their API/read error;
 they are not described as uncertain playback writes, and no retry is automatic.
 No new endpoint, credential, Spotify scope or dependency is introduced.
 
+## Use a preview's settings for future picks
+
+After generating with explicit preview-only choices, expand **Use these settings
+for future DJ picks** beneath the results. Choose a new duration (1–10080 minutes)
+or explicitly select **Keep until explicitly cleared**, then choose **Review using
+these settings**. The usual command sheet shows the target, mood, filters and
+lifetime. Only its confirmation saves through the existing `/dj/steer` writer.
+Opening the handoff, entering a duration, and generating or sharing a preview do
+not save anything. **Refresh current DJ and moods** only reloads observations.
+
+This copies the request's explicit mood and filters, not the predicted works,
+seed, start time, preview length, or any filters inferred from selection reasons.
+It replaces the group's entire temporary session. Existing session additions and
+inherited mood filters are not merged in. Standing taste and queued music stay
+unchanged, and saving does not start a stopped DJ. A separate unfinished draft in
+**Temporary session filters** is not modified by this handoff.
+
+The new lifetime starts on saving; it does not preserve an old expiry or derive
+one from preview hours. Mood names use the rehearsal engine's lowercase form and
+must resolve unambiguously in the current catalog. The current mood definition
+and live session are checked again by the existing review path. They are not
+frozen by rehearsal generation, so future music can differ from the preview.
+
+Only a completed, still-current preview for the same household, coordinator and
+room membership can supply settings. Editing, cancellation, hiding, a new
+in-flight generation, or changing groups makes retained observations ineligible.
+Generating again gives a new identity even when the choices and timestamp match.
+A preview with no explicit overrides cannot silently clear or copy live steering.
+Live steering has stricter field limits than the preview draft; incompatible
+choices are rejected whole, never truncated or silently discarded. Adjust the
+preview and generate again in that case. None of these observations reserves the
+house against another controller; uncertain confirmed writes are never replayed.
+
 ## Verification
 
 Run the complete package and Apple build gates with the repository workflows:
@@ -71,3 +104,14 @@ responses, not a running Rust engine. Both iOS17/macOS14 view branches passed
 syntax parsing, and the Xcode project passed plist/reference checks. Full Apple
 SDK type-checking, rendered native UI/share-sheet behavior, full-package tests,
 Rust integration and physical Sonos acceptance remain separate, unverified gates.
+
+For the rehearsal-to-steering handoff, all 35 focused tests pass under Swift
+6.2.1/Linux with warnings as errors: 19 new conversion/lifecycle tests and 16
+unchanged steering tests. This harness compiles the exact rehearsal, model,
+steering, draft and DJ decoder files with their relevant production model
+declarations. It excludes the full application, transport and shared command
+session; it does not establish an end-to-end save or physical playback result.
+The changed complete view parses for iOS 17 and macOS 14. Apple SDK type-checking,
+rendered interaction, full-package integration and hardware acceptance remain
+unverified for this addition. The view stays in its existing Xcode compilation
+unit and uses the existing command-review and result paths.
