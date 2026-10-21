@@ -874,6 +874,30 @@ pub(crate) fn topology_result(
     }
 }
 
+/// The rooms whose players run older software, each room and version once:
+/// the players of a stereo pair or a surround set share their room's name,
+/// so `Kitchen ×2 (86.10-80260)` rather than the room twice.
+fn rooms_behind(old: &[&(String, String)]) -> Vec<String> {
+    let mut rooms: Vec<(&str, &str, usize)> = Vec::new();
+    for (room, version) in old.iter().map(|p| (p.0.as_str(), p.1.as_str())) {
+        if let Some(seen) = rooms.iter_mut().find(|r| r.0 == room && r.1 == version) {
+            seen.2 += 1;
+        } else {
+            rooms.push((room, version, 1));
+        }
+    }
+    rooms
+        .into_iter()
+        .map(|(room, version, players)| {
+            if players == 1 {
+                format!("{room} ({version})")
+            } else {
+                format!("{room} ×{players} ({version})")
+            }
+        })
+        .collect()
+}
+
 /// `lan.updates`: whether Sonos offers software newer than some player
 /// runs. Only the offered version is read, never where it would come from:
 /// FrankenSonos never installs updates.
@@ -901,10 +925,7 @@ pub(crate) fn updates_result(found: &[HouseholdOffer]) -> CheckResult {
                 if old.is_empty() {
                     current.push(format!("{} runs {}", h.household, offer.version));
                 } else {
-                    let rooms: Vec<String> = old
-                        .iter()
-                        .map(|(room, version)| format!("{room} ({version})"))
-                        .collect();
+                    let rooms = rooms_behind(&old);
                     behind.push(format!(
                         "Sonos offers {} to the {} household; {} player(s) run older software: {}",
                         offer.version,
@@ -1256,6 +1277,34 @@ mod tests {
                 .contains("S1: no topology event")
         );
         assert_eq!(r.evidence["households"][0]["behind"][0]["room"], "Kitchen");
+    }
+
+    /// Seen live: a stereo pair's two players were listed as the same room
+    /// twice. Each room and version is named once, with its player count.
+    #[test]
+    fn a_pair_behind_is_named_once() {
+        let r = updates_result(&[offer(
+            "S2",
+            "97.1-80312",
+            &[
+                ("Kitchen", "86.10-80260"),
+                ("Study", "86.10-80260"),
+                ("Kitchen", "86.10-80260"),
+                ("Kitchen", "97.1-80312"),
+            ],
+        )]);
+        assert_eq!(
+            r.summary,
+            "Sonos offers 97.1-80312 to the S2 household; 3 player(s) run older software: \
+             Kitchen ×2 (86.10-80260), Study (86.10-80260)"
+        );
+        // The evidence still lists every player.
+        assert_eq!(
+            r.evidence["households"][0]["behind"]
+                .as_array()
+                .map(Vec::len),
+            Some(3)
+        );
     }
 
     #[test]
