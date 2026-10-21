@@ -197,36 +197,58 @@ import FrankenSonosKit
 
     private func work(_ pick: DJRehearsal.Pick, number: Int) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("\(number). \(pick.work.title)").font(.headline)
-            Text(pick.work.composer).font(.subheadline)
-            Text("\(DJRehearsal.day(pick.at)) · \(DJRehearsal.clock(pick.at)) · \(DJRehearsal.offset(pick.at))")
-                .font(.caption.monospaced()).foregroundStyle(.secondary)
-            Text("\(pick.work.movements) movement(s)" + (pick.work.minutes.map { " · \($0) min" } ?? "") +
-                 (pick.explicit ? " · Explicit" : ""))
-                .font(.caption).foregroundStyle(.secondary)
-            if let performers = pick.work.performers, !performers.isEmpty {
-                Text(performers.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
-            }
-            Text("Energy \(pick.energy)" + (pick.energyTarget.map { " · target \($0)" } ?? "") +
-                 (pick.genre.map { " · \($0)" } ?? "") + (pick.mood.map { " · mood \($0)" } ?? ""))
-                .font(.caption).foregroundStyle(.secondary)
-            Text(pick.work.reason.summary).font(.callout).textSelection(.enabled)
-            if let relaxed = pick.work.reason.relaxed, !relaxed.isEmpty {
-                Label("Relaxed: " + relaxed.joined(separator: ", "), systemImage: "info.circle")
-                    .font(.caption)
-            }
-            if let factors = pick.work.reason.factors, !factors.isEmpty {
-                DisclosureGroup("Why this pick") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(factors.enumerated()), id: \.offset) { _, factor in
-                            Text("\(factor.factor): \(Double(factor.weight) / 1000, specifier: "%.3f")×")
-                                .font(.caption).textSelection(.enabled)
-                        }
-                    }.padding(.top, 8)
-                }
-            }
+            workHeading(pick, number: number)
+            workDetails(pick)
+            workReason(pick.work.reason)
             Divider()
         }
+    }
+
+    // Keep each result-builder expression small: this row otherwise exhausts
+    // Swift's type checker and prevents the Apple client from building.
+    @ViewBuilder private func workHeading(_ pick: DJRehearsal.Pick, number: Int) -> some View {
+        Text("\(number). \(pick.work.title)").font(.headline)
+        Text(pick.work.composer).font(.subheadline)
+        Text("\(DJRehearsal.day(pick.at)) · \(DJRehearsal.clock(pick.at)) · \(DJRehearsal.offset(pick.at))")
+            .font(.caption.monospaced()).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private func workDetails(_ pick: DJRehearsal.Pick) -> some View {
+        let length: String = "\(pick.work.movements) movement(s)"
+        let minutes: String = pick.work.minutes.map { " · \($0) min" } ?? ""
+        let explicit: String = pick.explicit ? " · Explicit" : ""
+        let target: String = pick.energyTarget.map { " · target \($0)" } ?? ""
+        let genre: String = pick.genre.map { " · \($0)" } ?? ""
+        let mood: String = pick.mood.map { " · mood \($0)" } ?? ""
+        let energy: String = "Energy \(pick.energy)" + target + genre + mood
+        Text(length + minutes + explicit).font(.caption).foregroundStyle(.secondary)
+        if let performers = pick.work.performers, !performers.isEmpty {
+            Text(performers.joined(separator: ", ")).font(.caption).foregroundStyle(.secondary)
+        }
+        Text(energy).font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder private func workReason(_ reason: DJWork.Reason) -> some View {
+        Text(reason.summary).font(.callout).textSelection(.enabled)
+        if let relaxed = reason.relaxed, !relaxed.isEmpty {
+            Label("Relaxed: " + relaxed.joined(separator: ", "), systemImage: "info.circle")
+                .font(.caption)
+        }
+        if let factors = reason.factors, !factors.isEmpty {
+            DisclosureGroup("Why this pick") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(factors.indices, id: \.self) { index in
+                        factorRow(factors[index])
+                    }
+                }.padding(.top, 8)
+            }
+        }
+    }
+
+    private func factorRow(_ factor: DJWork.Factor) -> some View {
+        let weight = Double(factor.weight) / 1000.0
+        return Text("\(factor.factor): \(weight, specifier: "%.3f")×")
+            .font(.caption).textSelection(.enabled)
     }
 
     private func filterFields(_ fields: [DJRehearsalDraft.Filter]) -> some View {
