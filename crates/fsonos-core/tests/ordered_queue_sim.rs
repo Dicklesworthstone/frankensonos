@@ -174,10 +174,15 @@ fn ordinary_queue_starts_do_not_change_shuffle_or_repeat() {
 }
 
 #[test]
-fn a_failed_mode_change_never_advances_to_seek_or_play() {
+fn an_unverifiable_mode_change_never_advances_to_seek_or_play() {
     for generation in [1, 2] {
         for fault in [Fault::RejectedMode, Fault::LostMode, Fault::MalformedMode] {
             let rig = Rig::new(generation, true);
+            // No positive mode observation: uncertainty must still block all
+            // dependent mutations, even when the attempted write took effect.
+            rig.sim
+                .upnp_fault("Room", "GetTransportSettings", 401)
+                .unwrap();
             let t = rig.transport(fault);
             assert!(rig.start(&t).is_err());
             assert_eq!(*t.writes.borrow(), ["SetAVTransportURI", "SetPlayMode"]);
@@ -211,4 +216,17 @@ fn an_invalid_ordered_start_changes_nothing() {
     assert!(t.writes.borrow().is_empty());
     let media = soap::get_media_info(&rig.sim.lan(), rig.host).unwrap();
     assert_eq!(media.uri, STREAM);
+}
+
+#[test]
+fn lost_mode_replies_finish_the_start_without_repeating_any_stage() {
+    for generation in [1, 2] {
+        for fault in [Fault::LostMode, Fault::MalformedMode] {
+            let rig = Rig::new(generation, true);
+            let t = rig.transport(fault);
+            rig.start(&t).unwrap();
+            assert_eq!(*t.writes.borrow(), ORDERED);
+            rig.assert_playing_second();
+        }
+    }
 }

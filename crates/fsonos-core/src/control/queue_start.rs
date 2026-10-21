@@ -1,5 +1,5 @@
 //! Finish an explicit queue start when a stage's reply, not its effect, was
-//! lost. Source selection, track selection and Play are each sent once.
+//! lost. Source selection, ordered mode, track selection and Play are sent once.
 //! Ordinary starts keep the three-call path; ordered starts set NORMAL after
 //! selecting the queue and before seeking or playing. Ambiguous failures
 //! permit read-back only; a confirmed stage advances to the next one rather
@@ -7,12 +7,12 @@
 //! their original meaning (including render-parameter recovery upstream).
 
 use super::source_start::wait_for_playing;
-use fsonos_proto::content::{QUEUE, browse_range_snapshot};
+use fsonos_proto::content::{BrowseSnapshot, QUEUE, browse_range_snapshot};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::spotify_uri_from_renderer_uri;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
-use fsonos_types::{PlayerId, TransportState};
+use fsonos_types::{PlayMode, PlayerId, TransportState};
 use std::net::IpAddr;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -116,12 +116,9 @@ fn start<T: Transport + ?Sized>(
             Stage::Play => soap::play(transport, host),
         };
         if let Err(error) = result {
-            // Source/position/Playing prove nothing about a mode change.
-            // A failed mode reply must not authorize Seek or Play, and no
-            // earlier stage is replayed to try the mode again.
-            if stage == Stage::Mode {
-                return Err(error);
-            }
+            // Each ambiguous reply needs evidence for its own stage. Mode
+            // recovery reads the setting explicitly; being on the queue or
+            // already playing cannot prove NORMAL. Definite faults stop here.
             if matches!(
                 &error,
                 ProtoError::Network { .. } | ProtoError::Malformed(_)
@@ -195,6 +192,12 @@ fn confirmed<T: Transport + ?Sized>(
     let Some(resource) = &item.res else {
         return Ok(false);
     };
+    if stage == Stage::Mode {
+        if resource.uri.trim().is_empty() || resource.uri == "NOT_IMPLEMENTED" {
+            return Ok(false);
+        }
+        return mode_confirmed(transport, host, coordinator, position, &before);
+    }
     let unchanged = || {
         let current = soap::get_position_info(transport, host)?;
         if current.track != position || !same_track(&current.uri, &resource.uri) {
@@ -215,6 +218,47 @@ fn confirmed<T: Transport + ?Sized>(
     } else {
         unchanged()
     }
+}
+
+/// Seek has not been sent yet. Confirm NORMAL against the still-stopped
+/// selected queue, not against a target position we have not selected. Retain
+/// the original read-back revision and current occurrence across these reads.
+/// This observes the requested result; it cannot attribute it to a controller
+/// or detect a change completed before the first read or after the last one.
+fn mode_confirmed<T: Transport + ?Sized>(
+    transport: &T,
+    host: IpAddr,
+    coordinator: &PlayerId,
+    position: u32,
+    before: &BrowseSnapshot,
+) -> Result<bool, ProtoError> {
+    let current = soap::get_position_info(transport, host)?;
+    if current.track == 0
+        || current.uri.trim().is_empty()
+        || current.uri == "NOT_IMPLEMENTED"
+        || soap::get_transport_info(transport, host)?.state != TransportState::Stopped
+        || fsonos_proto::play_mode::get_play_mode(transport, host)? != PlayMode::Normal
+    {
+        return Ok(false);
+    }
+    // An owner's seek, including one within the same track, invalidates the
+    // observation. Do not reset or play over that change to finish our start.
+    let after = soap::get_position_info(transport, host)?;
+    if current.track != after.track
+        || current.position_secs != after.position_secs
+        || !same_track(&current.uri, &after.uri)
+        || *before != browse_range_snapshot(transport, host, QUEUE, position - 1, 1)?
+    {
+        return Ok(false);
+    }
+    let own_queue = format!("x-rincon-queue:{}#0", coordinator.0);
+    Ok(get_zone_group_state(transport, host)?
+        .groups
+        .iter()
+        .any(|group| group.coordinator == *coordinator)
+        && soap::get_media_info(transport, host)?.uri == own_queue
+        && fsonos_proto::play_mode::get_play_mode(transport, host)? == PlayMode::Normal
+        && soap::get_transport_info(transport, host)?.state == TransportState::Stopped)
 }
 
 fn same_track(actual: &str, expected: &str) -> bool {
