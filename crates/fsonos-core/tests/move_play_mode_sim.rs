@@ -149,6 +149,7 @@ struct Replies {
     fault: Fault,
     triggered: Cell<bool>,
     settings: Cell<usize>,
+    source_settings: Cell<usize>,
     mode_writes: Cell<usize>,
 }
 
@@ -161,6 +162,7 @@ impl Replies {
             fault,
             triggered: Cell::new(false),
             settings: Cell::new(0),
+            source_settings: Cell::new(0),
             mode_writes: Cell::new(0),
         }
     }
@@ -185,11 +187,16 @@ impl Transport for Replies {
         if host == self.source
             && name == "GetTransportSettings"
             && matches!(self.fault, Fault::ChangeSourceMode)
-            && !self.triggered.replace(true)
         {
-            let result = self.inner.soap_post(host, path, action, body)?;
-            set_play_mode(&self.inner, host, PlayMode::RepeatAll)?;
-            return Ok(result);
+            self.source_settings.set(self.source_settings.get() + 1);
+            // Snapshot capture brackets playback with two settings reads.
+            // Change only when Prepared::confirm_source begins its own proof,
+            // so the destination must remain untouched.
+            if self.source_settings.get() == 3 {
+                let result = self.inner.soap_post(host, path, action, body)?;
+                set_play_mode(&self.inner, host, PlayMode::RepeatAll)?;
+                return Ok(result);
+            }
         }
         if host != self.target {
             return self.inner.soap_post(host, path, action, body);

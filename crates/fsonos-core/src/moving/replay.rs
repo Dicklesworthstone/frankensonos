@@ -163,6 +163,17 @@ impl Prepared {
                     }
                     other => other,
                 })?;
+            // Bracket the source/queue identity read with the ordering mode.
+            // A controller can change shuffle/repeat immediately after the
+            // first settings reply; that is still a changed source epoch and
+            // must be caught before the destination is touched.
+            if let Some(expected) = self.play_mode
+                && fsonos_proto::play_mode::get_play_mode(t, host)? != expected
+            {
+                return Err(MoveError::SourceChanged(
+                    "the source queue's play mode changed during preparation".into(),
+                ));
+            }
             self.transport = soap::get_transport_info(t, host)?.state;
             if !matches!(
                 self.transport,
