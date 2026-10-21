@@ -136,6 +136,10 @@ enum Fault {
     EditQueue,
     ChangeModeAfterPlay,
     ChangeSourceMode,
+    SwitchSourceAfterPlay,
+    PauseSourceAfterPlay,
+    EditSourceQueueAfterPlay,
+    ChangeSourceModeAfterPlay,
 }
 
 struct Replies {
@@ -231,8 +235,31 @@ impl Transport for Replies {
             };
         }
         let result = self.inner.soap_post(host, path, action, body)?;
-        if name == "Play" && matches!(self.fault, Fault::ChangeModeAfterPlay) {
-            set_play_mode(&self.inner, host, PlayMode::RepeatAll)?;
+        if name == "Play" {
+            match self.fault {
+                Fault::ChangeModeAfterPlay => {
+                    set_play_mode(&self.inner, host, PlayMode::RepeatAll)?;
+                }
+                Fault::SwitchSourceAfterPlay => {
+                    soap::set_av_transport_uri(&self.inner, self.source, OTHER, "")?;
+                }
+                Fault::PauseSourceAfterPlay => {
+                    soap::pause(&self.inner, self.source)?;
+                }
+                Fault::EditSourceQueueAfterPlay => {
+                    soap::add_uri_to_queue(
+                        &self.inner,
+                        self.source,
+                        "x-file-cifs://example.invalid/owner-added.flac",
+                        "",
+                        false,
+                    )?;
+                }
+                Fault::ChangeSourceModeAfterPlay => {
+                    set_play_mode(&self.inner, self.source, PlayMode::RepeatAll)?;
+                }
+                _ => {}
+            }
         }
         Ok(result)
     }
@@ -439,5 +466,56 @@ fn a_source_mode_changed_during_preparation_leaves_the_destination_untouched() {
                 .all(|a| a.starts_with("Get") || a == "Browse")
         );
         f.source_kept(since);
+    }
+}
+
+
+#[test]
+fn owner_changes_after_destination_start_are_not_overwritten_by_source_stop() {
+    for (from, to) in PAIRS {
+        for fault in [
+            Fault::SwitchSourceAfterPlay,
+            Fault::PauseSourceAfterPlay,
+            Fault::EditSourceQueueAfterPlay,
+            Fault::ChangeSourceModeAfterPlay,
+        ] {
+            let f = Fixture::new(from, to, PlayMode::Shuffle);
+            let t = Replies::new(&f, fault);
+            let since = f.sim.soap_log().len();
+            assert!(f.copy(&t).is_err());
+            assert!(
+                f.sim.soap_log()[since..]
+                    .iter()
+                    .all(|entry| entry.room != f.from || entry.action != "Stop"),
+                "a newer owner action must not be overwritten by copy cleanup"
+            );
+            match fault {
+                Fault::SwitchSourceAfterPlay => {
+                    assert_eq!(soap::get_media_info(&f.sim.lan(), f.source).unwrap().uri, OTHER);
+                }
+                Fault::PauseSourceAfterPlay => {
+                    assert_eq!(
+                        soap::get_transport_info(&f.sim.lan(), f.source).unwrap().state,
+                        TransportState::Paused
+                    );
+                }
+                Fault::EditSourceQueueAfterPlay => {
+                    assert_eq!(
+                        browse_snapshot(&f.sim.lan(), f.source, QUEUE)
+                            .unwrap()
+                            .objects
+                            .len(),
+                        4
+                    );
+                }
+                Fault::ChangeSourceModeAfterPlay => {
+                    assert_eq!(
+                        get_play_mode(&f.sim.lan(), f.source).unwrap(),
+                        PlayMode::RepeatAll
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }

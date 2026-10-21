@@ -43,6 +43,8 @@ pub(super) struct Prepared {
     transport: TransportState,
     /// Unknown and direct-source settings are not replaced with NORMAL.
     play_mode: Option<PlayMode>,
+    /// Last point at which the source identity/position was proven stable.
+    origin_verified_at: Instant,
 }
 
 impl Prepared {
@@ -100,6 +102,7 @@ impl Prepared {
                         source: Source::Nothing,
                         transport: snap.transport_state,
                         play_mode: None,
+                        origin_verified_at: Instant::now(),
                     });
                 }
                 if track
@@ -128,6 +131,7 @@ impl Prepared {
             source,
             transport: snap.transport_state,
             play_mode,
+            origin_verified_at: Instant::now(),
         };
         prepared.confirm_source(t, households, snap)?;
         Ok(prepared)
@@ -179,6 +183,55 @@ impl Prepared {
                 }
                 _ => {}
             }
+            self.origin_verified_at = Instant::now();
+        }
+        Ok(())
+    }
+
+    /// Destination preparation can take long enough for a newer owner action
+    /// to land on the source. Before releasing it, prove that its source,
+    /// selected queue occurrence, queue revision, transport state and ordering
+    /// mode still match the playback we copied. A failed read is uncertainty,
+    /// never permission to send Stop.
+    pub(super) fn confirm_origin<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        households: &[HouseholdState],
+        snap: &ZoneSnapshot,
+    ) -> Result<(), MoveError> {
+        if self.is_empty() {
+            return Ok(());
+        }
+        let host = ip(households, &snap.coordinator)?;
+        let revision = match snap.source {
+            SnapshotSource::Queue { update_id, .. } => Some(update_id),
+            _ => None,
+        };
+        verify::playback(
+            t,
+            host,
+            &snap.coordinator,
+            self,
+            revision,
+            self.origin_verified_at.elapsed(),
+        )
+        .map_err(|error| match error {
+            MoveError::Core(crate::CoreError::Proto(ProtoError::Malformed(message))) => {
+                MoveError::SourceChanged(message)
+            }
+            other => other,
+        })?;
+        if soap::get_transport_info(t, host)?.state != self.transport {
+            return Err(MoveError::SourceChanged(
+                "the source transport changed while copying playback".into(),
+            ));
+        }
+        if let Some(expected) = self.play_mode
+            && fsonos_proto::play_mode::get_play_mode(t, host)? != expected
+        {
+            return Err(MoveError::SourceChanged(
+                "the source queue's play mode changed while copying playback".into(),
+            ));
         }
         Ok(())
     }
