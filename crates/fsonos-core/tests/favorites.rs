@@ -136,7 +136,36 @@ impl Transport for Recorder {
         self.0
             .borrow_mut()
             .push((host, action.clone(), body.into()));
+        if action == "GetZoneGroupState" {
+            return Ok(ZGS_S1.to_string());
+        }
         let out = match action.as_str() {
+            "GetMediaInfo" => soap::args_xml(&[
+                ("NrTracks", "0"),
+                ("MediaDuration", "NOT_IMPLEMENTED"),
+                ("CurrentURI", ""),
+                ("CurrentURIMetaData", ""),
+                ("NextURI", ""),
+                ("NextURIMetaData", ""),
+                ("PlayMedium", "NONE"),
+                ("RecordMedium", "NOT_IMPLEMENTED"),
+                ("WriteStatus", "NOT_IMPLEMENTED"),
+            ]),
+            "GetTransportInfo" => soap::args_xml(&[
+                ("CurrentTransportState", "STOPPED"),
+                ("CurrentTransportStatus", "OK"),
+                ("CurrentSpeed", "1"),
+            ]),
+            "GetPositionInfo" => soap::args_xml(&[
+                ("Track", "0"),
+                ("TrackDuration", "NOT_IMPLEMENTED"),
+                ("TrackMetaData", ""),
+                ("TrackURI", ""),
+                ("RelTime", "NOT_IMPLEMENTED"),
+                ("AbsTime", "NOT_IMPLEMENTED"),
+                ("RelCount", "2147483647"),
+                ("AbsCount", "2147483647"),
+            ]),
             "AddURIToQueue" => "<FirstTrackNumberEnqueued>1</FirstTrackNumberEnqueued>\
                  <NumTracksAdded>1</NumTracksAdded>"
                 .to_string(),
@@ -175,6 +204,17 @@ impl Transport for Recorder {
 impl Recorder {
     fn actions(&self) -> Vec<String> {
         self.0.borrow().iter().map(|(_, a, _)| a.clone()).collect()
+    }
+
+    fn writes(&self) -> Vec<String> {
+        self.0
+            .borrow()
+            .iter()
+            .filter(|(_, action, _)| {
+                !action.starts_with("Get") && action.as_str() != "Browse"
+            })
+            .map(|(_, action, _)| action.clone())
+            .collect()
     }
 }
 
@@ -220,16 +260,15 @@ fn each_kind_plays_with_the_right_soap() {
     let t = Recorder::default();
     favorites::play(&t, &h, &coordinator(), &s[2]).unwrap();
     assert_eq!(
-        t.actions(),
-        [
-            "Browse",
-            "AddURIToQueue",
-            "Browse",
-            "SetAVTransportURI",
-            "Seek",
-            "Play"
-        ],
+        t.writes(),
+        ["AddURIToQueue", "SetAVTransportURI", "Seek", "Play"],
         "a container stages and verifies the new queue before playing from the top"
+    );
+    assert!(
+        t.actions().iter().any(|action| action == "GetZoneGroupState")
+            && t.actions().iter().any(|action| action == "GetMediaInfo")
+            && t.actions().iter().filter(|action| *action == "Browse").count() >= 2,
+        "container replacement proves the destination group/source and staged queue"
     );
     assert!(
         t.0.borrow()
