@@ -432,3 +432,21 @@ extension DaemonClient {
         return try Self.decode(DJRehearsal.self, from: reply.data).validated(for: choices)
     }
 }
+
+extension DaemonClient {
+    /// One explicit GET, without a selected room, topology preflight or repair.
+    /// Checks may take longer than ordinary display reads. Failures remain read
+    /// errors, never uncertain playback receipts, and are not automatically retried.
+    public func diagnostics() async throws -> DiagnosticsReport {
+        try Task.checkCancellation()
+        var request = URLRequest(url: try endpoint.resource(["doctor"]),
+                                 cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: DiagnosticsReport.requestTimeout)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let reply = try await transport.send(request)
+        try Task.checkCancellation()
+        try Self.check(reply)
+        return try Self.decode(DiagnosticsReport.self, from: reply.data).validated()
+    }
+}
