@@ -108,46 +108,84 @@ const DashboardCore = (() => {
   }
   function model({ call, changed = () => {}, now = () => performance.now(), demo = false }) {
     const state = { items: [], selected: '', loading: false, busy: false, error: '', message: '',
-      uncertain: false, connected: false, active: true, initialized: false, retryAfter: 0 };
+      uncertain: false, connected: false, active: true, initialized: false, retryAfter: 0,
+      topologyFresh: false, failedTargets: [] };
     let epoch = 0, disposed = false, reading = null;
+    const revisions = new Map();
+    const revision = (target) => revisions.get(target) || 0;
     const emit = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
     const selected = () => state.items.find((i) => key(i.zone) === state.selected);
     const canControl = () => !!(!demo && !disposed && state.active && !state.busy && !state.loading
       && !state.uncertain && selected()?.fresh && (state.connected || now() - selected().at < 30000));
-    async function refresh(explicit = false) {
+    // Event names are not household identities. Resolve all matching groups,
+    // then issue only qualified reads; unknown names require fresh topology.
+    function eventTargets(room) {
+      if (!state.topologyFresh || !text(room)) return null;
+      const found = state.items.filter((item) => item.zone.members.includes(room)).map((item) => key(item.zone));
+      return found.length ? found : null;
+    }
+    async function refresh(explicit = false, scope = null) {
       if (disposed || !state.active || reading || state.busy) return false;
-      const version = ++epoch, observation = {};
+      if (scope !== null && (typeof scope !== 'object' || Array.isArray(scope)
+          || (scope.recovery !== true && (!Array.isArray(scope.targets) || !scope.targets.length
+            || scope.targets.length > 256 || !scope.targets.every(text))))) return false;
+      let targets = scope?.targets ? new Set(scope.targets) : null;
+      // A partial read cannot establish a missing or changed topology baseline.
+      if (!state.topologyFresh || (targets && [...targets].some((t) => !state.items.some((i) => key(i.zone) === t)))) {
+        targets = null; scope = null;
+      }
+      const version = ++epoch, observation = {}, stamps = new Map(revisions);
       reading = observation;
-      state.loading = true; state.error = ''; state.retryAfter = 0; emit();
+      state.loading = true; state.retryAfter = 0; emit();
       const current = () => !disposed && state.active && version === epoch;
       try {
-        const list = zones(await call('/zones'));
+        const list = targets ? state.items.map((i) => i.zone) : zones(await call('/zones'));
         if (!current()) return false;
         const old = new Map(state.items.map((i) => [shape(i.zone), i]));
-        const items = list.map((zone) => ({ zone, state: old.get(shape(zone))?.state || null,
-          fresh: false, at: old.get(shape(zone))?.at ?? now(), error: '' }));
-        let failed = false;
-        await each(items, async (item) => {
-          if (!current()) return;
+        const jobs = [];
+        const items = list.map((zone) => {
+          const prior = old.get(shape(zone));
+          const wanted = targets ? targets.has(key(zone)) : !scope?.recovery || !prior?.fresh;
+          if (!wanted && prior) return prior;
+          const item = { zone, state: prior?.state || null, fresh: false, at: prior?.at ?? now(), error: prior?.error || '' };
+          jobs.push(item); return item;
+        });
+        await each(jobs, async (item) => {
+          const target = key(item.zone), stamp = stamps.get(target) || 0;
+          const stillCurrent = () => current() && stamp === revision(target);
+          if (!stillCurrent()) return;
           try {
-            item.state = playback(await call(`/zones/${encodeURIComponent(key(item.zone))}/state`), item.zone);
-            item.at = now(); item.fresh = true;
+            const next = playback(await call(`/zones/${encodeURIComponent(target)}/state`), item.zone);
+            if (!stillCurrent()) return;
+            item.state = next; item.at = now(); item.fresh = true; item.error = '';
           } catch (e) {
-            failed = true; item.error = problem(e);
-            if (current()) state.retryAfter = Math.max(state.retryAfter, e.retryAfter || 0);
+            if (!stillCurrent()) return;
+            item.error = problem(e);
+            state.retryAfter = Math.max(state.retryAfter, e.retryAfter || 0);
           }
         });
         if (!current()) return false;
         state.items = items;
+        if (!targets) {
+          state.topologyFresh = true;
+          const retained = new Set(items.map((i) => key(i.zone)));
+          for (const target of revisions.keys()) if (!retained.has(target)) revisions.delete(target);
+        }
+        state.failedTargets = items.filter((i) => i.error).map((i) => key(i.zone));
+        state.error = state.failedTargets.length ? 'Some rooms could not be read. Last observations are marked stale.' : '';
         if (!state.initialized) state.selected = key(items.find((i) => i.state?.transport_state === 'playing')?.zone || list[0] || { coordinator_room: '', household: '' });
         if (!items.some((i) => key(i.zone) === state.selected)) state.selected = '';
         state.initialized = true;
-        if (explicit && selected()?.fresh) { state.uncertain = false; state.message = 'Playback refreshed. Review the current state before acting.'; }
-        if (failed) state.error = 'Some rooms could not be read. Last observations are marked stale.';
-        return !failed;
+        // Scoped/event recovery is never the explicit acknowledgement of a
+        // previously uncertain command, even when it observes its effect.
+        if (explicit && scope === null && selected()?.fresh) {
+          state.uncertain = false; state.message = 'Playback refreshed. Review the current state before acting.';
+        }
+        return jobs.every((i) => i.fresh);
       } catch (e) {
         if (current()) {
           state.error = problem(e); state.retryAfter = e.retryAfter || 0;
+          state.topologyFresh = false;
           for (const item of state.items) item.fresh = false;
         }
         return false;
@@ -163,9 +201,9 @@ const DashboardCore = (() => {
     // retained callback cannot dispatch after its operation/lifetime ended.
     async function mutate(operation) {
       if (!canControl()) return false;
-      const item = selected(), version = epoch, target = key(item.zone);
+      const item = selected(), version = epoch, target = key(item.zone), stamp = revision(target);
       let sent = false, accepted = false, open = true;
-      const valid = () => open && !disposed && state.active && version === epoch && state.selected === target;
+      const valid = () => open && !disposed && state.active && version === epoch && stamp === revision(target) && state.selected === target;
       const check = () => { if (!valid()) throw new Error('The view changed. Review this action again.'); };
       state.busy = true; state.message = ''; emit();
       try {
@@ -207,16 +245,24 @@ const DashboardCore = (() => {
         return send(`/${verb}`, { zone: target, ...(verb === 'volume' ? { delta: change.delta, group: true } : {}) });
       });
     }
-    function invalidate() {
-      ++epoch;
-      for (const item of state.items) item.fresh = false;
+    function invalidate(targets = null) {
+      if (targets === null) {
+        ++epoch; state.topologyFresh = false;
+        for (const item of state.items) item.fresh = false;
+      } else {
+        const wanted = new Set(targets);
+        for (const item of state.items) if (wanted.has(key(item.zone))) {
+          const target = key(item.zone);
+          revisions.set(target, revision(target) + 1); item.fresh = false;
+        }
+      }
       emit();
     }
     function suspend() {
       state.active = false; state.connected = false;
       invalidate();
     }
-    return { state, refresh, select, selected, canControl, command, mutate, suspend, invalidate,
+    return { state, refresh, eventTargets, select, selected, canControl, command, mutate, suspend, invalidate,
       connection(value) {
         const lost = state.connected && !value;
         state.connected = value;
