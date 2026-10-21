@@ -268,15 +268,27 @@ pub fn spotify_container_didl(
 /// Recover the service-facing `spotify:…` URI from a renderer URI such as
 /// `x-sonos-spotify:spotify%3atrack%3a<id>?sid=…` or
 /// `x-rincon-cpcontainer:1004206cspotify%3aalbum%3a<id>?sid=…` (the inverse
-/// of [`spotify_track_uri`]). `None` for non-Spotify URIs.
+/// of [`spotify_track_uri`]), or the unescaped
+/// `x-sonos-spotify:spotify:track:<id>?sid=…` a player reports for a Spotify
+/// Connect track. `None` for non-Spotify URIs, and for the Connect session
+/// (`x-sonos-vli:<player>:2,spotify:<session>`), which names no item.
 #[must_use]
 pub fn spotify_uri_from_renderer_uri(uri: &str) -> Option<String> {
     let (_, rest) = uri.split_once(':')?;
     let path = rest.split('?').next()?;
-    let start = path.to_ascii_lowercase().find("spotify%3a")?;
-    let decoded = percent_decode(&path[start..])?;
-    decoded.starts_with("spotify:").then_some(decoded)
+    if let Some(start) = path.to_ascii_lowercase().find("spotify%3a") {
+        let decoded = percent_decode(&path[start..])?;
+        return decoded.starts_with("spotify:").then_some(decoded);
+    }
+    let item = &path[path.find("spotify:")?..];
+    let kind = item["spotify:".len()..].split(':').next()?;
+    SPOTIFY_KINDS.contains(&kind).then(|| item.to_string())
 }
+
+/// The kinds of `spotify:<kind>:…` URI that name something to play.
+const SPOTIFY_KINDS: [&str; 7] = [
+    "track", "album", "artist", "playlist", "show", "episode", "user",
+];
 
 /// Decode `%XX` escapes. `None` on a malformed escape or non-UTF-8 result.
 fn percent_decode(s: &str) -> Option<String> {
@@ -504,6 +516,33 @@ mod tests {
         );
         assert_eq!(
             spotify_uri_from_renderer_uri("x-sonos-spotify:spotify%3atrack%3a%ZZ"),
+            None
+        );
+    }
+
+    /// Seen live: under Spotify Connect a player reports each track with
+    /// its colons unescaped, and between tracks the Connect session, which
+    /// is no track.
+    #[test]
+    fn a_spotify_connect_track_is_its_spotify_uri() {
+        assert_eq!(
+            spotify_uri_from_renderer_uri(
+                "x-sonos-spotify:spotify:track:abc123?sid=12&flags=0&sn=1"
+            )
+            .as_deref(),
+            Some("spotify:track:abc123")
+        );
+        assert_eq!(
+            spotify_uri_from_renderer_uri("x-sonos-spotify:spotify:user:someone:playlist:XyZ")
+                .as_deref(),
+            Some("spotify:user:someone:playlist:XyZ")
+        );
+        assert_eq!(
+            spotify_uri_from_renderer_uri("x-sonos-vli:RINCON_TEST01400:2,spotify:0123abcd"),
+            None
+        );
+        assert_eq!(
+            spotify_uri_from_renderer_uri("x-rincon-mp3radio://example.invalid/spotify:x"),
             None
         );
     }

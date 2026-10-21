@@ -419,6 +419,11 @@ impl Surface {
         let Some(raw) = raw.filter(|_| playback.transport == Some(TransportState::Playing)) else {
             return;
         };
+        // Spotify Connect names its session between tracks (seen live): no
+        // track, and not the end of the one heard.
+        if raw.starts_with("x-sonos-vli:") && raw.contains(",spotify:") {
+            return;
+        }
         let uri = played_uri(raw);
         let Some(first) = heard.plays(player, Some(uri.clone())) else {
             return;

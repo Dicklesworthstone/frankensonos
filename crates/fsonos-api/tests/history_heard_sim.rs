@@ -1,8 +1,9 @@
 //! What the house plays reaches the history even when fsonos didn't start
 //! it: the daemon's live model records a coordinator's new track once,
 //! with no DJ running. Music that moves to another room, and what a room
-//! plays when the daemon starts, are the plays already recorded. Against
-//! `fsonos-sim` over real loopback sockets.
+//! plays when the daemon starts, are the plays already recorded. Spotify
+//! Connect's tracks are their `spotify:` URIs. Against `fsonos-sim` over
+//! real loopback sockets.
 
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use fsonos_api::surface::{Surface, Survey, follow};
@@ -11,6 +12,7 @@ use fsonos_core::control;
 use fsonos_core::live::{Live, LiveConfig};
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::{MemStore, Store};
+use fsonos_proto::didl::spotify_track_didl;
 use fsonos_proto::net::Lan;
 use fsonos_proto::soap::{self, AV_TRANSPORT};
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
@@ -126,6 +128,52 @@ fn a_play_started_outside_fsonos_is_in_the_history() {
     let after_two = heard(2);
     assert_eq!(after_two.len(), 2, "{after_two:?}");
     assert_eq!(after_two[0].source_uri, LATE, "newest first");
+    sim.shutdown();
+}
+
+/// Spotify Connect, as the owner's players report it: each track as
+/// `x-sonos-spotify:spotify:track:<id>?…` with its colons unescaped, and
+/// between tracks the Connect session (`x-sonos-vli:<player>:2,spotify:…`),
+/// which is no track. The history has each track once, as its `spotify:`
+/// URI (what the DJ and the library know it by), and no session.
+#[test]
+fn spotify_connect_plays_are_its_tracks() {
+    let (sim, lan, live) = house(&["Kitchen"]);
+    let surface = daemon(&sim, &live, MemStore::default(), Box::new(SystemClock));
+    let kitchen = id(&live, "Kitchen");
+    let plays = || surface.recent_plays(&Client::Cli, None, 10).unwrap();
+    let params = sim.render_params(1).unwrap();
+    let play = |uri: &str, metadata: &str| {
+        control::play_uri(&*lan, &live.households(), &kitchen, uri, metadata).unwrap();
+        assert!(eventually(|| plays_now(&live, &kitchen, uri)), "{uri}");
+    };
+    let session = format!("x-sonos-vli:{}:2,spotify:0123abcd", kitchen.0);
+    let track = |id: &str| {
+        let uri = format!(
+            "x-sonos-spotify:spotify:track:{id}?sid={}&flags=0&sn={}",
+            params.sid, params.sn
+        );
+        play(
+            &uri,
+            &spotify_track_didl(&format!("spotify:track:{id}"), id, &params),
+        );
+    };
+
+    play(&session, "");
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(plays().is_empty(), "{:?}", plays());
+    track("connectA");
+    assert!(eventually(|| !plays().is_empty()), "{:?}", plays());
+    play(&session, "");
+    track("connectB");
+    assert!(eventually(|| plays().len() >= 2), "{:?}", plays());
+    std::thread::sleep(Duration::from_secs(1));
+    let uris: Vec<String> = plays().into_iter().map(|p| p.source_uri).collect();
+    assert_eq!(
+        uris,
+        ["spotify:track:connectB", "spotify:track:connectA"],
+        "newest first"
+    );
     sim.shutdown();
 }
 
