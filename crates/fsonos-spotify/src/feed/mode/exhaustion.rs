@@ -75,14 +75,7 @@ pub(super) fn permits<T: Transport + ?Sized>(
     {
         return Ok(false);
     }
-    let revision = browse(
-        at.transport,
-        host,
-        QUEUE,
-        BrowseFlag::DirectChildren,
-        0,
-        1,
-    )?;
+    let revision = browse(at.transport, host, QUEUE, BrowseFlag::DirectChildren, 0, 1)?;
     if revision.update_id != queue.update_id
         || usize::try_from(revision.total_matches).ok() != Some(queue.objects.len())
         || revision.number_returned != 1
@@ -130,8 +123,7 @@ fn owned_end(feed: &QueueFeed, queue: &BrowseSnapshot, end: u32) -> bool {
     positions.contains(&end)
         && queue.objects.iter().enumerate().all(|(index, _)| {
             u32::try_from(index + 1)
-                .ok()
-                .is_some_and(|position| position <= end || positions.contains(&position))
+                .is_ok_and(|position| position <= end || positions.contains(&position))
         })
 }
 
