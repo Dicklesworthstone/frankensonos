@@ -40,6 +40,30 @@ extension DaemonClient {
         try await readRooms(zones: snapshot.zones, previous: snapshot, only: rooms)
     }
 
+    /// Retry missing rooms against fresh topology without resetting healthy
+    /// observations or their playback clocks. A changed group is read in full;
+    /// departed rooms are dropped, never carried into a different household.
+    func recoverHouse(_ previous: HouseSnapshot, refreshing rooms: Set<RoomID> = []) async throws -> HouseSnapshot {
+        try Task.checkCancellation()
+        let current = try await zones()
+        let all = Set(current.flatMap(\.rooms))
+        guard all.count <= 1_024 else { throw ContractError.invalid("Too many rooms in the house observation.") }
+        var retained: [RoomID: ZoneState] = [:]
+        var dates: [RoomID: Date] = [:]
+        for zone in current where previous.zones.contains(where: { $0.sameGroup(as: zone) }) {
+            for id in zone.rooms {
+                guard previous.failures[id] == nil, let state = previous.states[id],
+                      let date = previous.stateObservedAt[id],
+                      (try? state.validated(for: zone)) != nil else { continue }
+                retained[id] = state; dates[id] = date
+            }
+        }
+        let targets = all.subtracting(retained.keys).union(rooms.intersection(all))
+        let base = HouseSnapshot(zones: current, states: retained, failures: [:],
+                                 observedAt: previous.observedAt, stateObservedAt: dates)
+        return try await readRooms(zones: current, previous: base, only: targets)
+    }
+
     private func readRooms(zones: [Zone], previous: HouseSnapshot?, only: Set<RoomID>?) async throws -> HouseSnapshot {
         let all = zones.flatMap { zone in zone.members.map { (zone, RoomID(household: zone.household, room: $0)) } }
         guard all.count <= 1_024 else { throw ContractError.invalid("Too many rooms in the house observation.") }
