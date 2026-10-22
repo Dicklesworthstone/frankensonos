@@ -34,9 +34,19 @@ impl std::fmt::Debug for Listener {
 
 /// Start the listener for player `index`.
 pub(crate) fn start(state: Arc<Mutex<State>>, index: usize) -> Result<Listener, SimError> {
-    let config = Http1ListenerConfig::default().http_config(Http1Config::default().host_policy(
-        HostPolicy::allow_list(vec!["127.0.0.1".into(), "localhost".into()]),
-    ));
+    // Real players answer every request, SOAP or GET, with `Connection:
+    // close` and close first (S1 and S2, seen live 2026-10-22), which leaves
+    // TIME_WAIT on the player's side. A sim that kept connections open left
+    // it on the client's instead, and runs of sim tests used up macOS's
+    // ephemeral ports ("Can't assign requested address").
+    let config = Http1ListenerConfig::default().http_config(
+        Http1Config::default()
+            .keep_alive(false)
+            .host_policy(HostPolicy::allow_list(vec![
+                "127.0.0.1".into(),
+                "localhost".into(),
+            ])),
+    );
     let (ready_tx, ready_rx) = mpsc::channel();
     let thread = thread::Builder::new()
         .name(format!("fsonos-sim-player-{index}"))
