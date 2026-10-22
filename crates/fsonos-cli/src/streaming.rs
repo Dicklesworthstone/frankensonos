@@ -183,6 +183,161 @@ fn report_measurement(
     )
 }
 
+/// The synchronization a stream was asked for (Unix only).
+#[cfg(unix)]
+type SyncPlan = Option<synchronization::Prepared>;
+#[cfg(not(unix))]
+type SyncPlan = ();
+
+/// What streaming ends with: the latency synchronization measured (Unix).
+#[cfg(unix)]
+type Waited = Option<synchronization::Measurement>;
+#[cfg(not(unix))]
+type Waited = ();
+
+/// The group a stream replaces and the stream it plays instead: what every
+/// check before an irreversible step compares the speakers with.
+struct Playing<'a> {
+    network: &'a crate::config::Network,
+    direct: &'a Direct,
+    previous: &'a ZoneSnapshot,
+    source: &'a str,
+}
+
+impl Playing<'_> {
+    /// Whether the original group still plays the stream (and, once
+    /// `settled`, plays it now).
+    #[cfg(unix)]
+    fn verify(&self, settled: bool) -> anyhow::Result<()> {
+        recovery::verify_measurement(
+            &*self.network.transport,
+            self.direct.households()?,
+            self.previous,
+            self.source,
+            settled,
+        )
+        .map_err(anyhow::Error::msg)
+    }
+}
+
+/// The group's music, grouping and volumes before the stream replaces them.
+fn snapshot_group(
+    network: &crate::config::Network,
+    direct: &Direct,
+    coordinator: &fsonos_types::PlayerId,
+) -> anyhow::Result<ZoneSnapshot> {
+    snapshot::capture(
+        &*network.transport,
+        direct.households()?,
+        coordinator,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_secs()
+            .try_into()?,
+    )
+    .context("snapshot the group's music and volumes before streaming")
+}
+
+/// Replace the group's music with the stream, once capture is live and the
+/// group is still the one snapshotted. `attempted` turns true just before
+/// the play goes out.
+fn start_playback(
+    playing: &Playing<'_>,
+    stream: &mut broadcast::LiveStream,
+    room: &str,
+    attempted: &mut bool,
+) -> anyhow::Result<()> {
+    stream
+        .wait_ready(Duration::from_secs(10))
+        .context("prepare live audio before replacing the group's music")?;
+    recovery::verify_start(
+        &*playing.network.transport,
+        playing.direct.households()?,
+        playing.previous,
+    )
+    .map_err(anyhow::Error::msg)?;
+    stream
+        .check()
+        .context("confirm live capture before playback")?;
+    // Record intent before dispatch: an error can follow an applied URI.
+    *attempted = true;
+    playing
+        .direct
+        .run("play", |rooms| {
+            fsonos_api::plan::plan_play(
+                rooms,
+                &PlayRequest {
+                    zone: room.to_owned(),
+                    source_uri: playing.source.to_owned(),
+                    title: Some("Computer audio".into()),
+                },
+            )
+        })
+        .map(|_| ())
+        .map_err(anyhow::Error::from)
+}
+
+/// Once the group plays the stream: launch the foreground application, if
+/// one was asked for, only after the speaker reads the audio from the group
+/// it had; then stream until stopped. `launched` holds the application for
+/// cleanup even when streaming fails.
+fn stream_until_stopped(
+    playing: &Playing<'_>,
+    stream: &mut broadcast::LiveStream,
+    launch: Option<&application::Launch>,
+    launched: &mut Option<application::Application>,
+    sync: SyncPlan,
+    stop: &Arc<AtomicBool>,
+    room: &str,
+) -> anyhow::Result<Waited> {
+    if launch.is_some() {
+        stream
+            .wait_for_reader(Duration::from_secs(10))
+            .context("wait for audio delivery before application launch")?;
+        #[cfg(unix)]
+        playing
+            .verify(false)
+            .context("confirm the original stream group before application launch")?;
+        // The reader may have disconnected while the speaker reads ran.
+        stream.wait_for_reader(Duration::ZERO)?;
+    }
+    *launched = launch
+        .map(|launch| application::Application::start(launch, Arc::clone(stop)))
+        .transpose()?;
+    eprintln!("fsonos stream: {room} listening; press Ctrl-C to stop");
+    #[cfg(unix)]
+    let result = synchronization::wait(stream, sync, Arc::clone(stop), |settled| {
+        playing.verify(settled)
+    });
+    #[cfg(not(unix))]
+    let result = {
+        let _ = (sync, playing);
+        stream.wait_until_stopped().map_err(anyhow::Error::from)
+    };
+    result
+}
+
+/// Stop the foreground application before the speakers are restored or its
+/// output removed. A child that was not reaped keeps its output.
+fn stop_application(
+    launched: &mut Option<application::Application>,
+    output: Option<&mut virtual_output::VirtualOutput>,
+) -> anyhow::Result<Option<()>> {
+    let stopped = launched
+        .as_mut()
+        .map(application::Application::shutdown)
+        .transpose();
+    if let Err(error) = &stopped {
+        eprintln!("fsonos stream: foreground application ended with an error: {error:#}");
+    }
+    if launched.as_ref().is_some_and(|app| !app.reaped())
+        && let Some(output) = output
+    {
+        output.retain();
+    }
+    stopped
+}
+
 pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     if global.daemon || global.daemon_url.is_some() {
         bail!("stream needs a direct LAN connection to Sonos; remove --daemon/--daemon-url");
@@ -198,21 +353,14 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
     }
     #[cfg(unix)]
     let sync = synchronization::Prepared::from_args(args)?;
+    #[cfg(not(unix))]
+    let sync = ();
     let direct = Direct::survey(global)?;
     let target = fsonos_api::plan::resolve(direct.households()?, &args.room)?;
     let coordinator = target.coordinator;
     let network = global.network()?;
     let interface = network.lan.local_address_toward(coordinator.ip)?;
-    let previous = snapshot::capture(
-        &*network.transport,
-        direct.households()?,
-        &coordinator.id,
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)?
-            .as_secs()
-            .try_into()?,
-    )
-    .context("snapshot the group's music and volumes before streaming")?;
+    let previous = snapshot_group(&network, &direct, &coordinator.id)?;
 
     // Bind before touching the speaker; no partial playback on bind failure.
     let listener = TcpListener::bind(SocketAddr::new(interface, 0))
@@ -229,97 +377,31 @@ pub fn run(global: &GlobalArgs, args: &StreamArgs) -> anyhow::Result<()> {
         broadcast::LiveStream::start(launch_encoder(args)?, listener, path, Arc::clone(&stop))
             .context("start live capture and the MP3 listener")?;
 
+    let playing = Playing {
+        network: &network,
+        direct: &direct,
+        previous: &previous,
+        source: &source,
+    };
     let mut attempted = false;
-    let play = stream
-        .wait_ready(Duration::from_secs(10))
-        .context("prepare live audio before replacing the group's music")
-        .and_then(|()| {
-            recovery::verify_start(&*network.transport, direct.households()?, &previous)
-                .map_err(anyhow::Error::msg)?;
-            stream
-                .check()
-                .context("confirm live capture before playback")?;
-            // Record intent before dispatch: an error can follow an applied URI.
-            attempted = true;
-            direct
-                .run("play", |rooms| {
-                    fsonos_api::plan::plan_play(
-                        rooms,
-                        &PlayRequest {
-                            zone: args.room.clone(),
-                            source_uri: source.clone(),
-                            title: Some("Computer audio".into()),
-                        },
-                    )
-                })
-                .map_err(anyhow::Error::from)
-        });
+    let play = start_playback(&playing, &mut stream, &args.room, &mut attempted);
     let was_started = play.is_ok();
     let mut launched = None;
-    let result = match play {
-        Ok(_) => (|| {
-            if launch.is_some() {
-                stream
-                    .wait_for_reader(Duration::from_secs(10))
-                    .context("wait for audio delivery before application launch")?;
-                #[cfg(unix)]
-                recovery::verify_measurement(
-                    &*network.transport,
-                    direct.households()?,
-                    &previous,
-                    &source,
-                    false,
-                )
-                .map_err(anyhow::Error::msg)
-                .context("confirm the original stream group before application launch")?;
-                // The reader may have disconnected while the speaker reads ran.
-                stream.wait_for_reader(Duration::ZERO)?;
-            }
-            launched = launch
-                .as_ref()
-                .map(|launch| application::Application::start(launch, Arc::clone(&stop)))
-                .transpose()?;
-            eprintln!(
-                "fsonos stream: {} listening; press Ctrl-C to stop",
-                args.room
-            );
-            #[cfg(unix)]
-            let result = synchronization::wait(
-                &mut stream,
-                sync,
-                Arc::clone(&stop),
-                |settled| {
-                    recovery::verify_measurement(
-                        &*network.transport,
-                        direct.households()?,
-                        &previous,
-                        &source,
-                        settled,
-                    )
-                    .map_err(anyhow::Error::msg)
-                },
-            );
-            #[cfg(not(unix))]
-            let result = stream.wait_until_stopped().map_err(anyhow::Error::from);
-            result
-        })(),
-        Err(error) => Err(error),
-    };
+    let result = play.and_then(|()| {
+        stream_until_stopped(
+            &playing,
+            &mut stream,
+            launch.as_ref(),
+            &mut launched,
+            sync,
+            &stop,
+            &args.room,
+        )
+    });
 
     // Stop our foreground application before restoring speakers or removing
     // its output. Child failure must not skip the existing cleanup sequence.
-    let application_stopped = launched
-        .as_mut()
-        .map(application::Application::shutdown)
-        .transpose();
-    if let Err(error) = &application_stopped {
-        eprintln!("fsonos stream: foreground application ended with an error: {error:#}");
-    }
-    if launched.as_ref().is_some_and(|app| !app.reaped())
-        && let Some(output) = output.as_mut()
-    {
-        output.retain();
-    }
+    let application_stopped = stop_application(&mut launched, output.as_mut());
 
     // Keep capture available while checking ownership and restoring playback.
     // Cancellation does not close the audio sockets before this observation.
