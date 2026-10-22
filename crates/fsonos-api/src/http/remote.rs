@@ -21,6 +21,7 @@ use crate::failure::{ErrorCode, Failure};
 use crate::surface::art::AlbumArt;
 
 mod dashboard;
+mod icons;
 mod studio;
 mod undo;
 
@@ -153,6 +154,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     routes.extend(undo::routes(cx));
     routes.extend(dashboard::routes(cx));
     routes.extend(studio::routes(cx));
+    routes.extend(icons::routes(cx));
     routes
 }
 

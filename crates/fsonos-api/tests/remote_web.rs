@@ -292,6 +292,32 @@ fn the_page_is_served_and_kept_to_itself() {
     }
 }
 
+/// The page names its icons, and the daemon serves them as images with the
+/// remote's headers: the mark for the tab, and a 180 px PNG for a phone's
+/// home screen.
+#[test]
+fn the_page_has_its_icons() {
+    let sim = SimHousehold::standard().spawn().expect("sim");
+    let remote = Remote::start(&sim);
+    let page = get(&remote, "/", &[]).text();
+    assert!(page.contains(r#"<link rel="icon" href="/icon.svg" type="image/svg+xml">"#));
+    assert!(page.contains(r#"<link rel="apple-touch-icon" href="/apple-touch-icon.png">"#));
+    for (path, kind, magic) in [
+        ("/icon.svg", "image/svg+xml", b"<svg".as_slice()),
+        ("/apple-touch-icon.png", "image/png", b"\x89PNG".as_slice()),
+    ] {
+        let icon = get(&remote, path, &[]);
+        assert_eq!(icon.status, 200, "{path}");
+        assert_eq!(icon.header("content-type"), Some(kind), "{path}");
+        assert_eq!(
+            icon.header("x-content-type-options"),
+            Some("nosniff"),
+            "{path}"
+        );
+        assert!(icon.body.starts_with(magic), "{path}");
+    }
+}
+
 /// Every route-table entry in the page's scripts, `['METHOD', '/path']`:
 /// each module (queue, remote, library, groups, timers) keeps its own table,
 /// and a line may hold more than one entry.
