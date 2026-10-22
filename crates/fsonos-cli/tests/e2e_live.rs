@@ -25,6 +25,19 @@ fn get(api: &str, path: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// `GET /health`'s `disk`: the daemon read its store's volume (vg3s.8).
+fn check_health_disk(s: &mut Scenario, disk: &Value) {
+    s.check(
+        "health-disk",
+        "http",
+        "GET /health carries the free space on the daemon's store volume",
+        ["ok", "low", "critical"].contains(&disk["verdict"].as_str().unwrap_or_default())
+            && disk["total_bytes"].as_u64().unwrap_or_default() > 0
+            && disk["free_bytes"].as_u64() <= disk["total_bytes"].as_u64(),
+        disk,
+    );
+}
+
 /// The doctor's `daemon.live` entry.
 fn live_check(api: &str) -> Value {
     get(api, "/doctor")["checks"]
@@ -109,8 +122,11 @@ fn serve_keeps_a_live_model_of_the_sim() {
         subscribed,
         live_check(&api),
     );
-    // /health says what the daemon sees, so a blind one can't pass as up.
-    let health = get(&api, "/health")["live"].clone();
+    // /health says what the daemon sees, so a blind one can't pass as up,
+    // and how much room its store has left.
+    let body = get(&api, "/health");
+    check_health_disk(&mut s, &body["disk"]);
+    let health = body["live"].clone();
     s.check(
         "health-live",
         "http",

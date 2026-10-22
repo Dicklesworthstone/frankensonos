@@ -4,10 +4,10 @@
 //! checks only this layer can make ([`checks`], which `fsonos setup` and the
 //! stdio MCP server's `doctor` tool run too):
 //!
-//! * `store.open` and `lan.*` ([`lan_checks`]): the core's LAN checks over
-//!   this host's LAN as `--routes` and the seeds shape it (the store, SSDP,
-//!   the seeds, reading each player, the households, a GENA round trip, the
-//!   topology);
+//! * `store.disk`, `store.open` and `lan.*` ([`lan_checks`]): the free
+//!   space on the store's volume, and the core's LAN checks over this host's
+//!   LAN as `--routes` and the seeds shape it (the store, SSDP, the seeds,
+//!   reading each player, the households, a GENA round trip, the topology);
 //! * `daemon.bind`: the bind guard's verdict on the HTTP and MCP addresses;
 //! * `daemon.health`: whether a daemon answers on the HTTP address, and
 //!   which version;
@@ -373,8 +373,9 @@ pub fn only(report: Report, prefix: Option<&str>) -> Report {
 }
 
 /// The core's LAN checks over this host's LAN, as `--routes`, the seeds and
-/// `--wait` shape it, with the store check for the data directory. Each run
-/// takes a fresh probe (it discovers once and caches what it saw).
+/// `--wait` shape it, with the store and free-space checks for the data
+/// directory. Each run takes a fresh probe (it discovers once and caches
+/// what it saw).
 pub fn lan_checks(
     global: &GlobalArgs,
 ) -> Result<impl Fn(&mut Runner) + Send + Sync + 'static, Failure> {
@@ -383,6 +384,7 @@ pub fn lan_checks(
     let data_dir = crate::daemon::data_dir(global)?;
     Ok(move |runner: &mut Runner| {
         let probe = Arc::new(LanProbe::new(Arc::clone(&lan), seeds.clone()).with_ssdp_wait(wait));
+        fsonos_core::doctor::disk::register(runner, data_dir.clone());
         fsonos_core::doctor::lan::register(runner, data_dir.clone(), &probe);
         let aliases = data_dir.join(fsonos_api::surface::ALIASES_FILE);
         fsonos_core::doctor::rooms::register(runner, aliases, &probe);

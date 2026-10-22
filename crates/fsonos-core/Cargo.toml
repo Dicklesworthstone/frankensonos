@@ -26,8 +26,9 @@ asupersync = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # Kill a timed-out engine's process group through a safe API, including
-# children launched by an owner-configured wrapper.
-rustix = { version = "1", features = ["process"] }
+# children launched by an owner-configured wrapper; read the store volume's
+# free space (doctor `store.disk`).
+rustix = { version = "1", features = ["fs", "process"] }
 
 [dev-dependencies]
 fsonos-sim = { workspace = true }

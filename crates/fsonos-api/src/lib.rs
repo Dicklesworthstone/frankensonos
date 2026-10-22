@@ -83,6 +83,21 @@ pub struct HealthDto {
     /// cannot reach the speakers says so. Counts only: no address or name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<LiveHealth>,
+    /// The room left on the volume that holds the daemon's store: when it
+    /// runs out, actions go unlogged and cannot be undone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk: Option<DiskHealth>,
+}
+
+/// The store's volume, in `GET /health` (`fsonos doctor` judges it as
+/// `store.disk`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DiskHealth {
+    /// `ok`; `low` (under 5 GiB: doctor warns); or `critical` (under 1 GiB:
+    /// doctor fails, and store writes are about to).
+    pub verdict: String,
+    pub free_bytes: u64,
+    pub total_bytes: u64,
 }
 
 /// The live model, in `GET /health` ([`live::health`]).

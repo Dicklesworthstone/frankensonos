@@ -739,6 +739,9 @@ pub struct ServiceStatus {
     /// players is blind (macOS Local Network, or the wrong network).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live: Option<fsonos_api::LiveHealth>,
+    /// The room left on its store's volume, from `GET /health`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk: Option<fsonos_api::DiskHealth>,
     /// `install --selftest-daily` scheduled the self-test.
     pub selftest_daily: bool,
     /// What could not be checked.
@@ -765,10 +768,10 @@ fn status(global: &GlobalArgs, manager: Manager, path: &Path) -> ServiceStatus {
         .and_then(read_daemon_file)
         .map(|f| f.pid);
     let daemon = crate::remote::Daemon::find(global, false).ok().flatten();
-    let live = daemon
+    let health = daemon
         .as_ref()
-        .and_then(|d| d.get::<fsonos_api::HealthDto>("/health").ok())
-        .and_then(|health| health.live);
+        .and_then(|d| d.get::<fsonos_api::HealthDto>("/health").ok());
+    let (live, disk) = health.map_or((None, None), |h| (h.live, h.disk));
     ServiceStatus {
         manager,
         path: path.to_path_buf(),
@@ -779,6 +782,7 @@ fn status(global: &GlobalArgs, manager: Manager, path: &Path) -> ServiceStatus {
         daemon_pid,
         daemon_answers: daemon.is_some(),
         live,
+        disk,
         selftest_daily: daily::installed(&daily::paths(manager, path)),
         notes,
     }
@@ -866,6 +870,15 @@ fn status_text(s: &ServiceStatus) -> String {
             out,
             "speakers: {} ({} player(s) in {} household(s), {} offline)",
             live.verdict, live.players, live.households, live.offline
+        );
+    }
+    if let Some(disk) = &s.disk {
+        let _ = writeln!(
+            out,
+            "disk: {} ({} MiB free of {} MiB)",
+            disk.verdict,
+            disk.free_bytes >> 20,
+            disk.total_bytes >> 20
         );
     }
     if s.selftest_daily {

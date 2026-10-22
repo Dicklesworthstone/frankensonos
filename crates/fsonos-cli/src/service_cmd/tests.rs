@@ -272,6 +272,53 @@ fn each_manager_keeps_its_file_where_it_looks() {
     );
 }
 
+/// Status says what the daemon sees and how much room its store has, from
+/// its `/health`, and leaves both out when no daemon answers.
+#[test]
+fn status_names_the_speakers_and_the_disk_the_daemon_reports() {
+    let mut status = ServiceStatus {
+        manager: Manager::Launchd,
+        path: PathBuf::from("/Users/u/Library/LaunchAgents/fsonos.plist"),
+        installed: true,
+        foreign: false,
+        running: Some(true),
+        pid: Some(41),
+        daemon_pid: Some(41),
+        daemon_answers: true,
+        live: Some(fsonos_api::LiveHealth {
+            verdict: "degraded".into(),
+            households: 2,
+            players: 5,
+            offline: 1,
+            subscriptions: 16,
+            surveyed_secs_ago: Some(3),
+        }),
+        disk: Some(fsonos_api::DiskHealth {
+            verdict: "low".into(),
+            free_bytes: 3 << 30,
+            total_bytes: 500 << 30,
+        }),
+        selftest_daily: false,
+        notes: Vec::new(),
+    };
+    let text = status_text(&status);
+    assert!(text.contains("daemon: answers (pid 41)\n"), "{text}");
+    assert!(
+        text.contains("speakers: degraded (5 player(s) in 2 household(s), 1 offline)\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("disk: low (3072 MiB free of 512000 MiB)\n"),
+        "{text}"
+    );
+    (status.live, status.disk, status.daemon_answers) = (None, None, false);
+    let text = status_text(&status);
+    assert!(
+        !text.contains("speakers:") && !text.contains("disk:"),
+        "{text}"
+    );
+}
+
 /// The job gets as long to stop as the daemon's drain takes, and more.
 #[test]
 fn a_stopping_service_has_time_to_put_the_music_back() {

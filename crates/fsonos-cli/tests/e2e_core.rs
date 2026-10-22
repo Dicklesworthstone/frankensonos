@@ -572,11 +572,14 @@ fn doctor_reports_the_setup_with_its_exit_codes() {
     let run = s.cli("doctor", &["doctor", "--json"]);
     let report = json(&run);
     // The harness sets no Spotify app: the DJ has nothing to play, which is
-    // a warning (sp4f.13), and the only thing wrong here.
+    // a warning (sp4f.13), and the only thing wrong here. The free space is
+    // the host's, not the setup's (its thresholds are unit tests): a worker
+    // short of disk may warn about it too.
     let gaps = report["checks"].as_array().map_or_default(|c| {
         c.iter()
             .filter(|x| x["status"] == "warn" || x["status"] == "fail")
             .map(|x| x["id"].as_str().unwrap_or_default().to_owned())
+            .filter(|id| id != "store.disk")
             .collect::<Vec<_>>()
     });
     s.check(
@@ -589,6 +592,7 @@ fn doctor_reports_the_setup_with_its_exit_codes() {
             && gaps == ["dj.sign_in"],
         format!("exit {:?}: {} | {}", run.code, flagged(&report), run.stderr),
     );
+    check_disk(&mut s, &report);
     s.check(
         "doctor",
         "cli",
@@ -682,6 +686,24 @@ fn check_mcp_doctor(s: &mut Scenario) {
         &text,
     );
     drop(mcp);
+}
+
+/// Doctor's `store.disk` read the data directory's volume (vg3s.8).
+fn check_disk(s: &mut Scenario, report: &Value) {
+    let disk = report["checks"]
+        .as_array()
+        .and_then(|c| c.iter().find(|x| x["id"] == "store.disk"))
+        .cloned()
+        .unwrap_or_default();
+    let evidence = &disk["evidence"];
+    s.check(
+        "doctor-disk",
+        "cli",
+        "doctor reads the free space on the data directory's volume",
+        evidence["total_bytes"].as_u64().unwrap_or_default() > 0
+            && evidence["free_bytes"].as_u64() <= evidence["total_bytes"].as_u64(),
+        disk.to_string(),
+    );
 }
 
 /// `fsonos play --search`: a bare --pick lists, a search plays its best

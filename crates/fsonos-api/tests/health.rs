@@ -98,6 +98,25 @@ fn health_over_loopback() {
     assert_eq!(health.status, "ok");
     assert_eq!(health.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(health.selftest, None);
+    assert_eq!(health.disk, None, "no data directory, no volume to read");
+}
+
+/// The daemon's health carries the free space on its store's volume, as
+/// doctor's `store.disk` judges it (vg3s.8).
+#[cfg(unix)]
+#[test]
+fn health_names_the_store_volume_space() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, health) = get_health(app(Some(dir.path())));
+    let disk = health.disk.expect("a data directory has a volume");
+    assert!(disk.total_bytes > 0, "{disk:?}");
+    assert!(disk.free_bytes <= disk.total_bytes, "{disk:?}");
+    let want = fsonos_core::doctor::disk::Space {
+        free: disk.free_bytes,
+        total: disk.total_bytes,
+    }
+    .verdict();
+    assert_eq!(disk.verdict, want);
 }
 
 /// The daemon's health names its last self-test: when, and whether it

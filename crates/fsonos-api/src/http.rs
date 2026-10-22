@@ -775,6 +775,13 @@ fn health(data_dir: Option<&std::path::Path>, live: Option<crate::LiveHealth>) -
             .and_then(fsonos_core::selftest::last_run)
             .map(|(at, passed)| crate::SelftestHealth { at, passed }),
         live,
+        disk: data_dir
+            .and_then(|dir| fsonos_core::doctor::disk::space(dir).ok())
+            .map(|space| crate::DiskHealth {
+                verdict: space.verdict().into(),
+                free_bytes: space.free,
+                total_bytes: space.total,
+            }),
     };
     Response::json(&body).expect("HealthDto serializes")
 }

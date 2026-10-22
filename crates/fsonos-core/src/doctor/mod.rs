@@ -19,7 +19,9 @@
 //! * [`spotify`] — per-household Spotify checks: a Spotify favorite, the
 //!   linked account, and render parameters that rebuild a favorite exactly.
 //! * [`rooms`] — the owner's room aliases parse and name rooms the house has.
+//! * [`disk`] — the free space on the store's volume.
 
+pub mod disk;
 pub mod lan;
 mod render;
 pub mod rooms;
