@@ -5,9 +5,12 @@
 > API, and an MCP server — so AI agents can act as a tasteful DJ for you and so
 > the system stops being frustrating.
 
-**Status:** planning + scaffold complete; implementation in progress via a
-beads task graph and a multi-agent swarm. This document is the self-contained
-source of truth. A fresh contributor (human or agent) should be able to read
+**Status (2026-10-22):** every workflow in §1 is implemented and runs end to
+end against `fsonos-sim`; on the owner's real house discovery, control,
+favorites, Spotify rendering and the inaudible self-test have run, while the
+DJ awaits the owner's first Spotify sign-in and the daemon a boot-time
+service the macOS Local Network permission allows (§9 has each milestone's
+code and house status). This document is the self-contained source of truth. A fresh contributor (human or agent) should be able to read
 this and start implementing without asking for clarification.
 
 **Date:** 2026-10-06. **Toolchain:** Rust `nightly-2026-08-31`, edition 2024.
@@ -225,7 +228,11 @@ Owner goal: talk to the owner's players exactly as SoCo/node-sonos do.
   ContentDirectory (browse favorites/queue), MusicServices + SystemProperties
   (service accounts), DeviceProperties, and (S2) Queue. Envelope + SOAPACTION
   builders are done; wire dispatch via `Transport` over the asupersync client,
-  and write per-action request/response (un)marshaling.
+  and write per-action request/response (un)marshaling. *As built:*
+  AVTransport, RenderingControl, GroupRenderingControl, ZoneGroupTopology and
+  ContentDirectory cover every goal (Spotify linkage is learned from the
+  household's favorites, §6), so MusicServices, SystemProperties,
+  DeviceProperties and the S2 Queue service are not wired.
 - **GENA eventing.** SUBSCRIBE with a callback URL to an asupersync HTTP sink;
   parse NOTIFY `LastChange` docs into typed state deltas; renew before timeout;
   UNSUBSCRIBE on shutdown. (Header build + timeout parse are done.)
@@ -233,7 +240,11 @@ Owner goal: talk to the owner's players exactly as SoCo/node-sonos do.
   the `sid`/`flags`/`sn` and the `SA_RINCON<type>…` descriptor and item-id
   prefix are **per-household** and are discovered from the household's own
   favorites via ContentDirectory — never hard-coded. (Builder takes them as
-  params; add the "learn params from favorites" routine.)
+  params; add the "learn params from favorites" routine.) *As built:* a
+  track's parameters are always learned; an album or playlist uses its own
+  household's container favorite when there is one, and otherwise fixed
+  container flags and item-id prefixes (`fsonos-proto/src/didl.rs`), which
+  the audible self-test is to prove or replace on real players (bead sbj9.6).
 
 Reference ground truth: svrooij **sonos-api-docs**, SoCo, node-sonos(-ts),
 Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
@@ -298,8 +309,12 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
   exists) and is case-insensitive.
 - **CLI + `serve` daemon.** `fsonos` subcommands (scaffolded) become real; the
   `serve` command wires: discovery → GENA sink → store → HTTP API → MCP server
-  → DJ, under one asupersync runtime, with graceful shutdown. A launchd plist
-  template (in `docs/`) runs it at login and restarts on crash.
+  → DJ, under one asupersync runtime, with graceful shutdown. `fsonos service
+  install` writes a LaunchAgent in the login session (a systemd user unit on
+  Linux) that starts it at login and restarts it on a crash. On macOS 26 a
+  launchd-started binary needs the Local Network permission granted once, and
+  `GET /health`'s live verdict (and `fsonos doctor`) say when a running
+  daemon cannot see the speakers (docs/DEPLOY.md).
 - **Tailscale.** Document the deployment: the daemon binds the tailnet
   interface (or uses Tailscale Serve) so tailnet agents reach it; speakers stay
   on the LAN. ACLs restrict who can reach the daemon. No Tailscale on speakers.
@@ -420,6 +435,18 @@ Gates after substantive Rust changes: `cargo fmt --check`,
 - **M6 — Reliability polish:** event resubscription robustness, reconnection,
   backoff, health, golden fixtures for both households.
 
+Where each stands (2026-10-22; code means implemented and tested end to end
+against `fsonos-sim`):
+
+| Milestone | Code | The owner's real house |
+|---|---|---|
+| M0, M1 | done | n/a |
+| M2 See & control | done | done: discovery by seeds (SSDP does not cross its routed subnets), the inaudible `fsonos selftest` passes |
+| M3 Spotify render | done | tracks rendered by hand on S1 and S2 (docs/PROTOCOL.md §4); no repeatable audible probe yet (bead sbj9.6) |
+| M4 DJ | done | not yet: awaits the owner's first Spotify sign-in and set (bead sp4f.1) |
+| M5 Surfaces & daemon | done | the daemon serves the house and the tailnet (Tailscale Serve); a boot-time service awaits the Local Network permission (bead vg3s.6) |
+| M6 Reliability | done for the simulated faults | measured on the house by its own log; nightly hardware checks not yet scheduled (bead sbj9.4) |
+
 ---
 
 ## 10. Beads mapping & the swarm
@@ -487,7 +514,10 @@ from a genre the DJ was built around.
   tracks to pin or ban. Precedence, strongest first: an active `dj steer` on
   the group (until it expires or is cleared), then the persistent preferences,
   then learned feedback (§12.9), then the raw account signals. A hard "avoid"
-  is never outweighed by a learned or account weight. The soft rungs are
+  is never outweighed by a learned or account weight. *As built:* when the
+  avoids alone would leave nothing to play, the DJ relaxes them rather than
+  stop (`fsonos-spotify/src/dj.rs`); whether it should stop, relax and say
+  so, or relax only a steer is the owner's open decision (bead sp4f.15). The soft rungs are
   bounded so each outweighs every rung below it together: the account's
   signals at most ×1.25 (a liked track ×1.1 times its taste weight), learned
   feedback ×0.25 – ×1.6 (one fresh dislike, ×0.71 or less, cancels a like and
@@ -792,8 +822,10 @@ daemon owns scheduling. A run missed by more than 10 minutes is skipped.
 ### 12.11 Move playback and whole-house mode
 
 [`b-move-party`, `d-house-verbs`] `fsonos move Kitchen Bedroom` joins the
-target to the source's group, waits for the topology event, then removes the
-source, so the track and position carry over and the DJ session follows.
+target to the source's group, confirms the join from the topology (read every
+100 ms, up to 5 s), then removes the source, handing coordination over first
+with `DelegateGroupCoordinationTo` when the source leads, so the track and
+position carry over and the DJ session follows.
 `party` groups every room in a household. S1 and S2 players cannot be grouped
 together, and the command says so instead of failing quietly.
 
@@ -822,7 +854,12 @@ support). The API is unauthenticated, so before any browser page uses it
 (`d-http-hardening`) every listener checks Host and Origin and accepts writes
 only as JSON. A single static page served by the daemon
 (rooms, now playing, volume, play/pause/skip, DJ mood, scenes) is a phone remote
-over the tailnet, with no app store and no account.
+over the tailnet, with no app store and no account. *As built:* the daemon
+serves two pages, the remote at `/` and the listening room at `/dashboard`,
+which cover the queue, the library, scenes, schedules, sleep, announcements
+and the DJ too. Native iOS and macOS remotes (`apps/apple`) speak the same
+HTTP API over the tailnet; whether they are a first-class surface of this
+plan is the owner's open decision (bead 8hhv.13).
 
 ### 12.14 Self-healing identity
 
@@ -836,7 +873,8 @@ triggers resubscription. Each path is tested with sim faults.
 ### 12.15 Room aliases and smart targets
 
 [`b-room-aliases`, `d-house-verbs`] `aliases.toml` (`kitchen` → "Kitchen",
-`downstairs` → Kitchen + Living Room), "did you mean" suggestions on near misses (suggestions only; a typo never acts on a room), reserved
+`downstairs` → Kitchen + Living Room), "did you mean" suggestions on near misses (a unique prefix of three or more letters names its room; anything else
+only suggests, so a typo never acts on a room), reserved
 `all`/`everywhere` per household, and a per-client default room.
 
 ### Milestone placement
