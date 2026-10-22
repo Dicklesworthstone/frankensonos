@@ -109,6 +109,18 @@ fn serve_keeps_a_live_model_of_the_sim() {
         subscribed,
         live_check(&api),
     );
+    // /health says what the daemon sees, so a blind one can't pass as up.
+    let health = get(&api, "/health")["live"].clone();
+    s.check(
+        "health-live",
+        "http",
+        "GET /health carries the live model's counts and verdict, and no address",
+        health["verdict"] == "ok"
+            && health["households"] == 2
+            && health["players"].as_u64().is_some_and(|n| n >= 4)
+            && !health.to_string().contains("127.0.0.1"),
+        &health,
+    );
 
     check_external_change(&mut s, &api);
     check_offline(&mut s, &api);

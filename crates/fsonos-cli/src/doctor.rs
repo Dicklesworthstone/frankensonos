@@ -124,6 +124,12 @@ impl Check for BindCheck {
 
 /// `GET /health` on `addr`: the daemon's version, or why there is none.
 fn probe_health(addr: SocketAddr, timeout: Duration) -> Result<String, String> {
+    probe_health_json(addr, timeout)
+        .map(|health| health["version"].as_str().unwrap_or_default().to_owned())
+}
+
+/// `GET /health` on `addr`: its answer, or why there is none.
+fn probe_health_json(addr: SocketAddr, timeout: Duration) -> Result<serde_json::Value, String> {
     let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| e.to_string())?;
     stream
         .set_read_timeout(Some(timeout))
@@ -139,10 +145,48 @@ fn probe_health(addr: SocketAddr, timeout: Duration) -> Result<String, String> {
     let body = answer.split_once("\r\n\r\n").map_or("", |(_, b)| b);
     let health: serde_json::Value = serde_json::from_str(body)
         .map_err(|_| format!("not a FrankenSonos answer: {answer:.80}"))?;
-    health["version"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| "no version in /health".to_string())
+    if health["version"].as_str().is_none() {
+        return Err("no version in /health".to_string());
+    }
+    Ok(health)
+}
+
+/// The verdict on a daemon that answered `/health` on `http`: answering is
+/// not enough, it must see the speakers. A blind one (no player found) is
+/// what a daemon the operating system keeps off the LAN looks like, while
+/// this terminal reaches the speakers fine. A daemon too old to say passes
+/// on its answer alone.
+fn health_result(health: &serde_json::Value, http: SocketAddr) -> CheckResult {
+    let version = health["version"].as_str().unwrap_or_default();
+    let live = &health["live"];
+    let players = live["players"].as_u64().unwrap_or_default();
+    let evidence = json!({ "version": version, "live": live });
+    let result = match live["verdict"].as_str() {
+        Some("blind") => CheckResult::fail(
+            format!("fsonos serve {version} answers on {http} but sees no players"),
+            "The daemon can't reach the speakers. On macOS allow it in System Settings > \
+             Privacy & Security > Local Network (a service needs this once per binary); else \
+             check the network it is on, and FSONOS_SEEDS.",
+        ),
+        Some("starting") => CheckResult::warn(
+            format!("fsonos serve {version} answers on {http} and is still finding the speakers"),
+            "Run the doctor again in a few seconds.",
+        ),
+        Some("degraded") => CheckResult::warn(
+            format!(
+                "fsonos serve {version} sees {players} player(s), {} offline, with {} event \
+                 subscription(s)",
+                live["offline"], live["subscriptions"]
+            ),
+            "See the daemon's own report (`GET /doctor`, daemon.live) for which players and why.",
+        ),
+        _ => CheckResult::pass(if live.is_null() {
+            format!("fsonos serve {version} answers on {http}")
+        } else {
+            format!("fsonos serve {version} answers on {http} and sees {players} player(s)")
+        }),
+    };
+    result.with_evidence(evidence)
 }
 
 /// Whether `fsonos serve` answers `/health` on the HTTP address.
@@ -164,11 +208,8 @@ impl Check for HealthCheck {
             return CheckResult::skip("the HTTP address has no fixed port to probe");
         }
         let timeout = ctx.remaining().min(Duration::from_secs(3));
-        match probe_health(self.http, timeout) {
-            Ok(version) => {
-                CheckResult::pass(format!("fsonos serve {version} answers on {}", self.http))
-                    .with_evidence(json!({ "version": version }))
-            }
+        match probe_health_json(self.http, timeout) {
+            Ok(health) => health_result(&health, self.http),
             Err(why) => CheckResult::warn(
                 format!("no daemon answers on {}", self.http),
                 "Start it with `fsonos serve`, or under launchd (docs/DEPLOY.md).",
@@ -475,6 +516,30 @@ mod tests {
             http: "127.0.0.1:0".parse().unwrap(),
         });
         assert_eq!(skipped.status, Status::Skip);
+    }
+
+    #[test]
+    fn a_daemon_that_answers_but_sees_no_players_fails() {
+        let http: SocketAddr = "127.0.0.1:8099".parse().unwrap();
+        let health =
+            |live: serde_json::Value| json!({ "status": "ok", "version": "0.1.0", "live": live });
+        let blind = health_result(&health(json!({"verdict": "blind", "players": 0})), http);
+        assert_eq!(blind.status, Status::Fail, "{blind:?}");
+        assert!(blind.remedy.unwrap().contains("Local Network"));
+        let degraded = health_result(
+            &health(
+                json!({"verdict": "degraded", "players": 13, "offline": 1, "subscriptions": 28}),
+            ),
+            http,
+        );
+        assert_eq!(degraded.status, Status::Warn, "{degraded:?}");
+        let ok = health_result(&health(json!({"verdict": "ok", "players": 13})), http);
+        assert_eq!(ok.status, Status::Pass);
+        assert!(ok.summary.contains("13 player"), "{ok:?}");
+        let starting = health_result(&health(json!({"verdict": "starting", "players": 0})), http);
+        assert_eq!(starting.status, Status::Warn, "{starting:?}");
+        let older = health_result(&json!({ "status": "ok", "version": "0.1.0" }), http);
+        assert_eq!(older.status, Status::Pass);
     }
 
     #[test]

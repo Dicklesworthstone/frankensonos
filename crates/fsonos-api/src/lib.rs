@@ -79,6 +79,26 @@ pub struct HealthDto {
     /// directory (the daily one, when scheduled), without its details.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selftest: Option<SelftestHealth>,
+    /// What the daemon's live model sees, so a daemon that answers but
+    /// cannot reach the speakers says so. Counts only: no address or name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveHealth>,
+}
+
+/// The live model, in `GET /health` ([`live::health`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LiveHealth {
+    /// `ok`; `degraded` (players offline, or no event subscriptions);
+    /// `starting` (its first survey has not ended); or `blind` (no player
+    /// found: the speakers are out of reach).
+    pub verdict: String,
+    pub households: u32,
+    pub players: u32,
+    pub offline: u32,
+    pub subscriptions: u32,
+    /// Seconds since a survey last succeeded; absent before the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surveyed_secs_ago: Option<u64>,
 }
 
 /// The last self-test, in `GET /health`.

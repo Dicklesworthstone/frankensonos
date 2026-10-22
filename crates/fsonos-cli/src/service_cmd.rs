@@ -735,6 +735,10 @@ pub struct ServiceStatus {
     pub daemon_pid: Option<u32>,
     /// It answered `GET /health`.
     pub daemon_answers: bool,
+    /// What it sees, from `GET /health`: one that answers but finds no
+    /// players is blind (macOS Local Network, or the wrong network).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live: Option<fsonos_api::LiveHealth>,
     /// `install --selftest-daily` scheduled the self-test.
     pub selftest_daily: bool,
     /// What could not be checked.
@@ -760,7 +764,11 @@ fn status(global: &GlobalArgs, manager: Manager, path: &Path) -> ServiceStatus {
         .as_deref()
         .and_then(read_daemon_file)
         .map(|f| f.pid);
-    let daemon_answers = matches!(crate::remote::Daemon::find(global, false), Ok(Some(_)));
+    let daemon = crate::remote::Daemon::find(global, false).ok().flatten();
+    let live = daemon
+        .as_ref()
+        .and_then(|d| d.get::<fsonos_api::HealthDto>("/health").ok())
+        .and_then(|health| health.live);
     ServiceStatus {
         manager,
         path: path.to_path_buf(),
@@ -769,7 +777,8 @@ fn status(global: &GlobalArgs, manager: Manager, path: &Path) -> ServiceStatus {
         running,
         pid,
         daemon_pid,
-        daemon_answers,
+        daemon_answers: daemon.is_some(),
+        live,
         selftest_daily: daily::installed(&daily::paths(manager, path)),
         notes,
     }
@@ -852,6 +861,13 @@ fn status_text(s: &ServiceStatus) -> String {
         (false, _) => "none answers".to_owned(),
     };
     let _ = writeln!(out, "daemon: {daemon}");
+    if let Some(live) = &s.live {
+        let _ = writeln!(
+            out,
+            "speakers: {} ({} player(s) in {} household(s), {} offline)",
+            live.verdict, live.players, live.households, live.offline
+        );
+    }
     if s.selftest_daily {
         let _ = writeln!(out, "daily self-test: scheduled");
     }

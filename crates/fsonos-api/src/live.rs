@@ -94,6 +94,39 @@ pub fn track(playback: &PlayerPlayback, now: Instant) -> Option<TrackDto> {
     })
 }
 
+/// The live model as `GET /health` reports it: counts and a verdict. Blind
+/// means no player has been found, which is how a daemon the operating
+/// system keeps off the LAN (macOS Local Network privacy) or one on the
+/// wrong network looks; starting, its first survey has not ended yet;
+/// degraded, players offline or no event subscriptions.
+#[must_use]
+pub fn health(s: &Snapshot) -> crate::LiveHealth {
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    let players: usize = s.households.iter().map(|h| h.players.len()).sum();
+    let offline = s
+        .health
+        .iter()
+        .filter(|(_, h)| h.health == Health::Offline)
+        .count();
+    let verdict = if players == 0 && s.surveyed_at.is_none() && s.last_error.is_none() {
+        "starting"
+    } else if players == 0 {
+        "blind"
+    } else if offline > 0 || s.subscriptions == 0 {
+        "degraded"
+    } else {
+        "ok"
+    };
+    crate::LiveHealth {
+        verdict: verdict.to_owned(),
+        households: count(s.households.len()),
+        players: count(players),
+        offline: count(offline),
+        subscriptions: count(s.subscriptions),
+        surveyed_secs_ago: s.surveyed_at.map(|at| at.elapsed().as_secs()),
+    }
+}
+
 const LIVE: CheckId = CheckId("daemon.live");
 
 /// The live model's health: surveys, event subscriptions, offline players.
@@ -168,6 +201,51 @@ mod tests {
         let mut runner = Runner::new();
         runner.register(LiveCheck { snapshot });
         runner.run().unwrap().get(LIVE).cloned().unwrap()
+    }
+
+    #[test]
+    fn health_is_blind_without_players_and_degraded_without_subscriptions() {
+        // Before its first survey ends, a daemon is starting, not blind.
+        let starting = health(&Snapshot::default());
+        assert_eq!(
+            (starting.verdict.as_str(), starting.surveyed_secs_ago),
+            ("starting", None)
+        );
+        let blind = health(&Snapshot {
+            last_error: Some("SSDP: no replies; no seeds answered".into()),
+            ..Snapshot::default()
+        });
+        assert_eq!((blind.verdict.as_str(), blind.players), ("blind", 0));
+        let mut house = HouseholdState::default();
+        house.players.push(fsonos_types::Player {
+            id: fsonos_types::PlayerId("RINCON_KIT".into()),
+            room_name: "Kitchen".into(),
+            ip: "192.0.2.10".parse().unwrap(),
+            model: String::new(),
+            generation: fsonos_types::Generation::S2,
+        });
+        let unsubscribed = Snapshot {
+            households: vec![house],
+            surveyed_at: Some(Instant::now()),
+            ..Snapshot::default()
+        };
+        let seen = health(&unsubscribed);
+        assert_eq!(
+            (seen.verdict.as_str(), seen.households, seen.players),
+            ("degraded", 1, 1)
+        );
+        assert_eq!(seen.surveyed_secs_ago, Some(0));
+        let subscribed = Snapshot {
+            subscriptions: 3,
+            ..unsubscribed
+        };
+        assert_eq!(health(&subscribed).verdict, "ok");
+        // Counts only: nothing a caller could locate the house by.
+        let text = serde_json::to_string(&health(&subscribed)).unwrap();
+        assert!(
+            !text.contains("192.0.2") && !text.contains("Kitchen"),
+            "{text}"
+        );
     }
 
     #[test]

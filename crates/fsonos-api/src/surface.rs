@@ -280,6 +280,14 @@ impl Surface {
         self.live.as_ref().and_then(Weak::upgrade)
     }
 
+    /// The live model's counts and verdict for `GET /health`; `None`
+    /// without a live model (the CLI's direct mode).
+    #[must_use]
+    pub fn live_health(&self) -> Option<crate::LiveHealth> {
+        self.live()
+            .map(|live| crate::live::health(&live.snapshot()))
+    }
+
     /// Resolve rooms with the owner's aliases from `path` (read on each call,
     /// so edits apply at once; a missing file means none).
     #[must_use]
