@@ -489,6 +489,21 @@ program), or the update-signature chain (`bin/upgrade`'s own verification,
 which uses the same libsonoscrypto with separate keys for the `.upd`
 signature section).
 
+**Queue metadata is a pre-auth DoS (found 2026-10-22, live, both
+generations).** `AddURIToQueue` with a `EnqueuedURIMetaData` DIDL whose
+`dc:title` is tens of KB answers `200`, then the daemon dies tens of seconds
+later and the watchdog restarts it: measured on a Play:5 Gen1 (57.23) at
+8 KB/16 KB/32 KB/60 KB and on a Sonos One (86.10) at 32 KB,
+death 72-97 s after the call, recovery 39-225 s, ICMP up throughout (the
+device is fine, only the daemon is gone). It is **not** a single-copy stack
+overflow: a 60 KB item on a just-cleared queue survives, the same 32 KB in a
+`<junk>` element instead of `<dc:title>` survives, and 60 KB sometimes
+survives — so it is deferred/asynchronous work against the stored title
+(memory pressure or a later parse), not an inline `strcpy`. `SetAVTransportURI`
+with the same metadata is accepted and silently stores only 629 bytes, so the
+queue path is the one to fuzz. `Browse` of a queue holding such an item takes
+over 45 s to answer.
+
 ## 10. SMAPI (the speaker↔Spotify bridge) — verified against the live endpoint
 
 Sonos renders music services through SMAPI, a SOAP API Sonos operates per
