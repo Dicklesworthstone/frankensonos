@@ -80,8 +80,9 @@ const STYLE: &str = include_str!("../remote/remote.css");
 /// images: album art on a service's CDN, see [`art_response`]), talk only
 /// to their own origin, never be framed.
 const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
-                   img-src 'self' https:; connect-src 'self'; base-uri 'none'; \
-                   form-action 'none'; frame-ancestors 'none'";
+                   img-src 'self' https:; \
+                   connect-src 'self'; base-uri 'none'; form-action 'none'; \
+                   frame-ancestors 'none'";
 
 /// Every remote route.
 pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
