@@ -244,3 +244,168 @@ fn direct_empty_cache_needs_no_daemon_or_speaker_discovery() {
     assert_eq!(page["items"], json!([]));
     assert_eq!(page["next_offset"], Value::Null);
 }
+
+fn playlist_page(offset: usize, limit: usize, q: &str) -> Value {
+    let items = [1, 3, 5]
+        .into_iter()
+        .map(|position| {
+            let repeated = position != 3;
+            json!({
+                "position": position,
+                "source_uri": if repeated { "spotify:track:Repeated" } else { "spotify:track:Different" },
+                "title": if repeated { "Again" } else { "Middle" },
+                "subtitle": "Björk & Guests", "album": "A recording",
+                "album_uri": "spotify:album:TestAlbum", "disc_number": 1,
+                "track_number": if repeated { 1 } else { 2 },
+                "duration_secs": 180, "explicit": repeated
+            })
+        })
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
+    let end = offset + items.len();
+    json!({
+        "playlist_uri": "spotify:playlist:ObservedList", "name": "A list", "q": q,
+        "coverage": "partial", "fetched_at": 100, "source_total": 8, "examined": 5,
+        "cached_total": 3, "total": 3, "offset": offset, "limit": limit,
+        "next_offset": if end < 3 { Some(end) } else { None },
+        "revision": "playlist-observation", "items": items
+    })
+}
+
+#[test]
+fn cli_playlist_json_and_text_preserve_order_duplicates_and_partial_coverage() {
+    let args = [
+        "--json",
+        "dj",
+        "browse",
+        "tracks",
+        "--playlist-uri",
+        "spotify:playlist:ObservedList",
+        "--limit",
+        "3",
+    ];
+    let page = playlist_page(0, 3, "");
+    let (output, paths) = through_daemon(&args, 200, &page);
+    assert!(output.status.success(), "{}", error_text(&output));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        page
+    );
+    assert_eq!(
+        paths[1],
+        "GET /library/playlist?playlist_uri=spotify%3Aplaylist%3AObservedList&offset=0&limit=3 HTTP/1.1"
+    );
+    let (output, _) = through_daemon(&args[1..], 200, &page);
+    assert!(output.status.success(), "{}", error_text(&output));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("Coverage: partial"));
+    assert!(text.contains("Revision: playlist-observation"));
+    assert!(text.contains("Source entries examined: 5 of 8"));
+    assert_eq!(
+        text.matches("source_uri: spotify:track:Repeated").count(),
+        2
+    );
+    assert!(text.find("#1 Again").unwrap() < text.find("#3 Middle").unwrap());
+    assert!(text.find("#3 Middle").unwrap() < text.find("#5 Again").unwrap());
+    assert!(text.contains("not a Sonos queue"));
+}
+
+#[test]
+fn cli_playlist_continuation_keeps_the_filter_revision_and_original_position() {
+    let args = [
+        "--json",
+        "dj",
+        "browse",
+        "tracks",
+        "--playlist-uri",
+        "spotify:playlist:ObservedList",
+        "--offset",
+        "1",
+        "--limit",
+        "1",
+        "--q",
+        "Björk & Guests",
+        "--expected-revision",
+        "playlist-observation",
+    ];
+    let page = playlist_page(1, 1, "Björk & Guests");
+    let (output, paths) = through_daemon(&args, 200, &page);
+    assert!(output.status.success(), "{}", error_text(&output));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        page
+    );
+    assert_eq!(
+        paths[1],
+        "GET /library/playlist?playlist_uri=spotify%3Aplaylist%3AObservedList&offset=1&limit=1&q=Bj%C3%B6rk%20%26%20Guests&expected_revision=playlist-observation HTTP/1.1"
+    );
+    assert_eq!(page["items"][0]["position"], 3);
+    assert_eq!(page["next_offset"], 2);
+}
+
+#[test]
+fn cli_playlist_rejects_stale_or_inconsistent_results_without_switching_caches() {
+    let args = [
+        "--json",
+        "dj",
+        "browse",
+        "tracks",
+        "--playlist-uri",
+        "spotify:playlist:ObservedList",
+        "--limit",
+        "3",
+        "--expected-revision",
+        "playlist-observation",
+    ];
+    let mut changed = playlist_page(0, 3, "");
+    changed["revision"] = "different-observation".into();
+    let (output, paths) = through_daemon(&args, 200, &changed);
+    assert!(!output.status.success());
+    assert!(error_text(&output).contains("INVALID_ARGUMENT"));
+    assert_eq!(paths.len(), 2, "health and one read; no automatic restart");
+    let mut malformed = playlist_page(0, 3, "");
+    malformed["items"][1]["position"] = 1.into();
+    let (output, _) = through_daemon(&args, 200, &malformed);
+    assert!(!output.status.success());
+    assert!(error_text(&output).contains("INTERNAL"));
+    let failure = fsonos_api::Failure::new(fsonos_api::ErrorCode::NotReady, "cache unavailable");
+    let (output, paths) =
+        through_daemon(&args, 503, &serde_json::to_value(failure.body()).unwrap());
+    assert!(!output.status.success());
+    assert!(error_text(&output).contains("NOT_READY"));
+    assert_eq!(paths.len(), 2);
+}
+
+#[test]
+fn invalid_playlist_continuation_fails_before_daemon_discovery() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let dir = Scratch::new("invalid-playlist");
+    let output = finish(
+        command(dir.path())
+            .env(
+                "FSONOS_HTTP_ADDR",
+                listener.local_addr().unwrap().to_string(),
+            )
+            .args([
+                "--daemon",
+                "--json",
+                "dj",
+                "browse",
+                "tracks",
+                "--playlist-uri",
+                "spotify:playlist:ObservedList",
+                "--offset",
+                "1",
+            ]),
+    );
+    assert!(!output.status.success());
+    assert!(error_text(&output).contains("INVALID_ARGUMENT"));
+    assert!(error_text(&output).contains("expected_revision"));
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "invalid continuation must not probe the daemon"
+    );
+}

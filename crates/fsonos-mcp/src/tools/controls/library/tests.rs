@@ -1,10 +1,11 @@
 use super::*;
 use crate::tools::Daemon;
 use fsonos_api::surface::dj_sync::library::BrowsePage;
+use fsonos_api::surface::dj_sync::playlist::PlaylistPage;
 use fsonos_api::{ErrorCode, Failure, Surface};
 use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
-use fsonos_core::store::{LibraryEntry, MemStore, Store};
+use fsonos_core::store::{CachedPlaylist, LibraryEntry, MemStore, PlaylistTrack, Store};
 use fsonos_proto::{ProtoError, Transport};
 use serde_json::{Value, json};
 use std::net::IpAddr;
@@ -44,7 +45,16 @@ fn local(with_store: bool) -> Backend {
             .collect::<Vec<_>>();
         store.upsert_library(&entries).unwrap();
         store
-            .save_playlists(&[("spotify:playlist:simList".into(), "A list".into())])
+            .save_playlists(&[
+                ("spotify:playlist:simList".into(), "A list".into()),
+                (
+                    "spotify:playlist:NamedOnly".into(),
+                    "Unobserved list".into(),
+                ),
+            ])
+            .unwrap();
+        store
+            .save_playlist_contents(&playlist_observation())
             .unwrap();
         surface = surface.with_action_log(Box::new(store), "mcp-test");
     }
@@ -53,6 +63,53 @@ fn local(with_store: bool) -> Backend {
 
 fn data(result: FinalCallToolResult) -> BrowsePage {
     serde_json::from_value(result.structured_content.unwrap()).unwrap()
+}
+
+fn playlist_data(result: FinalCallToolResult) -> PlaylistPage {
+    serde_json::from_value(result.structured_content.unwrap()).unwrap()
+}
+
+fn playlist_query() -> PlaylistQuery {
+    PlaylistQuery {
+        playlist_uri: "spotify:playlist:simList".into(),
+        offset: None,
+        limit: None,
+        q: None,
+        expected_revision: None,
+    }
+}
+
+fn playlist_observation() -> CachedPlaylist {
+    let tracks = [1, 3, 5]
+        .into_iter()
+        .map(|position| PlaylistTrack {
+            position,
+            source_uri: format!(
+                "spotify:track:{}",
+                if position == 3 {
+                    "Different"
+                } else {
+                    "Repeated"
+                }
+            ),
+            title: if position == 3 { "Middle" } else { "Again" }.into(),
+            artist: Some("Björk & Guests".into()),
+            album: Some("A recording".into()),
+            album_uri: Some("spotify:album:simAlbum".into()),
+            disc_number: Some(1),
+            track_number: Some(if position == 3 { 2 } else { 1 }),
+            duration_secs: Some(180),
+            explicit: position != 3,
+        })
+        .collect();
+    CachedPlaylist::new(
+        "spotify:playlist:simList".into(),
+        100,
+        Some(8),
+        5,
+        false,
+        tracks,
+    )
 }
 
 fn query(kind: &str) -> BrowseQuery {
@@ -322,4 +379,199 @@ fn text_is_actionable_without_fabricated_coverage_or_terminal_control_codes() {
         page.items[0].title, "Title\n\u{1b}[2J",
         "structured data is unchanged"
     );
+}
+
+#[test]
+fn playlist_occurrences_keep_original_positions_and_duplicate_tracks_without_io() {
+    let backend = local(true);
+    let first = playlist_data(
+        backend
+            .playlist_contents(&PlaylistQuery {
+                limit: Some(2),
+                ..playlist_query()
+            })
+            .unwrap(),
+    );
+    assert_eq!(first.coverage, "partial");
+    assert_eq!(first.name, "A list");
+    assert_eq!((first.source_total, first.examined), (Some(8), 5));
+    assert_eq!((first.cached_total, first.total), (3, 3));
+    assert_eq!(first.fetched_at, Some(100));
+    assert_eq!(first.next_offset, Some(2));
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .map(|item| item.position)
+            .collect::<Vec<_>>(),
+        [1, 3]
+    );
+    assert!(
+        first.items[0].explicit,
+        "inspection preserves explicit tracks"
+    );
+    let last = playlist_data(
+        backend
+            .playlist_contents(&PlaylistQuery {
+                offset: first.next_offset,
+                limit: Some(2),
+                expected_revision: first.revision.clone(),
+                ..playlist_query()
+            })
+            .unwrap(),
+    );
+    assert_eq!(last.revision, first.revision);
+    assert_eq!(last.next_offset, None);
+    assert_eq!(last.items.len(), 1);
+    assert_eq!(last.items[0].position, 5);
+    assert_eq!(last.items[0].source_uri, first.items[0].source_uri);
+    let filtered = playlist_data(
+        backend
+            .playlist_contents(&PlaylistQuery {
+                q: Some("bjork again".into()),
+                ..playlist_query()
+            })
+            .unwrap(),
+    );
+    assert_eq!((filtered.cached_total, filtered.total), (3, 2));
+    assert_eq!(
+        filtered
+            .items
+            .iter()
+            .map(|item| item.position)
+            .collect::<Vec<_>>(),
+        [1, 5]
+    );
+    let uncached = playlist_data(
+        backend
+            .playlist_contents(&PlaylistQuery {
+                playlist_uri: "spotify:playlist:NamedOnly".into(),
+                ..playlist_query()
+            })
+            .unwrap(),
+    );
+    assert_eq!(uncached.coverage, "not_cached");
+    assert!(uncached.items.is_empty());
+    assert!(uncached.revision.is_none());
+    assert!(uncached.fetched_at.is_none());
+}
+
+#[test]
+fn playlist_daemon_reads_forward_the_observation_and_validate_occurrence_order() {
+    let backend = local(true);
+    let first = playlist_data(backend.playlist_contents(&playlist_query()).unwrap());
+    let query = PlaylistQuery {
+        offset: Some(1),
+        limit: Some(2),
+        q: Some("Björk & Guests".into()),
+        expected_revision: first.revision.clone(),
+        ..playlist_query()
+    };
+    let page = backend
+        .surface
+        .playlist_contents(&Client::McpStdio, &query)
+        .unwrap();
+    let daemon = remote(Some(Ok(serde_json::to_value(&page).unwrap())));
+    // No standalone store: an incorrectly routed fallback cannot satisfy this read.
+    let result = playlist_data(
+        local(false)
+            .with_daemon(daemon.clone())
+            .playlist_contents(&query)
+            .unwrap(),
+    );
+    assert_eq!(result, page);
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .map(|item| item.position)
+            .collect::<Vec<_>>(),
+        [3, 5]
+    );
+    assert_eq!(
+        *daemon.calls.lock().unwrap(),
+        [json!([
+            "GET",
+            format!(
+                "/library/playlist?playlist_uri=spotify%3Aplaylist%3AsimList&offset=1&limit=2&q=Bj%C3%B6rk%20%26%20Guests&expected_revision={}",
+                first.revision.unwrap()
+            ),
+            null
+        ])]
+    );
+}
+
+#[test]
+fn invalid_playlist_queries_never_probe_the_daemon_or_read_local_state() {
+    for query in [
+        PlaylistQuery {
+            playlist_uri: "spotify:album:Wrong".into(),
+            ..playlist_query()
+        },
+        PlaylistQuery {
+            offset: Some(1),
+            ..playlist_query()
+        },
+        PlaylistQuery {
+            limit: Some(0),
+            ..playlist_query()
+        },
+        PlaylistQuery {
+            limit: Some(51),
+            ..playlist_query()
+        },
+        PlaylistQuery {
+            q: Some("x".repeat(513)),
+            ..playlist_query()
+        },
+        PlaylistQuery {
+            expected_revision: Some("\n".into()),
+            ..playlist_query()
+        },
+    ] {
+        let daemon = remote(None);
+        let error = local(false)
+            .with_daemon(daemon.clone())
+            .playlist_contents(&query)
+            .unwrap_err();
+        assert_eq!(error.data.unwrap()["code"], "INVALID_ARGUMENT");
+        assert!(daemon.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn playlist_stale_revisions_bad_pages_and_daemon_errors_are_terminal() {
+    let query = playlist_query();
+    let page = local(true)
+        .surface
+        .playlist_contents(&Client::McpStdio, &query)
+        .unwrap();
+    let daemon = remote(Some(Ok(serde_json::to_value(&page).unwrap())));
+    let error = local(true)
+        .with_daemon(daemon.clone())
+        .playlist_contents(&PlaylistQuery {
+            expected_revision: Some("old-observation".into()),
+            ..playlist_query()
+        })
+        .unwrap_err();
+    assert_eq!(error.data.unwrap()["code"], "INVALID_ARGUMENT");
+    assert_eq!(daemon.calls.lock().unwrap().len(), 1);
+
+    let mut duplicated_position = page;
+    duplicated_position.items[1].position = duplicated_position.items[0].position;
+    for answer in [
+        Err(Failure::new(ErrorCode::PolicyDenied, "not allowed")),
+        Err(Failure::new(ErrorCode::NotReady, "cache unavailable")),
+        Ok(json!({"items": []})),
+        Ok(serde_json::to_value(duplicated_position).unwrap()),
+    ] {
+        let daemon = remote(Some(answer));
+        assert!(
+            local(true)
+                .with_daemon(daemon.clone())
+                .playlist_contents(&query)
+                .is_err()
+        );
+        assert_eq!(daemon.calls.lock().unwrap().len(), 1);
+    }
 }

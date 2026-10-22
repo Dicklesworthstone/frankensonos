@@ -8,6 +8,9 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 pub(super) struct Page<T> {
     pub items: Vec<T>,
+    // A missing member is malformed; only explicit null ends pagination.
+    // The custom deserializer makes this Option required during decoding.
+    #[serde(deserialize_with = "Option::deserialize")]
     pub next: Option<String>,
     pub offset: Option<u32>,
     pub total: Option<u32>,
@@ -97,6 +100,23 @@ mod tests {
             next: next
                 .map(|offset| format!("https://api.spotify.com/v1/me/tracks?offset={offset}")),
         }
+    }
+
+    #[test]
+    fn completion_requires_an_explicit_next_member() {
+        for value in [
+            json!({ "items": [] }),
+            json!({ "items": [], "offset": 0, "total": 0 }),
+            json!({ "items": [null], "offset": 0, "total": 1 }),
+        ] {
+            assert!(serde_json::from_value::<Page<Value>>(value).is_err());
+        }
+        let empty: Page<Value> = serde_json::from_value(json!({
+            "items": [], "offset": 0, "total": 0, "next": null
+        }))
+        .unwrap();
+        Coverage::default().accept(&empty).unwrap();
+        assert!(empty.next.is_none());
     }
 
     #[test]

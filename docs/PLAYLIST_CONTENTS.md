@@ -81,3 +81,61 @@ Migration 14 adds `spotify_playlist_contents`, keyed by playlist URI, with one
 serialized observation per row. This keeps duplicate occurrences and their
 metadata separate from the general track cache. The in-memory and SQLite stores
 use the same validation and revision calculation.
+
+## CLI and agents
+
+List the cached playlist names and URIs, then open one:
+
+```bash
+fsonos dj browse playlists
+fsonos dj browse tracks --playlist-uri 'spotify:playlist:<id>'
+fsonos dj browse tracks --playlist-uri 'spotify:playlist:<id>' --q 'piano trio' --json
+```
+
+`--playlist-uri` requires the `tracks` category and cannot be combined with
+`--album-uri`. For a later page, retain the playlist and filter and pass the
+returned `next_offset` and `revision`:
+
+```bash
+fsonos dj browse tracks --playlist-uri 'spotify:playlist:<id>' \
+  --offset 50 --expected-revision '<revision>' --json
+```
+
+The CLI reads the daemon's cache when connected and the local store in direct
+mode. A daemon error does not silently switch to a different cache.
+
+The full MCP profile exposes the read-only, idempotent `playlist_contents` tool:
+
+```json
+{
+  "playlist_uri": "spotify:playlist:<id>",
+  "q": "piano trio",
+  "offset": 0,
+  "limit": 50
+}
+```
+
+Its arguments, result and revision rules match the HTTP endpoint. It uses the
+existing `browse_library` policy permission. Select an item's exact
+`source_uri` for `play` or `add_to_queue`; its playlist position is never an
+argument to `play_queue`.
+
+## Web remotes
+
+In either web remote, open **Find music**, browse playlists, then choose
+**View cached tracks**. The playlist's name filter is cleared so it does not
+hide its tracks. Filtering within the playlist keeps its original occurrence
+positions. **Back to playlists** returns to the playlist listing.
+
+Each page explains its observed coverage and read time. A known playlist with
+no recorded contents has a distinct not-yet-cached message. A complete empty
+observation and a complete observation containing only unavailable entries
+have different explanations. Explicit tracks remain visible.
+
+Play now, Add to end and Queue next use the existing review and confirmation
+flow. Review shows the source URI, original playlist position and destination
+group. Confirmation checks the current group and rereads the selected cached
+page with its expected revision, verifying the exact occurrence before sending
+the track URI to the existing playback route. A changed observation requires
+a fresh review. This reread checks the local cache; it does not contact Spotify
+or reserve playback. An uncertain write is not retried automatically.

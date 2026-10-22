@@ -185,7 +185,7 @@ const DashboardSession = (() => {
         : source.kind === 'playlist' ? 'Uses the playlist source; its live contents may differ from the cache.' : 'Uses this exact track source.';
       ++intent; state.result = null; state.error = '';
       state.pending = freeze({ kind: 'library', target, label: item.zone.members.join(' + '),
-        title: `${label}: ${name}`, detail: `${source.subtitle ? `${source.subtitle}. ` : ''}${effect} ${coverage} Source: ${source.source_uri}. The daemon’s policy and service availability still apply.`,
+        title: `${label}: ${name}`, detail: `${source.subtitle ? `${source.subtitle}. ` : ''}${source.position ? `Playlist position ${source.position}. ` : ''}${effect} ${coverage} Source: ${source.source_uri}. The daemon’s policy and service availability still apply.`,
         playback: playbackIdentity(item), catalog, libraryAction: action,
         url: action === 'play' ? '/play' : '/queue',
         body: { zone: target, source_uri: source.source_uri, title: name, ...(action === 'play' ? {} : { next: action === 'next' }) } });

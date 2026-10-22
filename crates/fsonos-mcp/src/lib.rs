@@ -239,6 +239,7 @@ fn configured_server(
             .tool(tools::DjStatus)
             .tool(tools::DjMoods)
             .tool(library::BrowseLibrary)
+            .tool(library::PlaylistContents)
             .tool(tools::SearchAndPlay)
             .tool(tools::RecentPlays)
             .tool(tools::GetQueue)

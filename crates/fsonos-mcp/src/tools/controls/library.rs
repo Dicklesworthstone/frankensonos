@@ -4,6 +4,7 @@ use crate::tools::{Backend, respond};
 use fastmcp::FinalCallToolResult;
 use fastmcp::prelude::McpResult;
 use fsonos_api::surface::dj_sync::library::BrowseQuery;
+use fsonos_api::surface::dj_sync::playlist::PlaylistQuery;
 
 impl Backend {
     /// Use the daemon's cache when present, never silently switch caches after
@@ -17,6 +18,18 @@ impl Backend {
             let path = query.path()?;
             let page = self.read(&path, || self.surface.browse_library(&self.client, query))?;
             page.validate_for(query, expected_revision)?;
+            Ok((page.text(), page))
+        })
+    }
+
+    /// Preserve playlist occurrence order and the daemon's observation revision.
+    pub fn playlist_contents(&self, query: &PlaylistQuery) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let path = query.path()?;
+            let page = self.read(&path, || {
+                self.surface.playlist_contents(&self.client, query)
+            })?;
+            page.validate_for(query)?;
             Ok((page.text(), page))
         })
     }

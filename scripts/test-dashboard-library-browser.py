@@ -43,10 +43,19 @@ function listing(url){
   return {kind,offset,limit:50,album_uri:album,coverage:'cached',total:all.length,revision:fixture.revision,
     items,next_offset:offset+items.length<all.length?offset+items.length:null};
 }
+function playlistContents(url){
+  const p=new URL(url,'http://localhost').searchParams,offset=Number(p.get('offset')),
+    playlist_uri=p.get('playlist_uri'),q=p.get('q')||'';
+  const items=[1,3,5].map((position,i)=>({position,source_uri:`spotify:track:${id(i<2?1:2)}`,
+    title:i<2?'Repeat':'Another song',subtitle:'Synthetic performer',explicit:false,
+    album:'An album',album_uri:`spotify:album:${id(9)}`,disc_number:1,track_number:i+1,duration_secs:180}));
+  return {playlist_uri,name:'Dinner',q,offset,limit:50,coverage:'partial',fetched_at:1700000000,
+    source_total:20,examined:6,cached_total:3,total:3,revision:fixture.revision,next_offset:null,items:items.slice(offset)};
+}
 async function call(url,body){
   fixture.calls.push({url,body});
   if(body!==undefined){fixture.writes.push({url,body:clone(body)});if(fixture.lost)throw new Error('Acknowledgement lost');
-    return url==='/queue'?{done:'Queued without starting playback',first:1,count:7,playing_queue:false}:{done:'Playing',changed:true};}
+    return url==='/queue'?{done:'Queued without starting playback',first:1,count:body.source_uri.startsWith('spotify:track:')?1:7,playing_queue:false}:{done:'Playing',changed:true};}
   if(url==='/zones')return clone(fixture.zones);
   if(url.endsWith('/state')){
     const z=fixture.zones.find(z=>url.includes(encodeURIComponent(DashboardCore.key(z))));
@@ -58,6 +67,7 @@ async function call(url,body){
     if(fixture.hold){fixture.hold=false;return new Promise(resolve=>{fixture.gate=()=>resolve(result);});}
     return result;
   }
+  if(url.startsWith('/library/playlist?'))return playlistContents(url);
   throw new Error('Unexpected fixture route '+url);
 }
 let workspace;
@@ -90,7 +100,7 @@ def setup(browser):
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.set_content(HTML)
     page.add_style_tag(content=(REMOTE/'dashboard-library.css').read_text())
-    for name in ['dashboard-core.js','dashboard-library.js','dashboard-session.js','dashboard-library-panel.js','dashboard-workspace.js']:
+    for name in ['dashboard-core.js','playlist-contents.js','dashboard-library.js','dashboard-session.js','dashboard-library-panel.js','dashboard-workspace.js']:
         page.add_script_tag(content=(REMOTE/name).read_text())
     page.add_script_tag(content=FIXTURE)
     page.evaluate('ready')
@@ -164,6 +174,25 @@ def queue_playlist(page):
     page.get_by_role('button',name='Confirm action').click()
     expect(page.locator('#outcome')).to_contain_text('without starting playback')
     assert len(writes(page))==1 and writes(page)[0]['url']=='/queue' and writes(page)[0]['body']['next'] is True
+
+
+def playlist_drilldown(page):
+    open_browser(page)
+    page.get_by_role('combobox',name='Library category').select_option('playlists')
+    page.get_by_role('button',name='View cached tracks',exact=True).nth(1).click()
+    expect(rows(page)).to_have_count(3)
+    expect(rows(page).nth(1)).to_contain_text('3. Repeat')
+    expect(page.locator('.dashboard-library [role=status]')).to_contain_text('Partial playlist: 6 of 20')
+    expect(page.locator('.dashboard-library [role=status]')).to_contain_text('3 unavailable or unsupported')
+    page.get_by_role('button',name='Back to playlists',exact=True).click()
+    expect(rows(page)).to_have_count(50)
+    page.get_by_role('button',name='View cached tracks',exact=True).nth(1).click()
+    page.get_by_role('button',name='Queue next: playlist position 3, Repeat',exact=True).click()
+    expect(page.locator('#review-detail')).to_contain_text('Playlist position 3')
+    assert writes(page)==[]
+    page.get_by_role('button',name='Confirm action').click()
+    expect(page.locator('#outcome')).to_contain_text('without starting playback')
+    assert writes(page)==[{'url':'/queue','body':{'zone':'Studio@S2','source_uri':'spotify:track:0000000000000000000001','title':'Repeat','next':True}}]
 
 
 def revision(page):
@@ -244,7 +273,7 @@ def main():
     parser.add_argument('--chromium', default=shutil.which('chromium') or shutil.which('chromium-browser'))
     args=parser.parse_args()
     cases=[('pagination',pages),('filter and Enter',filtering),('album drill-down',drilldown),('reviewed album playback',play_album),
-        ('playlist queue next',queue_playlist),('revision recovery',revision),('retained target fence',target_fence),
+        ('playlist queue next',queue_playlist),('playlist occurrence drill-down',playlist_drilldown),('revision recovery',revision),('retained target fence',target_fence),
         ('hidden preflight',hidden_preflight),('close during read',close_read),('browse without speakers',no_speakers),
         ('safe metadata and four widths',hostile),('lost reply without replay',lost_reply)]
     with sync_playwright() as p:

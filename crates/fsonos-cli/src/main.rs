@@ -527,16 +527,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Scene(args) => scene_cmd::run(global, &args),
         #[cfg(feature = "sim")]
         Command::Sim(args) => sim::run(&args, global.json),
-        Command::Discover => {
-            let found = Direct::survey(global)?.discover();
-            for (addr, why) in &found.unreachable {
-                tracing::warn!("{addr}: found but unreadable: {why}");
-            }
-            if let Some(err) = &found.ssdp_error {
-                tracing::warn!("SSDP failed, only seeds were tried: {err}");
-            }
-            emit(global.json, &found, direct::discover_text)
-        }
+        Command::Discover => discover(global),
         Command::Zones { zone } => zones(global, zone.as_deref()),
         Command::Search { query, zone, limit } => search(
             global,
@@ -610,6 +601,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Stream(args) => streaming::run(global, &args),
         control => run_control(global, &control),
     }
+}
+
+fn discover(global: &config::GlobalArgs) -> anyhow::Result<()> {
+    let found = Direct::survey(global)?.discover();
+    for (addr, why) in &found.unreachable {
+        tracing::warn!("{addr}: found but unreadable: {why}");
+    }
+    if let Some(err) = &found.ssdp_error {
+        tracing::warn!("SSDP failed, only seeds were tried: {err}");
+    }
+    emit(global.json, &found, direct::discover_text)
 }
 
 /// `fsonos zones`: every zone, or the one `room` plays in.

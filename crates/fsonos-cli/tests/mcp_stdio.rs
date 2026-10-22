@@ -217,6 +217,8 @@ fn control_tools_are_advertised_with_their_arguments() {
         "dj_moods",
         "dj_rehearse",
         "search_queue",
+        "browse_library",
+        "playlist_contents",
         "announce",
     ] {
         let t = tool(name);
@@ -225,24 +227,72 @@ fn control_tools_are_advertised_with_their_arguments() {
             "{t}"
         );
     }
-    let volume = &tool("set_volume")["inputSchema"];
-    for arg in ["zone", "volume", "delta", "group"] {
-        assert!(
-            volume["properties"].get(arg).is_some(),
-            "set_volume lacks {arg}: {volume}"
-        );
-    }
-    assert_eq!(volume["required"], json!(["zone"]), "{volume}");
-    assert_eq!(
-        tool("group")["inputSchema"]["required"],
-        json!(["zone", "to"])
-    );
+    assert_control_schemas(tool("set_volume"), tool("group"), tool("announce"));
     assert_eq!(
         tool("list_zones")["annotations"]["readOnlyHint"],
         true,
         "{list}"
     );
-    let steer = &tool("dj_steer")["inputSchema"];
+    assert_dj_start_and_steer_schemas(tool("dj_start"), tool("dj_steer"));
+    assert_eq!(
+        tool("dj_status")["annotations"]["readOnlyHint"],
+        true,
+        "{list}"
+    );
+    let rehearse = tool("dj_rehearse");
+    assert_eq!(rehearse["annotations"]["readOnlyHint"], true, "{rehearse}");
+    assert_tool_arguments(
+        rehearse,
+        &["zone", "works", "hours", "at", "mood", "seed"],
+        &["zone"],
+    );
+    let queue_search = tool("search_queue");
+    assert_eq!(queue_search["annotations"]["readOnlyHint"], true);
+    assert_eq!(queue_search["annotations"]["idempotentHint"], true);
+    assert_tool_arguments(
+        queue_search,
+        &["zone", "query", "offset", "limit", "expected_revision"],
+        &["zone", "query"],
+    );
+    let playlist = tool("playlist_contents");
+    assert_eq!(playlist["annotations"]["readOnlyHint"], true);
+    assert_eq!(playlist["annotations"]["idempotentHint"], true);
+    assert_tool_arguments(
+        playlist,
+        &["playlist_uri", "offset", "limit", "q", "expected_revision"],
+        &["playlist_uri"],
+    );
+}
+
+fn assert_tool_arguments(tool: &Value, arguments: &[&str], required: &[&str]) {
+    let schema = &tool["inputSchema"];
+    for arg in arguments {
+        assert!(
+            schema["properties"].get(*arg).is_some(),
+            "tool lacks {arg}: {tool}"
+        );
+    }
+    assert_eq!(schema["required"], json!(required), "{tool}");
+}
+
+fn assert_control_schemas(volume: &Value, group: &Value, announcement: &Value) {
+    assert_tool_arguments(volume, &["zone", "volume", "delta", "group"], &["zone"]);
+    assert_eq!(group["inputSchema"]["required"], json!(["zone", "to"]));
+    for arg in ["text", "chime", "wav_base64", "voice", "rooms", "volume"] {
+        assert!(
+            announcement["inputSchema"]["properties"].get(arg).is_some(),
+            "announce lacks {arg}: {announcement}"
+        );
+    }
+    assert!(
+        announcement["inputSchema"]["properties"]
+            .get("file")
+            .is_none()
+    );
+}
+
+fn assert_dj_start_and_steer_schemas(start: &Value, steer: &Value) {
+    let steer = &steer["inputSchema"];
     for arg in [
         "mood",
         "include_composers",
@@ -256,7 +306,7 @@ fn control_tools_are_advertised_with_their_arguments() {
         );
     }
     assert_eq!(steer["required"], json!(["zone"]), "{steer}");
-    let start = &tool("dj_start")["inputSchema"];
+    let start = &start["inputSchema"];
     for (name, schema) in steer["properties"].as_object().unwrap() {
         if name != "clear" {
             assert_eq!(
@@ -267,41 +317,6 @@ fn control_tools_are_advertised_with_their_arguments() {
     }
     assert!(start["properties"].get("clear").is_none());
     assert_eq!(start["required"], json!(["zone"]), "{start}");
-    let announcement = &tool("announce")["inputSchema"];
-    for arg in ["text", "chime", "wav_base64", "voice", "rooms", "volume"] {
-        assert!(
-            announcement["properties"].get(arg).is_some(),
-            "announce lacks {arg}: {announcement}"
-        );
-    }
-    assert!(announcement["properties"].get("file").is_none());
-    assert_eq!(
-        tool("dj_status")["annotations"]["readOnlyHint"],
-        true,
-        "{list}"
-    );
-    let rehearse = tool("dj_rehearse");
-    assert_eq!(rehearse["annotations"]["readOnlyHint"], true, "{rehearse}");
-    for arg in ["zone", "works", "hours", "at", "mood", "seed"] {
-        assert!(
-            rehearse["inputSchema"]["properties"].get(arg).is_some(),
-            "dj_rehearse lacks {arg}: {rehearse}"
-        );
-    }
-    assert_eq!(rehearse["inputSchema"]["required"], json!(["zone"]));
-    let queue_search = tool("search_queue");
-    assert_eq!(queue_search["annotations"]["readOnlyHint"], true);
-    assert_eq!(queue_search["annotations"]["idempotentHint"], true);
-    for arg in ["zone", "query", "offset", "limit", "expected_revision"] {
-        assert!(
-            queue_search["inputSchema"]["properties"].get(arg).is_some(),
-            "search_queue lacks {arg}: {queue_search}"
-        );
-    }
-    assert_eq!(
-        queue_search["inputSchema"]["required"],
-        json!(["zone", "query"])
-    );
 }
 
 #[test]

@@ -1,6 +1,8 @@
 // The Listening Room browses the daemon cache, not a second Spotify client.
 'use strict';
 const DashboardLibrary = (() => {
+  const P = typeof PlaylistContents !== 'undefined' ? PlaylistContents
+    : typeof require === 'function' ? require('./playlist-contents.js') : null;
   const LIMIT = 50;
   const KINDS = Object.freeze({ tracks: 'track', albums: 'album', playlists: 'playlist' });
   const uint = (v) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
@@ -9,22 +11,27 @@ const DashboardLibrary = (() => {
   const fail = (detail) => { throw new Error(detail); };
 
   function queryOf(value = {}) {
-    const { kind = 'albums', q = '', offset = 0, album_uri = null } = value;
+    const { kind = 'albums', q = '', offset = 0, album_uri = null, playlist_uri = null, expected_revision = null } = value;
     if (!Object.hasOwn(KINDS, kind) || !text(q, 2048) || [...q.trim()].length > 512 || !uint(offset)
-        || (album_uri !== null && (kind !== 'tracks' || !uri(album_uri, 'album')))) {
+        || (album_uri !== null && (kind !== 'tracks' || !uri(album_uri, 'album')))
+        || (playlist_uri !== null && (kind !== 'tracks' || album_uri !== null || !P))) {
       fail('Choose a library category and a filter of at most 512 characters.');
     }
-    return Object.freeze({ kind, q: q.trim(), offset, album_uri });
+    if (playlist_uri !== null) P.queryOf({ playlist_uri, q, offset, expected_revision });
+    return Object.freeze({ kind, q: q.trim(), offset, album_uri, playlist_uri, expected_revision });
   }
 
   function urlOf(value) {
-    const q = queryOf(value), params = new URLSearchParams({ kind: q.kind, offset: q.offset, limit: LIMIT });
+    const q = queryOf(value);
+    if (q.playlist_uri) return `/library/playlist?${new URLSearchParams(P.parameters(q))}`;
+    const params = new URLSearchParams({ kind: q.kind, offset: q.offset, limit: LIMIT });
     if (q.q) params.set('q', q.q);
     if (q.album_uri) params.set('album_uri', q.album_uri);
     return `/library/browse?${params}`;
   }
 
   function itemOf(item, query) {
+    if (query.playlist_uri) return P.itemOf(item);
     if (!item || item.kind !== KINDS[query.kind] || !uri(item.source_uri, item.kind)
         || !text(item.title) || !text(item.subtitle ?? '') || typeof item.explicit !== 'boolean'
         || (query.album_uri && item.album_uri !== query.album_uri)
@@ -40,6 +47,7 @@ const DashboardLibrary = (() => {
 
   function pageOf(value, input) {
     const query = queryOf(input);
+    if (query.playlist_uri) return Object.freeze({ ...P.pageOf(value, query), query });
     if (!value || value.kind !== query.kind || value.offset !== query.offset || value.limit !== LIMIT
         || value.album_uri !== query.album_uri || value.coverage !== 'cached' || !uint(value.total)
         || !text(value.revision, 256) || !value.revision.trim() || !Array.isArray(value.items)
@@ -62,7 +70,7 @@ const DashboardLibrary = (() => {
   }
 
   function model({ call, changed = () => {} }) {
-    const state = { open: false, active: true, kind: 'albums', filter: '', album: null,
+    const state = { open: false, active: true, kind: 'albums', filter: '', album: null, playlist: null,
       page: null, loading: false, stale: true, resetRequired: false, error: '' };
     let disposed = false, epoch = 0, running = null, queued = null;
     const emit = () => { if (!disposed) { try { changed(state); } catch (_) { /* Presentation only. */ } } };
@@ -103,7 +111,8 @@ const DashboardLibrary = (() => {
       if (!available()) return Promise.resolve(false);
       invalidate(); state.error = '';
       let query;
-      try { query = queryOf({ kind: state.kind, q: state.filter, offset, album_uri: state.album?.uri ?? null }); }
+      try { query = queryOf({ kind: state.kind, q: state.filter, offset, album_uri: state.album?.uri ?? null,
+        playlist_uri: state.playlist?.uri ?? null, expected_revision: state.playlist ? revision : null }); }
       catch (error) { state.error = error.message; emit(); return Promise.resolve(false); }
       const result = new Promise((resolve) => { queued = { query, revision, epoch, resolve }; });
       state.loading = true; emit(); void pump(); return result;
@@ -111,7 +120,7 @@ const DashboardLibrary = (() => {
     function refresh() { return request(); }
     function browse(kind) {
       if (!available() || !Object.hasOwn(KINDS, kind)) return Promise.resolve(false);
-      state.kind = kind; state.album = null;
+      state.kind = kind; state.album = null; state.playlist = null;
       return refresh();
     }
     function edit(filter) {
@@ -130,10 +139,17 @@ const DashboardLibrary = (() => {
     function album(item) {
       if (!choose(item) || item.kind !== 'album') return Promise.resolve(false);
       state.album = Object.freeze({ uri: item.source_uri, title: item.title });
+      state.playlist = null;
       state.kind = 'tracks'; state.filter = '';
       return refresh();
     }
-    return { state, refresh, browse, edit, choose, album,
+    function playlist(item) {
+      if (!choose(item) || item.kind !== 'playlist') return Promise.resolve(false);
+      state.playlist = Object.freeze({ uri: item.source_uri, title: item.title });
+      state.album = null; state.kind = 'tracks'; state.filter = '';
+      return refresh();
+    }
+    return { state, refresh, browse, edit, choose, album, playlist,
       next: (page) => turn(true, page), previous: (page) => turn(false, page),
       open() { if (disposed || !state.active) return Promise.resolve(false); state.open = true; return refresh(); },
       close() { state.open = false; invalidate(); emit(); },
@@ -142,6 +158,7 @@ const DashboardLibrary = (() => {
       dispose() { disposed = true; state.open = false; invalidate(); },
     };
   }
-  return { LIMIT, KINDS, queryOf, urlOf, pageOf, choiceOf, model };
+  return { LIMIT, KINDS, queryOf, urlOf, pageOf, choiceOf, model,
+    playlistCoverage: (page) => P.describe(page) };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardLibrary;

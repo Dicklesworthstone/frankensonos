@@ -141,8 +141,9 @@ test('real HTTP: album queueing is one POST and a lost reply after effect is ins
 
 test('served dashboard embeds the catalog and panel before their consumers and keeps existing guards',()=>{
   const root=path.join(__dirname,'../crates/fsonos-api/src');const source=fs.readFileSync(path.join(root,'http/remote/dashboard.rs'),'utf8');
-  for(const name of ['dashboard-library.js','dashboard-library-panel.js','dashboard-library.css'])assert.ok(source.includes(name));
-  assert.match(source,/\{LIBRARY\}\\n\{SESSION\}/);assert.match(source,/\{LIBRARY_PANEL\}\\n\{WORKSPACE\}/);
+  for(const name of ['playlist-contents.js','dashboard-library.js','dashboard-library-panel.js','dashboard-library.css'])assert.ok(source.includes(name));
+  assert.match(source,/\{PLAYLIST\}\\n\{LIBRARY\}\\n\{SESSION\}/);
+  assert.match(source,/\{LIBRARY_PANEL\}(?:\\n\{[A-Z_]+\})*\\n\{WORKSPACE\}/);
   assert.match(source,/\{STYLE\}\\n\{LIBRARY_STYLE\}/);assert.match(source,/asset\(content_type, text\)/);assert.match(source,/microphone=\(self\)/);
   const workspace=fs.readFileSync(path.join(root,'remote/dashboard-workspace.js'),'utf8');
   assert.match(workspace,/DashboardLibraryPanel.create\(\{ call, controller, session \}\)/);

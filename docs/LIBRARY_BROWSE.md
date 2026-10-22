@@ -38,7 +38,8 @@ selection. Albums are grouped by their service URI, and `cached_tracks` is only
 the number present locally, not the complete Spotify album length. In particular,
 an album represented by one liked movement is not advertised as a complete
 recording. Play/queue of an album still uses the album URI and the normal Sonos
-container path. Playlist membership is not fabricated from taste-track rows.
+container path. Playlist membership is recorded separately during sync; open a
+playlist's ordered occurrences through [`GET /library/playlist`](PLAYLIST_CONTENTS.md).
 
 Invalid categories, oversized filters, unknown or duplicate query fields,
 invalid album filters and limits outside 1–50 fail with `INVALID_ARGUMENT`.
@@ -58,6 +59,14 @@ it clears the album-title filter so that it does not hide movements. **Back to
 albums** returns to the album listing. Each album's displayed count explicitly
 says it may have more tracks than the cache contains. Choosing a destination
 keeps the page you were looking at.
+
+For a playlist, **View cached tracks** opens its observed track sequence and
+**Back to playlists** returns to the listing. Original playlist positions and
+duplicate tracks are preserved. The page shows when it was read and whether
+coverage is complete, partial, or not yet cached. Unsupported source entries
+leave gaps in the position numbers. Opening or filtering a playlist never
+starts a Spotify refresh. Review identifies the selected occurrence and
+rechecks that exact cached observation before sending its track URI.
 
 Play now, Add to end and Queue next use the existing two-step review: inspect
 the exact item and household-qualified destination, then confirm. The client

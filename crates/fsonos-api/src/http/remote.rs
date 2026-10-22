@@ -35,6 +35,7 @@ const PLAYBACK_SCRIPT: &str = include_str!("../remote/playback.js");
 const PLAYBACK_STYLE: &str = include_str!("../remote/playback.css");
 const SCRIPT: &str = include_str!("../remote/remote.js");
 const LIBRARY_SCRIPT: &str = include_str!("../remote/library.js");
+const PLAYLIST_SCRIPT: &str = include_str!("../remote/playlist-contents.js");
 const LIBRARY_STYLE: &str = include_str!("../remote/library.css");
 const GROUPS_SCRIPT: &str = include_str!("../remote/groups.js");
 const GROUPS_STYLE: &str = include_str!("../remote/groups.css");
@@ -109,7 +110,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENT_FEED_SCRIPT}\n{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{LISTENING_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
+                        "{EVENT_FEED_SCRIPT}\n{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{PLAYLIST_SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{LISTENING_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
                     ),
                 )
             },
@@ -325,6 +326,7 @@ mod tests {
             ("playback.js", PLAYBACK_SCRIPT),
             ("playback.css", PLAYBACK_STYLE),
             ("library.js", LIBRARY_SCRIPT),
+            ("playlist-contents.js", PLAYLIST_SCRIPT),
             ("library.css", LIBRARY_STYLE),
             ("remote.css", STYLE),
             ("groups.js", GROUPS_SCRIPT),

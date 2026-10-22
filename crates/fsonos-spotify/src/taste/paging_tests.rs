@@ -639,6 +639,8 @@ fn failed_playlist_refresh_keeps_previous_contents_but_a_first_prefix_is_useful(
                 "next": format!("{API}/playlists/TestList0/items?offset=2") }),
             json!({ "items": [{ "item": track(3) }], "offset": 2, "total": 3, "next": null }),
             json!({ "items": [{ "item": track(3) }], "offset": 1, "total": 3, "next": null }),
+            json!({ "items": [{ "item": track(3) }, { "item": track(4) }],
+                "offset": 1, "total": 3 }),
             json!({ "not_a_page": true }),
         ] {
             server.set("/v1/playlists/TestList0/items?offset=1", bad);
@@ -666,20 +668,22 @@ fn failed_playlist_refresh_keeps_previous_contents_but_a_first_prefix_is_useful(
         assert_eq!(prefix.tracks[0].position, 1);
         assert_eq!(prefix.tracks[0].source_uri, "spotify:track:TestTrack2");
 
-        server.set(
-            "/v1/playlists/TestList0/items",
+        for bad in [
             json!({ "not_a_page": true }),
-        );
-        let mut no_observation = MemStore::default();
-        sync_library(&mut session, &cx, &mut no_observation)
-            .await
-            .unwrap();
-        assert_eq!(
-            no_observation
-                .playlist_contents("spotify:playlist:TestList0")
-                .unwrap(),
-            None
-        );
+            json!({ "items": [{ "item": track(2) }], "offset": 0 }),
+        ] {
+            server.set("/v1/playlists/TestList0/items", bad);
+            let mut no_observation = MemStore::default();
+            sync_library(&mut session, &cx, &mut no_observation)
+                .await
+                .unwrap();
+            assert_eq!(
+                no_observation
+                    .playlist_contents("spotify:playlist:TestList0")
+                    .unwrap(),
+                None
+            );
+        }
     });
 }
 

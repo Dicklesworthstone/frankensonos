@@ -28,7 +28,7 @@ const DashboardLibraryPanel = (() => {
     const filter = el('input'); filter.type = 'search'; filter.maxLength = 1024;
     filter.placeholder = 'Filter this category'; filter.setAttribute('aria-label', 'Filter cached library');
     const refresh = button('Refresh listing', () => { clearTimer(); void control.refresh(); });
-    const back = button('Back to albums', () => { clearTimer(); control.edit(''); void control.browse('albums'); });
+    const back = button('Back to albums', () => { clearTimer(); control.edit(''); void control.browse(control.state.playlist ? 'playlists' : 'albums'); });
     const previous = button('Previous page', () => { clearTimer(); void control.previous(); });
     const next = button('Next page', () => { clearTimer(); void control.next(); });
     const status = el('p'); status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); status.tabIndex = -1;
@@ -69,35 +69,37 @@ const DashboardLibraryPanel = (() => {
       kind.value = state.kind; if (filter.value !== state.filter) filter.value = state.filter;
       body.setAttribute('aria-busy', String(state.loading));
       refresh.disabled = !visible() || state.loading;
-      back.hidden = !state.album;
+      back.hidden = !state.album && !state.playlist;
+      back.textContent = state.playlist ? 'Back to playlists' : 'Back to albums';
       const p = state.page, usable = visible() && !state.stale && !state.loading && !state.resetRequired;
       previous.disabled = !usable || !p || p.query.offset === 0;
       next.disabled = !usable || !p || p.next === null;
       range.textContent = p?.total ? `${p.query.offset + 1}–${p.query.offset + p.items.length} of ${p.total}` : '';
-      const heading = state.album ? `Cached tracks in ${state.album.title || 'Untitled album'}` : `Cached ${state.kind}`;
+      const parent = state.album || state.playlist;
+      const heading = parent ? `Cached tracks in ${parent.title || 'Untitled collection'}` : `Cached ${state.kind}`;
       status.textContent = state.error || (state.loading ? 'Reading cached music…' : state.stale
-        ? 'Last observation only. Refresh to choose music.' : `${heading}: ${p?.total || 0} entries.`);
+        ? 'Last observation only. Refresh to choose music.' : `${heading}: ${p?.total || 0} entries.${state.playlist && p ? ` ${L.playlistCoverage(p)}` : ''}`);
       const focus = rows.contains(doc.activeElement) ? doc.activeElement.dataset.catalogKey : null;
       const scroll = p === lastPage ? rows.scrollTop : 0; lastPage = p;
       rows.replaceChildren();
       for (const item of p?.items || []) {
         const name = item.title || `Untitled ${item.kind}`;
         const row = el('li', null, 'dashboard-library-item'), info = el('div');
-        info.append(el('strong', name), el('p', item.subtitle, 'small-note'));
+        info.append(el('strong', item.position ? `${item.position}. ${name}` : name), el('p', item.subtitle, 'small-note'));
         if (item.kind === 'album') info.append(el('p', `${item.cached_tracks} cached track(s); the full album may contain more.`, 'small-note'));
         if (item.album_uri) info.append(el('p', `Disc ${item.disc_number ?? '?'}, track ${item.track_number ?? '?'}`, 'small-note'));
         if (item.explicit) info.append(el('span', 'Explicit', 'small-note'));
         const actions = el('div', null, 'dashboard-library-actions');
-        if (item.kind === 'album') {
+        if (item.kind === 'album' || item.kind === 'playlist') {
           const tracks = button('View cached tracks', () => {
             if (!visible()) return;
-            clearTimer(); focusAlbum = true; void control.album(item);
-          }, `album:${item.source_uri}`);
+            clearTimer(); focusAlbum = true; void control[item.kind](item);
+          }, `${item.kind}:${item.source_uri}`);
           tracks.disabled = !usable; actions.append(tracks);
         }
         for (const [action, label] of [['play', 'Play now'], ['append', 'Add to end'], ['next', 'Queue next']]) {
-          const b = button(label, () => select(item, action, destination), `${action}:${item.source_uri}`);
-          b.setAttribute('aria-label', `${label}: ${name}`);
+          const b = button(label, () => select(item, action, destination), `${action}:${item.source_uri}:${item.position ?? ''}`);
+          b.setAttribute('aria-label', `${label}: ${item.position ? `playlist position ${item.position}, ` : ''}${name}`);
           b.disabled = !usable || !destination || !controller.canControl() || !!session.state.pending;
           actions.append(b);
         }
