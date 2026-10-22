@@ -274,8 +274,7 @@ public struct RemoteResult: Identifiable, Sendable {
     private func receive(_ value: LiveHouseView) {
         guard !stopped else { return }
         let oldZone = selectedZone
-        let oldState = selectedState
-        let wasFresh = selectedPlaybackIsFresh
+        let previous = house
         house = value
         if !choseInitialRoom, let first = value.snapshot?.zones.first {
             choseInitialRoom = true; selectedRoom = first.id
@@ -291,7 +290,12 @@ public struct RemoteResult: Identifiable, Sendable {
             if !preferences.isEngaged && actionPhase != .confirming && !scheduleAction && scheduleReview == nil && !undoAction && undoReview == nil && !sceneMutationAction && sceneMutationReview == nil { cancelReview() }
             queueOffset = 0
             invalidatePanel(); refreshPanel()
-        } else if selectedPlaybackIsFresh && (!wasFresh || oldState.map { old in selectedState.map { !old.samePlayback(as: $0) } ?? true } == true) {
+        } else if active && value.panelRevision != (previous?.panelRevision ?? 0) {
+            // Store changes and reconnect/reset need a panel read even without
+            // a selected room. Preserve drafts, reviews and attributed results.
+            refreshPanel()
+        } else if active, let zone = newZone,
+                  value.hasNewPlaybackObservation(for: zone.id, since: previous) {
             if panel == .queue || panel == .dj || panel == .sleep { refreshPanel() }
         }
     }

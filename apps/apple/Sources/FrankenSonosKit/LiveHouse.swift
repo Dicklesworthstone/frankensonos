@@ -11,10 +11,14 @@ public struct LiveHouseView: Sendable {
     public let isConnected: Bool
     /// Settled observations, excluding known invalidations and in-flight reads.
     public let freshRooms: Set<RoomID>
+    /// Coalesced invalidations of data not represented by room playback, such
+    /// as saved scenes, schedules and sleep timers. This is not a command ACK.
+    public let panelRevision: UInt64
 
     init(snapshot: HouseSnapshot?, phase: Phase, problem: String?,
-         isConnected: Bool? = nil, freshRooms: Set<RoomID>? = nil) {
+         isConnected: Bool? = nil, freshRooms: Set<RoomID>? = nil, panelRevision: UInt64 = 0) {
         self.snapshot = snapshot; self.phase = phase; self.problem = problem
+        self.panelRevision = panelRevision
         self.isConnected = phase != .suspended && (isConnected ?? (phase == .live))
         if self.isConnected, let snapshot {
             let observed = Set(snapshot.states.keys).intersection(snapshot.stateObservedAt.keys)
@@ -26,6 +30,18 @@ public struct LiveHouseView: Sendable {
     /// Display freshness only, never authority to skip a command's fresh reads.
     public func isFresh(for room: RoomID) -> Bool { freshRooms.contains(room) }
     public var isFresh: Bool { phase == .live && snapshot?.isComplete == true }
+
+    /// The buffered stream may skip the intermediate stale view. A new room
+    /// observation still invalidates its queue/DJ/timer, even if the same track
+    /// is playing. Another room's observation must not trigger this refresh.
+    func hasNewPlaybackObservation(for room: RoomID, since previous: Self?) -> Bool {
+        guard isFresh(for: room) else { return false }
+        guard let previous, previous.isFresh(for: room) else { return true }
+        return snapshot?.stateObservedAt[room] != previous.snapshot?.stateObservedAt[room] ||
+            previous.snapshot?.states[room].map { old in
+                snapshot?.states[room].map { !old.samePlayback(as: $0) } ?? true
+            } == true
+    }
 }
 
 /// One native client's read-only live session. Resume on foreground entry;
@@ -45,6 +61,9 @@ public actor LiveHouse {
     private var retryID: UInt64 = 0
     private var cursor: String?
     private var problem: String?
+    private var phase: LiveHouseView.Phase = .suspended
+    private var panelRevision: UInt64 = 0
+    private var panelFlush: Task<Void, Never>?
     private var feedDelay: Duration, readDelay: Duration
     private var feedTask: Task<Void, Never>?, readTask: Task<Void, Never>?
     private var flushTask: Task<Void, Never>?, feedRetry: Task<Void, Never>?, readRetry: Task<Void, Never>?
@@ -78,6 +97,7 @@ public actor LiveHouse {
         active = false; connected = false; generation &+= 1
         feedTask?.cancel(); feedTask = nil
         flushTask?.cancel(); flushTask = nil
+        panelFlush?.cancel(); panelFlush = nil
         feedRetry?.cancel(); feedRetry = nil
         cancelReadRetry()
         // Keep the read slot until its cancelled operation has drained. A
@@ -99,13 +119,33 @@ public actor LiveHouse {
     }
 
     private func publish(_ phase: LiveHouseView.Phase) {
+        self.phase = phase
         var fresh = Set<RoomID>()
         if active && connected && !full && !readingAll, let snapshot {
             fresh = Set(snapshot.states.keys).subtracting(readingRooms)
                 .subtracting(snapshot.affected(by: names))
         }
         output.yield(LiveHouseView(snapshot: snapshot, phase: phase, problem: problem,
-                                  isConnected: active && connected, freshRooms: fresh))
+                                  isConnected: active && connected, freshRooms: fresh, panelRevision: panelRevision))
+    }
+
+    /// Store-only changes need no speaker reads. Publish one durable revision
+    /// per fixed coalescing window; consumers refresh only their visible panel.
+    private func invalidatePanels() {
+        guard active, panelFlush == nil else { return }
+        let token = generation, delay = timing.coalesce
+        panelFlush = Task { [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+                await self?.flushPanels(generation: token)
+            } catch { }
+        }
+    }
+
+    private func flushPanels(generation token: UInt64) {
+        guard active && generation == token else { return }
+        panelFlush = nil; panelRevision &+= 1
+        publish(phase)
     }
 
     private func invalidate(_ room: String? = nil) {
@@ -249,13 +289,16 @@ public actor LiveHouse {
         switch signal {
         case .connected:
             connected = true; problem = nil
+            invalidatePanels()
             // Every connection gets a new full snapshot, even with a replay
             // cursor. Events received during that read stay pending afterwards.
             invalidate()
         case .event(let event):
             if let id = event.id, UInt64(id) != nil { cursor = id }
             switch event.kind {
-            case "events.reset": cursor = nil; invalidate()
+            case "events.reset": cursor = nil; invalidate(); invalidatePanels()
+            case "action.logged":
+                if Self.invalidatesPanels(event.data) { invalidatePanels() }
             case "topology.changed", "player.health": invalidate()
             case "zone.state", "dj.status":
                 let field = event.kind == "zone.state" ? "room" : "zone"
@@ -264,6 +307,22 @@ public actor LiveHouse {
                 else { invalidate() }
             default: break
             }
+        }
+    }
+
+    /// Read refusals are logged too: never turn a refused refresh into an
+    /// event -> read -> refusal loop. Match the tool, not names in its detail.
+    static func invalidatesPanels(_ data: String) -> Bool {
+        struct Action: Decodable { let intent: String; let decision: String }
+        guard let action = try? JSONDecoder().decode(Action.self, from: Data(data.utf8)),
+              action.decision == "allow" || action.decision.hasPrefix("clamp:") else { return false }
+        let tool = action.intent.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)[0]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        switch tool {
+        case "save_scene", "delete_scene", "add_schedule", "remove_schedule",
+             "pause_schedule", "resume_schedule", "set_sleep_timer", "undo", "undo_last":
+            return true
+        default: return false
         }
     }
 
@@ -291,6 +350,6 @@ public actor LiveHouse {
 
     deinit {
         feedTask?.cancel(); readTask?.cancel(); flushTask?.cancel()
-        feedRetry?.cancel(); readRetry?.cancel(); output.finish()
+        feedRetry?.cancel(); readRetry?.cancel(); panelFlush?.cancel(); output.finish()
     }
 }
