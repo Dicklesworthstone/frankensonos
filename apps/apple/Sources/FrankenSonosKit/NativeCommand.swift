@@ -159,11 +159,7 @@ public enum NativeCommand: Equatable, Sendable {
             if case .queuePlay = self { path = ["queue", "play"]; body["expected_uri"] = .string(item.uri!) }
             else { path = ["queue", "remove"]; body["expected_uris"] = .array([.string(item.uri!)]) }
         case .queueMove(let move):
-            path = ["queue", "move"]
-            body["position"] = .integer(Int64(move.item.position))
-            body["insert_before"] = .integer(Int64(move.insertBefore))
-            body["expected_uris"] = .array([.string(move.sourceURI)])
-            body["expected_revision"] = .string(move.revision)
+            path = ["queue", "move"]; body = move.fields(in: zone)
         case .djStart(let mood): path = ["dj", "start"]; if let mood { body["mood"] = .string(try source(mood)) }
         case .djStop: path = ["dj", "stop"]
         case .djSkip: path = ["dj", "skip"]

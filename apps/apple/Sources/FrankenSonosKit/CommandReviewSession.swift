@@ -179,7 +179,7 @@ fileprivate struct CommandObservation: Sendable {
                 throw ContractError.invalid("The reviewed queue entry changed. Refresh the queue.")
             }
         case .queueMove(let move):
-            try move.validate(await client.queue(zone, offset: move.item.position - 1))
+            try await move.validate { try await client.queue(zone, offset: $0) }
         case .listeningSettings(let change):
             try await change.preflight(client, in: zone)
         default: break
