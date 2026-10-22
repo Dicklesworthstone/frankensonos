@@ -33,7 +33,10 @@ import FrankenSonosKit
                 if panelLoading { ProgressView().controlSize(.small) }
                 Button {
                     if catalogVisible { bridge.catalog.refresh() }
-                    else { model.refreshPanel() }
+                    else {
+                        if model.panel == .queue { bridge.queueSearch.invalidate() }
+                        model.refreshPanel()
+                    }
                 } label: {
                     Image(systemName: "arrow.clockwise").frame(width: 44, height: 44)
                 }
@@ -64,6 +67,7 @@ import FrankenSonosKit
     }
 
     @ViewBuilder private var queuePanel: some View {
+        QueueSearchPanel(bridge: bridge)
         if let page = model.queue {
             if page.items.isEmpty {
                 EmptyMusicState(title: page.total == 0 ? "Make room for a little music" : "This page is empty",
@@ -441,6 +445,134 @@ import FrankenSonosKit
         }
         .disabled(!ready || uri.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .accessibilityHint("Opens a review before changing the selected group.")
+    }
+}
+
+/// Results stay separate from ordinary queue pages: matches can be far apart.
+@MainActor private struct QueueSearchPanel: View {
+    @ObservedObject var bridge: RemoteBridge
+    @State private var expanded = false
+    @State private var selectionProblem: String?
+    private var search: QueueSearchModel { bridge.queueSearch }
+    private var remote: RemoteModel { bridge.model }
+    private var visible: Bool { expanded && remote.active && remote.panel == .queue }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Search titles, artists and albums already in this group’s queue, including beyond the visible page. Typing does not send a request.")
+                    .font(.callout).foregroundStyle(.secondary)
+                TextField("Words from a title, artist or album", text: Binding(
+                    get: { search.query }, set: { search.edit($0); selectionProblem = nil }))
+                    .textFieldStyle(.roundedBorder).accessibilityLabel("Search this queue")
+                    .disabled(!visible)
+                    #if os(iOS)
+                    .submitLabel(.search)
+                    .autocorrectionDisabled()
+                    #endif
+                    .onSubmit { if visible { search.search() } }
+                controls
+                if let problem = search.problem ?? selectionProblem {
+                    Label(problem, systemImage: "exclamationmark.circle")
+                        .font(.callout).textSelection(.enabled)
+                }
+                if let observation = search.observation { results(observation) }
+            }.padding(.top, 12)
+        } label: {
+            Label("Find music in this queue", systemImage: "magnifyingglass")
+                .font(.headline).frame(minHeight: 44)
+        }
+        .remoteCard()
+        .onAppear { synchronize() }
+        .onDisappear { search.suspend() }
+        .onChange(of: expanded) { _, _ in synchronize() }
+        .onChange(of: remote.active) { _, _ in synchronize() }
+        .onChange(of: remote.selectedZone) { _, _ in synchronize() }
+        .onChange(of: remote.house?.panelRevision) { _, _ in search.invalidate() }
+        .onChange(of: remote.house?.isConnected) { _, _ in search.invalidate() }
+        .onChange(of: remote.queue?.revision) { before, after in
+            // Ignore a repeated observation of the same queue. A new revision,
+            // including a failed page read, retires results without rescanning.
+            if before != after { search.invalidate() }
+        }
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if search.loading {
+                ProgressView("Searching this section…")
+                Button("Cancel queue search", systemImage: "xmark.circle") { search.cancel() }
+                    .buttonStyle(.bordered)
+                Text("A cancelled read must finish draining before another search can start.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button(search.observation == nil ? "Search queue" : "Search from start", systemImage: "magnifyingglass") {
+                    guard visible else { return }
+                    selectionProblem = nil; search.search()
+                }.buttonStyle(.bordered).disabled(!search.canSearch)
+                if search.canContinue {
+                    Button("Search next section", systemImage: "chevron.right") {
+                        guard visible else { return }
+                        selectionProblem = nil; search.continueSearch()
+                    }.buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+
+    private func results(_ observation: QueueSearchObservation) -> some View {
+        let page = observation.page
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(search.isCurrent ? "Search results" : "Previous results — search again before acting")
+                .font(.headline)
+            Text("\(observation.request.zone.title) · \(observation.request.zone.household)")
+                .font(.subheadline)
+            Text("For “\(observation.request.query)” · \(page.items.count) matches in this section")
+                .font(.subheadline)
+            Text(page.coverage).font(.caption).foregroundStyle(.secondary)
+            Text(page.complete ? "End of queue reached. Earlier result batches are not retained."
+                 : "More of the queue remains. Continue explicitly to inspect the next section.")
+                .font(.caption).foregroundStyle(.secondary)
+            if page.items.isEmpty {
+                Text("No matches in the examined section.").font(.callout)
+            }
+            LazyVStack(alignment: .leading, spacing: 12) {
+                ForEach(page.items) { item in resultRow(item, observation: observation) }
+            }
+        }
+    }
+
+    private func resultRow(_ item: QueueItem, observation: QueueSearchObservation) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(item.position). \(item.title)").font(.headline)
+            Text([item.creator, item.album].compactMap { $0 }.joined(separator: " · "))
+                .font(.subheadline).foregroundStyle(.secondary)
+            if item.playable {
+                Button("Review playing this occurrence", systemImage: "play.circle") {
+                    guard visible, remote.canPrepare else { return }
+                    do {
+                        let selected = try search.selection(item, from: observation.id)
+                        guard remote.selectedZone?.sameGroup(as: selected.zone) == true else {
+                            throw ContractError.invalid("The selected group changed. Search its queue again.")
+                        }
+                        selectionProblem = nil
+                        remote.prepare(selected.command, in: selected.zone)
+                    } catch { selectionProblem = error.localizedDescription }
+                }.buttonStyle(.bordered)
+                    .disabled(!visible || !search.isCurrent || search.loading || !remote.canPrepare)
+                    .accessibilityHint("Reviews this exact queue position and revision before playback. It does not add a duplicate track.")
+            } else {
+                Text("No usable renderer identity; this occurrence is informational only.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Divider()
+        }
+    }
+
+    private func synchronize() {
+        if visible { search.activate(in: remote.selectedZone) }
+        else { search.suspend() }
+        selectionProblem = nil
     }
 }
 #endif
