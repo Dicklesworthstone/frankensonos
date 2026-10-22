@@ -216,6 +216,7 @@ fn control_tools_are_advertised_with_their_arguments() {
         "dj_status",
         "dj_moods",
         "dj_rehearse",
+        "search_queue",
         "announce",
     ] {
         let t = tool(name);
@@ -277,6 +278,19 @@ fn control_tools_are_advertised_with_their_arguments() {
         );
     }
     assert_eq!(rehearse["inputSchema"]["required"], json!(["zone"]));
+    let queue_search = tool("search_queue");
+    assert_eq!(queue_search["annotations"]["readOnlyHint"], true);
+    assert_eq!(queue_search["annotations"]["idempotentHint"], true);
+    for arg in ["zone", "query", "offset", "limit", "expected_revision"] {
+        assert!(
+            queue_search["inputSchema"]["properties"].get(arg).is_some(),
+            "search_queue lacks {arg}: {queue_search}"
+        );
+    }
+    assert_eq!(
+        queue_search["inputSchema"]["required"],
+        json!(["zone", "query"])
+    );
 }
 
 #[test]

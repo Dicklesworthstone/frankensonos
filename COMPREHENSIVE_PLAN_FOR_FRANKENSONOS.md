@@ -629,6 +629,12 @@ The §5 MCP tool list is nearly all writes. "Turn it down a bit in the kitchen",
   MCP resources `sonos://zones`, `sonos://zones/{room}`, and `sonos://dj` with
   subscriptions (fastmcp's `ServerBuilder` has `resource`, `resource_template`,
   and `resource_subscriptions`).
+- Queue search is shared by CLI (`queue-search`), HTTP
+  (`GET /zones/{room}/queue/search`) and MCP (`search_queue`). Bounded scans
+  match title, artist and album, preserve duplicate occurrences and exact
+  positions, and carry a coordinator-bound revision into explicit continuation
+  and guarded playback. A group or queue change invalidates the results;
+  search never changes playback. See `docs/QUEUE_SEARCH.md`.
 - Errors gain a stable `code` (`UNKNOWN_ROOM`, `AMBIGUOUS_ROOM`,
   `PLAYER_UNREACHABLE`, `SPOTIFY_NOT_LINKED`, `RENDER_PARAMS_MISSING`,
   `POLICY_DENIED`, …), a `hint`, and `suggestions` such as the closest room

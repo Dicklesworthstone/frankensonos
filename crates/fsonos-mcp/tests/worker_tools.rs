@@ -9,7 +9,7 @@ use fsonos_core::policy::{Client, Policy};
 use fsonos_mcp::tools::dj_feedback::DjFeedback;
 use fsonos_mcp::tools::dj_prefs::{DjPrefer, DjPreferences};
 use fsonos_mcp::tools::dj_sync::DjSyncStatus;
-use fsonos_mcp::tools::{AddToQueue, Backend, Daemon, install};
+use fsonos_mcp::tools::{AddToQueue, Backend, Daemon, SearchQueue, install};
 use fsonos_proto::{ProtoError, Transport};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -118,6 +118,12 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     vec![
+        Case {
+            handler: Box::new(SearchQueue),
+            arguments: json!({"zone": "Kitchen@S2", "query": "Bach strings"}),
+            method: "GET",
+            path: "/zones/Kitchen%40S2/queue/search?q=Bach%20strings&offset=0&limit=50",
+        },
         Case {
             handler: Box::new(AddToQueue),
             arguments: json!({"zone": "Kitchen@S2", "favorite": "17"}),

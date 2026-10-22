@@ -38,7 +38,7 @@ async fn echo(ctx: &McpContext, text: String) -> McpResult<String> {
 
 /// Play a selected existing queue entry through the shared backend.
 #[tool(
-    description = "Play an existing entry in a room's group queue without adding or removing tracks. First read get_queue and pass its one-based position; optional expected_uri must be the exact renderer URI returned for that entry, so a changed selection is refused. Also pass the queue's opaque revision as expected_revision to reject edits and coordinator changes even with duplicate track URIs. On a mismatch read the queue again; never silently discard these checks. Activates the queue even when a radio or another source is playing. Room caps and quiet hours apply, and undo_last restores previous playback. Preserves shuffle/repeat; do not automatically replay a failed request."
+    description = "Play an existing entry in a room's group queue without adding or removing tracks. First read get_queue or search_queue and pass the chosen occurrence's one-based position; optional expected_uri must be the exact renderer URI returned for that entry, so a changed selection is refused. Also pass the queue's opaque revision as expected_revision to reject edits and coordinator changes even with duplicate track URIs. On a mismatch read the queue again; never silently discard these checks. Activates the queue even when a radio or another source is playing. Room caps and quiet hours apply, and undo_last restores previous playback. Preserves shuffle/repeat; do not automatically replay a failed request."
 )]
 async fn play_queue(
     ctx: &McpContext,
@@ -242,6 +242,7 @@ fn configured_server(
             .tool(tools::SearchAndPlay)
             .tool(tools::RecentPlays)
             .tool(tools::GetQueue)
+            .tool(tools::SearchQueue)
             .tool(tools::AddToQueue)
             .tool(PlayQueue)
             .tool(RemoveFromQueue)

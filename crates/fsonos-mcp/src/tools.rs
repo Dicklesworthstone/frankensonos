@@ -49,6 +49,9 @@ pub use eq::{GetEq, SetEq};
 mod queue_add;
 pub use queue_add::AddToQueue;
 
+mod queue_search;
+pub use queue_search::SearchQueue;
+
 mod controls;
 mod documents;
 
@@ -778,7 +781,7 @@ async fn recent_plays(
 }
 
 #[tool(
-    description = "The queue a room's group plays from: its tracks in order (position, title, artist, album, URI), how many there are, and the position playing now (absent when the group isn't playing from its queue). `zone` is a room; `offset` skips that many tracks from the start (default 0); `limit` 1-100, default 50.",
+    description = "The queue a room's group plays from: its tracks in order (position, title, artist, album, URI), how many there are, and the position playing now (absent when the group isn't playing from its queue). `zone` is a room; `offset` skips that many tracks from the start (default 0); `limit` 1-100, default 50. search_queue finds title, artist or album words across a bounded section and returns exact occurrences with this queue's revision.",
     annotations(read_only, idempotent)
 )]
 async fn get_queue(

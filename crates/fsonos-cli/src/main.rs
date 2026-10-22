@@ -50,6 +50,7 @@ mod play_mode_cmd;
 mod policy_cmd;
 mod queue_edit_cmd;
 mod queue_play_cmd;
+mod queue_search_cmd;
 mod remote;
 mod rooms_cmd;
 mod scene_cmd;
@@ -135,8 +136,12 @@ enum Command {
         #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=100))]
         limit: u32,
     },
+    /// Find title, artist or album words in the existing group queue. Returns
+    /// absolute positions, exact renderer URIs and a revision for guarded actions.
+    QueueSearch(queue_search_cmd::QueueSearchArgs),
     /// Play an existing queue position without adding or removing tracks.
-    /// Use `queue <room>` to list positions first; `undo` restores playback.
+    /// Use `queue <room>` or `queue-search` to find positions first; `undo`
+    /// restores playback.
     QueuePlay(queue_play_cmd::QueuePlayArgs),
     /// Remove an identified consecutive range. Read queue --json first.
     /// Requires its revision and renderer URIs, or --snapshot. Not undoable.
@@ -510,6 +515,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Sleep(args) => schedule_cmd::sleep(global, &args),
         Command::Eq(args) => eq_cmd::run(global, &args),
         Command::QueuePlay(args) => queue_play_cmd::run(global, &args),
+        Command::QueueSearch(args) => queue_search_cmd::run(global, &args),
         Command::QueueRemove(args) => queue_edit_cmd::remove(global, &args),
         Command::QueueMove(args) => queue_edit_cmd::move_entries(global, &args),
         Command::PlayMode(args) => play_mode_cmd::run(global, &args),
@@ -1008,6 +1014,7 @@ fn plan_for<'a>(
         | Command::Favorites { .. }
         | Command::Queue { .. }
         | Command::QueuePlay(_)
+        | Command::QueueSearch(_)
         | Command::QueueRemove(_)
         | Command::QueueMove(_)
         | Command::PlayMode(_)
