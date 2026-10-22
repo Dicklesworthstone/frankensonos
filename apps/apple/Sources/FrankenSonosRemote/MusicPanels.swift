@@ -9,6 +9,8 @@ import FrankenSonosKit
     @State private var mood = ""
     @State private var minutes = 60
     @State private var browsingLibrary = true
+    @State private var selectingQueueBlock = false
+    @State private var queueSelectionRefreshID = UUID()
     private var model: RemoteModel { bridge.model }
     private var ready: Bool { model.canPrepare && !model.panelLoading }
     private var catalogVisible: Bool { model.panel == .library && browsingLibrary }
@@ -34,7 +36,7 @@ import FrankenSonosKit
                 Button {
                     if catalogVisible { bridge.catalog.refresh() }
                     else {
-                        if model.panel == .queue { bridge.queueSearch.invalidate() }
+                        if model.panel == .queue { bridge.queueSearch.invalidate(); queueSelectionRefreshID = UUID() }
                         model.refreshPanel()
                     }
                 } label: {
@@ -67,17 +69,20 @@ import FrankenSonosKit
     }
 
     @ViewBuilder private var queuePanel: some View {
-        QueueSearchPanel(bridge: bridge)
+        QueueSearchPanel(bridge: bridge).disabled(selectingQueueBlock)
+        QueueBlocksPanel(bridge: bridge, selecting: $selectingQueueBlock, refreshID: queueSelectionRefreshID)
         if let page = model.queue {
-            if page.items.isEmpty {
-                EmptyMusicState(title: page.total == 0 ? "Make room for a little music" : "This page is empty",
-                                systemImage: "text.line.first.and.arrowtriangle.forward",
-                                detail: page.total == 0 ? "Find something in Music, or add a link below. Your next tracks will appear here." : "The queue may have changed. Refresh or return to the previous page.")
-            } else {
-                Text("\(page.total) \(page.total == 1 ? "track" : "tracks") in this group’s queue")
-                    .font(.subheadline).foregroundStyle(.secondary)
-                LazyVStack(spacing: 10) {
-                    ForEach(page.items) { item in queueRow(item, page: page) }
+            if !selectingQueueBlock {
+                if page.items.isEmpty {
+                    EmptyMusicState(title: page.total == 0 ? "Make room for a little music" : "This page is empty",
+                                    systemImage: "text.line.first.and.arrowtriangle.forward",
+                                    detail: page.total == 0 ? "Find something in Music, or add a link below. Your next tracks will appear here." : "The queue may have changed. Refresh or return to the previous page.")
+                } else {
+                    Text("\(page.total) \(page.total == 1 ? "track" : "tracks") in this group’s queue")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    LazyVStack(spacing: 10) {
+                        ForEach(page.items) { item in queueRow(item, page: page) }
+                    }
                 }
             }
             if page.revision?.isEmpty != false {
@@ -100,7 +105,7 @@ import FrankenSonosKit
         } else if model.panelLoading {
             ProgressView("Reading your queue…").frame(maxWidth: .infinity).padding(24)
         }
-        sourceEntry
+        sourceEntry.disabled(selectingQueueBlock)
     }
 
     private func queueRow(_ item: QueueItem, page: QueuePage) -> some View {
@@ -445,6 +450,153 @@ import FrankenSonosKit
         }
         .disabled(!ready || uri.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .accessibilityHint("Opens a review before changing the selected group.")
+    }
+}
+
+/// Selection shares the visible queue's reads; it owns no transport or timer.
+@MainActor private struct QueueBlocksPanel: View {
+    @ObservedObject var bridge: RemoteBridge
+    @Binding var selecting: Bool
+    let refreshID: UUID
+    @State private var selection = QueueSelection()
+    @State private var problem: String?
+    private var remote: RemoteModel { bridge.model }
+    private var ready: Bool {
+        remote.canPrepare && remote.panel == .queue && !remote.panelLoading && remote.house?.isConnected == true
+    }
+
+    var body: some View {
+        content
+            .onAppear { observePage() }
+            .onDisappear { selection.clear(); selecting = false; problem = nil }
+            .onChange(of: remote.queue) { _, _ in observePage() }
+            .onChange(of: remote.panelLoading) { _, loading in if !loading { observePage() } }
+            .onChange(of: remote.selectedZone) { _, zone in
+                if let previous = selection.zone, zone?.sameGroup(as: previous) != true { retire() }
+            }
+            .onChange(of: remote.active) { _, active in if !active { retire(); selecting = false } }
+            .onChange(of: remote.house?.isConnected) { _, _ in retire() }
+            .onChange(of: remote.house?.panelRevision) { _, _ in retire() }
+            .onChange(of: remote.panelProblem) { _, value in if value != nil { retire() } }
+            .onChange(of: refreshID) { _, _ in retire() }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button(selecting ? "Done selecting" : "Select entries to move together",
+                   systemImage: selecting ? "checkmark.circle" : "checklist") {
+                if selecting { selection.clear(); selecting = false; problem = nil }
+                else if ready, let page = remote.queue, !page.items.isEmpty {
+                    selecting = true; problem = nil; observePage()
+                }
+            }.buttonStyle(.bordered)
+                .disabled(!selecting && (!ready || remote.queue?.items.isEmpty != false || remote.queue?.revision == nil))
+            if selecting {
+                Text("Select up to 100 consecutive entries. Previous and Next keep selected entries across pages of the same queue. Nothing plays while you select.")
+                    .font(.callout).foregroundStyle(.secondary)
+                Text("\(selection.items.count) of 100 selected").font(.subheadline.bold())
+                if !selection.isEmpty && !selection.isContiguous {
+                    Label("The selection has gaps. Select every intended entry in one consecutive block, or deselect the separate entries.", systemImage: "info.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if let problem {
+                    Label(problem, systemImage: "exclamationmark.circle").font(.callout).textSelection(.enabled)
+                }
+                if let page = remote.queue, let zone = remote.selectedZone {
+                    actions(page, zone: zone, offset: remote.queueOffset)
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ForEach(page.items) { item in selectionRow(item, page: page, zone: zone, offset: remote.queueOffset) }
+                    }
+                    if page.items.isEmpty { Text("This page has no entries. Return to the previous page or refresh.").font(.callout) }
+                }
+                Text("A move preserves the block’s internal order and does not start or restart playback. Review the full range before confirming; queue moves cannot be undone.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }.remoteCard()
+    }
+
+    private func actions(_ page: QueuePage, zone: Zone, offset: UInt32) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ViewThatFits(in: .horizontal) {
+                HStack { selectionButtons(page, zone: zone, offset: offset) }
+                VStack(alignment: .leading) { selectionButtons(page, zone: zone, offset: offset) }
+            }
+            blockMoveMenu(page, zone: zone)
+        }
+    }
+
+    @ViewBuilder private func selectionButtons(_ page: QueuePage, zone: Zone, offset: UInt32) -> some View {
+        Button("Select this page", systemImage: "checkmark.square") {
+            guard isVisible(page, zone: zone, offset: offset) else { return }
+            do { try selection.selectPage(page, in: zone, offset: offset); problem = nil }
+            catch { problem = error.localizedDescription }
+        }.buttonStyle(.bordered).disabled(!ready || page.items.isEmpty)
+        Button("Clear selection", systemImage: "xmark.circle") { selection.clear(); problem = nil }
+            .buttonStyle(.bordered).disabled(selection.isEmpty)
+    }
+
+    private func selectionRow(_ item: QueueItem, page: QueuePage, zone: Zone, offset: UInt32) -> some View {
+        let chosen = selection.contains(item)
+        return Button {
+            guard isVisible(page, zone: zone, offset: offset) else { return }
+            do { try selection.toggle(item, in: page, zone: zone, offset: offset); problem = nil }
+            catch { problem = error.localizedDescription }
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: chosen ? "checkmark.circle.fill" : "circle")
+                    .font(.title2).foregroundStyle(RemoteStyle.accent).frame(width: 32, height: 44)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("\(item.position). \(item.title)").font(.headline).foregroundStyle(.primary)
+                    Text([item.creator, item.album].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary)
+                    if page.playing == item.position { Text("Now playing").font(.caption).foregroundStyle(RemoteStyle.accent) }
+                    if !QueueSelection.canSelect(item) { Text("Queue identity unavailable").font(.caption).foregroundStyle(.secondary) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }.multilineTextAlignment(.leading).frame(minHeight: 44).contentShape(Rectangle())
+        }.buttonStyle(.plain).disabled(!ready || !QueueSelection.canSelect(item))
+            .accessibilityValue(chosen ? "Selected" : "Not selected")
+            .accessibilityHint("Changes only the local selection. Does not play this entry.")
+    }
+
+    private func blockMoveMenu(_ page: QueuePage, zone: Zone) -> some View {
+        let token = selection.id
+        return Menu("Review moving selected block", systemImage: "arrow.up.arrow.down") {
+            ForEach(QueueMoveDestination.allCases, id: \.self) { destination in
+                let move = try? selection.move(to: destination)
+                Button(destination.title) {
+                    guard selecting, ready, remote.queue == page,
+                          remote.selectedZone?.sameGroup(as: zone) == true,
+                          selection.isCurrent(token, page: page, zone: zone), let move else { return }
+                    // The complete immutable block enters the same one-use
+                    // review as single-entry moves, never a loop of mutations.
+                    remote.prepare(.queueMove(move), in: zone)
+                    selection.clear(); selecting = false; problem = nil
+                }.disabled(move == nil)
+            }
+        }.buttonStyle(.borderedProminent).foregroundStyle(RemoteStyle.accentInk)
+            .disabled(!ready || !selection.isContiguous || !selection.isCurrent(token, page: page, zone: zone))
+    }
+
+    private func isVisible(_ page: QueuePage, zone: Zone, offset: UInt32) -> Bool {
+        selecting && ready && remote.queue == page && remote.queueOffset == offset &&
+            remote.selectedZone?.sameGroup(as: zone) == true
+    }
+
+    private func observePage() {
+        // A page switch briefly clears remote.queue. Keep only the bounded
+        // selected occurrences while the shared read slot fetches the new page.
+        guard selecting, remote.active, remote.panel == .queue, !remote.panelLoading,
+              let page = remote.queue, let zone = remote.selectedZone else { return }
+        let hadSelection = !selection.isEmpty
+        do {
+            try selection.observe(page, in: zone, offset: remote.queueOffset)
+            if hadSelection && selection.isEmpty { problem = "The queue or group changed. Select entries again." }
+        } catch { problem = error.localizedDescription }
+    }
+
+    private func retire() {
+        if !selection.isEmpty { problem = "The queue or connection was invalidated. Select entries again after it refreshes." }
+        selection.clear()
     }
 }
 
