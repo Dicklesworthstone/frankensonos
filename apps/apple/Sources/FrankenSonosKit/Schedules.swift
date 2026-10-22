@@ -128,7 +128,7 @@ public struct SavedSchedule: Codable, Equatable, Sendable, Identifiable {
     }
 
     public func validated() throws -> Self {
-        guard id > 0, scheduleText(when, limit: 128), scheduleText(summary), scheduleText(creator),
+        guard id > 0, scheduleText(when, limit: 128), scheduleText(summary, limit: 262_144), scheduleText(creator),
               next.map({ ScheduleTime.instant($0) != nil }) ?? true,
               lastFired.map({ ScheduleTime.instant($0) != nil }) ?? true,
               enabled || next == nil else { throw ContractError.invalid("The schedule response is incomplete or contradictory.") }

@@ -335,6 +335,150 @@ async function draft(f, action = 'dj_start') {
   f.control.edit(action === 'apply_scene' ? 'scene' : 'zone', action === 'apply_scene' ? 'Evening & quiet' : 'Studio@S2');
 }
 
+const directionDraft = {
+  include_composers: ' Bach ', exclude_composers: 'Wagner',
+  include_artists: 'Earth, Wind & Fire\nMiles Davis', exclude_artists: 'Other Artist',
+  include_genres: 'jazz', exclude_genres: 'metal',
+  periods: 'Late Romantic', exclude_periods: 'modern',
+  decades: '1960\n1970', exclude_decades: '1980',
+  include_keywords: 'piano', exclude_keywords: 'vocal',
+  min_work_minutes: '2', max_work_minutes: '60', energy_bias: '-1',
+  allow_long_works: true, minutes: '90',
+};
+const fullDirection = () => ({ constraints: {
+  include_composers: ['Bach'], exclude_composers: ['Wagner'],
+  include_artists: ['Earth, Wind & Fire', 'Miles Davis'], exclude_artists: ['Other Artist'],
+  include_genres: ['jazz'], exclude_genres: ['metal'],
+  periods: ['late_romantic'], exclude_periods: ['modern'],
+  decades: [1960, 1970], exclude_decades: [1980],
+  include_keywords: ['piano'], exclude_keywords: ['vocal'],
+  min_work_minutes: 2, max_work_minutes: 60, energy_bias: -1, allow_long_works: true,
+}, for_secs: 5400 });
+function fillDirection(control) {
+  for (const [key, value] of Object.entries(directionDraft)) assert.equal(control.editDirection(key, value), true, key);
+}
+function changedDirections() {
+  const changed = Object.keys(fullDirection().constraints).map((field) => {
+    const direction = fullDirection();
+    const value = direction.constraints[field];
+    direction.constraints[field] = Array.isArray(value) ? field.includes('decades') ? [1990]
+      : field.includes('periods') ? ['baroque'] : ['Changed entry']
+      : typeof value === 'boolean' ? false : value + 1;
+    return [field, direction];
+  });
+  return [...changed, ['minutes', { ...fullDirection(), for_secs: 5460 }], ['absent', undefined], ['automatic', {}]];
+}
+
+test('new automatic DJ routines explicitly clear earlier steering and remain distinct from legacy routines', async () => {
+  const f = builderFixture();
+  f.data.rows = [row({ mood: null })];
+  await draft(f);
+  assert.equal(Object.isFrozen(f.control.state.draft.direction), true);
+  assert.equal(f.control.reviewCreate(), true);
+  const pending = f.control.state.pending;
+  assert.deepEqual(pending.body.direction, { constraints: {} });
+  assert.match(pending.summary, /automatic program \(clears current steering\)/);
+  assert.equal(await f.control.confirm(pending), true);
+  assert.deepEqual(f.writes, [{ when: 'weekdays 07:30', action: 'dj_start', zone: 'Studio@S2',
+    direction: { constraints: {} } }]);
+  assert.equal(Schedules.scheduleOf(f.data.rows[0]).direction, undefined);
+});
+
+test('all sixteen DJ filters and the relative duration are reviewed and sent together once', async () => {
+  const f = builderFixture(); await draft(f); fillDirection(f.control);
+  assert.equal(f.control.reviewCreate(), true);
+  const pending = f.control.state.pending;
+  assert.deepEqual(pending.body.direction, fullDirection());
+  assert.equal(Object.isFrozen(pending.body.direction), true);
+  assert.equal(Object.isFrozen(pending.body.direction.constraints.include_artists), true);
+  assert.throws(() => pending.body.direction.constraints.include_artists.push('Unreviewed'));
+  assert.match(pending.summary, /Earth, Wind & Fire/);
+  assert.match(pending.summary, /for 90 minutes on each start/);
+  assert.match(pending.summary, /long works allowed/);
+  assert.equal(await f.control.confirm(pending), true);
+  assert.deepEqual(f.writes, [{ when: 'weekdays 07:30', action: 'dj_start', zone: 'Studio@S2', direction: fullDirection() }]);
+});
+
+test('every direction field consumes a previous review and cannot be edited during a sent create', async () => {
+  for (const field of Object.keys(directionDraft)) {
+    const f = builderFixture(); await draft(f); fillDirection(f.control);
+    f.control.reviewCreate(); const old = f.control.state.pending;
+    const changed = field === 'allow_long_works' ? false : field === 'energy_bias' ? '2'
+      : ['min_work_minutes', 'max_work_minutes', 'minutes'].includes(field) ? '3'
+        : field.includes('decades') ? '1990' : field.includes('periods') ? 'baroque' : 'Another entry';
+    assert.equal(f.control.editDirection(field, changed), true, field);
+    assert.equal(f.control.state.pending, null, field);
+    assert.equal(await f.control.confirm(old), false, field);
+    assert.deepEqual(f.writes, [], field);
+  }
+  const f = builderFixture(); await draft(f); fillDirection(f.control);
+  f.control.reviewCreate(); const wait = deferred();
+  f.reply((body) => wait.promise.then(() => ({ id: 99, ...body, summary: 'Saved direction', creator: 'test-client',
+    enabled: true, next: '2030-01-15T07:30:00Z' })));
+  const work = f.control.confirm(f.control.state.pending); await new Promise(setImmediate);
+  assert.equal(f.control.editDirection('include_genres', 'rock'), false);
+  wait.resolve(); assert.equal(await work, true);
+  assert.deepEqual(f.writes[0].direction, fullDirection());
+});
+
+test('invalid direction drafts and timed automatic clearing cannot reach a write', async () => {
+  for (const [field, value] of [['minutes', '0'], ['minutes', '10081'], ['minutes', '1.5'],
+    ['periods', 'unknown period'], ['decades', '1965'], ['include_artists', 'x'.repeat(129)],
+    ['include_genres', Array(33).fill('jazz').join('\n')], ['energy_bias', '3'],
+    ['min_work_minutes', '601']]) {
+    const f = builderFixture(); await draft(f); f.control.edit('mood', 'bright');
+    assert.equal(f.control.editDirection(field, value), true);
+    assert.equal(f.control.reviewCreate(), false, field);
+    assert.equal(await f.control.confirm(f.control.state.pending), false);
+    assert.deepEqual(f.writes, []);
+  }
+  const f = builderFixture(); await draft(f);
+  f.control.editDirection('minutes', '60'); assert.equal(f.control.reviewCreate(), false);
+  f.control.editDirection('minutes', ''); assert.equal(f.control.reviewCreate(), true);
+  const pending = f.control.state.pending;
+  assert.equal(f.control.editDirection('allow_long_works', 'true'), false);
+  assert.equal(await f.control.confirm(pending), false);
+  assert.equal(f.control.edit('direction', 'unreadable'), false);
+  assert.equal(f.control.editDirection('unknown_field', ''), false);
+  assert.deepEqual(f.writes, []);
+});
+
+test('duplicate routines compare every filter and duration while preserving legacy absence', async () => {
+  const f = builderFixture(); f.data.rows = [row({ mood: null, direction: fullDirection() })];
+  await draft(f); fillDirection(f.control);
+  assert.equal(f.control.reviewCreate(), false);
+  assert.match(f.control.state.message, /equivalent schedule #7/);
+  for (const [field, direction] of changedDirections()) {
+    f.data.rows = [row({ mood: null, direction })];
+    await draft(f); fillDirection(f.control);
+    assert.equal(f.control.reviewCreate(), true, field);
+  }
+  assert.deepEqual(f.writes, []);
+});
+
+test('create acknowledgements must retain every reviewed filter and relative duration', async () => {
+  for (const [field, direction] of changedDirections()) {
+    const f = builderFixture(); await draft(f); fillDirection(f.control); f.control.reviewCreate();
+    f.reply((body) => ({ id: 99, ...body, direction, summary: 'Saved direction', creator: 'test-client',
+      enabled: true, next: '2030-01-15T07:30:00Z' }));
+    const pending = f.control.state.pending;
+    assert.equal(await f.control.confirm(pending), false, field);
+    assert.equal(await f.control.confirm(pending), false, field);
+    assert.equal(f.writes.length, 1, field);
+    assert.match(f.control.state.message, /uncertain/, field);
+  }
+});
+
+test('valid long filter summaries remain readable after an acknowledged create', async () => {
+  const f = builderFixture(); await draft(f);
+  f.control.editDirection('include_artists', Array(20).fill(`Artist ${'x'.repeat(120)}`).join('\n'));
+  assert.equal(f.control.reviewCreate(), true);
+  f.reply((body) => ({ id: 99, ...body, summary: body.direction.constraints.include_artists.join('; '),
+    creator: 'test-client', enabled: true, next: '2030-01-15T07:30:00Z' }));
+  assert.equal(await f.control.confirm(f.control.state.pending), true);
+  assert.ok(f.control.state.rows[0].summary.length > 2048);
+});
+
 test('all 127 nonempty weekday subsets produce canonical house-time specs', () => {
   const days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
   for (let mask = 1; mask < 128; mask++) {
@@ -373,7 +517,7 @@ test('new drafts do not choose a destination or write without review', async () 
 
 test('four actions emit only their fields through the native creation route', async () => {
   const examples = [
-    ['dj_start', { mood: 'bright' }, { when: 'weekdays 07:30', action: 'dj_start', zone: 'Studio@S2', mood: 'bright' }],
+    ['dj_start', { mood: 'bright' }, { when: 'weekdays 07:30', action: 'dj_start', zone: 'Studio@S2', mood: 'bright', direction: { constraints: {} } }],
     ['pause', { fade_secs: '600' }, { when: 'weekdays 07:30', action: 'pause', zone: 'Studio@S2', fade_secs: 600 }],
     ['volume', { zone: 'Den@S2', volume: '0' }, { when: 'weekdays 07:30', action: 'volume', zone: 'Den@S2', volume: 0 }],
     ['apply_scene', {}, { when: 'weekdays 07:30', action: 'apply_scene', scene: 'Evening & quiet' }],
@@ -432,6 +576,7 @@ test('edits consume old reviews, and switching actions clears stale action-speci
   const f = builderFixture();
   await draft(f);
   f.control.edit('mood', 'bright');
+  f.control.editDirection('include_genres', 'jazz');
   f.control.reviewCreate();
   const old = f.control.state.pending;
   f.control.edit('time', '08:00');
@@ -439,7 +584,11 @@ test('edits consume old reviews, and switching actions clears stale action-speci
   await f.control.beginCreate('volume');
   assert.equal(f.control.state.draft.mood, '');
   assert.equal(f.control.state.draft.zone, '');
+  assert.equal(f.control.state.draft.direction, undefined);
+  assert.equal(f.control.editDirection('include_genres', 'rock'), false);
   assert.equal(await f.control.confirm(old), false);
+  await f.control.beginCreate('dj_start');
+  assert.equal(f.control.state.draft.direction.include_genres, '');
   assert.deepEqual(f.writes, []);
 });
 
@@ -463,7 +612,7 @@ test('duplicate explicit routines, including paused ones, are detected again bef
     const f = builderFixture();
     await draft(f);
     f.control.reviewCreate();
-    f.data.rows = [row({ mood: null, enabled })];
+    f.data.rows = [row({ mood: null, direction: {}, enabled })];
     assert.equal(await f.control.confirm(f.control.state.pending), false);
     assert.deepEqual(f.writes, []);
     assert.match(f.control.state.message, /equivalent schedule #7/);
@@ -593,4 +742,89 @@ test('real localhost creation dispatch preserves the exact reviewed fields for e
     assert.deepEqual(requests.at(-1), ['POST', '/schedules', JSON.stringify(pending.body), 'application/json']);
   }
   assert.equal(requests.filter((r) => r[0] === 'POST').length, 4);
+});
+
+// A small DOM fixture runs the real element helper and both components without
+// a browser or third-party DOM dependency. Layout is outside this fixture.
+function domFixture() {
+  const document = { activeElement: null };
+  class Element {
+    constructor(tag) {
+      this.tagName = tag.toUpperCase(); this.children = []; this.attributes = new Map(); this.events = new Map();
+      this.disabled = false; this.open = false; this.type = tag === 'input' ? 'text' : tag;
+      this.value = ''; this.checked = false; this.selectionStart = 0;
+    }
+    append(...children) { this.children.push(...children); }
+    replaceChildren(...children) { this.children = children; }
+    set textContent(value) { this.children = [String(value)]; }
+    get textContent() { return this.children.map((child) => typeof child === 'string' ? child : child.textContent).join(''); }
+    setAttribute(name, value) {
+      this.attributes.set(name, String(value));
+      if (['disabled', 'open', 'checked'].includes(name)) this[name] = true;
+      else if (['type', 'id', 'value'].includes(name)) this[name] = String(value);
+    }
+    getAttribute(name) { return this.attributes.get(name) ?? null; }
+    contains(other) { return this === other || this.children.some((child) => child instanceof Element && child.contains(other)); }
+    descendants() { return this.children.flatMap((child) => child instanceof Element ? [child, ...child.descendants()] : []); }
+    querySelectorAll(selector) { return this.descendants().filter((child) => child.attributes.has(selector.slice(1, -1))); }
+    addEventListener(name, handler) { this.events.set(name, [...(this.events.get(name) || []), handler]); }
+    async dispatch(name) { for (const handler of this.events.get(name) || []) await handler({ target: this }); }
+    focus() { document.activeElement = this; }
+    setSelectionRange(start, end) { this.selectionStart = start; this.selectionEnd = end; }
+  }
+  document.createElement = (tag) => new Element(tag);
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const vm = require('node:vm');
+  const source = fs.readFileSync(path.join(__dirname, '../crates/fsonos-api/src/remote/remote.js'), 'utf8');
+  const helper = source.slice(source.indexOf('function el('), source.indexOf('\nlet toastTimer'));
+  const el = vm.runInNewContext(`${helper}\nel`, { document });
+  return { document, el };
+}
+
+test('the schedule DOM exposes full direction controls, preserves typing and sends the reviewed values', async (t) => {
+  const prior = global.document;
+  const dom = domFixture(); global.document = dom.document;
+  t.after(() => { if (prior === undefined) delete global.document; else global.document = prior; });
+  const f = builderFixture();
+  const panel = Schedules.panel({ call: f.call, el: dom.el });
+  t.after(() => panel.dispose());
+  const control = (key) => {
+    const found = panel.node.querySelectorAll('[data-schedule-focus]').find((node) => node.getAttribute('data-schedule-focus') === key);
+    assert.ok(found, `missing control ${key}`); return found;
+  };
+  const editor = () => panel.node.descendants().find((node) => node.className === 'dj-direction-editor');
+  panel.node.open = true; await panel.node.dispatch('toggle'); await new Promise(setImmediate);
+  await control('new-create').dispatch('click');
+  control('zone').value = 'Studio@S2'; await control('zone').dispatch('change');
+  assert.equal(editor().open, false);
+  editor().open = true; await editor().dispatch('toggle');
+  for (const key of Object.keys(directionDraft)) assert.equal(control(`schedule-direction-${key}`).disabled, false, key);
+  assert.equal(editor().descendants().filter((node) => node.tagName === 'TEXTAREA').length, 12);
+
+  const artists = control('schedule-direction-include_artists');
+  artists.value = 'Earth, Wind & Fire\nMiles Davis'; artists.selectionStart = 9; artists.focus();
+  await artists.dispatch('input');
+  assert.equal(editor().open, true);
+  assert.equal(dom.document.activeElement, control('schedule-direction-include_artists'));
+  assert.equal(dom.document.activeElement.selectionStart, 9);
+  assert.equal(dom.document.activeElement.value, 'Earth, Wind & Fire\nMiles Davis');
+  control('schedule-direction-minutes').value = '90'; await control('schedule-direction-minutes').dispatch('input');
+  control('schedule-direction-allow_long_works').checked = true; await control('schedule-direction-allow_long_works').dispatch('change');
+  control('schedule-direction-energy_bias').value = '-1'; await control('schedule-direction-energy_bias').dispatch('change');
+  await control('review-create').dispatch('click');
+  assert.match(panel.node.textContent, /Earth, Wind & Fire/);
+  assert.match(panel.node.textContent, /for 90 minutes on each start/);
+  assert.deepEqual(f.writes, []);
+
+  const wait = deferred();
+  f.reply((body) => wait.promise.then(() => ({ id: 99, ...body, summary: 'Saved direction', creator: 'test-client',
+    enabled: true, next: '2030-01-15T07:30:00Z' })));
+  const work = control('confirm').dispatch('click'); await new Promise(setImmediate);
+  for (const key of Object.keys(directionDraft)) assert.equal(control(`schedule-direction-${key}`).disabled, true, key);
+  wait.resolve(); await work;
+  assert.deepEqual(f.writes, [{ when: 'weekdays 07:30', action: 'dj_start', zone: 'Studio@S2', direction: {
+    constraints: { include_artists: ['Earth, Wind & Fire', 'Miles Davis'], energy_bias: -1, allow_long_works: true }, for_secs: 5400,
+  } }]);
+  assert.match(panel.node.textContent, /Created schedule #99/);
 });

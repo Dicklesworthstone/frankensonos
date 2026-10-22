@@ -259,6 +259,7 @@ const ScenesRemote = (() => {
         if (!text(g.value.trim(), 128)) throw new Error('The DJ mood name is too long.');
         source.mood = g.value.trim();
       }
+      if (g.kind === 'dj') source.direction = directionApi().fromDraft(g.direction ?? directionApi().draft(), source.mood);
       return { coordinator: leader.target, members: [...g.members], source,
         ...(g.playing === 'keep' ? {} : { playing: g.playing === 'play' }) };
     });
@@ -471,9 +472,29 @@ const ScenesRemote = (() => {
       if (key === 'members' ? !Array.isArray(value) || !value.every((v) => typeof v === 'string') : typeof value !== 'string') return false;
       let next = { ...group, [key]: key === 'members' ? [...value] : value };
       if (['coordinator', 'kind', 'value'].includes(key)) delete next.choice;
-      if (key === 'coordinator') next = { ...next, members: [], kind: 'keep', value: '', playing: 'keep' };
-      if (key === 'kind') next = { ...next, value: '', playing: value === 'keep' ? 'keep' : 'play' };
+      if (key === 'coordinator') {
+        next = { ...next, members: [], kind: 'keep', value: '', playing: 'keep' };
+        delete next.direction;
+      }
+      if (key === 'kind') {
+        next = { ...next, value: '', playing: value === 'keep' ? 'keep' : 'play' };
+        if (value === 'dj') next.direction = directionApi().draft();
+        else delete next.direction;
+      }
       return changeDraft({ ...state.draft, groups: state.draft.groups.map((g) => g === group ? next : g) });
+    }
+
+    function editDirection(group, field, value) {
+      if (!editable() || !state.draft?.groups.includes(group) || group.kind !== 'dj') return false;
+      try {
+        const direction = directionApi().editDraft(group.direction, field, value);
+        const next = { ...group, direction };
+        return changeDraft({ ...state.draft, groups: state.draft.groups.map((g) => g === group ? next : g) });
+      } catch (e) {
+        state.message = errorText(e);
+        publish();
+        return false;
+      }
     }
 
     function choicesFor(group) {
@@ -667,13 +688,15 @@ const ScenesRemote = (() => {
     }
 
     return { state, refresh, editName, editFade, review, cancel, confirm,
-      beginDefinition, addGroup, editGroup, removeGroup, editRoom, discardDefinition, reviewDefinition,
+      beginDefinition, addGroup, editGroup, editDirection, removeGroup, editRoom, discardDefinition, reviewDefinition,
       choicesFor, loadSources, filterSources, pageSources, chooseSource,
       close() { state.open = false; invalidate(); state.draft = state.rooms = null; state.sourceChoices = Object.create(null); publish(); },
       dispose() { disposed = true; ++epoch; } };
   }
 
+  let panelId = 0;
   function panel({ call, el, applied }) {
+    const identity = ++panelId, directionOpen = new Map();
     const body = el('div', { class: 'scene-manager-body' });
     const node = el('details', { class: 'scene-manager scenes' },
       el('summary', { text: 'Manage scenes' }), body);
@@ -694,7 +717,9 @@ const ScenesRemote = (() => {
           el('span', { class: 'scene-source-eyebrow', text: favorites ? 'Selected favorite' : 'Selected DJ mood' }),
           el('strong', { text: selectedName }));
         if (selected?.description) summary.append(el('span', { text: selected.description }));
-        if (!favorites && !g.value) summary.append(el('span', { text: 'Follow current steering and the house’s time-of-day program.' }));
+        if (!favorites && !g.value) summary.append(el('span', {
+          text: 'Use the house’s time-of-day program with the filters below. Empty settings clear temporary steering when this scene is applied.',
+        }));
         if (choices?.phase === 'ready' && g.value && !choices.items.some((item) => item.id === g.value
             && (!g.choice || JSON.stringify(item) === JSON.stringify(g.choice)))) {
           summary.append(el('p', { class: 'scene-source-error', role: 'status',
@@ -801,6 +826,19 @@ const ScenesRemote = (() => {
             oninput: (e) => control.editGroup(g, 'value', e.target.value) })));
         }
         if (lead && ['favorite', 'dj'].includes(g.kind)) field.append(sourceChooser(g, i, busy));
+        if (lead && g.kind === 'dj') {
+          const direction = directionApi().editor({
+            draft: g.direction, change: (key, value) => control.editDirection(g, key, value),
+            disabled: busy, el, idPrefix: `scene-direction-${identity}-${g.id}`,
+            focusAttribute: 'data-scene-focus', open: directionOpen.get(g.id) || false,
+            toggle: (open) => {
+              if (control.state.draft?.groups.includes(g)) directionOpen.set(g.id, open);
+            },
+          });
+          direction.setAttribute('data-scene-direction-id', String(g.id));
+          direction.setAttribute('aria-label', `Group ${i + 1} DJ direction`);
+          field.append(direction);
+        }
         field.append(select(`Group ${i + 1} playback`, `playing-${g.id}`, g.playing,
           [...(g.kind === 'keep' ? [['keep', 'Leave playback unchanged']] : []), ['play', 'Playing'], ['pause', 'Paused']],
           (v) => control.editGroup(g, 'playing', v)),
@@ -840,7 +878,14 @@ const ScenesRemote = (() => {
     function render(s) {
       const active = document.activeElement;
       const focus = body.contains(active) ? active.getAttribute('data-scene-focus') : null;
-      const caret = focus && ['text', 'search'].includes(active.type) ? active.selectionStart : null;
+      const textInput = (input) => ['text', 'search'].includes(input.type) || input.tagName === 'TEXTAREA';
+      const caret = focus && textInput(active) ? [active.selectionStart, active.selectionEnd] : null;
+      for (const editor of body.querySelectorAll('[data-scene-direction-id]')) {
+        directionOpen.set(Number(editor.getAttribute('data-scene-direction-id')), editor.open);
+      }
+      for (const id of directionOpen.keys()) {
+        if (!s.draft?.groups.some((g) => g.id === id && g.kind === 'dj')) directionOpen.delete(id);
+      }
       if (s.pending && focus && focus !== 'cancel') reviewFocus = focus;
       body.replaceChildren();
       body.setAttribute('aria-busy', String(s.loading || s.writing));
@@ -908,7 +953,7 @@ const ScenesRemote = (() => {
         .find((e) => e.getAttribute('data-scene-focus') === key);
       if (next && !next.disabled) {
         next.focus({ preventScroll: true });
-        if (['text', 'search'].includes(next.type) && Number.isInteger(caret)) next.setSelectionRange(caret, caret);
+        if (textInput(next) && caret?.every(Number.isInteger)) next.setSelectionRange(...caret);
       }
     }
     node.addEventListener('toggle', () => { if (node.open) void control.refresh(); else control.close(); });

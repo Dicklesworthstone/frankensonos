@@ -46,6 +46,21 @@ start preserves the current steering; a mood-only scheduled start lasts
 until the next time-of-day program change. Add constraints or `--for` to save
 an explicit reusable direction, or use `--automatic` to request a reset.
 
+## Create directions in the web remote
+
+In **Manage scenes → New custom scene**, choose the group and DJ source,
+then open **DJ filters and duration**. The same editor is available under
+**Scheduled routines → New routine → Start the DJ**. Choose an optional mood,
+enter names one per line, and give a duration in minutes if needed. Commas
+remain part of artist names; release decades use the full first year, such
+as `1960`.
+
+The review lists the complete direction before saving. Editing a filter or
+duration retires that review. A saved reply must retain the exact selection
+rules; a changed or incomplete reply is not reported as a verified save.
+An empty new DJ direction explicitly returns to the automatic program when
+the scene or routine runs. Saving either definition does not start music.
+
 ## HTTP and MCP
 
 `POST /schedules` and the `add_schedule` MCP tool accept the same optional

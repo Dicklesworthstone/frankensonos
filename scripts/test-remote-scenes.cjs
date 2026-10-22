@@ -618,7 +618,7 @@ test('one scene can define independent S1 and S2 groups with different sources',
   const body = await saveDefinition(f);
   assert.deepEqual(body.groups, [
     { coordinator: 'Den@S1', members: ['Hall@S1'], source: { kind: 'uri', uri: `spotify:playlist:${SPOTIFY_ID}` }, playing: true },
-    { coordinator: 'Studio@S2', members: ['Den@S2'], source: { kind: 'dj' }, playing: true },
+    { coordinator: 'Studio@S2', members: ['Den@S2'], source: { kind: 'dj', direction: { constraints: {} } }, playing: true },
   ]);
   assert.equal(f.writes.length, 1);
 });
@@ -639,7 +639,7 @@ test('named DJ moods are resolved through the destination rather than guessed or
   const f = await editor();
   group(f, 'Studio@S2', 'dj', 'FOCUS');
   const body = await saveDefinition(f);
-  assert.deepEqual(body.groups[0].source, { kind: 'dj', mood: 'focus' });
+  assert.deepEqual(body.groups[0].source, { kind: 'dj', mood: 'focus', direction: { constraints: {} } });
   assert.ok(f.reads.filter((r) => r.name === 'moods').every((r) => r.query.zone === 'Studio@S2'));
 });
 
@@ -1096,7 +1096,9 @@ test('named and automatic DJ choices use the same reviewed scene source contract
       assert.equal(f.control.chooseSource(g, null), true);
     }
     const body = await saveDefinition(f);
-    assert.deepEqual(body.groups[0].source, automatic ? { kind: 'dj' } : { kind: 'dj', mood: 'focus' });
+    assert.deepEqual(body.groups[0].source, automatic
+      ? { kind: 'dj', direction: { constraints: {} } }
+      : { kind: 'dj', mood: 'focus', direction: { constraints: {} } });
     assert.ok(f.reads.filter((r) => r.name === 'moods').every((r) => r.query.zone === 'Studio@S2'));
   }
 });
@@ -1109,5 +1111,179 @@ test('automatic DJ remains available when named moods cannot be read', async () 
   assert.equal(await f.control.loadSources(g), false);
   assert.equal(f.control.chooseSource(g, null), true);
   const body = await saveDefinition(f);
-  assert.deepEqual(body.groups[0].source, { kind: 'dj' });
+  assert.deepEqual(body.groups[0].source, { kind: 'dj', direction: { constraints: {} } });
+});
+
+const fullDirectionDraft = () => ({
+  include_composers: 'Bach', exclude_composers: 'Wagner',
+  include_artists: 'Earth, Wind & Fire\nNina Simone', exclude_artists: 'Other artist',
+  include_genres: 'jazz', exclude_genres: 'metal', periods: 'baroque', exclude_periods: 'late romantic',
+  decades: '1960\n1970', exclude_decades: '1980', include_keywords: 'piano', exclude_keywords: 'opera',
+  min_work_minutes: '2', max_work_minutes: '45', energy_bias: '-1', allow_long_works: true, minutes: '90',
+});
+const fullDirection = () => ({ constraints: {
+  include_composers: ['Bach'], exclude_composers: ['Wagner'],
+  include_artists: ['Earth, Wind & Fire', 'Nina Simone'], exclude_artists: ['Other artist'],
+  include_genres: ['jazz'], exclude_genres: ['metal'], periods: ['baroque'], exclude_periods: ['late_romantic'],
+  decades: [1960, 1970], exclude_decades: [1980], include_keywords: ['piano'], exclude_keywords: ['opera'],
+  min_work_minutes: 2, max_work_minutes: 45, energy_bias: -1, allow_long_works: true,
+}, for_secs: 5400 });
+function editDirection(f, index = 0, fields = fullDirectionDraft()) {
+  for (const [key, value] of Object.entries(fields)) {
+    assert.equal(f.control.editDirection(f.control.state.draft.groups[index], key, value), true, key);
+  }
+}
+
+test('custom DJ groups retain all filters through review, exact save and acknowledgement', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'dj', 'focus');
+  editDirection(f);
+  group(f, 'Den@S2', 'dj');
+  editDirection(f, 1, { include_genres: 'rock', minutes: '20' });
+  assert.deepEqual(f.control.state.draft.groups[0].direction, fullDirectionDraft());
+  assert.equal(Object.isFrozen(f.control.state.draft.groups[0].direction), true);
+  assert.equal(await f.control.reviewDefinition(), true, f.control.state.message);
+  const prepared = f.control.state.pending.prepared;
+  assert.deepEqual(prepared.body.groups[0].source, { kind: 'dj', mood: 'focus', direction: fullDirection() });
+  assert.deepEqual(prepared.body.groups[1].source, { kind: 'dj', direction: { constraints: { include_genres: ['rock'] }, for_secs: 1200 } });
+  assert.match(Scenes.detail(prepared.preview), /Earth, Wind & Fire, Nina Simone/);
+  assert.match(Scenes.detail(prepared.preview), /90 minutes on each start/);
+  assert.deepEqual(f.writes, [], 'review still performs no mutation');
+  assert.equal(await f.control.confirm(f.control.state.pending), true, f.control.state.message);
+  assert.deepEqual(f.writes[0].body, JSON.parse(JSON.stringify(prepared.body)));
+  assert.deepEqual(f.control.state.saved.groups[0].source.direction, fullDirection());
+  assert.equal(f.writes.length, 1);
+});
+
+test('mood, playback, member and room edits retain their group direction while automatic remains explicit', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'dj');
+  editDirection(f);
+  let g = f.control.state.draft.groups[0];
+  await f.control.loadSources(g);
+  assert.equal(f.control.chooseSource(g, f.control.choicesFor(g).items[0]), true);
+  assert.equal(f.control.chooseSource(f.control.state.draft.groups[0], null), true);
+  f.control.editGroup(f.control.state.draft.groups[0], 'members', ['Hall@S1']);
+  f.control.editGroup(f.control.state.draft.groups[0], 'playing', 'pause');
+  f.control.editRoom('Den@S2', 'volumes', '20');
+  f.control.editName('Directed house');
+  assert.deepEqual(f.control.state.draft.groups[0].direction, fullDirectionDraft());
+  const body = await saveDefinition(f);
+  assert.deepEqual(body.groups[0], { coordinator: 'Den@S1', members: ['Hall@S1'],
+    source: { kind: 'dj', direction: fullDirection() }, playing: false });
+});
+
+test('directions reset with a new source or coordinator and detached callbacks cannot restore them', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'dj');
+  editDirection(f);
+  const first = f.control.state.draft.groups[0];
+  f.control.editGroup(first, 'kind', 'uri');
+  assert.equal(f.control.state.draft.groups[0].direction, undefined);
+  assert.equal(f.control.editDirection(first, 'include_artists', 'stale'), false);
+  f.control.editGroup(f.control.state.draft.groups[0], 'value', 'x-file:fixture');
+  assert.deepEqual(Scenes.definition(f.control.state.draft, f.control.state.rooms, 'Morning').body.groups[0].source,
+    { kind: 'uri', uri: 'x-file:fixture' });
+  f.control.editGroup(f.control.state.draft.groups[0], 'kind', 'dj');
+  assert.deepEqual(f.control.state.draft.groups[0].direction, DjDirection.draft());
+  editDirection(f);
+  const previous = f.control.state.draft.groups[0];
+  f.control.editGroup(previous, 'coordinator', 'Den@S2');
+  assert.equal(f.control.state.draft.groups[0].kind, 'keep');
+  assert.equal(f.control.state.draft.groups[0].direction, undefined);
+  assert.equal(f.control.editDirection(previous, 'minutes', '5'), false);
+  f.control.editGroup(f.control.state.draft.groups[0], 'kind', 'dj');
+  const removed = f.control.state.draft.groups[0];
+  f.control.removeGroup(removed);
+  group(f, 'Den@S1', 'dj');
+  assert.equal(f.control.editDirection(removed, 'include_genres', 'stale'), false);
+  assert.notEqual(f.control.state.draft.groups[0].id, removed.id);
+  assert.deepEqual(f.control.state.draft.groups[0].direction, DjDirection.draft());
+  assert.deepEqual(f.writes, []);
+});
+
+test('semantic direction errors prevent review and malformed edits leave no hidden settings', async () => {
+  for (const fields of [
+    { periods: 'not a period' }, { min_work_minutes: '50', max_work_minutes: '2' },
+    { energy_bias: '3' }, { minutes: '0' }, { minutes: '10081' }, { minutes: '1.5' },
+    { include_artists: Array.from({ length: 33 }, (_, i) => `Artist ${i}`).join('\n') },
+  ]) {
+    const f = await editor();
+    group(f, 'Den@S1', 'dj', 'focus');
+    editDirection(f, 0, fields);
+    assert.equal(await f.control.reviewDefinition(), false, JSON.stringify(fields));
+    assert.equal(f.reads.some((read) => read.name === 'moods'), false, 'invalid direction fails before catalog reads');
+    assert.deepEqual(f.writes, []);
+  }
+  const f = await editor();
+  group(f, 'Den@S1', 'dj', 'focus');
+  editDirection(f, 0, { minutes: '20' });
+  f.control.chooseSource(f.control.state.draft.groups[0], null);
+  assert.equal(await f.control.reviewDefinition(), false, 'duration with no mood or filters must not become automatic');
+  const g = f.control.state.draft.groups[0];
+  for (const [key, value] of [['expires_at', '1'], ['include_genres', ['jazz']], ['allow_long_works', 'true']]) {
+    assert.equal(f.control.editDirection(g, key, value), false);
+    assert.equal(f.control.state.draft.groups[0], g);
+  }
+  assert.equal(f.control.editDirection(g, 'minutes', ''), true);
+  assert.equal(await f.control.reviewDefinition(), true);
+  assert.match(Scenes.detail(f.control.state.pending.prepared.preview), /clears current steering/);
+});
+
+test('direction edits invalidate old reviews and cannot mutate an obsolete group or closed editor', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'dj', 'focus');
+  editDirection(f);
+  assert.equal(await f.control.reviewDefinition(), true);
+  const pending = f.control.state.pending, previous = f.control.state.draft.groups[0];
+  assert.equal(f.control.editDirection(previous, 'minutes', '30'), true);
+  assert.equal(f.control.state.pending, null);
+  assert.equal(await f.control.confirm(pending), false);
+  assert.equal(f.control.editDirection(previous, 'include_genres', 'stale'), false);
+  const current = f.control.state.draft.groups[0];
+  f.control.close();
+  assert.equal(f.control.editDirection(current, 'minutes', '60'), false);
+  assert.deepEqual(f.writes, []);
+});
+
+test('editing a direction during a mood read preserves both new settings and the current catalog', async () => {
+  const f = await editor();
+  group(f, 'Den@S1', 'dj');
+  const wait = deferred();
+  f.hook = async (name) => name === 'moods' ? wait.promise : undefined;
+  const reading = f.control.loadSources(f.control.state.draft.groups[0]);
+  editDirection(f, 0, { include_artists: 'Earth, Wind & Fire', minutes: '90' });
+  wait.resolve(f.moods);
+  assert.equal(await reading, true);
+  const g = f.control.state.draft.groups[0];
+  assert.equal(f.control.choicesFor(g).items[0].title, 'focus');
+  assert.equal(g.direction.include_artists, 'Earth, Wind & Fire');
+  assert.equal(g.direction.minutes, '90');
+  assert.deepEqual(f.writes, []);
+});
+
+test('a custom-save acknowledgement must retain every direction field, duration and explicit presence', async () => {
+  for (const field of [...Object.keys(fullDirection().constraints), 'for_secs', 'direction']) {
+    const f = await editor();
+    group(f, 'Den@S1', 'dj', 'focus');
+    editDirection(f);
+    await f.control.reviewDefinition();
+    let attempts = 0;
+    f.hook = async (route, args) => {
+      if (route !== 'sceneSave') return undefined;
+      attempts++;
+      const saved = { name: args.params.name, saved: 1900000001, ...structuredClone(args.body) };
+      const source = saved.groups[0].source;
+      if (field === 'direction') delete source.direction;
+      else if (field === 'for_secs') delete source.direction.for_secs;
+      else delete source.direction.constraints[field];
+      return saved;
+    };
+    const pending = f.control.state.pending;
+    assert.equal(await f.control.confirm(pending), false, field);
+    assert.equal(await f.control.confirm(pending), false, field);
+    assert.equal(attempts, 1, field);
+    assert.equal(f.control.state.saved, null, field);
+    assert.match(f.control.state.message, /did not confirm.*uncertain/, field);
+  }
 });

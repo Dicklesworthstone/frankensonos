@@ -23,7 +23,7 @@ const SchedulesRemote = (() => {
 
   function scheduleOf(value) {
     if (!value || !integer(value.id, 1, Number.MAX_SAFE_INTEGER) || !text(value.when, 256)
-        || !text(value.summary) || !text(value.creator, 512) || typeof value.enabled !== 'boolean'
+        || !text(value.summary, 128000) || !text(value.creator, 512) || typeof value.enabled !== 'boolean'
         || (value.next != null && !instant(value.next)) || (value.last_fired != null && !instant(value.last_fired))) {
       throw new Error('The schedule response is unreadable. Refresh before changing it.');
     }
@@ -73,7 +73,8 @@ const SchedulesRemote = (() => {
   const ACTIONS = { dj_start: 'Start the DJ', apply_scene: 'Apply a scene', volume: 'Set room volume', pause: 'Pause a group' };
   const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const draftOf = (action) => ({ action, cadence: 'weekdays', time: '07:30', days: [],
-    delay: '45m', at: '', zone: '', scene: '', mood: '', volume: '20', fade_secs: '0' });
+    delay: '45m', at: '', zone: '', scene: '', mood: '', volume: '20', fade_secs: '0',
+    ...(action === 'dj_start' ? { direction: directionApi().draft() } : {}) });
 
   function stamp(value) {
     const canonical = (v, depth) => {
@@ -201,6 +202,7 @@ const SchedulesRemote = (() => {
       if (!mood) throw new Error('Choose a current DJ mood or the automatic program.');
       body.mood = mood.name.trim().toLowerCase();
     }
+    if (draft.action === 'dj_start') body.direction = directionApi().fromDraft(draft.direction, body.mood);
     for (const [action, field, max] of [['volume', 'volume', 100], ['pause', 'fade_secs', 600]]) {
       if (draft.action !== action) continue;
       if (typeof draft[field] !== 'string' || !/^\d+$/.test(draft[field]) || !integer(Number(draft[field]), 0, max)) {
@@ -210,7 +212,8 @@ const SchedulesRemote = (() => {
     }
     const label = draft.action === 'apply_scene' ? `scene “${destination.name}”`
       : draft.action === 'volume' ? `${destination.roomLabel} to ${body.volume}`
-        : `${destination.label}${draft.action === 'pause' ? `, fade ${body.fade_secs}s` : `, ${body.mood || 'automatic program'}`}`;
+        : draft.action === 'dj_start' ? `${destination.label}; ${directionApi().describe(body.direction, body.mood)}`
+          : `${destination.label}, fade ${body.fade_secs}s`;
     return Object.freeze({ action: 'create', body: Object.freeze(body), timing, destination, mood,
       summary: `${ACTIONS[draft.action]}: ${label}` });
   }
@@ -294,7 +297,7 @@ const SchedulesRemote = (() => {
 
     function edit(field, value) {
       if (disposed || !state.open || !state.loaded || state.loading || state.writing || !state.draft
-          || field === 'action' || !Object.hasOwn(state.draft, field)
+          || field === 'action' || field === 'direction' || !Object.hasOwn(state.draft, field)
           || (field === 'days' ? !Array.isArray(value) || !value.every((v) => DAYS.includes(v))
             : typeof value !== 'string' || value.length > 512)) return false;
       state.draft = { ...state.draft, [field]: field === 'days' ? [...value] : value };
@@ -302,6 +305,23 @@ const SchedulesRemote = (() => {
       state.message = '';
       publish();
       return true;
+    }
+
+    function editDirection(field, value) {
+      if (disposed || !state.open || !state.loaded || state.loading || state.writing
+          || state.draft?.action !== 'dj_start') return false;
+      state.pending = null;
+      try {
+        const direction = directionApi().editDraft(state.draft.direction, field, value);
+        state.draft = { ...state.draft, direction };
+        state.message = '';
+        publish();
+        return true;
+      } catch (e) {
+        state.message = errorText(e);
+        publish();
+        return false;
+      }
     }
 
     function reviewCreate() {
@@ -414,7 +434,7 @@ const SchedulesRemote = (() => {
       }
     }
 
-    return { state, refresh, review, cancel, confirm, beginCreate, edit, reviewCreate, dismissCreate,
+    return { state, refresh, review, cancel, confirm, beginCreate, edit, editDirection, reviewCreate, dismissCreate,
       close() { state.open = false; invalidate(); publish(); },
       dispose() { disposed = true; ++epoch; } };
   }
@@ -426,6 +446,7 @@ const SchedulesRemote = (() => {
     const button = (label, key, work, disabled) => el('button', { type: 'button', text: label,
       'data-schedule-focus': key, disabled, onclick: work });
     let reviewFocus = null;
+    let directionOpen = false;
     function creationForm(s) {
       const d = s.draft;
       const busy = s.loading || s.writing;
@@ -466,7 +487,11 @@ const SchedulesRemote = (() => {
         el('p', { text: d.action === 'volume' ? 'Changes only the selected room’s volume, subject to house limits.'
           : 'Acts on the selected room’s group at run time. Regrouping later can change which rooms hear it.' }));
       if (d.action === 'dj_start') form.append(select('DJ mood', 'mood', [['', 'Automatic time-of-day program'],
-        ...(options?.moods || []).map((v) => [v.name, v.name])]));
+        ...(options?.moods || []).map((v) => [v.name, v.name])]),
+        directionApi().editor({ draft: d.direction, change: (field, value) => control.editDirection(field, value),
+          disabled: busy, el, idPrefix: 'schedule-direction', focusAttribute: 'data-schedule-focus',
+          open: directionOpen, toggle: (open) => { directionOpen = open; } }),
+        el('p', { text: 'Each run replaces the group’s DJ steering before selecting new music. Already queued works remain.' }));
       if (d.action === 'volume') form.append(field('Volume (0–100)', 'volume', { type: 'number', min: 0, max: 100, step: 1 }));
       if (d.action === 'pause') form.append(field('Fade seconds (0–600; 0 pauses immediately)', 'fade_secs', { type: 'number', min: 0, max: 600, step: 1 }));
       form.append(el('div', { class: 'row' },
@@ -533,7 +558,7 @@ const SchedulesRemote = (() => {
       const next = [...content.querySelectorAll('[data-schedule-focus]')].find((e) => e.getAttribute('data-schedule-focus') === key);
       if (next && !next.disabled) {
         next.focus({ preventScroll: true });
-        if (next.type === 'text' && Number.isInteger(caret)) next.setSelectionRange(caret, caret);
+        if ((next.type === 'text' || next.tagName === 'TEXTAREA') && Number.isInteger(caret)) next.setSelectionRange(caret, caret);
       }
     }
     node.addEventListener('toggle', () => { if (node.open) control.refresh(); else control.close(); });

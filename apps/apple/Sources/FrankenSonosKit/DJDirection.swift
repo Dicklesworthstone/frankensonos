@@ -3,6 +3,7 @@ import Foundation
 /// Reusable steering for a scene or scheduled start. Relative time begins
 /// with each start. Keep every field for immutable-definition comparisons;
 /// the existing steering vocabulary validates and describes the filters.
+/// Canonical defaults make a returned energy_bias: 0 equivalent to omission.
 public struct DJDirection: Codable, Equatable, Sendable {
     public let constraints: [String: JSONValue]
     public let forSecs: UInt32?
@@ -18,7 +19,7 @@ public struct DJDirection: Codable, Equatable, Sendable {
         }
         if let raw = fields["constraints"] {
             guard case .object(let filters) = raw else { throw ContractError.invalid("The saved DJ filters are incomplete.") }
-            constraints = filters
+            constraints = try DJSteeringFilters(filters).values
         } else { constraints = [:] }
         switch fields["for_secs"] {
         case nil, .null?: forSecs = nil
@@ -29,7 +30,6 @@ public struct DJDirection: Codable, Equatable, Sendable {
             forSecs = UInt32(seconds)
         default: throw ContractError.invalid("The saved DJ duration must be whole seconds.")
         }
-        _ = try DJSteeringFilters(constraints)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -52,7 +52,7 @@ public struct DJDirection: Codable, Equatable, Sendable {
         guard forSecs == nil || mood != nil || !filters.values.isEmpty else {
             throw ContractError.invalid("Choose a mood or filter before giving a saved DJ direction a duration.")
         }
-        return self
+        return Self(constraints: filters.values, forSecs: forSecs)
     }
 
     public func summary(mood: String?) -> String {

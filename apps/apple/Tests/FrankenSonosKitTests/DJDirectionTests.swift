@@ -101,6 +101,29 @@ private func changedDirections() -> [DJDirection?] {
     #expect(try SceneDefinition(groups: automatic.groups).validated(zones: [automationZone()]).groups == automatic.groups)
 }
 
+@Test func nativeDirectionDefaultsNormalizeLikeTheDaemonBeforeComparingAnAuthoredScene() throws {
+    let requested = DJDirection(constraints: ["include_artists": .array([.string("Miles Davis")])])
+    let returned = try DaemonClient.decode(DJDirection.self, from: Data(#"{"constraints":{"include_artists":["Miles Davis"],"energy_bias":0}}"#.utf8))
+    #expect(requested == returned)
+    let withDefaults = DJDirection(constraints: ["include_artists": .array([.string("Miles Davis")]),
+        "energy_bias": .integer(0), "allow_long_works": .bool(false), "exclude_artists": .array([])])
+    #expect(try withDefaults.validated(mood: nil) == requested)
+    let scene = directedScene(withDefaults, mood: nil)
+    let checked = try SceneDefinition(groups: scene.groups).validated(zones: [automationZone()])
+    #expect(checked.groups[0].source.direction == returned)
+    #expect(try DaemonClient.decode(DJDirection.self, from: Data(#"{"constraints":{"energy_bias":0,"allow_long_works":false}}"#.utf8)) == DJDirection())
+    #expect(requested != DJDirection())
+}
+
+@Test func nativeScheduleReadsLongCompleteDirectionSummariesWithinABoundedResponse() throws {
+    let summary = String(repeating: "Artist and genre details; ", count: 400)
+    let value = try scheduleDecode(scheduleFixture(["summary": .string(summary), "direction": .object(savedDirection().fields)])).validated()
+    #expect(value.summary == summary && value.direction == savedDirection())
+    #expect(throws: ContractError.self) {
+        try scheduleDecode(scheduleFixture(["summary": .string(String(repeating: "x", count: 262_145))])).validated()
+    }
+}
+
 @Test func nativeDirectedSceneCanBeReadReviewedAndAppliedOnce() async throws {
     let transport = NativeAutomationTransport(), client = try automationClient(transport)
     let scene = directedScene()

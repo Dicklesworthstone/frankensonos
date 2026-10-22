@@ -12,6 +12,7 @@ const element = remote.slice(remote.indexOf('function el('), remote.indexOf('\nl
 const screenshots = process.env.FSONOS_SCENES_SCREENSHOTS;
 const control = (page, key) => page.locator(`[data-scene-focus="${key}"]`);
 const picker = (page, number) => page.getByRole('region', { name: `Group ${number} music choices`, exact: true });
+const direction = (page, id) => page.locator(`[data-scene-direction-id="${id}"]`);
 const writes = page => page.evaluate(() => fixture.calls.filter(([route]) => route === 'sceneSave'));
 const checkWidth = async page => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
 
@@ -123,6 +124,21 @@ test('scene music browser matrix: favorites, search, paging, retry, DJ, review a
         await control(page, 'source-2-focus').focus(); await page.keyboard.press('Enter');
         assert.equal(await control(page, 'automatic-2').getAttribute('aria-pressed'), 'false');
         assert.match(await page.getByLabel('Group 2 selected source', { exact: true }).innerText(), /focus/);
+        await direction(page, 2).locator('summary').click();
+        await direction(page, 2).getByLabel('Only artists', { exact: true }).pressSequentially('Earth, Wind & Fire');
+        assert.equal(await direction(page, 2).evaluate(node => node.open), true, 'typing keeps the filters expanded');
+        assert.equal(await direction(page, 2).getByLabel('Only artists', { exact: true }).inputValue(), 'Earth, Wind & Fire');
+        assert.equal(await direction(page, 2).getByLabel('Only artists', { exact: true })
+          .evaluate(node => node === document.activeElement && node.selectionStart === node.value.length), true);
+        await direction(page, 2).getByLabel('Only genres', { exact: true }).fill('jazz\nsoul');
+        await direction(page, 2).getByLabel('Only release decades', { exact: true }).fill('1960\n1970');
+        await direction(page, 2).getByLabel('Exclude keywords', { exact: true }).fill('opera');
+        await direction(page, 2).getByLabel('Minimum work length (minutes)', { exact: true }).fill('2');
+        await direction(page, 2).getByLabel('Maximum work length (minutes)', { exact: true }).fill('45');
+        await direction(page, 2).getByLabel('Energy shift', { exact: true }).selectOption('-1');
+        await direction(page, 2).getByLabel('Allow long works', { exact: true }).check();
+        await direction(page, 2).getByLabel('Direction duration (minutes)', { exact: true }).fill('90');
+        await checkWidth(page);
         assert.deepEqual(await writes(page), []);
         await control(page, 'review-definition').click();
         const review = page.getByRole('region', { name: 'Review scene change' });
@@ -131,7 +147,10 @@ test('scene music browser matrix: favorites, search, paging, retry, DJ, review a
         assert.ok(reviewBounds.y >= 0 && reviewBounds.y + Math.min(reviewBounds.height, 300) <= 960,
           'review is brought into view after composing music');
         assert.match(await review.innerText(), /Den@S1: favorite “Cello evening/);
-        assert.match(await review.innerText(), /Den@S2: DJ \(focus\)/);
+        assert.match(await review.innerText(), /Den@S2: DJ · focus/);
+        assert.match(await review.innerText(), /Only artists: Earth, Wind & Fire/);
+        assert.match(await review.innerText(), /90 minutes on each start/);
+        assert.equal(await direction(page, 2).getByLabel('Only artists', { exact: true }).isDisabled(), true);
         assert.deepEqual(await writes(page), []);
         await checkWidth(page); await capture(page, width, theme, 'review');
         await control(page, 'confirm').click();
@@ -139,7 +158,11 @@ test('scene music browser matrix: favorites, search, paging, retry, DJ, review a
         const sent = await writes(page);
         assert.equal(sent.length, 1);
         assert.deepEqual(sent[0][1].body.groups.map(g => [g.coordinator, g.source]), [
-          ['Den@S1', { kind: 'favorite', name: 'FV:2/13' }], ['Den@S2', { kind: 'dj', mood: 'focus' }],
+          ['Den@S1', { kind: 'favorite', name: 'FV:2/13' }], ['Den@S2', { kind: 'dj', mood: 'focus', direction: {
+            constraints: { include_artists: ['Earth, Wind & Fire'], include_genres: ['jazz', 'soul'],
+              decades: [1960, 1970], exclude_keywords: ['opera'], min_work_minutes: 2, max_work_minutes: 45,
+              energy_bias: -1, allow_long_works: true }, for_secs: 5400,
+          } }],
         ]);
         assert.deepEqual(errors, []);
       } finally { await page.close(); }
@@ -154,6 +177,28 @@ test('scene music browser matrix: favorites, search, paging, retry, DJ, review a
       await control(page, 'source-1').selectOption('dj');
       await picker(page, 1).getByText('No named moods are available.', { exact: false }).waitFor();
       assert.equal(await control(page, 'automatic-1').isEnabled(), true);
+      await direction(page, 1).locator('summary').click();
+      await direction(page, 1).getByLabel('Only genres', { exact: true }).fill('jazz');
+      await direction(page, 1).getByLabel('Only genres', { exact: true }).evaluate(node => { fixture.detachedDirection = node; });
+      await control(page, 'source-1').selectOption('uri');
+      await page.evaluate(() => {
+        fixture.detachedDirection.value = 'stale';
+        fixture.detachedDirection.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      assert.equal(await direction(page, 1).count(), 0);
+      await control(page, 'source-1').selectOption('dj');
+      await direction(page, 1).locator('summary').click();
+      assert.equal(await direction(page, 1).getByLabel('Only genres', { exact: true }).inputValue(), '');
+      await control(page, 'add-group').click();
+      await control(page, 'leader-2').selectOption('Den@S2');
+      await control(page, 'source-2').selectOption('dj');
+      await direction(page, 2).locator('summary').click();
+      await direction(page, 2).getByLabel('Only genres', { exact: true }).fill('rock');
+      assert.equal(await direction(page, 1).getByLabel('Only genres', { exact: true }).inputValue(), '', 'each group owns its own filters');
+      const ids = await page.locator('.dj-direction-editor [id]').evaluateAll(nodes => nodes.map(node => node.id));
+      assert.ok(ids.length >= 34);
+      assert.equal(new Set(ids).size, ids.length, 'both editors have unique labels and help targets');
+      await control(page, 'remove-group-2').click();
       await control(page, 'source-1').selectOption('uri');
       await control(page, 'value-1').fill('https://open.spotify.com/album/0123456789ABCDEFabcdef');
       await control(page, 'review-definition').click();

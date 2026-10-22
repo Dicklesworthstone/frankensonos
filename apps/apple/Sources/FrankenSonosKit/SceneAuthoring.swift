@@ -123,8 +123,8 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
                 let mood = (group.source.mood ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 guard mood.utf8.count <= 128 else { throw ContractError.invalid("Choose a shorter DJ mood name.") }
                 let name = mood.isEmpty ? nil : mood
-                _ = try group.source.direction?.validated(mood: name)
-                source = .init(kind: "dj", name: nil, uri: nil, mood: name, direction: group.source.direction)
+                let direction = try group.source.direction?.validated(mood: name)
+                source = .init(kind: "dj", name: nil, uri: nil, mood: name, direction: direction)
             default: throw ContractError.invalid("Choose a supported scene music source.")
             }
             return .init(coordinator: group.coordinator, members: group.members, source: source,

@@ -6,6 +6,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { once } = require('node:events');
 const dj = require('../crates/fsonos-api/src/remote/dj-steering.js');
+const Direction = require('../crates/fsonos-api/src/remote/dj-direction.js');
 
 const groups = () => [
   { household: 'S1', coordinator_room: 'Kitchen', members: ['Kitchen', 'Dining'] },
@@ -61,6 +62,79 @@ test('all sixteen constraints round-trip canonically without splitting artist na
   assert.equal(checked.include_artists.length, 1);
   assert.throws(() => checked.periods.push('baroque'));
   assert.throws(() => { checked.energy_bias = 0; });
+});
+
+test('scene and routine drafts author the full shared vocabulary without mutating prior reviews', () => {
+  const filters = { include_composers: ['Bach'], exclude_composers: ['Wagner'],
+    include_artists: ['Earth, Wind & Fire', 'Miles Davis'], exclude_artists: ['Example'],
+    include_genres: ['jazz'], exclude_genres: ['metal'], periods: ['late_romantic'], exclude_periods: ['modern'],
+    decades: [1960, 1970], exclude_decades: [1980], include_keywords: ['piano'], exclude_keywords: ['vocal'],
+    min_work_minutes: 2, max_work_minutes: 60, energy_bias: -2, allow_long_works: true };
+  const empty = Direction.draft();
+  let draft = empty;
+  for (const [field, value] of Object.entries(filters)) draft = Direction.editDraft(draft, field,
+    Array.isArray(value) ? value.join('\r\n') : typeof value === 'boolean' ? value : String(value));
+  draft = Direction.editDraft(draft, 'minutes', '120');
+  const reviewed = Direction.fromDraft(draft, 'calm');
+  assert.deepEqual(reviewed, { constraints: filters, for_secs: 7200 });
+  assert.deepEqual(Direction.fromDraft(empty), { constraints: {} });
+  assert.deepEqual(Direction.fromDraft(Direction.editDraft(empty, 'minutes', '1'), 'calm'), { constraints: {}, for_secs: 60 });
+  assert.equal(Direction.fromDraft(Direction.editDraft(empty, 'minutes', '10080'), 'calm').for_secs, 604800);
+  assert.equal(empty.include_artists, '');
+  assert.equal(Object.isFrozen(draft), true);
+  assert.throws(() => { draft.include_artists = 'another'; });
+  draft = Direction.editDraft(draft, 'include_artists', 'Later artist');
+  assert.deepEqual(reviewed.constraints.include_artists, ['Earth, Wind & Fire', 'Miles Davis']);
+  assert.match(Direction.describe(reviewed, 'calm'), /2 hours on each start/);
+});
+
+test('direction form parsing rejects typos, coercion, excess names and meaningless expiry', () => {
+  for (const [field, value] of [['minutes', '0'], ['minutes', '10081'], ['minutes', '1e2'],
+    ['minutes', '1.5'], ['minutes', ' '], ['energy_bias', ''], ['energy_bias', '3'],
+    ['energy_bias', '1.5'], ['min_work_minutes', '-1'], ['max_work_minutes', '601'],
+    ['decades', '60s'], ['decades', '1965'], ['decades', '1e3'], ['periods', 'unknown'],
+    ['include_artists', Array(33).fill('Artist').join('\n')], ['include_genres', 'x'.repeat(129)]]) {
+    assert.throws(() => Direction.fromDraft(Direction.editDraft(Direction.draft(), field, value), 'calm'), field);
+  }
+  assert.throws(() => Direction.fromDraft(Direction.editDraft(Direction.draft(), 'minutes', '60')));
+  assert.throws(() => Direction.fromDraft({ ...Direction.draft(), min_work_minutes: '40', max_work_minutes: '20' }));
+  for (const value of [null, [], { unknown: 'jazz' }, { allow_long_works: 'false' }, { minutes: 60 }]) {
+    assert.throws(() => Direction.fromDraft(value));
+  }
+  assert.throws(() => Direction.editDraft(Direction.draft(), '__proto__', 'x'));
+  assert.throws(() => Direction.editDraft(Direction.draft(), 'include_artists', 'x'.repeat(16385)));
+  const names = Direction.fromDraft({ ...Direction.draft(), include_artists: '\n  Earth, Wind & Fire \r\nMiles Davis\n' });
+  assert.deepEqual(names.constraints.include_artists, ['Earth, Wind & Fire', 'Miles Davis']);
+});
+
+test('reusable direction controls emit exact field edits and have unique accessible focus identities', () => {
+  const edits = [], toggles = [];
+  const el = (tag, attrs = {}, ...children) => ({ tag, attrs, id: attrs.id, value: attrs.value ?? '',
+    children, append(...nodes) { this.children.push(...nodes); } });
+  const draft = { ...Direction.draft(), include_artists: '<img src=x>\nEarth, Wind & Fire',
+    minutes: '90', energy_bias: '-1', allow_long_works: true };
+  const view = Direction.editor({ draft, change: (...edit) => edits.push(edit), disabled: true,
+    el, idPrefix: 'routine-direction', focusAttribute: 'data-schedule-focus', open: true,
+    toggle: (open) => toggles.push(open) });
+  const all = (node) => [node, ...node.children.filter((c) => c && typeof c === 'object').flatMap(all)];
+  const inputs = all(view).filter((node) => ['input', 'textarea', 'select'].includes(node.tag));
+  assert.equal(inputs.length, 17);
+  assert.equal(new Set(inputs.map((input) => input.id)).size, 17);
+  for (const input of inputs) {
+    assert.ok(input.attrs['aria-label']);
+    assert.equal(input.attrs['data-schedule-focus'], input.id);
+    assert.equal(input.attrs.disabled, true);
+  }
+  const artists = inputs.find((input) => input.id.endsWith('-include_artists'));
+  assert.equal(artists.value, draft.include_artists);
+  artists.attrs.oninput({ target: { value: 'Miles Davis\nEarth, Wind & Fire' } });
+  const energy = inputs.find((input) => input.id.endsWith('-energy_bias'));
+  assert.equal(energy.value, '-1'); energy.attrs.onchange({ target: { value: '2' } });
+  const long = inputs.find((input) => input.id.endsWith('-allow_long_works'));
+  assert.equal(long.attrs.checked, true); long.attrs.onchange({ target: { checked: false } });
+  view.attrs.ontoggle({ target: { open: false } });
+  assert.deepEqual(edits, [['include_artists', 'Miles Davis\nEarth, Wind & Fire'], ['energy_bias', '2'], ['allow_long_works', false]]);
+  assert.deepEqual(toggles, [false]);
 });
 
 test('constraint defaults are sparse and unknown fields cannot be silently erased', () => {
