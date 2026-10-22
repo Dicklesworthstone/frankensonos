@@ -111,58 +111,85 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes espeak-ng nodejs ffmpeg
       - name: Web shared reads and request lifecycle regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-read-requests.cjs scripts/test-remote-request-lifecycle.cjs scripts/test-remote-requests.cjs scripts/test-remote-http.cjs
       - name: Web queue client regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-queue.cjs scripts/test-remote-play-mode.cjs scripts/test-remote-queue-navigation.cjs scripts/test-remote-queue-search.cjs
       - name: Live queue and command coordination regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-queue-coordination.cjs scripts/test-remote-queue-live.cjs scripts/test-remote-queue-http.cjs
       - name: Web direct source playback regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-source-player.cjs scripts/test-remote-source-player-queue.cjs
       - name: Web speaker sound regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-equalizer.cjs scripts/test-remote-fades.cjs scripts/test-remote-sound-copy.cjs
       - name: Web library client regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-library.cjs scripts/test-remote-library-browse.cjs scripts/test-playlist-contents.cjs scripts/test-remote-library-sync.cjs scripts/test-remote-spotify-connect.cjs
       - name: Web room grouping regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-groups.cjs scripts/test-remote-transfers.cjs scripts/test-remote-room-sets.cjs
       - name: Live remote recovery regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-live.cjs scripts/test-remote-state.cjs scripts/test-remote-invalidation.cjs scripts/test-remote-playback.cjs scripts/test-remote-catalogs.cjs
       - name: Web heartbeat and event recovery regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-event-feed.cjs scripts/test-remote-event-integration.cjs
       - name: Web seek recovery regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-seek.cjs scripts/test-remote-seek-http.cjs
       - name: Web transport and volume regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-transport.cjs scripts/test-remote-volume.cjs
       - name: Web whole-group volume regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-group-volume.cjs scripts/test-remote-group-volume-relative.cjs
       - name: Web announcement regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-announcements.cjs
       - name: Web DJ taste regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-dj-preferences.cjs scripts/test-remote-dj-steering.cjs scripts/test-remote-dj-session.cjs scripts/test-remote-dj-rehearsal.cjs scripts/test-remote-dj-handoff.cjs
       - name: Web scheduled routine regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-schedules.cjs
       - name: Web sleep timer regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-timers.cjs
       - name: Web music routine composition and recovery regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-favorite-routines.cjs scripts/test-favorite-routines-panel.cjs scripts/test-music-routines.cjs
       - name: Web scene regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-scenes.cjs
       - name: Web action history regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-history.cjs scripts/test-remote-listening-history.cjs
       - name: Listening studio and DJ insight regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-studio.cjs scripts/test-remote-studio-insights.cjs scripts/test-remote-diagnostics.cjs
       - name: Listening room dashboard regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-dashboard.cjs scripts/test-dashboard-audio.cjs scripts/test-dashboard-http.cjs scripts/test-dashboard-queue.cjs scripts/test-dashboard-session.cjs scripts/test-dashboard-workspace.cjs
       - name: Listening room action recovery regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-dashboard-activity.cjs scripts/test-dashboard-activity-assets.cjs
       - name: Listening room queue editing regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-dashboard-queue-actions.cjs scripts/test-dashboard-queue-session.cjs
       - name: Listening room cached library regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-dashboard-library.cjs scripts/test-dashboard-library-actions.cjs
       - name: Listening room live recovery regressions
+        if: ${{ !cancelled() }}
         run: node --test scripts/test-dashboard-recovery.cjs scripts/test-dashboard-live-integration.cjs
       - name: Install the pinned Rust toolchain
+        if: ${{ !cancelled() }}
         run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy
       - name: Formatting
+        if: ${{ !cancelled() }}
         run: cargo fmt --all --check
       - name: Check every target
         id: check
