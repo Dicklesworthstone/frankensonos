@@ -169,29 +169,68 @@ import FrankenSonosKit
             EmptyMusicState(title: "Keep your favorites close", systemImage: "heart",
                             detail: "Favorites saved in Sonos appear here for this household. Refresh after adding one.")
         }
-        LazyVStack(spacing: 12) {
-            ForEach(model.favorites) { favorite in
-                Button { model.prepare(.playFavorite(favorite.id)) } label: {
-                    HStack(spacing: 16) {
-                        Image(systemName: favorite.kind == "stream" ? "radio.fill" : "music.note")
-                            .font(.title2).foregroundStyle(RemoteStyle.accent)
-                            .frame(width: 52, height: 52)
-                            .background(RemoteStyle.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(favorite.title).font(.headline).foregroundStyle(.primary)
-                            if let description = favorite.description, !description.isEmpty {
-                                Text(description).font(.subheadline).foregroundStyle(.secondary)
-                            }
-                            if !favorite.playable { Text("Playback unavailable").font(.caption).foregroundStyle(.secondary) }
-                        }.frame(maxWidth: .infinity, alignment: .leading).multilineTextAlignment(.leading)
-                        Image(systemName: "play.circle.fill").font(.title2).foregroundStyle(RemoteStyle.accent)
-                            .accessibilityHidden(true)
-                    }.remoteCard()
-                }.buttonStyle(.plain).disabled(!ready || !favorite.playable)
-                    .accessibilityHint("Review playing this favorite in the selected group.")
+        Text("Queue tracks, albums and playlists without replacing current music. Stations play directly.")
+            .font(.caption).foregroundStyle(.secondary)
+        if let zone = model.selectedZone {
+            LazyVStack(spacing: 12) {
+                ForEach(model.favorites) { favorite in favoriteRow(favorite, in: zone) }
             }
         }
+    }
+
+    private func favoriteRow(_ favorite: Favorite, in zone: Zone) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                guard ready, model.panel == .favorites, model.favorites.contains(favorite) else { return }
+                model.prepare(.playFavorite(favorite.id), in: zone)
+            } label: { favoriteLabel(favorite) }
+                .buttonStyle(.plain).disabled(!ready || !favorite.playable)
+                .accessibilityHint("Review playing this favorite in the selected group.")
+            if FavoriteQueue.canQueue(favorite) { favoriteQueueMenu(favorite, in: zone) }
+        }.remoteCard()
+    }
+
+    private func favoriteLabel(_ favorite: Favorite) -> some View {
+        HStack(spacing: 16) {
+            Image(systemName: favorite.kind == "stream" ? "radio.fill" : "music.note")
+                .font(.title2).foregroundStyle(RemoteStyle.accent)
+                .frame(width: 52, height: 52)
+                .background(RemoteStyle.accent.opacity(0.1), in: RoundedRectangle(cornerRadius: 14))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(favorite.title).font(.headline).foregroundStyle(.primary)
+                if let description = favorite.description, !description.isEmpty {
+                    Text(description).font(.subheadline).foregroundStyle(.secondary)
+                }
+                if !favorite.playable { Text("Playback unavailable").font(.caption).foregroundStyle(.secondary) }
+            }.frame(maxWidth: .infinity, alignment: .leading).multilineTextAlignment(.leading)
+            Image(systemName: "play.circle.fill").font(.title2).foregroundStyle(RemoteStyle.accent)
+                .accessibilityHidden(true)
+        }.frame(minHeight: 44).contentShape(Rectangle())
+    }
+
+    private func favoriteQueueMenu(_ favorite: Favorite, in zone: Zone) -> some View {
+        let next = try? FavoriteQueue(favorite, in: zone, next: true)
+        let append = try? FavoriteQueue(favorite, in: zone, next: false)
+        return Menu {
+            Button("Queue next", systemImage: "text.line.first.and.arrowtriangle.forward") {
+                if let next { prepareFavoriteQueue(next) }
+            }.disabled(next == nil)
+            Button("Add to end of queue", systemImage: "text.append") {
+                if let append { prepareFavoriteQueue(append) }
+            }.disabled(append == nil)
+        } label: {
+            Image(systemName: "text.badge.plus").frame(width: 44, height: 44)
+        }.buttonStyle(.bordered).disabled(!ready)
+            .accessibilityLabel("Queue options for \(favorite.title)")
+            .accessibilityHint("Review adding this favorite without starting playback.")
+    }
+
+    private func prepareFavoriteQueue(_ selection: FavoriteQueue) {
+        // A menu keeps the group and favorite that were actually displayed;
+        // the shared writer also reads both again before review and dispatch.
+        guard ready, model.panel == .favorites, model.favorites.contains(selection.favorite) else { return }
+        model.prepare(.queueFavorite(selection), in: selection.zone)
     }
 
     @ViewBuilder private var djPanel: some View {

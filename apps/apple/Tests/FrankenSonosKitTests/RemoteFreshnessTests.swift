@@ -17,7 +17,12 @@ import Testing
     #expect(model.house?.snapshot?.failures[offline.id] != nil)
     await transport.setVersion(2)
     try await transport.event("zone.state", room: "A")
-    try await freshnessWait { await MainActor.run { model.queue?.items.first?.title == "Pick 2" } }
+    // Panel reads and live playback settle independently. An already pending
+    // queue read can observe version 2 before the room's state batch finishes.
+    try await freshnessWait { await MainActor.run {
+        model.queue?.items.first?.title == "Pick 2" &&
+        model.selectedState?.track?.uri == "fixture:2" && model.selectedPlaybackIsFresh
+    } }
     #expect(model.selectedState?.track?.uri == "fixture:2")
     #expect(model.selectedPlaybackIsFresh && model.house?.isFresh == false)
     #expect(await transport.requests.allSatisfy { $0.httpMethod == "GET" })
