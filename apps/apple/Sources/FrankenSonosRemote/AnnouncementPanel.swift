@@ -16,19 +16,24 @@ import FrankenSonosKit
     @State private var fileTask: Task<Void, Never>?
     private var model: RemoteModel { bridge.model }
     private var ready: Bool { model.canPrepare && model.selectedZone?.sameGroup(as: zone) == true }
-    private var prepared: Announcement? { try? form.announcement(in: zone) }
+    private var topology: [Zone] { model.house?.snapshot?.zones ?? [] }
+    private var prepared: Announcement? {
+        guard let announcement = try? form.announcement(in: zone),
+              (try? announcement.validateTopology(topology)) != nil else { return nil }
+        return announcement
+    }
     private var speechCount: Int { form.speech.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars.count }
 
     init(bridge: RemoteBridge, zone: Zone) {
         self.bridge = bridge; self.zone = zone
-        _form = State(initialValue: AnnouncementForm(group: zone))
+        _form = State(initialValue: AnnouncementForm(group: zone, among: bridge.model.house?.snapshot?.zones ?? []))
     }
 
     var body: some View {
         let presentedPicker = pickerID
         return DisclosureGroup(isExpanded: $expanded) {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Speak a message, play a chime or upload a WAV, then let the daemon restore the music. Choose exactly which rooms in this group should hear it.")
+                Text("Speak a message, play a chime or upload a WAV, then let the daemon restore the music. Choose rooms across this household’s groups without regrouping them yourself. Other households remain independent.")
                     .font(.callout).foregroundStyle(.secondary)
                 if let notice = form.notice { Text(notice).font(.callout).foregroundStyle(.secondary) }
                 VStack(alignment: .leading, spacing: 16) {
@@ -57,12 +62,24 @@ import FrankenSonosKit
                     } else { fileSource }
                     Divider()
                     Text("Recipients · \(zone.household)").font(.headline)
-                    ForEach(zone.members, id: \.self) { room in
-                        Toggle(room, isOn: Binding(get: { form.selectedRooms.contains(room) }, set: {
-                            form.select(room, selected: $0); problem = nil
-                        }))
-                        .accessibilityLabel("Announce in \(room), household \(zone.household)")
-                        .frame(minHeight: 44)
+                    Text("\(form.selectedRooms.count) rooms selected. Only checked rooms will hear the announcement; their group members are also checked for restoration.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if form.availableGroups.isEmpty {
+                        Text("Refresh the house to read its grouping before choosing recipients.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    }
+                    ForEach(form.availableGroups) { recipientGroup in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Group led by \(recipientGroup.coordinatorRoom)").font(.subheadline.bold())
+                            ForEach(recipientGroup.members, id: \.self) { room in
+                                Toggle(room, isOn: Binding(get: { form.selectedRooms.contains(room) }, set: {
+                                    if form.select(room, selected: $0) { problem = nil }
+                                    else { problem = "The room is unavailable or the 256-room recipient limit has been reached." }
+                                }))
+                                .accessibilityLabel("Announce in \(room), household \(zone.household)")
+                                .frame(minHeight: 44)
+                            }
+                        }
                     }
                     ViewThatFits(in: .horizontal) {
                         HStack { selectionButtons }
@@ -81,8 +98,10 @@ import FrankenSonosKit
                     }
                     if let problem { Text(problem).font(.callout).foregroundStyle(.secondary).textSelection(.enabled) }
                     Button {
+                        guard ready, expanded else { return }
                         do {
                             let announcement = try form.announcement(in: zone)
+                            try announcement.validateTopology(topology)
                             problem = nil
                             model.prepare(.announce(announcement), in: zone)
                         } catch { problem = error.localizedDescription }
@@ -104,14 +123,21 @@ import FrankenSonosKit
         .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.wav]) { result in
             receiveFile(result, picker: presentedPicker)
         }
-        .onChange(of: zone) { _, current in
-            if !form.group.sameGroup(as: current) { cancelFileRead() }
-            form.observe(current); problem = nil
+        .onAppear { synchronizeRecipients() }
+        .onChange(of: zone) { _, _ in synchronizeRecipients() }
+        .onChange(of: topology) { _, _ in synchronizeRecipients() }
+        .onChange(of: model.house?.isConnected) { _, _ in
+            form.clearRooms(); cancelFileRead()
         }
         .onChange(of: form.kind) { _, _ in cancelFileRead(); problem = nil }
-        .onChange(of: expanded) { _, visible in if !visible { cancelFileRead() } }
-        .onChange(of: model.active) { _, active in if !active { cancelFileRead() } }
-        .onDisappear { cancelFileRead() }
+        .onChange(of: expanded) { _, visible in
+            if visible { synchronizeRecipients() }
+            else { form.clearRooms(); cancelFileRead() }
+        }
+        .onChange(of: model.active) { _, active in
+            if !active { form.clearRooms(); cancelFileRead() }
+        }
+        .onDisappear { form.clearRooms(); cancelFileRead() }
     }
 
     private var fileSource: some View {
@@ -167,8 +193,18 @@ import FrankenSonosKit
         form.cancelFileImport()
     }
 
+    private func synchronizeRecipients() {
+        if form.observe(zone, among: topology) { cancelFileRead(); problem = nil }
+    }
+
     @ViewBuilder private var selectionButtons: some View {
-        Button("Select this group’s rooms") { form.selectAll(); problem = nil }.buttonStyle(.bordered)
+        Button("Select this group’s rooms") { form.selectAll(); problem = nil }
+            .buttonStyle(.bordered).disabled(form.availableGroups.isEmpty)
+        if form.availableGroups.count > 1 {
+            Button("Select all \(form.availableRooms.count) rooms in \(zone.household)") {
+                if form.selectHousehold() { problem = nil }
+            }.buttonStyle(.bordered).disabled(!form.canSelectHousehold)
+        }
         Button("Clear selection") { form.clearRooms(); problem = nil }.buttonStyle(.bordered)
     }
 }
