@@ -27,8 +27,10 @@ mod mode;
 pub use mode::{MODE_READ, MODE_WRITE, PlayModeDto, PlayModeRequest, PlayModeSetDto};
 
 mod playback;
+mod search;
 mod snapshot;
 pub use playback::{PLAY, QueuePlayRequest};
+pub use search::{MAX_SEARCH_RESULTS, QueueSearchDto, QueueSearchRequest, SEARCH_PAGE_READS};
 
 mod movement;
 pub use movement::{MOVE, QueueMoveRequest, QueueMovedDto};

@@ -12,6 +12,7 @@
 //! | `GET /zones/{room}` | | [`crate::ZoneDto`] (`room` is percent-decoded) |
 //! | `GET /zones/{room}/state` | | [`crate::ZoneStateDto`] |
 //! | `GET /zones/{room}/queue?offset=<n>&limit=<n>` | | [`crate::surface::queue::QueueDto`] |
+//! | `GET /zones/{room}/queue/search?q=<words>` | | revision-bound metadata matches and the examined range; continue with `next_offset` and `expected_revision` |
 //! | `GET /zones/{room}/eq` | | [`crate::surface::eq::EqDto`]: the room's bass, treble and loudness |
 //! | `GET /zones/{room}/play-mode` | | the group's shuffle and repeat, and whether the DJ owns its queue |
 //! | `GET /favorites?zone=<room>` | | `[FavoriteDto]` of the room's household |

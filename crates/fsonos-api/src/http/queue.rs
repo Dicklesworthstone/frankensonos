@@ -16,6 +16,7 @@ use crate::surface::queue::{
 };
 
 mod mode;
+mod search;
 
 /// Queue addition, playback and identity-checked removal routes.
 pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
@@ -66,5 +67,6 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         .response_schema::<QueueMovedDto>(200, "The queue order was confirmed"),
     ];
     routes.extend(mode::routes(cx));
+    routes.extend(search::routes(cx));
     routes
 }
