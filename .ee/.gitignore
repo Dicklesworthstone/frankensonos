@@ -5,3 +5,4 @@ index/
 index.previous*
 write-spool/
 audit.jsonl
+ee.db.*

@@ -1,0 +1,9 @@
+{
+  "schema": "ee.store_auth.keyfile.v1",
+  "current": {
+    "keyId": "0171101e810ae9927f2e0d32558a314d",
+    "root": "9d52f4b7e9944e375d038d841d91ce816aa994135cfa7422aa2197560ce94115"
+  },
+  "retired": [],
+  "selfCheck": "f1b11b59a89e4fcde37d50b2aac0bd5922c283e8c784b2f2c318df01e3d13734"
+}
