@@ -235,6 +235,7 @@ fileprivate struct CommandObservation: Sendable {
 
     private static func affectedZones(_ command: NativeCommand, zone: Zone, zones: [Zone]) -> [Zone] {
         if command.savedScene != nil { return zones }
+        if case .announce(let announcement) = command { return announcement.affectedZones(in: zones) }
         if case .party = command { return zones.filter { $0.household == zone.household } }
         let destination: RoomID?
         switch command {

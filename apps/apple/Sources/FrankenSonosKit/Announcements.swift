@@ -1,6 +1,6 @@
 import Foundation
 
-/// An explicit, reviewed announcement to rooms of one selected group. Never
+/// An explicit, reviewed announcement across groups of one household. Never
 /// omit recipients: the daemon interprets an empty room list as the whole house.
 public struct Announcement: Equatable, Sendable {
     public enum Chime: String, CaseIterable, Sendable { case bell, beep, rise }
@@ -9,18 +9,35 @@ public struct Announcement: Equatable, Sendable {
         case chime(Chime)
         case wav(AnnouncementWav)
     }
+    public static let maximumRooms = 256
     public static let maximumSpeechScalars = 1_000
     public static let timeout: TimeInterval = 1_200
     public let source: Source
     public let rooms: [String]
     public let volume: Int
+    /// The selected navigation group; it is not an implicit recipient list.
     public let group: Zone
+    /// Complete original groups touched by the explicitly selected recipients.
+    /// Unselected members matter because temporary grouping/restoration can affect them.
+    public let affectedGroups: [Zone]
 
     public init(source: Source, rooms: [String], volume: Int = 35, in group: Zone) throws {
+        try self.init(source: source, rooms: rooms, volume: volume, in: group, among: [group])
+    }
+
+    public init(source: Source, rooms: [String], volume: Int = 35,
+                in group: Zone, among topology: [Zone]) throws {
         _ = try group.validated()
-        guard !rooms.isEmpty, rooms.count <= 256, Set(rooms).count == rooms.count,
-              rooms.allSatisfy({ room in group.members.contains { $0.utf8.elementsEqual(room.utf8) } }) else {
-            throw ContractError.invalid("Select at least one distinct room from this group for the announcement.")
+        let available = try Self.householdGroups(in: group, among: topology)
+        guard !rooms.isEmpty, rooms.count <= Self.maximumRooms,
+              Set(rooms.map { Data($0.utf8) }).count == rooms.count,
+              rooms.allSatisfy({ room in
+                  available.contains { $0.members.contains { $0.utf8.elementsEqual(room.utf8) } }
+              }) else {
+            throw ContractError.invalid("Select distinct rooms from the observed household for the announcement.")
+        }
+        affectedGroups = available.filter { candidate in
+            candidate.members.contains { member in rooms.contains { $0.utf8.elementsEqual(member.utf8) } }
         }
         guard (0...100).contains(volume) else {
             throw ContractError.invalid("Announcement volume must be between 0 and 100.")
@@ -53,13 +70,52 @@ public struct Announcement: Equatable, Sendable {
         case .wav(let wav): clip = "Upload exactly this WAV:\n\(wav.summary)\nThe reviewed bytes are retained; the file will not be reopened when you confirm."
         }
         let targets = rooms.map { RoomID(household: group.household, room: $0).address }.joined(separator: ", ")
-        return "\(clip)\n\nOnly in: \(targets)\nRequested volume: \(volume) (house caps still apply).\n\nThe daemon temporarily interrupts these rooms and may regroup them, then attempts to restore the original music, groups and levels. Other members of their group may also be affected during restoration. Speech is generated on the daemon with its configured voice. This is not undoable. Closing the remote does not recall a sent announcement."
+        return "\(clip)\n\nOnly in: \(targets)\nRequested volume: \(volume) (house caps still apply).\n\nThe daemon temporarily interrupts these rooms and may regroup them, then attempts to restore the original music, groups and levels. All \(affectedGroups.count) affected groups are checked before sending, including their unselected members. Those members may also be affected during restoration. Speech is generated on the daemon with its configured voice. This is not undoable. Closing the remote does not recall a sent announcement."
+    }
+
+    /// Validate all touched groups, not just the group selected in the sidebar.
+    /// The final client read is still not an atomic reservation on the daemon.
+    public func validateTopology(_ current: [Zone]) throws {
+        let available = try Self.householdGroups(in: group, among: current)
+        guard affectedGroups.allSatisfy({ expected in
+            available.contains { Self.sameGroup($0, expected) }
+        }) else {
+            throw ContractError.invalid("An announcement recipient's group changed. Choose the rooms and review again.")
+        }
+    }
+
+    /// CommandReviewSession reads all these groups before review and again
+    /// before confirmation. An unrelated household is never made a dependency.
+    func affectedZones(in current: [Zone]) -> [Zone] {
+        current.filter { candidate in
+            Self.sameGroup(candidate, group) || affectedGroups.contains { Self.sameGroup(candidate, $0) }
+        }
+    }
+
+    static func householdGroups(in group: Zone, among topology: [Zone]) throws -> [Zone] {
+        let topology = try Zone.validate(topology)
+        guard topology.contains(where: { Self.sameGroup($0, group) }) else {
+            throw ContractError.invalid("The announcement's selected group is missing or changed. Refresh the house.")
+        }
+        return topology.filter { $0.household.utf8.elementsEqual(group.household.utf8) }
+    }
+
+    // Swift String equality folds canonically equivalent Unicode. A reviewed
+    // network identity keeps its bytes; only member ordering/clock state may vary.
+    static func sameGroup(_ left: Zone, _ right: Zone) -> Bool {
+        left.household.utf8.elementsEqual(right.household.utf8) &&
+        left.coordinatorRoom.utf8.elementsEqual(right.coordinatorRoom.utf8) &&
+        Set(left.members.map { Data($0.utf8) }) == Set(right.members.map { Data($0.utf8) })
+    }
+
+    static func sameLayout(_ left: [Zone], _ right: [Zone]) -> Bool {
+        left.count == right.count && left.allSatisfy { group in right.contains { sameGroup(group, $0) } }
     }
 
     /// Reused by NativeCommand's payload validation, including before review.
     func fields(in current: Zone) throws -> [String: JSONValue] {
         _ = try current.validated()
-        guard current.sameGroup(as: group) else {
+        guard Self.sameGroup(current, group) else {
             throw ContractError.invalid("The announcement's group changed. Select its rooms and review again.")
         }
         // Use the retained names and household, not a later UI selection.

@@ -255,6 +255,8 @@ public enum NativeCommand: Equatable, Sendable {
             return target
         }
         switch self {
+        case .announce(let announcement):
+            try announcement.validateTopology(current)
         case .join(let room, let to):
             guard source.members.contains(room) else {
                 throw ContractError.invalid("The room no longer belongs to the selected group.")
