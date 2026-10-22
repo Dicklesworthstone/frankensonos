@@ -68,7 +68,9 @@ pub struct SceneGroupDto {
 
 /// What a scene group plays: `keep` (whatever the group has, its queue
 /// say), a `favorite` (by `name`), a `uri` (a stream, or a Spotify track,
-/// album or playlist), or the `dj` (in `mood`, if any).
+/// album or playlist), the `dj` (in `mood`, if any), or a captured `queue`
+/// reference. A queue reference recalls only the original, unchanged queue;
+/// its contents are not saved or reconstructed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SceneSourceDto {
     pub kind: String,
@@ -78,6 +80,59 @@ pub struct SceneSourceDto {
     pub uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mood: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue: Option<SceneQueueDto>,
+}
+
+/// A captured position in a coordinator's existing queue, not a queue backup.
+/// Capture creates this reference; authored scene definitions cannot supply it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SceneQueueDto {
+    pub coordinator: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub household: Option<String>,
+    pub update_id: u32,
+    /// One-based occurrence, so repeated track URIs remain distinct.
+    pub track: u32,
+    pub position_secs: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub play_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_seq: Option<u32>,
+}
+
+impl SceneQueueDto {
+    #[must_use]
+    pub fn text(&self) -> String {
+        let mode = self
+            .play_mode
+            .as_ref()
+            .map_or_else(String::new, |mode| format!(", {mode}"));
+        format!(
+            "original unchanged queue, track {} at {}:{:02}{mode} (queue contents are not saved)",
+            self.track,
+            self.position_secs / 60,
+            self.position_secs % 60,
+        )
+    }
+}
+
+impl From<&scenes::QueueReference> for SceneQueueDto {
+    fn from(queue: &scenes::QueueReference) -> Self {
+        Self {
+            coordinator: queue.coordinator.0.clone(),
+            household: queue
+                .household
+                .as_ref()
+                .map(|household| household.0.clone()),
+            update_id: queue.update_id,
+            track: queue.track,
+            position_secs: queue.position_secs,
+            play_mode: queue.play_mode.map(|mode| mode.as_str().to_owned()),
+            boot_seq: queue.boot_seq,
+        }
+    }
 }
 
 /// What applying a scene did (`POST /scenes/{name}/apply`, `apply_scene`,
@@ -148,6 +203,17 @@ pub struct SceneGroupDefinition {
 }
 
 impl SceneDefinition {
+    /// Validate source declarations without discovery or other I/O. Queue
+    /// references are captured by the daemon, never accepted as authored data.
+    pub fn validate_sources(&self) -> Result<(), Failure> {
+        for group in &self.groups {
+            if let Some(source) = &group.source {
+                source_of(source)?;
+            }
+        }
+        Ok(())
+    }
+
     /// The scene `name` this defines, its rooms named as the house names
     /// them, or why it can't be one (a room not in the house, a source that
     /// can't play, two households in one group).
@@ -249,6 +315,12 @@ fn scene_settings<T: Copy>(
 
 /// What a written-out group plays, or why that can't be a scene's source.
 fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
+    if dto.kind == "queue" || dto.queue.is_some() {
+        return Err(Failure::invalid(
+            "queue references can only be captured from the current house",
+        )
+        .with_hint("Use scene save without --from, or save_scene without a scene definition. Queue contents are not backed up."));
+    }
     let needs =
         |field: &str| Failure::invalid(format!("a {} source needs its `{field}`", dto.kind));
     match dto.kind.as_str() {
@@ -336,6 +408,7 @@ impl From<&SceneSource> for SceneSourceDto {
             name: None,
             uri: None,
             mood: None,
+            queue: None,
         };
         match source {
             SceneSource::Keep => dto("keep"),
@@ -351,6 +424,10 @@ impl From<&SceneSource> for SceneSourceDto {
             SceneSource::Dj { mood } => Self {
                 mood: mood.clone(),
                 ..dto("dj")
+            },
+            SceneSource::Queue { queue } => Self {
+                queue: Some(SceneQueueDto::from(queue)),
+                ..dto("queue")
             },
         }
     }
@@ -450,6 +527,22 @@ fn describe(households: &[HouseholdState], op: &SceneOp) -> String {
             Some(mood) => format!("{} starts the DJ ({mood})", room(coordinator)),
             None => format!("{} starts the DJ", room(coordinator)),
         },
+        SceneOp::Queue {
+            coordinator,
+            queue,
+            start,
+        } => format!(
+            "{} recalls queue track {} at {}:{:02}, {}",
+            room(coordinator),
+            queue.track,
+            queue.position_secs / 60,
+            queue.position_secs % 60,
+            if *start {
+                "playing"
+            } else {
+                "ready without playback"
+            },
+        ),
         SceneOp::Play { coordinator } => format!("{} plays", room(coordinator)),
         SceneOp::Pause { coordinator } => format!("{} pauses", room(coordinator)),
     }
@@ -641,6 +734,7 @@ impl Surface {
                 ),
             );
         }
+        def.validate_sources()?;
         let households = self.scene_house()?;
         let mut scene = def.scene(name, &households)?;
         for group in &mut scene.groups {
@@ -977,7 +1071,8 @@ impl Surface {
     /// `plan` without the steps the house policy denies `client`, each with
     /// a note: a client denied `set_volume` (or the class `volume`) applies a
     /// scene with the volumes left as they are. Each step is held to the
-    /// tool it is the work of ([`op_tool`]).
+    /// tools it is the work of. A queue recall is authorized as one operation:
+    /// denying any of its source, seek, mode or transport steps omits it all.
     fn permitted_ops(
         guard: &Guard<'_>,
         households: &[HouseholdState],
@@ -986,8 +1081,7 @@ impl Surface {
         let mut notes = Vec::new();
         let mut ops = Vec::with_capacity(plan.ops.len());
         for op in plan.ops {
-            let tool = op_tool(&op);
-            match guard.authorize(tool, false) {
+            match authorize_op(guard, &op) {
                 Ok(()) => ops.push(op),
                 Err(denied) => notes.push(Note {
                     code: if matches!(op, SceneOp::Volume { .. } | SceneOp::Mute { .. }) {
@@ -1083,7 +1177,20 @@ fn op_tool(op: &SceneOp) -> &'static str {
         SceneOp::Uri { .. } | SceneOp::Play { .. } => "play",
         SceneOp::Dj { .. } => "dj_start",
         SceneOp::Pause { .. } => "pause",
+        SceneOp::Queue { .. } => "play_queue",
     }
+}
+
+fn authorize_op(guard: &Guard<'_>, op: &SceneOp) -> Result<(), Failure> {
+    guard.authorize(op_tool(op), false)?;
+    if let SceneOp::Queue { queue, start, .. } = op {
+        guard.authorize("seek", false)?;
+        if queue.play_mode.is_some() {
+            guard.authorize("set_play_mode", false)?;
+        }
+        guard.authorize(if *start { "play" } else { "pause" }, false)?;
+    }
+    Ok(())
 }
 
 /// What a scene step changes, in words: "Kitchen's volume".
@@ -1102,9 +1209,13 @@ fn op_subject(households: &[HouseholdState], op: &SceneOp) -> String {
         SceneOp::Dj { coordinator, .. } => format!("the DJ in {}", room_of(coordinator)),
         SceneOp::Favorite { coordinator, .. }
         | SceneOp::Uri { coordinator, .. }
+        | SceneOp::Queue { coordinator, .. }
         | SceneOp::Play { coordinator }
         | SceneOp::Pause { coordinator } => {
             format!("what {} plays", room_of(coordinator))
         }
     }
 }
+
+#[cfg(test)]
+mod queue_tests;

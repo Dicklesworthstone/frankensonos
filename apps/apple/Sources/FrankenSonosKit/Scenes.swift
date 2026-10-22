@@ -19,12 +19,25 @@ extension Scene {
                 throw ContractError.invalid("A saved scene group has missing or repeated rooms.")
             }
             let source = group.source
+            guard source.kind == "queue" || source.queue == nil else {
+                throw ContractError.invalid("A scene has a queue reference attached to another music source. Capture it again.")
+            }
             switch source.kind {
             case "keep", "dj": break
             case "favorite":
                 guard source.name.map(named) == true else { throw ContractError.invalid("The scene favorite has no name.") }
             case "uri":
                 guard source.uri.map(named) == true else { throw ContractError.invalid("The scene source has no URI.") }
+            case "queue":
+                func identity(_ value: String) -> Bool {
+                    named(value) && value.utf8.count <= 1_024 &&
+                        !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+                }
+                guard let queue = source.queue, identity(queue.coordinator), queue.track > 0,
+                      queue.household.map(identity) != false,
+                      source.name == nil, source.uri == nil, source.mood == nil else {
+                    throw ContractError.invalid("The scene's saved queue position is incomplete. Capture the house again.")
+                }
             default:
                 throw ContractError.invalid("The scene uses an unsupported source: \(source.kind).")
             }

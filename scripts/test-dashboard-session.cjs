@@ -14,6 +14,9 @@ const dj = () => ({ zone: 'Studio', running: true, now: work(), next: [{ ...work
   steering: { source: 'session', mood: 'focus', constraints: { energy_bias: -1 }, added: {}, expires_at: 1800000000, expires_in_secs: 3600 } });
 const scene = () => ({ name: 'Dinner', saved: 1700000000, groups: [{ coordinator: 'Studio@S2', members: ['Kitchen@S2'], source: { kind: 'dj', mood: 'dinner' }, playing: true }],
   volumes: { 'Studio@S2': 22, 'Kitchen@S2': 18 }, mutes: { 'Kitchen@S2': false } });
+const queueScene = () => ({ ...scene(), groups: [{ ...scene().groups[0], source: { kind: 'queue', queue: {
+  coordinator: 'RINCON_SYNTHETIC', household: 'Sonos_fixture', update_id: 17, track: 3,
+  position_secs: 70, play_mode: 'REPEAT_ALL', boot_seq: 9 } } }] });
 const hit = () => ({ kind: 'track', title: 'A song', subtitle: 'An artist', source_uri: 'spotify:track:synthetic', score: 1 });
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a;reject=b; });return {resolve,reject,promise}; };
 const tick = () => new Promise((r) => setImmediate(r));
@@ -56,6 +59,31 @@ test('scene and mood catalogs reject incomplete shapes and duplicated names',()=
   assert.equal(S.scenes([scene()])[0].volumes['Kitchen@S2'],18);
   for(const v of [null,[{...scene(),volumes:{bad:101}}],[scene(),scene()]])assert.throws(()=>S.scenes(v));
   assert.throws(()=>S.moods({moods:[{name:'focus',constraints:{}},{name:'focus',constraints:{}}]}));
+});
+test('dashboard queue scenes retain a frozen exact recall reference and explain its limit',()=>{
+  const v = S.scene(queueScene());
+  assert.deepEqual(v.groups[0].source.queue, queueScene().groups[0].source.queue);
+  assert.equal(Object.isFrozen(v.groups[0].source.queue), true);
+  assert.match(S.sceneSource(v.groups[0].source), /track #3 at 1:10/);
+  assert.match(S.sceneSource(v.groups[0].source), /original player and unchanged queue/);
+  for (const bad of [null, {}, { ...v.groups[0].source.queue, track: 0 },
+    { ...v.groups[0].source.queue, play_mode: 'unknown' }]) {
+    const value = queueScene(); value.groups[0].source.queue = bad;
+    assert.throws(() => S.scene(value));
+  }
+  const hidden = queueScene(); hidden.groups[0].source.kind = 'keep';
+  assert.throws(() => S.scene(hidden));
+});
+test('dashboard queue recall rechecks the entire saved reference before writing',async()=>{
+  for (const changed of [false, true]) {
+    const f = fixture(); f.data.scene = queueScene(); await f.ready();
+    const reviewed = await f.session.reviewScene('Dinner');
+    assert.equal(reviewed.scene.groups[0].source.queue.track, 3);
+    if (changed) f.data.scene.groups[0].source.queue.boot_seq += 1;
+    assert.equal(await f.session.confirm(reviewed), !changed);
+    assert.equal(f.writes().length, changed ? 0 : 1);
+    if (!changed) assert.deepEqual(f.writes()[0], { url: '/scenes/Dinner/apply', body: {} });
+  }
 });
 test('session catalog and status are read-only, and movement count is not a track queue length',async()=>{
   const f=await fixture().ready();assert.equal(f.session.state.dj.now.movements,3);assert.equal(f.session.state.moods.length,2);assert.equal(f.writes().length,0);

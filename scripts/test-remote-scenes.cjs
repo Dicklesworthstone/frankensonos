@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const Scenes = require('../crates/fsonos-api/src/remote/scenes.js');
+const SceneQueue = require('../crates/fsonos-api/src/remote/scene-queue.js');
 
 const row = (extra = {}) => ({
   name: 'Evening',
@@ -17,6 +18,9 @@ const deferred = () => {
   const promise = new Promise((ok, no) => { resolve = ok; reject = no; });
   return { promise, resolve, reject };
 };
+const queueReference = () => ({ coordinator: 'RINCON_SYNTHETIC', household: 'Sonos_fixture',
+  update_id: 17, track: 3, position_secs: 70, play_mode: 'SHUFFLE_NOREPEAT', boot_seq: 9 });
+const queueRow = () => row({ groups: [{ ...row().groups[0], source: { kind: 'queue', queue: queueReference() } }] });
 
 function fixture(initial = [row()]) {
   let rows = structuredClone(initial);
@@ -72,6 +76,72 @@ test('signature ignores save time but binds every operational field', () => {
   assert.notEqual(Scenes.signature(a), Scenes.signature(Scenes.sceneOf(row({
     volumes: { ...row().volumes, 'Kitchen@S2': 25 },
   }))));
+});
+
+test('queue scene decoding retains the selected occurrence and explains the unchanged-queue requirement', () => {
+  const scene = Scenes.sceneOf(queueRow());
+  assert.deepEqual(scene.groups[0].source.queue, queueReference());
+  assert.equal(Object.isFrozen(scene.groups[0].source.queue), true);
+  assert.match(Scenes.detail(scene), /track #3 at 1:10/);
+  assert.match(Scenes.detail(scene), /original player and unchanged queue/);
+  assert.match(Scenes.detail(scene), /Queue contents are not saved/);
+  const unknown = SceneQueue.read({ ...queueReference(), play_mode: undefined, boot_seq: undefined, household: undefined });
+  assert.equal(unknown.play_mode, null);
+  assert.equal(unknown.boot_seq, null);
+  assert.doesNotMatch(SceneQueue.describe(unknown), /NORMAL/);
+});
+
+test('malformed queue references cannot enter the scene list', () => {
+  for (const change of [q => { q.coordinator = ''; }, q => { q.household = 1; },
+    q => { q.track = 0; }, q => { q.track = 2.5; }, q => { q.position_secs = -1; },
+    q => { q.update_id = 2 ** 32; }, q => { q.play_mode = 'unsupported'; }, q => { q.boot_seq = -1; }]) {
+    const scene = queueRow(); change(scene.groups[0].source.queue);
+    assert.throws(() => Scenes.scenesOf([scene]), /queue reference/);
+  }
+  const missing = queueRow(); delete missing.groups[0].source.queue;
+  assert.throws(() => Scenes.sceneOf(missing));
+  const hidden = queueRow(); hidden.groups[0].source.kind = 'keep';
+  assert.throws(() => Scenes.sceneOf(hidden));
+});
+
+test('the scene signature binds every queue identity, position and mode field', () => {
+  const original = Scenes.signature(Scenes.sceneOf(queueRow()));
+  for (const [field, value] of Object.entries({ coordinator: 'RINCON_OTHER', household: 'Sonos_other',
+    update_id: 18, track: 4, position_secs: 0, play_mode: 'REPEAT_ONE', boot_seq: 10 })) {
+    const changed = queueRow(); changed.groups[0].source.queue[field] = value;
+    assert.notEqual(Scenes.signature(Scenes.sceneOf(changed)), original, field);
+  }
+});
+
+test('queue scene apply sends once and changed recall references retire the review', async () => {
+  const f = fixture([queueRow()]); await f.control.refresh();
+  assert.equal(f.control.review('apply', 'Evening'), true);
+  const reviewed = f.control.state.pending;
+  assert.equal(await f.control.confirm(reviewed), true);
+  assert.equal(await f.control.confirm(reviewed), false);
+  assert.equal(f.writes.length, 1);
+  assert.deepEqual(f.writes[0].body, {});
+
+  const g = fixture([queueRow()]); await g.control.refresh();
+  g.control.review('apply', 'Evening'); const stale = g.control.state.pending;
+  const changed = queueRow(); changed.groups[0].source.queue.track = 4; g.set([changed]);
+  assert.equal(await g.control.confirm(stale), false);
+  assert.equal(g.writes.length, 0);
+});
+
+test('both embedded clients load the shared queue contract before their scene consumers', () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const root = path.join(__dirname, '../crates/fsonos-api/src');
+  const remote = fs.readFileSync(path.join(root, 'http/remote.rs'), 'utf8');
+  const dashboard = fs.readFileSync(path.join(root, 'http/remote/dashboard.rs'), 'utf8');
+  assert.match(remote, /\{SCENE_QUEUE_SCRIPT\}\\n\{SCENES_SCRIPT\}/);
+  assert.match(dashboard, /\{SCENE_QUEUE\}[\s\S]*\{SESSION\}/);
+  const context = vm.createContext({ input: JSON.stringify(queueRow()), ROUTES: {},
+    document: { getElementById: () => null } });
+  vm.runInContext(fs.readFileSync(path.join(root, 'remote/scene-queue.js'), 'utf8') + '\n'
+    + fs.readFileSync(path.join(root, 'remote/scenes.js'), 'utf8')
+    + '\nglobalThis.result = ScenesRemote.detail(ScenesRemote.sceneOf(JSON.parse(input)));', context);
+  assert.match(context.result, /track #3 at 1:10/);
 });
 
 test('opening, reviewing and cancelling are read-only', async () => {

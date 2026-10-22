@@ -34,10 +34,15 @@ fn scene_line(scene: &SceneDto) -> String {
                     .mood
                     .as_ref()
                     .map_or_else(|| "the DJ".to_string(), |m| format!("the DJ ({m})")),
+                "queue" => source.queue.as_ref().map_or_else(
+                    || "queue reference unavailable; capture the scene again".into(),
+                    fsonos_api::surface::scenes::SceneQueueDto::text,
+                ),
                 _ => "what it has".to_string(),
             };
             let state = match g.playing {
                 Some(true) => "playing",
+                Some(false) if source.kind == "queue" => "ready without playback",
                 Some(false) => "paused",
                 None => "playing or not as it is",
             };
@@ -107,6 +112,8 @@ impl Backend {
                 .with_hint("Name at least one, or leave the scene out to save the house as it is."),
             ));
         }
+        def.validate_sources()
+            .map_err(|error| crate::tool_error(&error))?;
         let path = format!("/scenes/{}", segment(name));
         if let Some(answer) = self.on_daemon("PUT", &path, Some(scene), |saved: &SceneDto| {
             format!("Saved {}", scene_line(saved))
@@ -162,7 +169,7 @@ impl Backend {
 }
 
 #[tool(
-    description = "List the saved scenes: named house states, each with how the rooms group, what each group plays (a favorite, a stream, the DJ in a mood, or whatever it has) and whether it plays, and each room's volume and mute. Put the house in one with apply_scene.",
+    description = "List the saved scenes: named house states, each with how the rooms group, what each group plays (a favorite, a URI, the DJ in a mood, a captured queue position, or whatever it has) and whether it plays, and each room's volume and mute. A queue reference requires the original unchanged queue; it is not a backup of its contents. Put the house in a scene with apply_scene.",
     annotations(read_only, idempotent)
 )]
 async fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -170,7 +177,7 @@ async fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallTool
 }
 
 #[tool(
-    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind dj with an optional mood, uri with a stream uri or a Spotify track, album or playlist link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. Its rooms must be in the house now, and its favorites in their group's household. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes."
+    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind dj with an optional mood, uri with a stream uri or a Spotify track, album or playlist link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. Capturing an ordinary queue saves its selected occurrence, elapsed time and known play mode as a reference to the original coordinator's unchanged queue; queue contents are not backed up. A changed queue or known speaker restart prevents recall. Queue references cannot be authored in scene; omit scene to capture them. Its rooms must be in the house now, and its favorites in their group's household. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes."
 )]
 async fn save_scene(
     ctx: &McpContext,
@@ -185,7 +192,7 @@ async fn save_scene(
 }
 
 #[tool(
-    description = "Put the house in the saved scene `name` (case ignored; list_scenes names them). Minimal: only the steps the house needs are sent (regroup, then volumes and mutes, then what plays, then play or pause), so applying a scene the house already matches changes nothing. Volumes stay within your caps. Undoable: undo_last restores the zones it changed. Rooms no longer in the house are skipped; a step that fails is reported and the rest still run. With `fade_secs` (1-60) the volumes ramp to the scene's over that long instead of jumping; the call answers when the fade is done.",
+    description = "Put the house in the saved scene `name` (case ignored; list_scenes names them). Only the needed steps are sent: regroup, volumes and mutes, sources and playback. A captured queue reference recalls its saved occurrence, elapsed time and known play mode only on the original unchanged queue; changed queues and known speaker restarts fail that step without playing a different source. It never reconstructs queue contents. Volumes stay within your caps. undo_last can attempt to restore prior speaker state. Rooms no longer in the house are skipped; a step that fails is reported and independent groups still run. With `fade_secs` (1-60) the volumes ramp to the scene's over that long instead of jumping; the call answers when the fade is done.",
     annotations(idempotent)
 )]
 async fn apply_scene(
@@ -200,7 +207,7 @@ async fn apply_scene(
 }
 
 #[tool(
-    description = "Show one saved scene by `name` (case ignored; list_scenes names the saved ones): how its rooms group, what each group plays and whether it plays, and each room's volume and mute. Nothing on the speakers changes; put the house in it with apply_scene.",
+    description = "Show one saved scene by `name` (case ignored; list_scenes names the saved ones): how its rooms group, what each group plays and whether it plays, and each room's volume and mute. Queue references show a saved occurrence and time in the original unchanged queue, not saved queue contents. Nothing on the speakers changes; put the house in it with apply_scene.",
     annotations(read_only, idempotent)
 )]
 async fn get_scene(
@@ -343,6 +350,73 @@ mod tests {
         );
         let unknown = error_text(b.get_scene("Morning"));
         assert!(unknown.starts_with("UNKNOWN_SCENE: "), "{unknown}");
+    }
+
+    #[test]
+    fn queue_scene_tools_describe_the_original_occurrence_and_preserve_its_wire_fields() {
+        let mut scene = evening();
+        scene.groups[0].source = SceneSource::Queue {
+            queue: scenes::QueueReference {
+                coordinator: fsonos_types::PlayerId("RINCON_TEST".into()),
+                household: Some(fsonos_types::HouseholdId("TEST-HOUSE".into())),
+                update_id: 42,
+                track: 3,
+                position_secs: 83,
+                play_mode: Some(fsonos_types::PlayMode::ShuffleNoRepeat),
+                boot_seq: Some(7),
+            },
+        };
+        scene.groups[0].playing = Some(false);
+        let b = backend(Client::McpStdio, &[scene]);
+        for result in [b.list_scenes().unwrap(), b.get_scene("Evening").unwrap()] {
+            let summary = text(&result);
+            assert!(
+                summary.contains("original unchanged queue, track 3 at 1:23, SHUFFLE_NOREPEAT")
+            );
+            assert!(summary.contains("queue contents are not saved"));
+            assert!(summary.contains("ready without playback"));
+            assert!(!summary.contains("what it has"));
+        }
+        let content = b.get_scene("Evening").unwrap().structured_content.unwrap();
+        assert_eq!(content["groups"][0]["source"]["kind"], "queue");
+        assert_eq!(content["groups"][0]["source"]["queue"]["track"], 3);
+        assert_eq!(content["groups"][0]["source"]["queue"]["boot_seq"], 7);
+    }
+
+    struct NoDaemon;
+
+    impl crate::tools::Daemon for NoDaemon {
+        fn call(
+            &self,
+            _: &str,
+            _: &str,
+            _: Option<&serde_json::Value>,
+        ) -> Option<Result<serde_json::Value, fsonos_api::Failure>> {
+            panic!("an authored queue reference must fail before daemon selection")
+        }
+    }
+
+    #[test]
+    fn queue_references_cannot_be_authored_before_any_daemon_or_house_read() {
+        let b = backend(Client::McpStdio, &[]).with_daemon(Arc::new(NoDaemon));
+        for source in [
+            serde_json::json!({"kind": "queue"}),
+            serde_json::json!({"kind": "keep", "queue": {
+                "coordinator": "RINCON_TEST", "update_id": 42,
+                "track": 3, "position_secs": 83
+            }}),
+        ] {
+            let failure = b
+                .save_scene_from(
+                    "Copied",
+                    &serde_json::json!({
+                        "groups": [{"coordinator": "Kitchen", "source": source}]
+                    }),
+                )
+                .unwrap_err();
+            assert!(failure.message.contains("only be captured"));
+            assert_eq!(failure.data.unwrap()["code"], "INVALID_ARGUMENT");
+        }
     }
 
     #[test]

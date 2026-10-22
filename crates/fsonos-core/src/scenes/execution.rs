@@ -99,7 +99,8 @@ pub(super) fn apply<T: Transport + ?Sized>(
             continue;
         }
         match run(t, &live, op, options, &mut favorites) {
-            Ok(()) => report.done.push(op.clone()),
+            Ok(true) => report.done.push(op.clone()),
+            Ok(false) => {}
             Err(error) => {
                 if let Some(coordinator) = sound_target(op) {
                     failed_sources.insert(coordinator.clone());
@@ -122,6 +123,7 @@ fn sound_target(op: &SceneOp) -> Option<&PlayerId> {
     match op {
         SceneOp::Favorite { coordinator, .. }
         | SceneOp::Uri { coordinator, .. }
+        | SceneOp::Queue { coordinator, .. }
         | SceneOp::Dj { coordinator, .. }
         | SceneOp::Play { coordinator }
         | SceneOp::Pause { coordinator } => Some(coordinator),
@@ -137,6 +139,7 @@ fn target(op: &SceneOp) -> &PlayerId {
         | SceneOp::Mute { player, .. } => player,
         SceneOp::Favorite { coordinator, .. }
         | SceneOp::Uri { coordinator, .. }
+        | SceneOp::Queue { coordinator, .. }
         | SceneOp::Dj { coordinator, .. }
         | SceneOp::Play { coordinator }
         | SceneOp::Pause { coordinator } => coordinator,

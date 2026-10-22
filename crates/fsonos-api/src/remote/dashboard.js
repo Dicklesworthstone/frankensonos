@@ -342,7 +342,7 @@
     if (r.scene) {
       for (const g of r.scene.groups) {
         const row = el('div', 'review-spec'); row.append(el('h3', '', [g.coordinator, ...g.members].join(' + ')),
-          el('p', '', `Source: ${g.source.kind}${g.source.mood ? ` · ${g.source.mood}` : ''}${g.source.name ? ` · ${g.source.name}` : ''}${g.source.uri ? ` · ${g.source.uri}` : ''}`),
+          el('p', '', `Source: ${S.sceneSource(g.source)}`),
           el('p', '', g.playing == null ? 'Keep playback state' : g.playing ? 'Playing' : 'Paused or stopped')); $('review-details').append(row);
       }
       const levels = el('div', 'review-spec'); levels.append(el('h3', '', 'Requested room levels (policy can clamp)'));

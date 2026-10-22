@@ -22,9 +22,10 @@
 //! names and player ids disambiguate duplicate names; ambiguity is an error,
 //! never a first-match choice. Captures retain every duplicate room. Rooms
 //! in different households can never share a group (S1 and S2 are always separate), so
-//! [`check`] rejects such a scene. A group's queue is not part of a scene:
-//! a group that played its queue keeps whatever it has
-//! ([`SceneSource::Keep`]). The DJ is started through [`SceneHooks`].
+//! [`check`] rejects such a scene. A captured queue source retains a guarded
+//! bookmark into the original queue: its occurrence, position and known play
+//! mode. Recall refuses an edited queue or a different coordinator; it never
+//! clears or rebuilds queue contents. The DJ is started through [`SceneHooks`].
 
 use crate::fade::Fader;
 use crate::favorites::{self, Favorite};
@@ -41,8 +42,10 @@ use std::time::Duration;
 
 mod execution;
 mod layout;
+mod queue;
 mod targets;
 
+pub use queue::QueueReference;
 pub use targets::canonical_room_name;
 
 /// The longest scene name.
@@ -105,6 +108,8 @@ pub enum SceneSource {
         #[serde(default)]
         metadata: String,
     },
+    /// A captured occurrence in an unchanged queue on its original player.
+    Queue { queue: QueueReference },
     /// The DJ, in `mood`.
     Dj {
         #[serde(default)]
@@ -178,6 +183,13 @@ pub enum SceneOp {
         metadata: String,
         start: bool,
     },
+    /// Recall a guarded queue bookmark. `start` is the final playback
+    /// intent: false loads it silently, ready to resume.
+    Queue {
+        coordinator: PlayerId,
+        queue: QueueReference,
+        start: bool,
+    },
     /// Start (or steer) the DJ.
     Dj {
         coordinator: PlayerId,
@@ -197,7 +209,9 @@ impl SceneOp {
     #[must_use]
     pub fn starts(&self) -> bool {
         match self {
-            Self::Favorite { start, .. } | Self::Uri { start, .. } => *start,
+            Self::Favorite { start, .. } | Self::Uri { start, .. } | Self::Queue { start, .. } => {
+                *start
+            }
             Self::Dj { .. } | Self::Play { .. } => true,
             Self::Leave { .. }
             | Self::Join { .. }
@@ -300,6 +314,12 @@ pub fn check(scene: &Scene, households: &[HouseholdState]) -> Result<Vec<String>
     let mut seen: Vec<String> = Vec::new();
     let mut players: Vec<(usize, PlayerId)> = Vec::new();
     for g in &scene.groups {
+        if let SceneSource::Queue { queue } = &g.source {
+            queue.validate().map_err(|why| SceneError::Corrupt {
+                name: scene.name.clone(),
+                why,
+            })?;
+        }
         let mut house = None;
         let mut rooms = Vec::new();
         for name in std::iter::once(&g.coordinator).chain(&g.members) {
@@ -434,6 +454,16 @@ fn plan_sources(
         });
         let coordinator = lead.primary.clone();
         let playing_now = now.is_some_and(|s| s.transport_state == TransportState::Playing);
+        if let SceneSource::Queue { queue } = &g.source {
+            // Even an apparently unchanged bookmark needs a live reboot and
+            // revision check. Execution reports a verified no-op separately.
+            plan.ops.push(SceneOp::Queue {
+                coordinator,
+                queue: queue.clone(),
+                start: g.playing.unwrap_or(playing_now),
+            });
+            continue;
+        }
         // A group that leads but whose state was not read may be playing:
         // its source takes the old path. One that does not lead yet will
         // leave its group, which stops it.
@@ -444,7 +474,7 @@ fn plan_sources(
         // a source that fails leaves its music playing as it was.
         let start = g.playing != Some(false) || maybe_playing;
         let source = match &g.source {
-            SceneSource::Keep => None,
+            SceneSource::Keep | SceneSource::Queue { .. } => None,
             SceneSource::Favorite { name, uri } => (uri.is_none() || on_now != uri.as_deref())
                 .then(|| SceneOp::Favorite {
                     coordinator: coordinator.clone(),
@@ -518,6 +548,11 @@ fn silence_starting<T: Transport + ?Sized>(
                 ..
             }
             | SceneOp::Uri {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::Queue {
                 coordinator,
                 start: true,
                 ..
@@ -698,7 +733,7 @@ fn run<T: Transport + ?Sized>(
     op: &SceneOp,
     options: &ApplyOptions<'_>,
     favorites: &mut HashMap<usize, Vec<Favorite>>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let s = |e: CoreError| e.to_string();
     match op {
         SceneOp::Leave { player, .. } => control::leave(t, households, player).map_err(s),
@@ -751,11 +786,19 @@ fn run<T: Transport + ?Sized>(
             metadata,
             start: false,
         } => load_source(t, households, coordinator, uri, metadata).map_err(s),
+        SceneOp::Queue {
+            coordinator,
+            queue,
+            start,
+        } => {
+            return queue::restore(t, households, coordinator, queue, *start);
+        }
         SceneOp::Dj { coordinator, mood } => options.hooks.start_dj(coordinator, mood.as_deref()),
         SceneOp::Play { coordinator } => control::resume(t, households, coordinator).map_err(s),
         // A stream that cannot pause stops (control::pause_at).
         SceneOp::Pause { coordinator } => control::pause(t, households, coordinator).map_err(s),
     }
+    .map(|()| true)
 }
 
 /// A group the DJ is playing in as a scene is saved, and the mood its
@@ -768,7 +811,7 @@ pub struct PlayingDj {
 
 /// The house as it is now, as a scene called `name`: every group, every
 /// room's level, and what each group plays (the DJ where `djs` says it
-/// plays, a favorite when the URI is one, a URI, or else whatever it has).
+/// plays, a favorite when the URI is one, a URI, or a guarded queue bookmark).
 pub fn capture<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -800,6 +843,7 @@ pub fn capture<T: Transport + ?Sized>(
             else {
                 continue;
             };
+            let before_boot = queue::boot(t, households, &group.coordinator)?;
             let snap = snapshot::capture(t, households, &group.coordinator, now)?;
             for level in &snap.levels {
                 if let Some(r) = household.rooms.iter().find(|r| r.primary == level.player) {
@@ -827,6 +871,10 @@ pub fn capture<T: Transport + ?Sized>(
                             metadata: metadata.clone(),
                         },
                     }
+                }
+                (None, SnapshotSource::Queue { .. }) => {
+                    queue::capture(t, households, &snap, before_boot)?
+                        .map_or(SceneSource::Keep, |queue| SceneSource::Queue { queue })
                 }
                 (None, _) => SceneSource::Keep,
             };

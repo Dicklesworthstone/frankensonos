@@ -2,6 +2,7 @@
 'use strict';
 
 const ScenesRemote = (() => {
+  const queueApi = () => typeof SceneQueue !== 'undefined' ? SceneQueue : require('./scene-queue.js');
   const routes = {
     scene: ['GET', '/scenes/{name}'],
     sceneSave: ['PUT', '/scenes/{name}'],
@@ -17,7 +18,8 @@ const ScenesRemote = (() => {
     : 'The request failed.';
 
   function sourceOf(v) {
-    if (!plain(v) || !['keep', 'favorite', 'uri', 'dj'].includes(v.kind)) {
+    if (!plain(v) || !['keep', 'favorite', 'uri', 'dj', 'queue'].includes(v.kind)
+        || (v.kind !== 'queue' && v.queue != null)) {
       throw new Error('A scene source is unreadable.');
     }
     for (const key of ['name', 'uri', 'mood']) if (v[key] != null && !text(v[key], 2048)) {
@@ -25,7 +27,8 @@ const ScenesRemote = (() => {
     }
     if (v.kind === 'favorite' && !v.name) throw new Error('A favorite source has no name.');
     if (v.kind === 'uri' && !v.uri) throw new Error('A URI source has no URI.');
-    return Object.freeze({ kind: v.kind, name: v.name ?? null, uri: v.uri ?? null, mood: v.mood ?? null });
+    return Object.freeze({ kind: v.kind, name: v.name ?? null, uri: v.uri ?? null, mood: v.mood ?? null,
+      ...(v.kind === 'queue' ? { queue: queueApi().read(v.queue) } : {}) });
   }
 
   function settingsOf(v, kind) {
@@ -90,7 +93,8 @@ const ScenesRemote = (() => {
     return JSON.stringify([
       scene.name,
       scene.groups.map((g) => [g.coordinator, g.members, g.source.kind, g.source.name,
-        g.source.uri, g.source.mood, g.playing]),
+        g.source.uri, g.source.mood, g.playing,
+        g.source.kind === 'queue' ? queueApi().signature(g.source.queue) : null]),
       Object.entries(scene.volumes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
       Object.entries(scene.mutes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
     ]);
@@ -103,7 +107,7 @@ const ScenesRemote = (() => {
       const src = g.source.kind === 'favorite' ? `favorite “${g.source.name}”`
         : g.source.kind === 'uri' ? g.source.uri
           : g.source.kind === 'dj' ? `DJ${g.source.mood ? ` (${g.source.mood})` : ''}`
-            : 'keep current source';
+            : g.source.kind === 'queue' ? queueApi().describe(g.source.queue) : 'keep current source';
       lines.push(`${rooms}: ${src}${g.playing == null ? '' : g.playing ? '; playing' : '; paused'}`);
     }
     const volumes = Object.entries(scene.volumes).map(([room, level]) => `${room} ${level}`).join(', ');

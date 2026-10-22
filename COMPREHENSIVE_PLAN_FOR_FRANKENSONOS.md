@@ -751,6 +751,16 @@ mood). `scene apply` diffs current state against the scene and issues only the
 operations needed. One call replaces five to ten, and it matches how people
 describe what they want ("dinner", "work").
 
+Capturing a non-DJ queue now records its original coordinator, household,
+queue revision, selected occurrence, elapsed position and known play mode.
+Applying that scene can return from a radio source to the saved queue while
+the queue remains unchanged. Recall checks the original player and, when
+available, its boot sequence before playback writes. A changed reference
+fails that source step and blocks dependent playback. Queue entries are never
+rebuilt or cleared by recall; full queue backups and reconstruction remain a
+separate feature. Existing `keep` scenes retain their original behavior.
+See `docs/SCENE_QUEUES.md` for the capture and apply contract.
+
 ### 12.8 An instant CLI through the daemon
 
 [`d-cli-daemon-client`] The CLI uses a running daemon's warm state when one

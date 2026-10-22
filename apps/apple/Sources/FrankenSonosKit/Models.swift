@@ -228,6 +228,33 @@ public struct Scene: Codable, Equatable, Sendable, Identifiable {
         public let name: String?
         public let uri: String?
         public let mood: String?
+        public let queue: QueueReference?
+
+        public init(kind: String, name: String?, uri: String?, mood: String?, queue: QueueReference? = nil) {
+            self.kind = kind; self.name = name; self.uri = uri; self.mood = mood; self.queue = queue
+        }
+    }
+    /// A position in the original coordinator's unchanged queue. Its contents
+    /// are not copied into the scene, and only house capture creates it.
+    public struct QueueReference: Codable, Equatable, Sendable {
+        public let coordinator: String
+        public let household: String?
+        public let updateId: UInt32
+        public let track: UInt32
+        public let positionSecs: UInt32
+        public let playMode: QueuePlaybackMode?
+        public let bootSeq: UInt32?
+
+        public init(coordinator: String, household: String? = nil, updateId: UInt32, track: UInt32,
+                    positionSecs: UInt32, playMode: QueuePlaybackMode? = nil, bootSeq: UInt32? = nil) {
+            self.coordinator = coordinator; self.household = household; self.updateId = updateId
+            self.track = track; self.positionSecs = positionSecs; self.playMode = playMode; self.bootSeq = bootSeq
+        }
+
+        public var summary: String {
+            let seconds = String(format: "%02d", positionSecs % 60)
+            return "Original unchanged queue · track \(track) at \(positionSecs / 60):\(seconds)"
+        }
     }
 }
 public struct SceneReport: Codable, Equatable, Sendable {

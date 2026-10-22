@@ -18,6 +18,7 @@ const CORE: &str = include_str!("../../remote/dashboard-core.js");
 const VISUALIZER: &str = include_str!("../../remote/dashboard-visualizer.js");
 const AUDIO: &str = include_str!("../../remote/dashboard-audio.js");
 const SESSION: &str = include_str!("../../remote/dashboard-session.js");
+const SCENE_QUEUE: &str = include_str!("../../remote/scene-queue.js");
 const QUEUE_STYLE: &str = include_str!("../../remote/dashboard-queue.css");
 const QUEUE: &str = include_str!("../../remote/dashboard-queue.js");
 const ACTIVITY: &str = include_str!("../../remote/dashboard-activity.js");
@@ -71,7 +72,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 document(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENTS}\n{CORE}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{SCRIPT}"
+                        "{EVENTS}\n{CORE}\n{LIVE}\n{VISUALIZER}\n{AUDIO}\n{SCENE_QUEUE}\n{PLAYLIST}\n{LIBRARY}\n{SESSION}\n{QUEUE}\n{LIBRARY_PANEL}\n{ACTIVITY}\n{ACTIVITY_PANEL}\n{WORKSPACE}\n{SCRIPT}"
                     ),
                 )
             },

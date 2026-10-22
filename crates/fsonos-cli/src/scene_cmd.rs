@@ -33,7 +33,9 @@ pub struct SceneArgs {
 enum SceneAction {
     /// Save the house as it is now as a scene: grouping, volumes and mutes,
     /// what each group plays (replaces a scene of that name). With --from, the
-    /// scene a TOML file writes out instead.
+    /// scene a TOML file writes out instead. Ordinary queues save a position
+    /// reference: recall requires the original unchanged queue; contents are
+    /// not backed up.
     Save {
         name: String,
         /// A TOML file writing the scene out: `[[groups]]` with `coordinator`,
@@ -44,7 +46,8 @@ enum SceneAction {
         from: Option<PathBuf>,
     },
     /// Put the house in a scene: only the steps it needs are sent;
-    /// `fsonos undo` puts it back. Exits 1 if a step failed.
+    /// captured queue positions require the original unchanged queue.
+    /// `fsonos undo` attempts to restore prior speaker state. Exits 1 if a step failed.
     Apply {
         name: String,
         /// Ramp the volumes to the scene's over this long instead of at once
@@ -94,6 +97,7 @@ pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
                 .with_hint("Write at least one, or drop --from to save the house as it is.")
                 .into());
             }
+            def.validate_sources()?;
             let scene: SceneDto = match Daemon::find(global, global.daemon)? {
                 Some(daemon) => daemon.put_json(&format!("/scenes/{}", pct(name)), &def)?,
                 None => s()?.save_scene_from(&cli, name, &def)?,
@@ -169,10 +173,15 @@ fn group_text(g: &SceneGroupDto) -> String {
             .mood
             .as_ref()
             .map_or_else(|| "the DJ".to_string(), |m| format!("the DJ ({m})")),
+        "queue" => source.queue.as_ref().map_or_else(
+            || "queue reference unavailable; capture the scene again".into(),
+            fsonos_api::surface::scenes::SceneQueueDto::text,
+        ),
         _ => "what it has".to_string(),
     };
     let state = match g.playing {
         Some(true) => "playing",
+        Some(false) if source.kind == "queue" => "ready without playback",
         Some(false) => "paused",
         None => "playing or not as it is",
     };
@@ -241,6 +250,7 @@ mod tests {
             name: None,
             uri: None,
             mood: None,
+            queue: None,
         };
         SceneDto {
             name: "Evening".into(),
@@ -279,5 +289,31 @@ mod tests {
              paused\n  volumes: Kitchen 30, Office 25 (muted)\n"
         );
         assert!(list_text(&[]).starts_with("no scenes saved yet"));
+    }
+
+    #[test]
+    fn captured_queue_text_explains_occurrence_and_recall_limits() {
+        let mut scene = evening();
+        scene.groups[0].source = SceneSourceDto {
+            kind: "queue".into(),
+            name: None,
+            uri: None,
+            mood: None,
+            queue: Some(fsonos_api::surface::scenes::SceneQueueDto {
+                coordinator: "RINCON_SYNTHETIC".into(),
+                household: Some("TEST-HOUSE".into()),
+                update_id: 42,
+                track: 3,
+                position_secs: 83,
+                play_mode: Some("SHUFFLE_NOREPEAT".into()),
+                boot_seq: Some(7),
+            }),
+        };
+        scene.groups[0].playing = Some(false);
+        let text = show_text(&scene);
+        assert!(text.contains("original unchanged queue, track 3 at 1:23, SHUFFLE_NOREPEAT"));
+        assert!(text.contains("queue contents are not saved"));
+        assert!(text.contains("ready without playback"));
+        assert!(!text.contains("Kitchen + Office: what it has"));
     }
 }

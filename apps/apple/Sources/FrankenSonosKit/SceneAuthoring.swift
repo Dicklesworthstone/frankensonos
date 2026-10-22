@@ -93,6 +93,9 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
         }
         var used = Set<RoomID>()
         let checked = try groups.map { group -> Scene.Group in
+            guard group.source.kind != "queue", group.source.queue == nil else {
+                throw ContractError.invalid("Capture the current house to save a queue position. Queue references cannot be authored, and their contents are not backed up.")
+            }
             let coordinator = try room(group.coordinator)
             for address in [group.coordinator] + group.members {
                 let member = try room(address)

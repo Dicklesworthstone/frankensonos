@@ -6,6 +6,7 @@ const DashboardSession = (() => {
     : typeof require === 'function' ? require('./dashboard-queue.js') : null;
   const libraryApi = () => typeof DashboardLibrary !== 'undefined' ? DashboardLibrary
     : typeof require === 'function' ? require('./dashboard-library.js') : null;
+  const sceneQueueApi = () => typeof SceneQueue !== 'undefined' ? SceneQueue : require('./scene-queue.js');
   const text = (v, max = 4096) => typeof v === 'string' && v.trim() !== '' && v.length <= max;
   const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
   const uint = (v) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
@@ -55,7 +56,8 @@ const DashboardSession = (() => {
   function scene(v) {
     if (!object(v) || !text(v.name, 256) || !Number.isSafeInteger(v.saved)
         || !list(v.groups, (g) => object(g) && text(g.coordinator) && list(g.members, text)
-          && object(g.source) && ['keep', 'favorite', 'uri', 'dj'].includes(g.source.kind)
+          && object(g.source) && ['keep', 'favorite', 'uri', 'dj', 'queue'].includes(g.source.kind)
+          && (g.source.kind === 'queue' || g.source.queue == null)
           && (g.source.kind !== 'favorite' || text(g.source.name))
           && (g.source.kind !== 'uri' || text(g.source.uri))
           && (g.source.mood == null || text(g.source.mood))
@@ -63,7 +65,15 @@ const DashboardSession = (() => {
         || !object(v.volumes) || !object(v.mutes) || Object.keys(v.volumes).length > 256 || Object.keys(v.mutes).length > 256
         || Object.entries(v.volumes).some(([r, n]) => !text(r) || !Number.isInteger(n) || n < 0 || n > 100)
         || Object.entries(v.mutes).some(([r, m]) => !text(r) || typeof m !== 'boolean')) fail('The saved scene is unreadable.');
-    return freeze(clone(v));
+    const copy = clone(v);
+    for (const group of copy.groups) if (group.source.kind === 'queue') {
+      group.source.queue = sceneQueueApi().read(group.source.queue);
+    }
+    return freeze(copy);
+  }
+  function sceneSource(source) {
+    return source.kind === 'queue' ? sceneQueueApi().describe(source.queue)
+      : `${source.kind}${source.mood ? ` · ${source.mood}` : ''}${source.name ? ` · ${source.name}` : ''}${source.uri ? ` · ${source.uri}` : ''}`;
   }
   function scenes(v) {
     if (!Array.isArray(v) || v.length > 128) fail('The scene catalog is unreadable.');
@@ -302,6 +312,6 @@ const DashboardSession = (() => {
       dispose() { disposed = true; active = false; ++version; ++intent; ++searchVersion; ++catalogVersion; },
     };
   }
-  return { model, work, dj, djIdentity, playbackIdentity, moods, scene, scenes, hits, stable };
+  return { model, work, dj, djIdentity, playbackIdentity, moods, scene, sceneSource, scenes, hits, stable };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = DashboardSession;

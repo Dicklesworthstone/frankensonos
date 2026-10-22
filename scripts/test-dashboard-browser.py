@@ -12,7 +12,7 @@ import re
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1] / 'crates/fsonos-api/src/remote'
-SCRIPTS = ['dashboard-core.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard.js']
+SCRIPTS = ['dashboard-core.js', 'dashboard-visualizer.js', 'dashboard-audio.js', 'scene-queue.js', 'dashboard-session.js', 'dashboard-queue.js', 'dashboard-workspace.js', 'dashboard.js']
 FIXTURE = r"""
 window.fixture = {
   writes: [], calls: [], feeds: [], offline:false, lost:false, partial:false, rawTitle:'II. Fixture movement',
