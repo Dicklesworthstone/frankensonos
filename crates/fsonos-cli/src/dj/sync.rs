@@ -199,6 +199,10 @@ impl LibrarySync {
         state.running = false;
         state.error = result.as_ref().err().map(|f| f.detail.clone());
         drop(state);
+        let result = result.map(|mut synced| {
+            synced.genre_stalled = stalled(self.last().as_ref(), &synced);
+            synced
+        });
         if let Ok(synced) = &result {
             self.fresh.store(true, Ordering::Release);
             if let Err(e) = write_stamp(&self.data_dir, synced) {
@@ -245,6 +249,7 @@ impl LibrarySync {
             classical: synced.library.classical,
             retired: synced.library.retired,
             genre_artists_pending: pending,
+            genre_stalled: 0,
             notes: synced.notes,
         })
     }
@@ -263,13 +268,25 @@ impl LibrarySync {
         last_synced(&self.data_dir)
     }
 
-    /// Whether a refresh is due at `now` (Unix seconds): never made, or
-    /// older than [`MAX_AGE`].
+    /// Whether a refresh is due at `now` (Unix seconds): never made, older
+    /// than [`MAX_AGE`], or with artist genres still pending. Pending genres
+    /// are retried at the next check while the refreshes make progress; each
+    /// one in a row that made none doubles the wait, from two [`CHECK`]s up
+    /// to [`MAX_AGE`] (sp4f.14).
     #[must_use]
     pub fn due(&self, now: i64) -> bool {
         let max = i64::try_from(MAX_AGE.as_secs()).unwrap_or(i64::MAX);
-        self.last()
-            .is_none_or(|last| last.genre_artists_pending > 0 || now.saturating_sub(last.at) >= max)
+        let check = i64::try_from(CHECK.as_secs()).unwrap_or(i64::MAX);
+        self.last().is_none_or(|last| {
+            let age = now.saturating_sub(last.at);
+            let shift = u32::try_from(last.genre_stalled.min(16)).unwrap_or(16);
+            let retry = if last.genre_stalled == 0 {
+                0
+            } else {
+                check.saturating_mul(1_i64 << shift).min(max)
+            };
+            age >= max || (last.genre_artists_pending > 0 && age >= retry)
+        })
     }
 
     /// Whether a refresh landed since the last call (the DJ then rebuilds
@@ -310,6 +327,20 @@ pub fn watch(sync: Option<Arc<LibrarySync>>, stop: Arc<AtomicBool>) {
         });
     if let Err(e) = spawned {
         tracing::warn!("not refreshing the library: {e}");
+    }
+}
+
+/// How many refreshes in a row, `now` included, left at least as many artist
+/// genres pending as the one before (`previous`).
+fn stalled(previous: Option<&SyncedDto>, now: &SyncedDto) -> usize {
+    match previous {
+        Some(before)
+            if now.genre_artists_pending > 0
+                && now.genre_artists_pending >= before.genre_artists_pending =>
+        {
+            before.genre_stalled.saturating_add(1)
+        }
+        _ => 0,
     }
 }
 
@@ -452,6 +483,7 @@ mod tests {
             classical: 1,
             retired: 0,
             genre_artists_pending: 0,
+            genre_stalled: 0,
             notes: Vec::new(),
         }
     }
@@ -473,6 +505,27 @@ mod tests {
             sync.due(1_000_001 + day),
             "unfinished genre enrichment retries at the next daemon check"
         );
+        // Refreshes that keep leaving the same artists pending back off:
+        // the wait doubles each time, up to a day (sp4f.14).
+        let check = i64::try_from(CHECK.as_secs()).unwrap();
+        let at = 1_000_000 + day;
+        pending.genre_stalled = 1;
+        write_stamp(&sync.data_dir, &pending).unwrap();
+        assert!(!sync.due(at + 1));
+        assert!(!sync.due(at + 2 * check - 1));
+        assert!(sync.due(at + 2 * check));
+        pending.genre_stalled = 2;
+        write_stamp(&sync.data_dir, &pending).unwrap();
+        assert!(!sync.due(at + 4 * check - 1));
+        assert!(sync.due(at + 4 * check));
+        pending.genre_stalled = 40;
+        write_stamp(&sync.data_dir, &pending).unwrap();
+        assert!(!sync.due(at + day - 1));
+        assert!(sync.due(at + day));
+        assert_eq!(stalled(Some(&pending), &pending), 41);
+        let mut progressed = pending.clone();
+        progressed.genre_artists_pending = 2;
+        assert_eq!(stalled(Some(&pending), &progressed), 0);
 
         std::fs::write(
             sync.data_dir.join(STAMP),

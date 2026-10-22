@@ -56,6 +56,12 @@ pub struct SyncedDto {
     /// next pass continue rather than repeat them.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub genre_artists_pending: usize,
+    /// Refreshes in a row that left as many artists pending as the one
+    /// before (Spotify refusing artist reads, say): each doubles the wait
+    /// before the next, so a refusal does not re-read the whole library
+    /// every few minutes.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub genre_stalled: usize,
     /// What the refresh couldn't read this time, a sentence each: taste
     /// signals the grant lacks, reads that failed or stopped early, artists
     /// left for the next refresh. It reads them again then. Empty when it
@@ -156,6 +162,7 @@ mod tests {
             classical: 300,
             retired,
             genre_artists_pending: 0,
+            genre_stalled: 0,
             notes: Vec::new(),
         }
     }
