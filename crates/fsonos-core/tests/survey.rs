@@ -2,7 +2,7 @@
 //! and S2 fixtures: SSDP replies, device descriptions, and one
 //! ZoneGroupTopology read per household.
 
-use fsonos_core::inventory::{survey, survey_or_remembered};
+use fsonos_core::inventory::{survey, survey_known_first, survey_or_remembered};
 use fsonos_proto::mdns;
 use fsonos_proto::{ProtoError, Transport, ssdp};
 use fsonos_types::{Generation, PlayerId};
@@ -37,6 +37,8 @@ struct FakeLan {
     /// An address that is advertised but never answers.
     dead: Option<&'static str>,
     topology_reads: RefCell<Vec<IpAddr>>,
+    /// How long each SSDP search was asked to wait.
+    waits: RefCell<Vec<Duration>>,
 }
 
 impl FakeLan {
@@ -46,6 +48,7 @@ impl FakeLan {
             mdns: false,
             dead: None,
             topology_reads: RefCell::new(Vec::new()),
+            waits: RefCell::new(Vec::new()),
         }
     }
 }
@@ -81,7 +84,8 @@ impl Transport for FakeLan {
             })
     }
 
-    fn ssdp_search(&self, _mx: u8, _wait: Duration) -> Result<Vec<ssdp::Advert>, ProtoError> {
+    fn ssdp_search(&self, _mx: u8, wait: Duration) -> Result<Vec<ssdp::Advert>, ProtoError> {
+        self.waits.borrow_mut().push(wait);
         if !self.ssdp {
             return Err(ProtoError::Network {
                 target: "SSDP".into(),
@@ -190,6 +194,39 @@ fn seeds_stand_in_when_ssdp_fails() {
 
     // Without seeds an SSDP failure is the survey's failure.
     assert!(survey(&lan, &[], Duration::from_millis(1)).is_err());
+}
+
+/// Known players that all answer are enough: their households name every
+/// member, so no discovery window is waited out (co55.11). One that no
+/// longer answers, or none known, waits for discovery as before.
+#[test]
+fn known_players_answer_without_waiting_for_discovery() {
+    let wait = Duration::from_secs(2);
+    let lan = FakeLan::new();
+    let found =
+        survey_known_first(&lan, &[ip("192.0.2.11")], || vec![ip("192.0.2.21")], wait).unwrap();
+    assert_eq!(found.households.len(), 2);
+    assert!(found.unreachable.is_empty(), "{:?}", found.unreachable);
+    assert!(
+        lan.waits.borrow().iter().all(Duration::is_zero),
+        "{:?}",
+        lan.waits.borrow()
+    );
+
+    // A known address that no longer answers: discovery after all.
+    let lan = FakeLan::new();
+    let found = survey_known_first(&lan, &[ip("192.0.2.99")], Vec::new, wait).unwrap();
+    assert_eq!(found.households.len(), 2);
+    assert!(
+        lan.waits.borrow().contains(&wait),
+        "{:?}",
+        lan.waits.borrow()
+    );
+
+    // None known: discovery, as a survey always did.
+    let lan = FakeLan::new();
+    survey_known_first(&lan, &[], Vec::new, wait).unwrap();
+    assert_eq!(*lan.waits.borrow(), [wait]);
 }
 
 #[test]

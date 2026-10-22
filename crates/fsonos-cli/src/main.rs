@@ -605,7 +605,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn discover(global: &config::GlobalArgs) -> anyhow::Result<()> {
-    let found = Direct::survey(global)?.discover();
+    let found = Direct::discovering(global)?.discover();
     for (addr, why) in &found.unreachable {
         tracing::warn!("{addr}: found but unreadable: {why}");
     }

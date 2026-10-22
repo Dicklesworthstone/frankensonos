@@ -42,20 +42,42 @@ impl Direct {
     /// Survey the LAN (SSDP for `global.wait`, plus the seeds) and load the
     /// house policy from the data directory (defaults when there is none).
     pub fn survey(global: &GlobalArgs) -> Result<Self, Failure> {
-        Self::open(global, None)
+        Self::opened(global, None, true)
     }
 
-    /// [`Self::survey`], with `doctor_checks` added to the doctor's report.
+    /// [`Self::survey`] waiting out discovery even when the known players
+    /// answer: `fsonos discover`, whose job is to find players nothing
+    /// knows yet.
+    pub fn discovering(global: &GlobalArgs) -> Result<Self, Failure> {
+        Self::opened(global, None, false)
+    }
+
+    /// [`Self::discovering`], with `doctor_checks` added to the doctor's
+    /// report.
     pub fn open(
         global: &GlobalArgs,
         doctor_checks: Option<fsonos_api::surface::DoctorChecks>,
+    ) -> Result<Self, Failure> {
+        Self::opened(global, doctor_checks, false)
+    }
+
+    /// With `known_first`, the seeds and remembered players are asked
+    /// before any discovery window ([`inventory::survey_known_first`]).
+    fn opened(
+        global: &GlobalArgs,
+        doctor_checks: Option<fsonos_api::surface::DoctorChecks>,
+        known_first: bool,
     ) -> Result<Self, Failure> {
         let seeds = global.seed_addrs()?;
         let data_dir = global.data_dir();
         let remembered = move || crate::known_players::remembered(data_dir.as_deref());
         let wait = global.wait();
         let lan = global.lan()?;
-        let survey = inventory::survey_or_remembered(&*lan, &seeds, &remembered, wait)?;
+        let survey = if known_first {
+            inventory::survey_known_first(&*lan, &seeds, &remembered, wait)?
+        } else {
+            inventory::survey_or_remembered(&*lan, &seeds, &remembered, wait)?
+        };
         if let Some(dir) = global.data_dir() {
             crate::completions::remember_rooms(
                 &dir,
@@ -64,7 +86,11 @@ impl Direct {
                     .iter()
                     .flat_map(|h| h.rooms.iter().map(|r| r.name.clone())),
             );
-            if !survey.households.is_empty() {
+            // Known players that answered found nothing new to remember,
+            // and with no discovery their households carry no id: keeping
+            // them would lose the ids a discovery recorded.
+            let unnamed = known_first && survey.households.iter().any(|h| h.id.is_none());
+            if !survey.households.is_empty() && !unnamed {
                 crate::known_players::remember_in(&dir, &survey.households);
             }
         }

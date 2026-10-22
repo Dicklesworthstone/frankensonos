@@ -308,6 +308,35 @@ pub fn survey_or_remembered<T: Transport + ?Sized>(
     }
 }
 
+/// [`survey_or_remembered`], asking the players already known (the seeds
+/// and the remembered ones) first, with no discovery window: a household's
+/// topology names every member, so when every known player answers the
+/// survey is done at once, and a command without the daemon answers in a
+/// moment rather than after the SSDP wait. With none known, or one that no
+/// longer answers (it moved, or is off), discovery runs as
+/// [`survey_or_remembered`] does, since only it may find that player.
+pub fn survey_known_first<T: Transport + ?Sized>(
+    t: &T,
+    seeds: &[IpAddr],
+    remembered: impl FnOnce() -> Vec<IpAddr>,
+    wait: Duration,
+) -> Result<Survey, CoreError> {
+    let mut known = seeds.to_vec();
+    for ip in remembered() {
+        if !known.contains(&ip) {
+            known.push(ip);
+        }
+    }
+    if !known.is_empty()
+        && let Ok(found) = survey(t, &known, Duration::ZERO)
+        && !found.households.is_empty()
+        && found.unreachable.is_empty()
+    {
+        return Ok(found);
+    }
+    survey_or_remembered(t, seeds, || known, wait)
+}
+
 /// The generation a player's `swGen` (device description) or `SWGen`
 /// (topology) value names.
 #[must_use]
