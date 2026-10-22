@@ -1,0 +1,8 @@
+# ee (Eidetic Engine) workspace: commit the durable store, ignore rebuildable runtime state.
+ee.write.lock
+ee.db-wal
+ee.db-shm
+ee.db-wal-cert
+index/
+index.previous*
+write-spool/
