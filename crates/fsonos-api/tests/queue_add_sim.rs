@@ -16,7 +16,7 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan};
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 const ROOM: &str = "Living Room";
@@ -125,9 +125,10 @@ fn a_track_goes_next_an_album_to_the_end_and_undo_takes_them_off() {
 }
 
 /// Passes everything to the sim, but loses every queue add's reply: the
-/// tracks are queued all the same.
+/// tracks are queued all the same. Counts the adds sent.
 struct LostAdd {
     lan: SimLan,
+    adds: Arc<AtomicUsize>,
 }
 
 impl Transport for LostAdd {
@@ -140,6 +141,7 @@ impl Transport for LostAdd {
     ) -> Result<String, ProtoError> {
         let answer = self.lan.soap_post(host, path, action, body)?;
         if action.contains("#AddURIToQueue") {
+            self.adds.fetch_add(1, Ordering::SeqCst);
             return Err(ProtoError::Network {
                 target: host.to_string(),
                 detail: "injected lost add reply".into(),
@@ -149,25 +151,61 @@ impl Transport for LostAdd {
     }
 }
 
-/// An add whose reply is lost may have queued its tracks: it is logged as
-/// failed, and undo stops at it rather than reach past it.
-#[test]
-fn an_add_with_a_lost_reply_is_logged_and_stops_undo() {
-    let sim = SimHousehold::standard().spawn().unwrap();
-    let houses = house(&sim);
-    let s = Surface::new(
-        Box::new(LostAdd { lan: sim.lan() }),
+fn lost_add_surface(sim: &SimHandle, adds: &Arc<AtomicUsize>) -> Surface {
+    let houses = house(sim);
+    Surface::new(
+        Box::new(LostAdd {
+            lan: sim.lan(),
+            adds: Arc::clone(adds),
+        }),
         Box::new(move |_| Ok(houses.clone())),
         Policy::default(),
         Box::new(SystemClock),
     )
-    .with_action_log(Box::new(MemStore::default()), "mcp");
-    let failed = s
+    .with_action_log(Box::new(MemStore::default()), "mcp")
+}
+
+/// A track whose add reply is lost is read back from the queue (19d76f11):
+/// the add is confirmed without being sent twice, and undo can take it off.
+#[test]
+fn a_track_add_with_a_lost_reply_is_confirmed_once_and_undoable() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let adds = Arc::new(AtomicUsize::new(0));
+    let s = lost_add_surface(&sim, &adds);
+    let added = s
         .queue_add(
             &Client::Cli,
             &add("spotify:track:0SimQueueTrack00000009", "Encore", false),
         )
+        .unwrap();
+    assert_eq!(added.count, 1, "{added:?}");
+    assert_eq!(adds.load(Ordering::SeqCst), 1, "the add was not replayed");
+    assert_eq!(titles(&s), ["Encore"]);
+    let undone = s.undo(&Client::Cli, true).unwrap().unwrap();
+    assert!(!undone.unqueued.is_empty(), "{undone:?}");
+    assert!(titles(&s).is_empty(), "{undone:?}");
+    sim.shutdown();
+}
+
+/// An album whose add reply is lost may have queued an unknown expansion: it
+/// is logged as failed, never sent twice, and undo stops at it rather than
+/// reach past it.
+#[test]
+fn an_album_add_with_a_lost_reply_is_logged_and_stops_undo() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let adds = Arc::new(AtomicUsize::new(0));
+    let s = lost_add_surface(&sim, &adds);
+    let failed = s
+        .queue_add(
+            &Client::Cli,
+            &add(
+                "https://open.spotify.com/album/0SimQueueAlbum00000001",
+                "Suite",
+                false,
+            ),
+        )
         .unwrap_err();
+    assert_eq!(adds.load(Ordering::SeqCst), 1, "the add was not replayed");
     let refused = s.undo(&Client::Cli, true).unwrap_err();
     assert!(
         refused.detail.contains("queue edit"),

@@ -458,7 +458,19 @@ mod tests {
         /// once they run out, the queue is browsed like anything else.
         queue: RefCell<VecDeque<String>>,
         fail: Option<fn() -> ProtoError>,
+        /// Answer topology and media reads as Den's group, idle: what a
+        /// staged queue replacement checks its destination with.
+        destination: bool,
     }
+
+    /// Den coordinating Den and Kitchen, as `households()` has it.
+    const DEN_GROUP: &str = "&lt;ZoneGroupState&gt;&lt;ZoneGroups&gt;\
+        &lt;ZoneGroup Coordinator=&quot;RINCON_DEN&quot; ID=&quot;RINCON_DEN:1&quot;&gt;\
+        &lt;ZoneGroupMember UUID=&quot;RINCON_DEN&quot; \
+        Location=&quot;http://192.0.2.10:1400/xml/device_description.xml&quot; ZoneName=&quot;Den&quot;/&gt;\
+        &lt;ZoneGroupMember UUID=&quot;RINCON_KIT1&quot; \
+        Location=&quot;http://192.0.2.10:1400/xml/device_description.xml&quot; ZoneName=&quot;Kitchen&quot;/&gt;\
+        &lt;/ZoneGroup&gt;&lt;/ZoneGroups&gt;&lt;/ZoneGroupState&gt;";
 
     /// A one-page Browse of the queue holding `uris`, at `update_id`.
     fn queue_page(uris: &[&str], update_id: u32) -> String {
@@ -512,6 +524,7 @@ mod tests {
                 browse: NO_FAVORITES,
                 queue: RefCell::new(VecDeque::new()),
                 fail: None,
+                destination: false,
             }
         }
 
@@ -546,10 +559,18 @@ mod tests {
                 }
                 return Ok(self.browse.to_string());
             }
+            let out_args = match action.as_str() {
+                "GetZoneGroupState" if self.destination => {
+                    format!("<ZoneGroupState>{DEN_GROUP}</ZoneGroupState>")
+                }
+                "GetMediaInfo" if self.destination => {
+                    "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into()
+                }
+                _ => self.out_args.to_string(),
+            };
             Ok(format!(
                 "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body>\
-                 <u:{action}Response xmlns:u=\"urn:x\">{}</u:{action}Response></s:Body></s:Envelope>",
-                self.out_args
+                 <u:{action}Response xmlns:u=\"urn:x\">{out_args}</u:{action}Response></s:Body></s:Envelope>"
             ))
         }
     }
@@ -778,6 +799,7 @@ mod tests {
                     queue_page(&[old, new[0], new[1]], 2),
                     queue_page(&new, 3),
                 ])),
+                destination: true,
                 ..Canned::ok(
                     "<FirstTrackNumberEnqueued>2</FirstTrackNumberEnqueued>\
                      <NumTracksAdded>2</NumTracksAdded><NewQueueLength>3</NewQueueLength>\
@@ -786,16 +808,29 @@ mod tests {
             };
             let out = execute(&t, &households(), &play_spotify(uri)).unwrap();
             assert!(out.changed && out.done.contains(uri), "{}", out.done);
-            // The old queue stays until the new tracks are read back after it.
+            // The old queue stays until the new tracks are read back after it,
+            // and each staged write first checks the group and its source are
+            // still the ones it started with (25a53ff9), as core's control
+            // tests pin.
             assert_eq!(
                 t.actions(),
                 [
                     "Browse",
+                    "GetZoneGroupState",
+                    "GetMediaInfo",
                     "Browse",
+                    "GetZoneGroupState",
+                    "GetMediaInfo",
                     "AddURIToQueue",
                     "Browse",
+                    "GetZoneGroupState",
+                    "GetMediaInfo",
+                    "GetZoneGroupState",
                     "RemoveTrackRangeFromQueue",
                     "Browse",
+                    "GetZoneGroupState",
+                    "GetZoneGroupState",
+                    "GetMediaInfo",
                     "SetAVTransportURI",
                     "Seek",
                     "Play"

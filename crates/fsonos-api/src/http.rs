@@ -66,6 +66,7 @@
 //! | `GET /art?zone=<room>` | | the album art of what the room's group plays: from its own player, or a `302` to a service's public `https` image (`204` when none) |
 //! | `GET /dashboard` (and `/dashboard.js`, `/dashboard.css`) | | the listening dashboard |
 //! | `GET /studio.js`, `/studio.css` | | the listening studio's script and style |
+//! | `GET /icon.svg`, `/apple-touch-icon.png` | | the remote's icons: the page's own, and a phone's home-screen one |
 //!
 //! Every route first passes the listener's [`WebPolicy`] (a present Origin
 //! must be the daemon's own; POSTs must be JSON); the listener itself admits

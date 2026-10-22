@@ -325,6 +325,16 @@ fn a_failed_topology_witness_is_not_retried_when_the_member_confirms_the_join() 
     assert!(result.complete, "{result:?}");
     let calls = sim.soap_log();
     let calls = &calls[mark..];
+    let join = calls
+        .iter()
+        .position(|e| {
+            e.room == "B"
+                && e.action == "SetAVTransportURI"
+                && e.args
+                    .iter()
+                    .any(|(k, v)| k == "CurrentURI" && v.starts_with("x-rincon:"))
+        })
+        .expect("the member joins the coordinator");
     let source = calls
         .iter()
         .position(|e| {
@@ -333,10 +343,12 @@ fn a_failed_topology_witness_is_not_retried_when_the_member_confirms_the_join() 
                 && e.args.iter().any(|(k, v)| k == "CurrentURI" && v == NEW)
         })
         .expect("the confirmed group starts the requested source");
-    // Undo's after-state surveys again after the scene has finished. Only
-    // the transition's reads, before it changes source, are witnesses.
+    // The action's before-snapshot reads the current groups too (b3432d67),
+    // before anything changes, and undo's after-state surveys again once the
+    // scene has finished. Only the reads between the join and the source
+    // start are the join's witnesses: the failed one is not retried.
     assert_eq!(
-        calls[..source]
+        calls[join..source]
             .iter()
             .filter(|e| e.player == a.0 && e.action == "GetZoneGroupState")
             .count(),

@@ -430,10 +430,15 @@ fn a_lost_enqueue_reply_is_not_retried_as_parameter_drift() {
         "Accepted but unacknowledged",
         false,
     );
-    assert!(matches!(
-        result,
-        Err(CoreError::Proto(ProtoError::Network { .. }))
-    ));
+    // A lost container reply is uncertain (19d76f11): the expansion is
+    // unknown, so it is neither confirmed nor retried as parameter drift.
+    assert!(
+        matches!(
+            &result,
+            Err(CoreError::Proto(ProtoError::Malformed(detail))) if detail.contains("uncertain")
+        ),
+        "{result:?}"
+    );
     let after = queue(&sim, &lan, "Kitchen");
     assert!(after.len() > original.len());
     assert_eq!(&after[..original.len()], original.as_slice());

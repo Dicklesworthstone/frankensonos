@@ -189,8 +189,11 @@ fn held_identity_jobs_leave_io_live_and_keep_their_slots_after_cancellation() {
         for (index, mut job) in jobs.into_iter().enumerate() {
             let answer = job.join(&cx).await;
             if index == 0 {
+                // An aborted waiter either never completes (a join error) or
+                // completes refused at its post-join checkpoint (503): either
+                // way it never holds the identity.
                 assert!(
-                    answer.is_err(),
+                    !matches!(answer, Ok(Ok(_))),
                     "the cancelled waiter cannot receive identity custody"
                 );
             } else {

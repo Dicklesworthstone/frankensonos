@@ -277,6 +277,37 @@ fn elsewhere(s: &mut Scenario, http: &str, step: &str, args: &[&str]) -> e2e::Ru
     s.cli_env(step, &args, &env, &["FSONOS_ROUTES", "FSONOS_SEEDS"])
 }
 
+/// A scene is its saver's (51645831): from elsewhere, as `loopback-http`,
+/// the CLI's "Evening" is refused and stays, while a scene saved from
+/// elsewhere is removed from there.
+fn scene_ownership_from_elsewhere(s: &mut Scenario, http: &str) {
+    let refused = elsewhere(s, http, "scene-rm-refused", &["scene", "rm", "Evening"]);
+    let kept = s.cli("scene-list-kept", &["--direct", "--json", "scene", "list"]);
+    s.check(
+        "scene-rm-refused",
+        "cli",
+        "scene rm from elsewhere cannot remove the CLI's scene",
+        refused.code == Some(5)
+            && refused.stderr.contains("POLICY_DENIED")
+            && json(&kept.stdout)[0]["name"] == "Evening",
+        format!("{refused:?}\n{kept:?}"),
+    );
+    let saved = elsewhere(s, http, "scene-save-elsewhere", &["scene", "save", "Night"]);
+    let removed = elsewhere(s, http, "scene-rm-elsewhere", &["scene", "rm", "Night"]);
+    let after = s.cli("scene-list-here", &["--direct", "--json", "scene", "list"]);
+    s.check(
+        "scene-rm",
+        "cli",
+        "scene rm from elsewhere removes the daemon's scene it saved",
+        saved.ok()
+            && removed.ok()
+            && json(&after.stdout)
+                .as_array()
+                .is_some_and(|all| all.len() == 1 && all[0]["name"] == "Evening"),
+        format!("{saved:?}\n{removed:?}\n{after:?}"),
+    );
+}
+
 /// Scenes, schedules and the policy from another machine are the daemon's,
 /// not that machine's empty store's.
 #[test]
@@ -329,20 +360,7 @@ fn scenes_schedules_and_the_policy_are_the_daemons_from_elsewhere() {
                 .is_some_and(|all| all.len() == 1),
         format!("{added:?}\n{here:?}"),
     );
-    let removed = elsewhere(
-        &mut s,
-        &http,
-        "scene-rm-elsewhere",
-        &["scene", "rm", "Evening"],
-    );
-    let after = s.cli("scene-list-here", &["--direct", "--json", "scene", "list"]);
-    s.check(
-        "scene-rm",
-        "cli",
-        "scene rm from elsewhere removes the daemon's scene",
-        removed.ok() && json(&after.stdout).as_array().is_some_and(Vec::is_empty),
-        format!("{removed:?}\n{after:?}"),
-    );
+    scene_ownership_from_elsewhere(&mut s, &http);
     // Capped as loopback-http, Kitchen goes up one step at most: the daemon
     // notes it, and the CLI prints the note.
     let clamped = elsewhere(
