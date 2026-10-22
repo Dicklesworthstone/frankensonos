@@ -188,11 +188,11 @@ fn rejected_and_uncertain_spotify_replacements_do_not_destroy_existing_music() {
                     vec!["AddURIToQueue", "AddURIToQueue"]
                 }
                 Fault::RefusedRemoval => {
-                    assert!(matches!(error, CoreError::Proto(ProtoError::Malformed(_))));
+                    assert!(matches!(error, CoreError::Uncertain(_)), "{error:?}");
                     vec!["AddURIToQueue", "RemoveTrackRangeFromQueue"]
                 }
                 _ => {
-                    assert!(matches!(error, CoreError::Proto(ProtoError::Malformed(_))));
+                    assert!(matches!(error, CoreError::Uncertain(_)), "{error:?}");
                     vec!["AddURIToQueue"]
                 }
             };
@@ -219,7 +219,7 @@ fn post_commit_start_uncertainty_does_not_request_address_healing_or_reenqueue()
             writes: RefCell::default(),
         };
         let error = replace(&replies, &houses, &id, ALBUM).unwrap_err();
-        assert!(matches!(error, CoreError::Proto(ProtoError::Malformed(_))));
+        assert!(matches!(error, CoreError::Uncertain(_)), "{error:?}");
         assert_eq!(
             *replies.writes.borrow(),
             [

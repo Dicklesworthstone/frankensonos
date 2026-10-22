@@ -223,7 +223,7 @@ fn a_handoff_during_removal_cannot_confirm_the_old_coordinators_result() {
                 },
             )
             .unwrap_err();
-        assert_eq!(error.code, ErrorCode::UpnpFault);
+        assert_eq!(error.code, ErrorCode::OutcomeUncertain);
         assert!(error.detail.contains("uncertain"));
         assert_eq!(writes.load(Ordering::SeqCst), 1);
         sim.shutdown();
@@ -242,7 +242,7 @@ fn removal_errors_keep_the_existing_wire_categories() {
     let uncertain = removal_failure(RemovalError::Uncertain("read-back changed".into()));
     assert_eq!(
         (uncertain.code, uncertain.status()),
-        (ErrorCode::UpnpFault, 502)
+        (ErrorCode::OutcomeUncertain, 502)
     );
     assert!(!uncertain.retryable());
     assert!(uncertain.hint.contains("do not retry blindly"));

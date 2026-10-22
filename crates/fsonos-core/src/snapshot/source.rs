@@ -165,6 +165,7 @@ pub(super) fn restore<T: Transport + ?Sized>(
             let ambiguous = matches!(
                 &error,
                 CoreError::Proto(ProtoError::Network { .. } | ProtoError::Malformed(_))
+                    | CoreError::Uncertain(_)
             );
             if ambiguous
                 && target

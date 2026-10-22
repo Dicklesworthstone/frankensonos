@@ -99,6 +99,11 @@ pub enum CoreError {
     /// what happened since.
     #[error("{0}")]
     NotUndoable(String),
+    /// A write may or may not have taken effect: its reply was lost, or the
+    /// read-back after it disagrees. It was not sent again; read the state
+    /// before sending it again (an album's tracks could be queued twice).
+    #[error("{0}")]
+    Uncertain(String),
 }
 
 fn list(items: &[String]) -> String {

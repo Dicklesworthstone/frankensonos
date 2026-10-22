@@ -378,7 +378,7 @@ fn a_definite_removal_refusal_is_not_overridden_by_an_owners_matching_deletion()
         let rig = Rig::new(s2, true);
         let t = Replies::new(&rig, None, Fault::RefusedAfterOwnerRemoval);
         let error = rig.replace(&t, true).unwrap_err();
-        assert!(matches!(error, CoreError::Proto(ProtoError::Malformed(_))));
+        assert!(matches!(error, CoreError::Uncertain(_)), "{error:?}");
         assert_eq!(t.count("AddURIToQueue"), 1, "no render-parameter retry");
         assert_eq!(t.count("RemoveTrackRangeFromQueue"), 1);
         assert!(!rig.queue().is_empty());

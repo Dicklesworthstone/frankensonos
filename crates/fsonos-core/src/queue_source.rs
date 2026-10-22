@@ -30,12 +30,22 @@ fn appended(before: &Queue, after: &Queue, added: Enqueued) -> bool {
         && after.uris.starts_with(&before.uris)
 }
 
+/// A check before any write failed: nothing was written.
 fn unconfirmed(detail: impl std::fmt::Display) -> CoreError {
     ProtoError::Malformed(format!(
         "queue replacement was not confirmed: {detail}; writes were not replayed; \
          read the queue before trying again"
     ))
     .into()
+}
+
+/// A check after a write failed: the replacement may be done, partly done
+/// or not done, and nothing was sent again (co55.10).
+fn uncertain(detail: impl std::fmt::Display) -> CoreError {
+    CoreError::Uncertain(format!(
+        "queue replacement was not confirmed: {detail}; writes were not replayed; \
+         read the queue before trying again"
+    ))
 }
 
 /// Play a renderer-ready album or playlist source. The original prefix is
@@ -89,66 +99,62 @@ fn replace<T: Transport + ?Sized>(
     if !autoplay {
         // This is not a source-parameter refusal: do not retry the whole
         // replacement when pausing or its read-back fails.
-        control::pause_confirmed(t, households, coordinator).map_err(unconfirmed)?;
+        control::pause_confirmed(t, households, coordinator).map_err(uncertain)?;
         destination
             .confirm(t, host, coordinator)
-            .map_err(unconfirmed)?;
+            .map_err(uncertain)?;
     }
     let added = match soap::enqueue_uri(t, host, uri, metadata, 0, false) {
         Ok(added) => added,
         Err(error @ ProtoError::SoapFault { .. }) => return Err(error.into()),
-        Err(error) => return Err(unconfirmed(error)),
+        Err(error) => return Err(uncertain(error)),
     };
-    let staged = read(t, host).map_err(unconfirmed)?;
+    let staged = read(t, host).map_err(uncertain)?;
     if !appended(&before, &staged, added) {
-        return Err(unconfirmed(
+        return Err(uncertain(
             "the append did not preserve the original prefix and the reported new range",
         ));
     }
     if !autoplay
         && !matches!(
-            soap::get_transport_info(t, host)
-                .map_err(unconfirmed)?
-                .state,
+            soap::get_transport_info(t, host).map_err(uncertain)?.state,
             TransportState::Paused | TransportState::Stopped
         )
     {
-        return Err(unconfirmed(
+        return Err(uncertain(
             "playback resumed while the replacement was staged",
         ));
     }
     destination
         .confirm(t, host, coordinator)
-        .map_err(unconfirmed)?;
+        .map_err(uncertain)?;
     if !before.uris.is_empty() {
         if staged.revision == 0 {
-            return Err(unconfirmed(
-                "the player reports wildcard queue revision zero",
-            ));
+            return Err(uncertain("the player reports wildcard queue revision zero"));
         }
-        let count = u32::try_from(before.uris.len()).map_err(unconfirmed)?;
+        let count = u32::try_from(before.uris.len()).map_err(uncertain)?;
         // A refused removal is not a rejected source and cannot authorize
         // another append through render-parameter recovery. The shared
         // verifier also fences coordinator changes and lost acknowledgements.
-        queue_removal::remove(t, host, coordinator, &staged, 1, count).map_err(unconfirmed)?;
+        queue_removal::remove(t, host, coordinator, &staged, 1, count).map_err(uncertain)?;
     }
     // Empty queues skip removal, but not destination verification. Never
     // detach an old coordinator or replace a newly selected source merely
     // because the requested tracks are still visible in its local queue.
     destination
         .confirm(t, host, coordinator)
-        .map_err(unconfirmed)?;
+        .map_err(uncertain)?;
     if !autoplay {
         // The new queue is committed. Even a definite source-selection
         // refusal must not trigger a second append through account recovery.
-        return control::load_queue_from(t, households, coordinator, 1).map_err(unconfirmed);
+        return control::load_queue_from(t, households, coordinator, 1).map_err(uncertain);
     }
     match control::play_queue_from(t, households, coordinator, 1) {
         Ok(()) => Ok(()),
         Err(error @ CoreError::Proto(ProtoError::SoapFault { .. })) => Err(error),
         // The queue has already changed. A lost start reply may be recovered
         // inside queue_start, but must not replay this entire replacement.
-        Err(error) => Err(unconfirmed(error)),
+        Err(error) => Err(uncertain(error)),
     }
 }
 

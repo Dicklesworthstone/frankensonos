@@ -1748,12 +1748,16 @@ fn run_dj(
     }
 }
 
-/// A failure at one speaker (it did not answer, or answered with a fault),
-/// which a set notes and steps past rather than stopping for.
+/// A failure at one speaker (it did not answer, answered with a fault, or
+/// may or may not have done it), which a set notes and steps past rather
+/// than stopping for.
 fn speaker_side(failure: &Failure) -> bool {
     matches!(
         failure.code,
-        ErrorCode::PlayerUnreachable | ErrorCode::UpnpFault | ErrorCode::NotCoordinator
+        ErrorCode::PlayerUnreachable
+            | ErrorCode::UpnpFault
+            | ErrorCode::NotCoordinator
+            | ErrorCode::OutcomeUncertain
     )
 }
 

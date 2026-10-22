@@ -104,7 +104,7 @@ const UNCERTAIN: &str = "queue removal outcome is uncertain";
 
 fn uncertain(detail: impl std::fmt::Display) -> Failure {
     Failure::new(
-        ErrorCode::UpnpFault,
+        ErrorCode::OutcomeUncertain,
         format!("{UNCERTAIN}: {detail}; the write was not replayed"),
     )
     .with_hint("Read the queue again before deciding on another removal; do not retry blindly.")

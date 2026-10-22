@@ -435,7 +435,7 @@ fn a_lost_enqueue_reply_is_not_retried_as_parameter_drift() {
     assert!(
         matches!(
             &result,
-            Err(CoreError::Proto(ProtoError::Malformed(detail))) if detail.contains("uncertain")
+            Err(CoreError::Uncertain(detail)) if detail.contains("uncertain")
         ),
         "{result:?}"
     );

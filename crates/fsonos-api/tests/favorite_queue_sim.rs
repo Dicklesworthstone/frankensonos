@@ -291,7 +291,11 @@ fn uncertain_container_adds_are_not_replayed_or_given_a_fabricated_undo_range() 
     let failure = s
         .queue_request(&Client::McpStdio, &request("Den@S2", &selected.id, false))
         .unwrap_err();
+    // A typed code that says to read before sending it again, never a
+    // speaker fault whose hint says "retry" (co55.10).
+    assert_eq!(failure.code.as_str(), "OUTCOME_UNCERTAIN", "{failure:?}");
     assert!(!failure.retryable());
+    assert!(failure.hint.contains("Read the queue"), "{}", failure.hint);
     assert!(failure.detail.contains("uncertain"));
     assert_eq!(adds.load(Ordering::SeqCst), 1);
     assert!(!queue(&sim, &houses, "Den@S2").is_empty());

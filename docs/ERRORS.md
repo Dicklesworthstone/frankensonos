@@ -61,6 +61,7 @@ succeed.
 | `UNKNOWN_SCHEDULE` | 404 | 3 | no | No schedule has that id. | Use an id that list_schedules (GET /schedules) shows. |
 | `QUEUE_CHANGED` | 409 | 1 | no | The queue, or the group playing it, changed since the selection was read (`queue-play`, `queue-remove`, `queue-move`), so nothing was changed. Real players refuse an edit carrying an old queue revision with UPnP fault 1028, reported as this code. | Read the queue again (get_queue) and select from its current revision; do not resend. |
 | `DJ_POOL_EMPTY` | 409 | 1 | no | The DJ's library has works, but the owner's preferences keep every one out: banned, or explicit while explicit tracks are off. (A library with no works at all is `SPOTIFY_AUTH_REQUIRED`: sign in and sync.) | Lift a ban or allow explicit tracks: fsonos dj prefs show lists them. |
+| `OUTCOME_UNCERTAIN` | 502 | 1 | no | A write may have taken effect: the speaker's reply was lost, or the read-back after it disagrees (a queue add, insert, move or removal, a queue replaced to play an album or playlist, a play-mode change, the DJ topping up its queue). It was not sent again, and sending it unchanged could do it twice (an album queued twice). | The speaker may have done it: read its state (get_queue, get_zone_state) before sending it again. |
 
 ## Notes
 

@@ -245,7 +245,7 @@ fn unconfirmed_append_does_not_discard_old_music_or_replay_the_write() {
                 &favorite.metadata,
             )
             .unwrap_err();
-            assert!(matches!(error, CoreError::Proto(ProtoError::Malformed(_))));
+            assert!(matches!(error, CoreError::Uncertain(_)), "{error:?}");
             assert_eq!(replies.writes(), ["AddURIToQueue"], "{fault:?}");
             let current = queue(&sim, host);
             assert_eq!(&current[..OLD.len()], OLD);
@@ -287,7 +287,7 @@ fn removal_races_and_refusals_do_not_clear_restart_or_repeat_the_source() {
                 &favorite.metadata,
             )
             .unwrap_err();
-            assert!(matches!(error, CoreError::Proto(ProtoError::Malformed(_))));
+            assert!(matches!(error, CoreError::Uncertain(_)), "{error:?}");
             assert_eq!(
                 replies.writes(),
                 ["AddURIToQueue", "RemoveTrackRangeFromQueue"]

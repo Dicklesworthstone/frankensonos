@@ -84,7 +84,7 @@ If a reply is lost or malformed, success requires the new queue to match
 exactly the original prefix and suffix with just the selected range removed,
 at a different revision. That result reports `recovered: true`. Concurrent
 edits, failed read-back or a timeout with unchanged reads are **uncertain**:
-`UPNP_FAULT` with `retryable: false`. Read the current queue before deciding
+`OUTCOME_UNCERTAIN` with `retryable: false`. Read the current queue before deciding
 what to do next. Do not blindly repeat the request; the original write could
 already have happened or still be finishing.
 

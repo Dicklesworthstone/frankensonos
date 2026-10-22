@@ -96,7 +96,11 @@ fn the_original_spotify_rust_helper_uses_the_daemons_action_log() {
 fn failed_and_malformed_daemon_adds_never_replay_locally() {
     for answer in [
         Err(Failure::new(ErrorCode::PlayerUnreachable, "lost reply")),
-        Err(Failure::new(ErrorCode::UpnpFault, "uncertain insertion")),
+        Err(Failure::new(ErrorCode::UpnpFault, "refused insertion")),
+        Err(Failure::new(
+            ErrorCode::OutcomeUncertain,
+            "uncertain insertion",
+        )),
         Err(Failure::new(ErrorCode::PolicyDenied, "not allowed")),
         Ok(json!({"done": "missing confirmed range"})),
     ] {

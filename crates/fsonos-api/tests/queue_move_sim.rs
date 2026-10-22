@@ -316,7 +316,7 @@ fn unconfirmed_or_concurrently_changed_results_are_nonretryable() {
         let req = f.request(2, 2, 6);
         f.fault(fault);
         let error = f.surface.queue_move(&Client::Cli, &req).unwrap_err();
-        assert_eq!(error.code, ErrorCode::UpnpFault);
+        assert_eq!(error.code, ErrorCode::OutcomeUncertain);
         assert!(!error.body().retryable);
         assert_eq!(f.attempts(), 1);
         // The move may have happened: undo stops at it.

@@ -27,7 +27,7 @@ fn invalid(detail: &str) -> CoreError {
 
 fn uncertain(cause: Option<&ProtoError>, detail: impl std::fmt::Display) -> CoreError {
     let cause = cause.map_or_else(String::new, |error| format!(" (write reply: {error})"));
-    invalid(&format!(
+    CoreError::Uncertain(format!(
         "queue insertion outcome is uncertain: {detail}{cause}; the add was not replayed; \
          inspect the queue before trying again"
     ))

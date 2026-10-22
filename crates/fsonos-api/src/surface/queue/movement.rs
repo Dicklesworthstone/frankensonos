@@ -170,7 +170,7 @@ const UNCERTAIN: &str = "queue move outcome is uncertain";
 
 fn uncertain(detail: impl std::fmt::Display) -> Failure {
     Failure::new(
-        ErrorCode::UpnpFault,
+        ErrorCode::OutcomeUncertain,
         format!("{UNCERTAIN}: {detail}; the write was not replayed"),
     )
     .with_hint("Read the queue before choosing another move; never blindly retry this request.")

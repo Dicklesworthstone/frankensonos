@@ -543,7 +543,7 @@ fn failure(err: FeedError) -> Failure {
         ),
         FeedError::NoRenderParams => Failure::new(ErrorCode::RenderParamsMissing, detail),
         FeedError::Inactive => Failure::new(ErrorCode::NoDjSession, detail),
-        FeedError::UncertainEnqueue(_) => Failure::new(ErrorCode::Internal, detail).with_hint(
+        FeedError::UncertainEnqueue(_) => Failure::new(ErrorCode::OutcomeUncertain, detail).with_hint(
             "Inspect the speaker's queue before starting the DJ again. The add was not \
              replayed, and existing playback was left alone.",
         ),

@@ -407,7 +407,7 @@ fn uncertain_effects_are_reported_not_retried() {
             let error = surface
                 .queue_remove(&Client::Cli, &request(2, &["b", "c"]))
                 .unwrap_err();
-            assert_eq!(error.code, ErrorCode::UpnpFault);
+            assert_eq!(error.code, ErrorCode::OutcomeUncertain);
             assert!(!error.code.retryable());
             assert!(error.detail.contains("uncertain"));
             assert_eq!(attempts.load(Ordering::Acquire), 1);

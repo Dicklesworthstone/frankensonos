@@ -227,6 +227,7 @@ impl Surface {
                     && matches!(
                         &error,
                         CoreError::Proto(ProtoError::Network { .. } | ProtoError::Malformed(_))
+                            | CoreError::Uncertain(_)
                     );
                 let failure = spotify_failure(error);
                 self.notice(&failure);

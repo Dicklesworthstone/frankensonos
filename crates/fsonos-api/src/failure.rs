@@ -89,11 +89,14 @@ pub enum ErrorCode {
     /// The DJ's library has works, but the owner's preferences keep every
     /// one out (bans, explicit tracks off).
     DjPoolEmpty,
+    /// A write may have taken effect: the speaker's reply was lost, or the
+    /// read-back after it disagrees. It was not sent again.
+    OutcomeUncertain,
 }
 
 impl ErrorCode {
     /// Every code, in documentation order.
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::InvalidArgument,
         Self::UnknownRoom,
         Self::AmbiguousRoom,
@@ -122,6 +125,7 @@ impl ErrorCode {
         Self::UnknownSchedule,
         Self::QueueChanged,
         Self::DjPoolEmpty,
+        Self::OutcomeUncertain,
     ];
 
     /// The wire name, e.g. `UNKNOWN_ROOM`.
@@ -156,6 +160,7 @@ impl ErrorCode {
             Self::UnknownSchedule => "UNKNOWN_SCHEDULE",
             Self::QueueChanged => "QUEUE_CHANGED",
             Self::DjPoolEmpty => "DJ_POOL_EMPTY",
+            Self::OutcomeUncertain => "OUTCOME_UNCERTAIN",
         }
     }
 
@@ -183,7 +188,7 @@ impl ErrorCode {
             | Self::DjPoolEmpty => 409,
             Self::PolicyDenied | Self::UntrustedOrigin => 403,
             Self::UnsupportedMediaType => 415,
-            Self::UpnpFault => 502,
+            Self::UpnpFault | Self::OutcomeUncertain => 502,
             Self::NotReady | Self::PlayerUnreachable => 503,
             Self::Internal => 500,
             Self::NotImplemented => 501,
@@ -219,7 +224,8 @@ impl ErrorCode {
             | Self::Internal
             | Self::NotImplemented
             | Self::QueueChanged
-            | Self::DjPoolEmpty => 1,
+            | Self::DjPoolEmpty
+            | Self::OutcomeUncertain => 1,
         }
     }
 
@@ -296,6 +302,9 @@ impl ErrorCode {
             }
             Self::DjPoolEmpty => {
                 "Lift a ban or allow explicit tracks: fsonos dj prefs show lists them."
+            }
+            Self::OutcomeUncertain => {
+                "The speaker may have done it: read its state (get_queue, get_zone_state) before sending it again."
             }
         }
     }
@@ -521,6 +530,7 @@ impl From<CoreError> for Failure {
             CoreError::Store(_) => Self::new(ErrorCode::Internal, "internal error"),
             CoreError::NoSpotifyFavorite => Self::new(ErrorCode::RenderParamsMissing, detail),
             CoreError::RenderParamsStale => Self::new(ErrorCode::RenderParamsStale, detail),
+            CoreError::Uncertain(_) => Self::new(ErrorCode::OutcomeUncertain, detail),
             // No field to fix: the newest action is past undo's reach, is one
             // undo can't put back, or someone changed its speakers since.
             CoreError::NotUndoable(_) => Self::new(ErrorCode::InvalidArgument, detail).with_hint(
@@ -588,6 +598,7 @@ mod tests {
             (ErrorCode::NotCoordinator, 409, 4, true),
             (ErrorCode::NotReady, 503, 4, true),
             (ErrorCode::UpnpFault, 502, 1, false),
+            (ErrorCode::OutcomeUncertain, 502, 1, false),
             (ErrorCode::PolicyDenied, 403, 5, false),
             (ErrorCode::Internal, 500, 1, false),
             (ErrorCode::NoMatch, 404, 3, false),
@@ -612,6 +623,20 @@ mod tests {
         assert!(!f.code.retryable());
         assert!(f.hint.contains("one hour"), "{}", f.hint);
         assert_ne!(f.hint, ErrorCode::InvalidArgument.default_hint());
+    }
+
+    /// A write whose reply was lost says to read before sending it again,
+    /// never "retry" (co55.10): an agent that retried enqueued twice.
+    #[test]
+    fn an_uncertain_write_says_to_read_before_sending_it_again() {
+        let f = Failure::from(CoreError::Uncertain(
+            "queue insertion outcome is uncertain: reply lost".into(),
+        ));
+        assert_eq!(f.code, ErrorCode::OutcomeUncertain);
+        assert!(!f.retryable());
+        assert_eq!(f.body().code.as_str(), "OUTCOME_UNCERTAIN");
+        assert!(f.hint.contains("read its state"), "{}", f.hint);
+        assert!(!f.hint.contains("retry"), "{}", f.hint);
     }
 
     #[test]

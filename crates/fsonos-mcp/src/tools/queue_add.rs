@@ -320,7 +320,8 @@ mod tests {
         let answers = [
             Err(Failure::new(ErrorCode::PlayerUnreachable, "reply lost")),
             Err(Failure::invalid("stale revision")),
-            Err(Failure::new(ErrorCode::UpnpFault, "uncertain move")),
+            Err(Failure::new(ErrorCode::UpnpFault, "refused move")),
+            Err(Failure::new(ErrorCode::OutcomeUncertain, "uncertain move")),
             Ok(json!({ "done": "missing confirmation fields" })),
         ];
         for answer in answers {

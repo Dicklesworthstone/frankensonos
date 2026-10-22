@@ -112,7 +112,7 @@ fn changed() -> Failure {
 
 fn uncertain(error: impl std::fmt::Display) -> Failure {
     Failure::new(
-        ErrorCode::UpnpFault,
+        ErrorCode::OutcomeUncertain,
         format!("play-mode outcome is uncertain: {error}; SetPlayMode was not replayed"),
     )
     .with_hint("Read get_play_mode again before deciding on another change; do not retry blindly.")
@@ -341,6 +341,7 @@ mod tests {
 
     #[test]
     fn unconfirmed_writes_are_not_retryable() {
+        assert_eq!(uncertain("response lost").code, ErrorCode::OutcomeUncertain);
         assert!(!uncertain("response lost").retryable());
         assert!(
             uncertain("response lost")

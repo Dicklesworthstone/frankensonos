@@ -70,14 +70,13 @@ pub const UNCERTAIN: &str = "favorite enqueue outcome is uncertain";
 /// tracks may have been queued.
 #[must_use]
 pub fn is_uncertain(error: &CoreError) -> bool {
-    matches!(error, CoreError::Proto(ProtoError::Malformed(detail)) if detail.starts_with(UNCERTAIN))
+    matches!(error, CoreError::Uncertain(detail) if detail.starts_with(UNCERTAIN))
 }
 
 fn uncertain(detail: &str) -> CoreError {
-    ProtoError::Malformed(format!(
+    CoreError::Uncertain(format!(
         "{UNCERTAIN}: {detail}; read the queue before another add; the request was not repeated"
     ))
-    .into()
 }
 
 /// Append a native track, album or playlist favorite, or insert it after the
