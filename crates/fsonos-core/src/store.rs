@@ -11,6 +11,7 @@
 //! owner-only `TokenCache` file in the data directory. All times are unix
 //! seconds stamped by the caller, which keeps behavior deterministic in tests.
 
+pub mod faults;
 mod sqlite;
 
 pub use sqlite::{LISTENING_RETENTION_SECS, SqliteStore};

@@ -782,6 +782,11 @@ fn health(data_dir: Option<&std::path::Path>, live: Option<crate::LiveHealth>) -
                 free_bytes: space.free,
                 total_bytes: space.total,
             }),
+        store: fsonos_core::store::faults::last().map(|fault| crate::StoreHealth {
+            kind: fault.kind.as_str().into(),
+            failures: fault.count,
+            last_secs_ago: fault.ago.as_secs(),
+        }),
     };
     Response::json(&body).expect("HealthDto serializes")
 }

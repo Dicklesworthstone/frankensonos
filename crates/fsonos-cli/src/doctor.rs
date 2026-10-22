@@ -28,7 +28,7 @@ use fsonos_api::Failure;
 use fsonos_api::surface::DoctorChecks;
 use fsonos_core::announce::speech::SpeechConfig;
 use fsonos_core::doctor::lan::LanProbe;
-use fsonos_core::doctor::{Check, CheckContext, CheckId, CheckResult, Report, Runner};
+use fsonos_core::doctor::{Check, CheckContext, CheckId, CheckResult, Report, Runner, Status};
 use fsonos_core::policy::Client;
 use fsonos_spotify::client::TokenCache;
 use serde_json::json;
@@ -160,7 +160,7 @@ fn health_result(health: &serde_json::Value, http: SocketAddr) -> CheckResult {
     let version = health["version"].as_str().unwrap_or_default();
     let live = &health["live"];
     let players = live["players"].as_u64().unwrap_or_default();
-    let evidence = json!({ "version": version, "live": live });
+    let evidence = json!({ "version": version, "live": live, "store": health["store"] });
     let result = match live["verdict"].as_str() {
         Some("blind") => CheckResult::fail(
             format!("fsonos serve {version} answers on {http} but sees no players"),
@@ -186,7 +186,46 @@ fn health_result(health: &serde_json::Value, http: SocketAddr) -> CheckResult {
             format!("fsonos serve {version} answers on {http} and sees {players} player(s)")
         }),
     };
+    // A store that fails while the speakers answer is worse than either
+    // alone looks: actions run, unlogged and not undoable (vg3s.8).
+    let result = match store_result(&health["store"], version) {
+        Some(store) if store.status == Status::Fail || result.status == Status::Pass => store,
+        _ => result,
+    };
     result.with_evidence(evidence)
+}
+
+/// How long a store fault in `/health` fails `daemon.health`; older ones
+/// warn.
+const STORE_FAULT_RECENT_SECS: u64 = 15 * 60;
+
+/// The store faults the daemon reported (`/health`'s `store`), judged: a
+/// recent one fails, an older one warns.
+fn store_result(store: &serde_json::Value, version: &str) -> Option<CheckResult> {
+    let failures = store["failures"].as_u64()?;
+    let ago = store["last_secs_ago"].as_u64().unwrap_or_default();
+    let kind = store["kind"].as_str().unwrap_or("io");
+    let summary = format!(
+        "fsonos serve {version}'s store failed {failures} time(s) ({kind}), the last {ago} s ago"
+    );
+    let remedy = match kind {
+        "disk_full" => {
+            "Make room on the data directory's volume (`fsonos doctor --only store` shows it): \
+             until the store can write, actions go unlogged and cannot be undone."
+        }
+        "corrupt" => {
+            "Stop the daemon, keep a copy of fsonos.db and its -wal file, and read the daemon \
+             log: the store is a cache plus history, and fsonos deletes nothing itself."
+        }
+        _ => {
+            "Read the daemon log for the store's I/O errors, and check the data directory's volume."
+        }
+    };
+    Some(if ago <= STORE_FAULT_RECENT_SECS {
+        CheckResult::fail(summary, remedy)
+    } else {
+        CheckResult::warn(summary, remedy)
+    })
 }
 
 /// Whether `fsonos serve` answers `/health` on the HTTP address.
@@ -542,6 +581,36 @@ mod tests {
         assert_eq!(starting.status, Status::Warn, "{starting:?}");
         let older = health_result(&json!({ "status": "ok", "version": "0.1.0" }), http);
         assert_eq!(older.status, Status::Pass);
+    }
+
+    /// A daemon whose store fails while the speakers answer fails the check;
+    /// one that failed long ago warns (vg3s.8).
+    #[test]
+    fn a_daemon_whose_store_fails_is_not_healthy() {
+        let http: SocketAddr = "127.0.0.1:8099".parse().unwrap();
+        let health = |ago: u64| {
+            json!({
+                "status": "ok",
+                "version": "0.1.0",
+                "live": {"verdict": "ok", "players": 13},
+                "store": {"kind": "disk_full", "failures": 12, "last_secs_ago": ago},
+            })
+        };
+        let failing = health_result(&health(30), http);
+        assert_eq!(failing.status, Status::Fail, "{failing:?}");
+        assert!(
+            failing.summary.contains("12 time(s) (disk_full)"),
+            "{failing:?}"
+        );
+        assert!(failing.remedy.unwrap().contains("Make room"));
+        let earlier = health_result(&health(STORE_FAULT_RECENT_SECS + 1), http);
+        assert_eq!(earlier.status, Status::Warn, "{earlier:?}");
+        // A blind daemon stays a failure about the speakers.
+        let mut blind = health(STORE_FAULT_RECENT_SECS + 1);
+        blind["live"] = json!({"verdict": "blind", "players": 0});
+        let blind = health_result(&blind, http);
+        assert_eq!(blind.status, Status::Fail);
+        assert!(blind.summary.contains("sees no players"), "{blind:?}");
     }
 
     #[test]

@@ -87,6 +87,22 @@ pub struct HealthDto {
     /// runs out, actions go unlogged and cannot be undone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk: Option<DiskHealth>,
+    /// Storage faults the daemon's store met (a full disk, corruption, I/O
+    /// errors), when it met any: while they last, actions are not logged or
+    /// undoable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<StoreHealth>,
+}
+
+/// The store's failures, in `GET /health` (vg3s.8; `fsonos doctor` fails
+/// `daemon.health` while they are recent).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StoreHealth {
+    /// The newest one's kind: `disk_full`, `corrupt` or `io`.
+    pub kind: String,
+    /// How many since the daemon started.
+    pub failures: u64,
+    pub last_secs_ago: u64,
 }
 
 /// The store's volume, in `GET /health` (`fsonos doctor` judges it as

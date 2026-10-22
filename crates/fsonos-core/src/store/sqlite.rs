@@ -283,6 +283,13 @@ fn backend(e: impl Display) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
+/// An engine error, noted first when it is a storage fault (a full disk,
+/// corruption, I/O) that no retry fixes ([`super::faults`]).
+fn engine(e: FrankenError) -> StoreError {
+    super::faults::note(&e);
+    backend(e)
+}
+
 /// Attempts at an operation that meets a transient conflict (busy, snapshot
 /// conflict, lock) before the conflict is reported. Other connections share
 /// the database file: the daemon's own (known players, DJ sync) and other
@@ -339,7 +346,7 @@ impl SqliteStore {
 
     fn open_migrated(path: &str, migrations: &[Migration]) -> Result<Self, StoreError> {
         let mut store = Self {
-            conn: retrying(|| AsyncConnection::open_sync(path)).map_err(backend)?,
+            conn: retrying(|| AsyncConnection::open_sync(path)).map_err(engine)?,
             wal: (path != ":memory:").then(|| PathBuf::from(format!("{path}-wal"))),
             plays: 0,
             held: None,
@@ -368,7 +375,7 @@ impl SqliteStore {
             self.conn
                 .query_sync("SELECT version FROM schema_migrations ORDER BY version")
         })
-        .map_err(backend)?
+        .map_err(engine)?
         .iter()
         .map(|row| int(row, 0))
         .collect()
@@ -378,7 +385,11 @@ impl SqliteStore {
     /// closing is also safe: committed writes stay in the WAL and the next
     /// open recovers them.
     pub fn close(mut self) -> Result<(), StoreError> {
-        self.conn.close_sync().map_err(backend)
+        self.conn.close_sync().map_err(|e| {
+            // Close hands its error over shared.
+            super::faults::note(&e);
+            backend(e)
+        })
     }
 
     fn migrate(&self, migrations: &[Migration]) -> Result<(), StoreError> {
@@ -388,7 +399,7 @@ impl SqliteStore {
                  version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)",
             )
         })
-        .map_err(backend)?;
+        .map_err(engine)?;
         let applied = self.schema_versions()?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -450,7 +461,7 @@ impl SqliteStore {
                 }
             }
         })
-        .map_err(backend)
+        .map_err(engine)
         .inspect(|_| self.wrote())
     }
 
@@ -501,18 +512,21 @@ impl SqliteStore {
                 tracing::debug!("WAL checkpoint deferred: another connection is busy");
             }
             Ok(_) => {}
-            Err(e) => tracing::warn!("WAL checkpoint failed: {e}"),
+            Err(e) => {
+                super::faults::note(&e);
+                tracing::warn!("WAL checkpoint failed: {e}");
+            }
         }
     }
 
     fn query(&self, sql: &str, params: &[SqliteValue]) -> Result<Vec<Row>, StoreError> {
-        retrying(|| self.conn.query_with_params_sync(sql, params)).map_err(backend)
+        retrying(|| self.conn.query_with_params_sync(sql, params)).map_err(engine)
     }
 
     fn execute(&self, sql: &str, params: &[SqliteValue]) -> Result<(), StoreError> {
         retrying(|| self.conn.execute_with_params_sync(sql, params))
             .map(drop)
-            .map_err(backend)
+            .map_err(engine)
             .inspect(|()| self.wrote())
     }
 }

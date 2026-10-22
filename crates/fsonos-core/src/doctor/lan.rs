@@ -239,6 +239,9 @@ fn store_open(data_dir: &std::path::Path) -> CheckResult {
     // report the one it holds.
     if let Some(versions) = SqliteStore::held(&path) {
         let latest = versions.last().copied().unwrap_or(0);
+        if let Some(failing) = failing(latest) {
+            return failing;
+        }
         return CheckResult::pass(format!("store open at schema version {latest}"))
             .with_evidence(json!({ "path": path, "schema_versions": versions, "held": true }));
     }
@@ -247,8 +250,10 @@ fn store_open(data_dir: &std::path::Path) -> CheckResult {
             let versions = store.schema_versions().unwrap_or_default();
             let latest = versions.last().copied().unwrap_or(0);
             let _ = store.close();
-            CheckResult::pass(format!("store open at schema version {latest}"))
-                .with_evidence(json!({ "path": path, "schema_versions": versions }))
+            failing(latest).unwrap_or_else(|| {
+                CheckResult::pass(format!("store open at schema version {latest}"))
+                    .with_evidence(json!({ "path": path, "schema_versions": versions }))
+            })
         }
         Err(e) => CheckResult::fail(
             format!("the store at {} does not open: {e}", path.display()),
@@ -256,6 +261,30 @@ fn store_open(data_dir: &std::path::Path) -> CheckResult {
              FSONOS_DATA_DIR elsewhere.",
         ),
     }
+}
+
+/// The store opens, but this process met a storage fault in the last quarter
+/// hour (vg3s.8): its writes have been failing, so actions go unlogged.
+fn failing(latest: i64) -> Option<CheckResult> {
+    let fault = crate::store::faults::last().filter(|f| f.ago < Duration::from_mins(15))?;
+    Some(
+        CheckResult::fail(
+            format!(
+                "the store opens at schema version {latest}, but {} of its operations have \
+                 failed ({}), the last {} s ago",
+                fault.count,
+                fault.kind.as_str(),
+                fault.ago.as_secs()
+            ),
+            "Actions are not logged or undoable while it fails. A full disk is the usual \
+             cause: see store.disk, and make room on that volume.",
+        )
+        .with_evidence(json!({
+            "kind": fault.kind.as_str(),
+            "failures": fault.count,
+            "last_secs_ago": fault.ago.as_secs(),
+        })),
+    )
 }
 
 // ── the LAN checks ───────────────────────────────────────────────────────
