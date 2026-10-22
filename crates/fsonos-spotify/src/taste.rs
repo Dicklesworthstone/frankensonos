@@ -243,33 +243,7 @@ pub async fn read_taste<S: Store + ?Sized>(
         }
     }
     if recent {
-        let url = reader.session.endpoints().recently_played();
-        if let Some(page) = reader
-            .get::<CursorPage<PlayHistory>>(&url, "recently played")
-            .await
-        {
-            // A track played over and over counts once: recent rotation is a
-            // nudge, not a top track.
-            let mut heard = HashSet::new();
-            let mut when = Vec::new();
-            for h in &page.items {
-                let Some(item) = h
-                    .track
-                    .as_ref()
-                    .and_then(|t| t.library_item(Origin::Taste, None))
-                else {
-                    continue;
-                };
-                if let Some(at) = unix_seconds(h.played_at.as_deref()) {
-                    when.push((item.source_uri.clone(), at));
-                }
-                if heard.insert(item.source_uri.clone()) {
-                    taste.track(item, RECENT_PM);
-                    reader.read.recent_tracks += 1;
-                }
-            }
-            taste.heard = Some(when);
-        }
+        reader.recent_plays(&mut taste).await;
     }
     if playlists {
         let (tracks, listed) = reader
@@ -362,6 +336,38 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
+    /// The recently played tracks into `taste`, and when each was played
+    /// (`taste.heard`). A track played over and over counts once: recent
+    /// rotation is a nudge, not a top track.
+    async fn recent_plays(&mut self, taste: &mut Taste) {
+        let url = self.session.endpoints().recently_played();
+        let Some(page) = self
+            .get::<CursorPage<PlayHistory>>(&url, "recently played")
+            .await
+        else {
+            return;
+        };
+        let mut heard = HashSet::new();
+        let mut when = Vec::new();
+        for h in &page.items {
+            let Some(item) = h
+                .track
+                .as_ref()
+                .and_then(|t| t.library_item(Origin::Taste, None))
+            else {
+                continue;
+            };
+            if let Some(at) = unix_seconds(h.played_at.as_deref()) {
+                when.push((item.source_uri.clone(), at));
+            }
+            if heard.insert(item.source_uri.clone()) {
+                taste.track(item, RECENT_PM);
+                self.read.recent_tracks += 1;
+            }
+        }
+        taste.heard = Some(when);
+    }
+
     /// GET and decode one response, recording a failure or a halt.
     async fn get<T: serde::de::DeserializeOwned>(&mut self, url: &str, what: &str) -> Option<T> {
         if self.read.halted.is_some() {
