@@ -70,3 +70,10 @@ The navigation suite runs with
 existing web queue CI step. Its localhost HTTP fixture verifies browser
 request ordering and payloads, not physical-speaker behavior. Actual Sonos,
 full daemon integration, and Rust workspace checks remain separate gates.
+
+The caret contract of the First/Last range inputs is pinned separately by
+`node --test scripts/test-remote-queue-range-caret.cjs`. It drives the shipped
+panel over a modeled DOM, types a two-digit value into each input, and asserts
+the digits keep their order and the caret survives the redraw; the second test
+re-runs the same script with the caret restoration narrowed to the search input
+and requires the reversed digits (`42` for a typed `24`).
