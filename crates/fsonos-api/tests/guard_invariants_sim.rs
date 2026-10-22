@@ -7,8 +7,9 @@
 //! checked:
 //!
 //! * I1: a capped client never leaves a room above its cap there that it
-//!   raised or started music in (a play, a resume, a join, a scene): the owner
-//!   may set any level; an agent may lower one.
+//!   raised or started music in (a play, a resume, a join, a scene, or an
+//!   unmute while its group plays): the owner may set any level; an agent
+//!   may lower one.
 //! * I2: a denied call changes nothing.
 //! * I3: a call that changed the house logged a row naming its client.
 //! * I4: I1 holds for an undo too.
@@ -34,7 +35,7 @@ use fsonos_core::clock::FakeClock;
 use fsonos_core::policy::{Client, Decision, Policy, ToolCall};
 use fsonos_core::store::{ActionFilter, MemStore};
 use fsonos_core::{HouseholdState, control, resolve_room};
-use fsonos_proto::control::{get_transport_info, get_volume};
+use fsonos_proto::control::{get_mute, get_transport_info, get_volume};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
 use serde_json::json;
@@ -78,6 +79,7 @@ impl Rng {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RoomState {
     volume: u8,
+    muted: bool,
     /// Its group's transport state.
     state: String,
     /// The room leading its group.
@@ -116,10 +118,12 @@ fn house(sim: &SimHandle) -> House {
             let state = get_transport_info(&lan, player(lead).ip)
                 .map_or_else(|e| e.to_string(), |t| format!("{:?}", t.state));
             let volume = get_volume(&lan, me.ip).unwrap_or(255);
+            let muted = get_mute(&lan, me.ip).unwrap_or(false);
             (
                 room,
                 RoomState {
                     volume,
+                    muted,
                     state,
                     lead,
                 },
@@ -395,7 +399,10 @@ fn violation(policy: &Policy, now: DateTime<FixedOffset>, step: &Step<'_>) -> Op
         // with the group's (x-rincon:), so a player leaves with nothing to
         // play, where the sim resumes what it played before it joined.
         let joined = was.lead != now_is.lead && now_is.lead != *room;
-        let started = now_is.playing() && ((!was.playing() && was.lead == now_is.lead) || joined);
+        // An unmuted room sounds at its level as soon as its group plays.
+        let unmuted = was.muted && !now_is.muted;
+        let started =
+            now_is.playing() && ((!was.playing() && was.lead == now_is.lead) || joined || unmuted);
         if (raised || started)
             && let Some((cap, why)) = policy.cap_for(room, client, now)
             && now_is.volume > cap

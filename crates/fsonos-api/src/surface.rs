@@ -674,7 +674,23 @@ impl Surface {
         guard: &Guard<'_>,
         command: &Command,
     ) -> Result<OutcomeDto, Failure> {
-        let mut notes = self.lower_before_playing(households, guard, command)?;
+        let (mut notes, fresh) = match self.lower_before_playing(households, guard, command) {
+            Ok(notes) => (notes, None),
+            // A level that could not be read because the player moved to a
+            // new address: surveyed again once and carried out there, as a
+            // command's own failure is healed (`crate::heal`).
+            Err(f) if f.code == ErrorCode::PlayerUnreachable && command.repeat_safe() => {
+                let Some(fresh) = self.resurvey() else {
+                    return Err(f);
+                };
+                (
+                    self.lower_before_playing(&fresh, guard, command)?,
+                    Some(fresh),
+                )
+            }
+            Err(f) => return Err(f),
+        };
+        let households = fresh.as_deref().unwrap_or(households);
         let mut outcome = self.carry_out(households, guard, command)?;
         notes.append(&mut outcome.notes);
         outcome.notes = notes;
@@ -1710,6 +1726,46 @@ fn speaker_side(failure: &Failure) -> bool {
 /// authorized as the tool it stands for, and a volume is bounded by the
 /// caller's cap and quiet hours as if it asked for that level now, so an
 /// undo is never a way round the house policy.
+/// An unmute an undo would restore, held to the caller's cap like any
+/// unmute (p7vq.13): refused while the room stands above it, so a caller
+/// whose volume restore was refused can't make the room sound loud.
+/// Restore steps are vetted one by one as they run, so a volume step
+/// before it has already lowered the room when it can.
+fn vet_unmute(
+    guard: &Guard<'_>,
+    transport: &dyn Transport,
+    households: &[HouseholdState],
+    player: &PlayerId,
+) -> Result<(), String> {
+    let Some(room) = households
+        .iter()
+        .flat_map(|h| &h.rooms)
+        .find(|r| r.players.contains(player))
+    else {
+        return Ok(());
+    };
+    let Some((cap, why)) = guard
+        .policy
+        .cap_for(&room.name, guard.client, guard.clock.now())
+    else {
+        return Ok(());
+    };
+    let level =
+        fsonos_core::control::volume(transport, households, &room.primary).map_err(|e| {
+            format!(
+                "could not read {}'s volume to keep its unmute under its cap: {e}",
+                room.name
+            )
+        })?;
+    if level > cap {
+        return Err(format!(
+            "unmuting {} would sound at {level}, above its cap of {cap}: {why}",
+            room.name
+        ));
+    }
+    Ok(())
+}
+
 fn vet_restore(
     guard: &Guard<'_>,
     transport: &dyn Transport,
@@ -1726,6 +1782,13 @@ fn vet_restore(
         RestoreOp::SetUri { .. } | RestoreOp::SeekTrack(_) | RestoreOp::SeekPosition(_) => "play",
     };
     guard.authorize(tool, false).map_err(|f| f.detail)?;
+    if let RestoreOp::SetMute {
+        player,
+        mute: false,
+    } = op
+    {
+        vet_unmute(guard, transport, households, player)?;
+    }
     let RestoreOp::SetVolume { player, level } = op else {
         return Ok(op.clone());
     };

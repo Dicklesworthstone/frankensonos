@@ -9,13 +9,15 @@ use fsonos_api::dj::{
     SteerConstraints,
 };
 use fsonos_api::plan::{
-    DjAction, TransportAction, plan_group, plan_play, plan_transport, plan_ungroup, plan_volume,
+    DjAction, TransportAction, plan_group, plan_mute, plan_play, plan_transport, plan_ungroup,
+    plan_volume,
 };
 use fsonos_api::surface::scenes::{SceneApplyRequest, SceneDefinition};
 use fsonos_api::surface::schedules::FadeVolumeRequest;
 use fsonos_api::surface::{Surface, Survey};
 use fsonos_api::{
-    ErrorCode, Failure, GroupRequest, NoteCode, OutcomeDto, PlayRequest, VolumeRequest, ZoneRequest,
+    ErrorCode, Failure, GroupRequest, MuteRequest, NoteCode, OutcomeDto, PlayRequest,
+    VolumeRequest, ZoneRequest,
 };
 use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::playback::PlayerPlayback;
@@ -476,6 +478,46 @@ fn a_scene_that_starts_music_lowers_loud_rooms_to_the_callers_cap_first() {
     assert_eq!((level, state), (90, TransportState::Playing), "{applied:?}");
     assert!(applied.notes.is_empty(), "{applied:?}");
     sim.shutdown();
+}
+
+/// A scene that only unmutes a loud room whose group already plays lowers
+/// it to the caller's cap first, as starting music there would (p7vq.13).
+#[test]
+fn a_scene_that_unmutes_a_loud_playing_room_lowers_it_first() {
+    let sim = SimHousehold::standard().spawn().unwrap();
+    let s = surface(&sim, MemStore::default());
+    let cli = Client::Cli;
+    let def = |v: serde_json::Value| -> SceneDefinition { serde_json::from_value(v).unwrap() };
+    let evening = def(serde_json::json!({
+        "groups": [{"coordinator": "Kitchen", "source": {"kind": "uri", "uri": STREAM}}]
+    }));
+    let unmuted = def(serde_json::json!({
+        "groups": [{"coordinator": "Kitchen"}],
+        "mutes": {"Kitchen": false}
+    }));
+    s.save_scene_from(&cli, "Evening", &evening).unwrap();
+    s.save_scene_from(&cli, "Unmuted", &unmuted).unwrap();
+    s.apply_scene(&cli, "Evening").unwrap();
+    volume(&s, &cli, "Kitchen", 90);
+    let mute = MuteRequest {
+        zone: "Kitchen".into(),
+        mute: true,
+    };
+    s.control(&cli, "mute", |h| plan_mute(h, &mute)).unwrap();
+
+    let applied = s.apply_scene(&agent(), "Unmuted").unwrap();
+    assert!(applied.complete, "{applied:?}");
+    let (level, _, state, _) = kitchen(&sim);
+    assert_eq!((level, state), (70, TransportState::Playing), "{applied:?}");
+    assert!(
+        applied
+            .notes
+            .iter()
+            .any(|n| n.code == NoteCode::VolumeClamped
+                && n.detail.starts_with("Kitchen lowered from 90 to 70 first")),
+        "{:?}",
+        applied.notes
+    );
 }
 
 #[test]

@@ -1684,7 +1684,8 @@ mod tests {
 
     #[test]
     fn control_tools_plan_execute_and_report() {
-        let (b, sent, surveys) = backend("", Client::McpStdio);
+        // A capped caller's resume reads each room's level first (p7vq.13).
+        let (b, sent, surveys) = backend("<CurrentVolume>10</CurrentVolume>", Client::McpStdio);
         let r = b
             .control("pause", |h| {
                 plan::plan_transport(

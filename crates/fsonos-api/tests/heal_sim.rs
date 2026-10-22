@@ -209,6 +209,26 @@ fn a_repeat_safe_command_follows_a_moved_player() {
     assert!(get_mute(&sim.lan(), to).unwrap());
 }
 
+/// A capped caller's unmute reads the room's level first (p7vq.13). A
+/// player that moved is surveyed again and the command carried out at its
+/// new address, as an uncapped command heals.
+#[test]
+fn a_capped_command_reads_a_moved_players_level_at_its_new_address() {
+    let mut sim = sim();
+    let surface = surface(&sim);
+    let _ = surface.households().unwrap();
+    let to = sim.change_address("Office").unwrap();
+
+    let req = MuteRequest {
+        zone: "Office".into(),
+        mute: false,
+    };
+    surface
+        .control(&Client::McpStdio, "mute", |h| plan_mute(h, &req))
+        .unwrap();
+    assert!(!get_mute(&sim.lan(), to).unwrap());
+}
+
 #[test]
 fn a_step_is_never_repeated_at_a_new_address() {
     let mut sim = sim();

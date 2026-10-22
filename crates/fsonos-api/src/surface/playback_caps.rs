@@ -1,9 +1,10 @@
 //! Quiet hours and room caps for music a capped caller starts, not just the
-//! volumes it sets: before a play, a resume, a DJ start, a join, a move, a
-//! party or a scene, each room the music will sound in that stands above the
-//! caller's cap there now is lowered to it ([`Guard::playback_caps`]), with
-//! a `VOLUME_CLAMPED` note. An agent cannot start the music at 80 at 2 a.m.
-//! in a room someone left loud.
+//! volumes it sets: before a play, a resume, a DJ start or skip, an unmute,
+//! a join, a move, a party or a scene, each room the music will sound in that
+//! stands above the caller's cap there now is lowered to it
+//! ([`Guard::playback_caps`]), with a `VOLUME_CLAMPED` note. An agent cannot
+//! start the music at 80 at 2 a.m. in a room someone left loud, and a room
+//! whose level cannot be read is not started at all.
 
 use fsonos_core::policy::Client;
 use fsonos_core::scenes::{SceneOp, ScenePlan};
@@ -12,7 +13,7 @@ use fsonos_types::PlayerId;
 use std::collections::HashMap;
 
 use super::Surface;
-use crate::failure::{Failure, NoteCode};
+use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::Command;
 
@@ -31,7 +32,7 @@ impl Surface {
         }
         let mut over = Vec::new();
         for (room, cap, why) in guard.playback_caps(households, command) {
-            if let Some(level) = self.above(households, room, cap) {
+            if let Some(level) = self.above(households, room, cap)? {
                 over.push((room, level, cap, why));
             }
         }
@@ -57,7 +58,7 @@ impl Surface {
                 .filter_map(|g| g.policy.cap_for(&room.name, g.client, g.clock.now()))
                 .min_by_key(|(cap, _)| *cap);
             if let Some((cap, why)) = cap
-                && let Some(level) = self.above(households, room, cap)
+                && let Some(level) = self.above(households, room, cap)?
             {
                 over.push((room, level, cap, why));
             }
@@ -65,17 +66,26 @@ impl Surface {
         self.lower(households, over)
     }
 
-    /// `room`'s level when it stands above `cap`. A room that does not
-    /// answer is left out: the command fails there too, or the room plays
-    /// nothing.
-    fn above(&self, households: &[HouseholdState], room: &Room, cap: u8) -> Option<u8> {
-        match control::volume(&*self.transport, households, &room.primary) {
-            Ok(level) => (level > cap).then_some(level),
-            Err(e) => {
-                tracing::warn!(room = room.name.as_str(), "volume unread: {e}");
-                None
-            }
-        }
+    /// `room`'s level when it stands above `cap`. A room whose level cannot
+    /// be read is refused, before anything is sent: its group would still
+    /// play there, at whatever level it was left (p7vq.13).
+    fn above(
+        &self,
+        households: &[HouseholdState],
+        room: &Room,
+        cap: u8,
+    ) -> Result<Option<u8>, Failure> {
+        let level = control::volume(&*self.transport, households, &room.primary).map_err(|e| {
+            Failure::new(
+                ErrorCode::PlayerUnreachable,
+                format!(
+                    "could not read {}'s volume to hold it to its cap of {cap} ({e}); \
+                     nothing was started",
+                    room.name
+                ),
+            )
+        })?;
+        Ok((level > cap).then_some(level))
     }
 
     /// Set each room in `over` (room, level, cap, why) to its cap; the
@@ -106,8 +116,8 @@ impl Surface {
 /// The rooms `plan` starts music in, grouped as the plan leaves the house:
 /// every room of a group it plays a source in (not one it only loads,
 /// paused), resumes or starts the DJ in, and every room it joins to a group
-/// (as a join does for [`Guard::playback_caps`]); not a room the plan sets a
-/// level for.
+/// or unmutes (as a join and an unmute do for [`Guard::playback_caps`]); not
+/// a room the plan sets a level for.
 fn scene_sounding_rooms<'h>(households: &'h [HouseholdState], plan: &ScenePlan) -> Vec<&'h Room> {
     let rooms = || households.iter().flat_map(|h| h.rooms.iter());
     let mut lead: HashMap<&PlayerId, &PlayerId> =
@@ -136,7 +146,13 @@ fn scene_sounding_rooms<'h>(households: &'h [HouseholdState], plan: &ScenePlan) 
                 }
             }
             SceneOp::Volume { player, .. } => leveled.push(player),
-            SceneOp::Mute { .. } | SceneOp::Pause { .. } => {}
+            // An unmuted room sounds at its own level, as a joining one does.
+            SceneOp::Mute {
+                player,
+                mute: false,
+                ..
+            } => joining.push(player),
+            SceneOp::Mute { mute: true, .. } | SceneOp::Pause { .. } => {}
         }
     }
     rooms()

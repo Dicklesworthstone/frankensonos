@@ -7,7 +7,8 @@
 //! response carries a [`Note`] saying so (`VOLUME_CLAMPED`); a denial is a
 //! `POLICY_DENIED` failure. Music a capped caller starts is held to the same
 //! caps ([`Guard::playback_caps`]): the rooms it will sound in are lowered to
-//! them first.
+//! them first, however it starts there (a play, a resume, a DJ start or
+//! skip, a join, an unmute).
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::clock::Clock;
@@ -129,9 +130,10 @@ impl Guard<'_> {
 
 impl Guard<'_> {
     /// Each room `command` starts music in, with the level a capped caller is
-    /// held to there now and why: every room of the group a play, a resume or
-    /// a DJ start sounds in, the room that joins a group, the rooms the music
-    /// moves to, a whole household for a party. Empty for an uncapped caller.
+    /// held to there now and why: every room of the group a play, a resume, a
+    /// DJ start or a DJ skip sounds in, the room that joins a group or is
+    /// unmuted, the rooms the music moves to, a whole household for a party.
+    /// Empty for an uncapped caller.
     #[must_use]
     pub fn playback_caps<'h>(
         &self,
@@ -149,7 +151,9 @@ impl Guard<'_> {
     }
 }
 
-/// The rooms `command` starts music in (see [`Guard::playback_caps`]).
+/// The rooms `command` starts music in (see [`Guard::playback_caps`]). Every
+/// command is named: a new one is a compile error here until someone decides
+/// whether it can make a room sound.
 fn sounding_rooms<'h>(households: &'h [HouseholdState], command: &Command) -> Vec<&'h Room> {
     let rooms = || households.iter().flat_map(|h| h.rooms.iter());
     let group = |coordinator: &PlayerId| -> Vec<&'h Room> {
@@ -164,14 +168,19 @@ fn sounding_rooms<'h>(households: &'h [HouseholdState], command: &Command) -> Ve
         }
         | Command::Dj {
             coordinator,
-            action: DjAction::Start,
+            action: DjAction::Start | DjAction::Skip,
         }
         | Command::DjSteer {
             coordinator,
             start: true,
             ..
         } => group(coordinator),
-        Command::Join { member, .. } => rooms().filter(|r| r.players.contains(member)).collect(),
+        // An unmuted room sounds at its own level whenever its group plays.
+        Command::Mute {
+            target: member,
+            mute: false,
+        }
+        | Command::Join { member, .. } => rooms().filter(|r| r.players.contains(member)).collect(),
         Command::Move { to, .. } => rooms()
             .find(|r| r.players.contains(to))
             .map_or_else(Vec::new, |r| group(&r.coordinator)),
@@ -179,7 +188,28 @@ fn sounding_rooms<'h>(households: &'h [HouseholdState], command: &Command) -> Ve
             .iter()
             .find(|h| h.player(member).is_some())
             .map_or_else(Vec::new, |h| h.rooms.iter().collect()),
-        _ => Vec::new(),
+        // None of these starts music: a pause or a mute quiets it, a step or
+        // a seek moves within what the group plays (a paused group stays
+        // paused), a level is bounded by `Guard::bound`, a room that leaves
+        // its group stands alone with nothing to play, and stopping or only
+        // steering the DJ plays nothing new.
+        Command::Transport {
+            action:
+                TransportAction::Pause
+                | TransportAction::Next
+                | TransportAction::Previous
+                | TransportAction::Seek(_),
+            ..
+        }
+        | Command::Mute { mute: true, .. }
+        | Command::Volume { .. }
+        | Command::Leave { .. }
+        | Command::Dj {
+            action: DjAction::Stop,
+            ..
+        }
+        | Command::DjSteer { start: false, .. }
+        | Command::Nothing { .. } => Vec::new(),
     }
 }
 
@@ -351,5 +381,57 @@ mod tests {
             guard(&policy, &Client::McpStdio).authorize("pause", false),
             Ok(())
         );
+    }
+
+    /// The rooms each command can start sounding, and so what a capped
+    /// caller's command lowers first: an unmute and a DJ skip too (p7vq.13);
+    /// never a mute, a pause, a step or a DJ stop.
+    #[test]
+    fn unmutes_and_dj_skips_start_music_too() {
+        let policy = Policy::default();
+        let g = guard(&policy, &Client::McpStdio);
+        let h = households();
+        let names = |cmd: &Command| -> Vec<String> {
+            let mut names: Vec<String> = g
+                .playback_caps(&h, cmd)
+                .into_iter()
+                .map(|(room, ..)| room.name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+        let unmute = Command::Mute {
+            target: id("RINCON_KIT1"),
+            mute: false,
+        };
+        assert_eq!(names(&unmute), ["Kitchen"]);
+        let skip = Command::Dj {
+            coordinator: id("RINCON_DEN"),
+            action: DjAction::Skip,
+        };
+        assert_eq!(names(&skip), ["Den", "Kitchen"]);
+        for quiet in [
+            Command::Mute {
+                target: id("RINCON_KIT1"),
+                mute: true,
+            },
+            Command::Dj {
+                coordinator: id("RINCON_DEN"),
+                action: DjAction::Stop,
+            },
+            Command::Transport {
+                coordinator: id("RINCON_DEN"),
+                action: TransportAction::Pause,
+            },
+            Command::Transport {
+                coordinator: id("RINCON_DEN"),
+                action: TransportAction::Next,
+            },
+        ] {
+            assert!(names(&quiet).is_empty(), "{quiet:?}");
+        }
+        // The owner's CLI runs uncapped: nothing is lowered for it.
+        let cli = guard(&policy, &Client::Cli);
+        assert!(cli.playback_caps(&h, &unmute).is_empty());
     }
 }
