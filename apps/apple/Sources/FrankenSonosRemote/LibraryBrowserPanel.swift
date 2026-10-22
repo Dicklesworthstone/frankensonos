@@ -16,6 +16,33 @@ import FrankenSonosKit
     private var validFilter: Bool { (try? LibraryBrowseRequest(query: filter)) != nil }
 
     var body: some View {
+        Group {
+            if catalog.playlist.isOpen { PlaylistContentsPanel(bridge: bridge) }
+            else { catalogBody }
+        }
+        .onAppear {
+            filter = catalog.request.query
+            if scenePhase == .active { resume() }
+        }
+        .onDisappear { catalog.suspend() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { resume() }
+            else if phase == .background { catalog.suspend() }
+        }
+        .onChange(of: remote.active) { _, active in
+            if !active { catalog.suspend() }
+            else if scenePhase == .active { resume() }
+        }
+        .onChange(of: filter) { _, value in
+            actionProblem = nil
+            catalog.filter(value)
+        }
+        .onChange(of: catalog.request.query) { _, value in
+            if filter.trimmingCharacters(in: .whitespacesAndNewlines) != value { filter = value }
+        }
+    }
+
+    private var catalogBody: some View {
         VStack(alignment: .leading, spacing: 18) {
             if let album = catalog.album { albumHeader(album) }
             else {
@@ -67,7 +94,19 @@ import FrankenSonosKit
                     }
                 } else {
                     LazyVStack(spacing: 10) {
-                        ForEach(page.items) { musicRow($0) }
+                        ForEach(page.items) { item in
+                            musicRow(item)
+                            if item.kind == "playlist" {
+                                let selection = catalog.selection(for: item.id)
+                                Button("View cached tracks", systemImage: "list.bullet") {
+                                    guard let selection else { return }
+                                    do { try catalog.openPlaylist(selection); actionProblem = nil }
+                                    catch { actionProblem = error.localizedDescription }
+                                }.buttonStyle(.bordered).disabled(selection == nil)
+                                    .accessibilityLabel("View cached tracks in \(item.title)")
+                                    .accessibilityHint("Reads playlist contents without playing or syncing music.")
+                            }
+                        }
                     }
                 }
                 if page.total > LibraryBrowseRequest.pageSize || page.offset > 0 { pagination(page) }
@@ -78,22 +117,6 @@ import FrankenSonosKit
 
             Text("Showing the daemon’s cached music, which can include retired or taste-derived items. Album track counts may be incomplete. Manage Spotify and sync in House → Spotify & library.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-        }
-        .onAppear {
-            filter = catalog.request.query
-            if scenePhase == .active { resume() }
-        }
-        .onDisappear { catalog.suspend() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active { resume() }
-            else if phase == .background { catalog.suspend() }
-        }
-        .onChange(of: filter) { _, value in
-            actionProblem = nil
-            catalog.filter(value)
-        }
-        .onChange(of: catalog.request.query) { _, value in
-            if filter.trimmingCharacters(in: .whitespacesAndNewlines) != value { filter = value }
         }
     }
 
@@ -317,6 +340,7 @@ import FrankenSonosKit
     }
 
     private func resume() {
+        guard remote.active else { return }
         catalog.resume()
         // A removed view discards its draft. Recover the displayed valid filter
         // if an invalid draft had suspended the retained browser model.
@@ -336,6 +360,124 @@ import FrankenSonosKit
             actionProblem = nil
             remote.prepare(selected, in: zone)
         } catch { actionProblem = error.localizedDescription }
+    }
+}
+
+/// Playlist positions identify cached source occurrences, never queue slots.
+@MainActor private struct PlaylistContentsPanel: View {
+    @ObservedObject var bridge: RemoteBridge
+    @State private var actionProblem: String?
+    private var catalog: LibraryCatalogModel { bridge.catalog }
+    private var detail: PlaylistContentsModel { catalog.playlist }
+    private var remote: RemoteModel { bridge.model }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Button("Back to playlists", systemImage: "chevron.left") { catalog.backToPlaylists() }
+                .buttonStyle(.bordered).disabled(!catalog.active)
+            Text(detail.name).font(.title2.bold()).accessibilityAddTraits(.isHeader)
+            Text("Cached tracks in original playlist order. Opening or filtering this list does not play music or sync Spotify.")
+                .font(.callout).foregroundStyle(.secondary)
+            TextField("Find a title, artist or album in this playlist", text: Binding(
+                get: { detail.query }, set: { detail.edit($0); actionProblem = nil }))
+                .textFieldStyle(.roundedBorder).accessibilityLabel("Filter cached playlist tracks")
+                .disabled(!detail.active)
+                #if os(iOS)
+                .submitLabel(.search).autocorrectionDisabled()
+                #endif
+                .onSubmit { detail.refresh() }
+            if detail.query.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars.count > 512 {
+                Text("Use at most 512 Unicode characters.").font(.caption).foregroundStyle(.red)
+            }
+            if detail.loading {
+                ProgressView("Reading cached playlist…")
+                Button("Cancel read", systemImage: "xmark.circle") { detail.cancel() }.buttonStyle(.bordered)
+            } else {
+                Button("Read from start / apply filter", systemImage: "arrow.clockwise") { detail.refresh() }
+                    .buttonStyle(.bordered).disabled(!detail.canRefresh)
+            }
+            if let problem = actionProblem ?? detail.problem {
+                Label(problem, systemImage: "exclamationmark.circle")
+                    .font(.callout).textSelection(.enabled).remoteCard()
+            }
+            if let observed = detail.observation { contents(observed) }
+            if remote.selectedZone == nil {
+                Text("Browsing does not need a speaker. Choose a group above before playing or queueing a track.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func contents(_ observed: PlaylistContentsObservation) -> some View {
+        let page = observed.page
+        return VStack(alignment: .leading, spacing: 14) {
+            if !detail.isCurrent {
+                Label("Previous page — read again before acting", systemImage: "clock.arrow.circlepath")
+                    .font(.headline)
+            }
+            Text(page.coverageText).font(.callout).foregroundStyle(.secondary)
+            if let at = page.fetchedAt {
+                Text(cacheTime(at)).font(.caption).foregroundStyle(.secondary)
+            }
+            Text("Filter: \(observed.request.query.isEmpty ? "all cached tracks" : observed.request.query)")
+                .font(.caption)
+            if page.items.isEmpty { Text(page.emptyText).font(.callout) }
+            else {
+                Text("Showing cached matches \(UInt64(page.offset) + 1)–\(UInt64(page.offset) + UInt64(page.items.count)) of \(page.total)")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                LazyVStack(alignment: .leading, spacing: 12) {
+                    ForEach(page.items) { item in track(item, observed: observed) }
+                }
+            }
+            HStack {
+                Button("Previous", systemImage: "chevron.left") { detail.previousPage() }
+                    .disabled(!detail.canGoBack)
+                Spacer(minLength: 8)
+                Button("Next", systemImage: "chevron.right") { detail.nextPage() }
+                    .disabled(!detail.canGoForward)
+            }.buttonStyle(.bordered)
+            Text("Only this page is retained. Gaps are unavailable source entries; repeated tracks remain separate occurrences. Play selects one track, not the rest of the playlist.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func track(_ item: PlaylistTrack, observed: PlaylistContentsObservation) -> some View {
+        let zone = remote.selectedZone
+        return VStack(alignment: .leading, spacing: 8) {
+            Text("\(item.position). \(item.title)").font(.headline)
+            Text([item.subtitle, item.album ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+                .font(.subheadline).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                if item.explicit { Text("Explicit").font(.caption.weight(.semibold)) }
+                if let seconds = item.durationSecs {
+                    Text("\(seconds / 60):\(String(format: "%02d", seconds % 60))").font(.caption.monospacedDigit())
+                }
+            }.foregroundStyle(.secondary)
+            Menu {
+                ForEach(PlaylistTrackSelection.Action.allCases, id: \.self) { action in
+                    Button(action.title) { choose(item, observed: observed, action: action, in: zone) }
+                }
+            } label: { Label("Play or queue this track", systemImage: "play.circle") }
+                .buttonStyle(.bordered).disabled(!detail.canChoose || !remote.canPrepare)
+                .accessibilityHint("Opens a review of this exact playlist occurrence and destination before sending.")
+        }.frame(maxWidth: .infinity, alignment: .leading).remoteCard()
+    }
+
+    private func choose(_ item: PlaylistTrack, observed: PlaylistContentsObservation,
+                        action: PlaylistTrackSelection.Action, in expected: Zone?) {
+        do {
+            guard remote.active, remote.canPrepare, remote.panel == .library,
+                  let zone = expected, remote.selectedZone?.sameGroup(as: zone) == true else {
+                throw ContractError.invalid("The destination changed or another action is active. Choose the track again.")
+            }
+            let selected = try detail.selection(item, from: observed.id, in: zone, action: action)
+            actionProblem = nil
+            remote.prepare(.playlistTrack(selected), in: zone)
+        } catch { actionProblem = error.localizedDescription }
+    }
+    private func cacheTime(_ seconds: Int64) -> String {
+        guard (-62_135_596_800...253_402_300_799).contains(seconds) else { return "Cache timestamp: Unix second \(seconds)" }
+        return "Cached " + Date(timeIntervalSince1970: TimeInterval(seconds)).formatted(date: .abbreviated, time: .standard)
     }
 }
 #endif

@@ -137,6 +137,7 @@ extension DaemonClient {
 @MainActor public final class LibraryCatalogModel {
     public typealias Reader = @Sendable (LibraryBrowseRequest) async throws -> LibraryCatalogPage
     public var onChange: (@MainActor () -> Void)?
+    public let playlist: PlaylistContentsModel
     public private(set) var request: LibraryBrowseRequest { willSet { onChange?() } }
     public private(set) var page: LibraryCatalogPage? { willSet { onChange?() } }
     public private(set) var observedAt: Date? { willSet { onChange?() } }
@@ -166,19 +167,27 @@ extension DaemonClient {
     private var albumReturn: (LibraryBrowseRequest, String)?
 
     public init(searchDelay: Duration = .milliseconds(350), now: @escaping @Sendable () -> Date = { Date() },
-                read: @escaping Reader) {
+                playlistRead: @escaping PlaylistContentsModel.Reader = { _ in
+                    throw ContractError.invalid("A playlist reader was not configured.")
+                }, read: @escaping Reader) {
         self.read = read; self.now = now; self.searchDelay = searchDelay
+        playlist = PlaylistContentsModel(read: playlistRead)
         // Known constants, not input from a server or user.
         request = try! LibraryBrowseRequest()
+        playlist.onChange = { [weak self] in self?.onChange?() }
     }
 
     public convenience init(client: DaemonClient, searchDelay: Duration = .milliseconds(350),
                             now: @escaping @Sendable () -> Date = { Date() }) {
-        self.init(searchDelay: searchDelay, now: now, read: { try await client.libraryCatalog($0) })
+        self.init(searchDelay: searchDelay, now: now,
+                  playlistRead: { try await client.playlistContents($0) },
+                  read: { try await client.libraryCatalog($0) })
     }
 
-    public var canChoose: Bool { active && !stopped && isFresh && !loading && page != nil && !restartRequired }
-    public var canRefresh: Bool { active && !stopped && !filterInvalid && !loading }
+    public var canChoose: Bool { active && !stopped && !playlist.isOpen && isFresh && !loading && page != nil && !restartRequired }
+    public var canRefresh: Bool {
+        active && !stopped && (playlist.isOpen ? playlist.canRefresh : !filterInvalid && !loading)
+    }
     public var canGoBack: Bool { canChoose && request.offset > 0 }
     public var canGoForward: Bool { canChoose && page?.nextOffset != nil }
     public var canChooseAlbum: Bool {
@@ -189,18 +198,22 @@ extension DaemonClient {
     public func resume() {
         guard !active && !stopped else { return }
         active = true
+        if playlist.isOpen { playlist.resume(); return }
         guard !restartRequired && !filterInvalid else { return }
         enqueue(request, revision: page?.revision ?? paginationRevision)
     }
     public func suspend() {
+        playlist.suspend()
         active = false; epoch &+= 1; pending = nil; task?.cancel()
         isFresh = false; loading = false; pageID = UUID()
     }
-    public func stop() { suspend(); stopped = true }
+    public func stop() { suspend(); playlist.stop(); stopped = true }
 
     /// Explicit refresh restarts at zero; never automatically splice a changed listing.
     public func refresh() {
-        guard active && !stopped && !filterInvalid else { return }
+        guard active && !stopped else { return }
+        if playlist.isOpen { playlist.refresh(); return }
+        guard !filterInvalid else { return }
         guard let first = try? LibraryBrowseRequest(category: request.category, query: request.query,
                                                    albumUri: request.albumUri) else { return }
         enqueue(first, revision: nil)
@@ -208,13 +221,14 @@ extension DaemonClient {
 
     public func browse(_ category: LibraryCategory) {
         guard active && !stopped else { return }
+        playlist.close()
         album = nil; albumReturn = nil; filterInvalid = false
         guard let next = try? LibraryBrowseRequest(category: category, query: request.query) else { return }
         enqueue(next, revision: nil)
     }
 
     public func filter(_ text: String) {
-        guard active && !stopped else { return }
+        guard active && !stopped && !playlist.isOpen else { return }
         do {
             let next = try LibraryBrowseRequest(category: request.category, query: text, albumUri: request.albumUri)
             let recovering = filterInvalid
@@ -270,6 +284,20 @@ extension DaemonClient {
             throw LibraryCatalogError.selectionExpired
         }
         return action.command(source: selection.item.sourceUri)
+    }
+
+    /// Resolve the exact catalog page before opening; never derive a playlist URI from its label.
+    public func openPlaylist(_ selection: LibraryCatalogSelection) throws {
+        guard let item = resolve(selection), item.kind == "playlist" else {
+            throw LibraryCatalogError.selectionExpired
+        }
+        try playlist.open(playlistUri: item.sourceUri, name: item.title)
+    }
+    public func backToPlaylists() {
+        guard active && !stopped && playlist.isOpen else { return }
+        playlist.close()
+        // Keep the original name filter and page, but require the listing's revision.
+        enqueue(request, revision: page?.revision ?? paginationRevision)
     }
 
     public func openAlbum(_ selection: LibraryCatalogSelection) {
