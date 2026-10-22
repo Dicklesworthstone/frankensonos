@@ -621,7 +621,7 @@ mod tests {
         }
     }
 
-    fn scheduled(direction: Value) -> fsonos_api::surface::schedules::ScheduleRequest {
+    fn scheduled(direction: &Value) -> fsonos_api::surface::schedules::ScheduleRequest {
         serde_json::from_value(json!({
             "when":"daily 07:30", "action":"dj_start", "zone":"Kitchen", "mood":"calm",
             "direction":direction
@@ -633,7 +633,7 @@ mod tests {
     fn scheduled_directions_are_forwarded_once_without_losing_fields() {
         let daemon = Arc::new(ScheduleDaemon::default());
         let b = backend(Client::McpStdio, &[]).with_daemon(daemon.clone());
-        let req = scheduled(direction());
+        let req = scheduled(&direction());
         let response = b.add_schedule(&req).unwrap();
         assert_eq!(
             *daemon.0.lock().unwrap(),
@@ -649,14 +649,14 @@ mod tests {
     #[test]
     fn invalid_scheduled_directions_fail_before_daemon_selection() {
         let b = backend(Client::McpStdio, &[]).with_daemon(Arc::new(NoDaemon));
-        let mut empty_timed = scheduled(json!({"for_secs":27}));
+        let mut empty_timed = scheduled(&json!({"for_secs":27}));
         empty_timed.mood = None;
-        let mut other_action = scheduled(direction());
+        let mut other_action = scheduled(&direction());
         other_action.action = "pause".into();
         other_action.mood = None;
         for req in [
-            scheduled(json!({"constraints":{"energy_bias":3}})),
-            scheduled(json!({"for_secs":604801})),
+            scheduled(&json!({"constraints":{"energy_bias":3}})),
+            scheduled(&json!({"for_secs":604_801})),
             empty_timed,
             other_action,
         ] {
