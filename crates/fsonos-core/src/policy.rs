@@ -135,9 +135,12 @@ pub const READ_CLASS: &str = "read";
 
 /// Tools that always carry out another tool's operation, which an entry
 /// denying that tool (or its class) denies too: a fade is a run of volume
-/// sets.
-pub const CARRIES: [(&str, &str); 2] = [
+/// sets, and a fade-out is a fade and then a pause.
+pub const CARRIES: [(&str, &str); 5] = [
     ("fade_volume", "set_volume"),
+    ("fade_and_pause", "pause"),
+    ("fade_and_pause", "fade_volume"),
+    ("fade_and_pause", "set_volume"),
     ("spotify_sign_in_complete", "spotify_sign_in"),
 ];
 
@@ -1505,6 +1508,48 @@ deny = ["auth"]
                 .find(|c| c.client == "alice@example.com")
                 .map(|c| c.grant.clone()),
             Some(vec!["auth".to_owned()])
+        );
+    }
+
+    /// `fade_and_pause` lowers the volume step by step, then pauses: a deny
+    /// of either, or of their classes, covers it (p7vq.14).
+    #[test]
+    fn a_fade_out_is_held_to_pause_and_volume_denies() {
+        let p = Policy::from_toml(
+            r#"
+[clients.nopause]
+deny = ["pause"]
+
+[clients.noplayback]
+deny = ["playback"]
+
+[clients.novolume]
+deny = ["set_volume"]
+
+[clients.quiet]
+deny = ["volume"]
+
+[clients.free]
+deny = ["seek"]
+"#,
+        )
+        .unwrap();
+        let fade = || ToolCall {
+            name: "fade_and_pause",
+            read_only: false,
+        };
+        for key in ["nopause", "noplayback", "novolume", "quiet"] {
+            assert!(
+                matches!(
+                    p.authorize(fade(), &Client::Tailnet(key.into())),
+                    Decision::Deny { .. }
+                ),
+                "{key}"
+            );
+        }
+        assert_eq!(
+            p.authorize(fade(), &Client::Tailnet("free".into())),
+            Decision::Allow
         );
     }
 
