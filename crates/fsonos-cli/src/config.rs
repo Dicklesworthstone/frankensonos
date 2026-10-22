@@ -255,6 +255,13 @@ pub struct ServeArgs {
     /// speakers.
     #[arg(long)]
     pub allow_unsafe_bind: bool,
+
+    /// Also answer the legacy Sonos bridge's HTTP API on this loopback
+    /// address (`127.0.0.1:8091`, say), as the `bridge-compat` client under
+    /// the house policy, so a caller of the old bridge moves over unchanged.
+    /// Off unless set; a non-loopback address is refused.
+    #[arg(long, env = "FSONOS_BRIDGE_COMPAT_ADDR")]
+    pub bridge_compat: Option<SocketAddr>,
 }
 
 /// Whether `fsonos` looks for Tailscale (`--tailscale`).

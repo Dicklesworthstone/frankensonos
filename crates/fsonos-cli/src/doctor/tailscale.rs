@@ -630,6 +630,7 @@ mod tests {
             spotify_redirect_uri: String::new(),
             events_port: 0,
             allow_unsafe_bind: false,
+            bridge_compat: None,
             tailscale: crate::config::TailscaleMode::Auto,
             tailscale_serve: false,
         }

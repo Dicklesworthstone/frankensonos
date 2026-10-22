@@ -126,6 +126,8 @@ mod scenes;
 
 mod announce;
 
+pub mod bridge;
+
 mod players;
 
 mod remote;

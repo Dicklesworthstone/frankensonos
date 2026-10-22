@@ -224,7 +224,13 @@ impl Identity {
 /// The keys the daemon's own clients go by ([`Client::key`]): a tailnet
 /// name that took one would get that client's rules, and a schedule it
 /// made would run as that client.
-const RESERVED: [&str; 4] = ["cli", "mcp-stdio", "loopback-http", "unknown"];
+const RESERVED: [&str; 5] = [
+    "cli",
+    "mcp-stdio",
+    "loopback-http",
+    "bridge-compat",
+    "unknown",
+];
 
 /// A name a caller can go by: not empty, bounded, no control characters,
 /// and none of [`RESERVED`].

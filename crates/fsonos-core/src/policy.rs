@@ -37,8 +37,8 @@
 //! ```
 //!
 //! Clients are keyed by [`Client::key`]: `cli`, `mcp-stdio`,
-//! `loopback-http`, a tailnet principal (login, `tag:<name>` or node name),
-//! or `unknown`.
+//! `loopback-http`, `bridge-compat`, a tailnet principal (login,
+//! `tag:<name>` or node name), or `unknown`.
 //!
 //! An `allow` or `deny` entry names a tool or a class of tools ([`CLASSES`]:
 //! `volume`, `playback`, `grouping`, `queue`, `sound`, `house-config`,
@@ -208,6 +208,9 @@ pub enum Client {
     LoopbackHttp,
     /// A resolved tailnet principal: login, `tag:<name>`, or node name.
     Tailnet(String),
+    /// A local agent on the legacy bridge's API (`fsonos serve
+    /// --bridge-compat`), held to the house policy like any agent.
+    BridgeCompat,
     /// A caller that could not be identified.
     Unknown,
 }
@@ -221,6 +224,7 @@ impl Client {
             Self::McpStdio => "mcp-stdio",
             Self::LoopbackHttp => "loopback-http",
             Self::Tailnet(principal) => principal,
+            Self::BridgeCompat => "bridge-compat",
             Self::Unknown => "unknown",
         }
     }

@@ -226,6 +226,9 @@ pub fn serve_env(serve: &ServeArgs) -> Vec<(String, String)> {
     if serve.events_port != EVENTS_PORT {
         set("FSONOS_EVENTS_PORT", serve.events_port.to_string());
     }
+    if let Some(addr) = serve.bridge_compat {
+        set("FSONOS_BRIDGE_COMPAT_ADDR", addr.to_string());
+    }
     env
 }
 

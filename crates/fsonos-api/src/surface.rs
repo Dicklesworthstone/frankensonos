@@ -63,6 +63,7 @@ pub mod schedules;
 pub mod spotify_auth;
 
 pub mod announce;
+mod bridge;
 mod dj_caps;
 mod intents;
 mod outside;

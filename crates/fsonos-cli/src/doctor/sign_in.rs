@@ -219,6 +219,7 @@ mod tests {
             spotify_redirect_uri: "http://127.0.0.1:8099/auth/spotify/callback".into(),
             events_port: 0,
             allow_unsafe_bind: false,
+            bridge_compat: None,
             tailscale: crate::config::TailscaleMode::Auto,
             tailscale_serve: false,
         }

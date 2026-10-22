@@ -54,6 +54,7 @@ use crate::config::{self, GlobalArgs, ServeArgs};
 use crate::dj::sync::LibrarySync;
 use crate::schedule_cmd::SchedulerArgs;
 
+mod bridge_compat;
 mod spotify_auth;
 
 mod serve_origin;
@@ -382,6 +383,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     let mcp = start_all("MCP server", &mcp_plan, |addr| {
         start_mcp(addr, &names, args.tailscale_serve)
     })?;
+    let bridge = bridge_compat::start(&surface, args.bridge_compat)?;
     // One value per key: the e2e harness and scripts parse this line.
     eprintln!(
         "fsonos serve: ready http=http://{} mcp=http://{}/mcp data={}",
@@ -390,22 +392,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         data_dir.display()
     );
     if let Some(&(_, loopback)) = http.iter().find(|(_, a)| a.ip().is_loopback()) {
-        let file = crate::remote::DaemonFile {
-            http: loopback,
-            cli_token: cli_token.clone(),
-            pid: std::process::id(),
-            routes: global.routes.as_deref().map(crate::remote::canonical),
-            serve: Some(crate::remote::ServeSettings {
-                http: args.http,
-                mcp_http: args.mcp_http,
-                tailscale_serve: args.tailscale_serve,
-                allow_unsafe_bind: args.allow_unsafe_bind,
-                tailscale_off: args.tailscale == config::TailscaleMode::Off,
-            }),
-        };
-        if let Err(e) = crate::remote::write_daemon_file(&data_dir, &file) {
-            tracing::warn!("the CLI will not find this daemon: {e}");
-        }
+        record_daemon(global, args, &data_dir, loopback, &cli_token);
     }
     announce_tailnet(&tailnet, &http_plan, &http, &mcp, args.tailscale_serve);
     if !matches!(
@@ -457,6 +444,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         tracing::warn!("the scheduler stopped with a panic");
     }
     stop_http(&http);
+    stop_http(&bridge);
     if let Some(watching) = tailnet_watch
         && watching.join().is_err()
     {
@@ -468,6 +456,33 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     // The surfaces hold the model weakly: this ends every subscription.
     drop(live);
     Ok(())
+}
+
+/// Write daemon.json for the loopback HTTP address `http`: the CLI finds
+/// this daemon by it, and the doctor judges the settings it runs with.
+fn record_daemon(
+    global: &GlobalArgs,
+    args: &ServeArgs,
+    data_dir: &Path,
+    http: SocketAddr,
+    cli_token: &str,
+) {
+    let file = crate::remote::DaemonFile {
+        http,
+        cli_token: cli_token.to_owned(),
+        pid: std::process::id(),
+        routes: global.routes.as_deref().map(crate::remote::canonical),
+        serve: Some(crate::remote::ServeSettings {
+            http: args.http,
+            mcp_http: args.mcp_http,
+            tailscale_serve: args.tailscale_serve,
+            allow_unsafe_bind: args.allow_unsafe_bind,
+            tailscale_off: args.tailscale == config::TailscaleMode::Off,
+        }),
+    };
+    if let Err(e) = crate::remote::write_daemon_file(data_dir, &file) {
+        tracing::warn!("the CLI will not find this daemon: {e}");
+    }
 }
 
 /// How long a stopping daemon waits for announcements in flight to put the

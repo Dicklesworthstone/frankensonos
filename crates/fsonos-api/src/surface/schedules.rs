@@ -631,6 +631,7 @@ pub fn client_of(key: &str) -> Client {
         "cli" => Client::Cli,
         "mcp-stdio" => Client::McpStdio,
         "loopback-http" => Client::LoopbackHttp,
+        "bridge-compat" => Client::BridgeCompat,
         "unknown" => Client::Unknown,
         principal => Client::Tailnet(principal.to_string()),
     }

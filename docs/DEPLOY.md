@@ -435,8 +435,17 @@ controls answer the same either way.
 ### Moving an agent off an earlier HTTP bridge
 
 An agent written against a small home-made Sonos bridge (a `soco` script
-answering `GET /status?zone=`, `POST /play {zone, uri}` and the like) moves to
-FrankenSonos route by route. Its calls then go through the house policy, land
+answering `GET /status?zone=`, `POST /play {zone, uri}` and the like) can move
+with no change at all: `fsonos serve --bridge-compat 127.0.0.1:8091` (or
+`FSONOS_BRIDGE_COMPAT_ADDR`) answers that bridge's routes in its JSON shapes on
+a loopback address, as the `bridge-compat` client. Its calls are then held to
+the caps and quiet hours, logged and undoable, and a `[clients."bridge-compat"]`
+table in `policy.toml` narrows what it may do. Stop the old bridge first, if it
+holds the port. The listener refuses a non-loopback address and any request a
+web page sends (one with `Origin` or `Sec-Fetch-Site`), since it has no
+authentication.
+
+Or it moves to FrankenSonos's own API, route by route. Its calls then go through the house policy, land
 in the action log and can be undone. Simplest is to give the agent the MCP
 endpoint above: the tools take the same room names. Over HTTP, the routes map
 like this (fsonos refuses unknown body fields, so rename them):

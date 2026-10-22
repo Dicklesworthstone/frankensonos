@@ -32,9 +32,15 @@ pub(crate) fn client(subject: Option<&str>) -> Client {
             && name == name.trim()
             && name.len() <= 256
             && !name.chars().any(char::is_control)
-            && !["cli", "mcp-stdio", "loopback-http", "unknown"]
-                .iter()
-                .any(|reserved| reserved.eq_ignore_ascii_case(name)) =>
+            && ![
+                "cli",
+                "mcp-stdio",
+                "loopback-http",
+                "bridge-compat",
+                "unknown",
+            ]
+            .iter()
+            .any(|reserved| reserved.eq_ignore_ascii_case(name)) =>
         {
             Client::Tailnet(name.to_string())
         }
