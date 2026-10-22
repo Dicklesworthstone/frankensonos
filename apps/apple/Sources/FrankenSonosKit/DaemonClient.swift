@@ -450,3 +450,26 @@ extension DaemonClient {
         return try Self.decode(DiagnosticsReport.self, from: reply.data).validated()
     }
 }
+
+extension DaemonClient {
+    /// A bounded daemon-side scan can outlast an ordinary 15-second panel read.
+    /// Search is read-only, single-shot, and keeps the shared transport limits.
+    public func searchQueue(_ selection: QueueSearchRequest) async throws -> QueueSearchPage {
+        try Task.checkCancellation()
+        let current = try await zones()
+        try Task.checkCancellation()
+        guard current.contains(where: { $0.sameGroup(as: selection.zone) }) else {
+            throw ContractError.invalid("The search group changed. Choose its current grouping and search again.")
+        }
+        var request = URLRequest(url: try endpoint.resource(
+            ["zones", selection.zone.id.address, "queue", "search"], query: selection.queryItems),
+            cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 120)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        try Task.checkCancellation()
+        let reply = try await transport.send(request)
+        try Task.checkCancellation()
+        try Self.check(reply)
+        return try Self.decode(QueueSearchPage.self, from: reply.data).validated(for: selection)
+    }
+}
