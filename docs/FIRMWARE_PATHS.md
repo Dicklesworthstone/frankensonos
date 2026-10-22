@@ -160,3 +160,119 @@ Reliability goal is already served by the daemon (stock speakers, no risk).
 Firmware replacement research proceeds S1-first (open book, zero hardware
 risk) with the Class C physical session as a deliberate, scheduled,
 human-in-the-loop event when the owner wants the S2 One opened.
+
+## Network-only root lane — state after the 2026-10-22 sweep
+
+Owner-directed condition: no developer-program key, no manual downgrade
+flash, no hardware disassembly; software disassembly is encouraged. The
+authorized lane is therefore "find a pre-auth bug in the daemon the players
+actually run". This section records what is now *proven*, so the next
+session does not re-walk it. Exploit-workspace detail lives in the
+git-ignored `captures/research/rs-20261022-s1root/` (state file,
+`deliverables/SESSION-STATE.md`) and the Ghidra project under
+`captures/research/ghidra/`.
+
+### Architecture: `anacapad` is a front proxy, and the service layer has no strings
+
+`anacapad` is the Anacapa HTTP server (conf `Port 1400`, `SSLPort 1443`) and
+is launched by `/opt/bin/anacapactl` as `/opt/bin/anacapad -c
+/opt/conf/anacapa.conf`. It contains the `R*Server` wrapper classes
+(`RDPServer`, `RGMServer`, `RSPServer`, `RZGTServer`) plus
+`RCRInParam`/`RCRResultParser`, i.e. an in-process control-RPC layer.
+
+It does **not** contain the literals `MediaRenderer`, `SetAVTransportURI`,
+the `AVTransport` service URN, `RenderingControl`, `Browse` or `Search` — in
+either the 34.16 or the 86.10 build — yet `/MediaRenderer/AVTransport/Control`
+answers 200 on live players and `/getrs` needs a numeric setting index. The
+UPnP service/action names are assembled and dispatched without literal
+strings. Consequence: string/xref sweeps on `anacapad` alone miss the
+AVT/CD/queue layer; work from the descriptor/RPC layer instead.
+
+### Tooling that works
+
+The 86.10 daemon is **MIPS16** (mixed with MIPS32). `r2`/`rabin2` cannot
+decode it — `aaa`, `/r`, `pdf` all return `invalid`, and there are no 32-bit
+immediates by construction. Use:
+
+- `mips-linux-gnu-objdump -d -m mips:32` for raw disassembly (decodes
+  MIPS16 correctly),
+- **Ghidra 12 headless** (`analyzeHeadless`, import with
+  `-processor MIPS:BE:32:default`) for decompilation; the scripts in
+  `captures/research/ghidra/scripts/` do a whole-binary copy-site sweep and
+  a targeted decompile, and the 3 MB binary analyzes in ~2 minutes.
+- Strings of interest sit in `.text` **literal pools** (`lw aN,<pc-literal>`),
+  not in `.data`; a `.data`-only grep finds nothing.
+
+The 34.16 binary is plain MIPS32 with a dynamic symbol table and remains the
+better map of the *legacy* source shape, but its addresses do not transfer.
+
+### What is measured hardened (do not re-spend device time)
+
+- HTTP request line, header chunking, `Content-Length` consumers, URI path
+  (with `..`/`\\` depth check): every copy has an instruction-level bound.
+- SOAP/XML args: per-field `strlcpy` with literal pitch, width-limited
+  `sscanf`, `__memcpy_chk` 1023→1024; `RupnpParseNextCsvValue` and
+  `RparseUrlEncodedValue` gate on capacity before each store. Live: a DIDL
+  `dc:title` of 60 KB through 2.5 MB, 400 KB of escaped DIDL, and a 4.5 MB
+  20 000-item document are all accepted without a restart.
+- `/devmode` and `/devunlock`: verify-then-store with exact-fit record loops;
+  decoded statement/confirm paths are capacity-checked at each stage.
+- Update path: the 8193-byte stream context, `readData` clamping, every
+  `read16` destination check, response-header `strlcpy`s, redirect copies,
+  URL building, `.upd` record loop, `.upm` shape attacks (4 KiB nesting,
+  1 MiB tag names, entity bombs) all hold; recovery matches the baseline
+  restart of ~5–9 s every time.
+- MPEG-TS: the naive CVE-2023-27355 shape (every packet AFC=3,
+  `afelen=0xFF`) plays and does not crash 57.23, so S1 parity is unproven.
+- Command injection: one `execve` funnel (`ap_create_subprocess_tokenized`),
+  fixed command table, no shell, URL pre-encoded. `/status/<file>` is a fixed
+  absolute-path table. No SMB code in either extracted build.
+
+### Update-metering facts
+
+`BeginSoftwareUpdate(URL, Flags, ExtraOptions)` writes
+`/var/run/upgradeinfo`; `ExtraOptions` supports `system_version=` with a
+CSV tokenizer and is written verbatim, so a literal newline forges extra
+`Key: [value]` lines. It is inert in practice: `bin/upgrade`'s reader is
+last-wins and the writer templates every key afterwards.
+
+The version gate aborts before `upgrade` starts (≈128 KB of the image read,
+then FIN/RST) for: the installed version, older signed images, a
+newer-but-wrong-model image, and an image whose type-1 version record was
+patched upward. `Force` (Flags bit 0) does not override it. 57.23's
+`MinCompatibleVersion` is the 56 line, so a signed 34.16/57.19 image cannot
+be installed by URL alone.
+
+### Open leads, in order
+
+1. The 2023 Pwn2Own pair is the only public S1-shaped material: `/msprox`
+   OOB read (CVE-2023-27353, leak) and the MPEG-TS `afelen` overflow
+   (CVE-2023-27355). `/msprox` returns 405 (route exists) on both 57.23 and
+   86.10; the invocation (a `uuid` target and the forwarded body encoding)
+   is not finished. The TS demux in the control-RPC layer has not been
+   located.
+2. `/getrs?id=N` indexes a setting table with no bounds check and then
+   `jalr`s through the entry; `N` is `atoi`, so negative and huge indices are
+   attacker-chosen. `-1…10000` answer without a restart, so reachable
+   entries are still empty or benign.
+3. `POST /notify` is the only body reader without a total cap (no
+   Transfer-Encoding parser at all; absent `Content-Length` reads to close).
+   100 KB and 1 MB bodies survive.
+4. `/advconfig` builds a stack buffer of `n+0x10` but validates only `n`
+   (n is a constant 0x1000; the saved `ra` sits in the slack).
+5. Expat is statically linked at 2.2.0 (34.16) and 2.5.0 (86.10) and 2.5.0
+   is still current in a 2026-09-10 build. Most post-2.5.0 CVEs are
+   denial-of-service; the memory-corruption ones need external-entity
+   sub-parsers (not used) or `XML_ParseBuffer` length misuse (only
+   `XML_Parse` is used).
+6. A signed devmode statement or a leaked Sonos key remains the cleanest
+   *enabler* (the updater then accepts modified images); nothing here
+   removes the signature check itself.
+
+### Safety notes for the next session
+
+Use bench players first and expect a watchdog restart. Do not drive one unit
+twice inside a minute. Announce state changes in Agent Mail (`am`) and leave
+the house paused at low volume. The Mac's LAN interface has DHCP churn;
+bind the source address explicitly when a device answers `EADDRNOTAVAIL`.
+
