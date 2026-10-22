@@ -35,6 +35,16 @@ test('grouping, sound, routines and recovery have deterministic destinations', (
     assert.equal(studio.identify(node(label)).workspace, expected, label);
   }
 });
+test('bare native details panels are filed into their workspaces, as sections are', () => {
+  // Seen live: sleep timers, schedules, scenes, undo and the action history
+  // mount as bare <details> and stayed in Listen.
+  const el = (tagName, id = '') => ({ tagName, id });
+  assert.equal(studio.movable(el('SECTION')), true);
+  assert.equal(studio.movable(el('DETAILS')), true);
+  assert.equal(studio.movable(el('MAIN', 'households')), false);
+  assert.equal(studio.movable(el('SECTION', 'households')), false);
+  assert.equal(studio.movable(el('DIV')), false);
+});
 test('unknown future native panels remain reachable', () => {
   const found = studio.identify(node('New native capability'));
   assert.equal(found.workspace, 'house'); assert.equal(found.title, 'New native capability');

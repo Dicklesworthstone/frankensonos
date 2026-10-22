@@ -29,6 +29,12 @@ const StudioRemote = (() => {
     { id: 'announcements', workspace: 'routines', match: /announce|chime|speech/i, title: 'Say something to the house', description: 'Speech or chimes, with the previous music restored afterward.', keywords: 'dinner ready voice say announcement chime' },
     { id: 'history', workspace: 'activity', match: /history|action|undo/i, title: 'Review changes and available undo', description: 'The daemon’s action history, outcomes, and supported recovery.', keywords: 'undo reverse log audit history recovery' },
   ]);
+  // A native panel the studio files into its workspace: a <section>, or a
+  // bare <details> (sleep timers, schedules, scenes, undo and the action
+  // history mount as one); never the households.
+  function movable(node) {
+    return node.id !== 'households' && ['SECTION', 'DETAILS'].includes(node.tagName);
+  }
   function identify(node) {
     const label = [node.id, node.getAttribute('aria-label'), node.querySelector('summary')?.textContent]
       .filter(Boolean).join(' ');
@@ -186,7 +192,7 @@ const StudioRemote = (() => {
       // Native modules can mount after us. Move their roots, never recreate the
       // controls or listeners. Unknown sections remain reachable in House.
       for (const node of [...native.children]) {
-        if (node.id === 'households' || node.tagName !== 'SECTION') continue;
+        if (!movable(node)) continue;
         const tool = identify(node);
         panels.set(node, tool);
         $('studio-' + tool.workspace).append(node);
@@ -354,7 +360,7 @@ const StudioRemote = (() => {
     return { reconcile, navigate, openTool, available, selected: () => selected,
       dispose() { disposed = true; observer.disconnect(); layoutObserver?.disconnect(); if (frame !== null) cancel(frame); for (const off of on) off(); } };
   }
-  return { mount, identify, search, choose, key, tools, workspaces, matchingZones, selectedCard, activate };
+  return { mount, movable, identify, search, choose, key, tools, workspaces, matchingZones, selectedCard, activate };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = StudioRemote;
 else if (typeof house !== 'undefined' && typeof registerCardPanel === 'function') {
