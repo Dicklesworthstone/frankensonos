@@ -210,9 +210,15 @@ impl Check for StoreOpenCheck {
     }
 }
 
+/// `store.open` on its own, for `data_dir`: the check [`register`] adds.
+#[must_use]
+pub fn store_check(data_dir: &std::path::Path) -> CheckResult {
+    store_open(data_dir)
+}
+
 /// The data directory exists and is writable, and the store opens with its
 /// schema current (opening applies any pending migrations, as the daemon
-/// would).
+/// would); when this process holds the store already, it is that store.
 fn store_open(data_dir: &std::path::Path) -> CheckResult {
     let remedy = "Set FSONOS_DATA_DIR to a directory this user can write, or fix its permissions.";
     if let Err(e) = std::fs::create_dir_all(data_dir) {
@@ -227,6 +233,15 @@ fn store_open(data_dir: &std::path::Path) -> CheckResult {
     }
     let _ = std::fs::remove_file(&probe);
     let path = data_dir.join(crate::store::FILE_NAME);
+    // This process holds the store (the daemon, `fsonos mcp`): another
+    // connection is one fsqlite cannot close while the first holds its locks
+    // (on the owner's daemon each GET /doctor kept two more descriptors), so
+    // report the one it holds.
+    if let Some(versions) = SqliteStore::held(&path) {
+        let latest = versions.last().copied().unwrap_or(0);
+        return CheckResult::pass(format!("store open at schema version {latest}"))
+            .with_evidence(json!({ "path": path, "schema_versions": versions, "held": true }));
+    }
     match SqliteStore::open(&path) {
         Ok(store) => {
             let versions = store.schema_versions().unwrap_or_default();

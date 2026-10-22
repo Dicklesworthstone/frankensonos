@@ -18,6 +18,7 @@ use fsqlite::{AsyncConnection, FrankenError, Row, SqliteValue};
 use std::fmt::Display;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// One schema step. Append new steps to [`MIGRATIONS`]; never edit or
@@ -204,6 +205,34 @@ pub struct SqliteStore {
     wal: Option<PathBuf>,
     /// Plays recorded through this handle, for [`PRUNE_EVERY`].
     plays: u32,
+    /// This store in [`HELD`] while it is open (a file, not `:memory:`).
+    held: Option<Held>,
+}
+
+/// The database files this process has open as a [`SqliteStore`], each with
+/// its schema versions ([`SqliteStore::held`]). A second connection to a file
+/// the process already holds is one fsqlite cannot close: it keeps the
+/// descriptors while any connection holds a lock on the file (closing one
+/// would drop the process' locks). So a check that only asks whether the
+/// store opens asks here first.
+static HELD: Mutex<Vec<(PathBuf, Vec<i64>)>> = Mutex::new(Vec::new());
+
+/// A store's entry in [`HELD`], gone when the store closes or drops.
+#[derive(Debug)]
+struct Held(PathBuf);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(i) = held.iter().position(|(path, _)| *path == self.0) {
+            held.swap_remove(i);
+        }
+    }
+}
+
+/// `path` as [`HELD`] keys it: canonical when it exists.
+fn held_key(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// How far back plays and feedback are kept, before the newest of each: a
@@ -263,6 +292,17 @@ impl SqliteStore {
         Self::open_at(&path.to_string_lossy())
     }
 
+    /// The schema versions of the store at `path` when this process already
+    /// has it open (the daemon, `fsonos mcp`); `None` when it does not.
+    #[must_use]
+    pub fn held(path: &Path) -> Option<Vec<i64>> {
+        let key = held_key(path);
+        let held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+        held.iter()
+            .find(|(path, _)| *path == key)
+            .map(|(_, versions)| versions.clone())
+    }
+
     /// A private, non-persistent database (tests, `--no-store` runs).
     pub fn open_in_memory() -> Result<Self, StoreError> {
         Self::open_at(":memory:")
@@ -273,12 +313,21 @@ impl SqliteStore {
     }
 
     fn open_migrated(path: &str, migrations: &[Migration]) -> Result<Self, StoreError> {
-        let store = Self {
+        let mut store = Self {
             conn: retrying(|| AsyncConnection::open_sync(path)).map_err(backend)?,
             wal: (path != ":memory:").then(|| PathBuf::from(format!("{path}-wal"))),
             plays: 0,
+            held: None,
         };
         store.migrate(migrations)?;
+        if path != ":memory:" {
+            let key = held_key(Path::new(path));
+            let versions = store.schema_versions()?;
+            HELD.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push((key.clone(), versions));
+            store.held = Some(Held(key));
+        }
         if let Err(e) = store.prune_listening() {
             tracing::warn!("old plays and feedback not pruned: {e}");
         }
@@ -1456,6 +1505,7 @@ mod tests {
             conn: AsyncConnection::open_sync(path.as_str()).unwrap(),
             wal: None,
             plays: 0,
+            held: None,
         };
         second.apply(&MIGRATIONS[0], 0).unwrap();
         assert_eq!(
