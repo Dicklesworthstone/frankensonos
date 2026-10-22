@@ -20,6 +20,7 @@
 //! | `POST /library/play` | [`crate::SearchPlayRequest`] | [`crate::OutcomeDto`] |
 //! | `GET /library/search?q=<text>&zone=<room>&limit=<n>` | | `[HitDto]`: the owner's library, and the room's favorites |
 //! | `GET /library/browse` | | the synced library's tracks, albums or playlists, with no Spotify or speaker request |
+//! | `GET /library/playlist?playlist_uri=<uri>` | | a synced playlist's tracks in order, and how much of it is cached, with no Spotify or speaker request |
 //! | `GET /history?zone=<room>&limit=<n>` | | `[PlayDto]`: what played, newest first |
 //! | `GET /doctor` | | the doctor report (`schema`, `exit_code`, `counts`, `checks`) |
 //! | `GET /actions?client=&since=&limit=` | | `[ActionDto]`, newest first |
