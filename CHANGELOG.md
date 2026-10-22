@@ -636,12 +636,18 @@ A selection; each commit message has the details.
   environment flags, so CI never needs the network.
   [`d88cf26`](https://github.com/Dicklesworthstone/frankensonos/commit/d88cf26),
   [`39c8fec`](https://github.com/Dicklesworthstone/frankensonos/commit/39c8fec)
+- **S1 Spotify rendering, on the S1 hardware.** The per-household render
+  parameters were learned from the owner's own favorites and playback was
+  verified on a real S1 player; the recorded parameters are in
+  [`docs/PROTOCOL.md`](docs/PROTOCOL.md) §4
+  ([`889f565`](https://github.com/Dicklesworthstone/frankensonos/commit/889f565)).
+- **MCP resource updates.** The server publishes `notifications/resources/updated`
+  for `sonos://zones`, `sonos://zones/{room}` and `sonos://dj`, with tests
+  ([`014c1c5`](https://github.com/Dicklesworthstone/frankensonos/commit/014c1c5));
+  GET /events and the HTTP stream remain the ordered alternative.
 - **Not yet.**
-  - Real-hardware CI, prebuilt binaries and the `0.1.0` tag.
-  - Spotify rendering on legacy S1 players is still being confirmed on real
-    hardware.
-  - MCP resource-update notifications wait on upstream support. GET /events,
-    the HTTP stream, already delivers the same changes.
+  - Real-hardware CI and the `0.1.0` tag. Published release binaries start with
+    `0.1.0`; per-push CI artifacts expire with the run.
   - Interfaces may change until `0.1.0`.
 
 ## Notes for agents

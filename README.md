@@ -256,7 +256,7 @@ reads      list_zones · list_rooms · list_players · get_zone · get_zone_stat
 control    play · play_favorite · add_to_queue · play_queue · remove_from_queue · move_in_queue
            set_play_mode · pause · resume · next · previous
            seek · set_volume · mute · group · ungroup · move_playback · group_all · set_eq
-           announce · undo_last
+           announce · undo_last · undo_checked · preview_undo · search_and_play
            fade_volume · fade_and_pause
 dj         dj_start · dj_skip · dj_stop · dj_steer · dj_feedback · dj_preferences · dj_prefer
            dj_sync · dj_sync_status
@@ -270,7 +270,7 @@ An agent that needs only the everyday tools can ask for fewer:
 15 most tasks use (`list_zones`, `get_zone_state`, `list_favorites`, `play`,
 `play_favorite`, `search_library`, `pause`, `resume`, `next`, `set_volume`,
 `dj_start`, `dj_steer`, `dj_skip`, `undo_last`, `events`): about 2,800 tokens of
-tool schemas instead of about 11,500 for all 67. The house policy applies the
+tool schemas instead of about 11,500 for all 68. The house policy applies the
 same either way.
 
 `events` is how an agent keeps up with the house: call it once for the newest
@@ -412,7 +412,10 @@ design is in [`COMPREHENSIVE_PLAN_FOR_FRANKENSONOS.md`](COMPREHENSIVE_PLAN_FOR_F
 
 ## Installation
 
-No prebuilt binaries yet (pre-release). Build from source:
+No published release binaries yet (pre-release). CI builds Apple Silicon and
+x86_64 Linux binaries for every push to `main`, but those artifacts expire with
+the run; a release download starts with `0.1.0`. Until then, build from source
+(the toolchain is pinned):
 
 ```bash
 git clone https://github.com/Dicklesworthstone/frankensonos

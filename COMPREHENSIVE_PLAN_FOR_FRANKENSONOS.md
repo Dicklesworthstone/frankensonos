@@ -307,7 +307,7 @@ Home Assistant `sonos`. Port behavior, not code wholesale (respect licenses).
   `dj_stop`. Served over stdio (for a local agent) and streamable HTTP (for
   tailnet agents). Room-name matching normalizes curly apostrophes (helper
   exists) and is case-insensitive.
-- **CLI + `serve` daemon.** `fsonos` subcommands (scaffolded) become real; the
+- **CLI + `serve` daemon.** `fsonos` subcommands are shipped; the
   `serve` command wires: discovery → GENA sink → store → HTTP API → MCP server
   → DJ, under one asupersync runtime, with graceful shutdown. `fsonos service
   install` writes a LaunchAgent in the login session (a systemd user unit on

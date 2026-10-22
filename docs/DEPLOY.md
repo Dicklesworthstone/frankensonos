@@ -286,6 +286,10 @@ fsonos tailscale status     # what Serve does on 443 / 8443, and the URLs
 fsonos tailscale teardown   # remove the daemon's mappings (only those)
 ```
 
+Port 443 is the **web remote**, so the Serve root (`/`) opens the house's
+browser remote, not a directory listing: open `https://<mac>.<tailnet>.ts.net/`
+on any tailnet device. `/mcp` on 8443 is the agent endpoint.
+
 `setup` refuses while **Funnel** is on for either port (Funnel would publish
 the unauthenticated API to the public internet; FrankenSonos never uses it),
 and never replaces Serve config it did not make. `--dry-run` shows the

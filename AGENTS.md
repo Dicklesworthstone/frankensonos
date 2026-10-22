@@ -81,7 +81,7 @@ behavior; reconcile at the boundary and update the docs.
 ## Architecture Doctrine
 
 - One Cargo workspace; the lanes own disjoint crates (`fsonos-{types,proto,
-  core,spotify,api,mcp,cli}`). Do not reach into another lane's crate files;
+  core,spotify,api,mcp,cli,tailscale,sim}`). Do not reach into another lane's crate files;
   coordinate at the public API boundary.
 - **Pure core, I/O at the edges.** Protocol encode/decode (SSDP, SOAP, GENA,
   DIDL) and DJ selection are pure, unit-tested without a network. I/O sits
