@@ -277,6 +277,20 @@ Whether an individual admin verb needs more than the static key on a given build
 still being mapped; the namespaces that take a `playerId`/`groupId` return
 `ERROR_INVALID_PARAMETER` under the obvious id forms, so their exact plumbing is open.
 
+**The same command table is also REST over HTTPS 1443**: the namespace triples
+above are path templates prefixed with `/api/v1`, e.g.
+`GET /api/v1/players/{playerId}/info` and `GET .../settings` answer 200 JSON with
+only the static key. Confirmed live: `info` (full device descriptor) and `settings`
+(settings groups with schema versions) are readable pre-auth; `diagnostics/metadata`
+answers 400 `ERROR_API_KEY_VALIDATION_FAILED`; `update/status` answers 403
+`ERROR_NO_PERMISSION` with `WWW-Authenticate: Bearer …insufficient_scope`, so the
+update verbs sit behind a scoped token. `POST .../authorization/authenticateClient`
+accepts `{}` and returns `{}` (key check only), `POST .../authorization/tokens`
+returns `authzTokenStatus: UNAUTHORIZED` with zeroed entitlements, and
+`authorization/authorizeDevice` wants a JWT `assertion`. The household
+`authorization/policy/{policyKey}` paths answer 403. So the open question narrows to
+how a local client obtains a scoped token without the cloud.
+
 ### Open leads, in order
 
 0. The local WebSocket API above is the widest new surface: a static key reaches
