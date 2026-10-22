@@ -6,3 +6,7 @@ ee.db-wal-cert
 index/
 index.previous*
 write-spool/
+
+# ee runtime gate (0-byte lock) and per-machine command audit tail.
+ee.db-fsqlite-ns-gate
+audit.jsonl
