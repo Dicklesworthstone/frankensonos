@@ -63,6 +63,7 @@ pub mod schedules;
 pub mod spotify_auth;
 
 pub mod announce;
+mod dj_caps;
 mod intents;
 mod outside;
 mod playback_caps;
@@ -392,8 +393,14 @@ impl Surface {
             return;
         };
         let households = live.households();
+        // A play the DJ starts on its own is held to its caps.
+        let caps = dj_caps::DjCaps {
+            surface: self,
+            households: &households,
+            coordinator: player,
+        };
         let at = DjSpeakers {
-            transport: &*self.transport,
+            transport: &caps,
             households: &households,
             coordinator: player,
         };
