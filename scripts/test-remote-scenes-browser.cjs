@@ -19,7 +19,7 @@ async function load(page, theme) {
   await page.setContent(`<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
     <body class="studio" data-theme="${theme}"><main style="padding:16px;max-width:960px;margin:auto"></main></body></html>`);
   for (const name of ['remote.css', 'scenes.css', 'studio.css']) await page.addStyleTag({ content: read(name) });
-  await page.addScriptTag({ content: `${element}\nconst module = { exports: {} };\n${read('scenes.js')}\nwindow.SceneComponent = module.exports;` });
+  await page.addScriptTag({ content: `${element}\nconst module = { exports: {} };\n${read('dj-direction.js')}\n${read('scene-queue.js')}\n${read('scenes.js')}\nwindow.SceneComponent = module.exports;` });
   await page.evaluate(() => {
     window.fixture = { calls: [], failFavorites: false, emptyFavorites: false, emptyMoods: false,
       deferFavorites: false, waiting: [], rows: [] };

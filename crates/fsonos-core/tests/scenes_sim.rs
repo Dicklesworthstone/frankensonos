@@ -128,13 +128,15 @@ fn a_saved_scene_brings_the_house_back_in_both_generations() {
     let djs = [PlayingDj {
         coordinator: id(&h, "Den"),
         mood: Some("calm".into()),
+        direction: None,
     }];
     let with_dj = scenes::capture(&lan, &h, "Evening", &djs, 0).unwrap();
     let den = with_dj.groups.iter().find(|g| g.coordinator == "Den");
     assert_eq!(
         den.map(|g| &g.source),
         Some(&SceneSource::Dj {
-            mood: Some("calm".into())
+            mood: Some("calm".into()),
+            direction: None,
         })
     );
     // Kitchen+Office, Den, Living Room, Bedroom.
@@ -217,6 +219,7 @@ fn volumes_fade_the_dj_is_asked_and_failures_are_reported() {
                 members: vec!["Office".into()],
                 source: SceneSource::Dj {
                     mood: Some("calm".into()),
+                    direction: None,
                 },
                 playing: Some(true),
             },

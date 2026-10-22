@@ -122,7 +122,7 @@ import FrankenSonosKit
                     case "keep": Text("Keep the current source")
                     case "favorite": Text("Favorite: \(group.source.name ?? "")")
                     case "uri": Text("Source URI: \(group.source.uri ?? "")").textSelection(.enabled)
-                    case "dj": Text("DJ mood: \(group.source.mood ?? "Time-of-day program")")
+                    case "dj": Text(group.source.djSummary).textSelection(.enabled)
                     case "queue":
                         if let queue = group.source.queue {
                             Text(queue.summary)

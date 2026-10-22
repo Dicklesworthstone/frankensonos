@@ -34,6 +34,7 @@ import FrankenSonosKit
                             Text(schedule.stateLabel).font(.caption)
                         }
                         Text(schedule.summary)
+                        if let direction = schedule.djSummary { Text(direction).textSelection(.enabled) }
                         Text(schedule.targetLabel).textSelection(.enabled)
                         Text("Runs as: \(schedule.creator)").font(.caption).textSelection(.enabled)
                         if let next = schedule.next { Text("Next run: \(next)").font(.caption).monospacedDigit() }

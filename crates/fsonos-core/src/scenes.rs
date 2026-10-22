@@ -27,6 +27,7 @@
 //! mode. Recall refuses an edited queue or a different coordinator; it never
 //! clears or rebuilds queue contents. The DJ is started through [`SceneHooks`].
 
+use crate::dj_direction::DjDirection;
 use crate::fade::Fader;
 use crate::favorites::{self, Favorite};
 use crate::rooms::{named_room, normalize_room};
@@ -89,6 +90,7 @@ pub struct SceneGroup {
 /// What a scene group plays.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // one declarative source per saved room group
 pub enum SceneSource {
     /// Whatever the group has (its queue, say).
     #[default]
@@ -110,10 +112,12 @@ pub enum SceneSource {
     },
     /// A captured occurrence in an unchanged queue on its original player.
     Queue { queue: QueueReference },
-    /// The DJ, in `mood`.
+    /// The DJ, in `mood`, with an optional reusable steering request.
     Dj {
         #[serde(default)]
         mood: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<DjDirection>,
     },
 }
 
@@ -146,6 +150,7 @@ fn names(known: &[String]) -> String {
 
 /// One step of applying a scene.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)] // bounded scene plan, preserving the typed direction
 pub enum SceneOp {
     /// The room leaves its group for one of its own.
     Leave {
@@ -194,6 +199,7 @@ pub enum SceneOp {
     Dj {
         coordinator: PlayerId,
         mood: Option<String>,
+        direction: Option<DjDirection>,
     },
     Play {
         coordinator: PlayerId,
@@ -251,6 +257,21 @@ pub trait SceneHooks {
     /// Start the DJ in the group `coordinator` leads, in `mood`, or steer
     /// the one already playing there.
     fn start_dj(&self, coordinator: &PlayerId, mood: Option<&str>) -> Result<(), String>;
+
+    /// Restore an explicit direction before starting the DJ. Older hooks
+    /// continue to support legacy sources, but cannot silently discard a
+    /// saved direction (including an explicit return to automatic mode).
+    fn start_dj_with_direction(
+        &self,
+        coordinator: &PlayerId,
+        mood: Option<&str>,
+        direction: Option<&DjDirection>,
+    ) -> Result<(), String> {
+        if direction.is_some() {
+            return Err("this DJ hook cannot restore a saved direction".into());
+        }
+        self.start_dj(coordinator, mood)
+    }
 }
 
 /// For callers without a DJ: a DJ source fails, with why.
@@ -495,9 +516,10 @@ fn plan_sources(
                     start,
                 })
             }
-            SceneSource::Dj { mood } => Some(SceneOp::Dj {
+            SceneSource::Dj { mood, direction } => Some(SceneOp::Dj {
                 coordinator: coordinator.clone(),
                 mood: mood.clone(),
+                direction: direction.clone(),
             }),
         };
         let starts = source.as_ref().is_some_and(SceneOp::starts);
@@ -793,7 +815,15 @@ fn run<T: Transport + ?Sized>(
         } => {
             return queue::restore(t, households, coordinator, queue, *start);
         }
-        SceneOp::Dj { coordinator, mood } => options.hooks.start_dj(coordinator, mood.as_deref()),
+        SceneOp::Dj {
+            coordinator,
+            mood,
+            direction,
+        } => {
+            options
+                .hooks
+                .start_dj_with_direction(coordinator, mood.as_deref(), direction.as_ref())
+        }
         SceneOp::Play { coordinator } => control::resume(t, households, coordinator).map_err(s),
         // A stream that cannot pause stops (control::pause_at).
         SceneOp::Pause { coordinator } => control::pause(t, households, coordinator).map_err(s),
@@ -807,6 +837,7 @@ fn run<T: Transport + ?Sized>(
 pub struct PlayingDj {
     pub coordinator: PlayerId,
     pub mood: Option<String>,
+    pub direction: Option<DjDirection>,
 }
 
 /// The house as it is now, as a scene called `name`: every group, every
@@ -856,6 +887,7 @@ pub fn capture<T: Transport + ?Sized>(
             let source = match (dj, &snap.source) {
                 (Some(d), _) => SceneSource::Dj {
                     mood: d.mood.clone(),
+                    direction: d.direction.clone(),
                 },
                 (None, SnapshotSource::Uri { uri, metadata, .. }) => {
                     match favorites

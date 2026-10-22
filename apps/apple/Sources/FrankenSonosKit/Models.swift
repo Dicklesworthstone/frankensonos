@@ -229,9 +229,12 @@ public struct Scene: Codable, Equatable, Sendable, Identifiable {
         public let uri: String?
         public let mood: String?
         public let queue: QueueReference?
+        public let direction: DJDirection?
 
-        public init(kind: String, name: String?, uri: String?, mood: String?, queue: QueueReference? = nil) {
+        public init(kind: String, name: String?, uri: String?, mood: String?, queue: QueueReference? = nil,
+                    direction: DJDirection? = nil) {
             self.kind = kind; self.name = name; self.uri = uri; self.mood = mood; self.queue = queue
+            self.direction = direction
         }
     }
     /// A position in the original coordinator's unchanged queue. Its contents

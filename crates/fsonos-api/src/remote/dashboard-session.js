@@ -6,6 +6,7 @@ const DashboardSession = (() => {
     : typeof require === 'function' ? require('./dashboard-queue.js') : null;
   const libraryApi = () => typeof DashboardLibrary !== 'undefined' ? DashboardLibrary
     : typeof require === 'function' ? require('./dashboard-library.js') : null;
+  const directionApi = () => typeof DjDirection !== 'undefined' ? DjDirection : require('./dj-direction.js');
   const sceneQueueApi = () => typeof SceneQueue !== 'undefined' ? SceneQueue : require('./scene-queue.js');
   const text = (v, max = 4096) => typeof v === 'string' && v.trim() !== '' && v.length <= max;
   const object = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -58,6 +59,7 @@ const DashboardSession = (() => {
         || !list(v.groups, (g) => object(g) && text(g.coordinator) && list(g.members, text)
           && object(g.source) && ['keep', 'favorite', 'uri', 'dj', 'queue'].includes(g.source.kind)
           && (g.source.kind === 'queue' || g.source.queue == null)
+          && (g.source.kind === 'dj' || g.source.direction == null)
           && (g.source.kind !== 'favorite' || text(g.source.name))
           && (g.source.kind !== 'uri' || text(g.source.uri))
           && (g.source.mood == null || text(g.source.mood))
@@ -66,14 +68,16 @@ const DashboardSession = (() => {
         || Object.entries(v.volumes).some(([r, n]) => !text(r) || !Number.isInteger(n) || n < 0 || n > 100)
         || Object.entries(v.mutes).some(([r, m]) => !text(r) || typeof m !== 'boolean')) fail('The saved scene is unreadable.');
     const copy = clone(v);
-    for (const group of copy.groups) if (group.source.kind === 'queue') {
-      group.source.queue = sceneQueueApi().read(group.source.queue);
+    for (const group of copy.groups) {
+      if (group.source.kind === 'queue') group.source.queue = sceneQueueApi().read(group.source.queue);
+      if (group.source.direction != null) group.source.direction = directionApi().read(group.source.direction, group.source.mood);
     }
     return freeze(copy);
   }
   function sceneSource(source) {
     return source.kind === 'queue' ? sceneQueueApi().describe(source.queue)
-      : `${source.kind}${source.mood ? ` · ${source.mood}` : ''}${source.name ? ` · ${source.name}` : ''}${source.uri ? ` · ${source.uri}` : ''}`;
+      : source.kind === 'dj' && source.direction != null ? directionApi().describe(source.direction, source.mood)
+        : `${source.kind}${source.mood ? ` · ${source.mood}` : ''}${source.name ? ` · ${source.name}` : ''}${source.uri ? ` · ${source.uri}` : ''}`;
   }
   function scenes(v) {
     if (!Array.isArray(v) || v.length > 128) fail('The scene catalog is unreadable.');

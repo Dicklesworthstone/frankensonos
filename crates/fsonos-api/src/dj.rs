@@ -30,6 +30,9 @@ use crate::surface::dj_prefs::{PrefChange, PreferencesDto, PreferredDto};
 use crate::surface::dj_rehearse::{DjRehearsal, DjRehearsalDto};
 use crate::surface::dj_sync::LibrarySyncDto;
 
+mod direction;
+pub use direction::DjDirectionDto;
+
 /// The speakers a DJ command acts on.
 #[derive(Clone, Copy)]
 pub struct DjSpeakers<'a> {

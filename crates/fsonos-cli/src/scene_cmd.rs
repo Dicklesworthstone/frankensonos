@@ -40,7 +40,7 @@ enum SceneAction {
         name: String,
         /// A TOML file writing the scene out: `[[groups]]` with `coordinator`,
         /// `members`, `source = { kind = "favorite", name = "…" }` (or `dj`
-        /// with a `mood`, a `uri`, `keep`) and `playing`; `[volumes]` and
+        /// with a `mood` and full `direction`, a `uri`, `keep`) and `playing`; `[volumes]` and
         /// `[mutes]` by room.
         #[arg(long, value_name = "FILE")]
         from: Option<PathBuf>,
@@ -169,6 +169,14 @@ fn group_text(g: &SceneGroupDto) -> String {
     let what = match source.kind.as_str() {
         "favorite" => format!("favorite {}", source.name.as_deref().unwrap_or("?")),
         "uri" => source.uri.clone().unwrap_or_default(),
+        "dj" if source.direction.is_some() => {
+            let direction = source.direction.as_ref().expect("matched direction");
+            if source.mood.is_none() && direction.constraints.is_empty() {
+                "the DJ (automatic program; clears current steering)".into()
+            } else {
+                format!("the DJ ({})", direction.summary(source.mood.as_deref()))
+            }
+        }
         "dj" => source
             .mood
             .as_ref()
@@ -251,6 +259,7 @@ mod tests {
             uri: None,
             mood: None,
             queue: None,
+            direction: None,
         };
         SceneDto {
             name: "Evening".into(),
@@ -278,6 +287,24 @@ mod tests {
     }
 
     #[test]
+    fn scene_text_explains_saved_dj_filters_and_relative_duration() {
+        let mut scene = evening();
+        scene.groups[0].source.direction = Some(fsonos_api::dj::DjDirectionDto {
+            constraints: fsonos_api::dj::SteerConstraints {
+                include_artists: vec!["Earth, Wind & Fire".into()],
+                ..Default::default()
+            },
+            for_secs: Some(17),
+        });
+        let text = group_text(&scene.groups[0]);
+        assert!(text.contains("Earth, Wind & Fire"), "{text}");
+        assert!(text.contains("17 seconds on each start"), "{text}");
+        scene.groups[0].source.mood = None;
+        scene.groups[0].source.direction = Some(fsonos_api::dj::DjDirectionDto::default());
+        assert!(group_text(&scene.groups[0]).contains("clears current steering"));
+    }
+
+    #[test]
     fn scenes_read_as_text() {
         assert_eq!(
             list_text(&[evening()]),
@@ -299,6 +326,7 @@ mod tests {
             name: None,
             uri: None,
             mood: None,
+            direction: None,
             queue: Some(fsonos_api::surface::scenes::SceneQueueDto {
                 coordinator: "RINCON_SYNTHETIC".into(),
                 household: Some("TEST-HOUSE".into()),

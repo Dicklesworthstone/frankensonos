@@ -30,6 +30,14 @@ fn scene_line(scene: &SceneDto) -> String {
             let what = match source.kind.as_str() {
                 "favorite" => format!("favorite {}", source.name.as_deref().unwrap_or("?")),
                 "uri" => source.uri.clone().unwrap_or_default(),
+                "dj" if source.direction.is_some() => {
+                    let direction = source.direction.as_ref().expect("matched direction");
+                    if source.mood.is_none() && direction.constraints.is_empty() {
+                        "the DJ (automatic program; clears current steering)".into()
+                    } else {
+                        format!("the DJ ({})", direction.summary(source.mood.as_deref()))
+                    }
+                }
                 "dj" => source
                     .mood
                     .as_ref()
@@ -169,7 +177,7 @@ impl Backend {
 }
 
 #[tool(
-    description = "List the saved scenes: named house states, each with how the rooms group, what each group plays (a favorite, a URI, the DJ in a mood, a captured queue position, or whatever it has) and whether it plays, and each room's volume and mute. A queue reference requires the original unchanged queue; it is not a backup of its contents. Put the house in a scene with apply_scene.",
+    description = "List the saved scenes: named house states, each with how the rooms group, what each group plays (a favorite, a URI, the DJ with a saved mood and full direction, a captured queue position, or whatever it has) and whether it plays, and each room's volume and mute. A queue reference requires the original unchanged queue; it is not a backup of its contents. Put the house in a scene with apply_scene.",
     annotations(read_only, idempotent)
 )]
 async fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -177,7 +185,7 @@ async fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallTool
 }
 
 #[tool(
-    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind dj with an optional mood, uri with a stream uri or a Spotify track, album or playlist link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. Capturing an ordinary queue saves its selected occurrence, elapsed time and known play mode as a reference to the original coordinator's unchanged queue; queue contents are not backed up. A changed queue or known speaker restart prevents recall. Queue references cannot be authored in scene; omit scene to capture them. Its rooms must be in the house now, and its favorites in their group's household. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes."
+    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind dj with optional mood and direction {constraints: {include_artists: [names], include_genres: [genres], ...}, for_secs: 7200}, uri with a stream uri or a Spotify track, album or playlist link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. A captured DJ retains its added filters and remaining duration, renewed on recall; an explicit empty direction without a mood clears prior steering. All steering constraint fields supported by add_schedule are accepted. Capturing an ordinary queue saves its selected occurrence, elapsed time and known play mode as a reference to the original coordinator's unchanged queue; queue contents are not backed up. A changed queue or known speaker restart prevents recall. Queue references cannot be authored in scene; omit scene to capture them. Its rooms must be in the house now, and its favorites in their group's household. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes."
 )]
 async fn save_scene(
     ctx: &McpContext,
@@ -236,9 +244,10 @@ mod tests {
     use fsonos_core::scenes::{self, Scene, SceneGroup, SceneSource};
     use fsonos_core::store::MemStore;
     use fsonos_proto::{ProtoError, Transport};
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use std::net::IpAddr;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     /// No speakers answer.
     struct Silent;
@@ -392,7 +401,7 @@ mod tests {
             _: &str,
             _: Option<&serde_json::Value>,
         ) -> Option<Result<serde_json::Value, fsonos_api::Failure>> {
-            panic!("an authored queue reference must fail before daemon selection")
+            panic!("invalid authored input must fail before daemon selection")
         }
     }
 
@@ -415,6 +424,166 @@ mod tests {
                 )
                 .unwrap_err();
             assert!(failure.message.contains("only be captured"));
+            assert_eq!(failure.data.unwrap()["code"], "INVALID_ARGUMENT");
+        }
+    }
+
+    fn direction() -> Value {
+        json!({"constraints": {
+            "include_composers": ["Bach"], "exclude_composers": ["Wagner"],
+            "include_artists": ["Nina Simone"], "exclude_artists": ["Other artist"],
+            "include_genres": ["jazz"], "exclude_genres": ["metal"],
+            "periods": ["baroque"], "exclude_periods": ["late_romantic"],
+            "decades": [1960], "exclude_decades": [1980],
+            "include_keywords": ["piano"], "exclude_keywords": ["opera"],
+            "min_work_minutes": 2, "max_work_minutes": 45,
+            "energy_bias": -1, "allow_long_works": true
+        }, "for_secs": 27})
+    }
+
+    #[test]
+    fn saved_dj_direction_is_complete_in_scene_text_and_structured_content() {
+        let mut scene = evening();
+        scene.groups[0].source = serde_json::from_value(json!({
+            "kind": "dj", "mood": "calm", "direction": direction()
+        }))
+        .unwrap();
+        let b = backend(Client::McpStdio, &[scene]);
+        let got = b.get_scene("Evening").unwrap();
+        let listed = b.list_scenes().unwrap();
+        for result in [&got, &listed] {
+            let text = text(result);
+            for fragment in [
+                "calm",
+                "Nina Simone",
+                "Bach",
+                "no metal",
+                "1960s",
+                "1980s",
+                "without opera",
+                "2 to 45 minutes",
+                "calmer",
+                "long works allowed",
+                "27 seconds on each start",
+            ] {
+                assert!(text.contains(fragment), "{fragment}: {text}");
+            }
+        }
+        assert_eq!(
+            got.structured_content.unwrap()["groups"][0]["source"]["direction"],
+            direction()
+        );
+        assert_eq!(
+            listed.structured_content.unwrap()["scenes"][0]["groups"][0]["source"]["direction"],
+            direction()
+        );
+
+        let mut scene = evening();
+        scene.groups[0].source =
+            serde_json::from_value(json!({"kind": "dj", "direction": {}})).unwrap();
+        let automatic = backend(Client::McpStdio, &[scene])
+            .get_scene("Evening")
+            .unwrap();
+        assert!(text(&automatic).contains("automatic program; clears current steering"));
+        assert_eq!(
+            automatic.structured_content.unwrap()["groups"][0]["source"]["direction"],
+            json!({})
+        );
+    }
+
+    #[test]
+    fn malformed_scene_directions_fail_before_daemon_selection() {
+        let b = backend(Client::McpStdio, &[]).with_daemon(Arc::new(NoDaemon));
+        for source in [
+            json!({"kind":"keep", "direction":{}}),
+            json!({"kind":"dj", "direction":{"for_secs":27}}),
+            json!({"kind":"dj", "mood":"calm", "direction":{"for_secs":0}}),
+            json!({"kind":"dj", "direction":{"constraints":{"energy_bias":3}}}),
+            json!({"kind":"dj", "direction":{"constraints":{"include_genre":["jazz"]}}}),
+            json!({"kind":"dj", "direction":{"expires_at":123}}),
+        ] {
+            let failure = b
+                .save_scene_from(
+                    "Directed",
+                    &json!({
+                        "groups":[{"coordinator":"Kitchen", "source":source}]
+                    }),
+                )
+                .unwrap_err();
+            assert_eq!(failure.data.unwrap()["code"], "INVALID_ARGUMENT");
+        }
+    }
+
+    #[derive(Default)]
+    struct ScheduleDaemon(Mutex<Vec<Value>>);
+
+    impl crate::tools::Daemon for ScheduleDaemon {
+        fn call(
+            &self,
+            method: &str,
+            path: &str,
+            body: Option<&Value>,
+        ) -> Option<Result<Value, fsonos_api::Failure>> {
+            assert_eq!((method, path), ("POST", "/schedules"));
+            let body = body.unwrap();
+            self.0.lock().unwrap().push(body.clone());
+            let mut reply = body.clone();
+            for (key, value) in [
+                ("id", json!(7)),
+                ("creator", json!("mcp-stdio")),
+                ("enabled", json!(true)),
+                ("next", json!("2030-01-02T07:30:00Z")),
+                (
+                    "summary",
+                    json!("start the DJ with saved filters for 27 seconds on each start"),
+                ),
+            ] {
+                reply[key] = value;
+            }
+            Some(Ok(reply))
+        }
+    }
+
+    fn scheduled(direction: Value) -> fsonos_api::surface::schedules::ScheduleRequest {
+        serde_json::from_value(json!({
+            "when":"daily 07:30", "action":"dj_start", "zone":"Kitchen", "mood":"calm",
+            "direction":direction
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn scheduled_directions_are_forwarded_once_without_losing_fields() {
+        let daemon = Arc::new(ScheduleDaemon::default());
+        let b = backend(Client::McpStdio, &[]).with_daemon(daemon.clone());
+        let req = scheduled(direction());
+        let response = b.add_schedule(&req).unwrap();
+        assert_eq!(
+            *daemon.0.lock().unwrap(),
+            [serde_json::to_value(&req).unwrap()]
+        );
+        assert_eq!(
+            response.structured_content.as_ref().unwrap()["direction"],
+            direction()
+        );
+        assert!(text(&response).contains("27 seconds on each start"));
+    }
+
+    #[test]
+    fn invalid_scheduled_directions_fail_before_daemon_selection() {
+        let b = backend(Client::McpStdio, &[]).with_daemon(Arc::new(NoDaemon));
+        let mut empty_timed = scheduled(json!({"for_secs":27}));
+        empty_timed.mood = None;
+        let mut other_action = scheduled(direction());
+        other_action.action = "pause".into();
+        other_action.mood = None;
+        for req in [
+            scheduled(json!({"constraints":{"energy_bias":3}})),
+            scheduled(json!({"for_secs":604801})),
+            empty_timed,
+            other_action,
+        ] {
+            let failure = b.add_schedule(&req).unwrap_err();
             assert_eq!(failure.data.unwrap()["code"], "INVALID_ARGUMENT");
         }
     }

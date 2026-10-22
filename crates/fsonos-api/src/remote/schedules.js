@@ -2,6 +2,8 @@
 'use strict';
 
 const SchedulesRemote = (() => {
+  const directionApi = () => typeof DjDirection !== 'undefined' ? DjDirection : require('./dj-direction.js');
+  const queueApi = () => typeof SceneQueue !== 'undefined' ? SceneQueue : require('./scene-queue.js');
   const routes = {
     schedules: ['GET', '/schedules'],
     schedulePause: ['POST', '/schedules/pause'],
@@ -26,11 +28,11 @@ const SchedulesRemote = (() => {
       throw new Error('The schedule response is unreadable. Refresh before changing it.');
     }
     const fields = {
-      dj_start: ['zone', 'mood'], pause: ['zone', 'fade_secs'],
+      dj_start: ['zone', 'mood', 'direction'], pause: ['zone', 'fade_secs'],
       volume: ['zone', 'volume'], apply_scene: ['scene'],
     };
     if (!Object.hasOwn(fields, value.action)) throw new Error('This schedule action is not supported by this remote.');
-    for (const field of ['zone', 'mood', 'scene', 'volume', 'fade_secs']) {
+    for (const field of ['zone', 'mood', 'direction', 'scene', 'volume', 'fade_secs']) {
       if (!fields[value.action].includes(field) && value[field] != null) throw new Error('The schedule action has conflicting fields.');
     }
     if (value.action === 'apply_scene' ? !text(value.scene, 512) : !text(value.zone, 512)) {
@@ -43,6 +45,7 @@ const SchedulesRemote = (() => {
     }
     return Object.freeze({ id: value.id, when: value.when, action: value.action,
       zone: value.zone ?? null, scene: value.scene ?? null, mood: value.mood ?? null,
+      ...(value.direction != null ? { direction: directionApi().read(value.direction, value.mood) } : {}),
       volume: value.volume ?? null, fade_secs: value.fade_secs ?? null,
       summary: value.summary, creator: value.creator, enabled: value.enabled,
       next: value.next ?? null, last_fired: value.last_fired ?? null });
@@ -62,7 +65,8 @@ const SchedulesRemote = (() => {
   // Next/last runs advance on their own; the definition and enabled state do not.
   function definition(row) {
     return JSON.stringify([row.id, row.when, row.action, row.zone, row.scene,
-      row.mood, row.volume, row.fade_secs, row.summary, row.creator]);
+      row.mood, row.volume, row.fade_secs, row.summary, row.creator,
+      row.direction == null ? null : directionApi().signature(row.direction, row.mood)]);
   }
 
   const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
@@ -112,9 +116,15 @@ const SchedulesRemote = (() => {
           || !Object.values(v.mutes).every((b) => typeof b === 'boolean')
           || !v.groups.every((g) => g && text(g.coordinator, 256) && Array.isArray(g.members)
             && g.members.every((r) => text(r, 256)) && object(g.source)
-            && ['keep', 'favorite', 'uri', 'dj'].includes(g.source.kind)
+            && ['keep', 'favorite', 'uri', 'dj', 'queue'].includes(g.source.kind)
+            && (g.source.kind === 'dj' || g.source.direction == null)
+            && (g.source.kind === 'queue' || g.source.queue == null)
             && (g.playing == null || typeof g.playing === 'boolean'))) {
         throw new Error('A saved scene is incomplete or ambiguous.');
+      }
+      for (const group of v.groups) {
+        if (group.source.kind === 'queue') queueApi().read(group.source.queue);
+        if (group.source.direction != null) directionApi().read(group.source.direction, group.source.mood);
       }
       seen.add(v.name);
       return Object.freeze({ name: v.name, signature: stamp(v),
@@ -207,7 +217,9 @@ const SchedulesRemote = (() => {
 
   function sameAction(row, body) {
     return row.action === body.action && row.zone === (body.zone ?? null) && row.scene === (body.scene ?? null)
-      && row.mood === (body.mood ?? null) && row.volume === (body.volume ?? null)
+      && row.mood === (body.mood ?? null)
+      && directionApi().signature(row.direction, row.mood) === directionApi().signature(body.direction, body.mood)
+      && row.volume === (body.volume ?? null)
       && (row.action !== 'pause' || (row.fade_secs ?? 0) === (body.fade_secs ?? 0));
   }
 

@@ -96,6 +96,9 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
             guard group.source.kind != "queue", group.source.queue == nil else {
                 throw ContractError.invalid("Capture the current house to save a queue position. Queue references cannot be authored, and their contents are not backed up.")
             }
+            guard group.source.kind == "dj" || group.source.direction == nil else {
+                throw ContractError.invalid("A saved DJ direction belongs only to a DJ source.")
+            }
             let coordinator = try room(group.coordinator)
             for address in [group.coordinator] + group.members {
                 let member = try room(address)
@@ -119,7 +122,9 @@ public struct SceneDefinition: Codable, Equatable, Sendable {
             case "dj":
                 let mood = (group.source.mood ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 guard mood.utf8.count <= 128 else { throw ContractError.invalid("Choose a shorter DJ mood name.") }
-                source = .init(kind: "dj", name: nil, uri: nil, mood: mood.isEmpty ? nil : mood)
+                let name = mood.isEmpty ? nil : mood
+                _ = try group.source.direction?.validated(mood: name)
+                source = .init(kind: "dj", name: nil, uri: nil, mood: name, direction: group.source.direction)
             default: throw ContractError.invalid("Choose a supported scene music source.")
             }
             return .init(coordinator: group.coordinator, members: group.members, source: source,
@@ -321,7 +326,7 @@ struct SceneMutationObservation: Sendable {
                     throw ContractError.invalid("This DJ mood is no longer available. Choose a listed mood or the automatic program.")
                 }
                 moods[group.coordinator] = mood
-                wire = .init(kind: "dj", name: nil, uri: nil, mood: mood.name); preview = wire
+                wire = .init(kind: "dj", name: nil, uri: nil, mood: mood.name, direction: group.source.direction); preview = wire
             }
             wireGroups.append(.init(coordinator: group.coordinator, members: group.members, source: wire, playing: group.playing))
             previewGroups.append(.init(coordinator: group.coordinator, members: group.members, source: preview, playing: group.playing))

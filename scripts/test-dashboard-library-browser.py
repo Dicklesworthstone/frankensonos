@@ -100,7 +100,7 @@ def setup(browser):
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.set_content(HTML)
     page.add_style_tag(content=(REMOTE/'dashboard-library.css').read_text())
-    for name in ['dashboard-core.js','scene-queue.js','playlist-contents.js','dashboard-library.js','dashboard-session.js','dashboard-library-panel.js','dashboard-workspace.js']:
+    for name in ['dashboard-core.js','scene-queue.js','playlist-contents.js','dashboard-library.js','dj-direction.js', 'dashboard-session.js','dashboard-library-panel.js','dashboard-workspace.js']:
         page.add_script_tag(content=(REMOTE/name).read_text())
     page.add_script_tag(content=FIXTURE)
     page.evaluate('ready')

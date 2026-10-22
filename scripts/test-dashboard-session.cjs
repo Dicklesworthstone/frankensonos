@@ -60,6 +60,27 @@ test('scene and mood catalogs reject incomplete shapes and duplicated names',()=
   for(const v of [null,[{...scene(),volumes:{bad:101}}],[scene(),scene()]])assert.throws(()=>S.scenes(v));
   assert.throws(()=>S.moods({moods:[{name:'focus',constraints:{}},{name:'focus',constraints:{}}]}));
 });
+test('dashboard scenes preserve and display reusable DJ direction without hiding invalid fields',()=>{
+  const value=scene();value.groups[0].source.direction={constraints:{include_artists:['Earth, Wind & Fire']},for_secs:17};
+  const decoded=S.scene(value);
+  assert.deepEqual(decoded.groups[0].source.direction,value.groups[0].source.direction);
+  assert.equal(Object.isFrozen(decoded.groups[0].source.direction.constraints.include_artists),true);
+  assert.match(S.sceneSource(decoded.groups[0].source),/Earth, Wind & Fire/);
+  assert.match(S.sceneSource(decoded.groups[0].source),/17 seconds on each start/);
+  for(const direction of [{constraints:{unsupported:true}},{constraints:{energy_bias:3}},{for_secs:0}]){
+    const bad=clone(value);bad.groups[0].source.direction=direction;assert.throws(()=>S.scene(bad));
+  }
+  const hidden=clone(value);hidden.groups[0].source.kind='keep';assert.throws(()=>S.scene(hidden));
+});
+test('every saved DJ direction change prevents a previously reviewed dashboard scene write',async()=>{
+  const direction={constraints:{include_genres:['jazz']},for_secs:7200};
+  for(const changed of [undefined,{}, {...direction,for_secs:60},{constraints:{include_genres:['classical']},for_secs:7200}]){
+    const f=fixture();f.data.scene.groups[0].source.direction=clone(direction);await f.ready();
+    const pending=await f.session.reviewScene('Dinner');assert.ok(pending);
+    f.data.scene.groups[0].source.direction=clone(changed);
+    assert.equal(await f.session.confirm(pending),false);assert.equal(f.writes().length,0);
+  }
+});
 test('dashboard queue scenes retain a frozen exact recall reference and explain its limit',()=>{
   const v = S.scene(queueScene());
   assert.deepEqual(v.groups[0].source.queue, queueScene().groups[0].source.queue);

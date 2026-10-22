@@ -19,6 +19,7 @@ use chrono::{DateTime, FixedOffset, Local, TimeDelta, TimeZone, Utc};
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions::{self, ScheduleBefore};
 use fsonos_core::clock::Clock;
+use fsonos_core::dj_direction::DjDirection;
 use fsonos_core::fade::{FadeOutcome, Fader, RampOutcome};
 use fsonos_core::policy::Client;
 use fsonos_core::schedule::{
@@ -39,6 +40,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::{Surface, room_view};
+use crate::dj::DjDirectionDto;
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure};
 use crate::plan::{self, TransportAction, resolve};
@@ -47,6 +49,9 @@ use crate::request::{DjStartRequest, VolumeChange, VolumeRequest, ZoneRequest, z
 mod dispatch;
 mod recovery;
 mod sleep_dispatch;
+
+#[cfg(test)]
+mod direction_tests;
 
 /// The longest sleep timer. The speaker's own timer, which backs the
 /// daemon's up five minutes later, counts down from just under a day.
@@ -333,6 +338,11 @@ pub struct ScheduleRequest {
     /// dj_start: a DJ mood to start in.
     #[serde(default)]
     pub mood: Option<String>,
+    /// dj_start: selection rules reapplied before each start; an empty
+    /// direction without a mood clears a previous override. Its lifetime
+    /// starts afresh on every run. Absent: preserve legacy start behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<DjDirectionDto>,
     /// volume: the level, 0-100.
     #[serde(default)]
     pub volume: Option<i64>,
@@ -342,6 +352,34 @@ pub struct ScheduleRequest {
 }
 
 impl ScheduleRequest {
+    /// Validate the action and its fields without discovery or daemon I/O.
+    /// The daemon resolves `when` against its clock when adding the schedule.
+    pub fn validate(&self) -> Result<(), Failure> {
+        self.action().map(|_| ())
+    }
+
+    fn dj_action(&self, room: String) -> Result<ScheduleAction, Failure> {
+        let (mood, direction) = match &self.direction {
+            Some(direction) => {
+                let (mood, direction) = direction.normalized(self.mood.as_deref())?;
+                (mood, Some(DjDirection::from(&direction)))
+            }
+            None => (
+                self.mood
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_lowercase),
+                None,
+            ),
+        };
+        Ok(ScheduleAction::DjStart {
+            room,
+            mood,
+            direction,
+        })
+    }
+
     /// The action asked for, checked (its rooms are resolved when it is
     /// added).
     pub fn action(&self) -> Result<ScheduleAction, Failure> {
@@ -374,20 +412,13 @@ impl ScheduleRequest {
                     ("volume", volume_set),
                     ("fade_secs", fade_set),
                 ])?;
-                Ok(ScheduleAction::DjStart {
-                    room: zone()?,
-                    mood: self
-                        .mood
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|m| !m.is_empty())
-                        .map(str::to_lowercase),
-                })
+                self.dj_action(zone()?)
             }
             "pause" => {
                 refuse(&[
                     ("scene", scene_set),
                     ("mood", mood_set),
+                    ("direction", self.direction.is_some()),
                     ("volume", volume_set),
                 ])?;
                 let fade_secs = self.fade_secs.unwrap_or(0);
@@ -405,6 +436,7 @@ impl ScheduleRequest {
                 refuse(&[
                     ("scene", scene_set),
                     ("mood", mood_set),
+                    ("direction", self.direction.is_some()),
                     ("fade_secs", fade_set),
                 ])?;
                 let raw = self.volume.ok_or_else(|| {
@@ -425,6 +457,7 @@ impl ScheduleRequest {
                 refuse(&[
                     ("zone", zone_set),
                     ("mood", mood_set),
+                    ("direction", self.direction.is_some()),
                     ("volume", volume_set),
                     ("fade_secs", fade_set),
                 ])?;
@@ -467,6 +500,8 @@ pub struct ScheduleDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mood: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<DjDirectionDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fade_secs: Option<u32>,
@@ -489,10 +524,16 @@ impl ScheduleDto {
         let local = |t: DateTime<Utc>| t.with_timezone(&Local).to_rfc3339();
         let (mut zone, mut scene, mut mood, mut volume, mut fade_secs) =
             (None, None, None, None, None);
+        let mut direction = None;
         match &s.action {
-            ScheduleAction::DjStart { room, mood: m } => {
+            ScheduleAction::DjStart {
+                room,
+                mood: m,
+                direction: d,
+            } => {
                 zone = Some(room.clone());
                 mood.clone_from(m);
+                direction = d.as_ref().map(DjDirectionDto::from);
             }
             ScheduleAction::Pause { room, fade_secs: f } => {
                 zone = Some(room.clone());
@@ -511,6 +552,7 @@ impl ScheduleDto {
             zone,
             scene,
             mood,
+            direction,
             volume,
             fade_secs,
             summary: summary(&s.action),
@@ -554,10 +596,23 @@ fn action_tool(action: &ScheduleAction) -> &'static str {
 #[must_use]
 pub fn summary(action: &ScheduleAction) -> String {
     match action {
-        ScheduleAction::DjStart { room, mood: None } => format!("start the DJ in {room}"),
+        ScheduleAction::DjStart {
+            room,
+            mood,
+            direction: Some(direction),
+        } => format!(
+            "start the DJ in {room} ({})",
+            DjDirectionDto::from(direction).summary(mood.as_deref()),
+        ),
+        ScheduleAction::DjStart {
+            room,
+            mood: None,
+            direction: None,
+        } => format!("start the DJ in {room}"),
         ScheduleAction::DjStart {
             room,
             mood: Some(mood),
+            direction: None,
         } => format!("start the DJ in {room} (mood {mood})"),
         ScheduleAction::Pause { room, fade_secs: 0 } => format!("pause {room}"),
         ScheduleAction::Pause { room, fade_secs } => format!(
@@ -1326,6 +1381,15 @@ impl Surface {
         self.authorize_write(client, "add_schedule")?;
         let action = req.action()?;
         self.authorize_write(client, action_tool(&action))?;
+        if matches!(
+            &action,
+            ScheduleAction::DjStart {
+                direction: Some(_),
+                ..
+            }
+        ) {
+            self.authorize_write(client, "dj_steer")?;
+        }
         let now = self.clock.now();
         let spec = ScheduleSpec::parse(&req.when, now).map_err(|e| schedule_failure(&e))?;
         match &action {
@@ -1333,7 +1397,7 @@ impl Surface {
             ScheduleAction::ApplyScene { name } => {
                 self.scene(client, name)?;
             }
-            ScheduleAction::DjStart { room, mood } => {
+            ScheduleAction::DjStart { room, mood, .. } => {
                 self.zone_of(client, room)?;
                 if let Some(mood) = mood {
                     self.check_mood(client, room, mood)?;
@@ -1676,7 +1740,29 @@ fn fire(surface: &Surface, schedule: &Schedule) -> Result<String, Failure> {
     let client = client_of(&schedule.creator);
     let zone = |room: &str| ZoneRequest { zone: room.into() };
     match &schedule.action {
-        ScheduleAction::DjStart { room, mood } => {
+        ScheduleAction::DjStart {
+            room,
+            mood,
+            direction: Some(direction),
+        } => {
+            let steer = DjDirectionDto::from(direction).steer(mood.as_deref())?;
+            surface.authorize_write(&client, "dj_steer")?;
+            let room = zone_name("zone", room)?;
+            surface
+                .control(&client, "dj_start", |rooms| {
+                    Ok(plan::Command::DjSteer {
+                        coordinator: resolve(rooms, room)?.coordinator.id.clone(),
+                        steer: Box::new(steer),
+                        start: true,
+                    })
+                })
+                .map(|outcome| outcome.done)
+        }
+        ScheduleAction::DjStart {
+            room,
+            mood,
+            direction: None,
+        } => {
             let req = dj_start(room, mood.as_deref(), surface.mood_lasts());
             surface
                 .control(&client, "dj_start", |rooms| {
@@ -2072,7 +2158,8 @@ mod tests {
             dj.action(),
             Ok(ScheduleAction::DjStart {
                 room: "Kitchen".into(),
-                mood: Some("bright".into())
+                mood: Some("bright".into()),
+                direction: None,
             })
         );
         let pause = ScheduleRequest {

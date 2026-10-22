@@ -2,6 +2,7 @@
 'use strict';
 
 const ScenesRemote = (() => {
+  const directionApi = () => typeof DjDirection !== 'undefined' ? DjDirection : require('./dj-direction.js');
   const queueApi = () => typeof SceneQueue !== 'undefined' ? SceneQueue : require('./scene-queue.js');
   const routes = {
     scene: ['GET', '/scenes/{name}'],
@@ -19,7 +20,7 @@ const ScenesRemote = (() => {
 
   function sourceOf(v) {
     if (!plain(v) || !['keep', 'favorite', 'uri', 'dj', 'queue'].includes(v.kind)
-        || (v.kind !== 'queue' && v.queue != null)) {
+        || (v.kind !== 'queue' && v.queue != null) || (v.kind !== 'dj' && v.direction != null)) {
       throw new Error('A scene source is unreadable.');
     }
     for (const key of ['name', 'uri', 'mood']) if (v[key] != null && !text(v[key], 2048)) {
@@ -28,7 +29,8 @@ const ScenesRemote = (() => {
     if (v.kind === 'favorite' && !v.name) throw new Error('A favorite source has no name.');
     if (v.kind === 'uri' && !v.uri) throw new Error('A URI source has no URI.');
     return Object.freeze({ kind: v.kind, name: v.name ?? null, uri: v.uri ?? null, mood: v.mood ?? null,
-      ...(v.kind === 'queue' ? { queue: queueApi().read(v.queue) } : {}) });
+      ...(v.kind === 'queue' ? { queue: queueApi().read(v.queue) } : {}),
+      ...(v.direction != null ? { direction: directionApi().read(v.direction, v.mood) } : {}) });
   }
 
   function settingsOf(v, kind) {
@@ -94,6 +96,7 @@ const ScenesRemote = (() => {
       scene.name,
       scene.groups.map((g) => [g.coordinator, g.members, g.source.kind, g.source.name,
         g.source.uri, g.source.mood, g.playing,
+        g.source.direction == null ? null : directionApi().signature(g.source.direction, g.source.mood),
         g.source.kind === 'queue' ? queueApi().signature(g.source.queue) : null]),
       Object.entries(scene.volumes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
       Object.entries(scene.mutes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
@@ -106,7 +109,8 @@ const ScenesRemote = (() => {
       const rooms = [g.coordinator, ...g.members].join(' + ');
       const src = g.source.kind === 'favorite' ? `favorite “${g.source.name}”`
         : g.source.kind === 'uri' ? g.source.uri
-          : g.source.kind === 'dj' ? `DJ${g.source.mood ? ` (${g.source.mood})` : ''}`
+          : g.source.kind === 'dj' ? (g.source.direction != null ? directionApi().describe(g.source.direction, g.source.mood)
+            : `DJ${g.source.mood ? ` (${g.source.mood})` : ''}`)
             : g.source.kind === 'queue' ? queueApi().describe(g.source.queue) : 'keep current source';
       lines.push(`${rooms}: ${src}${g.playing == null ? '' : g.playing ? '; playing' : '; paused'}`);
     }

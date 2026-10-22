@@ -54,6 +54,7 @@ const PREFERENCES_SCRIPT: &str = include_str!("../remote/dj-preferences.js");
 const PREFERENCES_STYLE: &str = include_str!("../remote/dj-preferences.css");
 const SESSION_SCRIPT: &str = include_str!("../remote/dj-session.js");
 const SESSION_STYLE: &str = include_str!("../remote/dj-session.css");
+const DIRECTION_SCRIPT: &str = include_str!("../remote/dj-direction.js");
 const STEERING_SCRIPT: &str = include_str!("../remote/dj-steering.js");
 const STEERING_STYLE: &str = include_str!("../remote/dj-steering.css");
 const HISTORY_SCRIPT: &str = include_str!("../remote/history.js");
@@ -111,7 +112,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 asset(
                     "text/javascript; charset=utf-8",
                     &format!(
-                        "{EVENT_FEED_SCRIPT}\n{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{PLAYLIST_SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENE_QUEUE_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{LISTENING_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
+                        "{EVENT_FEED_SCRIPT}\n{READ_SCRIPT}\n{QUEUE_SCRIPT}\n{SCRIPT}\n{PLAYLIST_SCRIPT}\n{LIBRARY_SCRIPT}\n{GROUPS_SCRIPT}\n{TIMERS_SCRIPT}\n{DIRECTION_SCRIPT}\n{SCHEDULES_SCRIPT}\n{SCENE_QUEUE_SCRIPT}\n{SCENES_SCRIPT}\n{MODE_SCRIPT}\n{ANNOUNCEMENTS_SCRIPT}\n{PREFERENCES_SCRIPT}\n{SESSION_SCRIPT}\n{STEERING_SCRIPT}\n{HISTORY_SCRIPT}\n{SYNC_SCRIPT}\n{CONNECT_SCRIPT}\n{PLAYBACK_SCRIPT}\n{EQ_SCRIPT}\n{SOUND_COPY_SCRIPT}\n{SOURCE_PLAYER_SCRIPT}\n{LISTENING_SCRIPT}\n{FADES_SCRIPT}\n{GROUP_VOLUME_SCRIPT}\n{ROUTINES_SCRIPT}\n{ROUTINES_PANEL_SCRIPT}"
                     ),
                 )
             },
@@ -347,6 +348,7 @@ mod tests {
             ("dj-preferences.css", PREFERENCES_STYLE),
             ("dj-session.js", SESSION_SCRIPT),
             ("dj-session.css", SESSION_STYLE),
+            ("dj-direction.js", DIRECTION_SCRIPT),
             ("dj-steering.js", STEERING_SCRIPT),
             ("dj-steering.css", STEERING_STYLE),
             ("history.js", HISTORY_SCRIPT),

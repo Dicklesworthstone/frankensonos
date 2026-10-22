@@ -14,13 +14,14 @@
 
 use fastapi::{JsonSchema, fastapi_openapi};
 use fsonos_core::actions;
+use fsonos_core::dj_direction::DjDirection;
 use fsonos_core::fade::Fader;
 use fsonos_core::favorites;
 use fsonos_core::policy::Client;
 use fsonos_core::rooms::{known_rooms, named_room, suggest_rooms};
 use fsonos_core::scenes::{
-    self, ApplyOptions, PlayingDj, Scene, SceneError, SceneGroup, SceneHooks, SceneOp, ScenePlan,
-    SceneReport, SceneSource,
+    self, ApplyOptions, Scene, SceneError, SceneGroup, SceneHooks, SceneOp, ScenePlan, SceneReport,
+    SceneSource,
 };
 use fsonos_core::store::{Store, StoreError};
 use fsonos_core::{CoreError, HouseholdState, Room};
@@ -31,12 +32,14 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use super::Surface;
-use crate::dj::{DjSpeakers, DjSteer, SteerConstraints};
+use crate::dj::{DjDirectionDto, DjSpeakers, DjSteer, SteerConstraints};
 use crate::failure::{ErrorCode, Failure, NoteCode};
 use crate::guard::{Guard, Note};
 use crate::plan::{Command, DjAction, VolumeScope};
 use crate::request::VolumeChange;
 use crate::source::normalize_source_uri;
+
+mod dj_direction;
 
 /// A saved scene (`GET /scenes`, `list_scenes`, `fsonos scene show`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -68,7 +71,8 @@ pub struct SceneGroupDto {
 
 /// What a scene group plays: `keep` (whatever the group has, its queue
 /// say), a `favorite` (by `name`), a `uri` (a stream, or a Spotify track,
-/// album or playlist), the `dj` (in `mood`, if any), or a captured `queue`
+/// album or playlist), the `dj` (with a `mood` and reusable `direction`, if
+/// supplied), or a captured `queue`
 /// reference. A queue reference recalls only the original, unchanged queue;
 /// its contents are not saved or reconstructed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -80,6 +84,10 @@ pub struct SceneSourceDto {
     pub uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mood: Option<String>,
+    /// Selection rules and a relative lifetime to reapply before starting.
+    /// An empty direction without a mood returns to automatic steering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direction: Option<DjDirectionDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue: Option<SceneQueueDto>,
 }
@@ -321,6 +329,9 @@ fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
         )
         .with_hint("Use scene save without --from, or save_scene without a scene definition. Queue contents are not backed up."));
     }
+    if dto.direction.is_some() && dto.kind != "dj" {
+        return Err(Failure::invalid("only a dj scene source takes `direction`"));
+    }
     let needs =
         |field: &str| Failure::invalid(format!("a {} source needs its `{field}`", dto.kind));
     match dto.kind.as_str() {
@@ -347,9 +358,16 @@ fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
                 metadata: String::new(),
             })
         }
-        "dj" => Ok(SceneSource::Dj {
-            mood: dto.mood.clone(),
-        }),
+        "dj" => {
+            let (mood, direction) = match &dto.direction {
+                Some(direction) => {
+                    let (mood, direction) = direction.normalized(dto.mood.as_deref())?;
+                    (mood, Some(DjDirection::from(&direction)))
+                }
+                None => (dto.mood.clone(), None),
+            };
+            Ok(SceneSource::Dj { mood, direction })
+        }
         other => Err(Failure::invalid(format!(
             "no scene source {other:?}: use keep, favorite, uri or dj"
         ))),
@@ -408,6 +426,7 @@ impl From<&SceneSource> for SceneSourceDto {
             name: None,
             uri: None,
             mood: None,
+            direction: None,
             queue: None,
         };
         match source {
@@ -421,8 +440,9 @@ impl From<&SceneSource> for SceneSourceDto {
                 uri: Some(uri.clone()),
                 ..dto("uri")
             },
-            SceneSource::Dj { mood } => Self {
+            SceneSource::Dj { mood, direction } => Self {
                 mood: mood.clone(),
+                direction: direction.as_ref().map(DjDirectionDto::from),
                 ..dto("dj")
             },
             SceneSource::Queue { queue } => Self {
@@ -523,10 +543,20 @@ fn describe(households: &[HouseholdState], op: &SceneOp) -> String {
             start: false,
             ..
         } => format!("{} has {uri} ready, paused", room(coordinator)),
-        SceneOp::Dj { coordinator, mood } => match mood {
-            Some(mood) => format!("{} starts the DJ ({mood})", room(coordinator)),
-            None => format!("{} starts the DJ", room(coordinator)),
-        },
+        SceneOp::Dj {
+            coordinator,
+            mood,
+            direction,
+        } => {
+            let detail = direction
+                .as_ref()
+                .map(|direction| DjDirectionDto::from(direction).summary(mood.as_deref()))
+                .or_else(|| mood.clone());
+            match detail {
+                Some(detail) => format!("{} starts the DJ ({detail})", room(coordinator)),
+                None => format!("{} starts the DJ", room(coordinator)),
+            }
+        }
         SceneOp::Queue {
             coordinator,
             queue,
@@ -600,24 +630,40 @@ struct SceneDj<'a> {
 
 impl SceneHooks for SceneDj<'_> {
     fn start_dj(&self, coordinator: &PlayerId, mood: Option<&str>) -> Result<(), String> {
+        self.start_dj_with_direction(coordinator, mood, None)
+    }
+
+    fn start_dj_with_direction(
+        &self,
+        coordinator: &PlayerId,
+        mood: Option<&str>,
+        direction: Option<&DjDirection>,
+    ) -> Result<(), String> {
         let s = self.surface;
         let dj = s.dj.as_deref().ok_or("this surface runs no DJ")?;
+        let steer = match direction {
+            Some(direction) => Some(
+                DjDirectionDto::from(direction)
+                    .steer(mood)
+                    .map_err(|failure| failure.detail)?,
+            ),
+            None => mood.map(|mood| DjSteer::Set {
+                mood: Some(mood.to_lowercase()),
+                constraints: SteerConstraints::default(),
+                // Legacy mood-only scenes last until the program takes over.
+                for_secs: s.mood_lasts(),
+            }),
+        };
         let at = DjSpeakers {
             transport: &*s.transport,
             households: self.households,
             coordinator,
         };
         let started = s.with_dj_store(|store| {
-            if let Some(mood) = mood {
-                let steer = DjSteer::Set {
-                    mood: Some(mood.to_lowercase()),
-                    constraints: SteerConstraints::default(),
-                    // Until the time-of-day program takes over again.
-                    for_secs: s.mood_lasts(),
-                };
-                if let Err(refused) = dj.steer(at, store, &steer, &*s.clock) {
-                    return Ok(Err(refused));
-                }
+            if let Some(steer) = &steer
+                && let Err(refused) = dj.steer(at, store, steer, &*s.clock)
+            {
+                return Ok(Err(refused));
             }
             Ok(dj.act(at, store, DjAction::Start, &*s.clock))
         });
@@ -692,21 +738,7 @@ impl Surface {
         }
         let households = self.scene_house()?;
         let now = self.now();
-        let sessions = self.scene_store(|store| Ok(store.dj_sessions()?))?;
-        // Where the DJ plays now, with its steering's mood. A session alone
-        // is only steering, kept whether or not the DJ runs.
-        let djs: Vec<PlayingDj> = households
-            .iter()
-            .flat_map(|h| &h.groups)
-            .filter(|g| self.dj.as_ref().is_some_and(|dj| dj.feeds(&g.coordinator)))
-            .map(|g| PlayingDj {
-                coordinator: g.coordinator.clone(),
-                mood: sessions
-                    .iter()
-                    .find(|s| s.coordinator == g.coordinator.0 && s.expires > now)
-                    .and_then(|s| s.mood.clone()),
-            })
-            .collect();
+        let djs = dj_direction::capture(self, &households)?;
         let scene = scenes::capture(&*self.transport, &households, name, &djs, now)
             .map_err(|e| self.explain(scene_failure(e)))?;
         self.store_scene(client, tool, &scene)
@@ -738,7 +770,10 @@ impl Surface {
         let households = self.scene_house()?;
         let mut scene = def.scene(name, &households)?;
         for group in &mut scene.groups {
-            if let SceneSource::Dj { mood: Some(mood) } = &mut group.source {
+            if let SceneSource::Dj {
+                mood: Some(mood), ..
+            } = &mut group.source
+            {
                 *mood = self.scene_mood(mood)?;
                 continue;
             }
@@ -914,6 +949,7 @@ impl Surface {
         let tool = "apply_scene";
         self.authorize_logged(client, tool)?;
         let scene = self.scene_store(|store| scenes::load(store, name))?;
+        dj_direction::validate(&scene)?;
         let households = self.scene_house()?;
         // Reject ambiguous legacy definitions before even capturing state;
         // policy preflight and scene execution must see the same targets.
@@ -1183,6 +1219,15 @@ fn op_tool(op: &SceneOp) -> &'static str {
 
 fn authorize_op(guard: &Guard<'_>, op: &SceneOp) -> Result<(), Failure> {
     guard.authorize(op_tool(op), false)?;
+    if matches!(
+        op,
+        SceneOp::Dj {
+            direction: Some(_),
+            ..
+        }
+    ) {
+        guard.authorize("dj_steer", false)?;
+    }
     if let SceneOp::Queue { queue, start, .. } = op {
         guard.authorize("seek", false)?;
         if queue.play_mode.is_some() {
@@ -1219,3 +1264,6 @@ fn op_subject(households: &[HouseholdState], op: &SceneOp) -> String {
 
 #[cfg(test)]
 mod queue_tests;
+
+#[cfg(test)]
+mod direction_tests;

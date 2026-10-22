@@ -102,6 +102,7 @@ public struct SavedSchedule: Codable, Equatable, Sendable, Identifiable {
     public let zone: String?
     public let scene: String?
     public let mood: String?
+    public let direction: DJDirection?
     public let volume: Int?
     public let fadeSecs: UInt32?
     public let summary: String
@@ -110,8 +111,21 @@ public struct SavedSchedule: Codable, Equatable, Sendable, Identifiable {
     public let next: String?
     public let lastFired: String?
 
+    public init(id: Int64, when: String, action: String, zone: String?, scene: String?, mood: String?,
+                volume: Int?, fadeSecs: UInt32?, summary: String, creator: String, enabled: Bool,
+                next: String?, lastFired: String?, direction: DJDirection? = nil) {
+        self.id = id; self.when = when; self.action = action; self.zone = zone; self.scene = scene
+        self.mood = mood; self.direction = direction; self.volume = volume; self.fadeSecs = fadeSecs
+        self.summary = summary; self.creator = creator; self.enabled = enabled
+        self.next = next; self.lastFired = lastFired
+    }
+
     public var stateLabel: String { !enabled ? "Paused" : (next == nil ? "No next run reported" : "Enabled") }
     public var targetLabel: String { scene.map { "Scene: " + $0 + " (house-wide)" } ?? zone ?? "Unspecified" }
+    public var djSummary: String? {
+        guard action == "dj_start" else { return nil }
+        return direction?.summary(mood: mood) ?? mood.map { "DJ mood: " + $0 } ?? "Start the DJ with its existing direction"
+    }
 
     public func validated() throws -> Self {
         guard id > 0, scheduleText(when, limit: 128), scheduleText(summary), scheduleText(creator),
@@ -119,6 +133,10 @@ public struct SavedSchedule: Codable, Equatable, Sendable, Identifiable {
               lastFired.map({ ScheduleTime.instant($0) != nil }) ?? true,
               enabled || next == nil else { throw ContractError.invalid("The schedule response is incomplete or contradictory.") }
         _ = try ScheduleTime.stored(when)
+        guard action == "dj_start" || direction == nil else {
+            throw ContractError.invalid("A saved DJ direction is attached to another scheduled action.")
+        }
+        _ = try direction?.validated(mood: mood)
         let valid: Bool
         switch action {
         case "dj_start":
@@ -147,6 +165,7 @@ public struct SavedSchedule: Codable, Equatable, Sendable, Identifiable {
         if let zone { fields["zone"] = .string(zone) }
         if let scene { fields["scene"] = .string(scene) }
         if let mood { fields["mood"] = .string(mood) }
+        if let direction { fields["direction"] = .object(direction.fields) }
         if let volume { fields["volume"] = .integer(Int64(volume)) }
         if let fadeSecs, fadeSecs > 0 { fields["fade_secs"] = .integer(Int64(fadeSecs)) }
         return fields
@@ -226,7 +245,9 @@ public enum ScheduleCommand: Equatable, Sendable {
     public var detail: String {
         switch self {
         case .add(let draft): "\((try? draft.time.canonical()) ?? "Invalid time"): \(draft.action.description)"
-        case .change(let schedule, _): "#\(schedule.id) • \(schedule.when)\n\(schedule.summary)\n\(schedule.targetLabel)\nRuns as: \(schedule.creator)"
+        case .change(let schedule, _):
+            ["#\(schedule.id) • \(schedule.when)", schedule.summary, schedule.djSummary,
+             schedule.targetLabel, "Runs as: \(schedule.creator)"].compactMap { $0 }.joined(separator: "\n")
         }
     }
 
@@ -290,8 +311,8 @@ public enum ScheduleCommand: Equatable, Sendable {
         let removed = if case .change(_, .remove) = self { true } else { false }
         let status = removed ? "This definition was removed; the response describes what it was." :
             actual.next.map { "Next run reported by the daemon: " + $0 } ?? actual.stateLabel
-        let detail = [actual.when, actual.summary, actual.targetLabel, "Runs as: " + actual.creator,
-                      status, "This confirms a schedule change, not successful playback. An already-started run may still finish."].joined(separator: "\n")
+        let detail = [actual.when, actual.summary, actual.djSummary, actual.targetLabel, "Runs as: " + actual.creator,
+                      status, "This confirms a schedule change, not successful playback. An already-started run may still finish."].compactMap { $0 }.joined(separator: "\n")
         return ScheduleReceipt(schedule: actual, title: title, detail: detail, removed: removed)
     }
 }

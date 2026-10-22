@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Scenes = require('../crates/fsonos-api/src/remote/scenes.js');
 const SceneQueue = require('../crates/fsonos-api/src/remote/scene-queue.js');
+const DjDirection = require('../crates/fsonos-api/src/remote/dj-direction.js');
 
 const row = (extra = {}) => ({
   name: 'Evening',
@@ -78,6 +79,67 @@ test('signature ignores save time but binds every operational field', () => {
   }))));
 });
 
+const directedRow = (direction = { constraints: { include_genres: ['jazz'], include_artists: ['Earth, Wind & Fire'] }, for_secs: 7200 }) =>
+  row({ groups: [{ ...row().groups[0], source: { kind: 'dj', direction } }] });
+
+test('saved DJ directions preserve all filters and exact remaining seconds', () => {
+  const constraints = {
+    include_composers: ['Composer A'], exclude_composers: ['Composer B'],
+    include_artists: ['Earth, Wind & Fire'], exclude_artists: ['Artist B'],
+    include_genres: ['jazz'], exclude_genres: ['pop'], periods: ['baroque'], exclude_periods: ['romantic'],
+    decades: [1960], exclude_decades: [1980], include_keywords: ['piano'], exclude_keywords: ['vocal'],
+    min_work_minutes: 3, max_work_minutes: 40, energy_bias: -1, allow_long_works: true,
+  };
+  const value = { constraints, for_secs: 17 };
+  const decoded = Scenes.sceneOf(directedRow(value));
+  assert.deepEqual(decoded.groups[0].source.direction, value);
+  assert.equal(Object.isFrozen(decoded.groups[0].source.direction.constraints.include_artists), true);
+  assert.match(Scenes.detail(decoded), /Earth, Wind & Fire/);
+  assert.match(Scenes.detail(decoded), /17 seconds on each start/);
+  const original = Scenes.signature(decoded);
+  for (const [field, current] of Object.entries(constraints)) {
+    const changed = structuredClone(value);
+    changed.constraints[field] = Array.isArray(current) ? [] : typeof current === 'boolean' ? false : null;
+    if (field === 'energy_bias') changed.constraints[field] = 0;
+    assert.notEqual(Scenes.signature(Scenes.sceneOf(directedRow(changed))), original, field);
+  }
+  assert.notEqual(Scenes.signature(Scenes.sceneOf(directedRow({ ...value, for_secs: 18 }))), original);
+});
+
+test('explicit automatic directions stay distinct from absent legacy steering', () => {
+  const automatic = Scenes.sceneOf(directedRow({}));
+  const absent = directedRow({}); delete absent.groups[0].source.direction;
+  assert.notEqual(Scenes.signature(automatic), Scenes.signature(Scenes.sceneOf(absent)));
+  assert.match(Scenes.detail(automatic), /automatic program \(clears current steering\)/);
+  assert.equal(DjDirection.signature(undefined), null);
+  assert.equal(DjDirection.signature(null), null);
+  assert.equal(DjDirection.signature({}), DjDirection.signature({ constraints: {}, for_secs: null }));
+});
+
+test('malformed and misplaced reusable directions never enter the scene catalog', () => {
+  for (const direction of [[], 'jazz', { expires_at: 12 }, { for_secs: 60 },
+    { constraints: null }, { constraints: { unknown_filter: true } },
+    { constraints: { energy_bias: 3 } }, { constraints: { periods: ['future'] } },
+    { constraints: { include_artists: [17] } }, { constraints: { include_genres: ['jazz'] }, for_secs: 0 },
+    { constraints: { include_genres: ['jazz'] }, for_secs: 604801 }]) {
+    assert.throws(() => Scenes.sceneOf(directedRow(direction)));
+  }
+  const hidden = directedRow({}); hidden.groups[0].source.kind = 'keep';
+  assert.throws(() => Scenes.sceneOf(hidden));
+});
+
+test('a changed saved DJ direction blocks an already reviewed scene apply', async () => {
+  for (const direction of [{ constraints: { include_genres: ['classical'] }, for_secs: 7200 },
+    { constraints: { include_genres: ['jazz'], include_artists: ['Earth, Wind & Fire'] }, for_secs: 60 }, {}]) {
+    const f = fixture([directedRow()]); await f.control.refresh();
+    assert.equal(f.control.review('apply', 'Evening'), true);
+    const pending = f.control.state.pending;
+    f.set([directedRow(direction)]);
+    assert.equal(await f.control.confirm(pending), false);
+    assert.deepEqual(f.writes, []);
+  }
+});
+
 test('queue scene decoding retains the selected occurrence and explains the unchanged-queue requirement', () => {
   const scene = Scenes.sceneOf(queueRow());
   assert.deepEqual(scene.groups[0].source.queue, queueReference());
@@ -136,12 +198,19 @@ test('both embedded clients load the shared queue contract before their scene co
   const dashboard = fs.readFileSync(path.join(root, 'http/remote/dashboard.rs'), 'utf8');
   assert.match(remote, /\{SCENE_QUEUE_SCRIPT\}\\n\{SCENES_SCRIPT\}/);
   assert.match(dashboard, /\{SCENE_QUEUE\}[\s\S]*\{SESSION\}/);
+  assert.match(remote, /\{DIRECTION_SCRIPT\}[\s\S]*\{SCHEDULES_SCRIPT\}[\s\S]*\{STEERING_SCRIPT\}/);
+  assert.match(dashboard, /\{DJ_DIRECTION\}[\s\S]*\{SESSION\}/);
   const context = vm.createContext({ input: JSON.stringify(queueRow()), ROUTES: {},
     document: { getElementById: () => null } });
   vm.runInContext(fs.readFileSync(path.join(root, 'remote/scene-queue.js'), 'utf8') + '\n'
+    + fs.readFileSync(path.join(root, 'remote/dj-direction.js'), 'utf8') + '\n'
     + fs.readFileSync(path.join(root, 'remote/scenes.js'), 'utf8')
     + '\nglobalThis.result = ScenesRemote.detail(ScenesRemote.sceneOf(JSON.parse(input)));', context);
   assert.match(context.result, /track #3 at 1:10/);
+  context.input = JSON.stringify(directedRow());
+  vm.runInContext('globalThis.result = ScenesRemote.detail(ScenesRemote.sceneOf(JSON.parse(input)));', context);
+  assert.match(context.result, /Earth, Wind & Fire/);
+  assert.match(context.result, /2 hours on each start/);
 });
 
 test('opening, reviewing and cancelling are read-only', async () => {

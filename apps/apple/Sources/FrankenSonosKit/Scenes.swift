@@ -22,8 +22,13 @@ extension Scene {
             guard source.kind == "queue" || source.queue == nil else {
                 throw ContractError.invalid("A scene has a queue reference attached to another music source. Capture it again.")
             }
+            guard source.kind == "dj" || source.direction == nil else {
+                throw ContractError.invalid("A saved DJ direction is attached to another scene music source.")
+            }
             switch source.kind {
-            case "keep", "dj": break
+            case "keep": break
+            case "dj":
+                _ = try source.direction?.validated(mood: source.mood)
             case "favorite":
                 guard source.name.map(named) == true else { throw ContractError.invalid("The scene favorite has no name.") }
             case "uri":

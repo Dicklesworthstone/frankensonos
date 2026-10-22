@@ -12,8 +12,9 @@
 //! picks them up within a second once it runs.
 
 use chrono::{DateTime, FixedOffset};
-use clap::{Args, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use fsonos_api::Failure;
+use fsonos_api::dj::DjDirectionDto;
 use fsonos_api::surface::Surface;
 use fsonos_api::surface::schedules::{
     ScheduleDto, ScheduleIdRequest, ScheduleRequest, Sleep, SleepRequest, SleepTimerDto,
@@ -55,7 +56,7 @@ pub enum ScheduleCommand {
         /// When: "in 45m", an RFC 3339 time, "daily 22:30", "weekdays 07:30",
         /// "weekends 09:00", "sat,sun 09:00", "mon-fri 07:00" (local time).
         when: String,
-        /// What: dj start <room> | pause <room> [--fade <duration>] |
+        /// What: dj start <room> [DJ direction flags] | pause <room> [--fade <duration>] |
         /// volume <room> <0-100> | scene <name>.
         #[arg(
             required = true,
@@ -210,10 +211,15 @@ fn take_option(words: &mut Vec<&str>, flag: &str) -> Result<Option<String>, Fail
 }
 
 /// The request `fsonos schedule add <when> <action...>` stands for: `dj
-/// start <room> [--mood <mood>]`, `pause <room> [--fade <duration>]`,
+/// start <room> [DJ direction flags]`, `pause <room> [--fade <duration>]`,
 /// `volume <room> <0-100>`, or `scene [apply] <name>`. A room or scene
 /// name may be several words.
 pub fn schedule_request(when: &str, action: &[String]) -> Result<ScheduleRequest, Failure> {
+    if action.first().is_some_and(|word| word == "dj")
+        && action.get(1).is_some_and(|word| word == "start")
+    {
+        return scheduled_dj(when, &action[2..]);
+    }
     let mut words: Vec<&str> = action.iter().map(String::as_str).collect();
     let mood = take_option(&mut words, "--mood")?;
     let fade_secs = take_option(&mut words, "--fade")?
@@ -232,12 +238,12 @@ pub fn schedule_request(when: &str, action: &[String]) -> Result<ScheduleRequest
         zone,
         scene,
         mood: mood.clone(),
+        direction: None,
         volume: None,
         fade_secs,
     };
     let named = |words: &[&str]| Some(words.join(" "));
     match words.as_slice() {
-        ["dj", "start", room @ ..] if !room.is_empty() => Ok(req("dj_start", named(room), None)),
         ["pause", room @ ..] if !room.is_empty() => Ok(req("pause", named(room), None)),
         ["volume", room @ .., level] if !room.is_empty() => {
             let volume = level.parse::<i64>().map_err(|_| {
@@ -263,6 +269,61 @@ pub fn schedule_request(when: &str, action: &[String]) -> Result<ScheduleRequest
              scene <name>.",
         )),
     }
+}
+
+/// Share the immediate DJ's complete constraint vocabulary, including
+/// repeated names and comma-containing artists. Room words remain joinable
+/// for the schedule command's existing unquoted multi-word targets.
+#[derive(Parser)]
+#[command(
+    name = "dj start",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
+struct ScheduledDj {
+    #[arg(required = true, num_args = 1..)]
+    room: Vec<String>,
+    #[arg(long)]
+    mood: Option<String>,
+    #[command(flatten)]
+    constraints: crate::dj_cmd::ConstraintArgs,
+    #[arg(long = "for", value_name = "SPAN", value_parser = crate::dj_cmd::parse_span)]
+    for_secs: Option<u64>,
+    /// Clear previous session steering each time the schedule runs.
+    #[arg(long, conflicts_with = "mood")]
+    automatic: bool,
+}
+
+fn scheduled_dj(when: &str, words: &[String]) -> Result<ScheduleRequest, Failure> {
+    let parsed = ScheduledDj::try_parse_from(
+        std::iter::once("dj start").chain(words.iter().map(String::as_str)),
+    )
+    .map_err(|error| {
+        Failure::invalid(error.to_string()).with_hint(
+            "Use dj start <room> --genre jazz --artist 'Miles Davis' --for 2h, or --automatic.",
+        )
+    })?;
+    let constraints = parsed.constraints.constraints();
+    if parsed.automatic && (!constraints.is_empty() || parsed.for_secs.is_some()) {
+        return Err(Failure::invalid(
+            "--automatic cannot be combined with DJ constraints or --for",
+        ));
+    }
+    let direction = (parsed.automatic || !constraints.is_empty() || parsed.for_secs.is_some())
+        .then_some(DjDirectionDto {
+            constraints,
+            for_secs: parsed.for_secs,
+        });
+    let request = ScheduleRequest {
+        when: when.to_owned(),
+        action: "dj_start".into(),
+        zone: Some(parsed.room.join(" ")),
+        mood: parsed.mood,
+        direction,
+        ..ScheduleRequest::default()
+    };
+    request.validate()?;
+    Ok(request)
 }
 
 /// `fsonos serve`'s scheduler settings; hidden, for the e2e tests.
@@ -371,6 +432,10 @@ mod tests {
             ("dj_start", Some("Living Room"), Some("bright"))
         );
         assert_eq!(dj.when, "weekdays 07:30");
+        assert!(
+            dj.direction.is_none(),
+            "old mood-only commands keep their behavior"
+        );
         let pause = add("in 45m", "pause --fade 2m Bedroom").unwrap();
         assert_eq!(
             (
@@ -394,6 +459,105 @@ mod tests {
             assert_eq!(
                 (scene.action.as_str(), scene.scene.as_deref()),
                 ("apply_scene", Some("dinner party"))
+            );
+        }
+    }
+
+    #[test]
+    fn scheduled_dj_keeps_full_constraints_names_and_a_relative_lifetime() {
+        let words = [
+            "dj",
+            "start",
+            "Living",
+            "Room@S2",
+            "--mood",
+            "bright",
+            "--artist",
+            "Earth, Wind & Fire",
+            "--artist",
+            "Miles Davis",
+            "--genre",
+            "jazz",
+            "--not-genre",
+            "pop",
+            "--composer",
+            "Bach",
+            "--not-composer",
+            "Wagner",
+            "--not-artist",
+            "Other artist",
+            "--period",
+            "baroque",
+            "--not-period",
+            "romantic",
+            "--decade",
+            "60s",
+            "--not-decade",
+            "1980s",
+            "--with",
+            "piano",
+            "--without",
+            "vocal",
+            "--min-minutes",
+            "3",
+            "--max-minutes",
+            "40",
+            "--energy",
+            "-1",
+            "--allow-long",
+            "--for",
+            "2h",
+        ]
+        .map(String::from);
+        let request = schedule_request("weekdays 07:30", &words).unwrap();
+        assert_eq!(request.zone.as_deref(), Some("Living Room@S2"));
+        assert_eq!(request.mood.as_deref(), Some("bright"));
+        let direction = request.direction.unwrap();
+        assert_eq!(direction.for_secs, Some(7200));
+        assert_eq!(
+            direction.constraints,
+            fsonos_api::dj::SteerConstraints {
+                include_composers: vec!["Bach".into()],
+                exclude_composers: vec!["Wagner".into()],
+                include_artists: vec!["Earth, Wind & Fire".into(), "Miles Davis".into()],
+                exclude_artists: vec!["Other artist".into()],
+                include_genres: vec!["jazz".into()],
+                exclude_genres: vec!["pop".into()],
+                periods: vec!["baroque".into()],
+                exclude_periods: vec!["romantic".into()],
+                decades: vec![1960],
+                exclude_decades: vec![1980],
+                include_keywords: vec!["piano".into()],
+                exclude_keywords: vec!["vocal".into()],
+                min_work_minutes: Some(3),
+                max_work_minutes: Some(40),
+                energy_bias: -1,
+                allow_long_works: true,
+            }
+        );
+        let automatic = add("daily 07:30", "dj start Kitchen --automatic").unwrap();
+        assert_eq!(automatic.direction, Some(DjDirectionDto::default()));
+        assert!(automatic.mood.is_none());
+    }
+
+    #[test]
+    fn invalid_scheduled_directions_fail_before_daemon_selection() {
+        for words in [
+            "dj start Kitchen --automatic --genre jazz",
+            "dj start Kitchen --automatic --mood calm",
+            "dj start Kitchen --automatic --for 2h",
+            "dj start Kitchen --for 2h",
+            "dj start Kitchen --genre jazz --for 0s",
+            "dj start Kitchen --genre jazz --for 8d",
+            "dj start Kitchen --energy 3",
+            "dj start Kitchen --min-minutes 40 --max-minutes 20",
+            "dj start Kitchen --unknown jazz",
+            "dj start Kitchen --calmer --brighter",
+        ] {
+            assert_eq!(
+                add("weekdays 07:30", words).unwrap_err().code,
+                ErrorCode::InvalidArgument,
+                "{words}"
             );
         }
     }

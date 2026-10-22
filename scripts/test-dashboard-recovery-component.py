@@ -107,7 +107,7 @@ def setup(browser, demo=False):
     script = (REMOTE/'dashboard.js').read_text()
     page.set_content(host(script, demo))
     page.add_script_tag(content=FIXTURE)
-    for name in ['event-feed.js','dashboard-core.js','dashboard-live.js','dashboard-session.js','dashboard.js']:
+    for name in ['event-feed.js','dashboard-core.js','dashboard-live.js','dj-direction.js', 'dashboard-session.js','dashboard.js']:
         page.add_script_tag(content=(REMOTE/name).read_text())
     page.evaluate('fixture.tick(350)')
     assert not errors, errors

@@ -113,7 +113,7 @@ class QueueBrowserTests(unittest.TestCase):
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
         self.page.set_content(HTML)
         self.page.add_style_tag(content=(ASSETS / "dashboard-queue.css").read_text())
-        for name in ["dashboard-core.js", "dashboard-session.js", "dashboard-queue.js", "dashboard-workspace.js"]:
+        for name in ["dashboard-core.js", "dj-direction.js", "dashboard-session.js", "dashboard-queue.js", "dashboard-workspace.js"]:
             self.page.add_script_tag(content=(ASSETS / name).read_text())
         self.page.evaluate(FIXTURE)
         self.page.wait_for_function("document.getElementById('queue-status').textContent.includes('55 tracks')")

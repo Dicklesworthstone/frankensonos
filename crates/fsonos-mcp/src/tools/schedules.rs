@@ -5,6 +5,7 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{CompleteResult, FinalCallToolResult};
+use fsonos_api::dj::DjDirectionDto;
 use fsonos_api::surface::schedules::{
     FadePauseRequest, FadeVolumeRequest, ScheduleDto, ScheduleRequest, SleepRequest, SleepTimerDto,
 };
@@ -111,6 +112,8 @@ impl Backend {
 
     /// The `add_schedule` tool.
     pub fn add_schedule(&self, req: &ScheduleRequest) -> McpResult<FinalCallToolResult> {
+        req.validate()
+            .map_err(|failure| crate::tool_error(&failure))?;
         let body = serde_json::to_value(req).map_err(|error| {
             crate::tool_error(&fsonos_api::Failure::new(
                 fsonos_api::ErrorCode::Internal,
@@ -236,7 +239,7 @@ async fn list_schedules(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallT
 }
 
 #[tool(
-    description = "Schedule something, once or every week; the daemon runs it with your rights. `when`: 'in 45m', an RFC 3339 time, 'daily 22:30', 'weekdays 07:30', 'weekends 09:00', 'sat,sun 09:00', 'mon-fri 07:00' (house local time). `action`: 'dj_start' (zone), 'pause' (zone; optional fade_secs up to 600 to fade out first), 'volume' (zone and volume 0-100), or 'apply_scene' (scene). A run missed by more than 10 minutes is skipped."
+    description = "Schedule something, once or every week; the daemon runs it with your rights. `when`: 'in 45m', an RFC 3339 time, 'daily 22:30', 'weekdays 07:30', 'weekends 09:00', 'sat,sun 09:00', 'mon-fri 07:00' (house local time). `action`: 'dj_start' (zone; optional mood and direction), 'pause' (zone; optional fade_secs up to 600 to fade out first), 'volume' (zone and volume 0-100), or 'apply_scene' (scene). For dj_start, direction is {constraints: {include_artists: [names], exclude_artists: [names], include_genres: [genres], exclude_genres: [genres], decades: [1960], exclude_decades: [1980], include_keywords: [words], exclude_keywords: [words], include_composers: [names], exclude_composers: [names], periods: [periods], exclude_periods: [periods], min_work_minutes: 1, max_work_minutes: 60, energy_bias: -2..2, allow_long_works: false}, for_secs: 7200}; all fields are optional. Duration starts afresh at each run and requires a mood or constraint. An explicit empty direction with no mood clears prior steering to the automatic program. Omit direction for legacy mood-only behavior. A run missed by more than 10 minutes is skipped."
 )]
 #[allow(clippy::too_many_arguments)] // one optional field per action
 async fn add_schedule(
@@ -246,15 +249,25 @@ async fn add_schedule(
     zone: Option<String>,
     scene: Option<String>,
     mood: Option<String>,
+    direction: Option<serde_json::Value>,
     volume: Option<i64>,
     fade_secs: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    let direction = direction
+        .map(serde_json::from_value::<DjDirectionDto>)
+        .transpose()
+        .map_err(|error| {
+            crate::tool_error(&fsonos_api::Failure::invalid(format!(
+                "invalid DJ direction: {error}",
+            )))
+        })?;
     let req = ScheduleRequest {
         when,
         action,
         zone,
         scene,
         mood,
+        direction,
         volume,
         fade_secs,
     };

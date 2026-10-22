@@ -16,6 +16,7 @@
 //! after the gap; a wall time the fall-back overlap repeats runs once, at
 //! its first occurrence.
 
+use crate::dj_direction::DjDirection;
 use crate::store::{Store, StoreError, StoredSchedule};
 use chrono::{
     DateTime, Datelike, FixedOffset, MappedLocalTime, NaiveDateTime, NaiveTime, TimeDelta,
@@ -321,6 +322,7 @@ pub fn tick<Tz: TimeZone>(
 /// people say them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // one persisted action per schedule
 pub enum ScheduleAction {
     ApplyScene {
         name: String,
@@ -329,6 +331,10 @@ pub enum ScheduleAction {
         room: String,
         #[serde(default)]
         mood: Option<String>,
+        /// Reapplied when this run starts; an absent value keeps the older
+        /// mood-only behavior.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<DjDirection>,
     },
     /// Pause, fading out over `fade_secs` first.
     Pause {
@@ -834,7 +840,8 @@ mod tests {
             dj,
             ScheduleAction::DjStart {
                 room: "Kitchen".into(),
-                mood: None
+                mood: None,
+                direction: None,
             }
         );
     }

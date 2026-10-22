@@ -35,6 +35,7 @@ pub mod actions;
 pub mod announce;
 pub mod clock;
 pub mod control;
+pub mod dj_direction;
 pub mod doctor;
 pub mod events;
 pub mod fade;

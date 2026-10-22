@@ -13,7 +13,7 @@ use fsonos_proto::control::{self as soap, MediaInfo, PositionInfo, TransportInfo
 use fsonos_proto::play_mode::{get_play_mode, set_play_mode};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
-use fsonos_types::{PlayMode, PlayerId, TransportState};
+use fsonos_types::{HouseholdId, PlayMode, PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -63,7 +63,10 @@ fn setup(generation: u8, policy: Policy) -> (SimHandle, Surface) {
     soap::seek_track(&lan, host, 2).unwrap();
     soap::play(&lan, host).unwrap();
     sim.advance(Duration::from_secs(17));
-    let mut household = HouseholdState::default();
+    let mut household = HouseholdState {
+        id: Some(HouseholdId(sim.player("Alpha").unwrap().household.clone())),
+        ..HouseholdState::default()
+    };
     household.apply_topology(&get_zone_group_state(&lan, host).unwrap());
     let surface = Surface::new(
         Box::new(lan),
@@ -135,8 +138,9 @@ fn assert_captured_queue(sim: &SimHandle, scene: &SceneDto, update_id: u32) {
         .queue
         .as_ref()
         .expect("a guarded queue reference");
-    assert_eq!(saved.coordinator, sim.player("Alpha").unwrap().uuid);
-    assert!(saved.household.is_some());
+    let alpha = sim.player("Alpha").unwrap();
+    assert_eq!(saved.coordinator, alpha.uuid);
+    assert_eq!(saved.household.as_deref(), Some(alpha.household.as_str()));
     assert_eq!(saved.update_id, update_id);
     assert_eq!((saved.track, saved.position_secs), (2, 17));
     assert_eq!(saved.play_mode.as_deref(), Some("REPEAT_ALL"));

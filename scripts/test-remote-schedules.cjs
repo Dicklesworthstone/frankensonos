@@ -45,6 +45,47 @@ test('all four schedule actions decode without borrowing unrelated fields', () =
   }
 });
 
+test('schedule reads retain and freeze reusable directions and refuse unrelated action fields', () => {
+  const direction = { constraints: { include_genres: ['jazz'], include_artists: ['Earth, Wind & Fire'] }, for_secs: 17 };
+  const decoded = Schedules.scheduleOf(row({ direction }));
+  assert.deepEqual(decoded.direction, direction);
+  assert.equal(Object.isFrozen(decoded.direction.constraints.include_artists), true);
+  assert.deepEqual(Schedules.scheduleOf(row({ mood: null, direction: {} })).direction, { constraints: {} });
+  assert.equal(Schedules.scheduleOf(row()).direction, undefined);
+  for (const change of [{ direction: { extra: true } }, { direction: { for_secs: 0 } },
+    { direction: { constraints: { energy_bias: 3 } } },
+    { action: 'pause', mood: null, direction: {} },
+    { action: 'volume', mood: null, volume: 20, direction: {} },
+    { action: 'apply_scene', mood: null, zone: null, scene: 'Evening', direction: {} }]) {
+    assert.throws(() => Schedules.scheduleOf(row(change)));
+  }
+});
+
+test('changing a saved direction invalidates schedule management reviews before writing', async () => {
+  const original = { constraints: { include_artists: ['Artist A'] }, for_secs: 7200 };
+  for (const direction of [undefined, {}, { ...original, for_secs: 3600 },
+    { ...original, constraints: { include_artists: ['Artist B'] } }]) {
+    const f = fixture([row({ direction: original })]);
+    const pending = await reviewed(f);
+    f.set([row({ direction })]);
+    assert.equal(await f.control.confirm(pending), false);
+    assert.deepEqual(f.writes, []);
+  }
+});
+
+test('the scene chooser validates DJ directions and also accepts captured unchanged-queue scenes', () => {
+  const base = { name: 'Evening', saved: 1, volumes: {}, mutes: {},
+    groups: [{ coordinator: 'Studio@S2', members: [], source: { kind: 'dj', direction: {} } }] };
+  assert.match(Schedules.scenesOf([base])[0].details, /direction/);
+  const invalid = structuredClone(base); invalid.groups[0].source.direction = { constraints: { energy_bias: 9 } };
+  assert.throws(() => Schedules.scenesOf([invalid]));
+  const queue = structuredClone(base); queue.groups[0].source = { kind: 'queue', queue: {
+    coordinator: 'RINCON_SYNTHETIC', update_id: 17, track: 3, position_secs: 70 } };
+  assert.equal(Schedules.scenesOf([queue])[0].name, 'Evening');
+  queue.groups[0].source.queue.track = 0;
+  assert.throws(() => Schedules.scenesOf([queue]));
+});
+
 test('malformed, unsafe, ambiguous and contradictory server data is refused', () => {
   for (const change of [{ id: 0 }, { id: 2 ** 53 }, { id: '7' }, { enabled: 1 },
     { when: '' }, { creator: '' }, { next: '2030-01-15T07:30:00' }, { last_fired: 'never' },

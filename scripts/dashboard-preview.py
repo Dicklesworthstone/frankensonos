@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 ASSETS = Path(__file__).resolve().parents[1] / "crates/fsonos-api/src/remote"
 SCRIPTS = ["event-feed.js", "dashboard-core.js", "dashboard-live.js", "dashboard-visualizer.js",
-           "dashboard-audio.js", "dashboard-library.js", "dashboard-session.js", "dashboard-queue.js",
+           "dashboard-audio.js", "dashboard-library.js", "dj-direction.js", "dashboard-session.js", "dashboard-queue.js",
            "dashboard-library-panel.js", "dashboard-activity.js", "dashboard-activity-panel.js",
            "dashboard-workspace.js", "dashboard.js"]
 STYLES = ["dashboard.css", "dashboard-library.css", "dashboard-queue.css", "dashboard-activity.css"]

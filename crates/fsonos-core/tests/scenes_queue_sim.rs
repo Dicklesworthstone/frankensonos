@@ -173,13 +173,14 @@ fn a_paused_bookmark_and_the_beginning_of_its_track_are_recalled_without_play() 
             soap::get_transport_info(&f.lan, f.host).unwrap().state,
             TransportState::Playing
         );
-        assert!(
-            f.sim.soap_log()[start..]
-                .iter()
-                .any(|call| call.action == "Seek"
-                    && call.args.contains(&("Unit".into(), "REL_TIME".into()))
-                    && call.args.contains(&("Target".into(), "00:00:00".into())))
-        );
+        assert!(f.sim.soap_log()[start..].iter().any(|call| {
+            call.action == "Seek"
+                && call.args.contains(&("Unit".into(), "REL_TIME".into()))
+                && call
+                    .args
+                    .iter()
+                    .any(|(name, value)| name == "Target" && soap::parse_hms(value) == Some(0))
+        }));
         // A stopped one-second offset is not natural playback progress and
         // cannot make an explicit zero bookmark look unchanged.
         soap::seek_position(&f.lan, f.host, 1).unwrap();
