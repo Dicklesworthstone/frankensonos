@@ -249,7 +249,10 @@ fn an_unapplied_mode_request_is_not_retried_or_assumed_normal() {
             get_play_mode(&t.inner, rig.host).unwrap(),
             PlayMode::RepeatOne
         );
-        assert_eq!(soap::get_position_info(&t.inner, rig.host).unwrap().track, 1);
+        assert_eq!(
+            soap::get_position_info(&t.inner, rig.host).unwrap().track,
+            1
+        );
     }
 }
 

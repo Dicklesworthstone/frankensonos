@@ -46,7 +46,9 @@ impl Fixture {
             .iter()
             .map(|room| {
                 let mut h = HouseholdState::default();
-                h.apply_topology(&get_zone_group_state(&lan, sim.player(room).unwrap().ip).unwrap());
+                h.apply_topology(
+                    &get_zone_group_state(&lan, sim.player(room).unwrap().ip).unwrap(),
+                );
                 h
             })
             .collect();
@@ -304,7 +306,11 @@ fn paused_copies_preserve_repeat_without_an_audible_play_pause_cycle() {
         let since = f.sim.soap_log().len();
         f.copy(&f.sim.lan()).unwrap();
         f.copied(PlayMode::RepeatOne);
-        assert!(f.target_actions(since).iter().all(|a| a != "Play" && a != "Pause"));
+        assert!(
+            f.target_actions(since)
+                .iter()
+                .all(|a| a != "Play" && a != "Pause")
+        );
     }
 }
 
@@ -312,11 +318,14 @@ fn paused_copies_preserve_repeat_without_an_audible_play_pause_cycle() {
 fn unsupported_delegation_uses_the_same_mode_preserving_replay() {
     for (from, to) in [("S1 Source", "S1 Target"), ("S2 Source", "S2 Target")] {
         let f = Fixture::new(from, to, PlayMode::ShuffleNoRepeat);
-        f.sim.upnp_fault(from, "DelegateGroupCoordinationTo", 401).unwrap();
+        f.sim
+            .upnp_fault(from, "DelegateGroupCoordinationTo", 401)
+            .unwrap();
         let source = resolve_room(&f.houses, from).unwrap();
         let target = resolve_room(&f.houses, to).unwrap();
         let report =
-            move_playback_within(&f.sim.lan(), &f.houses, &source, &target, Duration::ZERO).unwrap();
+            move_playback_within(&f.sim.lan(), &f.houses, &source, &target, Duration::ZERO)
+                .unwrap();
         assert_eq!(report.method, MoveMethod::Copied);
         f.copied(PlayMode::ShuffleNoRepeat);
     }
@@ -345,7 +354,11 @@ fn unconfirmed_settings_never_seek_play_or_stop_the_source() {
             assert!(f.copy(&t).is_err());
             assert_eq!(t.mode_writes.get(), 1);
             f.source_kept(since);
-            assert!(f.target_actions(since).iter().all(|a| a != "Seek" && a != "Play"));
+            assert!(
+                f.target_actions(since)
+                    .iter()
+                    .all(|a| a != "Seek" && a != "Play")
+            );
         }
     }
 }
@@ -380,7 +393,11 @@ fn source_or_queue_changes_during_mode_reads_block_the_setting() {
             assert!(f.copy(&t).is_err());
             assert_eq!(t.mode_writes.get(), 0);
             f.source_kept(since);
-            assert!(f.target_actions(since).iter().all(|a| a != "Seek" && a != "Play"));
+            assert!(
+                f.target_actions(since)
+                    .iter()
+                    .all(|a| a != "Seek" && a != "Play")
+            );
         }
     }
 }
@@ -476,7 +493,6 @@ fn a_source_mode_changed_during_preparation_leaves_the_destination_untouched() {
     }
 }
 
-
 #[test]
 fn owner_changes_after_destination_start_are_not_overwritten_by_source_stop() {
     for (from, to) in PAIRS {
@@ -498,11 +514,16 @@ fn owner_changes_after_destination_start_are_not_overwritten_by_source_stop() {
             );
             match fault {
                 Fault::SwitchSourceAfterPlay => {
-                    assert_eq!(soap::get_media_info(&f.sim.lan(), f.source).unwrap().uri, OTHER);
+                    assert_eq!(
+                        soap::get_media_info(&f.sim.lan(), f.source).unwrap().uri,
+                        OTHER
+                    );
                 }
                 Fault::PauseSourceAfterPlay => {
                     assert_eq!(
-                        soap::get_transport_info(&f.sim.lan(), f.source).unwrap().state,
+                        soap::get_transport_info(&f.sim.lan(), f.source)
+                            .unwrap()
+                            .state,
                         TransportState::Paused
                     );
                 }

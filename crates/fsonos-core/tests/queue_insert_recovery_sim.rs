@@ -322,7 +322,10 @@ fn source_relearning_requires_an_unchanged_explicit_refusal() {
         rig.enqueue(&t, TRACK, false).unwrap();
         t.only_add_writes(2);
         assert_eq!(
-            rig.queue().iter().filter(|uri| uri.as_str() == TRACK).count(),
+            rig.queue()
+                .iter()
+                .filter(|uri| uri.as_str() == TRACK)
+                .count(),
             1
         );
 
@@ -341,7 +344,10 @@ fn source_relearning_requires_an_unchanged_explicit_refusal() {
         assert!(error.to_string().contains("uncertain"), "{error}");
         t.only_add_writes(1);
         assert_eq!(
-            rig.queue().iter().filter(|uri| uri.as_str() == TRACK).count(),
+            rig.queue()
+                .iter()
+                .filter(|uri| uri.as_str() == TRACK)
+                .count(),
             1
         );
     }
@@ -350,7 +356,10 @@ fn source_relearning_requires_an_unchanged_explicit_refusal() {
 #[test]
 fn unknown_container_expansions_require_an_acknowledged_range() {
     for s2 in [false, true] {
-        for uri in ["spotify:album:RecoveryAlbum", "spotify:playlist:RecoveryList"] {
+        for uri in [
+            "spotify:album:RecoveryAlbum",
+            "spotify:playlist:RecoveryList",
+        ] {
             let rig = Rig::new(s2);
             let t = Intercept::new(&rig, Reply::Accepted, Edit::None);
             let result = rig.enqueue(&t, uri, false).unwrap();

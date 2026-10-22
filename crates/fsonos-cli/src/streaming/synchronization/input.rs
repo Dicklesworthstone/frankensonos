@@ -247,7 +247,14 @@ mod tests {
 
     #[test]
     fn mutable_defaults_indices_and_self_reference_are_refused() {
-        for reference in ["", "default", "@DEFAULT_MONITOR@", "12", ".monitor", "microphone"] {
+        for reference in [
+            "",
+            "default",
+            "@DEFAULT_MONITOR@",
+            "12",
+            ".monitor",
+            "microphone",
+        ] {
             assert!(Input::pulse_pair(reference, "room_mic").is_err());
         }
         for microphone in [
@@ -280,7 +287,12 @@ mod tests {
         let sync = args.iter().position(|arg| arg == "-isync").unwrap();
         assert_eq!(&args[sync..sync + 2], ["-isync", "0"]);
         assert_eq!(args.iter().filter(|arg| *arg == "-wallclock").count(), 2);
-        assert_eq!(args.iter().filter(|arg| *arg == "-thread_queue_size").count(), 2);
+        assert_eq!(
+            args.iter()
+                .filter(|arg| *arg == "-thread_queue_size")
+                .count(),
+            2
+        );
         assert!(args.iter().all(|arg| arg != "-use_wallclock_as_timestamps"));
         assert!(PULSE_PAIR_FILTER.contains("map=0.0-FL|1.0-FR"));
         assert!(!PULSE_PAIR_FILTER.contains("PTS-STARTPTS"));
@@ -367,7 +379,10 @@ mod tests {
             "room_mic",
         ])
         .unwrap();
-        assert_eq!(Input::from_args(&cli.args).is_ok(), cfg!(target_os = "linux"));
+        assert_eq!(
+            Input::from_args(&cli.args).is_ok(),
+            cfg!(target_os = "linux")
+        );
         let mut invalid = cli.args;
         invalid.input = "@DEFAULT_MONITOR@".into();
         assert!(Input::from_args(&invalid).is_err());

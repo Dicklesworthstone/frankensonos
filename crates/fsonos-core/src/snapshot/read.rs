@@ -37,9 +37,8 @@ fn changed() -> CoreError {
 
 fn same_track(a: &str, b: &str) -> bool {
     a == b
-        || spotify_uri_from_renderer_uri(a).is_some_and(|uri| {
-            spotify_uri_from_renderer_uri(b).as_deref() == Some(uri.as_str())
-        })
+        || spotify_uri_from_renderer_uri(a)
+            .is_some_and(|uri| spotify_uri_from_renderer_uri(b).as_deref() == Some(uri.as_str()))
 }
 
 fn queue_stamp<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<QueueStamp, CoreError> {
@@ -268,10 +267,30 @@ mod tests {
     fn clock_progress_is_not_an_owner_seek() {
         let playing = TransportState::Playing;
         assert!(progresses(Some(10), Some(11), playing, Duration::ZERO));
-        assert!(progresses(Some(10), Some(14), playing, Duration::from_secs(3)));
-        assert!(!progresses(Some(10), Some(15), playing, Duration::from_secs(3)));
-        assert!(!progresses(Some(10), Some(9), playing, Duration::from_secs(3)));
-        assert!(progresses(Some(u32::MAX), Some(u32::MAX), playing, Duration::MAX));
+        assert!(progresses(
+            Some(10),
+            Some(14),
+            playing,
+            Duration::from_secs(3)
+        ));
+        assert!(!progresses(
+            Some(10),
+            Some(15),
+            playing,
+            Duration::from_secs(3)
+        ));
+        assert!(!progresses(
+            Some(10),
+            Some(9),
+            playing,
+            Duration::from_secs(3)
+        ));
+        assert!(progresses(
+            Some(u32::MAX),
+            Some(u32::MAX),
+            playing,
+            Duration::MAX
+        ));
     }
 
     #[test]
@@ -279,7 +298,17 @@ mod tests {
         let paused = TransportState::Paused;
         assert!(progresses(None, None, paused, Duration::ZERO));
         assert!(!progresses(None, Some(0), paused, Duration::ZERO));
-        assert!(progresses(Some(10), Some(10), paused, Duration::from_secs(30)));
-        assert!(!progresses(Some(10), Some(11), paused, Duration::from_secs(30)));
+        assert!(progresses(
+            Some(10),
+            Some(10),
+            paused,
+            Duration::from_secs(30)
+        ));
+        assert!(!progresses(
+            Some(10),
+            Some(11),
+            paused,
+            Duration::from_secs(30)
+        ));
     }
 }

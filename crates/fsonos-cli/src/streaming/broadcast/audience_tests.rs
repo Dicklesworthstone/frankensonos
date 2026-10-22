@@ -26,7 +26,9 @@ impl Peer {
     fn new(audio: &Arc<Audio>, request: &[u8]) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
         let (server, _) = listener.accept().unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::clone(&stop);
@@ -67,7 +69,9 @@ fn a_live_get_is_ready_only_after_a_complete_frame_is_written() {
     peer.read(AUDIO_HEADERS);
     assert_eq!(audio.readers.load(Ordering::Acquire), 0);
     assert_eq!(
-        await_reader(&audio.readers, Duration::ZERO, || Ok(())).unwrap_err().kind(),
+        await_reader(&audio.readers, Duration::ZERO, || Ok(()))
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::TimedOut
     );
     audio.publish(frame()).unwrap();
@@ -143,8 +147,7 @@ fn delivery_guard_counts_once_and_clears_on_unwind() {
 fn cancellation_and_dead_encoder_win_over_existing_reader_evidence() {
     let count = AtomicUsize::new(1);
     for kind in [io::ErrorKind::Interrupted, io::ErrorKind::BrokenPipe] {
-        let error = await_reader(&count, Duration::from_secs(1), || Err(kind.into()))
-            .unwrap_err();
+        let error = await_reader(&count, Duration::from_secs(1), || Err(kind.into())).unwrap_err();
         assert_eq!(error.kind(), kind);
     }
 }

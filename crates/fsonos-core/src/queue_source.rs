@@ -83,12 +83,16 @@ fn replace<T: Transport + ?Sized>(
     let host = control::locate(households, coordinator)?.ip;
     let destination = Destination::read(t, host, coordinator).map_err(unconfirmed)?;
     let before = read(t, host)?;
-    destination.confirm(t, host, coordinator).map_err(unconfirmed)?;
+    destination
+        .confirm(t, host, coordinator)
+        .map_err(unconfirmed)?;
     if !autoplay {
         // This is not a source-parameter refusal: do not retry the whole
         // replacement when pausing or its read-back fails.
         control::pause_confirmed(t, households, coordinator).map_err(unconfirmed)?;
-        destination.confirm(t, host, coordinator).map_err(unconfirmed)?;
+        destination
+            .confirm(t, host, coordinator)
+            .map_err(unconfirmed)?;
     }
     let added = match soap::enqueue_uri(t, host, uri, metadata, 0, false) {
         Ok(added) => added,
@@ -113,7 +117,9 @@ fn replace<T: Transport + ?Sized>(
             "playback resumed while the replacement was staged",
         ));
     }
-    destination.confirm(t, host, coordinator).map_err(unconfirmed)?;
+    destination
+        .confirm(t, host, coordinator)
+        .map_err(unconfirmed)?;
     if !before.uris.is_empty() {
         if staged.revision == 0 {
             return Err(unconfirmed(
@@ -129,7 +135,9 @@ fn replace<T: Transport + ?Sized>(
     // Empty queues skip removal, but not destination verification. Never
     // detach an old coordinator or replace a newly selected source merely
     // because the requested tracks are still visible in its local queue.
-    destination.confirm(t, host, coordinator).map_err(unconfirmed)?;
+    destination
+        .confirm(t, host, coordinator)
+        .map_err(unconfirmed)?;
     if !autoplay {
         // The new queue is committed. Even a definite source-selection
         // refusal must not trigger a second append through account recovery.

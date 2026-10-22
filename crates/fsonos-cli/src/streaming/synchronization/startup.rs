@@ -46,7 +46,10 @@ fn with_capture(
         &probe::Config,
     ) -> anyhow::Result<Option<Vec<u8>>>,
 ) -> anyhow::Result<()> {
-    ensure!(!stop.requested(), "startup calibration cancelled or expired");
+    ensure!(
+        !stop.requested(),
+        "startup calibration cancelled or expired"
+    );
     let window = controller
         .begin_window()?
         .context("start mpv playback before requesting audible startup calibration")?;
@@ -83,7 +86,9 @@ fn with_capture(
     } else {
         // A within-hysteresis result is valid; an interrupted apply is not.
         uninterrupted(controller, window)?;
-        eprintln!("fsonos sync: startup acoustic lag {lag:.3} s; existing delay is within tolerance");
+        eprintln!(
+            "fsonos sync: startup acoustic lag {lag:.3} s; existing delay is within tolerance"
+        );
     }
     Ok(())
 }

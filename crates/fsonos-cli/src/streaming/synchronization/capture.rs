@@ -167,11 +167,8 @@ pub(super) fn record_guarded(
                             "capture ended before the calibration probe could start"
                         );
                         ensure!(capture.probe.is_none(), "duplicate capture readiness");
-                        capture.probe = Some(probe::Emission::start(
-                            &options.ffmpeg,
-                            config,
-                            seconds,
-                        )?);
+                        capture.probe =
+                            Some(probe::Emission::start(&options.ffmpeg, config, seconds)?);
                     }
                 }
                 Ok(Window::Finished(result)) => {

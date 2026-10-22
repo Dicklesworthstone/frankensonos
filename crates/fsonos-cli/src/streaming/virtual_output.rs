@@ -47,7 +47,8 @@ fn valid_name(name: &str) -> bool {
 }
 
 fn list(bytes: &[u8]) -> anyhow::Result<Vec<Value>> {
-    let entries: Vec<Value> = serde_json::from_slice(bytes).context("read pactl JSON device list")?;
+    let entries: Vec<Value> =
+        serde_json::from_slice(bytes).context("read pactl JSON device list")?;
     ensure!(
         entries.iter().all(|entry| {
             entry
@@ -65,7 +66,10 @@ fn named<'a>(entries: &'a [Value], name: &str) -> anyhow::Result<Option<&'a Valu
         .iter()
         .filter(|entry| entry["name"].as_str() == Some(name));
     let found = matches.next();
-    ensure!(matches.next().is_none(), "Pulse returned duplicate device names");
+    ensure!(
+        matches.next().is_none(),
+        "Pulse returned duplicate device names"
+    );
     Ok(found)
 }
 
@@ -113,9 +117,9 @@ impl Lease {
     }
 
     fn marked<'a>(&self, sinks: &'a [Value]) -> anyhow::Result<Option<&'a Value>> {
-        let mut matches = sinks.iter().filter(|sink| {
-            sink["properties"][OWNER].as_str() == Some(self.token.as_str())
-        });
+        let mut matches = sinks
+            .iter()
+            .filter(|sink| sink["properties"][OWNER].as_str() == Some(self.token.as_str()));
         let found = matches.next();
         ensure!(
             matches.next().is_none(),
@@ -242,7 +246,10 @@ impl VirtualOutput {
             pactl: Pactl::default(),
         };
         output.lease.create(|args| {
-            ensure!(!stop.load(Ordering::Acquire), "virtual output setup cancelled");
+            ensure!(
+                !stop.load(Ordering::Acquire),
+                "virtual output setup cancelled"
+            );
             output.pactl.run(args, Some(stop))
         })?;
         eprintln!(

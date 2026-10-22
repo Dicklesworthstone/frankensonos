@@ -237,7 +237,9 @@ impl Transport for Replies<'_> {
         }
         if let Some((phase, edit)) = self.edit {
             let due = match phase {
-                Phase::InitialQueue => name == "Browse" && body.contains("<ObjectID>Q:0</ObjectID>"),
+                Phase::InitialQueue => {
+                    name == "Browse" && body.contains("<ObjectID>Q:0</ObjectID>")
+                }
                 Phase::Added => name == "AddURIToQueue",
                 Phase::StagedGuard => name == "GetMediaInfo" && self.media_after_add.get() == 1,
                 Phase::Removed => name == "RemoveTrackRangeFromQueue",
@@ -275,7 +277,12 @@ fn stale_coordinators_cannot_stage_or_detach_themselves_to_play_a_replacement() 
 fn source_and_group_changes_during_preflight_prevent_the_append() {
     for s2 in [false, true] {
         for autoplay in [false, true] {
-            for edit in [Edit::Coordinator, Edit::Membership, Edit::Source, Edit::Metadata] {
+            for edit in [
+                Edit::Coordinator,
+                Edit::Membership,
+                Edit::Source,
+                Edit::Metadata,
+            ] {
                 let rig = Rig::new(s2, true);
                 let t = Replies::new(&rig, Some((Phase::InitialQueue, edit)), Fault::None);
                 assert!(rig.replace(&t, autoplay).is_err(), "{edit:?}");
@@ -301,7 +308,10 @@ fn a_new_source_after_staging_preserves_the_original_prefix_and_owner_selection(
             assert_eq!(t.count("AddURIToQueue"), 1);
             assert_eq!(t.count("RemoveTrackRangeFromQueue"), 0);
             assert!(rig.queue().starts_with(&OLD.map(str::to_string)));
-            assert_eq!(soap::get_media_info(&rig.lan, rig.host).unwrap().uri, SOURCE);
+            assert_eq!(
+                soap::get_media_info(&rig.lan, rig.host).unwrap().uri,
+                SOURCE
+            );
             t.no_selection();
         }
     }
@@ -419,7 +429,10 @@ fn a_confirmed_lost_removal_completes_playback_or_silent_preparation_once() {
             if autoplay {
                 assert_eq!(state, TransportState::Playing);
             } else {
-                assert!(matches!(state, TransportState::Paused | TransportState::Stopped));
+                assert!(matches!(
+                    state,
+                    TransportState::Paused | TransportState::Stopped
+                ));
             }
         }
     }

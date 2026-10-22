@@ -89,7 +89,11 @@ impl<'a, F> After<'a, F> {
     }
 
     fn count(&self, action: &str) -> usize {
-        self.reads.borrow().iter().filter(|(_, a)| a == action).count()
+        self.reads
+            .borrow()
+            .iter()
+            .filter(|(_, a)| a == action)
+            .count()
     }
 
     fn assert_read_only(&self) {
@@ -223,9 +227,10 @@ fn bonded_players_stay_one_logical_room_with_one_level_read() {
             .find(|p| p.room == "Room" && p.uuid != f.id("Room").0)
             .unwrap();
         assert!(
-            !t.reads.borrow().iter().any(|(host, a)| {
-                *host == secondary.ip && (a == "GetVolume" || a == "GetMute")
-            })
+            !t.reads
+                .borrow()
+                .iter()
+                .any(|(host, a)| { *host == secondary.ip && (a == "GetVolume" || a == "GetMute") })
         );
         t.assert_read_only();
     }
@@ -298,6 +303,9 @@ fn a_missing_media_count_uses_the_verified_queue_instead() {
         soap::play_from_queue(&f.lan, f.host("Room"), &f.id("Room")).unwrap();
         soap::play(&f.lan, f.host("Room")).unwrap();
         let snap = f.capture(&NoMediaCount(&f.lan)).unwrap();
-        assert!(matches!(snap.source, snapshot::SnapshotSource::Queue { track: 1, .. }));
+        assert!(matches!(
+            snap.source,
+            snapshot::SnapshotSource::Queue { track: 1, .. }
+        ));
     }
 }

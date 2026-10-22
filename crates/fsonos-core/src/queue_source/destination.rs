@@ -42,7 +42,11 @@ impl Destination {
             .collect();
         members.sort();
         members.dedup();
-        if !group.members.iter().any(|member| member.uuid == *coordinator) {
+        if !group
+            .members
+            .iter()
+            .any(|member| member.uuid == *coordinator)
+        {
             return Err(ProtoError::Malformed(
                 "the replacement coordinator is absent from its group".into(),
             ));

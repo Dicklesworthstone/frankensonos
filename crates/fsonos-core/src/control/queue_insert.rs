@@ -105,7 +105,9 @@ fn prepare<T: Transport + ?Sized>(
     next: bool,
 ) -> Result<Plan, CoreError> {
     if !leads(t, host, coordinator)? {
-        return Err(invalid("the enqueue target no longer coordinates its queue"));
+        return Err(invalid(
+            "the enqueue target no longer coordinates its queue",
+        ));
     }
     let source = soap::get_media_info(t, host)?.uri;
     let playing_queue = source == format!("x-rincon-queue:{}#0", coordinator.0);
@@ -128,7 +130,9 @@ fn prepare<T: Transport + ?Sized>(
             .and_then(|index| before.uris.get(index))
             .is_none_or(|uri| !same_track(uri, &current.uri))
         {
-            return Err(invalid("the playing queue occurrence could not be verified"));
+            return Err(invalid(
+                "the playing queue occurrence could not be verified",
+            ));
         }
         Some(current)
     } else {
@@ -180,7 +184,9 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
     {
         Some(request.source_uri)
     } else {
-        return Err(invalid("enqueue requires a Spotify track, album or playlist"));
+        return Err(invalid(
+            "enqueue requires a Spotify track, album or playlist",
+        ));
     };
     let Plan {
         before,
@@ -204,8 +210,7 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
         .uri
         == source;
     if !same_source
-        || !leads(t, host, coordinator)
-            .map_err(|error| uncertain(written.as_ref().err(), error))?
+        || !leads(t, host, coordinator).map_err(|error| uncertain(written.as_ref().err(), error))?
     {
         return Err(uncertain(
             written.as_ref().err(),
@@ -240,7 +245,12 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
     };
     let selected = inserted(&before, &after, added.first, added.count)
         .filter(|_| added.first == first)
-        .ok_or_else(|| uncertain(lost.as_ref(), "read-back did not show exactly the insertion"))?;
+        .ok_or_else(|| {
+            uncertain(
+                lost.as_ref(),
+                "read-back did not show exactly the insertion",
+            )
+        })?;
     if expected.is_some_and(|uri| selected.len() != 1 || !same_track(&selected[0], uri)) {
         return Err(uncertain(
             lost.as_ref(),
@@ -248,7 +258,10 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
         ));
     }
     if !still_observed(t, host, &after).map_err(|error| uncertain(lost.as_ref(), error))? {
-        return Err(uncertain(lost.as_ref(), "the queue changed during read-back"));
+        return Err(uncertain(
+            lost.as_ref(),
+            "the queue changed during read-back",
+        ));
     }
     if let Some(cause) = lost {
         tracing::warn!(cause = %cause, "enqueue confirmed by read-back; add not replayed");

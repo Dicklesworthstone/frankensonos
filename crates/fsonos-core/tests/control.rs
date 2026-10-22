@@ -333,7 +333,9 @@ impl Transport for QueueLan {
             });
         }
         let out = match action.as_str() {
-            "GetMediaInfo" => "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into(),
+            "GetMediaInfo" => {
+                "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into()
+            }
             "AddURIToQueue" => self.queue.add(),
             "RemoveTrackRangeFromQueue" => self.queue.remove(body),
             _ => String::new(),
@@ -733,7 +735,9 @@ impl Transport for ContainerDrift {
         self.actions.borrow_mut().push(name.clone());
         let out = match name.as_str() {
             "GetZoneGroupState" => return Ok(ZGS_S1.to_string()),
-            "GetMediaInfo" => "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into(),
+            "GetMediaInfo" => {
+                "<CurrentURI></CurrentURI><CurrentURIMetaData></CurrentURIMetaData>".into()
+            }
             "Browse" => {
                 if body.contains("<ObjectID>Q:0</ObjectID>") {
                     return Ok(self.queue.browse());

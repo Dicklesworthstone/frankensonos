@@ -162,8 +162,21 @@ mod tests {
     fn ordinary_streaming_and_passive_measurement_have_no_probe() {
         for flags in [
             vec!["stream", "Room"],
-            vec!["stream", "Room", "--measure-latency", "--sync-input", "paired"],
-            vec!["stream", "Room", "--sync-mpv", "/not-connected", "--sync-input", "paired"],
+            vec![
+                "stream",
+                "Room",
+                "--measure-latency",
+                "--sync-input",
+                "paired",
+            ],
+            vec![
+                "stream",
+                "Room",
+                "--sync-mpv",
+                "/not-connected",
+                "--sync-input",
+                "paired",
+            ],
         ] {
             let cli = Cli::try_parse_from(flags).unwrap();
             assert!(Config::from_args(&cli.args).unwrap().is_none());
@@ -310,8 +323,8 @@ mod tests {
             stream: Arc::new(AtomicBool::new(false)),
             deadline: Some(Instant::now() + Duration::from_secs(60)),
         };
-        let measured = measurement::collect(1_000, &stop, || capture::record(&options, &stop))
-            .unwrap();
+        let measured =
+            measurement::collect(1_000, &stop, || capture::record(&options, &stop)).unwrap();
         assert_eq!(measured.windows_read, 3);
         assert!(measured.estimate.lag_samples.abs_diff(3_200) <= 2);
     }
@@ -320,9 +333,31 @@ mod tests {
     fn startup_probe_requires_its_own_explicit_action_and_microphone() {
         for flags in [
             vec!["--sync-probe", "movie"],
-            vec!["--measure-latency", "--sync-microphone", "mic", "--sync-probe", "movie"],
-            vec!["--sync-mpv", "/tmp/test-mpv", "--sync-input", "paired", "--sync-probe", "movie"],
-            vec!["--sync-mpv", "/tmp/test-mpv", "--sync-microphone", "mic", "--sync-probe", "movie", "--measure-probe", "movie"],
+            vec![
+                "--measure-latency",
+                "--sync-microphone",
+                "mic",
+                "--sync-probe",
+                "movie",
+            ],
+            vec![
+                "--sync-mpv",
+                "/tmp/test-mpv",
+                "--sync-input",
+                "paired",
+                "--sync-probe",
+                "movie",
+            ],
+            vec![
+                "--sync-mpv",
+                "/tmp/test-mpv",
+                "--sync-microphone",
+                "mic",
+                "--sync-probe",
+                "movie",
+                "--measure-probe",
+                "movie",
+            ],
         ] {
             let mut argv = vec!["stream", "Room"];
             argv.extend(flags);
@@ -334,11 +369,24 @@ mod tests {
     fn startup_probe_validates_the_named_sink_without_connecting_to_mpv() {
         for format in ["pulse", "alsa", "avfoundation"] {
             let mut cli = Cli::try_parse_from([
-                "stream", "Room", "--format", format, "--input", "movie.monitor",
-                "--sync-mpv", "/never-connected", "--sync-microphone", "mic",
-                "--sync-probe", "movie",
-            ]).unwrap();
-            assert_eq!(Config::from_args(&cli.args).is_ok(), cfg!(target_os = "linux") && format == "pulse");
+                "stream",
+                "Room",
+                "--format",
+                format,
+                "--input",
+                "movie.monitor",
+                "--sync-mpv",
+                "/never-connected",
+                "--sync-microphone",
+                "mic",
+                "--sync-probe",
+                "movie",
+            ])
+            .unwrap();
+            assert_eq!(
+                Config::from_args(&cli.args).is_ok(),
+                cfg!(target_os = "linux") && format == "pulse"
+            );
             cli.args.input = "different.monitor".into();
             assert!(Config::from_args(&cli.args).is_err());
         }
@@ -347,9 +395,18 @@ mod tests {
     #[test]
     fn programmatic_arguments_cannot_bypass_probe_mode_separation() {
         let mut cli = Cli::try_parse_from([
-            "stream", "Room", "--input", "movie.monitor", "--sync-mpv", "/never-connected",
-            "--sync-microphone", "mic", "--sync-probe", "movie",
-        ]).unwrap();
+            "stream",
+            "Room",
+            "--input",
+            "movie.monitor",
+            "--sync-mpv",
+            "/never-connected",
+            "--sync-microphone",
+            "mic",
+            "--sync-probe",
+            "movie",
+        ])
+        .unwrap();
         cli.args.sync.measure_probe = Some("movie".into());
         assert!(Config::from_args(&cli.args).is_err());
         cli.args.sync.measure_probe = None;
@@ -359,5 +416,4 @@ mod tests {
         cli.args.sync.sync_mpv = None;
         assert!(Config::from_args(&cli.args).is_err());
     }
-
 }

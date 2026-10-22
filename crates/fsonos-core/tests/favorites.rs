@@ -210,9 +210,7 @@ impl Recorder {
         self.0
             .borrow()
             .iter()
-            .filter(|(_, action, _)| {
-                !action.starts_with("Get") && action.as_str() != "Browse"
-            })
+            .filter(|(_, action, _)| !action.starts_with("Get") && action.as_str() != "Browse")
             .map(|(_, action, _)| action.clone())
             .collect()
     }
@@ -265,9 +263,15 @@ fn each_kind_plays_with_the_right_soap() {
         "a container stages and verifies the new queue before playing from the top"
     );
     assert!(
-        t.actions().iter().any(|action| action == "GetZoneGroupState")
+        t.actions()
+            .iter()
+            .any(|action| action == "GetZoneGroupState")
             && t.actions().iter().any(|action| action == "GetMediaInfo")
-            && t.actions().iter().filter(|action| *action == "Browse").count() >= 2,
+            && t.actions()
+                .iter()
+                .filter(|action| *action == "Browse")
+                .count()
+                >= 2,
         "container replacement proves the destination group/source and staged queue"
     );
     assert!(

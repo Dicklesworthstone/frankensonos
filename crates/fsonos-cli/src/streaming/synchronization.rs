@@ -149,7 +149,9 @@ impl Prepared {
 
     /// Start only after Sonos accepted playback; a failed Play never records.
     pub fn start(self, stream: Arc<AtomicBool>) -> anyhow::Result<Session> {
-        let mut controller = self.controller.context("measurement has no mpv controller")?;
+        let mut controller = self
+            .controller
+            .context("measurement has no mpv controller")?;
         let options = self.options;
         let probe = self.probe;
         let session = Arc::new(AtomicBool::new(false));

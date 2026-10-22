@@ -524,7 +524,8 @@ fn cancellation_during_final_room_verification_prevents_the_delay_write() {
             if settled {
                 settled_reads.set(settled_reads.get() + 1);
                 if settled_reads.get() == 4 {
-                    stop.stream.store(true, std::sync::atomic::Ordering::Release);
+                    stop.stream
+                        .store(true, std::sync::atomic::Ordering::Release);
                 }
             }
             Ok(true)

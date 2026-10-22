@@ -154,11 +154,7 @@ impl Transport for Observe<'_> {
                         soap::play(&self.rig.lan, host)?;
                     }
                     Change::Group => {
-                        soap::leave_group(
-                            &self.rig.lan,
-                            self.rig.member_host,
-                            &self.rig.member,
-                        )?;
+                        soap::leave_group(&self.rig.lan, self.rig.member_host, &self.rig.member)?;
                     }
                     _ => {}
                 }
@@ -175,7 +171,8 @@ fn current_group_and_exact_radio_alias_are_accepted_by_read_only_checks() {
         let first = rig.sim.soap_log().len();
         rig.verify(&rig.lan, false).unwrap();
         rig.verify(&rig.lan, true).unwrap();
-        rig.verify(&Observe::new(&rig, Change::Alias), true).unwrap();
+        rig.verify(&Observe::new(&rig, Change::Alias), true)
+            .unwrap();
         rig.readonly_since(first);
         // Same host/path with different query data is not this stream.
         let other = format!("{STREAM}?other=1");
@@ -268,9 +265,7 @@ fn successful_measurement_checks_leave_the_existing_restoration_path_usable() {
         assert!(report.skipped.is_empty(), "{report:?}");
         assert_eq!(soap::get_media_info(&rig.lan, rig.host).unwrap().uri, OLD);
         assert_eq!(
-            soap::get_transport_info(&rig.lan, rig.host)
-                .unwrap()
-                .state,
+            soap::get_transport_info(&rig.lan, rig.host).unwrap().state,
             TransportState::Playing
         );
     }

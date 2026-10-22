@@ -17,11 +17,15 @@ fn queue_unchanged<T: Transport + ?Sized>(
 ) -> Result<(), MoveError> {
     let uri = format!("x-rincon-queue:{}#0", target.0);
     if soap::get_media_info(t, host)?.uri != uri {
-        return Err(invalid("the destination no longer renders the copied queue"));
+        return Err(invalid(
+            "the destination no longer renders the copied queue",
+        ));
     }
     let page = content::browse(t, host, QUEUE, BrowseFlag::DirectChildren, 0, 1)?;
     if page.update_id != revision || soap::get_media_info(t, host)?.uri != uri {
-        return Err(invalid("the destination queue changed while restoring its play mode"));
+        return Err(invalid(
+            "the destination queue changed while restoring its play mode",
+        ));
     }
     Ok(())
 }
@@ -34,7 +38,9 @@ pub(super) fn confirm<T: Transport + ?Sized>(
     expected: PlayMode,
 ) -> Result<(), MoveError> {
     if get_play_mode(t, host)? != expected {
-        return Err(invalid("the destination did not retain the source queue's play mode"));
+        return Err(invalid(
+            "the destination did not retain the source queue's play mode",
+        ));
     }
     queue_unchanged(t, host, target, revision)
 }

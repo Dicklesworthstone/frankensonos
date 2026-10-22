@@ -22,14 +22,14 @@ fn an_alias_expands_ambiguous_entries_exactly_as_the_command_does() {
     assert_eq!(view.matched, "alias");
     assert_eq!(names(&view), ["Kitchen@S1", "Kitchen@S2", "Patio@S2"]);
     assert_eq!(view.groups.len(), 3);
-    let group = view
-        .groups
-        .iter()
-        .find(|g| g.household == "S1")
-        .unwrap();
+    let group = view.groups.iter().find(|g| g.household == "S1").unwrap();
     assert_eq!(group.coordinator_room, "Den");
     assert_eq!(
-        group.members.iter().map(|r| r.room.as_str()).collect::<Vec<_>>(),
+        group
+            .members
+            .iter()
+            .map(|r| r.room.as_str())
+            .collect::<Vec<_>>(),
         ["Den", "Kitchen"]
     );
 }
@@ -54,7 +54,13 @@ fn everywhere_and_household_qualification_preserve_bonded_room_identity() {
     assert_eq!(s1.rooms.len(), 3);
     assert_eq!(s1.groups.len(), 2);
     assert!(s1.rooms.iter().all(|room| room.household == "S1"));
-    assert_eq!(s1.rooms.iter().filter(|room| room.room == "Ada’s Studio").count(), 1);
+    assert_eq!(
+        s1.rooms
+            .iter()
+            .filter(|room| room.room == "Ada’s Studio")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -123,7 +129,9 @@ struct NoSpeakerIo(Arc<AtomicUsize>);
 impl Transport for NoSpeakerIo {
     fn soap_post(&self, _: IpAddr, _: &str, _: &str, _: &str) -> Result<String, ProtoError> {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Err(ProtoError::NotWired("no speaker reads in target resolution"))
+        Err(ProtoError::NotWired(
+            "no speaker reads in target resolution",
+        ))
     }
 }
 
@@ -146,10 +154,8 @@ fn surface(policy: Policy) -> (Surface, Arc<AtomicUsize>, Arc<AtomicUsize>) {
 #[test]
 fn both_read_permissions_and_target_validation_precede_discovery() {
     for denied in ["resolve_rooms", "list_rooms", "list_zones"] {
-        let policy = Policy::from_toml(&format!(
-            "[clients.'loopback-http']\ndeny = ['{denied}']"
-        ))
-        .unwrap();
+        let policy =
+            Policy::from_toml(&format!("[clients.'loopback-http']\ndeny = ['{denied}']")).unwrap();
         let (surface, surveys, io) = surface(policy);
         assert_eq!(
             surface
@@ -164,7 +170,10 @@ fn both_read_permissions_and_target_validation_precede_discovery() {
     let (surface, surveys, io) = surface(Policy::default());
     for query in [" ".to_string(), "x".repeat(129)] {
         assert_eq!(
-            surface.resolve_rooms(&Client::Unknown, &query).unwrap_err().code,
+            surface
+                .resolve_rooms(&Client::Unknown, &query)
+                .unwrap_err()
+                .code,
             ErrorCode::InvalidArgument
         );
     }
@@ -187,9 +196,13 @@ fn the_surface_rereads_alias_edits_instead_of_reusing_a_previous_resolution() {
     let path = dir.path().join("aliases.toml");
     std::fs::write(&path, "[aliases]\nlistening = ['Den']").unwrap();
     let surface = surface.with_aliases_file(path.clone());
-    let before = surface.resolve_rooms(&Client::Unknown, "listening").unwrap();
+    let before = surface
+        .resolve_rooms(&Client::Unknown, "listening")
+        .unwrap();
     std::fs::write(&path, "[aliases]\nlistening = ['Kitchen']").unwrap();
-    let after = surface.resolve_rooms(&Client::Unknown, "listening").unwrap();
+    let after = surface
+        .resolve_rooms(&Client::Unknown, "listening")
+        .unwrap();
     assert_eq!(names(&before), ["Den@S1"]);
     assert_eq!(names(&after), ["Kitchen@S1", "Kitchen@S2"]);
     assert_ne!(before, after);

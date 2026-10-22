@@ -26,15 +26,27 @@ fn application_requires_an_explicit_output_and_double_dash() {
         vec!["stream", "Room", "--", "player"],
         vec!["stream", "Room", "--virtual-output", "movie", "player"],
         vec![
-            "stream", "Room", "--virtual-output", "movie", "--input", "other.monitor",
-            "--", "player",
+            "stream",
+            "Room",
+            "--virtual-output",
+            "movie",
+            "--input",
+            "other.monitor",
+            "--",
+            "player",
         ],
     ] {
         assert!(Cli::try_parse_from(values).is_err());
     }
     let args = parse(&[
-        "stream", "Room", "--virtual-output", "movie", "--", "player",
-        "--measure-latency", "track with spaces; $(not-a-shell)",
+        "stream",
+        "Room",
+        "--virtual-output",
+        "movie",
+        "--",
+        "player",
+        "--measure-latency",
+        "track with spaces; $(not-a-shell)",
     ]);
     assert_eq!(args.application.len(), 3);
     assert_eq!(args.application[1], "--measure-latency");
@@ -60,12 +72,21 @@ fn existing_player_correction_and_measurement_cannot_launch_another_application(
 fn launch_preflight_is_linux_pulse_only_and_has_no_execution_side_effects() {
     for format in ["pulse", "alsa", "avfoundation"] {
         let args = parse(&[
-            "stream", "Room", "--virtual-output", "movie", "--format", format,
-            "--", "/definitely-not-present/fsonos-test-player",
+            "stream",
+            "Room",
+            "--virtual-output",
+            "movie",
+            "--format",
+            format,
+            "--",
+            "/definitely-not-present/fsonos-test-player",
         ]);
-        let prepared = super::super::virtual_output::prepare(&args)
-            .and_then(|args| Launch::prepare(&args));
-        assert_eq!(prepared.is_ok(), cfg!(target_os = "linux") && format == "pulse");
+        let prepared =
+            super::super::virtual_output::prepare(&args).and_then(|args| Launch::prepare(&args));
+        assert_eq!(
+            prepared.is_ok(),
+            cfg!(target_os = "linux") && format == "pulse"
+        );
     }
 }
 
@@ -73,7 +94,12 @@ fn launch_preflight_is_linux_pulse_only_and_has_no_execution_side_effects() {
 #[test]
 fn malformed_programmatic_launches_are_rejected_before_io() {
     let args = parse(&[
-        "stream", "Room", "--virtual-output", "movie", "--", "not-launched",
+        "stream",
+        "Room",
+        "--virtual-output",
+        "movie",
+        "--",
+        "not-launched",
     ]);
     let args = super::super::virtual_output::prepare(&args).unwrap();
     for program in ["", "player\0suffix"] {
@@ -105,7 +131,10 @@ fn arguments_remain_literal_and_output_preference_is_child_local() {
     };
     let command = launch.command();
     assert_eq!(command.get_program(), "player");
-    assert_eq!(command.get_args().map(OsString::from).collect::<Vec<_>>(), launch.arguments);
+    assert_eq!(
+        command.get_args().map(OsString::from).collect::<Vec<_>>(),
+        launch.arguments
+    );
     assert_eq!(
         command.get_envs().collect::<Vec<_>>(),
         vec![(OsStr::new("PULSE_SINK"), Some(OsStr::new("movie")))]
@@ -123,7 +152,10 @@ fn native_non_utf8_arguments_are_not_reencoded() {
         arguments: vec![argument.clone()],
         sink: "movie".into(),
     };
-    assert_eq!(launch.command().get_args().next(), Some(argument.as_os_str()));
+    assert_eq!(
+        launch.command().get_args().next(),
+        Some(argument.as_os_str())
+    );
 }
 
 struct Receipt(std::path::PathBuf);
@@ -179,7 +211,10 @@ impl Drop for Receipt {
 fn wait_for_worker(app: &Application) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !app.worker.as_ref().unwrap().is_finished() {
-        assert!(Instant::now() < deadline, "application worker did not finish");
+        assert!(
+            Instant::now() < deadline,
+            "application worker did not finish"
+        );
         thread::sleep(Duration::from_millis(10));
     }
 }
@@ -215,8 +250,8 @@ fn child_fixture() {
 fn a_real_child_inherits_the_sink_without_ending_the_stream_on_success() {
     let receipt = Receipt::new();
     let stream_stop = Arc::new(AtomicBool::new(false));
-    let mut app = Application::from_command(receipt.command("success"), Arc::clone(&stream_stop))
-        .unwrap();
+    let mut app =
+        Application::from_command(receipt.command("success"), Arc::clone(&stream_stop)).unwrap();
     let result = receipt.read();
     assert_eq!(result["sink"], "movie");
     assert_eq!(result["stdin_bytes"], 0);
@@ -231,11 +266,16 @@ fn a_real_child_inherits_the_sink_without_ending_the_stream_on_success() {
 fn a_failed_child_is_reported_once_without_restart_or_ending_buffered_audio() {
     let receipt = Receipt::new();
     let stream_stop = Arc::new(AtomicBool::new(false));
-    let mut app = Application::from_command(receipt.command("failure"), Arc::clone(&stream_stop))
-        .unwrap();
+    let mut app =
+        Application::from_command(receipt.command("failure"), Arc::clone(&stream_stop)).unwrap();
     assert_eq!(receipt.read()["role"], "failure");
     wait_for_worker(&app);
-    assert!(app.shutdown().unwrap_err().to_string().contains("exited with"));
+    assert!(
+        app.shutdown()
+            .unwrap_err()
+            .to_string()
+            .contains("exited with")
+    );
     assert!(app.reaped());
     assert!(!stream_stop.load(Ordering::Acquire));
     app.shutdown().unwrap();
@@ -254,8 +294,8 @@ fn cancellation_before_launch_never_spawns_the_child() {
 fn shutdown_stops_and_reaps_a_running_child_without_cancelling_stream_cleanup() {
     let receipt = Receipt::new();
     let stream_stop = Arc::new(AtomicBool::new(false));
-    let mut app = Application::from_command(receipt.command("block"), Arc::clone(&stream_stop))
-        .unwrap();
+    let mut app =
+        Application::from_command(receipt.command("block"), Arc::clone(&stream_stop)).unwrap();
     receipt.read();
     let started = Instant::now();
     app.shutdown().unwrap();
@@ -270,8 +310,8 @@ fn stream_cancellation_and_drop_both_reap_the_owned_child() {
     for cancel in [false, true] {
         let receipt = Receipt::new();
         let stream_stop = Arc::new(AtomicBool::new(false));
-        let app = Application::from_command(receipt.command("block"), Arc::clone(&stream_stop))
-            .unwrap();
+        let app =
+            Application::from_command(receipt.command("block"), Arc::clone(&stream_stop)).unwrap();
         receipt.read();
         let reaped = Arc::clone(&app.reaped);
         if cancel {
