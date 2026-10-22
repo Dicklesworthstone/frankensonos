@@ -159,6 +159,8 @@ fileprivate struct CommandObservation: Sendable {
                 throw ContractError.invalid("This favorite is missing, ambiguous, or unplayable. Refresh favorites.")
             }
             favorite = matches[0]
+        } else if case .queueFavorite(let selection) = command {
+            favorite = try selection.validate(await client.favorites(zone), in: zone)
         }
         var scene: Scene?
         if let expected = command.savedScene {
