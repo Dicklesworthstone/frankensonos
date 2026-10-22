@@ -350,6 +350,10 @@ Added by §12 (each table is created by the migration of the bead that needs it)
 - `actions(id INTEGER PK, at INT, client TEXT, surface TEXT, intent TEXT, decision TEXT, result TEXT, before_state TEXT)` (§12.5; denied requests are logged too).
 - `scenes(name TEXT PK, spec TEXT, updated INT)` (§12.7).
 - `schedules(id INTEGER PK, spec TEXT, action TEXT, enabled INT, last_fired INT)` (§12.10).
+- `spotify_playlist_contents(playlist_uri TEXT PK, observation TEXT NOT NULL)`
+  (migration 14; ordered cached occurrences, original source positions,
+  timestamp, raw coverage and a local revision; independent of deduplicated
+  library rows).
 
 The genre-agnostic DJ (§12.1, migrations 7-8): `spotify_library` gained a
 `candidate` flag (superseding `is_classical` as the candidacy test), the
@@ -469,6 +473,13 @@ from a genre the DJ was built around.
   them, and from metadata heuristics where it does not. The pool spans every
   genre these signals cover. The extra scopes are requested at sign-in, and
   `docs/SCOPE.md` lists them when they land.
+- **Playlist contents survive taste extraction.** The existing bounded reads
+  also retain ordered occurrences, including repeated track URIs and gaps left
+  by unavailable entries. `GET /library/playlist` browses and filters that
+  local observation with revision-checked continuation. Complete, partial and
+  never-read contents stay distinct; failed refreshes retain the previous
+  observation rather than replace it with an empty playlist. See
+  [`docs/PLAYLIST_CONTENTS.md`](docs/PLAYLIST_CONTENTS.md) for coverage and bounds.
 - **Manual preference overrides win.** Persistent, owner-wide preferences in
   `preferences.toml` (data dir, beside `moods.toml`), with matching CLI, HTTP
   and MCP verbs: genres, artists, eras and moods to favor or avoid; a default

@@ -29,11 +29,11 @@
 use std::collections::{HashMap, HashSet};
 
 use asupersync::Cx;
-use fsonos_core::store::Store;
+use fsonos_core::store::{CachedPlaylist, PlaylistTrack, Store};
 
 use crate::SpotifyError;
 use crate::client::{
-    Artist, ArtistTopTracks, CursorPage, FullTrack, Me, PlayHistory, PlaylistItem,
+    Artist, ArtistTopTracks, CursorPage, FullTrack, Me, PAGE_LIMIT, PlayHistory, PlaylistItem,
     SimplifiedPlaylist, TASTE_SCOPES, decode, unix_seconds,
 };
 use crate::expand::halts;
@@ -108,6 +108,9 @@ pub struct Taste {
     /// its order, when the whole list was read; `None` when it wasn't (no
     /// grant, or a failed read), so the cached ones stay.
     pub playlists: Option<Vec<(String, String)>>,
+    /// Ordered observations from the existing bounded playlist reads. Kept
+    /// apart from `tracks`, whose library projection deduplicates by URI.
+    pub(crate) playlist_contents: Vec<PlaylistObservation>,
     /// What the owner played lately (`spotify:track:` URI, unix seconds),
     /// when that read succeeded; `None` when it wasn't read, so the cached
     /// plays stay.
@@ -121,6 +124,14 @@ pub struct Taste {
     /// The genres the names of the owner's playlists state ("Late Night
     /// Jazz") for the tracks on them, by track URI.
     named: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlaylistObservation {
+    pub(crate) contents: CachedPlaylist,
+    /// A failed refresh preserves the last useful observation. Reaching the
+    /// ordinary page budget alone is a fresh, explicitly partial observation.
+    pub(crate) failed: bool,
 }
 
 impl Taste {
@@ -261,7 +272,9 @@ pub async fn read_taste<S: Store + ?Sized>(
         }
     }
     if playlists {
-        let (tracks, listed) = reader.playlist_tracks(&mut taste.named).await;
+        let (tracks, listed) = reader
+            .playlist_tracks(&mut taste.named, &mut taste.playlist_contents, now)
+            .await;
         taste.playlists = listed;
         for item in tracks {
             taste.track(item, PLAYLIST_PM);
@@ -427,6 +440,8 @@ impl Reader<'_> {
     async fn playlist_tracks(
         &mut self,
         named: &mut HashMap<String, Vec<String>>,
+        observations: &mut Vec<PlaylistObservation>,
+        now: i64,
     ) -> (Vec<LibraryItem>, Option<Vec<(String, String)>>) {
         let Some(me) = self
             .get::<Me>(&self.session.endpoints().me(), "the user")
@@ -448,13 +463,43 @@ impl Reader<'_> {
         let mut readable = lists.iter().filter(|l| l.readable_by(&me.id));
         for list in readable.by_ref().take(MAX_PLAYLISTS) {
             let url = self.session.endpoints().playlist_items(&list.id, 0);
-            let entries: Vec<PlaylistItem> =
-                self.page(&url, "playlist items", MAX_PLAYLIST_PAGES).await;
+            let entries = self
+                .observe_pages::<serde_json::Value>(
+                    &url,
+                    "playlist items",
+                    MAX_PLAYLIST_PAGES,
+                    Some(PAGE_LIMIT as usize),
+                )
+                .await;
             self.read.playlists += 1;
+            let mut occurrences = Vec::new();
             // "Late Night Jazz": the owner's own name for these tracks.
             let stated = crate::genre_guess::from_name(&list.name);
-            for entry in &entries {
-                if let Some(item) = entry.library_item(Origin::Taste) {
+            for (position, entry) in (1_u32..).zip(&entries.items) {
+                // Null/unavailable entries and local files still occupy
+                // positions. Episodes and malformed tracks cannot become
+                // playable cache rows, but do not shift later occurrences.
+                if entry.get("is_local").and_then(serde_json::Value::as_bool) == Some(true) {
+                    continue;
+                }
+                if let Some(item) = serde_json::from_value::<PlaylistItem>(entry.clone())
+                    .ok()
+                    .and_then(|entry| entry.library_item(Origin::Taste))
+                    .filter(valid_playlist_track)
+                {
+                    let track = item.to_track();
+                    occurrences.push(PlaylistTrack {
+                        position,
+                        source_uri: track.source_uri,
+                        title: track.title,
+                        artist: track.artist,
+                        album: track.album,
+                        album_uri: item.album_uri.clone(),
+                        disc_number: item.disc_number,
+                        track_number: item.track_number,
+                        duration_secs: item.duration_secs,
+                        explicit: item.explicit,
+                    });
                     if !stated.is_empty() {
                         let genres: &mut Vec<String> =
                             named.entry(item.source_uri.clone()).or_default();
@@ -468,6 +513,19 @@ impl Reader<'_> {
                     tracks.push(item);
                 }
             }
+            if entries.examined > 0 || entries.complete {
+                observations.push(PlaylistObservation {
+                    contents: CachedPlaylist::new(
+                        format!("spotify:playlist:{}", list.id),
+                        now,
+                        entries.source_total,
+                        entries.examined,
+                        entries.complete,
+                        occurrences,
+                    ),
+                    failed: entries.failed,
+                });
+            }
         }
         if readable.next().is_some() {
             self.read.failed.push((
@@ -477,6 +535,22 @@ impl Reader<'_> {
         }
         (tracks, listed)
     }
+}
+
+fn valid_playlist_track(item: &LibraryItem) -> bool {
+    item.source_uri
+        .strip_prefix("spotify:track:")
+        .is_some_and(|id| {
+            !id.is_empty() && id.len() <= 128 && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+        && std::iter::once(item.title.as_str())
+            .chain(item.artists.iter().map(String::as_str))
+            .chain(item.album.as_deref())
+            .chain(item.album_uri.as_deref())
+            .all(|field| field.len() <= 16 * 1024)
+        && item.artists.iter().map(String::len).sum::<usize>()
+            + item.artists.len().saturating_sub(1) * crate::library::ARTIST_SEPARATOR.len()
+            <= 16 * 1024
 }
 
 #[cfg(test)]

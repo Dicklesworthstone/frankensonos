@@ -24,6 +24,10 @@ fn invalid(detail: &str) -> SpotifyError {
 }
 
 impl Coverage {
+    pub(super) fn observed(&self) -> (u32, Option<u32>) {
+        (self.offset, self.total)
+    }
+
     /// Validate before publishing this page. A bad page does not consume
     /// coverage; a successful read must account for every advertised entry.
     pub(super) fn accept<T>(&mut self, page: &Page<T>) -> Result<(), SpotifyError> {

@@ -535,3 +535,278 @@ fn a_changed_directory_total_keeps_earlier_pages_but_cannot_replace_cached_names
     });
     assert_eq!(server.calls("/v1/me/playlists").len(), 2);
 }
+
+#[test]
+fn synced_playlist_contents_preserve_raw_positions_duplicates_and_metadata() {
+    let server = Server::new();
+    server.set("/v1/me/playlists", page(vec![playlist(0, true)], 0, None));
+    let mut unavailable = track(9);
+    unavailable["is_playable"] = false.into();
+    let mut detailed = track(2);
+    detailed["album"]["uri"] = "spotify:album:ObservedAlbum".into();
+    detailed["disc_number"] = 2.into();
+    detailed["track_number"] = 3.into();
+    detailed["explicit"] = true.into();
+    server.set(
+        "/v1/playlists/TestList0/items",
+        json!({
+            "items": [
+                { "item": track(7) }, null,
+                { "is_local": true, "item": track(8) },
+                { "item": { "type": "episode" } },
+                { "item": unavailable }
+            ],
+            "offset": 0, "total": 7,
+            "next": format!("{API}/playlists/TestList0/items?offset=5")
+        }),
+    );
+    server.set(
+        "/v1/playlists/TestList0/items?offset=5",
+        json!({
+            "items": [{ "track": track(7) }, { "item": detailed }],
+            "offset": 5, "total": 7, "next": null
+        }),
+    );
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = server.session(&cx, PLAYLIST_SCOPE);
+        let mut store = MemStore::default();
+        sync_library(&mut session, &cx, &mut store).await.unwrap();
+        let observed = store
+            .playlist_contents("spotify:playlist:TestList0")
+            .unwrap()
+            .unwrap();
+        assert!(observed.complete);
+        assert_eq!((observed.source_total, observed.examined), (Some(7), 7));
+        assert_eq!(
+            observed
+                .tracks
+                .iter()
+                .map(|item| item.position)
+                .collect::<Vec<_>>(),
+            [1, 6, 7]
+        );
+        assert_eq!(observed.tracks[0].source_uri, observed.tracks[1].source_uri);
+        let last = &observed.tracks[2];
+        assert_eq!(
+            last.album_uri.as_deref(),
+            Some("spotify:album:ObservedAlbum")
+        );
+        assert_eq!(
+            (last.disc_number, last.track_number, last.duration_secs),
+            (Some(2), Some(3), Some(180))
+        );
+        assert_eq!(last.artist.as_deref(), Some("Test performer"));
+        assert!(last.explicit);
+        assert_eq!(
+            store.library().unwrap().len(),
+            2,
+            "only the library deduplicates"
+        );
+    });
+    assert_eq!(
+        server.calls("/v1/playlists/").len(),
+        2,
+        "no extra observation requests"
+    );
+}
+
+#[test]
+fn failed_playlist_refresh_keeps_previous_contents_but_a_first_prefix_is_useful() {
+    let server = Server::new();
+    server.set("/v1/me/playlists", page(vec![playlist(0, true)], 0, None));
+    server.set(
+        "/v1/playlists/TestList0/items",
+        json!({ "items": [{ "item": track(0) }, { "item": track(1) }],
+            "offset": 0, "total": 2, "next": null }),
+    );
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = server.session(&cx, PLAYLIST_SCOPE);
+        let mut store = MemStore::default();
+        sync_library(&mut session, &cx, &mut store).await.unwrap();
+        let previous = store
+            .playlist_contents("spotify:playlist:TestList0")
+            .unwrap()
+            .unwrap();
+        server.set(
+            "/v1/playlists/TestList0/items",
+            json!({ "items": [{ "item": track(2) }], "offset": 0, "total": 3,
+                "next": format!("{API}/playlists/TestList0/items?offset=1") }),
+        );
+        for bad in [
+            json!({ "items": [{ "item": track(3) }], "offset": 1, "total": 4,
+                "next": format!("{API}/playlists/TestList0/items?offset=2") }),
+            json!({ "items": [{ "item": track(3) }], "offset": 2, "total": 3, "next": null }),
+            json!({ "items": [{ "item": track(3) }], "offset": 1, "total": 3, "next": null }),
+            json!({ "not_a_page": true }),
+        ] {
+            server.set("/v1/playlists/TestList0/items?offset=1", bad);
+            sync_library(&mut session, &cx, &mut store).await.unwrap();
+            assert_eq!(
+                store
+                    .playlist_contents("spotify:playlist:TestList0")
+                    .unwrap(),
+                Some(previous.clone())
+            );
+        }
+        let mut first_read = MemStore::default();
+        sync_library(&mut session, &cx, &mut first_read)
+            .await
+            .unwrap();
+        let prefix = first_read
+            .playlist_contents("spotify:playlist:TestList0")
+            .unwrap()
+            .unwrap();
+        assert!(!prefix.complete);
+        assert_eq!(
+            (prefix.source_total, prefix.examined, prefix.tracks.len()),
+            (Some(3), 1, 1)
+        );
+        assert_eq!(prefix.tracks[0].position, 1);
+        assert_eq!(prefix.tracks[0].source_uri, "spotify:track:TestTrack2");
+
+        server.set(
+            "/v1/playlists/TestList0/items",
+            json!({ "not_a_page": true }),
+        );
+        let mut no_observation = MemStore::default();
+        sync_library(&mut session, &cx, &mut no_observation)
+            .await
+            .unwrap();
+        assert_eq!(
+            no_observation
+                .playlist_contents("spotify:playlist:TestList0")
+                .unwrap(),
+            None
+        );
+    });
+}
+
+#[test]
+fn clean_playlist_budget_prefix_replaces_previous_contents_without_mixing() {
+    let server = Server::new();
+    server.set("/v1/me/playlists", page(vec![playlist(0, true)], 0, None));
+    server.set(
+        "/v1/playlists/TestList0/items",
+        json!({ "items": [{ "item": track(90) }], "offset": 0, "total": 1, "next": null }),
+    );
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = server.session(&cx, PLAYLIST_SCOPE);
+        let mut store = MemStore::default();
+        sync_library(&mut session, &cx, &mut store).await.unwrap();
+        let previous = store
+            .playlist_contents("spotify:playlist:TestList0")
+            .unwrap()
+            .unwrap();
+        for n in 0..super::super::MAX_PLAYLIST_PAGES {
+            let route = if n == 0 {
+                "/v1/playlists/TestList0/items".into()
+            } else {
+                format!("/v1/playlists/TestList0/items?offset={n}")
+            };
+            server.set(
+                &route,
+                json!({ "items": [{ "item": track(n) }], "offset": n, "total": 10,
+                "next": format!("{API}/playlists/TestList0/items?offset={}", n + 1) }),
+            );
+        }
+        sync_library(&mut session, &cx, &mut store).await.unwrap();
+        let observed = store
+            .playlist_contents("spotify:playlist:TestList0")
+            .unwrap()
+            .unwrap();
+        assert!(!observed.complete);
+        assert_eq!((observed.source_total, observed.examined), (Some(10), 4));
+        assert_eq!(observed.tracks.len(), 4);
+        assert_ne!(observed.revision, previous.revision);
+        assert!(
+            observed
+                .tracks
+                .iter()
+                .all(|item| item.source_uri != "spotify:track:TestTrack90")
+        );
+    });
+    assert_eq!(
+        server.calls("/v1/playlists/").len(),
+        5,
+        "one initial read plus four bounded pages"
+    );
+}
+
+#[test]
+fn empty_unread_and_unknown_total_playlists_remain_distinguishable() {
+    let server = Server::new();
+    server.set(
+        "/v1/me/playlists",
+        page(
+            vec![playlist(0, true), playlist(1, false), playlist(2, true)],
+            0,
+            None,
+        ),
+    );
+    server.set(
+        "/v1/playlists/TestList0/items",
+        json!({ "items": [], "offset": 0, "total": 0, "next": null }),
+    );
+    server.set(
+        "/v1/playlists/TestList2/items",
+        page(vec![json!({ "item": track(2) })], 0, None),
+    );
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = server.session(&cx, PLAYLIST_SCOPE);
+        let mut store = MemStore::default();
+        sync_library(&mut session, &cx, &mut store).await.unwrap();
+        let empty = store
+            .playlist_contents("spotify:playlist:TestList0")
+            .unwrap()
+            .unwrap();
+        assert!(empty.complete && empty.tracks.is_empty());
+        assert_eq!((empty.source_total, empty.examined), (Some(0), 0));
+        assert_eq!(
+            store
+                .playlist_contents("spotify:playlist:TestList1")
+                .unwrap(),
+            None
+        );
+        let unknown_total = store
+            .playlist_contents("spotify:playlist:TestList2")
+            .unwrap()
+            .unwrap();
+        assert!(unknown_total.complete);
+        assert_eq!(
+            (unknown_total.source_total, unknown_total.examined),
+            (None, 1)
+        );
+        assert_eq!(store.playlists().unwrap().len(), 3);
+    });
+    assert_eq!(server.calls("/v1/playlists/").len(), 2);
+}
+
+#[test]
+fn an_oversized_playlist_page_does_not_become_a_complete_observation() {
+    let server = Server::new();
+    server.set("/v1/me/playlists", page(vec![playlist(0, true)], 0, None));
+    server.set(
+        "/v1/playlists/TestList0/items",
+        json!({
+            "items": (0..51).map(|n| json!({ "item": track(n) })).collect::<Vec<_>>(),
+            "offset": 0, "total": 51, "next": null
+        }),
+    );
+    runtime().block_on(async {
+        let cx = Cx::current().unwrap();
+        let mut session = server.session(&cx, PLAYLIST_SCOPE);
+        let mut store = MemStore::default();
+        sync_library(&mut session, &cx, &mut store).await.unwrap();
+        assert_eq!(
+            store
+                .playlist_contents("spotify:playlist:TestList0")
+                .unwrap(),
+            None
+        );
+    });
+    assert_eq!(server.calls("/v1/playlists/").len(), 1);
+}

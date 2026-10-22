@@ -10,9 +10,9 @@
 //! store no longer kept the DJ out of.
 
 use fsonos_core::store::{
-    Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback,
-    FeedbackKey, LibraryEntry, LoggedAction, PlayName, PlayRecord, Store, StoreError, StoredScene,
-    StoredSchedule,
+    Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, CachedPlaylist,
+    DjSession, Feedback, FeedbackKey, LibraryEntry, LoggedAction, PlayName, PlayRecord, Store,
+    StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, ZoneGroup};
@@ -240,6 +240,14 @@ impl Store for SharedStore<'_> {
 
     fn playlists(&self) -> Result<Vec<(String, String)>, StoreError> {
         self.lock().playlists()
+    }
+
+    fn save_playlist_contents(&mut self, contents: &CachedPlaylist) -> Result<(), StoreError> {
+        self.lock().save_playlist_contents(contents)
+    }
+
+    fn playlist_contents(&self, playlist_uri: &str) -> Result<Option<CachedPlaylist>, StoreError> {
+        self.lock().playlist_contents(playlist_uri)
     }
 
     fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError> {

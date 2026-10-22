@@ -11,6 +11,7 @@
 //! It is not undoable: the next sync reads the library afresh anyway.
 
 pub mod library;
+pub mod playlist;
 
 use std::fmt::Write as _;
 

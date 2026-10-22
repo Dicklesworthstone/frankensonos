@@ -88,6 +88,136 @@ pub struct LibraryEntry {
     pub taste_weight: Option<u32>,
 }
 
+/// One playable track occurrence in an observed Spotify playlist. Positions
+/// count every source entry, including skipped local files and episodes; two
+/// occurrences of the same URI remain two tracks.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PlaylistTrack {
+    /// One-based position in the source playlist, not in the filtered cache.
+    pub position: u32,
+    pub source_uri: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub album_uri: Option<String>,
+    pub disc_number: Option<u32>,
+    pub track_number: Option<u32>,
+    pub duration_secs: Option<u32>,
+    pub explicit: bool,
+}
+
+/// A bounded observation of playlist contents, kept independently of the DJ's
+/// deduplicated library. `complete` means pagination ended without an error;
+/// Spotify did not provide an atomic snapshot guarantee for these reads.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CachedPlaylist {
+    pub playlist_uri: String,
+    /// When this observation was read, in Unix seconds. Failed refreshes keep
+    /// the previous observation, including its original timestamp.
+    pub fetched_at: i64,
+    /// The source's advertised count, including entries we cannot play.
+    pub source_total: Option<u32>,
+    /// Raw source entries examined, before filtering unavailable music.
+    pub examined: u32,
+    pub complete: bool,
+    /// A local change detector for this entire cached observation, not a
+    /// Spotify snapshot ID or an authorization token.
+    pub revision: String,
+    pub tracks: Vec<PlaylistTrack>,
+}
+
+impl CachedPlaylist {
+    /// Make an observation and its deterministic local revision together.
+    #[must_use]
+    pub fn new(
+        playlist_uri: String,
+        fetched_at: i64,
+        source_total: Option<u32>,
+        examined: u32,
+        complete: bool,
+        tracks: Vec<PlaylistTrack>,
+    ) -> Self {
+        let mut observed = Self {
+            playlist_uri,
+            fetched_at,
+            source_total,
+            examined,
+            complete,
+            revision: String::new(),
+            tracks,
+        };
+        observed.revision = observed.observation_revision();
+        observed
+    }
+
+    fn observation_revision(&self) -> String {
+        // This tuple contains only strings, integers, booleans and lists:
+        // JSON serialization cannot fail. Explicit JSON field order plus a
+        // fixed hash keeps the token stable across processes and platforms.
+        let bytes = serde_json::to_vec(&(
+            &self.playlist_uri,
+            self.fetched_at,
+            self.source_total,
+            self.examined,
+            self.complete,
+            &self.tracks,
+        ))
+        .expect("playlist observation fields serialize to JSON");
+        let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
+        });
+        format!("playlist-v1-{hash:016x}")
+    }
+
+    fn validate(&self) -> Result<(), StoreError> {
+        let source = |uri: &str, kind: &str| {
+            uri.strip_prefix(&format!("spotify:{kind}:"))
+                .is_some_and(|id| {
+                    !id.is_empty()
+                        && id.len() <= 128
+                        && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                })
+        };
+        let bad = |detail: &str| StoreError::Backend(format!("invalid cached playlist: {detail}"));
+        if !source(&self.playlist_uri, "playlist") {
+            return Err(bad("playlist URI is malformed"));
+        }
+        if self
+            .source_total
+            .is_some_and(|total| self.examined > total || (self.complete && self.examined != total))
+        {
+            return Err(bad("coverage disagrees with the advertised total"));
+        }
+        if self.tracks.len() > 200 {
+            return Err(bad("more than 200 track occurrences"));
+        }
+        let mut previous = 0;
+        for track in &self.tracks {
+            if track.position <= previous || track.position > self.examined {
+                return Err(bad(
+                    "track positions are not ordered within the observation",
+                ));
+            }
+            previous = track.position;
+            if !source(&track.source_uri, "track") {
+                return Err(bad("track URI is malformed"));
+            }
+            if std::iter::once(track.title.as_str())
+                .chain(track.artist.as_deref())
+                .chain(track.album.as_deref())
+                .chain(track.album_uri.as_deref())
+                .any(|field| field.len() > 16 * 1024)
+            {
+                return Err(bad("track metadata is too large"));
+            }
+        }
+        if self.revision != self.observation_revision() {
+            return Err(bad("revision does not describe these contents"));
+        }
+        Ok(())
+    }
+}
+
 impl LibraryEntry {
     /// Whether the DJ may play it: `candidate`, or `is_classical` in a row
     /// cached before candidacy was recorded (when only classical tracks were
@@ -472,6 +602,14 @@ pub trait Store {
     /// Those playlists, in the list's order.
     fn playlists(&self) -> Result<Vec<(String, String)>, StoreError>;
 
+    /// Atomically replace one playlist's observed contents. An empty complete
+    /// observation is retained as evidence of an empty playlist. This does not
+    /// change the separate URI/name listing; callers decide refresh retention.
+    fn save_playlist_contents(&mut self, contents: &CachedPlaylist) -> Result<(), StoreError>;
+
+    /// The last saved observation, if any; absence is not an empty playlist.
+    fn playlist_contents(&self, playlist_uri: &str) -> Result<Option<CachedPlaylist>, StoreError>;
+
     /// Replace what the owner played on Spotify lately, on any device
     /// (`spotify:track:` URI, unix seconds), as a sync read it. A track
     /// heard more than once keeps its latest play.
@@ -573,6 +711,7 @@ pub struct MemStore {
     artist_genres: BTreeMap<String, (Vec<String>, i64)>,
     album_misses: BTreeMap<String, i64>,
     playlists: Vec<(String, String)>,
+    playlist_contents: BTreeMap<String, CachedPlaylist>,
     spotify_heard: Vec<(String, i64)>,
     play_names: BTreeMap<String, PlayName>,
     actions: Vec<LoggedAction>,
@@ -837,6 +976,17 @@ impl Store for MemStore {
 
     fn playlists(&self) -> Result<Vec<(String, String)>, StoreError> {
         Ok(self.playlists.clone())
+    }
+
+    fn save_playlist_contents(&mut self, contents: &CachedPlaylist) -> Result<(), StoreError> {
+        contents.validate()?;
+        self.playlist_contents
+            .insert(contents.playlist_uri.clone(), contents.clone());
+        Ok(())
+    }
+
+    fn playlist_contents(&self, playlist_uri: &str) -> Result<Option<CachedPlaylist>, StoreError> {
+        Ok(self.playlist_contents.get(playlist_uri).cloned())
     }
 
     fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError> {

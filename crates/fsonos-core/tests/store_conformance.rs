@@ -830,7 +830,7 @@ fn sqlite_in_memory_conforms() {
     suite(&mut s);
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     );
     s.close().unwrap();
 }
@@ -960,7 +960,7 @@ fn sqlite_file_survives_close_and_reopen() {
     let s = SqliteStore::open(&path).unwrap();
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     );
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);

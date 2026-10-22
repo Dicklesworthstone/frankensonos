@@ -84,6 +84,19 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     if let Some(playlists) = &taste.playlists {
         store.save_playlists(playlists)?;
     }
+    for observation in &taste.playlist_contents {
+        // Never combine a new prefix with an older suffix. A failed read
+        // keeps the prior observation; a first useful prefix can be cached,
+        // and a clean budget prefix replaces it with honest partial coverage.
+        if observation.failed
+            && store
+                .playlist_contents(&observation.contents.playlist_uri)?
+                .is_some()
+        {
+            continue;
+        }
+        store.save_playlist_contents(&observation.contents)?;
+    }
     if let Some(heard) = &taste.heard {
         store.save_spotify_heard(heard)?;
     }

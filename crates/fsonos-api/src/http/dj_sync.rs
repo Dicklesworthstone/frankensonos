@@ -5,6 +5,7 @@
 //! | `GET /dj/sync` | | [`LibrarySyncDto`] |
 //! | `POST /dj/sync` | `{}` | [`LibrarySyncDto`]: the refresh started (or already running) |
 //! | `GET /library/browse` | | [`BrowsePage`]: cached tracks, albums, or playlists |
+//! | `GET /library/playlist` | | [`PlaylistPage`]: ordered cached playlist occurrences |
 
 use fastapi::Request;
 use fastapi::core::RouteEntry;
@@ -14,6 +15,7 @@ use super::{Ctx, DJ, Op, answer, body_or_default, query_param, whole_number};
 use crate::failure::Failure;
 use crate::surface::dj_sync::LibrarySyncDto;
 use crate::surface::dj_sync::library::{BrowsePage, BrowseQuery};
+use crate::surface::dj_sync::playlist::{PlaylistPage, PlaylistQuery};
 
 pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     vec![
@@ -53,6 +55,20 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             200,
             "A bounded page of cached music with a change detector",
         ),
+        cx.route(
+            &Op::get(
+                "/library/playlist",
+                "playlist_contents",
+                "library",
+                "Read cached playlist occurrences and coverage without Spotify or speaker requests (browse_library permission)",
+            ),
+            |s, c, req| answer(playlist_query(req).and_then(|query| s.playlist_contents(c, &query))),
+        )
+        .query_schema::<PlaylistQuery>(true)
+        .response_schema::<PlaylistPage>(
+            200,
+            "A revision-checked cached observation with ordered playlist positions and explicit read coverage",
+        ),
     ]
 }
 
@@ -78,6 +94,35 @@ fn browse_query(req: &Request) -> Result<BrowseQuery, Failure> {
         limit: whole_number(req, "limit")?,
         q: query_param(req, "q")?,
         album_uri: query_param(req, "album_uri")?,
+    };
+    query.validate()?;
+    Ok(query)
+}
+
+fn playlist_query(req: &Request) -> Result<PlaylistQuery, Failure> {
+    let raw = req.query().unwrap_or_default();
+    if raw.len() > 16_384 {
+        return Err(Failure::invalid("the playlist browse query is too long"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for pair in raw.split('&').filter(|pair| !pair.is_empty()) {
+        let (name, _) = pair
+            .split_once('=')
+            .ok_or_else(|| Failure::invalid("playlist parameters must be name=value pairs"))?;
+        if !["playlist_uri", "offset", "limit", "q", "expected_revision"].contains(&name)
+            || !seen.insert(name)
+        {
+            return Err(Failure::invalid("unknown or repeated playlist parameter"));
+        }
+    }
+    let query = PlaylistQuery {
+        playlist_uri: query_param(req, "playlist_uri")?.ok_or_else(|| {
+            Failure::invalid("playlist_uri is required to browse a cached playlist")
+        })?,
+        offset: whole_number(req, "offset")?,
+        limit: whole_number(req, "limit")?,
+        q: query_param(req, "q")?,
+        expected_revision: query_param(req, "expected_revision")?,
     };
     query.validate()?;
     Ok(query)

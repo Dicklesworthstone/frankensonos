@@ -10,6 +10,16 @@ mod coverage;
 
 use coverage::{Coverage, Page};
 
+/// Validated raw coverage, before callers discard unavailable entries. A
+/// clean budget prefix is incomplete but is not a failed refresh.
+pub(super) struct Observation<T> {
+    pub(super) items: Vec<T>,
+    pub(super) examined: u32,
+    pub(super) source_total: Option<u32>,
+    pub(super) complete: bool,
+    pub(super) failed: bool,
+}
+
 struct Chain {
     path: String,
     progress: Progress,
@@ -120,10 +130,21 @@ impl Reader<'_> {
         what: &str,
         pages: usize,
     ) -> Vec<T> {
+        self.observe_pages(url, what, pages, None).await.items
+    }
+
+    pub(super) async fn observe_pages<T: serde::de::DeserializeOwned>(
+        &mut self,
+        url: &str,
+        what: &str,
+        pages: usize,
+        max_page_items: Option<usize>,
+    ) -> Observation<T> {
         let mut items = Vec::new();
         let mut coverage = Coverage::default();
         let mut chain = Chain::new(url, Progress::Offset(0));
         let mut next = Some(url.to_owned());
+        let failures = self.read.failed.len();
         for _ in 0..pages {
             let Some(url) = next.take() else {
                 break;
@@ -131,6 +152,13 @@ impl Reader<'_> {
             let Some(page) = self.get::<Page<T>>(&url, what).await else {
                 break;
             };
+            if max_page_items.is_some_and(|limit| page.items.len() > limit) {
+                self.read.failed.push((
+                    what.to_owned(),
+                    "taste page exceeds its requested item limit".into(),
+                ));
+                break;
+            }
             if let Err(error) = coverage.accept(&page) {
                 self.read.failed.push((what.to_owned(), error.to_string()));
                 break;
@@ -138,8 +166,17 @@ impl Reader<'_> {
             items.extend(page.items);
             next = self.continuation(&mut chain, page.next, what);
         }
+        let failed = self.read.failed.len() != failures || self.read.halted.is_some();
+        let complete = !failed && next.is_none();
+        let (examined, source_total) = coverage.observed();
         self.exhausted(next.is_some(), what);
-        items
+        Observation {
+            items,
+            examined,
+            source_total,
+            complete,
+            failed,
+        }
     }
 
     pub(super) async fn followed(&mut self) -> Vec<Artist> {

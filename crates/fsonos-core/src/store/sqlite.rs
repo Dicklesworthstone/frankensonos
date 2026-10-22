@@ -8,9 +8,9 @@
 //! method call.
 
 use super::{
-    Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, DjSession, Feedback,
-    FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction, PlayName, PlayRecord, Store,
-    StoreError, StoredScene, StoredSchedule,
+    Action, ActionFilter, AlbumTrack, AuthEntry, CachedAlbum, CachedPlayer, CachedPlaylist,
+    DjSession, Feedback, FeedbackKey, LibraryEntry, LibraryOrigin, LoggedAction, PlayName,
+    PlayRecord, Store, StoreError, StoredScene, StoredSchedule,
 };
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Generation, Player, PlayerId, Track, ZoneGroup};
@@ -180,6 +180,14 @@ const MIGRATIONS: &[Migration] = &[
         CREATE TABLE play_names (
             source_uri TEXT PRIMARY KEY, title TEXT NOT NULL, artist TEXT,
             named_at INTEGER NOT NULL);
+    ",
+    },
+    Migration {
+        version: 14,
+        name: "ordered Spotify playlist observations with explicit read coverage",
+        sql: "
+        CREATE TABLE spotify_playlist_contents (
+            playlist_uri TEXT PRIMARY KEY, observation TEXT NOT NULL);
     ",
     },
 ];
@@ -1164,6 +1172,36 @@ impl Store for SqliteStore {
         .collect()
     }
 
+    fn save_playlist_contents(&mut self, contents: &CachedPlaylist) -> Result<(), StoreError> {
+        contents.validate()?;
+        let observation = serde_json::to_string(contents).map_err(backend)?;
+        self.execute(
+            "INSERT OR REPLACE INTO spotify_playlist_contents (playlist_uri, observation) \
+             VALUES (?1, ?2)",
+            &[
+                contents.playlist_uri.as_str().into(),
+                observation.as_str().into(),
+            ],
+        )
+    }
+
+    fn playlist_contents(&self, playlist_uri: &str) -> Result<Option<CachedPlaylist>, StoreError> {
+        self.query(
+            "SELECT observation FROM spotify_playlist_contents WHERE playlist_uri = ?1",
+            &[playlist_uri.into()],
+        )?
+        .first()
+        .map(|row| {
+            let contents: CachedPlaylist = serde_json::from_str(&text(row, 0)?).map_err(backend)?;
+            contents.validate()?;
+            if contents.playlist_uri != playlist_uri {
+                return Err(backend("cached playlist identity differs from its key"));
+            }
+            Ok(contents)
+        })
+        .transpose()
+    }
+
     fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError> {
         let rows: Vec<Vec<SqliteValue>> = super::latest_plays(plays)
             .iter()
@@ -1596,7 +1634,7 @@ mod tests {
         let store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1637,7 +1675,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1694,7 +1732,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 2, "no row lost");
