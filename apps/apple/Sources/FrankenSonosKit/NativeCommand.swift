@@ -16,6 +16,7 @@ public enum NativeCommand: Equatable, Sendable {
     case playSource(String), playFavorite(String)
     case queueAdd(String, next: Bool)
     case queueFavorite(FavoriteQueue)
+    case playlistTrack(PlaylistTrackSelection)
     case queuePlay(QueueItem, revision: String)
     case queueRemove(QueueItem, revision: String)
     case queueMove(QueueMove)
@@ -42,6 +43,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .playFavorite: "Play this favorite"
         case .queueAdd(_, let next): next ? "Queue next" : "Add to queue"
         case .queueFavorite(let favorite): favorite.title
+        case .playlistTrack(let selection): selection.title
         case .queuePlay(let item, _): "Play \(item.title)"
         case .queueRemove: "Remove queue entry"
         case .queueMove(let move): move.destination.title
@@ -66,6 +68,7 @@ public enum NativeCommand: Equatable, Sendable {
         switch self {
         case .queueAdd: "Adds music without starting playback. The daemon resolves the source and applies its queue rules."
         case .queueFavorite(let favorite): favorite.explanation
+        case .playlistTrack(let selection): selection.explanation
         case .queueRemove: "Removes this exact revision-bound entry. This cannot be undone; removing the current entry can advance or stop playback."
         case .queueMove(let move): move.explanation
         case .listeningSettings(let change): change.explanation
@@ -99,7 +102,11 @@ public enum NativeCommand: Equatable, Sendable {
     public var steeringChange: DJSteeringChange? { if case .djFilters(let change) = self { change } else { nil } }
     public var isAnnouncement: Bool { if case .announce = self { true } else { false } }
     public var isQueueAdd: Bool {
-        switch self { case .queueAdd, .queueFavorite: true; default: false }
+        switch self {
+        case .queueAdd, .queueFavorite: true
+        case .playlistTrack(let selection): selection.isQueueAdd
+        default: false
+        }
     }
     public var requiresFreshTopology: Bool {
         switch self { case .join, .leave, .party, .move, .announce: true; default: false }
@@ -153,6 +160,8 @@ public enum NativeCommand: Equatable, Sendable {
             path = ["queue"]; body["source_uri"] = .string(try source(uri)); body["next"] = .bool(next)
         case .queueFavorite(let favorite):
             path = ["queue"]; body = try favorite.fields(in: zone)
+        case .playlistTrack(let selection):
+            path = selection.path; body = try selection.fields(in: zone)
         case .queuePlay(let item, let revision), .queueRemove(let item, let revision):
             try require(item.position > 0 && item.playable && !revision.isEmpty, "Refresh this queue before editing it.")
             body["position"] = .integer(Int64(item.position)); body["expected_revision"] = .string(revision)
@@ -225,6 +234,7 @@ public enum NativeCommand: Equatable, Sendable {
             matches = true
         case .queueAdd(_, let next): matches = !next || before.samePlayback(as: current)
         case .queueFavorite(let favorite): matches = !favorite.next || before.samePlayback(as: current)
+        case .playlistTrack(let selection): matches = selection.allowsTrackProgress || before.samePlayback(as: current)
         default: matches = before.samePlayback(as: current)
         }
         guard matches else { throw ContractError.invalid("The reviewed playback or level changed. Review its current state again.") }
@@ -314,6 +324,7 @@ public enum NativeCommand: Equatable, Sendable {
                   zone == nil || report.zone == zone?.coordinatorRoom else { throw ClientError.unreadable }
             return CommandReceipt(title: report.done, detail: report.work + "\n" + report.done)
         case .queueFavorite(let favorite): return try favorite.receipt(data, in: zone)
+        case .playlistTrack(let selection): return try selection.receipt(data, in: zone)
         case .queueAdd:
             let report = try DaemonClient.decode(QueueAdded.self, from: data)
             guard report.first > 0 else { throw ClientError.unreadable }
