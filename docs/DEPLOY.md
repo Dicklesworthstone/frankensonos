@@ -70,7 +70,7 @@ variables. The environment form is what launchd uses.
 | Data directory | `FSONOS_DATA_DIR` | `~/Library/Application Support/fsonos` | Store DB (including the players last found) and Spotify token cache. |
 | Direct-seed list | `FSONOS_SEEDS` | `seeds.toml` in the data directory, when present | Optional file of player addresses for flaky-SSDP networks; every IP address in it is tried (e.g. TOML `players = ["192.0.2.10"]`, or one per line). `fsonos setup` writes the default one when multicast fails but the players answer. Every command also takes `--seed <ip>`. Keep the file under `local/` or outside the repo. When discovery and the seeds find nothing, the players the last survey found (remembered in the store) are tried too. |
 | Routes file | `FSONOS_ROUTES` | unset | Only for `fsonos sim`: maps the virtual players' advertised addresses to the loopback sockets that serve them, plus the simulator's SSDP target. `fsonos sim` writes it; real players need none. While it is set, `fsonos` reaches nothing the file does not name (other addresses and multicast are refused): it asks only a daemon running under the same file, and unless `FSONOS_DATA_DIR` says otherwise it keeps its data in `data` beside the file, never the real house's store. |
-| Spotify client id | `FSONOS_SPOTIFY_CLIENT_ID` | unset | Needed only for the DJ (see §5). |
+| Spotify client id | `FSONOS_SPOTIFY_CLIENT_ID` | `spotify.toml` in the data directory, else unset | Needed only for the DJ (see §5); `fsonos setup` saves it there. |
 | Spotify redirect URI | `FSONOS_SPOTIFY_REDIRECT_URI` | `http://127.0.0.1:8099/auth/spotify/callback` | Must match the URI registered for your Spotify app. |
 | Log filter | `RUST_LOG` | `info` | `tracing` EnvFilter syntax. Logs go to stderr. The embedded database's own logging (per-statement telemetry at `info`) is held to errors unless the filter names `fsqlite`. |
 
@@ -458,13 +458,16 @@ Spotify account (Authorization Code + PKCE, requesting `user-library-read` plus
 the read-only taste scopes `user-follow-read`, `user-top-read`,
 `user-read-recently-played` and `playlist-read-private`; without the taste
 scopes the DJ uses your library alone and `fsonos doctor` warns) and caches the
-refresh token under `FSONOS_DATA_DIR`, never in the repo. Set
-`FSONOS_SPOTIFY_CLIENT_ID` first (your own app from the Spotify developer
-dashboard; for PKCE the client id is not a secret), and set it for the daemon
-too: uncomment `FSONOS_SPOTIFY_CLIENT_ID` in the filled-in plist's
-`EnvironmentVariables` and restart the job. Without it serve never refreshes
-the DJ's library, and while it runs `fsonos dj sync` and the `dj_sync` tool
-answer `NOT_IMPLEMENTED`; serve logs this at startup. `fsonos doctor` checks
+refresh token under `FSONOS_DATA_DIR`, never in the repo. The DJ reads through
+a Spotify app of your own: create one at https://developer.spotify.com/dashboard
+with the redirect URI above, and paste its client id when `fsonos setup` asks
+(for PKCE the client id is not a secret). Setup saves it as `spotify.toml` in
+the data directory, where serve reads it at every start, so neither the plist
+nor a shell needs `FSONOS_SPOTIFY_CLIENT_ID` (which still wins when set). A
+daemon already running when the app is saved picks it up when it next
+starts. Without an app serve never refreshes the DJ's library, `fsonos doctor`
+warns, and while it runs `fsonos dj sync` and the `dj_sync` tool answer
+`NOT_IMPLEMENTED`; serve logs this at startup. `fsonos doctor` checks
 that the sign-in still works (`dj.sign_in` reads one liked track, refreshing
 the token as serve would) and says when to sign in again.
 

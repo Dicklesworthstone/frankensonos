@@ -86,7 +86,7 @@ can drive:
 | **Sleep & schedules** | `sleep Bedroom 45m` fades the group out over the last two minutes (with the speaker's own timer as a backstop); `schedule add "weekdays 07:30" dj start Kitchen --mood bright` (the mood lasts until the time-of-day program changes, then the program takes over), or a pause, a volume or a scene (ramped over the policy's fade), at times or after delays; runs with the rights of whoever added it; a restarted daemon picks its sleep timers up again |
 | **Announcements** | `say "Dinner is ready" --rooms Kitchen,Office` with offline Linux speech (FrankenTTS, espeak-ng or Piper) or macOS `say`; `chime bell`; `announce --file clip.wav`. Policy-capped playback restores the previous music and speaker state |
 | **Safety** | `policy.toml`: per-room caps, a per-step limit, quiet hours, per-client tool allowlists; over-limit volumes are clamped and say so (the local CLI runs uncapped by default); `fsonos log` / `undo`, `fsonos policy show` / `check` |
-| **Setup & diagnosis** | `fsonos setup` walks a first run (including the Spotify sign-in); `fsonos doctor` checks speakers, Spotify linkage, listeners, the daemon and the Tailscale chain, and names the fix for each problem |
+| **Setup & diagnosis** | `fsonos setup` walks a first run (including your Spotify app and sign-in); `fsonos doctor` checks speakers, Spotify linkage, listeners, the daemon and the Tailscale chain, and names the fix for each problem |
 | **Three surfaces** | The `fsonos` CLI (`--json` everywhere), an HTTP API with an OpenAPI document, and an MCP server (tools plus `sonos://zones` and `sonos://dj` resources) over streamable HTTP or stdio, all answering alike, with the same stable error codes ([`docs/ERRORS.md`](docs/ERRORS.md)); editing room aliases (`fsonos rooms alias`) and checking `policy.toml` (`fsonos policy check`) are the CLI's alone, as they work on the data directory's files |
 | **A house without speakers** | `fsonos sim` starts virtual S1 and S2 households on loopback, so you can try every command, or develop an agent, with no hardware |
 
@@ -467,6 +467,9 @@ learned at runtime and kept locally. The full boundary is in
   each household's Sonos app, and the per-household render parameters are
   learned from your own Sonos favorites. Rendering was verified on real S1 and
   S2 players ([`docs/PROTOCOL.md`](docs/PROTOCOL.md) §4).
+- The DJ reads your library through a Spotify app of your own (create one at
+  developer.spotify.com/dashboard); `fsonos setup` asks for its client id and
+  keeps it in the data directory for the daemon.
 - The DJ's taste comes from your liked tracks and saved albums, plus your top
   tracks, recent plays and own playlists, leaning toward the artists you follow
   and play most (read-only scopes you grant at sign-in; without them it uses

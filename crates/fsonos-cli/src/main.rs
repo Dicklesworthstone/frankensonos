@@ -61,6 +61,7 @@ mod setup_cmd;
 mod setup_spotify;
 #[cfg(feature = "sim")]
 mod sim;
+mod spotify_app;
 mod streaming;
 mod tailscale_cmd;
 

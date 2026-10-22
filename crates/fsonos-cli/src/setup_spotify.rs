@@ -1,6 +1,9 @@
 //! The Spotify sign-in step of `fsonos setup`: the owner's PKCE login through
-//! fsonos-spotify's `Session` (scope `user-library-read`), then the first
-//! library sync into the store, which the DJ plays from.
+//! fsonos-spotify's `Session` (the read-only scopes docs/SCOPE.md lists), then
+//! the first library sync into the store, which the DJ plays from. With no
+//! Spotify app configured it asks for the app's client id on the terminal
+//! and saves it in the data directory, where `serve` finds it too
+//! ([`crate::spotify_app`]).
 //!
 //! The redirect URI (by default http://127.0.0.1:8099/auth/spotify/callback)
 //! is on the daemon's HTTP port. When a daemon runs, the sign-in goes
@@ -25,6 +28,7 @@ use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
 use std::io::{BufRead as _, Read as _, Write as _};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::Mutex;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -93,6 +97,9 @@ pub enum SignIn {
     NeedsTerminal,
     /// Signed in now (or before), and the library just read into the store.
     Synced(LibrarySync),
+    /// As `Synced`, but the running daemon has no Spotify app: it started
+    /// before one was saved, and reads it only when it starts again.
+    SyncedRestartDaemon(LibrarySync),
     /// Signed in through the daemon, but this run has no client id to read
     /// the library with.
     DaemonOnly,
@@ -107,9 +114,10 @@ pub fn verdict(result: SignIn, redirect_uri: &str) -> StepOutcome {
             Status::Warn,
             "no Spotify app client id is configured".to_owned(),
             Some(format!(
-                "Create an app at https://developer.spotify.com/dashboard with the redirect URI \
-                 {redirect_uri}, set FSONOS_SPOTIFY_CLIENT_ID (or pass --spotify-client-id), \
-                 and run fsonos setup again."
+                "Create an app at {} with the redirect URI {redirect_uri}, then run fsonos \
+                 setup on a terminal and paste its client id (saved for serve too), or set \
+                 FSONOS_SPOTIFY_CLIENT_ID (or pass --spotify-client-id).",
+                crate::spotify_app::DASHBOARD
             )),
         ),
         SignIn::NeedsTerminal => (
@@ -128,6 +136,19 @@ pub fn verdict(result: SignIn, redirect_uri: &str) -> StepOutcome {
                 sync.tracks, sync.candidates, sync.classical
             ),
             None,
+        ),
+        SignIn::SyncedRestartDaemon(sync) => (
+            Status::Warn,
+            format!(
+                "signed in; read {} library track(s), {} in the DJ's pool ({} classical); the \
+                 running daemon has no Spotify app yet",
+                sync.tracks, sync.candidates, sync.classical
+            ),
+            Some(
+                "Restart fsonos serve: it reads the Spotify app saved in the data directory when \
+                 it starts, then keeps the DJ's library fresh on its own."
+                    .to_owned(),
+            ),
         ),
         SignIn::DaemonOnly => (
             Status::Warn,
@@ -155,31 +176,34 @@ pub fn verdict(result: SignIn, redirect_uri: &str) -> StepOutcome {
 
 /// Sign in (on a terminal, through `prompt`) and sync the library.
 pub fn sign_in(global: &GlobalArgs, serve: &ServeArgs, prompt: Option<&Prompt>) -> SignIn {
+    let data_dir = match crate::daemon::data_dir(global) {
+        Ok(dir) => dir,
+        Err(f) => return SignIn::Failed(f.detail),
+    };
+    let saved = serve.spotify_app_id(&data_dir);
+    let daemon = Daemon::find(global, false).ok().flatten();
+    let status = daemon.as_ref().map(|d| d.get::<SignInDto>("/auth/spotify"));
     // A daemon that runs the sign-in holds the flow; the token it caches in
     // the shared data directory is the one read with below.
-    if let Some((daemon, status)) = Daemon::find(global, false)
-        .ok()
-        .flatten()
-        .and_then(|d| d.get::<SignInDto>("/auth/spotify").ok().map(|s| (d, s)))
-    {
+    if let (Some(daemon), Some(Ok(status))) = (&daemon, &status) {
         if !status.signed_in {
             let Some(prompt) = prompt else {
                 return SignIn::NeedsTerminal;
             };
-            if let Err(why) = through_daemon(&daemon, prompt) {
+            if let Err(why) = through_daemon(daemon, prompt) {
                 return SignIn::Failed(why);
             }
         }
-        if serve.spotify_client_id.is_none() {
+        if saved.is_none() {
             return SignIn::DaemonOnly;
         }
     }
-    let Some(client_id) = serve.spotify_client_id.clone() else {
+    // A daemon that answered without a sign-in route has no Spotify app.
+    let restart_daemon = matches!(status, Some(Err(_)));
+    let Some(client_id) = saved
+        .or_else(|| prompt.and_then(|p| ask_client_id(p, &serve.spotify_redirect_uri, &data_dir)))
+    else {
         return SignIn::NoClientId;
-    };
-    let data_dir = match crate::daemon::data_dir(global) {
-        Ok(dir) => dir,
-        Err(f) => return SignIn::Failed(f.detail),
     };
     let config = SpotifyConfig {
         client_id,
@@ -223,10 +247,38 @@ pub fn sign_in(global: &GlobalArgs, serve: &ServeArgs, prompt: Option<&Prompt>) 
             }
         }
         match sync_library(&mut session, &cx, &mut store).await {
+            Ok(sync) if restart_daemon => SignIn::SyncedRestartDaemon(sync),
             Ok(sync) => SignIn::Synced(sync),
             Err(e) => SignIn::Failed(format!("signed in, but the library read failed: {e}")),
         }
     })
+}
+
+/// Ask on the terminal for the client id of the owner's Spotify app, and
+/// save it in `data_dir` for `serve` too; `None` when none is given.
+fn ask_client_id(prompt: &Prompt, redirect_uri: &str, data_dir: &Path) -> Option<String> {
+    println!(
+        "The DJ reads your Spotify library through a Spotify app of your own. Create one at {} \
+         with the redirect URI {redirect_uri}, then paste its client id here (Enter skips):",
+        crate::spotify_app::DASHBOARD
+    );
+    let _ = std::io::stdout().flush();
+    let id = prompt.line(SIGN_IN_WAIT)?;
+    if id.is_empty() {
+        return None;
+    }
+    if !crate::spotify_app::plausible(&id) {
+        println!("That is not a Spotify client id (32 letters and digits); skipping Spotify.");
+        return None;
+    }
+    match crate::spotify_app::save(data_dir, &id) {
+        Ok(()) => println!(
+            "Saved in {}.",
+            data_dir.join(crate::spotify_app::FILE_NAME).display()
+        ),
+        Err(e) => println!("Could not save it ({e}); this run uses it anyway."),
+    }
+    Some(id)
 }
 
 /// Sign in through `daemon`: it starts the flow and the browser comes back
@@ -356,6 +408,34 @@ pub fn redirect_addr(uri: &str) -> Option<SocketAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A prompt answering `lines`, in order.
+    fn answering(lines: &[&str]) -> Prompt {
+        let (tx, rx) = mpsc::channel();
+        for line in lines {
+            tx.send((*line).to_owned()).unwrap();
+        }
+        Prompt {
+            lines: Mutex::new(rx),
+        }
+    }
+
+    #[test]
+    fn a_pasted_client_id_is_saved_for_serve_and_a_bad_one_is_not() {
+        let dir =
+            std::env::temp_dir().join(format!("fsonos-setup-spotify-app-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let uri = "http://127.0.0.1:8099/auth/spotify/callback";
+        assert_eq!(ask_client_id(&answering(&["not-an-id"]), uri, &dir), None);
+        assert_eq!(crate::spotify_app::saved(&dir), None);
+        assert_eq!(ask_client_id(&answering(&[""]), uri, &dir), None);
+        let app = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            ask_client_id(&answering(&[app]), uri, &dir).as_deref(),
+            Some(app)
+        );
+        assert_eq!(crate::spotify_app::saved(&dir).as_deref(), Some(app));
+    }
 
     #[test]
     fn setup_listens_only_on_a_loopback_redirect_with_a_port() {

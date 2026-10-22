@@ -34,8 +34,11 @@ pub type ReadGrant =
 /// See the module docs.
 pub struct SignInCheck {
     data_dir: PathBuf,
-    /// serve's Spotify app; `None` without `FSONOS_SPOTIFY_CLIENT_ID`.
+    /// serve's Spotify app; `None` when neither `FSONOS_SPOTIFY_CLIENT_ID`
+    /// nor the data directory's `spotify.toml` names one.
     config: Option<SpotifyConfig>,
+    /// The redirect URI a new app must register.
+    redirect_uri: String,
     read: ReadGrant,
 }
 
@@ -50,12 +53,12 @@ impl SignInCheck {
         Self {
             data_dir: data_dir.to_path_buf(),
             config: serve
-                .spotify_client_id
-                .clone()
+                .spotify_app_id(data_dir)
                 .map(|client_id| SpotifyConfig {
                     client_id,
                     redirect_uri: serve.spotify_redirect_uri.clone(),
                 }),
+            redirect_uri: serve.spotify_redirect_uri.clone(),
             read,
         }
     }
@@ -104,7 +107,17 @@ impl Check for SignInCheck {
                      and doctor alike (docs/DEPLOY.md).",
                 )
             } else {
-                CheckResult::skip("Spotify isn't set up; the DJ needs it (run `fsonos setup`)")
+                // Without Spotify the DJ has nothing to play: a warning, not
+                // a skip, so a house whose DJ cannot start never reads healthy.
+                CheckResult::warn(
+                    "Spotify isn't set up: the DJ has no library to play from",
+                    format!(
+                        "Create an app at {} with the redirect URI {}, then run `fsonos \
+                         setup`: it saves the app's client id and signs you in.",
+                        crate::spotify_app::DASHBOARD,
+                        self.redirect_uri
+                    ),
+                )
             };
         };
         if !signed_in {
@@ -234,7 +247,13 @@ mod tests {
         let check = |client_id| SignInCheck::with_read(&serve(client_id), &dir, Arc::clone(&read));
 
         let unset = run_one(check(None));
-        assert_eq!(unset.status, Status::Skip, "{unset:?}");
+        assert_eq!(unset.status, Status::Warn, "{unset:?}");
+        let remedy = unset.remedy.unwrap();
+        assert!(
+            remedy.contains(crate::spotify_app::DASHBOARD)
+                && remedy.contains("http://127.0.0.1:8099/auth/spotify/callback"),
+            "{remedy}"
+        );
         let signed_out = run_one(check(Some("app-1")));
         assert_eq!(signed_out.status, Status::Warn);
         assert!(signed_out.remedy.unwrap().contains("fsonos setup"));
@@ -258,6 +277,39 @@ mod tests {
         assert_eq!(works.evidence["refreshed"], true);
         assert_eq!(*reads.lock().unwrap(), [("app-1".to_owned(), dir.clone())]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The app `fsonos setup` saved in the data directory is the one the
+    /// check reads with when no option or variable names one.
+    #[test]
+    fn the_app_setup_saved_is_read_with() {
+        let dir = std::env::temp_dir().join(format!(
+            "fsonos-doctor-sign-in-saved-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = "0123456789abcdef0123456789abcdef";
+        crate::spotify_app::save(&dir, app).unwrap();
+        TokenCache::in_data_dir(&dir)
+            .store(&CachedToken {
+                access_token: "access-1".into(),
+                refresh_token: "refresh-1".into(),
+                expires_at: 0,
+                scope: "user-library-read".into(),
+            })
+            .unwrap();
+        let reads = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&reads);
+        let read: ReadGrant = Arc::new(move |config: SpotifyConfig, _: PathBuf| {
+            seen.lock().unwrap().push(config.client_id);
+            Ok(GrantCheck {
+                refreshed: false,
+                expires_in_secs: 3600,
+            })
+        });
+        let works = run_one(SignInCheck::with_read(&serve(None), &dir, read));
+        assert_eq!(works.status, Status::Pass, "{works:?}");
+        assert_eq!(*reads.lock().unwrap(), [app.to_owned()]);
     }
 
     #[test]

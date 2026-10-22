@@ -112,10 +112,10 @@ impl LibrarySync {
         data_dir: &Path,
         clock: Box<dyn Clock>,
     ) -> Option<Arc<Self>> {
-        let Some(client_id) = serve.spotify_client_id.clone() else {
-            tracing::info!(
-                "the DJ's library is not refreshed: no Spotify app client id \
-                 (FSONOS_SPOTIFY_CLIENT_ID)"
+        let Some(client_id) = serve.spotify_app_id(data_dir) else {
+            tracing::warn!(
+                "the DJ's library is not refreshed: no Spotify app client id; `fsonos setup` \
+                 saves one (or set FSONOS_SPOTIFY_CLIENT_ID)"
             );
             return None;
         };
@@ -396,13 +396,16 @@ pub fn run(global: &GlobalArgs, args: &SyncArgs) -> anyhow::Result<()> {
         }
         return crate::emit(global.json, &state, |s| format!("{}\n", s.done));
     }
-    let Some(client_id) = args.spotify_client_id.clone() else {
+    let data_dir = crate::daemon::data_dir(global)?;
+    let Some(client_id) =
+        crate::spotify_app::client_id(args.spotify_client_id.as_deref(), &data_dir)
+    else {
         return Err(Failure::invalid(
             "no daemon answers, and no Spotify app client id is set (FSONOS_SPOTIFY_CLIENT_ID)",
         )
         .with_hint(
-            "Run it with fsonos serve up (it refreshes daily on its own), or set \
-                 FSONOS_SPOTIFY_CLIENT_ID.",
+            "Run it with fsonos serve up (it refreshes daily on its own), or save the app \
+                 with fsonos setup, or set FSONOS_SPOTIFY_CLIENT_ID.",
         )
         .into());
     };
@@ -410,7 +413,7 @@ pub fn run(global: &GlobalArgs, args: &SyncArgs) -> anyhow::Result<()> {
         client_id,
         redirect_uri: args.spotify_redirect_uri.clone(),
     };
-    let sync = LibrarySync::new(config, crate::daemon::data_dir(global)?)
+    let sync = LibrarySync::new(config, data_dir)
         .ok_or_else(|| Failure::invalid("the Spotify app client id is not a valid id"))?;
     if !sync.signed_in() {
         return Err(signed_out().into());

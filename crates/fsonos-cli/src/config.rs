@@ -275,6 +275,14 @@ pub const EVENTS_PORT: u16 = 8097;
 pub const MCP_PORT: u16 = 8098;
 
 impl ServeArgs {
+    /// The Spotify app client id: the option or `FSONOS_SPOTIFY_CLIENT_ID`,
+    /// else the one `fsonos setup` saved in `data_dir`
+    /// ([`crate::spotify_app`]).
+    #[must_use]
+    pub fn spotify_app_id(&self, data_dir: &Path) -> Option<String> {
+        crate::spotify_app::client_id(self.spotify_client_id.as_deref(), data_dir)
+    }
+
     /// The settings `serve` takes from its environment alone (no flags), for
     /// a command that checks the daemon without taking its flags.
     pub fn from_env() -> Result<Self, clap::Error> {

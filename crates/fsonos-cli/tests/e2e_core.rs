@@ -571,11 +571,22 @@ fn doctor_reports_the_setup_with_its_exit_codes() {
     // Under the harness the HTTP address is 127.0.0.1:0: nothing to probe.
     let run = s.cli("doctor", &["doctor", "--json"]);
     let report = json(&run);
+    // The harness sets no Spotify app: the DJ has nothing to play, which is
+    // a warning (sp4f.13), and the only thing wrong here.
+    let gaps = report["checks"].as_array().map_or_default(|c| {
+        c.iter()
+            .filter(|x| x["status"] == "warn" || x["status"] == "fail")
+            .map(|x| x["id"].as_str().unwrap_or_default().to_owned())
+            .collect::<Vec<_>>()
+    });
     s.check(
         "doctor",
         "cli",
-        "an all-pass setup exits 0 with schema 1",
-        run.code == Some(0) && report["schema"] == 1 && report["exit_code"] == 0,
+        "a setup whose one gap is Spotify warns about that alone: exit 6 with schema 1",
+        run.code == Some(6)
+            && report["schema"] == 1
+            && report["exit_code"] == 6
+            && gaps == ["dj.sign_in"],
         format!("exit {:?}: {} | {}", run.code, flagged(&report), run.stderr),
     );
     s.check(
