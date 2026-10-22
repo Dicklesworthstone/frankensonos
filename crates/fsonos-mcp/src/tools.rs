@@ -215,9 +215,11 @@ impl Backend {
     /// The `dj_start` tool: on the daemon when one runs (its DJ keeps the
     /// queue fed), else here.
     pub fn dj_start(&self, req: &DjStartRequest) -> McpResult<FinalCallToolResult> {
-        let body = serde_json::to_value(req).ok();
-        self.on_daemon("POST", "/dj/start", body.as_ref(), sentence)
-            .unwrap_or_else(|| self.control("dj_start", |h| plan::plan_dj_start(h, req)))
+        req.zone().map_err(|failure| tool_error(&failure))?;
+        req.steer().map_err(|failure| tool_error(&failure))?;
+        self.write("/dj/start", req, || {
+            self.control("dj_start", |h| plan::plan_dj_start(h, req))
+        })
     }
 
     /// The `dj_steer` tool, on the daemon when one runs.
@@ -1066,17 +1068,52 @@ async fn dj(
 }
 
 #[tool(
-    description = "Start the DJ in the group a room plays in: it plays from the owner's own library, in any genre, to their taste (songs one at a time, classical works whole, every movement in order) and keeps the queue topped up. `zone` is a room name. Optional `mood` starts it steered (dj_moods lists the moods), for `for_minutes` (omit: until cleared)."
+    description = "Start the DJ in the group a room plays in: it plays from the owner's own library, in any genre, to their taste (songs one at a time, classical works whole, every movement in order) and keeps the queue topped up. Give a mood (dj_moods lists them), structured constraints, or both to apply them before new picks in this one start request. A fresh session selects its first work under these settings; an existing feed keeps already queued works and uses the new settings for later selections. The constraints match dj_steer: include/exclude artists, genres, composers, periods, decades and keywords; min_minutes/max_minutes bound work length; energy_bias is -2 to 2; allow_long admits long works. For example, 'start jazz from the sixties for two hours' is include_genres [\"jazz\"], decades [1960], for_minutes 120; 'start Miles Davis' is include_artists [\"Miles Davis\"]. A supplied mood or constraints replaces the group's previous session steering. for_minutes requires a mood or nonempty constraints; omit it to keep the new steering until cleared. With no mood, constraints or duration, starts under the group's existing steering or time-of-day program. Selection uses the same documented relaxation and standing preferences as dj_steer."
 )]
+#[allow(clippy::too_many_arguments)] // the same optional steering vocabulary as dj_steer
 async fn dj_start(
     ctx: &McpContext,
     zone: String,
     mood: Option<String>,
+    include_composers: Option<Vec<String>>,
+    exclude_composers: Option<Vec<String>>,
+    include_artists: Option<Vec<String>>,
+    exclude_artists: Option<Vec<String>>,
+    include_genres: Option<Vec<String>>,
+    exclude_genres: Option<Vec<String>>,
+    periods: Option<Vec<String>>,
+    exclude_periods: Option<Vec<String>>,
+    decades: Option<Vec<u16>>,
+    exclude_decades: Option<Vec<u16>>,
+    include_keywords: Option<Vec<String>>,
+    exclude_keywords: Option<Vec<String>>,
+    min_minutes: Option<u32>,
+    max_minutes: Option<u32>,
+    energy_bias: Option<i8>,
+    allow_long: Option<bool>,
     for_minutes: Option<u32>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
     let req = DjStartRequest {
         zone,
         mood,
+        constraints: SteerConstraints {
+            include_composers: include_composers.unwrap_or_default(),
+            exclude_composers: exclude_composers.unwrap_or_default(),
+            include_artists: include_artists.unwrap_or_default(),
+            exclude_artists: exclude_artists.unwrap_or_default(),
+            include_genres: include_genres.unwrap_or_default(),
+            exclude_genres: exclude_genres.unwrap_or_default(),
+            periods: periods.unwrap_or_default(),
+            exclude_periods: exclude_periods.unwrap_or_default(),
+            decades: decades.unwrap_or_default(),
+            exclude_decades: exclude_decades.unwrap_or_default(),
+            include_keywords: include_keywords.unwrap_or_default(),
+            exclude_keywords: exclude_keywords.unwrap_or_default(),
+            min_work_minutes: min_minutes,
+            max_work_minutes: max_minutes,
+            energy_bias: energy_bias.unwrap_or(0),
+            allow_long_works: allow_long.unwrap_or(false),
+        },
         for_secs: for_minutes.map(|m| u64::from(m) * 60),
     };
     with_backend_off_thread(ctx, move |b| b.dj_start(&req)).await
@@ -1310,6 +1347,7 @@ mod tests {
             .dj_start(&DjStartRequest {
                 zone: "Den".into(),
                 mood: None,
+                constraints: SteerConstraints::default(),
                 for_secs: None,
             })
             .unwrap();
@@ -1337,6 +1375,51 @@ mod tests {
             daemon.calls.lock().unwrap()[0].1,
             "/sleep?zone=Living%20Room"
         );
+    }
+
+    #[test]
+    fn invalid_start_steering_is_rejected_before_daemon_or_speaker_io() {
+        let (backend, sent, surveys) = backend("", Client::McpStdio);
+        let daemon = fake(Some(serde_json::json!({
+            "done": "must not be dispatched", "changed": true
+        })));
+        let backend = backend.with_daemon(Arc::clone(&daemon) as Arc<dyn Daemon>);
+        let valid = DjStartRequest {
+            zone: "Den".into(),
+            constraints: SteerConstraints {
+                include_genres: vec!["jazz".into()],
+                ..SteerConstraints::default()
+            },
+            for_secs: Some(7200),
+            ..DjStartRequest::default()
+        };
+        for request in [
+            DjStartRequest {
+                zone: " ".into(),
+                ..valid.clone()
+            },
+            DjStartRequest {
+                constraints: SteerConstraints::default(),
+                ..valid.clone()
+            },
+            DjStartRequest {
+                for_secs: Some(8 * 86_400),
+                ..valid.clone()
+            },
+            DjStartRequest {
+                constraints: SteerConstraints {
+                    energy_bias: 3,
+                    ..SteerConstraints::default()
+                },
+                ..valid
+            },
+        ] {
+            let error = backend.dj_start(&request).unwrap_err();
+            assert_eq!(error.data.unwrap()["code"], "INVALID_ARGUMENT");
+        }
+        assert!(daemon.calls.lock().unwrap().is_empty());
+        assert!(sent.lock().unwrap().is_empty());
+        assert_eq!(surveys.load(Ordering::SeqCst), 0);
     }
 
     #[test]

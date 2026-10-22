@@ -789,6 +789,7 @@ fn dj_start(room: &str, mood: Option<&str>, for_secs: Option<u64>) -> DjStartReq
         zone: room.to_string(),
         mood: mood.map(str::to_string),
         for_secs: mood.and(for_secs),
+        ..DjStartRequest::default()
     }
 }
 

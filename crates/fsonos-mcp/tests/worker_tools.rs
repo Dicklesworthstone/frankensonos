@@ -9,7 +9,7 @@ use fsonos_core::policy::{Client, Policy};
 use fsonos_mcp::tools::dj_feedback::DjFeedback;
 use fsonos_mcp::tools::dj_prefs::{DjPrefer, DjPreferences};
 use fsonos_mcp::tools::dj_sync::DjSyncStatus;
-use fsonos_mcp::tools::{AddToQueue, Backend, Daemon, SearchQueue, install};
+use fsonos_mcp::tools::{AddToQueue, Backend, Daemon, DjStart, SearchQueue, install};
 use fsonos_proto::{ProtoError, Transport};
 use serde_json::{Value, json};
 use std::future::Future;
@@ -32,6 +32,7 @@ impl Transport for NoIo {
 struct Request {
     method: String,
     path: String,
+    body: Option<Value>,
     thread: ThreadId,
     reply: mpsc::Sender<Result<Value, Failure>>,
 }
@@ -39,12 +40,18 @@ struct Request {
 struct HeldDaemon(mpsc::Sender<Request>);
 
 impl Daemon for HeldDaemon {
-    fn call(&self, method: &str, path: &str, _: Option<&Value>) -> Option<Result<Value, Failure>> {
+    fn call(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> Option<Result<Value, Failure>> {
         let (reply, answer) = mpsc::channel();
         self.0
             .send(Request {
                 method: method.into(),
                 path: path.into(),
+                body: body.cloned(),
                 thread: std::thread::current().id(),
                 reply,
             })
@@ -119,6 +126,21 @@ struct Case {
 fn cases() -> Vec<Case> {
     vec![
         Case {
+            handler: Box::new(DjStart),
+            arguments: json!({
+                "zone": "Kitchen@S2", "for_minutes": 120,
+                "include_composers": ["Bach"], "exclude_composers": ["Wagner"],
+                "include_artists": ["Ensemble A"], "exclude_artists": ["Ensemble B"],
+                "include_genres": ["jazz", "classical"], "exclude_genres": ["pop"],
+                "periods": ["baroque"], "exclude_periods": ["romantic"],
+                "decades": [1960], "exclude_decades": [1980],
+                "include_keywords": ["piano"], "exclude_keywords": ["vocal"],
+                "min_minutes": 3, "max_minutes": 30, "energy_bias": -1, "allow_long": true
+            }),
+            method: "POST",
+            path: "/dj/start",
+        },
+        Case {
             handler: Box::new(SearchQueue),
             arguments: json!({"zone": "Kitchen@S2", "query": "Bach strings"}),
             method: "GET",
@@ -192,6 +214,24 @@ fn queue_and_dj_handlers_yield_and_preserve_terminal_daemon_failures_in_both_era
                 (case.method, case.path)
             );
             assert_ne!(request.thread, std::thread::current().id());
+            if case.path == "/dj/start" {
+                assert_eq!(
+                    request.body,
+                    Some(json!({
+                        "zone": "Kitchen@S2", "mood": null, "for_secs": 7200,
+                        "constraints": {
+                            "include_composers": ["Bach"], "exclude_composers": ["Wagner"],
+                            "include_artists": ["Ensemble A"], "exclude_artists": ["Ensemble B"],
+                            "include_genres": ["jazz", "classical"], "exclude_genres": ["pop"],
+                            "periods": ["baroque"], "exclude_periods": ["romantic"],
+                            "decades": [1960], "exclude_decades": [1980],
+                            "include_keywords": ["piano"], "exclude_keywords": ["vocal"],
+                            "min_work_minutes": 3, "max_work_minutes": 30,
+                            "energy_bias": -1, "allow_long_works": true
+                        }
+                    }))
+                );
+            }
             let failure = Failure::new(ErrorCode::PlayerUnreachable, "reply lost after dispatch");
             let expected = McpError::tool_error(failure.tool_text());
             request.reply.send(Err(failure)).unwrap();

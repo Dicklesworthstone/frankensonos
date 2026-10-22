@@ -31,17 +31,10 @@ mod rehearse;
 
 #[derive(Subcommand)]
 pub enum DjAction {
-    /// Start the DJ in a room's group; with --mood, steered by it.
-    Start {
-        zone: String,
-        /// A mood (fsonos dj moods lists them).
-        #[arg(long)]
-        mood: Option<String>,
-        /// How long the mood lasts: 2h, 90m, 1h30m [default: until
-        /// cleared].
-        #[arg(long = "for", value_name = "SPAN", value_parser = parse_span, requires = "mood")]
-        for_secs: Option<u64>,
-    },
+    /// Start the DJ with a mood, artists, genres or other constraints for
+    /// new picks. A running feed keeps queued works; without settings,
+    /// keep the group's current steering.
+    Start(Box<StartArgs>),
     /// Skip the DJ's current work.
     Skip { zone: String },
     /// Stop the DJ.
@@ -87,6 +80,32 @@ pub enum DjAction {
     Browse(browse::BrowseArgs),
 }
 
+/// `fsonos dj start`: select and start a set in one request.
+#[derive(clap::Args)]
+pub struct StartArgs {
+    zone: String,
+    /// A mood (fsonos dj moods lists them), optionally refined by constraints.
+    #[arg(long)]
+    mood: Option<String>,
+    #[command(flatten)]
+    constraints: ConstraintArgs,
+    /// How long the mood or constraints last: 2h, 90m, 1h30m
+    /// [default: until cleared]. Requires a mood or a constraint.
+    #[arg(long = "for", value_name = "SPAN", value_parser = parse_span)]
+    for_secs: Option<u64>,
+}
+
+impl StartArgs {
+    fn request(&self) -> DjStartRequest {
+        DjStartRequest {
+            zone: self.zone.clone(),
+            mood: self.mood.clone(),
+            constraints: self.constraints.constraints(),
+            for_secs: self.for_secs,
+        }
+    }
+}
+
 /// `fsonos dj steer`: the fields of `dj_steer`.
 #[derive(clap::Args)]
 pub struct SteerArgs {
@@ -118,8 +137,8 @@ impl SteerArgs {
     }
 }
 
-/// The constraints of `dj_steer`, as flags: shared by `fsonos dj steer` and
-/// `fsonos dj rehearse`.
+/// The constraints of `dj_steer`, as flags: shared by `fsonos dj start`,
+/// `fsonos dj steer` and `fsonos dj rehearse`.
 #[derive(clap::Args)]
 pub struct ConstraintArgs {
     /// Only this composer (repeat for more).
@@ -233,7 +252,7 @@ impl DjAction {
     #[must_use]
     pub fn tool(&self) -> &'static str {
         match self {
-            Self::Start { .. } => "dj_start",
+            Self::Start(_) => "dj_start",
             Self::Skip { .. } => "dj_skip",
             Self::Stop { .. } => "dj_stop",
             Self::Steer(_) => "dj_steer",
@@ -256,18 +275,7 @@ impl DjAction {
     pub fn daemon_request(&self) -> Option<(&'static str, serde_json::Result<serde_json::Value>)> {
         let zone = |zone: &String| serde_json::to_value(ZoneRequest { zone: zone.clone() });
         Some(match self {
-            Self::Start {
-                zone,
-                mood,
-                for_secs,
-            } => (
-                "/dj/start",
-                serde_json::to_value(DjStartRequest {
-                    zone: zone.clone(),
-                    mood: mood.clone(),
-                    for_secs: *for_secs,
-                }),
-            ),
+            Self::Start(args) => ("/dj/start", serde_json::to_value(args.request())),
             Self::Skip { zone: z } => ("/dj/skip", zone(z)),
             Self::Stop { zone: z } => ("/dj/stop", zone(z)),
             Self::Steer(args) => ("/dj/steer", serde_json::to_value(args.request())),
@@ -288,18 +296,7 @@ impl DjAction {
     pub fn plan(&self, rooms: &Rooms<'_>) -> Result<Command, Failure> {
         let zone = |zone: &String| ZoneRequest { zone: zone.clone() };
         match self {
-            Self::Start {
-                zone,
-                mood,
-                for_secs,
-            } => plan::plan_dj_start(
-                rooms,
-                &DjStartRequest {
-                    zone: zone.clone(),
-                    mood: mood.clone(),
-                    for_secs: *for_secs,
-                },
-            ),
+            Self::Start(args) => plan::plan_dj_start(rooms, &args.request()),
             Self::Skip { zone: z } => plan::plan_dj(rooms, &zone(z), PlanDj::Skip),
             Self::Stop { zone: z } => plan::plan_dj(rooms, &zone(z), PlanDj::Stop),
             Self::Steer(args) => plan::plan_dj_steer(rooms, &args.request()),
@@ -561,6 +558,140 @@ mod tests {
         }
     }
 
+    fn start_of(args: &[&str]) -> DjStartRequest {
+        let DjAction::Start(start) = parse(args) else {
+            panic!("not a start")
+        };
+        start.request()
+    }
+
+    #[test]
+    fn start_defaults_preserve_steering_and_a_mood_can_still_expire() {
+        let plain = start_of(&["start", "Kitchen"]);
+        assert_eq!(plain.zone, "Kitchen");
+        assert_eq!(plain.steer().unwrap(), None);
+        let mood = start_of(&["start", "Kitchen", "--mood", "focus", "--for", "90m"]);
+        assert_eq!(
+            mood.steer().unwrap(),
+            Some(DjSteer::Set {
+                mood: Some("focus".into()),
+                constraints: SteerConstraints::default(),
+                for_secs: Some(5400),
+            })
+        );
+    }
+
+    #[test]
+    fn constrained_start_forwards_every_filter_in_one_start_request() {
+        let action = parse(&[
+            "start",
+            "Kitchen@S2",
+            "--composer",
+            "Bach",
+            "--not-composer",
+            "Wagner",
+            "--artist",
+            "Ensemble A",
+            "--not-artist",
+            "Ensemble B",
+            "--genre",
+            "jazz",
+            "--genre",
+            "classical",
+            "--not-genre",
+            "pop",
+            "--period",
+            "baroque",
+            "--not-period",
+            "romantic",
+            "--decade",
+            "60s",
+            "--not-decade",
+            "1980s",
+            "--with",
+            "piano",
+            "--without",
+            "vocal",
+            "--min-minutes",
+            "3",
+            "--max-minutes",
+            "30",
+            "--energy",
+            "-1",
+            "--allow-long",
+            "--for",
+            "2h",
+        ]);
+        assert_eq!(action.tool(), "dj_start");
+        assert!(!action.is_read());
+        let (path, body) = action.daemon_request().unwrap();
+        assert_eq!(path, "/dj/start");
+        let request: DjStartRequest = serde_json::from_value(body.unwrap()).unwrap();
+        let expected = SteerConstraints {
+            include_composers: vec!["Bach".into()],
+            exclude_composers: vec!["Wagner".into()],
+            include_artists: vec!["Ensemble A".into()],
+            exclude_artists: vec!["Ensemble B".into()],
+            include_genres: vec!["jazz".into(), "classical".into()],
+            exclude_genres: vec!["pop".into()],
+            periods: vec!["baroque".into()],
+            exclude_periods: vec!["romantic".into()],
+            decades: vec![1960],
+            exclude_decades: vec![1980],
+            include_keywords: vec!["piano".into()],
+            exclude_keywords: vec!["vocal".into()],
+            min_work_minutes: Some(3),
+            max_work_minutes: Some(30),
+            energy_bias: -1,
+            allow_long_works: true,
+        };
+        assert_eq!(request.zone, "Kitchen@S2");
+        assert_eq!(request.constraints, expected);
+        assert_eq!(
+            request.steer().unwrap(),
+            Some(DjSteer::Set {
+                mood: None,
+                constraints: expected,
+                for_secs: Some(7200),
+            })
+        );
+        let DjAction::Start(start) = action else {
+            panic!("not a start")
+        };
+        assert_eq!(
+            start.request(),
+            request,
+            "direct and daemon share the request"
+        );
+    }
+
+    #[test]
+    fn constrained_start_uses_the_shared_bounds_and_energy_conflicts() {
+        for args in [
+            vec!["start", "Den", "--for", "2h"],
+            vec!["start", "Den", "--genre", "jazz", "--for", "8d"],
+            vec!["start", "Den", "--genre", " "],
+            vec!["start", "Den", "--energy", "3"],
+            vec!["start", "Den", "--min-minutes", "40", "--max-minutes", "20"],
+        ] {
+            assert!(start_of(&args).steer().is_err(), "{args:?}");
+        }
+        assert!(Cli::try_parse_from(["dj", "start", "Den", "--calmer", "--brighter"]).is_err());
+        assert_eq!(
+            start_of(&["start", "Den", "--calmer", "--calmer"])
+                .constraints
+                .energy_bias,
+            -2
+        );
+        assert!(
+            start_of(&["start", "Den", "--mood", "focus", "--artist", "Ensemble A"])
+                .steer()
+                .unwrap()
+                .is_some()
+        );
+        <crate::Cli as clap::CommandFactory>::command().debug_assert();
+    }
+
     #[test]
     fn spans_read_as_people_write_them() {
         assert_eq!(parse_span("2h"), Ok(7200));
@@ -668,10 +799,10 @@ mod tests {
             Cli::try_parse_from(["dj", "steer", "Den", "--calmer", "--brighter"]).is_err(),
             "calmer and brighter conflict"
         );
-        assert!(
-            Cli::try_parse_from(["dj", "start", "Den", "--for", "2h"]).is_err(),
-            "--for needs --mood"
-        );
+        let DjAction::Start(start) = parse(&["start", "Den", "--for", "2h"]) else {
+            panic!("not a start")
+        };
+        assert!(start.request().steer().is_err(), "duration needs steering");
     }
 
     fn steering() -> DjSteeringDto {

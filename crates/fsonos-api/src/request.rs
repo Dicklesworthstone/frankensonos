@@ -403,7 +403,8 @@ impl DjSteerRequest {
 }
 
 /// `POST /dj/start` body: start the DJ in the zone a room plays in, steered
-/// by `mood` (for `for_secs`) when one is named.
+/// by a mood and/or selection constraints before selecting new music.
+/// A fresh session's first pick uses them; already queued works remain.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DjStartRequest {
@@ -411,8 +412,11 @@ pub struct DjStartRequest {
     /// A named mood to start in (`GET /dj/moods` lists them).
     #[serde(default)]
     pub mood: Option<String>,
-    /// How long the mood lasts, in seconds (60 to a week). Absent: until
-    /// cleared.
+    /// Selection constraints, laid over the named or time-of-day mood.
+    #[serde(default)]
+    pub constraints: SteerConstraints,
+    /// How long the requested steering lasts, in seconds (60 to a week).
+    /// Needs a mood or nonempty constraints. Absent: until cleared.
     #[serde(default)]
     pub for_secs: Option<u64>,
 }
@@ -422,15 +426,18 @@ impl DjStartRequest {
         zone_name("zone", &self.zone)
     }
 
-    /// The steering to start with; `None` when no mood is named.
+    /// The steering to start with; `None` preserves the current steering
+    /// when neither a mood nor constraints were supplied.
     pub fn steer(&self) -> Result<Option<DjSteer>, Failure> {
-        match (self.mood.as_deref(), self.for_secs) {
-            (None, None) => Ok(None),
-            (None, Some(_)) => Err(Failure::invalid("`for_secs` needs a `mood` to steer by")),
-            (Some(mood), for_secs) => {
-                steer_set(Some(mood), &SteerConstraints::default(), for_secs).map(Some)
+        if self.mood.is_none() && self.constraints.is_empty() {
+            if self.for_secs.is_some() {
+                return Err(Failure::invalid(
+                    "`for_secs` needs a `mood` or a constraint to steer by",
+                ));
             }
+            return Ok(None);
         }
+        steer_set(self.mood.as_deref(), &self.constraints, self.for_secs).map(Some)
     }
 }
 
@@ -797,11 +804,12 @@ mod tests {
     }
 
     #[test]
-    fn a_dj_start_steers_only_with_a_mood() {
+    fn a_plain_dj_start_preserves_steering_and_a_mood_start_replaces_it() {
         let start = |mood: Option<&str>, for_secs| DjStartRequest {
             zone: "Kitchen".into(),
             mood: mood.map(str::to_owned),
             for_secs,
+            ..DjStartRequest::default()
         };
         assert_eq!(start(None, None).steer().unwrap(), None);
         assert_eq!(
@@ -819,6 +827,62 @@ mod tests {
                 .detail
                 .contains("needs a `mood`")
         );
+    }
+
+    #[test]
+    fn a_dj_start_accepts_timed_constraints_without_a_mood() {
+        let request: DjStartRequest = serde_json::from_value(json!({
+            "zone": "Kitchen",
+            "constraints": {
+                "include_genres": [" jazz "],
+                "include_artists": [" Miles Davis "],
+                "decades": [1960],
+                "max_work_minutes": 20
+            },
+            "for_secs": 7200
+        }))
+        .unwrap();
+        assert_eq!(
+            request.steer().unwrap(),
+            Some(DjSteer::Set {
+                mood: None,
+                constraints: SteerConstraints {
+                    include_genres: vec!["jazz".into()],
+                    include_artists: vec!["Miles Davis".into()],
+                    decades: vec![1960],
+                    max_work_minutes: Some(20),
+                    ..SteerConstraints::default()
+                },
+                for_secs: Some(7200)
+            })
+        );
+        let plain: DjStartRequest = serde_json::from_value(json!({ "zone": "Kitchen" })).unwrap();
+        assert_eq!(plain.steer().unwrap(), None);
+    }
+
+    #[test]
+    fn a_dj_start_validates_the_same_constraints_and_duration_as_steering() {
+        for constraints in [
+            json!({ "include_genres": [" "] }),
+            json!({ "decades": [1965] }),
+            json!({ "energy_bias": 3 }),
+            json!({ "min_work_minutes": 20, "max_work_minutes": 10 }),
+            json!({ "include_artists": vec!["artist"; MAX_STEER_LIST + 1] }),
+        ] {
+            let request: DjStartRequest = serde_json::from_value(json!({
+                "zone": "Kitchen", "mood": "calm", "constraints": constraints
+            }))
+            .unwrap();
+            assert!(request.steer().is_err());
+        }
+        for seconds in [0, 59, MAX_STEER_SECS + 1] {
+            let request: DjStartRequest = serde_json::from_value(json!({
+                "zone": "Kitchen", "constraints": { "include_genres": ["jazz"] },
+                "for_secs": seconds
+            }))
+            .unwrap();
+            assert!(request.steer().is_err());
+        }
     }
 
     #[test]

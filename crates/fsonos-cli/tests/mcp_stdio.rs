@@ -256,6 +256,17 @@ fn control_tools_are_advertised_with_their_arguments() {
         );
     }
     assert_eq!(steer["required"], json!(["zone"]), "{steer}");
+    let start = &tool("dj_start")["inputSchema"];
+    for (name, schema) in steer["properties"].as_object().unwrap() {
+        if name != "clear" {
+            assert_eq!(
+                &start["properties"][name], schema,
+                "dj_start must expose the same {name} argument as dj_steer"
+            );
+        }
+    }
+    assert!(start["properties"].get("clear").is_none());
+    assert_eq!(start["required"], json!(["zone"]), "{start}");
     let announcement = &tool("announce")["inputSchema"];
     for arg in ["text", "chime", "wav_base64", "voice", "rooms", "volume"] {
         assert!(

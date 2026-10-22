@@ -894,7 +894,7 @@ fn read(daemon: &Daemon, global: &GlobalArgs, command: &Command) -> anyhow::Resu
 /// plays the works it queues, with no daemon to queue more.
 fn warn_direct(command: &Command) {
     if let Command::Dj {
-        action: DjAction::Start { .. },
+        action: DjAction::Start(_),
     } = command
     {
         tracing::warn!(

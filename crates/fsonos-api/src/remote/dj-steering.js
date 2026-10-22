@@ -3,7 +3,8 @@
 
 const DjSteeringRemote = (() => {
   const routes = { djSteeringZones: ['GET', '/zones'], djSteeringMoods: ['GET', '/dj/moods'],
-    djSteeringStatus: ['GET', '/zones/{room}/dj'], djSteeringWrite: ['POST', '/dj/steer'] };
+    djSteeringStatus: ['GET', '/zones/{room}/dj'], djSteeringWrite: ['POST', '/dj/steer'],
+    djSteeringStart: ['POST', '/dj/start'] };
   const lists = {
     include_composers: 'Only composers', exclude_composers: 'Exclude composers',
     include_artists: 'Only artists', exclude_artists: 'Exclude artists',
@@ -239,16 +240,17 @@ const DjSteeringRemote = (() => {
       finally { if (current(v)) { state.loading = false; publish(); } }
     }
 
-    function review(draft) {
+    function review(draft, start = false) {
       if (disposed || !state.open || state.busy || !state.ready || state.loading) return null;
       state.pending = null;
       try {
         const body = requestOf(state.target, draft, state.moods);
+        if (start && (body.clear || state.status.running)) fail('Start with settings requires a stopped DJ and a mood or constraints.');
         const preserve = !body.clear && draft.keep_expiry === true;
         const steering = state.status.steering;
         if (preserve && (steering.source !== 'session' || steering.expires_at === null
             || !integer(steering.expires_in_secs, 60, 604800))) fail('This deadline cannot be preserved. Choose a new duration or return to the program.');
-        state.pending = Object.freeze({ body, keep_expiry: preserve,
+        state.pending = Object.freeze({ body, start, keep_expiry: preserve,
           deadline: preserve ? steering.expires_at : null,
           zone: destination(), signature: signatureOf(steering) });
         state.message = '';
@@ -268,7 +270,8 @@ const DjSteeringRemote = (() => {
         const before = statusOf(await call('djSteeringStatus', { params: { room: expected.zone.target } }), expected.zone);
         if (!current(v)) return false;
         if (signatureOf(before.steering) !== expected.signature) fail('The steering changed or expired; nothing was saved. Refresh and review again.');
-        state.message = 'Saving steering…'; publish();
+        if (expected.start && before.running) fail('The DJ started since this review. Refresh and review its current session.');
+        state.message = expected.start ? 'Starting the DJ with these settings…' : 'Saving steering…'; publish();
         if (!current(v)) return false;
         let body = expected.body;
         if (expected.keep_expiry) {
@@ -279,7 +282,7 @@ const DjSteeringRemote = (() => {
           body = Object.freeze({ ...body, for_secs: remaining });
         }
         sent = true;
-        const answer = await call('djSteeringWrite', { body });
+        const answer = await call(expected.start ? 'djSteeringStart' : 'djSteeringWrite', { body });
         if (!answer || !text(answer.done) || typeof answer.changed !== 'boolean'
             || !Array.isArray(answer.notes ?? []) || !(answer.notes ?? []).every((n) => n && typeof n.code === 'string' && typeof n.detail === 'string')) {
           fail('The steering save response is unreadable.');
@@ -328,7 +331,7 @@ const DjSteeringRemote = (() => {
     const target = el('select', { id: `${id}-target` });
     const facts = el('div', { class: 'dj-direction-facts' });
     const importedNote = el('p', { class: 'dj-direction-warning', hidden: true,
-      text: 'Unsaved rehearsal draft: only its mood and filters are copied. Choose an expiry, then review. The seed, start time and work list are not sent. Live choices may differ; nothing starts playing.' });
+      text: 'Unsaved rehearsal draft: only its mood and filters are copied. Choose an expiry, then review saving the settings or starting the DJ with them. The seed, start time and work list are not sent. Live choices may differ.' });
     const mood = el('select', { id: `${id}-mood` });
     const minutes = el('input', { id: `${id}-minutes`, type: 'number', min: 1, max: 10080, step: 1, placeholder: 'Until cleared' });
     const expiry = el('select', { id: `${id}-expiry` },
@@ -349,7 +352,7 @@ const DjSteeringRemote = (() => {
     filterBox.append(el('p', { text: 'One entry per line, up to 32. Commas stay in names. Decades: 1960, 1970, etc., on separate lines. Periods: ' + periods.join(', ') + '.' }), filterGrid);
     const reviewBox = el('div', { class: 'dj-direction-review', hidden: true, tabindex: -1 });
     const controls = [mood, expiry, minutes, energy, long, min, max, ...Object.values(filters)];
-    const review = button('Review steering', () => {
+    function reviewSettings(start = false) {
       try {
         const constraints = { energy_bias: Number(energy.value), allow_long_works: long.checked };
         for (const [key, input] of Object.entries(filters)) {
@@ -362,11 +365,13 @@ const DjSteeringRemote = (() => {
         }
         if (expiry.value === 'duration' && !minutes.value) fail('Enter the new duration in whole minutes.');
         editor.review({ mood: mood.value, minutes: expiry.value === 'duration' ? minutes.value : '',
-          keep_expiry: expiry.value === 'keep', constraints });
+          keep_expiry: expiry.value === 'keep', constraints }, start);
       } catch (error) { editor.cancel(); status.textContent = message(error); }
-    });
+    }
+    const review = button('Review steering', () => reviewSettings());
+    const start = button('Review & start DJ', () => reviewSettings(true));
     const clear = button('Review return to program', () => editor.review({ clear: true }));
-    controls.push(review, clear);
+    controls.push(review, start, clear);
     let observed = null, displayedZones = null, displayedMoods = null, reviewed = null, imported = null;
     const editor = model({ call, changed: render });
 
@@ -388,6 +393,7 @@ const DjSteeringRemote = (() => {
       box.hidden = !state.open; toggle.setAttribute('aria-expanded', String(state.open));
       refresh.disabled = state.busy; target.disabled = state.busy || state.loading || !state.zones.length;
       for (const control of controls) control.disabled = !state.ready || state.busy || state.loading;
+      start.disabled = start.disabled || !state.status || state.status.running;
       status.textContent = state.loading ? 'Reading DJ state…' : state.message;
       if (displayedZones !== state.zones) {
         displayedZones = state.zones;
@@ -447,8 +453,10 @@ const DjSteeringRemote = (() => {
           reviewBox.append(el('h3', { text: pending.zone.label }),
             el('p', { text: body.clear ? 'Clear this group’s session and return to its time-of-day program.'
               : `Replace this group’s session. Mood: ${body.mood || 'time-of-day'}. ${describe(body.constraints)}. Duration: ${pending.keep_expiry ? `keep deadline ${new Date(pending.deadline * 1000).toLocaleString()}` : body.for_secs ? `${body.for_secs / 60} minutes from saving` : 'until cleared'}.` }),
-            el('p', { text: 'Applies from the next DJ pick, not to already queued works. Does not start, skip or restart playback. Standing preferences remain unchanged.' }),
-            el('div', { class: 'row' }, button('Save this group’s steering', () => { void editor.confirm(pending); }), button('Cancel', () => editor.cancel())));
+            el('p', { text: pending.start
+              ? 'Starts the DJ with these settings from its first pick. This replaces the group’s current source and queue and lets the daemon keep choosing music.'
+              : 'Applies from the next DJ pick, not to already queued works. Does not start, skip or restart playback. Standing preferences remain unchanged.' }),
+            el('div', { class: 'row' }, button(pending.start ? 'Start DJ with these settings' : 'Save this group’s steering', () => { void editor.confirm(pending); }), button('Cancel', () => editor.cancel())));
           reviewBox.focus({ preventScroll: true });
         }
       }
@@ -461,10 +469,10 @@ const DjSteeringRemote = (() => {
     box.append(el('h2', { text: 'Direct this group’s DJ' }),
       el('div', { class: 'row' }, refresh, button('Close', () => { editor.close(); toggle.focus(); })),
       field('DJ group', target), status, importedNote, facts,
-      el('p', { text: 'Edit the session below. Saving replaces its mood and extra filters. Keep the existing deadline, choose a new duration, or keep the session until cleared. Clearing returns to the program. Use DJ taste for persistent preferences across all groups.' }),
+      el('p', { text: 'Edit the session below. Saving replaces its mood and extra filters. When the DJ is stopped, you can also start it with these settings. Keep the existing deadline, choose a new duration, or keep the session until cleared. Clearing returns to the program. Use DJ taste for persistent preferences across all groups.' }),
       el('div', { class: 'dj-direction-grid' }, field('Mood', mood), field('Expiry', expiry), field('New duration in minutes', minutes),
         field('Energy shift', energy), field('Allow long works', long), field('Minimum work minutes', min), field('Maximum work minutes', max)),
-      filterBox, el('div', { class: 'row' }, review, clear), reviewBox);
+      filterBox, el('div', { class: 'row' }, review, start, clear), reviewBox);
     render(editor.state);
     return { node: el('div', { class: 'dj-direction' }, toggle, box), model: editor,
       openFor: async (zone, settings = null) => {
@@ -488,7 +496,7 @@ if (typeof document !== 'undefined' && typeof ROUTES !== 'undefined') {
       try { return await call(name, args); }
       finally {
         // A lost write answer is also a reason to re-observe, never to retry.
-        if (name === 'djSteeringWrite') document.dispatchEvent(new CustomEvent('fsonos:dj-changed', { detail: { zone: args.body.zone } }));
+        if (name === 'djSteeringWrite' || name === 'djSteeringStart') document.dispatchEvent(new CustomEvent('fsonos:dj-changed', { detail: { zone: args.body.zone } }));
       }
     } });
     directionRoot.append(directionPanel.node);

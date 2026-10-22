@@ -26,21 +26,22 @@ const draft = () => ({ mood: 'calm', minutes: '90', constraints: { exclude_artis
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 function fixture() {
-  const calls = [], replies = { djSteeringZones: [], djSteeringMoods: [], djSteeringStatus: [], djSteeringWrite: [] };
-  const defaults = { djSteeringZones: groups, djSteeringMoods: moods, djSteeringStatus: status, djSteeringWrite: saved };
+  const calls = [], replies = { djSteeringZones: [], djSteeringMoods: [], djSteeringStatus: [], djSteeringWrite: [], djSteeringStart: [] };
+  const defaults = { djSteeringZones: groups, djSteeringMoods: moods, djSteeringStatus: status, djSteeringWrite: saved, djSteeringStart: saved };
   const editor = dj.model({ call: async (name, args) => {
     calls.push([name, args]); assert.ok(Object.hasOwn(replies, name), `Unexpected route: ${name}`);
     if (!replies[name].length) return defaults[name]();
     const reply = replies[name].shift(); if (reply instanceof Error) throw reply; return reply;
   } });
   const open = async (target = 'Kitchen@S1') => { assert.equal(await editor.load(), true); assert.equal(await editor.select(target), true); };
-  const writes = () => calls.filter(([name]) => name === 'djSteeringWrite');
+  const writes = () => calls.filter(([name]) => name === 'djSteeringWrite' || name === 'djSteeringStart');
   return { editor, calls, replies, open, writes };
 }
 
-test('routes reuse the public steering API and cannot start, skip or replace music', () => {
+test('routes reuse the public steering and combined start APIs', () => {
   assert.deepEqual(dj.routes, { djSteeringZones: ['GET', '/zones'], djSteeringMoods: ['GET', '/dj/moods'],
-    djSteeringStatus: ['GET', '/zones/{room}/dj'], djSteeringWrite: ['POST', '/dj/steer'] });
+    djSteeringStatus: ['GET', '/zones/{room}/dj'], djSteeringWrite: ['POST', '/dj/steer'],
+    djSteeringStart: ['POST', '/dj/start'] });
 });
 
 test('all sixteen constraints round-trip canonically without splitting artist names at commas', () => {
@@ -179,6 +180,51 @@ test('clear uses its own reviewed request without changing standing preferences'
   const f = fixture(); await f.open();
   await f.editor.confirm(f.editor.review({ clear: true }));
   assert.deepEqual(f.writes()[0][1], { body: { zone: 'Kitchen@S1', clear: true } });
+});
+
+test('starting with filters submits one combined request after checking the stopped DJ', async () => {
+  const f = fixture();
+  const stopped = { ...status(), running: false, now: null, next: [] };
+  f.replies.djSteeringStatus.push(stopped);
+  await f.open();
+  const pending = f.editor.review({ minutes: '120', constraints: { include_genres: ['jazz'], decades: [1960] } }, true);
+  assert.equal(pending.start, true);
+  assert.equal(f.writes().length, 0);
+  f.replies.djSteeringStatus.push(stopped);
+  assert.equal(await f.editor.confirm(pending), true);
+  assert.deepEqual(f.writes(), [['djSteeringStart', { body: { zone: 'Kitchen@S1',
+    constraints: { include_genres: ['jazz'], decades: [1960] }, for_secs: 7200 } }]]);
+  assert.equal(f.editor.state.status.running, true);
+  assert.equal(await f.editor.confirm(pending), false);
+  assert.equal(f.writes().length, 1);
+});
+
+test('start reviews reject clearing, a running DJ, and another controller starting before confirmation', async () => {
+  const f = fixture(); await f.open();
+  assert.equal(f.editor.review(draft(), true), null);
+  const stopped = { ...status(), running: false };
+  f.replies.djSteeringStatus.push(stopped);
+  await f.editor.select('Kitchen@S1');
+  assert.equal(f.editor.review({ clear: true }, true), null);
+  const pending = f.editor.review(draft(), true);
+  assert.ok(pending);
+  assert.equal(await f.editor.confirm(pending), false);
+  assert.match(f.editor.state.message, /started since this review/);
+  assert.equal(f.writes().length, 0);
+});
+
+test('an uncertain combined start is not retried', async () => {
+  const f = fixture();
+  const stopped = { ...status(), running: false };
+  f.replies.djSteeringStatus.push(stopped);
+  await f.open();
+  const pending = f.editor.review(draft(), true);
+  f.replies.djSteeringStatus.push(stopped);
+  f.replies.djSteeringStart.push(new Error('Connection lost'));
+  assert.equal(await f.editor.confirm(pending), false);
+  assert.match(f.editor.state.message, /Outcome uncertain/);
+  assert.equal(await f.editor.confirm(pending), false);
+  assert.equal(f.writes().length, 1);
 });
 
 test('canceled, superseded, copied and refreshed reviews cannot be revived', async () => {

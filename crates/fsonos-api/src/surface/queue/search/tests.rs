@@ -75,7 +75,7 @@ fn response(action: &str, body: &str) -> String {
 struct Reads {
     pages: VecDeque<(u32, String)>,
     calls: Vec<(u32, u32)>,
-    topology_reads: usize,
+    topology_calls: usize,
     regroup: bool,
 }
 
@@ -91,8 +91,8 @@ impl Transport for Script {
     ) -> Result<String, ProtoError> {
         let mut reads = self.0.lock().unwrap();
         if action.contains("#GetZoneGroupState") {
-            reads.topology_reads += 1;
-            let topology = if reads.regroup && reads.topology_reads > 1 {
+            reads.topology_calls += 1;
+            let topology = if reads.regroup && reads.topology_calls > 1 {
                 TOPOLOGY.replace(
                     "Coordinator=\"RINCON_SIM_ALPHA\"",
                     "Coordinator=\"RINCON_SIM_BETA\"",
@@ -184,7 +184,7 @@ fn later_pages_match_all_terms_across_metadata_and_preserve_repeated_occurrences
     let reads = reads.lock().unwrap();
     assert!(reads.pages.is_empty());
     assert_eq!(reads.calls, [(0, 100), (100, 100), (200, 7), (0, 100)]);
-    assert_eq!(reads.topology_reads, 2);
+    assert_eq!(reads.topology_calls, 2);
 }
 
 #[test]
@@ -235,7 +235,7 @@ fn page_budget_returns_an_explicit_continuation_even_with_no_matches() {
         pages.push(pages[0].clone());
         let (surface, reads) = scripted(pages, Policy::default());
         let result = surface
-            .search_queue_section(&Client::Cli, &req("absent"), Duration::from_secs(86400))
+            .search_queue_section(&Client::Cli, &req("absent"), Duration::from_hours(24))
             .unwrap();
         assert!(result.items.is_empty());
         assert!(!result.complete);
@@ -262,7 +262,7 @@ fn an_expired_work_budget_returns_a_checked_section_without_another_data_page() 
     assert!(result.items.is_empty());
     let reads = reads.lock().unwrap();
     assert_eq!(reads.calls, [(0, 100), (0, 100)]);
-    assert_eq!(reads.topology_reads, 2);
+    assert_eq!(reads.topology_calls, 2);
 }
 
 #[test]
@@ -431,7 +431,7 @@ fn validation_and_get_queue_policy_run_before_any_player_reads() {
             ErrorCode::InvalidArgument
         );
     }
-    assert_eq!(reads.lock().unwrap().topology_reads, 0);
+    assert_eq!(reads.lock().unwrap().topology_calls, 0);
     let policy = Policy::from_toml("[clients.unknown]\ndeny = [\"get_queue\"]\n").unwrap();
     let (surface, reads) = scripted(Vec::new(), policy);
     assert_eq!(
@@ -441,7 +441,7 @@ fn validation_and_get_queue_policy_run_before_any_player_reads() {
             .code,
         ErrorCode::PolicyDenied
     );
-    assert_eq!(reads.lock().unwrap().topology_reads, 0);
+    assert_eq!(reads.lock().unwrap().topology_calls, 0);
 }
 
 #[test]

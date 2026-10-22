@@ -487,6 +487,16 @@ from a genre the DJ was built around.
   is classical). Time-of-day energy, `PickReason`s, steering and feedback use
   the same keys; energy comes from metadata that applies across genres, with
   tempo markings as one more input for classical movements.
+- **Start with a direction in one operation.** `dj start` accepts the same
+  structured constraints as `dj steer`, with an optional mood and expiry.
+  HTTP `POST /dj/start` takes `constraints` and `for_secs`; MCP `dj_start`
+  exposes the steering fields and `for_minutes`. The remote's DJ direction
+  editor can review and start a stopped group with its edited settings.
+  Steering is saved before new music is selected: a fresh session's first
+  pick uses it. An existing feed retains its already queued works. A duration
+  requires a mood or a nonempty constraint; a plain start preserves existing
+  steering. These use the same preference and filter-relaxation rules as a
+  separate steer, rather than inventing another selection policy.
 - **Multi-movement works stay whole.** Classical tracks on Spotify are
   movements. A DJ that picks tracks independently plays a scherzo, then an
   aria, then the finale of a different symphony, which is the most common way

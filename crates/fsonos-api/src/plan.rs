@@ -629,8 +629,8 @@ pub fn plan_dj<'a>(
     })
 }
 
-/// `POST /dj/start` / the `dj_start` tool: with a mood, steer the group and
-/// start the DJ in one go.
+/// `POST /dj/start` / the `dj_start` tool: with a mood or constraints, steer
+/// the group before selecting new music and start the DJ in one go.
 pub fn plan_dj_start<'a>(
     rooms: impl Into<Rooms<'a>>,
     req: &DjStartRequest,
@@ -851,6 +851,7 @@ mod tests {
             zone: "Den".into(),
             mood: mood.map(str::to_owned),
             for_secs: None,
+            ..DjStartRequest::default()
         };
         assert_eq!(
             plan_dj_start(&houses, &start(None)).unwrap(),
@@ -863,6 +864,29 @@ mod tests {
             plan_dj_start(&houses, &start(Some("calm"))).unwrap(),
             Command::DjSteer { start: true, .. }
         ));
+        let mut constrained = start(None);
+        constrained.zone = "kitchen@S1".into();
+        constrained.constraints.include_genres = vec!["jazz".into()];
+        constrained.constraints.decades = vec![1960];
+        constrained.for_secs = Some(7200);
+        assert_eq!(
+            plan_dj_start(&houses, &constrained).unwrap(),
+            Command::DjSteer {
+                coordinator: id("RINCON_DEN"),
+                steer: Box::new(DjSteer::Set {
+                    mood: None,
+                    constraints: constrained.constraints.clone(),
+                    for_secs: Some(7200),
+                }),
+                start: true,
+            }
+        );
+        constrained.zone = "Nowhere".into();
+        constrained.constraints.decades = vec![1965];
+        assert_eq!(
+            plan_dj_start(&houses, &constrained).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
     }
 
     #[test]

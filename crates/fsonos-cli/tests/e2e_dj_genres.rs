@@ -8,9 +8,13 @@ mod e2e;
 
 use e2e::{Daemon, Scenario, http};
 use fsonos_core::store::SqliteStore;
+use fsonos_proto::content::{QUEUE, browse_snapshot};
+use fsonos_proto::control::{get_position_info, get_transport_info};
+use fsonos_proto::didl::spotify_uri_from_renderer_uri;
 use fsonos_sim::SimHousehold;
 use fsonos_spotify::cache::apply_library_read;
 use fsonos_spotify::library::{LibraryItem, Origin};
+use fsonos_types::TransportState;
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -215,6 +219,110 @@ fn restart(api: &str) -> (u16, Value) {
     let (code, _) = call(api, "POST", "/dj/start", Some(&zone));
     let (_, status) = call(api, "GET", STATUS, None);
     (code, status)
+}
+
+fn is_jazz_track(uri: &str) -> bool {
+    let uri = spotify_uri_from_renderer_uri(uri).unwrap_or_else(|| uri.to_string());
+    [2, 3]
+        .iter()
+        .any(|song| uri == format!("spotify:track:simgnsong{song}000000000000"))
+}
+
+#[test]
+fn constrained_start_replaces_saved_steering_before_the_first_pick() {
+    let mut s = Scenario::start("dj-constrained-start");
+    s.sim(SimHousehold::standard());
+    seed(&mut s);
+    let (mut daemon, api, _) = serve(&mut s);
+
+    // A disjoint saved filter makes an ignored constraint or a start-before-
+    // steer ordering bug fail regardless of the DJ's random selection seed.
+    let classical = json!({
+        "zone": "Living Room", "constraints": { "include_genres": ["classical"] }
+    });
+    let (code, steered) = call(&api, "POST", "/dj/steer", Some(&classical));
+    s.check(
+        "previous-steering",
+        "http",
+        "the stopped group has classical-only steering before the constrained start",
+        code == 200,
+        &steered,
+    );
+
+    // No mood: the first pick must use these constraints over the program.
+    let jazz = json!({
+        "zone": "Living Room", "constraints": { "include_genres": ["jazz"] }
+    });
+    let (code, started) = call(&api, "POST", "/dj/start", Some(&jazz));
+    let (status_code, status) = call(&api, "GET", STATUS, None);
+    let selected = works(&status);
+    let host = s.ip("Living Room");
+    let playing = get_position_info(&s.lan(), host).unwrap();
+    let transport = get_transport_info(&s.lan(), host).unwrap();
+    let queue = browse_snapshot(&s.lan(), host, QUEUE).unwrap();
+    s.check(
+        "first-pick",
+        "http-and-sim",
+        "one constrained start replaces the saved filter before playing or queueing any work",
+        code == 200
+            && status_code == 200
+            && status["running"] == true
+            && status["steering"]["source"] == "session"
+            && status["steering"]["constraints"]["include_genres"] == json!(["jazz"])
+            && !selected.is_empty()
+            && selected.iter().all(|work| work["composer"] == "Nina Marsh")
+            && transport.state == TransportState::Playing
+            && playing.track == 1
+            && is_jazz_track(&playing.uri)
+            && !queue.objects.is_empty()
+            && queue
+                .objects
+                .iter()
+                .all(|item| item.res.as_ref().is_some_and(|res| is_jazz_track(&res.uri))),
+        format!("{started}\n{status}\n{playing:?}\n{queue:?}"),
+    );
+
+    check_invalid_start(&mut s, &api);
+    let code = daemon.interrupt(Duration::from_secs(10));
+    s.check(
+        "exit",
+        "daemon",
+        "SIGINT stops serve cleanly",
+        code == Some(0),
+        format!("{code:?}"),
+    );
+    s.finish();
+}
+
+fn check_invalid_start(s: &mut Scenario, api: &str) {
+    let host = s.ip("Living Room");
+    let (before_code, before) = call(api, "GET", STATUS, None);
+    let queue = browse_snapshot(&s.lan(), host, QUEUE).unwrap();
+    let playing = get_position_info(&s.lan(), host).unwrap();
+    let transport = get_transport_info(&s.lan(), host).unwrap();
+    let invalid = json!({
+        "zone": "Living Room",
+        "constraints": { "include_genres": ["classical"], "energy_bias": 3 }
+    });
+    let (code, refused) = call(api, "POST", "/dj/start", Some(&invalid));
+    let (after_code, after) = call(api, "GET", STATUS, None);
+    let still_playing = get_position_info(&s.lan(), host).unwrap();
+    s.check(
+        "invalid-start",
+        "http-and-sim",
+        "invalid start constraints preserve the saved steering, exact queue and playing track",
+        code == 422
+            && refused["code"] == "INVALID_ARGUMENT"
+            && before_code == 200
+            && after_code == 200
+            && after["running"] == true
+            && after["steering"] == before["steering"]
+            && browse_snapshot(&s.lan(), host, QUEUE).unwrap() == queue
+            && get_transport_info(&s.lan(), host).unwrap() == transport
+            && still_playing.track == playing.track
+            && still_playing.uri == playing.uri,
+        format!("{refused}\n{before}\n{after}\n{still_playing:?}"),
+    );
 }
 
 #[test]
