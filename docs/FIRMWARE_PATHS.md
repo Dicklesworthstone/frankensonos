@@ -40,6 +40,49 @@ AnonymousUpdateURL: %s` (the fetch can be redirected), and the update
 **manifest** (`.upm`) is signature-verified against a root-CA bundle
 (`SCRootCerts` / `RootCACertBundleDownloader`).
 
+**Live update-path probe (2026-10-22, Play:5 Gen1 on 57.23-74170, reads and
+two reboots only):** the device's own fetcher appends
+`?cmaj=&cmin=&cbld=&subm=&rev=&reg=&serial=&sonosid=&householdid=` and
+`User-Agent: Wget` to whatever `UpdateURL` it is given. Behaviour, measured
+with a byte-counting HTTP server and a packet capture:
+
+- a **64 KB** file is fetched to completion, so the server side is sound;
+- a 2 MB `.upd` of an **older** version is read for only ~10 KB and then the
+  connection is FIN/RST-closed — the version gate runs on the first records,
+  not after the whole download;
+- the **same** version aborts the same way (nothing to do);
+- the same image with the type-1 version record patched upward
+  (57.23 → 99.0) also aborts at ~10 KB, so the early gate is not satisfied by
+  the URL or the filename: the record is parsed and the (signed) header is
+  what decides;
+- a bare `.upm` manifest is fetched completely but produces **no** image
+  fetch (the manifest is root-CA-signed; ours is not).
+
+Consequence: `BeginSoftwareUpdate` alone cannot install a modified or older
+image without the signing key, and "Force" (Flags bit 0) only makes the
+device go as far as the gate. An in-band downgrade is therefore *not* a
+bypass by itself.
+
+**Reachable unauthenticated write (2026-10-22, verified live):** `POST
+/advconfig` writes `/jffs/netsettings_mod.txt` as root from two form fields
+(`FirstZP`, `PriorityBridge`, each `atoi`-reduced). A CSRF token is required
+and must be the **first** parameter (read from the GET form, single use);
+the pairing is `csrfToken=<tok>&FirstZP=1&PriorityBridge=0&` → `200 Success.`.
+The file only carries two integers, so it is a persistent config write, not
+code execution.
+
+**Diagnostics on 57.23:** `/diag` (the 34.16 module) is gone; `/status` is
+the live surface, lists its own options (`zl`, `enetports`, `VERSION`,
+`proc/...`, `ifconfig`, `showstp`) and runs the fixed command table as root
+(`/usr/sbin/brctl showstp br0`, `/sbin/ifconfig`, …), while `/status/<file>`
+returns fixed paths. Path traversal and arbitrary-path reads are refused.
+
+**SOAP robustness (2026-10-22, live sweep):** every action's string arguments
+were driven to 1850 bytes, bodies to 38 KB and parameter counts to 4800; the
+daemon never crashed, and the byte-wise `RCROutParam::accumulate` and the
+`RBase64Dec` decoder both clamp to their declared capacities. The obvious
+length bugs are not there.
+
 **VERIFIED 2026-10-08**: the .upd delivery path is **blocked** by RSA
 signature verification on running 57.23 firmware. Live-fire testing proved:
 `BeginSoftwareUpdate` accepts arbitrary URLs and the speaker downloads
