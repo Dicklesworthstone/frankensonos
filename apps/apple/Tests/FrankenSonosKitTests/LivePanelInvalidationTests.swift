@@ -266,3 +266,21 @@ private func withPanelRig(_ zones: [Zone] = [panelZone()], retry: Duration = .mi
     #expect(initial.hasNewPlaybackObservation(for: zone.id, since: nil))
     #expect(!initial.hasNewPlaybackObservation(for: RoomID(household: "absent", room: "Studio"), since: nil))
 }
+
+@Test(arguments: ["add_to_queue", "remove_from_queue", "move_in_queue"])
+func panelQueueEditsInvalidateWithoutAPlaybackChange(_ tool: String) async throws {
+    try await withPanelRig { rig in
+        try await rig.start()
+        let initial = try #require(await rig.views.latest)
+        let reads = await rig.transport.requests.count
+        await rig.transport.emit("action.logged", data: try panelAction("\(tool): Studio"))
+        try await panelEventually { await rig.views.latest?.panelRevision == initial.panelRevision + 1 }
+        let current = try #require(await rig.views.latest)
+        #expect(current.snapshot?.states == initial.snapshot?.states)
+        #expect(current.snapshot?.stateObservedAt == initial.snapshot?.stateObservedAt)
+        #expect(current.isFresh)
+        #expect(await rig.transport.requests.count == reads)
+        #expect(!LiveHouse.invalidatesPanels(try panelAction("\(tool): Studio", decision: "deny: policy")))
+        #expect(!LiveHouse.invalidatesPanels(try panelAction("get_queue: \(tool)", decision: "deny: policy")))
+    }
+}

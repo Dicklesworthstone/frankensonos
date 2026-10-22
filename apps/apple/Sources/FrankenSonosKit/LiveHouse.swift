@@ -12,7 +12,7 @@ public struct LiveHouseView: Sendable {
     /// Settled observations, excluding known invalidations and in-flight reads.
     public let freshRooms: Set<RoomID>
     /// Coalesced invalidations of data not represented by room playback, such
-    /// as saved scenes, schedules and sleep timers. This is not a command ACK.
+    /// as saved scenes, schedules, sleep timers and queue edits. Not a command ACK.
     public let panelRevision: UInt64
 
     init(snapshot: HouseSnapshot?, phase: Phase, problem: String?,
@@ -129,8 +129,8 @@ public actor LiveHouse {
                                   isConnected: active && connected, freshRooms: fresh, panelRevision: panelRevision))
     }
 
-    /// Store-only changes need no speaker reads. Publish one durable revision
-    /// per fixed coalescing window; consumers refresh only their visible panel.
+    /// Panel invalidations need no new house snapshot. Publish one durable
+    /// revision per fixed window; consumers refresh only their visible panel.
     private func invalidatePanels() {
         guard active, panelFlush == nil else { return }
         let token = generation, delay = timing.coalesce
@@ -320,7 +320,8 @@ public actor LiveHouse {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         switch tool {
         case "save_scene", "delete_scene", "add_schedule", "remove_schedule",
-             "pause_schedule", "resume_schedule", "set_sleep_timer", "undo", "undo_last":
+             "pause_schedule", "resume_schedule", "set_sleep_timer", "undo", "undo_last",
+             "add_to_queue", "remove_from_queue", "move_in_queue":
             return true
         default: return false
         }
