@@ -15,7 +15,7 @@ const SpotifyConnectRemote = (() => {
   function message(error) {
     if (error instanceof InputError) return error.message;
     const hints = {
-      NOT_IMPLEMENTED: 'Spotify sign-in is not configured. Set FSONOS_SPOTIFY_CLIENT_ID and the registered redirect on the daemon host, then restart the daemon.',
+      NOT_IMPLEMENTED: 'Spotify sign-in is not configured. On the daemon host, fsonos setup prints this daemon\'s callback: create an app with it as the redirect URI in Spotify\'s developer dashboard (developer.spotify.com/dashboard), set FSONOS_SPOTIFY_CLIENT_ID on the daemon host to the app\'s client id, then restart the daemon.',
       POLICY_DENIED: 'The house policy does not let this login use Spotify sign-in. Starting one is the owner\'s: sign in from the daemon host\'s own tailnet login, run fsonos setup on that host, or grant it to this login in policy.toml (grant = ["auth"] under its [clients."<login>"] table).',
       NOT_READY: 'Another Spotify sign-in is being completed. Check status before trying a new sign-in.',
       SPOTIFY_AUTH_REQUIRED: 'Spotify did not accept this sign-in. Check status, then start a new sign-in when ready.',

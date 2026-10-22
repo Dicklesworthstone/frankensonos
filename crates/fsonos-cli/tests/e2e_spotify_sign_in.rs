@@ -119,11 +119,14 @@ fn the_daemon_holds_the_sign_in_and_refuses_a_forged_redirect() {
     s.check(
         "no-app",
         "http",
-        "without an app client id the sign-in is NOT_IMPLEMENTED, naming the setting",
+        "without an app client id the sign-in is NOT_IMPLEMENTED, naming the setting, where \
+         to create the app and the callback it must register",
         status == 501
-            && json_of(&body)["hint"]
-                .as_str()
-                .is_some_and(|h| h.contains("FSONOS_SPOTIFY_CLIENT_ID")),
+            && json_of(&body)["hint"].as_str().is_some_and(|h| {
+                h.contains("FSONOS_SPOTIFY_CLIENT_ID")
+                    && h.contains("https://developer.spotify.com/dashboard")
+                    && h.contains("/auth/spotify/callback")
+            }),
         &body,
     );
     let code = daemon.interrupt(Duration::from_secs(10));

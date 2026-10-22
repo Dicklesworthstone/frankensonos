@@ -22,6 +22,7 @@ use crate::config::ServeArgs;
 /// `surface` running the Spotify sign-in when serve has a Spotify app
 /// client id, with its token cache in `data_dir`.
 pub fn install(surface: Surface, args: &ServeArgs, data_dir: &Path) -> Surface {
+    let surface = surface.with_spotify_redirect(args.spotify_redirect_uri.clone());
     let Some(client_id) = args.spotify_client_id.clone() else {
         return surface;
     };

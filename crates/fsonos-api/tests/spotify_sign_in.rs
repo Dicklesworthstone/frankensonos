@@ -214,12 +214,17 @@ fn without_a_spotify_app_the_sign_in_is_not_implemented() {
     let (status, _, body) = call(addr, "/auth/spotify", None);
     assert_eq!(status, 501, "{body}");
     assert_eq!(json_of(&body)["code"], "NOT_IMPLEMENTED");
+    let hint = json_of(&body)["hint"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(hint.contains("FSONOS_SPOTIFY_CLIENT_ID"), "{hint}");
+    // Where to create the app, and what it must register.
     assert!(
-        json_of(&body)["hint"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("FSONOS_SPOTIFY_CLIENT_ID")
+        hint.contains("https://developer.spotify.com/dashboard"),
+        "{hint}"
     );
+    assert!(hint.contains("redirect URI"), "{hint}");
 }
 
 #[test]

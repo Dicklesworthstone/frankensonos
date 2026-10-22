@@ -75,13 +75,29 @@ impl Surface {
         self
     }
 
+    /// Name `redirect_uri`, the sign-in's callback, to an owner who has no
+    /// Spotify app yet: the app they create must register exactly it.
+    #[must_use]
+    pub fn with_spotify_redirect(mut self, redirect_uri: impl Into<String>) -> Self {
+        self.spotify_redirect = Some(redirect_uri.into());
+        self
+    }
+
     fn sign_in_engine(&self) -> Result<&dyn SpotifyAuth, Failure> {
         self.spotify_auth.as_deref().ok_or_else(|| {
+            let redirect = self.spotify_redirect.as_deref().map_or_else(
+                || "the redirect URI fsonos setup prints".to_string(),
+                |uri| format!("the redirect URI {uri}"),
+            );
             Failure::new(
                 ErrorCode::NotImplemented,
                 "this daemon has no Spotify app configured",
             )
-            .with_hint("Start fsonos serve with FSONOS_SPOTIFY_CLIENT_ID (or --spotify-client-id).")
+            .with_hint(format!(
+                "Create an app at https://developer.spotify.com/dashboard with {redirect}, then \
+                 start fsonos serve with FSONOS_SPOTIFY_CLIENT_ID set to its client id (or \
+                 --spotify-client-id)."
+            ))
         })
     }
 
