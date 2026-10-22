@@ -1,0 +1,10 @@
+{
+  "schema_version": "br.wal_index.quarantine.v1",
+  "database_path": "/Users/jemanuel/projects/frankensonos/.beads/beads.db",
+  "reason": "initialized-zero-page-wal-index",
+  "main_sha256": "fa3958f8c932d5dbcfcb590ddeb771adda023195b931b03ea5064745138ed60a",
+  "wal_sha256": "c161950e603ba9bc5b452925b81993a6f9a029f367162907b437466469330a50",
+  "shm_sha256": "c92cb10eb3da7020d381b297850e009622b4c36cfe3c878aa686c08f1535e89b",
+  "retained_index": "/Users/jemanuel/projects/frankensonos/.beads/.br-wal-index-6URx6L/poisoned-shm",
+  "completion_marker": "quarantine-complete.json"
+}
