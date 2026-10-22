@@ -52,3 +52,21 @@
 .studio-story progress::-webkit-progress-bar { background: var(--line); border-radius: 10px; }
 .studio-story progress::-webkit-progress-value { background: var(--accent); border-radius: 10px; }
 .studio-story progress::-moz-progress-bar { background: var(--accent); border-radius: 10px; }
+
+/* Touch screens: every control the studio shows is at least 44 px to tap
+   (Apple's minimum touch target), however compact it is with a mouse: the
+   volume and position sliders, mute, the clock's buttons, the group level's
+   refresh. */
+@media (pointer: coarse) {
+  .studio button, .studio select, .studio-tool-grid details > summary { min-height: 44px; }
+  .studio input[type="range"] { min-height: 44px; }
+  .studio .group-volume > button,
+  .studio .playback-clock .row button,
+  .studio .studio-story-actions button,
+  .studio .studio-steering-line button,
+  .studio .studio-dj-feedback button,
+  .studio-top-actions button { min-height: 44px; }
+  .studio .volume .mute { min-height: 44px; min-width: 44px; }
+  .studio-palette header button { min-width: 44px; min-height: 44px; }
+  .studio #studio-command, .studio #studio-theme { min-width: 44px; }
+}
