@@ -243,8 +243,47 @@ patched upward. `Force` (Flags bit 0) does not override it. 57.23's
 `MinCompatibleVersion` is the 56 line, so a signed 34.16/57.19 image cannot
 be installed by URL alone.
 
+### Local smart-speaker WebSocket API (port 1443) — pre-auth, and it has admin verbs
+
+Newer builds also accept a local WebSocket API. Handshake: `wss://<ip>:1443/websocket/api`,
+header `X-Sonos-Api-Key: 123e4567-e89b-12d3-a456-426655440000` (a published constant),
+subprotocol `v1.api.smartspeaker.audio`. The server greets with an error envelope that
+already carries `householdId` and `locationId`.
+
+The request frame is a JSON **array of exactly two elements**: a command object
+`{namespace, command, householdId, <params>}` and an options object that must be `{}`.
+A one-element array, `[]` or `null` as the second element is rejected with
+`Parsing terminated:[1]`; a header+command pair is rejected at `[0].command`.
+`groups:1/getGroups` and `favorites:1/getFavorites` answer with typed payloads; live
+group ids look like `RINCON_<mac>01400:<hash>` and are not the `locationId`.
+
+The command table is compiled in as comma-joined descriptors
+(`<required id>,<namespace>,<command>[,<param>]`), which enumerates the whole surface
+with no wire probing. It includes, pre-auth:
+
+- `playerId,management,factoryReset`, `playerId,management,reboot`,
+  `playerId,networkTest,temporarilyDisableNetwork`
+- `deviceId,householdUpdate,beginHouseholdSoftwareUpdate`,
+  `playerId,update,beginSoftwareUpdate` / `checkForUpdate` / `getUpdateStatus`
+- `householdId,settings,getProtectedAdminSettings` / `setProtectedAdminSettings`,
+  `playerId,settings,updateAllSettings`, `setSonosNetChannel`, `setSelfTruePlay`
+- `householdId,platformInternal,invalidateCache` / `sync`,
+  `playerId,diagnostics,submitDiagnostics`
+- `playerId,upnpDeviceProperties,call` and the matching `upnpSystemProperties` /
+  `upnpZoneGroupTopology` subscribe/renew/unsubscribe/call families (a generic UPnP
+  passthrough)
+
+Whether an individual admin verb needs more than the static key on a given build is
+still being mapped; the namespaces that take a `playerId`/`groupId` return
+`ERROR_INVALID_PARAMETER` under the obvious id forms, so their exact plumbing is open.
+
 ### Open leads, in order
 
+0. The local WebSocket API above is the widest new surface: a static key reaches
+   `reboot`, `factoryReset`, the update triggers and a generic UPnP passthrough with no
+   pairing. The immediate task is finishing the parameter plumbing for the
+   `playerId`/`deviceId`/`userId` namespaces (the ids, not the key, are what the parser
+   rejects today), then exercising the admin verbs and their parsers.
 1. The 2023 Pwn2Own pair is the only public S1-shaped material: `/msprox`
    OOB read (CVE-2023-27353, leak) and the MPEG-TS `afelen` overflow
    (CVE-2023-27355). `/msprox` returns 405 (route exists) on both 57.23 and
