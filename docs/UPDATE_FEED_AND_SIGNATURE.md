@@ -481,8 +481,12 @@ fallback bundle, and matches no cert, SPKI, subject or modulus hash tried.
    Watch `/xml/review.xsl` for `PWNED-ROOTFS-MARKER`.
 5. The control port wedges after a failed update; use `https://<ip>:1443`
    with `-k`, and a direct `.upd` fetch to force a reboot.
-6. Local PPC execution is still blocked (`qemu-ppc` segfaults); a
-   `qemu-system-ppc` or PPC cross-build remains the only local oracle.
+6. Local PPC execution: `qemu-user` is installable and `qemu-ppc` runs in an
+   amd64 container; a harness cross-built with `gcc-powerpc-linux-gnu` against
+   `librcb` links cleanly. What still fails is the repo's **uClibc `ld.so.1`**,
+   which dies with `Illegal instruction` under every CPU model tried (`440`,
+   `440ep`, `7400`, `604`). A static harness (no uClibc loader) or a matching
+   loader is required before the resolver can be exercised locally.
 
 
 
