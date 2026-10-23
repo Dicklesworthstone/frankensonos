@@ -718,3 +718,17 @@ Practical guest notes: `insmod` refuses a second module with the same internal n
 so extra `/dev/mtdN` beyond the real devices are **symlinks** to a real one (the walk
 only needs `open` to succeed); a 128 MiB `nandsim` partition is mtd1 and is the
 directory store the code reads first.
+
+### Key store follow-up: the 48 comes from the section decrypt path
+
+`syslog("no decryption key")` returns 48 from `0x406214` (frame `0xc2a0`), the
+per-section decrypt wrapper. It is entered from the section loader at `0x4066e8`
+with `a2 = *(sp+92)`, the length of the RSA-encrypted key read from the section
+header, and maps the section with `mmap` immediately before. If that length is 0 the
+wrapper prints the message and returns 48.
+
+So the partition scan (512 bytes at index 1, then 4096 at +512, type-8 records with a
+`u32` length ≥ 8 at +4, parsed by `0x406200` and the `ZZ0052`/`ZZ0053`/`ZZ0045`
+library trio) feeds the key that the section decrypt needs. A bare `00000008
+00000008` record is not enough; the payload has to satisfy `ZZ0053`'s check before
+`ZZ0052` parses it, which is the next thing to take apart.
