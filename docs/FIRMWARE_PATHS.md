@@ -1968,3 +1968,21 @@ to a URI we choose.
 With the right service id the OAuth path still does not open:
 `GetWebCode(9)` → 800, `GetSessionId(9)` → 806, `AddOAuthAccountX(9, …)` → 402. So
 it needs genuine session state, not just the correct type.
+
+### `UpdateAvailableServices` is inert, and harmless to try
+
+Replaying the device's own 102-entry descriptor back through
+`UpdateAvailableServices` — verbatim, with an extra `<Service Id="999" …>` appended,
+with `AvailableServiceTypeList` alongside, and both entity-escaped and raw —
+always answers 200 and always leaves the in-memory list **empty** for the rest of
+that boot: `ListAvailableServices` then reports 0 services and no 999, in every
+variant.
+
+A soft reboot restores all 102 (so the payload never becomes the stored state, and
+the device rebuilds the list on boot). Practical upshot: the call is safe to
+experiment with on a house player — worst case the service list is empty until the
+next boot, which a rejected-image soft reboot fixes in under a minute.
+
+So registering a service we host is still open, and the payload shape is not the
+one the SCPD implies (it declares *no* arguments at all). Getting it right is worth
+it: a registered entry makes the device speak SMAPI to a URI we choose.
