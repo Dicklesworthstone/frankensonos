@@ -57,6 +57,13 @@ are written as `192.168.4.x`-style placeholders and uuids as `RINCON_…`.
   is base+offset with a base the linker sets at load. Read the prologue,
   derive the base, then search; a literal-address search on such a file is a
   guaranteed false negative, not evidence of absence.
+- **Follow-up measured on the same file:** its only literal-string table is a
+  *state machine* (`HELLO`, `DOWNLOAD`, `FLASHWRITE`, `REBOOT`, … at
+  `0x10000010`, one pointer per state). The diagnostic message strings are
+  reachable by **neither** an immediate nor a data pointer — several hundred
+  were checked — so their binding is resolved by the loader/relocation at
+  run time and needs the mapping, not pattern matching, to follow. Treat
+  "no literal and no pointer" as *relocated*, not unused.
 
 - **Component presence first.** Fresh NVD hits are worthless without the
   component: no CIFS/SMB client, no use of pupnp, and `0` bytes on a TLS
