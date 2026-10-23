@@ -246,9 +246,7 @@ pub(super) fn explicit(
     clock: &dyn Clock,
 ) -> Result<DjFeedbackDto, Failure> {
     let now = clock.now().timestamp();
-    if state.pool.is_empty() {
-        state.reload(store, moods_file, now)?;
-    }
+    state.refresh(store, moods_file, now)?;
     let room = room(at);
     let playback = control::playback(at.transport, at.households, at.coordinator)?;
     let work = source_of(&playback.position.uri)

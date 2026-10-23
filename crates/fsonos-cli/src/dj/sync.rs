@@ -294,6 +294,11 @@ impl LibrarySync {
     pub fn take_fresh(&self) -> bool {
         self.fresh.swap(false, Ordering::AcqRel)
     }
+
+    #[cfg(test)]
+    pub(super) fn mark_fresh_for_test(&self) {
+        self.fresh.store(true, Ordering::Release);
+    }
 }
 
 /// The daemon's schedule: refresh when due and signed in, checking again

@@ -6,6 +6,38 @@ same `fsonos_core::control::queue_removal` implementation as manual queue edits
 and logged enqueue undo. There is no separate interpretation of a deletion's
 acknowledgement in the automatic feed.
 
+## Current preferences and library
+
+An uninterrupted DJ picks up edits to `preferences.toml` and `moods.toml`
+without a restart or skip. Automatic playback processing shares one file check
+across every room, at most once per 30 seconds, including the daemon's quiet-queue
+maintenance. The next successful rebuild applies the new settings to future
+picks; music already queued keeps its whole-work order and the current track
+is not restarted.
+
+Moods, preferences and the library pool become active together after validation.
+If an edit is incomplete or invalid, automatic feeding retains the last valid
+plan and retries after its existing 30-second backoff. Ordinary volume events
+do not trigger repeated full-library rebuilds. Status reports the effective
+validated programs while a replacement is pending; reading status or preferences
+does not partially replace that live plan.
+
+Rehearsal, setting steering and explicit like/dislike commands check current inputs
+immediately, including a completed library sync and the latest feedback. Rehearsal changes
+no speaker state, saved feed, play history or feedback. A newly synced song can
+receive feedback without first restarting the DJ. Invalid configuration returns
+an error to these explicit requests while leaving the previous live plan intact.
+A rejected steering change also preserves the previous session, so a new mood
+cannot become active without its validated preferences. Clearing steering remains
+available while files are invalid and leaves pending library refreshes for the
+next automatic processing.
+
+The focused regressions use the in-memory store and the real loopback simulator:
+
+```sh
+cargo test --locked -p fsonos-cli --bin fsonos dj::plan_cache_tests
+```
+
 ## One verified deletion contract
 
 Every removal selects complete, contiguous works behind the retained boundary,

@@ -8,6 +8,8 @@
 //! rebuilds it only when a library sync, preferences.toml or moods.toml
 //! changed since (the rebuild reads the whole library cache: seconds, for a
 //! large library).
+//! Automatic feeding also checks those files at most once every 30 seconds,
+//! so external edits apply to future picks without a restart or skip.
 //!
 //! Every pick is steered: the zone's DJ session (from the store) names a
 //! mood and constraints, or, with no session or no mood, the time-of-day
@@ -70,6 +72,9 @@ pub const MOODS_FILE: &str = "moods.toml";
 
 /// Failed plan reads retry separately from speaker refill failures.
 const PLAN_RETRY: Duration = Duration::from_secs(30);
+
+/// Share one inexpensive input check across every room and playback event.
+const PLAN_CHECK: Duration = Duration::from_secs(30);
 
 /// See the module docs.
 pub struct SpotifyDj {
@@ -191,6 +196,8 @@ struct State {
     /// moods.toml and preferences.toml as they read then (see
     /// [`State::refresh`]).
     plan_inputs: Option<u64>,
+    /// When automatic feeding next checks the owner's files for edits.
+    plan_check_at: Option<Instant>,
     /// When a failed plan rebuild can retry, independent of speaker backoff.
     plan_retry_at: Option<Instant>,
     /// The feeds as last saved.
@@ -226,13 +233,13 @@ impl State {
                 })?,
                 // Feedback only weights the picks; without it the DJ still plays.
                 feedback: FeedbackModel::load(&StoreFeedback(store), now).ok(),
-                moods: self.moods.clone(),
+                moods: read_moods(moods_file)?,
                 ..Self::default()
             };
-            next.reload_moods(moods_file)?;
             prefs::apply(&mut next, moods_file)?;
             Ok(next)
         })();
+        self.plan_check_at = Some(Instant::now() + PLAN_CHECK);
         match candidate {
             Ok(next) => {
                 self.pool = next.pool;
@@ -254,7 +261,7 @@ impl State {
         }
     }
 
-    /// Bring the plan up to date for a skip. The pool is rebuilt only when
+    /// Bring the plan up to date for an explicit request. The pool is rebuilt only when
     /// what it is built from changed: a library sync (`planned` false), or an
     /// edit to moods.toml or preferences.toml. Otherwise it is kept and only
     /// the feedback, which moves with every listen, is read again. A rebuild
@@ -269,6 +276,7 @@ impl State {
         if self.planned && self.plan_inputs == Some(plan_inputs(moods_file)) {
             // Feedback only weights the picks; without it the DJ still plays.
             self.feedback = FeedbackModel::load(&StoreFeedback(store), now).ok();
+            self.plan_check_at = Some(Instant::now() + PLAN_CHECK);
             return Ok(());
         }
         self.reload(store, moods_file, now)
@@ -278,14 +286,17 @@ impl State {
         !self.planned && self.plan_retry_at.is_none_or(|due| now >= due)
     }
 
-    /// Re-read the moods and programs (the built-ins without a file).
-    fn reload_moods(&mut self, moods_file: Option<&PathBuf>) -> Result<(), Failure> {
-        if let Some(path) = moods_file {
-            self.moods = Moods::load(path).map_err(|e| {
-                Failure::invalid(e.to_string()).with_hint("Fix moods.toml in the data directory.")
-            })?;
+    /// Invalidate a changed plan without re-reading files for every volume
+    /// delta or rebuilding the library during the retry backoff.
+    fn check_plan_inputs(&mut self, moods_file: Option<&PathBuf>, now: Instant) {
+        if self.plan_check_at.is_some_and(|due| now < due) {
+            return;
         }
-        Ok(())
+        self.plan_check_at = Some(now + PLAN_CHECK);
+        if self.planned && self.plan_inputs != Some(plan_inputs(moods_file)) {
+            self.planned = false;
+            self.plan_retry_at = None;
+        }
     }
 
     /// The steering and local time for a pick in `coordinator`'s group: its
@@ -318,6 +329,19 @@ impl State {
             local_hour: u8::try_from(local.hour()).unwrap_or(0),
         })
     }
+}
+
+/// Read without changing a live plan: moods and preferences are published
+/// together only after both validate successfully.
+fn read_moods(moods_file: Option<&PathBuf>) -> Result<Moods, Failure> {
+    moods_file.map_or_else(
+        || Ok(Moods::builtin()),
+        |path| {
+            Moods::load(path).map_err(|e| {
+                Failure::invalid(e.to_string()).with_hint("Fix moods.toml in the data directory.")
+            })
+        },
+    )
 }
 
 /// A hash of what the plan is built from beyond the library cache:
@@ -724,7 +748,13 @@ impl DjEngine for SpotifyDj {
         clock: &dyn Clock,
     ) -> Result<OutcomeDto, Failure> {
         let mut state = self.state();
-        state.reload_moods(self.moods_file.as_ref())?;
+        if matches!(steer_by, DjSteer::Set { .. }) {
+            self.take_library_fresh(&mut state);
+            // A session must resolve against the complete accepted plan, not a
+            // newly added mood whose preferences failed validation. Clearing a
+            // session remains available even while the owner repairs an edit.
+            state.refresh(store, self.moods_file.as_ref(), clock.now().timestamp())?;
+        }
         let done = steer(&state, at, store, steer_by, clock);
         if done.is_ok() {
             state.refill_retries.remove(at.coordinator);
@@ -739,9 +769,18 @@ impl DjEngine for SpotifyDj {
         queue_position: Option<u32>,
         clock: &dyn Clock,
     ) -> Result<DjStatusDto, Failure> {
-        let mut state = self.state();
-        state.reload_moods(self.moods_file.as_ref())?;
-        let steering = dj_view::steering_of(store, &state.moods, at.coordinator, clock)?;
+        let state = self.state();
+        // Status is published after every live event. Use the validated
+        // plan once one exists, including during an invalid edit's retry,
+        // rather than re-reading files or reporting unaccepted programs.
+        let initial;
+        let moods = if state.plan_inputs.is_some() {
+            &state.moods
+        } else {
+            initial = read_moods(self.moods_file.as_ref())?;
+            &initial
+        };
+        let steering = dj_view::steering_of(store, moods, at.coordinator, clock)?;
         Ok(dj_view::status(
             room(at),
             state.feeds.get(at.coordinator),
@@ -760,12 +799,10 @@ impl DjEngine for SpotifyDj {
         clock: &dyn Clock,
     ) -> Result<DjRehearsalDto, Failure> {
         let mut state = self.state();
-        // The pool a start builds, when no start has built it yet.
-        if state.planned {
-            state.reload_moods(self.moods_file.as_ref())?;
-        } else {
-            state.reload(store, self.moods_file.as_ref(), clock.now().timestamp())?;
-        }
+        // The same current plan as a real skip, without advancing a feed,
+        // changing a speaker or recording any hypothetical listening.
+        self.take_library_fresh(&mut state);
+        state.refresh(store, self.moods_file.as_ref(), clock.now().timestamp())?;
         rehearsal::rehearse(&state, at, store, rehearsal, clock)
     }
 
@@ -775,22 +812,18 @@ impl DjEngine for SpotifyDj {
         store: &dyn Store,
         clock: &dyn Clock,
     ) -> Result<DjMoodsDto, Failure> {
-        let mut state = self.state();
-        state.reload_moods(self.moods_file.as_ref())?;
+        let moods = read_moods(self.moods_file.as_ref())?;
         let now = match at {
-            Some(at) => dj_view::steering_of(store, &state.moods, at.coordinator, clock)?,
-            None => dj_view::program_now(&state.moods, clock),
+            Some(at) => dj_view::steering_of(store, &moods, at.coordinator, clock)?,
+            None => dj_view::program_now(&moods, clock),
         };
-        Ok(dj_view::moods_of(&state.moods, now))
+        Ok(dj_view::moods_of(&moods, now))
     }
 
     fn until_program_changes(&self, clock: &dyn Clock) -> Option<u64> {
-        let mut state = self.state();
-        state.reload_moods(self.moods_file.as_ref()).ok()?;
+        let moods = read_moods(self.moods_file.as_ref()).ok()?;
         let now = clock.now();
-        let minutes = state
-            .moods
-            .minutes_until_program_changes(now.weekday(), now.time())?;
+        let minutes = moods.minutes_until_program_changes(now.weekday(), now.time())?;
         // Counted from the minute's start; never under the minute a mood
         // must last.
         Some(
@@ -869,7 +902,9 @@ impl DjEngine for SpotifyDj {
         // Keep a failed rebuild pending even after consuming the library's
         // freshness notification. A repaired plan can unblock a failed feed.
         self.take_library_fresh(&mut state);
-        if state.reload_due(Instant::now())
+        let checked_at = Instant::now();
+        state.check_plan_inputs(self.moods_file.as_ref(), checked_at);
+        if state.reload_due(checked_at)
             && let Err(f) = state.reload(store, self.moods_file.as_ref(), clock.now().timestamp())
         {
             tracing::warn!(detail = %f.detail, "the DJ retains its last validated plan; rebuild pending");
@@ -956,8 +991,10 @@ impl DjEngine for SpotifyDj {
         signal: DjFeedback,
         clock: &dyn Clock,
     ) -> Result<DjFeedbackDto, Failure> {
+        let mut state = self.state();
+        self.take_library_fresh(&mut state);
         feedback::explicit(
-            &mut self.state(),
+            &mut state,
             self.moods_file.as_ref(),
             at,
             store,
@@ -967,7 +1004,7 @@ impl DjEngine for SpotifyDj {
     }
 
     fn preferences(&self) -> Result<PreferencesDto, Failure> {
-        prefs::show(&mut self.state(), self.moods_file.as_ref())
+        prefs::show(self.moods_file.as_ref())
     }
 
     fn prefer(&self, change: &PrefChange) -> Result<PreferredDto, Failure> {
