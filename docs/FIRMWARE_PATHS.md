@@ -591,6 +591,33 @@ Because 34.16 has no signature section at all, **every edit above is free** — 
 a byte-exact recipe for the moment a signing key exists, and it also proves the only
 remaining wall on a keyless network downgrade is the signature, not the format.
 
+### Writer inventory: no `/jffs` path is name-controlled (kills the direct Configure.dev route)
+
+Every `fopen`/`open`/`rename`/`unlink` in the live 57.23 `anacapad` was enumerated from a
+full `.text` disassembly (`0x1000755c-0x1043cbb8`, 324 call sites) and each path
+argument resolved against `.rodata`. Result: **anacapad has no format string that builds a
+`/jffs` path from a variable.** The only `%s` near a jffs path is
+`file:///jffs/sonar-tone/%s`, and that is a playback URI (a read). Every write target is a
+fixed literal — `localsettings.txt`, `settings/*.xml`, `sonarEQ.xml`,
+`system/{dsp_disable,src_disable,audio_out_disable,overrideOffsets,save_sntp}`, `sntp.txt`,
+`shadow/*`, the logs. `netstartd`'s `"%s/Configure"` prefix is a constant root as well, so
+`/jffs/Configure` (exec'd from `wifi/Configure`) is just as unreachable.
+
+Therefore neither `/jffs/system/Configure.dev` nor `/jffs/VERSION` can be created by any
+shipped writer, and the writers that do exist (`SetString` → one XML file via `.tmp` +
+rename; `/advconfig` → two `atoi` ints) cannot aim at them. The boot-exec target is real
+(`rcS`: `sh /jffs/system/Configure.dev`) — only the write is missing.
+
+### `POST /setstring` is a one-request pre-auth kill
+
+`/setstring` is a plain HTTP form on 1400 (CSRF token from its own GET, fields `key`,
+`value`), i.e. no SOAP envelope and no API key. One POST answers `200`, the value
+**persists** (readable with `GetString` after the restart) and the daemon dies ~25 s later
+for ~80 s; a second POST rebooted the box (ICMP down ~36 s). 1 request versus ~2800 for
+the `/diaglevel` flood, so it is the cheapest DoS on the device by three orders of
+magnitude. The value surviving means the write completes before the hang — the lock or
+replication path is the likely deadlock.
+
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
 month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
 CVE-2026-75093 (`from_raw_dt_align` buffer size) and CVE-2026-55832 (attacker-chosen
@@ -898,3 +925,12 @@ inline key material nor an attacker certificate in the bundle is honoured.** A
 modified image therefore needs the vendor key even though the format is fully
 understood. The builder is `captures/research/selfsign/build.py` and is reusable
 for any future attempt that supplies real key material.
+
+## Runtime access (2026-10-22)
+
+The boot path itself gives the cleanest persistence story: `/etc/Configure` executes
+`/jffs/system/Configure.dev` as root and the same block sets the unlock flag that
+`/etc/scripts/run_sshd.sh` waits on before starting dropbear. One file in writable flash therefore
+yields root on every boot plus SSH, without the devmode statement. Live-verified unauth interfaces
+that could supply such a write, the `:1443` UPnP proxy, the `/getaa` SMB ingress and the
+`NumThreads 4` DoS are documented in [`RUNTIME_ACCESS.md`](RUNTIME_ACCESS.md).
