@@ -89,18 +89,17 @@ constant field.
 
 Section dispatch puts the real work on **type 17 (`application`)**, not type
 22: the handler table maps `0x11` to `0x1000868c`, which reads only
-`section_len - 16` and runs `ZZ0121`/`ZZ0124`. Its verify call uses a
-**fixed 32-byte expected digest copied from `DAT_1002c564`**, not a digest
-read from the package, plus algorithm 1 and length 0x20. Type 22 is a
-model-independent rcbundle container (364-byte header + 149 KB bundle) and
-is shared byte-for-byte between models. Component sections have no obvious
-per-component digest; only the rcbundle/application fields are signed.
+`section_len - 16` and runs `ZZ0121`/`ZZ0124`. `ZZ0124` is a tail call to
+`ZZ0125`; the verify callback is `ZZ0109` (PKCS#1 v1.5). The digest passed
+in is the 32-byte **SHA-256** state at `DAT_1002c564`, accumulated while the
+two list records are read, and it is exactly
+`SHA256(type17_payload[0x10:0x49])`. Type 22 is a model-independent
+rcbundle container (364-byte header + 149 KB bundle) shared byte-for-byte
+between models, and is not consulted by this verifier.
 
-The `.upd` signature blob is 256 bytes (RSA-2048). `upgradekey.pub` is a raw
-2048-bit public key, so it is the likely `.upd` verifier; UPM signatures are
-a separate, 128-byte/1024-bit scheme. A `pow(sig, e, n)` check against the
-header did not yield PKCS#1 padding at the offset assumed here, so the exact
-signature slice and key mapping still need confirmation.
+The `.upd` signature blob is 256 bytes (RSA-2048). The two accepted signer
+names map to hardcoded SPKIs inside `libsonoscrypto`; private halves are not
+shipped. UPM signatures are a separate, 128-byte/1024-bit scheme.
 
 An unsigned package does **not** run the type-3 preinstall, even when the
 section is correctly encrypted to the model key and the package carries a
@@ -132,7 +131,45 @@ one-byte `VERSION` edit survives and the image remains exactly the original
 4,571,136 bytes with version 3.0 and flags 0x40. A patched image and package
 are kept locally under `captures/firmware/`.
 
-## Negative results
+## The manifest is the real gate
+
+`BeginSoftwareUpdate` does **not** take a package URL. Anacapad treats
+`UpdateURL` as the URL of an `update.upm` **manifest**: it fetches exactly
+that URL (adding the device query itself), parses `<update_manifest>` and
+`<image model=...>`, and only then fetches the selected image. A direct
+`.upd` URL is therefore fetched *as if it were a manifest*, fails the XML
+parse, and merely reboots.
+
+The manifest is signed by a **separate 1024-bit RSA key** in a trailing
+comment:
+
+```
+<!-- SIGNATURE:<128-byte signature, 256 hex chars> -->
+```
+
+57.23 enforces it. Feeding a manifest with edited `<image>` URLs (or an
+unsigned one) is downloaded and then ignored: no image request follows.
+The current public feed manifest is
+`http://update-firmware.sonos.com/firmware/Prod/57.23-74170-v11.16.1-DILU1Q33hC-GA-1/update.upm`;
+on model 16 it still points at the **34.16** milestone
+(`.../34.16-37101-v7.1-nzhemz-MS-1/^34.16-37101`), so it is also the
+supported downgrade path.
+
+Because type 17 signs only the 57-byte list region, a package carrying the
+**original type-17 section** (and the original type-22 bundle) is valid
+regardless of component contents. The remaining blocker is the manifest's
+own signature, and it can be sidestepped without any key:
+
+1. keep the manifest **byte-identical** so its signature still matches;
+2. make `update-firmware.sonos.com` resolve to the local server;
+3. serve the exact image path from the manifest with the patched package.
+
+The path is plain HTTP, so a DNS override (router host, or an ARP+DNS spoof
+with forwarding) is sufficient. The manifest URL passed to
+`BeginSoftwareUpdate` must exist locally too and end in `/`; anacapad
+appends `update.upm`.
+
+
 
 - Unsigned `.upm` manifests are fetched and parsed but never lead to an
   image fetch; the manifest signature is enforced.
@@ -153,11 +190,11 @@ full and caused a reboot, and every one returned to the old rootfs:
 - same image with a realistic build bump (`57.23-74171` instead of 99020):
   fell back.
 
-The ping-only window is not a successful boot; anacapad never served. So the
-reboots are not installs, and the gate is above the image format. The most
-likely remaining blocker is the type-17 application verification; the
-component bytes themselves are not covered by the model-independent type-22
-rcbundle.
+The ping-only window is not a successful boot; anacapad never served. The
+component image format is therefore not the blocking gate either: with the
+original type-17 the signature is valid, so these direct-`.upd` trials never
+reached `upgrade` in the first place. `BeginSoftwareUpdate` wants a manifest
+(below), and anacapad only reboots on the parse failure.
 
 ## Header layout, decoded (libsonoscrypto / librcb)
 
@@ -225,18 +262,30 @@ never be read.
 
 **What the digest covers.** For the type-22 section the 32-byte digest is
 exactly `SHA-256` of the section's own bundle bytes (everything after the
-364-byte header) — verified against the shipped package. The type-17 digest
-is *not* the bundle, the encrypted sections, its own header or any prefix
-tried; it is signed separately and is still unresolved. So a forged type-22
-needs `digest = SHA-256(our bundle)` plus a signature over that digest, and
-a forged type-17 would need its own, separate value.
+364-byte header) — verified against the shipped package. For type 17 the
+digest is **SHA-256 of exactly `payload[0x10:0x49]`** — the two algorithm
+lists and their records, 57 bytes, ending just before `cert_count`. Nothing
+else: not the magic, not the header, not the name/signature, and no component.
+This was proved by RSA-verifying the shipped signature with the embedded
+verifier key and matching the recovered `DigestInfo` digest byte-for-byte.
+Consequences:
+
+- the components (kernel, preinstall, rootfs) are **not signed** at all, so a
+  correctly encrypted patched rootfs needs no new signature;
+- the type-17 signature only needs redoing if the two list records change;
+- a self-signed bundle does not help with type 17, because the verifier key
+  table is hardcoded (below).
 
 **Name resolution.** `ZZ0039` accepts only `keytype == 3` and a **20-byte**
-name, then `memcmp`s it against a store of 20-byte names (stride `0x20`)
-built from the parsed bundle and returns a key handle; anything else is
-rejected before any crypto runs. An entry therefore verifies only if its
-name is present in the bundle that type 22 just installed, so the bundle is
-the trust material and the same 20-byte id must appear in both headers.
+name, then `memcmp`s it against **two hardcoded entries** in
+`libsonoscrypto.so.1` (names `d67d7a0749635410ab3013a37418d4fb6de57de6` and
+`4cde17c6b9966c3084231fd84296c5b59d052d44`). Each entry stores a DER SPKI
+pointer (RELATIVE relocs, addends `0xdc08`/`0xdae0`) and a `0x126` length;
+both are 2048-bit RSA keys with `e = 65537`, parsed by
+`mbedtls_x509_crt_parse` / `mbedtls_pk_parse_public_key`. The private halves
+are not on the device: signing a *modified list* would need one. The 16-byte
+`0x00000001` and signature come from the type-17 entry, and `ZZ0109` calls
+`mbedtls_rsa_rsassa_pkcs1_v15_verify` (alg 1 → SHA-256).
 
 
 
@@ -264,7 +313,15 @@ the connection for any package larger than 128 KiB -- on S2 and on S1, for a
 pristine signed package as well as a modified one. A feed throttled to about
 2 KB/s reaches the same byte count after 55 s, so it is not the timeout.
 Packages below 128 KiB download completely. HTTP status is always 200; the
-server-side sent-byte counter is the only reliable oracle.
+server-side sent-byte counter is the only reliable oracle. Serving HTTP/1.0
+with no `Content-Length` and EOF framing does not change it, so the cut is
+not size negotiation: the reader stops at exactly 131072 bytes whatever the
+transport. The section handler `malloc`s `section_len` and asks the reader
+for the whole section, so the stop is inside that reader, not the framing.
+
+`upd_hdr.py` (local, under `~/sonos-root-local/recon/`) parses and rebuilds
+the 364-byte header byte-exactly and round-trips the shipped header; use it
+instead of re-deriving offsets.
 
 A correctly ordered, completely downloaded 2.3 KB package
 (records 1/21/2/2/2/3) still did not execute the type-3 script: probe writes
@@ -274,29 +331,22 @@ than to section size, order, or section encoding.
 
 ## Next
 
-1. Recover the **model public key** for the target player from the encrypted
-   rootfs (or from a plaintext 34.16-era updater, whose model-16 table the
-   older line still carries), then reproduce the `886499ca` envelope for an
-   edited type-3 script: generate an AES key, RSA-OAEP it to that model key,
-   AES-CBC the script, and keep `header_len = 0x14 + 2 + recipient_len + 8 +
-   rsa_len + 8`, `data_len` and a random 16-byte IV exact.
-2. Build a self-signed `rcbundle`: keep the shipped structure, replace the
-   cert with our own, and name it with a 20-byte id we choose. Header for it:
-   `list2 count = 0`, `cert_count = 1`, our name, `keytype` from the key
-   family, `sig_alg = 1`, `field = 1`, `sig_len = 0x100`. Which key type
-   (`1..4`) maps to RSA must be read out of `ZZ0109` (`0x8ec4`) first — it
-   accepts only `keytype == 1` on the path shown.
-3. Sign the header's 32-byte digest with our key (PKCS#1 v1.5) and place the
-   signature in the `sig_len` field. Then determine what the digest covers:
-   `upgrade` finalises it into `sp+9036` via `ZZ0059` + `ZZ0061`, so it is a
-   hash state carried in the parsed struct — either the header prefix or the
-   DER of the signer key (`ZZ0152` hashes exactly that); test both.
-4. Send the package and watch for the type-3 probe (`/tmp` marker, then
-   `/jffs/system/Configure.dev` and port 22), using the byte-counting server
-   because every package larger than 128 KiB dies at 131072 bytes.
-5. Local PPC execution is blocked: `qemu-ppc` user emulation (7.2 and 11.1,
-   arm64 and amd64 hosts) segfaults on every rootfs binary. `qemu-system-ppc`
-   or a PPC cross-build of `upgrade` remains the best oracle for iterating
-   the header without burning reboots on a live player.
-6. With a valid signature, the patched image should install and expose a
-   changed `/status/VERSION`.
+1. **Finish the DNS-offset install.** Keep the signed manifest untouched;
+   point `update-firmware.sonos.com` at the server (router host entry, or the
+   running ARP/DNS spoof), serve the manifest's exact
+   `.../34.16-37101-v7.1-nzhemz-MS-1/^34.16-37101` path, and confirm with a
+   packet capture that the player requests the image. Start with the real
+   34.16 package to prove the route end to end (expect a downgrade reboot),
+   then serve the patched 57.23 package at the same path.
+2. If the route proves out, the patched package needs no crypto changes at
+   all: keep the original type-17 and type-22 sections byte-for-byte, keep
+   `VERSION` with its trailing newline, and use the true v3.0 image.
+3. If the spoof route is unavailable, get the ASUS router credential for a
+   one-line local DNS override, or sign a manifest (needs the 1024-bit
+   manifest key, not the updater keys).
+4. Watch only for the `/xml/review.xsl` `PWNED-ROOTFS-MARKER`; `VERSION`
+   proves nothing when the build is unchanged.
+5. Local PPC execution is still blocked (`qemu-ppc` user mode segfaults on
+   every rootfs binary); `qemu-system-ppc` or a PPC cross-build remains the
+   only local oracle.
+
