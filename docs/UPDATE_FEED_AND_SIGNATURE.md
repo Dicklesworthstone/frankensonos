@@ -62,10 +62,17 @@ players.
 **Container byte order (corrected 2026-10-23): the type-17 payload is
 big-endian throughout** — magic, `total`, format word, both counts and every
 `[u32 len][u8 type][len-1 bytes]` record. Offsets: magic `0x621da74d`,
-`total`, `0x00010000`, pad, `count1`, `count2`, then the records; the last
-record is a `len = 0x101` signature (a type byte plus 256 bytes), followed
-by the key-reference block. Reading it little-endian gives nonsense lengths,
-which is what an earlier note did.
+`total`, `0x00010000`, pad, `count1`, `count2`, the records, then the
+key-reference block. Reading it little-endian gives nonsense lengths, which
+is what an earlier note did. Measured layout: `count1 = 2` (a 0x21
+`MessageDigest` of 32 bytes, then a 3-byte record), `count2 = 2` (a 4-byte
+record, then a 20-byte one whose type is `0x03` — the key-name record
+`ZZ0039` expects), and after the lists `u32 0x01`, `u32 0x100` and **256
+raw bytes**, i.e. the key reference `[keytype][u32][key_len = 0x100][key]`.
+The 256-byte blob is not DER, and whether it is the signer's key or the
+signature itself is **not settled** — private-key recovery over it with the
+three embedded devmode keys fails, so if it is the signature it uses a
+different key or padding than those.
 
 **What the type-17 digest covers (measured 2026-10-23).** The first
 attribute is `MessageDigest` (`len 0x21`, type `0x01`, 32 bytes at payload
