@@ -318,6 +318,14 @@ passthrough is *not* reachable this way: with the correct frame it answers
 stays the only working passthrough and its argument plumbing is still the
 blocker.
 
+**Registration is not wired on 86.10.** `devices/completeDeviceRegistration`
+(with the bare `deviceId`, not the RINCON form — the RINCON form is rejected as
+`Parsing terminated: deviceId`) answers `ERROR_UNSUPPORTED_COMMAND: command is
+not supported`, so the command exists in the descriptor table but has no handler
+on this build. Every payload shape tried (`{}`, a `deviceCert` string, a
+`deviceCert` object) gets the same answer. The token door on 86.10 is therefore
+just `resolveToken`, which never succeeds without a cloud-minted JWT.
+
 **WS connect exhaustion, and it escalates to a restart.** A bare TLS+WS
 handshake is enough — no frame, no valid key value, just the static-key header.
 At 0.3 s spacing 9 of 12 attempts timed out from the second one on; at 1 s, 9 of
