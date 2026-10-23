@@ -598,6 +598,16 @@ the updater never consults a chain. It remains useful for `/unlock`, `/devmode`
 and the `:1443` Bearer path, all of which sit on the rcb/bundle trust that *does*
 include the emSign roots.
 
+## Where the content key is not
+
+The 34.16 line is plaintext end to end (its sections carry no `886499ca`
+envelope), so no content key exists there: a sweep of the extracted 34.16
+rootfs finds no key, certificate or PEM file at all -- only the `keyval`
+helper binary. The per-model RSA key that unwraps section AES keys therefore
+lives only in the 57.x/86.x rootfs, i.e. inside the very image it protects.
+Confirmed on the shipped 34.16 package: full 2 097 157-byte fetch over
+Apache, still rejected -- the old line has its own signature gate.
+
 ## Next
 
 1. **Identify the post-download gate.** Delivery is proven (edited manifest
