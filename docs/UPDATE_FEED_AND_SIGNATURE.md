@@ -416,3 +416,22 @@ resolver is the compiled table, so a type-22 bundle cannot introduce the type-17
 
 Consequence: repacking sections is free (the digest covers only the 57-byte list
 region), but a *new* type-17 signature needs one of the two Sonos private keys.
+
+### Probe mechanics: version gate, URL, and the post-rejection stall
+
+- The updater **appends a query string** to whatever URL is given:
+  `?cmaj=<maj>&cmin=<min>&cbld=<build>&subm=4&rev=1&reg=1&serial=…&sonosid=…&householdid=…`.
+  A static file server therefore works; the package's **file name does not matter**
+  (`fz_count.upd` was fetched normally).
+- The version gate compares the type-1 record (12-byte payload: `u32 maj, u32 min,
+  u32 build`) with the installed version and reads about 128 KB before deciding;
+  the client then closes, so a `BrokenPipe` in the server log is normal on both the
+  accept and the reject path.
+- A **same-version** package is rejected at that point. To exercise the parser the
+  type-1 payload has to be bumped (99.1.1 in these probes), as in the VM lab.
+- After a rejection the unit can stop fetching: `BeginSoftwareUpdate` still answers
+  `200` with a `BeginSoftwareUpdateResponse`, the unit stays up on its version, but
+  no request reaches the server for later triggers and it does not reboot. This was
+  observed on two units after a rejected same-version probe; the 57.22→57.23 cycles
+  before it all fetched within seconds. A reboot is the reliable way back; assume a
+  cooldown or a stuck `upgrade` and do not stack probes.
