@@ -683,6 +683,18 @@ that reaches the RSA verify takes 2.7–5.7 s. That is a usable structural oracl
 devmode work without a key ("≥2.5 s" = the ring parsed). The walk is lenient — a 4-byte body
 containing only the magic still takes the slow path. Nothing crashes the verifier.
 
+### The `403` page family is one policy flag, not a header
+
+`/`, `/reset`, `/testenv` and `/diagmsg` all refuse with 403 through a *single* check:
+handler → `bl 0x10362fe0` → `cmpwi r3,0` → `li r4,0x193` → 403 unless the check is
+non-zero. `0x10362fe0` reads flag **22** from a global policy object (`0x10545f3c`) through
+`0x10394420 → 0x10394078` (a locked bitset read); its sibling `0x10363018` reads flag **18**.
+So the gate is device policy, not request shape — five user agents, `X-Sonos-Api-Key`,
+`X-Sonos-Device-Id`, `X-Requested-With`, and POST as well as GET all still 403. `/diagmsg`
+renders its heading before refusing, so its handler does run first. `/diaglevel`,
+`/advconfig` and `/support/*` are *not* behind this flag. Next step is whoever sets bit 22,
+and whether that is settings-backed (then `SetString` could arm it).
+
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
 month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
 CVE-2026-75093 (`from_raw_dt_align` buffer size) and CVE-2026-55832 (attacker-chosen
