@@ -436,7 +436,7 @@ fn cap_levels<T: Transport + ?Sized>(
         proof.levels[index].volume = target;
         let confirmed = proof.confirm(t, households, later(at, started));
         match (written, confirmed) {
-            (Ok(()), Ok(_)) | (Err(_), Ok(_)) => changed = true,
+            (Ok(()) | Err(_), Ok(_)) => changed = true,
             (Err(error), Err(_)) => return Err(error.into()),
             (Ok(()), Err(error)) => return Err(error),
         }
