@@ -40,10 +40,12 @@ Target order, cheapest first:
    `hls-radio://` playlist we serve is pre-auth, and any playlist with a forward-advancing
    live window makes the daemon `memcpy` segment entries *backwards* past the array
    (`new_head = 0x10 - (limit - head)`, unchecked) — 1–2 new segments per reload kills in
-   7–8 s. The copy is at `0x10192754`, the length is signed, and the destination is computed
-   from a constant 16, so the goal is to land controlled segment bytes on a structure that
-   matters (see the `re-hls-kill-cnk` bead for the exact register roles and the open
-   counter question).
+   7–8 s. The copy is at `0x10192754`, its destination is computed from a constant 16, so
+   the goal is to land controlled segment bytes on a structure that matters. It is guarded:
+   a backward counter pair and `head == 0` both divert to a reset instead of copying, so the
+   ordinary outcome is the one-entry overrun (`dest = base - 0xc48`); forcing
+   `limit < head` with `tail >= limit` is what would turn it into a huge signed length. See
+   the `re-hls-kill-cnk` bead for the register roles and the branch tree.
 2. Anything else that gives an arbitrary write: the update script is the natural payload
    vehicle once a write exists, because `/jffs/system/Configure.dev` runs as root at boot
    (`rcS` line 20) and also arms dropbear.
