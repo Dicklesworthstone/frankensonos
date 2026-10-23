@@ -572,3 +572,10 @@ network diagnostics (per-device `MinCompatibleVersion`, `LegacyCompatibleVersion
 `enetports`, `VERSION`, `proc/…`, `ifconfig`, `showstp`); `/tmp/upgrade.log`
 and `/jffs/upgrade.log`, present in the 34.16 table, return an empty document,
 so the updater log is not remotely readable on 57.23.
+
+Cross-check from the session that ran in parallel (see "Update gate, measured on
+the running 57.23 build" above): the **57.23** `bin/upgrade` has no
+`/tmp/device_unlocked_flag` string at all, and in a chroot harness neither that
+file nor `/jffs/VERSION` changed the verdict on an older image — it still
+answered `Upgrade blocked.` / error 9. So take the 34.16 bypass as a 34.16/56.0
+property and re-measure it before relying on it on 57.23.
