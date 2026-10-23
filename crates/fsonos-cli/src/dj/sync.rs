@@ -16,7 +16,10 @@
 //! A refresh opens its own connection to the store, so the DJ and the
 //! other surfaces never wait on its Spotify reads, and the DJ rebuilds its
 //! pool at its next pick once a refresh has landed. The last success is
-//! kept in [`STAMP`] in the data directory.
+//! kept in [`STAMP`] in the data directory. Unfinished playlist snapshots get
+//! separate bounded continuation passes at the next check, with persistent
+//! progress backoff and server cooldowns. They never reread saved albums/likes
+//! or postpone the next daily full refresh.
 
 use asupersync::Cx;
 use asupersync::http::Client;
@@ -26,7 +29,7 @@ use fsonos_api::{ErrorCode, Failure};
 use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::store::SqliteStore;
 use fsonos_spotify::SpotifyError;
-use fsonos_spotify::cache::sync_library_detailed;
+use fsonos_spotify::cache::{LibrarySyncDetailed, continue_playlists, sync_library_detailed};
 use fsonos_spotify::client::{SpotifyConfig, TokenCache};
 use fsonos_spotify::session::Session;
 use std::path::{Path, PathBuf};
@@ -37,6 +40,8 @@ use std::time::Duration;
 
 use crate::config::{GlobalArgs, ServeArgs};
 use crate::remote::Daemon;
+
+mod continuation;
 
 /// The last successful refresh, in the data directory.
 pub const STAMP: &str = "library-sync.json";
@@ -192,30 +197,19 @@ impl LibrarySync {
         self.run_claimed()
     }
 
-    /// Perform a refresh whose slot was already claimed.
+    /// Perform a full refresh whose slot was already claimed.
     fn run_claimed(&self) -> Result<SyncedDto, Failure> {
-        let result = self.read();
-        let mut state = self.running();
-        state.running = false;
-        state.error = result.as_ref().err().map(|f| f.detail.clone());
-        drop(state);
-        let result = result.map(|mut synced| {
-            synced.genre_stalled = stalled(self.last().as_ref(), &synced);
-            synced
-        });
-        if let Ok(synced) = &result {
-            self.fresh.store(true, Ordering::Release);
-            if let Err(e) = write_stamp(&self.data_dir, synced) {
-                tracing::warn!("record the library refresh: {e}");
-            }
-        }
-        result
+        self.run_pass(None)
     }
 
-    /// Read Spotify into a store of its own.
-    fn read(&self) -> Result<SyncedDto, Failure> {
+    /// Read Spotify into a store of its own. Keep the session's server
+    /// cooldown even when the read fails before producing a library result.
+    fn read(
+        &self,
+        owner: Option<String>,
+    ) -> Result<(Result<LibrarySyncDetailed, SpotifyError>, u64), Failure> {
         let (config, dir) = (self.config.clone(), self.data_dir.clone());
-        let synced = thread::Builder::new()
+        thread::Builder::new()
             .stack_size(STACK)
             .spawn(move || {
                 let runtime = crate::runtime().map_err(|e| SpotifyError::Http(format!("{e:#}")))?;
@@ -231,27 +225,19 @@ impl LibrarySync {
                         return Err(SpotifyError::Auth("not signed in to Spotify".into()));
                     }
                     let mut store = SqliteStore::open(&dir.join(crate::daemon::DB_FILE))?;
-                    sync_library_detailed(&mut session, &cx, &mut store).await
+                    let result = match owner {
+                        Some(owner) => {
+                            continue_playlists(&mut session, &cx, &mut store, &owner).await
+                        }
+                        None => sync_library_detailed(&mut session, &cx, &mut store).await,
+                    };
+                    Ok((result, session.retry_after_secs()))
                 })
             })
             .map_err(|e| Failure::new(ErrorCode::Internal, format!("start the refresh: {e}")))?
             .join()
             .map_err(|_| Failure::new(ErrorCode::Internal, "the library refresh panicked"))?
-            .map_err(failure)?;
-        let pending = synced
-            .genres
-            .deferred
-            .saturating_add(synced.genres.failed.len());
-        Ok(SyncedDto {
-            at: self.now(),
-            tracks: synced.library.tracks,
-            candidates: synced.library.candidates,
-            classical: synced.library.classical,
-            retired: synced.library.retired,
-            genre_artists_pending: pending,
-            genre_stalled: 0,
-            notes: synced.notes,
-        })
+            .map_err(failure)
     }
 
     /// Whether a Spotify sign-in is cached (no network).
@@ -275,6 +261,14 @@ impl LibrarySync {
     /// to [`MAX_AGE`] (sp4f.14).
     #[must_use]
     pub fn due(&self, now: i64) -> bool {
+        if let Some(saved) = continuation::load(&self.data_dir) {
+            if now < saved.not_before {
+                return false;
+            }
+            if saved.requires_refresh && now >= saved.retry_at {
+                return true;
+            }
+        }
         let max = i64::try_from(MAX_AGE.as_secs()).unwrap_or(i64::MAX);
         let check = i64::try_from(CHECK.as_secs()).unwrap_or(i64::MAX);
         self.last().is_none_or(|last| {
@@ -317,8 +311,10 @@ pub fn watch(sync: Option<Arc<LibrarySync>>, stop: Arc<AtomicBool>) {
             let mut next = i64::MIN;
             while !stop.load(Ordering::Acquire) {
                 if sync.elapsed_secs() >= next {
-                    if sync.signed_in() && sync.due(sync.now()) {
-                        match sync.run() {
+                    if sync.signed_in()
+                        && let Some(result) = sync.background()
+                    {
+                        match result {
                             Ok(synced) => eprintln!("fsonos serve: {}", synced.text()),
                             Err(f) => tracing::warn!("library refresh: {}", f.detail),
                         }
@@ -355,6 +351,7 @@ fn last_synced(data_dir: &Path) -> Option<SyncedDto> {
     serde_json::from_str(&text).ok()
 }
 
+#[cfg(test)]
 fn write_stamp(data_dir: &Path, synced: &SyncedDto) -> std::io::Result<()> {
     let text = serde_json::to_string_pretty(synced).map_err(std::io::Error::other)?;
     let tmp = data_dir.join(format!("{STAMP}.tmp"));

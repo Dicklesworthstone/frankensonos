@@ -37,6 +37,10 @@ impl Cooldown {
         })
     }
 
+    pub(super) fn remaining(&self) -> Duration {
+        self.remaining_at(Instant::now())
+    }
+
     async fn admit(
         &mut self,
         cx: &Cx,

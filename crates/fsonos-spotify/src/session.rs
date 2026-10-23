@@ -203,6 +203,15 @@ impl Session {
         retry::get(self, cx, url, max_wait_secs).await
     }
 
+    /// A server-requested pause still applying to subsequent Web API reads.
+    /// Background schedulers persist this rounded-up duration between sessions.
+    #[must_use]
+    pub fn retry_after_secs(&self) -> u64 {
+        let left = self.api_cooldown.remaining();
+        left.as_secs()
+            .saturating_add(u64::from(left.subsec_nanos() != 0))
+    }
+
     /// Whether the owner's grant still works, read-only: one liked track is
     /// read with the cached token, refreshed first when it is about to
     /// expire (or on a 401), so a revoked or lapsed sign-in shows before a

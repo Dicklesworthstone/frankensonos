@@ -244,6 +244,9 @@ mod playlist_rotation;
 #[path = "playlist_progress_tests.rs"]
 mod playlist_progress;
 
+#[path = "playlist_continuation_tests.rs"]
+mod playlist_continuation;
+
 impl Drop for Server {
     fn drop(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {

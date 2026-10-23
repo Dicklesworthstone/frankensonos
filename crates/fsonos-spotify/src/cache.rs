@@ -29,8 +29,11 @@ use crate::expand::{AlbumMisses, Expansion, complete_from_cache, complete_works}
 use crate::genres::{GenreRead, tag_genres};
 use crate::library::{ARTIST_SEPARATOR, LibraryItem, Origin, merge_duplicates, split_artists};
 use crate::session::Session;
-use crate::taste::{TasteRead, read_taste};
+use crate::taste::{PlaylistContinuation, Taste, TasteRead, read_taste};
+
+mod playlists;
 use crate::works::group_works;
+pub use playlists::continue_playlists;
 
 /// What one sync did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,6 +54,8 @@ pub struct LibrarySync {
 pub struct LibrarySyncDetailed {
     pub library: LibrarySync,
     pub genres: GenreRead,
+    /// Unfinished owner-scoped playlist work and the server's remaining cooldown.
+    pub playlists: PlaylistContinuation,
     /// What the best-effort reads couldn't read this time, a sentence each
     /// ([`sync_notes`]); empty when they read everything.
     pub notes: Vec<String>,
@@ -80,22 +85,8 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-    let (taste, read) = read_taste(session, cx, store, &items, now).await;
-    if let Some(playlists) = &taste.playlists {
-        store.save_playlists(playlists)?;
-    }
-    for observation in &taste.playlist_contents {
-        // Private progress is snapshot fenced. Keep a complete observation
-        // until its whole replacement is ready; a failed refresh likewise
-        // leaves any prior public evidence unchanged.
-        let previous = store.playlist_contents(&observation.contents.playlist_uri)?;
-        if previous.as_ref().is_some_and(|previous| {
-            observation.failed || (previous.complete && !observation.contents.complete)
-        }) {
-            continue;
-        }
-        store.save_playlist_contents(&observation.contents)?;
-    }
+    let (taste, mut read) = read_taste(session, cx, store, &items, now).await;
+    publish_playlists(store, &taste)?;
     if let Some(heard) = &taste.heard {
         store.save_spotify_heard(heard)?;
     }
@@ -146,6 +137,7 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     taste.name_genres(&mut items);
     crate::genre_guess::fill(&mut items);
     let report = apply_library_read(store, &items)?;
+    acknowledge_playlists(store, &taste, &mut read.continuation)?;
     // Read and cache the album track lists that complete partly-held works
     // (a liked Adagietto), so the DJ plays them whole from the cache. Best
     // effort, like the reads above: a halted run resumes next sync.
@@ -165,11 +157,53 @@ pub async fn sync_library_detailed<S: Store + ?Sized>(
     .await;
     let _ = misses.save(store, now);
     let notes = sync_notes(&read, &genres, &albums);
+    let mut playlists = read.continuation;
+    playlists.retry_after_secs = session.retry_after_secs();
     Ok(LibrarySyncDetailed {
         library: report,
         genres,
+        playlists,
         notes,
     })
+}
+
+fn acknowledge_playlists<S: Store + ?Sized>(
+    store: &mut S,
+    taste: &Taste,
+    continuation: &mut PlaylistContinuation,
+) -> Result<(), SpotifyError> {
+    if let Some(owner) = &continuation.owner {
+        for observation in &taste.playlist_contents {
+            if !observation.failed {
+                let (complete, limited) =
+                    crate::taste::mark_playlist_applied(store, owner, &observation.contents)?;
+                continuation.pending = continuation
+                    .pending
+                    .saturating_sub(usize::from(complete || limited));
+                continuation.limited += usize::from(limited);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn publish_playlists<S: Store + ?Sized>(store: &mut S, taste: &Taste) -> Result<(), SpotifyError> {
+    if let Some(playlists) = &taste.playlists {
+        store.save_playlists(playlists)?;
+    }
+    for observation in &taste.playlist_contents {
+        // Private progress is snapshot fenced. Keep a complete observation
+        // until its whole replacement is ready; a failed refresh likewise
+        // leaves any prior public evidence unchanged.
+        let previous = store.playlist_contents(&observation.contents.playlist_uri)?;
+        if previous.as_ref().is_some_and(|previous| {
+            observation.failed || (previous.complete && !observation.contents.complete)
+        }) {
+            continue;
+        }
+        store.save_playlist_contents(&observation.contents)?;
+    }
+    Ok(())
 }
 
 /// What a sync's best-effort reads couldn't read, a sentence each: the

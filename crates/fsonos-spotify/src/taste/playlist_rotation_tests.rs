@@ -103,7 +103,7 @@ fn windows_survive_restarts_reordering_and_a_removed_cursor_without_losing_music
 
         // The cursor's playlist is removed, one earlier ID is added, and
         // the server reverses its order. Resume at the next surviving ID.
-        ids = (10..70).filter(|&n| n != 34).chain([5]).rev().collect();
+        let mut ids: Vec<_> = (10..70).filter(|&n| n != 34).chain([5]).rev().collect();
         ids.push(5);
         directory(&server, &ids, OWNER);
         let mut store = SqliteStore::open(&path).unwrap();

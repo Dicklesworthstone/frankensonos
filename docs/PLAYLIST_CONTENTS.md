@@ -108,7 +108,7 @@ clean budget-limited window advances the checkpoint. Partial observations can
 grow across turns when no complete observation exists; **an existing complete
 observation stays available with its original revision until the new version
 has been read completely**. Completed scans begin a fresh observation on their
-next turn, so track metadata can also refresh when playlist membership is
+next full-sync turn, so track metadata can also refresh when playlist membership is
 unchanged.
 
 Each playlist is bounded to 10,000 raw source entries and 16 MiB of accumulated
@@ -117,8 +117,43 @@ exceeds a bound remains explicitly partial, or leaves its previous complete
 observation in place; sync notes explain the limit or continuing position.
 Repeated explicit syncs advance long playlists within the same per-sync budget.
 The final complete window supplies all accumulated tracks to the library and
-DJ pool, including music from the earlier windows. The URI/name listing can
-still contain playlists whose contents are not eligible or have not had a turn;
+DJ pool, including music from the earlier windows.
+
+### The daemon completes unfinished reads in the background
+
+After a full sync discovers unfinished playlists, the daemon continues them at
+its 15-minute library checks. These are playlist-only passes: they read the
+current account identity, the bounded playlist directory, and at most 25
+unfinished windows. They do not reread saved albums, liked tracks, followed
+artists, top items, recent listening, or artist metadata. The four-request
+playlist budget and version proofs are unchanged.
+
+A continuation skips complete unchanged snapshots and snapshots that reached
+the 10,000-entry or 16 MiB limit. A changed directory version makes that playlist
+eligible again. When the directory omits a version, completed and capped
+observations wait for the next full refresh; unfinished windows still use
+their normal preflight version check. Newly accepted music enters the shared
+library cache and the DJ uses it on future picks. Continuation adds evidence;
+retiring unrelated library or taste music remains a full-sync operation.
+
+Readiness, admission and retry deadlines survive daemon restarts in the local
+sync stamp. A pass that accepts no new source positions and finishes no
+additional playlists doubles its retry wait, up to one day. Progress restores
+the normal 15-minute interval. Spotify's longer `Retry-After` deadline is
+preserved without shortening it, including for an intervening manual refresh.
+An account change stops additive merging and schedules a full refresh before
+the new account contributes music.
+
+Continuation never changes the timestamp of the last full library refresh or
+postpones the daily full read. `dj sync` still requests one full bounded pass;
+the daemon follows with eligible background work. Sync status notes report
+unfinished and limit-bound playlists. The existing complete cached observation
+keeps its revision until a full replacement is proved, and a capped snapshot
+keeps its last published observation rather than replacing it with empty
+contents.
+
+The URI/name listing can still contain playlists whose contents are not eligible
+or have not had a turn;
 those remain `not_cached`.
 
 A complete directory read removes checkpoints for that owner's vanished or

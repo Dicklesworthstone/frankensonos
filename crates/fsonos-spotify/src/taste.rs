@@ -35,15 +35,20 @@ use fsonos_core::store::{CachedPlaylist, Store};
 
 use crate::SpotifyError;
 use crate::client::{
-    Artist, ArtistTopTracks, CursorPage, FullTrack, Me, PlayHistory, SimplifiedPlaylist,
-    TASTE_SCOPES, decode, unix_seconds,
+    Artist, ArtistTopTracks, CursorPage, FullTrack, PlayHistory, TASTE_SCOPES, decode, unix_seconds,
 };
 use crate::expand::halts;
 use crate::library::{LibraryItem, Origin};
 use crate::session::Session;
 
+mod continuation;
 mod paging;
 mod playlist_scan;
+
+pub use continuation::PlaylistContinuation;
+use continuation::Scan;
+pub(crate) use continuation::read_pending_playlists;
+pub(crate) use playlist_scan::mark_applied as mark_playlist_applied;
 
 /// A top track's weight (per mille).
 pub const TOP_TRACK_PM: u32 = 1080;
@@ -82,6 +87,8 @@ pub struct TasteRead {
     /// The owner's own (or collaborative) playlists read, and their tracks.
     pub playlists: usize,
     pub playlist_tracks: usize,
+    /// Durable unfinished playlist work for the daemon's bounded continuation pass.
+    pub continuation: PlaylistContinuation,
     /// Top tracks of followed or top artists the owner saved nothing by.
     pub artist_tracks: usize,
     /// Why those top tracks couldn't be read, when they couldn't (an app
@@ -250,7 +257,13 @@ pub async fn read_taste<S: Store + ?Sized>(
     }
     if playlists {
         let (tracks, listed) = reader
-            .playlist_tracks(store, &mut taste.named, &mut taste.playlist_contents, now)
+            .playlist_tracks(
+                store,
+                &mut taste.named,
+                &mut taste.playlist_contents,
+                now,
+                Scan::Refresh,
+            )
             .await;
         taste.playlists = listed;
         for item in tracks {
@@ -440,104 +453,6 @@ impl Reader<'_> {
             }
         }
         (tracks, done)
-    }
-
-    /// The tracks of the owner's own and collaborative playlists (others'
-    /// playlists' items aren't readable since February 2026), and every
-    /// playlist in their list when the whole list was read. `named` gets
-    /// the genres each playlist's name states, for its tracks.
-    async fn playlist_tracks<S: Store + ?Sized>(
-        &mut self,
-        store: &mut S,
-        named: &mut HashMap<String, Vec<String>>,
-        observations: &mut Vec<PlaylistObservation>,
-        now: i64,
-    ) -> (Vec<LibraryItem>, Option<Vec<(String, String)>>) {
-        let Some(me) = self
-            .get::<Me>(&self.session.endpoints().me(), "the user")
-            .await
-        else {
-            return (Vec::new(), None);
-        };
-        if me.id.trim().is_empty() || me.id.len() > 1_024 || me.id.chars().any(char::is_control) {
-            self.read
-                .failed
-                .push(("the user".into(), "invalid Spotify owner identity".into()));
-            return (Vec::new(), None);
-        }
-        let url = self.session.endpoints().my_playlists(0);
-        let failed = self.read.failed.len();
-        let lists: Vec<SimplifiedPlaylist> = self.page(&url, "playlists", MAX_PAGES).await;
-        let listed = (self.read.failed.len() == failed && self.read.halted.is_none()).then(|| {
-            lists
-                .iter()
-                .filter(|l| !l.id.is_empty())
-                .map(|l| (format!("spotify:playlist:{}", l.id), l.name.clone()))
-                .collect()
-        });
-        let mut tracks = Vec::new();
-        let mut readable: Vec<_> = lists
-            .iter()
-            .filter(|list| !list.id.is_empty() && list.readable_by(&me.id))
-            .collect();
-        if listed.is_some() {
-            let active = readable
-                .iter()
-                .map(|list| format!("spotify:playlist:{}", list.id))
-                .collect::<Vec<_>>();
-            if let Err(error) = store.retain_playlist_progress(&me.id, &active) {
-                self.read
-                    .failed
-                    .push(("playlist progress".into(), error.to_string()));
-                return (tracks, listed);
-            }
-        }
-        if readable.is_empty() || self.read.halted.is_some() {
-            return (tracks, listed);
-        }
-        let cursor = match store.playlist_scan_cursor(&me.id) {
-            Ok(cursor) => cursor,
-            Err(error) => {
-                self.read
-                    .failed
-                    .push(("playlist scan position".into(), error.to_string()));
-                return (tracks, listed);
-            }
-        };
-        // Stable IDs make order changes harmless. An absent cursor resumes
-        // at its next surviving ID; newly added earlier IDs get their turn
-        // after wrapping. Each eligible list is visited at most once a sync.
-        readable.sort_by(|a, b| a.id.cmp(&b.id));
-        readable.dedup_by(|a, b| a.id == b.id);
-        let start = readable
-            .partition_point(|list| cursor.as_ref().is_some_and(|last| list.id <= *last))
-            % readable.len();
-        readable.rotate_left(start);
-        let mut attempted = 0;
-        for list in readable.iter().take(MAX_PLAYLISTS) {
-            if self.read.halted.is_some() {
-                break;
-            }
-            // Advance before I/O so an unreadable list or interrupted sync
-            // cannot repeatedly take the first turn after a restart.
-            if let Err(error) = store.save_playlist_scan_cursor(&me.id, &list.id) {
-                self.read
-                    .failed
-                    .push(("playlist scan position".into(), error.to_string()));
-                break;
-            }
-            attempted += 1;
-            let (items, observation) = self.read_playlist(store, &me.id, list, named, now).await;
-            tracks.extend(items);
-            observations.extend(observation);
-        }
-        if attempted == MAX_PLAYLISTS && readable.len() > attempted {
-            self.read.failed.push((
-                "playlist items".into(),
-                "taste playlist budget reached before every readable playlist was visited".into(),
-            ));
-        }
-        (tracks, listed)
     }
 }
 

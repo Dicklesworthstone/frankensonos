@@ -1,6 +1,7 @@
 //! Resume ordered reads only while Spotify's playlist version stays unchanged.
 //! Private checkpoints never replace a complete published cache with a prefix.
 
+use super::continuation::Readiness;
 use super::paging::Observation;
 use super::{MAX_PLAYLIST_REQUESTS, PlaylistObservation, Reader, valid_playlist_track};
 use crate::client::{PAGE_LIMIT, PlaylistItem, SimplifiedPlaylist};
@@ -18,13 +19,13 @@ struct Snapshot {
     revision: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Occurrence {
     position: u32,
     item: LibraryItem,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Progress {
     version: u8,
     owner_id: String,
@@ -33,6 +34,13 @@ struct Progress {
     source_total: Option<u32>,
     examined: u32,
     complete: bool,
+    #[serde(default)]
+    applied: bool,
+    #[serde(default)]
+    fetched_at: Option<i64>,
+    /// A metadata bound is terminal for this snapshot, until Spotify changes it.
+    #[serde(default)]
+    limited: bool,
     tracks: Vec<Occurrence>,
 }
 
@@ -50,6 +58,9 @@ impl Progress {
             source_total: None,
             examined: 0,
             complete: false,
+            applied: false,
+            fetched_at: None,
+            limited: false,
             tracks: Vec::new(),
         }
     }
@@ -59,6 +70,7 @@ impl Progress {
             || self.owner_id != owner
             || self.playlist_uri != uri
             || !version(&self.snapshot_id)
+            || (self.limited && self.complete)
             || self.examined > MAX_PLAYLIST_ENTRIES
             || self.source_total.is_some_and(|total| {
                 self.examined > total || (self.complete && self.examined != total)
@@ -151,6 +163,66 @@ fn load_progress<S: Store + ?Sized>(
     }
 }
 
+/// A complete/capped unchanged snapshot is not work for a continuation pass.
+/// Without a directory version, completed observations wait for the next full
+/// refresh; pending windows still perform their normal preflight version check.
+pub(super) fn readiness<S: Store + ?Sized>(
+    store: &S,
+    owner: &str,
+    list: &SimplifiedPlaylist,
+) -> Result<Readiness, StoreError> {
+    let uri = format!("spotify:playlist:{}", list.id);
+    let Some(progress) = load_progress(store, owner, &uri)? else {
+        return Ok(Readiness::Pending);
+    };
+    if list
+        .snapshot_id
+        .as_ref()
+        .is_some_and(|snapshot| *snapshot != progress.snapshot_id)
+    {
+        return Ok(Readiness::Pending);
+    }
+    Ok(if progress.limited {
+        Readiness::Limited
+    } else if !progress.applied {
+        // Snapshot proof can precede a failed public-cache/library write.
+        Readiness::Pending
+    } else if progress.complete {
+        Readiness::Complete
+    } else if progress.examined >= MAX_PLAYLIST_ENTRIES {
+        Readiness::Limited
+    } else {
+        Readiness::Pending
+    })
+}
+
+/// Cache projection is a separate durable step from the snapshot proof. Only
+/// acknowledge the exact observation that was just published and merged.
+/// Returns whether this acknowledgement completes or caps the scan.
+pub(crate) fn mark_applied<S: Store + ?Sized>(
+    store: &mut S,
+    owner: &str,
+    contents: &CachedPlaylist,
+) -> Result<(bool, bool), StoreError> {
+    let Some(mut progress) = load_progress(store, owner, &contents.playlist_uri)? else {
+        return Ok((false, false));
+    };
+    if progress.applied
+        || progress.limited
+        || progress.observation(contents.fetched_at) != *contents
+    {
+        return Ok((false, false));
+    }
+    progress.applied = true;
+    let encoded =
+        serde_json::to_string(&progress).map_err(|error| StoreError::Backend(error.to_string()))?;
+    store.save_playlist_progress(owner, &contents.playlist_uri, &encoded)?;
+    Ok((
+        progress.complete,
+        !progress.complete && progress.examined >= MAX_PLAYLIST_ENTRIES,
+    ))
+}
+
 impl Reader<'_> {
     fn playlist_failed(&mut self, detail: impl std::fmt::Display) {
         self.read
@@ -173,6 +245,8 @@ impl Reader<'_> {
         store: &mut S,
         owner: &str,
         list: &SimplifiedPlaylist,
+        now: i64,
+        pending_only: bool,
     ) -> Option<(Progress, bool)> {
         let uri = format!("spotify:playlist:{}", list.id);
         let previous = match load_progress(store, owner, &uri) {
@@ -193,11 +267,27 @@ impl Reader<'_> {
                 MAX_PLAYLIST_REQUESTS - 2,
             ),
         };
-        // Completed observations are refreshed on the next turn. An edit
+        if pending_only
+            && let Some(ready) = previous.as_ref().filter(|state| {
+                !state.applied
+                    && !state.limited
+                    && (state.complete || state.examined >= MAX_PLAYLIST_ENTRIES)
+                    && state.snapshot_id == snapshot
+            })
+        {
+            // A prior projection write failed. Reuse its proved local contents,
+            // not another Spotify read or a fabricated new fetched-at time.
+            return Some((ready.clone(), false));
+        }
+        // Completed observations are refreshed on the next full-sync turn. An edit
         // discards private progress, never the last complete published cache.
         let mut progress = previous
             .filter(|state| !state.complete && state.snapshot_id == snapshot)
             .unwrap_or_else(|| Progress::new(owner, &uri, &snapshot));
+        if progress.limited {
+            self.playlist_failed("playlist snapshot reached its 16 MiB metadata limit");
+            return None;
+        }
         let first = progress.examined;
         let url = self.session.endpoints().playlist_items(&list.id, first);
         let entries = self
@@ -215,26 +305,68 @@ impl Reader<'_> {
         }
         let failed = entries.failed;
         progress.append(entries);
-        let encoded = match serde_json::to_string(&progress) {
-            Ok(encoded) if encoded.len() <= MAX_PLAYLIST_BYTES => encoded,
-            _ => {
-                self.playlist_failed("playlist progress exceeds its 16 MiB metadata limit");
-                return None;
-            }
-        };
+        progress.applied = false;
+        progress.fetched_at = Some(now);
+        self.accept_window(store, progress, failed, first).await
+    }
+
+    async fn accept_window<S: Store + ?Sized>(
+        &mut self,
+        store: &mut S,
+        mut progress: Progress,
+        failed: bool,
+        first: u32,
+    ) -> Option<(Progress, bool)> {
+        let id = progress.playlist_uri.strip_prefix("spotify:playlist:")?;
+        let encoded = serde_json::to_string(&progress).ok();
+        let too_large = encoded
+            .as_ref()
+            .is_none_or(|encoded| encoded.len() > MAX_PLAYLIST_BYTES);
         // A halt leaves the old checkpoint intact: without this final read,
         // even a successful page prefix cannot be joined to another window.
-        if self.playlist_snapshot(&list.id).await? != snapshot {
+        if self.playlist_snapshot(id).await? != progress.snapshot_id {
             self.playlist_failed(
                 "playlist changed while reading; its next turn restarts from the beginning",
             );
             return None;
         }
+        if too_large {
+            // Keep the published last-good contents, and a small terminal
+            // marker so background passes do not repeat this oversized window.
+            progress.limited = true;
+            progress.complete = false;
+            progress.tracks.clear();
+            match serde_json::to_string(&progress) {
+                Ok(marker) => {
+                    if let Err(error) = store.save_playlist_progress(
+                        &progress.owner_id,
+                        &progress.playlist_uri,
+                        &marker,
+                    ) {
+                        self.playlist_failed(error);
+                    }
+                }
+                Err(error) => self.playlist_failed(error),
+            }
+            self.playlist_failed("playlist progress exceeds its 16 MiB metadata limit");
+            return None;
+        }
         // A malformed window can still supply a useful first observation,
         // but it must not move the durable restart point past its failure.
-        if !failed && let Err(error) = store.save_playlist_progress(owner, &uri, &encoded) {
-            self.playlist_failed(error);
-            return None;
+        if !failed {
+            if let Err(error) = store.save_playlist_progress(
+                &progress.owner_id,
+                &progress.playlist_uri,
+                encoded.as_deref().unwrap_or(""),
+            ) {
+                self.playlist_failed(error);
+                return None;
+            }
+            self.read.continuation.advanced = self
+                .read
+                .continuation
+                .advanced
+                .saturating_add(progress.examined.saturating_sub(first));
         }
         if !progress.complete {
             self.playlist_failed(format!(
@@ -260,13 +392,17 @@ impl Reader<'_> {
         list: &SimplifiedPlaylist,
         named: &mut HashMap<String, Vec<String>>,
         now: i64,
+        pending_only: bool,
     ) -> (Vec<LibraryItem>, Option<PlaylistObservation>) {
         self.read.playlists += 1;
-        let Some((progress, failed)) = self.playlist_window(store, owner, list).await else {
+        let Some((progress, failed)) = self
+            .playlist_window(store, owner, list, now, pending_only)
+            .await
+        else {
             return (Vec::new(), None);
         };
         let observation = PlaylistObservation {
-            contents: progress.observation(now),
+            contents: progress.observation(progress.fetched_at.unwrap_or(0)),
             failed,
         };
         let stated = crate::genre_guess::from_name(&list.name);
