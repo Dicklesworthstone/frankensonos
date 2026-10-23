@@ -1283,6 +1283,14 @@ production name) at us, and the response shape the parser wants (reacts with
 "Invalid user", "Access token does not have adequate permissions", "Command
 scopes could not be determined").
 
+The scope vocabulary is solved, from `FUN_004bd3c0`: the `scp` claim is
+**CSV-split** and matched case-insensitively against a three-entry `{bit, name}`
+table — bit 1 `hh-config`, bit 3 `hh-config-admin` — and the bits are OR-ed into
+the token mask at `+0x14`. Authorisation is `(token_mask & required) == required`
+plus a `strcmp` on the user string, so `hh-config-admin` covers both bits. The
+claim shape (CSV string or array) changes nothing yet because the token still
+fails earlier, in the `iss` compare.
+
 Recorded separately: with the cloud unreachable every token — forged, real or
 garbage — returns 503, so a run of 503s says nothing about the token.
 
