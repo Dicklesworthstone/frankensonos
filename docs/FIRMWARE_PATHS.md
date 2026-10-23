@@ -3091,3 +3091,38 @@ The talk slides (Sonos One / Lenovo clock, A113X) document two things that trans
 - `/jffs` is mounted **noexec** on these devices (`sonos_allow_mount_exec`), so a
   persistence payload must be a script interpreted by init (`Configure.dev` is `sh`'d)
   or the mount flag must be flipped; a binary dropped in `/jffs` will not run.
+
+## 2026-10-24: public prior art maps onto our open lanes
+
+Two public sources name exactly the bug classes already open here, so the CVEs can be
+used instead of re-derived:
+
+- **SSA-2024-0002** (Sonos, 2025-02-12) covers three Pwn2Own 2024 findings:
+  **CVE-2025-1048** remote code execution in the **HLS** handling (RET2 / ZDI),
+  **CVE-2025-1049** RCE in **MPEG-TS** parsing (InfoSect / ZDI), and CVE-2025-1050 an
+  **SMB2 use-after-free** (Viettel; S2 only). All three are fixed in Sonos
+  **83.1-61240** (S2) and **57.22-61162** (S1) — i.e. the fix line is the same number
+  our patch-train floor already sits on.
+- **NCC Group, "Listen Up" (BlackHat USA 2024)** has a whitepaper and slides on
+  remotely compromising Sonos One over the air (MediaTek WPA2 driver,
+  CVE-2024-20018) and on breaking Era-100 secure boot through U-Boot
+  (**CVE-2023-50810**) to reach EL3 and load unsigned images.
+
+Consequences for this project:
+
+- our HLS daemon-kill (`frankensonos-re-hls-kill-cnk`) is CVE-2025-1048's class and
+  our TS probes are CVE-2025-1049's; both should be worked against the public
+  descriptions rather than from scratch;
+- **every one of those is patched on our builds** (57.23 and 86.10 are far above the
+  fix line), and the patch-train floor is the same 57.22-61162 — so reaching a
+  vulnerable build needs a *downgrade below the floor*, which is the same obstacle as
+  installing anything unsigned. A downgrade attempt to 57.22-59130 was made: the
+  device accepted `BeginSoftwareUpdate` (200, after sending all three arguments —
+  `UpdateURL`, `Flags`, `ExtraOptions`; one or two arguments give 402) and started
+  fetching, but the transfer aborts at ~131-147 KB on today's routed path, so the
+  version verdict is not yet in.
+- CVE-2023-50810 is Era-100/Era-class U-Boot; our Play:5/Play:1 fleet is MIPS and
+  predates it, so the EL3 route applies only if an ARM model is acquired.
+
+The eMudhra intermediate key remains the live lane for *this* fleet, since it needs
+no downgrade.
