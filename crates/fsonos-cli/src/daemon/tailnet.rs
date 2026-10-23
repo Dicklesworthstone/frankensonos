@@ -81,7 +81,7 @@ impl<T> Listeners<T> {
             match bind(addr, &self.names) {
                 Ok(listener) => self.held.push((addr, listener)),
                 Err(error) => {
-                    tracing::warn!("HTTP API: not listening on {addr}: {error:#}; will retry")
+                    tracing::warn!("HTTP API: not listening on {addr}: {error:#}; will retry");
                 }
             }
         }

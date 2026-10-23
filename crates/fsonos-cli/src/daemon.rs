@@ -395,23 +395,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         record_daemon(global, args, &data_dir, loopback, &cli_token);
     }
     announce_tailnet(&tailnet, &http_plan, &http, &mcp, args.tailscale_serve);
-    if !matches!(
-        tailnet,
-        fsonos_tailscale::TailnetStatus::Unavailable(fsonos_tailscale::Unavailable::Disabled)
-    ) {
-        let target = crate::tailscale_cmd::mappings(args)[0].target.clone();
-        serve_origin::watch(target, serve.clone(), Arc::clone(&stop));
-    }
-    if args.tailscale_serve {
-        // A first HTTPS certificate can take a while: not on the main thread.
-        let (serve, tailnet) = (args.clone(), tailnet.clone());
-        thread::spawn(
-            move || match crate::tailscale_cmd::setup_at_startup(&serve, &tailnet) {
-                Ok(done) => eprintln!("fsonos serve: {done}"),
-                Err(e) => eprintln!("fsonos serve: Tailscale Serve not set up: {e:#}"),
-            },
-        );
-    }
+    follow_serve(args, &tailnet, &serve, &stop);
     // Only automatic HTTP binds follow Tailscale while the daemon runs.
     // Loopback stays owned here; an explicit bind and every MCP listener
     // retain exactly the configured startup behavior.
@@ -456,6 +440,33 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     // The surfaces hold the model weakly: this ends every subscription.
     drop(live);
     Ok(())
+}
+
+/// Keep up with Tailscale Serve: watch the origin it proxies (unless
+/// Tailscale is off), and set it up when `--tailscale-serve` asks.
+fn follow_serve(
+    args: &ServeArgs,
+    tailnet: &fsonos_tailscale::TailnetStatus,
+    serve: &ServeOrigin,
+    stop: &Arc<AtomicBool>,
+) {
+    if !matches!(
+        tailnet,
+        fsonos_tailscale::TailnetStatus::Unavailable(fsonos_tailscale::Unavailable::Disabled)
+    ) {
+        let target = crate::tailscale_cmd::mappings(args)[0].target.clone();
+        serve_origin::watch(target, serve.clone(), Arc::clone(stop));
+    }
+    if args.tailscale_serve {
+        // A first HTTPS certificate can take a while: not on the main thread.
+        let (serve, tailnet) = (args.clone(), tailnet.clone());
+        thread::spawn(
+            move || match crate::tailscale_cmd::setup_at_startup(&serve, &tailnet) {
+                Ok(done) => eprintln!("fsonos serve: {done}"),
+                Err(e) => eprintln!("fsonos serve: Tailscale Serve not set up: {e:#}"),
+            },
+        );
+    }
 }
 
 /// Write daemon.json for the loopback HTTP address `http`: the CLI finds

@@ -319,6 +319,7 @@ fn configured_http_and_tailscale_off_do_not_start_the_worker() {
         spotify_redirect_uri: config::SPOTIFY_REDIRECT_URI.into(),
         events_port: config::EVENTS_PORT,
         allow_unsafe_bind: false,
+        bridge_compat: None,
     };
     assert!(enabled(&args));
     args.tailscale = TailscaleMode::Off;
