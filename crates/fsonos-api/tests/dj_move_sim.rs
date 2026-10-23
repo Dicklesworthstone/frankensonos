@@ -5,17 +5,21 @@
 
 use fsonos_api::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto, DjSteer};
 use fsonos_api::plan::{DjAction, plan_move, plan_play};
+use fsonos_api::surface::schedules::{Sleep, SleepRequest};
 use fsonos_api::surface::{Surface, Survey};
 use fsonos_api::{ErrorCode, Failure, MoveRequest, OutcomeDto, PlayRequest};
 use fsonos_core::clock::{Clock, SystemClock};
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::policy::{Client, Policy};
-use fsonos_core::store::{MemStore, Store};
+use fsonos_core::store::{ActionFilter, MemStore, Store};
 use fsonos_core::{HouseholdState, resolve_room};
+use fsonos_proto::control::get_remaining_sleep_timer;
 use fsonos_proto::topology::get_zone_group_state;
+use fsonos_proto::{ProtoError, Transport, soap};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::PlayerId;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 const STREAM: &str = "x-rincon-mp3radio://stream.example.invalid/moving.mp3";
@@ -186,4 +190,168 @@ fn a_move_holds_the_dj_then_hands_it_to_the_new_coordinator() {
         calls.lock().unwrap().is_empty(),
         "nothing to move holds nothing"
     );
+}
+
+/// The member really joins over a socket, but its acknowledgement never
+/// reaches the controller. Count writes so an outer retry cannot hide a
+/// broken handoff by repeating the join or starting the source again.
+struct LostJoin {
+    lan: SimLan,
+    lost: AtomicBool,
+    joins: Arc<AtomicUsize>,
+    malformed: bool,
+}
+
+impl Transport for LostJoin {
+    fn soap_post(
+        &self,
+        host: IpAddr,
+        path: &str,
+        header: &str,
+        body: &str,
+    ) -> Result<String, ProtoError> {
+        let action = header.trim_matches('"').rsplit('#').next().unwrap();
+        let reply = self.lan.soap_post(host, path, header, body)?;
+        if action == "SetAVTransportURI" && body.contains("x-rincon:") {
+            self.joins.fetch_add(1, Ordering::SeqCst);
+            if soap::parse_response(&reply, action).is_ok()
+                && !self.lost.swap(true, Ordering::SeqCst)
+            {
+                return if self.malformed {
+                    Ok("<incomplete-response>".into())
+                } else {
+                    Err(ProtoError::Network {
+                        target: "synthetic join acknowledgement".into(),
+                        detail: "lost after the member accepted its new group".into(),
+                    })
+                };
+            }
+        }
+        Ok(reply)
+    }
+}
+
+#[test]
+fn a_recovered_move_carries_the_dj_and_sleep_timer_and_logs_success_once() {
+    for s2 in [false, true] {
+        for malformed in [false, true] {
+            recovered_move(s2, malformed);
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)] // One move's fixture, lost reply and follow-on state stay together.
+fn recovered_move(s2: bool, malformed: bool) {
+    let model = if s2 {
+        SimModel::One
+    } else {
+        SimModel::Play5Gen1
+    };
+    let players = [
+        SimPlayerSpec::new("Kitchen", model),
+        SimPlayerSpec::new("Office", model),
+    ];
+    let builder = SimHousehold::builder();
+    let sim = if s2 {
+        builder.s2(players)
+    } else {
+        builder.s1(players)
+    }
+    .spawn()
+    .unwrap();
+    let lan = sim.lan();
+    let kitchen = sim.player("Kitchen").unwrap().ip;
+    let office = sim.player("Office").unwrap().ip;
+    let before = now(&lan, kitchen);
+    let old = coordinator(&before, "Kitchen");
+    let new = coordinator(&before, "Office");
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let joins = Arc::new(AtomicUsize::new(0));
+    let survey: Survey = Box::new(move |transport| {
+        let mut house = HouseholdState::default();
+        house.apply_topology(
+            &get_zone_group_state(transport, kitchen).map_err(fsonos_core::CoreError::from)?,
+        );
+        Ok(vec![house])
+    });
+    let surface = Surface::new(
+        Box::new(LostJoin {
+            lan: lan.clone(),
+            lost: AtomicBool::new(false),
+            joins: Arc::clone(&joins),
+            malformed,
+        }),
+        survey,
+        Policy::default(),
+        Box::new(SystemClock),
+    )
+    .with_action_log(Box::new(MemStore::default()), "http")
+    .with_sleep(Sleep::default())
+    .with_dj(Box::new(Recorder {
+        lan: lan.clone(),
+        kitchen,
+        calls: Arc::clone(&calls),
+    }));
+    let client = Client::LoopbackHttp;
+    let play = PlayRequest {
+        zone: "Kitchen".into(),
+        source_uri: STREAM.into(),
+        title: None,
+    };
+    surface
+        .control(&client, "play", |rooms| plan_play(rooms, &play))
+        .unwrap();
+    surface
+        .set_sleep_timer(
+            &client,
+            &SleepRequest {
+                zone: "Kitchen".into(),
+                duration: Some("45m".into()),
+                extend: false,
+                cancel: false,
+            },
+        )
+        .unwrap();
+
+    let request = MoveRequest {
+        zone: "Kitchen".into(),
+        to: "Office".into(),
+        copy: false,
+    };
+    let result = surface
+        .control(&client, "move_playback", |rooms| plan_move(rooms, &request))
+        .unwrap();
+    assert!(result.changed);
+    assert_eq!(
+        joins.load(Ordering::SeqCst),
+        1,
+        "the join was never replayed"
+    );
+    assert_eq!(coordinator(&now(&lan, kitchen), "Office"), new);
+    assert_eq!(
+        *calls.lock().unwrap(),
+        [
+            format!("moving {} (kitchen led by {})", old.0, old.0),
+            format!("moved {} -> {}", old.0, new.0),
+        ]
+    );
+    let timers = surface.sleep_timers(&client, None).unwrap();
+    let running: Vec<_> = timers.iter().filter(|timer| timer.ends.is_some()).collect();
+    assert_eq!(running.len(), 1, "{timers:?}");
+    assert_eq!(running[0].zone, "Office");
+    assert!(get_remaining_sleep_timer(&lan, office).unwrap().is_some());
+    assert_eq!(get_remaining_sleep_timer(&lan, kitchen).unwrap(), None);
+    let actions = surface
+        .recent_actions(&client, &ActionFilter::default())
+        .unwrap();
+    let moves: Vec<_> = actions
+        .iter()
+        .filter(|row| row.action.intent.starts_with("move_playback"))
+        .collect();
+    assert_eq!(
+        moves.len(),
+        1,
+        "one user operation produces one action-log record"
+    );
+    assert_eq!(moves[0].action.result, result.done);
 }

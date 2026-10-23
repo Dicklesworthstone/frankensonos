@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+mod grouping_state;
 mod loading;
 mod queue_insert;
 pub mod queue_removal;
@@ -525,7 +526,9 @@ pub fn set_tone<T: Transport + ?Sized>(
     Ok(())
 }
 
-/// Move `member` into the group `coordinator` leads.
+/// Move `member` into the group `coordinator` leads. A lost or malformed
+/// acknowledgement is confirmed by fresh topology for the whole bonded room;
+/// the join is never repeated to recover its reply.
 pub fn join<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -534,7 +537,17 @@ pub fn join<T: Transport + ?Sized>(
 ) -> Result<(), CoreError> {
     // Both must be known: a join across households can never work.
     locate(households, coordinator)?;
-    Ok(soap::join_group(t, addr(households, member)?, coordinator)?)
+    let result = soap::join_group(t, addr(households, member)?, coordinator);
+    match result {
+        Err(cause)
+            if grouping_state::uncertain(&cause)
+                && grouping_state::joined(t, households, member, coordinator) =>
+        {
+            tracing::warn!(cause = %cause, "group join confirmed by topology; not repeated");
+            Ok(())
+        }
+        other => Ok(other?),
+    }
 }
 
 /// Take `member` out of its group into a group of its own. A member joins
@@ -550,27 +563,56 @@ pub fn join<T: Transport + ?Sized>(
 /// `ZoneGroupState` stale for far longer than [`LEAVE_WAIT`] — fleet
 /// verified 2026-10-12, bead frankensonos-p9f — while the rest of the
 /// household already shows the leave.
+/// A lost delegation or self-join reply is reconciled from topology without
+/// replaying the write. Recovery requires the room's bonded players too.
 pub fn leave<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     member: &PlayerId,
 ) -> Result<(), CoreError> {
     let host = addr(households, member)?;
+    let mut lost_delegation = None;
     let delegated = match heir_of(households, member) {
         Some(heir) => match soap::delegate_group(t, host, &heir) {
             Ok(()) => true,
             // Refused: the self-join, and the topology decides.
             Err(ProtoError::SoapFault { .. }) => false,
+            Err(cause)
+                if grouping_state::uncertain(&cause)
+                    && grouping_state::delegated(t, households, member, &heir) =>
+            {
+                lost_delegation = Some(cause);
+                true
+            }
             Err(e) => return Err(e.into()),
         },
         None => false,
     };
-    if !delegated && soap::leave_group(t, host, member)? == soap::Leaving::Done {
-        return Ok(());
+    if !delegated {
+        match soap::leave_group(t, host, member) {
+            Ok(soap::Leaving::Done) => return Ok(()),
+            Ok(soap::Leaving::Unconfirmed) => {}
+            Err(cause)
+                if grouping_state::uncertain(&cause)
+                    && grouping_state::left(t, households, member) =>
+            {
+                tracing::warn!(cause = %cause, "group leave confirmed by topology; not repeated");
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
-    wait_until_alone(t, households, member, host)?;
+    if lost_delegation.is_none() {
+        wait_until_alone(t, households, member, host)?;
+    }
     if delegated {
         reunite_room(t, households, member, host);
+    }
+    if let Some(cause) = lost_delegation {
+        if !grouping_state::left(t, households, member) {
+            return Err(cause.into());
+        }
+        tracing::warn!(cause = %cause, "group handoff and leave confirmed by topology; not repeated");
     }
     Ok(())
 }

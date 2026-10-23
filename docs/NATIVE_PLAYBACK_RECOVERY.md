@@ -69,3 +69,36 @@ cargo test --locked -p fsonos-core --test transport_state_recovery_sim --test co
 The simulator cases cover normal and malformed lost acknowledgements for all
 three controls on both generations. Physical-speaker validation remains a
 separate check.
+
+## Grouping and moving music
+
+A join, ungroup or coordinator handoff can take effect even when its SOAP
+acknowledgement is lost. These operations now use fresh household topology to
+check the result after a network failure or malformed acknowledgement. The
+grouping write is sent once. A confirmed join lets a move continue through its
+existing handoff, so the DJ and sleep timer can follow the music to its new
+room and the action log can record the completed move.
+
+Confirmation includes the room's bonded players. A join requires the intended
+coordinator to retain its existing members and contain the joining room; a
+leave requires the original room to lead a group of its own. A coordinator
+leaving its group must also leave the other rooms together under the chosen
+successor. The existing bonded-room repair remains part of that leave path.
+Ambiguous membership, an unrelated regroup, or failed reads cannot establish
+success. The original write failure is retained when confirmation fails.
+
+Recovery prefers the destination or remaining coordinator, because the player
+that just acted may still report stale topology. Reads use the existing
+bounded regrouping wait; unreachable witnesses are not polled repeatedly.
+Explicit SOAP faults keep their existing behavior, including the documented
+self-join/402 leave path. These observations establish the requested layout,
+not causality or a transaction against other controllers.
+
+```sh
+cargo test --locked -p fsonos-core --test grouping_recovery_sim
+cargo test --locked -p fsonos-api --test dj_move_sim --test sleep_move_sim
+```
+
+The tests use real S1/S2 simulator sockets and discard an acknowledgement only
+after the simulated player accepted the operation. Physical-speaker acceptance
+remains a separate check.
