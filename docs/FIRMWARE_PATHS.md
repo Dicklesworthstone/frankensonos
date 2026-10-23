@@ -2515,3 +2515,7 @@ through the dispatch table. Combined with the earlier result that capacity, serv
 id and argument count are all ruled out, the 402 has to come from a *required-param
 or ordering* rule encoded in that table — i.e. read the table, or capture one real
 call.
+
+Also ruled out: the `:1443`/WS `upnpSystemProperties#call` proxy is no softer than
+raw SOAP for this action — the same six `input[]` pairs give the same UPnP 402. The
+proxy only changes the transport, not the handler or its parameter table.
