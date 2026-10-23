@@ -17,6 +17,26 @@ pub(super) struct Owner {
     observed: Instant,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum Action<'a> {
+    Load(&'a Item),
+    Mode(PlayMode),
+    Track(u32, &'a Item),
+    Position(u32),
+    Play,
+}
+
+impl Action<'_> {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Load(_) => "SetAVTransportURI",
+            Self::Mode(_) => "SetPlayMode",
+            Self::Track(_, _) | Self::Position(_) => "Seek",
+            Self::Play => "Play",
+        }
+    }
+}
+
 fn changed() -> ProtoError {
     ProtoError::Malformed(
         "the destination group, boot, source, selection, time, transport or play mode changed while staging the move".into(),
@@ -89,6 +109,74 @@ impl Owner {
             return Err(changed());
         }
         Ok(())
+    }
+
+    /// Adopt only the exact transition we dispatched. A helper that performed
+    /// no write must preserve every field, even when another controller happens
+    /// to select the same setting that the transfer wanted.
+    pub(super) fn after_action<T: Transport + ?Sized>(
+        &self,
+        t: &T,
+        host: IpAddr,
+        target: &PlayerId,
+        action: Option<Action<'_>>,
+        started: Instant,
+    ) -> Result<Self, ProtoError> {
+        let now = Self::read(t, host, target, self.mode.is_some())?;
+        let source_matches = if matches!(action, Some(Action::Load(_))) {
+            now.destination == self.destination.for_queue(target)
+        } else {
+            self.destination == now.destination
+        };
+        if !source_matches || !now.destination.is_queue(target) {
+            return Err(changed());
+        }
+        let mode = match action {
+            Some(Action::Mode(mode)) => Some(mode),
+            _ => self.mode,
+        };
+        let selected = |slot, item: &Item| {
+            now.position.track == slot
+                && verify::identity(&now.position.uri) == verify::identity(&item.uri)
+        };
+        let playback = match action {
+            Some(Action::Load(first)) => {
+                now.state == TransportState::Stopped
+                    && selected(1, first)
+                    && now.position.position_secs == Some(0)
+            }
+            Some(Action::Track(slot, item)) => {
+                now.state == self.state
+                    && selected(slot, item)
+                    && now.position.position_secs == Some(0)
+            }
+            Some(Action::Position(position)) => {
+                now.state == self.state
+                    && self.selection_agrees(&now)
+                    && now.position.position_secs == Some(position)
+            }
+            Some(Action::Play) => {
+                let forward = u32::try_from(started.elapsed().as_secs())
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(1);
+                now.state == TransportState::Playing
+                    && self.selection_agrees(&now)
+                    && self
+                        .position
+                        .position_secs
+                        .zip(now.position.position_secs)
+                        .is_some_and(|(before, after)| {
+                            after >= before && after <= before.saturating_add(forward)
+                        })
+            }
+            Some(Action::Mode(_)) | None => {
+                now.state == self.state && self.selection_agrees(&now) && self.time_agrees(&now)
+            }
+        };
+        if now.mode != mode || !playback {
+            return Err(changed());
+        }
+        Ok(now)
     }
 
     /// Stop may reset the current clock. It cannot select another source or

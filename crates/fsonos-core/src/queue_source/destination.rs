@@ -90,6 +90,17 @@ impl Destination {
         Ok(())
     }
 
+    /// The only source change authorized by loading this player's queue.
+    /// Group membership and boot identity remain the original evidence.
+    pub(crate) fn for_queue(&self, coordinator: &PlayerId) -> Self {
+        Self {
+            members: self.members.clone(),
+            boot_seq: self.boot_seq,
+            uri: format!("x-rincon-queue:{}#0", coordinator.0),
+            metadata: String::new(),
+        }
+    }
+
     pub(crate) fn is_queue(&self, coordinator: &PlayerId) -> bool {
         self.uri == format!("x-rincon-queue:{}#0", coordinator.0)
     }

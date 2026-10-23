@@ -1,15 +1,20 @@
 //! Copy a complete queue before committing its replacement. Failed staging
 //! can leave a suffix, but never authorizes clearing the original prefix.
 
-use super::{Item, MoveError, invalid, owner::Owner, verify};
+use super::{
+    Item, MoveError, Prepared, Source, invalid, mode,
+    owner::{Action, Owner},
+    verify,
+};
 use crate::CoreError;
 use crate::control::queue_removal::{self, Snapshot};
 use fsonos_proto::content::{self, BrowseFlag, QUEUE};
 use fsonos_proto::control as soap;
 use fsonos_proto::{ProtoError, Transport};
-use fsonos_types::PlayerId;
+use fsonos_types::{PlayerId, TransportState};
 use std::cell::Cell;
 use std::net::IpAddr;
+use std::time::Instant;
 
 fn head<T: Transport + ?Sized>(
     t: &T,
@@ -38,6 +43,7 @@ struct Fenced<'a, T: ?Sized> {
     count: usize,
     action: &'a str,
     blocked: Cell<bool>,
+    sent: Cell<bool>,
 }
 
 impl<T: Transport + ?Sized> Transport for Fenced<'_, T> {
@@ -67,6 +73,7 @@ impl<T: Transport + ?Sized> Transport for Fenced<'_, T> {
                 self.blocked.set(true);
             }
             proof?;
+            self.sent.set(true);
         }
         self.inner.soap_post(host, path, action, body)
     }
@@ -101,6 +108,7 @@ impl<T: Transport + ?Sized> Stage<'_, T> {
             count,
             action,
             blocked: Cell::new(false),
+            sent: Cell::new(false),
         }
     }
 
@@ -164,7 +172,7 @@ impl<T: Transport + ?Sized> Stage<'_, T> {
         Ok(observed)
     }
 
-    fn commit(&self, revision: u32) -> Result<u32, MoveError> {
+    fn commit(&self, revision: u32) -> Result<(u32, Owner), MoveError> {
         let staged = queue_removal::read(self.t, self.host)?;
         if staged.revision != revision || !complete(self.before, self.items, &staged) {
             return Err(invalid(
@@ -193,18 +201,7 @@ impl<T: Transport + ?Sized> Stage<'_, T> {
             self.before.uris.len(),
             self.items,
         )?;
-        let guarded = Fenced {
-            inner: self.t,
-            owner: &committed,
-            host: self.host,
-            target: self.target,
-            revision: final_revision,
-            count: self.items.len(),
-            action: "SetAVTransportURI",
-            blocked: Cell::new(false),
-        };
-        soap::play_from_queue(&guarded, self.host, self.target)?;
-        Ok(final_revision)
+        Ok((final_revision, committed))
     }
 }
 
@@ -214,7 +211,7 @@ pub(super) fn replace<T: Transport + ?Sized>(
     target: &PlayerId,
     items: &[Item],
     mode_known: bool,
-) -> Result<u32, MoveError> {
+) -> Result<(u32, Owner), MoveError> {
     let owner = Owner::read(t, host, target, mode_known)?;
     let before = queue_removal::read(t, host)?;
     let limit = usize::try_from(content::MAX_BROWSE_OBJECTS).unwrap_or(usize::MAX);
@@ -238,6 +235,7 @@ pub(super) fn replace<T: Transport + ?Sized>(
         count: before.uris.len(),
         action: "Stop",
         blocked: Cell::new(false),
+        sent: Cell::new(false),
     };
     // Stop before appending, so old playback cannot run into the staged
     // suffix. A paused source is never audibly started to establish pause.
@@ -261,4 +259,142 @@ pub(super) fn replace<T: Transport + ?Sized>(
         revision = stage.append(index, revision)?;
     }
     stage.commit(revision)
+}
+
+/// Carry staging's exact ownership evidence through the final source, mode,
+/// selection and transport writes. A failed proof permanently poisons this run.
+struct Finishing<'a, T: ?Sized> {
+    t: &'a T,
+    host: IpAddr,
+    target: &'a PlayerId,
+    revision: u32,
+    count: usize,
+    owner: Owner,
+    poisoned: bool,
+}
+
+impl<T: Transport + ?Sized> Finishing<'_, T> {
+    fn confirm(&self) -> Result<(), MoveError> {
+        if self.poisoned {
+            return Err(invalid(
+                "queue finalization lost ownership; no further writes are allowed",
+            ));
+        }
+        self.owner.confirm(self.t, self.host, self.target)?;
+        head(self.t, self.host, self.revision, self.count)?;
+        Ok(())
+    }
+
+    fn step(
+        &mut self,
+        action: Action<'_>,
+        operation: impl FnOnce(&Fenced<'_, T>) -> Result<(), MoveError>,
+    ) -> Result<(), MoveError> {
+        self.confirm()?;
+        self.poisoned = true;
+        let started = Instant::now();
+        let (written, blocked, sent) = {
+            let guarded = Fenced {
+                inner: self.t,
+                owner: &self.owner,
+                host: self.host,
+                target: self.target,
+                revision: self.revision,
+                count: self.count,
+                action: action.name(),
+                blocked: Cell::new(false),
+                sent: Cell::new(false),
+            };
+            (
+                operation(&guarded),
+                guarded.blocked.get(),
+                guarded.sent.get(),
+            )
+        };
+        // Mode restoration can reconcile a lost response using fresh reads.
+        // It must not turn our blocked write into somebody else's success.
+        if blocked {
+            return Err(invalid(
+                "the final playback ownership fence blocked a write",
+            ));
+        }
+        written?;
+        if matches!(action, Action::Play) {
+            verify::transport(self.t, self.host, TransportState::Playing)?;
+        }
+        let next = self.owner.after_action(
+            self.t,
+            self.host,
+            self.target,
+            sent.then_some(action),
+            started,
+        )?;
+        head(self.t, self.host, self.revision, self.count)?;
+        self.owner = next;
+        self.poisoned = false;
+        Ok(())
+    }
+}
+
+pub(super) fn finish<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    target: &PlayerId,
+    prepared: &Prepared,
+    revision: u32,
+    owner: Owner,
+) -> Result<(), MoveError> {
+    let Source::Queue {
+        items,
+        track,
+        position,
+    } = &prepared.source
+    else {
+        return Err(invalid("queue finalization requires a prepared queue"));
+    };
+    let selected = track
+        .checked_sub(1)
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| items.get(index))
+        .ok_or_else(|| invalid("the prepared queue occurrence is missing"))?;
+    let first = items
+        .first()
+        .ok_or_else(|| invalid("the prepared queue is empty"))?;
+    let mut finishing = Finishing {
+        t,
+        host,
+        target,
+        revision,
+        count: items.len(),
+        owner,
+        poisoned: false,
+    };
+    finishing.step(Action::Load(first), |guarded| {
+        soap::play_from_queue(guarded, host, target).map_err(MoveError::from)
+    })?;
+    if let Some(mode) = prepared.play_mode {
+        finishing.step(Action::Mode(mode), |guarded| {
+            mode::apply(guarded, host, target, revision, mode)
+        })?;
+    }
+    finishing.step(Action::Track(*track, selected), |guarded| {
+        soap::seek_track(guarded, host, *track).map_err(MoveError::from)
+    })?;
+    if *position > 0 {
+        finishing.step(Action::Position(*position), |guarded| {
+            soap::seek_position(guarded, host, *position).map_err(MoveError::from)
+        })?;
+    }
+    let started = Instant::now();
+    let state = if prepared.transport == TransportState::Playing {
+        finishing.step(Action::Play, |guarded| {
+            soap::play(guarded, host).map_err(MoveError::from)
+        })?;
+        TransportState::Playing
+    } else {
+        TransportState::Stopped
+    };
+    finishing.confirm()?;
+    verify::transport(t, host, state)?;
+    verify::playback(t, host, target, prepared, Some(revision), started.elapsed())
 }

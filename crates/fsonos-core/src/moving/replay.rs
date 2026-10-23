@@ -258,11 +258,7 @@ impl Prepared {
         host: IpAddr,
         target: &PlayerId,
     ) -> Result<(), MoveError> {
-        if self.is_empty() {
-            return Ok(());
-        }
-        let mut revision = None;
-        let (track, position) = match &self.source {
+        let position = match &self.source {
             Source::Nothing => return Ok(()),
             Source::Uri { item, position } => {
                 // A paused source must never start an audible Play/Pause
@@ -270,29 +266,14 @@ impl Prepared {
                 soap::stop(t, host)?;
                 verify::transport(t, host, TransportState::Stopped)?;
                 soap::set_av_transport_uri(t, host, &item.uri, &item.metadata)?;
-                (0, position.unwrap_or(0))
+                position.unwrap_or(0)
             }
-            Source::Queue {
-                items,
-                track,
-                position,
-            } => {
-                revision = Some(staging::replace(
-                    t,
-                    host,
-                    target,
-                    items,
-                    self.play_mode.is_some(),
-                )?);
-                (*track, *position)
+            Source::Queue { items, .. } => {
+                let (revision, owner) =
+                    staging::replace(t, host, target, items, self.play_mode.is_some())?;
+                return staging::finish(t, host, target, self, revision, owner);
             }
         };
-        if let (Some(mode), Some(revision)) = (self.play_mode, revision) {
-            mode::apply(t, host, target, revision, mode)?;
-        }
-        if track > 0 {
-            soap::seek_track(t, host, track)?;
-        }
         if position > 0 {
             soap::seek_position(t, host, position)?;
         }
@@ -304,10 +285,7 @@ impl Prepared {
             TransportState::Stopped
         };
         verify::transport(t, host, state)?;
-        if let (Some(mode), Some(revision)) = (self.play_mode, revision) {
-            mode::confirm(t, host, target, revision, mode)?;
-        }
-        verify::playback(t, host, target, self, revision, started.elapsed())
+        verify::playback(t, host, target, self, None, started.elapsed())
     }
 }
 

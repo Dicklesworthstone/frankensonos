@@ -156,6 +156,7 @@ enum Fault {
     IgnoreRemoval,
     RaceRemoval,
     SeekAfterRemoval,
+    SeekAfterLoad,
 }
 
 struct Replies {
@@ -299,6 +300,11 @@ impl Transport for Replies {
         }
         if name == "RemoveTrackRangeFromQueue" {
             return self.remove(host, path, action, body);
+        }
+        if name == "SetAVTransportURI" && matches!(self.fault, Fault::SeekAfterLoad) {
+            let response = self.inner.soap_post(host, path, action, body)?;
+            soap::seek_position(&self.inner, host, 99)?;
+            return Ok(response);
         }
         self.inner.soap_post(host, path, action, body)
     }
@@ -614,5 +620,29 @@ fn a_paused_source_stays_silent_and_an_inactive_destination_queue_is_supported()
             TransportState::Stopped
         );
         f.no_clear(since);
+    }
+}
+
+#[test]
+fn owner_seek_after_queue_load_stops_transfer_before_mode_seek_or_play() {
+    for s2 in [false, true] {
+        let f = Fixture::new(s2);
+        let t = Replies::new(&f, Fault::SeekAfterLoad);
+        let since = f.sim.soap_log().len();
+        assert!(f.copy(&t).is_err());
+        assert_eq!(f.queue(), INCOMING);
+        let position = soap::get_position_info(&f.sim.lan(), f.target).unwrap();
+        assert_eq!(position.position_secs, Some(99));
+        assert_eq!((t.adds.get(), t.removes.get(), t.starts.get()), (3, 1, 0));
+        f.source_kept(since);
+        f.no_clear(since);
+        let log = f.sim.soap_log();
+        let writes: Vec<_> = log[since..]
+            .iter()
+            .filter(|entry| entry.room == f.target_name)
+            .map(|entry| entry.action.as_str())
+            .filter(|action| matches!(*action, "SetPlayMode" | "Seek" | "Play"))
+            .collect();
+        assert_eq!(writes, vec!["Seek"]);
     }
 }

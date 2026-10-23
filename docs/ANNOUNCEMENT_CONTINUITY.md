@@ -51,6 +51,8 @@ fresh topology and playback reads prove the full transfer. Explicit protocol
 refusals retain their error; an acknowledged no-op also fails verification.
 Acknowledged joins and native transfers have a bounded topology-settle window;
 only observations repeat while waiting for their effects.
+The three-second polling budget bounds additional reads and sleeps; an
+in-flight SOAP request still uses its transport timeout.
 Neither result triggers a queue replay. If the clip installation itself was
 rejected and the original source is confirmed untouched, the rooms and
 levels can still return through the native path.
