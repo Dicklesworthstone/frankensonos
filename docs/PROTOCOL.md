@@ -545,6 +545,21 @@ program), or the update-signature chain (`bin/upgrade`'s own verification,
 which uses the same libsonoscrypto with separate keys for the `.upd`
 signature section).
 
+**The signature container, from the 90.01.9 app.** The current app ships an
+unobfuscated `libsonoscrypto` (arm32) with a whole signature API:
+`sonosSignatureParse` / `ParseFromEnd` / `Serialize` / `HashSignedAttributes`
+/ `Verify`, plus `GetContentType`, `GetMessageDigest`, `GetAllowlist`,
+`GetSrkRevoke`, `GetArVersion` and validators for the digest algorithm, key
+identifier scheme and signature algorithm. Signatures are parsed from the
+**end** of the blob and cover a **signed-attribute block** (content type,
+message digest, allowlist, SRK revocation, AR version). Inference, strongly
+suggested by that layout: the version identity is inside the signed
+attributes, which is why a hand-patched type-1 record is refused while a
+genuine build's header verifies — header tampering is not a way in. The same
+library also carries `validateDevModeStatement` / `isDevModeFlagEnabled` /
+`sonosRsaGetDevModePublicKey`, so the devmode statement format can be studied
+in readable ARM code instead of only the obfuscated MIPS one.
+
 **Queue metadata is a pre-auth DoS (found 2026-10-22, live, both
 generations).** `AddURIToQueue` with a `EnqueuedURIMetaData` DIDL whose
 `dc:title` is tens of KB answers `200`, then the daemon dies tens of seconds
