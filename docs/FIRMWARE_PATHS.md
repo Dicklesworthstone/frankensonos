@@ -829,7 +829,11 @@ advance, and all key/IV length variants (missing key, 0/15/17/32/1000-byte key,
 usable path here and not a crash lever. Playlist-level pathology is clean too:
 a single 100 KB line, 5000 segment lines, CRLF endings, `MEDIA-SEQUENCE` of
 `0xFFFFFFFF`, `TARGETDURATION:0` and a file with no trailing newline all parse
-and play, 6/6 without a restart. (`hls-aac://` and `hls-static://` behave
+and play, 6/6 without a restart. Segment *switching* is not it either: two
+entries pointing at the same file and two pointing at different files are both
+6/6 clean, and so are two players fed the same playlist at once. After the
+initial burst the only reliable statement is that HLS restarts this daemon
+*sometimes*. (`hls-aac://` and `hls-static://` behave
 identically to `hls-radio://` — the scheme only picks a service label. On 86.10
 the same fixture also never advances, but that unit was timing out on the plain
 control at the time, so the S2 result is not conclusive.)
