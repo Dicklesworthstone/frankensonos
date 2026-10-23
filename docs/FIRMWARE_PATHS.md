@@ -2021,3 +2021,25 @@ next boot, which a rejected-image soft reboot fixes in under a minute.
 So registering a service we host is still open, and the payload shape is not the
 one the SCPD implies (it declares *no* arguments at all). Getting it right is worth
 it: a registered entry makes the device speak SMAPI to a URI we choose.
+
+### What a real service entry looks like, and why the replay still fails
+
+Taken from the device's own list, a service element is:
+
+```
+<Service Id="294" Name="Radio Javan" Version="1.1"
+         Uri="https://rjsonos.app/musicservice" SecureUri="https://…"
+         ContainerType="MService" Capabilities="29889025"/>
+```
+
+`ContainerType` is `MService` (not `MusicService`), and `Capabilities` is a 32-bit
+mask, not `0`. With those copied onto our own entry (id 999, URI at a LAN sink), a
+single-entry delta push still answers 200 and `GetSessionId(999)` still answers 806,
+so the action neither registers the service in RAM nor makes the device talk to the
+URI.
+
+Status: `UpdateAvailableServices` is accepted and effectively inert whichever way
+it is driven — full list, delta, escaped, raw, correct attribute shape. The device
+rebuilds its list from elsewhere on boot. The remaining source of truth is the
+controller's own payload (or the on-disk service file the handler would write),
+not the SCPD, which declares no arguments at all.
