@@ -418,6 +418,13 @@ how a local client obtains a scoped token without the cloud.
    field into a 192-byte stack buffer, so CVE-2023-27355's overrun shape is gone
    from 57.23; `peslen` is 16-bit and can wrap, but nothing copies by it. The
    crash is an HLS life-cycle bug, not a demux copy. Beads `re-hls-kill`.
+   **And it is a write, not just a crash** (instruction-level, 2026-10-23): the
+   compaction computes `new_head = 0x10 - (limit - head)` with no bound check and
+   copies `(limit-head)` entries of `0xc50` to `new_head*0xc50`. The array is inline
+   at `obj+8`, so `limit-head == 17` — which is just the first append after the
+   split/reset, since that path sets `head = limit = 16` and head then wraps to 0 —
+   copies `0x81d0` bytes to `obj-0xc48`, i.e. **into the heap chunk header and the
+   preceding allocation**. Content copied is our own segment records.
    Payload primitives for the day a smash lands: 34.16 `execve` gadget
    `0x4f4178` (`a0=*s1`, `a1=argv`, `a2=environ`, needs `s1`), and 86.10
    `0x656a86` (`a1` alone drives both, path via `*a1`). **Neither is the live
@@ -728,7 +735,11 @@ callbacks in one header, no port, a 900-char path, 20 callbacks, port 65535, and
 inside the path. Rejected (412): missing angle brackets, empty `<>`, `https`, IPv6 literal,
 `user:pw@`. A 4000-char value resets the connection — that is the header-line cap
 (~2044), not a parser bug; the daemon stays up. The parser is strict about grammar and
-tolerant of length/multiplicity up to that cap.
+tolerant of length/multiplicity up to that cap. Delivery was checked against a real sink:
+900- and 920-character *paths* subscribe and NOTIFY normally, `CALLBACK` of 2044 bytes
+still parses (412 on grammar) while 2050 answers **413** and the daemon stays healthy,
+and with two callbacks only the **first** ever receives NOTIFY. A subscription also leaks
+`BootSeq` and each member's `ZoneName`/`ChannelMapSet` in the ZoneGroupState property.
 
 **`SetString` is not the zone-attribute setter.** `key=ZoneName` answers 200 but the room
 does not rename (`/status/zp` unchanged); the name lives in a different settings object, so
