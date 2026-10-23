@@ -1303,7 +1303,36 @@ Unknown and blocking: `resolveToken` answers `statusReason: UNKNOWN` for every
 `iss`/`sub`/`objectType`/`scope` variant, and there is no readable daemon log
 (`/status/tmp/*` serves only known files), so the Bearer path plus the code above
 are the whole oracle. Next read: `FUN_00603aac` at `0x603cf8` — what fills
-`param_3+8`. Committed at `90d2155`; doc and mail carry the same stopping point.
+`param_3+8`.
+
+**Answered — the value is a composition of claim names.** At `0x603cf2` the caller
+sets `a2 = sp+516`, `a3 = sp+32`, `a0 = sp+264` and calls the inspector with
+`a1 = s1` (the context). The buffer at `sp+516` is filled at `0x6020f8` by appending
+four **literal claim names** in order through the literal append at `0x602050`, with
+a separator append at `0x602094` between them:
+
+```
+0x602132  "owner"          0x677360
+0x60213a  <separator>      (0x602094)
+0x602140  "luid"           0x6af8d0
+0x602162  "hhid"           0x67697c
+0x6021e0  "network_hash"   0x6af8d8
+```
+
+So the expected `iss` is not a household id and not a Sonos string — it is the
+composition `owner<sep>luid<sep>hhid<sep>network_hash`. A mismatch logs
+`"Device token not minted in this HH."` (`0x6af900`) under category
+`muse_token_inspector` (`0x6af8e8`); the expiry failure is
+`"Token is expired, security settings have changed since the t…"` (`0x6af924`) and
+its value goes through `%llu` (`0x665e74`). Note the `hhid` compare at `0x60228c`
+reads `token+108`, so the claim *values* still matter after `iss` passes.
+
+Next is mechanical: mint with all four claims present and `iss` equal to the
+composition, trying `/` and `:` as the separator, and watch whether the reason moves
+off `invalid_token` to the expiry class (2/5). Compose `hhid` from the device's real
+household id so the later compares have something to match.
+
+Committed at `90d2155`; doc and mail carry the same stopping point.
 
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
 
