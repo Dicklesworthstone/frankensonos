@@ -1484,7 +1484,17 @@ insufficient_scope`, so the endpoint is healthy. Nothing about the token
 changed. The 503 window (~2–9 s per call, `service_unavailable` "Could not
 resolve token") therefore looks like a transient service state as much as a
 passed inspection, and the separator is **not yet proven**; only code
-reading settles it. Equal
+reading settles it.
+
+Composer arguments, read from the call site: `0x6020f8(out, token, ctx)`
+where the second operand is the **token** (the first value append reads
+`[+7]` of it) and the third is a `std::string` obtained from a virtual call
+on the context (`[param_2+16] → vtable+12`). The iss itself is normalised
+first into `sp+32` by the empty-tag wrapper. Both the token's own claims and
+a context-derived string are therefore in play, which is consistent with
+either reading but rules out a pure constant. Feeding
+`HouseholdControlID` (with the `.T7aLjgf…` suffix) as `hhid` changes nothing
+— still 401. Equal
 values cannot distinguish the order; a real `hhid` with `x` elsewhere still
 401s, so at least one more component must differ from `x` when the values
 are mixed.
