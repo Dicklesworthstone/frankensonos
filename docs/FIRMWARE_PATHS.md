@@ -2291,6 +2291,13 @@ Practical notes: `playerId` must be the device's own UDN (`/status/zp`); GET on 
 namespaces seen are `upnpDeviceProperties`, `upnpSystemProperties`, `upnpZoneGroupTopology` (call/subscribe/
 renew/unsubscribe). Absent on S1 57.23, whose local API is read-only.
 
+Pre-auth write inventory through the passthrough, all exercised live: `SystemProperties#SetString` (arbitrary
+keys), `DeviceProperties#SetZoneAttributes` (rename/icon/configuration, `result` 0), and
+`ZoneGroupTopology#BeginSoftwareUpdate`. Still gated: `management/reboot`, `factoryReset`, and
+`/api/v1/devices/{deviceId}/householdUpdate/update` (403 `insufficient_scope` for `{}` and for both
+`updateUrl`/`url` bodies). `OnlineUpdateBaseURL` is not a SystemProperties key on S2 either (SetString
+812, GetString 800), so the manifest origin cannot be redirected by setting alone there.
+
 `ContentDirectory#CreateObject` is not the queue-add path on 57.23: at `/MediaServer/ContentDirectory/Control`
 (the bare path 405s) it faults **713** for every DIDL shape tried, while `AddURIToQueue` is what writes the
 queue and its `savedqueues.rsq` store.
