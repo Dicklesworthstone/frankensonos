@@ -383,6 +383,24 @@ of its TBS, of its SPKI, of its PKCS#1 key, of its modulus, of its subject,
 or of the manifest record + cert. Whatever derives it lives in
 `sonosRcbParseHeader`'s store-building half, which is the next target.
 
+## Bundle manifest structure (corrected)
+
+`sonosRcbParseHeader` copies each **120-byte manifest entry** verbatim into a
+buffer (`memcpy(..., 120, entry)`), and `sonosRcbParseManifest` allocates
+`count * 12` bytes and walks that buffer as **12-byte records**:
+`u16 flags | u32 pointer | u32 length | u16 pad`. The pointer/length pairs
+address cert DER inside the bundle, and the flags word is matched before a
+record is handed to `sonosRcbParseCerts` (which then dispatches on a `u16`
+key type, 3 or 4). Each 120-byte entry therefore carries up to ten of those
+records; entry 0's first record points at `0x48c` length `0x1ba`, the first
+cert. The record area ends exactly at that cert, which is why an 8-byte
+reading also lined up.
+
+`ZZ0039` searches a **0x20-stride table** (`+1` and `+0x21`) for a 20-byte
+name, so the name a header carries must be one already inserted into that
+table; the table is filled while the manifest is loaded, so authoring a
+bundle means writing one 120-byte entry with our own records, name and cert.
+
 ## Reaching real packages and the app handshake
 
 The legacy update feed is directly usable. `GET
