@@ -1277,6 +1277,34 @@ all, and the value it is compared to is `param_3+8` — reader state from
 issuer is built from the token/payload context rather than being a constant, and
 that reader is where to read next (the compare site is `0x603cf8`).
 
+### Lane status (checkpoint)
+
+What is proven: both firmware builds carry `emSign ECC Root CA - G3` and AAA
+(Comodo); the recovered `EM DV TLS CA - G3B` key is the public "tiny integer" one
+from the October 2026 incident; a leaf forged with it verifies against the root
+extracted from the device's **own** bundle (`leaf.pem: OK`, re-checked). Kit:
+`captures/research/emudhra/mint_jwt.py` — RS256 (RSA leaf under the EC
+intermediate) and ES256 (EC leaf) both mint tokens that reach validation.
+
+The oracle is now sharp: a forged token as `Authorization: Bearer` on
+`management/reboot` returns `401 invalid_token` "Access token is invalid" — neither
+`API_KEY_VALIDATION_FAILED` (a non-token) nor `insufficient_scope` — so chain and
+signature pass and the **inspector** rejects it. That is the signal that was
+missing when every failure looked like a blanket 401.
+
+The inspector is mapped: `FUN_006021e4` compares `token+0x20` (`iss`) with reader
+state and a `%llu` of the expiry against `token+0xd0` with distinct codes (2
+expired, 5 bad expiration, 6 "not minted by this device"); `iss` is not normalised
+(`FUN_00601ffc` is a one-instruction wrapper over `FUN_005f7210` with an empty
+tag), and the compare target is `param_3+8` from `FUN_00603aac`, the streaming
+reader — so the expected issuer is derived from the token context, not a constant.
+
+Unknown and blocking: `resolveToken` answers `statusReason: UNKNOWN` for every
+`iss`/`sub`/`objectType`/`scope` variant, and there is no readable daemon log
+(`/status/tmp/*` serves only known files), so the Bearer path plus the code above
+are the whole oracle. Next read: `FUN_00603aac` at `0x603cf8` — what fills
+`param_3+8`. Committed at `90d2155`; doc and mail carry the same stopping point.
+
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
 
 NVD: "In certain Sonos products before S1 11.12 and S2 15.9 … a failure to
