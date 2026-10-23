@@ -1918,3 +1918,22 @@ for an actual account add instead of guessing, then re-run the length series.
 
 Both are cheap to check against the controller and the decrypted binary; neither
 needs the device.
+
+### Correction: the helper belongs to `AddOAuthAccountX`, not `AddAccountX`
+
+Re-reading the three call sites (`0x41b27c`, `0x41b3b8`, `0x41b674`) against their
+strings: all three sit in the `AddOAuthAccountX` family (`0x5186D8` /
+"AddOAuthAccountX"). So the `strcpy(sp+76, obj+161)` path is exercised by the
+**OAuth** action — the one that has 402'd for every shape tried, whereas
+`AddAccountX` is the plain one that 200s with a one-character id.
+
+That also explains the shape-strictness: OAuth account adds are **stateful** in
+Sonos. The flow is `GetWebCode` → the user authorises at the service → the client
+comes back with a code, and `AccountKey` is provisioned material, not something a
+caller can invent. So `AddOAuthAccountX` almost certainly needs a prior step's
+output (or a real service entry) before it will accept arguments, which is why six
+guessed shapes all land on 402.
+
+Consequence: H13 has two viable routes rather than one — either drive
+`AddOAuthAccountX` after a `GetWebCode` (needs the returned code), or read the real
+values out of controller traffic for a genuine add. Guessing the values is done.
