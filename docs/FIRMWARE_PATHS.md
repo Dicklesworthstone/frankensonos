@@ -952,6 +952,17 @@ argument plumbing is broken; 1400 direct works.) `GetString`/`SetString` are not
 the SCPD at all, which is why the SOAP read of the kv store 401s. A write to an *existing* key also did not
 wedge the unit — the ~80 s outage is specific to creating a new key.
 
+### `BeginSoftwareUpdate` shuts the daemon down but never arms (both generations)
+
+Controlled on 57.23 (.202) and 86.10-81100 (.81, via the passthrough): the action is accepted, the
+file is fetched once, and the daemon drops ~3 s later — the deferred shutdown fires, so
+`/etc/runanacapa` does get to run and no box reboot is involved. But `/status/tmp/upgrade.log` (the
+redirect target it uses) and `/jffs/upgrade_sys_report.log` both stay **empty**, which means the
+`[ -f /var/run/upgradeinfo ]` guard is false: `upgradeinfo` is still never written and `/bin/upgrade`
+never starts. `CheckForUpdate` alone causes no drop and adds nothing when paired. So the whole update
+path is one missing write away — whoever writes `/var/run/upgradeinfo` (`FUN_1029c34c`, after the
+cloud settings fetch) is the single target.
+
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
 month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
 CVE-2026-75093 (`from_raw_dt_align` buffer size) and CVE-2026-55832 (attacker-chosen
