@@ -741,3 +741,20 @@ So the partition scan (512 bytes at index 1, then 4096 at +512, type-8 records w
 library trio) feeds the key that the section decrypt needs. A bare `00000008
 00000008` record is not enough; the payload has to satisfy `ZZ0053`'s check before
 `ZZ0052` parses it, which is the next thing to take apart.
+
+### Store record payload = an 886499ca envelope (ZZ0053)
+
+`ZZ0053` (libsonoscrypto `0xbf70`) copies the first 4 payload bytes, compares them
+with `0x886499ca`, then parses the very same envelope as a package section
+(`header_len`, `recipient_len`, keytype 3, 20-byte recipient, cipher 1, RSA blob,
+cipher 1, IV + ciphertext) and returns its length. So a store entry is an
+*encrypted* record, not a raw key.
+
+A record `type 8, len 370` whose payload is a well-formed envelope encrypted to the
+known model-12 key (`e35f7c21…`, RSA-OAEP SHA-1 + AES-CBC) written at `mtd1+512`
+still leaves `48`, and a deliberately invalid `len=4` record changes nothing either,
+while a breakpoint on the `upgrade` record loop at `0x406200` never fires. The
+512-byte read plus `lseek(512)`/`read(4096)` is issued through **libflash**, so the
+store has a header/table in the first 512 bytes that has to point at the records
+before `0x406200` is entered. That table is the missing piece; the record framing
+itself is now known.
