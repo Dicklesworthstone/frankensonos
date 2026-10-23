@@ -619,6 +619,31 @@ Confirmation of whether the plaintext type-3 script ran cannot come from
 works, `/status/jffs/...` does not), so `/jffs/system/Configure.dev` is not
 visible over HTTP and a positive result has to be observed as port 22.
 
+## What the signature actually covers (recovered, not guessed)
+
+The shipped type-17 signature verifies under compiled key `b292…` and
+`pkeyutl -verifyrecover` yields a clean `DigestInfo`:
+
+```
+30 31 30 0d 06 09 60 86 48 01 65 03 04 02 01 05 00 04 20
+61c897a81e4f9399cb04b591fce452761b6ad63ce2f247bc0b04c13e17ab82b5
+```
+
+So: RSA-2048, PKCS#1 v1.5, **SHA-256**, key `b292…` — the mechanism is exactly
+as read from the code, and the earlier "invalid padding" was simply the S1
+signature checked against an S2 key (names are per build: the 57.23 model-5
+package carries `84c9bcbe…`, not `b292…`).
+
+The recovered hash is **not** over any ciphertext slice: `sha256` of the file
+prefix, of the header, of the digest field, of section 22, of its bundle or of
+the whole file all miss it. Meanwhile the *header's digest field* is exactly
+`sha256(ciphertext prefix)`, which is a different value. The only consistent
+reading is that the signed hash runs over the **decrypted plaintext stream**
+(the reader hashes plaintext as it decrypts), which for sections 3/4/6 needs
+the per-model content key. Consequence: the content key is a prerequisite for
+*signing*, not only for editing, and offline signature work on a model needs
+that model's key up front.
+
 ## Next
 
 1. **Identify the post-download gate.** Delivery is proven (edited manifest
