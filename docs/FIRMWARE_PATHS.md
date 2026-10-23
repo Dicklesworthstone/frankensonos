@@ -430,7 +430,12 @@ how a local client obtains a scoped token without the cloud.
    earlier window gave 10/10 across the variant matrix; segment count does not
    decide it, and a later window collapsed to **0/20** (payload-less packets,
    4x-length segment, one-segment loops, 12-20 segment lists all clean), then
-   came back only partly after a `/setstring` restart (1/3). So it is
+   came back only partly after a `/setstring` restart (1/3), then went to zero
+   again: 29 Play/Stop rounds with a GENA subscription live (events flowing,
+   `ThirdPartyMediaServersX` included), 4 runs with segments truncated
+   mid-transfer, and 3 identical runs on a second unit all stayed up. The crash
+   needs a condition that is not yet identified; per-device state is suspected
+   because the earlier kills only happened while this unit had recently churned. So it is
    state-dependent as well as flaky: the only honest claim is "HLS playback
    sometimes kills the daemon, 4-25 s fuse, worst right after a restart".
    Media *content* is not the variable — payload-less packets survive, and so
