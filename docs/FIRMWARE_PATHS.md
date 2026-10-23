@@ -328,7 +328,16 @@ how a local client obtains a scoped token without the cloud.
    (CVE-2023-27355). `/msprox` is **absent** from both extracted builds: no `msprox` bytes exist
    (case-insensitive, UTF-16 and split forms), `/api/anything` is a generic 400
    stub and `/api/v1/msprox` is 404. CVE-2023-27353 is therefore not reachable
-   here; retire it. The TS demux in the control-RPC layer has not been
+   here; retire it.
+   The TS demux also cannot be located by its constants: neither image contains
+   a `li 0x47` or `li 0xbc` immediate, and the plain update overlay carries only
+   `bin/anacapad`. Either the parser is struct-based inside anacapad or it lives
+   in a component the delta images do not carry; the naive live trigger did not
+   crash, so treat CVE-2023-27355 as unproven here.
+   Payload primitives for the day a smash lands: 34.16 `execve` gadget
+   `0x4f4178` (`a0=*s1`, `a1=argv`, `a2=environ`, needs `s1`), and 86.10
+   `0x656a86` (`a1` alone drives both, path via `*a1`). NX is off on 34.16, on
+   for 86.10. The TS demux in the control-RPC layer has not been
    located.
 2. `/getrs?id=N` indexes a setting table with no bounds check and then
    `jalr`s through the entry; `N` is `atoi`, so negative and huge indices are
