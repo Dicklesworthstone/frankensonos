@@ -979,3 +979,25 @@ productive pre-root surfaces are therefore the ones that execute **before** the
 signature: the type-1 and type-21 records and the type-22 header all sit inside the
 first 128 KiB and are parsed with no key (`type-21` is plaintext and completely unfuzzed
 so far), plus the anacapad/JWT doors on the running system.
+
+### Bytes after the type-17 record are not hashed (malleability foothold)
+
+The verifier hashes **everything before the type-17 record**, so the record itself and
+anything after it are outside the signature. Measured on a model-16 unit:
+
+- extending the type-17 `len` from 380 to 5380 and appending 5 KB of junk is read to the
+  **last byte** (5 611 749/5 611 749) — the reader trusts the extended length and the
+  prefix hash is unchanged;
+- appending a **record** after the type-17 record is also tolerated structurally: the VM
+  parses it and carries on (a 1 KB trailing type-3 reaches the normal `(48)` stop),
+  while a 176 KB trailing section stops after ~128 KB on the device because the
+  reassembly buffer for one record is ~128 KB;
+- semantics are **first-wins**: appending a type-1 with version 99.1.1 still reports
+  `upgrade to version 57.23-74170`.
+
+This is the same class as the NCC Era-100 "malleable firmware image" (data placed
+outside the signed region), except ours needs no U-Boot access. Open question: whether
+the *flasher* honours a trailing type-3/4 (first-wins for the version does not prove it
+does not), and the 128 KB per-record ceiling means any such section must be small or
+split. The next test is a small trailing preinstall script carrying an observable
+marker (write to the upgrade log), which answers it without touching the signed bytes.
