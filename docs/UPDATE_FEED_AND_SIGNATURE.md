@@ -608,6 +608,17 @@ lives only in the 57.x/86.x rootfs, i.e. inside the very image it protects.
 Confirmed on the shipped 34.16 package: full 2 097 157-byte fetch over
 Apache, still rejected -- the old line has its own signature gate.
 
+### `Flags=1` changes behaviour on the old line
+
+The same unsigned 34.16 package that sits idle with `Flags=4` reboots within
+~24 s with `Flags=1` (version still unchanged afterwards). So the flag word
+reaches a real decision point on 34.16 rather than being ignored; `Flags=1`
+is the value to vary next, together with `ExtraOptions` updater flags.
+Confirmation of whether the plaintext type-3 script ran cannot come from
+`/status/...`: the route only serves paths relative to `/` (`/status/VERSION`
+works, `/status/jffs/...` does not), so `/jffs/system/Configure.dev` is not
+visible over HTTP and a positive result has to be observed as port 22.
+
 ## Next
 
 1. **Identify the post-download gate.** Delivery is proven (edited manifest
