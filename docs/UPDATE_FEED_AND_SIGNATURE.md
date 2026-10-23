@@ -531,7 +531,11 @@ fallback bundle, and matches no cert, SPKI, subject or modulus hash tried.
    dies before `main` when the two glibcs are mixed; soft-float binaries are
    fine on their own, but even a bare `dlopen` of the repo's `librcb`
    segfaults inside the loader on relocation/init, while its version needs
-   are only `GLIBC_2.4` and older. A static build that carries the parser, or
+   are only `GLIBC_2.4` and older. The first faulting instruction is `isel`
+   (PowerPC 2.03), which QEMU 7.2 **and** 10.0 reject on every classic 32-bit
+   CPU tried (`g4`, `7450`, `7455`, `7447`); `e500` accepts `isel` and gets
+   into `ld.so` before segfaulting in the relocation loop. So a newer QEMU
+   alone does not fix it. A static build that carries the parser, or
    a matching PPC rootfs, is required before the resolver can be exercised
    locally.
 
