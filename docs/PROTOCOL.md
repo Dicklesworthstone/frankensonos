@@ -557,9 +557,18 @@ at `+0xC54`…`+0xC64` and `LR` at `+0xC74`; it decodes the statement into
 `r1+0x830` with an explicit **1024** limit, calls the verify helper and
 answers `li r3,403` when that fails, `400` on the early-outs, and only on
 success formats `Statement installed.` before `200`. It passes **2048** to
-the field getter and has no body-level cap of its own, so the overflow is
+the field getter (which is the *statement* cap and does hold) and no
+body-level limit of its own, so the overflow is
 upstream of it, in the shared POST reader — the same place the 34.16
-`Content-Length < 0x800` guard lives. Because the decoded buffer sits only
+`Content-Length < 0x800` guard lives. The MIPS 57.23 build shows it exactly:
+the devmode dispatch calls the body reader with **size 4096** for a buffer
+that is still at `sp+0x20` in a `0x1490` frame (`ra` at `sp+0x1488`), and the
+reader's only check is `body_len < 4096` → `413`; the copy loop then fills
+`s2 - written` bytes into the caller's buffer. So 2048…4095-byte bodies
+overflow by up to 2048 bytes and land in the decoded-statement buffer and the
+handler state — **2048 bytes short of `ra`**, which is why the address-filled
+probe bodies looked identical to garbage. The fix that would
+be correct is a `2048` size argument, or a 0x1000-byte buffer. Because the decoded buffer sits only
 `0x424` bytes below the saved registers, a decoded statement longer than
 1024 would reach `r25`…`r31` if the 1024 limit ever failed to clamp.
 
