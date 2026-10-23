@@ -853,6 +853,24 @@ answer UPnP 402, including for `GetString`/`GetTransportInfo` which need
 exactly one argument. The passthrough is therefore a no-argument proxy today
 and is not a useful fuzzing surface for argument handling.
 
+## 2026-10-23: stack-copy sweep triage (live 57.23 anacapad)
+
+The full-program copy sweep is 454 + 1789 sites. Of the 403 with a stack
+destination, 28 take a non-constant length; audited one by one, **26 are
+clamped** in the caller (explicit `min`, an early `return` above the cap, or a
+contract that rejects an over-long value — e.g. `FUN_10287374` returns 2 for
+`param_4 > 0x38` and then copies into a 56-byte buffer). Two remain:
+
+- `FUN_102886e0` (eventing send): copies `param_4` bytes into a 2060-byte frame
+  with no constant clamp — the only gate is `param_4 <= uVar1` where `uVar1`
+  comes from a vtable call on the connection object, then the same length is
+  `write()`n. Over-range needs a context larger than the frame, i.e. a source
+  that reports an inflated context size.
+- `FUN_101fb134` (tsclient) is already handled: `afelen > 0xBB` is rejected.
+
+So the copy surface is genuinely clean; the live kill found today is HLS
+life-cycle, not a copy.
+
 ## 2026-10-23: live 57.23 binaries recovered (model-12 key), verifier mapped
 
 The model-12 legacy key was recovered from the plaintext 34.16-37101-1-12
