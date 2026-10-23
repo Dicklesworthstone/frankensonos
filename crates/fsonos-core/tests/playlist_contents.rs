@@ -139,3 +139,45 @@ fn revision_identifies_the_entire_observation_including_order_and_coverage() {
         serde_json::from_str(&serde_json::to_string(&first).unwrap()).unwrap();
     assert_eq!(roundtrip, first);
 }
+
+#[test]
+fn long_observations_are_bounded_by_raw_entries_and_aggregate_metadata() {
+    let mut store = MemStore::default();
+    let long = CachedPlaylist::new(
+        PLAYLIST.into(),
+        100,
+        Some(250),
+        250,
+        true,
+        (1..=250)
+            .map(|position| track(position, "Repeated"))
+            .collect(),
+    );
+    store.save_playlist_contents(&long).unwrap();
+    assert_eq!(
+        store.playlist_contents(PLAYLIST).unwrap(),
+        Some(long.clone())
+    );
+    let beyond = fsonos_core::store::MAX_PLAYLIST_ENTRIES + 1;
+    let unavailable =
+        CachedPlaylist::new(PLAYLIST.into(), 200, Some(beyond), beyond, true, Vec::new());
+    assert!(store.save_playlist_contents(&unavailable).is_err());
+    let large = CachedPlaylist::new(
+        PLAYLIST.into(),
+        200,
+        Some(350),
+        350,
+        true,
+        (1..=350)
+            .map(|position| {
+                let mut item = track(position, "Repeated");
+                item.title = "t".repeat(16 * 1024);
+                item.artist = Some("a".repeat(16 * 1024));
+                item.album = Some("b".repeat(16 * 1024));
+                item
+            })
+            .collect(),
+    );
+    assert!(store.save_playlist_contents(&large).is_err());
+    assert_eq!(store.playlist_contents(PLAYLIST).unwrap(), Some(long));
+}

@@ -48,11 +48,13 @@ The page distinguishes these counts:
 | `total` | Cached occurrences matching `q`. |
 | `fetched_at` | Unix seconds when this observation was read; `null` when no observation exists. |
 
-`coverage` is `complete`, `partial`, or `not_cached`. Complete means the bounded
-pagination reached its end without a read error. It does **not** mean an atomic
-Spotify snapshot or that the playlist is still unchanged. A complete playlist
-can have no playable rows because all source entries were unavailable. A
-complete observation with `examined: 0` records an observed empty playlist.
+`coverage` is `complete`, `partial`, or `not_cached`. Complete means pagination
+reached its end without a read error. New resumable reads also check Spotify's
+playlist version before accepting each window, so they never join different
+versions. Legacy observations do not record that proof, and no observation
+promises that the playlist is still unchanged. A complete playlist can have no
+playable rows because all source entries were unavailable. A complete
+observation with `examined: 0` records an observed empty playlist.
 
 `revision` identifies the entire local observation, including its timestamp,
 coverage, occurrence positions, and metadata. It is not a Spotify snapshot ID,
@@ -61,18 +63,25 @@ the requested filter with surrounding whitespace removed.
 
 ## How synchronization records contents
 
-The existing authorized taste sync reads the owner's own and collaborative
-playlists. It now preserves ordered contents during those same reads, alongside
-the deduplicated library used for search and DJ selection. This adds no Spotify
-requests and grants no new scope.
+The authorized taste sync reads the owner's own and collaborative playlists.
+It preserves ordered contents alongside the deduplicated library used for
+search and DJ selection. Version checks use Spotify's read-only playlist
+metadata endpoint with the existing grant; synchronization grants no new scope
+and never writes to Spotify.
 
-Each sync reads at most 25 eligible playlists and four pages of 50 raw entries
-per playlist. Eligible playlists are visited in Spotify ID order, continuing
-after the last attempted ID and wrapping at the end. The position is stored
-for the signed-in Spotify owner, so manual syncs and daemon restarts continue
-the scan. Reordering the Spotify list does not reset it; when the last attempted
-playlist disappears, the scan continues at the next surviving ID. Repeated
-directory entries consume only one turn.
+Each sync visits at most 25 eligible playlists and spends at most four logical
+GETs per playlist, including its version checks. With a version in the playlist
+directory, this permits three pages of 50 raw entries plus a final version
+check. If the directory omits the version, a preflight check leaves room for
+two pages and the final check. Existing bounded authentication and transport
+retry rules still apply.
+
+Eligible playlists are visited in Spotify ID order, continuing after the last
+attempted ID and wrapping at the end. That position is stored for the signed-in
+Spotify owner, so manual syncs and daemon restarts continue the scan. Reordering
+the directory does not reset it; when the last attempted playlist disappears,
+the scan continues at the next surviving ID. Repeated directory entries consume
+only one turn.
 
 The scan advances before each playlist request. A refused or malformed list
 therefore yields to later lists. A rate limit or other halt stops further
@@ -81,24 +90,51 @@ to read or save the scan position stops playlist intake and appears in the sync
 notes; it does not silently restart from the first list. Unvisited observations
 and previously cached taste tracks survive incomplete reads.
 
-A playlist longer than 200 raw entries still produces an explicitly partial
-observation. The URI/name listing can contain playlists whose contents were not
-eligible or have not had their turn within this budget; those remain
-`not_cached`. Rotating among playlists does not continue a long playlist's item
-pages or join observations from different reads.
+### Long playlists continue on their next turn
 
-Each observation is replaced atomically in the local store. A failed refresh
-keeps the previous observation, including its original timestamp and revision.
-When no observation exists, a valid prefix can still be retained as partial.
-A successful read that reaches its configured budget can replace the old cache
-with a new partial observation. A new prefix is never joined to an older suffix.
+A private checkpoint stores each playlist's Spotify `snapshot_id`, the next raw
+source offset, and all accepted playable occurrences and metadata. It belongs
+to both the Spotify owner and playlist URI and survives daemon restarts. A
+later turn resumes only when the directory reports the same version; a changed
+version starts at zero. The final metadata request must still report that same
+playlist ID and version before the window can be accepted. Same-length edits,
+reorders, missing versions, or failed version proofs cannot splice unrelated
+windows together.
 
-Migration 14 adds `spotify_playlist_contents`, keyed by playlist URI, with one
-serialized observation per row. This keeps duplicate occurrences and their
-metadata separate from the general track cache. The in-memory and SQLite stores
-use the same validation and revision calculation. Migration 15 keeps the scan's
-last attempted playlist ID separately, keyed by Spotify owner, so a failed
-attempt cannot change an observation's revision or timestamp.
+A failed or malformed window keeps its old checkpoint and published
+observation. When there is no previous observation, an accepted page prefix
+can be published as partial only after its final version check succeeds. A
+clean budget-limited window advances the checkpoint. Partial observations can
+grow across turns when no complete observation exists; **an existing complete
+observation stays available with its original revision until the new version
+has been read completely**. Completed scans begin a fresh observation on their
+next turn, so track metadata can also refresh when playlist membership is
+unchanged.
+
+Each playlist is bounded to 10,000 raw source entries and 16 MiB of accumulated
+metadata. Unsupported entries count toward the raw bound. A playlist that
+exceeds a bound remains explicitly partial, or leaves its previous complete
+observation in place; sync notes explain the limit or continuing position.
+Repeated explicit syncs advance long playlists within the same per-sync budget.
+The final complete window supplies all accumulated tracks to the library and
+DJ pool, including music from the earlier windows. The URI/name listing can
+still contain playlists whose contents are not eligible or have not had a turn;
+those remain `not_cached`.
+
+A complete directory read removes checkpoints for that owner's vanished or
+no-longer-readable playlists. A partial directory cannot discard progress, and
+one account never resumes another account's checkpoint. Public observations
+remain cached independently; opening one still requires its URI in the current
+playlist listing.
+
+Each public observation is replaced atomically in the local store. Migration
+14 adds `spotify_playlist_contents`, keyed by playlist URI, with one serialized
+observation per row. This keeps duplicate occurrences and their metadata
+separate from the general track cache. The in-memory and SQLite stores use the
+same validation and local revision calculation. Migration 15 stores the scan's
+last attempted playlist ID separately, keyed by Spotify owner. Migration 16
+adds the private resumable checkpoints; these do not change the public
+observation's revision or timestamp until a replacement is published.
 
 ## CLI and agents
 

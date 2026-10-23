@@ -31,18 +31,19 @@
 use std::collections::{HashMap, HashSet};
 
 use asupersync::Cx;
-use fsonos_core::store::{CachedPlaylist, PlaylistTrack, Store};
+use fsonos_core::store::{CachedPlaylist, Store};
 
 use crate::SpotifyError;
 use crate::client::{
-    Artist, ArtistTopTracks, CursorPage, FullTrack, Me, PAGE_LIMIT, PlayHistory, PlaylistItem,
-    SimplifiedPlaylist, TASTE_SCOPES, decode, unix_seconds,
+    Artist, ArtistTopTracks, CursorPage, FullTrack, Me, PlayHistory, SimplifiedPlaylist,
+    TASTE_SCOPES, decode, unix_seconds,
 };
 use crate::expand::halts;
 use crate::library::{LibraryItem, Origin};
 use crate::session::Session;
 
 mod paging;
+mod playlist_scan;
 
 /// A top track's weight (per mille).
 pub const TOP_TRACK_PM: u32 = 1080;
@@ -59,11 +60,11 @@ pub const MAX_TASTE_PM: u32 = 1136;
 // A top track by a followed artist, the most a track gets, fits.
 const _: () = assert!(TOP_TRACK_PM * ARTIST_PM <= MAX_TASTE_PM * 1000);
 /// Bounds on one sync's reads, so a daily sync stays cheap: pages of a
-/// list (followed artists, playlists), playlists read, and pages per
-/// playlist (its first 200 tracks speak for it).
+/// list (followed artists, playlists), playlists read, and requests per
+/// playlist, including the version checks around each resumable window.
 const MAX_PAGES: usize = 20;
 const MAX_PLAYLISTS: usize = 25;
-const MAX_PLAYLIST_PAGES: usize = 4;
+const MAX_PLAYLIST_REQUESTS: usize = 4;
 /// Followed and top artists with nothing saved whose top tracks one sync
 /// reads, and how many of each one's tracks join the pool.
 const MAX_ARTIST_READS: usize = 50;
@@ -131,8 +132,8 @@ pub struct Taste {
 #[derive(Debug, Clone)]
 pub(crate) struct PlaylistObservation {
     pub(crate) contents: CachedPlaylist,
-    /// A failed refresh preserves the last useful observation. Reaching the
-    /// ordinary page budget alone is a fresh, explicitly partial observation.
+    /// A failed refresh preserves the last useful observation. Partial
+    /// windows never replace an already complete published observation.
     pub(crate) failed: bool,
 }
 
@@ -458,6 +459,12 @@ impl Reader<'_> {
         else {
             return (Vec::new(), None);
         };
+        if me.id.trim().is_empty() || me.id.len() > 1_024 || me.id.chars().any(char::is_control) {
+            self.read
+                .failed
+                .push(("the user".into(), "invalid Spotify owner identity".into()));
+            return (Vec::new(), None);
+        }
         let url = self.session.endpoints().my_playlists(0);
         let failed = self.read.failed.len();
         let lists: Vec<SimplifiedPlaylist> = self.page(&url, "playlists", MAX_PAGES).await;
@@ -473,6 +480,18 @@ impl Reader<'_> {
             .iter()
             .filter(|list| !list.id.is_empty() && list.readable_by(&me.id))
             .collect();
+        if listed.is_some() {
+            let active = readable
+                .iter()
+                .map(|list| format!("spotify:playlist:{}", list.id))
+                .collect::<Vec<_>>();
+            if let Err(error) = store.retain_playlist_progress(&me.id, &active) {
+                self.read
+                    .failed
+                    .push(("playlist progress".into(), error.to_string()));
+                return (tracks, listed);
+            }
+        }
         if readable.is_empty() || self.read.halted.is_some() {
             return (tracks, listed);
         }
@@ -508,7 +527,7 @@ impl Reader<'_> {
                 break;
             }
             attempted += 1;
-            let (items, observation) = self.read_playlist(list, named, now).await;
+            let (items, observation) = self.read_playlist(store, &me.id, list, named, now).await;
             tracks.extend(items);
             observations.extend(observation);
         }
@@ -519,76 +538,6 @@ impl Reader<'_> {
             ));
         }
         (tracks, listed)
-    }
-
-    async fn read_playlist(
-        &mut self,
-        list: &SimplifiedPlaylist,
-        named: &mut HashMap<String, Vec<String>>,
-        now: i64,
-    ) -> (Vec<LibraryItem>, Option<PlaylistObservation>) {
-        let url = self.session.endpoints().playlist_items(&list.id, 0);
-        let entries = self
-            .observe_pages::<serde_json::Value>(
-                &url,
-                "playlist items",
-                MAX_PLAYLIST_PAGES,
-                Some(PAGE_LIMIT as usize),
-            )
-            .await;
-        self.read.playlists += 1;
-        let mut tracks = Vec::new();
-        let mut occurrences = Vec::new();
-        // "Late Night Jazz": the owner's own name for these tracks.
-        let stated = crate::genre_guess::from_name(&list.name);
-        for (position, entry) in (1_u32..).zip(&entries.items) {
-            // Unsupported entries still occupy their source positions.
-            if entry.get("is_local").and_then(serde_json::Value::as_bool) == Some(true) {
-                continue;
-            }
-            if let Some(item) = serde_json::from_value::<PlaylistItem>(entry.clone())
-                .ok()
-                .and_then(|entry| entry.library_item(Origin::Taste))
-                .filter(valid_playlist_track)
-            {
-                let track = item.to_track();
-                occurrences.push(PlaylistTrack {
-                    position,
-                    source_uri: track.source_uri,
-                    title: track.title,
-                    artist: track.artist,
-                    album: track.album,
-                    album_uri: item.album_uri.clone(),
-                    disc_number: item.disc_number,
-                    track_number: item.track_number,
-                    duration_secs: item.duration_secs,
-                    explicit: item.explicit,
-                });
-                if !stated.is_empty() {
-                    let genres: &mut Vec<String> =
-                        named.entry(item.source_uri.clone()).or_default();
-                    for genre in &stated {
-                        if !genres.contains(genre) {
-                            genres.push(genre.clone());
-                        }
-                    }
-                }
-                self.read.playlist_tracks += 1;
-                tracks.push(item);
-            }
-        }
-        let observation = (entries.examined > 0 || entries.complete).then(|| PlaylistObservation {
-            contents: CachedPlaylist::new(
-                format!("spotify:playlist:{}", list.id),
-                now,
-                entries.source_total,
-                entries.examined,
-                entries.complete,
-                occurrences,
-            ),
-            failed: entries.failed,
-        });
-        (tracks, observation)
     }
 }
 

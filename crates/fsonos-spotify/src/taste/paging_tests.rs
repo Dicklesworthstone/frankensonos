@@ -143,11 +143,30 @@ impl Server {
                             if let Some(&status) = state.refused.get(path(uri)) {
                                 return response(status, "{}").with_header("Retry-After", "3600");
                             }
-                            match state.pages.get(uri).or_else(|| state.pages.get(path(uri))) {
+                            let offset_route = parameter(uri, "offset")
+                                .ok()
+                                .map(|offset| format!("{}?offset={offset}", path(uri)));
+                            match state
+                                .pages
+                                .get(uri)
+                                .or_else(|| {
+                                    offset_route
+                                        .as_ref()
+                                        .and_then(|route| state.pages.get(route))
+                                })
+                                .or_else(|| state.pages.get(path(uri)))
+                            {
                                 Some(body) => {
                                     response(200, body.to_string().replace(API, &state.base))
                                 }
-                                None => response(404, "{}"),
+                                None => match path(uri).strip_prefix("/v1/playlists/") {
+                                    Some(id) if !id.contains('/') => response(
+                                        200,
+                                        json!({ "id": id, "snapshot_id": "test-version-1" })
+                                            .to_string(),
+                                    ),
+                                    _ => response(404, "{}"),
+                                },
                             }
                         }
                     },
@@ -210,10 +229,20 @@ impl Server {
             .cloned()
             .collect()
     }
+
+    fn item_calls(&self) -> Vec<String> {
+        self.calls("/v1/playlists/")
+            .into_iter()
+            .filter(|call| path(call).ends_with("/items"))
+            .collect()
+    }
 }
 
 #[path = "playlist_rotation_tests.rs"]
 mod playlist_rotation;
+
+#[path = "playlist_progress_tests.rs"]
+mod playlist_progress;
 
 impl Drop for Server {
     fn drop(&mut self) {
@@ -233,6 +262,7 @@ fn page(items: Vec<Value>, offset: u32, next: Option<String>) -> Value {
 
 fn playlist(n: usize, owned: bool) -> Value {
     json!({ "id": format!("TestList{n}"), "name": format!("Playlist {n}"),
+        "snapshot_id": "test-version-1",
         "owner": { "id": if owned { "test-owner" } else { "other-owner" } } })
 }
 
@@ -388,7 +418,7 @@ fn playlist_item_and_playlist_count_budgets_report_incomplete_taste() {
             );
         }
         if !many_lists {
-            for n in 0..super::super::MAX_PLAYLIST_PAGES {
+            for n in 0..(super::super::MAX_PLAYLIST_REQUESTS - 1) {
                 let route = if n == 0 {
                     "/v1/playlists/TestList0/items".into()
                 } else {
@@ -419,10 +449,10 @@ fn playlist_item_and_playlist_count_budgets_report_incomplete_taste() {
             let expected = if many_lists {
                 super::super::MAX_PLAYLISTS
             } else {
-                super::super::MAX_PLAYLIST_PAGES
+                super::super::MAX_PLAYLIST_REQUESTS - 1
             };
             assert_eq!(taste.tracks.len(), expected);
-            assert_eq!(server.calls("/v1/playlists/").len(), expected);
+            assert_eq!(server.item_calls().len(), expected);
         });
     }
 }
@@ -511,7 +541,7 @@ fn playlist_coverage_counts_unavailable_entries_and_episodes_before_filtering() 
         assert_eq!(read.playlist_tracks, 1);
         assert_eq!(taste.tracks[0].source_uri, "spotify:track:TestTrack1");
     });
-    assert_eq!(server.calls("/v1/playlists/").len(), 2);
+    assert_eq!(server.item_calls().len(), 2);
 }
 
 #[test]
@@ -612,9 +642,9 @@ fn synced_playlist_contents_preserve_raw_positions_duplicates_and_metadata() {
         );
     });
     assert_eq!(
-        server.calls("/v1/playlists/").len(),
+        server.item_calls().len(),
         2,
-        "no extra observation requests"
+        "two item pages; the snapshot is checked separately"
     );
 }
 
@@ -695,7 +725,7 @@ fn failed_playlist_refresh_keeps_previous_contents_but_a_first_prefix_is_useful(
 }
 
 #[test]
-fn clean_playlist_budget_prefix_replaces_previous_contents_without_mixing() {
+fn clean_playlist_budget_prefix_waits_behind_previous_complete_contents() {
     let server = Server::new();
     server.set("/v1/me/playlists", page(vec![playlist(0, true)], 0, None));
     server.set(
@@ -711,7 +741,7 @@ fn clean_playlist_budget_prefix_replaces_previous_contents_without_mixing() {
             .playlist_contents("spotify:playlist:TestList0")
             .unwrap()
             .unwrap();
-        for n in 0..super::super::MAX_PLAYLIST_PAGES {
+        for n in 0..(super::super::MAX_PLAYLIST_REQUESTS - 1) {
             let route = if n == 0 {
                 "/v1/playlists/TestList0/items".into()
             } else {
@@ -728,21 +758,21 @@ fn clean_playlist_budget_prefix_replaces_previous_contents_without_mixing() {
             .playlist_contents("spotify:playlist:TestList0")
             .unwrap()
             .unwrap();
-        assert!(!observed.complete);
-        assert_eq!((observed.source_total, observed.examined), (Some(10), 4));
-        assert_eq!(observed.tracks.len(), 4);
-        assert_ne!(observed.revision, previous.revision);
-        assert!(
-            observed
-                .tracks
-                .iter()
-                .all(|item| item.source_uri != "spotify:track:TestTrack90")
-        );
+        assert_eq!(observed, previous);
+        let progress: Value = serde_json::from_str(
+            &store
+                .playlist_progress("test-owner", "spotify:playlist:TestList0")
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(progress["examined"], 3);
+        assert_eq!(progress["complete"], false);
     });
     assert_eq!(
-        server.calls("/v1/playlists/").len(),
-        5,
-        "one initial read plus four bounded pages"
+        server.item_calls().len(),
+        4,
+        "one initial item read plus three bounded pages"
     );
 }
 
@@ -793,7 +823,7 @@ fn empty_unread_and_unknown_total_playlists_remain_distinguishable() {
         );
         assert_eq!(store.playlists().unwrap().len(), 3);
     });
-    assert_eq!(server.calls("/v1/playlists/").len(), 2);
+    assert_eq!(server.item_calls().len(), 2);
 }
 
 #[test]
@@ -819,5 +849,5 @@ fn an_oversized_playlist_page_does_not_become_a_complete_observation() {
             None
         );
     });
-    assert_eq!(server.calls("/v1/playlists/").len(), 1);
+    assert_eq!(server.item_calls().len(), 1);
 }

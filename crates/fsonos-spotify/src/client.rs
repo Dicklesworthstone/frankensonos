@@ -620,6 +620,16 @@ impl Endpoints {
         )
     }
 
+    /// Only the playlist identity and current version, for fenced paging.
+    #[must_use]
+    pub fn playlist_snapshot(&self, playlist_id: &str) -> String {
+        format!(
+            "{}/playlists/{}?fields=id,snapshot_id",
+            self.api,
+            percent_encode(playlist_id)
+        )
+    }
+
     /// A page of one album's tracks, for albums longer than their embedded
     /// page.
     #[must_use]
@@ -725,6 +735,8 @@ pub struct SimplifiedPlaylist {
     pub owner: Option<PlaylistOwner>,
     #[serde(default)]
     pub collaborative: bool,
+    #[serde(default)]
+    pub snapshot_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -140,12 +140,30 @@ impl Reader<'_> {
         pages: usize,
         max_page_items: Option<usize>,
     ) -> Observation<T> {
+        self.observe_pages_from(url, what, pages, max_page_items, (0, None), None)
+            .await
+    }
+
+    /// Resume only coverage whose source identity the caller has fenced.
+    /// Returned positions include that prefix, while items contain this window.
+    pub(super) async fn observe_pages_from<T: serde::de::DeserializeOwned>(
+        &mut self,
+        url: &str,
+        what: &str,
+        pages: usize,
+        max_page_items: Option<usize>,
+        start: (u32, Option<u32>),
+        max_entries: Option<u32>,
+    ) -> Observation<T> {
         let mut items = Vec::new();
-        let mut coverage = Coverage::default();
-        let mut chain = Chain::new(url, Progress::Offset(0));
+        let mut coverage = Coverage::resume(start.0, start.1);
+        let mut chain = Chain::new(url, Progress::Offset(start.0));
         let mut next = Some(url.to_owned());
         let failures = self.read.failed.len();
         for _ in 0..pages {
+            if max_entries.is_some_and(|limit| coverage.observed().0 >= limit) {
+                break;
+            }
             let Some(url) = next.take() else {
                 break;
             };
@@ -156,6 +174,15 @@ impl Reader<'_> {
                 self.read.failed.push((
                     what.to_owned(),
                     "taste page exceeds its requested item limit".into(),
+                ));
+                break;
+            }
+            let count = u32::try_from(page.items.len()).unwrap_or(u32::MAX);
+            if max_entries.is_some_and(|limit| coverage.observed().0.saturating_add(count) > limit)
+            {
+                self.read.failed.push((
+                    what.to_owned(),
+                    "playlist entry limit reached before the collection ended".into(),
                 ));
                 break;
             }

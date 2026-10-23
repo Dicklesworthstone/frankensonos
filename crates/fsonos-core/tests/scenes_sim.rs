@@ -170,6 +170,7 @@ fn a_saved_scene_brings_the_house_back_in_both_generations() {
             SceneOp::Favorite { .. } => "favorite",
             SceneOp::Uri { .. } => "uri",
             SceneOp::Queue { .. } => "queue",
+            SceneOp::QueueBackup { .. } => "queue_backup",
             SceneOp::Dj { .. } => "dj",
             SceneOp::Play { .. } => "play",
             SceneOp::Pause { .. } => "pause",

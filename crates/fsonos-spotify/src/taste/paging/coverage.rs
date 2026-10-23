@@ -27,6 +27,10 @@ fn invalid(detail: &str) -> SpotifyError {
 }
 
 impl Coverage {
+    pub(super) fn resume(offset: u32, total: Option<u32>) -> Self {
+        Self { offset, total }
+    }
+
     pub(super) fn observed(&self) -> (u32, Option<u32>) {
         (self.offset, self.total)
     }

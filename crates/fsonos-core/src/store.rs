@@ -18,6 +18,12 @@ pub use sqlite::{LISTENING_RETENTION_SECS, SqliteStore};
 /// The database file's name inside the data directory.
 pub const FILE_NAME: &str = "fsonos.db";
 
+/// Bounds for one playlist observation or resumable read. Source positions
+/// include unavailable entries, so skipping them cannot evade the item bound.
+pub const MAX_PLAYLIST_ENTRIES: u32 = 10_000;
+/// Maximum aggregate metadata bytes in an observation or serialized checkpoint.
+pub const MAX_PLAYLIST_BYTES: usize = 16 * 1024 * 1024;
+
 use fsonos_proto::didl::SpotifyRenderParams;
 use fsonos_types::{Player, Track, ZoneGroup};
 use std::collections::BTreeMap;
@@ -107,8 +113,9 @@ pub struct PlaylistTrack {
 }
 
 /// A bounded observation of playlist contents, kept independently of the DJ's
-/// deduplicated library. `complete` means pagination ended without an error;
-/// Spotify did not provide an atomic snapshot guarantee for these reads.
+/// deduplicated library. `complete` means pagination ended without an error.
+/// The reader fences new resumable reads by Spotify version; legacy rows do
+/// not record that proof, and no observation promises current remote state.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CachedPlaylist {
     pub playlist_uri: String,
@@ -188,9 +195,10 @@ impl CachedPlaylist {
         {
             return Err(bad("coverage disagrees with the advertised total"));
         }
-        if self.tracks.len() > 200 {
-            return Err(bad("more than 200 track occurrences"));
+        if self.examined > MAX_PLAYLIST_ENTRIES || self.tracks.len() > 10_000 {
+            return Err(bad("more than 10,000 source entries"));
         }
+        let mut bytes = self.playlist_uri.len();
         let mut previous = 0;
         for track in &self.tracks {
             if track.position <= previous || track.position > self.examined {
@@ -209,6 +217,17 @@ impl CachedPlaylist {
                 .any(|field| field.len() > 16 * 1024)
             {
                 return Err(bad("track metadata is too large"));
+            }
+            for field in std::iter::once(track.source_uri.as_str())
+                .chain(std::iter::once(track.title.as_str()))
+                .chain(track.artist.as_deref())
+                .chain(track.album.as_deref())
+                .chain(track.album_uri.as_deref())
+            {
+                bytes = bytes
+                    .checked_add(field.len())
+                    .filter(|size| *size <= MAX_PLAYLIST_BYTES)
+                    .ok_or_else(|| bad("aggregate metadata is too large"))?;
             }
         }
         if self.revision != self.observation_revision() {
@@ -623,6 +642,31 @@ pub trait Store {
         playlist_id: &str,
     ) -> Result<(), StoreError>;
 
+    /// Private, versioned Spotify read state, isolated by owner and playlist.
+    /// The Spotify reader validates its schema and snapshot before resuming.
+    fn playlist_progress(
+        &self,
+        owner_id: &str,
+        playlist_uri: &str,
+    ) -> Result<Option<String>, StoreError>;
+
+    /// Atomically replace one bounded checkpoint after its snapshot is checked.
+    /// This does not replace the independently published playlist observation.
+    fn save_playlist_progress(
+        &mut self,
+        owner_id: &str,
+        playlist_uri: &str,
+        progress: &str,
+    ) -> Result<(), StoreError>;
+
+    /// Forget this owner's checkpoints absent from a complete readable list.
+    /// Callers must not prune from an incomplete directory or another account.
+    fn retain_playlist_progress(
+        &mut self,
+        owner_id: &str,
+        playlist_uris: &[String],
+    ) -> Result<(), StoreError>;
+
     /// Replace what the owner played on Spotify lately, on any device
     /// (`spotify:track:` URI, unix seconds), as a sync read it. A track
     /// heard more than once keeps its latest play.
@@ -726,6 +770,7 @@ pub struct MemStore {
     playlists: Vec<(String, String)>,
     playlist_contents: BTreeMap<String, CachedPlaylist>,
     playlist_scan_cursors: BTreeMap<String, String>,
+    playlist_progress: BTreeMap<(String, String), String>,
     spotify_heard: Vec<(String, i64)>,
     play_names: BTreeMap<String, PlayName>,
     actions: Vec<LoggedAction>,
@@ -1014,6 +1059,44 @@ impl Store for MemStore {
     ) -> Result<(), StoreError> {
         self.playlist_scan_cursors
             .insert(owner_id.to_owned(), playlist_id.to_owned());
+        Ok(())
+    }
+
+    fn playlist_progress(
+        &self,
+        owner_id: &str,
+        playlist_uri: &str,
+    ) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .playlist_progress
+            .get(&(owner_id.to_owned(), playlist_uri.to_owned()))
+            .cloned())
+    }
+
+    fn save_playlist_progress(
+        &mut self,
+        owner_id: &str,
+        playlist_uri: &str,
+        progress: &str,
+    ) -> Result<(), StoreError> {
+        if progress.len() > MAX_PLAYLIST_BYTES {
+            return Err(StoreError::Backend("playlist progress is too large".into()));
+        }
+        self.playlist_progress.insert(
+            (owner_id.to_owned(), playlist_uri.to_owned()),
+            progress.to_owned(),
+        );
+        Ok(())
+    }
+
+    fn retain_playlist_progress(
+        &mut self,
+        owner_id: &str,
+        playlist_uris: &[String],
+    ) -> Result<(), StoreError> {
+        let keep: std::collections::BTreeSet<_> = playlist_uris.iter().cloned().collect();
+        self.playlist_progress
+            .retain(|(owner, uri), _| owner != owner_id || keep.contains(uri));
         Ok(())
     }
 

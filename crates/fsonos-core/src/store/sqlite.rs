@@ -198,6 +198,15 @@ const MIGRATIONS: &[Migration] = &[
             owner_id TEXT PRIMARY KEY, playlist_id TEXT NOT NULL);
     ",
     },
+    Migration {
+        version: 16,
+        name: "snapshot-bound Spotify playlist reads continue across syncs",
+        sql: "
+        CREATE TABLE spotify_playlist_progress (
+            owner_id TEXT NOT NULL, playlist_uri TEXT NOT NULL, progress TEXT NOT NULL,
+            PRIMARY KEY (owner_id, playlist_uri));
+    ",
+    },
 ];
 
 /// How `spotify_library.genres` and `artist_genres.genres` join tags.
@@ -1232,6 +1241,73 @@ impl Store for SqliteStore {
         )
     }
 
+    fn playlist_progress(
+        &self,
+        owner_id: &str,
+        playlist_uri: &str,
+    ) -> Result<Option<String>, StoreError> {
+        self.query(
+            "SELECT progress FROM spotify_playlist_progress WHERE owner_id = ?1 AND playlist_uri = ?2",
+            &[owner_id.into(), playlist_uri.into()],
+        )?
+        .first()
+        .map(|row| {
+            let progress = text(row, 0)?;
+            if progress.len() > super::MAX_PLAYLIST_BYTES {
+                return Err(backend("playlist progress is too large"));
+            }
+            Ok(progress)
+        })
+        .transpose()
+    }
+
+    fn save_playlist_progress(
+        &mut self,
+        owner_id: &str,
+        playlist_uri: &str,
+        progress: &str,
+    ) -> Result<(), StoreError> {
+        if progress.len() > super::MAX_PLAYLIST_BYTES {
+            return Err(backend("playlist progress is too large"));
+        }
+        self.execute(
+            "INSERT OR REPLACE INTO spotify_playlist_progress (owner_id, playlist_uri, progress) \
+             VALUES (?1, ?2, ?3)",
+            &[owner_id.into(), playlist_uri.into(), progress.into()],
+        )
+    }
+
+    fn retain_playlist_progress(
+        &mut self,
+        owner_id: &str,
+        playlist_uris: &[String],
+    ) -> Result<(), StoreError> {
+        let keep: std::collections::BTreeSet<_> = playlist_uris.iter().cloned().collect();
+        let gone = self
+            .query(
+                "SELECT playlist_uri FROM spotify_playlist_progress WHERE owner_id = ?1",
+                &[owner_id.into()],
+            )?
+            .iter()
+            .map(|row| text(row, 0))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|uri| !keep.contains(uri))
+            .collect::<Vec<_>>();
+        if gone.is_empty() {
+            return Ok(());
+        }
+        self.in_transaction(|connection| {
+            for uri in &gone {
+                connection.execute_with_params_sync(
+                    "DELETE FROM spotify_playlist_progress WHERE owner_id = ?1 AND playlist_uri = ?2",
+                    &[owner_id.into(), uri.as_str().into()],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
     fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError> {
         let rows: Vec<Vec<SqliteValue>> = super::latest_plays(plays)
             .iter()
@@ -1664,7 +1740,7 @@ mod tests {
         let store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1705,7 +1781,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1762,7 +1838,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 2, "no row lost");

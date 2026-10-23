@@ -32,6 +32,7 @@ fn directory(server: &Server, ids: &[usize], owner: &str) {
             .iter()
             .map(|&n| {
                 json!({ "id": id(n), "name": format!("Playlist {n}"),
+                "snapshot_id": "test-version-1",
                 "owner": { "id": owner } })
             })
             .collect();
@@ -60,7 +61,7 @@ fn observed(store: &dyn Store, n: usize) -> CachedPlaylist {
 }
 
 fn attempted(server: &Server, since: usize) -> Vec<String> {
-    server.calls("/v1/playlists/")[since..]
+    server.item_calls()[since..]
         .iter()
         .map(|call| {
             path(call)
@@ -131,7 +132,8 @@ fn windows_survive_restarts_reordering_and_a_removed_cursor_without_losing_music
         // Each incomplete taste window retains earlier candidates, including
         // the removed list's music; partial evidence cannot retire it.
         assert_eq!(pool.len(), 61);
-        assert_eq!(server.calls("/v1/playlists/").len(), 75);
+        assert_eq!(server.item_calls().len(), 75);
+        assert_eq!(server.calls("/v1/playlists/").len(), 150);
         store.close().unwrap();
     });
 }

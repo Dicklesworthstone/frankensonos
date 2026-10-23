@@ -754,6 +754,44 @@ fn playlist_scan_cursors(s: &mut dyn Store) {
     assert_eq!(s.playlist_scan_cursor("owner-c").unwrap(), None);
 }
 
+fn playlist_progress(s: &mut dyn Store) {
+    let first = "spotify:playlist:ProgressA";
+    let second = "spotify:playlist:ProgressB";
+    assert_eq!(s.playlist_progress("owner-a", first).unwrap(), None);
+    s.save_playlist_progress("owner-a", first, "first window")
+        .unwrap();
+    s.save_playlist_progress("owner-a", first, "second window")
+        .unwrap();
+    s.save_playlist_progress("owner-a", second, "another playlist")
+        .unwrap();
+    s.save_playlist_progress("owner-b", first, "another owner")
+        .unwrap();
+    assert_eq!(
+        s.playlist_progress("owner-a", first).unwrap().as_deref(),
+        Some("second window")
+    );
+    s.retain_playlist_progress("owner-a", &[first.into()])
+        .unwrap();
+    assert_eq!(s.playlist_progress("owner-a", second).unwrap(), None);
+    assert_eq!(
+        s.playlist_progress("owner-b", first).unwrap().as_deref(),
+        Some("another owner")
+    );
+    s.retain_playlist_progress("owner-a", &[]).unwrap();
+    assert_eq!(s.playlist_progress("owner-a", first).unwrap(), None);
+    s.save_playlist_progress("owner-a", first, "after a fresh directory")
+        .unwrap();
+    let too_large = "x".repeat(fsonos_core::store::MAX_PLAYLIST_BYTES + 1);
+    assert!(
+        s.save_playlist_progress("owner-a", first, &too_large)
+            .is_err()
+    );
+    assert_eq!(
+        s.playlist_progress("owner-a", first).unwrap().as_deref(),
+        Some("after a fresh directory")
+    );
+}
+
 fn spotify_heard(s: &mut dyn Store) {
     assert!(s.spotify_heard().unwrap().is_empty());
     let play = |uri: &str, at: i64| (uri.to_owned(), at);
@@ -832,6 +870,7 @@ fn suite(s: &mut dyn Store) {
     album_misses(s);
     playlists(s);
     playlist_scan_cursors(s);
+    playlist_progress(s);
     spotify_heard(s);
     action_log(s);
     scenes(s);
@@ -849,7 +888,7 @@ fn sqlite_in_memory_conforms() {
     suite(&mut s);
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     );
     s.close().unwrap();
 }
@@ -979,7 +1018,7 @@ fn sqlite_file_survives_close_and_reopen() {
     let s = SqliteStore::open(&path).unwrap();
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
     );
     assert_eq!(
         s.playlist_scan_cursor("owner-a").unwrap().as_deref(),
@@ -988,6 +1027,18 @@ fn sqlite_file_survives_close_and_reopen() {
     assert_eq!(
         s.playlist_scan_cursor("owner-b").unwrap().as_deref(),
         Some("PlaylistB")
+    );
+    assert_eq!(
+        s.playlist_progress("owner-a", "spotify:playlist:ProgressA")
+            .unwrap()
+            .as_deref(),
+        Some("after a fresh directory")
+    );
+    assert_eq!(
+        s.playlist_progress("owner-b", "spotify:playlist:ProgressA")
+            .unwrap()
+            .as_deref(),
+        Some("another owner")
     );
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);

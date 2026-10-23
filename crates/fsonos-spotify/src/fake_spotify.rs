@@ -274,6 +274,7 @@ fn taste(fake: &Fake, uri: &str) -> Option<Response> {
             200,
             page(serde_json::json!([
                 { "id": "FakePlaylist000000001", "name": "Mine", "collaborative": false,
+                  "snapshot_id": "fake-version-1",
                   "owner": { "id": "fake-owner" } },
                 { "id": "FakePlaylist000000002", "name": "A Friend's", "collaborative": false,
                   "owner": { "id": "someone-else" } },
@@ -288,6 +289,11 @@ fn taste(fake: &Fake, uri: &str) -> Option<Response> {
                 { "added_at": "2026-01-02T00:00:00Z",
                   "item": { "type": "episode", "name": "A Podcast", "uri": "spotify:episode:FakeEpisode01" } },
             ])),
+        )
+    } else if uri.starts_with("/v1/playlists/FakePlaylist000000001?") {
+        json(
+            200,
+            r#"{"id":"FakePlaylist000000001","snapshot_id":"fake-version-1"}"#,
         )
     } else {
         // Since February 2026 only the owner's own (or collaborative)
