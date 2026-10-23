@@ -1138,3 +1138,11 @@ Boundary by build: the passthrough is **57.23-only** over WS (the same frames gi
 no pre-auth mutation beyond `SetString`. `diagnostics/submitDiagnostics` and
 `update/checkForUpdate` are accepted over WS on 86.10 (`update/check` is 404 on
 57.23, as recorded earlier).
+
+The handler is stricter than "big body": `POST /notify` with 64 KiB answers 405
+(body read first, then the method test), but a **2 KiB body sent with the
+`NOTIFY` method** (a plain `<e:propertyset>` wrapper with a 2 000-char property)
+also gets no response and takes HTTP down. The two failures therefore differ:
+one is a size limit before the method check, the other is reached only on the
+GENA method itself. Both units used (`168`, `185`) stayed without `:1400` for
+minutes; recovery is watchdog-driven and slow after repeat hits.
