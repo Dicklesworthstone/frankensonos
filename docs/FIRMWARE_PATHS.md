@@ -273,9 +273,34 @@ with no wire probing. It includes, pre-auth:
   `upnpZoneGroupTopology` subscribe/renew/unsubscribe/call families (a generic UPnP
   passthrough)
 
-Whether an individual admin verb needs more than the static key on a given build is
-still being mapped; the namespaces that take a `playerId`/`groupId` return
-`ERROR_INVALID_PARAMETER` under the obvious id forms, so their exact plumbing is open.
+Whether an individual admin verb needs more than the static key is now measured:
+the static key is effectively **read-only**. `POST .../update/check` is open and even
+returns a fresh `updateItem` with `updateURL`/`manifestURL`; `management/reboot`,
+`update/firmware`, `update/status` and the policy paths answer 403
+`ERROR_NO_PERMISSION` with `WWW-Authenticate: Bearer …insufficient_scope`.
+`Authorization: Bearer <api-key>` instead of the header answers 400
+`ERROR_API_KEY_VALIDATION_FAILED`, so the Bearer channel is a separate token.
+`POST .../authorization/authorizeDevice` wants `assertion` then `grantType`
+(any grant type then answers 403 Unauthorized), and the JWT errors in the binary
+(`INPUT_JWT_X5C_MISSING` / `_UNTRUSTED`) show the assertion must be an RS256 JWT
+carrying an x5c chain trusted by the on-device root bundle — i.e. cloud-issued, not
+self-signable.
+
+Generic UPnP passthrough is real but partial. `POST /api/v1/players/{id}/upnpDeviceProperties`
+and `.../upnpZoneGroupTopology` take `{"method":"<Action>","params":{…}}` and answer
+`upnpResponse` with typed `parameters`; `GetZoneAttributes` returned the live zone name.
+`upnpAVTransport` answers UPnP 402 (invalid args) for `GetTransportInfo`/`GetMediaInfo`
+with or without `InstanceID`, so that one still needs its plumbing.
+`update/check` and the passthrough are the two open doors the scoped verbs do not gate.
+
+**The surface is version-gated per build** (measured, benign reads only): the S1
+57.23 player answers `info` (with `apiVersion 1.18.10`, `minApiVersion 1.1.0`,
+`websocketUrl`, `restUrl`) and `settings/player`, and nothing else — `settings`,
+`diagnostics/metadata`, `update/check`, `devices/registration` and the `upnp*`
+passthrough are 404 there. A 97.2 S13 answers `info`, `settings`, `favorites`/`groups`
+(WS), `update/check` and the passthrough for DeviceProperties/ZoneGroupTopology. So the
+newer verbs (and the whole scoped-token front) exist only on S2-era builds; on S1 the
+local API is a read-only inventory/settings reader.
 
 **The same command table is also REST over HTTPS 1443**: the namespace triples
 above are path templates prefixed with `/api/v1`, e.g.
