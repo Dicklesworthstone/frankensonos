@@ -590,3 +590,42 @@ the running 57.23 build" above): the **57.23** `bin/upgrade` has no
 file nor `/jffs/VERSION` changed the verdict on an older image — it still
 answered `Upgrade blocked.` / error 9. So take the 34.16 bypass as a 34.16/56.0
 property and re-measure it before relying on it on 57.23.
+
+### SUCCESS: a model-matching older image installs over the air (and the patch-train is the gate)
+
+After the signature findings above, the missing variable turned out to be the
+**patch-train record (type 21)**, not the cert bundle or the version:
+
+- a genuine `57.22-65130-1-16` image (the `57.22-59130` manifest lists it) →
+  full 5.6 MB read, ~60 s reflash, and the unit comes back on **57.22-65130**.
+  This is a complete, keyless, network-only downgrade from 57.23.
+- a genuine `57.22-59130-1-16` image → the fetcher stops around `0x22000`
+  (13 %), fast reboot, version unchanged. Its type-21 reads
+  `2021_11 / 2023_01 / 2023_12`; the accepted build's reads
+  `2021_11 / 2023_01 / 2023_12 / 2024_12`. Appending `2024_12_PATCHES:` to the
+  rejected image's type-21 makes the daemon read the **whole** file again, so
+  the required patch level is exactly what the gate is comparing.
+- It still fails after that full read, because the type-21 edit breaks the
+  signature. So the gate is satisfiable, the signature is not.
+
+Practical floor: the earliest build that already carries `2024_12_PATCHES`.
+That is the 57.22-61162 fix line, i.e. `SSA-2024-0002` — **by URL you cannot
+downgrade a patched S1 player below the release that fixed it.** 34.16 sits
+below the whole patch-train scheme *and* predates signatures, so it needs both
+the patch gate and a signature it never had.
+
+Public build-directory names are recoverable from the Wayback CDX index
+(`url=update-firmware.sonos.com&matchType=domain&fl=original`) — that is where
+`57.19-46310-v11.12-rozcvdwa-GA-1` and `57.16-41110-v11.9-wzhipjet-GA-1` came
+from; the `v` tag is otherwise unguessable. Per-build manifests live at
+`update.sonos.com/firmware/Prod/<version>-<build>-<vtag>/update.upm`.
+
+### Update-path gotchas
+
+`BeginSoftwareUpdate` is on **ZoneGroupTopology**, not DeviceProperties
+(DeviceProperties has no such action on 57.23 and answers UPnP 401). The
+fetcher follows the URL with a `Wget` UA and appends `cmaj/cmin/cbld/subm/rev/
+reg/serial/sonosid/householdid`. `CheckForUpdate(UpdateType, CachedOnly,
+Version)` always answers the newest build regardless of `Version`, and returns
+both an `UpdateURL` (with the `^<version>` per-model placeholder, resolved
+on-device) and a `ManifestURL`.
