@@ -739,3 +739,22 @@ diffs). Interoperability facts measured on those builds:
 Open: an inline-key reference (type 1/2) is accepted by the ring parser but has
 not verified yet; if it verifies with an attacker key, an unsigned image is
 accepted end-to-end. Also open: the exact ref field semantics for those types.
+
+### Addendum: digest captured; inline refs still open
+
+The verifier's hash was captured at the call site by patching the call
+instruction to `break` (absolute breakpoints are not inserted when gdb debugs
+`ld.so.1`, because the binary is still unmapped): the value is exactly
+`sha256` of the file prefix before the type-17 record, reproduced offline. The
+signature is PKCS#1 v1.5 over it. The ring reference format was corrected to
+`[u32 key_len][u8 type][key bytes][u8 hash_alg][u32 1][u32 siglen][sig]`
+(type 3 is a SHA-1 of an SPKI and matched the built-in key at
+`libsonoscrypto+0xdd80`).
+
+Inline references (types 1, 2, 4) parse, but nine combinations
+(SPKI/PKCS#1/PEM × three types) with the now-correct digest all fail at
+"Sonos signature verification failed", and no "signed with key N" is printed
+for them, so the verifier does not resolve those to a key on the 57.23 MIPS
+build. The open question is whether a reference type can select an
+attacker-supplied certificate in the type-22 bundle; if it can, the image
+self-signs and the update floor stops mattering.
