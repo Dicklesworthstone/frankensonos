@@ -270,7 +270,8 @@ Grouping verbs (verified live on S2 97.1, 2026-10-07, with full restore):
   Dead ends, also verified: `BecomeCoordinatorOfStandaloneGroup` returns
   1023 on both generations (SoCo's `unjoin()` is broken on current firmware);
   `GroupManagement#RemoveMember` returns success but is a **no-op** on both
-  generations (S1 confirmed still grouped after 95 s; S2's apparent effect
+  generations, and `GroupManagement#AddMember` accepts `DeviceUUID` with
+  `200` yet changes nothing either (it wants `MemberID`+`BootSeq`) (S1 confirmed still grouped after 95 s; S2's apparent effect
   was actually the subsequent self-join). A controller must treat the 402
   on the self-join as success and verify via a topology read-back.
 - **A coordinator leaving the group it leads** (verified live on S1 57.23
@@ -335,7 +336,10 @@ just falling through: an unknown path answers POST with a 106-byte HTML
 `404` to POST — the handler runs and its lookup fails. A successful
 `ReportUnresponsiveDevice` (both `VerifyThenRemoveSystemwide` and `Remove`,
 short 12-hex `DeviceUUID`; the full `RINCON_…` id is rejected with SOAP
-`800`) does not seed it either, live or after a ZGT subscription. The same app
+`800`) does not seed it either, live or after a ZGT subscription — and neither
+does a genuinely fresh member link (solo via the `x-rincon` self-join, then
+rejoin accepted `200`, probed at +1/+3/+6/+10 s). Parked until a binary
+can say what fills the table. The same app
 also registers `POST /diagmsg` (64-char `msg`) and ships the anacapa server
 config the phone itself runs on port 3500, with a hardcoded
 `OnlineUpdateBaseURL http://update.sonos.com/firmware/latest/`; the app
