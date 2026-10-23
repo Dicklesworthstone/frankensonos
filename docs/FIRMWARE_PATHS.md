@@ -2667,3 +2667,29 @@ handler at all. Its decompilation is an ARP-checker initialiser
 16-byte stack buffer (`siocgif*` ifreq block: `struct ifreq` is 0x44, memset; strcpy
 target `ausStack_3c[16]`). So the overflow fires only if the interface name exceeds
 15 characters, and the account work does not feed it directly.
+
+### What the 402 actually tests
+
+The `li 0x192` sites for this action sit in the dispatcher at `0x4bdcf0`-`0x4be5xx`
+(one per parameter) and all have the shape
+
+```
+jal 0x4be6fc        ; validate+set one parameter
+bnez v0, <next param>
+li a1, 402          ; else fail the whole call
+```
+
+so a **single rejected parameter** aborts with 402 before the handler body runs — which
+is why every partial shape failed on its first argument.
+
+`0x4be6fc` takes the argument object, reads its `content-length` header, and runs
+`0x4a4200`, a chunked copy of exactly that many bytes (4096-byte blocks, via a
+reader virtual and a decoder `0x4a408c`) into the parameter's storage, then
+finalises with `0x4a4120`. Its verdict is "did the copy complete": 402 is raised
+when the declared `content-length` does not match the bytes the reader yields, or
+when the decoder rejects them — not when a value is semantically wrong.
+
+That is a mechanical, not semantic, gate: the argument content has to arrive in the
+form the reader expects. `SetString` and `AddAccountX` use the same machinery and
+accept ordinary text, so for this action some argument is being rejected on its
+content-length pairing rather than its name.
