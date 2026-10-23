@@ -304,7 +304,14 @@ Argument plumbing, measured on 86.10: both `params:{…}` and
 answers 400 `Parsing terminated:input.name`), but **no argument reaches SOAP**:
 `SetZoneAttributes` answers UPnP 402 in all four shapes tried while the
 zero-argument `GetZoneAttributes` returns live data. The passthrough is
-therefore read-only in practice.
+therefore read-only in practice. Admin verbs on 86.10 with the static key:
+`management/reboot` → 401 `invalid_token` (scoped), `settings/updateAllSettings`
+and `settings/setProtectedAdminSettings` are **GETs** (405 as POST) but the
+player path rejects them — 404 `unknown settings group name` — so they hang off
+another namespace; `settings/player` is open, the `settings` list is 401, and
+the household id for the household namespace is the `HouseholdControlID`
+(`Sonos_…`) from `/status/zp`, not `locationId` (that one answers `Household ID
+verification failed`).
 
 **The surface is version-gated per build** (measured, benign reads only): the S1
 57.23 player answers `info` (with `apiVersion 1.18.10`, `minApiVersion 1.1.0`,
