@@ -435,3 +435,19 @@ region), but a *new* type-17 signature needs one of the two Sonos private keys.
   observed on two units after a rejected same-version probe; the 57.22→57.23 cycles
   before it all fetched within seconds. A reboot is the reliable way back; assume a
   cooldown or a stuck `upgrade` and do not stack probes.
+
+### The device gate rejects a modified package earlier than the VM does
+
+On hardware, a package whose type-1 version was bumped to 99.1.1 (and even one whose
+only change is that bump) is fetched and closed after roughly the gate's read, with
+`upgrade` never starting (`/status/tmp/upgrade.log` stays empty, the unit stays on its
+version). A correctly signed image downloads the whole 4.6 MB and proceeds. Naming
+the file after its own version (`99.1.1-1-1-16.upd`) changes nothing, so the gate is
+content-based, not name-based.
+
+The VM lab gets past the same point only because `upgrade_nc` there runs with the
+compat branch at `0x407d7c` NOPped (`beqz v0, 0x407c10` forced to fall through,
+`jal 0x411ca0` immediately before it) and a 99.1.1 header. That is the difference to
+reproduce on hardware before parser fuzzing can be driven over the real update path:
+either the branch is the same gate, or the device's gate is a stricter check reached
+first. Until it is identified, treat every modified package as rejected pre-parser.
