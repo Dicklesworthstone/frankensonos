@@ -1460,3 +1460,17 @@ A find looks like one of:
 
 Verification is then two requests and one boot: write the payload above, force the
 short (rejected-image) reboot, then check 2323.
+
+### Zone names are stored raw; escaping happens only at render time
+
+Setting `DesiredZoneName` to `A<B&C"D` (XML-escaped in the SOAP body) stores the
+literal characters — `/info` returns `"name":"A<B&C\""` and `/status/zp` renders it
+as `A<![CDATA[<]]>B<![CDATA[&]]>C&quot;D`. So the value is persisted unescaped and
+the renderer escapes per output format.
+
+That makes the settings file itself the place where a crafted name could matter
+(entries are written as `<Key …>value</Key>` with the value inserted raw). The
+zone name sits behind a fixed key, so it cannot change *which* key is written, but
+a value containing the entry delimiters is the obvious next injection to try.
+Confirmed unchanged: `/advconfig` still handles exactly `FirstZP` and
+`PriorityBridge`, both `atoi`-reduced, into `%s/netsettings_mod.txt`.
