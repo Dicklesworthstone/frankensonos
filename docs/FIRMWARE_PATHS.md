@@ -667,6 +667,15 @@ the `/diaglevel` flood, so it is the cheapest DoS on the device by three orders 
 magnitude. The value surviving means the write completes before the hang — the lock or
 replication path is the likely deadlock.
 
+**It does not walk the boot slot.** Two writes (a benign key, then `BootSeq=1`) on
+57.23 produced a *daemon* restart loop (down/up every 6-12 s for minutes; ping
+stays up while HTTP is down, so the box does not reboot) and `SoftwareVersion`
+stayed `57.23-74170` across ~12 cycles. Slot fallback is driven by the
+bootloader's failed-boot counter, which daemon restarts never touch; reaching
+the other slot therefore needs real power cycles or a reboot the updater
+performs. The form needs URL-encoded fields (`csrfToken`, `key`, `value`) and
+returns "Setting changed".
+
 ### Two device sweeps, both negative (bundle parser, devmode ring)
 
 **Cert bundle (type-22), 36 mutants on the device** — record lengths `0/16/17/0x200/0x1000/
