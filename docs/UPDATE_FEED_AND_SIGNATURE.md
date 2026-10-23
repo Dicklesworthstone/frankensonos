@@ -396,7 +396,12 @@ handshake, carries the request and the first ~24 KB, then the fetcher closes
 with `close_notify` exactly as it does over plain HTTP — the same early
 abort, not a new gate. A self-signed certificate is accepted, and nothing
 on `:1400` exposes an update-state page, so a fetch is only observable from
-the server side.
+the server side. Repeated `BeginSoftwareUpdate` triggers are not idempotent:
+after one successful 5.4 MB transfer, further triggers connect, complete the
+TCP handshake and then send a bare `fatal decode_error` alert (7 bytes) with
+no ClientHello body and no request, while local `s_client` against the same
+listener still gets `200` — so the abort is client-side, and a provably
+working server is not evidence the device will fetch on demand.
 
 Transfer behaviour: a plain Python `http.server` (with or without
 `Content-Length`, HTTP/1.1 or 1.0) makes the player's `wget -qC <url> -T 300
