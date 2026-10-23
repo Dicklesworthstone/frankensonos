@@ -1265,8 +1265,23 @@ the S1 and S2 daemons. Since `lower-sslauth.sonos.com` is a public-CA host and
 the device's bundle is the public root set, a forged eMudhra leaf is exactly the
 right tool to impersonate it; the missing piece is name resolution (the device
 takes DNS from DHCP, and the two `%s` prefixes are compile/config-derivable).
-Guessing the prefixes directly did not resolve (`us-sonos`, `us-api`, `eu-api`,
-`us-prod`, `us-sonosapi` all NXDOMAIN).
+The builder is generic — the neighbours of that template are a service list
+(`oauth`, `keys`, `clientdata`, `music-accounts`, …), a second form
+`https://%s.%s%s` and `lechmere.%s.ws.sonos.com`. The `lower-*` form is the
+lower-environment variant; the production form resolves:
+
+```
+oauth.sslauth.sonos.com  ->  CloudFront
+GET /auth/oauth/v2/validate?access_token=AAAA  ->  403, "Client certificate required"
+```
+
+So the validator is **mutual-TLS**: the device presents a client certificate and
+we must present a server certificate the device trusts — which is exactly the
+forged eMudhra leaf, and we can ignore the device's client cert on our side. The
+remaining prerequisites are put DNS for `*.lower-sslauth.sonos.com` (or the
+production name) at us, and the response shape the parser wants (reacts with
+"Invalid user", "Access token does not have adequate permissions", "Command
+scopes could not be determined").
 
 Recorded separately: with the cloud unreachable every token — forged, real or
 garbage — returns 503, so a run of 503s says nothing about the token.
