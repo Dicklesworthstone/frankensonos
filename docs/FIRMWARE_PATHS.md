@@ -25,6 +25,14 @@ On success the daemon writes `/tmp/device_unlocked_flag`; the updater's
 `allow_policy_bypass` `stat()`s it. Forging a statement therefore needs the
 matching Sonos **private** key.
 
+**Correction (2026-10-23): the flag only buys anything on 34.16-era updaters.**
+`strings` on the 34.16 updater gives both `allow_policy_bypass` and
+`/tmp/device_unlocked_flag`; neither string exists in the 57.23 updater (only
+`pthread_mutex_unlock`). So on the current S1 build the devmode flag does not by
+itself make an unsigned/modified image install — the 57.23 updater is the newer
+signature-only design, and a 57.23-parser bug (bead `nyy`) or Sonos's key is what
+reaches code execution there. On older builds the flag path still exists.
+
 **Private-key hunt (2026-10-20):** neither S1-gen controller app carries the
 private key. The still-served 47.2 (v9.3) and 90.0 (v17.2.4) macOS DMGs were
 downloaded and the full `Sonos.app` binaries scanned: the only "RSA PRIVATE
