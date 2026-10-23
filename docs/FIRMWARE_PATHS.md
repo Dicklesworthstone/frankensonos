@@ -1588,6 +1588,16 @@ Follow-up on the first two after reading the callers:
   statement input itself is capped at 0x400, so the verifier can return at most
   a ~1 KB payload for a 256-byte buffer.
 
+**The 86.10 statement format is not the S1 one**, decoded from the S2 app's
+`validateDevModeStatement` (`0x138f4`): it compares the magic word to
+`0x711e7228` (the same little-endian `0x28721e71`), requires `len >= 0x1c`,
+compares `[+4]` (`rev`'d) to a caller value, then requires `len >= 0x20` and
+tests `rev([+0x18]) <= r0 <= rev([+0x1c])`, where `r0` is composed from two
+caller arguments. So `+0x18` and `+0x1c` straddle a caller-supplied bound
+instead of being equal constants as on S1, and the S1-shaped preamble (zeros
+there) fails. The live page also reports the real model (`8`) and device id,
+so the preamble is checkable from the page.
+
 86.10 is the S2 build, so these are not on the 57.23 S1 daemon at all. The first
 two need a peer that speaks the registration/devmode frames, which is the next
 piece of work. Sweep saved at `captures/research/ghidra-8610/sweep8610.txt`.
