@@ -321,7 +321,20 @@ how a local client obtains a scoped token without the cloud.
 
 ### Open leads, in order
 
-0. The local WebSocket API above is the widest new surface: a static key reaches
+0. **The only remaining gate on an unsigned image is the signature check, and the
+   only way around it is a device flag file** — see "Update gate, measured on the
+   running 57.23 build" below for the ordering, the two `allow_policy_bypass` call
+   sites and the offline harness. Next concrete work, in order: (a) finish the MDP so
+   the harness runs the signature code path (mtdram + partition table, or stub the
+   compat checker at source level); (b) re-test the *live* gate with a model-16 image
+   whose version record and model are untouched and only a ciphertext byte is flipped,
+   to confirm the live stop is the signature and not something else; (c) hunt any
+   pre-auth writer of `/jffs/VERSION` or `/jffs/system/Configure.dev` now that the
+   exact live daemon is readable; (d) exercise `settings/updateAllSettings`,
+   `setProtectedAdminSettings` and `management/factoryReset` on an S2 unit — S2 needs
+   no `/jffs` primitive because its `devunlock` path writes
+   `/tmp/device_unlocked_flag` and runs `run_sshd.sh` directly.
+1. The local WebSocket API above is the widest new surface: a static key reaches
    `reboot`, `factoryReset`, the update triggers and a generic UPnP passthrough with no
    pairing. The immediate task is finishing the parameter plumbing for the
    `playerId`/`deviceId`/`userId` namespaces (the ids, not the key, are what the parser
@@ -371,10 +384,95 @@ how a local client obtains a scoped token without the cloud.
    no TLS here and SMB is absent from both MIPS builds, so the recent
    BusyBox-TLS and Era-300 SMB CVEs are out of scope.
 
+### Update gate, measured on the running 57.23 build (2026-10-22, second session)
+
+The 57.23 line is no longer blind: the model-16 (ZPS5) package is decrypted with the
+recovered per-model key, so `opt/bin/anacapad`, `bin/upgrade`, `libsonoscrypto.so.1`
+and the rootfs of the *exact live build* are readable (see
+`captures/firmware/57.23-74170-1-16/PROVENANCE.md`). It is **PowerPC**, so the MIPS
+tooling in this file does not apply; `r2 -a ppc -b 32` and `objdump` do not decode it
+on this host, while `qemu-ppc` does run it (below).
+
+**Live A/B that settles the earlier "99.0 also aborts" result.** The 2026-10-22 sweep
+served a *model-5* image to a *model-16* unit and concluded the version gate could not
+be spoofed. That was the model mismatch, not the version. Re-run with the model-16
+image and **only the type-1 version record** patched 57.23.74170 → 99.0.1: the player
+reads all 5,606,749 bytes, then installs nothing and keeps answering 57.23. So the
+compatibility gate is model+version and is passed by a correct-model image; what stops
+an unsigned image is the step *after* the download. No section is written and no
+install script runs.
+
+**Order of the running updater, from the decrypted 57.23 `bin/upgrade`** (function at
+`0x10007fa0`; strings at `0x10016ec8…0x1001873c`): fetch and parse the record stream →
+per-record compatibility checks ("Min version %u.%u-%u", "Compatible with model …",
+`Upgrade blocked.`, "Failed compatibility check" → error 10) → signature-section parse
+and verify ("No valid signature" → error 6, "Sonos signature verification failed") →
+*then* `upgrade_write_sections` (`0x10008890`), which opens `/var/upgradescript`,
+runs `/bin/sh /var/upgradescript umountnone` (`system`, `0x10008af4`) and aborts on a
+non-zero exit, then flashes, then `upgrade_postinstall` runs
+`/bin/sh /var/upgradescript postinst`. `do_upgrade` only reaches the script when the
+whole validation pass returned 0, so **an unsigned image never executes its script**
+today. `/jffs/VERSION` present == "debug build": `int_doWriteFlash` returns early
+("Detected /jffs/VERSION, perfoming no-op update"), i.e. debug builds validate and then
+skip the write.
+
+**What the policy bypass actually gates** (34.16 build, which still carries the symbol;
+exact-fit keys and `/tmp` writer confirmed by disassembly): `allow_policy_bypass` is
+consulted at exactly two call sites — before reporting *Downgrade blocked.* and before
+*Invalid update state*. It returns true when `/tmp/device_unlocked_flag` exists
+(`stat`, helper `0x410b40`), when a 13-character `/jffs/...` path (the only 13-char path
+constants in the binary are `/jffs/VERSION` and `/usr/bin/wget`) passes a read+compare
+helper (`0x410b90`), and never from two default-return-0 stubs. 57.23 keeps the same
+behaviour under different strings — `/jffs/persist/deactivated_state` and
+`…deactivation_pending_state.json` ("Downgrade blocked (deactivated).") — but the
+`allow_policy_bypass` symbol itself is gone from that build. Consequence: the bypass is
+worth exactly a *policy* waiver (older version, deactivated-state downgrade); it does
+not by itself make a forged signature verify. Both cheap enablers are files
+(`/tmp/device_unlocked_flag`, `/jffs/VERSION`), and no pre-auth surface writes files.
+
+**File-write surfaces, checked.** `SystemProperties.SetString` accepts arbitrary key
+names and persists them (`GetString` reads them back), but the store is one XML file
+written `"%s.tmp"` + `rename` (`RSystemSettingsBase`/`RSPSetValue`), so the key is an
+XML tag, not a filename: `SetString` cannot create `/jffs/VERSION`. `/advconfig` writes
+only two `atoi` ints; `/set-cr-netstart-dest-mac` writes tmpfs only. `/jffs` consumers
+that *execute* are `/jffs/system/Configure.dev` (`sh`, `rcS`), `/jffs/Configure`
+(`exec`, `wifi/Configure`) and `/jffs/debug/testpoints.sh` (sourced) — all
+existence-gated, so any one arbitrary-content file write is root.
+
+**`/status/<path>` is a file *and command* reader for a fixed table** (not just the six
+links its index page shows). Working: `/status/proc/ath_rincon/status`, `/status/dmesg`,
+`/status/ifconfig`, `/status/uptime`, `/status/jffs/upgrade.log`,
+`/status/tmp/upgrade.log`, `/status/jffs/watchdog.log`. Two gotchas: `/tmp` and `/opt`
+are symlinks to tmpfs, and `/status` does not follow them reliably, so log reads come
+back empty; and the update attempt is performed by `/bin/upgrade` spawned from
+`/etc/runanacapa` on the *next* daemon start, so `/tmp/upgrade.log` (its stdout) is the
+place a failed run reports — read it right after a probe, before it rotates.
+
+**Offline harness (works, one blocker).** The 57.23 rootfs is big-endian squashfs 3 and
+`unsquashfs` extracts it. With `qemu-user` installed, `chroot <rootfs> /qemu-ppc
+/bin/upgrade` runs the *real* updater (uClibc PPC, static-pie qemu) and prints its whole
+decision trace, given `/ramdisk/var/run/upgradeinfo` (`Force`/`Ignore`/`Report`/
+`CurrentVersion`/`SystemVersion`/`URL` keys) and a local URL; `/tmp/upgrade.log` in the
+chroot receives the same lines. Blocker: without a flash device the hardware-feature
+compatibility check sees feature set 0 and fails with error 10 before the signature
+stage. `/dev/mtd0` exists via `mtdram`, but `hal_flash_info_init` still reports "init
+failed" (it wants a valid on-flash partition table for its offsets), so the MDP at
+`/dev/mtd` offset 0 is never read. A one-word patch at file offset `0x8654`
+(`li r28,0xa` → `li r28,0`) gets past the verdict and shows the next real failure
+("No valid signature", error 6), but the parser still stops at the compatibility record,
+so a real MDP is needed to exercise the signature code path end to end.
+
 ### Safety notes for the next session
 
 Use bench players first and expect a watchdog restart. Do not drive one unit
 twice inside a minute. Announce state changes in Agent Mail (`am`) and leave
 the house paused at low volume. The Mac's LAN interface has DHCP churn;
 bind the source address explicitly when a device answers `EADDRNOTAVAIL`.
+
+`192.168.4.0/22` is **routed** through an eero at `192.168.4.1`, not on the
+attached L2. ICMP crosses it; TCP payload and unicast UDP do not (SYN is
+forwarded, the SYN/ACK comes back, our ACK and data are never delivered, and
+`hal_*`-era ARP entries never appear for those hosts). `192.168.5.0/24` and
+`192.168.6.0/24` are on-link and fine, so bench on those. Do not read a `.4.x`
+timeout as a dead player; it is the path.
 
