@@ -503,6 +503,15 @@ same-version package can never reach the application phase; and any version
 bump breaks the 128 KiB prefix hash, so type 17 cannot be reached by a
 modified package either. Both roads need a Sonos private key.
 
+### Does `unlocked` skip verification? No
+
+`RdeviceIsUnlocked` (`libsonosminiutils.so.1` `0x930c`) is nothing more than
+`stat("/tmp/device_unlocked_flag") == 0` -- and neither `upgrade` nor
+`upgrade_mgr` contains the string `device_unlocked`, `unlockedBld` or
+`unlocked` at all. So an unlocked device does **not** get unsigned updates
+accepted; the devmode unlock only buys the SSH daemon. Both routes stay
+behind the same signature.
+
 ## Reaching real packages and the app handshake
 
 The legacy update feed is directly usable. `GET
