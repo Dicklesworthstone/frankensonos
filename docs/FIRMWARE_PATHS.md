@@ -1206,6 +1206,38 @@ differs, but the version and the log stay unchanged.) `getZoneGroupState`'s
 and this bench unit is already at 91 from the session's crashes, so reboots do
 happen; they just never coincide with an armed update.
 
+## 2026-10-23: eMudhra's compromised intermediates are in the bundle, and the keys are public
+
+The root bundle of **both builds** contains `emSign ECC Root CA - G3` *and*
+`AAA Certificate Services` (Comodo) — exactly the two roots the October 2026
+eMudhra incident hangs from. On 17 Oct 2026 the private keys of eight eMudhra
+**intermediate** CAs were shown to be recoverable ("tiny integers", recoverable
+almost instantly, Mozilla confirmed independently), and on 18-19 Oct the
+intermediates were revoked and blocked by the root programs. A Sonos firmware
+bundle has no CRL and does not consume OneCRL/CRLSet, so on 57.23 and 86.10 the
+compromised intermediates are still trusted.
+
+The recovered private key for **`EM DV TLS CA - G3B`** is published
+(`github.com/Fluepke/emudrahahahahaha`; the scalar is almost all zero bytes) together
+with its certificate. With it, a forged leaf verifies cleanly against the root
+extracted from the device's *own* bundle:
+
+```
+openssl verify -CAfile emroot.pem -untrusted chain2.pem \
+    -untrusted 'EM-DV-TLS-CA-G3B.crt.pem' leaf.pem   ->  leaf.pem: OK
+```
+
+So an assertion can now be signed by a leaf the device cannot distinguish from
+Sonos's own. What the token validator wants is visible in the binary: the
+assertion parser registers exactly `jti`, `iss`, `sub`, `aud`, `iat`, `exp`,
+`systemId`, `riat`, `rexp`, `scp` (`FUN_00605084`, names at `0x6aff9c…`), i.e.
+an OAuth-style device token with a scope list and refresh window. RS256 (RSA
+leaf signed by the EC intermediate) and ES256 (EC leaf) are both accepted by
+`openssl`; the daemon answers 401 to both with the `jwt-bearer` grant, so the
+remaining unknown is the *claim content/issuer* the validator compares against,
+not the chain. Kit and mint script: `captures/research/emudhra/`
+(`mint_jwt.py`), key material stays under the ignored `captures/`.
+
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
 
 NVD: "In certain Sonos products before S1 11.12 and S2 15.9 … a failure to
