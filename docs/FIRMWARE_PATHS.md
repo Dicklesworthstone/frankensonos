@@ -1635,7 +1635,7 @@ The reachable reboot lever is the updater, driven over `:1443`:
    `v1.api.smartspeaker.audio`, frame
    `[{"namespace":"upnpZoneGroupTopology","command":"call","householdId":…,"playerId":…},{"method":"BeginSoftwareUpdate","input":[{"name":"UpdateURL","value":…}, {"name":"Flags","value":"0"}]}]`.
    `result:0` comes back and the unit fetches the image.
-3. **`Flags` must be `0` and `ExtraOptions` omitted.** With `Flags=1` plus an empty
+3. **`Flags` is not critical** (0 and 1 both worked); the first attempt failed only because nothing was fetched within the observation window. Keep `Flags=0`. With `Flags=1` plus an empty
    `ExtraOptions` the call also answers `0`, but nothing is fetched and nothing
    reboots. With `Flags=0` the download starts within seconds (`ESTABLISHED` to the
    server, 5.6 MB image).
@@ -1718,3 +1718,33 @@ rejects, rather than 403), so this path is drivable from the LAN. Getting past t
 — the next step is to recover the accepted shape from the handler (`0x41ad84`),
 not to guess. `AccountType`/`AccountToken`/`AccountKey`/`OAuthDeviceID`/
 `AuthorizationCode`/`RedirectURI` are the six arguments.
+
+### `/notify`: the fault is a missing read-terminator, not a crash
+
+A clean, freshly booted 57.23 (`.185` after the recovery in the previous section)
+re-runs the matrix: `NOTIFY` empty → 400 alive, `NOTIFY` 2 KiB plain → 400 alive,
+`NOTIFY` 2 KiB propertyset → 400 alive, `POST` propertyset → 405 alive, 256 KiB
+`POST` → no response but the port keeps serving. So nothing *crashes*; requests
+that carry a body can **hang the worker**.
+
+The reader stops only on a short `read()`. It never consults `Content-Length`, and
+a `0`-byte read (client half-close) does not end the loop either, so a request whose
+body is delivered in full-size fragments loops and then blocks after the client's
+last byte; the connection stays open and the handling thread is gone for good.
+
+Measured on the clean unit with plain bodies:
+
+| body | result |
+|---|---|
+| 1 000–2 500 B | 405 (fast) |
+| 3 072 B, 4 096 B, 5 120 B, 6 000 B, 20 000 B, 64 KiB, 256 KiB | usually no response |
+| same 20 000 B at `--limit-rate 1k` (1 KiB fragments) | 405 — a short first read stops the loop |
+| same 20 000 B at `--limit-rate 4k` (4 KiB fragments) | no response |
+
+The threshold is not crisp because it depends on how the bytes arrive, which is what
+the fragment test shows: the buffer is a couple of KiB, and any body that is
+delivered in full-buffer reads hangs. Concurrency then does the rest: 40 parallel
+`POST /notify` with 256 KiB took ordinary `GET /status/VERSION` down from 10/10 to
+4/12 and then 0/12; the port reopened as the hung sockets were reaped, but a thread
+that loops on a closed socket stays blocked. That is the mechanism behind the
+30-minute outages, and why only a restart (device reboot) clears it.
