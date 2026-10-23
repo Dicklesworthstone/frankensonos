@@ -1412,6 +1412,48 @@ jumps to `LAB_00603c94` and skips the inspector entirely — every current token
 and never reaching `hhid`. Second, the inspector logs at level 7/6 under `muse_token_inspector` and
 the message strings are known, so reading the log is worth more than another claim permutation.
 
+### The claim schema is in the binary, and the WS command channel is a parameter oracle
+
+The parser's claim-name block sits at `0x6aff9a` and, in order, is:
+
+```
+jti  iss  sub  aud  iat  exp  systemId  riat  rexp  pinEpoch  accessPolicy  route  protocolVersion
+```
+
+`FUN_00603aac` is a rapidjson `ReaderHandler` that fills a 232-byte claims struct (`auStack_120`) at
+`FUN_00605940`; the inspector then reads fields of that struct — `exp` as a flag at `+0x64` over an
+`int64` at `+0x68` ("missing"/"invalid" codes 5), an optional string at `+0xa4`/`+0xa8`, and the
+claim at `+0x20`, which is rendered and compared against `*(param_3 + 8)` (the device's own id, code 6
+"not minted by this device"). With `+0x20` landing on `iss` under a 32-byte stride hypothesis,
+`iss` = the device's own id and `hhid` = the fingerprint over it; nine value combinations were sent
+(`iss`/`sub`/`route`/`luid`/`owner` = the UDN, `hhid` as `{owner{luid<UDN>}hhid<HH>network_hash<…>}`
+with the network hash empty/UDN/household) — all still `invalid_token`.
+
+Also recorded: the result-code to reason mapping lives as strings `MALFORMED`, `REVOKED`, `HOUSEHOLD`,
+`INVALID_REQUESTED_VALUE`, `NOT_MINTED_THIS_DEVICE` at `0x6afa58`, and the class vtable is `0x6afab0`
+(slot 2 = `0x603b69`), referenced only from the descriptor table at `0x4d8dec`.
+
+**The WS commander works once the frame is split correctly** — the WebSocket command channel gives
+the parameter diagnostics that REST flattens into a blanket error. `[header, payload]` with
+`playerId` **in the header** and the UDN as its value:
+
+```
+[{"namespace":"authorization","command":"authorizeDevice","householdId":"Sonos_…","playerId":"RINCON_…01400"},
+ {"assertion":"<jwt>","grantType":"urn:ietf:params:oauth:grant-type:jwt-bearer"}]
+```
+
+gives `ERROR_MISSING_PARAMETERS: Missing playerId` for a payload-side `playerId` or the locationId,
+`ERROR_INVALID_PARAMETER: playerId` when a locationId is used in the header, and only then
+`ERROR_NOT_AUTHORIZED: Unauthorized.` — i.e. the same wall as REST, reached deliberately.
+`resolveToken` on the same channel answers `success:true` with `statusReason: UNKNOWN` for every
+claim variant (empty, `sub`, `owner`, `luid`, `hhid`, far-future `exp`), so it does not expose the
+inspector's code either.
+
+Live identifiers on `.4.81` (household `Sonos_wI8BAkz9WLbe5jdUaRXQSQMJW8.T7aLjgf696_0Ij2e5ZDB`,
+location `lc_3ee386abdf5745068202801414f1a14a`, UDN `RINCON_000E58CADE9401400`) differ from the older
+`Sonos_qN6HO…` value used in earlier probes — **re-read `/status/zp` before minting**, and note the
+household id carries a `.` and a long suffix.
+
 Committed at `90d2155`; doc and mail carry the same stopping point.
 
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
