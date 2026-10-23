@@ -1270,8 +1270,12 @@ to a trusted device identity, then compares a `%llu` of the expiration with
 for every `iss`/`sub`/`objectType`/`scope` variant tried, and the daemon writes
 no readable log (`/status/tmp/*` serves only known files), so the oracle is the
 Bearer path plus the result code in the debugger-free code above. The next step
-is the `iss` normaliser: what `FUN_00601ffc` strips/expects decides the exact
-issuer string, and that is a three-line read rather than a guess.
+is the compare target, not the normaliser: `FUN_00601ffc` is a one-instruction
+wrapper over `FUN_005f7210` (an empty tag string), so `iss` is not reformatted at
+all, and the value it is compared to is `param_3+8` — reader state from
+`FUN_00603aac`, the streaming reader that parses the assertion. So the expected
+issuer is built from the token/payload context rather than being a constant, and
+that reader is where to read next (the compare site is `0x603cf8`).
 
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
 
