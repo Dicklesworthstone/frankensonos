@@ -50,6 +50,14 @@ are written as `192.168.4.x`-style placeholders and uuids as `RINCON_…`.
   expansion accepted with `200` proves no amplification limit (pre-2.4.9)
   without trusting a string; the compiled `expat_2.2.0` marker only confirms
   the base image.
+- **A binary that computes `gp` is relocated: apply a load bias before
+  trusting vaddrs.** `bin/upgrade` opens with `bltzal`/`lui gp,0xfc1` and
+  every data access is `lw ...,off(gp)`. Hunting string xrefs by
+  `lui`+`addiu` at the ELF vaddr finds nothing, because the runtime address
+  is base+offset with a base the linker sets at load. Read the prologue,
+  derive the base, then search; a literal-address search on such a file is a
+  guaranteed false negative, not evidence of absence.
+
 - **Component presence first.** Fresh NVD hits are worthless without the
   component: no CIFS/SMB client, no use of pupnp, and `0` bytes on a TLS
   port was read as "no TLS client" — wrongly: the fetcher *does* speak
