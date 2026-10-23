@@ -512,6 +512,12 @@ how a local client obtains a scoped token without the cloud.
    24 up it is stable. Destination is `ring+8-capacity*0xc50`, so `capacity = (8-T)/0xc50` lands the
    copy on a chosen parent offset `T` — length is a coarse index into the parent, 16–20 is the
    "make it die" setting and >=24 is the working-parity setting.
+   Honest correction to "survived": **the survivor lengths do not play, they wedge.** With
+   RelTime as the oracle (liveness alone was misleading), C=24 and C=40 both go TRANSITIONING ->
+   STOPPED within ~10 s and sit at 0:00:00 while HTTP stays up. Real behaviour of an advancing
+   window is: any length kills playback within a few seconds; 16–20 additionally kills the
+   daemon; >=24 keeps the daemon alive with playback wedged. A fixed (non-advancing) window still
+   plays, so it is the append/compaction path, not HLS itself.
    Length map measured (25 s each, only the name length changed): 5 -> 0.83 s, 16 -> 17.9 s,
    20 -> 11.9 s, and 24/28/32/40/64/128 all survived. Fatal band is **16–20 characters**; from 24
    up it is stable. Destination is `ring+8-capacity*0xc50`, so `capacity = (8-T)/0xc50` lands the
