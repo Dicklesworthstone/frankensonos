@@ -424,7 +424,14 @@ how a local client obtains a scoped token without the cloud.
    at `obj+8`, so `limit-head == 17` — which is just the first append after the
    split/reset, since that path sets `head = limit = 16` and head then wraps to 0 —
    copies `0x81d0` bytes to `obj-0xc48`, i.e. **into the heap chunk header and the
-   preceding allocation**. Content copied is our own segment records.
+   preceding allocation**. Content copied is our own segment records, so the overflow
+   length is chosen by the playlist: a window that adds 40 new segments per reload kills
+   in ~10 s and then self-sustains a ~20 s crash/restart loop.
+   Invocation details the harness needs: the path is `/MediaRenderer/AVTransport/Control`
+   (the short `/AVTransport/Control` answers 405) and `SetAVTransportURI` needs DIDL
+   metadata — empty returns 500, an `audioBroadcast` item carrying the `hls-radio://` res
+   is accepted. Live-window server: `captures/research/hlssrv.py` (any `*.m3u8` yields the
+   next 40-segment window, any `*.ts` a fixed sample packet).
    Payload primitives for the day a smash lands: 34.16 `execve` gadget
    `0x4f4178` (`a0=*s1`, `a1=argv`, `a2=environ`, needs `s1`), and 86.10
    `0x656a86` (`a1` alone drives both, path via `*a1`). **Neither is the live
