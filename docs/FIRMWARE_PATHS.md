@@ -741,6 +741,17 @@ still parses (412 on grammar) while 2050 answers **413** and the daemon stays he
 and with two callbacks only the **first** ever receives NOTIFY. A subscription also leaks
 `BootSeq` and each member's `ZoneName`/`ChannelMapSet` in the ZoneGroupState property.
 
+**`CreateAlarm` never gets past 402.** `ListAlarms` answers pre-auth and shows an
+empty list, but `CreateAlarm` faults 402 for every shape tried: empty
+`<DIDL-Lite/>`, a DIDL in the public UPnP form, the Sonos form with
+`xmlns:r`/`r:streamContent`, `Recurrence` `DAILY`/`ONCE`/`WEEKDAYS`,
+`Enabled` 0/1, `StartTime` with and without seconds and as ISO, a wrong
+`RoomUUID`, and past times. The fault is immediate in every case and does not
+discriminate, so it is not ordinary argument validation — 402 is also what this
+service uses when it cannot reach its store, and the store is the fixed
+`/jffs/settings/alarmclock.xml`. Persistence target is fixed either way, so no
+path control.
+
 **`SetString` is not the settings table.** `key=ZoneName` answers 200 but the room does
 not rename; `key=BootSeq` answers 200 and `BootSeq` in the group state stays 67; `key=VERSION`
 answers 200 and the reported build is unchanged. All are just kv entries in the
