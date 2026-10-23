@@ -1014,3 +1014,35 @@ SSDP and audio continue. A later size sweep measured the threshold. This is a
 one-request, pre-auth DoS from the GENA sink reader; it is the strongest
 blocking surface found so far, ahead of the multi-thousand-request
 `/diaglevel` flood.
+
+### Correction: an install wipes `/jffs`, so the earlier Configure.dev test was confounded
+
+The 57.23 preinstall script (decrypted with the model-12 key) does this in its
+`umountjffs` phase:
+
+```sh
+rm -rf /tmp/jffs; mkdir /tmp/jffs
+cp /jffs/localsettings.txt /tmp/jffs
+cp /jffs/wifi.txt /tmp/jffs
+cp /jffs/netsettings.txt /tmp/jffs
+cp /jffs/onlineupdate-inprogress.txt /tmp/jffs
+cp /jffs/irconfig.txt /tmp/jffs
+umount /jffs
+```
+
+`/jffs` is then re-formatted and only those five files are copied back. So:
+
+- **anything else put in `/jffs` — including `/jffs/system/Configure.dev` and
+  `/jffs/Configure` — is destroyed by every update.** H12 only holds until the
+  next install, and a test that sets the file and then reboots *by installing*
+  measures nothing.
+- the preserved set is the only place a pre-install persistent write could
+  survive an update (`netsettings.txt`/`wifi.txt` are parsed by `netstartd`, the
+  rest are plain settings).
+- `/jffs/Configure` is `exec`'d by `/wifi/Configure`, so it would need the
+  executable bit; `/jffs/system/Configure.dev` is `sh`'d, so mode `0644` is fine.
+  A settings-store write would not carry a mode, which favours `Configure.dev`.
+
+A non-OTA reboot is therefore required to test either path. `management/reboot`
+is 403 pre-auth and `/reboot` is 403 while locked, so the practical reboot is the
+watchdog, a crash, or leaving the device alone until it reboots itself.
