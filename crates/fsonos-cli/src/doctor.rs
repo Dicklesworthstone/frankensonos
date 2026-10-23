@@ -46,6 +46,7 @@ pub mod selftest_last;
 pub mod service;
 pub mod sign_in;
 pub mod tailscale;
+pub mod warnings;
 
 /// `fsonos doctor` arguments.
 #[derive(Debug, Clone, clap::Args)]
@@ -380,6 +381,9 @@ pub fn register(runner: &mut Runner, serve: &ServeArgs, data_dir: &Path) {
         tailnet: Box::new(move || config::own_tailnet_addrs(&settings.tailnet())),
     });
     runner.register(HealthCheck {
+        http: serve.http_local(),
+    });
+    runner.register(warnings::WarningsCheck {
         http: serve.http_local(),
     });
     runner.register(TasteScopesCheck {

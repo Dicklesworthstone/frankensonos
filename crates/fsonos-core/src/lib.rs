@@ -59,6 +59,7 @@ pub mod sleep;
 pub mod snapshot;
 pub mod store;
 pub mod topology;
+pub mod warnings;
 
 pub use rooms::{ControlTarget, known_rooms, resolve_room};
 pub use topology::Room;

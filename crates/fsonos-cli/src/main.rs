@@ -64,6 +64,7 @@ mod sim;
 mod spotify_app;
 mod streaming;
 mod tailscale_cmd;
+mod warning_counts;
 
 use anyhow::Context as _;
 use asupersync::runtime::{Runtime, RuntimeBuilder, reactor::create_reactor};
@@ -453,14 +454,19 @@ fn log_spec(rust_log: Option<String>) -> String {
 /// Exit codes follow `docs/ERRORS.md`: a [`Failure`] exits with its code's
 /// number (2 usage, 3 not found, 4 unreachable, 5 policy), anything else 1.
 fn main() -> ExitCode {
-    // Logs go to stderr: stdout carries the MCP stdio protocol.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_new(log_spec(std::env::var("RUST_LOG").ok()))
-                .unwrap_or_else(|_| "info,fsqlite=error".into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    // Logs go to stderr: stdout carries the MCP stdio protocol. Warnings
+    // are also counted by kind, for /health and doctor (co55.7).
+    {
+        use tracing_subscriber::prelude::*;
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::EnvFilter::try_new(log_spec(std::env::var("RUST_LOG").ok()))
+                    .unwrap_or_else(|_| "info,fsqlite=error".into()),
+            )
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+            .with(warning_counts::Counting)
+            .init();
+    }
 
     let cli = Cli::parse();
     if let Command::Doctor(args) = &cli.command {

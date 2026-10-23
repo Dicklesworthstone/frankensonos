@@ -790,8 +790,27 @@ fn health(data_dir: Option<&std::path::Path>, live: Option<crate::LiveHealth>) -
             failures: fault.count,
             last_secs_ago: fault.ago.as_secs(),
         }),
+        warnings: storming(),
     };
     Response::json(&body).expect("HealthDto serializes")
+}
+
+/// The daemon's storming warnings, when any is (`/health`'s `warnings`).
+fn storming() -> Option<crate::WarningsHealth> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let storming: Vec<crate::StormHealth> = fsonos_core::warnings::storms(now)
+        .into_iter()
+        .map(|storm| crate::StormHealth {
+            kind: storm.kind,
+            level: if storm.error { "error" } else { "warn" }.into(),
+            sample: storm.sample,
+            last_hour: storm.last_hour,
+            threshold: storm.threshold,
+        })
+        .collect();
+    (!storming.is_empty()).then_some(crate::WarningsHealth { storming })
 }
 
 fn json_text(text: &str) -> Response {

@@ -92,6 +92,33 @@ pub struct HealthDto {
     /// undoable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<StoreHealth>,
+    /// The daemon's own warnings that are storming (co55.7): one kind logged
+    /// far more often than usual in the last hour. Absent while none is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<WarningsHealth>,
+}
+
+/// The kinds of warning storming in the daemon, in `GET /health` (`fsonos
+/// doctor` judges them as `daemon.warnings`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WarningsHealth {
+    pub storming: Vec<StormHealth>,
+}
+
+/// One kind of warning storming in the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StormHealth {
+    /// Where it is logged (`target@file:line`), never its field values.
+    pub kind: String,
+    /// `warn` or `error`.
+    pub level: String,
+    /// Its message, every word holding a digit masked as `N`.
+    pub sample: String,
+    /// How many in the last hour.
+    pub last_hour: u32,
+    /// How many make a storm for it: at least 20, or ten times its usual
+    /// hour.
+    pub threshold: u32,
 }
 
 /// The store's failures, in `GET /health` (vg3s.8; `fsonos doctor` fails
