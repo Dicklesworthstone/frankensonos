@@ -109,7 +109,7 @@ fn seed(s: &mut Scenario) {
             apply_library_read(&mut store, &library()).map_err(|e| e.to_string())
         });
     let moods =
-        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"23:59\"\nmood = \"bright\"\n";
+        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"24:00\"\nmood = \"bright\"\n";
     let wrote = std::fs::write(s.dir().join("data").join("moods.toml"), moods);
     s.check(
         "library",

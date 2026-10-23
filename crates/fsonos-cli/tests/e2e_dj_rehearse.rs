@@ -74,7 +74,7 @@ fn seed(s: &mut Scenario) {
         format!("{seeded:?}"),
     );
     let moods =
-        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"23:59\"\nmood = \"bright\"\n";
+        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"24:00\"\nmood = \"bright\"\n";
     let wrote = std::fs::write(s.dir().join("data").join("moods.toml"), moods);
     s.check(
         "moods-file",

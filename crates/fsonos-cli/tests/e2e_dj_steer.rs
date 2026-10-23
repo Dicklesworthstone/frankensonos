@@ -73,7 +73,7 @@ fn seed(s: &mut Scenario) {
         format!("{seeded:?}"),
     );
     let moods =
-        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"23:59\"\nmood = \"bright\"\n";
+        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"24:00\"\nmood = \"bright\"\n";
     let wrote = std::fs::write(s.dir().join("data").join("moods.toml"), moods);
     s.check(
         "moods-file",
@@ -418,7 +418,7 @@ fn check_cli(s: &mut Scenario, api: &str) {
         "fsonos dj moods marks the mood playing now and lists the program",
         run.code == Some(0)
             && run.stdout.contains("* bright")
-            && run.stdout.contains("00:00–23:59  bright")
+            && run.stdout.contains("00:00–24:00  bright")
             && run
                 .stdout
                 .contains("Now: the time-of-day program: bright mood"),

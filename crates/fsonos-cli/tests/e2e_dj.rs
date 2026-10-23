@@ -392,7 +392,7 @@ fn seed(s: &mut Scenario) {
     // One all-day program, so the pick does not depend on when this runs
     // (a moods.toml's programs replace the built-in ones).
     let moods =
-        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"23:59\"\nmood = \"bright\"\n";
+        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"24:00\"\nmood = \"bright\"\n";
     let wrote = std::fs::write(s.dir().join("data").join("moods.toml"), moods);
     s.check(
         "moods",
