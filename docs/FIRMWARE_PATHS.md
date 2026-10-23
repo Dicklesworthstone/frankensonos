@@ -2435,3 +2435,19 @@ not strings), which matches the earlier finding that action and argument names a
 assembled rather than stored as literals — the handler walks a shared table by index.
 So the remaining unknown is the *table order and keys*, and the way to read it is the
 table itself (or the controller's call), not more values.
+
+### `AddAccountX` takes long values and stays healthy
+
+On a unit with no prior account (`.137`, first ever add):
+`AddAccountX(AccountType=2311, AccountID="1", AccountPassword="p", AccountUDN="U"×200)`
+→ **200**, player healthy. Repeating with a **2000**-character UDN → 200 again,
+healthy, and the same id "1" was accepted both times even with a different UDN.
+
+So `AccountUDN` is accepted at the two-kilobyte class the handler's capacities
+imply, and nothing in that call path overflows: either the copy is not in
+`AddAccountX` (it belongs to the OAuth sibling, per the caller strings) or its
+destination is far larger than the ~16-byte field is. Long values alone are not
+enough — the OAuth action has to be made to accept its parameters first.
+
+That closes the value-side experiments on the account path. Everything now points at
+one artefact: the parameter table the OAuth handler walks, or a real call to it.
