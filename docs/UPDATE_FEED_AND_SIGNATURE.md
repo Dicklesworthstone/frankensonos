@@ -550,6 +550,31 @@ are fine, the unresolved 20-byte **name** is what fails. It is identical
 across the model-5 and model-9 packages, is not in either bundle nor the
 fallback bundle, and matches no cert, SPKI, subject or modulus hash tried.
 
+## The pinned identities are compiled into `libsonoscrypto`
+
+`ZZ0039`'s "store" is a static two-entry table in `libsonoscrypto.so.3` at
+`.data.rel.ro` `0x1fd80`, stride `0x20`, entry shape `u8 keytype | char
+name[20] | padding`:
+
+```
+1fd80: 01 28a096f5f6f5578345d1e892dfb2f09ce99f1ad3
+1fda0: 00 b2927a288387da8b008ce7f4fbb6aecbefd97098
+```
+
+`b292…` is exactly the type-17 name of both the model-5 and model-9
+packages, and `01` is the RSA keytype, so these are the only signer
+identities the updater will ever accept. That is the hard answer to "does the
+eMudhra compromise give firmware replacement": only if one of these two
+identities can be made to resolve to a key we hold. The name is a constant we
+can now write verbatim, so the open question has narrowed to what the
+verifier builds the pk *from* for a given name — the bundle cert if any, or
+nothing at all.
+
+Also measured: a full 34.16 package (2 097 157 B, unsigned structure or
+pristine) is read to the last byte over Apache and still does not install, so
+the old line has its own gate too; the 128 KiB truncation is a Python-server
+artefact only.
+
 ## Next
 
 1. **Identify the post-download gate.** Delivery is proven (edited manifest
