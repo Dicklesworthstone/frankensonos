@@ -881,7 +881,11 @@ not memory state; `SetLEDState` / `SetButtonLockState` answer the same way and
 `RemoveBondedZones`, `CreateStereoPair` and `SeparateStereoPair`, `SetAutoplayVolume`,
 `SetAutoplayLinkedZones`, `SetAutoplayRoomUUID`, `SetUseAutoplayVolume` and
 `AddHTSatellite`, all unauthenticated — so pairing/bonding topology can be changed by
-anyone on the LAN. (The `:1443` proxy answers 402 for these only because its own
+anyone on the LAN. Verified end to end on a live stereo pair: `SeparateStereoPair`
+with the pair's own `ChannelMapSet` splits it (both halves revert to "Unnamed Room")
+and `CreateStereoPair` with the same string re-bonds it, after which the old name has
+to be set again — separation drops it. Zone names up to 4096 characters are accepted
+without a restart. (The `:1443` proxy answers 402 for these only because its own
 argument plumbing is broken; 1400 direct works.) `GetString`/`SetString` are not in
 the SCPD at all, which is why the SOAP read of the kv store 401s. A write to an *existing* key also did not
 wedge the unit — the ~80 s outage is specific to creating a new key.
