@@ -367,6 +367,35 @@ before a script of ours can run, because the AES key must be RSA-OAEP wrapped
 to it. The Playbar package only exercises the parser, the policy checks and
 the rollback path on this hardware.
 
+## Reaching real packages and the app handshake
+
+The legacy update feed is directly usable. `GET
+http://update.sonos.com/firmware/latest/default-1-1.ups?cbld=&cmaj=&cmin=&...`
+returns a 790-byte `.ups` manifest whose type-7 record holds a URL template
+with `^` where the device suffix goes:
+
+```
+http://update-firmware.sonos.com/firmware/Prod/57.23-74170-v11.16.1-DILU1Q33hC-GA-1/^57.23-74170
+```
+
+so `.../57.23-74170-1-5.upd` (Play:5) and `...-1-8.upd` (Play:1) both fetch
+(2.2 MB / 9.1 MB, model word 5 and 8 respectively). The type-14 record
+carries a newer `.upm` manifest; for models 5 and 8 it only offers 34.16, so
+the 57.23 line has no newer build for them and a same-version package is a
+noop ("All checks passed; exiting early due to noop mode").
+
+The updater's last phase is an **app handshake**, not a background install:
+`upgrade` binds `0.0.0.0:4444` (listener at `0x10008270`, `li r5,4444`) and
+`accept`s with a 15 s timeout while logging "waiting for connection from
+HH". Port scans during an attempt never saw 4444 open, so none of the
+attempts reached that phase.
+
+A forged type-22 header (DigestInfo signature over `SHA-256(bundle)`, fresh
+20-byte name) fails even on a **matching** model: the signature mechanics
+are fine, the unresolved 20-byte **name** is what fails. It is identical
+across the model-5 and model-9 packages, is not in either bundle nor the
+fallback bundle, and matches no cert, SPKI, subject or modulus hash tried.
+
 ## Next
 
 1. **Finish the DNS-offset install.** Keep the signed manifest untouched;
