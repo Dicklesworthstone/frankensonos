@@ -318,11 +318,15 @@ passthrough is *not* reachable this way: with the correct frame it answers
 stays the only working passthrough and its argument plumbing is still the
 blocker.
 
-**WS connect exhaustion.** ~40 connection cycles (each just a static-key
-handshake) leave the WS listener unable to complete a handshake for ~45 s while
-`/status/zp` keeps answering 200 the whole time — the daemon does not die, the
-listener stalls. Sequential one-at-a-time use is fine; it is a burst effect and
-worth knowing before blaming the API for timeouts. Bead `re-ws-exhaust`.
+**WS connect exhaustion, and it escalates to a restart.** A bare TLS+WS
+handshake is enough — no frame, no valid key value, just the static-key header.
+At 0.3 s spacing 9 of 12 attempts timed out from the second one on; at 1 s, 9 of
+12; at 2 s, 8 of 10, so spacing barely helps. HTTP stays up through the stall,
+then the daemon dies outright (HTTP 000) after roughly 25 attempts and the WS
+endpoint is still dead 60 s after HTTP comes back. Recovery is a watchdog
+restart, so this is the third cheap pre-auth kill on 86.10 alongside /setstring
+and HLS, and the cheapest (connect-and-drop). It also explains every "the API
+timed out" seen earlier in the session. Bead `re-ws-exhaust`.
 
 Generic UPnP passthrough is real but partial. `POST /api/v1/players/{id}/upnpDeviceProperties`
 and `.../upnpZoneGroupTopology` take `{"method":"<Action>","params":{…}}` and answer
