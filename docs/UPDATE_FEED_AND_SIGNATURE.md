@@ -389,7 +389,9 @@ the added types differ.
 the image over `https://` works once the server is forced down: OpenSSL 4.x
 has dropped TLS ≤1.1 and answers this client with a fatal `decode_error`
 alert in every configuration (that is what killed the earlier `tls443`
-services); `openssl@3` with `-tls1 -cipher 'ALL:@SECLEVEL=0'` completes the
+services). Forcing `-tls1` alone is also wrong: a TLS 1.2 client is then
+answered `fatal protocol_version` and `s_server` exits, so the version range
+has to stay open; `openssl@3` with `-tls1 -cipher 'ALL:@SECLEVEL=0'` completes the
 handshake, carries the request and the first ~24 KB, then the fetcher closes
 with `close_notify` exactly as it does over plain HTTP — the same early
 abort, not a new gate. A self-signed certificate is accepted, and nothing
