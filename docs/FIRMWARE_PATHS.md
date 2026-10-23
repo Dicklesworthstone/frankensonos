@@ -459,9 +459,13 @@ how a local client obtains a scoped token without the cloud.
    (7.2 s and 8.3 s, three and two deaths in 25 s), while 4, 8, 24 and 40 survived a 25 s
    window and 40 only died on a third run at 11.4 s. So the trigger is the ordinary forward
    append and a larger delta is not a larger copy — append+drain keeps `limit-head` small.
-   Ring geometry for the record: the composite init takes the parent and places the ring at
-   `parent+0xc508`, so `delta == 17` starts the copy at `parent-0x840` and covers the
-   parent's first `0x7990` bytes; the leading part of any such copy is out of the allocation.
+   Geometry, corrected (0xc50 stride, ring at `parent+0xc508`): `delta == 17` writes
+   `[parent+0xb8c0, parent+0x18a10)` — **inside the parent**, and it is the array's own
+   compaction shifted one entry too far. The 0xc50 bytes before the array cover the four
+   counters at `+0xc508/0xc50c/0xc510/0xc514`: they are overwritten with our segment bytes and
+   only `head` is restored afterwards, so after each compaction count/tail/limit are
+   attacker-chosen and then used as indices (`mulli …,0xc50`). That is a controlled write over
+   the queue control block, not a heap underrun.
    Invocation details the harness needs: the path is `/MediaRenderer/AVTransport/Control`
    (the short `/AVTransport/Control` answers 405) and `SetAVTransportURI` needs DIDL
    metadata — empty returns 500, an `audioBroadcast` item carrying the `hls-radio://` res
