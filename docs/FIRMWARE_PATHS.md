@@ -1586,3 +1586,24 @@ topology does not get its `LOCATION` read.
 Consequence for H4: triggering the device-description parser from a cold device
 needs a topology foothold first (household membership), not just a forged SSDP
 answer. That is the same wall as the mDNS negative.
+
+### There is a JSON settings writer, but it is behind the registration flow
+
+The 57.23 `anacapad` carries `handleRestrictedSettingsWrite`, which maintains
+`settings/netsettings.json` and `netsettings.json.tmp` and reports
+`json parse error %d, %s`; it sits next to the `device_account/registration`
+code (`regState`, `customerId`, `macAddr`). So the firmware does have a
+request-driven **file write** — just of a fixed name inside the settings
+directory, and reached from registration.
+
+Routes probed for it on a locked unit, all on :1400: `GET`/`POST`
+`/settings`, `/netsettings`, `/syssettings`, `/regcert`,
+`/settings/netsettings.json`. Every one answers 404 or 405; `/settings` is a
+consistent 405 for POST. So none of them writes anything while the unit is
+locked. (A run of `000`s during this looked like a crash but was the unit
+mid-auto-update — checked with a before/POST/after triplet, which gives
+200/405/200.)
+
+One more protocol note: this bench unit keeps *landing back* on `57.22-67080`
+after every deliberate `57.23` push. The cloud offers an update it accepts each
+boot; expect the version to revert and re-check before measuring.
