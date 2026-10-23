@@ -2714,3 +2714,23 @@ rejection is *not* documented constraint either — the per-parameter validators
 (`0x4bdccc` onwards, one `li a1,402` each) fail on something the SCPD does not
 describe. The next step is to walk those validator cases in order and see which one
 returns zero first, rather than trying more content.
+
+### 86.10 daemon in the guest: reaches settings init, needs real `/jffs`
+
+The 86.10 rootfs section decrypts with the model-12 key and unpacks as squashfs
+(`unsquashfs`), and the daemon starts under the guest loader with its own libs once
+**libflash's `MEMGETINFO` constant is patched to `0x40204d01`** (MIPS16 literal at
+file `0x15f8`, halfword `4024` → `4020`; stock `mtd.ko` accepts that value, a patched
+`mtd.ko` carrying `0x4024` does not). Without the patch it aborts with `SIGIOT` on
+`ENOTTY`, exactly like 57.23.
+
+With the patch it gets past flash init and dies later at **`0x4a801c`**
+(`lw a0,0(v0)` after `lw v0,448(s0)`, i.e. a null chain) once it starts reading the
+settings/schema objects. It also logs `dnssd_clientstub … /var/run/mdnsd` (no mDNS
+socket in the guest). Seeding an empty `/jffs/localsettings.txt` /
+`syssettings.xml` and mounting tmpfs on `/jffs` does not clear it, so the null is in
+the schema data, not the two files.
+
+That is the state to resume from for running the 86.10 token path locally: the
+binary, its libs and its config are staged at `/opt/s86` in the guest, paths linked
+from `/opt/{bin,lib,conf,htdocs}`, and the flash ABI is the only patch applied.
