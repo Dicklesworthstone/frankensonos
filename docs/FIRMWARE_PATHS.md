@@ -212,8 +212,11 @@ better map of the *legacy* source shape, but its addresses do not transfer.
   (with `..`/`\\` depth check): every copy has an instruction-level bound.
 - SOAP/XML args: per-field `strlcpy` with literal pitch, width-limited
   `sscanf`, `__memcpy_chk` 1023→1024; `RupnpParseNextCsvValue` and
-  `RparseUrlEncodedValue` gate on capacity before each store. Live: a DIDL
-  `dc:title` of 60 KB through 2.5 MB, 400 KB of escaped DIDL, and a 4.5 MB
+  `RparseUrlEncodedValue` gate on capacity before each store. `utf8strncpy`
+  reserves its last byte for the terminator and its truncation path writes the
+  replacement length exactly at `dst+cap-1`, so it does not creep into the next
+  field. Live: a DIDL `dc:title` of 60 KB through 2.5 MB, 400 KB of escaped
+  DIDL, 2k-50k sibling properties, 20k `<res>` elements and a 4.5 MB
   20 000-item document are all accepted without a restart.
 - `/devmode` and `/devunlock`: verify-then-store with exact-fit record loops;
   decoded statement/confirm paths are capacity-checked at each stage.
