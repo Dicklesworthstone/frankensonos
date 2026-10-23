@@ -284,8 +284,11 @@ fn seed(s: &mut Scenario) {
         .and_then(|mut store| {
             apply_library_read(&mut store, &library()).map_err(|e| e.to_string())
         });
+    // Bright until 23:59, so the program changes once a day: a mood a
+    // schedule starts the DJ in lasts until then (check_mood_expires). The
+    // scenario runs on its own clock file, so that minute is not a hazard.
     let moods =
-        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"24:00\"\nmood = \"bright\"\n";
+        "[[programs]]\ndays = \"daily\"\nfrom = \"00:00\"\nto = \"23:59\"\nmood = \"bright\"\n";
     let wrote = std::fs::write(data.join("moods.toml"), moods);
     s.check(
         "library",
