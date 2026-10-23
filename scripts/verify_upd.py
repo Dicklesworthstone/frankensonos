@@ -8,7 +8,7 @@ Checks, in order:
   4. the type-17 signature against the keyring in a libsonoscrypto.so.1
 
 Usage:
-  verify_upd.py PKG [--lib PATH]
+  verify_upd.py PKG [--lib PATH] [--digests-only]
 
 Exit 0 only when every check passes. The signature is checked with every
 2048-bit SPKI found at the keyring offsets; success names the key index.
@@ -47,6 +47,7 @@ def main():
         sys.exit(__doc__)
     path = sys.argv[1]
     lib = "/tmp/sq57x/lib/libsonoscrypto.so.1"
+    digests_only = "--digests-only" in sys.argv
     if "--lib" in sys.argv:
         lib = sys.argv[sys.argv.index("--lib") + 1]
     d = open(path, "rb").read()
@@ -99,8 +100,11 @@ def main():
             if check(i, k.name):
                 signed_by = i
                 break
-    print("type-17 signature   :", ("ok (key #%d)" % signed_by) if signed_by else "MISMATCH")
-    ok &= signed_by is not None
+    if digests_only:
+        print("type-17 signature   : skipped")
+    else:
+        print("type-17 signature   :", ("ok (key #%d)" % signed_by) if signed_by else "MISMATCH")
+        ok &= signed_by is not None
 
     print("verdict             :", "PASS" if ok else "FAIL")
     return 0 if ok else 1
