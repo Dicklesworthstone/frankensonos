@@ -959,7 +959,24 @@ file is fetched once, and the daemon drops ~3 s later — the deferred shutdown 
 `/etc/runanacapa` does get to run and no box reboot is involved. But `/status/tmp/upgrade.log` (the
 redirect target it uses) and `/jffs/upgrade_sys_report.log` both stay **empty**, which means the
 `[ -f /var/run/upgradeinfo ]` guard is false: `upgradeinfo` is still never written and `/bin/upgrade`
-never starts. `CheckForUpdate` alone causes no drop and adds nothing when paired. So the whole update
+
+
+**The writer's mechanism, read (57.23 `0x1029c34c`).** It is a periodic worker: `gettimeofday`, a
+10 000-unit delta, then a call to a predicate at `0x102c691c` that performs a **synchronous HTTPS
+settings query**. Only if that predicate returns non-zero does it `snprintf` `"%s/%s"` of
+`"/var/run"` + `"upgradeinfo"` and `fopen(..., "a")` — the file is *created* at open — and a second
+site later re-opens the same path with `"w"` and writes the body. Content is gated on two bools
+(`lbz 0x15e(r1)`, `lwz 0x118(r1)`); when they are false the file is still created and only the body
+is skipped. `runanacapa` tests existence, so the predicate is the whole gate.
+
+**Consequence, and it is the useful part:** the trigger is the **cloud's answer**, not the local
+call. `CheckForUpdate` runs the same query and the cloud answers "same build" or "an upgrade you
+already have", so `minVersion` never yields a downgrade record. Feed the daemon an answer that
+carries one and the file appears — which is where the eMudhra forgery stops being only an auth
+story: the query is HTTPS to a Sonos host and the trust store is the public bundle we can already
+sign against, so a DNS redirect plus a forged leaf is a complete path to the writer. Order matters:
+the file must exist *before* `BeginSoftwareUpdate` triggers `runanacapa`, and `/var/run` is tmpfs,
+so it has to happen in the same boot. causes no drop and adds nothing when paired. So the whole update
 path is one missing write away — whoever writes `/var/run/upgradeinfo` (`FUN_1029c34c`, after the
 cloud settings fetch) is the single target.
 
