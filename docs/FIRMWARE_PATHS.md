@@ -480,6 +480,16 @@ the threshold is not stable — treat it as "a few thousand". Reproduction:
 unique `module`). It is a DoS, not yet a controlled write: the name is copied by
 `strcpy` into an exact-size allocation and the insert path is bounded.
 
+**Boot-slot fallback, seen on the bench.** During the restart series from the flood
+above, the unit came up on `57.22-65130` (SoftwareDate 2025-05-13) and `/status/VERSION`
+served that for several minutes, then it returned to `57.23-74170` on its own; no flash
+was involved and ICMP was up throughout except during the actual reboots. So an S1
+player keeps the previous image in a second boot section and drops back to it when its
+boots keep failing. Two consequences: `/status/VERSION` is not a constant during a
+probe campaign (re-read it before comparing versions), and a *sustained* fallback would
+be a free downgrade to the previous build — here still above the SSA-2024-0002
+(`57.22-61162`) fix line, so it does not by itself reopen the 2025 bugs.
+
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
 month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
 CVE-2026-75093 (`from_raw_dt_align` buffer size) and CVE-2026-55832 (attacker-chosen
