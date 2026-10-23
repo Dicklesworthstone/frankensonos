@@ -1291,6 +1291,17 @@ plus a `strcmp` on the user string, so `hh-config-admin` covers both bits. The
 claim shape (CSV string or array) changes nothing yet because the token still
 fails earlier, in the `iss` compare.
 
+`iss` is the whole story on the claim side. The pre-gate is a `rfind` of
+`urn:dev:ops:44974-zp-` (`FUN_00520578`), so a token that does not start with
+that URN never reaches a claim check. Everything after it compares `iss` with a
+fingerprint the daemon composes itself as
+`{ owner { luid <luid> } hhid <hhid> network_hash <nh> }`, and **`<nh>` is
+computed locally** (`0x603940` → `0x51b9b4`), so a literal in the token can only
+match by reproducing it. Burnt shapes, all `401` with the resolver up: URN plus
+brace with and without a space, URN directly against the brace, RINCON in the
+`luid` slot, the brace alone, and the URN with a bare device id — the next read
+is `0x51b9b4`, the hash getter itself.
+
 Recorded separately: with the cloud unreachable every token — forged, real or
 garbage — returns 503, so a run of 503s says nothing about the token.
 
