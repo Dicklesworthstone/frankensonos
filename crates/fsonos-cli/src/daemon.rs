@@ -106,8 +106,12 @@ pub fn surface(global: &GlobalArgs, policy: Policy) -> Result<Surface, Failure> 
     let remembered = move || crate::known_players::remembered(data_dir.as_deref());
     let wait = global.wait();
     let survey: fsonos_api::surface::Survey = Box::new(move |transport| {
+        // Known players first, with no discovery window: a serve that already
+        // knows the house must answer at once instead of blocking on the SSDP
+        // wait while multicast is dead. With nothing remembered it falls back
+        // to the waited survey inside.
         let found =
-            fsonos_core::inventory::survey_or_remembered(transport, &seeds, &remembered, wait)?;
+            fsonos_core::inventory::survey_known_first(transport, &seeds, &remembered, wait)?;
         Ok(found.households)
     });
     Ok(
@@ -151,8 +155,12 @@ pub fn live_surface(
     // Right after a regroup the surface surveys directly; see
     // `fsonos_api::surface::SETTLE`.
     let survey: fsonos_api::surface::Survey = Box::new(move |transport| {
+        // Known players first, with no discovery window: a serve that already
+        // knows the house must answer at once instead of blocking on the SSDP
+        // wait while multicast is dead. With nothing remembered it falls back
+        // to the waited survey inside.
         let found =
-            fsonos_core::inventory::survey_or_remembered(transport, &seeds, &remembered, wait)?;
+            fsonos_core::inventory::survey_known_first(transport, &seeds, &remembered, wait)?;
         Ok(found.households)
     });
     let surface = Surface::new(
