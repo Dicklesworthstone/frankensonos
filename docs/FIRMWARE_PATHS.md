@@ -961,6 +961,33 @@ answer UPnP 402, including for `GetString`/`GetTransportInfo` which need
 exactly one argument. The passthrough is therefore a no-argument proxy today
 and is not a useful fuzzing surface for argument handling.
 
+## 2026-10-23: 86.10 differential — three unclamped copies the 57.23 build lacks
+
+86.10's daemon was extracted from the preserved `.upd` (model-12 key recovered from
+the plaintext 34.16-37101-1-12 updater, recipient `e35f7c21…`; the daemon itself
+ships as the 3.8 MB overlay component, SHA-256 `1b598f11…`, matching the rootfs's
+`anacapad.sha256`) and swept the same way: 981 stack-destination copies, 9 with a
+variable length. Seven are clamped; **three are not**, and all three are on the
+S2 device-registration / devmode path:
+
+- `FUN_004f38a0` (source file `dev_…`): `local_118[256]`, `memset(…,0xff)`, then
+  `memcpy(local_118 + (param_3 - uVar4), …, uVar4)` and the else branch
+  `memcpy(local_118 + (uVar4 - param_3), param_2, param_3)`. Nothing compares
+  `param_3` with 256 — the `max()` only feeds `*param_5`. If the caller-supplied
+  length (from the devmode/registration frame) exceeds 255, the copy runs past
+  the frame.
+- `FUN_004c0420` (register/signing key): zeroes 32 bytes at `obj+0x174`, then
+  `memcpy(obj+0x174, packet, len)` where `len` is a **big-endian u32 read straight
+  out of the packet** (`packet+0x20..0x23`) and is also stored as the field length.
+  A peer-supplied length above 32 overruns into the neighbouring member.
+- `FUN_004f9818`: `memcpy(dest, param_3, 0x14)` then
+  `memcpy(dest + 6, param_3[2], *param_3)` — `*param_3` is a count with no
+  comparison against the 0x14 record size minus the 6-byte header.
+
+86.10 is the S2 build, so these are not on the 57.23 S1 daemon at all. The first
+two need a peer that speaks the registration/devmode frames, which is the next
+piece of work. Sweep saved at `captures/research/ghidra-8610/sweep8610.txt`.
+
 ## 2026-10-23: stack-copy sweep triage (live 57.23 anacapad)
 
 The full-program copy sweep is 454 + 1789 sites. Of the 403 with a stack
