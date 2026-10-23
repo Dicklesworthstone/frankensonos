@@ -413,7 +413,12 @@ how a local client obtains a scoped token without the cloud.
    4 s). Recovery is automatic (watchdog) and quick, so it reads as a restart,
    not a wedge. `AFC=3, afelen=0xFF` segments crash *sooner* inside that window,
    which is why the first samples looked value-dependent. Beads
-   `re-afelen-live` / `re-hls-kill`. **It is not S1-only:** the same playlist on
+   `re-afelen-live` / `re-hls-kill`. It is **intermittent, not deterministic**:
+   identical `g2` replays killed 3 of 6 (down at 4 s, 12 s and 25 s) after an
+   earlier window gave 10/10 across the variant matrix; segment count does not
+   decide it (1-20 segments all crash sometimes and survive sometimes, and a
+   60 s watch on 8 segments saw it survive). Treat it as ~50 % per play with a
+   4-25 s fuse. **It is not S1-only:** the same playlist on
    86.10 (S2 Play:1) crashes 2/2 (8 s, 16 s), so the whole fleet is affected —
    the S2 daemon also fetches `hls-radio://`. Next: whether the fault is the
    segment-map builder (the `hls-%s said` / "creating HLS Segment Map entry"
