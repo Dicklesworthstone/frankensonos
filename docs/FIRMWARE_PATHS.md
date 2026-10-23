@@ -1088,11 +1088,19 @@ run. The updater's `read_hdr` (`FUN_00406fb0` in `upgrade`) is likewise fixed
 size: exactly 0x10 bytes into the caller's 16-byte buffer, then magic
 `0x35167f49` and version `0x11`/`0xffffffff` checks — no copies.
 
-`/status` has no injection surface either: `zp` and `ifconfig` are the only
-handlers (a ~50-word brute found nothing else; `tmp/upgrade.log` is registered
-only while an update runs), arguments in `?…` are ignored, `%20`/`;` are not
-re-split, and an unknown name returns 200 with an empty `<ZPSupportInfo/>`
-rather than 404.
+`/status` has no injection surface. The handler set is `zp`, `ifconfig`, `zl`
+(empty), `enetports`, `VERSION` and `showstp` (4.4 KB of bridge state);
+`tmp/upgrade.log` is registered only while an update runs. A ~50-word brute will
+miss `zl`/`enetports`/`showstp`/`VERSION` — use this list. Arguments in `?…` are
+ignored, `%20`/`;` are not re-split, and an unknown name returns 200 with an
+empty `<ZPSupportInfo/>` rather than 404.
+
+**S2 gates the debug pages but not `/setstring`.** On 86.10 `/advconfig`,
+`/diaglevel` and `/diagmsg` all answer 403 (they are open on 57.23) and
+`/support/*` is 404 on both. `/setstring` is *open* on 86.10 and one POST kills
+the daemon there too, faster than on S1 — measured down at 4 s after the "Setting
+changed" 200. So the one-request kill is fleet-wide; only the debug helpers
+differ by build.
 
 ## 2026-10-23: live 57.23 binaries recovered (model-12 key), verifier mapped
 
