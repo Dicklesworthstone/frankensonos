@@ -377,3 +377,31 @@ the rollback path on this hardware.
    every rootfs binary); `qemu-system-ppc` or a PPC cross-build remains the
    only local oracle.
 
+
+### Model-12 package record layout (measured on the shipped 57.23-…-1-12 file)
+
+The file-level records are the **same simple little-endian TLV as the probe packages**,
+not a new format: `[u32 magic 0x35167f49][u32 type][u32 len][u32 result]`, records laid
+end to end, `type = 0xffffffff` terminating. The shipped model-12 image is:
+
+```
+0x00000 type 1  (version)     0x0001c type 21 (capability list)
+0x00070 type 2  (kernel)      0x0009c type 2  (second blob)
+0x00130 type 22 (149 527 B)   0x24947 type 3  (preinstall script, enc)
+0x25e91 type 6  (985 210 B)   0x11670b type 4 (rootfs, 3 494 250 B)
+0x46b875 type 17 (380 B), result 1
+```
+
+So the `621da74d` magic is the inner type-17/type-22 payload header, not the file
+record magic; the docs above are about that inner header and still apply. Inside the
+type-17 payload the layout is `magic, header_len 0x16c, version 1, u16 field, list1
+count, list2 count`, then the list records (`u32 type`, then for type 0x21 a one-byte
+alg and a 32-byte digest; for type 3 a `u32 4` and a `u32 1`), then `cert_count 1,
+name_len 0x14, keytype 3, 20-byte name, sig_alg 1, field 1, sig_len 0x100`, 256-byte
+signature. The name in the shipped model-12 package is
+`23c7782e3cdfa4e62f155e44434116d8669982df`, i.e. one of the two hardcoded
+`libsonoscrypto` entries — confirming on model 12 what the PPC audit found: the
+resolver is the compiled table, so a type-22 bundle cannot introduce the type-17 key.
+
+Consequence: repacking sections is free (the digest covers only the 57-byte list
+region), but a *new* type-17 signature needs one of the two Sonos private keys.
