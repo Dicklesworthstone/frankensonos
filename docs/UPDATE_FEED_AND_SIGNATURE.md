@@ -669,3 +669,22 @@ The VM's key wall is concrete: with the libflash ABI patched (`0x40244d01` →
 the recipient id `e35f7c21c0ec00a768bfbd364a9a105cf300f023` matches nothing in the
 extracted files — so it lives in a flash partition whose type and record format
 still have to be identified.
+
+### Where the model key comes from (progress, not solved)
+
+With `MEMGETINFO` fixed the updater enumerates `/dev/mtd0..8`, reads the **512-byte
+head of the partition at index 1** and then 4096 bytes at offset 512 — a directory
+plus data area. A second enumeration pass follows. So the keyring is a partition
+record store, read by a TLV-ish parser at `0x406200`: it extracts a record type and
+only accepts `8` (`beq v0,8,0x406314`), then reads a `u32` count that must be `< 8`.
+A 512-byte synthetic header with the recipient id packed into 32-byte slots is not
+enough (`48` unchanged), so the record framing has to match.
+
+Filling that in needs the record layout from `0x406200`/`0x406070`; once a type-8
+record carrying `/tmp/model12.pem` exists, the VM reaches decryption and the type-17
+header parser becomes fuzzable without the device.
+
+Practical guest notes: `insmod` refuses a second module with the same internal name,
+so extra `/dev/mtdN` beyond the real devices are **symlinks** to a real one (the walk
+only needs `open` to succeed); a 128 MiB `nandsim` partition is mtd1 and is the
+directory store the code reads first.
