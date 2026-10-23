@@ -498,3 +498,31 @@ compat branch at `0x407d7c` NOPped (`beqz v0, 0x407c10` forced to fall through,
 reproduce on hardware before parser fuzzing can be driven over the real update path:
 either the branch is the same gate, or the device's gate is a stricter check reached
 first. Until it is identified, treat every modified package as rejected pre-parser.
+
+### The modern-path gate is a fixed 128 KiB pre-read (measured byte-exactly)
+
+A counting server records how far the client gets before closing. Genuine images
+(same version included) are read to the **last byte** — 5 606 749/5 606 749 — and
+the accept/reject decision happens later. Every modified package closes at exactly
+**131 072 bytes (128 KiB)**, twice, at Python's 16 KiB write granularity (131 072 and
+147 456 = 128/144 KiB), independent of what was changed:
+
+- version record bytes 0x10..0x1b (99.1.1) → 131 072, close;
+- a **single text byte** in the type-21 capability list (offset 0x2c, `PATCHES` →
+  `PATCHEX`) → 131 072, close.
+
+So the gate streams a hash of the first 128 KiB and bails when it does not match;
+nothing else is consulted first. A plain-text byte that no key signs still fails,
+which means the 128 KiB prefix is covered by a signature the package cannot
+reproduce — consistent with the model-12 verifier hashing every byte before the
+type-17 record (the earlier Post-its result), just with the read capped at 128 KiB
+before the final signature check at end-of-file.
+
+Operational: **one update attempt per boot.** After an attempt `:1400` stops
+answering within seconds and the unit drops off the network for ~4-5 minutes while
+it restarts; the next trigger has to be fired on the first 200 the port returns.
+A modified package therefore costs one boot per probe.
+
+Implication for a repack: bumping the version is not free (as the VM suggested).
+The gate hashes 128 KiB, so a modified image needs a valid type-17 signature over
+the prefix — i.e. one of the two compiled keys: the same dead end, reached earlier.
