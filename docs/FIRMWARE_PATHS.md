@@ -2396,3 +2396,22 @@ the SCPD, not the data.
 That re-frames the remaining work: recover the handler's name table (it is in the
 binary, referenced five times per name, just not in this function) rather than
 fuzzing more values.
+
+### The argument capacities are generous — order/names are the only variable left
+
+Reading the parameter fetches in the `AddOAuthAccountX` handler: each is
+`lui a1,0x52; addiu a1,…` followed by a `li a2,<cap>`, and the caps are
+
+```
+64, 0x802 (2050), 0x802, 66, 0x402 (1026), 0x802, 0x1a (26), 0x802
+```
+
+— roughly eight parameters, most allowing two kilobytes. Every value shape tried
+(120-char token, 32-hex key, 32-hex device id, short forms) is far inside those, so
+**capacity is definitively not the 402**.
+
+The name operands point into a `.rodata` table region (0x5286xx holds pointer tables,
+not strings), which matches the earlier finding that action and argument names are
+assembled rather than stored as literals — the handler walks a shared table by index.
+So the remaining unknown is the *table order and keys*, and the way to read it is the
+table itself (or the controller's call), not more values.
