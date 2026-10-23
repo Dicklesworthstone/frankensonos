@@ -307,7 +307,7 @@ fn an_undo_leaves_a_queue_that_changed_alone() {
 
     for (uri, why) in [
         ("x-rincon-mp3radio://example.invalid/a.mp3", "a stream"),
-        ("spotify:artist:0SimQueueArtist0000001", "an artist"),
+        ("spotify:genre:0SimQueueGenre00000001", "a genre"),
     ] {
         let err = s
             .queue_add(&Client::Cli, &add(uri, "x", false))
