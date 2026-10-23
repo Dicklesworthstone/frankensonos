@@ -336,7 +336,9 @@ how a local client obtains a scoped token without the cloud.
    entries are still empty or benign.
 3. `POST /notify` is the only body reader without a total cap (no
    Transfer-Encoding parser at all; absent `Content-Length` reads to close).
-   100 KB and 1 MB bodies survive.
+   Survives 100 KB and 1 MB bodies, non-XML garbage, a 300 KB LastChange
+   attribute, 2000-deep nesting and malformed percent escapes; the server
+   closes early on the larger ones and stays up.
 4. `/advconfig` builds a stack buffer of `n+0x10` but validates only `n`
    (n is a constant 0x1000; the saved `ra` sits in the slack).
 5. Expat is statically linked at 2.2.0 (34.16) and 2.5.0 (86.10) and 2.5.0
