@@ -486,6 +486,13 @@ the flow currently dies before the application phase. Any probe can use
 "did 4444 open" as a cheap pass/fail signal instead of watching for a script
 or a version change.
 
+Watched for 75 s on a pristine, model-matching, officially signed package:
+the port never opened. That closes the causal chain: the noop exit happens
+inside the install routine, i.e. **before** type 17 is processed, so a
+same-version package can never reach the application phase; and any version
+bump breaks the 128 KiB prefix hash, so type 17 cannot be reached by a
+modified package either. Both roads need a Sonos private key.
+
 ## Reaching real packages and the app handshake
 
 The legacy update feed is directly usable. `GET
