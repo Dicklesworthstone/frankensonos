@@ -1071,3 +1071,8 @@ a clean oracle for whether a candidate was accepted, independent of the version.
 
 `tot-huge.upd` (`total_len = 0xfffffff0`) only restarts the *daemon*, not the
 box, so it is not usable for this.
+
+Cross-unit check on .168 (same 57.23 build): a clean 256 KiB POST also kills
+HTTP, and the watchdog restarted the daemon in ~6 s. The long .185 outage came
+after three hits in quick succession (256 KiB, 512 KiB, 1 MiB); treat
+"durable" as "repeat hits outrun the supervisor", not a single request.
