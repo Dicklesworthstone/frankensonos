@@ -1302,6 +1302,14 @@ brace with and without a space, URN directly against the brace, RINCON in the
 `luid` slot, the brace alone, and the URN with a bare device id — the next read
 is `0x51b9b4`, the hash getter itself.
 
+That read narrows it: the composer's literals come from the pool at `0x6021d4` —
+`owner`, `luid`, `network_hash` — and the fourth entry (`0x67797c`) is a **byte
+table** (eight `0x10`, sixteen `0x40`, then `0x20`s), not text, so the hash slot
+is not a plain echo. `0x603940` reads an *optional* out of the token context
+(`0x47c6c8` is the optional-empty test, `0x51b9b4` a string copy) rather than
+hashing there. Filling `luid`, `hhid` and the hash slot with the same value
+(household, device id, RINCON) and matching `systemId` all still answer 401.
+
 Recorded separately: with the cloud unreachable every token — forged, real or
 garbage — returns 503, so a run of 503s says nothing about the token.
 
