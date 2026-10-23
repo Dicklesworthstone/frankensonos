@@ -69,10 +69,18 @@ is what an earlier note did. Measured layout: `count1 = 2` (a 0x21
 record, then a 20-byte one whose type is `0x03` — the key-name record
 `ZZ0039` expects), and after the lists `u32 0x01`, `u32 0x100` and **256
 raw bytes**, i.e. the key reference `[keytype][u32][key_len = 0x100][key]`.
-The 256-byte blob is not DER, and whether it is the signer's key or the
-signature itself is **not settled** — private-key recovery over it with the
-three embedded devmode keys fails, so if it is the signature it uses a
-different key or padding than those.
+The 256-byte blob is the **signature** and the 20-byte `0x03` record is the
+**key id** that names the signer; recovery fails under all three embedded
+devmode keys because the package signer is a different key than those.
+
+**The type-22 section is the same container** (`621da74d`, `total 0x16c`,
+`count1 = count2 = 2`, its own 32-byte MessageDigest and its own 20-byte key
+id and signature), and it sits at file offset before the script, kernel and
+rootfs. So the chain is two-level: type 22 signs the header section set, and
+type 17 — whose digest covers everything above it, type-22 included — signs
+the whole package. Neither digest is a plain hash of the prefix: type-22's
+stored digest matches neither `sha256(prefix before 22)` nor a hash of the
+type-17 payload, so the hashed byte range is still unidentified for both.
 
 **What the type-17 digest covers (measured 2026-10-23).** The first
 attribute is `MessageDigest` (`len 0x21`, type `0x01`, 32 bytes at payload
