@@ -297,11 +297,12 @@ Grouping verbs (verified live on S2 97.1, 2026-10-07, with full restore):
   `CALLBACK: <http://<CONTROLLER_IP>:<PORT>/cb>`, `NT: upnp:event`,
   `TIMEOUT: Second-300`. Response carries `SID: uuid:RINCON_<MAC>01400_subNNNNN`.
 - **Bridge caveat (2026-10-22, live):** the same SUBSCRIBE to a Bridge's
-  `ZoneGroupTopology/Event` never answers; nine attempts wedged the ZB100's
-  whole HTTP server (port 1400 accepts TCP, ICMP answers, no HTTP completes
-  for minutes — anacapad's `MaxConn 4` / `NumThreads 4` fills with hung
-  subscription threads). No watchdog recovery was observed; it needs a
-  power-cycle. Play:5 and Sonos One answer instantly. Callback URLs are
+  `ZoneGroupTopology/Event` never answers reliably once four exist: **one
+  subscription is fine, four successful ones hold all four anacapad threads**
+  and wedge the ZB100's whole HTTP server (port 1400 accepts TCP, ICMP
+  answers, no HTTP completes for hours; it came back once after ~13 h, so
+  threads free eventually but not usefully). Pre-auth, four requests, no key.
+  Play:5 and Sonos One answer instantly. Callback URLs are
   bounded: ≥ ~1022 chars gets `412`, and a missing `CALLBACK`, unbracketed
   URL or unknown `SID` get `400`/`412` — clean rejects, not overflows.
 - Speaker then POSTs `NOTIFY /cb` per change; body is
