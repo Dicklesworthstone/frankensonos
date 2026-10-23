@@ -2294,3 +2294,16 @@ renew/unsubscribe). Absent on S1 57.23, whose local API is read-only.
 `ContentDirectory#CreateObject` is not the queue-add path on 57.23: at `/MediaServer/ContentDirectory/Control`
 (the bare path 405s) it faults **713** for every DIDL shape tried, while `AddURIToQueue` is what writes the
 queue and its `savedqueues.rsq` store.
+
+### Unauthenticated surface map, 86.10-81100 (2026-10-23)
+
+The household now runs **81100**, not the 80260 the local artifacts came from, so the map was taken
+live over HTTPS 1443: `200` — `/info`, `/status`, `/support/review`, `/support/directsubmit`, `/devmode`;
+`405` — `/mtmhhsetup` (POST is the live verb); `423` — `/unlock`; `401` — `/getsetting`, `/testpoint`,
+`/support/networkmatrix`; `403` — `/`, `/support/aggregate`, `/testenv`, `/advconfig`, `/fcs`,
+`/diagmsg`, `/logger`, `/jobs`, `/reset`, `/ssh/fingerprints`, `/raw`; `404` — `/getrs`.
+
+Differences from 57.23: `/advconfig` and `/getrs` are closed on S2, `/support/aggregate` likewise, and
+`/support/networkmatrix`, `/fcs`, `/logger`, `/ssh/fingerprints`, `/raw` are names S1 does not have.
+Adds nothing pre-auth beyond what is listed, but it is the starting set for an instruction-level diff
+between 80260 and 81100 — the piece still missing from that comparison.
