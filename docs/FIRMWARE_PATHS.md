@@ -480,15 +480,15 @@ the threshold is not stable — treat it as "a few thousand". Reproduction:
 unique `module`). It is a DoS, not yet a controlled write: the name is copied by
 `strcpy` into an exact-size allocation and the insert path is bounded.
 
-**Boot-slot fallback, seen on the bench.** During the restart series from the flood
-above, the unit came up on `57.22-65130` (SoftwareDate 2025-05-13) and `/status/VERSION`
-served that for several minutes, then it returned to `57.23-74170` on its own; no flash
-was involved and ICMP was up throughout except during the actual reboots. So an S1
-player keeps the previous image in a second boot section and drops back to it when its
-boots keep failing. Two consequences: `/status/VERSION` is not a constant during a
-probe campaign (re-read it before comparing versions), and a *sustained* fallback would
-be a free downgrade to the previous build — here still above the SSA-2024-0002
-(`57.22-61162`) fix line, so it does not by itself reopen the 2025 bugs.
+**Version flips under a probe campaign.** During the restart series from the flood
+above, the unit served `57.22-65130` (SoftwareDate 2025-05-13) for several minutes,
+then returned to `57.23-74170` on its own. Careful: a parallel session was flashing
+the same unit in that window (it landed a genuine `57.22-65130` image), so do not read
+the flip as pure watchdog fallback — but the S1 platform does keep the previous image
+in a second boot section and a failed boot falls back to it, which is why a reboot
+series can move the version under you. Two rules follow: re-read `/status/VERSION`
+before comparing versions, and check who else is on the unit before attributing a
+version change. ICMP stayed up throughout except during the actual reboots.
 
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
 month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
