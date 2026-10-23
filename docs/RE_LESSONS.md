@@ -51,9 +51,12 @@ are written as `192.168.4.x`-style placeholders and uuids as `RINCON_…`.
   without trusting a string; the compiled `expat_2.2.0` marker only confirms
   the base image.
 - **Component presence first.** Fresh NVD hits are worthless without the
-  component: no TLS client in the fetch path, no CIFS/SMB client, no use of
-  pupnp. Probe for the component (0 bytes on a TLS port, empty
-  `/status/proc/fs/cifs/DebugData`) before reading CVE text.
+  component: no CIFS/SMB client, no use of pupnp, and `0` bytes on a TLS
+  port was read as "no TLS client" — wrongly: the fetcher *does* speak
+  TLS 1.0 and pulls a full 5.4 MB over it; the empty answer was the
+  server's OpenSSL 4 refusing that version. Probe the component with a
+  server it can actually negotiate (empty `/status/proc/fs/cifs/DebugData`
+  is a real absence) before reading CVE text.
 
 ## Where the edges actually are
 
