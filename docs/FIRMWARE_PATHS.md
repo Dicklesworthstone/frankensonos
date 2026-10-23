@@ -345,13 +345,16 @@ how a local client obtains a scoped token without the cloud.
    (case-insensitive, UTF-16 and split forms), `/api/anything` is a generic 400
    stub and `/api/v1/msprox` is 404. CVE-2023-27353 is therefore not reachable
    here; retire it.
-   The TS demux is not in the artifacts we hold. Full disassembly settles the
-   constants: no `cmpi 0x47` exists at all, the six `cmpi X,188` sites are
-   `std::string` allocation checks and the `li 71` sites are log/string uses.
-   The plain update overlay carries only `bin/anacapad`, and the 34.16 rootfs
-   carries only anacapad/upgrade/busybox, so the media component is elsewhere.
-   The naive `afelen=0xFF` trigger does not crash 57.23 — CVE-2023-27355 is
-   live-testing-only from here.
+   The TS demux is **in the live 57.23 daemon** (the 34.16/86.10 builds simply
+   predate it): the PPC binary carries `hls-aac://`/`hls-radio://`, "read frame
+   sync failed", `payload=%zu, pesleft=%d` and `peslen=%d`. The frame reader is
+   `FUN_101ba764` (Ghidra PPC): 4-byte header into a 0x81c-stride ring slot,
+   data capped at `local_c8 < 0x7fb`, slot data area 0x1e..0x819, header-parse
+   failures log "read frame header failed", oversize logs "read frame data
+   overflow". The ID3 peek copies up to 0x81 into a genuine 0x81-byte scratch
+   (-424..-295) and re-seeds its own count, so it is deliberate. The naive
+   `afelen=0xFF` trigger still does not crash 57.23, so the defect (if any) is in
+   the PES/consumer layer these frames feed, not the frame splitter.
    Payload primitives for the day a smash lands: 34.16 `execve` gadget
    `0x4f4178` (`a0=*s1`, `a1=argv`, `a2=environ`, needs `s1`), and 86.10
    `0x656a86` (`a1` alone drives both, path via `*a1`). **Neither is the live
