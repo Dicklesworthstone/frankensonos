@@ -329,11 +329,13 @@ how a local client obtains a scoped token without the cloud.
    (case-insensitive, UTF-16 and split forms), `/api/anything` is a generic 400
    stub and `/api/v1/msprox` is 404. CVE-2023-27353 is therefore not reachable
    here; retire it.
-   The TS demux also cannot be located by its constants: neither image contains
-   a `li 0x47` or `li 0xbc` immediate, and the plain update overlay carries only
-   `bin/anacapad`. Either the parser is struct-based inside anacapad or it lives
-   in a component the delta images do not carry; the naive live trigger did not
-   crash, so treat CVE-2023-27355 as unproven here.
+   The TS demux is not in the artifacts we hold. Full disassembly settles the
+   constants: no `cmpi 0x47` exists at all, the six `cmpi X,188` sites are
+   `std::string` allocation checks and the `li 71` sites are log/string uses.
+   The plain update overlay carries only `bin/anacapad`, and the 34.16 rootfs
+   carries only anacapad/upgrade/busybox, so the media component is elsewhere.
+   The naive `afelen=0xFF` trigger does not crash 57.23 — CVE-2023-27355 is
+   live-testing-only from here.
    Payload primitives for the day a smash lands: 34.16 `execve` gadget
    `0x4f4178` (`a0=*s1`, `a1=argv`, `a2=environ`, needs `s1`), and 86.10
    `0x656a86` (`a1` alone drives both, path via `*a1`). NX is off on 34.16, on
