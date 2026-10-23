@@ -2067,3 +2067,32 @@ Consequence: the remaining unknown is only the *content* contract — the device
 accepted every payload shape and applied none, including its own list replayed
 verbatim. Reading the controller's payload builder (or the on-disk service file)
 is the way in, and it needs no device access.
+
+### H13 status block (the account path)
+
+Target: `strcpy(sp+76, obj+161)` in `0x41b0c0`, reached from the
+`AddOAuthAccountX` family. Frame arithmetic is sound (memset to `sp+92`, family at
+`sp+92`, `ra` at `sp+132`), but the copy has never been fed a long value.
+
+Measured dead ends — do not re-spend:
+
+| attempt | result |
+|---|---|
+| `AddAccountX` with any id but `"1"`, any length, alpha or numeric | 402 |
+| `AddAccountX` same id, 60-char password | 402 |
+| `AddOAuthAccountX` with 6 args, plausible token/key/device-id/length shapes, ids 2311 / 9 | 402 |
+| `GetWebCode(9)` / `GetSessionId(9)` | 800 / 806 |
+
+Live leads, in order:
+
+1. the controller's payload builder for `AddOAuthAccountX` (`RUpnpSPAddAccountX`)
+   and for `UpdateAvailableServices` (`RUpnpMSDUpdateAvailableServices`) — both are
+   in the app binary and both replace guesswork with a replay;
+2. the object behind the three helper callers (`0x41b27c`, `0x41b3b8`, `0x41b674`)
+   to settle what `+161` actually is (no direct store exists for that offset);
+3. the remaining stack-`strcpy` sites `0x47add4` and the `0x47aa8c`/`0x47aa98`
+   pair, then the 24 `sprintf` sites.
+
+Read `MusicServices#ListAvailableServices` first on any unit: it is unauthenticated
+and gives the true service ids (Spotify 9/12), which several earlier attempts got
+wrong.
