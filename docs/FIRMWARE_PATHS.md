@@ -1431,3 +1431,32 @@ No pre-auth reboot exists (`management/reboot` answers 403, documented earlier),
 and the WS handshake on `:1443` answers `400` to a well-formed RFC 6455 upgrade
 on `/websocket/api` and `/api/websocket`, so a wedged unit cannot be poked back
 over TLS either.
+
+### How to recognise the missing primitive (audit checklist)
+
+H12 needs one thing: a file write whose **name** comes from the request. Do not
+re-tread the paths below — all are measured dead ends:
+
+| Path | Why it cannot write a named file |
+|---|---|
+| `SystemProperties#SetString` (SOAP, WS, `:1443` proxy) | key/value entry in an encrypted, class-named settings file; `..` in the key does not change the opened path |
+| `SetZoneAttributes` | name/icon/configuration into the same store; a URL icon is stored verbatim and never fetched |
+| `mtmhhsetup` | fixed `netsettings.txt` |
+| `/advconfig` | fixed `/jffs/netsettings_mod.txt`, two `atoi` integers |
+| `/set-cr-netstart-dest-mac` | `/var/run/...`, tmpfs |
+| `/raw`, `/reboot`, `/device_account/registration*` | all 403 while the unit is locked |
+| `management/reboot`, `management/factoryReset` | `ERROR_NO_PERMISSION` (WS) |
+
+A find looks like one of:
+
+- a caller of `RSystemSettingsBase(RSystemPropertiesImpl*, u32, const char *name, …)`
+  or `RSettingsFile(const char *)` / `sonos::SettingsFile(const char *)` where
+  `name` is request data rather than a literal;
+- a writer reached from a SOAP action or `:1443` route that takes a *path*
+  argument (`REncryptedFileWriter::xcreate` is the only path-taking writer in
+  `anacapad`; its two callers take fixed paths today);
+- a route in the lock-gated family that becomes reachable only after `/unlock`
+  — worth re-checking the moment a signature exists, but not a substitute.
+
+Verification is then two requests and one boot: write the payload above, force the
+short (rejected-image) reboot, then check 2323.
