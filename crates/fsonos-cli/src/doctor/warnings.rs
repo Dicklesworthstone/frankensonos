@@ -38,10 +38,11 @@ impl Check for WarningsCheck {
     }
 }
 
-/// The verdict on `/health`'s `warnings`: absent when none storms.
+/// The verdict on `/health`'s `warnings`: absent when none was logged in
+/// the last day.
 fn result(warnings: &Value) -> CheckResult {
     let Some(storming) = warnings["storming"].as_array().filter(|s| !s.is_empty()) else {
-        return CheckResult::pass("no warning is storming in the last hour");
+        return quiet(warnings["kinds"].as_array().map_or(&[][..], Vec::as_slice));
     };
     let named: Vec<String> = storming
         .iter()
@@ -69,7 +70,28 @@ fn result(warnings: &Value) -> CheckResult {
         ),
         remedy,
     )
-    .with_evidence(json!({ "storming": storming }))
+    .with_evidence(json!({ "storming": storming, "kinds": warnings["kinds"] }))
+}
+
+/// The pass when none storms, naming where the last day's most frequent
+/// kind is logged (`/health` carries no message for it).
+fn quiet(kinds: &[Value]) -> CheckResult {
+    let day = |kind: &Value| -> u64 {
+        kind["last_day"]
+            .as_array()
+            .map_or(0, |hours| hours.iter().filter_map(Value::as_u64).sum())
+    };
+    let Some(busiest) = kinds.iter().max_by_key(|kind| day(kind)) else {
+        return CheckResult::pass("no warning is storming in the last hour");
+    };
+    CheckResult::pass(format!(
+        "no warning is storming in the last hour; {} kind(s) logged in the last day, most \
+         often at {} ({} times)",
+        kinds.len(),
+        busiest["kind"].as_str().unwrap_or("?"),
+        day(busiest)
+    ))
+    .with_evidence(json!({ "kinds": kinds }))
 }
 
 /// What usually causes the warning whose message is `sample`.
@@ -107,6 +129,22 @@ mod tests {
     fn a_daemon_with_no_storm_passes_and_a_storm_is_named_with_its_cause() {
         assert_eq!(result(&Value::Null).status, Status::Pass);
         assert_eq!(result(&json!({ "storming": [] })).status, Status::Pass);
+        // No storm, but the day's warnings are named, the most frequent first.
+        let day = json!({ "storming": [], "kinds": [
+            { "kind": "fsonos_core::reconcile@crates/fsonos-core/src/reconcile.rs:9", "last_day": [2, 3, 1] },
+            { "kind": "fsonos_core::live@crates/fsonos-core/src/live.rs:9", "last_day": [0, 1, 0] },
+        ]});
+        let quiet = result(&day);
+        assert_eq!(quiet.status, Status::Pass);
+        assert!(
+            quiet.summary.contains(
+                "2 kind(s) logged in the last day, most often at \
+                 fsonos_core::reconcile@crates/fsonos-core/src/reconcile.rs:9 (6 times)"
+            ),
+            "{}",
+            quiet.summary
+        );
+        assert_eq!(quiet.evidence["kinds"][1]["last_day"][1], 1);
         let flapping = json!({ "storming": [{
             "kind": "fsonos_core::live@crates/fsonos-core/src/live.rs:640",
             "level": "warn",

@@ -790,27 +790,38 @@ fn health(data_dir: Option<&std::path::Path>, live: Option<crate::LiveHealth>) -
             failures: fault.count,
             last_secs_ago: fault.ago.as_secs(),
         }),
-        warnings: storming(),
+        warnings: warnings(),
     };
     Response::json(&body).expect("HealthDto serializes")
 }
 
-/// The daemon's storming warnings, when any is (`/health`'s `warnings`).
-fn storming() -> Option<crate::WarningsHealth> {
+/// The daemon's warnings (`/health`'s `warnings`): absent while none was
+/// logged in the last day.
+fn warnings() -> Option<crate::WarningsHealth> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
+    let level = |error: bool| if error { "error" } else { "warn" }.to_owned();
     let storming: Vec<crate::StormHealth> = fsonos_core::warnings::storms(now)
         .into_iter()
         .map(|storm| crate::StormHealth {
             kind: storm.kind,
-            level: if storm.error { "error" } else { "warn" }.into(),
+            level: level(storm.error),
             sample: storm.sample,
             last_hour: storm.last_hour,
             threshold: storm.threshold,
         })
         .collect();
-    (!storming.is_empty()).then_some(crate::WarningsHealth { storming })
+    let kinds: Vec<crate::WarningKindHealth> = fsonos_core::warnings::kinds(now)
+        .into_iter()
+        .map(|kind| crate::WarningKindHealth {
+            kind: kind.kind,
+            level: level(kind.error),
+            usual_hour: kind.usual_hour,
+            last_day: kind.day,
+        })
+        .collect();
+    (!storming.is_empty() || !kinds.is_empty()).then_some(crate::WarningsHealth { storming, kinds })
 }
 
 fn json_text(text: &str) -> Response {

@@ -23,6 +23,8 @@ pub const STORM_FLOOR: u32 = 20;
 pub const STORM_FACTOR: u32 = 10;
 /// The longest sample message kept.
 const SAMPLE_CHARS: usize = 120;
+/// Hours a kind's recent counts cover ([`Kind::day`]).
+const DAY: usize = 24;
 
 /// A kind of warning that is storming now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +40,22 @@ pub struct Storm {
     /// How many make a storm for this kind: the larger of [`STORM_FLOOR`]
     /// and [`STORM_FACTOR`] times its median hour.
     pub threshold: u32,
+}
+
+/// One kind of warning logged in the last day.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kind {
+    /// Where it is logged: `target@file:line`.
+    pub kind: String,
+    /// Whether it is logged at ERROR (else WARN).
+    pub error: bool,
+    /// Its message, every word holding a digit masked as `N`.
+    pub sample: String,
+    /// Its median hour before the last one: what a storm is judged against.
+    pub usual_hour: u32,
+    /// How many in each of the last 24 hours, oldest first: the last is
+    /// the hour that ends now.
+    pub day: Vec<u32>,
 }
 
 /// Warnings counted by kind, in buckets of five minutes, for a week. It is
@@ -79,13 +97,61 @@ impl Counts {
     /// The kinds storming at `now` (unix seconds), by kind.
     #[must_use]
     pub fn storms(&self, now: u64) -> Vec<Storm> {
-        let Some(first) = self.first else {
+        let Some((hourly, observed)) = self.hourly(now) else {
             return Vec::new();
         };
+        let mut storms: Vec<Storm> = hourly
+            .into_iter()
+            .filter_map(|(kind, hours)| {
+                let threshold =
+                    STORM_FLOOR.max(usual(&hours, observed).saturating_mul(STORM_FACTOR));
+                let last_hour = hours[0];
+                let (error, sample) = self.samples.get(kind).cloned().unwrap_or_default();
+                (last_hour >= threshold).then(|| Storm {
+                    kind: kind.to_owned(),
+                    error,
+                    sample,
+                    last_hour,
+                    threshold,
+                })
+            })
+            .collect();
+        storms.sort_by(|a, b| a.kind.cmp(&b.kind));
+        storms
+    }
+
+    /// Every kind logged in the day before `now` (unix seconds), by kind,
+    /// with its count in each of those hours.
+    #[must_use]
+    pub fn kinds(&self, now: u64) -> Vec<Kind> {
+        let Some((hourly, observed)) = self.hourly(now) else {
+            return Vec::new();
+        };
+        let mut kinds: Vec<Kind> = hourly
+            .into_iter()
+            .filter(|(_, hours)| hours[..DAY].iter().any(|n| *n > 0))
+            .map(|(kind, hours)| {
+                let (error, sample) = self.samples.get(kind).cloned().unwrap_or_default();
+                Kind {
+                    kind: kind.to_owned(),
+                    error,
+                    sample,
+                    usual_hour: usual(&hours, observed),
+                    day: hours[..DAY].iter().rev().copied().collect(),
+                }
+            })
+            .collect();
+        kinds.sort_by(|a, b| a.kind.cmp(&b.kind));
+        kinds
+    }
+
+    /// Per kind, its count in each hour back from `now`: `[0]` is the last
+    /// hour, `[h]` the hour that ended `h` hours ago; and how many whole
+    /// hours before the last one were observed. `None` before any count.
+    fn hourly(&self, now: u64) -> Option<(HashMap<&str, Vec<u32>>, usize)> {
+        let first = self.first?;
         let at = now / BUCKET_SECS;
         let span = usize::try_from(HOURS_KEPT).unwrap_or(168);
-        // Per kind, its count in each hour back from now: [0] is the last
-        // hour, [h] the hour that ended h hours ago.
         let mut hourly: HashMap<&str, Vec<u32>> = HashMap::new();
         for (bucket, counts) in &self.buckets {
             let Ok(h) = usize::try_from(at.saturating_sub(*bucket) / HOUR) else {
@@ -104,26 +170,7 @@ impl Counts {
             .unwrap_or(0)
             .saturating_sub(1)
             .min(span - 1);
-        let mut storms: Vec<Storm> = hourly
-            .into_iter()
-            .filter_map(|(kind, hours)| {
-                let mut before: Vec<u32> = hours[1..=observed].to_vec();
-                before.sort_unstable();
-                let median = before.get(before.len() / 2).copied().unwrap_or(0);
-                let threshold = STORM_FLOOR.max(median.saturating_mul(STORM_FACTOR));
-                let last_hour = hours[0];
-                let (error, sample) = self.samples.get(kind).cloned().unwrap_or_default();
-                (last_hour >= threshold).then(|| Storm {
-                    kind: kind.to_owned(),
-                    error,
-                    sample,
-                    last_hour,
-                    threshold,
-                })
-            })
-            .collect();
-        storms.sort_by(|a, b| a.kind.cmp(&b.kind));
-        storms
+        Some((hourly, observed))
     }
 
     /// Add the counts `kept` (a previous run's) to these, bucket by bucket,
@@ -169,6 +216,16 @@ pub fn storms(now: u64) -> Vec<Storm> {
         .storms(now)
 }
 
+/// Every kind logged in this process in the day before `now`
+/// ([`Counts::kinds`]).
+#[must_use]
+pub fn kinds(now: u64) -> Vec<Kind> {
+    COUNTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .kinds(now)
+}
+
 /// This process's counts as JSON, to keep across a restart.
 #[must_use]
 pub fn to_json() -> String {
@@ -187,6 +244,14 @@ pub fn restore_json(text: &str) -> Result<(), serde_json::Error> {
         .unwrap_or_else(PoisonError::into_inner)
         .merge(kept);
     Ok(())
+}
+
+/// The median of the `observed` hours before the last one in `hours`
+/// ([`Counts::hourly`]): a kind's usual hour.
+fn usual(hours: &[u32], observed: usize) -> u32 {
+    let mut before: Vec<u32> = hours[1..=observed].to_vec();
+    before.sort_unstable();
+    before.get(before.len() / 2).copied().unwrap_or(0)
 }
 
 /// `message` with every word that holds a digit (an address, a port, an id)
@@ -308,6 +373,33 @@ mod tests {
                 .all(|(a, b)| a.0 < b.0)
         );
         assert_eq!(after.samples[LISTENER].1, "renewal failed");
+    }
+
+    #[test]
+    fn the_last_days_kinds_carry_their_hours_and_usual_hour() {
+        let mut c = Counts::default();
+        assert!(c.kinds(T0).is_empty());
+        // Five an hour for two days, then 30 in the last hour; one ERROR
+        // a day and a half ago. In time order: a count older than the newest
+        // bucket is the clock set back, and counts as now.
+        spread(&mut c, LISTENER, 5, 0..12);
+        c.record(RENEWAL, true, "renewal failed", T0 + 12 * 3600);
+        spread(&mut c, LISTENER, 5, 12..48);
+        spread(&mut c, LISTENER, 30, 48..49);
+        let now = T0 + 49 * 3600 - 1;
+        let kinds = c.kinds(now);
+        assert_eq!(
+            kinds.iter().map(|k| k.kind.as_str()).collect::<Vec<_>>(),
+            [LISTENER],
+            "the ERROR is older than a day"
+        );
+        let listener = &kinds[0];
+        assert_eq!(listener.day.len(), 24);
+        assert_eq!(listener.day[23], 30, "the last hour comes last");
+        assert!(listener.day[..23].iter().all(|n| *n == 5), "{listener:?}");
+        assert_eq!(listener.usual_hour, 5);
+        assert!(!listener.error);
+        assert_eq!(c.kinds(now + 24 * 3600), Vec::new(), "a quiet day later");
     }
 
     #[test]

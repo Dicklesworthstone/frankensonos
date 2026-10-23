@@ -137,3 +137,33 @@ fn health_names_the_last_self_test() {
         })
     );
 }
+
+/// The daemon's health names each kind of warning it logged in the last
+/// day with its hourly counts (co55.7), and none of its message: that can
+/// name a room. A single one does not storm.
+#[test]
+fn health_names_the_days_warnings_by_kind() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    fsonos_core::warnings::record(
+        "fsonos_core::live@crates/fsonos-core/src/live.rs:1",
+        false,
+        "re-opening the event listener on 192.0.2.10:3400",
+        now,
+    );
+    let (_, health) = get_health(app(None));
+    let warnings = health.warnings.expect("a warning was logged");
+    assert!(warnings.storming.is_empty(), "{warnings:?}");
+    let kind = warnings
+        .kinds
+        .iter()
+        .find(|k| k.kind.ends_with("live.rs:1"))
+        .expect("the kind is named");
+    assert_eq!(kind.level, "warn");
+    let shown = serde_json::to_string(&warnings).unwrap();
+    assert!(!shown.contains("event listener"), "{shown}");
+    assert_eq!(kind.last_day.len(), 24);
+    assert_eq!(kind.last_day[23], 1, "{kind:?}");
+}

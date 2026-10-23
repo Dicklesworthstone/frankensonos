@@ -92,17 +92,36 @@ pub struct HealthDto {
     /// undoable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<StoreHealth>,
-    /// The daemon's own warnings that are storming (co55.7): one kind logged
-    /// far more often than usual in the last hour. Absent while none is.
+    /// The daemon's own warnings (co55.7): the kinds storming (one logged
+    /// far more often than usual in the last hour), and every kind logged in
+    /// the last day with its hourly counts. Absent while none was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub warnings: Option<WarningsHealth>,
 }
 
-/// The kinds of warning storming in the daemon, in `GET /health` (`fsonos
-/// doctor` judges them as `daemon.warnings`).
+/// The daemon's warnings, in `GET /health` (`fsonos doctor` judges them as
+/// `daemon.warnings`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WarningsHealth {
     pub storming: Vec<StormHealth>,
+    /// Every kind logged in the last day.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<WarningKindHealth>,
+}
+
+/// One kind of warning the daemon logged in the last day. It carries no
+/// message: `/health` answers anyone who reaches the listener, and a message
+/// can name a room.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WarningKindHealth {
+    /// Where it is logged (`target@file:line`), never its field values.
+    pub kind: String,
+    /// `warn` or `error`.
+    pub level: String,
+    /// Its median hour before the last one: what a storm is judged against.
+    pub usual_hour: u32,
+    /// How many in each of the last 24 hours, oldest first.
+    pub last_day: Vec<u32>,
 }
 
 /// One kind of warning storming in the daemon.
