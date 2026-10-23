@@ -375,6 +375,22 @@ how a local client obtains a scoped token without the cloud.
    segment-map builder (the `hls-%s said` / "creating HLS Segment Map entry"
    path) or the fetch/decode tail, and whether the crash point is steerable by
    playlist fields.
+
+   Static shape of the suspect (PPC, `FUN_10190584` = media-playlist ingest): the
+   segment queue is a 16-slot ring of 0xc50-byte entries based at `obj+8`
+   (`FUN_101913b0` init: capacity 16 at `+0xc514`, array pointer at `+0xc528`);
+   the counters `head/count/tail/limit` sit at `+0xc508/0xc50c/0xc510/0xc514`,
+   i.e. exactly where entry **16** would begin. `FUN_10192674` compacts with
+   `new_head = 16 - (limit - head)` and `memcpy(new_head*0xc50+8, head*0xc50+8,
+   (limit-head)*0xc50)` — no check that `limit-head <= 16`, and `FUN_1019278c`
+   (the "track list is split" reset) sets `head = limit = 16`. Head advances with
+   a real modulo (`FUN_101913fc`), so the wraparound itself is safe; the
+   compaction math and the 16/16 boundary are the two places worth chasing. The
+   ingest also calls the drain `while (count > 4) FUN_1018e93c(...)`, and an
+   adding new segments each reload crashes in 5 s (2-3 reloads at
+   `TARGETDURATION:2`), while a window that jumps **backwards** survives 40 s of
+   rewrites — so the kill is in the forward append, not in error reconciliation.
+   Beads `re-hls-kill`.
    Payload primitives for the day a smash lands: 34.16 `execve` gadget
    `0x4f4178` (`a0=*s1`, `a1=argv`, `a2=environ`, needs `s1`), and 86.10
    `0x656a86` (`a1` alone drives both, path via `*a1`). **Neither is the live
