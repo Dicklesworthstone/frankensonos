@@ -567,7 +567,10 @@ reader's only check is `body_len < 4096` → `413`; the copy loop then fills
 `s2 - written` bytes into the caller's buffer. So 2048…4095-byte bodies
 overflow by up to 2048 bytes and land in the decoded-statement buffer and the
 handler state — **2048 bytes short of `ra`**, which is why the address-filled
-probe bodies looked identical to garbage. The fix that would
+probe bodies looked identical to garbage. Live, the guard never shows as a
+`413`: 4095 and 5000 reset like everything else, and exactly 4096 hangs with
+no answer (both `/status` probes dead for 12 s) — the 413 branch leaves the
+already-sent body unread. The fix that would
 be correct is a `2048` size argument, or a 0x1000-byte buffer. Because the decoded buffer sits only
 `0x424` bytes below the saved registers, a decoded statement longer than
 1024 would reach `r25`…`r31` if the 1024 limit ever failed to clamp.
