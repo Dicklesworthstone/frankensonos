@@ -536,11 +536,16 @@ with no response; 2047 is fine. This is the body, not the statement: the same
 unused `button` value pushes the body to 2048. The 34.16 handler has the
 guard (Content-Length `< 0x800`, else `413`); 57.23 reads past its 0x800
 buffer instead, and the read is effectively **unbounded** — bodies of 20 KB
-are accepted and still end in a reset, never `413`. The same test on a
-Sonos One (86.10) answers `400` at 2100 and 4000 (the latter in 14.5 s) and
-is **flaky** around 8000 — one reset, one `400` on identical bytes — while
-32000 always answers `400` twice over. So the S2 boundary is roughly 8 KB
-and nondeterministic; the S1 57.23 edge at 2048 is the only hard one. It is independent of content (a syntactically trivial ring
+are accepted and still end in a reset, never `413`. The same test on a Sonos
+One (86.10) answered `400` at 2100/4000/8000/32000 and reset once at 8000
+across six runs, so S2 tolerates at least 32 KB and its crash is not
+reproducible; the S1 57.23 edge at 2048 is the only hard one.
+
+**Status semantics:** on the S1 a well-formed statement gets `403` (the
+signature check refuses it) and a burst makes every POST after the first
+answer `400`, but the `400`/`403` split also flips at random with fresh
+statements and 12–16 s spacing — roughly a coin flip, so `400` is *not* a
+usable parse oracle. Only a reset is trustworthy. It is independent of content (a syntactically trivial ring
 still resets), the listener and `/status` stay up (`200` ×3), and the same
 bytes driven into 34.16's `ZZ0137` return `0` with no fault — a 57.23
 regression, not the ring parser. Effect: the decoded-statement limit on
@@ -553,7 +558,7 @@ plausible code address instead of `A` changes nothing observable (reset in
 just after the read and trashes the handler's live locals, not only saved
 registers — from here a core or the 57.23 binary is required, not more blind
 bodies. Shifting the reference start with a leading list entry has not
-worked yet (attempts parse-fail `400`), so that remains a side question.
+worked yet (attempts answer `400`), so that remains a side question.
 
 **Reversal (same round, via libsonoscrypto)**: the gate IS cryptographic. The
 three obfuscated helpers resolve to `libsonoscrypto.so.1` functions: ZZ0021
