@@ -736,6 +736,24 @@ fn playlists(s: &mut dyn Store) {
     assert!(s.playlists().unwrap().is_empty());
 }
 
+fn playlist_scan_cursors(s: &mut dyn Store) {
+    assert_eq!(s.playlist_scan_cursor("owner-a").unwrap(), None);
+    s.save_playlist_scan_cursor("owner-a", "PlaylistA").unwrap();
+    s.save_playlist_scan_cursor("owner-b", "PlaylistB").unwrap();
+    s.save_playlist_scan_cursor("owner-a", "PlaylistC").unwrap();
+    // Replacing the displayed directory does not rewind either owner's scan.
+    s.save_playlists(&[]).unwrap();
+    assert_eq!(
+        s.playlist_scan_cursor("owner-a").unwrap().as_deref(),
+        Some("PlaylistC")
+    );
+    assert_eq!(
+        s.playlist_scan_cursor("owner-b").unwrap().as_deref(),
+        Some("PlaylistB")
+    );
+    assert_eq!(s.playlist_scan_cursor("owner-c").unwrap(), None);
+}
+
 fn spotify_heard(s: &mut dyn Store) {
     assert!(s.spotify_heard().unwrap().is_empty());
     let play = |uri: &str, at: i64| (uri.to_owned(), at);
@@ -813,6 +831,7 @@ fn suite(s: &mut dyn Store) {
     artist_genres(s);
     album_misses(s);
     playlists(s);
+    playlist_scan_cursors(s);
     spotify_heard(s);
     action_log(s);
     scenes(s);
@@ -830,7 +849,7 @@ fn sqlite_in_memory_conforms() {
     suite(&mut s);
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     );
     s.close().unwrap();
 }
@@ -960,7 +979,15 @@ fn sqlite_file_survives_close_and_reopen() {
     let s = SqliteStore::open(&path).unwrap();
     assert_eq!(
         s.schema_versions().unwrap(),
-        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    );
+    assert_eq!(
+        s.playlist_scan_cursor("owner-a").unwrap().as_deref(),
+        Some("PlaylistC")
+    );
+    assert_eq!(
+        s.playlist_scan_cursor("owner-b").unwrap().as_deref(),
+        Some("PlaylistB")
     );
     assert_eq!(s.recent_plays(None, 10).unwrap().len(), 5);
     assert_eq!(s.cached_players().unwrap().len(), 3);

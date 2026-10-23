@@ -190,6 +190,14 @@ const MIGRATIONS: &[Migration] = &[
             playlist_uri TEXT PRIMARY KEY, observation TEXT NOT NULL);
     ",
     },
+    Migration {
+        version: 15,
+        name: "bounded Spotify playlist scans resume after their last attempted ID",
+        sql: "
+        CREATE TABLE spotify_playlist_scans (
+            owner_id TEXT PRIMARY KEY, playlist_id TEXT NOT NULL);
+    ",
+    },
 ];
 
 /// How `spotify_library.genres` and `artist_genres.genres` join tags.
@@ -1202,6 +1210,28 @@ impl Store for SqliteStore {
         .transpose()
     }
 
+    fn playlist_scan_cursor(&self, owner_id: &str) -> Result<Option<String>, StoreError> {
+        self.query(
+            "SELECT playlist_id FROM spotify_playlist_scans WHERE owner_id = ?1",
+            &[owner_id.into()],
+        )?
+        .first()
+        .map(|row| text(row, 0))
+        .transpose()
+    }
+
+    fn save_playlist_scan_cursor(
+        &mut self,
+        owner_id: &str,
+        playlist_id: &str,
+    ) -> Result<(), StoreError> {
+        self.execute(
+            "INSERT OR REPLACE INTO spotify_playlist_scans (owner_id, playlist_id) \
+             VALUES (?1, ?2)",
+            &[owner_id.into(), playlist_id.into()],
+        )
+    }
+
     fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError> {
         let rows: Vec<Vec<SqliteValue>> = super::latest_plays(plays)
             .iter()
@@ -1634,7 +1664,7 @@ mod tests {
         let store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1675,7 +1705,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 1);
@@ -1732,7 +1762,7 @@ mod tests {
         let mut store = SqliteStore::open(Path::new(&path)).unwrap();
         assert_eq!(
             store.schema_versions().unwrap(),
-            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
         let lib = store.library().unwrap();
         assert_eq!(lib.len(), 2, "no row lost");

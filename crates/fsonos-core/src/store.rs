@@ -610,6 +610,19 @@ pub trait Store {
     /// The last saved observation, if any; absence is not an empty playlist.
     fn playlist_contents(&self, playlist_uri: &str) -> Result<Option<CachedPlaylist>, StoreError>;
 
+    /// The last playlist ID whose contents a bounded taste scan attempted for
+    /// this Spotify owner. It is a position in ID order, not proof of a read.
+    fn playlist_scan_cursor(&self, owner_id: &str) -> Result<Option<String>, StoreError>;
+
+    /// Advance one owner's scan before attempting the playlist read. Keeping
+    /// attempts separately from observations lets failures yield to later lists
+    /// without replacing last-good contents or their observation timestamps.
+    fn save_playlist_scan_cursor(
+        &mut self,
+        owner_id: &str,
+        playlist_id: &str,
+    ) -> Result<(), StoreError>;
+
     /// Replace what the owner played on Spotify lately, on any device
     /// (`spotify:track:` URI, unix seconds), as a sync read it. A track
     /// heard more than once keeps its latest play.
@@ -712,6 +725,7 @@ pub struct MemStore {
     album_misses: BTreeMap<String, i64>,
     playlists: Vec<(String, String)>,
     playlist_contents: BTreeMap<String, CachedPlaylist>,
+    playlist_scan_cursors: BTreeMap<String, String>,
     spotify_heard: Vec<(String, i64)>,
     play_names: BTreeMap<String, PlayName>,
     actions: Vec<LoggedAction>,
@@ -987,6 +1001,20 @@ impl Store for MemStore {
 
     fn playlist_contents(&self, playlist_uri: &str) -> Result<Option<CachedPlaylist>, StoreError> {
         Ok(self.playlist_contents.get(playlist_uri).cloned())
+    }
+
+    fn playlist_scan_cursor(&self, owner_id: &str) -> Result<Option<String>, StoreError> {
+        Ok(self.playlist_scan_cursors.get(owner_id).cloned())
+    }
+
+    fn save_playlist_scan_cursor(
+        &mut self,
+        owner_id: &str,
+        playlist_id: &str,
+    ) -> Result<(), StoreError> {
+        self.playlist_scan_cursors
+            .insert(owner_id.to_owned(), playlist_id.to_owned());
+        Ok(())
     }
 
     fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError> {

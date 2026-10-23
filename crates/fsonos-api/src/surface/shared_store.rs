@@ -250,6 +250,18 @@ impl Store for SharedStore<'_> {
         self.lock().playlist_contents(playlist_uri)
     }
 
+    fn playlist_scan_cursor(&self, owner_id: &str) -> Result<Option<String>, StoreError> {
+        self.lock().playlist_scan_cursor(owner_id)
+    }
+
+    fn save_playlist_scan_cursor(
+        &mut self,
+        owner_id: &str,
+        playlist_id: &str,
+    ) -> Result<(), StoreError> {
+        self.lock().save_playlist_scan_cursor(owner_id, playlist_id)
+    }
+
     fn save_spotify_heard(&mut self, plays: &[(String, i64)]) -> Result<(), StoreError> {
         self.lock().save_spotify_heard(plays)
     }

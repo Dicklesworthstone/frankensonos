@@ -103,6 +103,7 @@ fn opaque_cursors_are_compared_by_value_not_by_url_spelling() {
 #[derive(Default)]
 struct Script {
     pages: HashMap<String, Value>,
+    refused: HashMap<String, u16>,
     calls: Vec<String>,
     base: String,
 }
@@ -139,6 +140,9 @@ impl Server {
                                 return response(401, "{}");
                             }
                             let uri = req.uri.as_str();
+                            if let Some(&status) = state.refused.get(path(uri)) {
+                                return response(status, "{}").with_header("Retry-After", "3600");
+                            }
                             match state.pages.get(uri).or_else(|| state.pages.get(path(uri))) {
                                 Some(body) => {
                                     response(200, body.to_string().replace(API, &state.base))
@@ -207,6 +211,9 @@ impl Server {
             .collect()
     }
 }
+
+#[path = "playlist_rotation_tests.rs"]
+mod playlist_rotation;
 
 impl Drop for Server {
     fn drop(&mut self) {

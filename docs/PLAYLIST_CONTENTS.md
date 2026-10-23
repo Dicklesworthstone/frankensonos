@@ -66,10 +66,26 @@ playlists. It now preserves ordered contents during those same reads, alongside
 the deduplicated library used for search and DJ selection. This adds no Spotify
 requests and grants no new scope.
 
-The existing budget is at most 25 eligible playlists and four pages of 50 raw
-entries per playlist. A longer playlist therefore produces an explicitly
-partial observation. The URI/name listing can contain other playlists whose
-contents were not eligible or within this budget; those remain `not_cached`.
+Each sync reads at most 25 eligible playlists and four pages of 50 raw entries
+per playlist. Eligible playlists are visited in Spotify ID order, continuing
+after the last attempted ID and wrapping at the end. The position is stored
+for the signed-in Spotify owner, so manual syncs and daemon restarts continue
+the scan. Reordering the Spotify list does not reset it; when the last attempted
+playlist disappears, the scan continues at the next surviving ID. Repeated
+directory entries consume only one turn.
+
+The scan advances before each playlist request. A refused or malformed list
+therefore yields to later lists. A rate limit or other halt stops further
+requests, and the next sync starts after the list that was attempted. A failure
+to read or save the scan position stops playlist intake and appears in the sync
+notes; it does not silently restart from the first list. Unvisited observations
+and previously cached taste tracks survive incomplete reads.
+
+A playlist longer than 200 raw entries still produces an explicitly partial
+observation. The URI/name listing can contain playlists whose contents were not
+eligible or have not had their turn within this budget; those remain
+`not_cached`. Rotating among playlists does not continue a long playlist's item
+pages or join observations from different reads.
 
 Each observation is replaced atomically in the local store. A failed refresh
 keeps the previous observation, including its original timestamp and revision.
@@ -80,7 +96,9 @@ with a new partial observation. A new prefix is never joined to an older suffix.
 Migration 14 adds `spotify_playlist_contents`, keyed by playlist URI, with one
 serialized observation per row. This keeps duplicate occurrences and their
 metadata separate from the general track cache. The in-memory and SQLite stores
-use the same validation and revision calculation.
+use the same validation and revision calculation. Migration 15 keeps the scan's
+last attempted playlist ID separately, keyed by Spotify owner, so a failed
+attempt cannot change an observation's revision or timestamp.
 
 ## CLI and agents
 

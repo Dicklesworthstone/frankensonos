@@ -25,6 +25,8 @@
 //! early (rate limited past the waits, a server error, signed out, or a read
 //! budget reached) keeps what it read; the sync then keeps the taste-only
 //! tracks it cached before, rather than retiring what it didn't get to read.
+//! Playlist scans resume after their last attempted ID, including across
+//! restarts, so the per-sync limit doesn't permanently hide later playlists.
 
 use std::collections::{HashMap, HashSet};
 
@@ -247,7 +249,7 @@ pub async fn read_taste<S: Store + ?Sized>(
     }
     if playlists {
         let (tracks, listed) = reader
-            .playlist_tracks(&mut taste.named, &mut taste.playlist_contents, now)
+            .playlist_tracks(store, &mut taste.named, &mut taste.playlist_contents, now)
             .await;
         taste.playlists = listed;
         for item in tracks {
@@ -443,8 +445,9 @@ impl Reader<'_> {
     /// playlists' items aren't readable since February 2026), and every
     /// playlist in their list when the whole list was read. `named` gets
     /// the genres each playlist's name states, for its tracks.
-    async fn playlist_tracks(
+    async fn playlist_tracks<S: Store + ?Sized>(
         &mut self,
+        store: &mut S,
         named: &mut HashMap<String, Vec<String>>,
         observations: &mut Vec<PlaylistObservation>,
         now: i64,
@@ -466,80 +469,126 @@ impl Reader<'_> {
                 .collect()
         });
         let mut tracks = Vec::new();
-        let mut readable = lists.iter().filter(|l| l.readable_by(&me.id));
-        for list in readable.by_ref().take(MAX_PLAYLISTS) {
-            let url = self.session.endpoints().playlist_items(&list.id, 0);
-            let entries = self
-                .observe_pages::<serde_json::Value>(
-                    &url,
-                    "playlist items",
-                    MAX_PLAYLIST_PAGES,
-                    Some(PAGE_LIMIT as usize),
-                )
-                .await;
-            self.read.playlists += 1;
-            let mut occurrences = Vec::new();
-            // "Late Night Jazz": the owner's own name for these tracks.
-            let stated = crate::genre_guess::from_name(&list.name);
-            for (position, entry) in (1_u32..).zip(&entries.items) {
-                // Null/unavailable entries and local files still occupy
-                // positions. Episodes and malformed tracks cannot become
-                // playable cache rows, but do not shift later occurrences.
-                if entry.get("is_local").and_then(serde_json::Value::as_bool) == Some(true) {
-                    continue;
-                }
-                if let Some(item) = serde_json::from_value::<PlaylistItem>(entry.clone())
-                    .ok()
-                    .and_then(|entry| entry.library_item(Origin::Taste))
-                    .filter(valid_playlist_track)
-                {
-                    let track = item.to_track();
-                    occurrences.push(PlaylistTrack {
-                        position,
-                        source_uri: track.source_uri,
-                        title: track.title,
-                        artist: track.artist,
-                        album: track.album,
-                        album_uri: item.album_uri.clone(),
-                        disc_number: item.disc_number,
-                        track_number: item.track_number,
-                        duration_secs: item.duration_secs,
-                        explicit: item.explicit,
-                    });
-                    if !stated.is_empty() {
-                        let genres: &mut Vec<String> =
-                            named.entry(item.source_uri.clone()).or_default();
-                        for genre in &stated {
-                            if !genres.contains(genre) {
-                                genres.push(genre.clone());
-                            }
-                        }
-                    }
-                    self.read.playlist_tracks += 1;
-                    tracks.push(item);
-                }
-            }
-            if entries.examined > 0 || entries.complete {
-                observations.push(PlaylistObservation {
-                    contents: CachedPlaylist::new(
-                        format!("spotify:playlist:{}", list.id),
-                        now,
-                        entries.source_total,
-                        entries.examined,
-                        entries.complete,
-                        occurrences,
-                    ),
-                    failed: entries.failed,
-                });
-            }
+        let mut readable: Vec<_> = lists
+            .iter()
+            .filter(|list| !list.id.is_empty() && list.readable_by(&me.id))
+            .collect();
+        if readable.is_empty() || self.read.halted.is_some() {
+            return (tracks, listed);
         }
-        if readable.next().is_some() {
+        let cursor = match store.playlist_scan_cursor(&me.id) {
+            Ok(cursor) => cursor,
+            Err(error) => {
+                self.read
+                    .failed
+                    .push(("playlist scan position".into(), error.to_string()));
+                return (tracks, listed);
+            }
+        };
+        // Stable IDs make order changes harmless. An absent cursor resumes
+        // at its next surviving ID; newly added earlier IDs get their turn
+        // after wrapping. Each eligible list is visited at most once a sync.
+        readable.sort_by(|a, b| a.id.cmp(&b.id));
+        readable.dedup_by(|a, b| a.id == b.id);
+        let start = readable
+            .partition_point(|list| cursor.as_ref().is_some_and(|last| list.id <= *last))
+            % readable.len();
+        readable.rotate_left(start);
+        let mut attempted = 0;
+        for list in readable.iter().take(MAX_PLAYLISTS) {
+            if self.read.halted.is_some() {
+                break;
+            }
+            // Advance before I/O so an unreadable list or interrupted sync
+            // cannot repeatedly take the first turn after a restart.
+            if let Err(error) = store.save_playlist_scan_cursor(&me.id, &list.id) {
+                self.read
+                    .failed
+                    .push(("playlist scan position".into(), error.to_string()));
+                break;
+            }
+            attempted += 1;
+            let (items, observation) = self.read_playlist(list, named, now).await;
+            tracks.extend(items);
+            observations.extend(observation);
+        }
+        if attempted == MAX_PLAYLISTS && readable.len() > attempted {
             self.read.failed.push((
                 "playlist items".into(),
                 "taste playlist budget reached before every readable playlist was visited".into(),
             ));
         }
         (tracks, listed)
+    }
+
+    async fn read_playlist(
+        &mut self,
+        list: &SimplifiedPlaylist,
+        named: &mut HashMap<String, Vec<String>>,
+        now: i64,
+    ) -> (Vec<LibraryItem>, Option<PlaylistObservation>) {
+        let url = self.session.endpoints().playlist_items(&list.id, 0);
+        let entries = self
+            .observe_pages::<serde_json::Value>(
+                &url,
+                "playlist items",
+                MAX_PLAYLIST_PAGES,
+                Some(PAGE_LIMIT as usize),
+            )
+            .await;
+        self.read.playlists += 1;
+        let mut tracks = Vec::new();
+        let mut occurrences = Vec::new();
+        // "Late Night Jazz": the owner's own name for these tracks.
+        let stated = crate::genre_guess::from_name(&list.name);
+        for (position, entry) in (1_u32..).zip(&entries.items) {
+            // Unsupported entries still occupy their source positions.
+            if entry.get("is_local").and_then(serde_json::Value::as_bool) == Some(true) {
+                continue;
+            }
+            if let Some(item) = serde_json::from_value::<PlaylistItem>(entry.clone())
+                .ok()
+                .and_then(|entry| entry.library_item(Origin::Taste))
+                .filter(valid_playlist_track)
+            {
+                let track = item.to_track();
+                occurrences.push(PlaylistTrack {
+                    position,
+                    source_uri: track.source_uri,
+                    title: track.title,
+                    artist: track.artist,
+                    album: track.album,
+                    album_uri: item.album_uri.clone(),
+                    disc_number: item.disc_number,
+                    track_number: item.track_number,
+                    duration_secs: item.duration_secs,
+                    explicit: item.explicit,
+                });
+                if !stated.is_empty() {
+                    let genres: &mut Vec<String> =
+                        named.entry(item.source_uri.clone()).or_default();
+                    for genre in &stated {
+                        if !genres.contains(genre) {
+                            genres.push(genre.clone());
+                        }
+                    }
+                }
+                self.read.playlist_tracks += 1;
+                tracks.push(item);
+            }
+        }
+        let observation = (entries.examined > 0 || entries.complete).then(|| PlaylistObservation {
+            contents: CachedPlaylist::new(
+                format!("spotify:playlist:{}", list.id),
+                now,
+                entries.source_total,
+                entries.examined,
+                entries.complete,
+                occurrences,
+            ),
+            failed: entries.failed,
+        });
+        (tracks, observation)
     }
 }
 
