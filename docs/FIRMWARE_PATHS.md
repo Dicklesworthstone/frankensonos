@@ -475,15 +475,18 @@ how a local client obtains a scoped token without the cloud.
    (7.2 s and 8.3 s, three and two deaths in 25 s), while 4, 8, 24 and 40 survived a 25 s
    window and 40 only died on a third run at 11.4 s. So the trigger is the ordinary forward
    append and a larger delta is not a larger copy — append+drain keeps `limit-head` small.
-   Geometry, corrected (0xc50 stride, ring at `parent+0xc508`): `delta == 17` writes
-   `[parent+0xb8c0, parent+0x18a10)` — **inside the parent**, and it is the array's own
-   compaction shifted one entry too far. The 0xc50 bytes before the array cover the four
+   Geometry, corrected **again** (0xc50 stride, ring at `parent+0xc508`, so dest =
+   `0xc510 - C*0xc50`): the original note was right and my later "inside the parent" fix was
+   wrong. The copy always ENDS at the array start, so the counter block is the *tail* of every
+   copy, and `C` walks the destination backwards: `C=15` -> `parent+0xc60`, `C=16` ->
+   `parent+0x10` (the vtable/header words), `C=17` -> `parent-0xc40`, `C=40` -> `parent-0x12770`.
+   That is why 16–20 is the fatal band (vtable and first pointers) rather than a counter effect.
+   The 0xc50 bytes before the array cover the four
    counters at `+0xc508/0xc50c/0xc510/0xc514`: they are overwritten with our segment bytes and
    only `head` is restored afterwards, so after each compaction count/tail/limit are
    attacker-chosen and then used as indices (`mulli …,0xc50`). That is a controlled write over
-   the queue control block, not a heap underrun. The payload maps precisely: the counters come
-   from the **first four 32-bit words of the entry after the head entry** (entry offsets
-   0x00–0x0c), so whatever field sits at entry+0 is the injected value; entry offset 0xc18 is a
+   the queue control block, not a heap underrun. The counters are written from the **last four 32-bit words of the copied range**
+   (i.e. the tail of the last entry), not the first, so whatever field sits at entry+0 is the injected value; entry offset 0xc18 is a
    double (segment duration). Whether entry+0 is a copied URI or a pointer decides if the
    injected words are ASCII-bounded or heap pointers.
    Counter roles are now partly resolved: `0xc50c` is **count** (the wrap path does
