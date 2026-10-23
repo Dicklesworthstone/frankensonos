@@ -916,5 +916,13 @@ nothing exploitable by itself.
 
 **But the gate is one file, not a signature.** It lives in the installed `upgrade`, so
 once any root primitive exists, editing that list (or bind-mounting an older `upgrade`)
-reopens the entire downgrade history — up to 34.16 and the ALAC/SMB/MPEG-TS bugs. That
-makes "root first, downgrade second" the correct order, not the reverse.
+reopens the entire downgrade history — up to 34.16 and the ALAC/SMB/MPEG-TS bugs.
+
+Which also means the downgrade is **optional once root exists**, not a step towards it:
+root already permits running anything, reading the flash keyring and bind-mounting over
+the readonly rootfs, so old firmware adds no capability — only a way to *reproduce* old
+bugs. As a route to root it is closed for exactly the versions that contain them. The
+productive pre-root surfaces are therefore the ones that execute **before** the
+signature: the type-1 and type-21 records and the type-22 header all sit inside the
+first 128 KiB and are parsed with no key (`type-21` is plaintext and completely unfuzzed
+so far), plus the anacapad/JWT doors on the running system.
