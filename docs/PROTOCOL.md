@@ -517,7 +517,8 @@ with no response; 2047 is fine. This is the body, not the statement: the same
 1480-byte statement answers `400` on a 2047-byte body and resets once an
 unused `button` value pushes the body to 2048. The 34.16 handler has the
 guard (Content-Length `< 0x800`, else `413`); 57.23 reads past its 0x800
-buffer instead. It is independent of content (a syntactically trivial ring
+buffer instead, and the read is effectively **unbounded** — bodies of 20 KB
+are accepted and still end in a reset, never `413`. It is independent of content (a syntactically trivial ring
 still resets), the listener and `/status` stay up (`200` ×3), and the same
 bytes driven into 34.16's `ZZ0137` return `0` with no fault — a 57.23
 regression, not the ring parser. Effect: the decoded-statement limit on
