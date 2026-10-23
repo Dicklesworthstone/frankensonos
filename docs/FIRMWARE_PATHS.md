@@ -1859,3 +1859,17 @@ Reading caution for whoever continues: after the first success, every subsequent
 looks like "account already exists"/missing-argument rather than a length check, so
 do not read the 402s as a cap on `AccountID` — the sequence has to be
 remove-then-add with the right arguments before length can be bisected.
+
+### `AddAccountX` argument shape: one-character `AccountID` only, for now
+
+Reproduced on two units, one of them freshly booted and account-free:
+`AddAccountX(2311, AccountID="1", …)` answers 200, and `"12"`, `"1234567890"`,
+`"Z"*60` all answer 402. The same id with a 60-character `AccountPassword` also
+402s, while a byte-identical repeat of the working tuple keeps returning 200
+(idempotent re-add). `RemoveAccount(2311, "1")` is 806 throughout, so the stored
+key is not the plain id.
+
+So the handler is shape-strict and the guesses are not the shapes, which means the
+`strcpy` into the ~16-byte field is not yet shown to be reachable with an
+overflow. The next step is to take the real argument shapes from controller traffic
+for an actual account add instead of guessing, then re-run the length series.
