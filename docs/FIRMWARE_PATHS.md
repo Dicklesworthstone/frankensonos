@@ -403,7 +403,11 @@ how a local client obtains a scoped token without the cloud.
    adding new segments each reload crashes in 5 s (2-3 reloads at
    `TARGETDURATION:2`), while a window that jumps **backwards** survives 40 s of
    rewrites — so the kill is in the forward append, not in error reconciliation.
-   Beads `re-hls-kill`.
+   **The TS layer itself is hardened:** `FUN_101fb134` (tsclient) rejects
+   `afelen > 0xBB` outright (`if (0xbb < local_140[0]) return 0;`) and reads the
+   field into a 192-byte stack buffer, so CVE-2023-27355's overrun shape is gone
+   from 57.23; `peslen` is 16-bit and can wrap, but nothing copies by it. The
+   crash is an HLS life-cycle bug, not a demux copy. Beads `re-hls-kill`.
    Payload primitives for the day a smash lands: 34.16 `execve` gadget
    `0x4f4178` (`a0=*s1`, `a1=argv`, `a2=environ`, needs `s1`), and 86.10
    `0x656a86` (`a1` alone drives both, path via `*a1`). **Neither is the live
