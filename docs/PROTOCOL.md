@@ -497,9 +497,10 @@ first).
 **Live crash in the 57.23 devmode path (2026-10-23, pre-auth).** A statement
 that is syntactically valid up to the key ring makes `POST /devmode` close the
 connection with no response instead of answering, when the ring's key-material
-length runs past the parser's expectations (0x600 bytes observed 2/2; 0x520
-and below answer `400`). It is content-dependent as well as length-dependent —
-the same 0x600 length filled with `B` answered `400` — consistent with
+length runs past the parser's expectations (a hard cliff: 0x5A0 and below
+answer `400`, 0x5B0 and above reset, every size from 0x5B0 to 0x800 tried). It is
+content-dependent as well as length-dependent — the same 0x600 length filled
+with `B` answered `400` — consistent with
 `hash_alg`/`siglen` being read past the end of the statement buffer so the
 values come from stale stack. The listener and `/status` stay up immediately
 afterwards (`200` ×3), so it is a per-connection crash, not the daemon. The

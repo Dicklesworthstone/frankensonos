@@ -63,7 +63,7 @@ are written as `192.168.4.x`-style placeholders and uuids as `RINCON_…`.
 - **Queue metadata is the soft spot**: a multi-KB `dc:title` in
   `AddURIToQueue` kills the daemon 72–97 s later. It is state-dependent —
   always run a cleared-queue control before calling it an overflow.
-- **Devmode ring keys past ~0x600 reset the connection** on 57.23 and the
+- **Devmode ring keys from 0x5B0 up reset the connection** on 57.23 and the
   fault is content-dependent; `hash_alg`/`siglen` are read past the copied
   statement. 34.16 returns `0` for the same bytes.
 - **GENA**: `/msprox`-style guessing fails; subscribe from a Play:5 or an S2,
