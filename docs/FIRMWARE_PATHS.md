@@ -61,7 +61,11 @@ with a byte-counting HTTP server and a packet capture:
 Consequence: `BeginSoftwareUpdate` alone cannot install a modified or older
 image without the signing key, and "Force" (Flags bit 0) only makes the
 device go as far as the gate. An in-band downgrade is therefore *not* a
-bypass by itself.
+bypass by itself. See
+[`UPDATE_FEED_AND_SIGNATURE.md`](UPDATE_FEED_AND_SIGNATURE.md) for the
+direct-package extension (2026-10-22): whole-`.upd` fetch, the encrypted
+component envelope, the signature TLV layout, and why unsigned preinstall
+does not run.
 
 **Reachable unauthenticated write (2026-10-22, verified live):** `POST
 /advconfig` writes `/jffs/netsettings_mod.txt` as root from two form fields
@@ -830,3 +834,30 @@ It is defensively written and matches the earlier mutation result:
 
 The DER certificates themselves are handed to the bundled mbedtls 2.5.0, so the
 remaining exposure is mbedtls's x509 parser rather than Sonos code.
+
+### Self-signed image built end to end: the resolver does not read the bundle
+
+With the type-17 grammar and digest fully known, a complete attacker-signed
+image was built to test the last open question (does a key reference resolve
+against the *bundle* the way it resolves against compiled-in keys?):
+
+1. RSA-2048 key and self-signed certificate, SPKI DER, SHA-1 of that SPKI.
+2. The bundle really is plaintext: `rcbundle\0`, a length-prefixed version, a
+   big-endian `u16` count at `+0x6A`, then `u16 flags / u32 offset / u16 length`
+   entries (offset relative to the `rcbundle` byte, DER data after the table).
+   The new certificate is appended, its entry added, the count bumped and every
+   existing offset shifted by the 8 bytes the new entry occupies.
+3. The type-17 ring kept, with the digest field at `+0x1d`, the SHA-1 at `+0x4f`
+   and the 256-byte signature at `+0x6c`; the version record bumped to 99.1.1 so
+   success would be unmistakable. Signature = RSA PKCS#1 v1.5 over SHA-256 of
+   every byte before the type-17 record (verified offline with `openssl dgst`).
+4. Served it. The unit read **all 5,607,497 bytes** (so the version/patch gate
+   passed and the modified bundle parsed), rebooted in ~10 s and came back on
+   57.23 — i.e. it failed at verification.
+
+Combined with the earlier inline-reference result, the conclusion is: **the
+type-17 key resolver only matches keys compiled into `libsonoscrypto`; neither
+inline key material nor an attacker certificate in the bundle is honoured.** A
+modified image therefore needs the vendor key even though the format is fully
+understood. The builder is `captures/research/selfsign/build.py` and is reusable
+for any future attempt that supplies real key material.
