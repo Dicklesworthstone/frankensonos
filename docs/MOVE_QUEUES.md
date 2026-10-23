@@ -6,6 +6,15 @@ and the fallback for unsupported coordination must copy the source queue.
 Both now stage the replacement before removing anything already queued at
 the destination.
 
+Queues may mix Spotify songs and podcast episodes, including repeated
+occurrences. Each is rendered with the destination household's own linked
+service parameters. Episodes use only that household's service id, with no
+track-only account flags or descriptor. Spotify's case-sensitive catalog ids
+are preserved. Artist and show entries must already be expanded before a queue
+can be copied; their container does not stand in for an exact occurrence.
+Direct episode, artist and show sources also relearn destination linkage before
+either room is changed. Missing linkage leaves both rooms untouched.
+
 ## What a queue transfer does
 
 1. Read the complete source queue and learn the destination household's
@@ -62,5 +71,6 @@ read-back.
 Run:
 
     cargo test -p fsonos-core --test moving_queue_staging_sim
+    cargo test -p fsonos-core --test moving_spotify_sim
     cargo test -p fsonos-core --test move_play_mode_sim --test moving_sim
     cargo test -p fsonos-core moving::replay

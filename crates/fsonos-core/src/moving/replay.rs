@@ -8,8 +8,9 @@ use crate::{HouseholdState, control};
 use fsonos_proto::content::{self, QUEUE};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::{
-    DidlKind, DidlObject, SpotifyRenderParams, item_metadata, parse_didl, spotify_queue_uri,
-    spotify_track_didl, spotify_track_uri, spotify_uri_from_renderer_uri,
+    DidlKind, DidlObject, SpotifyBare, SpotifyRenderParams, item_metadata, parse_didl,
+    spotify_bare_didl, spotify_bare_uri, spotify_queue_uri, spotify_track_didl, spotify_track_uri,
+    spotify_uri_from_renderer_uri,
 };
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayMode, PlayerId, TransportState};
@@ -62,17 +63,24 @@ impl Prepared {
                 metadata,
                 position_secs,
             } => {
-                let item = if let Some(spotify) =
-                    spotify_uri_from_renderer_uri(uri).filter(|s| s.starts_with("spotify:track:"))
+                let item = if let Some(spotify) = spotify_uri_from_renderer_uri(uri)
+                    .filter(|s| s.starts_with("spotify:track:") || SpotifyBare::of(s).is_some())
                 {
                     let title = parse_didl(metadata)
                         .ok()
                         .and_then(|v| v.into_iter().next())
                         .map_or_default(|object| object.title);
                     let params = parameters(t, households, target)?;
-                    Item {
-                        uri: spotify_track_uri(&spotify, &params),
-                        metadata: spotify_track_didl(&spotify, &title, &params),
+                    if SpotifyBare::of(&spotify).is_some() {
+                        Item {
+                            uri: spotify_bare_uri(&spotify, params.sid),
+                            metadata: spotify_bare_didl(&spotify, &title, params.sid),
+                        }
+                    } else {
+                        Item {
+                            uri: spotify_track_uri(&spotify, &params),
+                            metadata: spotify_track_didl(&spotify, &title, &params),
+                        }
                     }
                 } else {
                     Item {
@@ -320,18 +328,26 @@ fn queue_items<T: Transport + ?Sized>(
             ));
         }
         let item = if let Some(spotify) = spotify_uri_from_renderer_uri(&res.uri) {
-            if !spotify.starts_with("spotify:track:") {
+            let episode = SpotifyBare::of(&spotify) == Some(SpotifyBare::Episode);
+            if !spotify.starts_with("spotify:track:") && !episode {
                 return Err(MoveError::Unplayable(
-                    "a source queue item is not a Spotify track".into(),
+                    "a source queue item is not an expanded Spotify track or episode".into(),
                 ));
             }
             if learned.is_none() {
                 learned = Some(parameters(t, households, target)?);
             }
             let params = learned.as_ref().expect("parameters learned above");
-            Item {
-                uri: spotify_queue_uri(&spotify),
-                metadata: spotify_track_didl(&spotify, &object.title, params),
+            if episode {
+                Item {
+                    uri: spotify_bare_uri(&spotify, params.sid),
+                    metadata: spotify_bare_didl(&spotify, &object.title, params.sid),
+                }
+            } else {
+                Item {
+                    uri: spotify_queue_uri(&spotify),
+                    metadata: spotify_track_didl(&spotify, &object.title, params),
+                }
             }
         } else {
             Item {

@@ -291,14 +291,14 @@ fn automatic_addresses_never_include_loopback_lan_wildcard_or_public_ips() {
         unreachable!()
     };
     status.ipv4.extend([
-        "127.0.0.1".parse().unwrap(),
+        "127.0.0.1".parse::<std::net::Ipv4Addr>().unwrap(),
         "192.168.1.10".parse().unwrap(),
         "0.0.0.0".parse().unwrap(),
         "203.0.113.10".parse().unwrap(),
         "100.64.0.10".parse().unwrap(),
     ]);
     status.ipv6.extend([
-        "::1".parse().unwrap(),
+        "::1".parse::<std::net::Ipv6Addr>().unwrap(),
         "::".parse().unwrap(),
         "2001:db8::10".parse().unwrap(),
     ]);

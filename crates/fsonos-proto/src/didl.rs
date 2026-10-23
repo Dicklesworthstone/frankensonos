@@ -245,7 +245,7 @@ impl SpotifyBare {
 pub fn spotify_bare_uri(spotify_uri: &str, sid: u32) -> String {
     format!(
         "x-sonos-spotify:{}?sid={sid}",
-        spotify_uri.to_ascii_lowercase().replace(':', "%3a")
+        spotify_uri.replace(':', "%3a")
     )
 }
 
@@ -781,7 +781,7 @@ mod tests {
         assert_eq!(SpotifyBare::of("spotify:album:A"), None);
         assert_eq!(
             spotify_bare_uri("spotify:artist:ABC", 12),
-            "x-sonos-spotify:spotify%3aartist%3aabc?sid=12"
+            "x-sonos-spotify:spotify%3aartist%3aABC?sid=12"
         );
         let episode = spotify_bare_didl("spotify:episode:abc", "Ep & 1", 7);
         assert!(episode.contains("?sid=7"));
@@ -796,6 +796,21 @@ mod tests {
             spotify_bare_didl("spotify:show:s", "S", 7)
                 .contains("<upnp:class>object.container</upnp:class>")
         );
+    }
+
+    #[test]
+    fn bare_spotify_rendering_preserves_case_sensitive_catalog_ids() {
+        for kind in ["artist", "episode", "show"] {
+            let source = format!("spotify:{kind}:AbCdEf0123456789GhIjKl");
+            let uri = spotify_bare_uri(&source, 7);
+            assert_eq!(spotify_uri_from_renderer_uri(&uri), Some(source.clone()));
+            let item = parse_didl(&spotify_bare_didl(&source, "Mixed case", 7))
+                .unwrap()
+                .remove(0);
+            assert_eq!(item.res.unwrap().uri, uri);
+            assert!(item.desc.is_none());
+            assert!(!uri.contains("flags=") && !uri.contains("sn="));
+        }
     }
 
     #[test]
