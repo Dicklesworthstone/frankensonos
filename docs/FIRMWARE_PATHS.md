@@ -325,9 +325,10 @@ how a local client obtains a scoped token without the cloud.
    rejects today), then exercising the admin verbs and their parsers.
 1. The 2023 Pwn2Own pair is the only public S1-shaped material: `/msprox`
    OOB read (CVE-2023-27353, leak) and the MPEG-TS `afelen` overflow
-   (CVE-2023-27355). `/msprox` exists on the **1443 local API** (`/api/msprox` answers 400), not on
-   :1400 where the 405 is generic; the envelope (a `uuid` target and the
-   forwarded body encoding) is not finished. The TS demux in the control-RPC layer has not been
+   (CVE-2023-27355). `/msprox` is **absent** from both extracted builds: no `msprox` bytes exist
+   (case-insensitive, UTF-16 and split forms), `/api/anything` is a generic 400
+   stub and `/api/v1/msprox` is 404. CVE-2023-27353 is therefore not reachable
+   here; retire it. The TS demux in the control-RPC layer has not been
    located.
 2. `/getrs?id=N` indexes a setting table with no bounds check and then
    `jalr`s through the entry; `N` is `atoi`, so negative and huge indices are
