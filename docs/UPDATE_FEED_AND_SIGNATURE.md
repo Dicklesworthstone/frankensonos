@@ -795,3 +795,17 @@ erase (swap `/dev/mtd1` for an mtdram symlink), and the entry has to be an envel
 not a raw key. With the id table at 0, an envelope to the model key at 512 and the
 correct record framing the run still ends at `48`, i.e. the handle is still 0 — so
 the lookup keys on something the synthetic store does not express yet.
+
+### The key handle is an object slot, and only type 6 uses it
+
+`0x406558` is the per-section loader. Its callers at `0x406820` and `0x4068e8` differ
+in the 6th argument: the first passes **0**, the second passes `*(*(a0+12)+0x20)` —
+a vtable slot on a crypto object. The dispatch before the call only takes the keyed
+path for section **type 6** (`li v1,6; bne …`) and branches away for type 22. So the
+`48` on our package comes from the type-6 (kernel) section being processed with a
+crypto object whose key slot is still 0: the lookup that fills it happens before the
+section loop, and it is what the store is for.
+
+That collapses the remaining work to one place: who fills `*(crypto+0x20)` and from
+which stored id. Everything downstream (iterator, envelope, `ZZ0052`, `ZZ0045`) is
+fed from there.
