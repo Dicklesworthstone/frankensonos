@@ -115,7 +115,7 @@ jobs:
         run: node --test scripts/test-remote-read-requests.cjs scripts/test-remote-request-lifecycle.cjs scripts/test-remote-requests.cjs scripts/test-remote-http.cjs
       - name: Web queue client regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-remote-queue.cjs scripts/test-remote-play-mode.cjs scripts/test-remote-queue-navigation.cjs scripts/test-remote-queue-search.cjs
+        run: node --test scripts/test-remote-queue.cjs scripts/test-remote-play-mode.cjs scripts/test-remote-queue-navigation.cjs scripts/test-remote-queue-search.cjs scripts/test-remote-queue-range-caret.cjs
       - name: Live queue and command coordination regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-queue-coordination.cjs scripts/test-remote-queue-live.cjs scripts/test-remote-queue-http.cjs
@@ -160,7 +160,7 @@ jobs:
         run: node --test scripts/test-remote-timers.cjs
       - name: Web music routine composition and recovery regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-favorite-routines.cjs scripts/test-favorite-routines-panel.cjs scripts/test-music-routines.cjs
+        run: node --test scripts/test-favorite-routines.cjs scripts/test-favorite-routines-panel.cjs scripts/test-music-routines.cjs scripts/test-music-routines-handoff.cjs
       - name: Web scene regressions
         if: ${{ !cancelled() }}
         run: node --test scripts/test-remote-scenes.cjs
@@ -184,7 +184,7 @@ jobs:
         run: node --test scripts/test-dashboard-library.cjs scripts/test-dashboard-library-actions.cjs
       - name: Listening room live recovery regressions
         if: ${{ !cancelled() }}
-        run: node --test scripts/test-dashboard-recovery.cjs scripts/test-dashboard-live-integration.cjs
+        run: node --test scripts/test-dashboard-recovery.cjs scripts/test-dashboard-live-integration.cjs scripts/test-dashboard-room-recovery.cjs
       - name: Install the pinned Rust toolchain
         if: ${{ !cancelled() }}
         run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy
