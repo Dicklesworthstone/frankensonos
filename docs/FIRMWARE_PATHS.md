@@ -1937,3 +1937,24 @@ guessed shapes all land on 402.
 Consequence: H13 has two viable routes rather than one — either drive
 `AddOAuthAccountX` after a `GetWebCode` (needs the returned code), or read the real
 values out of controller traffic for a genuine add. Guessing the values is done.
+
+### Spotify is service id 9, and the service list is readable and pushable pre-auth
+
+`MusicServices#ListAvailableServices` answers **unauthenticated** and returns the
+whole 102-entry descriptor XML with `Id`, `Name`, `Uri` and `SecureUri` per
+service. **Spotify is `Id="9"`** (a second, `Id="12"`, is also named Spotify).
+Every earlier account probe used 2311, which is not in this list at all — that
+alone explains a good share of the 402s.
+
+`UpdateAvailableServices` also accepts a caller-supplied descriptor list
+(`AvailableServiceDescriptorList`) unauthenticated and answers 200, but a minimal
+custom `<Service Id="999" …>` entry did not survive: the following
+`ListAvailableServices` still showed the original 102 and no entry 999. So the call
+is accepted and the payload is normalised away — it needs the real descriptor shape
+(or the companion `AvailableServiceTypeList`) before a service we host can be
+registered, which is the interesting goal because the device would then talk SMAPI
+to a URI we choose.
+
+With the right service id the OAuth path still does not open:
+`GetWebCode(9)` → 800, `GetSessionId(9)` → 806, `AddOAuthAccountX(9, …)` → 402. So
+it needs genuine session state, not just the correct type.
