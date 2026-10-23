@@ -316,6 +316,22 @@ Grouping verbs (verified live on S2 97.1, 2026-10-07, with full restore):
   wire level), `AVTransportURI`, `CurrentTransportActions`, …
 - RenderingControl LastChange root: `…/RCS/`, children like
   `<Volume channel="Master" val="19"/>`, plus `LF`/`RF` fixed at 100.
+**The `/msprox?` proxy (from the 11.16.1 controller app).** The newest S1 app
+recognises a URL whose last path segment is `/msprox?` and parses its query
+with **`;` as the separator** (not `&`), a 0x20 name and 0x401 value buffer,
+looking up the key `uuid`; it then resolves that uuid through a device table
+and forwards the request, treating HTTP 1001 plus a rate limit as "in
+flight". It sits behind `ReportUnresponsiveDevice(DeviceUUID,
+DesiredAction)` (values include `VerifyThenRemoveSystemwide`, `Remove`) on
+ZoneGroupTopology. The players answer the endpoint (S1 allows GET — `405`
+for POST; S2 the reverse) and return their own bare `404` to every shape
+tried so far (absolute and relative request lines, SOAP bodies, self,
+target, `_MS` and short uuids, both directions, with and without
+`desiredAction`), so its resolver precondition is still unmet. The same app
+also registers `POST /diagmsg` (64-char `msg`) and ships the anacapa server
+config the phone itself runs on port 3500, with a hardcoded
+`OnlineUpdateBaseURL http://update.sonos.com/firmware/latest/`; the app
+carries no RSA private key, only the two root CAs.
 - ZoneGroupTopology NOTIFYs carry the full current `ZoneGroupState` (not a
   diff) — a single subscription anywhere in a household tracks all grouping.
 - Queue LastChange root: `<Event xmlns="urn:schemas-sonos-com:metadata-1-0/Queue/">`
