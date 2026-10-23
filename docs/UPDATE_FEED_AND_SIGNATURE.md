@@ -140,39 +140,39 @@ that URL (adding the device query itself), parses `<update_manifest>` and
 `.upd` URL is therefore fetched *as if it were a manifest*, fails the XML
 parse, and merely reboots.
 
-The manifest is signed by a **separate 1024-bit RSA key** in a trailing
-comment:
+The manifest is signed in a trailing `<!-- SIGNATURE:... -->` comment with a
+separate 1024-bit key, **but 57.23 does not enforce that signature**: a
+manifest whose body is edited (extra `<image>` pointing at a local server)
+is fetched and its image is downloaded. The signature key's public modulus
+is embedded in `libsonoscrypto.so.1` at file `0xd9fd`; only the public half
+is on the device.
 
-```
-<!-- SIGNATURE:<128-byte signature, 256 hex chars> -->
-```
+Delivery works end to end over plain HTTP:
 
-57.23 enforces it. Feeding a manifest with edited `<image>` URLs (or an
-unsigned one) is downloaded and then ignored: no image request follows.
-The current public feed manifest is
-`http://update-firmware.sonos.com/firmware/Prod/57.23-74170-v11.16.1-DILU1Q33hC-GA-1/update.upm`;
-on model 16 it still points at the **34.16** milestone
-(`.../34.16-37101-v7.1-nzhemz-MS-1/^34.16-37101`), so it is also the
-supported downgrade path.
+1. `BeginSoftwareUpdate` wants the URL of the **`update.upm` file** (a
+   directory gets a directory listing, not the manifest);
+2. an added `<image model="16" version="<higher>">http://<server>/<base></image>`
+   is selected;
+3. the `<image>` text is a **base**: the updater appends `/update.upd`;
+4. the fetch is reliable only with **Range/206** support — a stock
+   `http.server` breaks the pipe on the 5 MB file.
 
-Because type 17 signs only the 57-byte list region, a package carrying the
-**original type-17 section** (and the original type-22 bundle) is valid
-regardless of component contents. The remaining blocker is the manifest's
-own signature, and it can be sidestepped without any key:
+Local `http://` URLs avoid TLS completely. A Sonos hostname forces HTTPS and
+a self-signed cert is rejected with alert 42, so local URLs are the way in.
 
-1. keep the manifest **byte-identical** so its signature still matches;
-2. make `update-firmware.sonos.com` resolve to the local server;
-3. serve the exact image path from the manifest with the patched package.
-
-The path is plain HTTP, so a DNS override (router host, or an ARP+DNS spoof
-with forwarding) is sufficient. The manifest URL passed to
-`BeginSoftwareUpdate` must exist locally too and end in `/`; anacapad
-appends `update.upm`.
-
+What is still unresolved is the step **after** the download: even a package
+with the original signature and only `type-1` build 74171 (no component
+change) reboots back to `57.23-74170`. The image is fetched (served in
+206 responses), then the device reboots and keeps the old rootfs. The
+manifest's `revision`/`system_version` bumps, extra `flags` attributes, and
+image naming did not change that. That post-download gate is the next thing
+to identify.
 
 
-- Unsigned `.upm` manifests are fetched and parsed but never lead to an
-  image fetch; the manifest signature is enforced.
+
+
+- Edited `.upm` manifests **are** accepted (signature is advisory) and do
+  lead to an image fetch; the failure is after the download.
 - An unsigned `.upd` is fetched and parsed, then rejected; the reboot is
   unconditional, not a sign of installation.
 - The kernel rejects squashfs 4.x; v3.0 is required.
@@ -367,6 +367,22 @@ before a script of ours can run, because the AES key must be RSA-OAEP wrapped
 to it. The Playbar package only exercises the parser, the policy checks and
 the rollback path on this hardware.
 
+## Bundle manifest layout
+
+The rcbundle keeps a compact manifest: a `u16` count at bundle+`0x6a`
+(132 in the shipped bundles) followed by `count` **8-byte records** of
+`u32 0x07c10000 | u16 offset | u16 length`, then the DER certs. Offsets are
+absolute in the bundle, consecutive (`off[i] + len[i] == off[i+1]`), and the
+record area ends exactly where the first cert starts (`0x490`/`0x48c` in the
+shipped file) -- the layout is contiguous by construction.
+
+The manifest carries no name. The header's 20-byte name is identical across
+the model-5 and model-9 packages and matches none of: raw name in bundle,
+raw name in `/etc/fallback_trusted_roots.rcb`, SHA-1/MD5/SHA-256 of the cert,
+of its TBS, of its SPKI, of its PKCS#1 key, of its modulus, of its subject,
+or of the manifest record + cert. Whatever derives it lives in
+`sonosRcbParseHeader`'s store-building half, which is the next target.
+
 ## Reaching real packages and the app handshake
 
 The legacy update feed is directly usable. `GET
@@ -398,24 +414,26 @@ fallback bundle, and matches no cert, SPKI, subject or modulus hash tried.
 
 ## Next
 
-1. **Finish the DNS-offset install.** Keep the signed manifest untouched;
-   point `update-firmware.sonos.com` at the server (router host entry, or the
-   running ARP/DNS spoof), serve the manifest's exact
-   `.../34.16-37101-v7.1-nzhemz-MS-1/^34.16-37101` path, and confirm with a
-   packet capture that the player requests the image. Start with the real
-   34.16 package to prove the route end to end (expect a downgrade reboot),
-   then serve the patched 57.23 package at the same path.
-2. If the route proves out, the patched package needs no crypto changes at
-   all: keep the original type-17 and type-22 sections byte-for-byte, keep
-   `VERSION` with its trailing newline, and use the true v3.0 image.
-3. If the spoof route is unavailable, get the ASUS router credential for a
-   one-line local DNS override, or sign a manifest (needs the 1024-bit
-   manifest key, not the updater keys).
-4. Watch only for the `/xml/review.xsl` `PWNED-ROOTFS-MARKER`; `VERSION`
-   proves nothing when the build is unchanged.
-5. Local PPC execution is still blocked (`qemu-ppc` user mode segfaults on
-   every rootfs binary); `qemu-system-ppc` or a PPC cross-build remains the
-   only local oracle.
+1. **Identify the post-download gate.** Delivery is proven (edited manifest
+   → `<image>` base → `/update.upd` fetched in 206 chunks → reboot), but the
+   updater keeps `57.23-74170` even for a package that is byte-identical to
+   the official one except `type-1` build 74171. Compare what the updater
+   does with the **official** 34.16 package through the same route: if that
+   also fails, the problem is the route/manifest attributes; if it installs,
+   the problem is our package's own type-1 or section set.
+2. Check whether the manifest's `version`, `flags`, `milestone_index`,
+   `fromver_*`, `submodel_*` or the `<image>` **file naming** gates the
+   installer, one attribute at a time, using the official package as control.
+3. Keep the manifest URL pointed at the **`update.upm` file** on the local
+   server and keep Range support; both are required for a reliable fetch.
+4. Only after install works: swap the image for the patched v3.0 rootfs
+   package (original type-17/type-22, `VERSION` with trailing newline).
+   Watch `/xml/review.xsl` for `PWNED-ROOTFS-MARKER`.
+5. The control port wedges after a failed update; use `https://<ip>:1443`
+   with `-k`, and a direct `.upd` fetch to force a reboot.
+6. Local PPC execution is still blocked (`qemu-ppc` segfaults); a
+   `qemu-system-ppc` or PPC cross-build remains the only local oracle.
+
 
 
 ### Model-12 package record layout (measured on the shipped 57.23-…-1-12 file)
