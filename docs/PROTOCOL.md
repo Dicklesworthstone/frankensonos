@@ -538,61 +538,41 @@ definitive answer is dynamic: qemu-mips emulation of anacapad, or one live
 POST of a crafted statement (rate-limited, and a mutation — owner approval
 first).
 
-**Live crash in the 57.23 devmode path (2026-10-23, pre-auth).** Any
-`POST /devmode` whose body is **2048 bytes or more** closes the connection
-with no response; 2047 is fine. This is the body, not the statement: the same
-1480-byte statement answers `400` on a 2047-byte body and resets once an
-unused `button` value pushes the body to 2048. The 34.16 handler has the
-guard (Content-Length `< 0x800`, else `413`); 57.23 reads past its 0x800
-buffer instead, and the read is effectively **unbounded** — bodies of 20 KB
-are accepted and still end in a reset, never `413`. The same test on a Sonos
-One (86.10) answered `400` at 2100/4000/8000/32000 and reset once at 8000
-across six runs, so S2 tolerates at least 32 KB and its crash is not
-reproducible; the S1 57.23 edge at 2048 is the only hard one.
+**The 57.23 devmode body limit is a clean early reject, not an overflow
+(2026-10-23).** A body of **2048 bytes or more** gets an answer *before any
+of it is read*: sending the headers plus only half the declared body already
+draws the `400` while 1024 bytes are still outstanding, and the rest then
+hits a closed socket. The client sees a reset, not the response, because the
+2 KB body is left unread — that is the entire "crash". `2047` is fine and
+parses normally (`403` with a well-formed statement). `/status` never moves,
+and no daemon restart is involved.
 
-**Static confirmation in the 57.23 build** (PPC rootfs recovered from the
-public feed, `SQ57`; the MIPS player build is still unread): the handler is
-one function, frame `0xC70`, entry after `stwu r1,-3184`, saved `r25`–`r31`
-at `+0xC54`…`+0xC64` and `LR` at `+0xC74`; it decodes the statement into
-`r1+0x830` with an explicit **1024** limit, calls the verify helper and
-answers `li r3,403` when that fails, `400` on the early-outs, and only on
-success formats `Statement installed.` before `200`. It passes **2048** to
-the field getter (which is the *statement* cap and does hold) and no
-body-level limit of its own, so the overflow is
-upstream of it, in the shared POST reader — the same place the 34.16
-`Content-Length < 0x800` guard lives. The MIPS 57.23 build shows it exactly:
-the devmode dispatch calls the body reader with **size 4096** for a buffer
-that is still at `sp+0x20` in a `0x1490` frame (`ra` at `sp+0x1488`), and the
-reader's only check is `body_len < 4096` → `413`; the copy loop then fills
-`s2 - written` bytes into the caller's buffer. So 2048…4095-byte bodies
-overflow by up to 2048 bytes and land in the decoded-statement buffer and the
-handler state — **2048 bytes short of `ra`**, which is why the address-filled
-probe bodies looked identical to garbage. Live, the guard never shows as a
-`413`: 4095 and 5000 reset like everything else, and exactly 4096 hangs with
-no answer (both `/status` probes dead for 12 s) — the 413 branch leaves the
-already-sent body unread. The fix that would
-be correct is a `2048` size argument, or a 0x1000-byte buffer. Because the decoded buffer sits only
-`0x424` bytes below the saved registers, a decoded statement longer than
-1024 would reach `r25`…`r31` if the 1024 limit ever failed to clamp.
+This is the 34.16 behaviour, unchanged: that build's reader takes
+`Content-Length` and does `sltu(len, 0x800)` → `413`; 57.23 uses the same
+2048 bound with a different status path. The devmode STATEMENT is
+separately capped at 2048 and the MIPS 57.23 handler decodes it into
+`sp+0x820` with a **1024** limit, so the decoded buffer cannot exceed the
+frame. Net: **the devmode POST path is memory-safe**; earlier notes calling
+it an unbounded stack write were wrong.
 
-**Status semantics:** on the S1 a well-formed statement gets `403` (the
-signature check refuses it) and a burst makes every POST after the first
-answer `400`, but the `400`/`403` split also flips at random with fresh
-statements and 12–16 s spacing — roughly a coin flip, so `400` is *not* a
-usable parse oracle. Only a reset is trustworthy. It is independent of content (a syntactically trivial ring
-still resets), the listener and `/status` stay up (`200` ×3), and the same
-bytes driven into 34.16's `ZZ0137` return `0` with no fault — a 57.23
-regression, not the ring parser. Effect: the decoded-statement limit on
-57.23 is the body limit, which is why anything past ~1480 decoded bytes
-"suddenly" crashed in earlier tests. The 0x800 buffer sits in a 0x1490 frame
-with saved registers at +0x1440, so a full-body overwrite is the thing to
-aim at next (S1 has no canary and no ASLR). Filling the overflow with a
-plausible code address instead of `A` changes nothing observable (reset in
-0.17-0.35 s either way, listener alive), i.e. the crash happens during or
-just after the read and trashes the handler's live locals, not only saved
-registers — from here a core or the 57.23 binary is required, not more blind
-bodies. Shifting the reference start with a leading list entry has not
-worked yet (attempts answer `400`), so that remains a side question.
+**Constituent addresses (MIPS 57.23, model-12 image).** Handler entry
+`0x4ba1f8`, `addiu sp,sp,-3192`, saved `ra` at `sp+0xC74`, statement decoded
+to `sp+0x820`, base64 limit 1024 (`0x4ba320`), refusal `li v0,403` at
+`0x4ba3e0`, success `li v0,200` at `0x4ba3fc`. The 2048-bounded body read is
+at `0x4ba48c` (function `0x4ba408`: frame `0x830`, `ra` at `0x82c`, buffer
+`sp+0x20`), so 2047 bytes end at `sp+0x81F` — thirteen bytes short of `ra`.
+The dispatcher's own 4096-bounded read exists too (`0x428390`, frame
+`0x14f0`) but devmode's effective bound is the 2048 one.
+
+**Status semantics.** A well-formed statement that fails verification gets
+`403`; `400` is what the pre-read reject and the parse early-outs return, and
+a burst makes every POST after the first answer `400` too, so neither status
+distinguishes "throttled" from "malformed". With fresh statements and 12–16 s
+spacing the `400`/`403` split still flips at random — roughly a coin flip —
+so **only a content change that survives repetition proves anything**; a
+reset means the body was never read and carries no information about the
+statement at all. The same bytes driven into 34.16's `ZZ0137` return `0`
+with no fault, and the listener plus `/status` stay up throughout.
 
 **Reversal (same round, via libsonoscrypto)**: the gate IS cryptographic. The
 three obfuscated helpers resolve to `libsonoscrypto.so.1` functions: ZZ0021
