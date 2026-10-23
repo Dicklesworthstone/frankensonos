@@ -2339,3 +2339,9 @@ Allocation of effort follows: on S1 the entry vector is the vendor key or a memo
 bug (H13 and the media path); H12 is what to install once one of them lands. On S2
 the same file may be *pre-auth* reachable, because `/raw` exists there and its route
 family is richer — worth a check on `.112` before assuming the S1 conclusion holds.
+
+Checked, and S2 does not break the pattern: `/raw` is 403 on a live 86.10 player for
+`/raw`, `/raw?filename=…`, `/raw/<path>`, `/raw/system/Configure.dev` and
+`POST /raw`. So the raw-file interface is auth-gated on both generations, and the
+strategic conclusion above holds for S2 as well — H12 stays an after-root
+persistence mechanism, not an entry vector, on this fleet.
