@@ -80,12 +80,12 @@ The 364-byte header is a custom TLV, not ASN.1:
   and the literal `rcbundle`.
 
 `ZZ0126` verifies the certificate Name with a caller callback and then
-verifies the digest signature with the entry's key. The `count == 1` branch
-**skips the Name-verification callback entirely**, so a single
-attacker-supplied Name plus attacker key may verify without any chain check
-(unresolved caveat: the raw header's count fields read as zero under the
-current offset map). `ZZ0124`/`ZZ0125` do the policy checks;
-`ZZ0118`/`ZZ0119` validate the algorithm and Name type bytes.
+verifies the digest signature with the entry's key. A header whose **second
+list count is 0** skips the post-loop chain check entirely, so the entry is
+verified only against itself; the wire fields and the exact ordering are in
+the next section. `ZZ0124`/`ZZ0125` do the policy checks;
+`ZZ0118`/`ZZ0119`/`ZZ0120` validate key type, signature algorithm and a
+constant field.
 
 Section dispatch puts the real work on **type 17 (`application`)**, not type
 22: the handler table maps `0x11` to `0x1000868c`, which reads only
@@ -159,6 +159,73 @@ likely remaining blocker is the type-17 application verification; the
 component bytes themselves are not covered by the model-independent type-22
 rcbundle.
 
+## Header layout, decoded (libsonoscrypto / librcb)
+
+Artifacts (public, from `anacapad-internals`): `lib/libsonoscrypto.so.3`
+(sha256 `7ba2531b9c5921e4…`) exports `ZZ0121` (header parser, `0x9e14`),
+`ZZ0125` (`0xa384`, per-entry verify loop), `ZZ0126` (`0xa618`),
+`ZZ0109` (`0x8ec4`, actual RSA verify), `ZZ0118/0119/0120` (validators) and
+`ZZ0026` (`0x3fd4`, typed-record copier). `lib/libsonos-root-cert-bundle.so.2`
+(sha256 `4cd8ae0486d1d68f…`) exports `sonosRcbParseHeader`/`sonosRcbVerifySig`.
+Both are PPC and readable; the layouts below come from their code, not from
+guessing.
+
+The 364-byte header is a TLV, exactly:
+
+```
+0x00 u32 magic 621da74d      0x04 u32 header_len (0x16c)
+0x08 u16 version == 1        0x0a u16 field
+0x0c u32 list1 count <= 8    0x10 u32 list2 count <= 8
+0x14 list2 records, then list1 records (each: u32 type, u32 len <= 0x40
+     unless (type>>1)==5, then u32 type + 4-byte value + u32 value2)
+```
+
+then, in order:
+
+```
+u8 cert_count (1 or 2), then per entry:
+   u32 name_len <= 0x7ff
+   u8  keytype (1..4, ZZ0119)
+   name[name_len]                      (opaque id, not DER)
+   u8  sig_alg (1..4, ZZ0118)
+   u32 field (== 1, ZZ0120)
+   u32 sig_len (0x100)
+   sig[sig_len]                        (RSA-2048 signature)
+```
+
+All of it must fit `header_len`; the parser rejects any overrun. Field
+lengths map to digest sizes 1→32, 2→16, 3→20, 4→28, and the signature length
+must equal the hash length implied by the *entry's* alg. In the shipped
+type-22 header the records are: type 2 (`alg 1` + 32-byte digest), type 3
+(4-byte value), then `cert_count = 1`, `name_len = 20`, `keytype = 3`,
+`sig_alg = 1`, `field = 1`, `sig_len = 0x100` and 256 bytes ending exactly
+at `header_len`.
+
+`ZZ0125` runs this per entry: the **name callback** (`ZZ0039` in `upgrade`)
+resolves the Name to a key handle, then `ZZ0109` verifies the 256-byte
+signature over the digest against that key. With `list2 count == 0` the
+post-loop chain check is skipped (`0xa60c`), so a header that carries no
+second list is verified only against the entry itself. Type-22 additionally
+appends `rcbundle\0<version>\0<pad>` plus the DER cert table; `upgrade`
+installs it to `/jffs/sys/run/rcb/<name>` **before** the type-3 script is
+written, which is how a bundle can supply the key that type 17 then needs.
+
+Types 17 and 22 are stored **in plaintext** (magic `621da74d` at offset 0 of
+the payload). Types 3, 4 and 6 are wrapped in the `886499ca` envelope, and
+all three of one package share the same wrapped AES key:
+
+```
+886499ca | u32 header_len (0x13a) | u32 00010000 | 8 * 00
+u8 recipient_len | u8 03 | recipient | u32 00000001 | u32 rsa_len
+RSA-OAEP(SHA-1) AES key | u32 00000001 | u32 data_len | 16-byte IV | ciphertext
+```
+
+so **editing the preinstall script on this line also means re-encrypting it**
+to the model key; the plaintext-script edits in the earlier trials could
+never be read.
+
+
+
 ## 86.10 / S2 delta
 
 The S2 line (PPC, 86.10) uses a different container layout. A stock
@@ -193,13 +260,29 @@ than to section size, order, or section encoding.
 
 ## Next
 
-1. Build a one-entry type-22 header: attacker Name, attacker key, digest of a
-   modified package, and a signature over it. Because `count == 1` skips the
-   Name callback, this may need no chain at all.
-2. Confirm what the 33-byte digest covers and the exact signature slice, then
-   check the 256-byte blob against `upgradekey.pub` at the right offset.
-3. Local PPC execution is blocked: `qemu-ppc` user emulation (7.2 and 11.1,
+1. Recover the **model public key** for the target player from the encrypted
+   rootfs (or from a plaintext 34.16-era updater, whose model-16 table the
+   older line still carries), then reproduce the `886499ca` envelope for an
+   edited type-3 script: generate an AES key, RSA-OAEP it to that model key,
+   AES-CBC the script, and keep `header_len = 0x14 + 2 + recipient_len + 8 +
+   rsa_len + 8`, `data_len` and a random 16-byte IV exact.
+2. Build a self-signed `rcbundle`: keep the shipped structure, replace the
+   cert with our own, and name it with a 20-byte id we choose. Header for it:
+   `list2 count = 0`, `cert_count = 1`, our name, `keytype` from the key
+   family, `sig_alg = 1`, `field = 1`, `sig_len = 0x100`. Which key type
+   (`1..4`) maps to RSA must be read out of `ZZ0109` (`0x8ec4`) first — it
+   accepts only `keytype == 1` on the path shown.
+3. Sign the header's 32-byte digest with our key (PKCS#1 v1.5) and place the
+   signature in the `sig_len` field. Then determine what the digest covers:
+   `upgrade` finalises it into `sp+9036` via `ZZ0059` + `ZZ0061`, so it is a
+   hash state carried in the parsed struct — either the header prefix or the
+   DER of the signer key (`ZZ0152` hashes exactly that); test both.
+4. Send the package and watch for the type-3 probe (`/tmp` marker, then
+   `/jffs/system/Configure.dev` and port 22), using the byte-counting server
+   because every package larger than 128 KiB dies at 131072 bytes.
+5. Local PPC execution is blocked: `qemu-ppc` user emulation (7.2 and 11.1,
    arm64 and amd64 hosts) segfaults on every rootfs binary. `qemu-system-ppc`
-   or a PPC cross-build of `upgrade` is the next oracle option.
-4. With a valid signature, the patched v3 rootfs should install and expose a
+   or a PPC cross-build of `upgrade` remains the best oracle for iterating
+   the header without burning reboots on a live player.
+6. With a valid signature, the patched image should install and expose a
    changed `/status/VERSION`.
