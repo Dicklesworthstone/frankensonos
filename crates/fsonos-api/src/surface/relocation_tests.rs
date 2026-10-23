@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::dj::DjSteer;
+use crate::guard::Note;
 use fsonos_core::clock::SystemClock;
 use fsonos_core::playback::PlayerPlayback;
 use fsonos_core::store::{DjSession, MemStore};

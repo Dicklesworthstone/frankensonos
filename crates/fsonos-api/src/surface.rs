@@ -40,7 +40,7 @@ use crate::dj::{DjEngine, DjMoodsDto, DjSpeakers, DjStatusDto};
 use crate::events::{EventBus, ResourceChanges};
 use crate::execute::OutcomeDto;
 use crate::failure::{ErrorCode, Failure, NoteCode};
-use crate::guard::{Guard, Note};
+use crate::guard::Guard;
 use crate::plan::{Command, DjAction, Rooms, plan_play_favorite, resolve};
 use crate::reads::{FavoriteDto, HitDto, PlayDto, RoomDto, TrackDto, ZoneStateDto};
 use crate::request::{PlayFavoriteRequest, SearchRequest};
@@ -70,6 +70,7 @@ mod outside;
 mod playback_caps;
 pub mod players;
 mod search_play;
+mod set_runs;
 mod shared_store;
 
 pub mod art;
@@ -958,17 +959,9 @@ impl Surface {
         let intent = intents::of(tool, &households, &commands);
         // One before-state across every affected zone, so one undo restores
         // the whole set.
-        let mut targets: Vec<PlayerId> = Vec::new();
-        for command in &commands {
-            for player in affected(&households, command) {
-                if !targets.contains(&player) {
-                    targets.push(player);
-                }
-            }
-        }
-        let (snaps, missed) =
-            actions::capture_zones(&*self.transport, &households, &targets, self.now());
-        let result = self.execute_set(&households, &guard, &commands);
+        let run = self.run_set(&households, &guard, &commands, true);
+        let (snaps, missed) = (run.snaps, run.missed);
+        let result = set_runs::merged(&households, &commands, run.outcomes);
         if regroups {
             self.invalidate();
         }
@@ -1024,53 +1017,16 @@ impl Surface {
     /// does not stop `pause everywhere`, and a room at its cap does not turn
     /// another room's change into a "denied" call that undo cannot reach.
     /// The call fails when none went ahead, or at the first failure of any
-    /// other kind.
+    /// other kind. Groups that share no zone run at once
+    /// ([`Surface::run_set`]): by such a failure, the others have run too.
     fn execute_set(
         &self,
         households: &[HouseholdState],
         guard: &Guard<'_>,
         commands: &[Command],
     ) -> Result<OutcomeDto, Failure> {
-        let mut combined = OutcomeDto {
-            done: String::new(),
-            changed: false,
-            volume: None,
-            notes: Vec::new(),
-        };
-        let (mut skipped, mut went) = (None, false);
-        for command in commands {
-            let outcome = match self.execute_following(households, guard, command) {
-                Ok(outcome) => outcome,
-                Err(failure)
-                    if commands.len() > 1
-                        && (speaker_side(&failure) || failure.code == ErrorCode::PolicyDenied) =>
-                {
-                    let room = command
-                        .addressed()
-                        .and_then(|id| households.iter().find_map(|h| h.player(id)))
-                        .map_or("a room", |p| p.room_name.as_str());
-                    combined.notes.push(Note {
-                        code: NoteCode::Skipped,
-                        detail: format!("{room} skipped: {}", failure.detail),
-                    });
-                    skipped.get_or_insert(failure);
-                    continue;
-                }
-                Err(failure) => return Err(failure),
-            };
-            went = true;
-            if !combined.done.is_empty() && !outcome.done.is_empty() {
-                combined.done.push_str("; ");
-            }
-            combined.done.push_str(&outcome.done);
-            combined.changed |= outcome.changed;
-            combined.volume = combined.volume.or(outcome.volume);
-            combined.notes.extend(outcome.notes);
-        }
-        match skipped {
-            Some(failure) if !went => Err(failure),
-            _ => Ok(combined),
-        }
+        let run = self.run_set(households, guard, commands, false);
+        set_runs::merged(households, commands, run.outcomes)
     }
 
     /// Undo the newest undoable action — only `client`'s own when
@@ -2085,6 +2041,7 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::surface;
     use super::*;
+    use crate::guard::Note;
     use crate::plan::{TransportAction, plan_transport};
     use crate::request::ZoneRequest;
     use crate::zones::fixtures::households;
