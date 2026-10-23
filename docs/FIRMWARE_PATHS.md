@@ -1477,8 +1477,7 @@ actually holds, and which claim feeds it, is the next read at the `rfind`. A mis
 its value goes through `%llu` (`0x665e74`). Note the `hhid` compare at `0x60228c`
 reads `token+108`, so the claim *values* still matter after `iss` passes.
 
-**The `|` composition reached the resolver twice, then stopped
-(2026-10-23).** The composition is built from the token's own claim values
+**The `|` composition is **not discriminating** (2026-10-23).** The composition is built from the token's own claim values
 in the order `owner|luid|hhid|network_hash`, joined with a pipe — with all
 four claims set to `x` and `iss` set to `x|x|x|x` the endpoint moves off
 `401 invalid_token` to **`503 service_unavailable` "Could not resolve
@@ -1491,8 +1490,18 @@ control — with the unauthenticated baseline still a correct `403
 insufficient_scope`, so the endpoint is healthy. Nothing about the token
 changed. The 503 window (~2–9 s per call, `service_unavailable` "Could not
 resolve token") therefore looks like a transient service state as much as a
-passed inspection, and the separator is **not yet proven**; only code
-reading settles it.
+passed inspection, and comparison inside a healthy window (control `401`) shows `x|x|x|x`,
+`owner|luid|hhid|network_hash`, `x|x|x|`, `x|x|x` and the context-household
+variant **all at 401** — identical to the control. So the separator is a
+guess, not a finding; `503` is service flakiness that can hit every token,
+and the only protocol that means anything is: gate on the control returning
+`401`, then compare inside that window. Code is the only trustworthy oracle.
+
+Value sources in the composer, by contrast, are concrete: separators sit
+between segments; one value is read at `token+0x48`, another at `token+0x30`
+(`lw a1,v0+7; addiu a1,41/65`), and the last is the context string from the
+virtual call — so at least one component is device state, not a claim, which
+explains why self-consistent issuers keep failing.
 
 Composer arguments, read from the call site: `0x6020f8(out, token, ctx)`
 where the second operand is the **token** (the first value append reads
