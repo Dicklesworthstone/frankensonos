@@ -357,7 +357,12 @@ how a local client obtains a scoped token without the cloud.
    `0x656a86` (`a1` alone drives both, path via `*a1`). NX is off on 34.16, on
    for 86.10. The TS demux in the control-RPC layer has not been
    located.
-2. `/getrs?id=N` indexes a setting table with no bounds check and then
+2. `POST /diaglevel` grows an append-only global diag hash by one `calloc`+`strcpy` per
+   unique `module` name, pre-auth, with no NULL check on the allocation — ~2800 names
+   kills the daemon (~20 s outage, watchdog restarts). DoS proven; the interesting
+   question is whether the bucket/list index math can be walked out of range (see
+   "Update gate" section for the measured behaviour and `captures/research/diagflood.py`).
+3. `/getrs?id=N` indexes a setting table with no bounds check and then
    `jalr`s through the entry; `N` is `atoi`, so negative and huge indices are
    attacker-chosen. `-1…10000` answer without a restart, so reachable
    entries are still empty or benign.
@@ -461,6 +466,19 @@ failed" (it wants a valid on-flash partition table for its offsets), so the MDP 
 (`li r28,0xa` → `li r28,0`) gets past the verdict and shows the next real failure
 ("No valid signature", error 6), but the parser still stops at the compatibility record,
 so a real MDP is needed to exercise the signature code path end to end.
+
+**`POST /diaglevel` is a pre-auth remote kill (found 2026-10-22, second session).** The
+page takes `module` (≤31 bytes after the 32-byte parser cap) and `level` (`atoi`), with a
+single-use CSRF token from the GET form, and `set_diaglevel` inserts the name into a
+global diag hash: `HashAdd` `calloc(1, strlen+0x15)`, `strcpy`s the name at node+0x14 and
+links it, with **no NULL check on the allocation**, and nothing ever removes an entry.
+Push ~2800 unique module names (two requests each: GET for a token, then POST) and the
+daemon dies; the watchdog restarts it, HTTP is refused for ~20 s and the house is dark
+until it is back. Measured once at 2800 in a single run; a split run died at ~350, so
+the threshold is not stable — treat it as "a few thousand". Reproduction:
+`captures/research/diagflood.py` style loop (`GET /diaglevel` → token → `POST` with a
+unique `module`). It is a DoS, not yet a controlled write: the name is copied by
+`strcpy` into an exact-size allocation and the insert path is bounded.
 
 ### Safety notes for the next session
 
