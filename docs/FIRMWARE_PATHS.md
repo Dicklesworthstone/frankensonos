@@ -1319,8 +1319,20 @@ a separator append at `0x602094` between them:
 0x6021e0  "network_hash"   0x6af8d8
 ```
 
-So the expected `iss` is not a household id and not a Sonos string — it is the
-composition `owner<sep>luid<sep>hhid<sep>network_hash`. A mismatch logs
+
+
+**The prefix half is `urn:dev:ops:44974-zp-`.** The `rfind` guard at `0x603c92`
+compares `sp+64` against the BSS `std::string` at `0x7048e8` (literal pool
+`0x603d24`), which static-init builds from the literal at `0x666b40`,
+`urn:dev:ops:44974-zp-`; the call to the inspector at `0x603cf8` is only taken
+when `rfind(...) == 0`, i.e. the string must *start with* that URN. The
+equality compare against reader state follows at `0x6021e4`.
+
+Tried and still `invalid_token` (so still open): `urn:dev:ops:44974-zp-` with
+the serial (`78-28-CA-92-21-DC:6`, `7828CA9221DC6`, lower-case), the bare MAC,
+the sonosid (`114063254`), the household id and `Sonos_<hhid>`; and the bare
+claim-name composition with `/ : . - _` separators. Which string `sp+64`
+actually holds, and which claim feeds it, is the next read at the `rfind`. A mismatch logs
 `"Device token not minted in this HH."` (`0x6af900`) under category
 `muse_token_inspector` (`0x6af8e8`); the expiry failure is
 `"Token is expired, security settings have changed since the t…"` (`0x6af924`) and
