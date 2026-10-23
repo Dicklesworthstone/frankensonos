@@ -91,4 +91,5 @@ edits are free — it needs a key or a bypass like anything else.
 - An HLS experiment keeps retriggering across restarts, and a paused HLS URI survives a
   restart and keeps crashing. The reliable settle is: `SetAVTransportURI` to a **non-HLS**
   `x-rincon-mp3radio://` URL on your server, then `Stop` (`InstanceID=0`). Pause alone leaves
-  the HLS life-cycle armed.
+  the HLS life-cycle armed — and an unrestored URI keeps crash-looping the unit long after
+  the test, so settling is part of the test, not an optional tidy-up.
