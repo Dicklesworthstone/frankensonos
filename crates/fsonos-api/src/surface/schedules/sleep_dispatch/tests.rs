@@ -2,6 +2,7 @@
 
 use super::super::Surface;
 use super::*;
+use crate::failure::{ErrorCode, Failure};
 use crate::surface::Survey;
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::SystemClock;
@@ -13,6 +14,7 @@ use fsonos_proto::{ProtoError, Transport};
 use fsonos_sim::{SimHandle, SimHousehold, SimLan, SimModel, SimPlayerSpec};
 use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
@@ -46,6 +48,7 @@ struct House {
     sim: SimHandle,
     surface: Arc<Surface>,
     houses: Vec<HouseholdState>,
+    inventory: Arc<Mutex<Result<Vec<HouseholdState>, Failure>>>,
     lose_pause: Arc<AtomicBool>,
     now: DateTime<Utc>,
 }
@@ -77,8 +80,9 @@ impl House {
         household
             .apply_topology(&get_zone_group_state(&lan, sim.player("Room0").unwrap().ip).unwrap());
         let houses = vec![household];
-        let known = houses.clone();
-        let survey: Survey = Box::new(move |_| Ok(known.clone()));
+        let inventory = Arc::new(Mutex::new(Ok(houses.clone())));
+        let known = Arc::clone(&inventory);
+        let survey: Survey = Box::new(move |_| known.lock().unwrap().clone());
         let lose_pause = Arc::new(AtomicBool::new(false));
         let surface = Arc::new(
             Surface::new(
@@ -96,6 +100,7 @@ impl House {
             sim,
             surface,
             houses,
+            inventory,
             lose_pause,
             now: Utc::now(),
         };
@@ -113,6 +118,11 @@ impl House {
 
     fn sleep(&self) -> &Arc<Sleep> {
         self.surface.sleep.as_ref().unwrap()
+    }
+
+    fn inventory(&self, next: Result<Vec<HouseholdState>, Failure>) {
+        *self.inventory.lock().unwrap() = next;
+        self.surface.invalidate();
     }
 
     fn id(&self, room: &str) -> PlayerId {
@@ -134,6 +144,80 @@ impl House {
         )
         .unwrap();
         fsonos_core::control::set_volume(&self.sim.lan(), &self.houses, &id, 30).unwrap();
+    }
+}
+
+#[test]
+fn unavailable_inventory_retains_the_original_timer_until_its_room_returns() {
+    for s2 in [false, true] {
+        for unavailable in [
+            Err(Failure::new(ErrorCode::NotReady, "survey is still running")),
+            Ok(Vec::new()),
+            Ok(crate::zones::fixtures::households()),
+        ] {
+            let h = House::new(1, s2);
+            h.play();
+            let id = h.id("Room0");
+            let original = h.sleep().timers.get(&id).unwrap();
+            h.inventory(unavailable);
+            let scheduler = Scheduler::new(&h.surface);
+            let before = h.sim.soap_log().len();
+            for _ in 0..2 {
+                assert_eq!(start(&scheduler, h.now).len(), 1);
+                assert!(scheduler.wait(Duration::from_secs(5)));
+                assert_eq!(h.sleep().timers.get(&id), Some(original.clone()));
+                assert_eq!(h.sim.soap_log().len(), before);
+            }
+            h.inventory(Ok(h.houses.clone()));
+            assert_eq!(
+                start(&scheduler, h.now + chrono::TimeDelta::minutes(2)).len(),
+                1
+            );
+            assert!(scheduler.wait(Duration::from_secs(5)));
+            assert!(h.sleep().timers.get(&id).is_none());
+            assert!(start(&scheduler, h.now).is_empty());
+            assert_eq!(
+                h.sim
+                    .soap_log()
+                    .iter()
+                    .filter(|e| e.action == "Pause")
+                    .count(),
+                1
+            );
+            let host = h.sim.player("Room0").unwrap().ip;
+            assert_eq!(soap::get_volume(&h.sim.lan(), host).unwrap(), 30);
+            assert_eq!(
+                soap::get_transport_info(&h.sim.lan(), host).unwrap().state,
+                TransportState::Paused
+            );
+        }
+    }
+}
+
+#[test]
+fn a_long_outage_expires_unstarted_sleep_without_pausing_later_music() {
+    for s2 in [false, true] {
+        let h = House::new(1, s2);
+        h.play();
+        h.inventory(Err(Failure::new(ErrorCode::NotReady, "LAN unavailable")));
+        let scheduler = Scheduler::new(&h.surface);
+        let before = h.sim.soap_log().len();
+        assert_eq!(start(&scheduler, h.now).len(), 1);
+        assert!(scheduler.wait(Duration::from_secs(5)));
+        assert!(!h.sleep().timers.all().is_empty());
+        let late = h.now + chrono::TimeDelta::minutes(6);
+        assert_eq!(start(&scheduler, late).len(), 1);
+        assert!(scheduler.wait(Duration::from_secs(5)));
+        assert!(h.sleep().timers.all().is_empty());
+        assert_eq!(h.sim.soap_log().len(), before);
+        h.inventory(Ok(h.houses.clone()));
+        assert!(start(&scheduler, late).is_empty());
+        assert_eq!(
+            soap::get_transport_info(&h.sim.lan(), h.sim.player("Room0").unwrap().ip)
+                .unwrap()
+                .state,
+            TransportState::Playing
+        );
     }
 }
 

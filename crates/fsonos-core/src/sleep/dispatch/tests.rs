@@ -127,6 +127,42 @@ fn cancellation_cannot_be_reversed_by_releasing_an_old_dispatch() {
 }
 
 #[test]
+fn an_unstarted_fade_expires_at_its_backstop_without_speaker_io() {
+    let timers = SleepTimers::new();
+    let original = timer("room", 0);
+    assert!(timers.adopt(original.clone()));
+    let run = timers.due_runs(epoch(), 1).remove(0);
+    let backstop = original.ends + delta(BACKSTOP);
+    assert!(!timers.expire_run(&run, backstop - TimeDelta::seconds(1)));
+    assert!(timers.expire_run(&run, backstop));
+    assert!(!timers.release_run(&run));
+    assert!(timers.all().is_empty());
+    assert_eq!(
+        timers.run_due(&NoIo, &[], &Fader::default(), &run).unwrap(),
+        SleepOutcome::Gone
+    );
+}
+
+#[test]
+fn expiry_cannot_retire_a_newer_dispatch_or_running_work() {
+    let timers = SleepTimers::new();
+    let original = timer("room", 0);
+    assert!(timers.adopt(original.clone()));
+    let old = timers.due_runs(epoch(), 1).remove(0);
+    assert!(timers.release_run(&old));
+    let current = timers.due_runs(epoch(), 1).remove(0);
+    let late = original.ends + delta(BACKSTOP);
+    assert!(!timers.expire_run(&old, late));
+    timers
+        .lock()
+        .get_mut(&original.coordinator)
+        .unwrap()
+        .running = true;
+    assert!(!timers.expire_run(&current, late));
+    assert!(timers.get(&original.coordinator).is_some());
+}
+
+#[test]
 fn interruption_survives_failed_admission_and_volume_changes_while_waiting() {
     for before_release in [false, true] {
         let timers = SleepTimers::new();

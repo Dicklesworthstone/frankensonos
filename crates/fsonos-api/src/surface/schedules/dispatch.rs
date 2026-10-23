@@ -1,13 +1,21 @@
 //! Schedule admission: allocate a worker before consuming an occurrence.
 //!
-//! Capacity and spawn failures leave the persistent schedule due. Immediately
-//! before execution, check its definition and enabled state under the store
-//! lock and claim it once. Never replay an action after that boundary: even
-//! an error can follow a partial or unacknowledged speaker mutation.
+//! Capacity, spawn and inventory readiness failures leave the persistent
+//! schedule due. Resolve its targets without writes, then check its definition
+//! and enabled state under the store lock and claim it once. Never replay an
+//! action after that boundary: even an error can follow a partial or
+//! unacknowledged speaker mutation.
 
-use super::{Ran, Schedule, Scheduler, Surface, Tick, core_schedule, fire, span, summary};
+use super::{
+    Ran, Schedule, ScheduleAction, Scheduler, Surface, Tick, client_of, core_schedule, fire,
+    room_view, span, summary,
+};
 use crate::failure::{ErrorCode, Failure};
+use crate::plan;
+use crate::surface::scenes::scene_failure;
 use chrono::{DateTime, TimeZone, Utc};
+use fsonos_core::rooms::{Matched, ResolveContext, named_room, resolve_targets};
+use fsonos_core::{HouseholdState, scenes};
 use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -149,6 +157,103 @@ fn claim_current(
         .unwrap_or(Admission::Hold))
 }
 
+/// Readiness is checked before the durable claim, never by retrying a failed
+/// action. A scheduled scene waits for all its named rooms instead of partially
+/// applying while another household is still being discovered.
+fn ready(surface: &Surface, schedule: &Schedule) -> Result<(), Failure> {
+    let households = surface.households()?;
+    if households.iter().all(|house| house.rooms.is_empty()) {
+        return Err(Failure::new(ErrorCode::NotReady, "no Sonos rooms answered"));
+    }
+    let client = client_of(&schedule.creator);
+    let aliases = surface.aliases();
+    let rooms = room_view(&households, aliases.as_ref(), &client);
+    match &schedule.action {
+        ScheduleAction::ApplyScene { name } => {
+            let scene = surface
+                .with_store(|store| Ok(scenes::load(store, name)))?
+                .ok_or_else(super::no_store)?
+                .map_err(scene_failure)?;
+            scenes::check(&scene, &households).map_err(scene_failure)?;
+            for room in scene
+                .groups
+                .iter()
+                .flat_map(|group| std::iter::once(&group.coordinator).chain(&group.members))
+                .chain(scene.volumes.keys())
+                .chain(scene.mutes.keys())
+            {
+                named_ready(&households, room)?;
+            }
+            Ok(())
+        }
+        ScheduleAction::Pause { room, fade_secs: 0 } | ScheduleAction::Volume { room, .. } => {
+            targets_ready(&rooms, room, false)
+        }
+        ScheduleAction::DjStart { room, .. } | ScheduleAction::Pause { room, .. } => {
+            targets_ready(&rooms, room, true)
+        }
+    }
+}
+
+fn named_ready(households: &[HouseholdState], name: &str) -> Result<(), Failure> {
+    let (_, room) = named_room(households, name)?.ok_or_else(|| {
+        Failure::new(
+            ErrorCode::NotReady,
+            format!("{name} is not in the house yet"),
+        )
+    })?;
+    fsonos_core::resolve_room(households, &room.primary.0)?;
+    Ok(())
+}
+
+fn alias_member_ready(households: &[HouseholdState], name: &str) -> Result<(), Failure> {
+    // Set aliases deliberately include all exact matches across households.
+    // Preserve that fan-out while requiring every named member to be ready.
+    match named_room(households, name) {
+        Err(fsonos_core::CoreError::AmbiguousRoom { candidates, .. }) => {
+            for candidate in candidates {
+                named_ready(households, &candidate)?;
+            }
+            Ok(())
+        }
+        _ => named_ready(households, name),
+    }
+}
+
+fn targets_ready(rooms: &plan::Rooms<'_>, name: &str, single: bool) -> Result<(), Failure> {
+    if single {
+        plan::resolve(rooms, name)?;
+    } else {
+        plan::resolve_set(rooms, name)?;
+    }
+    let resolution = resolve_targets(
+        rooms.households,
+        name,
+        ResolveContext {
+            aliases: rooms.aliases,
+            client: rooms.client,
+        },
+    )?;
+    if let Some(aliases) = rooms.aliases {
+        match resolution.matched {
+            Matched::Here => {
+                if let Some(default) = aliases.default_room(rooms.client) {
+                    return targets_ready(rooms, default, single);
+                }
+            }
+            Matched::Alias => {
+                if let Some(alias) = aliases.get(name) {
+                    for member in &alias.rooms {
+                        alias_member_ready(rooms.households, member)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn launch(
     scheduler: &Scheduler,
     schedule: Schedule,
@@ -165,7 +270,7 @@ fn launch(
     let id = schedule.id;
     let work = Box::new(move || {
         let reservation = permit;
-        let result = claim_current(&surface, &schedule, at, || {
+        let admission = || {
             if reservation.dispatch.stopped() {
                 return Admission::Hold;
             }
@@ -178,7 +283,16 @@ fn launch(
             } else {
                 Admission::Run
             }
-        });
+        };
+        if admission() == Admission::Run
+            && let Err(failure) = ready(&surface, &schedule)
+        {
+            tracing::debug!("schedule #{id} awaits its targets: {}", failure.detail);
+            return;
+        }
+        // Readiness can take time, so recheck the grace period, shutdown and
+        // current definition immediately before the irreversible claim.
+        let result = claim_current(&surface, &schedule, at, admission);
         match result {
             Ok(Admission::Run) => {}
             Ok(Admission::Skip) => {
@@ -219,3 +333,6 @@ fn launch(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod readiness_tests;

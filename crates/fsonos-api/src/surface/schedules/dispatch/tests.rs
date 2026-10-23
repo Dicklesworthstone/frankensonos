@@ -10,13 +10,14 @@ use std::time::Duration;
 fn fixture() -> (Arc<Surface>, Schedule, DateTime<Utc>) {
     let created = DateTime::parse_from_rfc3339("2026-10-01T10:00:00Z").unwrap();
     let at = created.to_utc() + chrono::TimeDelta::minutes(1);
+    let households = crate::zones::fixtures::households();
     let surface = Arc::new(
         Surface::new(
             Box::new(Canned {
                 out_args: "",
                 sent: Arc::new(Mutex::new(Vec::new())),
             }),
-            Box::new(|_| Ok(Vec::new())),
+            Box::new(move |_| Ok(households.clone())),
             Policy::default(),
             Box::new(FakeClock::new(created)),
         )
@@ -28,7 +29,7 @@ fn fixture() -> (Arc<Surface>, Schedule, DateTime<Utc>) {
                 id: 0,
                 spec: ScheduleSpec::Once(at.fixed_offset()).to_string(),
                 action: serde_json::to_string(&ScheduleAction::Pause {
-                    room: "Test room".into(),
+                    room: "Den".into(),
                     fade_secs: 0,
                 })
                 .unwrap(),

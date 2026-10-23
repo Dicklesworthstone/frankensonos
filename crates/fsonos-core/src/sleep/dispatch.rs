@@ -2,8 +2,8 @@
 //! once execution begins, even an error is not permission to replay it.
 
 use super::{
-    CoreError, DateTime, Fader, HouseholdState, Instant, SleepOutcome, SleepTimer, SleepTimers,
-    Transport, Utc, delta,
+    BACKSTOP, CoreError, DateTime, Fader, HouseholdState, Instant, SleepOutcome, SleepTimer,
+    SleepTimers, Transport, Utc, delta,
 };
 
 /// One dispatch of one timer, issued by [`SleepTimers::due_runs`]. Use it only
@@ -86,6 +86,30 @@ impl SleepTimers {
             return false;
         };
         a.timer.fading = false;
+        true
+    }
+
+    /// Retire an unstarted dispatch once its device backstop has expired.
+    /// Readiness recovery must not pause new music hours after the original
+    /// deadline. This performs no speaker I/O and cannot retire a replacement,
+    /// a newer dispatch, or work that already entered `run_due`.
+    pub fn expire_run(&self, run: &SleepRun, now: DateTime<Utc>) -> bool {
+        if run
+            .timer
+            .ends
+            .checked_add_signed(delta(BACKSTOP))
+            .is_some_and(|end| now < end)
+        {
+            return false;
+        }
+        let mut armed = self.lock();
+        if !armed
+            .get(&run.timer.coordinator)
+            .is_some_and(|a| a.generation == run.generation && a.timer.fading && !a.running)
+        {
+            return false;
+        }
+        armed.remove(&run.timer.coordinator);
         true
     }
 

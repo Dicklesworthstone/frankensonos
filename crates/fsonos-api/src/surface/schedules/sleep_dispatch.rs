@@ -1,10 +1,11 @@
 //! Bounded sleep workers with rollback only before entering core execution.
 
-use super::{Ran, Scheduler, Sleep};
+use super::{Ran, Scheduler, Sleep, delta};
 use chrono::{DateTime, Utc};
 use fsonos_core::sleep::{SleepOutcome, SleepRun};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 
 const MAX_FADES: usize = 8;
 type Work = Box<dyn FnOnce() + Send>;
@@ -32,6 +33,18 @@ impl Pending {
             sleep: Arc::clone(sleep),
             ticket,
         })
+    }
+
+    fn expired(&self, now: DateTime<Utc>) -> bool {
+        if !self.sleep.timers.expire_run(&self.ticket, now) {
+            return false;
+        }
+        tracing::info!(
+            "sleep timer in {} expired before its fade could start",
+            self.ticket.timer().room
+        );
+        self.sleep.save();
+        true
     }
 }
 
@@ -66,6 +79,7 @@ fn start_with(
         };
         let surface = Arc::clone(&scheduler.surface);
         let dispatch = Arc::clone(&scheduler.dispatch);
+        let admitted = Instant::now();
         if spawn(Box::new(move || {
             // Keep this guard alive until the entire run, including restore,
             // settles. An unstarted closure releases its claim on every exit.
@@ -73,11 +87,28 @@ fn start_with(
             if dispatch.stopped() {
                 return;
             }
-            let households = surface.households().unwrap_or_default();
-            if dispatch.stopped() {
+            let admission_time = || {
+                now.checked_add_signed(delta(admitted.elapsed()))
+                    .unwrap_or(DateTime::<Utc>::MAX_UTC)
+            };
+            if guard.expired(admission_time()) {
+                return;
+            }
+            let households = match surface.households() {
+                Ok(households) => households,
+                Err(error) => {
+                    tracing::debug!("sleep fade awaits inventory: {}", error.detail);
+                    return;
+                }
+            };
+            if dispatch.stopped() || guard.expired(admission_time()) {
                 return;
             }
             let timer = guard.ticket.timer();
+            if let Err(error) = fsonos_core::resolve_room(&households, &timer.coordinator.0) {
+                tracing::debug!("sleep fade in {} awaits its room: {error}", timer.room);
+                return;
+            }
             let outcome = guard.sleep.timers.run_due(
                 &*surface.transport,
                 &households,
