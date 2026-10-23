@@ -1277,6 +1277,14 @@ all, and the value it is compared to is `param_3+8` — reader state from
 issuer is built from the token/payload context rather than being a constant, and
 that reader is where to read next (the compare site is `0x603cf8`).
 
+That read is done: `param_3+8` is **header** state, not payload — reader B
+(`FUN_0060397c`, handler `FUN_00604a20`) binds exactly the JWT header fields
+`x5c`, `alg`, `kid` (names at `0x6aff38`, `0x6aff3c`, `0x6aff40`), while reader A
+binds the claims. So "minted by this device" compares a claim against material
+the code derives from the header/`x5c`. Setting `iss` to the forged leaf's CN
+(plain and `CN=` forms) still fails, so that derivation — most likely something
+computed from the leaf certificate — is the next read, not a string guess.
+
 ### Lane status (checkpoint)
 
 What is proven: both firmware builds carry `emSign ECC Root CA - G3` and AAA
