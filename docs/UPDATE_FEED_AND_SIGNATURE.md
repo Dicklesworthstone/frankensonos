@@ -251,10 +251,19 @@ Types 17 and 22 are stored **in plaintext** (magic `621da74d` at offset 0 of
 the payload). Types 3, 4 and 6 are wrapped in the `886499ca` envelope, and
 all three of one package share the same wrapped AES key:
 ```
-886499ca | u32 header_len (0x13a) | u32 00010000 | 8 * 00
-u8 recipient_len | u8 03 | recipient | u32 00000001 | u32 rsa_len
-RSA-OAEP(SHA-1) AES key | u32 00000001 | u32 data_len | 16-byte IV | ciphertext
+886499ca | u32 header_len (0x13a) | u32 00010000 | u32 00000000
+u8 01 | u32 recipient_len (20) | u8 keytype 3 | recipient[20]
+u32 cipher 1 | u32 rsa_len (0x100) | RSA-OAEP(SHA-1) AES key
+u32 cipher 1 | u32 data_len | 16-byte IV | AES-CBC ciphertext
 ```
+
+`header_len = 0x14 + 2 + 20 + 8 + 0x100 + 8 = 0x13a`, and the IV begins
+exactly at `header_len`. The recipient is a **20-byte key id in the same
+namespace as the header names** (keytype 3 again), not a key: it is absent
+from both the package bundle and `/etc/fallback_trusted_roots.rcb`, so it
+indexes a per-model keyring shipped in the device rootfs. The private half
+lives there; the **public half is what a repack needs**, and the id alone
+does not give it.
 
 so **editing the preinstall script on this line also means re-encrypting it**
 to the model key; the plaintext-script edits in the earlier trials could
