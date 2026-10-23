@@ -575,6 +575,29 @@ pristine) is read to the last byte over Apache and still does not install, so
 the old line has its own gate too; the 128 KiB truncation is a Python-server
 artefact only.
 
+## The signing model is closed: two compiled keys, name = SHA-1(SPKI)
+
+Each table entry is completed by a relocation to a 294-byte **SubjectPublicKeyInfo**
+compiled into `.rodata`:
+
+```
+1fd98 -> 0xdae4 (294 B)   sha1(spki) = 28a096f5f6f5578345d1e892dfb2f09ce99f1ad3
+1fdb8 -> 0xd9bc (294 B)   sha1(spki) = b2927a288387da8b008ce7f4fbb6aecbefd97098
+```
+
+The entry name is exactly `SHA-1` of that SPKI, `b292…` is the name the shipped
+type-17 section carries, and `ZZ0039` tail-calls `0x20580(ptr, 294)` to build the
+pk from those bytes. So the verifier parses **compiled** keys; neither the bundle
+nor `/etc/fallback_trusted_roots.rcb` participates in package signing. Those two
+keys are also absent from the 132-cert bundle (no cert there hashes to either
+name), which is why no bundle substitution can help.
+
+Consequence, stated plainly: replacing firmware needs the **private half of one
+of those two RSA keys**. The eMudhra/emSign compromise is not sufficient, because
+the updater never consults a chain. It remains useful for `/unlock`, `/devmode`
+and the `:1443` Bearer path, all of which sit on the rcb/bundle trust that *does*
+include the emSign roots.
+
 ## Next
 
 1. **Identify the post-download gate.** Delivery is proven (edited manifest
