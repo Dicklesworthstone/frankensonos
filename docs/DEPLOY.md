@@ -200,7 +200,11 @@ A DJ that was playing keeps playing across a restart: serve keeps its queues
 in `dj-feeds.json` in the data directory and feeds them on, unless the queue
 was cleared or replaced meanwhile. Sleep timers carry over the same way, in
 `sleep-timers.json`: each still fades out and pauses on time, unless its
-speaker's own timer was cancelled meanwhile (from the Sonos app, say).
+speaker's own timer was cancelled meanwhile (from the Sonos app, say). The
+daemon's own warning counts carry over in `warnings.json`, so a warning that
+is always busy on your network (players dropping out of their household's
+topology on weak Wi-Fi, say) is judged against its usual hour after a
+restart, not taken for a storm (`daemon.warnings` in `fsonos doctor`).
 
 ### Alternative: a LaunchAgent
 
