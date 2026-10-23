@@ -358,7 +358,15 @@ how a local client obtains a scoped token without the cloud.
    overflow". The ID3 peek copies up to 0x81 into a genuine 0x81-byte scratch
    (-424..-295) and re-seeds its own count, so it is deliberate. The naive
    `afelen=0xFF` trigger still does not crash 57.23, so the defect (if any) is in
-   the PES/consumer layer these frames feed, not the frame splitter.
+   the PES/consumer layer these frames feed, not the frame splitter. **But the
+   path only decodes over HLS** (`hls-radio://` fetches the playlist and every
+   segment; a bare `.ts` over `x-rincon-mp3radio` never decodes), and once it
+   does decode, a segment with `AFC=3, afelen=0xFF` on every packet *does* take
+   the live daemon down — delayed (down at +5 s or +20 s) and intermittent (one
+   of three repeats clean), with automatic watchdog recovery. Threshold is not
+   clean by value (`0xB7`/`0xB8` also crashed once, `0xC0`/`0xE0`/`0xFF`
+   sometimes clean), so the fault depends on decoded content, not `afelen`
+   alone. Bead `re-afelen-live`.
    Payload primitives for the day a smash lands: 34.16 `execve` gadget
    `0x4f4178` (`a0=*s1`, `a1=argv`, `a2=environ`, needs `s1`), and 86.10
    `0x656a86` (`a1` alone drives both, path via `*a1`). **Neither is the live
