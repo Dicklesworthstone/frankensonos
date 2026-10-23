@@ -504,6 +504,11 @@ how a local client obtains a scoped token without the cloud.
    short is fatal-and-immediate, long is an orderly compaction the queue tolerates. Capacity
    grows with length, so a long URI is a large but chosen backward shift — the knob for landing
    the copy on a target (e.g. the second sub-object at `parent+0xcd48`).
+   Length map measured (25 s each, only the name length changed): 5 -> 0.83 s, 16 -> 17.9 s,
+   20 -> 11.9 s, and 24/28/32/40/64/128 all survived. Fatal band is **16–20 characters**; from 24
+   up it is stable. Destination is `ring+8-capacity*0xc50`, so `capacity = (8-T)/0xc50` lands the
+   copy on a chosen parent offset `T` — length is a coarse index into the parent, and 16–20 is the
+   "make it die" setting while ≥24 is the working-parity setting.
    Invocation details the harness needs: the path is `/MediaRenderer/AVTransport/Control`
    (the short `/AVTransport/Control` answers 405) and `SetAVTransportURI` needs DIDL
    metadata — empty returns 500, an `audioBroadcast` item carrying the `hls-radio://` res
