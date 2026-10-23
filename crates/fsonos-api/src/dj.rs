@@ -157,6 +157,13 @@ pub trait DjEngine: Send + Sync {
         Vec::new()
     }
 
+    /// The feeds the engine carried to a new coordinator by itself since the
+    /// last call ([`Self::on_topology`]), as `(from, to)`, so the surface
+    /// carries what it keeps per group across too. The default: none.
+    fn take_handovers(&self) -> Vec<(PlayerId, PlayerId)> {
+        Vec::new()
+    }
+
     /// Seconds from `clock`'s now until the time-of-day program picks
     /// another mood: how long a mood that a schedule or a scene starts the
     /// DJ in lasts, so the program takes over again. `None` (the default):

@@ -119,6 +119,8 @@ pub struct Surface {
     /// The DJ status last published per coordinator (`dj.status`), so an
     /// event goes out only when it changed.
     dj_seen: Mutex<HashMap<PlayerId, DjStatusDto>>,
+    /// Who started the DJ in each group, whose caps its own plays keep to.
+    dj_starters: dj_caps::Starters,
     /// What the live model heard each coordinator play
     /// ([`Self::record_heard`]).
     heard: Mutex<Heard>,
@@ -220,6 +222,7 @@ impl Surface {
             live: None,
             events: None,
             dj_seen: Mutex::new(HashMap::new()),
+            dj_starters: dj_caps::Starters::default(),
             heard: Mutex::new(Heard::default()),
             settle_until: Mutex::new(None),
             announcements: None,
@@ -399,6 +402,7 @@ impl Surface {
             surface: self,
             households: &households,
             coordinator: player,
+            starter: self.dj_starters.of(player),
         };
         let at = DjSpeakers {
             transport: &caps,
@@ -779,6 +783,9 @@ impl Surface {
             return self
                 .with_dj_store(|store| {
                     let done = run_dj(&**dj, at, store, command, &*self.clock);
+                    if done.is_ok() {
+                        self.dj_starters.carried_out(command, guard.client);
+                    }
                     let queue_position = self
                         .live()
                         .and_then(|live| live.player(coordinator)?.queue_position);
@@ -1445,6 +1452,7 @@ impl Surface {
         if let Err(f) = rekeyed {
             tracing::warn!("the DJ's steering stays with {}: {}", old.0, f.detail);
         }
+        self.dj_starters.moved(&old, &new);
         if let Some(dj) = &self.dj {
             dj.moved(&old, &new);
         }

@@ -701,6 +701,18 @@ fn applied(
 struct SceneDj<'a> {
     surface: &'a Surface,
     households: &'a [HouseholdState],
+    /// Who applies the scene: the session's starter.
+    client: &'a Client,
+}
+
+impl<'a> SceneDj<'a> {
+    fn new(surface: &'a Surface, households: &'a [HouseholdState], client: &'a Client) -> Self {
+        Self {
+            surface,
+            households,
+            client,
+        }
+    }
 }
 
 impl SceneHooks for SceneDj<'_> {
@@ -743,7 +755,10 @@ impl SceneHooks for SceneDj<'_> {
             Ok(dj.act(at, store, DjAction::Start, &*s.clock))
         });
         match started {
-            Ok(Some(Ok(_))) => Ok(()),
+            Ok(Some(Ok(_))) => {
+                s.dj_starters.started(coordinator, self.client);
+                Ok(())
+            }
             Ok(Some(Err(f))) | Err(f) => Err(f.detail),
             Ok(None) => Err("the DJ needs the daemon's store".into()),
         }
@@ -1083,10 +1098,7 @@ impl Surface {
         } else {
             self.scene_store(|store| Ok(actions::capture_sessions(store, &dj_zones)?))?
         };
-        let hooks = SceneDj {
-            surface: self,
-            households: &households,
-        };
+        let hooks = SceneDj::new(self, &households, client);
         let report = self.fader_for(&households, &plan, |fader| {
             scenes::apply(
                 &*self.transport,

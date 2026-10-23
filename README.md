@@ -58,7 +58,7 @@ can drive:
   volumes it sets: a play, a resume, a DJ start or skip, or an unmute first
   brings a room left loud down to its cap, and one whose level can't be read
   is not started. The DJ restarting a group on its own is held to them too,
-  as client `dj` (`[clients.dj]`). Hand the house to an agent without it playing volume
+  as client `dj` (`[clients.dj]`) and as whoever started it. Hand the house to an agent without it playing volume
   80 at 2 a.m.
 - **A DJ that plays what you like.** It plays from your own Spotify likes and
   saves, in whatever genres they span (pop, jazz, hip-hop, soundtracks,

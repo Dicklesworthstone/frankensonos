@@ -53,6 +53,10 @@ fn handle(surface: &Weak<Surface>, event: Option<&LiveEvent>) -> bool {
     {
         tracing::warn!(detail = %error.detail, "DJ topology reconciliation could not access the store");
     }
+    // Whoever started a session the engine carried over still holds its caps.
+    for (from, to) in surface.dj.iter().flat_map(|dj| dj.take_handovers()) {
+        surface.dj_starters.moved(&from, &to);
+    }
     let feeds = |id: &PlayerId| surface.dj.as_ref().is_some_and(|dj| dj.feeds(id));
     for player in targets(&snapshot, event, feeds) {
         // This rechecks ownership: a concurrent stop or move must not restart
@@ -359,11 +363,12 @@ mod simulator_tests {
     use fsonos_core::clock::{Clock, SystemClock};
     use fsonos_core::live::{Live, LiveConfig};
     use fsonos_core::playback::PlayerPlayback;
-    use fsonos_core::policy::Policy;
+    use fsonos_core::policy::{Client, Policy};
     use fsonos_core::store::{MemStore, Store};
     use fsonos_proto::net::Lan;
     use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
     use fsonos_types::PlayerId;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Sender};
 
@@ -371,6 +376,8 @@ mod simulator_tests {
         active: PlayerId,
         seen: Sender<Option<u8>>,
         topology_seen: AtomicBool,
+        /// A feed it reports carried over, once.
+        handover: Mutex<Option<(PlayerId, PlayerId)>>,
     }
 
     impl DjEngine for Probe {
@@ -431,6 +438,10 @@ mod simulator_tests {
             self.topology_seen.store(true, Ordering::SeqCst);
         }
 
+        fn take_handovers(&self) -> Vec<(PlayerId, PlayerId)> {
+            self.handover.lock().unwrap().take().into_iter().collect()
+        }
+
         fn on_playback(
             &self,
             at: DjSpeakers<'_>,
@@ -483,6 +494,16 @@ mod simulator_tests {
         live: &Arc<Live>,
         active: PlayerId,
     ) -> (Arc<Surface>, Receiver<Option<u8>>) {
+        surface_handing(sim, live, active, None)
+    }
+
+    /// [`surface`], its engine reporting `handover` once.
+    fn surface_handing(
+        sim: &SimHandle,
+        live: &Arc<Live>,
+        active: PlayerId,
+        handover: Option<(PlayerId, PlayerId)>,
+    ) -> (Arc<Surface>, Receiver<Option<u8>>) {
         let (seen, received) = mpsc::channel();
         let surface = Surface::new(
             Box::new(sim.lan()),
@@ -495,9 +516,27 @@ mod simulator_tests {
             active,
             seen,
             topology_seen: AtomicBool::new(false),
+            handover: Mutex::new(handover),
         }))
         .with_action_log(Box::new(MemStore::default()), "test");
         (Arc::new(surface), received)
+    }
+
+    /// A coordinator re-elected under the DJ: the engine carries the feed,
+    /// and who started the session goes with it, its caps still holding.
+    #[test]
+    fn a_handover_the_engine_made_carries_the_sessions_starter() {
+        let (sim, live, active) = household();
+        let office = PlayerId(sim.player("Office").unwrap().uuid.clone());
+        let handover = Some((active.clone(), office.clone()));
+        let (surface, _received) = surface_handing(&sim, &live, active.clone(), handover);
+        surface.dj_starters.started(&active, &Client::McpStdio);
+        assert!(handle(&Arc::downgrade(&surface), None));
+        assert_eq!(surface.dj_starters.of(&office), Some(Client::McpStdio));
+        assert_eq!(surface.dj_starters.of(&active), None);
+        drop(surface);
+        drop(live);
+        sim.shutdown();
     }
 
     #[test]

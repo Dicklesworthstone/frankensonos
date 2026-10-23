@@ -205,6 +205,9 @@ struct State {
     /// Action-log rows written since the surface last took them
     /// ([`DjEngine::take_logged`]).
     logged: Vec<LoggedAction>,
+    /// Feeds carried to a new coordinator since the surface last took them
+    /// ([`DjEngine::take_handovers`]).
+    handed_over: Vec<(PlayerId, PlayerId)>,
 }
 
 /// What a pick is planned with right now, beyond the pool.
@@ -844,6 +847,10 @@ impl DjEngine for SpotifyDj {
 
     fn take_logged(&self) -> Vec<LoggedAction> {
         std::mem::take(&mut self.state().logged)
+    }
+
+    fn take_handovers(&self) -> Vec<(PlayerId, PlayerId)> {
+        std::mem::take(&mut self.state().handed_over)
     }
 
     fn moving(&self, from: &PlayerId) {

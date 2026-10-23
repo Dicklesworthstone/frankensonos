@@ -235,6 +235,7 @@ impl SpotifyDj {
             state.handover.origins.remove(from);
             state.handover.attempts.remove(from);
             state.handover.remember(&snapshot.households, to);
+            state.handed_over.push((from.clone(), to.clone()));
             tracing::info!(from = %from.0, to = %to.0, "DJ followed the inherited queue");
         }
         // Group membership can change without any playback event. Persist it
@@ -464,6 +465,7 @@ mod tests {
             dj.on_topology(&sim.lan(), &after, &mut store);
             assert!(!dj.feeds(&from));
             assert!(dj.feeds(&to));
+            assert_eq!(dj.take_handovers(), [(from.clone(), to.clone())]);
             let adopted = dj.state().feeds[&to].snapshot().unwrap();
             assert_eq!(adopted.earlier, vec![from.0.clone()]);
             assert_eq!(adopted.queued, saved(&from).queued);
@@ -483,6 +485,7 @@ mod tests {
                 reads,
                 "settled ownership needs no reads"
             );
+            assert!(dj.take_handovers().is_empty(), "nothing moved again");
         }
     }
 
