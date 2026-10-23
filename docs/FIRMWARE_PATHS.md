@@ -1163,6 +1163,11 @@ the daemon restarts, the box does not. `DoPostUpdateTasks` changes nothing.
 So the update path is: cloud advertises → we fetch (all pre-auth) → **the
 device installs on the next box reboot** → and the only pre-auth trigger for
 that reboot is missing, because `management/reboot` answers 401 without a token.
+The S2 unit is left *armed* with the real 97.2 item, so a power cycle there will
+apply it — useful to know before blaming the next session's test for a version
+change. (The units reboot on their own often enough — `BootSeq` 91 and 107 — so
+whatever escalates a repeated daemon crash to a box reboot is the thing to
+find; it was not 120 WebSocket connects.)
 
 Tried the obvious combine on S1 too — arm with a local `UpdateItem` in
 `ExtraOptions`, then force `/setstring` writes until the box reboots — six
