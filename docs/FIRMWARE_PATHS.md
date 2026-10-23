@@ -2752,3 +2752,30 @@ missing per-model schema: `opt/localsettings/models/` is empty and the MDP we wr
 is the s1emu stub without model data, and 86.10's `anacapa.conf` has no `HackModel`
 knob to force one (unlike the older conf). Filling `models/` (or a real MDP) is the
 next thing to try before the daemon will finish settings init.
+
+### The OAuth body found — and what it actually reads
+
+The action-name table (`.rodata` 0x51f9f0, entries of `{name_ptr, name_len, 1}`)
+puts `AddOAuthAccountX` at index 1 behind `AddAccountX`, 15 actions in all. The body
+is `FUN_004bd39c`, and it reads exactly four arguments:
+
+```
+AccountType   via FUN_004a43ec  (integer getter)  -> local
+AccountToken  via FUN_004a4460  (string getter)   -> 2052-byte buffer
+AccountKey    via FUN_004a4460                    -> 2052-byte buffer
+AccountUID    via FUN_004a43ec  (integer getter)  -> local, then flag byte set
+```
+
+then bounds both strings with `0x406510` at **< 0x801**, and calls the owner virtual
+`+0x2c(parent, type, uid, token, key)`; zero from that virtual is success, anything
+else is a 402. So `AccountUID` is a real input that the SCPD does not list, and the
+body itself imposes a 2048-byte ceiling per credential.
+
+The pre-body validators (0x4bdccc and its chain, one `li a1,402` each) run first:
+each calls `0x4be6fc` (the content-length copy) and a per-type coercion virtual, so
+402 before the body means the *request-shaped* copy fails, not the body's logic.
+
+Tried and still 402: the exact four inputs; the full ten; chunked transfer-encoding;
+HTTP/1.0; absent `charset`. The four-input shape is the correct minimum, so the next
+step is `0x4be6fc`'s header source — where the `content-length` on an argument object
+is set — rather than more shapes.
