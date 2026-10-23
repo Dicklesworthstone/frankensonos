@@ -963,3 +963,38 @@ Other measured negatives/positives:
   init fails. `upgrade` is unaffected because it tolerates the failure. Local
   anacapad fuzzing therefore needs an emulated MDP partition table, not just a
   RAM mtd.
+
+### H12 boot-execution path: confirmed in the rootfs, primitive still missing
+
+The claim in bead `frankensonos-q57` is **real and better than stated** — two
+independent boot scripts act on one file:
+
+- `/etc/rc.d/rcS` (run 1, after `/jffs` is mounted): `if [ -f
+  /jffs/system/Configure.dev ]; then sh /jffs/system/Configure.dev; fi` — i.e.
+  arbitrary root commands, every boot.
+- `/wifi/Configure` (run earlier by rcS): `if [ -f /etc/unlocked_build_flag -o -e
+  /jffs/system/Configure.dev ]; then /usr/sbin/telnetd; touch
+  /tmp/device_unlocked_flag; fi` — i.e. **mere existence** starts a root telnet
+  shell on 2323 and sets the flag the updater's `allow_policy_bypass` keys on.
+
+What is missing is a primitive that creates a file at a chosen path. Status:
+
+- `/jffs/system` appears in **no** binary — only in those two shell scripts. The
+  writable settings store is `/jffs/settings` (singular literal in `anacapad`;
+  `RSystemSettingsBase` builds `<g_pszZPSettingsRoot>/<name>` with `snprintf`).
+- `SystemProperties#SetString` **does persist** (values survive a full reboot) and
+  it is reachable unauthenticated on 57.23 through both the WebSocket API and the
+  `:1443` UPnP proxy (`input[]` of name/value). But it stores settings as
+  key/value entries in a **file named by the class** (`localsettings.txt` and
+  friends), not one file per key.
+- Path traversal in the key is accepted (`SetString("../system/Configure.dev",
+  script)` and `"../../system/..."` both return result 0 and read back after a
+  reboot), and still does **not** produce `/jffs/system/Configure.dev`: no
+  telnetd, `/unlock` still 423, `/reboot` still 403 after two boots.
+  `SetString("Configure.dev", …)` likewise.
+
+So the remaining task for H12 is exactly one thing: **a named-file write
+primitive** (a class whose file name or path comes from the request), after which
+root is automatic at the next boot. Candidates to audit: `sonos::SettingsFile`
+constructors reached from a request, `SetZoneAttributes`' icon fetch/cache path,
+and the diagnostics/report writers.
