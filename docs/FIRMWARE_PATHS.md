@@ -758,3 +758,17 @@ for them, so the verifier does not resolve those to a key on the 57.23 MIPS
 build. The open question is whether a reference type can select an
 attacker-supplied certificate in the type-22 bundle; if it can, the image
 self-signs and the update floor stops mattering.
+
+### `.upd` container robustness, measured
+
+The record loop tolerates far more than a real image needs:
+
+- **Section count**: a file with 4 096 record 3s may be parsed end to end; 8 192
+  also completes (131 KB, clean). 32 768 stops the read around 155 KB (≈9.7 k
+  records) without a restart — a graceful cap between 8 k and 9.7 k.
+- **Zero / short `total_len`**: `total_len` 0, 8 and 17 all parse benignly (the
+  loop just consumes the remaining stream).
+- **`total_len` far above the data**: `0x100000` (1 MB) and `0xfffffff0` (≈4 GB)
+  both take the daemon down and the watchdog restarts it within ~5 s. One field
+  is therefore a reliable pre-auth DoS; the record copy does not re-check the
+  declared length against the bytes actually received.
