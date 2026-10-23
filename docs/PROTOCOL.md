@@ -405,7 +405,17 @@ Update mechanism (verified 2026-10-07):
   blobs and the key/signature blobs (types 22/17) carry a `0x621da74d`
   header (RSA-2048-OAEP-wrapped per-blob AES-128-CBC key at `[0x32:0x132]`,
   AES-CBC body, IV = 16 zero bytes, at `0x13A`); the S1 34.16 equivalents
-  are readable (gzip kernel, custom CramFS rootfs, shell script). See
+  are readable (gzip kernel, custom CramFS rootfs, shell script). The
+  encrypted blob header is a **key-entry list**, all big-endian:
+  `[magic 0x886499CA][u32 header_len][u16 1][u16 0][u32 n_pre][u8 n_cipher]`
+  then `n_cipher` entries `[u32 len<2048][u8 type][len bytes][u32 len2<513]
+  [len2 bytes]`, then `[u32 rsa_len<2048][RSA]`, `[u32 data_len][IV+data]`;
+  the leading `u32 4` in `upgrade_reboot`'s dump is the signature index, not
+  part of this struct. `header_len` is only a lower bound on bytes consumed.
+  The parser trusts `n_cipher`: a count that overruns the entries actually
+  present leaves `ZZ0053`/`ZZ0121` reading the next fields as entries, and a
+  type-3 entry with an unrecognised 20-byte recipient id crashes the root
+  `upgrade` process (probe log in `captures/research/root-hunt/`). See
   `docs/FIRMWARE_PATHS.md` for the per-class layout and the `sonostool`
   decryption path.
 - S2 86.10 payload (type 23) extracts to `bin/anacapad`: the 3 MB zone
