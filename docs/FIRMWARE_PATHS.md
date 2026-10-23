@@ -1459,6 +1459,32 @@ location `lc_3ee386abdf5745068202801414f1a14a`, UDN `RINCON_000E58CADE9401400`) 
 `Sonos_qN6HO…` value used in earlier probes — **re-read `/status/zp` before minting**, and note the
 household id carries a `.` and a long suffix.
 
+### Structure fully mapped; the inspector still rejects every shape
+
+The header and payload handlers are both rapidjson `ReaderHandler`s, and their registered field
+tables are readable:
+
+- header (`FUN_00604a20`): `x5c` (cap 0x15), `alg` (5), `kid` (5) — `kid` is slot 0, so the
+  `param_3 + 8` target behind code 6 ("not minted by this device") **is the JOSE `kid`**;
+- payload (`FUN_00605084`): `jti iss sub aud iat exp riat rexp scp` (strings `jti/iss/sub/aud`,
+  numbers `iat/exp/riat/rexp`, array `scp`) — so the claim at `+0x20` that is rendered and compared
+  against `kid` is one of those, and `hhid`/the optional at `+0xa4` are Sonos extensions.
+
+Two namespace strings matter. The claim formatter (`FUN_005f7210`) takes a tag that
+`FUN_005f71d4` substitutes through the text, and that tag is a `std::string` in `.bss` (`0x7048e8`)
+initialised at `0x46fa14` from **`urn:dev:ops:44974-zp-`**. The same object is the needle of a
+`rfind(…, 0) != 0` prefix test that runs *before* the inspector and skips it on a mismatch, so the
+received token is expected to carry that `urn:` form. Sonos claim namespaces seen in the build are
+`urn:sonos:environment|user|hhid|udn|idtype|device`.
+
+Every mechanical combination tried on `.4.81` still returns `invalid_token`: plain and
+`urn:dev:ops:44974-zp-`-prefixed claim names, `Bearer` value with and without the `urn:` prefix,
+`kid` as the UDN and as `urn:dev:ops:44974-zp-<UDN>`, `idtype=device`, and the braced `hhid`
+fingerprint. Since the *same* rejection now covers a correct-looking structure, the next step is an
+**emulator run of the daemon** (a MIPS guest with `/opt/s57` and a readable log) rather than more
+permutations; the code paths log every reason under `muse_token_inspector` and the message strings
+are known (`0x6af900`, `0x6af924`, `0x6af974`, `0x6af98c`, `0x6af9b4`, `0x6af9e0`, `0x6af9ec`).
+
 Committed at `90d2155`; doc and mail carry the same stopping point.
 
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
