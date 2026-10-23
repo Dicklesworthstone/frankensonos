@@ -2893,3 +2893,37 @@ Tried and still 402: the exact four inputs; the full ten; chunked transfer-encod
 HTTP/1.0; absent `charset`. The four-input shape is the correct minimum, so the next
 step is `0x4be6fc`'s header source — where the `content-length` on an argument object
 is set — rather than more shapes.
+
+### Token lane: the composer and the pre-gate are now exact; two values are built locally
+
+Read on the 86.10 build (`captures/firmware/s2_overlay/bin/anacapad`, MIPS16 — plain
+`objdump` mis-decodes it, `-m mips:16` is required; Ghidra will not form functions in
+that region, so the caller is read as assembly).
+
+`FUN_00520578` is a one-line `std::string::rfind` wrapper and the object compared
+against is the `.bss` `std::string` at `0x7048e8`, static-initialised from the literal
+at `0x666b40`, `urn:dev:ops:44974-zp-`. So the gate is a **prefix test**: `iss` must
+begin with that URN or the inspector is skipped entirely.
+
+The composer `FUN_006020f8` is confirmed instruction by instruction: `0x602094`
+appends `'{'` (`FUN_005f7420(...,0x7b)`), `0x602074` appends a string, and `'}'`
+(`0x7d`) closes. The order is
+
+```
+{ owner { luid <luid> } hhid <hhid> network_hash <network_hash> }
+```
+
+with `<luid>` = `param_2+0x48`, `<hhid>` = `param_2+0x30` (both filled by the policy
+callback from `iss`), and `<network_hash>` = the third argument.
+
+At the call site (`0x603cf2`) the third argument is `sp+516`, filled immediately
+before by `0x603940` — so **`network_hash` is computed locally**, not read from the
+token. `0x603940` builds a string and hands it to `0x51b9b4`; `0x603964` is its
+companion. Those two, plus whatever fills the policy struct's `+0x30`/`+0x48`, are the
+whole remaining surface.
+
+Measured blind (all `401 invalid_token`): `iss` suffixes RINCON / deviceId / serial;
+`mhhid` as the bare household id, `Sonos_<hhid>`, the bare brace form with empty
+`luid`/`network_hash`, with the household id in the network slot, and with
+`locationId` in either slot. A single-token probe cannot score these — the reply is
+one bit — so the next work is the two builders, not more combinations.
