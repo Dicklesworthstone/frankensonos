@@ -525,9 +525,13 @@ regression, not the ring parser. Effect: the decoded-statement limit on
 57.23 is the body limit, which is why anything past ~1480 decoded bytes
 "suddenly" crashed in earlier tests. The 0x800 buffer sits in a 0x1490 frame
 with saved registers at +0x1440, so a full-body overwrite is the thing to
-aim at next (S1 has no canary and no ASLR). Shifting the reference start
-with a leading list entry has not worked yet (attempts parse-fail `400`), so
-that remains a side question, not the cliff.
+aim at next (S1 has no canary and no ASLR). Filling the overflow with a
+plausible code address instead of `A` changes nothing observable (reset in
+0.17-0.35 s either way, listener alive), i.e. the crash happens during or
+just after the read and trashes the handler's live locals, not only saved
+registers — from here a core or the 57.23 binary is required, not more blind
+bodies. Shifting the reference start with a leading list entry has not
+worked yet (attempts parse-fail `400`), so that remains a side question.
 
 **Reversal (same round, via libsonoscrypto)**: the gate IS cryptographic. The
 three obfuscated helpers resolve to `libsonoscrypto.so.1` functions: ZZ0021
