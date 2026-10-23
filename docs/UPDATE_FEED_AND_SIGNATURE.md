@@ -59,9 +59,17 @@ the model key family; model-16 keys are recoverable from a plaintext 34.16
 updater, so arbitrary sections can be re-encrypted for the owner's ZPS5
 players.
 
+**Container byte order (corrected 2026-10-23): the type-17 payload is
+big-endian throughout** — magic, `total`, format word, both counts and every
+`[u32 len][u8 type][len-1 bytes]` record. Offsets: magic `0x621da74d`,
+`total`, `0x00010000`, pad, `count1`, `count2`, then the records; the last
+record is a `len = 0x101` signature (a type byte plus 256 bytes), followed
+by the key-reference block. Reading it little-endian gives nonsense lengths,
+which is what an earlier note did.
+
 **What the type-17 digest covers (measured 2026-10-23).** The first
-attribute of the type-17 container is `MessageDigest` (`u32 0x21`,
-type byte `0x01`, 32 bytes) and it is **SHA-256 of every byte before the
+attribute is `MessageDigest` (`len 0x21`, type `0x01`, 32 bytes at payload
+offsets `0x1D`–`0x3C`) and it is **SHA-256 of every byte before the
 type-17 section** — headers, version header, script, kernel, rootfs, all of
 it. Recomputing it over a patched package makes the digest correct and the
 device then downloads the entire 5.4 MB over TLS (664 records, counted at
