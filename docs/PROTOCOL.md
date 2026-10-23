@@ -419,9 +419,12 @@ Update mechanism (verified 2026-10-07):
   the leading `u32 4` in `upgrade_reboot`'s dump is the signature index, not
   part of this struct. `header_len` is only a lower bound on bytes consumed.
   The parser trusts `n_cipher`: a count that overruns the entries actually
-  present leaves `ZZ0053`/`ZZ0121` reading the next fields as entries, and a
-  type-3 entry with an unrecognised 20-byte recipient id crashes the root
-  `upgrade` process (probe log in `captures/research/root-hunt/`). See
+  present leaves `ZZ0053`/`ZZ0121` reading the following `rsa_len`/RSA bytes
+  as another entry, and the consumer walks it — with the untouched body a
+  single `n_cipher` bump to 2 already faults the root `upgrade` process
+  (probe log in `captures/research/root-hunt/`). Re-laying the blob with a
+  fresh RSA changes where the fabricated entry lands and may survive, so the
+  trigger is the count/layout mismatch, not a specific type. See
   `docs/FIRMWARE_PATHS.md` for the per-class layout and the `sonostool`
   decryption path.
 - S2 86.10 payload (type 23) extracts to `bin/anacapad`: the 3 MB zone
