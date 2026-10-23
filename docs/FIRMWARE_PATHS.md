@@ -1873,3 +1873,23 @@ So the handler is shape-strict and the guesses are not the shapes, which means t
 `strcpy` into the ~16-byte field is not yet shown to be reachable with an
 overflow. The next step is to take the real argument shapes from controller traffic
 for an actual account add instead of guessing, then re-run the length series.
+
+### Two caveats on H13's premise, worth settling before more device time
+
+1. **`AddAccountX` may not be the path the app uses.** The S1 controller carries
+   `RUpnpSPAddAccountX` / `SCOpAddAccountX` / `SCIOpAddServiceAccount`, and for a
+   real music service the `AccountID`/`AccountPassword` values come back from the
+   service (SMAPI), so they are long — while the daemon accepts a one-character id
+   today. Either the daemon's check is on a different field than assumed, or the
+   real flow goes through `AddOAuthAccountX`. The controller binary is the place to
+   read the actual argument shapes from.
+2. **Offset `+161` has no direct store in the daemon.** Searching the whole
+   disassembly for stores at `161(reg)` finds none, so that field is filled by a
+   bulk copy, sits inside a larger object, or is an inline string buffer. The
+   16-byte size used so far is derived from the helper's frame layout (memset to
+   `sp+92`, family word written at `sp+92`, `ra` at `sp+132`), not from the field's
+   own declaration — the *overflow* arithmetic is sound, the *field-size* claim is
+   an inference.
+
+Both are cheap to check against the controller and the decrypted binary; neither
+needs the device.
