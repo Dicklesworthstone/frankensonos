@@ -334,7 +334,9 @@ then the daemon dies outright (HTTP 000) after roughly 25 attempts and the WS
 endpoint is still dead 60 s after HTTP comes back. Recovery is a watchdog
 restart, so this is the third cheap pre-auth kill on 86.10 alongside /setstring
 and HLS, and the cheapest (connect-and-drop). It also explains every "the API
-timed out" seen earlier in the session. Bead `re-ws-exhaust`.
+timed out" seen earlier in the session. Bead `re-ws-exhaust`. **It is S2-only:**
+20 connects at the same 0.3 s spacing against an S1 unit (57.23) all succeed and
+the daemon never blinks.
 
 Generic UPnP passthrough is real but partial. `POST /api/v1/players/{id}/upnpDeviceProperties`
 and `.../upnpZoneGroupTopology` take `{"method":"<Action>","params":{…}}` and answer
