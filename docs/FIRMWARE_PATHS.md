@@ -1506,3 +1506,25 @@ zone name sits behind a fixed key, so it cannot change *which* key is written, b
 a value containing the entry delimiters is the obvious next injection to try.
 Confirmed unchanged: `/advconfig` still handles exactly `FirstZP` and
 `PriorityBridge`, both `atoi`-reduced, into `%s/netsettings_mod.txt`.
+
+### Settings entries: exact format, and why key injection does not work
+
+The writer format is in `anacapad` as a literal:
+
+```
+<%s LastUpdateDevice="%s" Version="0">\n%s</%s>\n
+```
+
+key, device id, **value inserted raw**, key again. No escaping of the value.
+
+Turning that into an extra key needs a newline in the value, and the value is
+forced to one line: both the SOAP path (`&#10;` entities) and the WS proxy path
+(real `\n` in the JSON string) store `a b c` for `a\nb\nc`. Sending
+`x</probe1><inj2 …>9</inj2><probe1 …>` therefore stays inside the value: SOAP
+`GetString` returns it verbatim (`x &lt;/probe1&gt; &lt;inj2 …&gt; …`), and after a
+reboot the injected keys (`inj1`, `inj2`) still answer UPnP `800`.
+
+Two useful by-products: plain `SystemProperties#GetString` **returns the value**
+(the `:1443` proxy does not — it only reports `result`), and a value carrying
+markup is stored raw, so the settings file can be made non-well-formed without any
+visible harm.
