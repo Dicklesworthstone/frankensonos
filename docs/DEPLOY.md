@@ -325,8 +325,10 @@ tailscale serve status
 ### Alternative: listen on the tailnet directly
 
 Leave `FSONOS_HTTP_ADDR` unset and `fsonos serve` listens on loopback **and**
-on every tailnet address of the Mac whenever Tailscale is up at startup; the
-startup log prints the URLs (MagicDNS first) for tailnet devices. Traffic is
+on every tailnet address of the Mac whenever Tailscale is up. The daemon
+checks again every 30 seconds, so a later login, reconnect, or address
+change takes effect without a daemon restart. The startup log prints the
+URLs (MagicDNS first); new listeners are logged as they come up. Traffic is
 plain HTTP inside WireGuard. Two things to know:
 
 - On a direct tailnet listener, Tailscale names each caller by its address
@@ -340,9 +342,15 @@ plain HTTP inside WireGuard. Two things to know:
   Serve traffic arrives on loopback and uses `loopback-http` unless
   `FSONOS_TAILSCALE_SERVE` enables the caller headers described above.
   The house policy and volume caps still apply.
-- The tailnet addresses are read once, at startup. If the daemon starts
-  before Tailscale is up, it listens on loopback only and logs why; restart it
-  (`launchctl kickstart -k`) once Tailscale is up. Serve avoids this.
+- Loopback stays available throughout Tailscale changes. Failed automatic
+  tailnet binds are retried on the next check. A reported disconnect removes
+  the tailnet listeners; new addresses or a changed MagicDNS name rebuild
+  their Host, browser-origin, and caller-identity rules. Brief failures of
+  the Tailscale CLI keep working listeners and their names; after four
+  unanswered checks (about two minutes), only addresses still found on the
+  host's interfaces remain, without a stale MagicDNS name. An explicitly
+  configured HTTP address keeps its configured startup behavior, and
+  `FSONOS_TAILSCALE=off` disables automatic tailnet listeners.
   `fsonos doctor --only tailscale` checks the whole chain: Tailscale up and
   logged in, the MagicDNS name, and the daemon answering over the tailnet,
   with the connect URLs or the fix. With Serve in front, `tailscale.serve`

@@ -57,6 +57,7 @@ use crate::schedule_cmd::SchedulerArgs;
 mod spotify_auth;
 
 mod serve_origin;
+mod tailnet;
 
 /// The data directory, or `INVALID_ARGUMENT` when none can be determined.
 pub fn data_dir(global: &GlobalArgs) -> Result<PathBuf, Failure> {
@@ -412,7 +413,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         fsonos_tailscale::TailnetStatus::Unavailable(fsonos_tailscale::Unavailable::Disabled)
     ) {
         let target = crate::tailscale_cmd::mappings(args)[0].target.clone();
-        serve_origin::watch(target, serve, Arc::clone(&stop));
+        serve_origin::watch(target, serve.clone(), Arc::clone(&stop));
     }
     if args.tailscale_serve {
         // A first HTTPS certificate can take a while: not on the main thread.
@@ -424,6 +425,26 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
             },
         );
     }
+    // Only automatic HTTP binds follow Tailscale while the daemon runs.
+    // Loopback stays owned here; an explicit bind and every MCP listener
+    // retain exactly the configured startup behavior.
+    let (http, tailnet_watch) = if tailnet::enabled(args) {
+        let (local, automatic) = http
+            .into_iter()
+            .partition(|(_, addr)| addr.ip().is_loopback());
+        let watching = tailnet::watch(
+            automatic,
+            names,
+            Arc::clone(&surface),
+            cli_token,
+            args.tailscale_serve,
+            serve,
+            Arc::clone(&stop),
+        );
+        (local, watching)
+    } else {
+        (http, None)
+    };
     announce_live(&live);
 
     while !stop.load(Ordering::Acquire) {
@@ -436,6 +457,11 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
         tracing::warn!("the scheduler stopped with a panic");
     }
     stop_http(&http);
+    if let Some(watching) = tailnet_watch
+        && watching.join().is_err()
+    {
+        tracing::warn!("the automatic tailnet listeners stopped with a panic");
+    }
     stop_mcp(mcp);
     // Announcements in flight put the music back before the process ends.
     drain_announcements(|| surface.announcements_pending(), ANNOUNCE_DRAIN);
@@ -649,6 +675,7 @@ fn start_http(
     let server = Arc::new(TcpServer::new(config));
     let (bound_tx, bound_rx) = mpsc::channel();
     let serving = Arc::clone(&server);
+    let finished = Arc::clone(&server);
     thread::Builder::new()
         .name("fsonos-http".into())
         .spawn(move || {
@@ -677,11 +704,23 @@ fn start_http(
             if let Err(e) = result {
                 let _ = bound_tx.send(Err(e));
             }
+            // Automatic listeners can be retried after a serving failure.
+            finished.shutdown();
         })
         .context("start the HTTP API thread")?;
-    let bound = bound_rx
+    let bound = match bound_rx
         .recv_timeout(Duration::from_secs(10))
-        .context("the HTTP API did not start within 10 s")??;
+        .context("the HTTP API did not start within 10 s")
+        .and_then(std::convert::identity)
+    {
+        Ok(bound) => bound,
+        Err(error) => {
+            // A late start must not leave an unowned listener behind: the
+            // tailnet watcher will retry this address on its next look.
+            server.shutdown();
+            return Err(error);
+        }
+    };
     Ok((server, bound))
 }
 

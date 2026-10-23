@@ -207,8 +207,9 @@ pub fn ip_addresses(text: &str) -> Vec<IpAddr> {
 #[derive(Debug, Clone, clap::Args)]
 pub struct ServeArgs {
     /// HTTP API bind address [default: 127.0.0.1:8099 plus this host's
-    /// tailnet addresses when Tailscale is up]. Setting it binds exactly this
-    /// address (loopback behind Tailscale Serve, or the tailnet address).
+    /// tailnet addresses, following Tailscale startup and reconnects].
+    /// Setting it binds exactly this address (loopback behind Tailscale
+    /// Serve, or the tailnet address).
     #[arg(long, env = "FSONOS_HTTP_ADDR")]
     pub http: Option<SocketAddr>,
 
@@ -319,7 +320,8 @@ impl ServeArgs {
     }
 
     /// Where the HTTP API binds: the configured address, or loopback plus
-    /// the tailnet when Tailscale is up.
+    /// the tailnet when Tailscale is up. The daemon keeps the automatic
+    /// tailnet listeners current while it runs.
     #[must_use]
     pub fn http_plan(
         &self,
