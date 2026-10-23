@@ -423,10 +423,15 @@ how a local client obtains a scoped token without the cloud.
    copies `(limit-head)` entries of `0xc50` to `new_head*0xc50`. The array is inline
    at `obj+8`, so `limit-head == 17` — which is just the first append after the
    split/reset, since that path sets `head = limit = 16` and head then wraps to 0 —
-   copies `0x81d0` bytes to `obj-0xc48`, i.e. **into the heap chunk header and the
-   preceding allocation**. Content copied is our own segment records, so the overflow
-   length is chosen by the playlist: a window that adds 40 new segments per reload kills
-   in ~10 s and then self-sustains a ~20 s crash/restart loop.
+   copies `0x81d0` bytes to `obj-0xc48`, i.e. **into whatever precedes the parent and the
+   preceding allocation**. Content copied is our own segment records. The kill is **not**
+   monotone in the per-reload delta, though: 1 and 2 new segments per reload kill reliably
+   (7.2 s and 8.3 s, three and two deaths in 25 s), while 4, 8, 24 and 40 survived a 25 s
+   window and 40 only died on a third run at 11.4 s. So the trigger is the ordinary forward
+   append and a larger delta is not a larger copy — append+drain keeps `limit-head` small.
+   Ring geometry for the record: the composite init takes the parent and places the ring at
+   `parent+0xc508`, so `delta == 17` starts the copy at `parent-0x840` and covers the
+   parent's first `0x7990` bytes; the leading part of any such copy is out of the allocation.
    Invocation details the harness needs: the path is `/MediaRenderer/AVTransport/Control`
    (the short `/AVTransport/Control` answers 405) and `SetAVTransportURI` needs DIDL
    metadata — empty returns 500, an `audioBroadcast` item carrying the `hls-radio://` res
