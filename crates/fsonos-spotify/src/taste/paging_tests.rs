@@ -186,10 +186,14 @@ impl Server {
             token: format!("http://{addr}/api/token"),
         };
         state.lock().unwrap().base.clone_from(&endpoints.api);
+        // The continuation tests open their store here before any session
+        // writes a token cache into it.
+        let data = scratch_dir(&format!("taste-pages-{}", addr.port()));
+        std::fs::create_dir_all(&data).unwrap();
         let server = Self {
             state,
             endpoints,
-            data: scratch_dir(&format!("taste-pages-{}", addr.port())),
+            data,
             shutdown: Some(Box::new(move || signal.trigger_immediate())),
             thread: Some(thread),
         };

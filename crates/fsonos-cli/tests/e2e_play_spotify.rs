@@ -90,15 +90,17 @@ fn spotify_albums_and_playlists_play_from_their_first_track() {
         format!("{state:?}, track {track:?}, {uri}"),
     );
 
-    let artist = format!("spotify:artist:{ALBUM}");
-    let run = s.cli("play-artist", &["play", "Kitchen", &artist]);
+    // Artists, episodes and shows play since b3ac8880; an audiobook is a
+    // Spotify kind the house still cannot play.
+    let audiobook = format!("spotify:audiobook:{ALBUM}");
+    let run = s.cli("play-audiobook", &["play", "Kitchen", &audiobook]);
     let (_, _, uri) = now(&s);
     s.check(
-        "play-artist",
+        "play-audiobook",
         "cli",
-        "an artist says it can't play yet, and the playlist plays on",
+        "an audiobook is refused before any speaker changes, and the playlist plays on",
         !run.ok()
-            && run.stderr.contains("error[NOT_IMPLEMENTED]")
+            && run.stderr.contains("error[INVALID_ARGUMENT]")
             && uri.contains(&format!("{PLAYLIST}1")),
         &run.stderr,
     );

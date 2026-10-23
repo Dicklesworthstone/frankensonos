@@ -98,7 +98,7 @@ fn remove_range(s: &mut Scenario, mode: &str, room: &str, path: &Path) {
         removed.ok()
             && result["count"] == 2
             && result["remaining"] == 3
-            && result["undoable"] == false
+            && result["undoable"] == true
             && current(s) == [uri("a"), uri("d"), uri("e")],
         format!("{} {}", removed.stdout, removed.stderr),
     );

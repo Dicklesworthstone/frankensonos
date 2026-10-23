@@ -683,7 +683,7 @@ fn bare_spotify_kinds_enqueue_with_the_sid_only() {
             .unwrap_or_else(|| panic!("{kind}: no enqueue sent: {sent:?}"));
         assert!(
             add.contains(&format!(
-                "x-sonos-spotify:spotify%3a{kind}%3a0fixturespotify0000203?sid=12"
+                "x-sonos-spotify:spotify%3a{kind}%3a0FixtureSpotify0000203?sid=12"
             )),
             "{kind}: {add}"
         );

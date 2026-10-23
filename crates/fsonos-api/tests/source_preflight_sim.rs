@@ -87,35 +87,31 @@ fn unsupported_sources_do_not_snapshot_or_change_an_over_cap_house() {
         let before = control::playback(&sim.lan(), &houses, &target.coordinator.id).unwrap();
         let original_queue = queue(&sim, &houses, zone);
 
-        for kind in ["artist", "show", "episode"] {
-            let canonical = format!("spotify:{kind}:{ID}");
-            for source_uri in [
-                canonical.clone(),
-                format!("https://open.spotify.com/intl-en/{kind}/{ID}?si=pasted"),
-            ] {
-                let req = request(zone, source_uri);
-                let calls_before = sim.soap_log().len();
-                let failure = s
-                    .control(&Client::McpStdio, "play", |rooms| plan_play(rooms, &req))
-                    .unwrap_err();
-                assert_eq!(failure.code, ErrorCode::NotImplemented, "{req:?}");
-                assert_eq!(failure.status(), 501);
-                assert_eq!(
-                    failure.detail,
-                    format!(
-                        "Spotify tracks, albums and playlists play so far; {canonical} is none of them"
-                    )
-                );
-                assert_eq!(
-                    failure.hint,
-                    "Play one of its tracks, albums or playlists for now."
-                );
-                assert_eq!(
-                    sim.soap_log().len(),
-                    calls_before,
-                    "rejected {req:?} performed speaker I/O before failing"
-                );
-            }
+        // Tracks, albums, playlists, artists, episodes and shows all play
+        // (b3ac8880); an audiobook, pasted either way, is a kind none of the
+        // playback paths can render.
+        for source_uri in [
+            format!("spotify:audiobook:{ID}"),
+            format!("https://open.spotify.com/intl-en/audiobook/{ID}?si=pasted"),
+        ] {
+            let req = request(zone, source_uri);
+            let calls_before = sim.soap_log().len();
+            let failure = s
+                .control(&Client::McpStdio, "play", |rooms| plan_play(rooms, &req))
+                .unwrap_err();
+            assert_eq!(failure.code, ErrorCode::InvalidArgument, "{req:?}");
+            assert_eq!(failure.status(), 422);
+            assert!(
+                failure
+                    .detail
+                    .contains("unsupported Spotify kind \"audiobook\""),
+                "{failure:?}"
+            );
+            assert_eq!(
+                sim.soap_log().len(),
+                calls_before,
+                "rejected {req:?} performed speaker I/O before failing"
+            );
         }
 
         assert_eq!(
