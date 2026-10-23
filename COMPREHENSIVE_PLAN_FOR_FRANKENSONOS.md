@@ -786,9 +786,16 @@ queue revision, selected occurrence, elapsed position and known play mode.
 Applying that scene can return from a radio source to the saved queue while
 the queue remains unchanged. Recall checks the original player and, when
 available, its boot sequence before playback writes. A changed reference
-fails that source step and blocks dependent playback. Queue entries are never
-rebuilt or cleared by recall; full queue backups and reconstruction remain a
-separate feature. Existing `keep` scenes retain their original behavior.
+fails that source step and blocks dependent playback. Default bookmark recall
+does not edit queue entries. Opt-in `scene save --backup-queues` (also HTTP,
+MCP and web capture) retains complete ordered contents with a 1,000-entry and
+4 MiB per-queue bound. Backup recall stages and verifies the saved suffix
+before removing the old prefix with the speaker's revision guard, then
+restores occurrence, time, mode and playback intent on the original player.
+It tolerates prior queue edits and reboots, but fences concurrent changes and
+never replays uncertain writes. Paused recall stays silent. Replacement queue
+contents are outside action-history undo. Existing `keep` scenes retain their
+original behavior.
 See `docs/SCENE_QUEUES.md` for the capture and apply contract.
 
 ### 12.8 An instant CLI through the daemon

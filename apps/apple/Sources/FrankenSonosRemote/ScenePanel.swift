@@ -66,7 +66,7 @@ import FrankenSonosKit
             Label("Remember this moment", systemImage: "camera.aperture").font(.title3.bold())
             Text("Save the house’s groups, music, levels and mutes as they are when you confirm. Capturing does not change what is playing.")
                 .font(.callout).foregroundStyle(.secondary)
-            Text("Queue positions can be recalled only while the original queue remains unchanged. Queue contents are not saved.")
+            Text("This capture saves queue positions only. Recall requires the original unchanged queue; queue contents are not saved.")
                 .font(.caption).foregroundStyle(.secondary)
             // Keep the actor-isolated call in the closure; passing the method
             // directly crashes Swift 6.1 IR generation on Apple platforms.
@@ -123,11 +123,11 @@ import FrankenSonosKit
                     case "favorite": Text("Favorite: \(group.source.name ?? "")")
                     case "uri": Text("Source URI: \(group.source.uri ?? "")").textSelection(.enabled)
                     case "dj": Text(group.source.djSummary).textSelection(.enabled)
-                    case "queue":
+                    case "queue", "queue_backup":
                         if let queue = group.source.queue {
                             Text(queue.summary)
                             if let mode = queue.playMode { Text(mode.summary) }
-                            Text("Queue contents are not saved. Recall requires the original unchanged queue; a known speaker restart also invalidates this position.")
+                            Text(queue.recallNote)
                                 .font(.caption).foregroundStyle(.secondary)
                         } else {
                             Text("Queue position unavailable. Capture the scene again.")
@@ -135,7 +135,7 @@ import FrankenSonosKit
                     default: Text("Unsupported source: \(group.source.kind)")
                     }
                     Text(group.playing.map { $0 ? "Start / continue playback" :
-                        (group.source.kind == "queue" ? "Ready without playback" : "Pause playback")
+                        (group.source.kind == "queue" || group.source.kind == "queue_backup" ? "Ready without playback" : "Pause playback")
                     } ?? "Leave play/pause state unchanged")
                         .font(.caption).foregroundStyle(.secondary)
                 }

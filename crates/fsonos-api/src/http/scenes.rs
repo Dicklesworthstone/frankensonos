@@ -12,7 +12,7 @@ use fastapi::{Method, PathParams, Request};
 use super::{Ctx, Op, answer, body_or_default, percent_decode};
 use crate::failure::Failure;
 use crate::surface::scenes::{
-    SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDeletedDto, SceneDto,
+    SceneApplyDto, SceneApplyRequest, SceneDeletedDto, SceneDto, SceneSaveRequest,
 };
 
 const SCENES: &str = "scenes";
@@ -80,25 +80,29 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "Save a scene (replacing one of that name): the house as it is now, or the one the body writes out",
             ),
             |s, c, req| {
-                // No body (or `{}`): the house as it is now.
-                let saved = body_or_default::<Option<SceneDefinition>>(req, None).and_then(|def| {
+                // No body (or `{}`) captures bookmarks; backup_queues opts
+                // into durable contents without accepting authored metadata.
+                let saved = body_or_default::<Option<SceneSaveRequest>>(req, None).and_then(|r| {
                     let name = path_name(req)?;
-                    match def.filter(|d| *d != SceneDefinition::default()) {
+                    let request = r.unwrap_or_default();
+                    let backup_queues = request.backup_queues;
+                    match request.into_definition()? {
                         Some(def) => s.save_scene_from(c, &name, &def),
+                        None if backup_queues => s.save_scene_with_queue_backups(c, &name),
                         None => s.save_scene(c, &name),
                     }
                 });
                 answer(saved)
             },
         )
-        .request_schema::<SceneDefinition>(false)
+        .request_schema::<SceneSaveRequest>(false)
         .response_schema::<SceneDto>(200, "The scene as saved"),
         cx.route(
             &Op::post(
                 "/scenes/{name}/apply",
                 "apply_scene",
                 SCENES,
-                "Put the house in a saved scene: only the steps it needs, undoable",
+                "Put the house in a saved scene; action-history undo cannot restore replaced queue contents",
             ),
             |s, c, req| {
                 // An empty body or `{}` applies at once.

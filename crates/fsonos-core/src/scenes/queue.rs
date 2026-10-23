@@ -58,12 +58,12 @@ fn invalid(detail: &str) -> ProtoError {
 }
 
 #[derive(PartialEq, Eq)]
-struct Group {
-    members: Vec<PlayerId>,
-    boot_seq: Option<u32>,
+pub(super) struct Group {
+    pub(super) members: Vec<PlayerId>,
+    pub(super) boot_seq: Option<u32>,
 }
 
-fn group<T: Transport + ?Sized>(
+pub(super) fn group<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
     coordinator: &PlayerId,
@@ -146,7 +146,7 @@ fn entry<T: Transport + ?Sized>(
     })
 }
 
-fn same_track(a: &str, b: &str) -> bool {
+pub(super) fn same_track(a: &str, b: &str) -> bool {
     a == b
         || spotify_uri_from_renderer_uri(a).is_some_and(|source| {
             spotify_uri_from_renderer_uri(b).as_deref() == Some(source.as_str())
@@ -216,15 +216,15 @@ pub(super) fn capture<T: Transport + ?Sized>(
     Ok(Some(queue))
 }
 
-struct Playback {
-    media: MediaInfo,
-    position: PositionInfo,
-    state: TransportState,
+pub(super) struct Playback {
+    pub(super) media: MediaInfo,
+    pub(super) position: PositionInfo,
+    pub(super) state: TransportState,
     observed: Instant,
 }
 
 impl Playback {
-    fn read<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<Self, ProtoError> {
+    pub(super) fn read<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<Self, ProtoError> {
         let media = soap::get_media_info(t, host)?;
         let position = soap::get_position_info(t, host)?;
         let state = soap::get_transport_info(t, host)?.state;
@@ -239,14 +239,14 @@ impl Playback {
         })
     }
 
-    fn same_source(&self, other: &Self) -> bool {
+    pub(super) fn same_source(&self, other: &Self) -> bool {
         self.media.uri == other.media.uri
             && self.media.uri_metadata == other.media.uri_metadata
             && self.position.track == other.position.track
             && same_track(&self.position.uri, &other.position.uri)
     }
 
-    fn agrees(&self, other: &Self) -> bool {
+    pub(super) fn time_agrees(&self, other: &Self) -> bool {
         let forward = if self.state == TransportState::Playing {
             u32::try_from(self.observed.elapsed().as_secs())
                 .unwrap_or(u32::MAX)
@@ -254,15 +254,17 @@ impl Playback {
         } else {
             0
         };
-        self.same_source(other)
-            && self.state == other.state
-            && match (self.position.position_secs, other.position.position_secs) {
-                (Some(before), Some(after)) => {
-                    after >= before && after <= before.saturating_add(forward)
-                }
-                (None, None) => true,
-                _ => false,
+        match (self.position.position_secs, other.position.position_secs) {
+            (Some(before), Some(after)) => {
+                after >= before && after <= before.saturating_add(forward)
             }
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
+    pub(super) fn agrees(&self, other: &Self) -> bool {
+        self.same_source(other) && self.state == other.state && self.time_agrees(other)
     }
 }
 
@@ -284,6 +286,7 @@ impl<'a, T: Transport + ?Sized> Guarded<'a, T> {
         t: &'a T,
         house: &HouseholdState,
         queue: &'a QueueReference,
+        baseline: Option<(&Playback, Option<PlayMode>)>,
     ) -> Result<Self, CoreError> {
         let coordinator = &queue.coordinator;
         let host = control::locate(std::slice::from_ref(house), coordinator)?.ip;
@@ -307,10 +310,19 @@ impl<'a, T: Transport + ?Sized> Guarded<'a, T> {
         }
         let selected = entry(t, host, queue)?;
         let current = Playback::read(t, host)?;
+        if baseline.is_some_and(|(before, _)| !before.agrees(&current)) {
+            return Err(invalid("playback ownership changed after queue reconstruction").into());
+        }
         let current_mode = queue
             .play_mode
             .map(|_| get_play_mode(t, host))
             .transpose()?;
+        if baseline
+            .and_then(|(_, mode)| mode)
+            .is_some_and(|mode| current_mode != Some(mode))
+        {
+            return Err(invalid("the play mode changed after queue reconstruction").into());
+        }
         Ok(Self {
             t,
             host,
@@ -485,6 +497,19 @@ pub(super) fn restore<T: Transport + ?Sized>(
     queue: &QueueReference,
     start: bool,
 ) -> Result<bool, String> {
+    restore_from(t, households, coordinator, queue, start, None)
+}
+
+/// A queue rebuild carries its final ownership observation into playback
+/// restoration; a changed source must not become a new accepted baseline.
+pub(super) fn restore_from<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    queue: &QueueReference,
+    start: bool,
+    baseline: Option<(&Playback, Option<PlayMode>)>,
+) -> Result<bool, String> {
     queue.validate()?;
     if coordinator != &queue.coordinator {
         return Err(
@@ -503,7 +528,7 @@ pub(super) fn restore<T: Transport + ?Sized>(
         return Err("the saved queue belongs to a different household".into());
     }
     let result = (|| -> Result<bool, CoreError> {
-        let guarded = Guarded::prepare(t, house, queue)?;
+        let guarded = Guarded::prepare(t, house, queue, baseline)?;
         let host = guarded.host;
         guarded.before()?;
         let current = guarded.expected.borrow();

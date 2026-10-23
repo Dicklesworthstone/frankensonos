@@ -8,12 +8,11 @@ use crate::{HouseholdState, control};
 use fsonos_proto::content::{self, QUEUE};
 use fsonos_proto::control as soap;
 use fsonos_proto::didl::{
-    DidlKind, DidlObject, SpotifyRenderParams, parse_didl, spotify_queue_uri, spotify_track_didl,
-    spotify_track_uri, spotify_uri_from_renderer_uri, xml_escape,
+    DidlKind, DidlObject, SpotifyRenderParams, item_metadata, parse_didl, spotify_queue_uri,
+    spotify_track_didl, spotify_track_uri, spotify_uri_from_renderer_uri,
 };
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayMode, PlayerId, TransportState};
-use std::fmt::Write as _;
 use std::net::IpAddr;
 use std::time::Instant;
 
@@ -377,56 +376,6 @@ fn queue_items<T: Transport + ?Sized>(
 
 fn invalid(message: &str) -> MoveError {
     ProtoError::Malformed(message.into()).into()
-}
-
-/// Preserve the metadata represented by the protocol model for non-Spotify
-/// items, including their service descriptor and resource attributes. Spotify
-/// descriptors instead come from the destination household during preparation.
-fn item_metadata(item: &DidlObject) -> String {
-    let mut xml = format!(
-        "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" \
-         xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
-         xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" \
-         xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">\
-         <item id=\"{}\" parentID=\"{}\" restricted=\"{}\">",
-        xml_escape(&item.id),
-        xml_escape(&item.parent_id),
-        item.restricted,
-    );
-    for (tag, value) in [
-        ("dc:title", Some(item.title.as_str())),
-        ("upnp:class", Some(item.class.as_str())),
-        ("dc:creator", item.creator.as_deref()),
-        ("upnp:album", item.album.as_deref()),
-        ("upnp:albumArtURI", item.album_art_uri.as_deref()),
-    ] {
-        if let Some(value) = value {
-            let _ = write!(xml, "<{tag}>{}</{tag}>", xml_escape(value));
-        }
-    }
-    if let Some(res) = &item.res {
-        xml.push_str("<res");
-        for (name, value) in [
-            ("protocolInfo", res.protocol_info.as_deref()),
-            ("duration", res.duration.as_deref()),
-        ] {
-            if let Some(value) = value {
-                let _ = write!(xml, " {name}=\"{}\"", xml_escape(value));
-            }
-        }
-        let _ = write!(xml, ">{}</res>", xml_escape(&res.uri));
-    }
-    if let Some(desc) = &item.desc {
-        let _ = write!(
-            xml,
-            "<desc id=\"{}\" nameSpace=\"{}\">{}</desc>",
-            xml_escape(&desc.id),
-            xml_escape(&desc.name_space),
-            xml_escape(&desc.value)
-        );
-    }
-    xml.push_str("</item></DIDL-Lite>");
-    xml
 }
 
 #[cfg(test)]

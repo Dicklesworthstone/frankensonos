@@ -237,8 +237,8 @@ public struct Scene: Codable, Equatable, Sendable, Identifiable {
             self.direction = direction
         }
     }
-    /// A position in the original coordinator's unchanged queue. Its contents
-    /// are not copied into the scene, and only house capture creates it.
+    /// A captured position on the original coordinator. A non-nil total
+    /// identifies a durable backup whose queue contents remain on the daemon.
     public struct QueueReference: Codable, Equatable, Sendable {
         public let coordinator: String
         public let household: String?
@@ -247,16 +247,29 @@ public struct Scene: Codable, Equatable, Sendable, Identifiable {
         public let positionSecs: UInt32
         public let playMode: QueuePlaybackMode?
         public let bootSeq: UInt32?
+        public let total: UInt32?
 
         public init(coordinator: String, household: String? = nil, updateId: UInt32, track: UInt32,
-                    positionSecs: UInt32, playMode: QueuePlaybackMode? = nil, bootSeq: UInt32? = nil) {
+                    positionSecs: UInt32, playMode: QueuePlaybackMode? = nil, bootSeq: UInt32? = nil,
+                    total: UInt32? = nil) {
             self.coordinator = coordinator; self.household = household; self.updateId = updateId
             self.track = track; self.positionSecs = positionSecs; self.playMode = playMode; self.bootSeq = bootSeq
+            self.total = total
         }
 
         public var summary: String {
             let seconds = String(format: "%02d", positionSecs % 60)
+            if let total {
+                return "Saved queue backup · \(total) entries · track \(track) at \(positionSecs / 60):\(seconds)"
+            }
             return "Original unchanged queue · track \(track) at \(positionSecs / 60):\(seconds)"
+        }
+
+        public var recallNote: String {
+            if total != nil {
+                return "Recall replaces the original player’s current queue. Action-history undo cannot restore the replaced queue contents."
+            }
+            return "Queue contents are not saved. Recall requires the original unchanged queue; a known speaker restart also invalidates this position."
         }
     }
 }

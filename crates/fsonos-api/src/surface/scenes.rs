@@ -72,9 +72,9 @@ pub struct SceneGroupDto {
 /// What a scene group plays: `keep` (whatever the group has, its queue
 /// say), a `favorite` (by `name`), a `uri` (a stream, or a Spotify track,
 /// album or playlist), the `dj` (with a `mood` and reusable `direction`, if
-/// supplied), or a captured `queue`
-/// reference. A queue reference recalls only the original, unchanged queue;
-/// its contents are not saved or reconstructed.
+/// supplied), a captured `queue` reference, or a durable `queue_backup`.
+/// References require the original unchanged queue. Backups retain its
+/// ordered contents and can reconstruct them on the original player.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SceneSourceDto {
     pub kind: String,
@@ -92,8 +92,9 @@ pub struct SceneSourceDto {
     pub queue: Option<SceneQueueDto>,
 }
 
-/// A captured position in a coordinator's existing queue, not a queue backup.
-/// Capture creates this reference; authored scene definitions cannot supply it.
+/// The public summary of a captured queue. `total` identifies a durable
+/// backup; its private renderer metadata remains in the scene store.
+/// Authored scene definitions cannot supply either kind of captured queue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SceneQueueDto {
@@ -108,6 +109,9 @@ pub struct SceneQueueDto {
     pub play_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boot_seq: Option<u32>,
+    /// Saved entries, present only when queue contents were backed up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u32>,
 }
 
 impl SceneQueueDto {
@@ -117,6 +121,14 @@ impl SceneQueueDto {
             .play_mode
             .as_ref()
             .map_or_else(String::new, |mode| format!(", {mode}"));
+        if let Some(total) = self.total {
+            return format!(
+                "saved queue backup, {total} entries, track {} at {}:{:02}{mode} (replaces the original player's current queue on recall; action-history undo cannot restore those contents)",
+                self.track,
+                self.position_secs / 60,
+                self.position_secs % 60,
+            );
+        }
         format!(
             "original unchanged queue, track {} at {}:{:02}{mode} (queue contents are not saved)",
             self.track,
@@ -139,7 +151,45 @@ impl From<&scenes::QueueReference> for SceneQueueDto {
             position_secs: queue.position_secs,
             play_mode: queue.play_mode.map(|mode| mode.as_str().to_owned()),
             boot_seq: queue.boot_seq,
+            total: None,
         }
+    }
+}
+
+/// Capture the current house, optionally retaining complete queue contents,
+/// or save an authored definition using the existing scene fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SceneSaveRequest {
+    #[serde(default)]
+    pub groups: Vec<SceneGroupDefinition>,
+    #[serde(default)]
+    pub volumes: BTreeMap<String, u8>,
+    #[serde(default)]
+    pub mutes: BTreeMap<String, bool>,
+    /// Capture complete ordinary queues. Cannot accompany an authored scene.
+    #[serde(default)]
+    pub backup_queues: bool,
+}
+
+impl SceneSaveRequest {
+    /// Separate authored scenes from capture without reading the household.
+    pub fn into_definition(self) -> Result<Option<SceneDefinition>, Failure> {
+        let def = SceneDefinition {
+            groups: self.groups,
+            volumes: self.volumes,
+            mutes: self.mutes,
+        };
+        if def == SceneDefinition::default() {
+            return Ok(None);
+        }
+        if self.backup_queues {
+            return Err(Failure::invalid(
+                "backup_queues captures the current house and cannot accompany an authored scene",
+            ));
+        }
+        def.validate_sources()?;
+        Ok(Some(def))
     }
 }
 
@@ -323,11 +373,11 @@ fn scene_settings<T: Copy>(
 
 /// What a written-out group plays, or why that can't be a scene's source.
 fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
-    if dto.kind == "queue" || dto.queue.is_some() {
+    if matches!(dto.kind.as_str(), "queue" | "queue_backup") || dto.queue.is_some() {
         return Err(Failure::invalid(
-            "queue references can only be captured from the current house",
+            "queue references and backups can only be captured from the current house",
         )
-        .with_hint("Use scene save without --from, or save_scene without a scene definition. Queue contents are not backed up."));
+        .with_hint("Capture without --from or an authored definition; set backup_queues or use scene save --backup-queues to retain queue contents."));
     }
     if dto.direction.is_some() && dto.kind != "dj" {
         return Err(Failure::invalid("only a dj scene source takes `direction`"));
@@ -450,6 +500,13 @@ impl From<&SceneSource> for SceneSourceDto {
                 queue: Some(SceneQueueDto::from(queue)),
                 ..dto("queue")
             },
+            SceneSource::QueueBackup { backup } => Self {
+                queue: Some(SceneQueueDto {
+                    total: Some(u32::try_from(backup.entries.len()).unwrap_or(u32::MAX)),
+                    ..SceneQueueDto::from(&backup.reference)
+                }),
+                ..dto("queue_backup")
+            },
         }
     }
 }
@@ -568,6 +625,23 @@ fn describe(households: &[HouseholdState], op: &SceneOp) -> String {
             queue.track,
             queue.position_secs / 60,
             queue.position_secs % 60,
+            if *start {
+                "playing"
+            } else {
+                "ready without playback"
+            },
+        ),
+        SceneOp::QueueBackup {
+            coordinator,
+            backup,
+            start,
+        } => format!(
+            "{} restores {} saved queue entries, track {} at {}:{:02}, {}",
+            room(coordinator),
+            backup.entries.len(),
+            backup.reference.track,
+            backup.reference.position_secs / 60,
+            backup.reference.position_secs % 60,
             if *start {
                 "playing"
             } else {
@@ -730,6 +804,25 @@ impl Surface {
     /// Save the house as it is now as the scene `name`, replacing one of
     /// that name (`save_scene`).
     pub fn save_scene(&self, client: &Client, name: &str) -> Result<SceneDto, Failure> {
+        self.capture_scene(client, name, false)
+    }
+
+    /// Capture complete ordinary queues so recall can reconstruct them after
+    /// edits or restarts. Saving still performs no speaker writes.
+    pub fn save_scene_with_queue_backups(
+        &self,
+        client: &Client,
+        name: &str,
+    ) -> Result<SceneDto, Failure> {
+        self.capture_scene(client, name, true)
+    }
+
+    fn capture_scene(
+        &self,
+        client: &Client,
+        name: &str,
+        backup_queues: bool,
+    ) -> Result<SceneDto, Failure> {
         let tool = "save_scene";
         self.authorize_logged(client, tool)?;
         // A bad name fails before the speakers are read.
@@ -740,8 +833,12 @@ impl Surface {
         let households = self.scene_house()?;
         let now = self.now();
         let djs = dj_direction::capture(self, &households)?;
-        let scene = scenes::capture(&*self.transport, &households, name, &djs, now)
-            .map_err(|e| self.explain(scene_failure(e)))?;
+        let scene = if backup_queues {
+            scenes::capture_with_queue_backups(&*self.transport, &households, name, &djs, now)
+        } else {
+            scenes::capture(&*self.transport, &households, name, &djs, now)
+        }
+        .map_err(|e| self.explain(scene_failure(e)))?;
         self.store_scene(client, tool, &scene)
     }
 
@@ -1007,10 +1104,20 @@ impl Surface {
             .iter()
             .chain(report.failed.iter().map(|(op, _)| op))
             .any(|op| matches!(op, SceneOp::Leave { .. } | SceneOp::Join { .. }));
+        let backed_up_queue = report
+            .done
+            .iter()
+            .chain(report.failed.iter().map(|(op, _)| op))
+            .any(|op| matches!(op, SceneOp::QueueBackup { .. }));
         if regrouped {
             self.invalidate();
         }
         let mut applied = applied(&scene.name, &households, report, notes);
+        if backed_up_queue {
+            applied
+                .done
+                .push_str(" (action-history undo cannot restore replaced queue contents)");
+        }
         if let Some(over) = faded {
             let _ = write!(applied.done, " (volumes faded over {}s)", over.as_secs());
         }
@@ -1214,7 +1321,7 @@ fn op_tool(op: &SceneOp) -> &'static str {
         SceneOp::Uri { .. } | SceneOp::Play { .. } => "play",
         SceneOp::Dj { .. } => "dj_start",
         SceneOp::Pause { .. } => "pause",
-        SceneOp::Queue { .. } => "play_queue",
+        SceneOp::Queue { .. } | SceneOp::QueueBackup { .. } => "play_queue",
     }
 }
 
@@ -1229,12 +1336,23 @@ fn authorize_op(guard: &Guard<'_>, op: &SceneOp) -> Result<(), Failure> {
     ) {
         guard.authorize("dj_steer", false)?;
     }
-    if let SceneOp::Queue { queue, start, .. } = op {
+    let queue = match op {
+        SceneOp::Queue { queue, start, .. } => Some((queue, *start)),
+        SceneOp::QueueBackup { backup, start, .. } => {
+            guard.authorize("add_to_queue", false)?;
+            guard.authorize("remove_from_queue", false)?;
+            // Staging a durable replacement first establishes silence.
+            guard.authorize("pause", false)?;
+            Some((&backup.reference, *start))
+        }
+        _ => None,
+    };
+    if let Some((queue, start)) = queue {
         guard.authorize("seek", false)?;
         if queue.play_mode.is_some() {
             guard.authorize("set_play_mode", false)?;
         }
-        guard.authorize(if *start { "play" } else { "pause" }, false)?;
+        guard.authorize(if start { "play" } else { "pause" }, false)?;
     }
     Ok(())
 }
@@ -1256,6 +1374,7 @@ fn op_subject(households: &[HouseholdState], op: &SceneOp) -> String {
         SceneOp::Favorite { coordinator, .. }
         | SceneOp::Uri { coordinator, .. }
         | SceneOp::Queue { coordinator, .. }
+        | SceneOp::QueueBackup { coordinator, .. }
         | SceneOp::Play { coordinator }
         | SceneOp::Pause { coordinator } => {
             format!("what {} plays", room_of(coordinator))

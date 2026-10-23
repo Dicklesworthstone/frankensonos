@@ -9,7 +9,8 @@
 .scene-review { border-width: 2px; }
 .scene-card pre, .scene-review pre { margin: .5rem 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20rem; overflow-y: auto; }
 .scene-capture { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; align-items: end; }
-.scene-capture input, .scene-fade input { width: 100%; min-width: 0; min-height: 44px; font: inherit; padding: .5rem; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: .5rem; }
+.scene-capture input:not([type="checkbox"]), .scene-fade input { width: 100%; min-width: 0; min-height: 44px; font: inherit; padding: .5rem; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: .5rem; }
+.scene-backup-option { grid-column: 1 / -1; display: flex; align-items: center; gap: .5rem; min-height: 44px; }
 .scene-fade { display: grid; grid-template-columns: minmax(8rem, 1fr) 6rem; gap: .5rem; align-items: center; }
 .scene-manager-body .row { flex-wrap: wrap; gap: .5rem; }
 .scene-manager-body button { min-height: 44px; white-space: normal; }

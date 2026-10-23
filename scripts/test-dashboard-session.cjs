@@ -60,6 +60,16 @@ test('scene and mood catalogs reject incomplete shapes and duplicated names',()=
   for(const v of [null,[{...scene(),volumes:{bad:101}}],[scene(),scene()]])assert.throws(()=>S.scenes(v));
   assert.throws(()=>S.moods({moods:[{name:'focus',constraints:{}},{name:'focus',constraints:{}}]}));
 });
+test('dashboard queue backups retain count and make queue replacement explicit',()=>{
+  const value=queueScene();value.groups[0].source.kind='queue_backup';value.groups[0].source.queue.total=4;
+  const decoded=S.scene(value);
+  assert.equal(decoded.groups[0].source.queue.total,4);
+  assert.match(S.sceneSource(decoded.groups[0].source),/Saved queue backup, 4 entries/);
+  assert.match(S.sceneSource(decoded.groups[0].source),/replaces the original player’s current queue/);
+  const missing=clone(value);delete missing.groups[0].source.queue.total;assert.throws(()=>S.scene(missing));
+  const wrong=clone(value);wrong.groups[0].source.kind='queue';assert.throws(()=>S.scene(wrong));
+  const invalid=clone(value);invalid.groups[0].source.queue.total=1001;assert.throws(()=>S.scene(invalid));
+});
 test('dashboard scenes preserve and display reusable DJ direction without hiding invalid fields',()=>{
   const value=scene();value.groups[0].source.direction={constraints:{include_artists:['Earth, Wind & Fire']},for_secs:17};
   const decoded=S.scene(value);

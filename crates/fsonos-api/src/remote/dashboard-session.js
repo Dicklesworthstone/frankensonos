@@ -57,8 +57,8 @@ const DashboardSession = (() => {
   function scene(v) {
     if (!object(v) || !text(v.name, 256) || !Number.isSafeInteger(v.saved)
         || !list(v.groups, (g) => object(g) && text(g.coordinator) && list(g.members, text)
-          && object(g.source) && ['keep', 'favorite', 'uri', 'dj', 'queue'].includes(g.source.kind)
-          && (g.source.kind === 'queue' || g.source.queue == null)
+          && object(g.source) && ['keep', 'favorite', 'uri', 'dj', 'queue', 'queue_backup'].includes(g.source.kind)
+          && (['queue', 'queue_backup'].includes(g.source.kind) || g.source.queue == null)
           && (g.source.kind === 'dj' || g.source.direction == null)
           && (g.source.kind !== 'favorite' || text(g.source.name))
           && (g.source.kind !== 'uri' || text(g.source.uri))
@@ -69,13 +69,16 @@ const DashboardSession = (() => {
         || Object.entries(v.mutes).some(([r, m]) => !text(r) || typeof m !== 'boolean')) fail('The saved scene is unreadable.');
     const copy = clone(v);
     for (const group of copy.groups) {
-      if (group.source.kind === 'queue') group.source.queue = sceneQueueApi().read(group.source.queue);
+      if (['queue', 'queue_backup'].includes(group.source.kind)) {
+        group.source.queue = sceneQueueApi().read(group.source.queue);
+        if ((group.source.kind === 'queue_backup') !== (group.source.queue.total != null)) fail('The saved queue source kind is unreadable.');
+      }
       if (group.source.direction != null) group.source.direction = directionApi().read(group.source.direction, group.source.mood);
     }
     return freeze(copy);
   }
   function sceneSource(source) {
-    return source.kind === 'queue' ? sceneQueueApi().describe(source.queue)
+    return ['queue', 'queue_backup'].includes(source.kind) ? sceneQueueApi().describe(source.queue)
       : source.kind === 'dj' && source.direction != null ? directionApi().describe(source.direction, source.mood)
         : `${source.kind}${source.mood ? ` · ${source.mood}` : ''}${source.name ? ` · ${source.name}` : ''}${source.uri ? ` · ${source.uri}` : ''}`;
   }

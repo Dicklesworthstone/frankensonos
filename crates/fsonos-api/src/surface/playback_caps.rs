@@ -139,6 +139,7 @@ fn scene_sounding_rooms<'h>(households: &'h [HouseholdState], plan: &ScenePlan) 
             SceneOp::Favorite { coordinator, .. }
             | SceneOp::Uri { coordinator, .. }
             | SceneOp::Queue { coordinator, .. }
+            | SceneOp::QueueBackup { coordinator, .. }
             | SceneOp::Dj { coordinator, .. }
             | SceneOp::Play { coordinator } => {
                 if op.starts() {

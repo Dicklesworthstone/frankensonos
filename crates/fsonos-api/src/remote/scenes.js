@@ -19,8 +19,8 @@ const ScenesRemote = (() => {
     : 'The request failed.';
 
   function sourceOf(v) {
-    if (!plain(v) || !['keep', 'favorite', 'uri', 'dj', 'queue'].includes(v.kind)
-        || (v.kind !== 'queue' && v.queue != null) || (v.kind !== 'dj' && v.direction != null)) {
+    if (!plain(v) || !['keep', 'favorite', 'uri', 'dj', 'queue', 'queue_backup'].includes(v.kind)
+        || (!['queue', 'queue_backup'].includes(v.kind) && v.queue != null) || (v.kind !== 'dj' && v.direction != null)) {
       throw new Error('A scene source is unreadable.');
     }
     for (const key of ['name', 'uri', 'mood']) if (v[key] != null && !text(v[key], 2048)) {
@@ -28,8 +28,13 @@ const ScenesRemote = (() => {
     }
     if (v.kind === 'favorite' && !v.name) throw new Error('A favorite source has no name.');
     if (v.kind === 'uri' && !v.uri) throw new Error('A URI source has no URI.');
+    let queue;
+    if (['queue', 'queue_backup'].includes(v.kind)) {
+      queue = queueApi().read(v.queue);
+      if ((v.kind === 'queue_backup') !== (queue.total != null)) throw new Error('The scene’s saved queue reference does not match its source kind.');
+    }
     return Object.freeze({ kind: v.kind, name: v.name ?? null, uri: v.uri ?? null, mood: v.mood ?? null,
-      ...(v.kind === 'queue' ? { queue: queueApi().read(v.queue) } : {}),
+      ...(queue ? { queue } : {}),
       ...(v.direction != null ? { direction: directionApi().read(v.direction, v.mood) } : {}) });
   }
 
@@ -97,7 +102,7 @@ const ScenesRemote = (() => {
       scene.groups.map((g) => [g.coordinator, g.members, g.source.kind, g.source.name,
         g.source.uri, g.source.mood, g.playing,
         g.source.direction == null ? null : directionApi().signature(g.source.direction, g.source.mood),
-        g.source.kind === 'queue' ? queueApi().signature(g.source.queue) : null]),
+        ['queue', 'queue_backup'].includes(g.source.kind) ? queueApi().signature(g.source.queue) : null]),
       Object.entries(scene.volumes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
       Object.entries(scene.mutes).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0),
     ]);
@@ -111,7 +116,7 @@ const ScenesRemote = (() => {
         : g.source.kind === 'uri' ? g.source.uri
           : g.source.kind === 'dj' ? (g.source.direction != null ? directionApi().describe(g.source.direction, g.source.mood)
             : `DJ${g.source.mood ? ` (${g.source.mood})` : ''}`)
-            : g.source.kind === 'queue' ? queueApi().describe(g.source.queue) : 'keep current source';
+            : ['queue', 'queue_backup'].includes(g.source.kind) ? queueApi().describe(g.source.queue) : 'keep current source';
       lines.push(`${rooms}: ${src}${g.playing == null ? '' : g.playing ? '; playing' : '; paused'}`);
     }
     const volumes = Object.entries(scene.volumes).map(([room, level]) => `${room} ${level}`).join(', ');
@@ -366,7 +371,7 @@ const ScenesRemote = (() => {
     let disposed = false;
     let sourceRequest = 0;
     const state = { open: false, rows: [], loaded: false, loading: false, writing: false,
-      pending: null, name: '', fade: '0', message: '', result: null, draft: null, rooms: null, saved: null,
+      pending: null, name: '', fade: '0', backupQueues: false, message: '', result: null, draft: null, rooms: null, saved: null,
       sourceChoices: Object.create(null) };
     const publish = () => { if (!disposed) { try { changed(state); } catch (_) {} } };
     const current = (version) => !disposed && state.open && epoch === version;
@@ -404,6 +409,10 @@ const ScenesRemote = (() => {
       if (disposed || !state.open || state.loading || state.writing) return;
       ++epoch; state.pending = null; state.fade = String(value ?? ''); publish();
     }
+    function editBackupQueues(value) {
+      if (disposed || !state.open || state.loading || state.writing || typeof value !== 'boolean') return;
+      ++epoch; state.pending = null; state.backupQueues = value; publish();
+    }
 
     function review(action, name = null) {
       if (disposed || !state.open || !state.loaded || state.loading || state.writing || state.pending) return false;
@@ -420,7 +429,8 @@ const ScenesRemote = (() => {
         if (!integer(value, 0, 60)) return false;
         fadeSecs = value;
       }
-      state.pending = Object.freeze({ action, name: asked, row, fadeSecs });
+      state.pending = Object.freeze({ action, name: asked, row, fadeSecs,
+        ...(action === 'capture' ? { backupQueues: state.backupQueues } : {}) });
       publish();
       return true;
     }
@@ -629,11 +639,15 @@ const ScenesRemote = (() => {
             }
           }
           sent = true;
-          const saved = sceneOf(await call('sceneSave', { params: { name: reviewed.name }, body: prepared ? prepared.body : {} }));
+          const saved = sceneOf(await call('sceneSave', { params: { name: reviewed.name },
+            body: prepared ? prepared.body : reviewed.backupQueues ? { backup_queues: true } : {} }));
           if (prepared && authoredSignature(saved) !== authoredSignature(prepared.preview)) {
             throw new Error('The reply did not confirm the reviewed custom scene definition.');
           }
           if (saved.name !== reviewed.name) throw new Error('The reply did not confirm the reviewed scene name.');
+          if (!prepared && saved.groups.some((g) => g.source.kind === (reviewed.backupQueues ? 'queue' : 'queue_backup'))) {
+            throw new Error('The reply did not confirm the reviewed queue capture option.');
+          }
           if (!disposed) {
             state.saved = saved;
             state.draft = state.rooms = null;
@@ -687,7 +701,7 @@ const ScenesRemote = (() => {
       }
     }
 
-    return { state, refresh, editName, editFade, review, cancel, confirm,
+    return { state, refresh, editName, editFade, editBackupQueues, review, cancel, confirm,
       beginDefinition, addGroup, editGroup, editDirection, removeGroup, editRoom, discardDefinition, reviewDefinition,
       choicesFor, loadSources, filterSources, pageSources, chooseSource,
       close() { state.open = false; invalidate(); state.draft = state.rooms = null; state.sourceChoices = Object.create(null); publish(); },
@@ -895,8 +909,12 @@ const ScenesRemote = (() => {
       const name = el('input', { type: 'text', maxlength: 128, value: s.name,
         placeholder: 'Scene name', 'aria-label': 'Scene name', 'data-scene-focus': 'name',
         disabled: s.loading || s.writing, oninput: (e) => control.editName(e.target.value) });
+      const backup = el('input', { type: 'checkbox', checked: s.backupQueues,
+        'data-scene-focus': 'backup-queues', disabled: s.loading || s.writing || !!s.draft,
+        onchange: (e) => control.editBackupQueues(e.target.checked) });
       body.append(el('div', { class: 'scene-capture' }, name,
-        button('Review capture', 'capture', () => control.review('capture'), !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft)));
+        button('Review capture', 'capture', () => control.review('capture'), !s.loaded || s.loading || s.writing || !!s.pending || !!s.draft),
+        el('label', { class: 'scene-backup-option' }, backup, el('span', { text: 'Back up queue contents' }))));
       if (s.draft) body.append(definitionForm(s));
       if (s.saved) body.append(el('details', {}, el('summary', { text: `Last saved scene: ${s.saved.name}` }), el('pre', { text: detail(s.saved) })));
       if (s.message) body.append(el('p', { role: 'status', text: s.message }));
@@ -921,6 +939,9 @@ const ScenesRemote = (() => {
         const review = el('section', { class: 'scene-review', 'aria-label': 'Review scene change' },
           el('h3', { text: title }));
         if (p.prepared) review.append(el('pre', { text: detail(p.prepared.preview) }));
+        if (p.action === 'capture') review.append(el('p', { text: p.backupQueues
+          ? 'Save complete queues, up to 1,000 entries and 4 MiB per queue. Recall can rebuild them on their original players, replacing current queue contents. Capture itself leaves speakers untouched.'
+          : 'Save queue bookmarks. Recall requires each original player’s queue to remain unchanged. Select “Back up queue contents” to save the tracks too.' }));
         if (p.row) review.append(el('details', {}, el('summary', { text: 'Existing saved definition' }), el('pre', { text: detail(p.row) })));
         review.append(el('p', { text: p.action === 'define'
           ? 'Saving does not play or regroup anything. Apply the saved scene separately. The daemon resolves favorites and moods by name; later edits can change them. This preview is not an atomic lock on another client’s edits.'
