@@ -346,23 +346,38 @@ struct Engine {
 }
 
 /// Whether to listen again at `local`, this host's address toward the
-/// players now, rather than at `current`. Only when the look before saw
-/// `local` too (`moved` remembers it): Wi-Fi dropping out for a moment moves
-/// the route to another interface and back within one [`ROUTE_CHECK`], and
-/// following each move re-subscribed every player twice (seen live: 47
-/// re-opens in a week, nearly all in such pairs 5 s apart). A real move (a
-/// new DHCP lease) is followed one look later.
-fn route_settled(current: IpAddr, local: IpAddr, moved: &mut Option<IpAddr>) -> bool {
+/// players at `now`, rather than at `current`. Only once every look for
+/// [`ROUTE_SETTLE`] has seen `local` (`moved` remembers it and since when):
+/// Wi-Fi dropping out moves the route to another interface and back, and
+/// following each move re-subscribed every player twice. Seen live: 47
+/// re-opens in a week in pairs 5 s apart, then (2026-10-23, with a wired
+/// link up beside the Wi-Fi) pairs 10-11 s apart while the Wi-Fi
+/// re-associated, which a two-look rule followed. While the route is away
+/// the players cannot reach the other address anyway. A real move (a new
+/// DHCP lease) is followed once it has held that long.
+fn route_settled(
+    current: IpAddr,
+    local: IpAddr,
+    moved: &mut Option<(IpAddr, Instant)>,
+    now: Instant,
+) -> bool {
     if local == current {
         *moved = None;
         return false;
     }
-    if *moved == Some(local) {
-        *moved = None;
-        return true;
+    match *moved {
+        Some((seen, since)) if seen == local => {
+            if now.duration_since(since) < ROUTE_SETTLE {
+                return false;
+            }
+            *moved = None;
+            true
+        }
+        _ => {
+            *moved = Some((local, now));
+            false
+        }
     }
-    *moved = Some(local);
-    false
 }
 
 /// A player that answered discovery, by SSDP or else by mDNS (on a LAN
@@ -392,6 +407,11 @@ const TICK: Duration = Duration::from_millis(200);
 /// How often the live model checks which address this host reaches the
 /// players from (a local route lookup; nothing is sent).
 const ROUTE_CHECK: Duration = Duration::from_secs(5);
+
+/// How long a new route toward the players must hold before the model
+/// listens there ([`route_settled`]): longer than a Wi-Fi re-association,
+/// which the house's watchdog retries 15 s apart.
+const ROUTE_SETTLE: Duration = Duration::from_secs(60);
 
 /// Successful read-only fallback surveys retry the local listener within
 /// this interval. Failed discovery retains its ordinary exponential backoff.
@@ -426,7 +446,7 @@ struct Model {
     route_checked: Instant,
     /// A new address toward the players, seen at the last look and not yet
     /// followed ([`route_settled`]).
-    route_moved: Option<IpAddr>,
+    route_moved: Option<(IpAddr, Instant)>,
 }
 
 /// Surveys and reads through one transport, GENA through the LAN.
@@ -529,7 +549,7 @@ impl Engine {
             }
             if now.duration_since(m.route_checked) >= ROUTE_CHECK {
                 m.route_checked = now;
-                self.follow_route(&mut m);
+                self.follow_route(&mut m, now);
             }
             if m.rec.schedule.due(now) && !surveys.busy() {
                 surveys.start(&self, &mut m);
@@ -602,8 +622,8 @@ impl Engine {
     /// the old address, so listen again where they can reach us, and survey
     /// at once ([`Self::relisten`]): checked every [`ROUTE_CHECK`], not only
     /// at surveys, which back off while the players do not answer. Followed
-    /// once two looks agree ([`route_settled`]).
-    fn follow_route(&self, m: &mut Model) {
+    /// once the move has held for [`ROUTE_SETTLE`] ([`route_settled`]).
+    fn follow_route(&self, m: &mut Model, now: Instant) {
         let Some(s) = &m.sink else {
             m.route_moved = None;
             return;
@@ -622,7 +642,7 @@ impl Engine {
         let Ok(local) = self.lan.local_address_toward(toward) else {
             return;
         };
-        if route_settled(current, local, &mut m.route_moved) {
+        if route_settled(current, local, &mut m.route_moved, now) {
             let why = format!("this host now reaches the players from {local}, not {current}");
             self.relisten(m, &why);
         } else if m.route_moved.is_some() {
@@ -637,7 +657,7 @@ impl Engine {
         if self.stop.load(Ordering::Acquire) {
             return Vec::new();
         }
-        self.follow_route(m);
+        self.follow_route(m, now);
         let listener_error = if m.sink.is_none() {
             match self.open_sink(&m.rec.households) {
                 Ok(s) => {
@@ -1062,28 +1082,38 @@ mod tests {
         );
     }
 
-    /// The live pattern: the route leaves for another interface and comes
-    /// back one look later. Nothing to follow; a move that stays is
-    /// followed once, a look later.
+    /// The live patterns: the route leaves for another interface and comes
+    /// back a look later, or (a Wi-Fi re-association beside a wired link)
+    /// some looks later. Nothing to follow; a move that holds for
+    /// [`ROUTE_SETTLE`] is followed once.
     #[test]
-    fn a_route_that_comes_straight_back_is_not_followed() {
+    fn a_route_that_comes_back_within_the_settle_time_is_not_followed() {
         let wifi: IpAddr = "192.0.2.10".parse().unwrap();
         let wired: IpAddr = "198.51.100.20".parse().unwrap();
         let renewed: IpAddr = "192.0.2.11".parse().unwrap();
+        let t0 = Instant::now();
         let mut moved = None;
-        let mut follow = |local| route_settled(wifi, local, &mut moved);
-        assert!(!follow(wifi));
+        let mut at = |secs: u64, local| {
+            route_settled(wifi, local, &mut moved, t0 + Duration::from_secs(secs))
+        };
+        assert!(!at(0, wifi));
         // A blip: away for one look, then back.
-        assert!(!follow(wired));
-        assert!(!follow(wifi));
-        assert!(!follow(wired), "the earlier blip does not count");
-        // Away, then somewhere else: still not settled.
-        assert!(!follow(renewed));
-        // The same new address twice in a row: follow it, once.
-        assert!(follow(renewed));
-        assert!(!follow(wifi));
-        assert!(!follow(renewed));
-        assert!(follow(renewed));
+        assert!(!at(5, wired));
+        assert!(!at(10, wifi));
+        // A re-association: away for 25 s (six looks), then back.
+        for secs in (15..=40).step_by(5) {
+            assert!(!at(secs, wired), "{secs} s");
+        }
+        assert!(!at(45, wifi));
+        assert!(!at(50, wired), "the earlier stretch does not count");
+        // Away, then somewhere else: the wait starts again.
+        assert!(!at(55, renewed));
+        assert!(!at(110, renewed), "55 s is not yet settled");
+        // Held for the settle time: follow it, once.
+        assert!(at(115, renewed));
+        assert!(!at(120, wifi));
+        assert!(!at(125, renewed));
+        assert!(at(185, renewed));
     }
 
     #[test]
