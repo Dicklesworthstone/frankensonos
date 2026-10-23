@@ -369,10 +369,12 @@ how a local client obtains a scoped token without the cloud.
    4 s). Recovery is automatic (watchdog) and quick, so it reads as a restart,
    not a wedge. `AFC=3, afelen=0xFF` segments crash *sooner* inside that window,
    which is why the first samples looked value-dependent. Beads
-   `re-afelen-live` / `re-hls-kill`. Next: whether the fault is the segment-map
-   builder (the `hls-%s said` / "creating HLS Segment Map entry" path) or the
-   fetch/decode tail, and whether the crash point is steerable by playlist
-   fields.
+   `re-afelen-live` / `re-hls-kill`. **It is not S1-only:** the same playlist on
+   86.10 (S2 Play:1) crashes 2/2 (8 s, 16 s), so the whole fleet is affected —
+   the S2 daemon also fetches `hls-radio://`. Next: whether the fault is the
+   segment-map builder (the `hls-%s said` / "creating HLS Segment Map entry"
+   path) or the fetch/decode tail, and whether the crash point is steerable by
+   playlist fields.
    Payload primitives for the day a smash lands: 34.16 `execve` gadget
    `0x4f4178` (`a0=*s1`, `a1=argv`, `a2=environ`, needs `s1`), and 86.10
    `0x656a86` (`a1` alone drives both, path via `*a1`). **Neither is the live
@@ -1046,3 +1048,9 @@ umount /jffs
 A non-OTA reboot is therefore required to test either path. `management/reboot`
 is 403 pre-auth and `/reboot` is 403 while locked, so the practical reboot is the
 watchdog, a crash, or leaving the device alone until it reboots itself.
+
+Size sweep on the same unit: 64 KiB answers **405** (the handler wants a
+different method/headers) and the daemon survives; **256 KiB and 512 KiB** both
+time out and kill HTTP, like 1 MiB. The unit also stayed without `:1400` for
+minutes after the largest attempts while ICMP and playback continued, so this is
+a durable one-request control-surface outage, not a momentary reset.
