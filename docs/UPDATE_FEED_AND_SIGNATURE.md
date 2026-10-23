@@ -876,3 +876,34 @@ section loop, and it is what the store is for.
 That collapses the remaining work to one place: who fills `*(crypto+0x20)` and from
 which stored id. Everything downstream (iterator, envelope, `ZZ0052`, `ZZ0045`) is
 fed from there.
+
+### Downgrading to recover patched bugs: the floor is enforced by a compiled patch list
+
+Tested on `.164` (model 16, 57.23) with genuine, signed images served over HTTP and the
+delivered byte count measured:
+
+| package | build date | type-21 series list | delivered | result |
+|---|---|---|---|---|
+| 34.16-37101-1-16 | old | none | 147 456 B, close | refused |
+| 57.19-46310-1-16 | old | 2 entries | 147 456 B, close | refused |
+| 57.22-59130-1-16 | pre-fix | 3 entries (`…2023_12`) | 131 072 B, close | refused |
+| 57.22-65130 / 57.22-67080 | Jul 2025 | 4 entries (`…2024_12`) | full | accepted |
+
+The discriminator is the plaintext **type-21 patch-series list** in the package against
+the same list compiled into the *installed* `upgrade` (`PATCHES` strings in the binary;
+57.23 carries `2021_11, 2023_01, 2023_12, 2024_12`). A package missing a series the
+firmware has is refused with `(10) attempted to upgrade to an incompatible version`
+before any decryption or signature check — this, not `MINCOMPATVER`, is what makes old
+firmware unreachable (`MINCOMPATVER` is 56.0 in every captured build; the 34.16 abort
+is the same gate).
+
+Consequence: every public S1 RCE sits *below* the floor. CVE-2025-1048/1049 are fixed
+in 57.22-61162, i.e. inside the accepted 57.22 family; the Pwn2Own-2023 set
+(27352–27355) and CVE-2022-24049 are far below. 57.23 is a Feb 2026 build and the
+March 2026 advisory (CVE-2026-4149) is S2/SMB-only, so a plain downgrade recovers
+nothing exploitable by itself.
+
+**But the gate is one file, not a signature.** It lives in the installed `upgrade`, so
+once any root primitive exists, editing that list (or bind-mounting an older `upgrade`)
+reopens the entire downgrade history — up to 34.16 and the ALAC/SMB/MPEG-TS bugs. That
+makes "root first, downgrade second" the correct order, not the reverse.
