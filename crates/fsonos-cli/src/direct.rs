@@ -86,11 +86,10 @@ impl Direct {
                     .iter()
                     .flat_map(|h| h.rooms.iter().map(|r| r.name.clone())),
             );
-            // Known players that answered found nothing new to remember,
-            // and with no discovery their households carry no id: keeping
-            // them would lose the ids a discovery recorded.
-            let unnamed = known_first && survey.households.iter().any(|h| h.id.is_none());
-            if !survey.households.is_empty() && !unnamed {
+            // Seed-only surveys establish remembered addresses too. Saving
+            // an anonymous refresh retains any household identities the
+            // store already knows while updating the players' addresses.
+            if !survey.households.is_empty() {
                 crate::known_players::remember_in(&dir, &survey.households);
             }
         }

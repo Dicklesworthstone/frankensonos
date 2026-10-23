@@ -45,7 +45,16 @@ pub fn survey<T: Transport + ?Sized>(
     seeds: &[IpAddr],
     wait: Duration,
 ) -> Result<Survey, CoreError> {
-    let mut out = Survey::default();
+    survey_observations(t, seeds, &[], wait).map(Observations::finish)
+}
+
+fn survey_observations<T: Transport + ?Sized>(
+    t: &T,
+    seeds: &[IpAddr],
+    known: &[HouseholdState],
+    wait: Duration,
+) -> Result<Observations, CoreError> {
+    let mut out = Observations::default();
     let mut found: Vec<(IpAddr, Option<String>)> = Vec::new();
     // Both channels within one `wait` where the transport listens on both
     // at once (see `Transport::discover`).
@@ -91,7 +100,7 @@ pub fn survey<T: Transport + ?Sized>(
             return Err(e.into());
         }
         if !seeds.is_empty() {
-            out.ssdp_error = Some(e.to_string());
+            out.report.ssdp_error = Some(e.to_string());
         }
     }
     for &ip in seeds {
@@ -100,37 +109,42 @@ pub fn survey<T: Transport + ?Sized>(
         }
     }
 
-    Ok(read_players(t, found, out))
+    Ok(read_players(t, found, known, out))
 }
 
 fn read_players<T: Transport + ?Sized>(
     t: &T,
     found: Vec<(IpAddr, Option<String>)>,
-    mut out: Survey,
-) -> Survey {
-    let mut described: Vec<(IpAddr, DeviceDescription, Option<String>)> = Vec::new();
+    known: &[HouseholdState],
+    mut out: Observations,
+) -> Observations {
+    let first_new = out.described.len();
     for (ip, household) in found {
         let url = ssdp::description_url(ip);
         match t
             .http_get(&url)
             .and_then(|body| parse_device_description(&body))
         {
-            Ok(desc) => described.push((ip, desc, household)),
-            Err(e) => out.unreachable.push((ip.to_string(), e.to_string())),
+            Ok(desc) => out.described.push((ip, desc, household)),
+            Err(e) => out.report.unreachable.push((ip.to_string(), e.to_string())),
         }
     }
 
-    // Any player answers ZoneGroupTopology for its whole household, so ask
-    // one player per household; bridges answer too.
-    let mut covered: HashSet<PlayerId> = HashSet::new();
-    for (ip, desc, _) in &described {
-        if covered.contains(&desc.udn) {
+    // Any player answers for its whole household; bridges answer too. A
+    // stale first response can omit a discovered peer. Keep each response
+    // coherent when that peer later supplies a newer, overlapping view.
+    for (ip, desc, hint) in &out.described[first_new..] {
+        if out
+            .observations
+            .iter()
+            .any(|seen| seen.members.contains(&desc.udn))
+        {
             continue;
         }
         let zgs = match get_zone_group_state(t, *ip) {
             Ok(zgs) => zgs,
             Err(e) => {
-                out.unreachable.push((ip.to_string(), e.to_string()));
+                out.report.unreachable.push((ip.to_string(), e.to_string()));
                 continue;
             }
         };
@@ -141,26 +155,150 @@ fn read_players<T: Transport + ?Sized>(
             .flat_map(|m| std::iter::once(&m.uuid).chain(m.satellites.iter().map(|s| &s.uuid)))
             .cloned()
             .collect();
-        out.boot_seqs
-            .extend(zgs.boot_seqs().map(|(p, seq)| (p.clone(), seq)));
-        out.vanished.extend(zgs.vanished.iter().cloned());
+        let mut hints: HashSet<&String> = hint
+            .iter()
+            .chain(
+                out.described
+                    .iter()
+                    .filter(|(_, player, _)| members.contains(&player.udn))
+                    .filter_map(|(_, _, household)| household.as_ref()),
+            )
+            .collect();
+        let identity_advertised = !hints.is_empty();
+        // A current advertisement is authoritative. Without one, retain a
+        // compatible remembered identity before adoption, so two partial
+        // responses cannot acquire the same ID only after reconciliation.
+        if hints.is_empty() {
+            hints.extend(
+                known
+                    .iter()
+                    .filter(|h| h.players.iter().any(|p| members.contains(&p.id)))
+                    .filter_map(|h| h.id.as_ref().map(|id| &id.0)),
+            );
+        }
+        if hints.len() > 1 {
+            out.report.unreachable.push((ip.to_string(),
+                "player answered, but its topology conflicts with household identity hints; this response was not adopted".into()));
+            continue;
+        }
         let mut state = HouseholdState::default();
         state.apply_topology(&zgs);
-        for (member_ip, member, household) in &described {
+        state.id = hints.into_iter().next().cloned().map(HouseholdId);
+        for (member_ip, member, _) in &out.described {
             if members.contains(&member.udn) {
                 state.apply_description(member, *member_ip);
-                if state.id.is_none() {
-                    state.id = household.clone().map(HouseholdId);
-                }
             }
         }
-        covered.extend(members);
-        covered.insert(desc.udn.clone());
         state.players.sort_by(|a, b| a.room_name.cmp(&b.room_name));
-        out.households.push(state);
+        let observed = Observation {
+            state,
+            identity_advertised,
+            members,
+            boot_seqs: zgs.boot_seqs().map(|(p, seq)| (p.clone(), seq)).collect(),
+            vanished: zgs.vanished,
+        };
+        if let Err(detail) = adopt_observation(&mut out.observations, observed) {
+            out.report.unreachable.push((ip.to_string(), detail.into()));
+        }
     }
-    sort_households(&mut out.households);
     out
+}
+
+/// Retain per-response evidence until all discovery and fallback reads are
+/// reconciled. Flattening it before fallback would lose which topology a
+/// boot sequence or vanished-player report belongs to.
+#[derive(Default)]
+struct Observations {
+    observations: Vec<Observation>,
+    described: Vec<(IpAddr, DeviceDescription, Option<String>)>,
+    report: Survey,
+}
+
+impl Observations {
+    fn finish(mut self) -> Survey {
+        let present: HashSet<_> = self
+            .observations
+            .iter()
+            .flat_map(|seen| seen.members.iter().cloned())
+            .collect();
+        let mut vanished = HashSet::new();
+        for observed in self.observations {
+            self.report.households.push(observed.state);
+            self.report.boot_seqs.extend(observed.boot_seqs);
+            self.report.vanished.extend(
+                observed
+                    .vanished
+                    .into_iter()
+                    .filter(|v| !present.contains(&v.uuid) && vanished.insert(v.uuid.clone())),
+            );
+        }
+        sort_households(&mut self.report.households);
+        self.report
+    }
+}
+
+/// The state and its evidence must come from the same accepted response.
+/// Appending the old boot/vanished evidence after replacing its topology
+/// would report an active player as missing or spuriously replay a reboot.
+struct Observation {
+    state: HouseholdState,
+    /// Current discovery outranks a compatible identity retained from the
+    /// previous model. Two current identities must never be collapsed.
+    identity_advertised: bool,
+    members: HashSet<PlayerId>,
+    boot_seqs: Vec<(PlayerId, u32)>,
+    vanished: Vec<VanishedDevice>,
+}
+
+fn adopt_observation(
+    observations: &mut Vec<Observation>,
+    mut fresh: Observation,
+) -> Result<(), &'static str> {
+    let overlaps: Vec<_> = observations
+        .iter()
+        .enumerate()
+        .filter(|(_, old)| {
+            fresh
+                .state
+                .id
+                .as_ref()
+                .is_some_and(|id| old.state.id.as_ref() == Some(id))
+                || !fresh.members.is_disjoint(&old.members)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    // A current advertisement can replace a stale cached identity. Resolve
+    // all current identities first so the result does not depend on which
+    // overlapping response happened to be inserted first.
+    let advertised = fresh.identity_advertised
+        || overlaps
+            .iter()
+            .any(|&index| observations[index].identity_advertised);
+    let mut identity = None;
+    for observed in std::iter::once(&fresh).chain(overlaps.iter().map(|&i| &observations[i])) {
+        if advertised && !observed.identity_advertised {
+            continue;
+        }
+        if let Some(id) = &observed.state.id {
+            if identity.as_ref().is_some_and(|new| new != id) {
+                return Err(
+                    "player answered, but its topology overlaps distinct household identities; this conflicting response was not adopted",
+                );
+            }
+            identity = Some(id.clone());
+        }
+    }
+    fresh.state.id = identity;
+    fresh.identity_advertised = advertised;
+    let insert_at = overlaps.first().copied().unwrap_or(observations.len());
+    let mut index = 0;
+    observations.retain(|_| {
+        let keep = !overlaps.contains(&index);
+        index += 1;
+        keep
+    });
+    observations.insert(insert_at, fresh);
+    Ok(())
 }
 
 /// Survey a running model without mistaking a missed multicast reply for
@@ -174,20 +312,18 @@ pub fn survey_known<T: Transport + ?Sized>(
     known: &[HouseholdState],
     wait: Duration,
 ) -> Result<Survey, CoreError> {
-    let mut first = survey(t, seeds, wait);
-    if let Ok(found) = &mut first {
-        retain_household_ids(&mut found.households, known);
-    }
+    let first = survey_observations(t, seeds, known, wait);
     let mut attempted: HashSet<IpAddr> = seeds.iter().copied().collect();
     if let Ok(found) = &first {
         attempted.extend(
             found
-                .households
+                .observations
                 .iter()
-                .flat_map(|h| h.players.iter().map(|p| p.ip)),
+                .flat_map(|h| h.state.players.iter().map(|p| p.ip)),
         );
         attempted.extend(
             found
+                .report
                 .unreachable
                 .iter()
                 .filter_map(|(addr, _)| addr.parse::<IpAddr>().ok()),
@@ -197,9 +333,9 @@ pub fn survey_known<T: Transport + ?Sized>(
     for household in known {
         if first.as_ref().is_ok_and(|found| {
             found
-                .households
+                .observations
                 .iter()
-                .any(|h| same_household(h, household))
+                .any(|h| same_household(&h.state, household))
         }) {
             continue;
         }
@@ -210,63 +346,25 @@ pub fn survey_known<T: Transport + ?Sized>(
         }
     }
     if fallback.is_empty() {
-        return first;
+        return first.map(Observations::finish);
     }
-    let extra = read_players(t, fallback, Survey::default());
-    let mut out = match first {
-        Ok(found) => found,
-        Err(error) if extra.households.is_empty() => return Err(error),
-        Err(error) => Survey {
-            ssdp_error: Some(error.to_string()),
-            ..Survey::default()
-        },
+    let (out, error) = match first {
+        Ok(found) => (found, None),
+        Err(error) => (Observations::default(), Some(error)),
     };
-    for mut fresh in extra.households {
-        if let Some(existing) = out
-            .households
-            .iter_mut()
-            .find(|h| same_household(h, &fresh))
-        {
-            if fresh.id.is_none() {
-                fresh.id.clone_from(&existing.id);
-            }
-            *existing = fresh;
-        } else {
-            out.households.push(fresh);
+    let mut out = read_players(t, fallback, known, out);
+    if let Some(error) = error {
+        if out.observations.is_empty() {
+            return Err(error);
         }
+        out.report.ssdp_error = Some(error.to_string());
     }
-    retain_household_ids(&mut out.households, known);
-    out.unreachable.extend(extra.unreachable);
-    for (player, seq) in extra.boot_seqs {
-        if let Some((_, old)) = out.boot_seqs.iter_mut().find(|(id, _)| *id == player) {
-            *old = seq;
-        } else {
-            out.boot_seqs.push((player, seq));
-        }
-    }
-    for vanished in extra.vanished {
-        out.vanished.retain(|old| old.uuid != vanished.uuid);
-        out.vanished.push(vanished);
-    }
-    out.vanished
-        .retain(|v| out.households.iter().all(|h| h.player(&v.uuid).is_none()));
-    sort_households(&mut out.households);
-    Ok(out)
+    Ok(out.finish())
 }
 
 fn same_household(a: &HouseholdState, b: &HouseholdState) -> bool {
     a.id.as_ref().is_some_and(|id| b.id.as_ref() == Some(id))
         || a.players.iter().any(|p| b.player(&p.id).is_some())
-}
-
-fn retain_household_ids(fresh: &mut [HouseholdState], known: &[HouseholdState]) {
-    for household in fresh {
-        if household.id.is_none()
-            && let Some(previous) = known.iter().find(|h| same_household(h, household))
-        {
-            household.id.clone_from(&previous.id);
-        }
-    }
 }
 
 fn sort_households(households: &mut [HouseholdState]) {
@@ -448,5 +546,73 @@ mod tests {
         let mut st = HouseholdState::default();
         assert!(!st.apply_description(&desc("ZB100", Some(1)), "192.0.2.1".parse().unwrap()));
         assert_eq!(st.players.len(), 0);
+    }
+
+    fn observation(identity: Option<&str>, members: &[&str]) -> Observation {
+        Observation {
+            state: HouseholdState {
+                id: identity.map(|id| HouseholdId(id.into())),
+                ..HouseholdState::default()
+            },
+            identity_advertised: false,
+            members: members.iter().map(|id| PlayerId((*id).into())).collect(),
+            boot_seqs: Vec::new(),
+            vanished: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn an_anonymous_overlap_does_not_bridge_distinct_known_households() {
+        let mut observations = vec![
+            observation(Some("household-one"), &["one", "shared-one"]),
+            observation(Some("household-two"), &["two", "shared-two"]),
+        ];
+        let error = adopt_observation(
+            &mut observations,
+            observation(None, &["shared-one", "shared-two", "three"]),
+        )
+        .unwrap_err();
+        assert!(error.contains("overlaps distinct household identities"));
+        assert_eq!(observations.len(), 2);
+        assert_eq!(
+            observations[0].state.id,
+            Some(HouseholdId("household-one".into()))
+        );
+        assert_eq!(
+            observations[1].state.id,
+            Some(HouseholdId("household-two".into()))
+        );
+        assert!(
+            observations
+                .iter()
+                .all(|o| !o.members.contains(&PlayerId("three".into())))
+        );
+    }
+
+    #[test]
+    fn one_known_identity_survives_a_newer_anonymous_full_observation() {
+        let mut observations = vec![
+            observation(Some("household-one"), &["one"]),
+            observation(None, &["two"]),
+        ];
+        adopt_observation(
+            &mut observations,
+            observation(None, &["one", "two", "three"]),
+        )
+        .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(
+            observations[0].state.id,
+            Some(HouseholdId("household-one".into()))
+        );
+        assert_eq!(observations[0].members.len(), 3);
+    }
+
+    #[test]
+    fn disjoint_anonymous_observations_are_not_assumed_to_be_one_household() {
+        let mut observations = Vec::new();
+        adopt_observation(&mut observations, observation(None, &["one"])).unwrap();
+        adopt_observation(&mut observations, observation(None, &["two"])).unwrap();
+        assert_eq!(observations.len(), 2);
     }
 }

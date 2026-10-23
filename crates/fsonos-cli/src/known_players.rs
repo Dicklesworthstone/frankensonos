@@ -7,6 +7,7 @@
 use fsonos_core::HouseholdState;
 use fsonos_core::live::Surveyed;
 use fsonos_core::store::{SqliteStore, Store};
+use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -60,16 +61,49 @@ fn addresses(store: &dyn Store) -> Vec<IpAddr> {
 }
 
 /// Remember `households`' players and groups in `store`, stamped `now`. A
-/// household found only through seeds has no id: its players are kept under
-/// "", its groups not at all (two such households would overwrite each
-/// other's).
+/// household found only through seeds has no id: known players retain their
+/// cached household identity, and newly found players are kept under "".
+/// Anonymous observations do not replace groups (two such households would
+/// overwrite each other's). Explicit current identities remain authoritative.
 pub fn remember(store: &mut dyn Store, households: &[HouseholdState], now: i64) {
+    let mut identities = if households.iter().any(|h| h.id.is_none()) {
+        match store.cached_players() {
+            Ok(players) => players
+                .into_iter()
+                .map(|p| (p.player.id, p.household))
+                .collect::<HashMap<_, _>>(),
+            Err(e) => {
+                tracing::warn!("the players found were not remembered: cached identities: {e}");
+                return;
+            }
+        }
+    } else {
+        HashMap::new()
+    };
+    for household in households {
+        if let Some(id) = &household.id {
+            for player in &household.players {
+                identities.insert(player.id.clone(), id.0.clone());
+            }
+        }
+    }
     let saved = households.iter().try_for_each(|h| match &h.id {
         Some(id) => {
             store.save_players(&id.0, &h.players, now)?;
             store.save_groups(&id.0, &h.groups, now)
         }
-        None => store.save_players("", &h.players, now),
+        None => {
+            // Keep writes batched by identity instead of one transaction
+            // per player; a known household can contain newly found players.
+            let mut by_household = BTreeMap::<&str, Vec<_>>::new();
+            for player in &h.players {
+                let id = identities.get(&player.id).map_or("", String::as_str);
+                by_household.entry(id).or_default().push(player.clone());
+            }
+            by_household
+                .into_iter()
+                .try_for_each(|(id, players)| store.save_players(id, &players, now))
+        }
     });
     if let Err(e) = saved {
         tracing::warn!("the players found were not remembered: {e}");
@@ -186,5 +220,94 @@ mod tests {
         );
         assert_eq!(addresses(&store).len(), 2);
         assert!(store.cached_groups("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn seed_only_addresses_survive_a_store_reopen() {
+        let dir = std::env::temp_dir().join(format!(
+            "fsonos-remembered-seeds-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        let houses = [
+            HouseholdState {
+                players: vec![player("seed-one", "192.0.2.30")],
+                ..HouseholdState::default()
+            },
+            HouseholdState {
+                players: vec![player("seed-two", "192.0.2.31")],
+                ..HouseholdState::default()
+            },
+        ];
+        let mut store = open(&dir).unwrap();
+        remember(&mut store, &houses, 100);
+        drop(store);
+        assert_eq!(
+            remembered(Some(&dir)),
+            ["192.0.2.30", "192.0.2.31"].map(|ip| ip.parse::<IpAddr>().unwrap())
+        );
+    }
+
+    #[test]
+    fn anonymous_refresh_updates_addresses_without_erasing_known_household_ids() {
+        let mut store = MemStore::default();
+        let first = HouseholdState {
+            id: Some(HouseholdId("household-one".into())),
+            players: vec![player("one", "192.0.2.10"), player("two", "192.0.2.11")],
+            groups: vec![ZoneGroup {
+                coordinator: PlayerId("one".into()),
+                members: vec![PlayerId("one".into()), PlayerId("two".into())],
+            }],
+            ..HouseholdState::default()
+        };
+        let second = HouseholdState {
+            id: Some(HouseholdId("household-two".into())),
+            players: vec![player("three", "192.0.2.20")],
+            ..HouseholdState::default()
+        };
+        remember(&mut store, &[first.clone(), second], 100);
+        let anonymous = [
+            HouseholdState {
+                players: vec![player("one", "192.0.2.12"), player("new", "192.0.2.30")],
+                ..HouseholdState::default()
+            },
+            HouseholdState {
+                players: vec![player("three", "192.0.2.21")],
+                ..HouseholdState::default()
+            },
+        ];
+        remember(&mut store, &anonymous, 200);
+        let rows = store.cached_players().unwrap();
+        for (id, household, ip) in [
+            ("one", "household-one", "192.0.2.12"),
+            ("three", "household-two", "192.0.2.21"),
+            ("new", "", "192.0.2.30"),
+        ] {
+            let cached = rows.iter().find(|p| p.player.id.0 == id).unwrap();
+            assert_eq!(cached.household, household);
+            assert_eq!(cached.player.ip, ip.parse::<IpAddr>().unwrap());
+            assert_eq!(cached.last_seen, 200);
+        }
+        assert_eq!(store.cached_groups("household-one").unwrap(), first.groups);
+        let remembered = addresses(&store);
+        assert_eq!(
+            remembered.len(),
+            3,
+            "the missing old address is not retried"
+        );
+        assert!(!remembered.contains(&"192.0.2.11".parse().unwrap()));
+
+        let reassigned = HouseholdState {
+            id: Some(HouseholdId("household-new".into())),
+            players: vec![player("one", "192.0.2.13")],
+            ..HouseholdState::default()
+        };
+        remember(&mut store, &[reassigned], 300);
+        let rows = store.cached_players().unwrap();
+        let moved = rows.iter().find(|p| p.player.id.0 == "one").unwrap();
+        assert_eq!(moved.household, "household-new", "an explicit ID wins");
+        assert_eq!(moved.player.ip, "192.0.2.13".parse::<IpAddr>().unwrap());
     }
 }
