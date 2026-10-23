@@ -494,7 +494,9 @@ type-22 verification passed. It has never been observed open, not even for
 the pristine, model-matching, officially signed package, so on this hardware
 the flow currently dies before the application phase. Any probe can use
 "did 4444 open" as a cheap pass/fail signal instead of watching for a script
-or a version change.
+or a version change; `~/sonos-root-local/recon/upd_probe.py <ip> <pkg>` does
+exactly that and reports which of the three outcomes occurred, so probes no
+longer need hand-rolled loops.
 
 Watched for 75 s on a pristine, model-matching, officially signed package:
 the port never opened. That closes the causal chain: the noop exit happens
