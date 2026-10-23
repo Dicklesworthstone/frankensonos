@@ -476,3 +476,81 @@ forwarded, the SYN/ACK comes back, our ACK and data are never delivered, and
 `192.168.6.0/24` are on-link and fine, so bench on those. Do not read a `.4.x`
 timeout as a dead player; it is the path.
 
+
+## 2026-10-22 late: the update gate is version policy, and the signature is real
+
+New, verified state; supersedes the "signed-bundle splice" open lead.
+
+### Model numbers were confounding every earlier gate test
+
+**Every S1 player on this LAN is model 16** (Play:5 Gen2 running S1 firmware),
+while every `.upd` held locally was `-1-5` or `-1-12`. Every earlier
+"a signed older image is rejected" result was therefore also a *model
+mismatch*, and could not distinguish the version policy from the
+compatibility section. Check `GET /devmode` (`Model:`) and the type-2
+compatibility record (`[1][model][submodel_min][submodel_max]`) before
+reading anything into a rejection.
+
+Canonical model-16 URLs are derivable from the manifest Sonos still serves and
+are public: `…/Prod/34.16-37101-v7.1-nzhemz-MS-1/34.16-37101-1-16.upd` and
+`…/Prod/57.23-74170-v11.16.1-DILU1Q33hC-GA-1/57.23-74170-1-16.upd`
+(`captures/firmware/manifest_s1_57.23.upm` carries the per-model list; model
+16 appears once, at 34.16, with `flags="0x6"`).
+
+### The gate is a version-policy check with a hardcoded floor
+
+`bin/upgrade` (34.16) is the whole update pipeline: `wget_fork`, then the
+section parser `fcn.0x40aa04`, then `upgrade_write_sections` (writes the type-3
+script to `/var/upgradescript` and `system()`s it) and `reprogram_flash`.
+Its compat handlers call `upgrade_compare_versions` against
+`get_current_version`, and an *older* image is rejected unless
+`allow_policy_bypass()` allows it, whose failure text is `Downgrade blocked.`.
+The bypass is only consulted below a hardcoded floor `ver_this = 34.7-35162`
+(string `0x4174fc`, parsed by `parse_version_string`), i.e. images in the
+`34.7 … current` band need no policy at all. `/jffs/VERSION`, if present,
+overrides `get_current_version` outright.
+
+Measured consequence: an **unmodified version-record bump** (34.16 → 99.0) is
+enough to make the daemon read the entire image instead of closing after the
+`0x20000` sniff window. Model, submodel and the encrypted-envelope shape are
+not what the early gate keys on.
+
+### The signature is enforced after the download, with a clean oracle
+
+The fixture `SONOS-BEGIN` probe is: trigger `BeginSoftwareUpdate` and watch
+(a) how far the fetcher reads and (b) whether the unit reboots. A **genuine
+same-version model-16 image** reflashes and reboots (~50 s), so that is the
+accept baseline;
+
+- version record bumped, signature copied → full read, then reboot in ~18 s,
+  version unchanged, script never runs;
+- `res` field of the type-3 record zeroed → same;
+- type-3 payload replaced with a plaintext marker script (`touch`,
+  `telnetd`, `sleep 150`) → same, and the 150 s hang never appears.
+
+So any single-byte edit fails verification, and failing verification happens
+*before* `upgrade_write_sections` — no script execution. Without the vendor
+private key, a modified image cannot install on 57.23. A downgrade needs a
+**genuine** model-matching image whose own version satisfies the policy.
+
+### Signature handler shape
+
+Handler table at `.data 0x10000090`, 16-byte entries `[type][a][b][fn]`; type
+`0x11` (17) → `0x40a774`. It bounds the section at `(len-0x11) < 0x22b8`,
+runs the "enveloped" reader `0x408b1c` and requires it to consume exactly the
+payload, parses the ring with `ZZ0121` into a `0x22b8` context, then verifies
+through `ZZ0124`→`ZZ0125`: per ring entry it resolves the key through a
+callback, compares the hash algorithm, `memcmp`s a DER-hash fingerprint, and
+only then verifies. The ring parser and both verifiers were already audited as
+bounded; the remaining question is whether that resolver honour inline key
+material (the devmode path does not — it pins the built-in via `ZZ0080`).
+
+### Other surfaces measured this round
+
+`/support/review` is unauthenticated on S1 57.23 and returns ~84 KB of live
+network diagnostics (per-device `MinCompatibleVersion`, `LegacyCompatibleVersion`,
+`HwFeatures`, topology) — good for a fleet inventory, no upgrade log. The
+`/status/<key>` table on 57.23 is the short list it advertises (`zp`,
+`enetports`, `VERSION`, `proc/…`, `ifconfig`, `showstp`); `/tmp/upgrade.log`
+and `/jffs/upgrade.log`, present in the 34.16 table, return an empty document,
+so the updater log is not remotely readable on 57.23.
