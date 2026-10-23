@@ -480,6 +480,17 @@ the threshold is not stable — treat it as "a few thousand". Reproduction:
 unique `module`). It is a DoS, not yet a controlled write: the name is copied by
 `strcpy` into an exact-size allocation and the insert path is bounded.
 
+**Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
+month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
+CVE-2026-75093 (`from_raw_dt_align` buffer size) and CVE-2026-55832 (attacker-chosen
+offset/length selecting an out-of-range mapping slice), published 2026-08-18 and
+2026-09-15, i.e. **after** the 2026-02-17 S1 build. They are not reachable here yet:
+neither the 57.23 rootfs nor the 86.10 `anacapad` overlay carries a tract runtime
+(no `_ZN5tract…` symbols, no `onnx`), and the `tract_*` strings that do appear are
+`time`-crate leftovers. Re-check on any 97.x image, and if a tract-linked component
+appears, look for a path that parses a model from attacker input (TruePlay tone data
+is the obvious candidate).
+
 ### Safety notes for the next session
 
 Use bench players first and expect a watchdog restart. Do not drive one unit
