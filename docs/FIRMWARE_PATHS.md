@@ -820,7 +820,10 @@ correct 16-byte key and IV, with the key line before `#EXT-X-VERSION`, and with
 no `IV` at all (default IV). The same segment truncated by one byte *does*
 advance, and all key/IV length variants (missing key, 0/15/17/32/1000-byte key,
 8/32/64-hex-digit IV, `SAMPLE-AES`) leave the daemon up. So decryption is not a
-usable path here and not a crash lever.
+usable path here and not a crash lever. (`hls-aac://` and `hls-static://` behave
+identically to `hls-radio://` — the scheme only picks a service label. On 86.10
+the same fixture also never advances, but that unit was timing out on the plain
+control at the time, so the S2 result is not conclusive.)
 
 **`CreateObject` never gets past 402 either.** `SQ:` browses as a valid, empty
 container (`NumberReturned 0`), but `CreateObject` answers 713 for a DIDL with no
