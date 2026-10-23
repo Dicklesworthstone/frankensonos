@@ -327,7 +327,11 @@ ZoneGroupTopology. The players answer the endpoint (S1 allows GET — `405`
 for POST; S2 the reverse) and return their own bare `404` to every shape
 tried so far (absolute and relative request lines, SOAP bodies, self,
 target, `_MS` and short uuids, both directions, with and without
-`desiredAction`), so its resolver precondition is still unmet. The same app
+`desiredAction`, the parameter names `id`/`device`/`DeviceUUID`/`dev`/
+`target`/`u`, and a live subscription SID of the target as `SID`/`sid`/
+`uuid`), so its resolver precondition is still unmet — and since the `404`
+comes with no body or delay, it is plausibly emitted before the key is even
+read. The same app
 also registers `POST /diagmsg` (64-char `msg`) and ships the anacapa server
 config the phone itself runs on port 3500, with a hardcoded
 `OnlineUpdateBaseURL http://update.sonos.com/firmware/latest/`; the app
@@ -519,9 +523,10 @@ unused `button` value pushes the body to 2048. The 34.16 handler has the
 guard (Content-Length `< 0x800`, else `413`); 57.23 reads past its 0x800
 buffer instead, and the read is effectively **unbounded** — bodies of 20 KB
 are accepted and still end in a reset, never `413`. The same test on a
-Sonos One (86.10) answers `400` at 2100 and 4000 (the 4000 answer takes
-14.5 s) and resets only at 8000, so the S2 build has a bigger limit and the
-S1 57.23 build is the tight one. It is independent of content (a syntactically trivial ring
+Sonos One (86.10) answers `400` at 2100 and 4000 (the latter in 14.5 s) and
+is **flaky** around 8000 — one reset, one `400` on identical bytes — while
+32000 always answers `400` twice over. So the S2 boundary is roughly 8 KB
+and nondeterministic; the S1 57.23 edge at 2048 is the only hard one. It is independent of content (a syntactically trivial ring
 still resets), the listener and `/status` stay up (`200` ×3), and the same
 bytes driven into 34.16's `ZZ0137` return `0` with no fault — a 57.23
 regression, not the ring parser. Effect: the decoded-statement limit on
