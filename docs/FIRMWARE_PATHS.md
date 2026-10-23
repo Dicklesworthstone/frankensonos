@@ -481,6 +481,11 @@ how a local client obtains a scoped token without the cloud.
    0x00–0x0c), so whatever field sits at entry+0 is the injected value; entry offset 0xc18 is a
    double (segment duration). Whether entry+0 is a copied URI or a pointer decides if the
    injected words are ASCII-bounded or heap pointers.
+   Counter roles are now partly resolved: `0xc50c` is **count** (the wrap path does
+   `count = limit` before resetting limit, and the split path sums into it) and `0xc514` is
+   written as 16 at exactly those two sites and nowhere else in the live binary — which is the
+   open puzzle, because a diff of 17 needs limit to be 17. Something must increment it through
+   a register-held base; the append after the ingest's success path is where to look.
    Invocation details the harness needs: the path is `/MediaRenderer/AVTransport/Control`
    (the short `/AVTransport/Control` answers 405) and `SetAVTransportURI` needs DIDL
    metadata — empty returns 500, an `audioBroadcast` item carrying the `hls-radio://` res
