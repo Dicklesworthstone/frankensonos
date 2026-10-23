@@ -420,11 +420,13 @@ Update mechanism (verified 2026-10-07):
   part of this struct. `header_len` is only a lower bound on bytes consumed.
   The parser trusts `n_cipher`: a count that overruns the entries actually
   present leaves `ZZ0053`/`ZZ0121` reading the following `rsa_len`/RSA bytes
-  as another entry, and the consumer walks it — with the untouched body a
-  single `n_cipher` bump to 2 already faults the root `upgrade` process
-  (probe log in `captures/research/root-hunt/`). Re-laying the blob with a
-  fresh RSA changes where the fabricated entry lands and may survive, so the
-  trigger is the count/layout mismatch, not a specific type. See
+  as another entry, and the consumer walks it. Blob-side mutations are only
+  one variable: the home updater also rate-limits `BeginSoftwareUpdate`
+  after repeated attempts, so only the first update of a boot is a fair
+  sample. On fresh boots, cipher-2-with-one-entry completed the download and
+  rebooted, while two explicitly declared entries closed the transfer at the
+  type-3 record and twice left TCP/1400 down with ICMP still answering
+  (probe log in `captures/research/root-hunt/`). See
   `docs/FIRMWARE_PATHS.md` for the per-class layout and the `sonostool`
   decryption path.
 - S2 86.10 payload (type 23) extracts to `bin/anacapad`: the 3 MB zone
