@@ -295,6 +295,7 @@ fn steer(surface: &Surface, mood: &str, filters: SteerConstraints, for_secs: Opt
         .unwrap();
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn scene(source: Value) -> SceneDefinition {
     serde_json::from_value(json!({
         "groups": [{"coordinator": "Alpha", "source": source, "playing": true}]

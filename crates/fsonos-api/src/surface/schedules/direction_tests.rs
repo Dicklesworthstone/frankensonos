@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::json;
 
+#[allow(clippy::needless_pass_by_value)]
 fn request(direction: serde_json::Value) -> ScheduleRequest {
     serde_json::from_value(json!({
         "when": "daily 07:30", "action": "dj_start", "zone": " Kitchen ",

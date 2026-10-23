@@ -208,6 +208,7 @@ fn read_players<T: Transport + ?Sized>(
 /// reconciled. Flattening it before fallback would lose which topology a
 /// boot sequence or vanished-player report belongs to.
 #[derive(Default)]
+#[allow(clippy::struct_field_names)]
 struct Observations {
     observations: Vec<Observation>,
     described: Vec<(IpAddr, DeviceDescription, Option<String>)>,
