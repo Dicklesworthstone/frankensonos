@@ -256,19 +256,7 @@ pub async fn read_taste<S: Store + ?Sized>(
         reader.recent_plays(&mut taste).await;
     }
     if playlists {
-        let (tracks, listed) = reader
-            .playlist_tracks(
-                store,
-                &mut taste.named,
-                &mut taste.playlist_contents,
-                now,
-                Scan::Refresh,
-            )
-            .await;
-        taste.playlists = listed;
-        for item in tracks {
-            taste.track(item, PLAYLIST_PM);
-        }
+        reader.playlist_taste(store, &mut taste, now).await;
     }
     let covered = covered_artists(saved, &taste.tracks);
     // An artist followed and among the top artists is one artist.
@@ -382,6 +370,29 @@ impl Reader<'_> {
             }
         }
         taste.heard = Some(when);
+    }
+
+    /// The owner's playlists' tracks into `taste`, and the playlists listed
+    /// ([`Self::playlist_tracks`]).
+    async fn playlist_taste<S: Store + ?Sized>(
+        &mut self,
+        store: &mut S,
+        taste: &mut Taste,
+        now: i64,
+    ) {
+        let (tracks, listed) = self
+            .playlist_tracks(
+                store,
+                &mut taste.named,
+                &mut taste.playlist_contents,
+                now,
+                Scan::Refresh,
+            )
+            .await;
+        taste.playlists = listed;
+        for item in tracks {
+            taste.track(item, PLAYLIST_PM);
+        }
     }
 
     /// GET and decode one response, recording a failure or a halt.
