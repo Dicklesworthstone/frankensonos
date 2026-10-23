@@ -1372,3 +1372,27 @@ Runnable detail for anyone continuing the qemu lab (all on `css`, guest `:2311`)
   port 1400 alive but the main thread has already left the accept loop, so the
   socket accepts nothing. Forcing the loader's return value to `SUCCESS`
   (`0x458e7c`) is not enough either — the request continues in the DCMS block.
+
+### WS `subscribe`: plumbing found, delivery does not reach an HTTP callback
+
+The 57.23 command table (recovered from the live binary) is short: `management/factoryReset`,
+`settings/getPlayerSettings`, `settings/getPublicSettings`,
+`settings/get{Protected,Restricted}AdminSettings`, `settings/set*`, and the
+`upnpSystemProperties` / `upnpZoneGroupTopology` `call` + `subscribe` / `renew` /
+`unsubscribe` families. `settings/getPlayerSettings` and `getPublicSettings`
+answer unauthenticated; `management/factoryReset` is `ERROR_NO_PERMISSION`.
+
+`subscribe` needs two values in the **options** object, `port` and `eventPath`,
+and then answers `result:0` with a `logicalSID` and a subscription duration:
+
+```
+[{"namespace":"upnpSystemProperties","command":"subscribe",…,"playerId":…},
+ {"port":19181,"eventPath":"/cb"}]
+```
+
+Delivery is still open: with a listener bound on that port and a `SetString` on
+another connection, **nothing arrived** — neither an HTTP `NOTIFY` to the callback
+nor a pushed frame on the subscribing WebSocket (5 s wait, twice). So a
+subscription can be created pre-auth but its events do not reach a caller-supplied
+callback in this configuration; treat the WS `subscribe` as bookkeeping until that
+is understood.
