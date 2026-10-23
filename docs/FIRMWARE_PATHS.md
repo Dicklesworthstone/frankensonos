@@ -741,9 +741,12 @@ still parses (412 on grammar) while 2050 answers **413** and the daemon stays he
 and with two callbacks only the **first** ever receives NOTIFY. A subscription also leaks
 `BootSeq` and each member's `ZoneName`/`ChannelMapSet` in the ZoneGroupState property.
 
-**`SetString` is not the zone-attribute setter.** `key=ZoneName` answers 200 but the room
-does not rename (`/status/zp` unchanged); the name lives in a different settings object, so
-that needs `DeviceProperties#SetZoneAttributes`. A write to an *existing* key also did not
+**`SetString` is not the settings table.** `key=ZoneName` answers 200 but the room does
+not rename; `key=BootSeq` answers 200 and `BootSeq` in the group state stays 67; `key=VERSION`
+answers 200 and the reported build is unchanged. All are just kv entries in the
+`/setstring` store (readable back with `GetString`), not the settings object that publishes
+them, so the name still needs `DeviceProperties#SetZoneAttributes` and a real boot-counter
+change needs whatever writes the settings record. A write to an *existing* key also did not
 wedge the unit — the ~80 s outage is specific to creating a new key.
 
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
