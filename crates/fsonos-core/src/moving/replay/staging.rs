@@ -240,9 +240,8 @@ pub(super) fn replace<T: Transport + ?Sized>(
     // Stop before appending, so old playback cannot run into the staged
     // suffix. A paused source is never audibly started to establish pause.
     match soap::stop(&guarded, host) {
-        Ok(()) => {}
         Err(error) if guarded.blocked.get() => return Err(error.into()),
-        Err(ProtoError::Network { .. } | ProtoError::Malformed(_)) => {}
+        Ok(()) | Err(ProtoError::Network { .. } | ProtoError::Malformed(_)) => {}
         Err(error) => return Err(error.into()),
     }
     let quiet = owner.after_stop(t, host, target)?;
