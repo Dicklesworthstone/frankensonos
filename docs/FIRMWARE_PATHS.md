@@ -1251,6 +1251,29 @@ differs, but the version and the log stay unchanged.) `getZoneGroupState`'s
 and this bench unit is already at 91 from the session's crashes, so reboots do
 happen; they just never coincide with an armed update.
 
+## 2026-10-23: why the trust anchors cannot simply be replaced, and where that stops
+
+Swapping `libsonoscrypto.so.1` for one carrying our own keys is circular on the
+face of it: `upgrade` has **no RPATH/RUNPATH** (checked with `llvm-objdump -p`;
+only `NEEDED` entries), so the loader always takes `/lib` out of the read-only
+squashfs, and writing there needs an install. Same for `/bin/upgrade` itself.
+
+It stops being circular in one important place: on **S2 the daemon is not in the
+rootfs at all.** The 86.10 rootfs ships only `opt/bin/anacapad.sha256`, and the
+path inside it is `/jffs/app/install/bin/anacapad` — i.e. the daemon binary lives
+on **writable jffs**. The same is true of `upgrade`'s own artefact writes
+(`upd_cert_bundle.rcb` under `/jffs/sys/run/rcb/`) and of every settings store.
+So a single arbitrary *file write* into jffs yields persistent code execution on
+S2 with **no signature involved at all**; the signature only matters for
+installing a whole image.
+
+That reorders the target list: the pre-auth writers we have are all fixed-name
+and fixed-shape (`/advconfig` writes `netsettings_mod.txt` from two `atoi` ints;
+`/setstring` writes a kv store; `CreateObject`/`SetString` write their own files).
+What is missing is a writer that lets the *path* or the *content shape* be
+chosen. Note also that `SetString`/`SetZoneAttributes` prove jffs is writable
+from the network path today, so the filesystem side is not the obstacle.
+
 ## 2026-10-23: VM harness — exact flash contract, and the trap in it
 
 `upgrade` (57.23, PPC) takes options (`Eek! Unknown option.`, `No URL provided`,
