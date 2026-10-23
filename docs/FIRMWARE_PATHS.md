@@ -812,6 +812,16 @@ still parses (412 on grammar) while 2050 answers **413** and the daemon stays he
 and with two callbacks only the **first** ever receives NOTIFY. A subscription also leaks
 `BootSeq` and each member's `ZoneName`/`ChannelMapSet` in the ZoneGroupState property.
 
+**HLS AES-128 keys are fetched but never used.** `#EXT-X-KEY:METHOD=AES-128,
+URI="ekey.bin"` makes the daemon fetch the key file (confirmed in the server log,
+including a 404 and 0/15/16/17/32/1000-byte keys), yet an actually encrypted
+segment never advances the transport: RelTime stays `0:00:00` for 20 s with the
+correct 16-byte key and IV, with the key line before `#EXT-X-VERSION`, and with
+no `IV` at all (default IV). The same segment truncated by one byte *does*
+advance, and all key/IV length variants (missing key, 0/15/17/32/1000-byte key,
+8/32/64-hex-digit IV, `SAMPLE-AES`) leave the daemon up. So decryption is not a
+usable path here and not a crash lever.
+
 **`CreateObject` never gets past 402 either.** `SQ:` browses as a valid, empty
 container (`NumberReturned 0`), but `CreateObject` answers 713 for a DIDL with no
 `res`, 710 for an empty `ContainerID`, and **402** for every DIDL that carries a
