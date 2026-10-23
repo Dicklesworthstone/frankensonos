@@ -1329,3 +1329,35 @@ touch /tmp/device_unlocked_flag
 `touch`-ing the flag is what the updater's `allow_policy_bypass` checks, so after
 the first boot a modified `.upd` no longer needs the version/patch games. Remove
 the file (or empty it) to fall back to a normal, locked player.
+
+### VM anacapad bring-up: what the blocker actually is (2026-10-23)
+
+Runnable detail for anyone continuing the qemu lab (all on `css`, guest `:2311`):
+
+- The Debian 4.9 `mtd.ko` compiles `MEMGETINFO` as `0x40084d01` and rejects the
+  compiler-independent ABI; the 57.23 `libflash` builds `0x40244d01` (it puts a
+  36-byte `mtd_info_user` on the stack) and gets `ENOTTY`, which anacapad turns
+  into `SIGIOT`. The 45.1 `libflash` uses `0x40204d01` and the stock
+  `mtd.ko` **accepts** it (`ioctl(...0x40204d01) = 0`, verified against
+  `/dev/mtdr0`). So the 57.23 library simply post-dates the guest kernel's MTD
+  ABI. One word fixes it: patch `lui s6,0x4024` at libflash vaddr `0x1670` to
+  `0x4020`; `MEMGETINFO` then succeeds for every probed device.
+- `mtdram` registers at most **8** devices per kernel regardless of module name
+  (`insmod` answers `File exists` past 8), so use nandsim (`parts=1` gives
+  `mtd0`/`mtd1`) plus eight mtdram units and alias `/dev/mtd9`..`/dev/mtd15`
+  onto existing minors; anacapad probes 0..15 and aborts on the first `ENOENT`.
+- With the ABI patched the server reaches the DCMS block and then aborts in
+  `dcm`: it loads `/jffs/regdevicecert/cert.xml`, `/jffs/regdevicecert/prod/cert.xml`
+  and `/jffs/regdevicecert/prod/metadata.txt` (in that order, via
+  `%s/%s` + `prod`), and on any problem logs
+  `<dcm,1> regcert: loaded:%s (b:%d e:%s)` with the status word from
+  `{SUCCESS,BAD_FILE,BAD_KEY,BAD_CERT,BAD_ISSUE_DATE,MISMATCH_ENV,MISMATCH_ISSUER,MISMATCH_HHID,MISMATCH_USER}`
+  and raises `SIGABRT`. Creating the three files with a self-signed PEM (or DER)
+  certificate and a plausible `metadata.txt` still yields `BAD_FILE (b:0 e:)`,
+  so the metadata format is the remaining unknown; both files are read in full
+  before the verdict, so it is a content test, not an open failure.
+- `SIGABRT` comes from the shared fatal printer at `0x4a6d40` (its `jal abort` at
+  `0x4a6d38`); replacing it with `b 0x4a6d30` (`jr ra`) keeps the process and
+  port 1400 alive but the main thread has already left the accept loop, so the
+  socket accepts nothing. Forcing the loader's return value to `SUCCESS`
+  (`0x458e7c`) is not enough either — the request continues in the DCMS block.
