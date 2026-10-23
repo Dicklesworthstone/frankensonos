@@ -600,14 +600,31 @@ impl DjEngine for PlaysIn {
         Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
     }
 
+    /// A stored session is its steering, as the real DJ reports it: saving
+    /// a scene reads it back to keep the session's direction.
     fn status(
         &self,
-        _: DjSpeakers<'_>,
-        _: &dyn Store,
+        at: DjSpeakers<'_>,
+        store: &dyn Store,
         _: Option<u32>,
         _: &dyn Clock,
     ) -> Result<DjStatusDto, Failure> {
-        Err(Failure::new(ErrorCode::NotImplemented, "not in this test"))
+        let session = store.dj_session(&at.coordinator.0).ok().flatten();
+        Ok(DjStatusDto {
+            zone: at.coordinator.0.clone(),
+            running: self.feeds(at.coordinator),
+            now: None,
+            next: Vec::new(),
+            steering: DjSteeringDto {
+                source: if session.is_some() { "session" } else { "none" }.into(),
+                mood: session.and_then(|s| s.mood),
+                constraints: SteerConstraints::default(),
+                added: SteerConstraints::default(),
+                expires_at: None,
+                expires_in_secs: None,
+            },
+            problem: None,
+        })
     }
 
     fn moods(
