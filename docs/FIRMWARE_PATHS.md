@@ -1765,3 +1765,22 @@ delivered in full-buffer reads hangs. Concurrency then does the rest: 40 paralle
 4/12 and then 0/12; the port reopened as the hung sockets were reaped, but a thread
 that loops on a closed socket stays blocked. That is the mechanism behind the
 30-minute outages, and why only a restart (device reboot) clears it.
+
+### The account helper's 16-byte field, and a live 200 from `AddAccountX`
+
+`0x41b0c0` (136-byte frame) builds a socket address and then does
+`strcpy(sp+76, s3+161)`: the memset only covers `sp+24..sp+92`, the family word is
+written at `sp+92`, so the destination field is about **16 bytes**, and saved
+registers start at `sp+116` with `ra` at `sp+132`. Anything over ~15 characters
+writes past the field; ~56 characters reaches `ra`. It is called from three sites
+(`0x41b27c`, `0x41b3b8`, `0x41b674`) with an object whose `+161` field is used
+elsewhere as a filename component.
+
+`AddAccountX` (`AccountType`, `AccountID`, `AccountPassword`, `AccountUDN`) answered
+**200 unauthenticated** on the unit — the account-add path is drivable from the LAN.
+
+Reading caution for whoever continues: after the first success, every subsequent
+`AddAccountX` answers 402, as does `RemoveAccount` with only `AccountType`. That
+looks like "account already exists"/missing-argument rather than a length check, so
+do not read the 402s as a cap on `AccountID` — the sequence has to be
+remove-then-add with the right arguments before length can be bisected.
