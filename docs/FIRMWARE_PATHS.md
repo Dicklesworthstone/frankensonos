@@ -8,7 +8,34 @@ Two rules hold regardless: **flashing or modifying a device is human-led**
 (images, keys, decompiled code) is committed — analysis lives as prose here
 and in `docs/PROTOCOL.md` §9.
 
-## Class A: S1-gen MIPS players (Play:5 Gen1, Play:1, Bridges) — OPEN BOOK
+## NCC whitepaper: what maps to our lines and what does not
+
+Read of "Listen Up" (BHUSA 2024, NCC Group, 40 pp). Two distinct bugs, both
+older than our firmware:
+
+- **CVE-2023-50809** — Sonos One (MediaTek) WPA2 `WpaParseEapolKeyData`:
+  unchecked IE length, integer underflow, `memmove` into a 32-byte GTK stack
+  buffer, malicious-AP trigger, kernel RCE. Fixed in S2 15.9 / S1 11.12.
+- **CVE-2023-50810** — **Era 100 U-Boot**, three issues chained: U-Boot still
+  tries to load a stored environment despite `CONFIG_ENV_IS_NOWHERE` not being
+  set, `sonosboot` ignoring `setenv("bootargs", …)`'s return value (so a
+  read-only `.flags=bootargs:sr` keeps attacker `bootargs`), and a Sonos image
+  header whose unchecked `kernel_offset` lets data be planted at a fixed
+  address while the image signature still validates (`initrd=ADDR,SIZE`).
+  Fixed in the same releases.
+
+Neither applies to Play:1/Play:5 as shipped (Atheros Wi-Fi, older SoC, 57.23 /
+86.10 are far past the fix). Two things are still worth keeping:
+
+- the **stored-environment** trick is generic U-Boot behaviour — if our
+  bootloaders share the misconfiguration, an env write gives a persistent
+  `bootargs`/`initrd` override, i.e. the persistence half we want, but it needs
+  a flash writer first (the updater writes fixed partitions only);
+- `/jffs` is mounted **`noexec`** on Sonos; a `Configure.dev` works because
+  `Configure` runs `sh <file>`, but any binary dropped in jffs needs
+  `mount -o remount,exec /jffs` (the kernel hooks it via `sonos_allow_mount_exec`).
+
+Class A: S1-gen MIPS players (Play:5 Gen1, Play:1, Bridges) — OPEN BOOK
 
 State (2026-10-20, static RE): milestone-era images (34.16) are unencrypted
 and fully decoded; rootfs extracted and readable on both platforms (Play:5
