@@ -1153,9 +1153,20 @@ install needs the cloud policy to admit a version, and the local
 installable if the cloud is made to advertise something newer, or if the writer
 is reached another way.
 
-Tried the obvious combine — arm with a local `UpdateItem` in `ExtraOptions`,
-then force `/setstring` writes until the box rebooots — six writes and three
-minutes later: still `57.23-74170`. (The vendor URL with the same item XML does
+**The install half is a reboot away, and no pre-auth reboot exists.** On 86.10
+`CheckForUpdate` really does advertise a newer build (97.2-81220 with
+`UpdateURL`/`ManifestURL`), and `BeginSoftwareUpdate` with that exact
+`UpdateItem` is accepted — the daemon bounces for ~20 s and returns on the same
+version. Five `/setstring` writes and 120 WebSocket connects later `BootSeq`
+(S2's own counter, 107) had not moved and the version was still `86.10-81100`:
+the daemon restarts, the box does not. `DoPostUpdateTasks` changes nothing.
+So the update path is: cloud advertises → we fetch (all pre-auth) → **the
+device installs on the next box reboot** → and the only pre-auth trigger for
+that reboot is missing, because `management/reboot` answers 401 without a token.
+
+Tried the obvious combine on S1 too — arm with a local `UpdateItem` in
+`ExtraOptions`, then force `/setstring` writes until the box reboots — six
+writes and three minutes later: still `57.23-74170`. (The vendor URL with the same item XML does
 take the daemon down for ~70 s, versus ~20 s for a bare restart, so *something*
 differs, but the version and the log stay unchanged.) `getZoneGroupState`'s
 `BootSeq` is the reliable reboot counter — a daemon restart does not bump it —
