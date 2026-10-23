@@ -784,7 +784,7 @@ const QueueRemote = (() => {
       body.append(overview);
       if (page && !page.revision) body.append(el('p', { class: 'queue-notice', text: 'Read-only: this daemon did not return a queue revision.' }));
       const source = el('input', { type: 'text', value: state.source, disabled: !editable,
-        placeholder: 'Spotify track, album or playlist', 'aria-label': 'Spotify link or URI',
+        placeholder: 'Spotify music or podcast', 'aria-label': 'Spotify link or URI',
         'data-focus': 'source', class: 'queue-source' });
       const append = button('Add to end', () => { if (ownsPage()) return control.add(state.source); }, !editable || !nonblank(state.source));
       const next = button('Queue next', () => { if (ownsPage()) return control.add(state.source, true); }, !editable || !nonblank(state.source));
@@ -794,7 +794,7 @@ const QueueRemote = (() => {
         append.disabled = next.disabled = !editable || !nonblank(source.value);
       });
       const sourceTools = disclosure('source', `Add music${state.source.trim() ? ' · Draft' : ''}`,
-        el('div', { class: 'queue-tool-content' }, el('label', {}, 'Spotify track, album or playlist', source),
+        el('div', { class: 'queue-tool-content' }, el('label', {}, 'Spotify music or podcast', source),
           el('div', { class: 'row' }, append, next)), Boolean(page && !page.total));
       if (page?.total) body.append(drawSearch(state, page, busy, untrusted));
       body.append(sourceTools);

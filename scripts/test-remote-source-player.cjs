@@ -16,13 +16,13 @@ const state = (z = zone(), overrides = {}) => ({ zone: z, transport_state: 'play
 const defer = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const settle = async () => { for (let i = 0; i < 80; i++) await Promise.resolve(); };
 
-for (const kind of ['track', 'album', 'playlist']) test(`Spotify ${kind} links canonicalize without contacting Spotify`, () => {
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) test(`Spotify ${kind} links canonicalize without contacting Spotify`, () => {
   for (const uri of [`spotify:${kind}:${ID}`, ` Spotify:${kind.toUpperCase()}:${ID} `,
     `https://open.spotify.com/${kind}/${ID}?si=tracking#ignored`,
     `https://OPEN.SPOTIFY.COM/intl-fr/embed/${kind}/${ID}/`, `http://play.spotify.com/${kind}/${ID}`,
     `https://open.spotify.com.:443/${kind}/${ID}`]) {
     const parsed = Player.source(uri);
-    assert.equal(parsed.uri, `spotify:${kind}:${ID}`); assert.equal(parsed.container, kind !== 'track'); assert.ok(Object.isFrozen(parsed));
+    assert.equal(parsed.uri, `spotify:${kind}:${ID}`); assert.equal(parsed.container, kind === 'album' || kind === 'playlist'); assert.ok(Object.isFrozen(parsed));
   }
 });
 
@@ -34,7 +34,7 @@ test('legacy Spotify playlist URIs and share links keep the playlist id', () => 
 
 test('malformed, unsupported and shortened music addresses fail before any I/O', () => {
   for (const uri of ['', null, 'a song title', 'spotify:track:short', `spotify:album:${ID}x`,
-    `spotify:track:${ID.slice(1)}_`, `spotify:artist:${ID}`, `spotify:episode:${ID}`, `spotify:show:${ID}`,
+    `spotify:track:${ID.slice(1)}_`, `spotify:genre:${ID}`, `spotify:user:${ID}`, `spotify:local:${ID}`,
     'https://open.spotify.com/', 'https://spotify.link/abc', 'https://a.spotify.link/abc',
     'custom:source', 'ftp://audio.example/track',
     'https://name@audio.example/music', 'https://audio.example:99999/live',
@@ -86,11 +86,17 @@ function harness(options = {}) {
   return h;
 }
 
-test('successful playback is one policy-path request and carries its cap notes', async () => {
-  const h = harness(), pending = await h.reviewed(`https://open.spotify.com/album/${ID}?si=anything`);
-  assert.equal(h.writes().length, 0); assert.equal(pending.item.container, true);
-  assert.equal(await h.api.confirm(pending), true);
-  assert.deepEqual(h.writes(), [['sourcePlay', { body: { zone: 'Den@S2', source_uri: `spotify:album:${ID}` } }]]);
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) test(`${kind} playback requires a destination and one confirmed policy-path request`, async () => {
+  const h = harness();
+  await h.api.refresh(); h.api.edit('input', `https://open.spotify.com/${kind}/${ID}?si=anything`);
+  assert.equal(h.api.state.target, '');
+  assert.equal(await h.api.review(), false); assert.equal(h.writes().length, 0);
+  h.api.edit('target', 'Den@S2'); assert.equal(await h.api.review(), true);
+  const pending = h.api.state.pending;
+  assert.equal(h.writes().length, 0);
+  assert.equal(pending.item.container, kind === 'album' || kind === 'playlist');
+  assert.equal(await h.api.confirm(pending), true); assert.equal(await h.api.confirm(pending), false);
+  assert.deepEqual(h.writes(), [['sourcePlay', { body: { zone: 'Den@S2', source_uri: `spotify:${kind}:${ID}` } }]]);
   assert.equal(h.api.state.result.status, 'accepted'); assert.match(h.api.state.result.detail, /Volume capped/);
   assert.equal(h.api.state.writing, false); assert.equal(h.api.state.pending, null);
 });

@@ -187,6 +187,17 @@ test('search keeps unsupported sources read-only and plays a specific reviewed i
   const r=f.session.review('play',{hit:f.session.state.hits[0]});assert.equal(await f.session.confirm(r),true);
   assert.deepEqual(f.writes()[0],{url:'/play',body:{zone:'Studio@S2',source_uri:'spotify:track:synthetic',title:'A song'}});
 });
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) test(`dashboard search preserves reviewed ${kind} identity and waits for confirmation`,async()=>{
+  const f=await fixture().ready();
+  const source_uri=`spotify:${kind}:0123456789ABCDEFabcdef`;
+  f.data.hits=[{kind,title:`A ${kind}`,source_uri}];await f.session.search(kind);
+  assert.equal(f.session.state.hits[0].playable,true);assert.equal(f.writes().length,0);
+  const review=f.session.review('play',{hit:f.session.state.hits[0]});
+  assert.ok(review);assert.equal(f.writes().length,0);
+  assert.match(review.detail,kind==='album'||kind==='playlist'?/Replaces this group’s queue/:/Replaces the current source/);
+  assert.equal(await f.session.confirm(review),true);assert.equal(await f.session.confirm(review),false);
+  assert.deepEqual(f.writes(),[{url:'/play',body:{zone:'Studio@S2',source_uri,title:`A ${kind}`}}]);
+});
 test('household favorites use the favorite endpoint, not a fabricated Spotify URI',async()=>{
   const f=await fixture().ready();f.data.hits=[{title:'Radio',kind:'favorite',favorite:'FV:2/7'}];await f.session.search('Radio');
   const r=f.session.review('play',{hit:f.session.state.hits[0]});assert.equal(await f.session.confirm(r),true);

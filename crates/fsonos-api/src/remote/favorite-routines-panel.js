@@ -78,7 +78,7 @@ const FavoriteRoutinePanel = (() => {
       formNode.append(
         field('Routine name', 'label', { type: 'text', maxlength: 80, autocomplete: 'off', required: true }, disabled),
         select('Music source', 'source_kind', draft.source_kind, [['favorite', 'Sonos favorite'],
-          ['spotify', 'Spotify track, album or playlist'], ['stream', 'Radio stream URL']], (value) => {
+          ['spotify', 'Spotify music or podcast'], ['stream', 'Radio stream URL']], (value) => {
           imported = null;
           draft.source_kind = value; draft.favorite = '';
           void control.choose(state.group?.target || '', value);
@@ -102,7 +102,7 @@ const FavoriteRoutinePanel = (() => {
         field(draft.source_kind === 'spotify' ? 'Spotify URI or full share link' : 'Radio stream URL', 'source_uri',
           { type: 'text', maxlength: 2048, autocomplete: 'off', spellcheck: 'false', required: true }, disabled),
         paragraph(draft.source_kind === 'spotify'
-          ? 'Paste a track, album or playlist link. The review shows its canonical Spotify URI. Short links are not expanded; this browser never contacts Spotify.'
+          ? 'Paste a track, album, playlist, artist, episode or show link. The review shows its canonical Spotify URI. Short links are not expanded; this browser never contacts Spotify.'
           : 'Use the station’s direct HTTP or HTTPS audio stream, not its web page. The speaker must be able to reach it. Avoid private access keys: the source is saved in the scene and this tab’s recovery record.'),
       );
       formNode.append(
@@ -236,7 +236,7 @@ const FavoriteRoutinePanel = (() => {
         paragraph('Each run restores this exact grouping. Listed rooms may leave other groups; rooms added later may be detached. It then starts the selected music source, replacing whatever that group was playing.'),
         paragraph(container
           ? 'This album or playlist replaces the group’s queue at run time; the routine is not a backup of that queue.'
-          : 'The routine switches the group to this track or stream at run time.'),
+          : 'The routine switches the group to this source at run time.'),
         paragraph(settings.volume === null
           ? 'Volume: keep current levels, subject to the house policy.'
           : `Volume: request ${settings.volume} for each saved room, subject to its policy cap and fade. This can raise or lower the level.${settings.volume === 0 ? ' Zero is silent.' : ''}`),

@@ -92,7 +92,7 @@ const DashboardSession = (() => {
     if (!Array.isArray(v) || v.length > 8) fail('The search response is unreadable.');
     return v.map((h) => {
       if (!object(h) || !text(h.title) || !text(h.kind)) fail('A search result is unreadable.');
-      const spotify = typeof h.source_uri === 'string' && /^spotify:(track|album|playlist):[a-zA-Z0-9]+$/.exec(h.source_uri);
+      const spotify = typeof h.source_uri === 'string' && /^spotify:(track|album|playlist|artist|episode|show):[a-zA-Z0-9]+$/.exec(h.source_uri);
       const playable = (spotify && spotify[1] === h.kind) || (h.kind === 'favorite' && /^FV:2\/\d+$/.test(h.favorite));
       return freeze({ title: h.title, kind: h.kind, subtitle: typeof h.subtitle === 'string' ? h.subtitle : '',
         source_uri: spotify ? h.source_uri : null, favorite: playable && h.kind === 'favorite' ? h.favorite : null, playable: !!playable });

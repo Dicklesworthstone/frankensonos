@@ -704,10 +704,28 @@ test('Spotify share links and legacy URIs normalize to the same saved source wit
     assert.equal(Scenes.sourceUri(raw), `spotify:${kind}:${SPOTIFY_ID}`);
   }
   assert.equal(Scenes.sourceUri('x-file-cifs:owner/music.flac'), 'x-file-cifs:owner/music.flac');
-  for (const value of ['Spotify:artist:' + SPOTIFY_ID, 'spotify:track:short',
+  for (const value of ['Spotify:genre:' + SPOTIFY_ID, 'spotify:track:short',
     'https://spotify.link/short', 'not a URI', 'x-file:a b', 'x-file:\u0000', 'x-file:' + 'é'.repeat(1100)]) {
     assert.throws(() => Scenes.sourceUri(value), value);
   }
+});
+
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) test(`custom ${kind} scene requires chosen rooms and only saves after review`, async () => {
+  const f = await editor();
+  assert.deepEqual(f.control.state.draft.groups, []); assert.deepEqual(f.writes, []);
+  const uri = `https://open.spotify.com/intl-fr/embed/${kind}/${SPOTIFY_ID}?si=share`;
+  assert.equal(Scenes.sourceUri(`Spotify:${kind.toUpperCase()}:${SPOTIFY_ID}`), `spotify:${kind}:${SPOTIFY_ID}`);
+  group(f, 'Den@S1', 'uri', uri, ['Hall@S1']);
+  assert.equal(await f.control.reviewDefinition(), true, f.control.state.message);
+  assert.deepEqual(f.writes, []);
+  const pending = f.control.state.pending;
+  assert.equal(await f.control.confirm(pending), true, f.control.state.message);
+  assert.equal(await f.control.confirm(pending), false);
+  assert.deepEqual(f.writes.map(write => write.name), ['sceneSave']);
+  assert.deepEqual(f.writes[0].body.groups, [{
+    coordinator: 'Den@S1', members: ['Hall@S1'], source: { kind: 'uri', uri: `spotify:${kind}:${SPOTIFY_ID}` }, playing: true,
+  }]);
+  assert.match(f.control.state.message, /No playback was changed/);
 });
 
 test('empty custom definitions cannot trigger the PUT endpoint implicit capture behavior', async () => {

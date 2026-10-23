@@ -47,7 +47,7 @@ async function ready(input = draft(), b = backend(), options = {}) {
   return { b, m, p: m.state.pending };
 }
 
-for (const kind of ['track', 'album', 'playlist']) {
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) {
   test(`Spotify ${kind} canonicalization uses the backend's source vocabulary`, () => {
     const expected = { kind: 'uri', uri: `spotify:${kind}:${ID}` };
     for (const source_uri of [`spotify:${kind}:${ID}`, `Spotify:${kind.toUpperCase()}:${ID}`,
@@ -58,6 +58,7 @@ for (const kind of ['track', 'album', 'playlist']) {
   });
   test(`Spotify ${kind} routine persists scene and schedule without favorite discovery`, async () => {
     const { b, m, p } = await ready(draft({ source_uri: `spotify:${kind}:${ID}` }));
+    assert.equal(writes(b).length, 0);
     await m.confirm(p); await m.confirm(p);
     assert.equal(m.state.phase, 'complete', m.state.message);
     assert.deepEqual(writes(b).map(([name]) => name), ['routineSaveScene', 'routineAdd']);
@@ -84,7 +85,7 @@ for (const uri of ['https://radio.example.invalid/live.mp3?channel=2', 'http://1
 }
 
 const invalid = [
-  ['spotify', 'spotify:album:short'], ['spotify', `spotify:artist:${ID}`], ['spotify', `spotify:episode:${ID}`],
+  ['spotify', 'spotify:album:short'], ['spotify', `spotify:genre:${ID}`], ['spotify', `spotify:local:${ID}`],
   ['spotify', `https://open.spotify.com.evil.invalid/album/${ID}`],
   ['spotify', `https://user@open.spotify.com/album/${ID}`], ['spotify', `https://open.spotify.com:443/album/${ID}`],
   ['spotify', `https://open.spotify.com/not/../album/${ID}`], ['spotify', 'https://spotify.link/short'],

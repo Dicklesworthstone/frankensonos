@@ -55,6 +55,18 @@ test('browse routes are read-only and require no selected destination or search 
   assert.equal(f.writes().length, 0);
 });
 
+test('new playable Spotify kinds are never fabricated as cached tracks, albums or playlists', async () => {
+  for (const kind of ['artist', 'episode', 'show']) for (const category of ['tracks', 'albums', 'playlists']) {
+    const f = fixture(async (name, args) => name === 'libraryBrowse'
+      ? page(args.query, { total: 1, next_offset: null, items: [item(0, kind)] }) : undefined);
+    await open(f, true);
+    assert.equal(await f.control.browse(category), false);
+    assert.equal(f.control.state.loaded, false);
+    assert.equal(f.control.choose(0, 'play'), false);
+    assert.deepEqual(f.writes(), []);
+  }
+});
+
 test('an empty or failed room read does not prevent offline cache browsing', async () => {
   for (const rooms of [[], 'error']) {
     const f = fixture(async (name) => {

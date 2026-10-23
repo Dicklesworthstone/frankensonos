@@ -33,7 +33,8 @@ not silently redirected to a different track at the same position.
 
 ## Add music
 
-Expand **Add music** and paste a Spotify track, album or playlist URI/link.
+Expand **Add music** and paste a Spotify track, album, playlist, artist, episode
+or show URI/link.
 **Add to end** and **Queue next** call `POST /queue`; Spotify URI normalization and
 validation remain in the shared server action. These buttons add entries, not
 start playback. If the group is on a radio or another source, use an entry's

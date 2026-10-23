@@ -1,7 +1,8 @@
 # Play a link or stream from the web remote
 
 Open **Play a link or stream**, select the destination group, and paste a
-Spotify track, album or playlist share link (or its `spotify:` URI). The item
+Spotify track, album, playlist, artist, episode or show share link (or its
+`spotify:` URI). The item
 does not have to be in the synced library. An optional title supplies display
 metadata. Select **Review playback**, inspect the group and its current
 source, then **Play now**.
@@ -9,7 +10,7 @@ source, then **Play now**.
 Spotify locale, embed and legacy playlist links are normalized to their
 canonical Spotify URI; share tracking parameters are discarded. Shortened
 `spotify.link` URLs require opening the link yourself and pasting its full
-address. Artist, show and episode playback is not exposed by this control.
+address. The source kinds match the existing daemon API.
 Spotify still requires the household's existing Sonos account linkage and
 learned rendering parameters; this interface does not bypass them.
 
@@ -21,8 +22,8 @@ Embedded sign-in details, local-file and executable URI schemes are refused.
 Source addresses and optional titles pass through the ordinary action log;
 do not paste private access-bearing addresses into a shared controller.
 
-Playing an album or playlist replaces the group's queue. Playing a track or
-stream replaces its current source. The review says which effect applies.
+Playing an album or playlist replaces the group's queue. Tracks, artists,
+episodes, shows and streams replace its current source. The review says which effect applies.
 The existing policy, volume caps, playback orchestration and action history
 remain authoritative. This is the native `/play` route, not a Spotify Web
 API playback command or a new privileged endpoint.
@@ -40,11 +41,13 @@ Validation: `node --test scripts/test-remote-source-player.cjs` executes the
 shipped parsing, controller, DOM panel and mounting adapter. It also checks
 a real loopback HTTP exchange. Physical Sonos/Spotify acceptance is a separate
 hardware check; the loopback server does not emulate the Rust daemon.
+Artist, episode and show start-to-audio behavior still requires real-device
+qualification; accepting a source or command does not establish audibility.
 
 ## Add Spotify music without interrupting the current source
 
 Select **Queue next** or **Queue at end** in the Action field, then **Review
-queue addition**. Tracks, albums and playlists use the existing `/queue`
+queue addition**. All six Spotify source kinds use the existing `/queue`
 contract with `next: true` or `next: false`; no play, resume, source replacement
 or volume request is added. Streams are play-only in this panel.
 
@@ -60,7 +63,12 @@ natural track advances. These checks cannot prevent changes between the final
 read and the speaker's write. An incomplete acknowledgement remains uncertain:
 never retry automatically or fall back to Play now, which would interrupt music.
 
+Both the full remote and listening room use this source control. Replaying a
+history entry transfers only its source and optional title; it never selects
+the historical room or starts playback. Choose a current destination and
+confirm the new play or queue action explicitly.
+
 Queue tests: `node --test scripts/test-remote-source-player*.cjs`. Coverage
-includes real loopback HTTP, paused/idle queues, stale revisions and anchors,
+includes all six source kinds, real loopback HTTP, paused/idle queues, stale revisions and anchors,
 malformed receipts, delayed replies and duplicate submissions. The HTTP fixture
 is not the Rust daemon or a physical speaker.

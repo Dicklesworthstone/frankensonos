@@ -240,6 +240,25 @@ test('recent listening is group-scoped, lazy and independent of search words', a
   assert.deepEqual(f.control.state.hits.map((hit) => hit.playedAt), recentRecords.map((r) => r.played_at));
   assert.equal(f.control.state.hits.length, 3, 'repeated listens are not collapsed');
 });
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) for (const mode of ['play', 'append', 'next']) {
+  test(`recent ${kind} ${mode} preserves its exact source and requires explicit destination and confirmation`, async () => {
+    const record = { source_uri: `spotify:${kind}:0123456789ABCDEFabcdef`, played_at: 1700000000,
+      title: `Recorded ${kind}`, artist: 'Recorded artist' };
+    const f = fixture(async name => name === 'libraryHistory' ? [record] : undefined);
+    await f.control.refreshRooms(); assert.equal(f.control.state.target, '');
+    assert.equal(await f.control.recent(), false); assert.deepEqual(f.writes(), []);
+    f.control.target('Room@S2'); assert.equal(await f.control.recent(), true);
+    assert.equal(f.control.state.hits[0].kind, kind);
+    assert.equal(f.control.choose(0, mode), true); assert.deepEqual(f.writes(), []);
+    assert.equal(await f.control.confirm(), true); assert.equal(await f.control.confirm(), false);
+    assert.deepEqual(f.writes(), [[mode === 'play' ? 'libraryPlay' : 'libraryAdd', { body: {
+      zone: 'Room@S2', source_uri: record.source_uri, title: record.title,
+      ...(mode === 'play' ? {} : { next: mode === 'next' }),
+    } }]]);
+    assert.equal(f.calls.some(([name]) => name === 'librarySearch'), false);
+  });
+}
+
 test('recent music replays the recorded URI or appends it without any fuzzy search', async () => {
   for (const mode of ['play', 'append', 'next']) {
     const f = fixture(async (name) => name === 'libraryHistory' ? recentRecords : undefined);

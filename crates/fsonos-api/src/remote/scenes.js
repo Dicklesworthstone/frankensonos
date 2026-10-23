@@ -208,8 +208,8 @@ const ScenesRemote = (() => {
     const scheme = parts[1].toLowerCase(), rest = parts[2];
     const spotify = (kind, id) => {
       kind = kind.toLowerCase();
-      if (!['track', 'album', 'playlist'].includes(kind) || !/^[a-z0-9]{22}$/i.test(id)) {
-        throw new Error('A scene plays a Spotify track, album or playlist with a complete 22-character ID.');
+      if (!['track', 'album', 'playlist', 'artist', 'episode', 'show'].includes(kind) || !/^[a-z0-9]{22}$/i.test(id)) {
+        throw new Error('A scene plays a Spotify track, album, playlist, artist, episode or show with a complete 22-character ID.');
       }
       return `spotify:${kind}:${id}`;
     };

@@ -50,7 +50,7 @@ function fixture() {
   return f;
 }
 
-for (const kind of ['track', 'album', 'playlist']) test(`library ${kind} handoff fills a routine and uses only reviewed scene/schedule writes`, async () => {
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) test(`library ${kind} handoff fills a routine and uses only reviewed scene/schedule writes`, async () => {
   const f = fixture(), selection = music(kind, 'S1');
   f.control.resumeDraft();
   const patch = await f.control.importSource(selection);
@@ -68,9 +68,9 @@ for (const kind of ['track', 'album', 'playlist']) test(`library ${kind} handoff
   assert.deepEqual(f.scenes[0].groups[0].source, { kind: 'uri', uri: `spotify:${kind}:${ID}` });
 });
 
-test('browse handoff can start without a playback destination and never invents one', async () => {
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) test(`${kind} handoff without a destination never invents one`, async () => {
   const f = fixture(); f.control.resumeDraft();
-  const patch = await f.control.importSource(music());
+  const patch = await f.control.importSource(music(kind));
   assert.equal(patch.source_kind, 'spotify');
   assert.equal(f.control.state.group, null);
   assert.equal(f.control.state.groups.length, 2);
@@ -188,7 +188,7 @@ test('reopening an unsent draft preserves its group and favorites without a new 
 test('handoff payloads are bounded music data and reject timing, writes, ambiguous sources and incomplete identity', () => {
   const base = music('album', 'S1');
   for (const payload of [{ ...base, when: 'daily 06:00' }, { ...base, action: 'apply_scene' },
-    { ...base, volume: 100 }, { ...base, source_uri: `spotify:artist:${ID}` },
+    { ...base, volume: 100 }, { ...base, source_uri: `spotify:genre:${ID}` },
     { ...base, source_uri: 'spotify:track:short' }, { ...base, favorite: 'FV:2/1' },
     { ...base, title: '' }, { ...base, subtitle: '\u0000' },
     { ...base, group: { ...base.group, members: ['Den@S2'] } },

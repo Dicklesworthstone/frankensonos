@@ -10,11 +10,11 @@ const SourcePlayerRemote = (() => {
 
   function spotify(kind, id) {
     kind = kind.toLowerCase();
-    if (!['track', 'album', 'playlist'].includes(kind)) {
-      throw new Error('Choose a Spotify track, album or playlist, not an artist, show or episode.');
+    if (!['track', 'album', 'playlist', 'artist', 'episode', 'show'].includes(kind)) {
+      throw new Error('Choose a Spotify track, album, playlist, artist, episode or show.');
     }
     if (!/^[a-zA-Z0-9]{22}$/.test(id)) throw new Error('The Spotify id must contain exactly 22 letters and digits. Paste the complete link.');
-    return Object.freeze({ uri: `spotify:${kind}:${id}`, kind, container: kind !== 'track' });
+    return Object.freeze({ uri: `spotify:${kind}:${id}`, kind, container: kind === 'album' || kind === 'playlist' });
   }
 
   function source(raw) {
@@ -26,7 +26,7 @@ const SourcePlayerRemote = (() => {
       const parts = uri.split(':');
       if (parts.length === 3) return spotify(parts[1], parts[2]);
       if (parts.length === 5 && /^user$/i.test(parts[1]) && /^playlist$/i.test(parts[3])) return spotify('playlist', parts[4]);
-      throw new Error('Use a Spotify track, album or playlist URI.');
+      throw new Error('Use a Spotify track, album, playlist, artist, episode or show URI.');
     }
     // Only media addresses: never resolve short links, load pages, or execute a URI.
     const authority = /^https?:\/\/([^/?#]+)/i.exec(uri);
@@ -46,7 +46,7 @@ const SourcePlayerRemote = (() => {
       if (segments[0] === 'embed') segments.shift();
       if (segments.length === 2) return spotify(...segments);
       if (segments.length === 4 && segments[0] === 'user' && segments[2] === 'playlist') return spotify('playlist', segments[3]);
-      throw new Error('Paste a link to one Spotify track, album or playlist.');
+      throw new Error('Paste a link to one Spotify track, album, playlist, artist, episode or show.');
     }
     // Preserve escaping, query parameters and letter case, which may be signed.
     return Object.freeze({ uri, kind: 'stream', container: false });
@@ -215,7 +215,7 @@ const SourcePlayerRemote = (() => {
       try {
         if (!group) throw new Error('Choose the group that should play this source.');
         item = source(state.input);
-        if (mode !== 'play' && item.kind === 'stream') throw new Error('Only Spotify tracks, albums and playlists can be queued here. Choose Play now for a stream.');
+        if (mode !== 'play' && item.kind === 'stream') throw new Error('Only Spotify tracks, albums, playlists, artists, episodes and shows can be queued here. Choose Play now for a stream.');
         title = [...state.title.trim()].slice(0, MAX_TITLE).join('');
         if (/[\p{Cc}]/u.test(title)) throw new Error('The display title contains control characters.');
       } catch (error) { state.message = problem(error); publish(); return false; }
@@ -285,7 +285,7 @@ const SourcePlayerRemote = (() => {
     const result = el('p', { role: 'status', 'aria-live': 'polite' });
     const consent = el('div', { class: 'source-review', hidden: true });
     const details = el('details', { class: 'zone source-player' }, el('summary', { text: 'Play a link or stream' }),
-      el('div', {}, el('p', { text: 'Play a Spotify track, album or playlist without syncing it first, or send a direct audio stream to the speakers.' }),
+      el('div', {}, el('p', { text: 'Play a Spotify track, album, playlist, artist, episode or show without syncing it first, or send a direct audio stream to the speakers.' }),
         el('label', {}, 'Destination ', target), el('label', {}, 'Source ', input), el('label', {}, 'Title ', title), el('label', {}, 'Action ', mode),
         el('div', { class: 'row' }, refresh, review, clear), message, consent, result));
     const node = el('section', { class: 'scenes', 'aria-label': 'Play a link or stream' }, details);

@@ -11,11 +11,11 @@ The composer supports three sources:
 
 - **Sonos favorite:** choose a playable track, stream, album or playlist from
   the selected household's favorites. Existing favorite routines still work.
-- **Spotify track, album or playlist:** paste a canonical Spotify URI or its
+- **Spotify music or podcast:** paste a track, album, playlist, artist, episode
+  or show as a canonical Spotify URI or its
   full `open.spotify.com` / `play.spotify.com` link. Locale, embed, tracking and
   legacy playlist forms are normalized; review shows the canonical source.
-  Artist, episode and show links are not offered by the scene engine. Short
-  links must be opened separately; the browser does not expand them or contact
+  Short links must be opened separately; the browser does not expand them or contact
   Spotify. Playback still needs the daemon and speakers' existing Spotify setup.
 - **Radio stream URL:** paste a direct HTTP(S) audio stream, not the station's
   web page. The speaker must be able to reach and decode it. Embedded user-info,
@@ -30,8 +30,9 @@ saving a scene is not a playback or reachability test.
 ## Start with music you found
 
 In **Music & DJ → Music library**, choose **Create routine** on a supported
-Spotify track, album or playlist, or a playable Sonos favorite. The action also
-works on cached browse results and supported recent-listening entries. It opens
+Spotify source or a playable Sonos favorite. Cached browse results still cover
+tracks, albums and playlists; recent listening can also supply artists,
+episodes and shows. It opens
 **Routines → Music routines** with a readable music summary and a suggested name,
 so you do not need to copy a URI. Cached Spotify music can be chosen before a
 destination is selected; the composer then asks you to choose a current group.
@@ -71,8 +72,8 @@ the enabled schedule may run as soon as its own deadline arrives.
 The scene saves the selected group's coordinator and exact room membership,
 qualified by household. Each execution restores that grouping: listed rooms
 may leave other groups, and unlisted rooms joined later may be detached.
-An album or playlist can replace the group's queue; a track or stream changes
-its playback source. The review identifies these effects before either write.
+An album or playlist can replace the group's queue; tracks, artists, episodes,
+shows and streams change its playback source. The review identifies these effects before either write.
 
 **Volume is optional.** Blank leaves current levels unchanged, subject to the
 house policy. A number from 0 to 100 requests that level for each saved room,

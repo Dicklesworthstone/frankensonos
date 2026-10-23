@@ -29,7 +29,7 @@ function harness() {
   return h;
 }
 
-for (const mode of ['next', 'end']) for (const kind of ['track', 'album', 'playlist']) {
+for (const mode of ['next', 'end']) for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) {
   test(`${kind} queue-${mode} preserves playback and sends only the native add request`, async () => {
     const h = harness(), before = structuredClone(h.state), p = await h.review(mode, kind);
     assert.equal(h.writes().length, 0); assert.equal(p.mode, mode); assert.equal(p.before.queue.total, 12);

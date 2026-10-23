@@ -38,7 +38,7 @@ const LibraryRemote = (() => {
     });
   }
 
-  const spotify = (uri) => typeof uri === 'string' && /^spotify:(track|album|playlist):[a-zA-Z0-9]+$/.exec(uri);
+  const spotify = (uri) => typeof uri === 'string' && /^spotify:(track|album|playlist|artist|episode|show):[a-zA-Z0-9]+$/.exec(uri);
 
   function hitsOf(value) {
     if (!Array.isArray(value) || value.length > LIMIT) {
@@ -83,7 +83,7 @@ const LibraryRemote = (() => {
     const group = zone ? Object.freeze({ target: zone.target, members: zone.members }) : null;
     if (hit.favorite && zone && hit.title.trim()) return Object.freeze({ kind: 'favorite',
       favorite: hit.favorite, title: hit.title, subtitle: hit.subtitle, household: zone.household, group });
-    if (!/^spotify:(track|album|playlist):[A-Za-z0-9]{22}$/.test(hit.source || '')) return null;
+    if (!/^spotify:(track|album|playlist|artist|episode|show):[A-Za-z0-9]{22}$/.test(hit.source || '')) return null;
     return Object.freeze({ kind: 'spotify', source_uri: hit.source, title: hit.title.trim() || `Spotify ${hit.kind}`,
       subtitle: hit.subtitle, household: zone?.household || null, group });
   }

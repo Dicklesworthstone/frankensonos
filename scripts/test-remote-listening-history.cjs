@@ -152,7 +152,7 @@ test('only a current visible history row can initiate the handoff', async () => 
 });
 
 test('history handoff transfers only the supported source and an optional bounded title', () => {
-  for (const kind of ['track', 'album', 'playlist']) {
+  for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) {
     const row = play({ source_uri: `spotify:${kind}:0000000000000000000001` });
     const incoming = history.replayOf(row, sourcePlayer.source);
     assert.deepEqual(incoming, { source_uri: row.source_uri, title: row.title });
@@ -169,7 +169,7 @@ test('history handoff transfers only the supported source and an optional bounde
 
 test('unsupported historical sources are never guessed into playable tracks or fetched', async () => {
   for (const source_uri of ['x-rincon:old-speaker', 'x-sonos-spotify:opaque-renderer', 'javascript:alert(1)',
-    'spotify:artist:0000000000000000000001', 'spotify:episode:0000000000000000000001', 'https://spotify.link/short']) {
+    'spotify:genre:0000000000000000000001', 'spotify:local:0000000000000000000001', 'https://spotify.link/short']) {
     const f = playerFixture();
     assert.throws(() => history.replayOf(play({ source_uri }), sourcePlayer.source));
     assert.equal(await f.m.offer({ source_uri }), false); assert.equal(f.calls.length, 0);
@@ -184,9 +184,9 @@ test('source imports cannot carry a destination, queue position, action or unkno
   }
 });
 
-for (const gen of ['S1', 'S2']) for (const mode of ['play', 'next', 'end']) {
-  test(`recorded source reaches ${gen} ${mode} only after selecting, reviewing and confirming`, async () => {
-    const f = playerFixture(), row = play({ room: 'Study', source_uri: 'spotify:album:0000000000000000000001' });
+for (const kind of ['track', 'album', 'playlist', 'artist', 'episode', 'show']) for (const gen of ['S1', 'S2']) for (const mode of ['play', 'next', 'end']) {
+  test(`recorded ${kind} reaches ${gen} ${mode} only after selecting, reviewing and confirming`, async () => {
+    const f = playerFixture(), row = play({ room: 'Study', source_uri: `spotify:${kind}:0000000000000000000001` });
     assert.equal(await f.m.offer(history.replayOf(row, sourcePlayer.source)), true);
     assert.equal(f.m.state.target, ''); assert.equal(f.m.state.mode, 'play');
     assert.equal(await f.m.review(), false); assert.equal(f.writes().length, 0);

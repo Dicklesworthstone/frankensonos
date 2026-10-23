@@ -136,14 +136,14 @@ const FavoriteRoutines = (() => {
         // Parse the raw path, as the server does; URL path normalization must
         // not turn an unreviewed path, user-info or lookalike host into music.
         const link = /^https?:\/\/(?:open|play)\.spotify\.com\/([^?#]*)(?:[?#].*)?$/i.exec(uri);
-        if (!link) fail('Paste a Spotify track, album or playlist URI, or its full open.spotify.com link. Short links are not expanded.');
+        if (!link) fail('Paste a Spotify track, album, playlist, artist, episode or show URI, or its full open.spotify.com link. Short links are not expanded.');
         parts = link[1].split('/').filter(Boolean);
         if (parts[0]?.startsWith('intl-')) parts.shift();
         if (parts[0] === 'embed') parts.shift();
         if (parts.length === 4 && parts[0] === 'user' && parts[2] === 'playlist') parts = ['playlist', parts[3]];
       }
-      if (parts.length !== 2 || !['track', 'album', 'playlist'].includes(parts[0].toLowerCase())
-          || !/^[A-Za-z0-9]{22}$/.test(parts[1])) fail('Spotify routines need a track, album or playlist with its full 22-character ID.');
+      if (parts.length !== 2 || !['track', 'album', 'playlist', 'artist', 'episode', 'show'].includes(parts[0].toLowerCase())
+          || !/^[A-Za-z0-9]{22}$/.test(parts[1])) fail('Spotify routines need a track, album, playlist, artist, episode or show with its full 22-character ID.');
       return { kind: 'uri', uri: `spotify:${parts[0].toLowerCase()}:${parts[1]}` };
     }
     let parsed;
