@@ -1025,6 +1025,24 @@ answer UPnP 402, including for `GetString`/`GetTransportInfo` which need
 exactly one argument. The passthrough is therefore a no-argument proxy today
 and is not a useful fuzzing surface for argument handling.
 
+## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
+
+NVD: "In certain Sonos products before S1 11.12 and S2 15.9 … a failure to
+correctly handle the return value of the `setenv` command can be used to
+override the kernel command-line parameters and ultimately bypass the Secure
+Boot implementation", persistent with kernel privileges, and it names **PLAY:5
+gen 2, PLAYBASE, PLAY:1, One, One SL and Amp** — that is this fleet exactly.
+CVSS 6.0, `AV:N/AC:L/PR:H`.
+
+The "before release X" phrasing does not mean fixed here: the OTA packages
+carry no bootloader. The preinstall scripts touch `/dev/mtd` only for the
+install flow and never `setenv`/`fw_setenv`, and the kernels embed only the
+stock defaults (`root=/dev/ram`), so the effective `bootargs` are assembled by
+U-Boot from its environment at boot. Nothing in the network surface writes that
+environment today, which is why the CVE still needs a foothold: either a first
+root primitive to write the env/cmdline, or an update-path write that reaches
+`/dev/mtd`. Keep it as the persistence half of a chain rather than an entry.
+
 ## 2026-10-23: 86.10 differential — three unclamped copies the 57.23 build lacks
 
 86.10's daemon was extracted from the preserved `.upd` (model-12 key recovered from
