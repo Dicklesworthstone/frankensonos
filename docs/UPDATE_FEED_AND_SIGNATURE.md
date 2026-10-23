@@ -316,6 +316,17 @@ execution structurally on this line. Type 13 is an `886499ca` envelope, type
 `upgrade`. The gate internals above are unchanged; only the dispatch order and
 the added types differ.
 
+**TLS for the fetch is possible, and the client is TLS 1.0 only.** Serving
+the image over `https://` works once the server is forced down: OpenSSL 4.x
+has dropped TLS ≤1.1 and answers this client with a fatal `decode_error`
+alert in every configuration (that is what killed the earlier `tls443`
+services); `openssl@3` with `-tls1 -cipher 'ALL:@SECLEVEL=0'` completes the
+handshake, carries the request and the first ~24 KB, then the fetcher closes
+with `close_notify` exactly as it does over plain HTTP — the same early
+abort, not a new gate. A self-signed certificate is accepted, and nothing
+on `:1400` exposes an update-state page, so a fetch is only observable from
+the server side.
+
 Transfer behaviour: a plain Python `http.server` (with or without
 `Content-Length`, HTTP/1.1 or 1.0) makes the player's `wget -qC <url> -T 300
 -O - -` stop after exactly 131072 bytes. **Apache completes the same file
