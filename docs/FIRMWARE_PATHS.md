@@ -490,6 +490,28 @@ series can move the version under you. Two rules follow: re-read `/status/VERSIO
 before comparing versions, and check who else is on the unit before attributing a
 version change. ICMP stayed up throughout except during the actual reboots.
 
+### The signature ring carries ids, not keys (so self-signing needs a vendor key)
+
+Answered the open question from the parallel session, on the 34.16 `libsonoscrypto.so.1`
+(the same code family 57.23 verifies with):
+
+- `ZZ0121(ctx, buf, len)` zeroes a `0x22b8` context, requires magic `0x621da74d`, then a
+  `u32 total`, a `u16` of 1, then a `u32 n` (`<9`) of entries, then a second `u32 m` (`<9`)
+  of entries. Every entry is **`0x108` bytes** and is parsed by `ZZ0026` as
+  `[u32 kind][u32 len]` with `len < 0x101`, then `memcpy(entry+8, …)`: kind 1 needs
+  `len == 0x21` (33), kind 2 needs `0x11` (17), kind 3 needs `0x15` (21). Second byte of
+  the payload is a key-type byte that `ZZ0118` validates.
+- 33 bytes is a truncated-hash fingerprint, 21 a 20-byte digest, 17 a 16-byte key id —
+  **no entry can hold an RSA-2048 modulus**, so the ring references keys, it does not
+  carry them. The key itself comes from the caller's context: the verify chain the update
+  binary passes in is `ZZ0078 / ZZ0063 / ZZ0110 / ZZ0039`, and `ZZ0110 → ZZ0109` resolves
+  through the caller's key ring (this is why "MDP signature missing" and "Cert bundle
+  missing required signature" exist as errors) rather than from bytes in the image.
+- Consequence: **a self-signed image needs a Sonos private key**; nothing keyless is left
+  in the update path. The keyless leverage is the version/patch-train policy, and the
+  MDP is the one thing the offline harness still lacks (see above) — supply it and the
+  whole path, including a genuine older image, runs offline.
+
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
 month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
 CVE-2026-75093 (`from_raw_dt_align` buffer size) and CVE-2026-55832 (attacker-chosen
