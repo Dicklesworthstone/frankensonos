@@ -61,11 +61,11 @@ players.
 
 ## Signature gate
 
-After the sections are read, `upgrade` calls `ZZ0121` on the type-22 payload
-and then `ZZ0124` to verify. The type-22 payload is a **364-byte header**
-(the updater reads `header_len = 0x16c`, little-endian as a `u32` at +4)
-followed by a 149 KB `rcbundle` (trusted-root Name bundle, magic `rcbundle`,
-rootfs fallback `/etc/fallback_trusted_roots.rcb`).
+After the sections are read, `upgrade` calls `ZZ0121` on the type-17 payload
+and then `ZZ0124`/`ZZ0125` to verify. The type-22 payload is a **364-byte
+header** (the parser reads `header_len = 0x16c`, big-endian as a `u32` at +4)
+followed by a 149 KB `rcbundle` (a public CA root bundle plus Sonos roots,
+magic `rcbundle`, rootfs fallback `/etc/fallback_trusted_roots.rcb`).
 
 The 364-byte header is a custom TLV, not ASN.1:
 
@@ -307,27 +307,35 @@ execution structurally on this line. Type 13 is an `886499ca` envelope, type
 `upgrade`. The gate internals above are unchanged; only the dispatch order and
 the added types differ.
 
-Transfer behaviour measured against a plain Python HTTP server: the player's
-`wget -qC <url> -T 300 -O - -` stops after exactly 131072 bytes and resets
-the connection for any package larger than 128 KiB -- on S2 and on S1, for a
-pristine signed package as well as a modified one. A feed throttled to about
-2 KB/s reaches the same byte count after 55 s, so it is not the timeout.
-Packages below 128 KiB download completely. HTTP status is always 200; the
-server-side sent-byte counter is the only reliable oracle. Serving HTTP/1.0
-with no `Content-Length` and EOF framing does not change it, so the cut is
-not size negotiation: the reader stops at exactly 131072 bytes whatever the
-transport. The section handler `malloc`s `section_len` and asks the reader
-for the whole section, so the stop is inside that reader, not the framing.
+Transfer behaviour: a plain Python `http.server` (with or without
+`Content-Length`, HTTP/1.1 or 1.0) makes the player's `wget -qC <url> -T 300
+-O - -` stop after exactly 131072 bytes. **Apache completes the same file
+in one request** (`01:01`, `200 15919011` in the access log), and the shipped
+package then reaches the parser, the script and the reboot. So the 128 KiB
+cut is an artefact of the Python server, not of the device, and every further
+test should be served by Apache.
 
-`upd_hdr.py` (local, under `~/sonos-root-local/recon/`) parses and rebuilds
-the 364-byte header byte-exactly and round-trips the shipped header; use it
-instead of re-deriving offsets.
+With the full package delivered, three variants still do not change
+`/status/zp` (`86.10-81100`): pristine 86.10-80260, the same with a version
+header forced to 87.0, and the same with the model field switched 9 -> 8
+(this player is `S12`/Play:1, the package is `limelight`/model 9, so the
+image is for a Playbar). Each still reboots, i.e. the attempt reaches the
+flash/reboot stage and rolls back; the model mismatch is the likely reason
+the image does not take. Reaching the flash write is still enough for the
+goal, because the type-3 script runs as root before it and writes `/jffs`.
 
 A correctly ordered, completely downloaded 2.3 KB package
 (records 1/21/2/2/2/3) still did not execute the type-3 script: probe writes
-to `/tmp` and `/jffs` never appeared. That matches the S1 result -- unsigned
-packages never reach the script -- and narrows it to the same gate rather
-than to section size, order, or section encoding.
+to `/tmp` and `/jffs` never appeared. That package copied the **encrypted**
+type-3 record, and it was encrypted for model 9 while the test player is
+model 8, so the device could not unwrap the section AES key at all. The
+2.3 KB result therefore does not by itself prove that an unsigned package
+skips the script; the S1 evidence for that gate stands on its own.
+
+Consequence for the plan: **the model-8 (Play:1) public key is required**
+before a script of ours can run, because the AES key must be RSA-OAEP wrapped
+to it. The Playbar package only exercises the parser, the policy checks and
+the rollback path on this hardware.
 
 ## Next
 
