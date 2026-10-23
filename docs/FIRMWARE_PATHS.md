@@ -772,3 +772,24 @@ The record loop tolerates far more than a real image needs:
   both take the daemon down and the watchdog restarts it within ~5 s. One field
   is therefore a reliable pre-auth DoS; the record copy does not re-check the
   declared length against the bytes actually received.
+
+### Read-through of the live 57.23 bundle parser (`libsonosrootcerts.so.1`)
+
+The bundle path is the one pre-verification parser in the live build, so it got
+a manual read (6.7 KB library, plain MIPS32, exported API
+`sonosRcbParseHeader` / `sonosRcbParseCerts{,Copy}` / `sonosRcbParseManifest`).
+
+It is defensively written and matches the earlier mutation result:
+
+- `sonosRcbParseHeader` requires a `rcbundle` magic, then walks fixed fields with
+  `ptr >= base`, `ptr < base+len`, and `len - field >= offset` checks before every
+  copy; the 64-byte and 32-byte fields both re-check `len` first.
+- `sonosRcbParseManifest` rejects a certificate count `>= 301` (`0x1004`,
+  `sltiu 0x12d`) and `malloc(count*12)` for the entry array, so the loop counter
+  and the allocation are the same quantity.
+- The per-entry loop range-checks the entry length against the remaining buffer
+  before passing `(ptr,len)` to `mbedtls_x509_crt_parse_der`, and re-checks the
+  running offset each iteration.
+
+The DER certificates themselves are handed to the bundled mbedtls 2.5.0, so the
+remaining exposure is mbedtls's x509 parser rather than Sonos code.
