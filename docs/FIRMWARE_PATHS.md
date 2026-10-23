@@ -291,7 +291,17 @@ returns a fresh `updateItem` with `updateURL`/`manifestURL`; `management/reboot`
 (any grant type then answers 403 Unauthorized), and the JWT errors in the binary
 (`INPUT_JWT_X5C_MISSING` / `_UNTRUSTED`) show the assertion must be an RS256 JWT
 carrying an x5c chain trusted by the on-device root bundle — i.e. cloud-issued, not
-self-signable.
+self-signable. The endpoints, mapped on 86.10: the grant is
+`POST /api/v1/players/{id}/authorization/authorizeDevice` (`assertion` then
+`grantType`), the *status* read is `POST /api/v1/households/{householdControlId}/
+authorization/tokens` (`authzTokenStatus: UNAUTHORIZED`, zeroed entitlements —
+`grantType`, `clientId`, `code` and `scope` bodies all leave it UNAUTHORIZED), and
+`POST .../players/{id}/authorization/authenticateClient` answers `{}` with
+`X-Sonos-Type: none`. All four cheap forgeries — `alg:none` with and without
+`x5c`, HS256 with a guessed key, and an RS256 JWT carrying a freshly minted
+self-signed x5c — come back as the same blanket 403 `Unauthorized.`, so validation
+detail is not observable over REST. Local minting stays open only for something
+signed by a key whose chain reaches the on-device root bundle.
 
 Generic UPnP passthrough is real but partial. `POST /api/v1/players/{id}/upnpDeviceProperties`
 and `.../upnpZoneGroupTopology` take `{"method":"<Action>","params":{…}}` and answer
