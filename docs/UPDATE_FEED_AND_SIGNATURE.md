@@ -59,6 +59,17 @@ the model key family; model-16 keys are recoverable from a plaintext 34.16
 updater, so arbitrary sections can be re-encrypted for the owner's ZPS5
 players.
 
+**What the type-17 digest covers (measured 2026-10-23).** The first
+attribute of the type-17 container is `MessageDigest` (`u32 0x21`,
+type byte `0x01`, 32 bytes) and it is **SHA-256 of every byte before the
+type-17 section** — headers, version header, script, kernel, rootfs, all of
+it. Recomputing it over a patched package makes the digest correct and the
+device then downloads the entire 5.4 MB over TLS (664 records, counted at
+the server), but it still does not install and the version stays 57.23:
+the signature over the very payload holding that digest is the remaining
+gate. Any component edit therefore needs a re-signature, not just a digest
+fix.
+
 ## Signature gate
 
 After the sections are read, `upgrade` calls `ZZ0121` on the type-17 payload
