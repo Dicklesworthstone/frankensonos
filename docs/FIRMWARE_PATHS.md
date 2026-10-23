@@ -2742,3 +2742,13 @@ the view `{sp+447,17}` names. The block that builds it is `0x603c38–0x603c44`
 (`6049e8(sp+516)`, `604fe8(sp+32)`, then `Stream(sp+264, sp+440)`), i.e. `sp+440` is
 the `std::function` object the stream reads through and `sp+447` its capture. Read
 `604fe8`'s field list for the 17-byte capture instead of the counter table.
+
+The daemon is **not** fully stripped of names in the useful sense: its `.dynsym`
+exports 1081 functions, including `sonos::localsettings::*`
+(`SchemaDataHelper::IngestSchemaSchemaData`, `SchemaData`, `AttributeDetail`, …), so
+`nm -D -C` gives real names for exported code even though `.symtab` is gone. The
+null-deref at `0x4a801c` sits in that localsettings/schema area, consistent with a
+missing per-model schema: `opt/localsettings/models/` is empty and the MDP we write
+is the s1emu stub without model data, and 86.10's `anacapa.conf` has no `HackModel`
+knob to force one (unlike the older conf). Filling `models/` (or a real MDP) is the
+next thing to try before the daemon will finish settings init.
