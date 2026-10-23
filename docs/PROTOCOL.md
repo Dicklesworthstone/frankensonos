@@ -511,22 +511,22 @@ definitive answer is dynamic: qemu-mips emulation of anacapad, or one live
 POST of a crafted statement (rate-limited, and a mutation — owner approval
 first).
 
-**Live crash in the 57.23 devmode path (2026-10-23, pre-auth).** A statement
-that is syntactically valid up to the key ring makes `POST /devmode` close the
-connection with no response instead of answering, when the ring's key-material
-length runs past the parser's expectations (a hard cliff: 0x5A0 and below
-answer `400`, 0x5B0 and above reset, every size from 0x5B0 to 0x800 tried). It is
-content-dependent as well as length-dependent — the same 0x600 length filled
-with `B` answered `400` — consistent with
-`hash_alg`/`siglen` being read past the end of the statement buffer so the
-values come from stale stack. The listener and `/status` stay up immediately
-afterwards (`200` ×3), so it is a per-connection crash, not the daemon. The
-same bytes driven straight into 34.16's `ZZ0137` return `0` with no fault, so
-this is a 57.23 regression that the readable code cannot reproduce — the first
-live devmode bug, and the reason the 57.23 daemon binary is now the top
-acquisition target. Shifting the reference start with a leading list entry has
-not worked yet (attempts parse-fail `400`), so whether the cliff is an absolute
-buffer offset or the reference slot arithmetic is still open.
+**Live crash in the 57.23 devmode path (2026-10-23, pre-auth).** Any
+`POST /devmode` whose body is **2048 bytes or more** closes the connection
+with no response; 2047 is fine. This is the body, not the statement: the same
+1480-byte statement answers `400` on a 2047-byte body and resets once an
+unused `button` value pushes the body to 2048. The 34.16 handler has the
+guard (Content-Length `< 0x800`, else `413`); 57.23 reads past its 0x800
+buffer instead. It is independent of content (a syntactically trivial ring
+still resets), the listener and `/status` stay up (`200` ×3), and the same
+bytes driven into 34.16's `ZZ0137` return `0` with no fault — a 57.23
+regression, not the ring parser. Effect: the decoded-statement limit on
+57.23 is the body limit, which is why anything past ~1480 decoded bytes
+"suddenly" crashed in earlier tests. The 0x800 buffer sits in a 0x1490 frame
+with saved registers at +0x1440, so a full-body overwrite is the thing to
+aim at next (S1 has no canary and no ASLR). Shifting the reference start
+with a leading list entry has not worked yet (attempts parse-fail `400`), so
+that remains a side question, not the cliff.
 
 **Reversal (same round, via libsonoscrypto)**: the gate IS cryptographic. The
 three obfuscated helpers resolve to `libsonoscrypto.so.1` functions: ZZ0021
