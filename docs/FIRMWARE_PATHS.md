@@ -1097,6 +1097,28 @@ in the `hls-radio://` URI. `192.168.4.160` is the working value at the time of
 writing; `192.168.4.222` is dead. A stale host address shows up as the player
 never fetching, not as an error.
 
+## 2026-10-23: `BeginSoftwareUpdate` is open pre-auth and fetches our URL
+
+`ZoneGroupTopology#BeginSoftwareUpdate(UpdateURL, Flags, ExtraOptions)` — the
+action behind the update path — answers success **with no key and no token**
+(the `:1443` `management/reboot` equivalent is 403, this is not). Pointing it at
+`http://<mac>:8127/test.upd` made the device pull the whole 4.7 MB file from our
+server in 10 s (logged). `CheckForUpdate(UpdateType, CachedOnly, Version)` is
+open too and returns the vendor `UpdateItem`, which is where the real URL shapes
+come from: `UpdateURL` is `…/^<version>` (no extension), plus a `ManifestURL`
+`.upm`.
+
+What does **not** happen yet: no install, no `/status/tmp/upgrade.log`, no
+version change, and `/status/tmp/upgradeinfo` stays empty. Tried: a local
+`test.upd`, the same file renamed to the real `34.16-37101-1-16.upd` (a
+downgrade for this model), the vendor `^57.23-74170` URL, and `Flags` 0/1/2/4 —
+all accepted, all inert; one vendor-URL call was followed by a daemon restart
+but nothing else. The daemon only launches `/bin/upgrade` when
+`/var/run/upgradeinfo` exists at start, so either the file is not being written
+or a real box reboot is required — and `management/reboot` is exactly the token
+we do not have. Still, the *fetch* half of the update path is now unauthenticated
+and parameterised, which is what any local-manifest trick would need.
+
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
 
 NVD: "In certain Sonos products before S1 11.12 and S2 15.9 … a failure to
