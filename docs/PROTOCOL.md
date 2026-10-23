@@ -518,7 +518,10 @@ with no response; 2047 is fine. This is the body, not the statement: the same
 unused `button` value pushes the body to 2048. The 34.16 handler has the
 guard (Content-Length `< 0x800`, else `413`); 57.23 reads past its 0x800
 buffer instead, and the read is effectively **unbounded** — bodies of 20 KB
-are accepted and still end in a reset, never `413`. It is independent of content (a syntactically trivial ring
+are accepted and still end in a reset, never `413`. The same test on a
+Sonos One (86.10) answers `400` at 2100 and 4000 (the 4000 answer takes
+14.5 s) and resets only at 8000, so the S2 build has a bigger limit and the
+S1 57.23 build is the tight one. It is independent of content (a syntactically trivial ring
 still resets), the listener and `/status` stay up (`200` ×3), and the same
 bytes driven into 34.16's `ZZ0137` return `0` with no fault — a 57.23
 regression, not the ring parser. Effect: the decoded-statement limit on
