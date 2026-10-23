@@ -2693,3 +2693,16 @@ That is a mechanical, not semantic, gate: the argument content has to arrive in 
 form the reader expects. `SetString` and `AddAccountX` use the same machinery and
 accept ordinary text, so for this action some argument is being rejected on its
 content-length pairing rather than its name.
+
+Refinement from the SCPD itself: of the ten declared arguments, `AccountUDN` and
+`AccountNickname` are `out`; the **input** set is eight, with `AccountType` and
+`AccountTier` typed `ui4` and the rest `string`. The state variables carry no
+allowed-value lists or ranges, so the types impose nothing beyond "numeric" for the
+two ui4 fields.
+
+Eight inputs, numeric ids, realistic OAuth-shaped content (GUID device id, 40-char
+code, 32-hex hash, `https://` redirect) and ids 9/2311 all still produce 402. So the
+rejection is *not* documented constraint either — the per-parameter validators
+(`0x4bdccc` onwards, one `li a1,402` each) fail on something the SCPD does not
+describe. The next step is to walk those validator cases in order and see which one
+returns zero first, rather than trying more content.
