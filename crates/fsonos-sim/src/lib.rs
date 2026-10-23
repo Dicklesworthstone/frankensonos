@@ -32,7 +32,7 @@
 //! Faults, for scenarios that need things to go wrong:
 //! [`upnp_fault`](SimHandle::upnp_fault), [`set_latency`](SimHandle::set_latency),
 //! [`drop_notifies`](SimHandle::drop_notifies), [`reboot`](SimHandle::reboot),
-//! [`change_address`](SimHandle::change_address),
+//! [`change_address`](SimHandle::change_address), [`move_to`](SimHandle::move_to),
 //! [`reelect_coordinator`](SimHandle::reelect_coordinator),
 //! [`set_offline`](SimHandle::set_offline), [`join_lag`](SimHandle::join_lag),
 //! [`retain_favorites`](SimHandle::retain_favorites).
@@ -56,6 +56,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+/// Where a player listens unless told otherwise: any free loopback port.
+const ANY_PORT: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
 /// The hardware a virtual player imitates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,7 +384,7 @@ impl SimBuilder {
         };
         for index in 0..count {
             // On error, `handle` drops and stops the listeners already started.
-            let listener = server::start(Arc::clone(&state), index)?;
+            let listener = server::start(Arc::clone(&state), index, ANY_PORT)?;
             let addr = listener.addr;
             handle.listeners.push(listener);
             let mut s = state
@@ -814,6 +817,39 @@ impl SimHandle {
             info.ip = to;
         }
         Ok(to)
+    }
+
+    /// [`Self::change_address`] for a client in another process: `who`
+    /// advertises `to` (a free `192.0.2.N`) and listens on the loopback
+    /// socket `at`, and its old socket refuses connections. The client's
+    /// routes file must already send `to` to `at`: `fsonos` reads it once,
+    /// at start. Returns the old address.
+    pub fn move_to(&mut self, who: &str, to: Ipv4Addr, at: SocketAddr) -> Result<IpAddr, SimError> {
+        let (index, from) = self.with_player(who, |s, p| {
+            if to.octets()[..3] != [192, 0, 2] || s.players.iter().any(|o| o.ip == to) {
+                return Err(SimError::Invalid(format!(
+                    "{to} is not a free virtual address"
+                )));
+            }
+            Ok((p, IpAddr::V4(s.players[p].ip)))
+        })?;
+        let listener = server::start(Arc::clone(&self.state), index, at)?;
+        let addr = listener.addr;
+        let old = std::mem::replace(&mut self.listeners[index], listener);
+        old.shutdown.trigger_immediate();
+        let _ = old.thread.join();
+        self.with_player(who, |s, p| {
+            s.players[p].ip = to;
+            s.players[p].port = addr.port();
+            let to = IpAddr::V4(to);
+            s.log_gena(p, "", GenaEvent::AddressChanged { from, to });
+            Ok(())
+        })?;
+        let info = &mut self.players[index];
+        info.ip = IpAddr::V4(to);
+        info.addr = addr;
+        info.base_url = format!("http://{addr}");
+        Ok(from)
     }
 
     /// The coordinator of `who`'s group hands it to another visible member,

@@ -32,8 +32,13 @@ impl std::fmt::Debug for Listener {
     }
 }
 
-/// Start the listener for player `index`.
-pub(crate) fn start(state: Arc<Mutex<State>>, index: usize) -> Result<Listener, SimError> {
+/// Start the listener for player `index` on `at` (`127.0.0.1:0` for any
+/// free port).
+pub(crate) fn start(
+    state: Arc<Mutex<State>>,
+    index: usize,
+    at: SocketAddr,
+) -> Result<Listener, SimError> {
     // Real players answer every request, SOAP or GET, with `Connection:
     // close` and close first (S1 and S2, seen live 2026-10-22), which leaves
     // TIME_WAIT on the player's side. A sim that kept connections open left
@@ -66,7 +71,7 @@ pub(crate) fn start(state: Arc<Mutex<State>>, index: usize) -> Result<Listener, 
             let handle = runtime.handle();
             runtime.block_on(async move {
                 let listener = Http1Listener::bind_with_config(
-                    "127.0.0.1:0",
+                    at,
                     move |req: Request| {
                         let response = respond(&state, index, &req);
                         async move { response }

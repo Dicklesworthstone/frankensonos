@@ -47,7 +47,7 @@ use fsonos_sim::{SimBuilder, SimHandle, SimLan};
 use serde_json::{Value, json};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -246,6 +246,32 @@ impl Scenario {
     #[must_use]
     pub fn sim_handle(&self) -> Option<&SimHandle> {
         self.sim.as_ref()
+    }
+
+    /// [`Self::sim_handle`], to change the sim's players.
+    pub fn sim_handle_mut(&mut self) -> Option<&mut SimHandle> {
+        self.sim.as_mut()
+    }
+
+    /// Route a spare advertised address to a free loopback port, for a
+    /// player to [`SimHandle::move_to`] later. `fsonos` reads the routes file
+    /// once, at start, so call this before starting it.
+    pub fn spare_route(&mut self) -> (Ipv4Addr, SocketAddr) {
+        let sim = self.sim.as_ref().expect("Scenario::sim first");
+        let ip = (100..=254)
+            .rev()
+            .map(|host| Ipv4Addr::new(192, 0, 2, host))
+            .find(|ip| sim.players().iter().all(|p| p.ip != IpAddr::V4(*ip)))
+            .expect("a free virtual address");
+        let at = TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .expect("a free loopback port");
+        let mut routes = fs::OpenOptions::new()
+            .append(true)
+            .open(self.dir.join("routes.toml"))
+            .expect("open routes.toml");
+        writeln!(routes, "\"{ip}\" = \"{at}\"").expect("route the spare address");
+        (ip, at)
     }
 
     /// Let the `fsonos` runs that follow see this host's real tailnet (the
