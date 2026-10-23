@@ -1047,6 +1047,17 @@ answer UPnP 402, including for `GetString`/`GetTransportInfo` which need
 exactly one argument. The passthrough is therefore a no-argument proxy today
 and is not a useful fuzzing surface for argument handling.
 
+## 2026-10-23: test-host addressing (operational)
+
+The Mac's wireless interface renumbers with DHCP and the old secondary aliases
+die with it: mid-session `192.168.4.222` stopped answering while the interface
+had moved to `192.168.1.226` and then `192.168.4.160`. Servers are bound to
+`0.0.0.0`, so only the URL host and the client source address need updating —
+re-read `ifconfig` and use the current `inet` value both for `--interface` and
+in the `hls-radio://` URI. `192.168.4.160` is the working value at the time of
+writing; `192.168.4.222` is dead. A stale host address shows up as the player
+never fetching, not as an error.
+
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
 
 NVD: "In certain Sonos products before S1 11.12 and S2 15.9 … a failure to
