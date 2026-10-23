@@ -88,5 +88,7 @@ edits are free — it needs a key or a bypass like anything else.
   before and after and do not attribute a version change to yourself without checking.
 - Nothing here writes flash until the updater decides to; a failed run leaves the version
   untouched.
-- An HLS experiment keeps retriggering across restarts. `Pause` with `InstanceID=0` on
-  `/MediaRenderer/AVTransport/Control` settles the unit; `Stop` alone did not.
+- An HLS experiment keeps retriggering across restarts, and a paused HLS URI survives a
+  restart and keeps crashing. The reliable settle is: `SetAVTransportURI` to a **non-HLS**
+  `x-rincon-mp3radio://` URL on your server, then `Stop` (`InstanceID=0`). Pause alone leaves
+  the HLS life-cycle armed.
