@@ -114,7 +114,9 @@ pub struct Snapshot {
     pub health: HealthBoard,
     /// Active GENA subscriptions.
     pub subscriptions: usize,
-    /// When a survey last succeeded.
+    /// When the last survey that succeeded started: the households are the
+    /// house as of then. A caller that asked for a survey at `t` has its
+    /// answer once this is at or after `t`.
     pub surveyed_at: Option<Instant>,
     /// Why the last survey or event listener failed. A successful read-only
     /// survey retains a listener failure until callbacks can be served again.

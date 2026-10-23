@@ -307,6 +307,32 @@ fn refresh_requests_coalesce_without_overlapping_or_disappearing_on_completion()
     f.finish(surveys);
 }
 
+/// What a survey found is the house as of when it started reading, and it
+/// is stamped so (co55.3): a command that asked for a fresh look while it
+/// read (a player had moved) must not take its answer for one.
+#[test]
+fn a_survey_is_stamped_with_when_it_started_not_when_it_finished() {
+    let mut f = Fixture::new(2, Stage::Discovery, false);
+    let mut surveys = Surveys::default();
+    let before = Instant::now();
+    f.start(&mut surveys);
+    let asked = Instant::now();
+    f.release();
+    wait_for(|| {
+        surveys.complete(&f.engine, &mut f.model);
+        !surveys.busy()
+    });
+    let stamped = f.model.surveyed_at.expect("the survey succeeded");
+    assert!(
+        before <= stamped && stamped < asked,
+        "stamped {:?} after it began, asked {:?} after it began",
+        stamped.duration_since(before),
+        asked.duration_since(before)
+    );
+    assert_eq!(f.engine.snapshot.lock().unwrap().surveyed_at, Some(stamped));
+    f.finish(surveys);
+}
+
 #[test]
 fn newer_real_topology_discards_a_held_old_topology_reply() {
     for generation in [1, 2] {

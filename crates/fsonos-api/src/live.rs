@@ -32,15 +32,18 @@ pub fn households(live: &Live) -> Result<Vec<HouseholdState>, Failure> {
 }
 
 /// Ask the model to survey now and wait up to `timeout` for that survey;
-/// the households it found, or `None` when it did not finish in time.
+/// the households it found, or `None` when it did not finish in time. A
+/// survey already reading when the request came in does not count: it
+/// reports the house from before whatever made the caller ask (a player
+/// that moved), so the follow-up the request queues is the answer.
 #[must_use]
 pub fn resurvey(live: &Live, timeout: Duration) -> Option<Vec<HouseholdState>> {
-    let before = live.snapshot().surveyed_at;
+    let asked = Instant::now();
     live.refresh_soon();
-    let deadline = Instant::now() + timeout;
+    let deadline = asked + timeout;
     loop {
         let snapshot = live.snapshot();
-        if snapshot.surveyed_at.is_some() && snapshot.surveyed_at != before {
+        if snapshot.surveyed_at.is_some_and(|started| started >= asked) {
             return Some(snapshot.households);
         }
         if Instant::now() >= deadline {

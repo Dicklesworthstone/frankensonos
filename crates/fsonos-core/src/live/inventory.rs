@@ -17,6 +17,8 @@ struct Pending {
     plan: InventoryPlan,
     cancelled: Arc<AtomicBool>,
     thread: JoinHandle<Result<Survey, CoreError>>,
+    /// When it began reading: what it finds is the house as of then.
+    started: Instant,
 }
 
 #[derive(Default)]
@@ -43,6 +45,7 @@ impl Surveys {
         if self.busy() || engine.stop.load(Ordering::Acquire) {
             return;
         }
+        let started = Instant::now();
         self.maintain_listener(engine, model);
         bootstrap::observed(&mut model.remembered, &model.rec.households);
         let seeds = bootstrap::seeds(&engine.config.seeds, &model.remembered);
@@ -68,6 +71,7 @@ impl Surveys {
                     plan,
                     cancelled,
                     thread,
+                    started,
                 });
             }
             Err(error) => {
@@ -140,7 +144,10 @@ impl Surveys {
                     }
                     progress::request_survey(model);
                     let completed = Instant::now();
-                    model.surveyed_at = Some(completed);
+                    // Stamped with its start, as the inline survey is: a
+                    // command that asked for a fresh look while this one
+                    // read must wait for the follow-up (api live::resurvey).
+                    model.surveyed_at = Some(pending.started);
                     model.last_error = self.listener_error.clone();
                     model.rec.schedule.succeeded(completed);
                     if model.sink.is_none() {

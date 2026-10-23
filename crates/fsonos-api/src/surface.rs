@@ -766,10 +766,11 @@ impl Surface {
     }
 
     /// The speakers as a survey finds them now: the live model's next
-    /// survey (up to 5 s), or a direct one, which the cache keeps.
+    /// survey (up to 10 s: one already reading must finish before the
+    /// follow-up starts), or a direct one, which the cache keeps.
     fn resurvey(&self) -> Option<Vec<HouseholdState>> {
         if let Some(live) = self.live() {
-            return crate::live::resurvey(&live, Duration::from_secs(5));
+            return crate::live::resurvey(&live, Duration::from_secs(10));
         }
         let households = (self.survey)(&*self.transport).ok()?;
         if let Ok(mut cache) = self.cache.lock() {
