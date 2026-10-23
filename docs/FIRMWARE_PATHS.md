@@ -748,6 +748,14 @@ still parses (412 on grammar) while 2050 answers **413** and the daemon stays he
 and with two callbacks only the **first** ever receives NOTIFY. A subscription also leaks
 `BootSeq` and each member's `ZoneName`/`ChannelMapSet` in the ZoneGroupState property.
 
+**`CreateObject` never gets past 402 either.** `SQ:` browses as a valid, empty
+container (`NumberReturned 0`), but `CreateObject` answers 713 for a DIDL with no
+`res`, 710 for an empty `ContainerID`, and **402** for every DIDL that carries a
+`res` — with `parentID` `SQ:`/`SQ:0`/`SQ:1`/empty, class `musicTrack` and
+`playlistContainer`, and both `x-rincon-mp3radio` and plain `http` resources.
+The store it would write is the fixed `savedqueues.rsq`, so again no path
+control; it does parse far enough to distinguish 710/713/402.
+
 **`CreateAlarm` never gets past 402.** `ListAlarms` answers pre-auth and shows an
 empty list, but `CreateAlarm` faults 402 for every shape tried: empty
 `<DIDL-Lite/>`, a DIDL in the public UPnP form, the Sonos form with
