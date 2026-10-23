@@ -26,11 +26,13 @@
 //! pause, or group change prevents restoring an obsolete snapshot; changed
 //! room levels are preserved and reported instead of overwritten.
 //!
-//! Known limit: when a target room leads a group whose other rooms are not
-//! announced to, those rooms play on during the announcement and are put
-//! back to the snapshot (rewound) afterwards.
+//! When a target room leads a partially announced group, an untargeted room
+//! keeps its live transport and queue. The targets rejoin that live group,
+//! then coordination returns natively: continued progress, queue edits and
+//! paused playback survive without replaying an old queue bookmark.
 
 pub mod clip;
+mod continuity;
 mod recovery;
 pub mod speech;
 mod watch;
@@ -469,16 +471,20 @@ impl Announcer {
                 effects.volumes.push((room.primary.clone(), *level));
                 control::set_volume(t, hs, &room.primary, *level)?;
             }
-            if plan.lead_leaves {
+            continuity::prepare(t, &hs[0], rooms, &mut effects)?;
+            if plan.lead_leaves && !effects.groups.contains(&plan.lead) {
                 effects.groups.push(plan.lead.clone());
                 effects.sources.push(plan.lead.clone());
-                control::leave(t, hs, &plan.lead)?;
+                let now = refreshed(t, &hs[0])?;
+                control::leave(t, std::slice::from_ref(&now), &plan.lead)?;
             }
             for room in &plan.joins {
                 effects.groups.push(room.clone());
                 effects.sources.push(room.clone());
-                control::join(t, hs, room, &plan.lead)?;
+                let now = refreshed(t, &hs[0])?;
+                control::join(t, std::slice::from_ref(&now), room, &plan.lead)?;
             }
+            recovery::wait_for_group(t, &hs[0], plan)?;
             for room in rooms {
                 effects.mutes.push(room.primary.clone());
                 control::set_mute(t, hs, &room.primary, false)?;

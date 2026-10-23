@@ -135,7 +135,7 @@ fn read_players<T: Transport + ?Sized>(
     // coherent when that peer later supplies a newer, overlapping view.
     for (ip, desc, hint) in &out.described[first_new..] {
         if out
-            .observations
+            .entries
             .iter()
             .any(|seen| seen.members.contains(&desc.udn))
         {
@@ -197,7 +197,7 @@ fn read_players<T: Transport + ?Sized>(
             boot_seqs: zgs.boot_seqs().map(|(p, seq)| (p.clone(), seq)).collect(),
             vanished: zgs.vanished,
         };
-        if let Err(detail) = adopt_observation(&mut out.observations, observed) {
+        if let Err(detail) = adopt_observation(&mut out.entries, observed) {
             out.report.unreachable.push((ip.to_string(), detail.into()));
         }
     }
@@ -208,9 +208,8 @@ fn read_players<T: Transport + ?Sized>(
 /// reconciled. Flattening it before fallback would lose which topology a
 /// boot sequence or vanished-player report belongs to.
 #[derive(Default)]
-#[allow(clippy::struct_field_names)]
 struct Observations {
-    observations: Vec<Observation>,
+    entries: Vec<Observation>,
     described: Vec<(IpAddr, DeviceDescription, Option<String>)>,
     report: Survey,
 }
@@ -218,12 +217,12 @@ struct Observations {
 impl Observations {
     fn finish(mut self) -> Survey {
         let present: HashSet<_> = self
-            .observations
+            .entries
             .iter()
             .flat_map(|seen| seen.members.iter().cloned())
             .collect();
         let mut vanished = HashSet::new();
-        for observed in self.observations {
+        for observed in self.entries {
             self.report.households.push(observed.state);
             self.report.boot_seqs.extend(observed.boot_seqs);
             self.report.vanished.extend(
@@ -318,7 +317,7 @@ pub fn survey_known<T: Transport + ?Sized>(
     if let Ok(found) = &first {
         attempted.extend(
             found
-                .observations
+                .entries
                 .iter()
                 .flat_map(|h| h.state.players.iter().map(|p| p.ip)),
         );
@@ -334,7 +333,7 @@ pub fn survey_known<T: Transport + ?Sized>(
     for household in known {
         if first.as_ref().is_ok_and(|found| {
             found
-                .observations
+                .entries
                 .iter()
                 .any(|h| same_household(&h.state, household))
         }) {
@@ -355,7 +354,7 @@ pub fn survey_known<T: Transport + ?Sized>(
     };
     let mut out = read_players(t, fallback, known, out);
     if let Some(error) = error {
-        if out.observations.is_empty() {
+        if out.entries.is_empty() {
             return Err(error);
         }
         out.report.ssdp_error = Some(error.to_string());

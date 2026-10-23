@@ -295,6 +295,26 @@ pub fn delegate_group<T: Transport + ?Sized>(
     .map(drop)
 }
 
+/// Transfer a group's live transport and queue to its member `heir` while
+/// retaining the former coordinator in that group (`RejoinGroup` 1).
+/// Callers must verify the resulting membership and playback; an ambiguous
+/// reply does not authorize repeating the handoff. This variant is covered
+/// by the simulator, separately from the hardware-verified leave above.
+pub fn delegate_group_and_rejoin<T: Transport + ?Sized>(
+    t: &T,
+    host: IpAddr,
+    heir: &PlayerId,
+) -> Result<(), ProtoError> {
+    call(
+        t,
+        host,
+        &AV_TRANSPORT,
+        "DelegateGroupCoordinationTo",
+        &[INSTANCE, ("NewCoordinator", &heir.0), ("RejoinGroup", "1")],
+    )
+    .map(drop)
+}
+
 // ---------------------------------------------------------------- volume
 
 pub fn get_volume<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<u8, ProtoError> {
