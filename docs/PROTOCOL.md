@@ -329,9 +329,13 @@ tried so far (absolute and relative request lines, SOAP bodies, self,
 target, `_MS` and short uuids, both directions, with and without
 `desiredAction`, the parameter names `id`/`device`/`DeviceUUID`/`dev`/
 `target`/`u`, and a live subscription SID of the target as `SID`/`sid`/
-`uuid`), so its resolver precondition is still unmet — and since the `404`
-comes with no body or delay, it is plausibly emitted before the key is even
-read. The same app
+`uuid`), so its resolver precondition is still unmet. The endpoint is not
+just falling through: an unknown path answers POST with a 106-byte HTML
+`405`, while `/msprox` answers an **empty** `405` to GET and an **empty**
+`404` to POST — the handler runs and its lookup fails. A successful
+`ReportUnresponsiveDevice` (both `VerifyThenRemoveSystemwide` and `Remove`,
+short 12-hex `DeviceUUID`; the full `RINCON_…` id is rejected with SOAP
+`800`) does not seed it either, live or after a ZGT subscription. The same app
 also registers `POST /diagmsg` (64-char `msg`) and ships the anacapa server
 config the phone itself runs on port 3500, with a hardcoded
 `OnlineUpdateBaseURL http://update.sonos.com/firmware/latest/`; the app
