@@ -1251,6 +1251,26 @@ differs, but the version and the log stay unchanged.) `getZoneGroupState`'s
 and this bench unit is already at 91 from the session's crashes, so reboots do
 happen; they just never coincide with an armed update.
 
+## 2026-10-23: token validation is a *cloud* call, and its host is templated
+
+When resolution fails the daemon answers **503 `service_unavailable`, "Could not
+resolve token"** even for garbage (`Bearer AAAA`), i.e. it does not decide
+locally first — it asks the cloud and reports the transport failure. That is the
+single most useful fact for the token lane: the gate is a network dependency we
+can own.
+
+The endpoint is built from `https://%s-%s.lower-sslauth.sonos.com%s` plus
+`/auth/oauth/v2/validate?access_token=%s` — the same two strings are in **both**
+the S1 and S2 daemons. Since `lower-sslauth.sonos.com` is a public-CA host and
+the device's bundle is the public root set, a forged eMudhra leaf is exactly the
+right tool to impersonate it; the missing piece is name resolution (the device
+takes DNS from DHCP, and the two `%s` prefixes are compile/config-derivable).
+Guessing the prefixes directly did not resolve (`us-sonos`, `us-api`, `eu-api`,
+`us-prod`, `us-sonosapi` all NXDOMAIN).
+
+Recorded separately: with the cloud unreachable every token — forged, real or
+garbage — returns 503, so a run of 503s says nothing about the token.
+
 ## 2026-10-23: why the trust anchors cannot simply be replaced, and where that stops
 
 Swapping `libsonoscrypto.so.1` for one carrying our own keys is circular on the
