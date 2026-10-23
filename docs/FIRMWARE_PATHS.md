@@ -3051,3 +3051,25 @@ Measured blind (all `401 invalid_token`): `iss` suffixes RINCON / deviceId / ser
 `luid`/`network_hash`, with the household id in the network slot, and with
 `locationId` in either slot. A single-token probe cannot score these — the reply is
 one bit — so the next work is the two builders, not more combinations.
+
+### From the blasty A113X research: storage format, OTA manifest, noexec
+
+The talk slides (Sonos One / Lenovo clock, A113X) document two things that transfer:
+
+- **Secure-storage key entries are TLVs.** The EL3 parser takes a blob whose first
+  block is `TYPE_PARAM_HEADER(1)` containing `TYPE_ENCRYPTED_SIZE(2)`, then entries of
+  `TYPE_KEY_DEFINITION(3)` with `NAME_SIZE(4)`, `NAME_DATA(5)`, `VALUE_SIZE(6)`,
+  `VALUE_DATA(7)`, `KEY_TYPE(8)`, `BUFFER_STATUS(9)`, `HASH_DATA(0xa)`, all `u32 type /
+  u32 len / value`. On-device the model RSA key is stored encrypted in **MDP3**
+  (`sonos_blob_encdec`, AES-256-GCM with a key derived from the OTP `AES GCM HWKEY`;
+  MDP3 offsets 0x580/0x680 on that platform). That is very likely what sits *inside*
+  the `886499ca` envelope of our type-8 store record: the envelope is the transport,
+  the TLV above is the payload. Worth building next in the VM.
+- **The OTA manifest** is `https://update.sonos.com/firmware/latest/default-1-1.ups`,
+  returns a TLV manifest with a URI base, and the query string (`cmaj/cmin/serial/...`)
+  is **not validated** (serial `111111111` works). A `.ups`/manifest path therefore
+  exists that is independent of a direct `.upd`, and any field read from the manifest
+  rather than the package is a candidate for bypassing the patch-list gate.
+- `/jffs` is mounted **noexec** on these devices (`sonos_allow_mount_exec`), so a
+  persistence payload must be a script interpreted by init (`Configure.dev` is `sh`'d)
+  or the mount flag must be flipped; a binary dropped in `/jffs` will not run.
