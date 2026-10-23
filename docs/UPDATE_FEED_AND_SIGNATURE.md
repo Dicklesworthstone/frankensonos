@@ -513,9 +513,12 @@ fallback bundle, and matches no cert, SPKI, subject or modulus hash tried.
    `440ep`, `7400`, `604`, `7455`, `7447`, `603`, `604e`). With Debian's own
    PPC sysroot (`-L /usr/powerpc-linux-gnu`, `libc6-dev-powerpc-cross`) a
    trivial binary runs, but a harness linked against the repo's `librcb`
-   dies before `main` when the two glibcs are mixed. A static build that
-   carries the parser, or a matching PPC rootfs, is required before the
-   resolver can be exercised locally.
+   dies before `main` when the two glibcs are mixed; soft-float binaries are
+   fine on their own, but even a bare `dlopen` of the repo's `librcb`
+   segfaults inside the loader on relocation/init, while its version needs
+   are only `GLIBC_2.4` and older. A static build that carries the parser, or
+   a matching PPC rootfs, is required before the resolver can be exercised
+   locally.
 
 
 
