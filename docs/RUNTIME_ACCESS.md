@@ -93,6 +93,23 @@ close (killing the server is enough), so the wedge only becomes permanent when t
 - Devmode: `POST /devmode` verifies an RSA-PKCS1v15 signed TLV (magic `0x28721E71`, device id inside
   the digest) against keys in `libsonoscrypto`; `button=delete` removes a statement unsigned.
 
+## The `/status` page table is a real (fixed) exec surface
+
+`/status/<name>` is backed by a whitelist table at `0x6e68f4` whose entries are
+`{page, type, 0|args, path_or_command}`; type `2` runs a command, type `1`
+reads a path. `/status/showstp` demonstrably **runs** `/usr/sbin/brctl showstp
+br0` on both lines and returns `<Command cmdline='…'>` with its output. Other
+runnable pages: `route`, `showmacs`, `showstats`, `scanresults`, `uptime`,
+`dmesg`. Readable file pages include `/tmp/upgrade.log`, `/proc/net/tcp`,
+`/proc/net/snmp`, `/proc/slabinfo`, `/jffs/localsettings.txt`,
+`/jffs/settings/householdsettings.json`, `/opt/log/*` and `/etc/resolv.conf` —
+requested by basename (`/status/VERSION` serves `/VERSION`).
+
+There is **no generic shell**: only the table's fixed commands run. So
+`mdputil`/`keyval` cannot be invoked over HTTP as-is. `/status/upgrade.log`
+maps to `/tmp/upgrade.log` but stayed empty through three full update attempts
+(including across reboots), so it is not a usable updater oracle on this build.
+
 ## What this build lacks (model/line differences)
 
 On the Play:1 S2 (86.10-81100) the following newer routes are absent from the binary and answer
