@@ -547,6 +547,19 @@ One (86.10) answered `400` at 2100/4000/8000/32000 and reset once at 8000
 across six runs, so S2 tolerates at least 32 KB and its crash is not
 reproducible; the S1 57.23 edge at 2048 is the only hard one.
 
+**Static confirmation in the 57.23 build** (PPC rootfs recovered from the
+public feed, `SQ57`; the MIPS player build is still unread): the handler is
+one function, frame `0xC70`, entry after `stwu r1,-3184`, saved `r25`–`r31`
+at `+0xC54`…`+0xC64` and `LR` at `+0xC74`; it decodes the statement into
+`r1+0x830` with an explicit **1024** limit, calls the verify helper and
+answers `li r3,403` when that fails, `400` on the early-outs, and only on
+success formats `Statement installed.` before `200`. It passes **2048** to
+the field getter and has no body-level cap of its own, so the overflow is
+upstream of it, in the shared POST reader — the same place the 34.16
+`Content-Length < 0x800` guard lives. Because the decoded buffer sits only
+`0x424` bytes below the saved registers, a decoded statement longer than
+1024 would reach `r25`…`r31` if the 1024 limit ever failed to clamp.
+
 **Status semantics:** on the S1 a well-formed statement gets `403` (the
 signature check refuses it) and a burst makes every POST after the first
 answer `400`, but the `400`/`403` split also flips at random with fresh
