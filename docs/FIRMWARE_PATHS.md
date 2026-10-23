@@ -2202,3 +2202,28 @@ service list from the cloud on boot, and/or it needs the cloud's exact payload
 (including per-service manifests) to consider the list valid. Registering a service
 that makes the device speak SMAPI to our URI therefore needs either the exact cloud
 artifact or a device kept offline across the boot.
+
+### The `sprintf` block is low-yield, and SUBSCRIBE has two traps
+
+All 24 `sprintf` call sites resolve to numeric formats (`%u`, `%d`, `%x`, `%zd`,
+`%u.%u.%u.%u`, `SID`, `HTTP/1.1 %d `, static date formats). The only `%s` formats
+are the HTTP client's `"%s:%u"` (`0x4235b8`, `0x4237d4`), which write into
+`obj+6117` from a string pointer at `obj+6088` — a host:port builder. Everything
+else is bounded by the specifier.
+
+That host comes from a GENA callback in the reachable path, and **SUBSCRIBE only
+accepts a literal IP** there: `http://192.168.4.160:19181/cb` answers 200, while
+`http://aaaa:9999/cb` and even a 20-character dotted-less name answer 412. So the
+`%s` is at most 15 characters in that path and the builder is not the smash.
+
+Two traps worth recording, both hit here:
+
+- **the method is `SUBSCRIBE`, not `POST`.** `curl -X POST` to an `/Event` path
+  gives 501 with an empty body on every event endpoint; `curl -X SUBSCRIBE` gives
+  200. Several earlier "NOTIFY/SUBSCRIBE" results that looked like refusals may
+  just have been POSTs.
+- a hostname callback is rejected with 412, so a LAN callback must be an IP
+  literal.
+
+Net: the whole `sprintf` block can be closed off; the remaining S1 copy surface is
+the two `strcpy` sites at `0x47aa8c`/`0x47aa98`/`0x47add4` already listed.
