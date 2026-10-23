@@ -91,12 +91,11 @@ pub fn remember(store: &mut dyn Store, households: &[HouseholdState], now: i64) 
             }
         }
     }
-    let saved = households.iter().try_for_each(|h| match &h.id {
-        Some(id) => {
+    let saved = households.iter().try_for_each(|h| {
+        if let Some(id) = &h.id {
             store.save_players(&id.0, &h.players, now)?;
             store.save_groups(&id.0, &h.groups, now)
-        }
-        None => {
+        } else {
             // Keep writes batched by identity instead of one transaction
             // per player; a known household can contain newly found players.
             let mut by_household = BTreeMap::<&str, Vec<_>>::new();

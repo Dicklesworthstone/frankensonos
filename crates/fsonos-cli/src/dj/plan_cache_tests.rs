@@ -122,7 +122,10 @@ fn automatic_file_checks_are_shared_bounded_and_keep_failed_rebuilds_pending() {
     )
     .unwrap();
     for _ in 0..100 {
-        state.check_plan_inputs(Some(&moods_file), due - Duration::from_secs(1));
+        state.check_plan_inputs(
+            Some(&moods_file),
+            due.checked_sub(Duration::from_secs(1)).unwrap(),
+        );
         assert!(
             state.planned,
             "ordinary event churn does not re-read the files"
@@ -146,8 +149,11 @@ fn automatic_file_checks_are_shared_bounded_and_keep_failed_rebuilds_pending() {
     assert!(state.reload(&store, Some(&moods_file), 0).is_err());
     let retry_at = state.plan_retry_at.unwrap();
     for _ in 0..100 {
-        state.check_plan_inputs(Some(&moods_file), retry_at - Duration::from_secs(1));
-        assert!(!state.reload_due(retry_at - Duration::from_secs(1)));
+        state.check_plan_inputs(
+            Some(&moods_file),
+            retry_at.checked_sub(Duration::from_secs(1)).unwrap(),
+        );
+        assert!(!state.reload_due(retry_at.checked_sub(Duration::from_secs(1)).unwrap()));
         assert_eq!(state.plan_retry_at, Some(retry_at));
     }
     assert_eq!(state.pool.preferences().energy, Some(12));
@@ -258,7 +264,7 @@ fn automatic_top_up_uses_external_preferences_without_replacing_queued_music() {
         "[ban]\nartists = ['Artist One', 'Artist Two']\n",
     )
     .unwrap();
-    dj.state().plan_check_at = Some(Instant::now() - PLAN_CHECK);
+    dj.state().plan_check_at = Some(Instant::now().checked_sub(PLAN_CHECK).unwrap());
     let host = house.sim.player("Den").unwrap().ip;
     control::next(&lan, host).unwrap();
     let position = control::get_position_info(&lan, host).unwrap();
