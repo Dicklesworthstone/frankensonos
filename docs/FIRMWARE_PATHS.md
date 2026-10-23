@@ -1607,3 +1607,32 @@ mid-auto-update — checked with a before/POST/after triplet, which gives
 One more protocol note: this bench unit keeps *landing back* on `57.22-67080`
 after every deliberate `57.23` push. The cloud offers an update it accepts each
 boot; expect the version to revert and re-check before measuring.
+
+### Recovery from the wedged `:1400` state (measured 2026-10-23)
+
+The wedged state survives a reboot of the *service*: `advconfig` writes restart the
+TLS listener but `:1400` stays accepting-less. Only a **device reboot** clears it.
+The reachable reboot lever is the updater, driven over `:1443`:
+
+1. The TLS listener on `:1443` serves the whole HTTP surface for the routes in its
+   allowlist (`/status/*`, `/xml/*`, `/notify`, `/getrs`, `/diaglevel`, `/advconfig`,
+   `/api/*`); `/`, `/reboot` and `/jobs` answer 403 there, so the job page cannot be
+   used.
+2. Trigger `BeginSoftwareUpdate` through the WS passthrough instead of `:1400`:
+   handshake `wss://<ip>:1443/websocket/api`, header
+   `X-Sonos-Api-Key: 123e4567-e89b-12d3-a456-426655440000`, subprotocol
+   `v1.api.smartspeaker.audio`, frame
+   `[{"namespace":"upnpZoneGroupTopology","command":"call","householdId":…,"playerId":…},{"method":"BeginSoftwareUpdate","input":[{"name":"UpdateURL","value":…}, {"name":"Flags","value":"0"}]}]`.
+   `result:0` comes back and the unit fetches the image.
+3. **`Flags` must be `0` and `ExtraOptions` omitted.** With `Flags=1` plus an empty
+   `ExtraOptions` the call also answers `0`, but nothing is fetched and nothing
+   reboots. With `Flags=0` the download starts within seconds (`ESTABLISHED` to the
+   server, 5.6 MB image).
+4. A genuinely signed older image (57.22-67080, above the 56 `MinCompatibleVersion`)
+   is accepted; the unit downloads it, reboots twice, and comes back with `:1400`
+   answering again. Restoring 57.23 afterwards uses the same trigger with the signed
+   57.23-74170-1-16 image.
+
+`Flags=0` + the signed 57.22 image was used on `.185` after ~2 h of a wedged `:1400`;
+the port answered again on the downgraded build, so the procedure is the working
+recovery path for a wedged unit, independent of the `/notify` fault.
