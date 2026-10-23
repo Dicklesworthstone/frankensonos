@@ -2265,3 +2265,32 @@ write with a chosen name, then the boot chain does the rest**.
 The composed status string is not surfaced by `/support/review` or `/status/zp`
 (grepped both for `confdev`/`configure` — absent), so it is a report/telemetry
 field, not a remote oracle.
+
+### S2 local API: a generic pre-auth UPnP executor (2026-10-23)
+
+The compiled command table at `0x26a002` namespaces the UPnP passthrough, and REST does the same
+thing over HTTPS with only the published static key:
+
+```
+POST /api/v1/players/{playerId}/upnp<Service>
+X-Sonos-Api-Key: 123e4567-e89b-12d3-a456-426655440000
+{"method":"<Action>","input":[{"name":"<arg>","value":"<v>"}]}
+-> {"_objectType":"upnpResponse","parameters":[…],"result":0}
+```
+
+Verified live on 86.10-81100: `SetString` then `GetString` round-tripped a value through
+`upnpSystemProperties`, `GetZoneAttributes` answered through `upnpDeviceProperties`, and — the one that
+matters — **`ZoneGroupTopology#BeginSoftwareUpdate` was accepted and the player fetched our file**.
+
+That is the useful asymmetry: on S2 the native `update/beginSoftwareUpdate` and `management/reboot` are
+`insufficient_scope` (403) with the static key, but the *passthrough* reaches the same update path with no
+token, no CSRF page and no SOAP envelope. `GET …/settings` is free too (playerUI/playerBasic), `POST`/`PUT`
+on `settings/updateAllSettings` is 405, so settings are written via the passthrough, not the native verb.
+
+Practical notes: `playerId` must be the device's own UDN (`/status/zp`); GET on a passthrough path is 405;
+namespaces seen are `upnpDeviceProperties`, `upnpSystemProperties`, `upnpZoneGroupTopology` (call/subscribe/
+renew/unsubscribe). Absent on S1 57.23, whose local API is read-only.
+
+`ContentDirectory#CreateObject` is not the queue-add path on 57.23: at `/MediaServer/ContentDirectory/Control`
+(the bare path 405s) it faults **713** for every DIDL shape tried, while `AddURIToQueue` is what writes the
+queue and its `savedqueues.rsq` store.
