@@ -2345,3 +2345,22 @@ Checked, and S2 does not break the pattern: `/raw` is 403 on a live 86.10 player
 `POST /raw`. So the raw-file interface is auth-gated on both generations, and the
 strategic conclusion above holds for S2 as well — H12 stays an after-root
 persistence mechanism, not an entry vector, on this fleet.
+
+### Where the 402 comes from (and where it does not)
+
+`0x41ad84` — the function holding the copy — contains **no** references to
+`AccountToken` / `AccountKey` / `AccountType`, so it is a *sub-function* of the
+`AddOAuthAccountX` handler; the name-driven argument parsing happens earlier in the
+same handler. The parameter capacities visible near the copy are `128`, `128`, `4`
+(so three of the arguments are bounded at 128 bytes or less, and one at 4).
+
+There is **no literal `402` anywhere in the handler**, so the error is raised by the
+`RCRInParam` layer before the handler's own logic — i.e. a name/order/capacity
+mismatch, not a value judgement. Six value shapes (short, 120-char token, 32-hex
+key, 32-hex device id, one-argument, three-argument, ids 9/12/2311/2049/2548/
+5198492) all land on it, so the parameter *names* or *order* are what differs from
+the SCPD, not the data.
+
+That re-frames the remaining work: recover the handler's name table (it is in the
+binary, referenced five times per name, just not in this function) rather than
+fuzzing more values.
