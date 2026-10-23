@@ -77,10 +77,17 @@ devmode keys because the package signer is a different key than those.
 `count1 = count2 = 2`, its own 32-byte MessageDigest and its own 20-byte key
 id and signature), and it sits at file offset before the script, kernel and
 rootfs. So the chain is two-level: type 22 signs the header section set, and
-type 17 — whose digest covers everything above it, type-22 included — signs
-the whole package. Neither digest is a plain hash of the prefix: type-22's
-stored digest matches neither `sha256(prefix before 22)` nor a hash of the
-type-17 payload, so the hashed byte range is still unidentified for both.
+type 17 — whose digest is `SHA-256` of **every byte before it**, type-22
+included — signs the whole package. Type-22's digest is `SHA-256` of the
+**`rcbundle` payload that follows the container** (`rcbundle\0\x04`, 149 147
+bytes), so it authenticates the trust-anchor bundle itself, and type 17 in
+turn covers that signature. Both hashed ranges are now exact, byte for
+byte.
+
+The two 20-byte key ids are **not present in the bundle** (`f4df800d…` for
+type 22, `d67d7a07…` for type 17), so they resolve against a device-side
+keyring and a re-signature still needs a vendor private key; nothing in the
+package can stand in for one.
 
 **What the type-17 digest covers (measured 2026-10-23).** The first
 attribute is `MessageDigest` (`len 0x21`, type `0x01`, 32 bytes at payload
