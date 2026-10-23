@@ -332,6 +332,16 @@ model 8, so the device could not unwrap the section AES key at all. The
 2.3 KB result therefore does not by itself prove that an unsigned package
 skips the script; the S1 evidence for that gate stands on its own.
 
+Observed on a Play:1 (model 8) with the Playbar package: the attempt
+always reboots, but **the type-3 script never runs** -- `/jffs/upgrade.log`,
+which the shipped script writes, is absent after every attempt, including a
+byte-identical re-assembly of the package used as a control. Replacing the
+encrypted type-3 payload with a **plaintext** script is also not executed,
+so the reader needs the envelope (no plaintext fallback) or verification
+fails before the script. A forged type-22 header (self-signed over the
+unchanged bundle, DigestInfo signature, fresh 20-byte name) is accepted as
+far as the download and the reboot, and behaves like the original.
+
 Consequence for the plan: **the model-8 (Play:1) public key is required**
 before a script of ours can run, because the AES key must be RSA-OAEP wrapped
 to it. The Playbar package only exercises the parser, the policy checks and
