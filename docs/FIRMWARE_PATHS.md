@@ -869,7 +869,21 @@ not rename; `key=BootSeq` answers 200 and `BootSeq` in the group state stays 67;
 answers 200 and the reported build is unchanged. All are just kv entries in the
 `/setstring` store (readable back with `GetString`), not the settings object that publishes
 them, so the name still needs `DeviceProperties#SetZoneAttributes` and a real boot-counter
-change needs whatever writes the settings record. A write to an *existing* key also did not
+change needs whatever writes the settings record. `SetString` is also *inert* for those
+names while `SetZoneAttributes` is not — see below.
+
+**The `DeviceProperties` setters are open pre-auth and they do write the settings
+record.** `SetZoneAttributes(DesiredZoneName, DesiredIcon, DesiredConfiguration)`
+renames the room with a plain SOAP call on 1400 and the name **survives a daemon
+restart** (the settings store is re-read), so this is a persistent pre-auth write,
+not memory state; `SetLEDState` / `SetButtonLockState` answer the same way and
+`GetLEDState` reads the new value back. The SCPD also exposes `AddBondedZones`,
+`RemoveBondedZones`, `CreateStereoPair` and `SeparateStereoPair`, `SetAutoplayVolume`,
+`SetAutoplayLinkedZones`, `SetAutoplayRoomUUID`, `SetUseAutoplayVolume` and
+`AddHTSatellite`, all unauthenticated — so pairing/bonding topology can be changed by
+anyone on the LAN. (The `:1443` proxy answers 402 for these only because its own
+argument plumbing is broken; 1400 direct works.) `GetString`/`SetString` are not in
+the SCPD at all, which is why the SOAP read of the kv store 401s. A write to an *existing* key also did not
 wedge the unit — the ~80 s outage is specific to creating a new key.
 
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
