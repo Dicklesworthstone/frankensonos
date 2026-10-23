@@ -2227,3 +2227,23 @@ Two traps worth recording, both hit here:
 
 Net: the whole `sprintf` block can be closed off; the remaining S1 copy surface is
 the two `strcpy` sites at `0x47aa8c`/`0x47aa98`/`0x47add4` already listed.
+
+### H12 write side confirmed: the live binary only `stat`s the file
+
+In 57.23 `anacapad` the string `/jffs/system/Configure.dev` has exactly **two** code
+references, both in one status/report builder around `0x4502e0`/`0x4503b4`:
+
+- `0x4503b4` calls `sonosFileExists("/jffs/system/Configure.dev")` — a pure
+  existence probe whose result is turned into a string with the append helpers
+  (`0x499664` / `0x499688`) and handed to a report builder at `0x49afe8`;
+- `0x4502e0` composes the neighbouring field.
+
+Neither opens it for writing, and the string is absent from `libsonosutils`' write
+set except as a preserve-table entry. So nothing in the running daemon can create
+`/jffs/system/Configure.dev`; it is placed externally (by a dev build, by an admin,
+or by whatever primitive we find). That is the clean, final shape of H12: **find a
+write with a chosen name, then the boot chain does the rest**.
+
+The composed status string is not surfaced by `/support/review` or `/status/zp`
+(grepped both for `confdev`/`configure` — absent), so it is a report/telemetry
+field, not a remote oracle.
