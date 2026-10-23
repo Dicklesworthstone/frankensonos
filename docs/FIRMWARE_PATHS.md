@@ -346,6 +346,13 @@ how a local client obtains a scoped token without the cloud.
 6. A signed devmode statement or a leaked Sonos key remains the cleanest
    *enabler* (the updater then accepts modified images); nothing here
    removes the signature check itself.
+7. The 86.10 daemon embeds libcurl for its HTTP client. The curl advisories of
+   the last quarter (`Set-Cookie` public-suffix scope, proxy-auth leakage,
+   LDAP SASL downgrade, HTTP/2 stream-dependency UAF) are all logic or
+   feature-gated, not response-parser memory corruption, so they do not give a
+   local code-execution primitive against a malicious server. BusyBox carries
+   no TLS here and SMB is absent from both MIPS builds, so the recent
+   BusyBox-TLS and Era-300 SMB CVEs are out of scope.
 
 ### Safety notes for the next session
 
