@@ -998,3 +998,13 @@ primitive** (a class whose file name or path comes from the request), after whic
 root is automatic at the next boot. Candidates to audit: `sonos::SettingsFile`
 constructors reached from a request, `SetZoneAttributes`' icon fetch/cache path,
 and the diagnostics/report writers.
+
+### `/notify` body: one unauthenticated 1 MB POST kills HTTP
+
+Reproduced twice on the 57.23 Play:5: `POST /notify` with a 1 MB body
+(`Content-Type: text/xml`, arbitrary bytes) gets no response and the daemon
+stops answering on `:1400` (and `:1443`) until the watchdog restarts it, while
+SSDP and audio continue. A later size sweep measured the threshold. This is a
+one-request, pre-auth DoS from the GENA sink reader; it is the strongest
+blocking surface found so far, ahead of the multi-thousand-request
+`/diaglevel` flood.
