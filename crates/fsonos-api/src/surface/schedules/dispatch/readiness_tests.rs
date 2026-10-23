@@ -141,6 +141,7 @@ impl House {
         self.surface.load_schedules().unwrap()[0].last_fired
     }
 
+    #[allow(clippy::unused_self)] // a step of the house, called like its others
     fn tick(&self, scheduler: &Scheduler, now: DateTime<Utc>) -> Vec<Ran> {
         let ran = run_schedules(scheduler, now, &Utc);
         assert!(scheduler.wait(Duration::from_secs(5)));
