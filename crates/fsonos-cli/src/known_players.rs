@@ -33,9 +33,11 @@ pub fn remembered(data_dir: Option<&Path>) -> Vec<IpAddr> {
     }
 }
 
-/// The addresses of the players each household's latest survey found, without
-/// duplicates. A player that survey missed (moved to another address, or
-/// gone) keeps its row, but it is not tried again.
+/// The addresses of each identified household's latest survey, without
+/// duplicates. Its omitted players keep their rows but are not tried again.
+/// Anonymous players may belong to different households, so keep every
+/// player's current cached address until its identity is known. A UUID's
+/// updated row still replaces its old address.
 fn addresses(store: &dyn Store) -> Vec<IpAddr> {
     let players = match store.cached_players() {
         Ok(players) => players,
@@ -53,7 +55,9 @@ fn addresses(store: &dyn Store) -> Vec<IpAddr> {
     };
     let mut found: Vec<IpAddr> = Vec::new();
     for p in &players {
-        if Some(p.last_seen) == latest(&p.household) && !found.contains(&p.player.ip) {
+        if (p.household.is_empty() || Some(p.last_seen) == latest(&p.household))
+            && !found.contains(&p.player.ip)
+        {
             found.push(p.player.ip);
         }
     }
@@ -309,5 +313,63 @@ mod tests {
         let moved = rows.iter().find(|p| p.player.id.0 == "one").unwrap();
         assert_eq!(moved.household, "household-new", "an explicit ID wins");
         assert_eq!(moved.player.ip, "192.0.2.13".parse::<IpAddr>().unwrap());
+    }
+
+    #[test]
+    fn a_partial_anonymous_survey_keeps_other_households_retryable() {
+        let mut store = MemStore::default();
+        let first = HouseholdState {
+            players: vec![player("anonymous-one", "192.0.2.30")],
+            ..HouseholdState::default()
+        };
+        let second = HouseholdState {
+            players: vec![player("anonymous-two", "192.0.2.31")],
+            ..HouseholdState::default()
+        };
+        let identified = HouseholdState {
+            id: Some(HouseholdId("known-household".into())),
+            players: vec![
+                player("known-one", "192.0.2.40"),
+                player("known-two", "192.0.2.41"),
+            ],
+            ..HouseholdState::default()
+        };
+        remember(&mut store, &[first, second, identified], 100);
+
+        // One anonymous household does not answer. The other answers at a
+        // new address; the identified household also loses one member.
+        let refreshed = [
+            HouseholdState {
+                players: vec![player("anonymous-one", "192.0.2.32")],
+                ..HouseholdState::default()
+            },
+            HouseholdState {
+                id: Some(HouseholdId("known-household".into())),
+                players: vec![player("known-one", "192.0.2.42")],
+                ..HouseholdState::default()
+            },
+        ];
+        remember(&mut store, &refreshed, 200);
+        let mut kept = addresses(&store);
+        kept.sort();
+        assert_eq!(
+            kept,
+            ["192.0.2.31", "192.0.2.32", "192.0.2.42"].map(|ip| ip.parse::<IpAddr>().unwrap()),
+            "an absent anonymous household stays discoverable; a known household's old member does not"
+        );
+
+        // The other anonymous household can be found on the next run,
+        // without forgetting the first or retaining its own old address.
+        let returned = HouseholdState {
+            players: vec![player("anonymous-two", "192.0.2.33")],
+            ..HouseholdState::default()
+        };
+        remember(&mut store, &[returned], 300);
+        let mut kept = addresses(&store);
+        kept.sort();
+        assert_eq!(
+            kept,
+            ["192.0.2.32", "192.0.2.33", "192.0.2.42"].map(|ip| ip.parse::<IpAddr>().unwrap())
+        );
     }
 }

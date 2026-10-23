@@ -1,7 +1,7 @@
 //! Live plans, read-only rehearsals and feedback share current cache inputs.
 
 use super::{PLAN_CHECK, SpotifyDj, State, sync};
-use fsonos_api::dj::{DjEngine, DjSpeakers, DjSteer};
+use fsonos_api::dj::{DjEngine, DjSpeakers, DjSteer, SteerConstraints};
 use fsonos_api::plan::DjAction;
 use fsonos_api::surface::dj_feedback::DjFeedback;
 use fsonos_api::surface::dj_rehearse::{DjRehearsal, RehearsalLength};
@@ -458,7 +458,7 @@ fn steering_accepts_new_moods_only_with_their_validated_preferences_and_library(
         &mut store,
         &DjSteer::Set {
             mood: Some("focus".into()),
-            constraints: Default::default(),
+            constraints: SteerConstraints::default(),
             for_secs: None,
         },
         &clock,
@@ -480,7 +480,7 @@ fn steering_accepts_new_moods_only_with_their_validated_preferences_and_library(
     library.mark_fresh_for_test();
     let steering = DjSteer::Set {
         mood: Some("afterhours".into()),
-        constraints: Default::default(),
+        constraints: SteerConstraints::default(),
         for_secs: None,
     };
     assert!(dj.steer(at, &mut store, &steering, &clock).is_err());
@@ -523,7 +523,7 @@ fn clearing_steering_works_without_a_library_or_valid_files_and_keeps_sync_pendi
         &mut store,
         &DjSteer::Set {
             mood: Some("focus".into()),
-            constraints: Default::default(),
+            constraints: SteerConstraints::default(),
             for_secs: None,
         },
         &clock,
