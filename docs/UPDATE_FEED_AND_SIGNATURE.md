@@ -84,10 +84,20 @@ bytes), so it authenticates the trust-anchor bundle itself, and type 17 in
 turn covers that signature. Both hashed ranges are now exact, byte for
 byte.
 
-The two 20-byte key ids are **not present in the bundle** (`f4df800d…` for
-type 22, `d67d7a07…` for type 17), so they resolve against a device-side
-keyring and a re-signature still needs a vendor private key; nothing in the
-package can stand in for one.
+**Verification reproduced.** The type-17 signature recovers under key #2 of
+the `libsonoscrypto.so.1` keyring (SPKI at file `0xdae0`; the table entry
+named `d67d7a07…` at `0xe0bd` and a 0x126 length point at it) — the other
+three keys fail PKCS#1 padding. The recovered DigestInfo is
+`dbd059c4a69503d0e6ad35f61670280e38c64963dcafdde4fd3e0879eaccfb48`, which is
+exactly `SHA-256(payload[0x10:0x49])`: the **57-byte region holding the
+counts and both attribute lengths/types**, digest included. So the original
+note's range was right and the earlier "not the payload" reading came from
+byte-order confusion.
+
+That closes the chain and it is the vendor's: the signed region contains the
+digest, the digest covers the package, and both key ids live in a keyring on
+the device, not in any part of the package. A component edit needs
+`d67d7a07…`'s private key; nothing shipped can stand in for it.
 
 **What the type-17 digest covers (measured 2026-10-23).** The first
 attribute is `MessageDigest` (`len 0x21`, type `0x01`, 32 bytes at payload
