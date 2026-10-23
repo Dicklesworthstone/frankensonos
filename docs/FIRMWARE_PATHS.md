@@ -1358,6 +1358,22 @@ actually holds, and which claim feeds it, is the next read at the `rfind`. A mis
 its value goes through `%llu` (`0x665e74`). Note the `hhid` compare at `0x60228c`
 reads `token+108`, so the claim *values* still matter after `iss` passes.
 
+**The response is one-bit (2026-10-23).** Expired `exp`, absent `exp`,
+far-future `exp`, a bad signature, a missing `hhid`, and every iss shape
+tried (names only, names+values, `"" / : | . - _ & = ,`, and the same
+wrapped in braces) all return the identical `401 invalid_token "Access
+token is invalid"`. Nothing in the body distinguishes *which* sub-check
+failed, so issuer guesses cannot be validated incrementally — the string
+must be reproduced exactly from code.
+
+The composer is readable enough for that: `0x6020f8` builds into a
+`std::string` and each segment goes through `0x602050` (append a literal) or
+`0x602074` (append a `std::string` dereferenced from the argument), a
+separator append (`0x602094`) sits between them with its value as a
+constructor parameter (falling back to `'{'` = 123), the tail appends `'}'`
+(125), and the result is compared with `std::string::operator==`
+(`0x48cb64`) against a field of the token at `0x60229a`.
+
 Next is mechanical: mint with all four claims present and `iss` equal to the
 composition, trying `/` and `:` as the separator, and watch whether the reason moves
 off `invalid_token` to the expiry class (2/5). Compose `hhid` from the device's real
