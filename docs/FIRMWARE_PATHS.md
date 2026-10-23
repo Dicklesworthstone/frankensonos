@@ -1396,3 +1396,23 @@ nor a pushed frame on the subscribing WebSocket (5 s wait, twice). So a
 subscription can be created pre-auth but its events do not reach a caller-supplied
 callback in this configuration; treat the WS `subscribe` as bookkeeping until that
 is understood.
+
+### The wedged state is the HTTP accept path, not the daemon
+
+`.164` (same firmware, never sent a `/notify` by us in this round) entered the
+same state while being read only with `GET` for inventory: ICMP answered, TCP
+connected to `:1400` (kernel completes the handshake from the listen backlog),
+nothing accepted, and every request timed out. On that unit `:1443` was still
+fully alive at the same moment: `GET /info` answered `200`,
+`/api/v1/players/local/upnpSystemProperties?protocolVersion=1` answered `403`
+(route present, scope/services missing) while `:1400/info` and `:1400/status/*`
+were dead. So the crash leaves the process and its TLS/WS listener running and
+kills only the plain-HTTP accept loop; the watchdog does not treat that as death
+and takes many minutes (observed >35 min, three units at once) before it
+restarts the daemon. That matches the lab: a `SIGABRT` that is turned into a
+plain return leaves a process with `LISTEN` on `:1400` and no accept.
+
+No pre-auth reboot exists (`management/reboot` answers 403, documented earlier),
+and the WS handshake on `:1443` answers `400` to a well-formed RFC 6455 upgrade
+on `/websocket/api` and `/api/websocket`, so a wedged unit cannot be poked back
+over TLS either.
