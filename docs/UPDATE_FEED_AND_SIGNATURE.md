@@ -758,3 +758,21 @@ while a breakpoint on the `upgrade` record loop at `0x406200` never fires. The
 store has a header/table in the first 512 bytes that has to point at the records
 before `0x406200` is entered. That table is the missing piece; the record framing
 itself is now known.
+
+### Store layout: 32-byte id slots at 0, entries from 512
+
+Dumping the 512-byte head read (gdb on the libflash read) shows it is a **table of
+20-byte key ids in 32-byte slots**; the entry area starts at offset 512 (one 4096
+read). The head that was in place came from packing the recipient id into every slot,
+which is why the ids appeared there.
+
+Two traps for reproducing this in the VM: nandsim pages must be **erased** before a
+rewrite (a second write to offset 0 without erase leaves the old bytes — no
+`flash_erase`/`nandwrite` in the guest image, so either use an mtdram partition or add
+an erase helper), and the entry at 512 must be an `886499ca` envelope (ZZ0053 rejects
+anything else).
+
+Still open: what the envelope's plaintext must be (a raw key, or another envelope)
+and whether the recipient is resolved from this same table. `48` is returned both
+for a missing entry and for a failed envelope decrypt, so the two cannot be told
+apart from the message alone.
