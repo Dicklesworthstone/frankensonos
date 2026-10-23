@@ -527,6 +527,14 @@ how a local client obtains a scoped token without the cloud.
    valid heap pointer to bytes we wrote, and later `ptr + idx*0xc50` lookups read our URI text as
    entries. That would be a fake-array primitive; the parent init at `0x101922e8` (which writes
    `+0xc` and `+0x20` in the sibling shape) is where to confirm the offset.
+   Init confirmed (`0x101913b0`): it writes the capacity argument to `+0xc`, the array pointer to
+   `+0x20`, and zero to `+0`. So `+0xc` is seeded 16, it is the same slot the compaction reads as
+   `B`, and it is only ever statically written as 16 — capacity and "limit" are one variable and
+   the increment is invisible statically. `B-A > 16` therefore needs either that unseen increment
+   or a `+0`/`A` that is negative or >16. The ring also holds an inline array at `+8` *and* the
+   pointer at `+0x20`; the copy uses the inline address, so `+0x20` only matters where code indexes
+   through the pointer. Dynamic step: watch `ring+0xc` and `ring+0` across a 1-segment window and
+   log them just before each call into `0x10192674`.
    Length map measured (25 s each, only the name length changed): 5 -> 0.83 s, 16 -> 17.9 s,
    20 -> 11.9 s, and 24/28/32/40/64/128 all survived. Fatal band is **16–20 characters**; from 24
    up it is stable. Destination is `ring+8-capacity*0xc50`, so `capacity = (8-T)/0xc50` lands the
