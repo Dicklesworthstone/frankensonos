@@ -698,3 +698,44 @@ So `[{…,"playerId":…},{"method":"GetZoneGroupState"}]` answers
 answer UPnP 402, including for `GetString`/`GetTransportInfo` which need
 exactly one argument. The passthrough is therefore a no-argument proxy today
 and is not a useful fuzzing surface for argument handling.
+
+## 2026-10-23: live 57.23 binaries recovered (model-12 key), verifier mapped
+
+The model-12 legacy key was recovered from the plaintext 34.16-37101-1-12
+updater (fixed wrapper at `0x19300`, system word `0x0000`, recipient
+`e35f7c21…`) with the archive tooling, following the model-16 technique. It
+decrypts the model-12 OTA family, which puts the **exact live 57.23 MIPS
+`anacapad`, `upgrade` and their libraries on disk** (git-ignored
+`captures/firmware/57.23-74170-1-12/`, with `57.19-46310-1-12` beside it for
+diffs). Interoperability facts measured on those builds:
+
+- 57.23 `upgrade` is a rewrite over `libsonoscrypto`, `libsonosrootcerts` and
+  `libflash`; the record parser and cert-bundle parser live in those libraries
+  (`sonosRcbParseHeader` / `sonosRcbParseManifest`, status strings "tampered
+  bundle", "bad magic number").
+- **Verification scheme (traced live, not inferred):** the type-17 ring is a
+  key ring; a key reference of type 3 is the SHA-1 of an RSA public key in
+  **SPKI DER** form, matched against keys compiled into `libsonoscrypto`; the
+  signature is RSA-2048 PKCS#1 v1.5 over **SHA-256 of every file byte before
+  the type-17 record** (captured digest at the call: 32 bytes, and reproduced
+  byte-for-byte with `sha256(file[:type17_start])`). Ring grammar: count1/count2
+  entry lists, then a key count and per-ref `u8 type`, two `u32` fields (second
+  one is the key-material length, `<0x101`), key bytes.
+- The type-22 certificate bundle is **plaintext** (`rcbundle` magic after the
+  0x621da74d ring header; 132 DER certificates in the model-12 image). It is
+  parsed before any signature result, so it is the pre-verification surface on
+  the update path. 128 mutations of the bundle header and 128 of the signature
+  ring (magic, lengths, counts, types) parsed without a crash; the obvious
+  overflows are checked.
+- `/status/tmp/upgrade.log` is a live read of the updater's own log, and the
+  spawned updater's stdout is reachable there until it rotates. `BeginSoftwareUpdate`
+  on an on-link unit plus that read is a complete remote oracle for the gate.
+- A patched 57.23 `upgrade` (`0x407d7c`: NOP the compatibility branch) runs in
+  the 34.16 VM with six RAM `mtdram` devices, `/tmp/bootsection`/`bootgeneration`
+  and its own `ld.so.1` (`/opt/s57/lib/ld.so.1 --library-path …`), reaching the
+  real verifier. Same-version images hit a "no decryption key" quirk; serve a
+  bumped version (e.g. 99.1.1) instead.
+
+Open: an inline-key reference (type 1/2) is accepted by the ring parser but has
+not verified yet; if it verifies with an attacker key, an unsigned image is
+accepted end-to-end. Also open: the exact ref field semantics for those types.
