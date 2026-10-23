@@ -649,3 +649,19 @@ is reachable with a version bump and a matching model.
 The VM lab reproduces the parse path but not the signature: with the compat branch
 NOPped it reaches `no decryption key` (48) because the stub MDP carries no per-model
 keyring.
+
+### First on-device header probe: `name_len = 0x7ff`
+
+A model-16 package with the version bumped to 99.1.1 and the type-17 `name_len`
+changed from 0x14 to 0x7ff (its 20-byte name left short) is fetched in full from the
+LAN, then fails and reboots back to 57.23 with an empty `upgrade.log`. No crash and
+no install. On-device probes are one per boot, so `/status/dmesg` is the only place
+a backtrace could surface, and it is empty on 57.23 — for parser work the VM plus
+gdb remains the better instrument, once the decryption key is solved there.
+
+The VM's key wall is concrete: with the libflash ABI patched (`0x40244d01` →
+`0x40204d01` at file 0x1670) `upgrade` gets past `MEMGETINFO` and fails at
+`no encrypted upgrade key available (48)`. The key is not in the rootfs or the MDP —
+the recipient id `e35f7c21c0ec00a768bfbd364a9a105cf300f023` matches nothing in the
+extracted files — so it lives in a flash partition whose type and record format
+still have to be identified.
