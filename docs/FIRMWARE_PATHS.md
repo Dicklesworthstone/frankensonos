@@ -303,6 +303,27 @@ self-signed x5c — come back as the same blanket 403 `Unauthorized.`, so valida
 detail is not observable over REST. Local minting stays open only for something
 signed by a key whose chain reaches the on-device root bundle.
 
+**The WS frame shape is `[header, payload]`, and that was the missing piece.**
+A command is a two-element JSON array: `{"namespace","command","householdId"}`
+then the payload object — putting the payload *inside* the header answers
+`Parsing terminated:[1]` forever, and a bare second element gets
+`Parsing terminated:[0].command`. The `authorization`/`resolveToken` config
+names its payload fields in `RserializeResolveTokenConfigAsJson`, read from the
+string table as `token`, `objectId`, `objectType` and an `attributes` object; a
+complete frame answers `authzTokenStatus UNAUTHORIZED / UNKNOWN` pre-auth (static
+key only) for every token tried, up to 100 KB, including a `h.<100 KB>.s` JWT
+shape, so the resolver takes the string and shows no length cliff. The `upnp*`
+passthrough is *not* reachable this way: with the correct frame it answers
+`ERROR_UNSUPPORTED_NAMESPACE: v1:players namespace is not supported`, so REST
+stays the only working passthrough and its argument plumbing is still the
+blocker.
+
+**WS connect exhaustion.** ~40 connection cycles (each just a static-key
+handshake) leave the WS listener unable to complete a handshake for ~45 s while
+`/status/zp` keeps answering 200 the whole time — the daemon does not die, the
+listener stalls. Sequential one-at-a-time use is fine; it is a burst effect and
+worth knowing before blaming the API for timeouts. Bead `re-ws-exhaust`.
+
 Generic UPnP passthrough is real but partial. `POST /api/v1/players/{id}/upnpDeviceProperties`
 and `.../upnpZoneGroupTopology` take `{"method":"<Action>","params":{…}}` and answer
 `upnpResponse` with typed `parameters`; `GetZoneAttributes` returned the live zone name.
