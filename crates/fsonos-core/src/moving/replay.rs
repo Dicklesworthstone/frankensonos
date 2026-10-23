@@ -17,6 +17,8 @@ use std::net::IpAddr;
 use std::time::Instant;
 
 mod mode;
+mod owner;
+mod staging;
 mod verify;
 
 struct Item {
@@ -259,19 +261,14 @@ impl Prepared {
         if self.is_empty() {
             return Ok(());
         }
-        // Prove the destination can report the setting before stopping it or
-        // clearing its queue. Unsupported reads must not leave half a move.
-        if self.play_mode.is_some() {
-            fsonos_proto::play_mode::get_play_mode(t, host)?;
-        }
-        // A paused source must never start an audible Play/Pause round trip.
-        // Stop before loading, then leave it ready to resume at its position.
-        soap::stop(t, host)?;
-        verify::transport(t, host, TransportState::Stopped)?;
         let mut revision = None;
         let (track, position) = match &self.source {
             Source::Nothing => return Ok(()),
             Source::Uri { item, position } => {
+                // A paused source must never start an audible Play/Pause
+                // round trip. Direct sources do not edit the queue.
+                soap::stop(t, host)?;
+                verify::transport(t, host, TransportState::Stopped)?;
                 soap::set_av_transport_uri(t, host, &item.uri, &item.metadata)?;
                 (0, position.unwrap_or(0))
             }
@@ -280,18 +277,13 @@ impl Prepared {
                 track,
                 position,
             } => {
-                soap::remove_all_tracks_from_queue(t, host)?;
-                verify::empty_queue(t, host)?;
-                for (index, item) in items.iter().enumerate() {
-                    let added = soap::enqueue_uri(t, host, &item.uri, &item.metadata, 0, false)?;
-                    if added.count != 1 || usize::try_from(added.first).ok() != Some(index + 1) {
-                        return Err(invalid(
-                            "the destination inserted a track at an unexpected position",
-                        ));
-                    }
-                }
-                revision = Some(verify::queue(t, host, items)?);
-                soap::play_from_queue(t, host, target)?;
+                revision = Some(staging::replace(
+                    t,
+                    host,
+                    target,
+                    items,
+                    self.play_mode.is_some(),
+                )?);
                 (*track, *position)
             }
         };
@@ -663,10 +655,10 @@ mod simulator_tests {
     #[test]
     fn ignored_destination_commands_never_stop_the_source() {
         for (from_room, to_room) in [("Kitchen", "Den"), ("Den", "Kitchen")] {
-            for action in ["RemoveAllTracksFromQueue", "Seek", "Play"] {
+            for action in ["RemoveTrackRangeFromQueue", "Seek", "Play"] {
                 let sim = fixture();
                 seed_spotify(&sim, from_room);
-                if action == "RemoveAllTracksFromQueue" {
+                if action == "RemoveTrackRangeFromQueue" {
                     seed_spotify(&sim, to_room);
                 }
                 let lan = sim.lan();
@@ -686,12 +678,19 @@ mod simulator_tests {
                         .all(|entry| entry.room != from_room || entry.action != "Stop"),
                     "{action}: the original music must not be stopped"
                 );
-                if action == "RemoveAllTracksFromQueue" {
-                    assert!(
+                if action == "RemoveTrackRangeFromQueue" {
+                    assert_eq!(
                         log[calls..]
                             .iter()
-                            .all(|entry| entry.action != "AddURIToQueue")
+                            .filter(|entry| entry.action == "AddURIToQueue")
+                            .count(),
+                        2,
+                        "the incoming queue is staged before committing the replacement"
                     );
+                    assert!(log[calls..].iter().all(|entry| {
+                        entry.action != "RemoveAllTracksFromQueue"
+                            && (entry.room != to_room || entry.action != "Play")
+                    }));
                 }
                 assert_eq!(
                     soap::get_transport_info(&lan, from.coordinator.ip)

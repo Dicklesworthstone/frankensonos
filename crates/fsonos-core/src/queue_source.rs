@@ -12,7 +12,7 @@ use fsonos_proto::control::{self as soap, Enqueued};
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
 
-mod destination;
+pub(crate) mod destination;
 
 use destination::Destination;
 

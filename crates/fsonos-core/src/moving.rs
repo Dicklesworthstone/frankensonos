@@ -268,8 +268,10 @@ fn replay_instead_of_delegating<T: Transport + ?Sized>(
 
 /// Copy the music `from` plays onto `to`'s group (any household: Spotify
 /// items are re-rendered with the target household's parameters), at the
-/// same track and position, then stop `from`. Preparation is read-only:
-/// missing resources or render parameters never clear the destination queue.
+/// same track and position, then stop `from`. Preparation is read-only.
+/// The complete incoming queue is staged after the destination's original
+/// entries before a revision-guarded prefix removal. Failed staging retains
+/// those entries; uncertain writes are verified by reads, never replayed.
 pub fn copy_playback<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],

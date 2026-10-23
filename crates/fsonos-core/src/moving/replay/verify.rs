@@ -12,7 +12,7 @@ use fsonos_types::{PlayerId, TransportState};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-fn identity(uri: &str) -> String {
+pub(super) fn identity(uri: &str) -> String {
     // Queue inserts use a bare encoded Spotify URI; reads include a renderer
     // scheme and account parameters. Compare the track, not that envelope.
     let rendered = if uri.to_ascii_lowercase().starts_with("spotify%3a") {
@@ -21,14 +21,6 @@ fn identity(uri: &str) -> String {
         uri.to_string()
     };
     spotify_uri_from_renderer_uri(&rendered).unwrap_or(rendered)
-}
-
-pub(super) fn empty_queue<T: Transport + ?Sized>(t: &T, host: IpAddr) -> Result<(), MoveError> {
-    let page = content::browse(t, host, QUEUE, BrowseFlag::DirectChildren, 0, 1)?;
-    if page.total_matches != 0 || !page.objects.is_empty() || page.number_returned != 0 {
-        return Err(invalid("the destination did not clear its queue"));
-    }
-    Ok(())
 }
 
 pub(super) fn queue<T: Transport + ?Sized>(

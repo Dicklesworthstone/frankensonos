@@ -7,14 +7,15 @@ use fsonos_types::PlayerId;
 use std::net::IpAddr;
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct Destination {
+pub(crate) struct Destination {
     members: Vec<String>,
+    boot_seq: Option<u32>,
     uri: String,
     metadata: String,
 }
 
 impl Destination {
-    pub(super) fn read<T: Transport + ?Sized>(
+    pub(crate) fn read<T: Transport + ?Sized>(
         t: &T,
         host: IpAddr,
         coordinator: &PlayerId,
@@ -67,12 +68,15 @@ impl Destination {
         }
         Ok(Self {
             members,
+            boot_seq: topology
+                .boot_seqs()
+                .find_map(|(id, boot)| (id == coordinator).then_some(boot)),
             uri: uri.to_string(),
             metadata: media.get("CurrentURIMetaData").unwrap_or("").to_string(),
         })
     }
 
-    pub(super) fn confirm<T: Transport + ?Sized>(
+    pub(crate) fn confirm<T: Transport + ?Sized>(
         &self,
         t: &T,
         host: IpAddr,
@@ -80,9 +84,13 @@ impl Destination {
     ) -> Result<(), ProtoError> {
         if *self != Self::read(t, host, coordinator)? {
             return Err(ProtoError::Malformed(
-                "the group membership or source changed while replacing its queue".into(),
+                "the group membership, boot or source changed while replacing its queue".into(),
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn is_queue(&self, coordinator: &PlayerId) -> bool {
+        self.uri == format!("x-rincon-queue:{}#0", coordinator.0)
     }
 }
