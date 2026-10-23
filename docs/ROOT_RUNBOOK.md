@@ -36,10 +36,18 @@ Read this with `docs/FIRMWARE_PATHS.md` open. Two facts frame it:
 
 Target order, cheapest first:
 
-1. Anything that gives an arbitrary write: the update script is the natural payload vehicle
-   once a write exists, because `/jffs/system/Configure.dev` runs as root at boot
+1. **HLS segment ring — the one live write primitive.** `SetAVTransportURI` with an
+   `hls-radio://` playlist we serve is pre-auth, and any playlist with a forward-advancing
+   live window makes the daemon `memcpy` segment entries *backwards* past the array
+   (`new_head = 0x10 - (limit - head)`, unchecked) — 1–2 new segments per reload kills in
+   7–8 s. The copy is at `0x10192754`, the length is signed, and the destination is computed
+   from a constant 16, so the goal is to land controlled segment bytes on a structure that
+   matters (see the `re-hls-kill-cnk` bead for the exact register roles and the open
+   counter question).
+2. Anything else that gives an arbitrary write: the update script is the natural payload
+   vehicle once a write exists, because `/jffs/system/Configure.dev` runs as root at boot
    (`rcS` line 20) and also arms dropbear.
-2. Failing a write, a full RCE gives the same result directly.
+3. Failing a write, a full RCE gives the same result directly.
 
 Live entry points that reach a parser **before** verification, on the device (the key is
 present there, so these are the only parsers that run):
