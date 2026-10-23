@@ -1516,6 +1516,13 @@ guess, not a finding; `503` is service flakiness that can hit every token,
 and the only protocol that means anything is: gate on the control returning
 `401`, then compare inside that window. Code is the only trustworthy oracle.
 
+A further control-gated sweep of ten separators with all-equal values
+(`, ; . - _ : # & = @`) is **all 401** as well, so it is not a separator
+question at all — the composition must contain a device string for every
+candidate to fail this way. The claim fields are `std::optional<std::string>`
+shaped: a presence byte four bytes below the string (the `iss` guard reads
+`lbu 108` before using `112`, and `iss` itself is `lbu 28`/string at `32`).
+
 Value sources in the composer, by contrast, are concrete: separators sit
 between segments; one value is read at `token+0x48`, another at `token+0x30`
 (`lw a1,v0+7; addiu a1,41/65`), and the last is the context string from the
