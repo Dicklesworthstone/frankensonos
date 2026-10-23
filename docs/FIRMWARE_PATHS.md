@@ -1305,6 +1305,17 @@ Unknown and blocking: `resolveToken` answers `statusReason: UNKNOWN` for every
 are the whole oracle. Next read: `FUN_00603aac` at `0x603cf8` — what fills
 `param_3+8`.
 
+**Oracle recipe (2026-10-23).** The reason string only appears when the
+request carries **both** headers: `X-Sonos-Api-Key: <published dummy>`
+selects the API-key path and the `Authorization: Bearer <jwt>` is then
+handed to the token inspector. With the Bearer alone every forged token is
+answered `400 ERROR_API_KEY_VALIDATION_FAILED`, which is why earlier trials
+read as if the token were never parsed. The route is
+`POST /api/v1/players/{playerId}/management/reboot`; household paths
+(`/households/{hhid}/…` and `/households/{HouseholdControlID}/…`) answer
+`404`, and the S2 daemon is **MIPS16** — plain `objdump` mis-decodes it,
+`-m mips:16` is required.
+
 **Answered — the value is a composition of claim names.** At `0x603cf2` the caller
 sets `a2 = sp+516`, `a3 = sp+32`, `a0 = sp+264` and calls the inspector with
 `a1 = s1` (the context). The buffer at `sp+516` is filled at `0x6020f8` by appending
