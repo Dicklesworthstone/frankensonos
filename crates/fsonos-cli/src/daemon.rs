@@ -59,6 +59,7 @@ mod spotify_auth;
 
 mod serve_origin;
 mod tailnet;
+mod warning_file;
 
 /// The data directory, or `INVALID_ARGUMENT` when none can be determined.
 pub fn data_dir(global: &GlobalArgs) -> Result<PathBuf, Failure> {
@@ -358,6 +359,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     let ticking = start_scheduler(&surface, &stop)?;
     // The DJ's library: refreshed when due at start, then daily.
     crate::dj::sync::watch(library, Arc::clone(&stop));
+    let counting = warning_file::keep(&data_dir, Arc::clone(&stop));
 
     // The local CLI's proof that it is the CLI (see crate::remote).
     let cli_token = fsonos_core::announce::clip::clip_id().context("make the CLI token")?;
@@ -439,6 +441,7 @@ pub fn run(global: &GlobalArgs, args: &ServeArgs, scheduler: &SchedulerArgs) -> 
     drain_announcements(|| surface.announcements_pending(), ANNOUNCE_DRAIN);
     // The surfaces hold the model weakly: this ends every subscription.
     drop(live);
+    warning_file::finish(&data_dir, counting);
     Ok(())
 }
 

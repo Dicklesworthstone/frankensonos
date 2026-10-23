@@ -7,7 +7,8 @@
 //! its field values, which carry addresses and ids. One sample message is
 //! kept per kind, with every word that holds a digit masked.
 
-use std::collections::{HashMap, VecDeque};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{LazyLock, Mutex, PoisonError};
 
 /// Counting granularity, in seconds.
@@ -39,8 +40,9 @@ pub struct Storm {
     pub threshold: u32,
 }
 
-/// Warnings counted by kind, in buckets of five minutes, for a week.
-#[derive(Debug, Default)]
+/// Warnings counted by kind, in buckets of five minutes, for a week. It is
+/// kept across a restart as JSON ([`to_json`], [`restore_json`]).
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Counts {
     /// The first bucket counted: hours before it were not observed.
     first: Option<u64>,
@@ -123,6 +125,27 @@ impl Counts {
         storms.sort_by(|a, b| a.kind.cmp(&b.kind));
         storms
     }
+
+    /// Add the counts `kept` (a previous run's) to these, bucket by bucket,
+    /// so the kinds' usual hours survive a restart.
+    pub fn merge(&mut self, kept: Counts) {
+        self.first = match (self.first, kept.first) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let mut buckets: BTreeMap<u64, HashMap<String, u32>> = BTreeMap::new();
+        for (bucket, counts) in kept.buckets.into_iter().chain(self.buckets.drain(..)) {
+            let into = buckets.entry(bucket).or_default();
+            for (kind, n) in counts {
+                let total = into.entry(kind).or_default();
+                *total = total.saturating_add(n);
+            }
+        }
+        self.buckets = buckets.into_iter().collect();
+        for (kind, sample) in kept.samples {
+            self.samples.entry(kind).or_insert(sample);
+        }
+    }
 }
 
 /// This process's warnings.
@@ -144,6 +167,26 @@ pub fn storms(now: u64) -> Vec<Storm> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .storms(now)
+}
+
+/// This process's counts as JSON, to keep across a restart.
+#[must_use]
+pub fn to_json() -> String {
+    serde_json::to_string(&*COUNTS.lock().unwrap_or_else(PoisonError::into_inner))
+        .unwrap_or_default()
+}
+
+/// Add the counts a previous run kept ([`to_json`]) to this process's.
+///
+/// # Errors
+/// When `text` is not such JSON; nothing is changed then.
+pub fn restore_json(text: &str) -> Result<(), serde_json::Error> {
+    let kept: Counts = serde_json::from_str(text)?;
+    COUNTS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .merge(kept);
+    Ok(())
 }
 
 /// `message` with every word that holds a digit (an address, a port, an id)
@@ -236,6 +279,35 @@ mod tests {
         let storms = c.storms(T0 + 26 * 3600 - 1);
         assert_eq!(storms.len(), 1, "{storms:?}");
         assert_eq!((storms[0].last_hour, storms[0].threshold), (50, 50));
+    }
+
+    /// A kind that is always busy is not a storm just because the daemon
+    /// restarted: the usual hours it kept come back with it.
+    #[test]
+    fn a_busy_kinds_usual_hour_survives_a_restart() {
+        let mut before = Counts::default();
+        spread(&mut before, LISTENER, 5, 0..24);
+        let kept = serde_json::to_string(&before).unwrap();
+        // The restarted daemon: 30 in its first hour.
+        let mut after = Counts::default();
+        spread(&mut after, LISTENER, 30, 24..25);
+        let now = T0 + 25 * 3600 - 1;
+        assert_eq!(
+            after.storms(now).len(),
+            1,
+            "with no history, 30 is over the floor"
+        );
+        after.merge(serde_json::from_str(&kept).unwrap());
+        assert!(after.storms(now).is_empty(), "{:?}", after.storms(now));
+        assert_eq!(after.first, Some(T0 / BUCKET_SECS));
+        assert!(
+            after
+                .buckets
+                .iter()
+                .zip(after.buckets.iter().skip(1))
+                .all(|(a, b)| a.0 < b.0)
+        );
+        assert_eq!(after.samples[LISTENER].1, "renewal failed");
     }
 
     #[test]
