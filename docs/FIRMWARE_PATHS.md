@@ -1549,3 +1549,23 @@ Two useful by-products: plain `SystemProperties#GetString` **returns the value**
 (the `:1443` proxy does not — it only reports `result`), and a value carrying
 markup is stored raw, so the settings file can be made non-well-formed without any
 visible harm.
+
+### H4 measured: an SSDP reply alone does not make a player fetch a description
+
+A responder on 1900 answered a player's own `M-SEARCH` (`ST
+urn:schemas-upnp-org:device:ZonePlayer:1`, then `…:service:ContentDirectory:1`)
+with a well-formed `200 OK` whose `LOCATION` pointed at a LAN HTTP sink, `ST`
+echoed, `USN` a fresh UUID, plus `X-RINCON-HOUSEHOLD` set to the player's own
+household. The player queries repeatedly (also from port 1901 for
+ContentDirectory) and **never fetched the description** — not on a normal boot,
+not on a forced soft reboot, not with the household header.
+
+Control: a generic UPnP client on the same collision domain (the phone/desktop
+Spotify app) *did* fetch `/xml/device_description.xml` from the same sink and sent
+`User-Agent: Spotify/…`, so the reply is well formed and accepted by a stock
+client. Sonos players are simply stricter: a device that is not already in their
+topology does not get its `LOCATION` read.
+
+Consequence for H4: triggering the device-description parser from a cold device
+needs a topology foothold first (household membership), not just a forged SSDP
+answer. That is the same wall as the mDNS negative.
