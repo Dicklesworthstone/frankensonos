@@ -354,9 +354,10 @@ how a local client obtains a scoped token without the cloud.
    live-testing-only from here.
    Payload primitives for the day a smash lands: 34.16 `execve` gadget
    `0x4f4178` (`a0=*s1`, `a1=argv`, `a2=environ`, needs `s1`), and 86.10
-   `0x656a86` (`a1` alone drives both, path via `*a1`). NX is off on 34.16, on
-   for 86.10. The TS demux in the control-RPC layer has not been
-   located.
+   `0x656a86` (`a1` alone drives both, path via `*a1`). **Neither is the live
+   unit**: the exact 57.23 daemon is PowerPC (NX on, no canary/PIE/RELRO), so
+   these are shape references only and PPC gadgets must be derived from the
+   decrypted build. NX is off on 34.16, on for 86.10 and 57.23.
 2. `POST /diaglevel` grows an append-only global diag hash by one `calloc`+`strcpy` per
    unique `module` name, pre-auth, with no NULL check on the allocation — ~2800 names
    kills the daemon (~20 s outage, watchdog restarts). DoS proven; the interesting
