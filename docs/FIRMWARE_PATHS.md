@@ -300,8 +300,26 @@ authorization/tokens` (`authzTokenStatus: UNAUTHORIZED`, zeroed entitlements —
 `X-Sonos-Type: none`. All four cheap forgeries — `alg:none` with and without
 `x5c`, HS256 with a guessed key, and an RS256 JWT carrying a freshly minted
 self-signed x5c — come back as the same blanket 403 `Unauthorized.`, so validation
-detail is not observable over REST. Local minting stays open only for something
-signed by a key whose chain reaches the on-device root bundle.
+detail is not observable over REST. **The on-device root bundle is the public CA set — 132 roots, no Sonos root.**
+Extracted from the type-22 bundle of both the model-12 (86.10) and model-16
+(57.23) packages: Amazon, GlobalSign, Google Trust Services, DigiCert, eMudhra,
+AffirmTrust and the rest of the usual list. So chain trust is *not* the barrier
+a Sonos root would be; any publicly-trusted leaf can sign the assertion and the
+gate reduces to the claim schema.
+
+Two things follow. First, `grantType` matters and
+`urn:ietf:params:oauth:grant-type:jwt-bearer` is the right one — it changes the
+failure from **403 `ERROR_NO_PERMISSION`** (permission pre-check) to **401
+`ERROR_NOT_AUTHORIZED`** (real validation), while every other grant type stays
+403 and an absent one is 400 `Parsing terminated:grantType`. Second, the
+assertion can be genuinely minted: a real Let's Encrypt chain from this fleet
+(ECDSA P-256, so **ES256** with the raw `r||s` JWS form, not RS256/DER) plus a
+4-cert `x5c` produces a token the daemon actually validates and rejects on
+content, not on chain. `.`/`alg:none`/HS256/self-signed all stay 401 as well, so
+the response code alone no longer separates "untrusted" from "wrong claims" —
+the claim schema has to come from the parser
+(`FUN_00603aac` is the payload reader, errors map through `FUN_00600f08`'s
+`INPUT_JWT_*` table). Local minting stays open only on that schema.
 
 **The WS frame shape is `[header, payload]`, and that was the missing piece.**
 A command is a two-element JSON array: `{"namespace","command","householdId"}`
