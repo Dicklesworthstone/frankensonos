@@ -885,6 +885,14 @@ them, so the name still needs `DeviceProperties#SetZoneAttributes` and a real bo
 change needs whatever writes the settings record. `SetString` is also *inert* for those
 names while `SetZoneAttributes` is not — see below.
 
+**The `SetString` store can be read back, and it has a ~1 KB value cap.**
+`SystemProperties#GetString(VariableName)` — not `DeviceProperties` — returns
+`StringValue` from the same store `/setstring` writes (a key written earlier read
+back exactly). Values round-trip byte-exact up to 1000 bytes; a 2000-byte value
+**resets the connection** and 3000+ answers 400, with the daemon staying up and
+no key created. Newlines in a value are flattened to spaces, so a `key=value`
+line cannot be forged by injecting into the value.
+
 **The `DeviceProperties` setters are open pre-auth and they do write the settings
 record.** `SetZoneAttributes(DesiredZoneName, DesiredIcon, DesiredConfiguration)`
 renames the room with a plain SOAP call on 1400 and the name **survives a daemon
