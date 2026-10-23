@@ -2645,3 +2645,25 @@ carried at `sp+440` (stream at `sp+264`, view `{sp+447,17}`), and only then does
 `rfind` at `0x603c8c` prefix-test it and the inspector run at `0x6021e4` with
 `(out=sp+264, ctx=s1, pointer=sp+516, state=sp+32)`. Naming that 17-byte claim is
 the last unknown before the code can be driven by construction.
+
+### `AddOAuthAccountX` has ten arguments — and it is not the ARP checker
+
+Decompiling the real action wrapper (`FUN_00481330`, which is what the dispatcher
+calls) shows the handler fetch-and-set sequence, in order:
+
+```
+AccountType, AccountToken, AccountKey, OAuthDeviceID, AuthorizationCode,
+RedirectURI, UserIdHashCode, AccountTier, AccountUDN, AccountNickname
+```
+
+and the served SCPD declares exactly those ten, in that order. Earlier probes used
+six — three (`UserIdHashCode`, `AccountUDN`, `AccountNickname`) were never sent,
+which is *one* reason every one of them returned 402.
+
+**Correction to the earlier H13 note:** `0x41ad84` is not a sub-function of this
+handler at all. Its decompilation is an ARP-checker initialiser
+(`/proc/sys/net/ipv4/neigh/<if>/…`, a pipe, `arpchecker` logging). The `strcpy` at
+`0x41b0c0` copies `obj+0xa1` — an **interface name**, not an account field — into a
+16-byte stack buffer (`siocgif*` ifreq block: `struct ifreq` is 0x44, memset; strcpy
+target `ausStack_3c[16]`). So the overflow fires only if the interface name exceeds
+15 characters, and the account work does not feed it directly.
