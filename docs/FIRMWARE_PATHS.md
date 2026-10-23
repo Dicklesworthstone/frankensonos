@@ -420,9 +420,13 @@ how a local client obtains a scoped token without the cloud.
    `re-afelen-live` / `re-hls-kill`. It is **intermittent, not deterministic**:
    identical `g2` replays killed 3 of 6 (down at 4 s, 12 s and 25 s) after an
    earlier window gave 10/10 across the variant matrix; segment count does not
-   decide it (1-20 segments all crash sometimes and survive sometimes, and a
-   60 s watch on 8 segments saw it survive). Treat it as ~50 % per play with a
-   4-25 s fuse. **It is not S1-only:** the same playlist on
+   decide it, and a later window collapsed to **0/20** (payload-less packets,
+   4x-length segment, one-segment loops, 12-20 segment lists all clean), then
+   came back only partly after a `/setstring` restart (1/3). So it is
+   state-dependent as well as flaky: the only honest claim is "HLS playback
+   sometimes kills the daemon, 4-25 s fuse, worst right after a restart".
+   Media *content* is not the variable — payload-less packets survive, and so
+   does a 4x-length segment. **It is not S1-only:** the same playlist on
    86.10 (S2 Play:1) crashes 2/2 (8 s, 16 s), so the whole fleet is affected —
    the S2 daemon also fetches `hls-radio://`. Next: whether the fault is the
    segment-map builder (the `hls-%s said` / "creating HLS Segment Map entry"
