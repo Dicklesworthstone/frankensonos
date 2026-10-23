@@ -1666,3 +1666,26 @@ measured. Two are dead, one gives a useful map:
 
 Net: controlling the LAN buys observability and the HLS/media fetches, not a new
 pre-authentication parser on S1.
+
+### The live 57.23 daemon has exactly seven stack-`strcpy` sites
+
+A bounded audit of the *running* build is only possible now that the binaries are
+decrypted. Sizing it first: `anacapad` imports `strcpy`, `sprintf`, `sscanf`,
+`memcpy` (plus its own `snprintf_append`), and there are 37 `strcpy` call sites
+in total — but only **seven** copy into a stack destination, which is the set that
+can smash a frame:
+
+| site | source | first read |
+|---|---|---|
+| `0x41b124` | `s3+161` into `sp+76` | fills a `sockaddr_un`-shaped area (`sun_path`, ~104 bytes) — unbounded copy into a fixed path field |
+| `0x43f090` | `sp+24` into `s0+6108` | object field, source is a stack buffer |
+| `0x4548f4` | into `s3` | after a successful `rename`, destination is a pointer not a frame slot |
+| `0x47aa8c` | string returned by `0x4cb3e0` | into `sp+160` in a 360-byte frame, beside another buffer at `sp+227` |
+| `0x47aa98` | same shape | second copy in the same function |
+| `0x47add4` | `s0+99` | into `sp+24` in a 200-byte frame; reads `*(s0+356)` nearby |
+| `0x4cf3e0` | `ioctl(SIOCGIFCONF)` data | interface names, kernel-bounded |
+
+The three to read properly are `0x47aa8c`/`0x47aa98` (string-returning call into a
+frame), `0x47add4` and `0x41b124`; the rest are either kernel data or
+caller-supplied pointers. None is proven request-driven yet, and `sprintf` (24
+sites) is the next block if these are clean.
