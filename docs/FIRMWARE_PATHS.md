@@ -1258,6 +1258,21 @@ remaining unknown is the *claim content/issuer* the validator compares against,
 not the chain. Kit and mint script: `captures/research/emudhra/`
 (`mint_jwt.py`), key material stays under the ignored `captures/`.
 
+Where it currently stops, precisely: the forged token used as
+`Authorization: Bearer` on `management/reboot` is *inspected* and rejected with
+`401 invalid_token` ("Access token is invalid") — not `API_KEY_VALIDATION_FAILED`
+(which is what a non-token gets) and not `insufficient_scope` — so signature and
+chain pass and the inspector itself fails. Its checks are visible:
+`FUN_006021e4` normalises `token+0x20` (`iss`, via `FUN_00601ffc`) and compares it
+to a trusted device identity, then compares a `%llu` of the expiration with
+`token+0xd0`, with distinct result codes (2 = expired, 5 = bad expiration,
+6 = "not minted by this device"). `resolveToken` answers `statusReason: UNKNOWN`
+for every `iss`/`sub`/`objectType`/`scope` variant tried, and the daemon writes
+no readable log (`/status/tmp/*` serves only known files), so the oracle is the
+Bearer path plus the result code in the debugger-free code above. The next step
+is the `iss` normaliser: what `FUN_00601ffc` strips/expects decides the exact
+issuer string, and that is a three-line read rather than a guess.
+
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
 
 NVD: "In certain Sonos products before S1 11.12 and S2 15.9 … a failure to
