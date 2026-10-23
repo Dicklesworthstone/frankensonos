@@ -1434,6 +1434,24 @@ actually holds, and which claim feeds it, is the next read at the `rfind`. A mis
 its value goes through `%llu` (`0x665e74`). Note the `hhid` compare at `0x60228c`
 reads `token+108`, so the claim *values* still matter after `iss` passes.
 
+**The inspector passes with `|` and self-consistent claim values
+(2026-10-23).** The composition is built from the token's own claim values
+in the order `owner|luid|hhid|network_hash`, joined with a pipe — with all
+four claims set to `x` and `iss` set to `x|x|x|x` the endpoint moves off
+`401 invalid_token` to **`503 service_unavailable` "Could not resolve
+token"**, reproducibly. Every other separator (`/ : . - _ & , ""`) and the
+claim-*name* variants stay at 401, so `|` is the live separator and the
+comparison is self-consistency, not a device-identity constant. Equal
+values cannot distinguish the order; a real `hhid` with `x` elsewhere still
+401s, so at least one more component must differ from `x` when the values
+are mixed.
+
+The next gate is **resolution**, not inspection: the 503 comes from
+`resolveToken` and does not move for `sub` = UDID, `sub` = short id,
+`systemId`, or `aud` = UDID. `GET settings/player` and `GET info` answer
+`200` with the same token, but they are also open with the API key alone,
+so they do not yet prove anything about scopes.
+
 **The response is one-bit (2026-10-23).** Expired `exp`, absent `exp`,
 far-future `exp`, a bad signature, a missing `hhid`, and every iss shape
 tried (names only, names+values, `"" / : | . - _ & = ,`, and the same
