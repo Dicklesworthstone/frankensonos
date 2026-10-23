@@ -464,7 +464,11 @@ how a local client obtains a scoped token without the cloud.
    counters at `+0xc508/0xc50c/0xc510/0xc514`: they are overwritten with our segment bytes and
    only `head` is restored afterwards, so after each compaction count/tail/limit are
    attacker-chosen and then used as indices (`mulli …,0xc50`). That is a controlled write over
-   the queue control block, not a heap underrun.
+   the queue control block, not a heap underrun. The payload maps precisely: the counters come
+   from the **first four 32-bit words of the entry after the head entry** (entry offsets
+   0x00–0x0c), so whatever field sits at entry+0 is the injected value; entry offset 0xc18 is a
+   double (segment duration). Whether entry+0 is a copied URI or a pointer decides if the
+   injected words are ASCII-bounded or heap pointers.
    Invocation details the harness needs: the path is `/MediaRenderer/AVTransport/Control`
    (the short `/AVTransport/Control` answers 405) and `SetAVTransportURI` needs DIDL
    metadata — empty returns 500, an `audioBroadcast` item carrying the `hls-radio://` res
