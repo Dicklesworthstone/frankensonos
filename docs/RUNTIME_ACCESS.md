@@ -100,7 +100,10 @@ close (killing the server is enough), so the wedge only becomes permanent when t
 reads a path. `/status/showstp` demonstrably **runs** `/usr/sbin/brctl showstp
 br0` on both lines and returns `<Command cmdline='…'>` with its output. Other
 runnable pages: `route`, `showmacs`, `showstats`, `scanresults`, `uptime`,
-`dmesg`. Readable file pages include `/tmp/upgrade.log`, `/proc/net/tcp`,
+`dmesg` — but of those, **only `showstp` actually produces output** on either
+line (deterministic across repeats); `route`, `showmacs`, `showstats`,
+`scanresults`, `uptime`, `dmesg`, `api`, `cloud` and `device` are inert on
+86.10 and 57.23 despite being in the table. Readable file pages include `/tmp/upgrade.log`, `/proc/net/tcp`,
 `/proc/net/snmp`, `/proc/slabinfo`, `/jffs/localsettings.txt`,
 `/jffs/settings/householdsettings.json`, `/opt/log/*` and `/etc/resolv.conf` —
 requested by basename (`/status/VERSION` serves `/VERSION`).
