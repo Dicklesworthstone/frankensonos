@@ -1469,14 +1469,22 @@ actually holds, and which claim feeds it, is the next read at the `rfind`. A mis
 its value goes through `%llu` (`0x665e74`). Note the `hhid` compare at `0x60228c`
 reads `token+108`, so the claim *values* still matter after `iss` passes.
 
-**The inspector passes with `|` and self-consistent claim values
+**The `|` composition reached the resolver twice, then stopped
 (2026-10-23).** The composition is built from the token's own claim values
 in the order `owner|luid|hhid|network_hash`, joined with a pipe — with all
 four claims set to `x` and `iss` set to `x|x|x|x` the endpoint moves off
 `401 invalid_token` to **`503 service_unavailable` "Could not resolve
 token"**, reproducibly. Every other separator (`/ : . - _ & , ""`) and the
-claim-*name* variants stay at 401, so `|` is the live separator and the
-comparison is self-consistency, not a device-identity constant. Equal
+claim-*name* variants stayed at 401, which read as "`|` is the live
+separator and the check is self-consistency". **Caveat measured hours
+later:** the same `x|x|x|x` token then answered `401` on four consecutive
+tries, and so did a fresh `jti`, the all-household variant and the `iss=x`
+control — with the unauthenticated baseline still a correct `403
+insufficient_scope`, so the endpoint is healthy. Nothing about the token
+changed. The 503 window (~2–9 s per call, `service_unavailable` "Could not
+resolve token") therefore looks like a transient service state as much as a
+passed inspection, and the separator is **not yet proven**; only code
+reading settles it. Equal
 values cannot distinguish the order; a real `hhid` with `x` elsewhere still
 401s, so at least one more component must differ from `x` when the values
 are mixed.
