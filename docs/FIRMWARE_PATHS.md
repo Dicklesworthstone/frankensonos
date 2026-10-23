@@ -2498,3 +2498,20 @@ enough — the OAuth action has to be made to accept its parameters first.
 
 That closes the value-side experiments on the account path. Everything now points at
 one artefact: the parameter table the OAuth handler walks, or a real call to it.
+
+### Handler parameter plumbing (structural facts)
+
+The `AddOAuthAccountX` handler drives a parameter-list object, and reading that
+plumbing gives three concrete shapes for anyone continuing:
+
+- it advances an index at `+4` and hard-stops at **16 params** (`sltiu v0,v1,16`);
+- a parameter descriptor lives at `obj + idx*0x30 + 0x2ec` (stride `0x30`);
+- the `lui a1,0x52; addiu a1,…` operands point at a `.rodata` region of **code
+  pointers** (a dispatch/vtable-like table, with `0x4ee214` as the common stub), not
+  at name strings — which is why resolving them as strings comes back empty.
+
+So the names are not reachable by dereferencing those operands; they are resolved
+through the dispatch table. Combined with the earlier result that capacity, service
+id and argument count are all ruled out, the 402 has to come from a *required-param
+or ordering* rule encoded in that table — i.e. read the table, or capture one real
+call.
