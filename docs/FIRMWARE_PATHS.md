@@ -1098,7 +1098,9 @@ empty `<ZPSupportInfo/>` rather than 404.
 **`/status/showstp` stalls the status server on S2.** It answers 200 with only
 ~227 bytes, but takes 15.7 s / 3.2 s / 0.65 s on three consecutive calls and
 each call blocks `/status/*` completely while it runs (a concurrent `/status/zp`
-times out, then recovers). Nothing dies; it is a trivial stall lever.
+times out, then recovers). Nothing dies; it is a trivial stall lever. Warm, four
+parallel `showstp` calls each returned in 0.5-0.8 s and the daemon stayed up, so
+the 15 s figure is a cold-start cost, not serialisation.
 
 **S2 gates the debug pages but not `/setstring`.** On 86.10 `/advconfig`,
 `/diaglevel` and `/diagmsg` all answer 403 (they are open on 57.23) and
