@@ -188,6 +188,7 @@ impl Surface {
         result
     }
 
+    #[allow(clippy::too_many_lines)] // the queue-undo backup's staging is in flight
     fn remove_selected(
         &self,
         client: &Client,

@@ -401,12 +401,14 @@ fn owner_change(f: &Fixture, change: u8) {
         1 => soap::seek_position(&f.lan, f.host, 99).unwrap(),
         2 => soap::pause(&f.lan, f.host).unwrap(),
         3 => set_play_mode(&f.lan, f.host, PlayMode::RepeatOne).unwrap(),
-        4 => soap::leave_group(
-            &f.lan,
-            f.sim.player("Beta").unwrap().ip,
-            &PlayerId(f.sim.player("Beta").unwrap().uuid.clone()),
-        )
-        .unwrap(),
+        4 => {
+            soap::leave_group(
+                &f.lan,
+                f.sim.player("Beta").unwrap().ip,
+                &PlayerId(f.sim.player("Beta").unwrap().uuid.clone()),
+            )
+            .unwrap();
+        }
         5 => f.sim.reboot("Alpha", Duration::ZERO).unwrap(),
         6 => f.sim.reboot("Beta", Duration::ZERO).unwrap(),
         7 => {
