@@ -1002,13 +1002,25 @@ S2 device-registration / devmode path:
   `param_3` with 256 — the `max()` only feeds `*param_5`. If the caller-supplied
   length (from the devmode/registration frame) exceeds 255, the copy runs past
   the frame.
-- `FUN_004c0420` (register/signing key): zeroes 32 bytes at `obj+0x174`, then
-  `memcpy(obj+0x174, packet, len)` where `len` is a **big-endian u32 read straight
-  out of the packet** (`packet+0x20..0x23`) and is also stored as the field length.
-  A peer-supplied length above 32 overruns into the neighbouring member.
 - `FUN_004f9818`: `memcpy(dest, param_3, 0x14)` then
-  `memcpy(dest + 6, param_3[2], *param_3)` — `*param_3` is a count with no
-  comparison against the 0x14 record size minus the 6-byte header.
+  `memcpy(dest + 6, param_3[2], *param_3)` — the payload is written over the
+  tail of the fixed header. The ring's free space is checked against
+  `payload + 0x19 + strlen(name)` first, so it is safe unless that sum wraps;
+  it is a telemetry writer and the payloads are small.
+
+Follow-up on the first two after reading the callers:
+
+- `FUN_004c0420` is **capped, not open**: the whole body sits inside
+  `if (len < 0x21)` (32 fits, 33+ logs "Invalid registration signing key" and
+  returns), so the u32 from `packet+0x20` is safe. Only the `FUN_004f38a0`
+  finding stands.
+- `FUN_004f38a0` is only ever called with a devmode statement result:
+  `FUN_004f3b44` runs `ZZ0137` on the `POST /devmode` statement and passes its
+  output length as `param_3`, and `FUN_004f3974` is the notification-only path
+  (passes 0). So driving `param_3` past 255 needs a statement that *passes*
+  signature verification — the one thing still gated on the missing key. The
+  statement input itself is capped at 0x400, so the verifier can return at most
+  a ~1 KB payload for a 256-byte buffer.
 
 86.10 is the S2 build, so these are not on the 57.23 S1 daemon at all. The first
 two need a peer that speaks the registration/devmode frames, which is the next
