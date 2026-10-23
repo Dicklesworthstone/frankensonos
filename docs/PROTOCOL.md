@@ -423,10 +423,13 @@ Update mechanism (verified 2026-10-07):
   as another entry, and the consumer walks it. Blob-side mutations are only
   one variable: after repeated attempts the updater enters a stale state in
   which it aborts even the pristine official file after ~128 KiB, so only
-  the first update after a power-cycle is a fair sample. On fresh boots,
-  cipher-2-with-one-entry completed the download and rebooted, while two
-  explicitly declared entries closed the transfer at the type-3 record and
-  twice left TCP/1400 down with ICMP still answering
+  the first update after a power-cycle is a fair sample. The crash samples
+  below were taken with the **model-5** package; the owner's `.185` is model
+  16 (ZPS5, PowerPC), whose own package parses the same blobs but has not yet
+  shown a daemon drop in local or LAN tests. On fresh boots with the 1-5
+  package, cipher-2-with-one-entry completed the download and rebooted, while
+  two explicitly declared entries closed the transfer at the type-3 record
+  and twice left TCP/1400 down with ICMP still answering
   (probe log in `captures/research/root-hunt/`). See
   `docs/FIRMWARE_PATHS.md` for the per-class layout and the `sonostool`
   decryption path.
