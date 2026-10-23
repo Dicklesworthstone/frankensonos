@@ -554,6 +554,43 @@ reached on a full image because the key error fires first. Next fuzzing needs th
 everything after the type-22 cert bundle is unparsed without it, so the script, kernel,
 rootfs, cert-bundle and signature parsers are all still untouched offline.
 
+### `upgradeinfo` accepts keys anacapad never writes (pre-auth policy override)
+
+`/bin/upgrade` parses `/var/run/upgradeinfo` as `Key: [value]` lines against a key table
+at `0x100178c4..0x100178f4`: `Progress`, `Report`, `SonosID`, `HouseholdID`,
+`CurrentVersion`, `SystemVersion`, `Timestamp`, **`OriginClient`**, **`PrevSWGenMinVersion`**,
+**`MinVersion`**. `RTopologyImpl::BeginSoftwareUpdate` only ever templates the first seven
+plus `Force`/`Ignore`/`URL`, so the last three can only arrive by **injection** — and
+`ExtraOptions` is written into that file verbatim, so an XML character reference
+(`&#10;`, a bare LF is normalised to a space) appends arbitrary lines:
+
+```
+ExtraOptions = &#10;MinVersion: [1.0-1]
+```
+
+Measured: in the chroot harness a `MinVersion: [1.0-1]` line turns an older image's
+post-download verdict from `Upgrade blocked. (9) downgrade blocked` into a pass (the run
+then proceeds to the encrypted-section step). It does **not** help with the *fetch-side*
+abort: on hardware the same image with the same injection is still cut off at exactly
+`0x20000`, so there are two distinct version gates and `MinVersion` only reaches the
+second. `PrevSWGenMinVersion` and `OriginClient` are parsed but not yet mapped to any
+behaviour.
+
+### A 34.16 body can be made to parse cleanly on 57.23 — and then only the signature stops it
+
+Chasing the downgrade floor: a genuine model-16 `34.16-37101` image aborts on 57.23, and
+the abort is *not* the unknown section types 9/10 — it is the **trailer record**
+(`type 0xffffffff`) that every 34.16-era image ends with, the same defect reproduced in
+the fuzz above. Remove only the trailer and it parses on; it then hits the version floor
+(`Upgrade blocked. (9)`), which the injected `MinVersion` clears. With the trailer gone
+*and* a synthesised type-21 patch-train record (`2021_11/2023_01/2023_12/2024_12`) spliced
+after the version record, the whole 4.7 MB body parses, the compatibility section
+matches, and the run ends at exactly one thing: `No valid signature` (6).
+
+Because 34.16 has no signature section at all, **every edit above is free** — so this is
+a byte-exact recipe for the moment a signing key exists, and it also proves the only
+remaining wall on a keyless network downgrade is the signature, not the format.
+
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
 month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
 CVE-2026-75093 (`from_raw_dt_align` buffer size) and CVE-2026-55832 (attacker-chosen
