@@ -2734,3 +2734,11 @@ the schema data, not the two files.
 That is the state to resume from for running the 86.10 token path locally: the
 binary, its libs and its config are staged at `/opt/s86` in the guest, paths linked
 from `/opt/{bin,lib,conf,htdocs}`, and the flash ABI is the only patch applied.
+
+**The 17-byte name is not a perf-counter.** The pointer table at `0x6af878` holds
+`AUTH_IS_AUTHORIZED`, `AUTH_PARSE_DEVICE_TOKEN`, `AUTH_POLICY_TABLE_CACHE_FETCH`,
+`COMMAND_*`, `PLAYER_VOLUME_SET_VOLUME` — all longer than 17, so none is the string
+the view `{sp+447,17}` names. The block that builds it is `0x603c38–0x603c44`
+(`6049e8(sp+516)`, `604fe8(sp+32)`, then `Stream(sp+264, sp+440)`), i.e. `sp+440` is
+the `std::function` object the stream reads through and `sp+447` its capture. Read
+`604fe8`'s field list for the 17-byte capture instead of the counter table.
