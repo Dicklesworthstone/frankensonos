@@ -1282,8 +1282,13 @@ That read is done: `param_3+8` is **header** state, not payload — reader B
 `x5c`, `alg`, `kid` (names at `0x6aff38`, `0x6aff3c`, `0x6aff40`), while reader A
 binds the claims. So "minted by this device" compares a claim against material
 the code derives from the header/`x5c`. Setting `iss` to the forged leaf's CN
-(plain and `CN=` forms) still fails, so that derivation — most likely something
-computed from the leaf certificate — is the next read, not a string guess.
+(plain and `CN=` forms) still fails. Also failed: `iss` equal to the leaf's
+base64 DER (the `x5c[0]` value), a single-cert `x5c`, `x5c` as a bare string, the
+device id, the household id, `Sonos`, `sonos`, `api.sonos.com`, `muse`,
+`https://muse.sonos.com`, a URN, `:1`/`:0` suffixed ids and an empty string — all
+`401 invalid_token`. So the derivation is struct-derived, not one of the obvious
+strings, and the next read is reader B's field handler (`FUN_00604a20` class,
+`x5c`/`alg`/`kid`) to see where the compared `string*` actually comes from.
 
 ### Lane status (checkpoint)
 
