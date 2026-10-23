@@ -345,7 +345,13 @@ fn reads(cx: &Ctx<'_>) -> Vec<RouteEntry> {
         .inline()
         .entry(cx.web, {
             let surface = Arc::clone(cx.surface);
-            Box::new(move |_| health(surface.data_dir(), surface.live_health()))
+            Box::new(move |_| {
+                health(
+                    surface.data_dir(),
+                    surface.live_health(),
+                    &surface.room_names(),
+                )
+            })
         })
         .response_schema::<HealthDto>(200, "The daemon answers"),
         cx.route(
@@ -770,7 +776,11 @@ fn error_answers(mut entry: RouteEntry, write: bool) -> RouteEntry {
     entry
 }
 
-fn health(data_dir: Option<&std::path::Path>, live: Option<crate::LiveHealth>) -> Response {
+fn health(
+    data_dir: Option<&std::path::Path>,
+    live: Option<crate::LiveHealth>,
+    rooms: &[String],
+) -> Response {
     let body = HealthDto {
         status: "ok".into(),
         version: env!("CARGO_PKG_VERSION").into(),
@@ -790,14 +800,16 @@ fn health(data_dir: Option<&std::path::Path>, live: Option<crate::LiveHealth>) -
             failures: fault.count,
             last_secs_ago: fault.ago.as_secs(),
         }),
-        warnings: warnings(),
+        warnings: warnings(rooms),
     };
     Response::json(&body).expect("HealthDto serializes")
 }
 
 /// The daemon's warnings (`/health`'s `warnings`): absent while none was
-/// logged in the last day.
-fn warnings() -> Option<crate::WarningsHealth> {
+/// logged in the last day. A storm's sample names none of `rooms`, nor the
+/// home directory or a login ([`fsonos_core::warnings::scrub`]).
+fn warnings(rooms: &[String]) -> Option<crate::WarningsHealth> {
+    let home = std::env::var("HOME").ok();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -807,7 +819,7 @@ fn warnings() -> Option<crate::WarningsHealth> {
         .map(|storm| crate::StormHealth {
             kind: storm.kind,
             level: level(storm.error),
-            sample: storm.sample,
+            sample: fsonos_core::warnings::scrub(&storm.sample, rooms, home.as_deref()),
             last_hour: storm.last_hour,
             threshold: storm.threshold,
         })

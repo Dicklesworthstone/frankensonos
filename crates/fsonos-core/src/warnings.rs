@@ -254,6 +254,27 @@ fn usual(hours: &[u32], observed: usize) -> u32 {
     before.get(before.len() / 2).copied().unwrap_or(0)
 }
 
+/// `sample` as anyone who reaches the daemon may read it: each of `rooms`
+/// (the longest first) as `<room>`, `home` (the user's directory, which names
+/// them) as `~`, and every word holding an `@` (a login) as `<login>`.
+/// Masking ([`mask`]) took the words that hold a digit already.
+#[must_use]
+pub fn scrub(sample: &str, rooms: &[String], home: Option<&str>) -> String {
+    let mut out = match home.filter(|h| h.len() > 1) {
+        Some(home) => sample.replace(home, "~"),
+        None => sample.to_owned(),
+    };
+    let mut rooms: Vec<&String> = rooms.iter().filter(|r| !r.is_empty()).collect();
+    rooms.sort_by_key(|r| std::cmp::Reverse(r.len()));
+    for room in rooms {
+        out = out.replace(room.as_str(), "<room>");
+    }
+    out.split(' ')
+        .map(|word| if word.contains('@') { "<login>" } else { word })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// `message` with every word that holds a digit (an address, a port, an id)
 /// as `N`, cut to [`SAMPLE_CHARS`].
 fn mask(message: &str) -> String {
@@ -310,6 +331,32 @@ mod tests {
         assert_eq!(mask("RINCON_000E58A0000401400 at fd7a::5"), "N at N::N");
         assert_eq!(mask("renewal failed"), "renewal failed");
         assert_eq!(mask(&"x".repeat(500)).len(), SAMPLE_CHARS);
+    }
+
+    #[test]
+    fn a_sample_others_read_names_no_room_home_or_login() {
+        let rooms = ["Living".to_owned(), "Living Room".to_owned(), String::new()];
+        assert_eq!(
+            scrub(
+                "sleep timer in Living Room's group: Living did not answer",
+                &rooms,
+                None
+            ),
+            "sleep timer in <room>'s group: <room> did not answer"
+        );
+        assert_eq!(
+            scrub(
+                "cannot open the store in /Users/someone/Library/fsonos: denied",
+                &[],
+                Some("/Users/someone")
+            ),
+            "cannot open the store in ~/Library/fsonos: denied"
+        );
+        assert_eq!(
+            scrub("signed in as someone@example.com, then", &[], Some("")),
+            "signed in as <login> then"
+        );
+        assert_eq!(scrub("renewal failed", &rooms, None), "renewal failed");
     }
 
     #[test]

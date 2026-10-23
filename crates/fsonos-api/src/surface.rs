@@ -294,6 +294,18 @@ impl Surface {
             .map(|live| crate::live::health(&live.snapshot()))
     }
 
+    /// The rooms the live model knows, by name, with no I/O: what `GET
+    /// /health` keeps out of a warning's sample. None without a live model.
+    #[must_use]
+    pub fn room_names(&self) -> Vec<String> {
+        self.live().map_or_else(Vec::new, |live| {
+            live.households()
+                .iter()
+                .flat_map(|h| h.players.iter().map(|p| p.room_name.clone()))
+                .collect()
+        })
+    }
+
     /// Resolve rooms with the owner's aliases from `path` (read on each call,
     /// so edits apply at once; a missing file means none).
     #[must_use]
