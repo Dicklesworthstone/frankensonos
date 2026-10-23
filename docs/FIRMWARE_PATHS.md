@@ -2051,3 +2051,19 @@ it is driven — full list, delta, escaped, raw, correct attribute shape. The de
 rebuilds its list from elsewhere on boot. The remaining source of truth is the
 controller's own payload (or the on-disk service file the handler would write),
 not the SCPD, which declares no arguments at all.
+
+### The device SCPD is stale; the controller confirms both arguments exist
+
+The S1 controller carries `RUpnpMSDUpdateAvailableServices` and the literal pair
+`AvailableServiceDescriptorList` / `AvailableServiceTypeList` (alongside
+`ListAvailableServices`). So the action really takes both, and the argument-less
+declaration in the device's own `MusicServices1.xml` is simply out of date — the
+same staleness that hid the true service ids.
+
+Neither name is a `SystemProperties` key either (`GetString` on both, and on
+`AvailableServices`, is 800), so the list is not readable or writable that way.
+
+Consequence: the remaining unknown is only the *content* contract — the device
+accepted every payload shape and applied none, including its own list replayed
+verbatim. Reading the controller's payload builder (or the on-disk service file)
+is the way in, and it needs no device access.
