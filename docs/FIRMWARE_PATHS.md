@@ -934,3 +934,24 @@ The boot path itself gives the cleanest persistence story: `/etc/Configure` exec
 yields root on every boot plus SSH, without the devmode statement. Live-verified unauth interfaces
 that could supply such a write, the `:1443` UPnP proxy, the `/getaa` SMB ingress and the
 `NumThreads 4` DoS are documented in [`RUNTIME_ACCESS.md`](RUNTIME_ACCESS.md).
+
+### 2026-10-23 later: what the ring byte is, and anacapad notes
+
+Clarified by live/differential runs: the ref byte after the length is accepted
+for many values (0 invalid, 1–4 accepted, 5+ parse in some builds), and mutated
+types still verify the genuine signature. It is therefore not a key *selector*
+by itself: the 20-byte payload is still resolved against the compiled store (the
+genuine model-16 fingerprint `d67d7a…` exists only in `libsonoscrypto`, not in
+any of the bundle's 238 key encodings). Inline-key hypotheses are exhausted for
+now; the bundle's role is at most a chain, not a key source.
+
+Other measured negatives/positives:
+- `/getrs` with no query string hangs (no response within 5 s); any unstastisfied
+  query answers 200 with `Content-Length: 0` and dummy content headers, so the
+  three `4d2e08` lookups are not the obvious names yet.
+- A 1 MB POST to `/notify` times out at the client but leaves the daemon alive.
+- The 57.23 `anacapad` will not start under qemu-user in the VM: it aborts
+  (`SIGIOT`) after `MEMGETINFO` on `/dev/mtd0` returns `ENOTTY` and the flash/MDP
+  init fails. `upgrade` is unaffected because it tolerates the failure. Local
+  anacapad fuzzing therefore needs an emulated MDP partition table, not just a
+  RAM mtd.
