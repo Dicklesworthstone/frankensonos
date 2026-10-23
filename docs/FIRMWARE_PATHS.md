@@ -2150,3 +2150,29 @@ nohup qemu-system-mips -M malta -m 256 -kernel vmlinux49 -initrd initrd49e.gz \
 - The unpatched `upgrade` still fails compat on the stub MDP (`Failed compatibility
   check`); copy it and zero the `beqz` at file offset `0x7d7c` for local runs. It then
   reaches `no decryption key (48)` because the stub carries no model keyring.
+
+### Verdict on `UpdateAvailableServices`: accepted, never applied
+
+Eight payload variants, every one answered 200 and every one left the device
+unchanged (`ListAvailableServices` empty for that boot, `GetSessionId(999)` 806, no
+request to a LAN SMAPI sink):
+
+1. full 102-entry list replayed verbatim, entity-escaped
+2. same plus an extra entry
+3. same plus `AvailableServiceTypeList`
+4. same, descriptor raw instead of escaped
+5. single self-closing entry with `ContainerType="MService"`
+6. single entry plus `Policy` + `Manifest` children (the real entries are *not*
+   self-closing — they carry `<Policy Auth=… PollInterval=…/>` and
+   `<Manifest Version=… Uri=…/>`)
+7. 6 plus a matching type list of just `999`
+8. 7 plus `AvailableServiceListVersion` at 2, 9999 and 999999
+
+After a reboot the list is the original 102 with no `999`, so the cloud's boot-time
+fetch wins over anything this action stores. Nothing about the call is harmful.
+
+Best current explanation: the action is storage-only and the device re-reads the
+service list from the cloud on boot, and/or it needs the cloud's exact payload
+(including per-service manifests) to consider the list valid. Registering a service
+that makes the device speak SMAPI to our URI therefore needs either the exact cloud
+artifact or a device kept offline across the boot.
