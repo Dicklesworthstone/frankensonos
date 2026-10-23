@@ -695,6 +695,20 @@ renders its heading before refusing, so its handler does run first. `/diaglevel`
 `/advconfig` and `/support/*` are *not* behind this flag. Next step is whoever sets bit 22,
 and whether that is settings-backed (then `SetString` could arm it).
 
+### Two small surface facts
+
+**`SUBSCRIBE` CALLBACK grammar.** Accepted (200): a normal `<http://ip:port/path>`, two
+callbacks in one header, no port, a 900-char path, 20 callbacks, port 65535, and a space
+inside the path. Rejected (412): missing angle brackets, empty `<>`, `https`, IPv6 literal,
+`user:pw@`. A 4000-char value resets the connection — that is the header-line cap
+(~2044), not a parser bug; the daemon stays up. The parser is strict about grammar and
+tolerant of length/multiplicity up to that cap.
+
+**`SetString` is not the zone-attribute setter.** `key=ZoneName` answers 200 but the room
+does not rename (`/status/zp` unchanged); the name lives in a different settings object, so
+that needs `DeviceProperties#SetZoneAttributes`. A write to an *existing* key also did not
+wedge the unit — the ~80 s outage is specific to creating a new key.
+
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
 month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
 CVE-2026-75093 (`from_raw_dt_align` buffer size) and CVE-2026-55832 (attacker-chosen
