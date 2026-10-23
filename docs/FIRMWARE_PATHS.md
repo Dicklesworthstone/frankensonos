@@ -1696,3 +1696,25 @@ The three to read properly are `0x47aa8c`/`0x47aa98` (string-returning call into
 frame), `0x47add4` and `0x41b124`; the rest are either kernel data or
 caller-supplied pointers. None is proven request-driven yet, and `sprintf` (24
 sites) is the next block if these are clean.
+
+### The `0x41b124` copy is in the OAuth account-add path, which is reachable unauthenticated
+
+The function containing it is `AddOAuthAccountX`'s handler (frame 184 at
+`0x41ad84`; its own strings are `AddOAuthAccountX`, `untX`, `untToken`). It builds
+a file path with `snprintf`, calls `sonosFileReadInt`, and then
+
+```
+strcpy(sp+76, s3+161)        ; s3 = a0 from 0x41b0c8, field at +161
+```
+
+— an unbounded copy into a path-sized field near the top of a 184-byte frame, from
+an object field rather than a literal, so the length depends on whatever filled
+`+161`.
+
+`AddOAuthAccountX` answers **unauthenticated** (500 + UPnP 402, i.e. it parses and
+rejects, rather than 403), so this path is drivable from the LAN. Getting past the
+402 is the blocker: `AccountType` 2311 with plausible token/key/device-id lengths
+(120 / 32 / 32) still 402s in 0.27 s, so the validation is local and shape-specific
+— the next step is to recover the accepted shape from the handler (`0x41ad84`),
+not to guess. `AccountType`/`AccountToken`/`AccountKey`/`OAuthDeviceID`/
+`AuthorizationCode`/`RedirectURI` are the six arguments.
