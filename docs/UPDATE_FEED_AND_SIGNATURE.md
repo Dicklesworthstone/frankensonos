@@ -179,13 +179,31 @@ Delivery works end to end over plain HTTP:
 Local `http://` URLs avoid TLS completely. A Sonos hostname forces HTTPS and
 a self-signed cert is rejected with alert 42, so local URLs are the way in.
 
+The URL builder is `FUN_103f9b0c` in anacapad. It appends `update.upm?query`
+to the passed base when the package flag is clear, and builds component
+names as `<base><name>-<rev>-<reg>.upd` otherwise. The base is used
+verbatim, so it **must end in `/`**; the image URL is likewise treated as a
+directory base and the updater appends `/update.upd` (it strips the final
+path segment). A real controller sends a base URL; the `.upm` suffix is
+never in its input.
+
+**The update manager wedges.** After roughly one manifest cycle it answers
+`BeginSoftwareUpdate` with 200 but performs no fetch and no reboot, for at
+least 12 minutes, across `Flags` 0/1/6, new URLs and new paths. Soft reboots
+from a direct `.upd` revive at most one attempt; `/reboot` and
+`/support/reboot` are 403 and the `/api` routes return 400. A **power-cycle**
+is the only reliable reset.
+
+The current public manifest's own model-16 entry is `34.16-37101` with
+`fromver_max="34.7-33245"`, so a player already on 57.23 does **not** select
+it. Added entries are not reliably selected either, in either order or with
+`model="16"`/`model="16.4"` (the ZmSTP node data reports model `16.4`).
+
 What is still unresolved is the step **after** the download: even a package
 with the original signature and only `type-1` build 74171 (no component
 change) reboots back to `57.23-74170`. The image is fetched (served in
-206 responses), then the device reboots and keeps the old rootfs. The
-manifest's `revision`/`system_version` bumps, extra `flags` attributes, and
-image naming did not change that. That post-download gate is the next thing
-to identify.
+206 responses), then the device reboots and keeps the old rootfs. No
+manifest attribute tried so far changes that.
 
 
 
@@ -580,3 +598,25 @@ A modified package therefore costs one boot per probe.
 Implication for a repack: bumping the version is not free (as the VM suggested).
 The gate hashes 128 KiB, so a modified image needs a valid type-17 signature over
 the prefix — i.e. one of the two compiled keys: the same dead end, reached earlier.
+
+### Correction: the 131 072-byte abort is a **model mismatch**, not a prefix hash
+
+The earlier 128 KiB result was measured with **model-12** packages served to
+**model-16** units (`.164`/`.168`/`.185` all report `Model: 16` on `/devmode`). A
+model-16 package with only its version bumped to 99.1.1 is read to the last byte
+(**5 606 749/5 606 749**) by the same unit that aborted a model-12 file at 131 072.
+The compatibility block prints the model it parsed (`Compatible with model 12 …`),
+so the model is the first thing checked and the client walks away once it does not
+match — no 128 KiB hash exists.
+
+What actually happens with a matching model and a modified prefix: the full file is
+read, then the signature check fails. The unit reboots back to its version and
+`/status/tmp/upgrade.log` is empty (verification precedes the log). A genuine
+same-model package passes and flashes. So the only real gate is the type-17 RSA
+signature over the prefix (the two compiled `libsonoscrypto` keys); a repack needs
+one of them, exactly as the static analysis said, and everything before that point
+is reachable with a version bump and a matching model.
+
+The VM lab reproduces the parse path but not the signature: with the compat branch
+NOPped it reaches `no decryption key` (48) because the stub MDP carries no per-model
+keyring.
