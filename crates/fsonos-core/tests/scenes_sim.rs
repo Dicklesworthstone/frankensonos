@@ -79,6 +79,23 @@ fn sorted(mut scene: Scene) -> Scene {
     scene
 }
 
+/// What `op` does, in a word, to list a plan.
+fn op_name(op: &SceneOp) -> &'static str {
+    match op {
+        SceneOp::Leave { .. } => "leave",
+        SceneOp::Join { .. } => "join",
+        SceneOp::Volume { .. } => "volume",
+        SceneOp::Mute { .. } => "mute",
+        SceneOp::Favorite { .. } => "favorite",
+        SceneOp::Uri { .. } => "uri",
+        SceneOp::Queue { .. } => "queue",
+        SceneOp::QueueBackup { .. } => "queue_backup",
+        SceneOp::Dj { .. } => "dj",
+        SceneOp::Play { .. } => "play",
+        SceneOp::Pause { .. } => "pause",
+    }
+}
+
 #[test]
 fn a_saved_scene_brings_the_house_back_in_both_generations() {
     let sim = sim();
@@ -160,22 +177,7 @@ fn a_saved_scene_brings_the_house_back_in_both_generations() {
     let (ops, report) = apply(&lan, &h, &scene, &ApplyOptions::default());
     assert!(report.is_complete(), "{report:#?}");
     assert_eq!(report.done, ops);
-    let names: Vec<&str> = ops
-        .iter()
-        .map(|op| match op {
-            SceneOp::Leave { .. } => "leave",
-            SceneOp::Join { .. } => "join",
-            SceneOp::Volume { .. } => "volume",
-            SceneOp::Mute { .. } => "mute",
-            SceneOp::Favorite { .. } => "favorite",
-            SceneOp::Uri { .. } => "uri",
-            SceneOp::Queue { .. } => "queue",
-            SceneOp::QueueBackup { .. } => "queue_backup",
-            SceneOp::Dj { .. } => "dj",
-            SceneOp::Play { .. } => "play",
-            SceneOp::Pause { .. } => "pause",
-        })
-        .collect();
+    let names: Vec<&str> = ops.iter().map(op_name).collect();
     assert_eq!(
         names,
         [
