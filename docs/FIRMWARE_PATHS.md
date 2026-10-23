@@ -1640,3 +1640,29 @@ The reachable reboot lever is the updater, driven over `:1443`:
 `Flags=0` + the signed 57.22 image was used on `.185` after ~2 h of a wedged `:1400`;
 the port answered again on the downgraded build, so the procedure is the working
 recovery path for a wedged unit, independent of the `/notify` fault.
+
+### LAN-position plays (owner controls the network) — tested 2026-10-23
+
+Owning the LAN was supposed to open MITM-shaped routes, so the three cheapest were
+measured. Two are dead, one gives a useful map:
+
+- **Album art is not fetched by a screenless S1.** `SetAVTransportURI` with an
+  `upnp:albumArtURI` on our server and a playable `res` on the same host: the player fetched
+  the audio twice and the JPEG zero times. Artwork is the controller's job on this class.
+  Re-test only on a unit with a display (S2 One/Move) before calling it dead generally.
+- **Players do not fetch a description from an M-SEARCH answer.** They *do* search: a 60 s
+  passive listen collected 23 `ZonePlayer:1`/`ContentDirectory` M-SEARCHes from .5/.6 players
+  (plus DIAL from non-Sonos hosts), which means the vector exists. Replying unicast with a
+  `ZonePlayer:1` 200, a matching USN and a LOCATION on our server got 23 answers out and
+  **zero description fetches**. The household topology the players already hold is
+  authoritative, so a stranger's LOCATION is ignored. (Same conclusion the earlier NOTIFY
+  probe reached from the other direction.) Reaching the description parser therefore needs a
+  rogue device that is *accepted into the topology*, not just advertised.
+- **`OnlineUpdateBaseURL` is not a SetString key** — the POST answers 400 for it, while
+  arbitrary keys 200. It is a replicated setting owned by `/testenv` (the page carries an
+  `OnlineUpdateBaseURL override` field and a 120 s replication warning), and `/testenv` is
+  itself behind the devmode flag. So redirecting the *manifest* fetch at the daemon is
+  gated on devmode too.
+
+Net: controlling the LAN buys observability and the HLS/media fetches, not a new
+pre-authentication parser on S1.
