@@ -894,7 +894,15 @@ status 4, "too many certs"), `malloc(count * 0xc)` and fills fixed 12-byte
 records through a validating reader. The header parser `FUN_10396bfc` checks
 availability before every field, requires version 3 or 4, and copies a fixed
 0x40 bytes into a 0x40 stack buffer. This agrees with the earlier 128-mutation
-run.
+run. The updater's `read_hdr` (`FUN_00406fb0` in `upgrade`) is likewise fixed
+size: exactly 0x10 bytes into the caller's 16-byte buffer, then magic
+`0x35167f49` and version `0x11`/`0xffffffff` checks — no copies.
+
+`/status` has no injection surface either: `zp` and `ifconfig` are the only
+handlers (a ~50-word brute found nothing else; `tmp/upgrade.log` is registered
+only while an update runs), arguments in `?…` are ignored, `%20`/`;` are not
+re-split, and an unknown name returns 200 with an empty `<ZPSupportInfo/>`
+rather than 404.
 
 ## 2026-10-23: live 57.23 binaries recovered (model-12 key), verifier mapped
 
