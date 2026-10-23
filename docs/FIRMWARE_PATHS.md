@@ -2560,3 +2560,29 @@ call.
 Also ruled out: the `:1443`/WS `upnpSystemProperties#call` proxy is no softer than
 raw SOAP for this action — the same six `input[]` pairs give the same UPnP 402. The
 proxy only changes the transport, not the handler or its parameter table.
+
+### Refinement: the issuer is a global, and a prefix test runs before the inspector
+
+Reading the caller around `0x603cf8` corrects the "iss is compared to reader state"
+framing. The sequence is:
+
+1. a map lookup on the parsed stream, then `FUN_00603aac` is re-entered to read the
+   value at `sp+447` with length **17** — the claim's JSON value;
+2. `rfind(<claim>, <global c-string>, 0)` (`0x520578`) is called on that value with
+   the global at **`0x7048e8`**, i.e. `starts_with`;
+3. only if it returns 0 is the inspector `FUN_006021e4` called; otherwise control goes
+   to `0x603c94`.
+
+`0x7048e8` is in `.bss` (`0x6fa8f0..0x7056f0`) and its address appears as a relocation
+in the `.data.rel.ro` table at `0x46fa14` alongside `0x704828/0x704844/…`, so it is a
+member (an inline `std::string` buffer) of a global auth/context object, not a
+constant. The reader fills the context on the way through, but the *prefix* that gates
+the inspector comes from that object.
+
+So a forged `iss` must **begin with** whatever the global holds at runtime; "Sonos"
+very likely fails that prefix test and lands on the non-inspector path, which is also
+the most plausible source of the `invalid_token` answer. Next: identify that global's
+value — the code does not reference the struct through `lui`, so it is reached through
+`gp`; the writer of `0x7048e8` is the thing to find (it is a `std::string` assignment,
+not a constant), and on a live S2 unit the household id is the obvious candidate to
+try as an `iss` prefix.
