@@ -196,6 +196,20 @@ For whole-container removal, `RemoveTrackRangeFromQueue(UpdateID=0,
 StartingIndex=N, NumberOfTracks=M)` deletes a range in ONE call — verified on
 both generations (a 491-track playlist removed atomically; queues restored).
 
+### Bare Spotify kinds: artist, episode, show (probed 2026-10-23)
+
+`spotify:artist:<ID>`, `spotify:episode:<ID>` and `spotify:show:<ID>` render
+through `x-sonos-spotify:spotify%3a<kind>%3a<ID>?sid=<SERVICE_ID>` and DIDL
+with the class the kind expects (`object.container.person.musicArtist`,
+`object.item.audioItem.musicTrack`, `object.container`). Only `sid` is sent:
+adding `flags`, `sn` or the `cdudn` descriptor makes the renderer refuse
+with UPnP **402**. Both `SetAVTransportURI` and `AddURIToQueue` accept all
+three kinds with that shape on S1 57.23 (episode also with a real catalog id),
+and the queue stores the prefixed URI. Start-to-audio of these kinds is not
+yet qualified: a real episode Set+Play is answered 200 then sits in
+`TRANSITIONING`, and a show returns to `STOPPED`; tracks, albums and
+playlists remain the proven kinds.
+
 Queue edits and the revision guard (verified live on S1 and S2, 2026-10-17;
 stopped groups, two copies of the last track appended, only the copies
 edited, queue and play mode restored and checked): `RemoveTrackRangeFromQueue`
@@ -479,6 +493,20 @@ string in both binaries); the S2 build adds a `RRuntimePolicyInterface`
 definitive answer is dynamic: qemu-mips emulation of anacapad, or one live
 POST of a crafted statement (rate-limited, and a mutation — owner approval
 first).
+
+**Live crash in the 57.23 devmode path (2026-10-23, pre-auth).** A statement
+that is syntactically valid up to the key ring makes `POST /devmode` close the
+connection with no response instead of answering, when the ring's key-material
+length runs past the parser's expectations (0x600 bytes observed 2/2; 0x520
+and below answer `400`). It is content-dependent as well as length-dependent —
+the same 0x600 length filled with `B` answered `400` — consistent with
+`hash_alg`/`siglen` being read past the end of the statement buffer so the
+values come from stale stack. The listener and `/status` stay up immediately
+afterwards (`200` ×3), so it is a per-connection crash, not the daemon. The
+same bytes driven straight into 34.16's `ZZ0137` return `0` with no fault, so
+this is a 57.23 regression that the readable code cannot reproduce — the first
+live devmode bug, and the reason the 57.23 daemon binary is now the top
+acquisition target.
 
 **Reversal (same round, via libsonoscrypto)**: the gate IS cryptographic. The
 three obfuscated helpers resolve to `libsonoscrypto.so.1` functions: ZZ0021
