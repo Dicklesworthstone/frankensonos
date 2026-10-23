@@ -37,7 +37,7 @@ test('selection and review are read-only, immutable and preserve repeated URI po
   assert.throws(() => choice.rows.push({})); assert.throws(() => { choice.zone.members[0] = 'Changed'; });
   const op = Q.plan(choice, 'remove');
   assert.deepEqual(op.body, { zone: 'Synthetic / room@S2', position: 2, expected_revision: 'synthetic:revision', expected_uris: Array(3).fill('same:duplicate') });
-  assert.match(op.detail, /Not undoable/); assert.match(op.detail, /currently playing/);
+  assert.match(op.detail, /check the result/); assert.match(op.detail, /currently playing/);
   assert.equal(f.calls.length, 1); assert.ok(f.calls.every((c) => c.body === undefined));
 });
 
@@ -163,7 +163,7 @@ test('acknowledgements remain usable after the originating view is hidden', asyn
 
 test('removal receipts must match the group, selected range, remaining length and undo boundary', async () => {
   const f = await fixture(), op = Q.plan(f.model.select(2, 3), 'remove');
-  for (const patch of [{ zone: 'Other' }, { position: 1 }, { count: 2 }, { remaining: 83 }, { undoable: true }, { recovered: 'yes' }, { done: '' }, { notes: [{}] }]) {
+  for (const patch of [{ zone: 'Other' }, { position: 1 }, { count: 2 }, { remaining: 83 }, { undoable: 'true' }, { undoable: undefined }, { recovered: 'yes' }, { done: '' }, { notes: [{}] }]) {
     assert.throws(() => Q.receipt(removed(op, patch), op));
   }
   assert.equal(Q.receipt(removed(op), op).done, 'Removed');
@@ -172,10 +172,23 @@ test('removal receipts must match the group, selected range, remaining length an
 test('move receipts validate the resulting position rather than the original insert-before', async () => {
   const f = await fixture(), op = Q.plan(f.model.select(2, 3), 'move', 10);
   assert.equal(op.resultPosition, 7);
-  for (const patch of [{ position: 10 }, { count: 1 }, { total: 82 }, { revision: '' }, { changed: 'yes' }, { undoable: true }, { zone: 'Other' }]) {
+  for (const patch of [{ position: 10 }, { count: 1 }, { total: 82 }, { revision: '' }, { changed: 'yes' }, { undoable: 'true' }, { undoable: undefined }, { zone: 'Other' }]) {
     assert.throws(() => Q.receipt(moved(op, patch), op));
   }
   assert.equal(Q.receipt(moved(op, { changed: false }), op).changed, false);
+});
+
+test('queue edit receipts preserve the daemon backup result without sending a second edit', async () => {
+  for (const undoable of [false, true]) {
+    for (const action of ['remove', 'move']) {
+      const f = await fixture(), op = Q.plan(f.model.select(2, 3), action, 10);
+      const reply = action === 'remove' ? removed(op, { undoable }) : moved(op, { undoable });
+      const result = Q.receipt(reply, op);
+      assert.equal(result.undoable, undoable);
+      assert.equal(result.changed, true);
+      assert.ok(f.calls.every((call) => call.body === undefined));
+    }
+  }
 });
 
 test('play receipts need a complete native outcome; malformed successes are not acknowledgements', async () => {

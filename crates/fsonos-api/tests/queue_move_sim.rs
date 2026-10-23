@@ -189,7 +189,7 @@ fn moves_a_block_through_a_group_member_without_touching_playback_on_s1_and_s2()
         assert_eq!((done.position, done.count, done.total), (4, 2, 5));
         assert!(done.changed);
         assert!(!done.recovered);
-        assert!(!done.undoable);
+        assert!(done.undoable);
         assert_eq!(f.current(), ["a", "d", "e", "b", "c"].map(uri));
         let after = soap::get_position_info(&f.sim.lan(), host).unwrap();
         assert_eq!(after.uri, before.uri);
@@ -203,11 +203,27 @@ fn moves_a_block_through_a_group_member_without_touching_playback_on_s1_and_s2()
             .unwrap();
         assert_eq!(log.len(), 1);
         assert!(log[0].action.intent.starts_with("move_in_queue"));
-        // Marked: not undoable, and undo stops at it.
+        // The exact pre-edit queue and playback bookmark are durably undoable.
         assert!(log[0].action.before_state.is_some());
-        assert!(!fsonos_core::actions::undoable(
+        assert!(fsonos_core::actions::undoable(
             log[0].action.before_state.as_deref()
         ));
+        let restored = f
+            .surface
+            .undo_checked(&Client::LoopbackHttp, log[0].id)
+            .unwrap();
+        assert_eq!(restored.undone, Some(log[0].id));
+        assert!(restored.failures.is_empty(), "{restored:?}");
+        assert_eq!(f.current(), ["a", "b", "c", "d", "e"].map(uri));
+        let restored_position = soap::get_position_info(&f.sim.lan(), host).unwrap();
+        assert_eq!(restored_position.track, before.track);
+        assert_eq!(restored_position.position_secs, before.position_secs);
+        assert_eq!(restored_position.uri, before.uri);
+        assert_eq!(
+            f.attempts(),
+            1,
+            "undo restores the saved queue without replaying the move"
+        );
     }
 }
 

@@ -2,6 +2,7 @@
 //! content, source, play mode and position are never rebuilt by the controller.
 
 use fastapi::{JsonSchema, fastapi_openapi};
+use fsonos_core::actions;
 use fsonos_core::policy::Client;
 use fsonos_core::{CoreError, control};
 use fsonos_proto::content::{BrowsePage, QUEUE, browse_snapshot};
@@ -186,17 +187,21 @@ fn wrote(result: &Result<QueueMovedDto, Failure>) -> bool {
 
 impl Surface {
     /// Rearrange a selected block without changing any playback settings.
-    /// The action is logged but not advertised as undoable: a zone snapshot
-    /// does not retain enough queue identity to reverse a later edit safely.
-    /// A move that changed the queue, or may have (an uncertain outcome),
-    /// stops undo from reaching past it.
+    /// Selected queues within the backup bounds retain durable undo. Other
+    /// changed or uncertain outcomes stop undo from reaching past the edit.
     pub fn queue_move(
         &self,
         client: &Client,
         req: &QueueMoveRequest,
     ) -> Result<QueueMovedDto, Failure> {
         self.authorize_logged(client, MOVE)?;
-        let result = self.move_selected(client, req);
+        let _changing = self.log.as_ref().map(|log| {
+            log.restoring
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        let mut kept = None;
+        let mut result = self.move_selected(client, req, &mut kept);
         let (decision, text) = match &result {
             Ok(done) => ("allow".into(), done.done.clone()),
             Err(failure) => {
@@ -204,7 +209,10 @@ impl Surface {
                 ("allow".into(), format!("failed: {}", failure.detail))
             }
         };
-        self.record(
+        if wrote(&result) && kept.is_none() {
+            kept = Some(actions::before_state_not_undoable("queue edit"));
+        }
+        let saved = self.record_confirmed(
             client,
             format!(
                 "{MOVE}: {} position {} before {}",
@@ -212,8 +220,18 @@ impl Surface {
             ),
             decision,
             text,
-            wrote(&result).then(|| fsonos_core::actions::before_state_not_undoable("queue edit")),
+            kept,
         );
+        if !saved
+            && let Ok(done) = &mut result
+            && done.undoable
+        {
+            done.undoable = false;
+            done.done = done.done.replace(
+                "undo available",
+                "not undoable: the action log could not be saved",
+            );
+        }
         result
     }
 
@@ -221,6 +239,7 @@ impl Surface {
         &self,
         client: &Client,
         req: &QueueMoveRequest,
+        kept: &mut Option<String>,
     ) -> Result<QueueMovedDto, Failure> {
         req.validate()?;
         let (households, group) = self.queue_households(client, &req.zone)?;
@@ -240,6 +259,21 @@ impl Surface {
                     "a queue move requires a nonzero native revision",
                 ));
             }
+            let backup = self.log.as_ref().and_then(|_| {
+                actions::capture_queue_undo(
+                    &*self.transport,
+                    &households,
+                    &group.coordinator,
+                    self.now(),
+                )
+                .ok()
+                .filter(|pending| pending.matches_before(after.page.update_id, &after.uris))
+                .and_then(|pending| {
+                    pending
+                        .movement(req.position, count, req.insert_before)
+                        .ok()
+                })
+            });
             self.queue_group_unchanged(player.ip, &group)?;
             let sent = reorder_tracks(
                 &*self.transport,
@@ -282,12 +316,32 @@ impl Surface {
                 ));
             }
             after = observed;
+            if let Some(backup) = backup
+                && let Ok(undo) = actions::finish_queue_undo(
+                    &*self.transport,
+                    &households,
+                    backup,
+                    after.page.update_id,
+                    &after.uris,
+                    self.now(),
+                )
+            {
+                *kept = actions::with_queue_undo(None, &[undo]);
+            }
         }
+        let undoable = kept
+            .as_deref()
+            .is_some_and(|state| actions::undoable(Some(state)));
+        let undo_status = if undoable {
+            "undo available"
+        } else {
+            "not undoable"
+        };
         let zone = player.room_name.clone();
         let status = if plan.changes_order { "moved" } else { "kept" };
         Ok(QueueMovedDto {
             done: format!(
-                "{status} {count} track(s) at position {} in {zone}'s queue (not undoable)",
+                "{status} {count} track(s) at position {} in {zone}'s queue ({undo_status})",
                 plan.position,
             ),
             zone,
@@ -297,7 +351,7 @@ impl Surface {
             revision: snapshot::revision(&group.coordinator, &after.page),
             changed: plan.changes_order,
             recovered,
-            undoable: false,
+            undoable,
         })
     }
 }

@@ -178,7 +178,9 @@ impl<T: Transport + ?Sized> Stage<'_, T> {
             .into());
         }
         self.owner.confirm(self.t, self.host, self.coordinator)?;
-        if !self.before.objects.is_empty() {
+        let committed_revision = if self.before.objects.is_empty() {
+            revision
+        } else {
             let deletion = queue_removal::Snapshot {
                 revision,
                 uris: staged
@@ -203,19 +205,24 @@ impl<T: Transport + ?Sized> Stage<'_, T> {
                 stopped: Cell::new(false),
             };
             let count = u32::try_from(self.before.objects.len()).map_err(invalid)?;
-            queue_removal::remove(&guarded, self.host, self.coordinator, &deletion, 1, count)?;
+            let removed =
+                queue_removal::remove(&guarded, self.host, self.coordinator, &deletion, 1, count)?;
             if guarded.blocked.get() {
                 return Err(invalid(
                     "the source ownership fence failed before committing the queue",
                 )
                 .into());
             }
-        }
+            removed.revision
+        };
         let final_queue = content::browse_snapshot(self.t, self.host, QUEUE)?;
-        if !same_items(self.saved, &final_queue.objects) {
-            return Err(
-                invalid("the committed queue does not match the complete saved queue").into(),
-            );
+        if final_queue.update_id != committed_revision
+            || !same_items(self.saved, &final_queue.objects)
+        {
+            return Err(invalid(
+                "the committed queue no longer matches its confirmed revision and complete saved contents",
+            )
+            .into());
         }
         let committed = self.owner.after_removal(
             self.t,
@@ -303,6 +310,7 @@ fn silence<T: Transport + ?Sized>(
     Ok(quiet)
 }
 
+#[allow(clippy::too_many_arguments)] // optional ownership inherited from a logged edit
 pub(super) fn restore<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -311,12 +319,33 @@ pub(super) fn restore<T: Transport + ?Sized>(
     backup: &QueueBackup,
     start: bool,
     attempted: &mut bool,
+    baseline: Option<&super::Baseline<'_>>,
 ) -> Result<bool, String> {
     let prepare = (|| -> Result<_, CoreError> {
         let host = control::locate(households, coordinator)?.ip;
         let owner = Owner::read(t, host, coordinator, backup.reference.play_mode.is_some())?;
         intended(&owner, house, coordinator)?;
         let before = content::browse_snapshot(t, host, QUEUE)?;
+        if let Some(expected) = baseline {
+            let uris = before
+                .objects
+                .iter()
+                .map(|item| item.res.as_ref().map(|res| &res.uri))
+                .collect::<Option<Vec<_>>>();
+            if expected.owner.group != owner.group
+                || expected.owner.mode != owner.mode
+                || !expected.owner.playback.agrees(&owner.playback)
+                || expected.revision != before.update_id
+                || uris.as_ref().is_none_or(|uris| {
+                    uris.len() != expected.uris.len()
+                        || uris.iter().zip(expected.uris).any(|(a, b)| *a != b)
+                })
+            {
+                return Err(
+                    invalid("the logged queue result changed before undo reconstruction").into(),
+                );
+            }
+        }
         if before.objects.iter().any(|item| {
             item.res
                 .as_ref()

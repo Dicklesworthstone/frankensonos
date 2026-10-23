@@ -32,11 +32,16 @@ use crate::{CoreError, HouseholdState};
 use fsonos_proto::Transport;
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 
 mod house_config;
+mod queue;
 pub use house_config::{
     SceneBefore, SceneRow, ScheduleBefore, ScheduleRow, before_state_config, scene_row,
     schedule_row,
+};
+pub use queue::{
+    PendingQueueUndo, QueueUndo, capture_queue_undo, finish_queue_undo, with_queue_undo,
 };
 
 /// Retention: the newest this many actions are kept…
@@ -113,6 +118,10 @@ pub struct BeforeState {
     pub tones: Vec<ToneBefore>,
     #[serde(default)]
     pub queued: Vec<QueuedBefore>,
+    /// Complete bounded contents and exact post-edit proof for native queue
+    /// removal/reordering. Older action rows have no queue reconstruction.
+    #[serde(default)]
+    pub queue_undo: Vec<QueueUndo>,
     /// The touched rooms just after the action ([`with_after`]); none in
     /// rows logged before undo checked for changes.
     #[serde(default)]
@@ -630,11 +639,28 @@ fn restore_zones<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     before: &BeforeState,
+    at: i64,
     vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> ZoneOutcomes {
+    let started = Instant::now();
     let mut zones = Vec::new();
     let mut failures = Vec::new();
+    for saved in &before.queue_undo {
+        match queue::restore(t, households, saved, queue::later(at, started), vet) {
+            Ok(report) => zones.push((saved.coordinator().clone(), report)),
+            Err(error) => failures.push((saved.coordinator().clone(), error.to_string())),
+        }
+    }
     for snap in &before.zones {
+        // A queue reconstruction owns its complete playback continuation.
+        // Never follow its failure with an obsolete reference-only restore.
+        if before
+            .queue_undo
+            .iter()
+            .any(|saved| saved.coordinator() == &snap.coordinator)
+        {
+            continue;
+        }
         match snapshot::restore_vetted(t, households, snap, &snapshot::Aspect::ALL, vet) {
             Ok(report) => zones.push((snap.coordinator.clone(), report)),
             Err(e) => failures.push((snap.coordinator.clone(), e.to_string())),
@@ -655,6 +681,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
     force: bool,
     vet: &dyn Fn(&snapshot::RestoreOp) -> Result<snapshot::RestoreOp, String>,
 ) -> Result<UndoReport, CoreError> {
+    let started = Instant::now();
     let before = BeforeState::parse(target.action.before_state.as_deref().unwrap_or("[]"))
         .map_err(|e| {
             CoreError::Store(format!(
@@ -662,6 +689,9 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
                 target.id
             ))
         })?;
+    // Even --force cannot overwrite a queue that no longer matches the exact
+    // confirmed edit. Check every saved queue before any independent restore.
+    queue::refuse_if_changed(t, households, &before.queue_undo, at)?;
     if !force {
         refuse_if_changed(t, households, &target, &before)?;
         house_config::refuse_if_changed(store, &target, &before)?;
@@ -675,7 +705,7 @@ fn restore_target_vetted<T: Transport + ?Sized, S: Store + ?Sized>(
         .collect();
     let now_sessions = capture_sessions(store, &steered)?;
 
-    let (zones, failures) = restore_zones(t, households, &before, vet);
+    let (zones, failures) = restore_zones(t, households, &before, queue::later(at, started), vet);
     let mut sessions = Vec::new();
     let mut session_failures = Vec::new();
     for session in &before.dj_sessions {

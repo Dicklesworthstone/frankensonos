@@ -100,10 +100,10 @@ public struct QueueMove: Equatable, Sendable {
         case .end: placement = "to the end of the queue"
         }
         if count == 1 {
-            return "Move “\(item.title)” from position \(item.position) \(placement). This exact queued copy will be at position \(resultingPosition) of \(total).\n\nOnly queue order changes; playback is not started or restarted. This move cannot be undone."
+            return "Move “\(item.title)” from position \(item.position) \(placement). This exact queued copy will be at position \(resultingPosition) of \(total).\n\nOnly queue order changes; playback is not started or restarted. Undo requires a complete backup saved by the daemon; check the result."
         }
         let entries = items.map { "\($0.position). \($0.title)" }.joined(separator: "\n")
-        return "Move \(count) consecutive entries from positions \(item.position)–\(items.last!.position) \(placement), starting at position \(resultingPosition) of \(total). Their internal order stays unchanged.\n\n\(entries)\n\nOnly queue order changes; playback is not started or restarted. This move cannot be undone."
+        return "Move \(count) consecutive entries from positions \(item.position)–\(items.last!.position) \(placement), starting at position \(resultingPosition) of \(total). Their internal order stays unchanged.\n\n\(entries)\n\nOnly queue order changes; playback is not started or restarted. Undo requires a complete backup saved by the daemon; check the result."
     }
 
     func fields(in zone: Zone) -> [String: JSONValue] {
@@ -175,10 +175,13 @@ public struct QueueMove: Equatable, Sendable {
               !result.done.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               result.position == resultingPosition, result.count == count, result.total == total,
               Self.validRevision(result.revision), !result.revision.utf8.elementsEqual(revision.utf8),
-              result.changed, !result.undoable else { throw ClientError.unreadable }
+              result.changed else { throw ClientError.unreadable }
         let recovery = result.recovered ? " The speaker’s result was confirmed by reading the queue again." : ""
         let moved = count == 1 ? "“\(item.title)” moved from position \(item.position) to \(result.position) of \(result.total)."
             : "\(count) entries moved together from positions \(item.position)–\(items.last!.position) to positions \(result.position)–\(UInt64(result.position) + UInt64(count) - 1) of \(result.total), preserving their order."
-        return CommandReceipt(title: result.done, detail: moved + recovery + " This move cannot be undone.")
+        let undo = result.undoable
+            ? " Undo is available while the queue and playback still match this edit."
+            : " This move cannot be undone."
+        return CommandReceipt(title: result.done, detail: moved + recovery + undo)
     }
 }

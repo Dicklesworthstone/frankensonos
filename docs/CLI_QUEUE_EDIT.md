@@ -15,8 +15,9 @@ fsonos queue 'Room@S2' --offset 0 --limit 100 --json > queue.json
 fsonos queue-remove 'Room@S2' 3 --count 2 --snapshot queue.json
 ```
 
-This removes positions 3 and 4 as they appeared in that snapshot. Removal is
-not undoable. Removing the current entry may change or stop playback. The
+This removes positions 3 and 4 as they appeared in that snapshot. The result
+reports whether the daemon saved a complete [undo backup](QUEUE_UNDO.md).
+Removing the current entry may change or stop playback. The
 command itself is the confirmation; it does not ask an interactive question.
 A snapshot is read only, never overwritten, and should be kept out of git
 because it contains the household's music and renderer information.
@@ -30,7 +31,8 @@ fsonos queue-move 'Room@S2' 3 1 --count 2 --snapshot queue.json
 Both positions refer to the ORIGINAL queue, before moving the block. To
 append, use the snapshot's `total + 1` as the destination. Do not subtract the
 block's size. Moving before a position inside the selected block, or just
-after it, is a no-op. Reordering is not undoable by `fsonos undo`.
+after it, is a no-op. When the response reports `undoable: true`, `fsonos undo`
+can restore the saved queue while the confirmed edit's ownership still holds.
 
 The saved page must include every selected entry. `--count` defaults to one
 and is limited to 100. Large queues can be read with `--offset` and `--limit`;

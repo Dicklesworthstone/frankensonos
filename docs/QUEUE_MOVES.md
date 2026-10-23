@@ -45,8 +45,9 @@ Changing the selection, refreshing, paging, or closing the panel discards the
 review. A replaced room card cannot send its old confirmation. A request
 already sent is never retried or silently cancelled on closing; reopen the
 panel to inspect its outcome. Lost or unreadable replies require an explicit
-refresh before another edit. The browser does not clear/rebuild the queue,
-start playback, or pretend that queue reordering is undoable.
+refresh before another edit. The browser does not clear/rebuild the queue or
+start playback. The result reports whether the daemon saved a complete undo
+backup; [queue edit undo](QUEUE_UNDO.md) explains its bounds and checks.
 
 For terminal use, `fsonos queue-move` accepts a saved queue page or explicit
 URI/revision guards; see [CLI_QUEUE_EDIT.md](CLI_QUEUE_EDIT.md).
@@ -93,9 +94,11 @@ A successful response contains `done`, `zone`, the block's new one-based
 `position`, `count`, unchanged `total`, and the observed post-operation
 `revision`. `changed` is false for structural no-ops, which send no native
 write. `recovered` means the write reply failed but a complete coherent read
-confirmed the expected new order. `undoable` is false: an ordinary playback
-snapshot does not capture enough queue identity to reverse this edit safely.
-Read the current queue again before selecting another block.
+confirmed the expected new order. `undoable` is true only when the daemon saved
+the complete original selected queue and proved the exact post-move result.
+Queues outside the backup bounds and uncertain writes remain undo barriers.
+Read the current queue again before selecting another block; subsequent queue
+or playback changes can prevent the earlier move from being undone.
 
 Each real move carries the observed nonzero native UpdateID. A reported zero
 is refused rather than used as a wildcard. The controller checks fresh group

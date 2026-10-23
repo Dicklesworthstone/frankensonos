@@ -45,8 +45,8 @@ use std::time::Duration;
 
 mod execution;
 mod layout;
-mod queue;
-mod queue_backup;
+pub(crate) mod queue;
+pub(crate) mod queue_backup;
 mod targets;
 
 pub use queue::QueueReference;

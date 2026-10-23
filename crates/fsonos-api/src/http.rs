@@ -29,7 +29,7 @@
 //! | `GET /policy` | | [`crate::surface::house_policy::PolicyDto`]: the house policy, and the caller under it |
 //! | `POST /play` | [`crate::PlayRequest`] | [`OutcomeDto`] |
 //! | `POST /queue` | [`crate::surface::queue::QueueAddRequest`] | [`crate::surface::queue::QueueAddedDto`] |
-//! | `POST /queue/play`, `/queue/remove`, `/queue/move` | the entries, by position and URI, at the queue's revision | play one, remove a run of them (not undoable), or move them, without restarting playback |
+//! | `POST /queue/play`, `/queue/remove`, `/queue/move` | the entries, by position and URI, at the queue's revision | play one, remove a run, or move them without restarting playback; edits report whether a complete undo backup was saved |
 //! | `POST /play-mode` | the zone and its shuffle and repeat | [`crate::OutcomeDto`], undoable |
 //! | `POST /pause`, `/resume`, `/next`, `/previous`, `/ungroup` | [`crate::ZoneRequest`] | [`crate::OutcomeDto`] |
 //! | `POST /seek` | [`crate::SeekRequest`] | [`crate::OutcomeDto`] |

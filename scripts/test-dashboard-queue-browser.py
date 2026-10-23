@@ -156,7 +156,7 @@ class QueueBrowserTests(unittest.TestCase):
     def test_range_removal_warns_and_refreshes_the_queue(self):
         self.select(2, 4)
         self.page.locator('[data-queue-edit="remove"]').click()
-        self.assertIn('Not undoable', self.page.locator('#review-description').inner_text())
+        self.assertIn('check the result', self.page.locator('#review-description').inner_text())
         self.assertIn('currently playing', self.page.locator('#review-description').inner_text())
         self.confirm()
         self.page.wait_for_function("document.getElementById('queue-status').textContent.includes('52 tracks')")

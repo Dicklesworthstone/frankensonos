@@ -168,8 +168,12 @@ private func blockMove(_ position: UInt32 = 26, count: UInt32 = 60,
         let receipt = try move.receipt(JSONEncoder().encode(base), in: blockZone())
         #expect(receipt.detail.contains("positions 1–60") && receipt.detail.contains("confirmed by reading"))
         #expect(!receipt.partial)
+        var recoverable = base; recoverable["undoable"] = .bool(true)
+        let saved = try move.receipt(JSONEncoder().encode(recoverable), in: blockZone())
+        #expect(saved.detail.contains("Undo is available"))
+        #expect(!saved.partial)
         for (key, value) in [("count", JSONValue.integer(1)), ("position", .integer(2)), ("total", .integer(121)),
-                             ("revision", .string("block:r1")), ("zone", .string("Other")), ("undoable", .bool(true)), ("changed", .bool(false))] {
+                             ("revision", .string("block:r1")), ("zone", .string("Other")), ("undoable", .string("true")), ("changed", .bool(false))] {
             var wrong = base; wrong[key] = value
             #expect(throws: ClientError.self) { try move.receipt(JSONEncoder().encode(wrong), in: blockZone()) }
         }

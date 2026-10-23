@@ -48,7 +48,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/queue/remove",
                 REMOVE,
                 CONTROL,
-                "Remove identified consecutive queue entries once (not undoable)",
+                "Remove identified consecutive queue entries once (undoable when a complete backup is saved)",
             ),
             |s, c, req| answer(body::<QueueRemoveRequest>(req).and_then(|r| s.queue_remove(c, &r))),
         )
@@ -59,7 +59,7 @@ pub(super) fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
                 "/queue/move",
                 MOVE,
                 CONTROL,
-                "Move identified queue entries natively without restarting playback (not undoable)",
+                "Move identified queue entries natively without restarting playback (undoable when a complete backup is saved)",
             ),
             |s, c, req| answer(body::<QueueMoveRequest>(req).and_then(|r| s.queue_move(c, &r))),
         )

@@ -118,7 +118,7 @@ private func moveClient(_ transport: QueueMoveTransport) throws -> DaemonClient 
         #expect(secondCopy.explanation.contains("Track 5"))
         #expect(secondCopy.explanation.contains("position 5"))
         #expect(secondCopy.explanation.contains("position 6 of 6"))
-        #expect(secondCopy.explanation.contains("cannot be undone"))
+        #expect(secondCopy.explanation.contains("check the result"))
     }
 
     @Test func boundaryAndAlreadyNextActionsAreUnavailable() throws {
@@ -257,7 +257,7 @@ private func moveClient(_ transport: QueueMoveTransport) throws -> DaemonClient 
     @Test func missingMismatchedAndLostReceiptsAreUncertainAndNeverRetried() async throws {
         let chosen = try move()
         let changes: [[String: Any]] = [["zone": "Hall"], ["position": 5], ["count": 2], ["total": 7],
-            ["revision": "move:r1"], ["revision": " "], ["changed": false], ["undoable": true],
+            ["revision": "move:r1"], ["revision": " "], ["changed": false], ["undoable": "true"],
             ["recovered": "true"], ["done": ""]]
         var transports = try changes.map { change in RecordingTransport(try movedJSON(chosen) { $0.merge(change) { _, new in new } }) }
         for missing in ["position", "total", "revision", "recovered", "changed", "undoable"] {
@@ -273,5 +273,28 @@ private func moveClient(_ transport: QueueMoveTransport) throws -> DaemonClient 
             }
             #expect(await transport.requests.count == 1)
         }
+    }
+
+    @Test func savedQueueBackupsAreAcceptedAndPresentedWithoutRepeatingTheMove() async throws {
+        let chosen = try move()
+        let transport = try RecordingTransport(movedJSON(chosen) { $0["undoable"] = true })
+        let result = try await client(transport).perform(.queueMove(chosen), in: testZone())
+        #expect(!result.partial)
+        #expect(result.detail.contains("Undo is available"))
+        #expect(!result.detail.contains("cannot be undone"))
+        #expect(await transport.requests.count == 1)
+    }
+
+    @Test(arguments: [false, true])
+    func removalReceiptsPresentTheDaemonBackupResult(undoable: Bool) async throws {
+        let item = QueueItem(position: 2, title: "Test entry", uri: "renderer:test", creator: nil, album: nil)
+        let body: [String: Any] = ["done": "Removed", "position": 2, "count": 1,
+                                  "remaining": 5, "undoable": undoable]
+        let transport = RecordingTransport(String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self))
+        let result = try await client(transport).perform(.queueRemove(item, revision: "queue:r1"), in: testZone())
+        #expect(!result.partial)
+        #expect(result.detail.contains("Undo is available") == undoable)
+        #expect(result.detail.contains("cannot be undone") == !undoable)
+        #expect(await transport.requests.count == 1)
     }
 }

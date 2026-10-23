@@ -10,8 +10,10 @@ use fsonos_core::clock::SystemClock;
 use fsonos_core::policy::{Client, Policy};
 use fsonos_core::store::MemStore;
 use fsonos_proto::control as soap;
+use fsonos_proto::play_mode::{get_play_mode, set_play_mode};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_sim::{SimHandle, SimHousehold, SimModel, SimPlayerSpec};
+use fsonos_types::{PlayMode, TransportState};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::{Arc, mpsc};
@@ -146,6 +148,80 @@ fn sim(s2: bool) -> SimHandle {
 }
 
 #[test]
+fn http_removal_review_and_checked_undo_restore_the_selected_queue_on_s1_and_s2() {
+    for s2 in [false, true] {
+        for paused in [false, true] {
+            let sim = sim(s2);
+            let player = sim.player("Room").unwrap();
+            let host = player.ip;
+            let source = format!("x-rincon-queue:{}#0", player.uuid);
+            soap::set_av_transport_uri(&sim.lan(), host, &source, "").unwrap();
+            soap::seek_track(&sim.lan(), host, 2).unwrap();
+            set_play_mode(&sim.lan(), host, PlayMode::RepeatOne).unwrap();
+            soap::play(&sim.lan(), host).unwrap();
+            sim.advance(Duration::from_secs(17));
+            if paused {
+                soap::pause(&sim.lan(), host).unwrap();
+            }
+            let original = soap::get_position_info(&sim.lan(), host).unwrap();
+            let api = Api::start(&sim, Client::LoopbackHttp);
+            let (status, before) = api.get("/zones/Room/queue");
+            assert_eq!(status, 200, "{before}");
+            let (status, removed) = api.remove(&json!({
+                "zone": "Room", "position": 2,
+                "expected_uris": [before["items"][1]["uri"]],
+                "expected_revision": before["revision"]
+            }));
+            assert_eq!(status, 200, "{removed}");
+            assert_eq!(removed["undoable"], true, "{removed}");
+            assert_eq!(removed["remaining"], 2);
+            let (status, preview) = api.get("/undo/preview");
+            assert_eq!(status, 200, "{preview}");
+            assert_eq!(preview["undoable"], true, "{preview}");
+            let (status, restored) = api.call(
+                "/undo/checked",
+                Some(&json!({"expected_id": preview["id"]})),
+                &[("Content-Type", "application/json")],
+            );
+            assert_eq!(status, 200, "{restored}");
+            assert_eq!(restored["undone"], preview["id"]);
+            assert!(restored.get("failures").is_none(), "{restored}");
+            let (_, after) = api.get("/zones/Room/queue");
+            assert_eq!(after["total"], before["total"]);
+            for index in 0..3 {
+                assert_eq!(after["items"][index]["uri"], before["items"][index]["uri"]);
+            }
+            assert_ne!(after["revision"], before["revision"]);
+            let position = soap::get_position_info(&sim.lan(), host).unwrap();
+            assert_eq!(position.track, original.track);
+            assert_eq!(position.uri, original.uri);
+            assert_eq!(position.position_secs, original.position_secs);
+            assert_eq!(
+                get_play_mode(&sim.lan(), host).unwrap(),
+                PlayMode::RepeatOne
+            );
+            let state = soap::get_transport_info(&sim.lan(), host).unwrap().state;
+            if paused {
+                assert!(matches!(
+                    state,
+                    TransportState::Paused | TransportState::Stopped
+                ));
+            } else {
+                assert_eq!(state, TransportState::Playing);
+            }
+            let (status, _) = api.call(
+                "/undo/checked",
+                Some(&json!({"expected_id": preview["id"]})),
+                &[("Content-Type", "application/json")],
+            );
+            assert_ne!(status, 200, "a consumed queue backup must not be replayed");
+            drop(api);
+            sim.shutdown();
+        }
+    }
+}
+
+#[test]
 fn http_read_remove_and_stale_retry_preserve_unselected_entries_on_s1_and_s2() {
     for s2 in [false, true] {
         let sim = sim(s2);
@@ -267,7 +343,7 @@ fn http_moves_preserve_queue_playback_and_reject_replaying_old_selections() {
         assert_eq!(done["position"], 3);
         assert_eq!(done["changed"], true);
         assert_eq!(done["recovered"], false);
-        assert_eq!(done["undoable"], false);
+        assert_eq!(done["undoable"], true);
         let (status, failure) = send();
         assert_eq!(status, 409, "{failure}");
         assert_eq!(failure["code"], "QUEUE_CHANGED");

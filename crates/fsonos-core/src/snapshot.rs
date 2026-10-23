@@ -100,6 +100,13 @@ pub enum RestoreOp {
         player: PlayerId,
         mute: bool,
     },
+    /// Authorization for a separately guarded action-log queue reconstruction.
+    /// This marker carries no contents and cannot execute as a snapshot step.
+    RestoreQueue {
+        player: PlayerId,
+        start: bool,
+        mode: bool,
+    },
     Play,
     Stop,
 }
@@ -471,6 +478,12 @@ fn run<T: Transport + ?Sized>(
         RestoreOp::SetMute { player, mute } => soap::set_mute(t, ip(household, player)?, *mute)?,
         RestoreOp::Play => soap::play(t, host)?,
         RestoreOp::Stop => soap::stop(t, host)?,
+        RestoreOp::RestoreQueue { .. } => {
+            return Err(fsonos_proto::ProtoError::Malformed(
+                "queue restoration needs its logged contents and ownership proof".into(),
+            )
+            .into());
+        }
     }
     Ok(())
 }

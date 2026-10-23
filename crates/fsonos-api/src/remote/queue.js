@@ -528,7 +528,7 @@ const QueueRemote = (() => {
       const body = pending.body;
       return write('queueRemove', body, (result) => result.position === body.position
         && result.count === body.expected_uris.length && result.remaining === pending.remaining
-        && result.undoable === false && typeof result.recovered === 'boolean',
+        && typeof result.undoable === 'boolean' && typeof result.recovered === 'boolean',
       'Removing the reviewed queue entries…');
     }
 
@@ -613,7 +613,7 @@ const QueueRemote = (() => {
         && result.count === body.expected_uris.length && result.total === pending.total
         && nonblank(result.zone) && nonblank(result.revision)
         && result.revision !== body.expected_revision && result.changed === true
-        && result.undoable === false && typeof result.recovered === 'boolean',
+        && typeof result.undoable === 'boolean' && typeof result.recovered === 'boolean',
       'Moving the reviewed queue entries…');
     }
 
@@ -899,13 +899,13 @@ const QueueRemote = (() => {
             ? `Move ${pending.titles.length} entry(s) from position ${pending.body.position} ${destination} in ${zone}? The block will start at ${pending.position}.`
             : `Remove ${pending.titles.length} entry(s) starting at position ${pending.body.position}?` }),
           el('p', { text: moving
-            ? 'Only queue order changes; this does not start playback. Reordering cannot be undone. Other queue changes require a fresh review.'
-            : 'This cannot be undone. Removing the current entry may advance or stop playback. An active DJ can add new music.' }));
+            ? 'Only queue order changes; this does not start playback. Undo requires a complete backup saved by the daemon; check the result. Other queue changes require a fresh review.'
+            : 'Undo requires a complete backup saved by the daemon; check the result. Removing the current entry may advance or stop playback. An active DJ can add new music.' }));
         const titles = el('ul');
         for (const title of pending.titles) titles.append(el('li', { text: title }));
         review.append(titles, el('div', { class: 'row' },
           button(moving ? 'Cancel move' : 'Cancel removal', () => control.cancelRemoval()),
-          button(moving ? 'Move entries' : 'Remove permanently',
+          button(moving ? 'Move entries' : 'Remove entries',
             () => moving ? control.move(pending) : control.remove(pending), busy)));
         body.append(review);
       }

@@ -222,21 +222,23 @@ mod tests {
 
     #[test]
     fn removal_forwards_exact_identities_and_revision_and_returns_confirmed_counts() {
-        let outcome = json!({
-            "done": "removed 2 tracks (not undoable)", "zone": "Room", "position": 3,
-            "count": 2, "remaining": 8, "recovered": true, "undoable": false
-        });
-        let reply = Arc::new(Reply {
-            calls: Mutex::default(),
-            answer: Some(Ok(outcome.clone())),
-        });
-        let result = backend(&reply).remove_from_queue(&removal()).unwrap();
-        assert!(!result.is_error);
-        assert_eq!(result.structured_content, Some(outcome));
-        assert_eq!(
-            *reply.calls.lock().unwrap(),
-            [json!(["POST", "/queue/remove", removal()])]
-        );
+        for undoable in [false, true] {
+            let outcome = json!({
+                "done": "removed 2 tracks", "zone": "Room", "position": 3,
+                "count": 2, "remaining": 8, "recovered": true, "undoable": undoable
+            });
+            let reply = Arc::new(Reply {
+                calls: Mutex::default(),
+                answer: Some(Ok(outcome.clone())),
+            });
+            let result = backend(&reply).remove_from_queue(&removal()).unwrap();
+            assert!(!result.is_error);
+            assert_eq!(result.structured_content, Some(outcome));
+            assert_eq!(
+                *reply.calls.lock().unwrap(),
+                [json!(["POST", "/queue/remove", removal()])]
+            );
+        }
     }
 
     #[test]
@@ -293,22 +295,24 @@ mod tests {
 
     #[test]
     fn moves_forward_the_exact_selection_and_return_the_confirmed_new_revision() {
-        let outcome = json!({
-            "done": "moved two queue entries", "zone": "Room", "position": 1,
-            "count": 2, "total": 8, "changed": true, "recovered": true,
-            "undoable": false, "revision": "new-opaque-token"
-        });
-        let reply = Arc::new(Reply {
-            calls: Mutex::default(),
-            answer: Some(Ok(outcome.clone())),
-        });
-        let result = backend(&reply).move_in_queue(&movement()).unwrap();
-        assert!(!result.is_error);
-        assert_eq!(result.structured_content, Some(outcome));
-        assert_eq!(
-            *reply.calls.lock().unwrap(),
-            [json!(["POST", "/queue/move", movement()])]
-        );
+        for undoable in [false, true] {
+            let outcome = json!({
+                "done": "moved two queue entries", "zone": "Room", "position": 1,
+                "count": 2, "total": 8, "changed": true, "recovered": true,
+                "undoable": undoable, "revision": "new-opaque-token"
+            });
+            let reply = Arc::new(Reply {
+                calls: Mutex::default(),
+                answer: Some(Ok(outcome.clone())),
+            });
+            let result = backend(&reply).move_in_queue(&movement()).unwrap();
+            assert!(!result.is_error);
+            assert_eq!(result.structured_content, Some(outcome));
+            assert_eq!(
+                *reply.calls.lock().unwrap(),
+                [json!(["POST", "/queue/move", movement()])]
+            );
+        }
     }
 
     #[test]

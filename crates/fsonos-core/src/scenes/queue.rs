@@ -58,9 +58,9 @@ fn invalid(detail: &str) -> ProtoError {
 }
 
 #[derive(PartialEq, Eq)]
-pub(super) struct Group {
-    pub(super) members: Vec<PlayerId>,
-    pub(super) boot_seq: Option<u32>,
+pub(crate) struct Group {
+    pub(crate) members: Vec<PlayerId>,
+    pub(crate) boot_seq: Option<u32>,
 }
 
 pub(super) fn group<T: Transport + ?Sized>(
@@ -216,10 +216,10 @@ pub(super) fn capture<T: Transport + ?Sized>(
     Ok(Some(queue))
 }
 
-pub(super) struct Playback {
-    pub(super) media: MediaInfo,
-    pub(super) position: PositionInfo,
-    pub(super) state: TransportState,
+pub(crate) struct Playback {
+    pub(crate) media: MediaInfo,
+    pub(crate) position: PositionInfo,
+    pub(crate) state: TransportState,
     observed: Instant,
 }
 

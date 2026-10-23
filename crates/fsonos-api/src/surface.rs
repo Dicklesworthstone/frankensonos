@@ -565,8 +565,22 @@ impl Surface {
         result: String,
         before_state: Option<String>,
     ) {
+        self.record_confirmed(client, intent, decision, result, before_state);
+    }
+
+    /// Queue recovery is advertised only when its durable action was saved.
+    /// Failure still does not turn an already executed speaker write into a
+    /// retryable command failure.
+    fn record_confirmed(
+        &self,
+        client: &Client,
+        intent: String,
+        decision: String,
+        result: String,
+        before_state: Option<String>,
+    ) -> bool {
         let Some(log) = &self.log else {
-            return;
+            return false;
         };
         let action = Action {
             at: self.now(),
@@ -583,8 +597,14 @@ impl Surface {
             Err(_) => Err("action log poisoned".to_string()),
         };
         match written {
-            Ok(id) => self.announce_logged(&[LoggedAction { id, action }]),
-            Err(e) => tracing::warn!("action not logged ({}): {e}", action.intent),
+            Ok(id) => {
+                self.announce_logged(&[LoggedAction { id, action }]);
+                true
+            }
+            Err(e) => {
+                tracing::warn!("action not logged ({}): {e}", action.intent);
+                false
+            }
         }
     }
 
@@ -1787,6 +1807,26 @@ fn vet_restore(
     households: &[HouseholdState],
     op: &RestoreOp,
 ) -> Result<RestoreOp, String> {
+    if let RestoreOp::RestoreQueue { start, mode, .. } = op {
+        for tool in [
+            "pause",
+            "add_to_queue",
+            "remove_from_queue",
+            "play_queue",
+            "seek",
+        ] {
+            guard.authorize(tool, false).map_err(|f| f.detail)?;
+        }
+        if *start {
+            guard.authorize("resume", false).map_err(|f| f.detail)?;
+        }
+        if *mode {
+            guard
+                .authorize("set_play_mode", false)
+                .map_err(|f| f.detail)?;
+        }
+        return Ok(op.clone());
+    }
     let tool = match op {
         RestoreOp::SetVolume { .. } => "set_volume",
         RestoreOp::SetMute { .. } => "mute",
@@ -1795,6 +1835,7 @@ fn vet_restore(
         RestoreOp::Stop => "pause",
         RestoreOp::Play | RestoreOp::PlayQueue => "resume",
         RestoreOp::SetUri { .. } | RestoreOp::SeekTrack(_) | RestoreOp::SeekPosition(_) => "play",
+        RestoreOp::RestoreQueue { .. } => unreachable!("queue recovery was authorized above"),
     };
     guard.authorize(tool, false).map_err(|f| f.detail)?;
     if let RestoreOp::SetMute {

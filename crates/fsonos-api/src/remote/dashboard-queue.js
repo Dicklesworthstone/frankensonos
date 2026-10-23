@@ -67,8 +67,8 @@ const DashboardQueue = (() => {
     const detail = action === 'play'
       ? 'Starts this existing queue entry, including when paused. Does not add tracks or rebuild the queue. This can interrupt the current work.'
       : action === 'remove'
-        ? `Permanently removes only the selected entries. Not undoable. ${page.playing >= position && page.playing < position + count ? 'Includes the currently playing entry and may interrupt playback.' : 'Other queue entries are retained.'}`
-        : `Moves the range before original position #${insertBefore}${insertBefore === page.total + 1 ? ' (the end)' : ''}; its new first position is #${resultPosition}. Does not restart or resume playback. Not undoable. Shuffle can change the actual listening order.`;
+        ? `Removes only the selected entries. Undo requires a complete backup saved by the daemon; check the result. ${page.playing >= position && page.playing < position + count ? 'Includes the currently playing entry and may interrupt playback.' : 'Other queue entries are retained.'}`
+        : `Moves the range before original position #${insertBefore}${insertBefore === page.total + 1 ? ' (the end)' : ''}; its new first position is #${resultPosition}. Does not restart or resume playback. Undo requires a complete backup saved by the daemon; check the result. Shuffle can change the actual listening order.`;
     const result = frozen({ choice, action, body, resultPosition, title, detail, url: `/queue/${action}` });
     plans.add(result); return result;
   }
@@ -104,14 +104,14 @@ const DashboardQueue = (() => {
     }
     const { rows, page, zone } = operation.choice;
     if (value.zone !== zone.coordinator_room || value.count !== rows.length
-        || typeof value.recovered !== 'boolean' || value.undoable !== false
+        || typeof value.recovered !== 'boolean' || typeof value.undoable !== 'boolean'
         || (operation.action === 'remove'
           ? value.position !== rows[0].position || value.remaining !== page.total - rows.length
           : value.position !== operation.resultPosition || value.total !== page.total
             || !revisionOf(value.revision) || typeof value.changed !== 'boolean')) {
       throw new Error('The queue edit acknowledgement did not match the reviewed change.');
     }
-    return { done: value.done, changed: operation.action === 'remove' || value.changed,
+    return { done: value.done, changed: operation.action === 'remove' || value.changed, undoable: value.undoable,
       notes: [...(value.notes || []), ...(value.recovered
         ? [{ detail: 'The daemon confirmed the result by reading the queue; the edit was not replayed.' }] : [])] };
   }

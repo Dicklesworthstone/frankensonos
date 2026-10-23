@@ -3,6 +3,7 @@
 //! a complete, coherent read; the non-idempotent removal is never replayed.
 
 use fastapi::{JsonSchema, fastapi_openapi};
+use fsonos_core::actions;
 use fsonos_core::control::queue_removal::{self, RemovalError, read};
 use fsonos_core::policy::Client;
 use fsonos_core::{CoreError, control};
@@ -76,7 +77,8 @@ impl QueueRemoveRequest {
     }
 }
 
-/// A confirmed removal. Queue content deletion is not currently undoable.
+/// A confirmed removal. `undoable` requires a durable complete queue backup
+/// and proof of the exact result, still subject to ownership checks on undo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct QueueRemovedDto {
     pub done: String,
@@ -138,7 +140,13 @@ impl Surface {
         req: &QueueRemoveRequest,
     ) -> Result<QueueRemovedDto, Failure> {
         self.authorize_logged(client, REMOVE)?;
-        let result = self.remove_selected(client, req);
+        let _changing = self.log.as_ref().map(|log| {
+            log.restoring
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        });
+        let mut kept = None;
+        let mut result = self.remove_selected(client, req, &mut kept);
         let (decision, text) = match &result {
             Ok(done) => ("allow".to_string(), done.done.clone()),
             Err(failure) => {
@@ -146,16 +154,16 @@ impl Surface {
                 ("allow".to_string(), format!("failed: {}", failure.detail))
             }
         };
-        // A zone snapshot does not capture queue contents. Do not claim this
-        // edit can be undone by restoring only a source and queue position.
-        // A removal that went through, or may have (an uncertain outcome),
-        // stops undo from reaching past it; a refusal removed nothing.
+        // Unsupported captures and uncertain writes retain the barrier. A
+        // reference-only snapshot must never claim to recover deleted entries.
         let wrote = match &result {
             Ok(_) => true,
             Err(failure) => failure.detail.starts_with(UNCERTAIN),
         };
-        let kept = wrote.then(|| fsonos_core::actions::before_state_not_undoable("queue edit"));
-        self.record(
+        if wrote && kept.is_none() {
+            kept = Some(actions::before_state_not_undoable("queue edit"));
+        }
+        let saved = self.record_confirmed(
             client,
             format!(
                 "{REMOVE}: {} position {} count {}",
@@ -167,6 +175,16 @@ impl Surface {
             text,
             kept,
         );
+        if !saved
+            && let Ok(done) = &mut result
+            && done.undoable
+        {
+            done.undoable = false;
+            done.done = done.done.replace(
+                "undo available",
+                "not undoable: the action log could not be saved",
+            );
+        }
         result
     }
 
@@ -174,6 +192,7 @@ impl Surface {
         &self,
         client: &Client,
         req: &QueueRemoveRequest,
+        kept: &mut Option<String>,
     ) -> Result<QueueRemovedDto, Failure> {
         let (start, end) = req.range()?;
         let (households, group) = self.queue_households(client, &req.zone)?;
@@ -218,6 +237,17 @@ impl Surface {
                 ));
             }
         }
+        let backup = self.log.as_ref().and_then(|_| {
+            actions::capture_queue_undo(
+                &*self.transport,
+                &households,
+                &group.coordinator,
+                self.now(),
+            )
+            .ok()
+            .filter(|pending| pending.matches_before(before.revision, &before.uris))
+            .and_then(|pending| pending.removal(req.position, count).ok())
+        });
         self.queue_group_unchanged(host, &group)?;
         // The same native mutation and read-back as enqueue undo. The API
         // retains its stricter request, revision-token and membership checks.
@@ -230,6 +260,31 @@ impl Surface {
             count,
         )
         .map_err(removal_failure)?;
+        if let Some(backup) = backup {
+            let expected: Vec<_> = before.uris[..start]
+                .iter()
+                .chain(&before.uris[end..])
+                .cloned()
+                .collect();
+            if let Ok(undo) = actions::finish_queue_undo(
+                &*self.transport,
+                &households,
+                backup,
+                done.revision,
+                &expected,
+                self.now(),
+            ) {
+                *kept = actions::with_queue_undo(None, &[undo]);
+            }
+        }
+        let undoable = kept
+            .as_deref()
+            .is_some_and(|state| actions::undoable(Some(state)));
+        let undo_status = if undoable {
+            "undo available"
+        } else {
+            "not undoable"
+        };
         let (remaining, recovered) = (done.remaining, done.recovered);
         let recovery = if recovered {
             "; confirmed by read-back, not replayed"
@@ -239,7 +294,7 @@ impl Surface {
         Ok(QueueRemovedDto {
             done: format!(
                 "removed {count} track(s) at position {} from {zone}'s queue; \
-                 {remaining} remain (not undoable{recovery})",
+                 {remaining} remain ({undo_status}{recovery})",
                 req.position,
             ),
             zone,
@@ -247,7 +302,7 @@ impl Surface {
             count,
             remaining,
             recovered,
-            undoable: false,
+            undoable,
         })
     }
 }
@@ -257,3 +312,6 @@ mod tests;
 
 #[cfg(test)]
 mod authority_tests;
+
+#[cfg(test)]
+mod undo_tests;

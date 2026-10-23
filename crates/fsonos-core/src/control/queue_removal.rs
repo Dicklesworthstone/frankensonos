@@ -21,6 +21,8 @@ pub struct Snapshot {
 pub struct Removed {
     pub remaining: u32,
     pub recovered: bool,
+    /// Native revision from the same complete read that proved the removal.
+    pub revision: u32,
 }
 
 /// Distinguish refusal before a write from an uncertain result after one.
@@ -172,6 +174,7 @@ pub fn remove<T: Transport + ?Sized>(
         remaining: u32::try_from(after.uris.len())
             .map_err(|_| uncertain(write_error.as_ref(), "the resulting queue is too large"))?,
         recovered: write_error.is_some(),
+        revision: after.revision,
     })
 }
 

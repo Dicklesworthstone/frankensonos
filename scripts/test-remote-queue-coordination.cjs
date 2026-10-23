@@ -112,7 +112,7 @@ async function prepare(h, p, kind) {
   }
   const select = h.control(p, 'select-1'); select.checked = true; select.emit('change');
   h.click(p, kind === 'remove' ? 'Review removal' : 'move-selection-end');
-  const button = h.control(p, kind === 'remove' ? 'Remove permanently' : 'Move entries');
+  const button = h.control(p, kind === 'remove' ? 'Remove entries' : 'Move entries');
   return () => button.emit('click');
 }
 
@@ -168,7 +168,7 @@ test('detached contextual move buttons cannot retarget a refreshed queue page', 
 for (const kind of ['play', 'add', 'remove', 'move']) {
   test(`a pending native action retires detached queue ${kind} handlers and reviews`, async () => {
     const h = browser(), p = h.parts()[0]; await prepare(h, p, kind);
-    const key = { play: 'play-1', add: 'Add to end', remove: 'Remove permanently', move: 'Move entries' }[kind];
+    const key = { play: 'play-1', add: 'Add to end', remove: 'Remove entries', move: 'Move entries' }[kind];
     const old = h.control(p, key), hold = deferred(); h.intercept = (route, args) => args.body ? hold.promise : undefined;
     p.next.emit('click'); old.emit('click'); await settle();
     assert.deepEqual(h.posts().map(([route]) => route), ['next']);
@@ -280,8 +280,8 @@ test('a coalesced live event burst refreshes only open queues and retains their 
 test('live refresh retains exact selection but consumes old confirmation buttons', async () => {
   const h=browser(); const controller=await live(h),p=h.parts()[0]; await h.open(p);
   const select=h.control(p,'select-1');select.checked=true;select.emit('change');h.click(p,'Review removal');
-  const old=h.control(p,'Remove permanently');h.event('zone.state',{room:'Den',volume:22}); await h.tick(300);
-  assert.equal(h.control(p,'select-1').checked,true); assert.equal(h.control(p,'Remove permanently'),undefined);
+  const old=h.control(p,'Remove entries');h.event('zone.state',{room:'Den',volume:22}); await h.tick(300);
+  assert.equal(h.control(p,'select-1').checked,true); assert.equal(h.control(p,'Remove entries'),undefined);
   old.emit('click');await settle();assert.equal(h.posts().length,0);controller.dispose();
 });
 

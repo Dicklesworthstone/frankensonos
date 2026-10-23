@@ -61,7 +61,7 @@ async fn play_queue(
 
 /// Remove selected consecutive queue entries through the shared backend.
 #[tool(
-    description = "Remove consecutive entries from a room's group queue. First read get_queue, then pass the one-based starting position and exact renderer URIs in expected_uris (one to 100, in queue order). Pass that response's revision as expected_revision to reject intervening queue or coordinator changes. Uses revision-checked deletion, never clears/rebuilds the queue, and never automatically retries a failed write. This deletes queue entries and is NOT undoable with undo_last; read the queue again after any uncertain result rather than blindly retrying."
+    description = "Remove consecutive entries from a room's group queue. First read get_queue, then pass the one-based starting position and exact renderer URIs in expected_uris (one to 100, in queue order). Pass that response's revision as expected_revision to reject intervening queue or coordinator changes. Uses revision-checked deletion, never clears/rebuilds the queue, and never automatically retries a failed write. Check the result's undoable field: undo_last can restore a selected queue only when a complete bounded backup was saved and the queue, group and playback still match the confirmed edit. Read the queue again after any uncertain result rather than blindly retrying."
 )]
 async fn remove_from_queue(
     ctx: &McpContext,
@@ -84,7 +84,7 @@ async fn remove_from_queue(
 
 /// Rearrange an identified block without rebuilding the queue or playback.
 #[tool(
-    description = "Move consecutive queue entries without clearing, re-enqueueing or restarting playback. First read get_queue. Pass its revision as REQUIRED expected_revision, one-based position, and one to 100 exact consecutive renderer URIs in expected_uris. insert_before refers to a position in the ORIGINAL queue; total plus one appends. Destinations inside or just after the selected block are no-ops. Returns the block's new position and observed revision. Not undoable with undo_last. Never automatically retry a failed move or discard a revision; read the queue again after uncertainty."
+    description = "Move consecutive queue entries without clearing, re-enqueueing or restarting playback. First read get_queue. Pass its revision as REQUIRED expected_revision, one-based position, and one to 100 exact consecutive renderer URIs in expected_uris. insert_before refers to a position in the ORIGINAL queue; total plus one appends. Destinations inside or just after the selected block are no-ops. Returns the block's new position and observed revision. Check undoable: undo_last requires a saved complete bounded backup and unchanged queue, group and playback since the confirmed edit. Never automatically retry a failed move or discard a revision; read the queue again after uncertainty."
 )]
 async fn move_in_queue(
     ctx: &McpContext,

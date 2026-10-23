@@ -5,9 +5,12 @@ one to 100 consecutive queue entries without clearing and rebuilding the
 queue or issuing play, seek, source, volume, mute or grouping commands.
 The player may advance or stop when its currently playing entry is removed.
 
-**Removal is not undoable.** `undo_last` does not reconstruct deleted queue
-contents. Responses report `undoable: false`, and the action log does not
-advertise a queue-removal snapshot as something it can restore.
+**Check the response's `undoable` field.** The daemon can save a complete
+backup of a selected queue of up to 1,000 entries / 4 MiB and restore it with
+`undo_last`, including its original selected occurrence, position and play
+mode. Undo requires the queue, playback and physical group to still match
+the confirmed edit. Unsupported captures and uncertain writes remain explicit
+undo barriers. See [queue edit undo](QUEUE_UNDO.md) for the bounds and checks.
 
 ## Read, select, remove
 
@@ -44,7 +47,7 @@ is optional for compatibility, but should be supplied to reject intervening
 queue edits or a different coordinator even when the selected URIs look the
 same. Across pages, use only entries with matching revision tokens.
 
-An example successful response:
+An example successful response when no complete undo backup was saved:
 
 ```json
 {

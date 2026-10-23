@@ -69,7 +69,7 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueAdd: "Adds music without starting playback. The daemon resolves the source and applies its queue rules."
         case .queueFavorite(let favorite): favorite.explanation
         case .playlistTrack(let selection): selection.explanation
-        case .queueRemove: "Removes this exact revision-bound entry. This cannot be undone; removing the current entry can advance or stop playback."
+        case .queueRemove: "Removes this exact revision-bound entry. Removing the current entry can advance or stop playback. Undo requires a complete backup saved by the daemon; check the result."
         case .queueMove(let move): move.explanation
         case .listeningSettings(let change): change.explanation
         case .announce(let announcement): announcement.explanation
@@ -332,8 +332,11 @@ public enum NativeCommand: Equatable, Sendable {
         case .queueRemove(let item, _):
             struct Removed: Decodable { let done: String; let position: UInt32; let count: UInt32; let remaining: UInt32; let undoable: Bool }
             let r = try DaemonClient.decode(Removed.self, from: data)
-            guard r.position == item.position, r.count == 1, !r.undoable else { throw ClientError.unreadable }
-            return CommandReceipt(title: r.done, detail: "\(r.remaining) queue entries remain. This removal cannot be undone.")
+            guard r.position == item.position, r.count == 1 else { throw ClientError.unreadable }
+            let undo = r.undoable
+                ? "Undo is available while the queue and playback still match this edit."
+                : "This removal cannot be undone."
+            return CommandReceipt(title: r.done, detail: "\(r.remaining) queue entries remain. " + undo)
         case .queueMove(let move): return try move.receipt(data, in: zone)
         default:
             let report = try DaemonClient.decode(Outcome.self, from: data)

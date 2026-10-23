@@ -205,7 +205,7 @@ test('a failed removal cannot be retried by a second click or confirmation', asy
 test('invalid removal success bodies are uncertain, never silently accepted', async () => {
   const good = { done: 'Removed', position: 1, count: 1, remaining: 59, recovered: false, undoable: false };
   for (const answer of [null, {}, { ...good, position: 2 }, { ...good, count: 2 },
-    { ...good, remaining: 100 }, { ...good, undoable: true }, { ...good, recovered: undefined }]) {
+    { ...good, remaining: 100 }, { ...good, undoable: 'true' }, { ...good, undoable: undefined }, { ...good, recovered: undefined }]) {
     let writes = 0;
     const c = QueueRemote.model({ zone: 'Room', call: async (name) => {
       if (name === 'queue') return page(); writes++; return answer;
@@ -214,6 +214,23 @@ test('invalid removal success bodies are uncertain, never silently accepted', as
     assert.equal(await c.remove(), false);
     assert.equal(writes, 1);
     assert.equal(c.state.page, null);
+  }
+});
+
+test('a confirmed removal accepts either durable undo outcome and never repeats the edit', async () => {
+  for (const undoable of [false, true]) {
+    let writes = 0;
+    const c = QueueRemote.model({ zone: 'Room', call: async (name) => {
+      if (name === 'queue') return page();
+      writes++;
+      return { done: undoable ? 'Removed (undo available)' : 'Removed (not undoable)',
+        position: 1, count: 1, remaining: 59, recovered: false, undoable };
+    } });
+    await c.load(); c.select(1, true); c.reviewRemoval();
+    assert.equal(await c.remove(), true);
+    assert.equal(writes, 1);
+    assert.match(c.state.message, undoable ? /undo available/ : /not undoable/);
+    assert.equal(c.state.uncertain, false);
   }
 });
 
@@ -614,7 +631,7 @@ test('incomplete and contradictory move acknowledgements never enable another ed
     (r) => ({ ...r, position: 2 }), (r) => ({ ...r, count: 0 }), (r) => ({ ...r, total: 9 }),
     (r) => ({ ...r, revision: '' }), (r) => ({ ...r, revision: 'q:before' }),
     (r) => ({ ...r, changed: false }), (r) => ({ ...r, changed: 'true' }),
-    (r) => ({ ...r, recovered: undefined }), (r) => ({ ...r, undoable: true }),
+    (r) => ({ ...r, recovered: undefined }), (r) => ({ ...r, undoable: 'true' }), (r) => ({ ...r, undoable: undefined }),
     (r) => ({ ...r, done: null }), (r) => ({ ...r, zone: null })];
   for (const reply of bad) {
     const { c, calls } = movingQueue(10, { reply });
@@ -632,6 +649,16 @@ test('server read-back recovery is accepted without a second move', async () => 
   assert.equal(await c.move(), true);
   assert.match(c.state.message, /Verified/);
   assert.equal(calls.filter(([n]) => n === 'queueMove').length, 1);
+});
+
+test('a moved queue with a durable undo backup is a confirmed one-shot result', async () => {
+  const { c, calls } = movingQueue(10, { reply: (r) => ({ ...r, undoable: true,
+    done: 'Moved (undo available)' }) });
+  await c.load(); c.select(2, true); c.reviewMove(1);
+  assert.equal(await c.move(), true);
+  assert.match(c.state.message, /undo available/);
+  assert.equal(c.state.uncertain, false);
+  assert.equal(calls.filter(([name]) => name === 'queueMove').length, 1);
 });
 
 test('closing while reading discards the old page and reopening reads anew', async () => {

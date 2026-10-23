@@ -178,7 +178,8 @@ fn sends_the_observed_revision_and_reads_the_entire_result() {
         done,
         Removed {
             remaining: 2,
-            recovered: false
+            recovered: false,
+            revision: 8,
         }
     );
     let calls = wire.calls.borrow();
@@ -211,7 +212,8 @@ fn lost_and_malformed_replies_recover_without_repeating_deletion() {
             done,
             Removed {
                 remaining: 2,
-                recovered: true
+                recovered: true,
+                revision: 8,
             }
         );
         assert_eq!(wire.writes(), 1);

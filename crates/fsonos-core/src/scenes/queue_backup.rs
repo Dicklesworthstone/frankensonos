@@ -56,7 +56,7 @@ fn playable(uri: &str) -> bool {
 }
 
 impl QueueBackup {
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub(crate) fn validate(&self) -> Result<(), String> {
         self.reference.validate()?;
         let selected = usize::try_from(self.reference.track).unwrap_or(usize::MAX);
         if self.entries.is_empty()
@@ -144,7 +144,7 @@ fn same_items(expected: &[DidlObject], actual: &[DidlObject]) -> bool {
 
 /// Read at most the capture limit, refusing a partial, changed or oversized
 /// container before constructing a scene that could later be persisted.
-fn bounded_snapshot<T: Transport + ?Sized>(
+pub(crate) fn bounded_snapshot<T: Transport + ?Sized>(
     t: &T,
     host: IpAddr,
 ) -> Result<BrowseSnapshot, ProtoError> {
@@ -242,7 +242,7 @@ fn replay_item<T: Transport + ?Sized>(
     })
 }
 
-pub(super) fn capture<T: Transport + ?Sized>(
+pub(crate) fn capture<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
     snap: &ZoneSnapshot,
@@ -300,14 +300,14 @@ pub(super) fn capture<T: Transport + ?Sized>(
     Ok(Some(backup))
 }
 
-struct Owner {
-    group: Group,
-    playback: Playback,
-    mode: Option<PlayMode>,
+pub(crate) struct Owner {
+    pub(crate) group: Group,
+    pub(crate) playback: Playback,
+    pub(crate) mode: Option<PlayMode>,
 }
 
 impl Owner {
-    fn read<T: Transport + ?Sized>(
+    pub(crate) fn read<T: Transport + ?Sized>(
         t: &T,
         host: IpAddr,
         coordinator: &PlayerId,
@@ -326,7 +326,7 @@ impl Owner {
         })
     }
 
-    fn confirm<T: Transport + ?Sized>(
+    pub(crate) fn confirm<T: Transport + ?Sized>(
         &self,
         t: &T,
         host: IpAddr,
@@ -410,6 +410,25 @@ pub(super) fn restore<T: Transport + ?Sized>(
     backup: &QueueBackup,
     start: bool,
 ) -> Result<bool, String> {
+    restore_bound(t, households, coordinator, backup, start, None)
+}
+
+/// Undo carries its authorized post-action observation into staging. A fresh
+/// read may confirm that observation, but must never replace its ownership.
+pub(crate) struct Baseline<'a> {
+    pub(crate) owner: &'a Owner,
+    pub(crate) revision: u32,
+    pub(crate) uris: &'a [String],
+}
+
+pub(crate) fn restore_bound<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    backup: &QueueBackup,
+    start: bool,
+    baseline: Option<&Baseline<'_>>,
+) -> Result<bool, String> {
     backup.validate()?;
     if coordinator != &backup.reference.coordinator {
         return Err(
@@ -437,6 +456,7 @@ pub(super) fn restore<T: Transport + ?Sized>(
         backup,
         start,
         &mut attempted,
+        baseline,
     );
     result.map_err(|error| {
         if attempted {

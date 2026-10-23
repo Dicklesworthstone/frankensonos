@@ -81,9 +81,9 @@ test('consecutive range moves preserve order and use the original destination co
   assert.equal(f.data.tracks.length, 55); assert.equal(f.data.transport, 'paused');
 });
 
-test('multi-entry removal is explicit, non-undoable, and never turns into queue clear', async () => {
+test('multi-entry removal explains conditional undo and never turns into queue clear', async () => {
   const f = await fixture(), r = f.review('remove', 2, 3);
-  assert.match(r.detail, /Not undoable/); assert.match(r.detail, /currently playing/);
+  assert.match(r.detail, /check the result/); assert.match(r.detail, /currently playing/);
   assert.equal(await f.session.confirm(r), true); assert.equal(f.data.tracks.length, 52);
   assert.equal(f.writes().length, 1); assert.equal(f.writes()[0].body.expected_uris.length, 3);
 });
