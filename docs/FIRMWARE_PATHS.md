@@ -1466,6 +1466,13 @@ values cannot distinguish the order; a real `hhid` with `x` elsewhere still
 401s, so at least one more component must differ from `x` when the values
 are mixed.
 
+Grant/alg facts from the same round: only `grantType` =
+`urn:ietf:params:oauth:grant-type:jwt-bearer` is recognised on
+`authorization/authorizeDevice` (it answers `401` instead of the blanket
+`403`), and `mint_jwt.py` now also mints **ES256** (`ALG=ES256`, EC leaf,
+DER→raw R||S) which behaves identically — algorithm is not the
+discriminator. The assertion path still answers `401` for every shape
+
 The next gate is **resolution**, not inspection: the 503 comes from
 `resolveToken` and does not move for `sub` = UDID, `sub` = short id,
 `systemId`, or `aud` = UDID. `GET settings/player` and `GET info` answer
