@@ -134,6 +134,7 @@ fn write(
     std::fs::rename(tmp, data_dir.join(STAMP))
 }
 
+#[allow(clippy::needless_pass_by_value)] // a map_err adapter
 fn store_failure(error: std::io::Error) -> Failure {
     Failure::new(
         ErrorCode::Internal,
@@ -207,6 +208,7 @@ impl LibrarySync {
         result
     }
 
+    #[allow(clippy::needless_pass_by_value)] // the continuation's owner handoff is in flight
     fn perform_pass(&self, owner: Option<String>) -> Result<SyncedDto, Failure> {
         let before = self.last();
         let checkpoint = load(&self.data_dir).unwrap_or_default();
