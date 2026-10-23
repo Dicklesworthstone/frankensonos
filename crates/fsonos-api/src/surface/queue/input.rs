@@ -6,7 +6,7 @@ use fsonos_core::actions::{self, QueuedBefore};
 use fsonos_core::favorites::{self, FavoriteKind};
 use fsonos_core::policy::Client;
 use fsonos_core::{control, favorite_queue};
-use fsonos_proto::didl::SpotifyContainer;
+use fsonos_proto::didl::{SpotifyBare, SpotifyContainer};
 use serde::{Deserialize, Serialize};
 
 use super::{ADD, QueueAddRequest, QueueAddedDto, Surface};
@@ -58,11 +58,12 @@ impl QueueRequest {
                 .normalized()?;
                 if normalized.source_uri.starts_with("spotify:track:")
                     || SpotifyContainer::of(&normalized.source_uri).is_some()
+                    || SpotifyBare::of(&normalized.source_uri).is_some()
                 {
                     Ok(())
                 } else {
                     Err(Failure::invalid(
-                        "source_uri must name a Spotify track, album or playlist; use favorite for native sources",
+                        "source_uri must name a Spotify track, album, playlist, artist, episode or show; use favorite for native sources",
                     ))
                 }
             }

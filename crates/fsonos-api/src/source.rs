@@ -8,7 +8,7 @@
 //! with a clear message, and passes any other well-formed URI through
 //! unchanged for the core and the speaker to judge.
 
-use fsonos_proto::didl::SpotifyContainer;
+use fsonos_proto::didl::{SpotifyBare, SpotifyContainer};
 
 use crate::failure::{ErrorCode, Failure};
 
@@ -67,14 +67,15 @@ pub(crate) fn validate_playable_source(source_uri: &str) -> Result<(), Failure> 
     if !source_uri.starts_with("spotify:")
         || source_uri.starts_with("spotify:track:")
         || SpotifyContainer::of(source_uri).is_some()
+        || SpotifyBare::of(source_uri).is_some()
     {
         return Ok(());
     }
     Err(Failure::new(
         ErrorCode::NotImplemented,
-        format!("Spotify tracks, albums and playlists play so far; {source_uri} is none of them"),
+        format!("Spotify tracks, albums, playlists, artists, episodes and shows play; {source_uri} is none of them"),
     )
-    .with_hint("Play one of its tracks, albums or playlists for now."))
+    .with_hint("Play one of its tracks, albums, playlists, artists, episodes or shows for now."))
 }
 
 /// `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` (RFC 3986 §3.1).

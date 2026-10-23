@@ -8,7 +8,7 @@ use super::queue_removal::{Snapshot, read};
 use crate::CoreError;
 use fsonos_proto::content::{BrowseFlag, MAX_BROWSE_OBJECTS, QUEUE, browse};
 use fsonos_proto::control::{self as soap, Enqueued};
-use fsonos_proto::didl::{SpotifyContainer, spotify_uri_from_renderer_uri};
+use fsonos_proto::didl::{SpotifyBare, SpotifyContainer, spotify_uri_from_renderer_uri};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::PlayerId;
@@ -175,7 +175,9 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     request: &Request<'_>,
 ) -> Result<Queued, CoreError> {
-    let expected = if SpotifyContainer::of(request.source_uri).is_some() {
+    let expected = if SpotifyContainer::of(request.source_uri).is_some()
+        || SpotifyBare::of(request.source_uri).is_some()
+    {
         None
     } else if request
         .source_uri
@@ -185,7 +187,7 @@ pub(super) fn enqueue<T: Transport + ?Sized>(
         Some(request.source_uri)
     } else {
         return Err(invalid(
-            "enqueue requires a Spotify track, album or playlist",
+            "enqueue requires a Spotify track, album, playlist, artist, episode or show",
         ));
     };
     let Plan {

@@ -664,6 +664,36 @@ fn a_spotify_album_replaces_the_queue_and_plays_from_its_first_track() {
 }
 
 #[test]
+fn bare_spotify_kinds_enqueue_with_the_sid_only() {
+    let h = house();
+    for (kind, class) in [
+        ("artist", "object.container.person.musicArtist"),
+        ("episode", "object.item.audioItem.musicTrack"),
+        ("show", "object.container"),
+    ] {
+        let t = QueueLan::default();
+        let uri = format!("spotify:{kind}:0FixtureSpotify0000203");
+        let added = control::queue_spotify_tracks(&t, &h, &pid(2), &[(&uri, "Bare")]).unwrap();
+        assert_eq!(added, Some(5), "{kind}");
+        let sent = t.sent.borrow();
+        let add = sent
+            .iter()
+            .map(|(_, _, body)| body)
+            .find(|body| body.contains("EnqueuedURI"))
+            .unwrap_or_else(|| panic!("{kind}: no enqueue sent: {sent:?}"));
+        assert!(
+            add.contains(&format!(
+                "x-sonos-spotify:spotify%3a{kind}%3a0fixturespotify0000203?sid=12"
+            )),
+            "{kind}: {add}"
+        );
+        assert!(add.contains(class), "{kind}: {add}");
+        assert!(!add.contains("flags="), "{kind}: {add}");
+        assert!(!add.contains("sn="), "{kind}: {add}");
+    }
+}
+
+#[test]
 fn a_household_without_spotify_favorites_keeps_its_queue() {
     let h = house();
     // `Favorites` answers Browse only: clearing the queue would fail the test.

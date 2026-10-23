@@ -711,9 +711,9 @@ fn fade_volumes<T: Transport + ?Sized>(
     }
 }
 
-/// Start `uri` on the group `coordinator` leads: a Spotify track, album
-/// or playlist through the household's own Spotify account (as `play`
-/// does), anything else as the renderer URI it is.
+/// Start `uri` on the group `coordinator` leads: a Spotify track, album,
+/// playlist, artist, episode or show through the household's own Spotify
+/// account (as `play` does), anything else as the renderer URI it is.
 fn play_source<T: Transport + ?Sized>(
     t: &T,
     households: &[HouseholdState],
@@ -723,6 +723,9 @@ fn play_source<T: Transport + ?Sized>(
 ) -> Result<(), CoreError> {
     if uri.starts_with("spotify:track:") {
         return control::play_spotify_track(t, households, coordinator, uri, uri);
+    }
+    if fsonos_proto::didl::SpotifyBare::of(uri).is_some() {
+        return control::play_spotify_bare(t, households, coordinator, uri, uri);
     }
     if let Some(kind) = fsonos_proto::didl::SpotifyContainer::of(uri) {
         return control::play_spotify_container(t, households, coordinator, kind, uri, uri);
@@ -742,6 +745,9 @@ fn load_source<T: Transport + ?Sized>(
     control::pause_confirmed(t, households, coordinator)?;
     if uri.starts_with("spotify:track:") {
         return control::load_spotify_track(t, households, coordinator, uri, uri);
+    }
+    if fsonos_proto::didl::SpotifyBare::of(uri).is_some() {
+        return control::load_spotify_bare(t, households, coordinator, uri, uri);
     }
     if let Some(kind) = fsonos_proto::didl::SpotifyContainer::of(uri) {
         return control::load_spotify_container(t, households, coordinator, kind, uri, uri);

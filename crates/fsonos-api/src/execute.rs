@@ -10,7 +10,7 @@ use fsonos_core::grouping;
 use fsonos_core::moving::{self, MoveMethod};
 use fsonos_core::{CoreError, HouseholdState, control, resolve_room};
 use fsonos_proto::Transport;
-use fsonos_proto::didl::SpotifyContainer;
+use fsonos_proto::didl::{SpotifyBare, SpotifyContainer};
 use fsonos_types::PlayerId;
 use serde::{Deserialize, Serialize};
 
@@ -71,9 +71,10 @@ pub fn execute_guarded<T: Transport + ?Sized>(
 /// parameters ([`ErrorCode::RenderParamsMissing`] when it has no Spotify
 /// favorite to learn from); `spotify:album:` and `spotify:playlist:` URIs
 /// replace the group's queue with the album or playlist and play it from the
-/// top. Other renderer URIs play as given, without DIDL metadata. Other
-/// Spotify kinds (artists, episodes, shows) and the DJ answer
-/// [`ErrorCode::NotImplemented`].
+/// top; `spotify:artist:`, `spotify:episode:` and `spotify:show:` render on
+/// the account id alone (only `?sid=` is sent). Other renderer URIs play as
+/// given, without DIDL metadata. The DJ answer and other Spotify kinds
+/// return [`ErrorCode::NotImplemented`].
 pub fn execute<T: Transport + ?Sized>(
     transport: &T,
     households: &[HouseholdState],
@@ -306,6 +307,10 @@ fn play<T: Transport + ?Sized>(
     let title = title.unwrap_or(source_uri);
     if source_uri.starts_with("spotify:track:") {
         return control::play_spotify_track(transport, households, coordinator, source_uri, title)
+            .map_err(spotify_failure);
+    }
+    if SpotifyBare::of(source_uri).is_some() {
+        return control::play_spotify_bare(transport, households, coordinator, source_uri, title)
             .map_err(spotify_failure);
     }
     if let Some(kind) = SpotifyContainer::of(source_uri) {
@@ -852,8 +857,8 @@ mod tests {
     #[test]
     fn unwired_paths_say_so_without_touching_speakers() {
         let t = Canned::ok("");
-        let artist = play_spotify("spotify:artist:0123456789ABCDEFabcdef");
-        let err = execute(&t, &households(), &artist).unwrap_err();
+        let genre = play_spotify("spotify:genre:0123456789ABCDEFabcdef");
+        let err = execute(&t, &households(), &genre).unwrap_err();
         assert_eq!((err.code, err.status()), (ErrorCode::NotImplemented, 501));
         let dj = Command::Dj {
             coordinator: id("RINCON_DEN"),
@@ -864,6 +869,22 @@ mod tests {
             ErrorCode::NotImplemented
         );
         assert_eq!(t.actions(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn bare_spotify_kinds_need_the_household_account() {
+        // Artist, episode and show render with `?sid=` learnt from a Spotify
+        // favorite; without one they say so before touching a speaker.
+        for uri in [
+            "spotify:artist:0123456789ABCDEFabcdef",
+            "spotify:episode:0123456789ABCDEFabcdef",
+            "spotify:show:0123456789ABCDEFabcdef",
+        ] {
+            let t = Canned::ok("");
+            let err = execute(&t, &households(), &play_spotify(uri)).unwrap_err();
+            assert_eq!(err.code, ErrorCode::RenderParamsMissing, "{uri}");
+            assert_eq!(t.actions(), ["Browse"], "{uri}");
+        }
     }
 
     #[test]

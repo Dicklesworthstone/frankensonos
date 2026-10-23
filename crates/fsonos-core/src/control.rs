@@ -12,8 +12,8 @@ use fsonos_proto::Transport;
 use fsonos_proto::content;
 use fsonos_proto::control::{self as soap, PositionInfo, TransportInfo};
 use fsonos_proto::didl::{
-    SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_queue_uri,
-    spotify_track_didl, spotify_track_uri,
+    SpotifyBare, SpotifyContainer, SpotifyRenderParams, learn_spotify_params, spotify_bare_didl,
+    spotify_bare_uri, spotify_queue_uri, spotify_track_didl, spotify_track_uri,
 };
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_types::{Player, PlayerId};
@@ -239,6 +239,35 @@ pub fn play_spotify_container<T: Transport + ?Sized>(
     loading::spotify_container(t, households, coordinator, kind, spotify_uri, title, true)
 }
 
+/// Play a bare Spotify kind (`spotify:artist:<id>`, `spotify:episode:<id>`,
+/// `spotify:show:<id>`) on the group `coordinator` leads. The account id is
+/// taken from the household's Spotify render parameters, so it needs a
+/// Spotify favorite ([`CoreError::NoSpotifyFavorite`] otherwise);
+/// `flags`/`sn`/the descriptor are not sent for these kinds (they are
+/// refused with 402 when present).
+pub fn play_spotify_bare<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    spotify_uri: &str,
+    title: &str,
+) -> Result<(), CoreError> {
+    loading::spotify_bare(t, households, coordinator, spotify_uri, title, true)
+}
+
+/// [`play_spotify_bare`] without the Play: the group is paused first and the
+/// source is selected, ready to resume.
+pub fn load_spotify_bare<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    spotify_uri: &str,
+    title: &str,
+) -> Result<(), CoreError> {
+    loading::pause_confirmed(t, households, coordinator)?;
+    loading::spotify_bare(t, households, coordinator, spotify_uri, title, false)
+}
+
 /// Append Spotify tracks (`(spotify:track URI, title)`) to the queue of the
 /// group `coordinator` leads, in order. Returns the queue position of the
 /// first one added, for [`play_queue_from`]. `Ok(None)` when nothing was
@@ -250,19 +279,27 @@ pub fn queue_spotify_tracks<T: Transport + ?Sized>(
     coordinator: &PlayerId,
     tracks: &[(&str, &str)],
 ) -> Result<Option<u32>, CoreError> {
-    let Some(params) = spotify_params(t, households, coordinator)? else {
+    let params = spotify_params(t, households, coordinator)?;
+    if params.is_none() && !tracks.iter().any(|(uri, _)| SpotifyBare::of(uri).is_some()) {
         return Ok(None);
-    };
+    }
     let host = addr(households, coordinator)?;
     let mut first = None;
     for (uri, title) in tracks {
-        let at = soap::add_uri_to_queue(
-            t,
-            host,
-            &spotify_queue_uri(uri),
-            &spotify_track_didl(uri, title, &params),
-            false,
-        )?;
+        let (queued, metadata) = if SpotifyBare::of(uri).is_some() {
+            let sid = params.as_ref().ok_or(CoreError::NoSpotifyFavorite)?.sid;
+            (
+                spotify_bare_uri(uri, sid),
+                spotify_bare_didl(uri, title, sid),
+            )
+        } else {
+            let params = params.as_ref().ok_or(CoreError::NoSpotifyFavorite)?;
+            (
+                spotify_queue_uri(uri),
+                spotify_track_didl(uri, title, params),
+            )
+        };
+        let at = soap::add_uri_to_queue(t, host, &queued, &metadata, false)?;
         first.get_or_insert(at);
     }
     Ok(first)
@@ -336,6 +373,13 @@ pub fn enqueue_spotify<T: Transport + ?Sized>(
     let kind = SpotifyContainer::of(spotify_uri);
     let source = |rejected: Option<&(String, String)>| -> Result<(String, String), CoreError> {
         let favorites = content::browse_all(t, host, "FV:2")?;
+        if SpotifyBare::of(spotify_uri).is_some() {
+            let params = learn_spotify_params(&favorites).ok_or(CoreError::NoSpotifyFavorite)?;
+            return Ok((
+                spotify_bare_uri(spotify_uri, params.sid),
+                spotify_bare_didl(spotify_uri, title, params.sid),
+            ));
+        }
         if let Some(kind) = kind {
             return match rejected {
                 Some(old) => {

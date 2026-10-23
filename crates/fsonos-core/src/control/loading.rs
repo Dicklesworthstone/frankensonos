@@ -2,13 +2,13 @@
 //! loading share renderer account selection and the same bounded recovery.
 
 use super::{
-    addr, is_render_800, pause_at, play_uri, queue_start, source_start, spotify_source,
-    spotify_track_source,
+    addr, is_render_800, pause_at, play_uri, queue_start, source_start, spotify_params,
+    spotify_source, spotify_track_source,
 };
 use crate::{CoreError, HouseholdState};
 use fsonos_proto::content;
 use fsonos_proto::control as soap;
-use fsonos_proto::didl::SpotifyContainer;
+use fsonos_proto::didl::{SpotifyContainer, spotify_bare_didl, spotify_bare_uri};
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
 use fsonos_types::{PlayerId, TransportState};
@@ -176,6 +176,28 @@ pub(super) fn spotify_track<T: Transport + ?Sized>(
             }
         }
         other => other,
+    }
+}
+
+/// Play a bare Spotify kind (`spotify:artist:<id>`, `spotify:episode:<id>`,
+/// `spotify:show:<id>`) on the group `coordinator` leads. These kinds render
+/// on the account id alone: only `?sid=<id>` is appended, with the class the
+/// kind expects. It needs the household's Spotify favorite for that id.
+pub(super) fn spotify_bare<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    coordinator: &PlayerId,
+    spotify_uri: &str,
+    title: &str,
+    autoplay: bool,
+) -> Result<(), CoreError> {
+    let params = spotify_params(t, households, coordinator)?.ok_or(CoreError::NoSpotifyFavorite)?;
+    let uri = spotify_bare_uri(spotify_uri, params.sid);
+    let metadata = spotify_bare_didl(spotify_uri, title, params.sid);
+    if autoplay {
+        play_uri(t, households, coordinator, &uri, &metadata)
+    } else {
+        load_uri(t, households, coordinator, &uri, &metadata)
     }
 }
 

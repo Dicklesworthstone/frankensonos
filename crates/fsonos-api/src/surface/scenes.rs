@@ -346,12 +346,13 @@ fn source_of(dto: &SceneSourceDto) -> Result<SceneSource, Failure> {
         "uri" => {
             let uri = normalize_source_uri(dto.uri.as_deref().ok_or_else(|| needs("uri"))?)?;
             let playable = uri.starts_with("spotify:track:")
-                || fsonos_proto::didl::SpotifyContainer::of(&uri).is_some();
+                || fsonos_proto::didl::SpotifyContainer::of(&uri).is_some()
+                || fsonos_proto::didl::SpotifyBare::of(&uri).is_some();
             if uri.starts_with("spotify:") && !playable {
                 return Err(Failure::invalid(format!(
-                    "a scene plays a Spotify track, album or playlist, not {uri}"
+                    "a scene plays a Spotify track, album, playlist, artist, episode or show, not {uri}"
                 ))
-                .with_hint("Name one of its tracks, albums or playlists, or use the dj source."));
+                .with_hint("Name one of its tracks, albums, playlists, artists, episodes or shows, or use the dj source."));
             }
             Ok(SceneSource::Uri {
                 uri,

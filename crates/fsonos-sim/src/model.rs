@@ -1077,8 +1077,15 @@ impl State {
     /// (`spotify%3atrack%3a…`) gets the renderer scheme and the household's
     /// account parameters, as real queues list it.
     fn queued_uri(&self, p: usize, uri: &str) -> String {
-        if uri.to_ascii_lowercase().starts_with("spotify%3a") {
-            let params = &self.households[self.players[p].household].params;
+        let lower = uri.to_ascii_lowercase();
+        let params = &self.households[self.players[p].household].params;
+        if bare_spotify(&lower) {
+            if lower.contains('?') {
+                uri.to_string()
+            } else {
+                format!("x-sonos-spotify:{uri}?sid={}", params.sid)
+            }
+        } else if lower.starts_with("spotify%3a") {
             format!(
                 "x-sonos-spotify:{uri}?sid={}&flags={}&sn={}",
                 params.sid, params.flags, params.sn
@@ -1103,6 +1110,14 @@ impl State {
             return Ok(());
         }
         let params = &self.households[self.players[p].household].params;
+        if bare_spotify(&lower) {
+            // These kinds carry the account id and nothing else; flags, sn
+            // and the descriptor are refused (402) rather than required.
+            let has_sid = uri
+                .split_once('?')
+                .is_some_and(|(_, q)| q.split('&').any(|kv| kv == format!("sid={}", params.sid)));
+            return if has_sid { Ok(()) } else { Err(SONOS_FAILURE) };
+        }
         if let Some((_, query)) = uri.split_once('?') {
             let has = |k: &str, v: u32| query.split('&').any(|kv| kv == format!("{k}={v}"));
             if !has("sid", params.sid) || !has("sn", params.sn) {
@@ -1116,6 +1131,14 @@ impl State {
             .is_some_and(|d| d.value == params.cdudn);
         if desc_ok { Ok(()) } else { Err(SONOS_FAILURE) }
     }
+}
+
+/// Whether `uri` (lowercased) names one of the Spotify kinds that render on
+/// the account id alone: artist, episode or show.
+fn bare_spotify(lower: &str) -> bool {
+    ["artist", "episode", "show"]
+        .iter()
+        .any(|k| lower.contains(&format!("spotify%3a{k}%3a")))
 }
 
 /// The URI of track `n` of a Spotify container (album or playlist), as a
@@ -1509,6 +1532,57 @@ mod tests {
             .unwrap(),
             "CurrentTransportState",
         )
+    }
+
+    #[test]
+    fn bare_spotify_kinds_queue_with_the_account_id_only() {
+        let mut s = state();
+        for (i, (kind, class)) in [
+            ("artist", "object.container.person.musicArtist"),
+            ("episode", "object.item.audioItem.musicTrack"),
+            ("show", "object.container"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let uri = format!("x-sonos-spotify:spotify%3a{kind}%3aABC?sid=12");
+            assert_eq!(s.queued_uri(0, &uri), uri, "{kind} already carries sid");
+            s.check_renderable(0, &uri, "").unwrap_or_else(|f| {
+                panic!("{kind} rejected: {f:?}");
+            });
+            let meta = docs::item_metadata("1", kind, class, "");
+            let out = enqueue(&mut s, 0, &uri, &meta).unwrap();
+            assert_eq!(
+                get(&out, "FirstTrackNumberEnqueued"),
+                (i + 1).to_string(),
+                "{kind}"
+            );
+        }
+
+        // An episode also starts on its own, not only through the queue.
+        let episode = "x-sonos-spotify:spotify%3aepisode%3aABC?sid=12";
+        let meta = docs::item_metadata("1", "Ep", "object.item.audioItem.musicTrack", "");
+        call(
+            &mut s,
+            0,
+            &AV_TRANSPORT,
+            "SetAVTransportURI",
+            &[
+                ("InstanceID", "0"),
+                ("CurrentURI", episode),
+                ("CurrentURIMetaData", &meta),
+            ],
+        )
+        .unwrap();
+        call(
+            &mut s,
+            0,
+            &AV_TRANSPORT,
+            "Play",
+            &[("InstanceID", "0"), ("Speed", "1")],
+        )
+        .unwrap();
+        assert_eq!(transport_state(&mut s, 0), "PLAYING");
     }
 
     #[test]

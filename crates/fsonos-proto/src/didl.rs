@@ -152,6 +152,68 @@ pub fn spotify_queue_uri(spotify_uri: &str) -> String {
     spotify_uri.replace(':', "%3a")
 }
 
+/// Spotify kinds the speaker renders from the bare URI plus the household
+/// account id, without the per-track `flags`/`sn`/descriptor parameters:
+/// an artist, an episode or a show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpotifyBare {
+    Artist,
+    Episode,
+    Show,
+}
+
+impl SpotifyBare {
+    /// The kind a `spotify:artist:<id>`, `spotify:episode:<id>` or
+    /// `spotify:show:<id>` names.
+    #[must_use]
+    pub fn of(spotify_uri: &str) -> Option<Self> {
+        match spotify_uri.strip_prefix("spotify:")?.split(':').next()? {
+            "artist" => Some(Self::Artist),
+            "episode" => Some(Self::Episode),
+            "show" => Some(Self::Show),
+            _ => None,
+        }
+    }
+
+    fn class(self) -> &'static str {
+        match self {
+            Self::Artist => "object.container.person.musicArtist",
+            Self::Episode => "object.item.audioItem.musicTrack",
+            Self::Show => "object.container",
+        }
+    }
+}
+
+/// The renderer-facing URI for a bare Spotify kind: the `x-sonos-spotify:`
+/// scheme, the percent-encoded Spotify URI and the household's service id.
+/// The speaker refuses these kinds with 402 when `flags`, `sn` or the
+/// descriptor are also present, so only `sid` is appended. All three are
+/// accepted by `SetAVTransportURI` and `AddURIToQueue` on S1 57.23.
+#[must_use]
+pub fn spotify_bare_uri(spotify_uri: &str, sid: u32) -> String {
+    format!(
+        "x-sonos-spotify:{}?sid={sid}",
+        spotify_uri.to_ascii_lowercase().replace(':', "%3a")
+    )
+}
+
+/// DIDL metadata for a bare Spotify kind, with the class the renderer
+/// expects for it. No descriptor is carried: these kinds render on the URI's
+/// account id alone.
+#[must_use]
+pub fn spotify_bare_didl(spotify_uri: &str, title: &str, sid: u32) -> String {
+    let class = SpotifyBare::of(spotify_uri).map_or("object.item", SpotifyBare::class);
+    format!(
+        "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" \
+xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">\
+<item id=\"1\" parentID=\"0\" restricted=\"true\"><dc:title>{title}</dc:title>\
+<upnp:class>{class}</upnp:class><res>{uri}</res></item></DIDL-Lite>",
+        title = xml_escape(title),
+        uri = xml_escape(&spotify_bare_uri(spotify_uri, sid)),
+    )
+}
+
 /// A Spotify album or playlist: a container the speaker expands into its
 /// tracks when it is enqueued (docs/PROTOCOL.md, "Container playback").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -651,6 +713,36 @@ mod tests {
             ))
             .as_deref(),
             Some("spotify:album:abc123")
+        );
+
+        // Bare kinds render on the account id alone: no flags/sn/descriptor.
+        assert_eq!(
+            SpotifyBare::of("spotify:artist:A"),
+            Some(SpotifyBare::Artist)
+        );
+        assert_eq!(
+            SpotifyBare::of("spotify:episode:E"),
+            Some(SpotifyBare::Episode)
+        );
+        assert_eq!(SpotifyBare::of("spotify:show:S"), Some(SpotifyBare::Show));
+        assert_eq!(SpotifyBare::of("spotify:track:T"), None);
+        assert_eq!(SpotifyBare::of("spotify:album:A"), None);
+        assert_eq!(
+            spotify_bare_uri("spotify:artist:ABC", 12),
+            "x-sonos-spotify:spotify%3aartist%3aabc?sid=12"
+        );
+        let episode = spotify_bare_didl("spotify:episode:abc", "Ep & 1", 7);
+        assert!(episode.contains("?sid=7"));
+        assert!(episode.contains("<upnp:class>object.item.audioItem.musicTrack</upnp:class>"));
+        assert!(episode.contains("<dc:title>Ep &amp; 1</dc:title>"));
+        assert!(!episode.contains("cdudn"));
+        assert!(
+            spotify_bare_didl("spotify:artist:a", "A", 7)
+                .contains("object.container.person.musicArtist")
+        );
+        assert!(
+            spotify_bare_didl("spotify:show:s", "S", 7)
+                .contains("<upnp:class>object.container</upnp:class>")
         );
     }
 

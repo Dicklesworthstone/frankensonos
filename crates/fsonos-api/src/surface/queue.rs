@@ -10,7 +10,7 @@ use fsonos_core::actions::{self, QueuedBefore};
 use fsonos_core::policy::Client;
 use fsonos_core::{CoreError, control};
 use fsonos_proto::ProtoError;
-use fsonos_proto::didl::SpotifyContainer;
+use fsonos_proto::didl::{SpotifyBare, SpotifyContainer};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
@@ -188,9 +188,12 @@ impl Surface {
         }
         .normalized()?;
         let uri = asked.source_uri;
-        if !(uri.starts_with("spotify:track:") || SpotifyContainer::of(&uri).is_some()) {
+        if !(uri.starts_with("spotify:track:")
+            || SpotifyContainer::of(&uri).is_some()
+            || SpotifyBare::of(&uri).is_some())
+        {
             return Err(Failure::invalid(format!(
-                "only a Spotify track, album or playlist can be queued, not {uri}"
+                "only a Spotify track, album, playlist, artist, episode or show can be queued, not {uri}"
             )));
         }
         let households = self.households()?;
