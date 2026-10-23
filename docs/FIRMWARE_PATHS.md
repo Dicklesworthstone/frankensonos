@@ -1092,3 +1092,18 @@ Cross-unit check on .168 (same 57.23 build): a clean 256 KiB POST also kills
 HTTP, and the watchdog restarted the daemon in ~6 s. The long .185 outage came
 after three hits in quick succession (256 KiB, 512 KiB, 1 MiB); treat
 "durable" as "repeat hits outrun the supervisor", not a single request.
+
+### H12 result after a clean test: SetString keys are not files
+
+On a freshly reflashed unit (so no stale `/jffs`), `SetString("../system/Configure.dev",
+<script>)` returns result 0 and reads back after a reboot, but the unit is still
+locked afterwards (`/reboot` 403, `/unlock` 423, 2323 and 22 closed) — and the same
+holds for a plain `Configure.dev` key. So the store keeps keys as *entries in a
+class-named file* and does not turn the key, or `..` in the key, into a path.
+
+`mtmhhsetup` (unauthenticated on S2) opens `netsettings.txt` through
+`sonos::SettingsFile` — again a fixed name.
+
+H12 therefore stands blocked on exactly one thing: a write primitive whose **file
+name comes from the request**. The boot side needs nothing more (see above), and
+`/jffs/system/Configure.dev` needs no executable bit because it is `sh`'d.
