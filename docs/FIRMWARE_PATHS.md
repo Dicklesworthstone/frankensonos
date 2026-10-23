@@ -695,6 +695,13 @@ renders its heading before refusing, so its handler does run first. `/diaglevel`
 `/advconfig` and `/support/*` are *not* behind this flag. Next step is whoever sets bit 22,
 and whether that is settings-backed (then `SetString` could arm it).
 
+**Answered:** they are the devmode/permission bits. The setter neighbourhood `0x103940e0` is
+the devmode statement path itself — it takes the policy lock, calls `ZZ0137` to verify a
+statement, then stores the result and the flags — and the page gate reads bit 22 of the same
+object. So `/`, `/reset`, `/testenv` and `/diagmsg` open **after a successful devmode
+unlock**: another capability hanging off the same missing RSA key, not something
+`SetString` can arm. The object (`0x10545f3c`) and bits 18/22 are the pointers for later.
+
 ### Two small surface facts
 
 **`SUBSCRIBE` CALLBACK grammar.** Accepted (200): a normal `<http://ip:port/path>`, two
