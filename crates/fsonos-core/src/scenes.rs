@@ -25,7 +25,9 @@
 //! [`check`] rejects such a scene. A captured queue source retains a guarded
 //! bookmark into the original queue: its occurrence, position and known play
 //! mode. Recall refuses an edited queue or a different coordinator; it never
-//! clears or rebuilds queue contents. The DJ is started through [`SceneHooks`].
+//! clears or rebuilds queue contents. Opt-in [`capture_with_queue_backups`]
+//! saves bounded, replayable queue contents for staged reconstruction after
+//! edits or a reboot. The DJ is started through [`SceneHooks`].
 
 use crate::dj_direction::DjDirection;
 use crate::fade::Fader;
@@ -44,9 +46,13 @@ use std::time::Duration;
 mod execution;
 mod layout;
 mod queue;
+mod queue_backup;
 mod targets;
 
 pub use queue::QueueReference;
+pub use queue_backup::{
+    MAX_QUEUE_BACKUP_BYTES, MAX_QUEUE_BACKUP_ENTRIES, QueueBackup, QueueBackupEntry,
+};
 pub use targets::canonical_room_name;
 
 /// The longest scene name.
@@ -112,6 +118,8 @@ pub enum SceneSource {
     },
     /// A captured occurrence in an unchanged queue on its original player.
     Queue { queue: QueueReference },
+    /// A complete, bounded queue copy, reconstructed on its original player.
+    QueueBackup { backup: QueueBackup },
     /// The DJ, in `mood`, with an optional reusable steering request.
     Dj {
         #[serde(default)]
@@ -195,6 +203,12 @@ pub enum SceneOp {
         queue: QueueReference,
         start: bool,
     },
+    /// Rebuild a saved queue safely, then select its occurrence and time.
+    QueueBackup {
+        coordinator: PlayerId,
+        backup: QueueBackup,
+        start: bool,
+    },
     /// Start (or steer) the DJ.
     Dj {
         coordinator: PlayerId,
@@ -215,9 +229,10 @@ impl SceneOp {
     #[must_use]
     pub fn starts(&self) -> bool {
         match self {
-            Self::Favorite { start, .. } | Self::Uri { start, .. } | Self::Queue { start, .. } => {
-                *start
-            }
+            Self::Favorite { start, .. }
+            | Self::Uri { start, .. }
+            | Self::Queue { start, .. }
+            | Self::QueueBackup { start, .. } => *start,
             Self::Dj { .. } | Self::Play { .. } => true,
             Self::Leave { .. }
             | Self::Join { .. }
@@ -335,12 +350,15 @@ pub fn check(scene: &Scene, households: &[HouseholdState]) -> Result<Vec<String>
     let mut seen: Vec<String> = Vec::new();
     let mut players: Vec<(usize, PlayerId)> = Vec::new();
     for g in &scene.groups {
-        if let SceneSource::Queue { queue } = &g.source {
-            queue.validate().map_err(|why| SceneError::Corrupt {
-                name: scene.name.clone(),
-                why,
-            })?;
-        }
+        let source_valid = match &g.source {
+            SceneSource::Queue { queue } => queue.validate(),
+            SceneSource::QueueBackup { backup } => backup.validate(),
+            _ => Ok(()),
+        };
+        source_valid.map_err(|why| SceneError::Corrupt {
+            name: scene.name.clone(),
+            why,
+        })?;
         let mut house = None;
         let mut rooms = Vec::new();
         for name in std::iter::once(&g.coordinator).chain(&g.members) {
@@ -485,6 +503,14 @@ fn plan_sources(
             });
             continue;
         }
+        if let SceneSource::QueueBackup { backup } = &g.source {
+            plan.ops.push(SceneOp::QueueBackup {
+                coordinator,
+                backup: backup.clone(),
+                start: g.playing.unwrap_or(playing_now),
+            });
+            continue;
+        }
         // A group that leads but whose state was not read may be playing:
         // its source takes the old path. One that does not lead yet will
         // leave its group, which stops it.
@@ -495,7 +521,7 @@ fn plan_sources(
         // a source that fails leaves its music playing as it was.
         let start = g.playing != Some(false) || maybe_playing;
         let source = match &g.source {
-            SceneSource::Keep | SceneSource::Queue { .. } => None,
+            SceneSource::Keep | SceneSource::Queue { .. } | SceneSource::QueueBackup { .. } => None,
             SceneSource::Favorite { name, uri } => (uri.is_none() || on_now != uri.as_deref())
                 .then(|| SceneOp::Favorite {
                     coordinator: coordinator.clone(),
@@ -575,6 +601,11 @@ fn silence_starting<T: Transport + ?Sized>(
                 ..
             }
             | SceneOp::Queue {
+                coordinator,
+                start: true,
+                ..
+            }
+            | SceneOp::QueueBackup {
                 coordinator,
                 start: true,
                 ..
@@ -821,6 +852,13 @@ fn run<T: Transport + ?Sized>(
         } => {
             return queue::restore(t, households, coordinator, queue, *start);
         }
+        SceneOp::QueueBackup {
+            coordinator,
+            backup,
+            start,
+        } => {
+            return queue_backup::restore(t, households, coordinator, backup, *start);
+        }
         SceneOp::Dj {
             coordinator,
             mood,
@@ -855,6 +893,31 @@ pub fn capture<T: Transport + ?Sized>(
     name: &str,
     djs: &[PlayingDj],
     now: i64,
+) -> Result<Scene, SceneError> {
+    capture_source(t, households, name, djs, now, false)
+}
+
+/// Capture replayable queue contents as well as occurrence, time and mode.
+/// Every queue must fit [`MAX_QUEUE_BACKUP_ENTRIES`] and
+/// [`MAX_QUEUE_BACKUP_BYTES`]; incomplete or unplayable copies are refused.
+/// Existing [`capture`] continues to save queue bookmarks only.
+pub fn capture_with_queue_backups<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    name: &str,
+    djs: &[PlayingDj],
+    now: i64,
+) -> Result<Scene, SceneError> {
+    capture_source(t, households, name, djs, now, true)
+}
+
+fn capture_source<T: Transport + ?Sized>(
+    t: &T,
+    households: &[HouseholdState],
+    name: &str,
+    djs: &[PlayingDj],
+    now: i64,
+    backup_queues: bool,
 ) -> Result<Scene, SceneError> {
     check_name(name)?;
     let mut scene = Scene {
@@ -909,6 +972,12 @@ pub fn capture<T: Transport + ?Sized>(
                             metadata: metadata.clone(),
                         },
                     }
+                }
+                (None, SnapshotSource::Queue { .. }) if backup_queues => {
+                    queue_backup::capture(t, households, &snap, before_boot)?
+                        .map_or(SceneSource::Keep, |backup| SceneSource::QueueBackup {
+                            backup,
+                        })
                 }
                 (None, SnapshotSource::Queue { .. }) => {
                     queue::capture(t, households, &snap, before_boot)?

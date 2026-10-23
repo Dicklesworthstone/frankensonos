@@ -22,6 +22,7 @@ const deferred = () => {
 const queueReference = () => ({ coordinator: 'RINCON_SYNTHETIC', household: 'Sonos_fixture',
   update_id: 17, track: 3, position_secs: 70, play_mode: 'SHUFFLE_NOREPEAT', boot_seq: 9 });
 const queueRow = () => row({ groups: [{ ...row().groups[0], source: { kind: 'queue', queue: queueReference() } }] });
+const backupRow = () => row({ groups: [{ ...row().groups[0], source: { kind: 'queue_backup', queue: { ...queueReference(), total: 4 } } }] });
 
 function fixture(initial = [row()]) {
   let rows = structuredClone(initial);
@@ -166,6 +167,22 @@ test('malformed queue references cannot enter the scene list', () => {
   assert.throws(() => Scenes.sceneOf(hidden));
 });
 
+test('queue backups retain their count and expose replacement and undo limits', () => {
+  const scene = Scenes.sceneOf(backupRow());
+  assert.equal(scene.groups[0].source.queue.total, 4);
+  assert.match(Scenes.detail(scene), /Saved queue backup, 4 entries, track #3 at 1:10/);
+  assert.match(Scenes.detail(scene), /replaces the original player’s current queue/);
+  assert.match(Scenes.detail(scene), /undo cannot restore the replaced queue contents/);
+  for (const total of [undefined, null, 0, 2, 1001, 3.5, '4']) {
+    const bad = backupRow(); bad.groups[0].source.queue.total = total;
+    assert.throws(() => Scenes.sceneOf(bad));
+  }
+  const mislabeled = backupRow(); mislabeled.groups[0].source.kind = 'queue';
+  assert.throws(() => Scenes.sceneOf(mislabeled));
+  const changed = backupRow(); changed.groups[0].source.queue.total = 5;
+  assert.notEqual(Scenes.signature(scene), Scenes.signature(Scenes.sceneOf(changed)));
+});
+
 test('the scene signature binds every queue identity, position and mode field', () => {
   const original = Scenes.signature(Scenes.sceneOf(queueRow()));
   for (const [field, value] of Object.entries({ coordinator: 'RINCON_OTHER', household: 'Sonos_other',
@@ -271,6 +288,42 @@ test('capture creates a new scene and overwrites only the reviewed existing defi
   assert.equal(f.control.review('capture'), true);
   assert.equal(await f.control.confirm(f.control.state.pending), true);
   assert.equal(f.writes.length, 1);
+});
+
+test('queue backup capture sends the reviewed option once and changing it cancels review', async () => {
+  const writes = [];
+  const control = Scenes.model({ call: async (name, options = {}) => {
+    if (name === 'scenes') return [];
+    assert.equal(name, 'sceneSave');
+    writes.push(structuredClone(options));
+    return backupRow();
+  } });
+  await control.refresh(); control.editName('Evening'); control.editBackupQueues(true);
+  assert.equal(control.review('capture'), true);
+  const old = control.state.pending;
+  control.editBackupQueues(false);
+  assert.equal(control.state.pending, null);
+  assert.equal(await control.confirm(old), false);
+  assert.deepEqual(writes, []);
+  control.editBackupQueues(true); control.review('capture');
+  const reviewed = control.state.pending;
+  assert.equal(await control.confirm(reviewed), true);
+  assert.equal(await control.confirm(reviewed), false);
+  assert.deepEqual(writes, [{ params: { name: 'Evening' }, body: { backup_queues: true } }]);
+});
+
+test('a bookmark reply cannot confirm requested queue backup capture and is never replayed', async () => {
+  let writes = 0;
+  const control = Scenes.model({ call: async (name) => {
+    if (name === 'scenes') return [];
+    writes += 1; return queueRow();
+  } });
+  await control.refresh(); control.editName('Evening'); control.editBackupQueues(true);
+  control.review('capture'); const reviewed = control.state.pending;
+  assert.equal(await control.confirm(reviewed), false);
+  assert.match(control.state.message, /did not confirm the reviewed queue capture option/);
+  assert.equal(await control.confirm(reviewed), false);
+  assert.equal(writes, 1);
 });
 
 test('capture aborts when existence or the overwritten definition changes', async () => {

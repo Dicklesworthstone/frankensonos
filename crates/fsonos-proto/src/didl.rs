@@ -11,6 +11,7 @@
 
 use crate::{ProtoError, xml};
 use fsonos_types::Track;
+use std::fmt::Write as _;
 
 /// Escape a string for inclusion in XML character data / attributes.
 #[must_use]
@@ -20,6 +21,57 @@ pub fn xml_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+/// Serialize the playback metadata represented by one item in the protocol
+/// model, including its service descriptor and resource attributes. Queue
+/// IDs remain metadata; callers must not use them as stable track identities.
+#[must_use]
+pub fn item_metadata(item: &DidlObject) -> String {
+    let mut xml = format!(
+        "<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" \
+         xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+         xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" \
+         xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">\
+         <item id=\"{}\" parentID=\"{}\" restricted=\"{}\">",
+        xml_escape(&item.id),
+        xml_escape(&item.parent_id),
+        item.restricted,
+    );
+    for (tag, value) in [
+        ("dc:title", Some(item.title.as_str())),
+        ("upnp:class", Some(item.class.as_str())),
+        ("dc:creator", item.creator.as_deref()),
+        ("upnp:album", item.album.as_deref()),
+        ("upnp:albumArtURI", item.album_art_uri.as_deref()),
+    ] {
+        if let Some(value) = value {
+            let _ = write!(xml, "<{tag}>{}</{tag}>", xml_escape(value));
+        }
+    }
+    if let Some(res) = &item.res {
+        xml.push_str("<res");
+        for (name, value) in [
+            ("protocolInfo", res.protocol_info.as_deref()),
+            ("duration", res.duration.as_deref()),
+        ] {
+            if let Some(value) = value {
+                let _ = write!(xml, " {name}=\"{}\"", xml_escape(value));
+            }
+        }
+        let _ = write!(xml, ">{}</res>", xml_escape(&res.uri));
+    }
+    if let Some(desc) = &item.desc {
+        let _ = write!(
+            xml,
+            "<desc id=\"{}\" nameSpace=\"{}\">{}</desc>",
+            xml_escape(&desc.id),
+            xml_escape(&desc.name_space),
+            xml_escape(&desc.value)
+        );
+    }
+    xml.push_str("</item></DIDL-Lite>");
+    xml
 }
 
 /// Parameters needed to render a Spotify track on a specific household. These

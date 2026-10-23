@@ -15,6 +15,7 @@ use fsonos_api::Failure;
 use fsonos_api::surface::Surface;
 use fsonos_api::surface::scenes::{
     SceneApplyDto, SceneApplyRequest, SceneDefinition, SceneDeletedDto, SceneDto, SceneGroupDto,
+    SceneSaveRequest,
 };
 use fsonos_core::policy::Client;
 use std::fmt::Write as _;
@@ -34,8 +35,8 @@ enum SceneAction {
     /// Save the house as it is now as a scene: grouping, volumes and mutes,
     /// what each group plays (replaces a scene of that name). With --from, the
     /// scene a TOML file writes out instead. Ordinary queues save a position
-    /// reference: recall requires the original unchanged queue; contents are
-    /// not backed up.
+    /// bookmark by default. --backup-queues retains their contents so a
+    /// scene can rebuild them after edits or a speaker restart.
     Save {
         name: String,
         /// A TOML file writing the scene out: `[[groups]]` with `coordinator`,
@@ -44,10 +45,17 @@ enum SceneAction {
         /// `[mutes]` by room.
         #[arg(long, value_name = "FILE")]
         from: Option<PathBuf>,
+        /// Back up complete ordinary queues. Recall replaces the original
+        /// players' queues with these saved entries; undo cannot recover the
+        /// replaced contents. Incompatible with --from.
+        #[arg(long, conflicts_with = "from")]
+        backup_queues: bool,
     },
     /// Put the house in a scene: only the steps it needs are sent;
-    /// captured queue positions require the original unchanged queue.
-    /// `fsonos undo` attempts to restore prior speaker state. Exits 1 if a step failed.
+    /// queue bookmarks require the original unchanged queue. A queue backup
+    /// rebuilds the original player's queue with its saved contents.
+    /// `fsonos undo` attempts to restore prior speaker state, but cannot
+    /// recover replaced queue contents. Exits 1 if a step failed.
     Apply {
         name: String,
         /// Ramp the volumes to the scene's over this long instead of at once
@@ -80,6 +88,7 @@ pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
         SceneAction::Save {
             name,
             from: Some(file),
+            ..
         } => {
             let text = std::fs::read_to_string(file)
                 .with_context(|| format!("read {}", file.display()))?;
@@ -106,10 +115,22 @@ pub fn run(global: &GlobalArgs, args: &SceneArgs) -> anyhow::Result<()> {
                 format!("saved scene {}", show_text(scene))
             })
         }
-        SceneAction::Save { name, from: None } => {
+        SceneAction::Save {
+            name,
+            from: None,
+            backup_queues,
+        } => {
             // The DJ plays in the daemon: only it knows where.
             let scene: SceneDto = match Daemon::find(global, global.daemon)? {
+                Some(daemon) if *backup_queues => daemon.put_json(
+                    &format!("/scenes/{}", pct(name)),
+                    &SceneSaveRequest {
+                        backup_queues: true,
+                        ..SceneSaveRequest::default()
+                    },
+                )?,
                 Some(daemon) => daemon.put(&format!("/scenes/{}", pct(name)))?,
+                None if *backup_queues => s()?.save_scene_with_queue_backups(&cli, name)?,
                 None => s()?.save_scene(&cli, name)?,
             };
             crate::emit(global.json, &scene, |scene| {
@@ -181,7 +202,7 @@ fn group_text(g: &SceneGroupDto) -> String {
             .mood
             .as_ref()
             .map_or_else(|| "the DJ".to_string(), |m| format!("the DJ ({m})")),
-        "queue" => source.queue.as_ref().map_or_else(
+        "queue" | "queue_backup" => source.queue.as_ref().map_or_else(
             || "queue reference unavailable; capture the scene again".into(),
             fsonos_api::surface::scenes::SceneQueueDto::text,
         ),
@@ -189,7 +210,9 @@ fn group_text(g: &SceneGroupDto) -> String {
     };
     let state = match g.playing {
         Some(true) => "playing",
-        Some(false) if source.kind == "queue" => "ready without playback",
+        Some(false) if matches!(source.kind.as_str(), "queue" | "queue_backup") => {
+            "ready without playback"
+        }
         Some(false) => "paused",
         None => "playing or not as it is",
     };
@@ -249,8 +272,52 @@ pub fn apply_text(applied: &SceneApplyDto) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Cli, Command};
+    use clap::{Parser, error::ErrorKind};
     use fsonos_api::surface::scenes::SceneSourceDto;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn queue_backups_are_explicit_and_default_capture_remains_a_bookmark() {
+        for backup in [false, true] {
+            let mut args = vec!["fsonos", "scene", "save", "Evening"];
+            if backup {
+                args.push("--backup-queues");
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Command::Scene(SceneArgs {
+                action:
+                    SceneAction::Save {
+                        name,
+                        from,
+                        backup_queues,
+                    },
+            }) = cli.command
+            else {
+                panic!("expected a scene capture")
+            };
+            assert_eq!(name, "Evening");
+            assert!(from.is_none());
+            assert_eq!(backup_queues, backup);
+        }
+    }
+
+    #[test]
+    fn a_queue_backup_cannot_be_combined_with_an_authored_scene_file() {
+        for flags in [
+            ["--backup-queues", "--from", "evening.toml"],
+            ["--from", "evening.toml", "--backup-queues"],
+        ] {
+            let error = Cli::try_parse_from(
+                ["fsonos", "scene", "save", "Evening"]
+                    .into_iter()
+                    .chain(flags),
+            )
+            .err()
+            .expect("backup capture conflicts with a scene file");
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict);
+        }
+    }
 
     fn evening() -> SceneDto {
         let source = |kind: &str| SceneSourceDto {
@@ -328,6 +395,7 @@ mod tests {
             mood: None,
             direction: None,
             queue: Some(fsonos_api::surface::scenes::SceneQueueDto {
+                total: None,
                 coordinator: "RINCON_SYNTHETIC".into(),
                 household: Some("TEST-HOUSE".into()),
                 update_id: 42,
@@ -343,5 +411,24 @@ mod tests {
         assert!(text.contains("queue contents are not saved"));
         assert!(text.contains("ready without playback"));
         assert!(!text.contains("Kitchen + Office: what it has"));
+    }
+
+    #[test]
+    fn backed_up_queue_text_explains_saved_contents_and_replacement() {
+        let mut scene = evening();
+        scene.groups[0].source = serde_json::from_value(serde_json::json!({
+            "kind": "queue_backup", "queue": {
+                "coordinator": "RINCON_SYNTHETIC", "update_id": 42,
+                "track": 2, "position_secs": 93, "play_mode": "NORMAL", "total": 4
+            }
+        }))
+        .unwrap();
+        scene.groups[0].playing = Some(false);
+        for text in [show_text(&scene), list_text(&[scene])] {
+            assert!(text.contains("saved queue backup, 4 entries, track 2 at 1:33, NORMAL"));
+            assert!(text.contains("replaces the original player's current queue on recall"));
+            assert!(text.contains("ready without playback"));
+            assert!(!text.contains("queue contents are not saved"));
+        }
     }
 }

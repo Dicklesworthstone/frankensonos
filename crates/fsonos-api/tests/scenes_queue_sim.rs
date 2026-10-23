@@ -208,7 +208,7 @@ fn captured_queue_scenes_round_trip_recall_and_undo_on_both_generations() {
     }
 }
 
-fn denied_recall(tool: &str, denied_writer: bool) {
+fn denied_recall(tool: &str, denied_writer: bool, backup: bool) {
     let policy = Policy::from_toml(&format!(
         "[clients.\"tag:restricted\"]\ndeny = [\"{tool}\"]\n"
     ))
@@ -224,7 +224,13 @@ fn denied_recall(tool: &str, denied_writer: bool) {
     } else {
         (&cli, &restricted)
     };
-    surface.save_scene(writer, "Restricted queue").unwrap();
+    if backup {
+        surface
+            .save_scene_with_queue_backups(writer, "Restricted queue")
+            .unwrap();
+    } else {
+        surface.save_scene(writer, "Restricted queue").unwrap();
+    }
     radio(&sim, false);
     let before = playback(&sim);
     let before_queue = queue(&sim);
@@ -252,7 +258,99 @@ fn denied_recall(tool: &str, denied_writer: bool) {
 fn caller_and_writer_permissions_gate_the_entire_queue_recall() {
     for tool in ["play_queue", "seek", "set_play_mode", "play", "pause"] {
         for denied_writer in [false, true] {
-            denied_recall(tool, denied_writer);
+            denied_recall(tool, denied_writer, false);
+        }
+    }
+}
+
+#[test]
+fn queue_backup_mutations_require_both_caller_and_writer_permissions() {
+    for tool in [
+        "play_queue",
+        "add_to_queue",
+        "remove_from_queue",
+        "seek",
+        "set_play_mode",
+        "play",
+        "pause",
+    ] {
+        for denied_writer in [false, true] {
+            denied_recall(tool, denied_writer, true);
+        }
+    }
+}
+
+#[test]
+fn captured_backups_rebuild_edited_queues_through_the_surface_on_both_generations() {
+    for generation in [1, 2] {
+        for playing in [false, true] {
+            let (sim, surface) = setup(generation, Policy::default());
+            if !playing {
+                soap::pause(&sim.lan(), host(&sim)).unwrap();
+            }
+            let original_queue = queue(&sim);
+            let original = playback(&sim);
+            let captured_at = sim.soap_log().len();
+            let saved = surface
+                .save_scene_with_queue_backups(&Client::Cli, "Durable queue")
+                .unwrap();
+            assert_reads_only(&sim, captured_at);
+            assert_eq!(saved.groups[0].source.kind, "queue_backup");
+            assert_eq!(
+                saved.groups[0].source.queue.as_ref().unwrap().total,
+                Some(3)
+            );
+            assert_eq!(saved.groups[0].playing, Some(playing));
+            assert_eq!(
+                surface.scene(&Client::Unknown, "Durable queue").unwrap(),
+                saved
+            );
+            radio(&sim, true);
+            soap::enqueue_uri(
+                &sim.lan(),
+                host(&sim),
+                "x-file-cifs://example.invalid/extra.flac",
+                "",
+                0,
+                false,
+            )
+            .unwrap();
+            let before_apply = sim.soap_log().len();
+            let applied = surface.apply_scene(&Client::Cli, "Durable queue").unwrap();
+            assert!(applied.complete && applied.changed, "{applied:?}");
+            assert!(
+                applied
+                    .done
+                    .contains("undo cannot restore replaced queue contents")
+            );
+            let current_queue = queue(&sim);
+            let uris = |snapshot: &BrowseSnapshot| {
+                snapshot
+                    .objects
+                    .iter()
+                    .map(|object| object.res.as_ref().unwrap().uri.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(uris(&current_queue), uris(&original_queue));
+            let position = playback(&sim).position;
+            assert_eq!(position.track, original.position.track);
+            assert_eq!(position.position_secs, original.position.position_secs);
+            assert_eq!(position.uri, original.position.uri);
+            assert_eq!(
+                get_play_mode(&sim.lan(), host(&sim)).unwrap(),
+                PlayMode::RepeatAll
+            );
+            if playing {
+                assert_eq!(playback(&sim).transport.state, TransportState::Playing);
+            } else {
+                assert_ne!(playback(&sim).transport.state, TransportState::Playing);
+                assert!(
+                    sim.soap_log()[before_apply..]
+                        .iter()
+                        .all(|call| call.action != "Play")
+                );
+            }
+            sim.shutdown();
         }
     }
 }

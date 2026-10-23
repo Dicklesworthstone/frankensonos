@@ -19,7 +19,7 @@ extension Scene {
                 throw ContractError.invalid("A saved scene group has missing or repeated rooms.")
             }
             let source = group.source
-            guard source.kind == "queue" || source.queue == nil else {
+            guard source.kind == "queue" || source.kind == "queue_backup" || source.queue == nil else {
                 throw ContractError.invalid("A scene has a queue reference attached to another music source. Capture it again.")
             }
             guard source.kind == "dj" || source.direction == nil else {
@@ -33,7 +33,7 @@ extension Scene {
                 guard source.name.map(named) == true else { throw ContractError.invalid("The scene favorite has no name.") }
             case "uri":
                 guard source.uri.map(named) == true else { throw ContractError.invalid("The scene source has no URI.") }
-            case "queue":
+            case "queue", "queue_backup":
                 func identity(_ value: String) -> Bool {
                     named(value) && value.utf8.count <= 1_024 &&
                         !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
@@ -42,6 +42,13 @@ extension Scene {
                       queue.household.map(identity) != false,
                       source.name == nil, source.uri == nil, source.mood == nil else {
                     throw ContractError.invalid("The scene's saved queue position is incomplete. Capture the house again.")
+                }
+                if source.kind == "queue_backup" {
+                    guard let total = queue.total, (1...1_000).contains(total), queue.track <= total else {
+                        throw ContractError.invalid("The scene's saved queue backup is incomplete or exceeds the 1,000-entry limit. Capture the house again.")
+                    }
+                } else if queue.total != nil {
+                    throw ContractError.invalid("A queue bookmark cannot contain a backup entry count. Refresh scenes.")
                 }
             default:
                 throw ContractError.invalid("The scene uses an unsupported source: \(source.kind).")

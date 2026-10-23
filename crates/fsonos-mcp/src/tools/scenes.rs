@@ -42,7 +42,7 @@ fn scene_line(scene: &SceneDto) -> String {
                     .mood
                     .as_ref()
                     .map_or_else(|| "the DJ".to_string(), |m| format!("the DJ ({m})")),
-                "queue" => source.queue.as_ref().map_or_else(
+                "queue" | "queue_backup" => source.queue.as_ref().map_or_else(
                     || "queue reference unavailable; capture the scene again".into(),
                     fsonos_api::surface::scenes::SceneQueueDto::text,
                 ),
@@ -50,7 +50,9 @@ fn scene_line(scene: &SceneDto) -> String {
             };
             let state = match g.playing {
                 Some(true) => "playing",
-                Some(false) if source.kind == "queue" => "ready without playback",
+                Some(false) if matches!(source.kind.as_str(), "queue" | "queue_backup") => {
+                    "ready without playback"
+                }
                 Some(false) => "paused",
                 None => "playing or not as it is",
             };
@@ -91,14 +93,29 @@ impl Backend {
     /// The `save_scene` tool: on the daemon when one runs, whose DJ is the
     /// one a group plays (saved as the DJ, not as what it has), else here.
     pub fn save_scene(&self, name: &str) -> McpResult<FinalCallToolResult> {
+        self.capture_scene(name, false)
+    }
+
+    /// Capture complete ordinary queues for durable scene recall.
+    pub fn save_scene_with_queue_backups(&self, name: &str) -> McpResult<FinalCallToolResult> {
+        self.capture_scene(name, true)
+    }
+
+    fn capture_scene(&self, name: &str, backup_queues: bool) -> McpResult<FinalCallToolResult> {
         let path = format!("/scenes/{}", segment(name));
-        if let Some(answer) = self.on_daemon("PUT", &path, None, |scene: &SceneDto| {
+        let request = backup_queues.then(|| serde_json::json!({"backup_queues": true}));
+        if let Some(answer) = self.on_daemon("PUT", &path, request.as_ref(), |scene: &SceneDto| {
             format!("Saved {}", scene_line(scene))
         }) {
             return answer;
         }
         respond(|| {
-            let scene = self.surface.save_scene(&self.client, name)?;
+            let scene = if backup_queues {
+                self.surface
+                    .save_scene_with_queue_backups(&self.client, name)?
+            } else {
+                self.surface.save_scene(&self.client, name)?
+            };
             Ok((format!("Saved {}", scene_line(&scene)), scene))
         })
     }
@@ -177,7 +194,7 @@ impl Backend {
 }
 
 #[tool(
-    description = "List the saved scenes: named house states, each with how the rooms group, what each group plays (a favorite, a URI, the DJ with a saved mood and full direction, a captured queue position, or whatever it has) and whether it plays, and each room's volume and mute. A queue reference requires the original unchanged queue; it is not a backup of its contents. Put the house in a scene with apply_scene.",
+    description = "List the saved scenes: named house states, each with how the rooms group, what each group plays (a favorite, a URI, the DJ with a saved mood and full direction, a captured queue position, or whatever it has) and whether it plays, and each room's volume and mute. A queue reference requires the original unchanged queue. A queue_backup retains complete contents and rebuilds the original player's queue on recall. Put the house in a scene with apply_scene.",
     annotations(read_only, idempotent)
 )]
 async fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
@@ -185,22 +202,29 @@ async fn list_scenes(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallTool
 }
 
 #[tool(
-    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind dj with optional mood and direction {constraints: {include_artists: [names], include_genres: [genres], ...}, for_secs: 7200}, uri with a stream uri or a Spotify track, album or playlist link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. A captured DJ retains its added filters and remaining duration, renewed on recall; an explicit empty direction without a mood clears prior steering. All steering constraint fields supported by add_schedule are accepted. Capturing an ordinary queue saves its selected occurrence, elapsed time and known play mode as a reference to the original coordinator's unchanged queue; queue contents are not backed up. A changed queue or known speaker restart prevents recall. Queue references cannot be authored in scene; omit scene to capture them. Its rooms must be in the house now, and its favorites in their group's household. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes."
+    description = "Save a scene called `name` (1-64 characters): the house as it is now (how the rooms group, each room's volume and mute, what each group plays and whether it plays), or, with `scene`, the one it writes out: {\"groups\": [{\"coordinator\": room, \"members\": [rooms], \"source\": {\"kind\": \"favorite\", \"name\": title} (or kind dj with optional mood and direction {constraints: {include_artists: [names], include_genres: [genres], ...}, for_secs: 7200}, uri with a stream uri or a Spotify track, album or playlist link, keep), \"playing\": bool}], \"volumes\": {room: 0-100}, \"mutes\": {room: bool}}. A captured DJ retains its added filters and remaining duration, renewed on recall; an explicit empty direction without a mood clears prior steering. All steering constraint fields supported by add_schedule are accepted. Capturing an ordinary queue saves its selected occurrence, elapsed time and known play mode as a bookmark by default. With backup_queues true, complete ordered contents are retained (up to 1000 entries and 4 MiB per queue) and recall can rebuild the original player's queue after edits or a restart. Recall replaces that player's current queue; undo_last cannot recover the replaced contents. Capture fails if a queue cannot be saved completely. The option cannot accompany scene. Captured queue sources cannot be authored; omit scene to capture them. Its rooms must be in the house now, and its favorites in their group's household. A scene of the same name (case ignored) is replaced. Nothing on the speakers changes."
 )]
 async fn save_scene(
     ctx: &McpContext,
     name: String,
     scene: Option<serde_json::Value>,
+    backup_queues: Option<bool>,
 ) -> McpResult<CompleteResult<FinalCallToolResult>> {
-    with_backend_off_thread(ctx, move |b| match &scene {
-        Some(scene) => b.save_scene_from(&name, scene),
-        None => b.save_scene(&name),
+    with_backend_off_thread(ctx, move |b| {
+        match (&scene, backup_queues.unwrap_or(false)) {
+            (Some(_), true) => Err(crate::tool_error(&fsonos_api::Failure::invalid(
+                "backup_queues captures the current house and cannot accompany an authored scene",
+            ))),
+            (Some(scene), false) => b.save_scene_from(&name, scene),
+            (None, true) => b.save_scene_with_queue_backups(&name),
+            (None, false) => b.save_scene(&name),
+        }
     })
     .await
 }
 
 #[tool(
-    description = "Put the house in the saved scene `name` (case ignored; list_scenes names them). Only the needed steps are sent: regroup, volumes and mutes, sources and playback. A captured queue reference recalls its saved occurrence, elapsed time and known play mode only on the original unchanged queue; changed queues and known speaker restarts fail that step without playing a different source. It never reconstructs queue contents. Volumes stay within your caps. undo_last can attempt to restore prior speaker state. Rooms no longer in the house are skipped; a step that fails is reported and independent groups still run. With `fade_secs` (1-60) the volumes ramp to the scene's over that long instead of jumping; the call answers when the fade is done.",
+    description = "Put the house in the saved scene `name` (case ignored; list_scenes names them). Only the needed steps are sent: regroup, volumes and mutes, sources and playback. A captured queue reference recalls its saved occurrence, elapsed time and known play mode only on the original unchanged queue; changed queues and known speaker restarts fail that step without playing a different source. A queue_backup reconstructs its saved contents on the original player; this replaces the current queue, whose contents cannot be recovered by undo_last. Volumes stay within your caps. undo_last can attempt to restore prior speaker state. Rooms no longer in the house are skipped; a step that fails is reported and independent groups still run. With `fade_secs` (1-60) the volumes ramp to the scene's over that long instead of jumping; the call answers when the fade is done.",
     annotations(idempotent)
 )]
 async fn apply_scene(
@@ -215,7 +239,7 @@ async fn apply_scene(
 }
 
 #[tool(
-    description = "Show one saved scene by `name` (case ignored; list_scenes names the saved ones): how its rooms group, what each group plays and whether it plays, and each room's volume and mute. Queue references show a saved occurrence and time in the original unchanged queue, not saved queue contents. Nothing on the speakers changes; put the house in it with apply_scene.",
+    description = "Show one saved scene by `name` (case ignored; list_scenes names the saved ones): how its rooms group, what each group plays and whether it plays, and each room's volume and mute. Queue references show an occurrence in the original unchanged queue; queue_backup summaries also show the number of saved entries that recall can reconstruct. Nothing on the speakers changes; put the house in it with apply_scene.",
     annotations(read_only, idempotent)
 )]
 async fn get_scene(
@@ -410,6 +434,11 @@ mod tests {
         let b = backend(Client::McpStdio, &[]).with_daemon(Arc::new(NoDaemon));
         for source in [
             serde_json::json!({"kind": "queue"}),
+            serde_json::json!({"kind": "queue_backup"}),
+            serde_json::json!({"kind": "queue_backup", "queue": {
+                "coordinator": "RINCON_TEST", "update_id": 42,
+                "track": 3, "position_secs": 83, "total": 7
+            }}),
             serde_json::json!({"kind": "keep", "queue": {
                 "coordinator": "RINCON_TEST", "update_id": 42,
                 "track": 3, "position_secs": 83
@@ -426,6 +455,54 @@ mod tests {
             assert!(failure.message.contains("only be captured"));
             assert_eq!(failure.data.unwrap()["code"], "INVALID_ARGUMENT");
         }
+    }
+
+    #[derive(Default)]
+    struct CaptureDaemon(Mutex<Vec<Value>>);
+
+    impl crate::tools::Daemon for CaptureDaemon {
+        fn call(
+            &self,
+            method: &str,
+            path: &str,
+            body: Option<&Value>,
+        ) -> Option<Result<Value, fsonos_api::Failure>> {
+            self.0.lock().unwrap().push(json!([method, path, body]));
+            Some(Ok(
+                serde_json::to_value(SceneDto::new(&evening(), 0)).unwrap()
+            ))
+        }
+    }
+
+    #[test]
+    fn backup_capture_forwards_only_its_opt_in_and_plain_capture_keeps_no_body() {
+        let daemon = Arc::new(CaptureDaemon::default());
+        let b = backend(Client::McpStdio, &[]).with_daemon(daemon.clone());
+        let ordinary = b.save_scene("Evening").unwrap();
+        let backup = b.save_scene_with_queue_backups("Evening").unwrap();
+        assert_eq!(ordinary.structured_content, backup.structured_content);
+        assert_eq!(
+            *daemon.0.lock().unwrap(),
+            [
+                json!(["PUT", "/scenes/Evening", null]),
+                json!(["PUT", "/scenes/Evening", {"backup_queues": true}]),
+            ]
+        );
+    }
+
+    #[test]
+    fn save_scene_schema_advertises_an_optional_boolean_backup_switch() {
+        let definition = fastmcp_server::ToolHandler::definition(&SaveScene);
+        let schema = definition.input_schema;
+        assert_eq!(
+            schema["properties"]["backup_queues"]["type"],
+            json!(["boolean", "null"])
+        );
+        assert_eq!(schema["required"], json!(["name"]));
+        assert!(schema["properties"].get("scene").is_some());
+        let description = definition.description.unwrap();
+        assert!(description.contains("backup_queues"));
+        assert!(description.contains("bookmark by default"));
     }
 
     fn direction() -> Value {
