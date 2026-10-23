@@ -213,7 +213,6 @@ written, which is how a bundle can supply the key that type 17 then needs.
 Types 17 and 22 are stored **in plaintext** (magic `621da74d` at offset 0 of
 the payload). Types 3, 4 and 6 are wrapped in the `886499ca` envelope, and
 all three of one package share the same wrapped AES key:
-
 ```
 886499ca | u32 header_len (0x13a) | u32 00010000 | 8 * 00
 u8 recipient_len | u8 03 | recipient | u32 00000001 | u32 rsa_len
@@ -223,6 +222,21 @@ RSA-OAEP(SHA-1) AES key | u32 00000001 | u32 data_len | 16-byte IV | ciphertext
 so **editing the preinstall script on this line also means re-encrypting it**
 to the model key; the plaintext-script edits in the earlier trials could
 never be read.
+
+**What the digest covers.** For the type-22 section the 32-byte digest is
+exactly `SHA-256` of the section's own bundle bytes (everything after the
+364-byte header) — verified against the shipped package. The type-17 digest
+is *not* the bundle, the encrypted sections, its own header or any prefix
+tried; it is signed separately and is still unresolved. So a forged type-22
+needs `digest = SHA-256(our bundle)` plus a signature over that digest, and
+a forged type-17 would need its own, separate value.
+
+**Name resolution.** `ZZ0039` accepts only `keytype == 3` and a **20-byte**
+name, then `memcmp`s it against a store of 20-byte names (stride `0x20`)
+built from the parsed bundle and returns a key handle; anything else is
+rejected before any crypto runs. An entry therefore verifies only if its
+name is present in the bundle that type 22 just installed, so the bundle is
+the trust material and the same 20-byte id must appear in both headers.
 
 
 
