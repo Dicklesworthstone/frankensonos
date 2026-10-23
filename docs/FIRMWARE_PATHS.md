@@ -1234,3 +1234,23 @@ also gets no response and takes HTTP down. The two failures therefore differ:
 one is a size limit before the method check, the other is reached only on the
 GENA method itself. Both units used (`168`, `185`) stayed without `:1400` for
 minutes; recovery is watchdog-driven and slow after repeat hits.
+
+### H12 is live on 57.23, and the file is in the preserved set
+
+Two corrections to the section above, from the decrypted 57.23 tree
+(`libsonosutils.so.1`, `anacapad`):
+
+- **57.23 knows the path.** Both binaries carry `system/Configure.dev`
+  (`/jffs/system/Configure.dev` in `anacapad`), next to `devmode`,
+  `unlockedBld`, `confdev`. It is not a 34.16-only relic.
+- **It is a preserved file.** `libsonosutils` holds the `/jffs` table as
+  `{u32 flags, char *relative_path}` pairs terminated by `0xffffffff`:
+  `system/Configure.dev` is `0x1101`, i.e. file (`1`) + preserve (`0x100`) +
+  `0x1000`; the same preserve bit is on `conf/anacapa.conf` and `regdevicecert`,
+  while plain logs carry only `1`. The `umountjffs` copy list in the install
+  script is therefore partial; the preserve table is what carries the file across
+  an update. So once `/jffs/system/Configure.dev` exists it stays, which makes
+  H12 a one-shot write rather than something to redo every boot.
+
+Still missing is only the write primitive with a request-chosen name; nothing
+about persistence or the boot side is.
