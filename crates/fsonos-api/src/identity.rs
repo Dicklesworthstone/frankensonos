@@ -37,7 +37,7 @@
 
 use fastapi::Request;
 use fastapi::core::middleware::RemoteAddr;
-use fsonos_core::policy::Client;
+use fsonos_core::policy::{self, Client};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
@@ -221,26 +221,13 @@ impl Identity {
     }
 }
 
-/// The keys the daemon's own clients go by ([`Client::key`]): a tailnet
-/// name that took one would get that client's rules, and a schedule it
-/// made would run as that client.
-const RESERVED: [&str; 5] = [
-    "cli",
-    "mcp-stdio",
-    "loopback-http",
-    "bridge-compat",
-    "unknown",
-];
-
 /// A name a caller can go by: not empty, bounded, no control characters,
-/// and none of [`RESERVED`].
+/// and none of the daemon's own keys ([`policy::RESERVED_KEYS`]).
 fn plausible(name: &str) -> bool {
     !name.trim().is_empty()
         && name.len() <= MAX_LOGIN
         && !name.chars().any(char::is_control)
-        && !RESERVED
-            .iter()
-            .any(|key| key.eq_ignore_ascii_case(name.trim()))
+        && !policy::reserved_key(name)
 }
 
 /// `a == b`, taking the same time wherever they first differ.
@@ -272,8 +259,22 @@ mod tests {
         assert_eq!(serve.of(&request(None)), Client::LoopbackHttp);
         assert_eq!(serve.of(&request(Some("  "))), Client::LoopbackHttp);
         assert_eq!(serve.of(&request(Some("a\u{7}b"))), Client::LoopbackHttp);
-        // A daemon client's own key is no tailnet name.
-        for reserved in ["cli", "CLI", "mcp-stdio", "loopback-http", "unknown"] {
+        // A daemon client's own key is no tailnet name, nor is a system
+        // actor's: a login of `dj` would read as the DJ in the log.
+        for reserved in [
+            "cli",
+            "CLI",
+            "mcp-stdio",
+            "loopback-http",
+            "unknown",
+            "bridge-compat",
+            "dj",
+            " DJ ",
+            "schedule",
+            "sleep",
+            "selftest",
+            "setup",
+        ] {
             assert_eq!(
                 serve.of(&request(Some(reserved))),
                 Client::LoopbackHttp,

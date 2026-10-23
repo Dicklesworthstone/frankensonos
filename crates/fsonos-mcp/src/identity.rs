@@ -4,7 +4,7 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{FinalSubscriptionsListenParams, JsonRpcRequest};
-use fsonos_core::policy::Client;
+use fsonos_core::policy::{self, Client};
 
 use crate::{tool_error, tools};
 
@@ -32,15 +32,7 @@ pub(crate) fn client(subject: Option<&str>) -> Client {
             && name == name.trim()
             && name.len() <= 256
             && !name.chars().any(char::is_control)
-            && ![
-                "cli",
-                "mcp-stdio",
-                "loopback-http",
-                "bridge-compat",
-                "unknown",
-            ]
-            .iter()
-            .any(|reserved| reserved.eq_ignore_ascii_case(name)) =>
+            && !policy::reserved_key(name) =>
         {
             Client::Tailnet(name.to_string())
         }
@@ -115,6 +107,13 @@ mod tests {
             "",
             " ",
             "reader\n",
+            "bridge-compat",
+            "dj",
+            "DJ",
+            "schedule",
+            "sleep",
+            "selftest",
+            "setup",
         ] {
             assert_eq!(client(Some(name)), Client::Unknown, "{name:?}");
         }
@@ -125,6 +124,7 @@ mod tests {
             Client::McpStdio,
             Client::Tailnet("cli".into()),
             Client::Tailnet("loopback-http".into()),
+            Client::Tailnet("dj".into()),
         ] {
             assert_eq!(auth(caller).subject.as_deref(), Some("unknown"));
         }

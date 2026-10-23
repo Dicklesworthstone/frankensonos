@@ -230,6 +230,33 @@ impl Client {
     }
 }
 
+/// The keys no caller may go by: the daemon's own clients ([`Client::key`])
+/// and the system actors that act under a key of their own (the DJ; also
+/// schedules, sleep timers, the self-test and setup). A tailnet name that
+/// took one would get that client's rules, a schedule it made would run as
+/// that client, and its rows in the action log would read as that client's.
+pub const RESERVED_KEYS: [&str; 10] = [
+    "cli",
+    "mcp-stdio",
+    "loopback-http",
+    "bridge-compat",
+    "unknown",
+    "dj",
+    "schedule",
+    "sleep",
+    "selftest",
+    "setup",
+];
+
+/// Whether `name` is one of [`RESERVED_KEYS`], ignoring case and the
+/// whitespace around it.
+#[must_use]
+pub fn reserved_key(name: &str) -> bool {
+    RESERVED_KEYS
+        .iter()
+        .any(|key| key.eq_ignore_ascii_case(name.trim()))
+}
+
 impl fmt::Display for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.key())
@@ -1748,5 +1775,24 @@ max_volume = 40
                 .starts_with(&format!("{} line 2", path.display())),
             "{e}"
         );
+    }
+
+    #[test]
+    fn the_daemons_own_clients_and_system_actors_have_reserved_keys() {
+        for client in [
+            Client::Cli,
+            Client::McpStdio,
+            Client::LoopbackHttp,
+            Client::BridgeCompat,
+            Client::Unknown,
+        ] {
+            assert!(reserved_key(client.key()), "{client}");
+        }
+        for name in ["dj", "DJ", " dj ", "schedule", "sleep", "selftest", "setup"] {
+            assert!(reserved_key(name), "{name:?}");
+        }
+        for name in ["dj-agent", "ada@example.com", "tag:agent", ""] {
+            assert!(!reserved_key(name), "{name:?}");
+        }
     }
 }
