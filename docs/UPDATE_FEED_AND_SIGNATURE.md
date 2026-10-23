@@ -385,6 +385,11 @@ or of the manifest record + cert. Whatever derives it lives in
 
 ## Bundle manifest structure (corrected)
 
+On disk a manifest record is eight bytes -- `u16 0x07c1 | u32 offset |
+u16 length` -- laid out back to back with an eight-byte grid; the runtime
+array it is expanded into is twelve bytes per record
+(`u16 flags | u32 pointer | u32 length | u16 pad`).
+
 `sonosRcbParseHeader` copies each **120-byte manifest entry** verbatim into a
 buffer (`memcpy(..., 120, entry)`), and `sonosRcbParseManifest` allocates
 `count * 12` bytes and walks that buffer as **12-byte records**:
@@ -400,6 +405,14 @@ reading also lined up.
 name, so the name a header carries must be one already inserted into that
 table; the table is filled while the manifest is loaded, so authoring a
 bundle means writing one 120-byte entry with our own records, name and cert.
+
+A minimal forged bundle was built and shipped (single entry, self-signed
+RSA cert, records pointing at it, fresh name in both the bundle label and the
+header, digest and signature over the bundle). It downloads in full and does
+**not** reboot, while a package with the original bundle does -- so the
+remaining failure is in the bundle's trust material or the name, not in the
+transport or the section framing. Both variants keep the entry count at one
+and `list2 = 0`.
 
 ## Reaching real packages and the app handshake
 
