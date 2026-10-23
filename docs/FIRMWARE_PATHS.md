@@ -1119,6 +1119,16 @@ or a real box reboot is required — and `management/reboot` is exactly the toke
 we do not have. Still, the *fetch* half of the update path is now unauthenticated
 and parameterised, which is what any local-manifest trick would need.
 
+Who writes the flag file is now known and it is **not** this action:
+`FUN_1029c34c` (log tag `topology`) queries the **cloud** settings and, only if
+that query succeeds and carries a minimum-version/downgrade record, opens
+`/var/run/upgradeinfo` with `fopen(…,"a")` and writes `MinVersion: [...]`. So an
+install needs the cloud policy to admit a version, and the local
+`CheckForUpdate` currently returns the installed build itself with
+`DownloadSize=0` — the device has nothing to do. A local package only becomes
+installable if the cloud is made to advertise something newer, or if the writer
+is reached another way.
+
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
 
 NVD: "In certain Sonos products before S1 11.12 and S2 15.9 … a failure to
