@@ -1294,3 +1294,19 @@ Two corrections to the section above, from the decrypted 57.23 tree
 
 Still missing is only the write primitive with a request-chosen name; nothing
 about persistence or the boot side is.
+
+### Unauthenticated `SetZoneAttributes`: the icon is stored verbatim, nothing fetches it
+
+`DeviceProperties#SetZoneAttributes` is open on plain :1400 SOAP (`DesiredZoneName`,
+`DesiredIcon`, `DesiredConfiguration`) and answers 200. `DesiredIcon` accepts an
+arbitrary URL and is stored **as-is** — it shows up immediately in `/status/zp`'s
+`<ZoneIcon>`, alongside the built-in `x-rincon-roomicon:<name>` form.
+
+A URL icon is *not* fetched: with a byte-counting server bound on the LAN, setting
+`http://<host>:<port>/icon.png` produced no request, before or after a boot. So the
+icon is not a way to make the daemon fetch an attacker document, and it stores no
+file.
+
+The socket-level route is the only one here: DeviceProperties is absent from the
+57.23 WebSocket command table (`ERROR_UNSUPPORTED_NAMESPACE`), though it works over
+SOAP, so a "the proxy covers DeviceProperties" assumption is false on S1.
