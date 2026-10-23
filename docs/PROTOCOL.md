@@ -337,8 +337,10 @@ just falling through: an unknown path answers POST with a 106-byte HTML
 `ReportUnresponsiveDevice` (both `VerifyThenRemoveSystemwide` and `Remove`,
 short 12-hex `DeviceUUID`; the full `RINCON_…` id is rejected with SOAP
 `800`) does not seed it either, live or after a ZGT subscription — and neither
-does a genuinely fresh member link (solo via the `x-rincon` self-join, then
-rejoin accepted `200`, probed at +1/+3/+6/+10 s). Parked until a binary
+does a genuinely fresh member link: the `x-rincon` solo answered the
+documented `402` and the topology read-back showed the member **gone**
+within 1 s, probed while solo (`404`) and after a rejoin accepted `200`
+(probe at +1/+3/+8 s, `404` with connection churn). Parked until a binary
 can say what fills the table. The same app
 also registers `POST /diagmsg` (64-char `msg`) and ships the anacapa server
 config the phone itself runs on port 3500, with a hardcoded
