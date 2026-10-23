@@ -518,6 +518,13 @@ how a local client obtains a scoped token without the cloud.
    window is: any length kills playback within a few seconds; 16–20 additionally kills the
    daemon; >=24 keeps the daemon alive with playback wedged. A fixed (non-advancing) window still
    plays, so it is the append/compaction path, not HLS itself.
+   Band completed: 128/256/512 characters also keep the daemon alive (22 s each), so the
+   daemon-death band is **<=20** and >=24 is daemon-stable up to at least 512. Why 16 matters: it
+   is the smallest `C` that lands on the parent's low pointer words (dest `parent+0x10`) while
+   leaving the vtable at `0x0` alone — if one of those words is the array pointer it becomes a
+   valid heap pointer to bytes we wrote, and later `ptr + idx*0xc50` lookups read our URI text as
+   entries. That would be a fake-array primitive; the parent init at `0x101922e8` (which writes
+   `+0xc` and `+0x20` in the sibling shape) is where to confirm the offset.
    Length map measured (25 s each, only the name length changed): 5 -> 0.83 s, 16 -> 17.9 s,
    20 -> 11.9 s, and 24/28/32/40/64/128 all survived. Fatal band is **16–20 characters**; from 24
    up it is stable. Destination is `ring+8-capacity*0xc50`, so `capacity = (8-T)/0xc50` lands the
