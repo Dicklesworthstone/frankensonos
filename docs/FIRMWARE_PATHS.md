@@ -662,3 +662,39 @@ reg/serial/sonosid/householdid`. `CheckForUpdate(UpdateType, CachedOnly,
 Version)` always answers the newest build regardless of `Version`, and returns
 both an `UpdateURL` (with the `^<version>` per-model placeholder, resolved
 on-device) and a `ManifestURL`.
+
+### Aftermath: what does and does not move the gate
+
+- **Manifest flags are not device flags.** The model-16 34.16 entry carries
+  `flags="0x6"`; that is a *manifest* flag. `BeginSoftwareUpdate`'s own `Flags`
+  word maps as bit0 → `Force`, and the daemon's `Ignore` key is only zeroed on
+  one branch, but neither `Flags=2` nor `Flags=4` installs a rejected image.
+- **The enforced minimum is not the blocker.** `/support/review` shows
+  `MinCompatibleVersion` and `LegacyCompatibleVersion` both `56.0-00000` on the
+  unit, i.e. every 57.x image clears it. The type-21 patch level is the real
+  guard, and it is covered by the signature.
+- **A record appended after the type-17 is covered too.** 57.23 plus a trailing
+  plaintext type-3 script record (after a valid signature) reads to EOF and then
+  fails, so "append unsigned script after the signature" does not work either.
+
+### WebSocket / REST API on 57.23, measured
+
+`wss://<ip>:1443/websocket/api` with `X-Sonos-Api-Key:
+123e4567-e89b-12d3-a456-426655440000` and subprotocol `v1.api.smartspeaker.audio`
+answers pre-auth; a frame is `[{namespace,command,householdId,<params>},{}]`
+(second element `{}`). `groups:1/getGroups` and `favorites:1/getFavorites`
+return typed payloads.
+
+The JSON parser is robust: array nesting 100 → **60 000**, object nesting
+20 000, and string values of 1 MB and 4 MB all answer with the daemon alive
+(the 4 MB case just exceeds a 10 s read deadline).
+
+The UPnP passthrough (`upnpZoneGroupTopology`, `upnpSystemProperties`,
+`upnpDeviceProperties`) has a different argument shape from the rest of the
+API: `method` goes in the **options object**, `playerId` in the command object.
+So `[{…,"playerId":…},{"method":"GetZoneGroupState"}]` answers
+`success:true,result:0`. **Arguments never reach SOAP**: `params` as a map, a
+`[{name,value}]` list, a bare list, nested objects, or at command level all
+answer UPnP 402, including for `GetString`/`GetTransportInfo` which need
+exactly one argument. The passthrough is therefore a no-argument proxy today
+and is not a useful fuzzing surface for argument handling.
