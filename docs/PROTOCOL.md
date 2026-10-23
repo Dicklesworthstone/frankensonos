@@ -508,7 +508,9 @@ afterwards (`200` ×3), so it is a per-connection crash, not the daemon. The
 same bytes driven straight into 34.16's `ZZ0137` return `0` with no fault, so
 this is a 57.23 regression that the readable code cannot reproduce — the first
 live devmode bug, and the reason the 57.23 daemon binary is now the top
-acquisition target.
+acquisition target. Shifting the reference start with a leading list entry has
+not worked yet (attempts parse-fail `400`), so whether the cliff is an absolute
+buffer offset or the reference slot arithmetic is still open.
 
 **Reversal (same round, via libsonoscrypto)**: the gate IS cryptographic. The
 three obfuscated helpers resolve to `libsonoscrypto.so.1` functions: ZZ0021
