@@ -491,6 +491,12 @@ how a local client obtains a scoped token without the cloud.
    written as 16 at exactly those two sites and nowhere else in the live binary — which is the
    open puzzle, because a diff of 17 needs limit to be 17. Something must increment it through
    a register-held base; the append after the ingest's success path is where to look.
+   Entry layout, partial: the setter `0x10191458` fetches the entry by index and operates on
+   `entry+0xc28/0xc2c` as a two-word string field, next to the double at `0xc18`; entry+0 is the
+   only plausible place for the URI. If that is a `std::string` the injected words are
+   ptr/size/capacity — two of them small — and the next compaction reads a modestly earlier
+   offset; a plain `char[]` would put ASCII in all four and wrap every index. The measured
+   2–3 reloads to death leans to the `std::string` reading.
    Invocation details the harness needs: the path is `/MediaRenderer/AVTransport/Control`
    (the short `/AVTransport/Control` answers 405) and `SetAVTransportURI` needs DIDL
    metadata — empty returns 500, an `audioBroadcast` item carrying the `hls-radio://` res
