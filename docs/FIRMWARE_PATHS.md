@@ -887,6 +887,15 @@ contract that rejects an over-long value — e.g. `FUN_10287374` returns 2 for
 So the copy surface is genuinely clean; the live kill found today is HLS
 life-cycle, not a copy.
 
+The bundle parser was re-read with the same filter and is also clean.
+`sonosRcbParseCerts` in `libsonosrootcerts.so.1` is only a 16-bit-masking thunk
+into `FUN_10396e34` in the daemon, which caps the count at `0x12d` (returns
+status 4, "too many certs"), `malloc(count * 0xc)` and fills fixed 12-byte
+records through a validating reader. The header parser `FUN_10396bfc` checks
+availability before every field, requires version 3 or 4, and copies a fixed
+0x40 bytes into a 0x40 stack buffer. This agrees with the earlier 128-mutation
+run.
+
 ## 2026-10-23: live 57.23 binaries recovered (model-12 key), verifier mapped
 
 The model-12 legacy key was recovered from the plaintext 34.16-37101-1-12
