@@ -510,8 +510,12 @@ fallback bundle, and matches no cert, SPKI, subject or modulus hash tried.
    amd64 container; a harness cross-built with `gcc-powerpc-linux-gnu` against
    `librcb` links cleanly. What still fails is the repo's **uClibc `ld.so.1`**,
    which dies with `Illegal instruction` under every CPU model tried (`440`,
-   `440ep`, `7400`, `604`). A static harness (no uClibc loader) or a matching
-   loader is required before the resolver can be exercised locally.
+   `440ep`, `7400`, `604`, `7455`, `7447`, `603`, `604e`). With Debian's own
+   PPC sysroot (`-L /usr/powerpc-linux-gnu`, `libc6-dev-powerpc-cross`) a
+   trivial binary runs, but a harness linked against the repo's `librcb`
+   dies before `main` when the two glibcs are mixed. A static build that
+   carries the parser, or a matching PPC rootfs, is required before the
+   resolver can be exercised locally.
 
 
 
