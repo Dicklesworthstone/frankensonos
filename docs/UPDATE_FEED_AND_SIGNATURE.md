@@ -776,3 +776,22 @@ Still open: what the envelope's plaintext must be (a raw key, or another envelop
 and whether the recipient is resolved from this same table. `48` is returned both
 for a missing entry and for a failed envelope decrypt, so the two cannot be told
 apart from the message alone.
+
+### 0x406214 is a type-8 record iterator; the key handle is an incoming stack arg
+
+The function is `(buf, len, key_handle, end, counter*)`: it walks records, requires
+type 8 (`beq v0,8`), requires the payload to start with `886499ca` via `ZZ0053`, then
+hands the payload to `ZZ0052` with `a3 = key_handle`, and finally calls `ZZ0045`. The
+`48` path is exactly `key_handle == 0` (`beqz a2` at `0x40625c`).
+
+`key_handle` is **not produced inside this function**: `0x406214` reads it from
+`92(sp)`, an incoming stack argument of its caller (the section loader at `0x4066e8`),
+so it is resolved higher up before the section buffer is even mapped. That places the
+lookup (and the store read) in the section-metadata stage, which is the next frame to
+walk; the store records themselves are only consumed here.
+
+Practical residue from this stretch: the store partition must be writable without an
+erase (swap `/dev/mtd1` for an mtdram symlink), and the entry has to be an envelope,
+not a raw key. With the id table at 0, an envelope to the model key at 512 and the
+correct record framing the run still ends at `48`, i.e. the handle is still 0 — so
+the lookup keys on something the synthetic store does not express yet.
