@@ -1146,6 +1146,15 @@ install needs the cloud policy to admit a version, and the local
 installable if the cloud is made to advertise something newer, or if the writer
 is reached another way.
 
+Tried the obvious combine — arm with a local `UpdateItem` in `ExtraOptions`,
+then force `/setstring` writes until the box rebooots — six writes and three
+minutes later: still `57.23-74170`. (The vendor URL with the same item XML does
+take the daemon down for ~70 s, versus ~20 s for a bare restart, so *something*
+differs, but the version and the log stay unchanged.) `getZoneGroupState`'s
+`BootSeq` is the reliable reboot counter — a daemon restart does not bump it —
+and this bench unit is already at 91 from the session's crashes, so reboots do
+happen; they just never coincide with an armed update.
+
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
 
 NVD: "In certain Sonos products before S1 11.12 and S2 15.9 … a failure to
