@@ -1095,6 +1095,11 @@ miss `zl`/`enetports`/`showstp`/`VERSION` — use this list. Arguments in `?…`
 ignored, `%20`/`;` are not re-split, and an unknown name returns 200 with an
 empty `<ZPSupportInfo/>` rather than 404.
 
+**`/status/showstp` stalls the status server on S2.** It answers 200 with only
+~227 bytes, but takes 15.7 s / 3.2 s / 0.65 s on three consecutive calls and
+each call blocks `/status/*` completely while it runs (a concurrent `/status/zp`
+times out, then recovers). Nothing dies; it is a trivial stall lever.
+
 **S2 gates the debug pages but not `/setstring`.** On 86.10 `/advconfig`,
 `/diaglevel` and `/diagmsg` all answer 403 (they are open on 57.23) and
 `/support/*` is 404 on both. `/setstring` is *open* on 86.10 and one POST kills
