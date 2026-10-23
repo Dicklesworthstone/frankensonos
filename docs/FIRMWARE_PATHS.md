@@ -2111,3 +2111,35 @@ Live leads, in order:
 Read `MusicServices#ListAvailableServices` first on any unit: it is unauthenticated
 and gives the true service ids (Spotify 9/12), which several earlier attempts got
 wrong.
+
+#### Relaunching the css exec VM (after a css restart)
+
+`/opt/s57` and the guest `/tmp` do not survive. The working launch is:
+
+```
+pkill -f qemu-system-mips; sleep 2
+cd /tmp/s1emu
+nohup qemu-system-mips -M malta -m 256 -kernel vmlinux49 -initrd initrd49e.gz \
+  -drive file=debian_mips_run4.qcow2,format=qcow2,if=ide \
+  -append "root=/dev/sda1 console=ttyS0" \
+  -net nic,model=e1000 -net user,hostfwd=tcp::2311-:22 -nographic > rN.out 2>&1
+```
+
+`initrd49e.gz` is the only initrd with the NIC modules (`initrd49d` boots with no
+`eth0`). Then, in the guest (root/root, port 2311):
+
+- `/opt/s57` is rebuilt from the host with
+  `tar -C <57.23-…-1-12 tree> -cz bin lib | ssh … "tar -C /opt/s57 -xz"`, followed by
+  the **full rootfs `/lib`** (the updater needs `libmbedtls`/`libmbedcrypto`) and
+  `chmod +x /opt/s57/lib/ld.so.1` (tar restores 0644 and the loader then fails with
+  `exec: Permission denied`).
+- `/VERSION`, `/LEGACYCOMPATVER`, `/MINCOMPATVER` must be created from the rootfs
+  (`57.23-74170`, `36.0-00000`, `56.0-00000`) or the compat block compares against
+  a bogus default.
+- mtd: `mtd.ko`, the `nand*`/`crc`/`bch` modules, `nandsim.ko parts=1`, eight renamed
+  `mtdram` copies, `/dev/mtd0..15` via `mknod c 90 2n`, `/dev/mtdr0`, the 576-byte
+  MDP written to `mtd0` with `bs=2048 conv=sync`, `/tmp/bootsection=0`,
+  `/tmp/bootgeneration=1`.
+- The unpatched `upgrade` still fails compat on the stub MDP (`Failed compatibility
+  check`); copy it and zero the `beqz` at file offset `0x7d7c` for local runs. It then
+  reaches `no decryption key (48)` because the stub carries no model keyring.
