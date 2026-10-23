@@ -1251,6 +1251,29 @@ differs, but the version and the log stay unchanged.) `getZoneGroupState`'s
 and this bench unit is already at 91 from the session's crashes, so reboots do
 happen; they just never coincide with an armed update.
 
+## 2026-10-23: VM harness — exact flash contract, and the trap in it
+
+`upgrade` (57.23, PPC) takes options (`Eek! Unknown option.`, `No URL provided`,
+a `-T` letter are in the binary) — worth checking for a key-file option before
+emulating flash at all.
+
+The libflash import layout, from the PLT relocations: `get_mdp` `0x1002bf7c`,
+`ptable_read` `0x1002bfb4`, `info_exit` `0x1002c01c`, `info_init` `0x1002c034`,
+`check_repartitioned` `0x1002c04c`, `get_bootsection` `0x1002c054`, `get_mdp2`
+`0x1002c0ac`, `get_bootgeneration` `0x1002c1a4`, `program_m16` `0x1002c1cc`,
+`get_mdp_wrapper` `0x1002c284`, `reprogram_flash` `0x1002c2bc`. The startup
+contract is `get_mdp_wrapper(&info)` → `info_init(&ptr, 0)` →
+`get_mdp2(ptr, &struct)`, and **all three store a pointer through r3** — a shim
+that only returns it makes the next call write to NULL and segfaults. With the
+storing fixed the binary still dies before printing anything, so the wrapper's
+info struct needs its real fields; that struct is the remaining unknown.
+
+Harness gotcha worth keeping: busybox `test` **segfaults** as a `while`
+condition in this guest (`while /bin/busybox test …` kills init with
+`Attempted to kill init`), so the offset sweep is written as a `for N in 0 8 …`
+word list. `[`, `head` and `wc` have no symlinks in the rootfs; call
+`/bin/busybox <applet>`.
+
 ## 2026-10-23: eMudhra's compromised intermediates are in the bundle, and the keys are public
 
 The root bundle of **both builds** contains `emSign ECC Root CA - G3` *and*
