@@ -310,9 +310,10 @@ deny = ["volume"]
 - One choke point: every mutating call on every surface is authorized,
   snapshotted, carried out under the policy, and logged with who asked, the
   verdict (allow, clamp or deny) and what happened. That includes the DJ's
-  own top-ups (client `dj`), `fsonos setup --test-play`'s short test play,
-  the restore at the end of `fsonos stream`, and each step of a Spotify
-  sign-in (never its code); none of these is undoable.
+  own top-ups (client `dj`), a sleep timer's fade-out (client `sleep`), each
+  audible self-test run (client `selftest`), `fsonos setup --test-play`'s
+  short test play, the restore at the end of `fsonos stream`, and each step
+  of a Spotify sign-in (never its code); none of these is undoable.
 - Starting a Spotify sign-in is the owner's: the CLI on the daemon's host
   (`fsonos setup`) and the owner's own devices (the tailnet login the
   daemon's host is logged in as, as the Apple and web remotes are through
