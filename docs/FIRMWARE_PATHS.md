@@ -2630,3 +2630,18 @@ value — the code does not reference the struct through `lui`, so it is reached
 `gp`; the writer of `0x7048e8` is the thing to find (it is a `std::string` assignment,
 not a constant), and on a live S2 unit the household id is the obvious candidate to
 try as an `iss` prefix.
+
+**Expiry is not a usable sub-oracle.** Two live probes with `exp` an hour in the
+past (`iss` = `urn:dev:ops:44974-zp-X` and `iss` = `Sonos`) both answer the same
+blanket `invalid_token` / "Access token is invalid" as a valid `exp`, so the HTTP
+description does not distinguish inspector codes 2/5/6. Only a full pass (a 200 and
+the reboot) is observable from outside; treat every other outcome as opaque and
+read the code, not the response.
+
+Recorded plumbing for whoever continues: `sp+64` is not a separate claim — the 72
+bytes at `sp+32` are `memset` to zero at `0x603ba0` and `sp+64` is that struct's
+`+32`; the reader `0x603aac` fills it from the claim named by a **17-byte** string
+carried at `sp+440` (stream at `sp+264`, view `{sp+447,17}`), and only then does the
+`rfind` at `0x603c8c` prefix-test it and the inspector run at `0x6021e4` with
+`(out=sp+264, ctx=s1, pointer=sp+516, state=sp+32)`. Naming that 17-byte claim is
+the last unknown before the code can be driven by construction.
