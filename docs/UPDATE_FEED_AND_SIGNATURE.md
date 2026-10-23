@@ -473,6 +473,19 @@ remaining failure is in the bundle's trust material or the name, not in the
 transport or the section framing. Both variants keep the entry count at one
 and `list2 = 0`.
 
+### The 4444 phase is the verify-passed oracle
+
+The type-17 handler builds a three-step state machine around a `poll()` with
+a 5000 ms timeout (`0x100096cc`): it starts the listener, then calls three
+vtable methods (offsets `0x14`, `0x18`, `0x1c`) in sequence, aborting on the
+first non-zero return. Because the listener is only created once the handler
+runs, **`0.0.0.0:4444` opening at all means type 17 was reached** -- i.e. the
+type-22 verification passed. It has never been observed open, not even for
+the pristine, model-matching, officially signed package, so on this hardware
+the flow currently dies before the application phase. Any probe can use
+"did 4444 open" as a cheap pass/fail signal instead of watching for a script
+or a version change.
+
 ## Reaching real packages and the app handshake
 
 The legacy update feed is directly usable. `GET
