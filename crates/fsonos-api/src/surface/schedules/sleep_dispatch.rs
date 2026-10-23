@@ -115,18 +115,25 @@ fn start_with(
                 &guard.sleep.fader,
                 &guard.ticket,
             );
-            match outcome {
-                Ok(outcome) => tracing::info!(
-                    "sleep timer in {}'s group: {}",
-                    timer.room,
-                    match outcome {
-                        SleepOutcome::Paused => "faded out and paused",
-                        SleepOutcome::Cancelled => "cancelled during its fade",
-                        SleepOutcome::Interrupted => "ended by a volume change during its fade",
-                        SleepOutcome::Gone => "already cancelled or replaced",
-                    }
-                ),
-                Err(error) => tracing::warn!("sleep timer in {}'s group: {error}", timer.room),
+            let result = match &outcome {
+                Ok(outcome) => {
+                    let what = describe(*outcome);
+                    tracing::info!("sleep timer in {}'s group: {what}", timer.room);
+                    (*outcome != SleepOutcome::Gone).then(|| what.to_owned())
+                }
+                Err(error) => {
+                    tracing::warn!("sleep timer in {}'s group: {error}", timer.room);
+                    Some(format!("failed: {error}"))
+                }
+            };
+            // A fade moved the speakers: the log says so, as the sleep
+            // timer's own action (p7vq.16).
+            if let Some(result) = result {
+                surface.record_system(
+                    "sleep",
+                    format!("sleep: fade out {}'s group", timer.room),
+                    result,
+                );
             }
             guard.sleep.save();
         })) {
@@ -134,6 +141,16 @@ fn start_with(
         }
     }
     ran
+}
+
+/// What a sleep timer's run did, in a few words.
+fn describe(outcome: SleepOutcome) -> &'static str {
+    match outcome {
+        SleepOutcome::Paused => "faded out and paused",
+        SleepOutcome::Cancelled => "cancelled during its fade",
+        SleepOutcome::Interrupted => "ended by a volume change during its fade",
+        SleepOutcome::Gone => "already cancelled or replaced",
+    }
 }
 
 #[cfg(test)]

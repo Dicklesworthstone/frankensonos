@@ -6,8 +6,9 @@ use crate::failure::{ErrorCode, Failure};
 use crate::surface::Survey;
 use fsonos_core::HouseholdState;
 use fsonos_core::clock::SystemClock;
-use fsonos_core::policy::Policy;
+use fsonos_core::policy::{Client, Policy};
 use fsonos_core::sleep::SleepTimer;
+use fsonos_core::store::{ActionFilter, MemStore};
 use fsonos_proto::control as soap;
 use fsonos_proto::topology::get_zone_group_state;
 use fsonos_proto::{ProtoError, Transport};
@@ -94,7 +95,8 @@ impl House {
                 Policy::default(),
                 Box::new(SystemClock),
             )
-            .with_sleep(Sleep::default()),
+            .with_sleep(Sleep::default())
+            .with_action_log(Box::new(MemStore::default()), "serve"),
         );
         let h = Self {
             sim,
@@ -191,6 +193,32 @@ fn unavailable_inventory_retains_the_original_timer_until_its_room_returns() {
                 TransportState::Paused
             );
         }
+    }
+}
+
+/// A timer's fade is the sleep timer's own action in the log (p7vq.16): it
+/// moved the speakers, though no caller asked just then.
+#[test]
+fn a_timer_that_fades_out_is_logged_as_the_sleep_timers_own_action() {
+    for s2 in [false, true] {
+        let h = House::new(1, s2);
+        h.play();
+        let scheduler = Scheduler::new(&h.surface);
+        assert_eq!(start(&scheduler, h.now).len(), 1);
+        assert!(scheduler.wait(Duration::from_secs(5)));
+        let log = h
+            .surface
+            .recent_actions(&Client::Cli, &ActionFilter::default())
+            .unwrap();
+        assert_eq!(log.len(), 1, "{log:?}");
+        let action = &log[0].action;
+        assert_eq!(
+            (action.client.as_str(), action.surface.as_str()),
+            ("sleep", "sleep")
+        );
+        assert_eq!(action.intent, "sleep: fade out Room0's group");
+        assert_eq!(action.result, "faded out and paused");
+        assert!(action.before_state.is_none(), "not undoable");
     }
 }
 

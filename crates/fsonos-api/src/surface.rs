@@ -609,6 +609,33 @@ impl Surface {
         }
     }
 
+    /// Append what a system actor did on its own (`sleep`: a timer's fade),
+    /// as the DJ logs its top-ups: client and surface `actor`, not undoable.
+    /// A log that cannot be written never fails the run it records.
+    fn record_system(&self, actor: &str, intent: String, result: String) {
+        let Some(log) = &self.log else {
+            return;
+        };
+        let action = Action {
+            at: self.now(),
+            client: actor.to_owned(),
+            surface: actor.to_owned(),
+            intent,
+            decision: "allow".to_owned(),
+            result,
+            before_state: None,
+            undo_of: None,
+        };
+        let written = match log.store.lock() {
+            Ok(mut store) => actions::record(&mut **store, &action).map_err(|e| e.to_string()),
+            Err(_) => Err("action log poisoned".to_string()),
+        };
+        match written {
+            Ok(id) => self.announce_logged(&[LoggedAction { id, action }]),
+            Err(e) => tracing::warn!("action not logged ({}): {e}", action.intent),
+        }
+    }
+
     /// Announce logged actions on the event stream (`action.logged`).
     fn announce_logged(&self, logged: &[LoggedAction]) {
         let Some(bus) = &self.events else {
