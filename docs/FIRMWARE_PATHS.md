@@ -1054,3 +1054,20 @@ different method/headers) and the daemon survives; **256 KiB and 512 KiB** both
 time out and kill HTTP, like 1 MiB. The unit also stayed without `:1400` for
 minutes after the largest attempts while ICMP and playback continued, so this is
 a durable one-request control-surface outage, not a momentary reset.
+
+### The non-destructive reboot primitive (needed for any `/jffs` test)
+
+Because an accepted install reformats `/jffs`, any test of a file placed there
+must reboot **without** completing an update. A rejected image does exactly that:
+
+1. `BeginSoftwareUpdate` at an image the gate refuses (wrong patch train, or a
+   version-bumped image with a bad signature).
+2. The daemon reads ~130–160 KB, aborts, and the box reboots in ~18 s.
+3. The install script never runs, so `/jffs` is untouched.
+
+Contrast: an accepted image runs `umountjffs` (wipe) and takes ~50–60 s to come
+back. So "short reboot, `/jffs` preserved" vs "long reboot, `/jffs` wiped" is also
+a clean oracle for whether a candidate was accepted, independent of the version.
+
+`tot-huge.upd` (`total_len = 0xfffffff0`) only restarts the *daemon*, not the
+box, so it is not usable for this.
