@@ -497,6 +497,13 @@ how a local client obtains a scoped token without the cloud.
    ptr/size/capacity — two of them small — and the next compaction reads a modestly earlier
    offset; a plain `char[]` would put ASCII in all four and wrap every index. The measured
    2–3 reloads to death leans to the `std::string` reading.
+   **Confirmed live, and it is a dial.** Identical advancing windows: 5-character segment names
+   (short, so the value sits in the string's SSO buffer) die at **0.83 s**, on the first
+   compaction; 40-character names (heap string, so the word is a real capacity) **survived 40 s**
+   untouched. So the compaction's `limit` really is string internals and **URI length sets it**:
+   short is fatal-and-immediate, long is an orderly compaction the queue tolerates. Capacity
+   grows with length, so a long URI is a large but chosen backward shift — the knob for landing
+   the copy on a target (e.g. the second sub-object at `parent+0xcd48`).
    Invocation details the harness needs: the path is `/MediaRenderer/AVTransport/Control`
    (the short `/AVTransport/Control` answers 405) and `SetAVTransportURI` needs DIDL
    metadata — empty returns 500, an `audioBroadcast` item carrying the `hls-radio://` res
