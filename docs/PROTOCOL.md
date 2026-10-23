@@ -545,6 +545,20 @@ program), or the update-signature chain (`bin/upgrade`'s own verification,
 which uses the same libsonoscrypto with separate keys for the `.upd`
 signature section).
 
+**The signature container, decoded (90.01.9 app, `sonosSignatureParse`).** The
+blob is big-endian: u32 magic `0x621da74d`, u32 `total` (must be ≤ the buffer),
+u16 `0x0100` (format version), u16 (shifted), u32 **count1 ≤ 8** followed by
+that many 0x108-byte *attribute* entries, u32 **count2 ≤ 8** and the same,
+a byte, then key references from object offset 0x10a0 with 0x910-byte slots.
+`sonosSignatureHashSignedAttributes` hashes **both attribute lists**, and the
+getters name the attribute kinds: `ContentType`, `MessageDigest`,
+`Allowlist`, `SrkRevoke`, `ArVersion`. Because a `MessageDigest` attribute is
+part of the signed set, the image content — including the type-1 version
+record — is covered transitively, which is why patching the header breaks
+verification. The container is byte-for-byte the same family as the devmode
+ring (same magic, same 0x108/0x910 slot geometry), so any bounds weakness in
+one parser is worth testing in the other.
+
 **The signature container, from the 90.01.9 app.** The current app ships an
 unobfuscated `libsonoscrypto` (arm32) with a whole signature API:
 `sonosSignatureParse` / `ParseFromEnd` / `Serialize` / `HashSignedAttributes`
