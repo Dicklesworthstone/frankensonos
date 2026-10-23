@@ -299,6 +299,12 @@ and `.../upnpZoneGroupTopology` take `{"method":"<Action>","params":{…}}` and 
 `upnpAVTransport` answers UPnP 402 (invalid args) for `GetTransportInfo`/`GetMediaInfo`
 with or without `InstanceID`, so that one still needs its plumbing.
 `update/check` and the passthrough are the two open doors the scoped verbs do not gate.
+Argument plumbing, measured on 86.10: both `params:{…}` and
+`input:[{name,value}]` parse (the latter is stricter — a non-array `input`
+answers 400 `Parsing terminated:input.name`), but **no argument reaches SOAP**:
+`SetZoneAttributes` answers UPnP 402 in all four shapes tried while the
+zero-argument `GetZoneAttributes` returns live data. The passthrough is
+therefore read-only in practice.
 
 **The surface is version-gated per build** (measured, benign reads only): the S1
 57.23 player answers `info` (with `apiVersion 1.18.10`, `minApiVersion 1.1.0`,
@@ -1107,3 +1113,28 @@ class-named file* and does not turn the key, or `..` in the key, into a path.
 H12 therefore stands blocked on exactly one thing: a write primitive whose **file
 name comes from the request**. The boot side needs nothing more (see above), and
 `/jffs/system/Configure.dev` needs no executable bit because it is `sh`'d.
+
+### WebSocket passthrough: argument shape, and what it is worth
+
+The `upnp*`/`call` commands take `method` in the **options object** (element `[1]`)
+and arguments as `input`, a list of `{name,value}` pairs on the command object,
+with `playerId` present:
+
+```
+[{"namespace":"upnpSystemProperties","command":"call","householdId":…,"playerId":…},
+ {"method":"SetString","input":[{"name":"VariableName","value":"k"},
+                                {"name":"StringValue","value":"v"}]}]
+```
+
+That answers `result:0`, and `GetString` reads the value back (a missing key gives
+UPnP `800`). A `params` map, a bare list, nested objects or command-level `params`
+all fail with `402` on both generations — the earlier "params never reach SOAP"
+result was a shape problem, not a plumbing gap.
+
+Boundary by build: the passthrough is **57.23-only** over WS (the same frames give
+`ERROR_UNSUPPORTED_COMMAND` on 86.10). `management/reboot` and
+`management/factoryReset` answer 403 insufficient scope on 57.23 and
+`ERROR_SERVICE_UNAVAILABLE` on 86.10, so there is still **no pre-auth reboot** and
+no pre-auth mutation beyond `SetString`. `diagnostics/submitDiagnostics` and
+`update/checkForUpdate` are accepted over WS on 86.10 (`update/check` is 404 on
+57.23, as recorded earlier).
