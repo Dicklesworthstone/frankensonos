@@ -644,6 +644,34 @@ the per-model content key. Consequence: the content key is a prerequisite for
 *signing*, not only for editing, and offline signature work on a model needs
 that model's key up front.
 
+## The content key is obtainable — via MDP3 + OTP (HITB 2023 method)
+
+The published Sonos One work (`github.com/blasty/sonos`, HITB 2023, "Smart
+Speaker Shenanigans") documents the whole content-key path, and it matches
+this envelope byte for byte:
+
+- manufacturing data lives in `MDP3` (magic `f079a9cb`, length `0x4000`);
+  offsets `0x580` (jffs key), `0x680` (rootfs key) and **`0x780` (model RSA
+  private key)**, each a `{magic, len, data}` field;
+- `sonos_blob_encdec` derives its AES key as `sha256(OTP[0xD0:0xE0])[0:16]`,
+  takes the blob's trailing 12 bytes as IV XORed with a per-blob tag
+  (`"rootfs"`, `"ubifs"`, `"model"`), and runs an ECB keystream over
+  `IV || BE32(counter)`;
+- the OTA side: AES key RSA-**OAEP**-wrapped at `body[0x32:0x132]`, body
+  AES-128-**CBC with a zero IV** from `body[0x13A:]`, 16-byte plaintext
+  prefix, PKCS#7 padding — exactly the layout already recorded above.
+
+So the model key is *not* a secret that must be guessed; it is an MDP3 field
+sealed with an OTP-derived key. What that needs in turn is MDP3 plus
+OTP[0xD0..0xE0]. On our units those are userland-reachable in principle:
+`anacapad` imports `hal_flash_get_mdp`, and both `mdputil` and `keyval` ship
+in the rootfs. The gap is execution — the status exec pages (`/status/ps`,
+`/status/dmesg`) exist but answer empty on both tested lines.
+
+This method solves the **content** wall only. The two compiled RSA keys still
+gate the *signature*, and the talk's tool deliberately skips the signature
+blobs.
+
 ## Next
 
 1. **Identify the post-download gate.** Delivery is proven (edited manifest
