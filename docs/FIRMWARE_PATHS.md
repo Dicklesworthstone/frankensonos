@@ -2314,3 +2314,28 @@ Differences from 57.23: `/advconfig` and `/getrs` are closed on S2, `/support/ag
 `/support/networkmatrix`, `/fcs`, `/logger`, `/ssh/fingerprints`, `/raw` are names S1 does not have.
 Adds nothing pre-auth beyond what is listed, but it is the starting set for an instruction-level diff
 between 80260 and 81100 — the piece still missing from that comparison.
+
+### Strategic conclusion: H12 is not a pre-auth path on S1
+
+Putting the pieces together:
+
+- no code in the running daemon writes `/jffs/system/Configure.dev` — the string has
+  two references, both `sonosFileExists`/status composition;
+- every write surface that *is* reachable pre-auth produces a fixed filename — the
+  settings store (`/jffs/settings/<class>`, encrypted), `/advconfig`
+  (`/jffs/netsettings_mod.txt`, two integers), `/set-cr-netstart-dest-mac`
+  (`/var/run`, tmpfs);
+- the surfaces that could emit a *named* file are all 403 while the unit is locked:
+  `handleRestrictedSettingsWrite` behind `device_account/registration`, `/raw`,
+  `/device_account/*`.
+
+So on a locked S1 player, H12 cannot be reached at all — it is an **after-root (or
+after-unlock) persistence mechanism**, not an entry vector. Its value is that it is
+the *best* persistence available: `/jffs/system/Configure.dev` is in the jffs
+preserve table (`0x1101`), so unlike the tmpfs flag it survives firmware updates and
+re-establishes telnetd, dropbear and the updater bypass on every boot.
+
+Allocation of effort follows: on S1 the entry vector is the vendor key or a memory
+bug (H13 and the media path); H12 is what to install once one of them lands. On S2
+the same file may be *pre-auth* reachable, because `/raw` exists there and its route
+family is richer — worth a check on `.112` before assuming the S1 conclusion holds.
