@@ -15,7 +15,7 @@
 use anyhow::{Context as _, bail};
 use clap::Args;
 use fsonos_core::doctor::lan::LanProbe;
-use fsonos_core::doctor::{Report, Runner};
+use fsonos_core::doctor::{Report, Runner, Status};
 use fsonos_core::selftest::audible::{self, MAX_VOLUME, Plan};
 use fsonos_proto::net::Exchange;
 use std::io::Write as _;
@@ -174,7 +174,58 @@ fn run_audible(global: &GlobalArgs, args: &SelftestArgs) -> anyhow::Result<ExitC
         stop,
         Box::new(|line| eprintln!("fsonos selftest: {line}")),
     );
-    show(global, &runner.run()?)
+    let report = runner.run()?;
+    log_audible(global, &args.room, &report);
+    show(global, &report)
+}
+
+/// The audible run in the action log, as the self-test's own action
+/// (p7vq.16): it played in `rooms` though no one sent a command. Client and
+/// surface `selftest`, not undoable. A log that cannot be written never
+/// fails the run.
+fn log_audible(global: &GlobalArgs, rooms: &[String], report: &Report) {
+    let Some(dir) = global.data_dir() else {
+        return;
+    };
+    let at = i64::try_from(crate::doctor::selftest_last::unix_now()).unwrap_or(i64::MAX);
+    let action = audible_action(rooms, report, at);
+    let logged = fsonos_core::store::SqliteStore::open(&dir.join(crate::daemon::DB_FILE))
+        .map_err(|e| e.to_string())
+        .and_then(|mut store| {
+            fsonos_core::actions::record(&mut store, &action).map_err(|e| e.to_string())
+        });
+    if let Err(e) = logged {
+        tracing::warn!("the audible self-test was not logged: {e}");
+    }
+}
+
+/// The action log's row for an audible run in `rooms` that ended with
+/// `report`, at `at` (unix seconds).
+fn audible_action(rooms: &[String], report: &Report, at: i64) -> fsonos_core::store::Action {
+    let counts = report.counts();
+    let restored = report
+        .get(audible::RESTORE)
+        .is_some_and(|r| r.status == Status::Pass);
+    fsonos_core::store::Action {
+        at,
+        client: "selftest".into(),
+        surface: "selftest".into(),
+        intent: format!("selftest --audible in {}", rooms.join(" and ")),
+        decision: "allow".into(),
+        result: format!(
+            "{} passed, {} warned, {} failed; {}",
+            counts.pass,
+            counts.warn,
+            counts.fail,
+            if restored {
+                "every room put back"
+            } else {
+                "not every room put back"
+            }
+        ),
+        before_state: None,
+        undo_of: None,
+    }
 }
 
 /// Tap `lan` into a new transcript file at `path` (none: the data
@@ -244,5 +295,50 @@ fn keep(global: &GlobalArgs, report: &Report) {
     };
     if let Err(e) = save(&dir, report, unix_now()) {
         eprintln!("fsonos selftest: not kept for `fsonos doctor`: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fsonos_core::doctor::{CheckId, CheckResult, Entry};
+
+    fn entry(id: CheckId, result: CheckResult) -> Entry {
+        Entry {
+            id,
+            title: String::new(),
+            result,
+        }
+    }
+
+    #[test]
+    fn an_audible_run_is_the_self_tests_own_action_and_says_if_rooms_came_back() {
+        let rooms = ["Kitchen".to_owned(), "Office".to_owned()];
+        let mut report = Report {
+            entries: vec![
+                entry(
+                    CheckId("selftest.audible.tone"),
+                    CheckResult::fail("no", "fix"),
+                ),
+                entry(audible::RESTORE, CheckResult::pass("back")),
+            ],
+        };
+        let action = audible_action(&rooms, &report, 7);
+        assert_eq!(
+            (action.client.as_str(), action.surface.as_str()),
+            ("selftest", "selftest")
+        );
+        assert_eq!(action.intent, "selftest --audible in Kitchen and Office");
+        assert_eq!(
+            action.result,
+            "1 passed, 0 warned, 1 failed; every room put back"
+        );
+        assert!(action.before_state.is_none(), "not undoable");
+        report.entries[1].result = CheckResult::fail("not back", "look");
+        assert!(
+            audible_action(&rooms, &report, 7)
+                .result
+                .ends_with("not every room put back")
+        );
     }
 }
