@@ -1344,6 +1344,39 @@ composition, trying `/` and `:` as the separator, and watch whether the reason m
 off `invalid_token` to the expiry class (2/5). Compose `hhid` from the device's real
 household id so the later compares have something to match.
 
+**Correction from the decompiler: `iss` is not the compared claim — `hhid` is.** Ghidra renders
+`FUN_006021e4` cleanly (`DecompAt 0x6021e4` in `captures/research/ghidra`):
+
+```c
+FUN_006020f8(local_18, asStack_d0, local_70);                       // build the expected string
+if ((*(char *)(param_4 + 0x6c) == '\0') ||
+    (std::operator==(local_18, (string *)(param_4 + 0x70)) == 0)) { // expected == token.hhid
+    ... "Device token not minted in this HH." ...  result 4;
+}
+```
+
+`param_4` is the parsed token (the caller passes the claims object), `+0x6c` is a bool and `+0x70`
+a `std::string` — an `optional<string>` holding `hhid`. This check demands the token's `hhid` equal
+a value the device *computes*; `iss` is compared elsewhere.
+
+That computed value is a brace-formatted fingerprint (`FUN_006020f8`): `'{'`, then `owner`, `'{'`,
+`luid`, `<v1>`, `'}'`, `hhid`, `<v2>`, `network_hash`, `<v3>`, `'}'` —
+
+```
+{owner{luid<v1>}hhid<v2>network_hash<v3>}
+```
+
+`<v1>`/`<v2>` come from the first argument's string object, `<v3>` from the second. Sent live as
+`hhid` with all four claims present, on `.4.81` and against ten separators/formats (`/ : | , - _ . \
+n`, space, `;`), plain values, brace form and `Sonos_<hhid>`: every one returns the same
+`invalid_token` / `Access token is invalid`.
+
+Two things bound the remaining work. First, the caller runs `FUN_00520578(auStack_270, 0x7048e8, 0)`
+*before* the inspector; `0x7048e8` is in `.bss`, so it is a runtime-populated set, a non-zero result
+jumps to `LAB_00603c94` and skips the inspector entirely — every current token may be failing there
+and never reaching `hhid`. Second, the inspector logs at level 7/6 under `muse_token_inspector` and
+the message strings are known, so reading the log is worth more than another claim permutation.
+
 Committed at `90d2155`; doc and mail carry the same stopping point.
 
 ## 2026-10-23: CVE-2023-50810 (U-Boot) is worth keeping on the list
