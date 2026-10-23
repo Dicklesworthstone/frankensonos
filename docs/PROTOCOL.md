@@ -421,11 +421,12 @@ Update mechanism (verified 2026-10-07):
   The parser trusts `n_cipher`: a count that overruns the entries actually
   present leaves `ZZ0053`/`ZZ0121` reading the following `rsa_len`/RSA bytes
   as another entry, and the consumer walks it. Blob-side mutations are only
-  one variable: the home updater also rate-limits `BeginSoftwareUpdate`
-  after repeated attempts, so only the first update of a boot is a fair
-  sample. On fresh boots, cipher-2-with-one-entry completed the download and
-  rebooted, while two explicitly declared entries closed the transfer at the
-  type-3 record and twice left TCP/1400 down with ICMP still answering
+  one variable: after repeated attempts the updater enters a stale state in
+  which it aborts even the pristine official file after ~128 KiB, so only
+  the first update after a power-cycle is a fair sample. On fresh boots,
+  cipher-2-with-one-entry completed the download and rebooted, while two
+  explicitly declared entries closed the transfer at the type-3 record and
+  twice left TCP/1400 down with ICMP still answering
   (probe log in `captures/research/root-hunt/`). See
   `docs/FIRMWARE_PATHS.md` for the per-class layout and the `sonostool`
   decryption path.
