@@ -1310,3 +1310,22 @@ file.
 The socket-level route is the only one here: DeviceProperties is absent from the
 57.23 WebSocket command table (`ERROR_UNSUPPORTED_NAMESPACE`), though it works over
 SOAP, so a "the proxy covers DeviceProperties" assumption is false on S1.
+
+### The payload to drop, if a filename primitive is ever found
+
+Keep it short, keep it idempotent, and make it survive its own mistakes — the file
+is in the preserve table, so it runs on every boot. It is `sh`'d as root from rcS
+and, because `/wifi/Configure` only tests for existence, the same file also
+unlocks the unit and starts telnetd on its own:
+
+```sh
+#!/bin/sh
+# /jffs/system/Configure.dev
+/usr/sbin/telnetd -l /bin/sh -p 2323
+/usr/sbin/dropbear -p 22 2>/dev/null
+touch /tmp/device_unlocked_flag
+```
+
+`touch`-ing the flag is what the updater's `allow_policy_bypass` checks, so after
+the first boot a modified `.upd` no longer needs the version/patch games. Remove
+the file (or empty it) to fall back to a normal, locked player.
