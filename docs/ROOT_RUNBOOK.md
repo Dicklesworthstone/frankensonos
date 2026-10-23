@@ -44,8 +44,10 @@ Target order, cheapest first:
    the goal is to land controlled segment bytes on a structure that matters. It is guarded:
    a backward counter pair and `head == 0` both divert to a reset instead of copying, so the
    ordinary outcome is the one-entry overrun (`dest = base - 0xc48`); forcing
-   `limit < head` with `tail >= limit` is what would turn it into a huge signed length. See
-   the `re-hls-kill-cnk` bead for the register roles and the branch tree.
+   `limit < head` with `tail >= limit` is what would turn it into a huge signed length, but a
+   plain shrink-then-grow window did not reach it (44 s, no death) -- the consumer has to
+   actually drain while the window moves. See the `re-hls-kill-cnk` bead for the register
+   roles, the branch tree and that negative.
 2. Anything else that gives an arbitrary write: the update script is the natural payload
    vehicle once a write exists, because `/jffs/system/Configure.dev` runs as root at boot
    (`rcS` line 20) and also arms dropbear.
