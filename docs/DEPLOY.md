@@ -307,6 +307,32 @@ tailscale serve status
 
 - The API is at `https://<mac>.<tailnet>.ts.net/` and the MCP endpoint at
   `https://<mac>.<tailnet>.ts.net:8443/mcp`.
+
+### Calling `/mcp` by hand (the exact contract)
+
+The endpoint speaks the modern MCP dialect and admits **no `initialize`** — a
+handshake is not how a session starts, so a client that sends one gets
+`-32601 Method not found`. Three things are required on every request: the
+`MCP-Protocol-Version` header, the `Mcp-Method` header equal to the JSON-RPC
+method, and `_meta` in the params carrying both
+`io.modelcontextprotocol/protocolVersion` and
+`io.modelcontextprotocol/clientCapabilities`. Drop or contradict any one of
+them and the answer is `-32020 MCP request headers do not match the JSON-RPC
+request`; a version the server does not serve answers `-32022` with the
+supported list.
+
+```bash
+curl -s https://<mac>.<tailnet>.ts.net:8443/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -H 'Mcp-Method: tools/list' -H 'MCP-Protocol-Version: 2026-07-28' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{
+       "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+       "io.modelcontextprotocol/clientCapabilities":{}}}}'
+```
+
+`Mcp-Name` carries the tool for `tools/call`. None of this is needed over
+stdio (`fsonos mcp`), which still negotiates `2024-11-05` normally and is what
+`claude mcp add ... fsonos -- ... mcp` uses.
 - `--bg` configurations persist across reboots; `tailscaled` holds them.
 - The daemon only ever binds loopback, so there is no boot-time race with
   Tailscale coming up: its loopback listeners answer any `*.ts.net` Host, the
