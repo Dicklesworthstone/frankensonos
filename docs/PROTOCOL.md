@@ -412,25 +412,23 @@ Update mechanism (verified 2026-10-07):
   header (RSA-2048-OAEP-wrapped per-blob AES-128-CBC key at `[0x32:0x132]`,
   AES-CBC body, IV = 16 zero bytes, at `0x13A`); the S1 34.16 equivalents
   are readable (gzip kernel, custom CramFS rootfs, shell script). The
-  encrypted blob header is a **key-entry list**, all big-endian:
-  `[magic 0x886499CA][u32 header_len][u16 1][u16 0][u32 n_pre][u8 n_cipher]`
-  then `n_cipher` entries `[u32 len<2048][u8 type][len bytes][u32 len2<513]
-  [len2 bytes]`, then `[u32 rsa_len<2048][RSA]`, `[u32 data_len][IV+data]`;
-  the leading `u32 4` in `upgrade_reboot`'s dump is the signature index, not
-  part of this struct. `header_len` is only a lower bound on bytes consumed.
-  The parser trusts `n_cipher`: a count that overruns the entries actually
-  present leaves `ZZ0053`/`ZZ0121` reading the following `rsa_len`/RSA bytes
-  as another entry, and the consumer walks it. Blob-side mutations are only
-  one variable: after repeated attempts the updater enters a stale state in
-  which it aborts even the pristine official file after ~128 KiB, so only
-  the first update after a power-cycle is a fair sample. The crash samples
-  below were taken with the **model-5** package; the owner's `.185` is model
-  16 (ZPS5, PowerPC), whose own package parses the same blobs but has not yet
-  shown a daemon drop in local or LAN tests. On fresh boots with the 1-5
-  package, cipher-2-with-one-entry completed the download and rebooted, while
-  two explicitly declared entries closed the transfer at the type-3 record
-  and twice left TCP/1400 down with ICMP still answering
-  (probe log in `captures/research/root-hunt/`). See
+  encrypted blob header is a **key-entry list**: `[magic 0x886499CA]` (stored
+  in the target's byte order), `[u32 header_len]`, `[u16 1][u16 0]`, `[u32
+  n_pre]`, `[u8 n_cipher]`, then `n_cipher` entries `[u32 len<2048][u8
+  type][len bytes]`, then `[u32 cipher=1][u32 rsa_len<2048][RSA]`, `[u32
+  cipher=1][u32 data_len][IV+data]`. The `u32 4` before the magic is the
+  signature index, not part of the struct. **All multi-byte fields follow the
+  host byte order** — little-endian on the MIPS models, big-endian on the
+  PowerPC model 16. `header_len` is only a lower bound on bytes consumed; the
+  parser bounds the count (`<=8`), each entry (`<2048`), `rsa_len` (`<2048`)
+  and the data length against the blob end, and an unknown entry type is
+  rejected by `ZZ0119` before the cipher setup. With the recovered model-16
+  private key the envelope round-trips (RSA-OAEP/SHA-1 then AES-CBC/PKCS#7),
+  so a blob can be re-encrypted and served; a multi-entry list (`n_cipher>1`)
+  still fails `enveloped data parse` in local tests, so the exact key-entry
+  shape for more than one entry is not yet pinned. The updater also goes
+  stale after a few attempts and then aborts even the pristine file, so only
+  the first update after a power-cycle is a fair sample. See
   `docs/FIRMWARE_PATHS.md` for the per-class layout and the `sonostool`
   decryption path.
 - S2 86.10 payload (type 23) extracts to `bin/anacapad`: the 3 MB zone
