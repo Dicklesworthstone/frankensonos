@@ -667,6 +667,22 @@ the `/diaglevel` flood, so it is the cheapest DoS on the device by three orders 
 magnitude. The value surviving means the write completes before the hang — the lock or
 replication path is the likely deadlock.
 
+### Two device sweeps, both negative (bundle parser, devmode ring)
+
+**Cert bundle (type-22), 36 mutants on the device** — record lengths `0/16/17/0x200/0x1000/
+0xffffffff/0x7fffffff/len+4096`, magic bytes, inner header bytes at `4/8/0xc/0x10/0x1c/0x20/
+0x30/0x32/0x13a`, and bit flips in the ciphertext. Outcomes are only "no fetch", a partial
+read, or the full 5.6 MB with the usual ~10 s drop; ICMP loss never exceeded a normal
+reboot (~24 s). No crash, no hang. (About a third of the runs lost the trigger while the
+unit was still restarting from the previous case, so the real denominator is lower.)
+
+**Devmode statement, 13 shaped rings** (1/2/3 entries with correct kind+length, bad magic,
+count 9, under/over declared length, kind 0/9, truncated, magic only, empty) — all 403, but
+they split the response time cleanly: parser rejects come back in 0.6–1.0 s while anything
+that reaches the RSA verify takes 2.7–5.7 s. That is a usable structural oracle for future
+devmode work without a key ("≥2.5 s" = the ring parsed). The walk is lenient — a 4-byte body
+containing only the magic still takes the slow path. Nothing crashes the verifier.
+
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
 month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
 CVE-2026-75093 (`from_raw_dt_align` buffer size) and CVE-2026-55832 (attacker-chosen
