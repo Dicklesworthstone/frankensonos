@@ -513,6 +513,40 @@ Answered the open question from the parallel session, on the 34.16 `libsonoscryp
   MDP is the one thing the offline harness still lacks (see above) — supply it and the
   whole path, including a genuine older image, runs offline.
 
+### Harness, second round: the key is the wall, and a mid-stream trailer aborts
+
+Extending the chroot harness needed the model key at runtime; the updater derives it from
+flash MDP data, not from anything in the image:
+
+- `hal_flash_get_mdp2` reads 0x1000 bytes at flash 0x200 and accepts only magic
+  `0xca989b4a` or `0xfa87b921`; `hal_flash_get_mdp` reads 0x200 at offset 0 and accepts
+  `0xce10e47d`. A `libflash` shim (PPC, cross-gcc, `-shared -nostdlib`,
+  `-Wl,--hash-style=sysv -Wl,-soname,libflash.so.1`) that serves those from a file is
+  enough to get the getters called, but every zero-filled MDP2 still ends at
+  "no decryption key": the update path re-derives a decryption key from MDP fields plus
+  the static 0x4f0-byte blob at `0x10016ef8`, so **real MDP bytes are required** — a DER
+  key pasted at 0 or at 0x780 is not sufficient. Getting them wants a device-side dump.
+- Loader facts worth keeping: uClibc needs the **SysV hash** or it segfaults during
+  relocation, and `LD_PRELOAD` paths are opened **on the host** by qemu-user, so a
+  preload under `chroot` must be given as a host path (`LD_PRELOAD=/tmp/root/lib/x.so`,
+  not `/lib/x.so`) — with the guest path ld.so reports "cannot preload" and silently
+  ignores it. Preloading over the *real* libflash (instead of replacing it) is the right
+  shape: `hal_flash_info_init` then still does its own partial setup.
+- A hand-made `/dev/mdp` must be shaped (magic, `+0x64` flags `0x14`, `+0x70` version,
+  a 3-char serial at `+0x98`); a zero file makes the MDP parser dereference NULL and the
+  updater dies before any of its own code runs.
+
+**Fuzz result so far (650 mutated images, offline, no device):** the 16-byte header reader
+and the type-2 sub-record parser take zero-, short-, huge- (`0xffffffff`, `0x7fffffff`,
+`0x100000`) and mismatched declared lengths, random bodies, 20 000 records in one file,
+and unknown section types without a single crash or hang. One real defect showed up:
+**a type `0xffffffff` (trailer) record placed where a section is expected aborts the
+updater** (SIGABRT) — `hdr + trailer` alone reproduces it, and so does any stream with a
+trailer before the end. On a device that is a failed upgrade plus a reboot; it cannot be
+reached on a full image because the key error fires first. Next fuzzing needs the key:
+everything after the type-22 cert bundle is unparsed without it, so the script, kernel,
+rootfs, cert-bundle and signature parsers are all still untouched offline.
+
 **Recent-CVE check (2026-10-22).** The only Sonos-tagged CVEs published in the last
 month are both in **`tract`**, Sonos's ONNX/TensorFlow inference toolkit:
 CVE-2026-75093 (`from_raw_dt_align` buffer size) and CVE-2026-55832 (attacker-chosen
