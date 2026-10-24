@@ -305,3 +305,32 @@ and a liveness read every 200 requests.
 and the unset-entry dereference never faults, so black-box probing is exhausted — only the table base and
 entry stride in the 57.23 `anacapad` can name populated indices now. Runner:
 `captures/research/getrs_probe.py`.
+
+## AddOAuthAccountX argument matrix (S1 .202, 2026-10-24)
+
+Unauthenticated `SystemProperties#AddOAuthAccountX`, ten declared args in SCPD order: `AccountType,
+AccountToken, AccountKey, OAuthDeviceID, AuthorizationCode, RedirectURI, UserIdHashCode, AccountTier,
+AccountUDN, AccountNickname`. Each arg is copied by the shared chunked copier `0x4be6fc` *before* the per-arg
+validators run, so an oversized value always reaches the copy even though the action answers 402.
+
+20 cases (control + ten args at 2 048 + empty/1 B/2 050/100 k + all-ten-long + three integer spellings):
+
+| case | body | HTTP | SOAP | ms |
+|---|---|---|---|---|
+| control (all short) | 607 | 500 | 402 | 54 |
+| each of the ten args at 2 048 B (10 cases) | 2 645-2 654 | 500 | 402 | 19-101 |
+| `AccountType` empty | 606 | 500 | 402 | 44 |
+| `AccountToken` 1 B | 605 | 500 | 402 | 82 |
+| `AccountToken` 2 050 B | 2 654 | 500 | 402 | 63 |
+| `AccountToken` 100 k | 100 604 | 500 | 402 | 451 |
+| `AccountKey` 100 k | 100 604 | 500 | 402 | 325 |
+| all ten at 800 B | 8 572 | 500 | 402 | 109 |
+| `AccountType` as `abc` / `-1` / `0x100` | 608-611 | 500 | 402 | 31-34 |
+
+Every case: `200` liveness before and after, no RST, no timeout, no wedge. **Verdict: the arg surface is
+benign**; the only observable is latency, which scales with the 100 k bodies (325-451 ms against a 20-80 ms
+baseline) — i.e. the copy is real and linear, but nothing overruns and the 402 verdict never changes.
+
+Because the control 402s too, the ten-arg body still dies in a validator before the account logic, so this
+matrix cannot discriminate arg *content* — only arg *size*, which is what it was for. Runner:
+`captures/research/addoauth_fuzz.py`.
