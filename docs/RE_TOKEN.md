@@ -55,3 +55,64 @@ that slot 24 returns, not proof of a fixed layout on the policy base.
 Instrument: `captures/research/hhid_emu.py` (Unicorn 2.1.4, MIPS16 via an odd
 entry PC, PLT stubs patched to `jr ra` and serviced in Python). It runs the
 composer; the policy builder still faults at `0x0` on the `_Znwj` path.
+
+## 2026-10-23 (cont.) — the inspector, executed
+
+`captures/research/hhid_emu.py` now drives `FUN_006021e4` itself: a fake `ctx`
+with per-slot Python stubs, a fake provider for slots 12/24, and logging stubbed
+off (`0x5a1494` returns 0, otherwise the un-started logger jumps through a null
+`.bss` pointer). Results, all observed:
+
+- The compare at `0x602294` is `composed == a3+0x70` where `a3` is the third
+  argument. Matching both sides moves the result from **4** to **5**; a mismatch
+  returns 4 immediately. Code 4 is exactly the mhhid fingerprint gate.
+- The composed text, from the live composer under emulation with the household
+  triple, is
+  `{"owner":{"luid":"T7aLjgf696"},"hhid":"Sonos_wI8BAkz9WLbe5jdUaRXQSQMJW8","network_hash":"0Ij2e5ZDB"}`
+  — compact JSON, no spaces, insertion order owner/luid, hhid, network_hash.
+- `a3` (fingerprint carrier, `+0x6c` present flag, `+0x70` string) is a
+  232-byte claim-set built by `FUN_00604fe8` — the same layout as
+  `muse::v1::t::CommandHeader` (`FUN_006083e0`): strings at `+8/+32/+56`,
+  `optional<string>` at `+108`, `+136`, `+164`, `+204`, a vector at `+192`.
+  So `+0x6c` is a claim slot, not a policy field.
+- The issuer check compares the derived value at `0x602400` against
+  `a2+8` — i.e. `iss` must equal what the provider derives.
+
+The provider object is `ctx+16`; slot 24 (`0x602212`) returns the issuer and the
+hhid/luid pair, slot 12 (`0x60226c`) returns `network_hash`. Nothing in the
+binary fills an object at `+0x30/+0x48` with immediate-offset stores, so the
+provider copies an existing structure — that copy is the remaining unknown, not
+the template.
+
+## Live facts (owner LAN, 2026-10-23)
+
+The triple is broadcast, unauthenticated, in the mDNS TXT record and SSDP:
+
+| field | value for this household |
+|---|---|
+| TXT `hhid` | `Sonos_wI8BAkz9WLbe5jdUaRXQSQMJW8` |
+| TXT `mhhid` / `HouseholdControlID` | `Sonos_wI8BAkz9WLbe5jdUaRXQSQMJW8.T7aLjgf696_0Ij2e5ZDB` |
+| TXT `locationid` | `lc_3ee386abdf5745068202801414f1a14a` |
+| SSDP `X-SONOS-INFOHASH` | per-device, e.g. `gO3he3_8kpXAHD8WcNXpHRFhZbqXsn7cXGH6bXeKZ3w` |
+
+So `mhhid` = `<hhid>.<first>_<second>`; luid/network_hash are plausibly those
+two segments. 27 live combinations were rejected (`iss` = URN + RINCON / serial
+/ hhid / split / location; claims `mhhid` vs `urn:dev:ops:44974-zp-mhhid`;
+`exp` numeric and string; `mhhid` as JSON with each split, as the plain dotted
+string, and with luid=location/infohash). All answered `401 ERROR_NOT_AUTHORIZED`
+with an identical body, so a wrong claim and a wrong issuer are indistinguishable
+from outside — the provider copy is what has to be read next.
+
+## Oracles that exist (and the ones that do not)
+
+- `POST /api/v1/players/{id}/authorization/authorizeDevice` is the only endpoint
+  that runs the inspector; it is all-or-nothing (401 vs a grant). The failure
+  code is logged only on `muse_token_inspector`, and none of `/status/dmesg`,
+  `/status/jffs/*.log`, `/status/tmp/*` returns anything on 81100.
+- `POST /api/v1/households/{hhid}/authorization/tokens` (resolveToken) answers
+  `status: UNAUTHORIZED`, `statusReason: UNKNOWN` for every variant.
+- `getProtectedAdminSettings` over the WebSocket answers
+  `insufficient_scope` for a garbage bearer as well as for a candidate, so it
+  does not reflect inspection either.
+- `/status/zp` and the mDNS TXT are the useful *data* oracles:
+  `HouseholdControlID`, `LocationId`, `SerialNumber`, `LocalUID`.
