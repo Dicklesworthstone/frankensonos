@@ -144,4 +144,7 @@ its control row; runs without a control are marked as such. The one harness bug 
   `/status`. `.202` was wedged by the final update run and recovered on its own before close.
 - Open beads: 4 in progress (`xnf`, `re-hls-kill-cnk`, `c25`, `spotify-more-kinds-94i`), 4 blocked
   (`q57`, `publish-0-1-0-isb`, `re-uboot-cve-ols`, `re-spotify-audio-w21`); 138 closed.
+- HLS ended at: pointer offset and percent-decoding settled on device, the slot-16 write and its
+  header corruption measured, the destination's cursor proven to be helper-derived; the `.plt`
+  stub payload is built and fetched but does not fire. Not claimed: code execution.
 - Not claimed: any code execution, any unsigned install, any unlock.
