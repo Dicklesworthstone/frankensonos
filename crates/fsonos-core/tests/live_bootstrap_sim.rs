@@ -106,7 +106,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn wait_for(live: &Live, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
