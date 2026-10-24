@@ -204,3 +204,43 @@ inspector keeps in `s0` — the trampolines stash it at `out+0x1e`) returns empt
 strings for every one of the nine: each needs the constructed object. So the
 issuer bytes remain a live read; the tables above are what to instrument next,
 `0x6b3760` first.
+
+## 2026-10-23 (stop point) — live values tried, R_ALLOW_SSH_PUBKEY_INSTALL
+
+Two more live issuers, both only with the JSON `mhhid` that already reproduces
+slot 12: `urn:dev:ops:44974-zp-RINCON_000E58CADE9401400` and the bare
+`RINCON_000E58CADE9401400` — both 401. The dispatcher's target-id string
+(slot 16 at `0x47aeb8`) is not exposed by `/status/zp`, the mDNS TXT or the
+`groups` WS reply, so it could not be tried as an issuer; `/status/zp` does
+carry `LocalUID`, `SerialNumber`, `HouseholdControlID` and `LocationId`.
+
+**Honest stop point.** Static work has reached the limit: every remaining value
+(issuer, hhid, luid, network_hash) is produced by the live service object the
+inspector receives at `ctx+16`. A future emulator run needs:
+
+- the object type behind `ctx+16` (nine `.rodata` candidate vtables are listed
+  above, `0x6b3760` first) **constructed**, not zeroed — zeroed objects make
+  every candidate return the empty string;
+- its fields, which the callback reads as: issuer at `+0`, `hhid` at `+0x30`,
+  `luid` at `+0x48`, "mhhid present" flag at `+0x18`, and — on the same
+  dispatcher `ctx` — the expiration service at `ctx+12` (slots 28 and 40) and
+  the time source at `ctx+20` (slot 60);
+- the easiest real construction is the provider setter `0x5fb608`
+  (`MuseDeviceImplProvider` +0/+8/+16), or the service constructor around
+  `0x47f62x` that installs the actor vptr at `service+21644`.
+
+## `R_ALLOW_SSH_PUBKEY_INSTALL` — what consumes it
+
+- It is a **device-properties statement**, not a config key: the settings
+  persistence layer logs `Removing persistent statement with
+  R_ALLOW_SSH_PUBKEY_INSTALL` (`0x685e9c`, string use at `0x4f3b10`) and
+  `R_ALLOW_SSH_PUBKEY_INSTALL may not be persisted` (`0x685efc`, use at
+  `0x4f3cc4`), i.e. the statement is filtered out on load so it acts as a
+  one-shot gate rather than stored state.
+- The consumer endpoint **is `/ssh/fingerprints`**: it is a real route
+  (`0x6f7168`, handler `0x4aa9ec`, flags `0x101`) that calls into `0x4cb910`,
+  which builds a JSON body keyed `pubkey` (`0x67b8d8`, used at `0x4cba10`)
+  together with the dropbear host key path
+  `/jffs/persist/ssh/dropbear_ecdsa_host_key` (`0x67b898`, used at `0x4cba88`)
+  and answers 200 or 403. So the pubkey install is driven through that route,
+  and the `R_ALLOW_…` statement is what the persistence layer refuses to keep.
