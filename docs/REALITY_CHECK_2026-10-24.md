@@ -10,22 +10,23 @@ not a summary of activity.
 ## Verdict
 
 **Not root yet.** The lane has moved from "unknown wall" to a small number of *measured* walls and
-two real primitives, but no state-changing exploit is proven end to end.
+two primitives, but no state-changing exploit is proven end to end. Claims below are scoped to
+what a run actually showed; the audit in the session log flags the ones that are inference.
 
 What changed for the better:
 
-1. **The install path is now fully characterised, and it is closed without the vendor key.**
+1. **The install path is characterised up to the signature gate, and that gate is closed without the vendor key.**
    Proven by code and by device: the type-17 signature covers the 57-byte list2 region only, but
    that region stores `sha256(file[:type17])` and the updater memcmps the running prefix hash
    against it; any body edit needs both a digest rewrite and a fresh signature. Appended records
    after the type-17 are unsigned, and *every* unused-section variant (types 5/9/10, raw and
    enveloped) is parsed then rejected before pass 2 - the flasher never runs. A rebuilt rootfs
    package is correct and aborts exactly at the prefix digest.
-2. **A real, controllable memory primitive exists in the HLS queue**: an unchecked
-   `memcpy(dst, src, n*3152)` whose destination and length come from ring counters that an append
-   to slot 16 overwrites with the **URI text**. An emulator maps C one-to-one to the enqueue batch
-   and shows a 4 GiB wrapped copy that faults from batch 17 (shortcut chain), while a bounded
-   backward copy of 28-40 slots is available in the non-shortcut chain.
+2. **A real memory primitive exists in the HLS queue**: an unchecked `memcpy(dst, src, n*3152)`
+   whose destination and length come from ring counters that an append to slot 16 would overwrite
+   with URI text. The emulator shows the shortcut chain (batch >= 17) produces a wrapped ~4 GiB
+   copy that faults *in the emulator*; on device no configuration yet reaches that state, because
+   slot 16 is gated behind the shortcut. The reachable live band is inside the array, C <= 15.
 3. **Every pre-signature and runtime parser surface tried is hardened** (see the negative ledger).
    That is a real narrowing: future effort has a short list.
 
@@ -37,26 +38,26 @@ What did *not* happen: no daemon code execution, no unsigned install, no devmode
 |---|---|
 | genuine URL installs work both ways (control) | 57.22-65130 accepted, 30 s box-down, returns 57.22; 57.23 restored; `docs/RE_UPDATER.md` control section |
 | updater loop after a failed run, and its recovery | `docs/ROOT_LANE_STATUS.md` 23:58Z; 20 consecutive 200s after recovery |
-| signature scope and prefix digest | `docs/RE_UPDATER.md` "two separate values"; digest reproduced on three builds |
+| signature scope and prefix digest | `docs/RE_UPDATER.md` "two separate values"; digest reproduced on three builds (the packaged rebuild's own digest is stale - audit) |
 | appended sections never reach pass 2 | 7-variant matrix, `docs/RE_UPDATER.md`, `scripts/append_upd_section.py` |
-| rewound rootfs package builder | `captures/firmware/57.23-74170-1-16/pwned-q57.upd`, SHA-256 `73587fac…`, aborts at the digest |
-| HLS C/dest/fault map | `scripts/hls-queue-emu/` + `docs/RE_HLS_EXPLOIT.md` |
-| URI is the injected counter word | `strlcpy(record+0, uri, 2049)` at 0x10191b14 |
-| token fingerprint format | composer is compact JSON; hhid = `{owner:{luid},hhid,network_hash}` from mDNS TXT; `docs/RE_TOKEN.md` |
+| rootfs package builder | `captures/firmware/57.23-74170-1-16/pwned-q57.upd`, SHA-256 `73587fac…`; aborts mid-fetch, digest not yet recomputed |
+| HLS C/dest map (emulator) | `scripts/hls-queue-emu/` + `docs/RE_HLS_EXPLOIT.md`; live reachability is limited |
+| URI is at record+0 | `strlcpy(record+0, uri, 2049)` at 0x10191b14; a second copy lands at 0x801 and the lane doc records both |
+| token fingerprint format | composer is compact JSON; hhid = `{owner:{luid},hhid,network_hash}`; luid/network_hash are the mhhid segments *by inference* (the TXT triple matched slot 12), `docs/RE_TOKEN.md` |
 | token issuer needs a live object | nine rodata vtables, trampoline shape, honest stop point |
 | devmode statement is device-bound | signature covers the whole clear statement incl. id (`docs/RE_DEVMODE.md`) |
 | `/ssh/fingerprints` is a host-key reporter gated by unlock | `docs/RE_TOKEN.md` |
-| `/status/ZPLocalSettingsFile/<name>` reads one `..` into `/jffs` | `docs/RE_WRITE_PRIMITIVES.md` |
+| `/status/ZPLocalSettingsFile/<name>` reads one `..` into `/jffs` | `docs/RE_WRITE_PRIMITIVES.md`; name length bounded by the request line (~4 KiB ok, 8 KiB reset) |
 
 ## Negative ledger (do not re-spend)
 
-- Type-21 patch list: bounded; all mutations fail the 512 KiB semantic verdict.
+- Type-21 patch list: no size crash found; every mutation hit the 512 KiB semantic verdict (that is a verdict point, not a proven size bound).
 - Type-1 version, type-2 compat: structural bounds found; only semantic verdicts move.
-- Type-22 x509 (mbedtls 2.5.0, no PSS support): 2496-case offline sweep, zero crashes.
-- GENA client responses: 18 malformed shapes, zero.
+- Type-22 x509 (mbedtls 2.5.0, no PSS support): 2496-case offline sweep, zero crashes (commit eaa20e4, `scripts/mbedtls-harness/`; the ./third of on-device runs that lost the trigger are not in that denominator).
+- GENA client responses: 18 malformed shapes, zero (single run each; no control matrix beyond liveness).
 - Updater HTTP responses (busybox wget as root): chunked/redirect/header matrix, desyncs but no
   crash; the client is `wget` and the argv is known.
-- SMB client state machine on S2: 18 applied mutations, zero.
+- SMB client state machine on S2: 18 applied mutations, zero (apply-verified; warm-up case first).
 - `/notify` LastChange: 12 shapes, 128 KiB ceiling, push does not drive state.
 - `/status` name length: bounded; `/mtmhhsetup`: 403-gated while locked.
 - Token without a live object: 63+ claim permutations, all one-bit 401.
@@ -69,7 +70,7 @@ Advanced with evidence: `re-hls-kill-cnk`, `xnf`, `nyy`, `2ba`, `re-beginsw-fdp`
 Still genuinely blocked: `q57` (needs an install path), `publish-0-1-0-isb` (deps),
 `re-spotify-audio-w21` (scope: needs a streaming credential; evaluation already GO),
 `c4v` (gated on a locked unit).
-No bead was closed merely for a refusal; refusals are labelled.
+Closures are evidence-bound; three are thin and flagged by the audit: `nyy` (a crash that later proved to be an envelope-shape rejection, with no control row), `2ba` (a negative that omits its ~1/3 lost-trigger denominator in the close text), `xnf` is still open while the live endpoint returns 401. `re-s2-devcopy-pfo` is static-only.
 
 ## Gap analysis for the root goal
 
@@ -78,7 +79,7 @@ No bead was closed merely for a refusal; refusals are labelled.
 | pre-auth code exec on S1/S2 | NOT ACHIEVED | one primitive (HLS) without control of PC; no second primitive |
 | unsigned/durable install | BLOCKED | vendor key or a bug in the pre-signature parser (all tried are clean) |
 | unlock / devmode | BLOCKED | device-bound statement needs the portal (owner login) |
-| persistence path after root | READY | `Configure.dev` payload built; `/jffs` preserve table verified |
+| persistence path after root | READY | `Configure.dev` payload built; `/jffs` preserve table recorded in FIRMWARE_PATHS (0x1101) |
 | SSH after unlock | MAPPED | statement starts telnetd/dropbear; `/ssh/fingerprints` is read-only |
 
 ## Next actions, in priority order
