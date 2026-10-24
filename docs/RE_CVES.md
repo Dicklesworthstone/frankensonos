@@ -42,7 +42,7 @@ Pre-window but live on 2.5.0 (verified against NVD text):
 
 | CVE | pub | what | 5.0.3? | reachable? |
 |---|---|---|---|---|
-| CVE-2026-107695 | 10-08 | **HLS demuxer infinite loop** — `parse_playlist()` accepts Master Playlist tags in a Media Playlist; a self-referencing playlist adds variants forever in `hls_read_header()` | yes (`before 8.1.3`) | **high, but not reproduced** — exactly the `x-rincon-mp3radio://…/x.m3u8` path the hls-kill bead drives; measured self-reference is bounded (§4a) |
+| CVE-2026-107695 | 10-08 | **HLS demuxer infinite loop** — `parse_playlist()` accepts Master Playlist tags in a Media Playlist; a self-referencing playlist adds variants forever in `hls_read_header()` | yes (`before 8.1.3`) | **high, but not reproduced** — exactly the `x-rincon-mp3radio://…/x.m3u8` path the hls-kill bead drives; measured self-reference is bounded (measured below) |
 | CVE-2026-107697 | 10-08 | HLS demuxer bypasses protocol/`allowed_extensions` for child playlists | yes | high — a master playlist can make the demuxer open non-media local/protocol targets (file read, extra SSRF) |
 | CVE-2026-107660 | 10-08 | `tls_open()` in `libavformat/tls_mbedtls.c` skips hostname checks for **IP-literal** hosts | yes (`before 8.1.3`) | medium — needs an `https://IP/…` media URL; any trusted CA-issued cert then intercepts |
 | CVE-2026-96611 | 09-23 | signed overflow on HEIF `ispe` w/h in `mov.c` | yes (before 9.0) | low on this fleet (MOV/HEIF only, not the M3U8 path) |
