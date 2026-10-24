@@ -307,7 +307,7 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         Probe {
             cli_candidates: vec![script],
-            timeout: Duration::from_secs(1),
+            timeout: Duration::from_secs(5),
         }
     }
 
@@ -321,7 +321,7 @@ mod tests {
             look(&fake_cli(0), TARGET),
             Look::Answered(Some(NAME.into()))
         );
-        assert_eq!(look(&fake_cli(3), TARGET), Look::Unanswered);
+        assert_eq!(look(&fake_cli(8), TARGET), Look::Unanswered);
     }
 
     #[test]
