@@ -1779,16 +1779,30 @@ piece of work. Sweep saved at `captures/research/ghidra-8610/sweep8610.txt`.
 
 **The daemon read matches the app prefix and completes the field map
 (2026-10-24).** `FUN_004f3b44` → `ZZ0137` (`libsonoscrypto.so.3`, `0xca14`)
-checks the same magic bytes, then `[+4]` against the model, then a strict
-version window: `[+0x18]` (u32 BE) must be **greater than** the device's version
-word and `[+0x1c]` must be **less than** it (two `bc 13` tests, so equality
-fails). The version word is composed as `(byte@obj+0x49d << 16) |
-byte@obj+0x49e`; `+0x49e` is the version halfword written at `0x4dda2e`, and
-`+0x49d` is zero on this path, so the comparison is effectively on the
-major-version byte. After the version comes `[+0x20]` (u8 devid length, must
-equal the caller's), a `memcmp` of the statement bytes at `+0x21` against the
-caller's buffer (`0xcbd4`), then a u8 payload length and the ring. The statement
-is therefore device-bound on S2 too, exactly as on S1 (`0xacc4`).
+checks the same magic bytes, then `[+4]` against the model, then a version
+window: `[+0x18]` (u32 BE) is a lower bound and `[+0x1c]` an upper bound, **both
+inclusive** (`bc 13,28` leaves if `r0 < [+0x18]`, `bc 13,29` leaves if
+`r0 > [+0x1c]`; `+0x18 == +0x1c == r0` passes). The version word is composed as
+`(byte@obj+0x49d << 16) | byte@obj+0x49e`; `+0x49e` is the version halfword
+written at `0x4dda2e`, and `+0x49d` is zero on this path, so the comparison is
+effectively on the major-version byte. After the version comes `[+0x20]` (u8
+devid length, must equal the caller's), a `memcmp` of the statement bytes at
+`+0x21` against the caller's buffer (`0xcbd4`), then a u8 payload length and
+the ring.
+
+**Everything before the ring is signed, the device id included.** The verifier
+chain computes the digest over `statement[0 .. ring_offset)` (`0xa7d4` calls
+the hash with `data=statement, len=0x2e`; S1 at `0xa888`), and only then does
+the RSA check. The `memcmp` is a redundant pre-check, so a public statement
+cannot be patched to another serial. An instruction-level Unicorn harness
+(`scripts/emu_devmode_stmt_s1.py`, `_s2.py`) reproduces the map: a valid
+preamble + ring reaches the verifier, while bad magic, a wrong-id `memcmp`, an
+out-of-window version or a missing ring stop before it; flipping one of the 16
+"free" bytes still reaches the verifier. On the wire the status is `403` for
+every decodable statement (`400` only for a missing/undecodable field), and the
+old `>=2.5 s` signal is the rate limiter, not RSA: spacing under ~2.1 s makes
+the daemon sleep ~2.1 s per missed interval. Portal procedure:
+`docs/RE_DEVMODE.md`.
 
 `POST /mtmhhsetup` (`0x4ac11c`, S2) is the MTM provisioning handler: a
 urlencoded body with `hhid` (optional, `Sonos_MTM_` + 22 alnum or empty to

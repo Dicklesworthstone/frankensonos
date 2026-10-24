@@ -15,31 +15,66 @@ offsets in decimal.
 ### The S2 statement layout, from `ZZ0137` (`0xca14`)
 
 `FUN_004f3b44` calls `ZZ0137(buf, len, model, devid_buf, devid_len, ver_hi,
-ver_byte, &payload_off, &payload_len, &max, &min)`. The verifier, in order:
+ver_byte, &payload_off, &payload_len, &ver_a, &ver_b)`. The verifier, in order:
 
 | offset | size | check |
 |---|---|---|
 | `+0x00` | u32 BE | `0x28721e71` (same bytes as S1's LE magic) |
 | `+0x04` | u32 BE | equals the caller's model value (page reports it) |
 | `+0x08` | 16 | free |
-| `+0x18` | u32 BE | **max version**: must be **greater than** `r0` |
-| `+0x1c` | u32 BE | **min version**: must be **less than** `r0` |
+| `+0x18` | u32 BE | **lower version bound**, inclusive: `r0 >= word` |
+| `+0x1c` | u32 BE | **upper version bound**, inclusive: `r0 <= word` |
 | `+0x20` | u8 | devid length, must equal the caller's expected length |
 | `+0x21` | n | device id, `memcmp` against the caller's buffer (`0xcbd4`) |
 | `+0x21+n` | u8 | payload length; `len >= devid_len+34+payload_len` |
 | … | | payload |
 | … | | signature ring, handed to the parser (`0x20400`) |
 
+The two window tests are `cmplw 7,r0,word` + `bc 13,28` (exit if `r0 < +0x18`)
+and the same with `bc 13,29` at `0xcb8c` (exit if `r0 > +0x1c`), so **both
+bounds are inclusive** — a statement with `+0x18 == +0x1c == r0` passes. The
+earlier "max/min, strict" reading here was wrong; the app's
+`rev([+0x18]) <= r0 <= rev([+0x1c])` is the same test and was right.
+
 `r0` is built at `0xcb20` as `(arg6 << 16) | arg7`. The caller passes two
 object bytes: `+0x49d` (arg6) and `+0x49e` (arg7). `+0x49e` is a u16 written by
 `FUN_004dda10` (`0x4dda2e`, from `FUN_0051927c` → the u16 at object `+0x56a`) and
 again by the update coordinator `FUN_004db988`; `+0x49d` is set from the high
 byte of that coordinator's counter and is zero on the devmode path. On a
-86.10 unit the byte read is the major-version byte, so `r0` is `0x56` and a
-statement must carry `max > 86 > min`. The two comparisons are strict
-(`bc 13,28` / `bc 13,29`), not `>=`, so 86 itself is outside the window.
+86.10 unit the byte read is the major-version byte, so `r0` is `0x56` (86) and
+a statement must carry `+0x18 <= 86 <= +0x1c`.
 
 The payload length is **one byte** (`lbzx 9,31,27` at `0xcbf4`).
+
+### What `ZZ0137` actually signs — the device id is inside the signature
+
+The verifier does not hash a separate digest field. `ZZ0123` hands the
+signature-container verifier (`ZZ0126`) three things: the parsed ring context,
+the statement pointer, and the ring offset. `ZZ0126` then computes the digest
+over `statement[0 .. ring_offset)` — the entire clear preamble, payload
+included:
+
+- S1: the hash callback is called at `0xa888` with `algo=1, data=statement,
+  len=0x2e`, and `0x2e` is exactly the ring offset for a 12-byte id and empty
+  payload (`devid_len+34+payload_len`).
+- S2: the same call is at `0xa7d4` with `data=statement, len=0x2e`.
+
+So **everything the parser reads is signed**: magic, model, the 16 "free"
+bytes, both version bounds, the id length, the id itself, the payload length
+and the payload. The ring that follows is the only unsigned material — it
+carries the key reference and the signature. `memcmp` of the id at `0xacc4`
+(S1) / `0xcbd4` (S2) is therefore a redundant pre-check for a *forged* id, not
+the security boundary.
+
+Consequence: a public statement for the same model **cannot be patched** to a
+different serial; the signature breaks and the only free fields are the ring
+internals. A per-serial portal statement is required.
+
+Emulator demonstration (`scripts/emu_devmode_stmt_{s1,s2}.py`): flipping a byte
+in the 16-byte free area at `+0x08` still reaches the verifier (the byte is
+unchecked but hashed); changing the id fails at the `memcmp` before any hashing.
+On the wire both classes answer `403`, so the emulator, not the status, is the
+discriminator.
 
 ### `FUN_004f38a0` cannot be driven past 255 — the 256-byte frame is exact
 
@@ -111,12 +146,33 @@ the literal `MTM_` and the hhid; `RserializeData` renders that to 33 bytes and
 `{"hhid":…,"key":…,"rebootDelay":…}`; every failure is the JSON
 `{"error":code,"message":…}` under the matching status.
 
-### Statement replay prerequisites (recorded for the live follow-up)
+### Portal procedure for the owner (the only source of a statement)
 
-Because of the `memcmp`, a published statement only works on the unit whose id
-it names. The portal path (login.sonos.com) issues per-serial statements; replay
-still needs one for the actual unit. Parser facts for judging a candidate:
-`len < 4`/`< 8`/`< 28`/`< 32` are silent rejects; `devid_len` must equal the
-expected length and the bytes must match; the version pair must straddle `r0`;
-the ring is then parsed and RSA-verified against the pinned key. On S1 the same
-`memcmp` is at `0xacc4` with the id at `+0x444`, length at `+0x4c4`.
+The statement is per-serial and fully signed, so this is the path. Do it in a
+normal browser signed in to the Sonos account (the same login as the app):
+
+1. Open `https://developer.sonos.com/devmode/`; it redirects to
+   `login.sonos.com` — sign in. (The page is a Salesforce community page and
+   only exists after login.)
+2. Read the unit's **Device ID** from `http://<player>:1400/devmode`: the
+   `Device ID:` line, 12 hex characters, no separators. For the Play:5 that is
+   `000E585D8C10`; for the Play:1 `000E58CADE94`. If the form also asks for a
+   model, use `16` (Play:5) or `8` (Play:1).
+3. Submit and copy the returned **base64 statement**. It is one line; the
+   portal's own statements decode to under 1 KB, and the daemon rejects a
+   decoded length above `0x400`, so keep it under ~1360 base64 characters.
+4. Paste it here. It goes to `POST http://<player>:1400/devmode` with the
+   page's fresh `csrfToken` and `button=submit`, spaced >= 5.5 s (closer spacing
+   makes the daemon sleep ~2.1 s per missed interval, which is the `4 s`
+   responses seen in testing).
+
+Then check, in order: the POST answers `200`; `GET https://<player>:1443/unlock`
+stops answering `423`; TCP 2323 and 22 accept; `GET /testenv` answers `200`
+instead of `403`.
+
+Parser facts for judging a candidate: `len < 4`/`< 8`/`< 28`/`< 32` are silent
+rejects; `devid_len` must equal the expected length and the bytes must match;
+on S2 the version word must lie inside `[+0x18, +0x1c]` (both inclusive), and on
+S1 `[+0x18] < 0x390018` and `[+0x1c] >= 0x390017`; the ring is then parsed and
+RSA-verified against the pinned key. S1 `memcmp` is at `0xacc4` (id at `+0x21`,
+length at `+0x20`, expected length arg), S2 at `0xcbd4`.

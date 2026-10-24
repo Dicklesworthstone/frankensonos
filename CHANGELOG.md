@@ -452,10 +452,12 @@ library, in whatever genres it spans.
   [`docs/FIRMWARE_PATHS.md`](docs/FIRMWARE_PATHS.md)). They are documentation
   only: FrankenSonos never writes to a device.
   - The S2 devmode statement is fully mapped from the daemon and its crypto
-    library (magic, model, a strict min/max version window, a device-id
-    `memcmp`, then payload and ring), the payload length is a byte, so
-    `FUN_004f38a0`'s 256-byte frame is exact, and `POST /mtmhhsetup`'s full
-    form shape, validation, error codes and persistence are decoded
+    library: magic, model, a version window (both bounds inclusive), device-id
+    `memcmp`, payload and ring. Everything before the ring is hashed, the id
+    included, so a public statement cannot be patched to another serial. The
+    payload length is a byte, so `FUN_004f38a0`'s 256-byte frame is exact, and
+    `POST /mtmhhsetup`'s full form shape, validation, error codes and
+    persistence are decoded, with a Unicorn harness proving the map
     ([`docs/RE_DEVMODE.md`](docs/RE_DEVMODE.md)).
 
 ### Fixed
