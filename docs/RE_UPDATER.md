@@ -178,3 +178,33 @@ bytes rather than the transport; the stop offset varies from 1.0 to 5.0 MiB, so 
 appears to validate as it streams and drops the connection at the first thing it dislikes.
 What it dislikes is not yet isolated — candidates are the bumped build, the fresh envelope
 IV/ciphertext and the rewritten digest, each of which can be varied independently next.
+
+## Appended unused section types (2026-10-24): parsed, but pass 2 never runs
+
+The prefix digest makes an append the only signature-neutral edit, so the appended-type
+route was probed rather than the rootfs swap. Fixtures are the stock package plus one record
+after the genuine type-17, prefix byte-identical (checked: `sha256(prefix)` unchanged,
+`7c50ba32…`), built with `scripts/append_upd_section.py`. Shapes copied verbatim from a
+34.16 image, where type 5 is `len 17 / field 0 / payload 00` and types 9 and 10 are
+`len 528 / field 0 / 512-byte plaintext`.
+
+| # | appended record | bytes served | fetch | reboot | /VERSION after |
+|---|---|---|---|---|---|
+| 1 | type 5, field 0, payload `00` | 5,606,766 | 19 s | none (0.5 s ping blip) | 57.23-74170 |
+| 2 | type 5, field 0, repeat | 5,606,766 | 18.6 s | none (0.5 s blip) | 57.23-74170 |
+| 3 | type 5, field 1, payload `00` | 5,606,766 | 17.7 s | none | 57.23-74170 |
+| 4 | type 5, field 4, payload `00` | 5,606,766 | 22.6 s | none | 57.23-74170 |
+| 5 | type 5, field 4, enveloped `00` (model key) | 5,607,111 | 21.0 s | none | 57.23-74170 |
+| 6 | type 9, field 0, 34.16 payload | 5,607,277 | 21.8 s | none (0.4 s blip) | 57.23-74170 |
+| 7 | type 10, field 0, 34.16 payload | 5,607,277 | 21.0 s | none | 57.23-74170 |
+| 0 | **control: stock package, no append** | 5,606,749 | 25 s | none | 57.23-74170 |
+
+Every appended variant fetches to the last byte and then goes quiet: no second reboot, no
+>40 s accepted-install path, `/status/ZPLocalSettingsFile/../VERSION` unchanged. Class is
+therefore the **reject** one, i.e. the record is parsed but pass 2 does not flash. Field 0/1/4
+and raw vs enveloped make no difference, and neither do types 9/10, so the appended record is
+neither rejected as "Extra section" (that would abort the fetch earlier) nor enough to carry
+pass 1 to a successful return.
+
+Recorded but not yet explained: intermittent sub-second ping blips 3-5 s into the transfer in
+runs 1, 2 and 6, absent in the control and in runs 3, 4, 5 and 7.
