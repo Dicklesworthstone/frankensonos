@@ -215,3 +215,10 @@ The script pins mtimes (`T = 1771344440`, the base image date) and `s_minor`,
 so the *tree* is reproducible, but mksquashfs 3.4 is not byte-deterministic
 (two back-to-back runs differ throughout the compressed image). The SHAs above
 bind the delivered artifacts, not a rebuild.
+
+## Lane status
+
+Paused: no pre-auth writer with a request-chosen name exists on 86.10-81100 as
+far as this lane can see (reader-only name path, all writers behind the devmode
+statement bits). Resume from the `open`64/`fopen64` sweep over strings built from
+`ap_request_get` when the gate side or a signature lands.
