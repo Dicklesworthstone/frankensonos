@@ -96,3 +96,35 @@ Split-then-compact (the reachable production shape):
 
 Mapping starts 0x80000 below the object so a negative C still has a destination;
 a copy larger than 2 MB is counted but not performed.
+
+## Reachability and fault thresholds
+
+`C = 16 − (limit − h)` only leaves the 16-slot ring through **`limit`**, i.e. the
+size of the batch the split is given. The split writes `h = limit` itself, so the
+same batch size sets C directly: **C = limit** after the split, independent of
+the ring state. Negative C without a split needs a compaction whose limit is
+already more than 16 past the head.
+
+| batch (=limit) | C | destination | copy |
+|---|---|---|---|
+| 1–16 | 0…16 | inside the ring | 1–16 slots |
+| 17 | −1 (`0xFFFFFFFF`) | 1 slot below the object | 17 slots |
+| 20 | −4 (`0xFFFFFFFC`) | 4 slots below | 20 slots |
+| 28 | 28 | 28 slots below | 28 slots |
+| 32 | 32 | 32 slots below | 32 slots |
+| 35 | −19 (`0xFFFFFFED`) without split, 35 with | 19/35 slots below | 110 320 B |
+
+Reachability conditions, all of which the emulator exercised: the pending byte
+must be armed (writer `0x101908c8` → setter `0x10192614`) and `+0xc510` must be
+non-zero; a split with `q50 < q54` writes `+0xc50c = q4 + limit` and suppresses
+the following compaction, so `q50 == q54` is what keeps the C ≥ 28 path live.
+
+### Recommended playlist for MagentaBarn
+
+- **28–40 media segments in one enqueue burst** (`limit` ≥ 28 → C ≥ 28, dst at
+  or past the ring edge); 40 gives the largest in-band C without a 4 GB wrap.
+- Uniform 2 s segments, sequential `EXT-X-MEDIA-SEQUENCE`, no `EXT-X-DISCONTINUITY`
+  inside the batch (a discontinuity reset re-arms `+0xc508` and loses the setup).
+- Keep `q50 == q54` at the split (no `q4 + limit` term) so the compaction is not
+  suppressed; let the writer re-arm `+0` after the split.
+- Stay under 65 536 entries so the append path's 16-bit index is untouched.
