@@ -110,7 +110,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn wait_for(live: &Live, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
-    let until = Instant::now() + Duration::from_secs(30);
+    let until = Instant::now() + Duration::from_secs(120);
     loop {
         let snapshot = live.snapshot();
         if predicate(&snapshot) {

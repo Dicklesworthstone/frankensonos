@@ -102,3 +102,15 @@ Two results worth more than the table:
   `GetVolume` at 0 and `<TransportState val="PAUSED_PLAYBACK"/>` leaves `GetTransportInfo` at PLAYING, with a
   bare `SID: uuid:test` and with a real `SID` from a live subscription. The event is parsed and dropped;
   `200` is the only feedback, so body-shape work here cannot use state as an oracle.
+
+## The accept loop has ~4 connection slots and no header deadline (2026-10-24)
+
+`scripts/wedge-probe.py` holds N partial requests (headers without the blank line) on :1400 and
+probes `/status` every second. 1-3 held: no stall in 14-15 probes. 4 held: 1 stall in 7 probes and
+latency rising to 171 ms. 6 held: 1 stall in 6. 24 held: 4 stalls in 9 probes, alternating. Closing
+the held sockets recovers at once. So the listener accepts but the daemon answers nothing while
+every worker sits in a read that has no deadline - the multi-minute wedge is what a client that
+leaves such sockets open produces. The probe exits nonzero on a stall, so it is a reproducer.
+
+Our own daemon has the same shape (asupersync has no separate header timeout), so its listener
+workers went from 4 to 16 for headroom; the real fix would be a header deadline in the server.

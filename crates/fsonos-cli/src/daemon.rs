@@ -766,8 +766,13 @@ fn start_http(
 /// caller opening them without end could exhaust the host otherwise.
 const MAX_HTTP_CONNECTIONS: usize = 256;
 
-/// How many threads each listener serves on.
-const LISTENER_WORKERS: usize = 4;
+/// How many threads each listener serves on. A connection whose request
+/// headers have not arrived yet holds a worker (asupersync has no separate
+/// header deadline), so this is also the number of half-open requests the
+/// daemon tolerates: the players' own server stalls at four
+/// (`scripts/wedge-probe.py`), and a caller that opens sockets without
+/// finishing them must not take the API down with it.
+const LISTENER_WORKERS: usize = 16;
 
 /// The runtime a listener serves on. Its workers only move bytes: each HTTP
 /// route, and each MCP tool that can take long, runs on a thread of its own
