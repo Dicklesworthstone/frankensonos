@@ -126,3 +126,12 @@ Timeboxed session (~6 h). Two live units (`.202` S1, `.84` S1) plus `.81/.86` S2
 lost to network/router drops during the window and recovered. Every device run in the tables has
 its control row; runs without a control are marked as such. The one harness bug found mid-session
 (`TS_FILE` vs `TSFILE`) invalidated the early "real TS" rows and they were re-run, not reinterpreted.
+
+## Session close
+
+- Pushed: `main` at `7a8d5a8` (rebased over a concurrent upstream push, no force).
+- Units left healthy and idle: `.202` 57.23, `.84` 57.23, `.81`/`.86` 86.10; all four answer
+  `/status`. `.202` was wedged by the final update run and recovered on its own before close.
+- Open beads: 4 in progress (`xnf`, `re-hls-kill-cnk`, `c25`, `spotify-more-kinds-94i`), 4 blocked
+  (`q57`, `publish-0-1-0-isb`, `re-uboot-cve-ols`, `re-spotify-audio-w21`); 138 closed.
+- Not claimed: any code execution, any unsigned install, any unlock.
