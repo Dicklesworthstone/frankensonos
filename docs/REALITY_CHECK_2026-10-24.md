@@ -21,9 +21,9 @@ What changed for the better:
    against it; any body edit needs both a digest rewrite and a fresh signature. Appended records
    after the type-17 are unsigned, and *every* unused-section variant (types 5/9/10, raw and
    enveloped) is parsed then rejected before pass 2 - the flasher never runs. The rebuilt rootfs
-   package still aborts mid-body even with the prefix digest recomputed, so the digest is not
-   the mid-stream cause; the remaining difference is the re-encrypted envelope length/parse, and
-   the signature stage is not yet reached.
+   pipeline is proven end to end on an untouched tree (full read with a zero-IV length-exact
+   envelope), but a patched tree still aborts mid-body; the signature stage is not reached and
+   remains the wall.
 2. **A real memory primitive exists in the HLS queue**: an unchecked `memcpy(dst, src, n*3152)`
    whose destination and length come from ring counters that an append to slot 16 would overwrite
    with URI text. The emulator shows the shortcut chain (batch >= 17) produces a wrapped ~4 GiB
@@ -68,8 +68,9 @@ What did *not* happen: no daemon code execution, no unsigned install, no devmode
 - `/getrs`: 2229-index scan (bit31 values, negatives, dense ranges, a 2000-value random sample),
   flat 200 and alive throughout - the table reads are benign.
 - `AddOAuthAccountX`: 20-case ten-argument matrix, every case 500/402, liveness before and after.
-- Rootfs envelope: even length-exact re-encryption with a recomputed digest aborts mid-body
-  (0x180000), so the toolchain is not byte-correct yet; a no-change re-squash control is running.
+- Rootfs envelope: the toolchain is now correct enough that an *untouched* tree with a zero IV and a
+  length-exact envelope completes the whole read; a patched tree then aborts mid-body, so the
+  remaining difference is the inserted content, not the envelope. The signature is still the wall.
 
 ## Bead status (the 20 open at session start)
 
