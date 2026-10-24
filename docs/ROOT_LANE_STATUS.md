@@ -111,3 +111,15 @@ Pre-signature parser results so far are negative but clean: type-21 mutations al
 512 KiB compat verdict (bounded parse), 18 malformed GENA-client responses survive, and three
 poisoned type-22 cert bundles read to the end without a device-side fault (offline mbedtls
 harness pending).
+
+## Update 2026-10-24 00:30Z — two live leads, both now reachable
+
+- HLS: the Unicorn harness proves the compaction C equals the *batch size the split is
+  given* (split sets h=limit, limit=16 -> C=limit) and that a copy under the object starts at
+  C>=17; C=28/32/40 is reachable with a 28-40 segment enqueue burst, provided the split is not
+  suppressed (producer==consumer). Device runs in progress on .84.
+- Updater: the fetcher is `/usr/bin/wget` (busybox) executed as root via execl, pre-signature.
+  A 1 MiB status line aborts at ~128 KiB and a zero chunk ends the body early; the decoder
+  deserves a real chunked-grammar fuzz (offline with the device's own PPC busybox first).
+- Everything else tried is clean: 2496-case x509 sweep, type-21/type-1/type-2 semantics,
+  GENA response parsing (18), SMB client matrix, `/status` name length, mtmhsetup (gated).
