@@ -208,3 +208,35 @@ pass 1 to a successful return.
 
 Recorded but not yet explained: intermittent sub-second ping blips 3-5 s into the transfer in
 runs 1, 2 and 6, absent in the control and in runs 3, 4, 5 and 7.
+
+## Type-21 (patch list) mutation series (2026-10-24)
+
+Type 21 is the first record, plaintext, and parsed before any key: `FUN_1000760c` mallocs
+`len-16+1`, reads the payload with hashing on, NUL-terminates it, then `FUN_100057d8` runs
+`strtok(buf, "\n")` and `strchr(line, ':')` per line. Fixtures replace the payload in place
+(`build_upd_rootfs.py --raw`) and keep every other byte; the prefix digest is rewritten, and
+for an unchanged payload the list2 digest is unchanged too, so that control still verifies.
+
+| fixture | payload | served of ~5.6 MB | abort point | reboot |
+|---|---|---|---|---|
+| **control: payload copied verbatim** | 68 B, stock | **5,606,749 (100%)** | none | none |
+| one token 1 KB | 1025 B | 5,607,706 | **524,288** | none |
+| one token 8 KB | 8193 B | 5,614,874 | **524,288** | none |
+| one token 64 KB | 65537 B | 5,672,218 | **524,288** | none |
+| 20 tokens | 340 B | 5,607,021 | **524,288** | none |
+| 100 tokens | 1700 B | 5,608,381 | **524,288** | none |
+| every line without a colon | 32 B | 5,606,713 | **524,288** | none |
+| embedded NULs | 41 B | 5,606,722 | **524,288** | none |
+| tokens without `_PATCHES` | 27 B | 5,606,708 | **524,288** | none |
+| record `len` = 0xFFFF, 68 B of data | 68 B | 5,606,749 | **524,288** | none |
+| stock prefix of the list + junk | 415 B | 5,607,096 | **524,288** | none |
+
+Class: **daemon aborts the download at exactly 512 KiB** (524,288 = the send-buffer boundary,
+so it reads one buffer, evaluates, closes). No reboot, no daemon-down, `/VERSION` and the
+version unchanged, recovery immediate. The payload copied verbatim completes, so the check
+keys on the type-21 *content*, not on the rebuild: any difference in the patch list stops the
+fetch at the first decision point. Size, token count, colon presence, NULs, suffix presence
+and the extended-`len` framing all behave identically — the parser itself never faults.
+
+Sub-second ping blips appeared in 5 of 12 runs, including the control, so they are not a
+type-21 signal.

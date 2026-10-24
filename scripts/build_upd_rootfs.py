@@ -123,6 +123,7 @@ def main():
         "captures/firmware/57.23-74170-1-16/model16-private.pem"
     out = a[a.index("--out") + 1] if "--out" in a else base + ".patched"
     bump = "--bump-build" in a
+    raw = "--raw" in a
 
     d = open(base, "rb").read()
     recs = list(records(d))
@@ -132,7 +133,7 @@ def main():
     _, off, tot = hits[0]
     old = d[off:off + tot]
     field = old[12:16]
-    blob = envelope(payload, key, recipient_of(old[16:]), field)
+    blob = payload if raw else envelope(payload, key, recipient_of(old[16:]), field)
 
     new = bytearray(d[:off]) + bytearray(old[:16]) + blob + bytearray(d[off + tot:])
     struct.pack_into("<I", new, off + 8, 16 + len(blob))   # keep the length exact
@@ -164,7 +165,7 @@ def main():
     open(out, "wb").write(new)
     print("base      %d bytes" % len(d))
     print("out       %d bytes (%+d)" % (len(new), len(new) - len(d)))
-    print("type %-3d  %d -> %d bytes" % (want, tot, len(blob)))
+    print("type %-3d  %d -> %d bytes%s" % (want, tot, len(blob), " raw" if raw else ""))
     print("type-17   record bytes identical; digest rewritten to %s" % prefix2)
     print("type-17   list2 sha256 %s (signature now stale unless re-signed)" % signed)
     print("wrote     %s" % out)
