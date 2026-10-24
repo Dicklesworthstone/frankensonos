@@ -3322,3 +3322,43 @@ whether the process aborts at the DCMS/regcert gate, and only then add
 `keyval`-made `/jffs/regdevicecert/{cert.xml,prod/cert.xml,prod/metadata.txt}`.
 The mtd nodes below are placeholders on `mtd0`; the guest kernel has no mtdram
 module, so `MEMGETINFO` behaviour is still unproven here.
+
+### PPC guest: the daemon reaches the port binds, then SIGABRTs (2026-10-24)
+
+Progress past the earlier recipe, and the corrections that made it run at all:
+
+- **`pkill -f qemu-system-ppc` kills the ssh shell** whose command line contains
+  the string; use `pkill -x`. Most of the earlier "the VM died" was this.
+- run the VM from a script under `tmux new-session -d` — `setsid … &` inside an
+  ssh command is unreliable.
+- the daemon resolves `/opt/bin`, `/opt/conf`, `/opt/htdocs`, `/opt/lib` and
+  `/opt/log` **absolutely**: symlink them to `/opt/s16/opt/*` and `/opt/s16/lib`
+  and run from `/opt`. The initramfs ships `/opt/log` as a *file*, so `rm -f`
+  then `mkdir -p` it, or the daemon dies with `Bad PidFile value`.
+- `0x10007710` waits forever on `/dev/chk` (ioctl `0x4004f301` == 6550). With no
+  driver, patch it: `li r3,1; blr` at file offset `0x7710`, or nop the branch at
+  `0x78cc`. Without this the daemon spins at `0x100078e4` and never starts.
+- **libflash shim** (`-shared -fPIC -nostdlib`, exports the eight dlsym names
+  `hal_flash_get_mdp`, `…_get_mdp2`, both `_wrapper` forms, `info_init`,
+  `info_exit`, `mdp_write`, `sonosMdpSerialToString`, plus the data symbols
+  `bytes_so_far`/`total_bytes`). Two traps: the shim **must carry a SYSV hash**
+  (`-Wl,--hash-style=both`) or this glibc's dlopen rejects it, and it needs
+  `-Wl,-soname,libflash.so.1`. With only GNU hash the daemon segfaults on the
+  NULL handle before any call.
+- `DiagLevel default=7` in the conf is what makes the startup trace readable.
+
+State reached: modules load, `anacapa is starting on port 1400/1443/1843`, then
+`Aborted` (exit 134) ~40 ms later, before anything accepts.
+
+**The DCMS strings are not in this binary.** `regcert: loaded:%s`, `BAD_CERT`,
+`MISMATCH_*` are absent from the 1-16 `anacapad` (only `/regcert` and `regcert`
+exist), so the earlier DCMS analysis came from a different build and the abort
+here is a different fatal. It is not the regcert gate: `/jffs/regdevicecert` was
+populated with a self-signed cert and a `SID=` metadata file and the abort is
+unchanged.
+
+Tooling note: the qemu gdbstub accepts `target remote` but `handle`/`continue`
+never stop on a guest signal in batch mode; the reliable instrument is the
+monitor socket — start qemu with `-monitor unix:/tmp/mon,server,nowait` and
+`echo "info registers" | nc -U /tmp/mon` to sample NIP (that is how the
+`/dev/chk` spin was identified).
