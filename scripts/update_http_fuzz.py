@@ -18,13 +18,17 @@ The metrics are bytes written before the client closed, the abort stage
 import argparse, json, os, socket, struct, sys, threading, time, urllib.request, urllib.error
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-IMAGE = os.path.join(ROOT, "captures", "firmware", "57.23-74170-1-16.upd")
-MANIFEST = os.path.join(ROOT, "captures", "firmware", "manifest_9901.upm")
+IMAGE = os.environ.get("UPD_IMAGE", os.path.join(ROOT, "captures", "firmware", "57.23-74170-1-16.upd"))
+MANIFEST = os.environ.get("UPD_MANIFEST", os.path.join(ROOT, "captures", "firmware", "manifest_9901.upm"))
 CHUNK = 16384
 
 MODES = ("control", "chunk0", "chunk1", "chunkmax", "chunkneg", "chunkgarbage",
          "redir1", "redir10", "redir100", "loc4k", "500hdr", "hdr4k", "hdr64k",
-         "status1m")
+         "status1m", "size-zeros", "size-zeros0", "size-0x", "size-plus",
+         "size-space", "size-tab", "size-9digit", "size-9hex", "size-ext",
+         "size-upper", "split-crlf", "no-crlf", "trailer64k", "te-cl",
+         "te-cl-huge", "dup-cl", "cl-max", "cont100", "204body", "304body",
+         "double-resp", "cl0")
 
 
 def manifest(host, port):
@@ -79,6 +83,47 @@ def chunked(s, data):
         s.write(b"-1\r\n" + data)
     elif mode == "chunkgarbage":
         s.write(b"ZZZ\r\n" + data)
+    elif mode == "size-zeros":
+        sized(s, b"0000000001", data)
+    elif mode == "size-zeros0":
+        s.write(b"0000000000\r\n\r\n"); s.write(data)
+    elif mode == "size-0x":
+        sized(s, b"0x1", data)
+    elif mode == "size-plus":
+        sized(s, b"+1", data)
+    elif mode == "size-space":
+        s.write(b"1 \r\n" + data[:1] + b"\r\n"); tail_chunks(s, data[1:])
+    elif mode == "size-tab":
+        s.write(b"1\t\r\n" + data[:1] + b"\r\n"); tail_chunks(s, data[1:])
+    elif mode == "size-9digit":
+        s.write(b"100000000\r\n" + data)
+    elif mode == "size-9hex":
+        s.write(b"0xFFFFFFFFF\r\n" + data)
+    elif mode == "size-ext":
+        sized(s, b"1;x=y", data)
+    elif mode == "size-upper":
+        sized(s, b"A", data)
+    elif mode == "split-crlf":
+        s.write(b"1"); time.sleep(0.25); s.write(b"\r\n" + data[:1] + b"\r\n"); tail_chunks(s, data[1:])
+    elif mode == "no-crlf":
+        s.write(b"1\r\n" + data[:1]); s.write(b"1\r\n" + data[1:2] + b"\r\n0\r\n\r\n")
+    elif mode == "trailer64k":
+        s.write(b"0\r\nX-Junk: " + b"A" * 65536 + b"\r\n\r\n")
+    elif mode == "chunk-trailer":
+        s.write(b"0\r\nX-A: 1\r\n\r\n")
+
+
+def sized(s, token, data):
+    s.write(token + b"\r\n" + data[:1] + b"\r\n")
+    tail_chunks(s, data[1:])
+
+
+def tail_chunks(s, rest):
+    for i in range(0, len(rest), CHUNK):
+        part = rest[i:i + CHUNK]
+        if not s.write(("%x\r\n" % len(part)).encode() + part + b"\r\n"):
+            return
+    s.write(b"0\r\n\r\n")
 
 
 def handle(c, addr, state):
@@ -128,6 +173,43 @@ def handle(c, addr, state):
             loc = "/" + "a" * 4096
             s.write(("HTTP/1.1 302 Found\r\nLocation: %s\r\nContent-Length: 0\r\n"
                      "Connection: close\r\n\r\n" % loc).encode())
+        elif s.mode == "te-cl":
+            body = state["body"]
+            s.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                    b"Content-Length: 10\r\nConnection: close\r\n\r\n")
+            chunked(s, body)
+        elif s.mode == "te-cl-huge":
+            body = state["body"]
+            s.write(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                    b"Content-Length: 99999999\r\nConnection: close\r\n\r\n")
+            chunked(s, body)
+        elif s.mode == "dup-cl":
+            body = state["body"]
+            s.write(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n"
+                    b"Content-Length: 200\r\nConnection: close\r\n\r\n")
+            s.write(body)
+        elif s.mode == "cl-max":
+            body = state["body"]
+            s.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0xFFFFFFFF\r\n"
+                    b"Connection: close\r\n\r\n" + body)
+        elif s.mode == "cl0":
+            s.write(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        elif s.mode == "cont100":
+            s.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+            body_resp(s, state)
+        elif s.mode == "204body":
+            body = state["body"]
+            s.write(b"HTTP/1.1 204 No Content\r\nContent-Length: %d\r\n"
+                    b"Connection: close\r\n\r\n" % len(body) + body)
+        elif s.mode == "304body":
+            body = state["body"]
+            s.write(b"HTTP/1.1 304 Not Modified\r\nContent-Length: %d\r\n"
+                    b"Connection: close\r\n\r\n" % len(body) + body)
+        elif s.mode == "double-resp":
+            body = state["body"]
+            s.write(b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n"
+                    b"Connection: close\r\n\r\n" % len(body) + body)
+            s.write(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHELLO")
         elif s.mode == "500hdr":
             body = state["body"]
             hdr = (b"HTTP/1.1 500 Internal Server Error\r\nServer: CloudFront\r\n"
@@ -152,7 +234,7 @@ def handle(c, addr, state):
 
 def body_resp(s, state):
     body = state["body"]
-    if s.mode.startswith("chunk"):
+    if s.mode.startswith("chunk") or s.mode.startswith("size-") or s.mode in ("split-crlf", "no-crlf", "trailer64k"):
         hdr = (b"HTTP/1.1 200 OK\r\nServer: CloudFront\r\n"
                b"Content-Type: application/octet-stream\r\n"
                b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
