@@ -95,9 +95,9 @@ Request:
   - `reboot` — optional integer; `>= 30` becomes 30, 0 stays 0, a negative
     value leaves the default 1. `>= 1` calls `sonosForceReboot(n)` after the
     reply.
-- Precondition: the existing `HouseholdID` setting must be empty
-  (`getSetting` result and first byte, `0x4ac25c`), i.e. a factory-reset player;
-  otherwise `500 not factory reset`.
+- Precondition: `HouseholdID` must be absent or empty (`getSetting` status and
+  first byte, `0x4ac25c`), i.e. a factory-reset player; otherwise
+  `500 not factory reset`.
 
 Effect (`0x4ac564` onward): `ZZ0215` derives 16 bytes from the decoded key,
 the literal `MTM_` and the hhid; `RserializeData` renders that to 33 bytes and
