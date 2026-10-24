@@ -459,6 +459,10 @@ library, in whatever genres it spans.
     `POST /mtmhhsetup`'s full form shape, validation, error codes and
     persistence are decoded, with a Unicorn harness proving the map
     ([`docs/RE_DEVMODE.md`](docs/RE_DEVMODE.md)).
+  - The updater's HTTP response parser (`wget` as root, pre-signature) is
+    mapped against malformed frames, and two pre-auth request-data surfaces
+    (`/status/ZPLocalSettingsFile/<name>`, `/mtmhhsetup`) are length-fuzzed
+    ([`docs/UPDATE_HTTP_CLIENT.md`](docs/UPDATE_HTTP_CLIENT.md)).
 
 ### Fixed
 

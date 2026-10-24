@@ -411,6 +411,13 @@ package then reaches the parser, the script and the reboot. So the 128 KiB
 cut is an artefact of the Python server, not of the device, and every further
 test should be served by Apache.
 
+Malformed response frames are measured in
+[`UPDATE_HTTP_CLIENT.md`](UPDATE_HTTP_CLIENT.md): the client is `wget -qC
+<T> -O -` as root, it accepts a 64 KiB header line and a 4 KiB `Location`
+(truncated to a 4,084-byte path), rejects negative/garbage chunk sizes and a
+`0`-size chunk outright, stops after four redirects, and aborts a 1 MiB status
+line at ~128 KiB. No frame crashes or wedges the daemon.
+
 With the full package delivered, three variants still do not change
 `/status/zp` (`86.10-81100`): pristine 86.10-80260, the same with a version
 header forced to 87.0, and the same with the model field switched 9 -> 8
