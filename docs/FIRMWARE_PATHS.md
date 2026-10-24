@@ -3362,3 +3362,30 @@ never stop on a guest signal in batch mode; the reliable instrument is the
 monitor socket — start qemu with `-monitor unix:/tmp/mon,server,nowait` and
 `echo "info registers" | nc -U /tmp/mon` to sample NIP (that is how the
 `/dev/chk` spin was identified).
+
+#### Locating the abort (2026-10-24)
+
+The abort call is not reachable by symbol: this binary's `.plt` is **all zeros in
+the file** (the loader fills it at run time), so `objdump -d -j .plt` prints an
+empty body. Resolve it through `.rela.plt` instead: `abort` is relocation index
+203, and its GOT slot `0x10546688` sits inside the `.plt` range, so the stub is
+`0x10546678` and the two `bl` call sites are `0x101e36c0` and `0x102caf28`.
+NOPing both is *not* enough — the abort is reached from libc.
+
+The decisive move is to patch `abort` itself in `libc.so.6` (vaddr `0x354a4`,
+first word `9421fed0` → `4e800020` = `blr`). With that, the daemon stops dying
+and keeps running indefinitely. The trace then shows where it was: the fatal is
+in the **Spotify/registration init**, right after `spotesdk … Starting`,
+`Failed to open inputs token (1)` and the `internalevts` subscriptions.
+
+State with `abort` neutralised: the process survives and the timed-job manager
+runs (`advertise` every 60 s), but the HTTP listener never comes up — the
+`starting on port 1400/1443/1843` line is absent and `advertise` fails with
+`failed to open local description http://127.0.0.1:1400/xml/device_description.xml
+(0x81000004)`. So the abort sits inside the server-start path and returning from
+`abort()` skips it rather than resuming it.
+
+Sampling note: `-d int` gives the exception PC stream but the abort syscall
+(`tgkill`) does not appear in it; sampling NIP over the monitor is too slow
+(~200 ms per `info registers`) to catch a 40 ms window. Patching `abort` in libc
+is the reliable way in.
