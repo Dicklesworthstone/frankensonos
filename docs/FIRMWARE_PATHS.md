@@ -3487,3 +3487,27 @@ So the on-demand trigger is `GET /audio_tap?tap=<unknown-name>`, not
 `/advconfig` — and `/advconfig`'s POST form carries no device selector at all
 (only `csrfToken`, `FirstZP`, `PriorityBridge`), which is why a POST there cannot
 arm the queue.
+
+#### The tap path is the only caller — the HLS write needs an unlock
+
+Exhaustive reference count for the advance and its wrapper:
+
+| symbol | `bl` callers | data words |
+|---|---|---|
+| wrapper `0x1018bdbc` | 0 | 1 — only vtable slot `0x1046d8f4` |
+| advance `0x1018f858` | 1 — only the wrapper (`0x1018bde4`) | 0 |
+
+So the only way in is slot 23 of the vtable at `0x1046d898`, and the only caller of
+that slot is `0x1000b064` in the `/audio_tap` handler. The object is a
+process-wide singleton created at init (`0x10008cc0` stores it to `0x10545c44`),
+so it exists during radio playback — but nothing else ever invokes the slot.
+
+The handler's permission gate runs first: `0x1000afd0: bl 0x103933b0`, which
+`stat`s `/tmp/device_unlocked_flag` (`0x1049704c`) and returns 1 only if it
+exists; on 0 it logs `AudioTap: permission denied` (`0x1043e684`) and answers 403
+before any device-name compare. Creating that file in the guest makes the gate
+pass, but the daemon still has to be serving for the GET to arrive — and it
+aborts before binding, so the tap route is not reachable end-to-end yet.
+
+Conclusion: the HLS header write needs the unlock path (q57 / devmode lane); no
+pre-unlock route reaches the wrapper.
