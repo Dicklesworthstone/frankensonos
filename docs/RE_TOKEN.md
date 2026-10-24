@@ -180,3 +180,27 @@ Household Id [%s]"` (`0x66f498`, logged from `0x48d3dc`) is emitted by the
 household-settings path and prints the network hash next to the household id —
 i.e. both are stored household state, consistent with `mhhid = hhid.luid_net`
 and with the mDNS TXT values.
+
+### Vtable sweep, corrected (`.rodata`, trampoline-aware)
+
+The real vtables live in `.rodata` (`~0x665000-0x6bda40`) with a null typeinfo
+word at `vptr-4`; 445 pass the shape test. Slot bodies are frequently
+trampolines (`sb s0,30(a0); lb v1,14(s0); li a1,<id>; b <impl>`) that branch to
+the implementation, so a scan must resolve at least one hop. Nine tables put a
+0x30/0x48 struct writer behind slot 24:
+
+```
+0x66c694 -> 0x482a80   0x66e2dc -> 0x48a13c   0x66e300 -> 0x48a194
+0x673c44 -> 0x4a227c   0x678c08 -> 0x4b9704   0x680318 -> 0x4dbd14
+0x682444 -> 0x4e35c0   0x6b3760 -> 0x619658   0x6b4c2c -> 0x61cb1c
+```
+
+`0x6b3760` is a settings-cache class: slot 6 compares `this+80` against the
+literal `"cacheSettings"` (`0x6b35ec`) and hands back `this+396` — i.e. a keyed
+getter, which is the shape "getPolicy(key)" the inspector calls.
+
+Running those slots with a zeroed object and a live `s0` (the claim value the
+inspector keeps in `s0` — the trampolines stash it at `out+0x1e`) returns empty
+strings for every one of the nine: each needs the constructed object. So the
+issuer bytes remain a live read; the tables above are what to instrument next,
+`0x6b3760` first.
