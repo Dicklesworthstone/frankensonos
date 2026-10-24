@@ -224,3 +224,51 @@ statement bits). Resume from the `open`64/`fopen64` sweep over strings built fro
 `ap_request_get` when the gate side or a signature lands.
 
 Tool provenance: `squashfs3.4.tar.gz` sha256 `9ea1a9b3bd4f387ca11b5e96f00f8ae996fb81c4c7ad41f7c7f359917628a339`, built in `debian:bookworm-slim` with `CFLAGS="… -std=gnu89 -fgnu89-inline -fcommon -include sys/sysmacros.h -include fixmacros.h -DFNM_EXTMATCH=32"` (fixmacros defines `minor`/`major`), `make clean && make mksquashfs` → binary sha256 `8b130f61066b3b573080a399a60f39ced56b12535cf36c074c5cc6a7e20871c0`; artifacts re-hashed in place: `pwned-q57.upd` `73587fac…f24370`, `rootfs-patched.bin` `864cf317…4c9af9`, `build_rootfs.py` `a7978ac7…2723e5`.
+
+## /status/JFFSRoot and the path join (static read, 2026-10-24)
+
+Trigger surface: `GET /status/JFFSRoot/<name>` and `/status/ZPLocalSettingsFile/<sub>` are both 200-empty
+and pre-auth on 57.23-style targets. The dispatcher is `0x478fe0` (anacapad, MIPS16), which `strcmp`s the
+next segment against `ZPLocalSettingsFile`, `ZPExpirationTime`, `ZPForcedUPnPExpirationTimeout`,
+`JFFSRoot`, `ServerRoot`, `ContinueAfterIPChange`. `JFFSRoot` calls the imported **`setJFFSRoot`**
+(`libsonosminiutils`, PPC, `0x61d0`) with the raw segment.
+
+**`setJFFSRoot(name)` (0x61d0..0x6234)** — `freeJFFSRoot()`, then **`__strdup(name)`** (PLT reloc
+`0x203ec -> __strdup`), and the pointer is stored into `g_pszJFFSRoot` and a second twin global. There is
+**no length limit, no `PATH_MAX` check, no leading-slash check and no empty-string rejection**. The root
+lives in the heap until the next call.
+
+**The join, `constructJFFSRootPath(dst, size, name)` (0x6238)**:
+
+- no-name path: `strlcpy(dst, *g_pszJFFSRoot, size)` (PLT `0x20404 -> strlcpy`);
+- named path: `__snprintf_chk(dst, size, 1, -1, fmt, *g_pszJFFSRoot, name)` (PLT `0x2054c`), i.e.
+  `root "/" name`;
+- both are **bounded by the caller's size**; the *name* length is **never checked before the append**, it
+  is truncated, and truncation is only signalled afterwards by comparing the return value with `size`
+  (0x6298: `cmplw 31,3`) to yield 1/0. Callers do test that value (0x47270c, 0x4f3d96, 0x4f3e54).
+
+Caller sizes and buffers: `0x4726f2` size **256** into `sp+24` (frame `save 328` — 24+256 = 280 fits, the
+adjacent byte at `sp+280` is a separate flag); `0x4eda50`, `0x4f3d8c`, `0x4f3e4a` size **1024** into
+`sp+32`/`sp+24` with 1096/1232/1064-byte frames. The `/status/ZPLocalSettingsFile` branch instead uses
+`FUN_004d440c` → `FUN_004d42c8`/`FUN_005212e8` `std::string`, and `FUN_004d4320` concatenates the root and
+parts with `append('/')` + `append(std::string)` — **unbounded by construction** (heap).
+
+**Maximum name that fits:** `size - strlen(root) - 2`. With the default root `/jffs` (5) that is **249**
+for the 256-byte join and **1017** for the 1024-byte ones.
+
+**Predicted failure mode: truncation, not overflow.** Both primitives are length-bounded, so a long name
+produces a *cut* path (the real file is not found, or two names collide on the same truncated path) rather
+than a smash. The root is the lever: a root of length ≥ 254 makes every 256-byte path degenerate to the
+root prefix alone; ≥ 1022 does the same to the 1024-byte sites. Only if a caller ever passes a size larger
+than its own buffer would this become memory corruption, and the three sites checked do not.
+
+### Boundary values worth testing (cheap GETs, no state needed beyond the root)
+
+1. `/status/JFFSRoot/` + names of **245, 248, 249, 250, 252, 253, 254, 255, 256, 257, 511, 512, 1023,
+   1024, 1025, 4095** `A`s, then `/status/ZPLocalSettingsFile/ZPLocalSettingsFile` — confirm the path is
+   cut at 255 total and that 255/256/257/1024 behave identically once truncated.
+2. Roots of length **0, 1, 4, 5 (`/jffs` control), 200, 250, 253, 254, 255, 256, 1022, 1023, 1024, 4096**,
+   re-reading the localsettings path after each: expect the join to collapse toward the root as it grows
+   and a *silent* full-string swap once root ≥ size.
+3. A root **without a leading slash**, a root with `/../` segments, and a root of exactly `size-2` chars —
+   after `setJFFSRoot` none of these is normalised, so they surface in the joined path verbatim.
