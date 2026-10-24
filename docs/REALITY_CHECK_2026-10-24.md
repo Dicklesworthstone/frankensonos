@@ -111,10 +111,12 @@ absent from this binary); the monitor socket samples NIP and is the way to name 
 ## Gate datum (publish readiness)
 
 `cargo clippy --workspace --all-targets -- -D warnings`: PASS, no diagnostics.
-`cargo test --workspace`: 137 test binaries, **1 failure** —
-`crates/fsonos-core/tests/live_bootstrap_sim.rs:108`, the S2 household not reappearing after the
-Living Room player is set back online; it passes 1/1 in isolation (2.12 s), so it is
-order/parallelism sensitive rather than a plain red. Two initial gate attempts were refused by the
+`cargo test --workspace` (rch, --allow-local-fallback): 137 test binaries, **1 failure** —
+`crates/fsonos-core/tests/live_bootstrap_sim.rs:108`
+(`warm_discovery_does_not_unconditionally_probe_every_cached_player`); the whole file passes 4/4
+when run alone (2.29 s, rerun at 13:2x), so it is order/parallelism sensitive in the workspace run
+rather than a plain red. The earlier run in this session failed a different test in the same file,
+which supports that reading. Only docs changed since clippy passed on this tree. Two initial gate attempts were refused by the
 rch shim (queue_timeout); both recorded runs then went through rch with local fallback enabled.
 So the workspace is not green as a whole and must not be called release-ready.
 
