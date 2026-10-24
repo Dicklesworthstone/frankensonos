@@ -3284,3 +3284,41 @@ functions we emulated (`0x10192754` et al.) are **PPC-only, 1-16 build**; a gdb
 breakpoint there cannot hit in a guest running the MIPS 34-era daemon. Getting the
 real field pairs needs the 1-16 (or a 57.x MIPS HLS) `anacapad` in a guest with
 the same staged tree — the 1-16 image's own libs are PPC and the guest is MIPS.
+
+### PPC guest recipe (2026-10-24, timed out before the port opened)
+
+Setup that is already in place on `css` and works:
+
+- `qemu-system-ppc` **is installable** (`10.2.1`, `apt-get install qemu-system-ppc`) — the
+  earlier note that only MIPS was available is stale;
+- PPC kernel obtained: `linux-image-3.2.0-4-powerpc_3.2.78-1_powerpc.deb` from
+  `archive.debian.org/debian/pool/main/l/linux/`, unpacked to
+  `/tmp/ppcboot/boot/vmlinux-3.2.0-4-powerpc` (20 MB, boots to userland);
+- boot line that reaches `READY-PPC`:
+  `qemu-system-ppc -M mac99,via=pmu -cpu G4 -m 512 -kernel vmlinux-3.2.0-4-powerpc
+   -initrd ppcrun.gz -append "rdinit=/init console=ttyPZ0,9600"
+   -net user,hostfwd=tcp::14000-:1400 -net nic -nographic -no-reboot`
+  (start it with `setsid … &` or it dies with the ssh session; also raise the ssh
+  timeout past the `sleep`, or the caller kills it);
+- initramfs = `/tmp/ppcx` (unpacked `ppcinitrd3.gz`) with the 1-16 rootfs at
+  `opt/s16` (shipped from `/tmp/s1root16`); the tree is rooted so the daemon is
+  `/opt/s16/opt/bin/anacapad` and its conf `/opt/s16/opt/conf/anacapa.conf`, libs
+  `/opt/s16/lib` (PPC, so no ABI problem: **the 1-16 libflash needs no `0x4020`
+  patch** — no `3c164024` exists in it, unlike the 57.23 library).
+
+Two init bugs found and fixed — keep them fixed:
+
+1. the initramfs busybox has **no arithmetic support**, so `$((i*2))` aborts with
+   "you disabled math support" and panics; write minors literally;
+2. `mknod`/`ln` are not applets on `PATH` — call `/bin/busybox mknod` and
+   `/bin/busybox ln`.
+
+State reached: init runs, `/opt/s16/opt/bin/anacapad -c conf/anacapa.conf` starts
+under `LD_LIBRARY_PATH=/opt/s16/lib` and prints `Error 1 opening LED device`
+(cosmetic), but **:1400 never opened** and the VM was found dead on the next
+check — the run was cut by the timebox, not by a diagnosed failure. Next step is
+to run the same initrd with `-serial file:` and a longer-lived `setsid`, confirm
+whether the process aborts at the DCMS/regcert gate, and only then add
+`keyval`-made `/jffs/regdevicecert/{cert.xml,prod/cert.xml,prod/metadata.txt}`.
+The mtd nodes below are placeholders on `mtd0`; the guest kernel has no mtdram
+module, so `MEMGETINFO` behaviour is still unproven here.
