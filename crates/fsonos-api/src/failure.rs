@@ -328,11 +328,19 @@ pub enum NoteCode {
     /// A room or group of a set could not do it (a speaker that did not
     /// answer, or refused: nothing to resume, say); the rest went ahead.
     Skipped,
+    /// The command ran, but its action could not be logged (the store was
+    /// busy or full), so it cannot be undone.
+    NotLogged,
 }
 
 impl NoteCode {
     /// Every note code, in documentation order.
-    pub const ALL: [Self; 3] = [Self::VolumeClamped, Self::Healed, Self::Skipped];
+    pub const ALL: [Self; 4] = [
+        Self::VolumeClamped,
+        Self::Healed,
+        Self::Skipped,
+        Self::NotLogged,
+    ];
 
     /// The wire name, e.g. `VOLUME_CLAMPED`.
     #[must_use]
@@ -341,6 +349,7 @@ impl NoteCode {
             Self::VolumeClamped => "VOLUME_CLAMPED",
             Self::Healed => "HEALED",
             Self::Skipped => "SKIPPED",
+            Self::NotLogged => "NOT_LOGGED",
         }
     }
 }

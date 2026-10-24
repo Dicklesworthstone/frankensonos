@@ -72,3 +72,4 @@ A successful response can carry notes about how the request was carried out.
 | `VOLUME_CLAMPED` | The requested volume exceeded the house policy and was lowered. |
 | `HEALED` | The speakers had changed under the request (a player at a new address, or a new group coordinator) and it was retried once there. Only commands that are safe to repeat are retried at a new address. |
 | `SKIPPED` | A room or group of a set (`everywhere`, `all`, a multi-room alias, or the rooms a party gathers) could not do it: its speaker did not answer, or refused (nothing to resume, say). The rest went ahead; the call fails only when none could. |
+| `NOT_LOGGED` | The command ran, but its action could not be written to the log (the store was busy or full), so it cannot be undone. The change itself held; only its record and undo did not. |

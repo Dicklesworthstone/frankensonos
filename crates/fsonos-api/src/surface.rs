@@ -582,8 +582,8 @@ impl Surface {
         decision: String,
         result: String,
         before_state: Option<String>,
-    ) {
-        self.record_confirmed(client, intent, decision, result, before_state);
+    ) -> bool {
+        self.record_confirmed(client, intent, decision, result, before_state)
     }
 
     /// Queue recovery is advertised only when its durable action was saved.
@@ -900,8 +900,8 @@ impl Surface {
         let before = actions::before_state_with(&snaps, &sessions);
         let (decision, text, before) = log_entry(&result, before, missed.len());
         let before = self.with_after(before, &snaps, &[]);
-        self.record(client, intent, decision, text, before);
-        result
+        let logged = self.record(client, intent, decision, text, before);
+        note_unlogged(result, logged)
     }
 
     /// Like [`Self::control_io`] but for commands that act on a *set* of
@@ -983,8 +983,8 @@ impl Surface {
         let before = actions::before_state_with(&snaps, &[]);
         let (decision, text, before) = log_entry(&result, before, missed.len());
         let before = self.with_after(before, &snaps, &[]);
-        self.record(client, intent, decision, text, before);
-        result
+        let logged = self.record(client, intent, decision, text, before);
+        note_unlogged(result, logged)
     }
 
     /// `before`, an undoable action's before-state, with the touched rooms
@@ -1997,6 +1997,24 @@ pub(crate) fn warnings_view(rooms: &[String]) -> crate::WarningsHealth {
     crate::WarningsHealth { storming, kinds }
 }
 
+/// A change that ran but whose action could not be logged tells the caller
+/// it cannot be undone (p7vq.8). A denial, an error, or a no-op (nothing
+/// changed) has nothing to annotate; `logged` is whether the action saved.
+fn note_unlogged(result: Result<OutcomeDto, Failure>, logged: bool) -> Result<OutcomeDto, Failure> {
+    match result {
+        Ok(mut outcome) if !logged && outcome.changed => {
+            outcome.notes.push(crate::guard::Note {
+                code: NoteCode::NotLogged,
+                detail: "carried out, but the action could not be logged, so it cannot be \
+                         undone (the store is busy or full)"
+                    .to_owned(),
+            });
+            Ok(outcome)
+        }
+        other => other,
+    }
+}
+
 fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
     let group_of = |p: &PlayerId| {
         households
@@ -2101,6 +2119,39 @@ mod tests {
     use crate::plan::{TransportAction, plan_transport};
     use crate::request::ZoneRequest;
     use crate::zones::fixtures::households;
+
+    fn outcome(changed: bool) -> OutcomeDto {
+        OutcomeDto {
+            done: "did it".to_owned(),
+            changed,
+            volume: None,
+            notes: Vec::new(),
+        }
+    }
+
+    fn is_not_logged(note: &Note) -> bool {
+        note.code == NoteCode::NotLogged
+    }
+
+    #[test]
+    fn a_change_that_could_not_be_logged_says_it_cannot_be_undone() {
+        // The store write failed on a real change: the caller is told.
+        let noted = note_unlogged(Ok(outcome(true)), false).unwrap();
+        assert!(noted.notes.iter().any(is_not_logged), "{noted:?}");
+    }
+
+    #[test]
+    fn a_logged_change_a_no_op_or_a_failure_is_not_annotated() {
+        // Logged fine: no note.
+        let ok = note_unlogged(Ok(outcome(true)), true).unwrap();
+        assert!(!ok.notes.iter().any(is_not_logged), "{ok:?}");
+        // Nothing changed (a no-op): nothing to be un-undoable, even unlogged.
+        let noop = note_unlogged(Ok(outcome(false)), false).unwrap();
+        assert!(!noop.notes.iter().any(is_not_logged), "{noop:?}");
+        // A denial or error passes through untouched.
+        let err = note_unlogged(Err(Failure::new(ErrorCode::PolicyDenied, "no")), false);
+        assert!(err.is_err());
+    }
 
     #[test]
     fn control_authorizes_plans_and_executes() {
