@@ -3188,3 +3188,27 @@ Consequences for this project:
 
 The eMudhra intermediate key remains the live lane for *this* fleet, since it needs
 no downgrade.
+
+### S2 write surface: the 403 gate is the devmode statement bitset
+
+86.10-81100, same lane as `docs/RE_WRITE_PRIMITIVES.md`. The route gate is a bit
+test `ZZ0018` (libsonoscrypto `0xad8c`, imported once) behind
+`sonosMuseRESTStream::checkPerm` `0x4f3824`, with wrappers `0x4f2080` (bit 22)
+and `0x4f2094` (bit 18). The tested bitset is the **raw devmode statement**
+copied to the devmode object: `RDevMode::update` `0x4f3a40` memsets 1024,
+memcpy's the statement only after `ZZ0137` verifies (`0x4f3bbc`/`0x4f3bc6`),
+stores the length at `+0x400`, and refuses a statement of 1025 bytes or more
+(`0x4f3b56`). So bit 18/22 have exactly one setter: a verified devmode
+statement. Gate map: bit 18 = `/advconfig`, `/testenv`, `/diaglevel`,
+`/diagmsg`, `/logger`; bit 22 = `/reset`, `/reboot`, and the whole page family.
+`/devmode` is open because its handler tests no bit.
+
+Only fixed names are written pre-auth: the settings entry (`SetString`), and
+`/tmp/devmode.tmp.bin` + `debug/devmode.bin` from the devmode store
+(`0x4f3ef8..0x4f3f40`, `O_WRONLY|O_CREAT|O_TRUNC` 0600, after verification).
+A request-chosen *name* exists on the read side only —
+`/status/ZPLocalSettingsFile/<name>` joins `*(0x7004c4)` with the name
+(`0x4d4448`) and `..` is honoured once (`../VERSION` reads `/jffs/VERSION`);
+its three callers are constant names. There is no request-driven writer for
+that builder. `:1443` mirrors this: `/raw` 403, `/device_account/registration`
+`[/state|/status]` is read-only 200 JSON, POST verbs 405.
