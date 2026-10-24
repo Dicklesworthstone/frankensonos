@@ -240,3 +240,42 @@ and the extended-`len` framing all behave identically — the parser itself neve
 
 Sub-second ping blips appeared in 5 of 12 runs, including the control, so they are not a
 type-21 signal.
+
+## Positive control (2026-10-24): what an accept actually looks like
+
+Serving the genuine `57.22-65130-1-16` to `.4.202` (then running 57.23-74170) gives:
+
+```
+full read  5,602,653 / 5,602,653
+ping down  67.2 s -> 97.4 s   (30.2 s, the box reboot)
+back as    57.22-65130   (/status/zp and /status/ZPLocalSettingsFile/../VERSION agree)
+```
+
+and serving the genuine 57.23 package back restores `57.23-74170` the same way. So the
+accept class is **full read + ~30 s box-down + a changed version**, and a full read on its own
+is *not* an accept — every earlier "full read, no change" run above is a reject. The
+sub-second blips seen in some runs are unrelated (they also occur on the control).
+
+## Type-1 / version-record series (2026-10-24)
+
+The 28-byte file header is the version record; `FUN_100073b8` requires `len == 0x1c`, swabs
+`major.minor-build` and prints it with `%u.%u-%u` into a 1024-byte buffer, then stores
+`ver_this`. Fixtures patch the triple and rewrite the prefix digest (the list2 digest and
+therefore the signature stay valid).
+
+| version | served | class |
+|---|---|---|
+| 57.23-74170 (control, payload copied) | 5,606,749 (100%) | full read, no change |
+| 4294967295.4294967295-4294967295 | 5,606,749 (100%) | full read, no change |
+| 999999.999999-999999999 | 5,606,749 (100%) | full read, no change |
+| 57.23-74171 | 5,606,749 (100%) | full read, no change |
+| 57.23-74169 | 5,606,749 (100%) | full read, no change |
+| 57.22-74170 | 5,606,749 (100%) | full read, no change |
+| 57.23-0 | 5,606,749 (100%) | full read, no change |
+| **0.0-0** | 524,288 | **512 KiB abort** |
+| **0.23-74170** | 524,288 | **512 KiB abort** |
+
+Only a zero **major** trips the 512 KiB gate; minor/build and even a full-`u32` version are
+accepted for the download. Formatting never faults — the 1024-byte `snprintf` buffer holds the
+longest possible `%u.%u-%u` (33 bytes). No version variant reaches pass 2, including a higher
+build with a still-valid signature.

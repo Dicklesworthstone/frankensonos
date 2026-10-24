@@ -53,7 +53,8 @@ tampered/self-trust cases. `good.der` self-verified with `verify: 0 flags:0x0`.
 ## Result that matters: the build has no RSASSA-PSS in x509
 
 Every PSS fixture fails at **parse** with `-0x2180`, while a 512-bit
-RSA/SHA-256 cert of the same modulus length parses `0`. `libmbedx509.so.0`
+RSA/SHA-256 cert of the same modulus length parses `0` (the code alone is not a
+discriminator — a junk file also returns `-0x2180` — the control pair is). `libmbedx509.so.0`
 contains no `pss` string and no `1.2.840.113549.1.1.10` OID, i.e. it was built
 without `MBEDTLS_X509_RSASSA_PSS_SUPPORT`. Consequently **CVE-2018-0487 cannot
 be reached through the bundle parser on 34.16** — the PSS verification code is
