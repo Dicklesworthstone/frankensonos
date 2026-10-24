@@ -3511,3 +3511,27 @@ aborts before binding, so the tap route is not reachable end-to-end yet.
 
 Conclusion: the HLS header write needs the unlock path (q57 / devmode lane); no
 pre-unlock route reaches the wrapper.
+
+#### Who writes /tmp/device_unlocked_flag
+
+Exactly one writer. The path string `0x1049704c` has one occurrence and three
+code uses:
+
+| site | call | role |
+|---|---|---|
+| `0x102a8cb4` | `open(path, 0x40 /*O_CREAT*/, 0644)` | **creates the flag** |
+| `0x103933c4` | `__xstat(3, path, buf)` | the `/audio_tap` gate |
+| `0x100c1d20` | trace log | diagnostic only |
+
+The writer sits in the function at `0x102a89d0`, whose nearby string is
+`failure when exiting %s config mode (%d)` (`0x104689d8`) — i.e. the flag is
+created on **config-mode exit**. That function is itself unreferenced statically
+(no `bl`, no data word), so it is a thread entry / callback started by the
+config-mode flow rather than by an HTTP route.
+
+So the chain is: config mode exit → flag created → `/audio_tap` gate passes →
+slot 23 → advance + pending push → next playlist parse arms the split → header
+write. Nothing else in the image creates the flag, and no plain HTTP route does.
+
+**The devmode/config-mode statement is therefore the single precondition for the
+whole HLS write**, and it is the lane's real next step.
