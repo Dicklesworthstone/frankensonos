@@ -39,36 +39,42 @@ stays 0 and every POST dies at the state check with `400`. A `/devmode` GET or a
 3 s quiet gap does not change it. Consequence: no status can currently separate
 a parse failure from a state failure, and no blob can verify.
 
-## Matrix (20 cases, `:1443`, `/info` checked after each)
+## Matrix (`.86`, 22 calls; `/info` checked after each)
 
-| case (raw body) | GET | POST | notes |
+Raw body bytes including the 8-byte `confirm=` prefix.
+
+| case | GET | POST | notes |
 |---|---|---|---|
-| no body | 423 | 400 | state gate |
-| `confirm=` (8) | 403 | 400 | |
-| odd 1 hex char | 423 | 400 | would fail deserialize |
-| 2 bytes hex | 403 | 400 | |
-| 1,024-byte body | 403 | 400 | |
-| 2,048-byte body | 423 | **reset** | exactly the cap; reader closes early |
-| 2,049-byte body | 403 | 413 | |
-| 65,536-byte body | 423 | **reset** | |
-| `confirm=zzzz` (non-hex) | 423 | 400 | |
+| body 0 | 403 | 400 | state gate |
+| body 1 | 423 | 400 | |
+| body 4 | 423 | 400 | |
+| body 1,032 (0x400 hex data) | 403 | 400 | |
+| body 2,056 (0x800 hex data) | 423 | **reset** | over the body cap |
+| body 2,057 | 423 | 413 | |
+| body 65,544 | 423 | **reset** | |
+| `confirm=!!!!` (invalid base64) | 423 | 400 | |
+| `confirm=SGVsbG8=` (real base64) | 423 | 400 | base64 is not the format |
 | percent-escaped `deadbeef` | 403 | 400 | |
 | embedded `%00` | 423 | 400 | |
-| `confirm=` mid-body (`x=1&confirm=…`) | 403 | 400 | prefix `strncmp` fails |
-| `confirm=` at the end, then `&x=1` | 423 | 400 | trailing bytes are not hex |
-| duplicate `confirm=` | 403 | 400 | only the raw body is scanned |
+| `confirm=` at start | 423 | 400 | |
+| `confirm=` in the middle | 423 | 400 | prefix `strncmp` fails |
+| `confirm=` at the end, `&x=1` after | 403 | 400 | trailing bytes are not hex |
+| duplicate `confirm=` | 423 | 400 | only the raw body is scanned |
 | devmode magic + bad ring | 423 | 400 | never reaches a ring parser |
-| `+` terminator | 403 | 400 | |
-| `/mfgunlock` empty | 423 | 400 | |
-| `/mfgunlock` 4 KB body | 423 | 413 | |
-| `/mfgunlock` 64 KB body | 403 | 413 | |
-| `/mfgunlock` duplicate | 423 | 400 | |
+| `/mfgunlock` GET | **404** | 405 | route absent on `.86` now |
+| `/mfgunlock` body 0 | 404 | 405 | |
+| `/mfgunlock` body 1 / 4K / 64K / bad | 404 | reset | reader still runs before the 404 |
 
-The exact body limit is `0x800` bytes: at exactly the cap the reader closes
-while the client is still writing (reset); one byte over answers `413`. Sizes
-are raw body bytes including the 8-byte `confirm=` prefix, hence 2,048 rather
-than the 0x400 the decoded buffer holds.
-`/info` answered `200` after every case; no case crashed or wedged the daemon.
+The exact body cap is `0x800` raw bytes: at/over it the reader closes while
+the client is still writing (reset); the 413 appears when the response wins the
+race. `/info` answered `200` after every call; nothing crashed or wedged.
+
+`/mfgunlock` is unstable on `.86`: it answered `405` to POST in one probe and
+`404` to both methods in this run. `.81` serves it (423 with the same page), and
+its 4 KB/64 KB bodies answer `413`.
+
+**Base64 is not the wire format.** `SGVsbG8=` fails at the hex deserializer
+(`H` and `=`). Only hex characters reach the 0x400 buffer.
 
 ## What is still needed
 

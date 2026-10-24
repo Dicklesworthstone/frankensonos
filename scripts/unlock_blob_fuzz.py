@@ -42,7 +42,8 @@ def run(ip, path, cases):
     out = []
     for label, val in cases:
         g = req(ip, path)
-        code, size, dt, err = req(ip, path, (val or "").encode())
+        body = val if isinstance(val, bytes) else (val or "").encode()
+        code, size, dt, err = req(ip, path, body)
         up = info(ip)
         rec = {"case": label, "body": len(val or ""), "get": g[0], "code": code,
                "size": size, "time": dt, "err": err, "info": up}
@@ -52,37 +53,41 @@ def run(ip, path, cases):
 
 
 def dev(ip):
+    import base64
     hex4 = "deadbeef"
-    big = lambda n: ("ab" * n)[:2 * n]          # n decoded bytes
+    raw = lambda n: b"confirm=" + (b"ab" * n)[:n]          # body of exactly n bytes
+    b64 = "SGVsbG8="
     magic = "28721e71" + "00000014" + "00" * 16 + "00000055" + "00000057"
     cases = [
-        ("none", None),
-        ("empty", "confirm="),
-        ("odd-1", "confirm=a"),
-        ("two-bytes", "confirm=" + hex4[:4]),
-        ("0x400", "confirm=" + big(0x400)),
-        ("0x800", "confirm=" + big(0x800)),
-        ("0x801", "confirm=" + big(0x801)),
-        ("64KB", "confirm=" + big(0x10000)),
-        ("non-hex", "confirm=zzzz"),
-        ("percent", "confirm=%64%65%61%64%62%65%65%66"),
-        ("nul", "confirm=" + hex4 + "%00" + hex4),
-        ("mid", "x=1&confirm=" + hex4),
-        ("end", "confirm=" + hex4 + "&x=1"),
-        ("dup", "confirm=" + hex4 + "&confirm=11223344"),
-        ("magic-badring", "confirm=" + magic + "00000000"),
-        ("plus-term", "confirm=" + hex4 + "+junk"),
+        ("body-0", b""),
+        ("body-1", b"c"),
+        ("body-4", b"conf"),
+        ("body-0x400", raw(0x400)),
+        ("body-0x800", raw(0x800)),
+        ("body-0x801", raw(0x801)),
+        ("body-64K", raw(65536)),
+        ("bad-b64", b"confirm=!!!!"),
+        ("real-b64", ("confirm=" + b64).encode()),
+        ("percent", b"confirm=%64%65%61%64%62%65%65%66"),
+        ("nul", ("confirm=" + hex4 + "%00" + hex4).encode()),
+        ("start", ("confirm=" + hex4).encode()),
+        ("middle", ("x=1&confirm=" + hex4).encode()),
+        ("end", ("confirm=" + hex4 + "&x=1").encode()),
+        ("dup", ("confirm=" + hex4 + "&confirm=11223344").encode()),
+        ("magic-badring", ("confirm=" + magic + "00000000").encode()),
     ]
     return run(ip, "/devunlock", cases)
 
 
 def mfg(ip):
-    big = lambda n: ("cd" * n)[:2 * n]
+    raw = lambda n: b"confirm=" + (b"cd" * n)[:n]
     cases = [
-        ("empty", "confirm="),
-        ("4KB", "confirm=" + big(4096)),
-        ("64KB", "confirm=" + big(65536)),
-        ("dup", "confirm=cafe&confirm=beef"),
+        ("get", None),
+        ("body-0", b""),
+        ("body-1", b"c"),
+        ("body-4K", raw(4096)),
+        ("body-64K", raw(65536)),
+        ("bad", b"confirm=!!!!"),
     ]
     return run(ip, "/mfgunlock", cases)
 
