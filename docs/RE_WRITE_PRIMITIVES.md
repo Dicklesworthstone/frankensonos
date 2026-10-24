@@ -272,3 +272,36 @@ than its own buffer would this become memory corruption, and the three sites che
    and a *silent* full-string swap once root ≥ size.
 3. A root **without a leading slash**, a root with `/../` segments, and a root of exactly `size-2` chars —
    after `setJFFSRoot` none of these is normalised, so they surface in the joined path verbatim.
+
+## /getrs?id=N — index map and scan (S1 .202, 2026-10-24)
+
+`/getrs` `atoi`s the id, indexes a settings table and indirect-calls the entry. Raw sockets so an RST is
+distinguishable from a clean close; `/status` liveness after any anomaly, every 200 requests, and at the end.
+
+Map rows, each a separate request:
+
+| id | status | body | headers |
+|---|---|---|---|
+| `-1` | 200 | empty | dummy `X-RINCON-CONTENT-VERSION: 4294967295`, `X-RINCON-LAST-UPDATE-DEVICE: RINCON_FFFFFFFFFFFF99999` |
+| `0` | 200 | empty | same |
+| `1` | 200 | empty | same |
+| `100` | 200 | empty | same |
+| `65535` | 200 | empty | same |
+| `32768` | 200 | empty | same |
+| `65536` | 200 | empty | same |
+| `131072` | 200 | empty | same |
+| `0x7fffffff` (bit 31 set) | 200 | empty | same |
+| `0x80000000` | 200 | empty | same |
+| `0xffffffff` (`-1` as u32) | 200 | empty | same |
+
+Scan: `16384..16600` step 1, plus a 2 000-value uniform sample in `0..1 000 000` (seed 7), with a 20 s gap
+and a liveness read every 200 requests.
+
+**Denominator: 2 229 requests. Result: 2 229 × 200 (100 %), 0 RST, 0 timeout, 0 non-empty bodies, liveness
+200 at all 11 gaps and at the end.** Latency is jitter, not structure — median ~40 ms, p99 609 ms, one
+3 278 ms outlier, scattered rather than clustered on indices.
+
+**Verdict: table reads are benign; no crash.** Every index from `-1` through `0xffffffff` behaves identically
+and the unset-entry dereference never faults, so black-box probing is exhausted — only the table base and
+entry stride in the 57.23 `anacapad` can name populated indices now. Runner:
+`captures/research/getrs_probe.py`.
