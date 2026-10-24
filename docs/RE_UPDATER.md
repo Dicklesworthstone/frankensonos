@@ -417,3 +417,43 @@ but the fetch still does not finish. **Prefix diff: none.** The remaining delta 
 content (the two paths the q57 payload adds), and the abort offset is committed here rather
 than explained. This is where the lane stops.
 Next step, unimplemented: diff our image against the original on generator-controlled facts the digest cannot see — superblock `block_size` / `flags` / `bytes_used` and the first/last ciphertext blocks — before anything else in the tree.
+
+## Manifest (`.upm`) signature handling — enforced, and it is why an edited manifest never fetches (2026-10-24)
+
+Parser: `FUN_102a12e8` fetches the manifest, feeds it line by line through `FUN_10387494`, then
+finalises with `FUN_10387344` → `FUN_103872a4(..., 1)`. The line feeder accumulates into a
+0x400 buffer at `+0x9e8` and, on each newline, either
+
+- if the line begins `<!-- SIGNATURE:` (`strncmp` 0xf against `0x104fa4d8`) → `FUN_10387368`,
+  which finishes a SHA-256 context at `+0x970`, deserialises the signature blob at `+0x9f7`
+  (`RdeserializeData`, needs `len > 0x13`), resolves the key with `ZZ0096` and calls
+  `ZZ0109(key, 1, 1, digest, 0x20, sig, len)`. On any failure it logs
+  `Got manifest with invalid signature` and sets `+0x96c = 1`;
+- otherwise, while `+0x278 == 0`, `ZZ0064(+0x25c, line, len)` hashes the line and the line is
+  dispatched to the tag handler.
+
+So the digest covers every manifest line before the `SIGNATURE` comment; the comment line
+itself is not hashed.
+
+**The verdict gates everything.** `FUN_103872a4` returns 1 only when `+0x96c == 0` and the tag
+depth is 0 and a signature was seen; otherwise it logs
+`manifest parse error (Error parsing: %d, Tag depth: %d, Signature seen: %d)` and returns 0.
+The caller (`0x102a1690`) then does:
+
+```
+iVar2 = FUN_10387344(state);
+if ((iVar2 == 0) || (cStack_2ae84 == '\0')) { log("topology",1,"UPM Invalid"); }
+else { FUN_10386630(...); }        // only here is the selected entry handed over
+```
+
+`FUN_103878d0` and `FUN_10388888` also return immediately once `+0x96c` is set, so a bad
+signature stops the rest of the document being interpreted at all.
+
+**Consequence:** an edited manifest needs a valid signature over the edited text. Our edited
+manifests never fetched because the parse fails at the signature, not because of selection.
+
+**Which URL is fetched:** the `<image>` element's *text*, not `base_url`. On `</image>`
+(`FUN_10388888`) the accumulated text at `+0x555` is trimmed and `^`-expanded against the
+base URL (`FUN_103878c4` → `FUN_1038784c` → `FUN_10318eb0` against `manager+0x442`), then
+copied to `+0x12a`; the copy is skipped when the text is empty, leaving the `base_url`
+default in place. `base_url` (`FUN_103876f0`) is therefore only the fallback.
