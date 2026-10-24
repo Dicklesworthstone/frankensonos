@@ -3253,3 +3253,34 @@ A request-chosen *name* exists on the read side only —
 its three callers are constant names. There is no request-driven writer for
 that builder. `:1443` mirrors this: `/raw` 403, `/device_account/registration`
 `[/state|/status]` is read-only 200 JSON, POST verbs 405.
+
+### anacapad serves in the css guest (2026-10-24, no live unit touched)
+
+The DCMS abort does **not** reproduce with the binary that tree actually holds.
+`/opt/s57/bin/anacapad` hashes to `captures/firmware/s1_rootfs/opt/bin/anacapad`
+(1 451 072 B, MIPS, `md5 beB283F…`) — the 34-era daemon, not a 57.23 one — and
+`/status/VERSION` answers `57.23-74170` from the surrounding tree. That build
+never reaches the regcert gate; `ls /jffs/regdevicecert` is still empty and no
+`keyval` run was needed.
+
+What it takes to run it in the guest:
+
+1. stage a complete `/opt/s16` from the image (bin, conf, htdocs, lib) and keep
+   the **patched** `libflash.so.1` (ABI `0x4020`);
+2. let the guest's own loader do the work — `/lib/ld-uClibc.so.0` is the 45.1
+   `0.9.28` one; invoking the rootfs's `ld-uClibc-0.9.26.so` by hand segfaults in
+   the loader at `base+0x1070`;
+3. `LD_LIBRARY_PATH=/opt/s16/lib` and run `./bin/anacapad -c conf/anacapa.conf`
+   from `/opt/s16` (it needs `log/`, `conf/mime.types` and `htdocs/xml` beside it).
+
+Result: 11 threads up, **`0.0.0.0:1400` and `:1443` listening**, and both SOAP
+verbs answer — `GetZoneAttributes` returns
+`<CurrentZoneName>Unnamed Room</CurrentZoneName>`, and `SetZoneAttributes`
+(GovRoom) answers 200 and is reflected by the next Get.
+
+**HLS is not in this binary.** `strings` finds no `hls`/`EXT-X`/`mpegurl`, and no
+`lw/sw` with the ring offsets `0xc508/0xc50c/0xc510/0xc514` exists. The queue
+functions we emulated (`0x10192754` et al.) are **PPC-only, 1-16 build**; a gdb
+breakpoint there cannot hit in a guest running the MIPS 34-era daemon. Getting the
+real field pairs needs the 1-16 (or a 57.x MIPS HLS) `anacapad` in a guest with
+the same staged tree — the 1-16 image's own libs are PPC and the guest is MIPS.
