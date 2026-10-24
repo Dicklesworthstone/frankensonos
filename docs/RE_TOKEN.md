@@ -135,3 +135,48 @@ Minted anyway with `iss = urn:dev:ops:44974-zp-RINCON_000E58CADE9401400` and
 Both checks agree with the emulator only as far as the format; the values still
 come from a provider we cannot instantiate, so the next instrument is that
 provider, not more permutations.
+
+## 2026-10-23 (provider map) — the ctx services and where they come from
+
+The inspector's `ctx` (`a1`) is a stack struct built by the muse command
+dispatcher `FUN_0047ad64`; services live at `ctx+4/+8/+12/+16/+20`. Two hard
+facts from that builder:
+
+- `0x47aeb8`-region calls `MuseDeviceImplProvider::getInstance` (`0x5fb44c`) and
+  `getTargetIdProvider` (`0x5fb4ec`), then calls **slot 16** on the result into
+  `sp+10684` (a string, disposed at `0x47b140`). That string is the
+  **target id** and is not the issuer.
+- The provider trio is a singleton of `MuseDeviceImplProvider` with getters
+  `getActorProvider` (`0x5fb4a8`, member **+0**), `getTargetIdProvider`
+  (`0x5fb4ec`, member **+8**) and `getTargetValidator` (`0x5fb534`, member
+  **+16**); the setter is `0x5fb608` (shared_ptr stores at +0/+8/+16). Only
+  three providers exist — there is no separate "policy provider".
+
+The actor provider's class vtable is installed from the literal at `0x480518`
+into `service+21644` (`0x47f624`). That literal is **`0x66c038`, in `.rodata`,
+not `.data.rel.ro`** — this is why the earlier vtable sweeps found nothing:
+they only covered `.data.rel.ro`. The table, with its `offset-to-top` at
+`0x66c030` (`-0x548c = -21644`, so the vptr belongs to the +21644 subobject):
+
+| slot | 0 | 4 | 8 | 12 | 16 | 20 | 24 | 28 | 32 |
+|---|---|---|---|---|---|---|---|---|---|
+| | `0x480bcd` | `0x480bf5` | `0x47b4e1` | **0** | **0** | `0x47b6ed` | `0x47b799` | `0x47bf4d` | `0x47b8a1` |
+
+Two consequences:
+
+1. **`ctx+16` cannot be the actor provider** — slot 12 (the call at `0x60226c`)
+   is a null entry, and so is slot 16. Whatever `ctx+16` is, it is not this
+   class.
+2. The slot bodies are *trampolines*, not methods: e.g. slot 24 is
+   `0x47b799: sb s0,30(a0); lb v1,14(s0); li a1,109; b 0x47b06a` — it stashes a
+   **static base held in `s0`** at `a0+0x1e` and dispatches on an ID (`109`).
+   Emulating `0x47b799` directly (zeroed `this`, `out`/`key` on the heap) writes
+   the empty string and reads nothing of `this`, because `s0` is unset. So the
+   slot cannot be run without the live service object; the derived bytes are a
+   live read, not a static one.
+
+`grep`-able corroboration for the value pair: `"Network Hash [%s], Muse
+Household Id [%s]"` (`0x66f498`, logged from `0x48d3dc`) is emitted by the
+household-settings path and prints the network hash next to the household id —
+i.e. both are stored household state, consistent with `mhhid = hhid.luid_net`
+and with the mDNS TXT values.
