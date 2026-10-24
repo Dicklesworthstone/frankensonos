@@ -3389,3 +3389,31 @@ Sampling note: `-d int` gives the exception PC stream but the abort syscall
 (`tgkill`) does not appear in it; sampling NIP over the monitor is too slow
 (~200 ms per `info registers`) to catch a 40 ms window. Patching `abort` in libc
 is the reliable way in.
+
+#### Forcing the append in the guest (gdb mechanics, reusable)
+
+The queue append at `0x10191fbc` can be driven by hand once the queue ctor
+`0x10192364` has run; no listener and no network are needed.
+
+- **gdb cannot read or write the queue pages** (`Cannot access memory at
+  0x48557150`) even when stopped there, but **`restore <file> binary <addr>`
+  does write**. It is byte-order aware: the blob must be big-endian, so a
+  `0x00000010` word is the file bytes `00 00 00 10`.
+- The **monitor `x` reads work only while the CPU is stopped in a user thread**.
+  Stopped in the idle task (`0xc0012df4`) every user address is unmapped and all
+  reads fail. `set $pc` on the idle task is also lost on resume — the idle
+  context is restored from its saved state, so the append never runs. Drive the
+  append from a breakpoint hit by the daemon itself (the ctor is such a point).
+- `-ex continue` returns immediately in batch mode unless `set target-async off`
+  is issued first; with it, `continue` blocks and stops at breakpoints. A
+  breakpoint left installed at an address whose page is momentarily unmapped
+  aborts the resume with `Cannot access memory` — delete it after the hit.
+- `gva2gpa <vaddr>` works while stopped and is the only way to get a physical
+  address; the monitor has no `write` command in this build.
+
+Result of the forced run (record `+0x20 = 0x2f2f2f2f`, `+4 = 'etd '`, `+8 = ' tel'`,
+`+12 = 'netd'`, `+0xC50C = 16`, `+0xC510 = 0`): the first `memcpy` destination is
+`ring+0xC508` — the header — and the array pointer at `ring+0xC528` becomes
+`0x2f2f2f2f`; the second destination is `0x2f2f2f2f + 0x65746420*0xC50 =
+0x583ff92f`. The guard at `0x10191fe4` proceeds when `+8 < +0xC` (count <
+capacity), not the other way round.
