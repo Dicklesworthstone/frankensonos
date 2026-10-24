@@ -57,3 +57,20 @@ The signature/transport walls are settled in `UPDATE_FEED_AND_SIGNATURE.md` and
 4. An enveloped trailing section the flasher honors -> unsigned rootfs after the signature
    record (still needs the flasher to be last-wins, not first-wins).
 5. A pre-auth request-chosen file write (writer lane) -> Configure.dev directly.
+
+## Update 2026-10-23 23:10Z (supersedes the "what would change the verdict" list)
+
+- Verified statically: the type-17 signature is over the 57-byte **list2** region only, but that
+  region contains `sha256(file[:type17])` and the verifier compares the running prefix hash to it,
+  so a body (rootfs) edit breaks verification at the end even though the RSA signature is intact.
+- **New foothold: section types 5, 11, 12, 23 are absent from genuine images and carry flags=0
+  (not hashed).** Only a repeated type is fatal; 0x11 is the only repeatable one. Handler
+  0x10007db0 receives a partition code per type (6/7/8/0xc) and is the only caller into
+  `hal_flash_reprogram_flash`. An appended unused type therefore reaches the flasher unsigned.
+- The rootfs builder exists and is verified (`captures/firmware/57.23-74170-1-16/pwned-q57.upd`,
+  SHA-256 73587fac...): Configure.dev 0644 + `/PWNED-MARKER`, only type-4 replaced. First runs
+  abort at ~4 MiB, most likely a declared-length/envelope builder mismatch (reenc-only aborts too).
+- Devmode: statement is device-bound on both generations; payload length is u8 (the 256-byte copy
+  is exact, not short). Without the portal, no live unlock.
+- Token: hhid claim solved from the mDK TXT triple (`{owner,luid,hhid,network_hash}` JSON); still
+  401 because the *issuer* comes from the provider object's real strings, not a stub.
