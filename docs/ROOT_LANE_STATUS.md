@@ -93,3 +93,21 @@ Two concrete chains are ready for a future unlock: a valid devmode statement (po
 device-bound) -> `/ssh/fingerprints` installs a `pubkey` JSON entry into the dropbear
 authorized-keys path -> root shell; the route and its filter
 (`R_ALLOW_SSH_PUBKEY_INSTALL`, not persisted) are mapped.
+
+## Update 2026-10-23 23:58Z — accepted-install control proven; recovery recipe
+
+The positive control finally ran: serving the genuine 57.22-65130-1-16 package put the unit on
+57.22 (full 5,602,653-byte read, box reboot, automatic return), and a genuine 57.23 package
+restored it. So URL installs of *genuine* images work in both directions and every "reject"
+classification above is meaningful against that control.
+
+Operational hazard found: a failed/looping updater leaves `/var/run/upgradeinfo` pointing at a
+stale URL and the daemon restart-loops every 20-50 s with no fetch. Recovery (measured): serve a
+genuine image, retry `BeginSoftwareUpdate` until one trigger is accepted, wait for the full read
+and reboot, then require 20 consecutive `/status` 200s. Do not change the URL; 200-no-fetch just
+means the daemon was mid-restart.
+
+Pre-signature parser results so far are negative but clean: type-21 mutations all stop at the
+512 KiB compat verdict (bounded parse), 18 malformed GENA-client responses survive, and three
+poisoned type-22 cert bundles read to the end without a device-side fault (offline mbedtls
+harness pending).
