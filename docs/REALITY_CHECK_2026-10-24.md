@@ -22,8 +22,8 @@ What changed for the better:
    after the type-17 are unsigned, and *every* unused-section variant (types 5/9/10, raw and
    enveloped) is parsed then rejected before pass 2 - the flasher never runs. The rebuilt rootfs
    pipeline is proven end to end on an untouched tree (full read with a zero-IV length-exact
-   envelope), but a patched tree still aborts mid-body; the signature stage is not reached and
-   remains the wall.
+   envelope); a patched tree gets to 5.11/5.61 MB and still aborts, so the last 0.5 MB is a
+   squashfs tail difference and the signature remains the wall.
 2. **A real memory primitive exists in the HLS queue**: an unchecked `memcpy(dst, src, n*3152)`
    whose destination and length come from ring counters that an append to slot 16 would overwrite
    with URI text. The emulator shows the shortcut chain (batch >= 17) produces a wrapped ~4 GiB
@@ -68,9 +68,10 @@ What did *not* happen: no daemon code execution, no unsigned install, no devmode
 - `/getrs`: 2229-index scan (bit31 values, negatives, dense ranges, a 2000-value random sample),
   flat 200 and alive throughout - the table reads are benign.
 - `AddOAuthAccountX`: 20-case ten-argument matrix, every case 500/402, liveness before and after.
-- Rootfs envelope: the toolchain is now correct enough that an *untouched* tree with a zero IV and a
-  length-exact envelope completes the whole read; a patched tree then aborts mid-body, so the
-  remaining difference is the inserted content, not the envelope. The signature is still the wall.
+- Rootfs envelope: the toolchain reached its best state: a zero-IV, length-exact, prefix-matched
+  patched build now reads 5,111,808 of 5,606,749 bytes before the client closes (the untouched-tree
+  control completes). The remaining ~0.5 MB is a squashfs tail/block difference to compare next
+  session; the signature is still the wall even after that.
 
 ## Bead status (the 20 open at session start)
 
