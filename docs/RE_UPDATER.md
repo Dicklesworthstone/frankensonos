@@ -457,3 +457,36 @@ manifests never fetched because the parse fails at the signature, not because of
 base URL (`FUN_103878c4` → `FUN_1038784c` → `FUN_10318eb0` against `manager+0x442`), then
 copied to `+0x12a`; the copy is skipped when the text is empty, leaving the `base_url`
 default in place. `base_url` (`FUN_103876f0`) is therefore only the fallback.
+
+## The cloud-settings predicate and the upgradeinfo consumer (2026-10-24)
+
+`FUN_102c691c(ctx, timeout_ms)` builds a `GET /product-settings/v3/settings` with
+`Content-Type: application/json` and the caller's timeout (10 000 ms from the timed job), runs it
+through `FUN_1035fb44`, then reads the body in 0x1000 chunks (`FUN_1035d160`) into the streaming
+JSON state machine `FUN_10396890` (reached via `FUN_103901a4` → `+0x7f8`).
+
+It returns 1 only when the parser reports completion (`FUN_103901a4` returns 0) **and**
+
+```
+*(char *)(ctx + 0x14e) != 0   &&   *(int *)(ctx + 0x108) != 0
+```
+
+i.e. a one-byte flag and a non-zero int on the caller's object, both written by the parse
+callbacks. Anything else — request failure, parse error, either field zero — returns 0, and
+`FUN_1029c34c` then logs `Failed to query cloud settings` and sets the min version to
+`0x7fffffff` without touching `/var/run/upgradeinfo`. The two field *names* are not yet pinned:
+the callbacks that store them were not located, so the key strings are the next read.
+
+**Consumer side: `MinVersion` cannot override the 512 KiB gate.** In `upgrade`, no-argument
+startup reads `/var/run/upgradeinfo` (`FUN_10004c88` → `FUN_10006110` → `sonosSettingsFileLoad`
+with the key/value parser `FUN_10005e80`) and takes the `URL:` line as the fetch target
+(percent-decoded into the struct). `MinVersion` is stored at struct `+0x597` and
+`PrevSWGenMinVersion` at `+0x556` — and **nothing in the binary reads either offset** (no
+`lwz`/`addi` with 1431 or 1366 against that struct; the only reference to the strings is the
+parser itself at `0x10005fa0`/`0x10005f88`).
+
+The daemon never reads the file either: `upgradeinfo` occurs exactly once in `anacapad`
+(`0x1049553c`, the writer's path) and `MinVersion` only in the writer's format string. So the
+512 KiB fetch gate lives entirely in the daemon, before `upgrade` exists, and `MinVersion` is
+parsed-then-ignored dead data on this build. A genuine 57.22-59130 does not become installable
+by arming the file; it would still have to pass the daemon's own gate.
