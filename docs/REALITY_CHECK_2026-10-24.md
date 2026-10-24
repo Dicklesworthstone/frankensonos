@@ -122,10 +122,12 @@ So the workspace is not green as a whole and must not be called release-ready.
 
 ## Next actions, in priority order
 
-1. HLS: solve the destination. The helper at `0x101919b4` returns the value stored as the ring
-   cursor; find what its return is derived from (it is not the record's `+4`, and it is invariant to
-   name, duration and `+0xc40` in the model), then the `.plt` stub payload already built should fire.
-   The emulator is the iteration tool; one device run per candidate array.
+1. HLS: the destination is now known (`(cursor+1) mod capacity`, all from the name), but the write
+   itself needs the append to run at cursor 16, which needs the split to take its "full" branch. That
+   branch tests a **second queue's pending count at `+0xCD50` against its capacity at `+0xCD54`**, not
+   the ring depth; live playlists of 40/200 lines still fetch only ~0.5 segment/s, so the branch is
+   not being taken and slot 16 is never written (the old DEAD pointer rows do not reproduce). Find
+   what fills the pending counters, then the `.plt` payload already built fires.
 2. Owner action: load the browser relay extension and sign in once to the devmode portal; a
    per-serial statement immediately yields telnetd + dropbear (S1) or the SSH reporter (S2).
 3. A second memory bug: the S2 registration/devmode handler under a *valid* statement, and the
