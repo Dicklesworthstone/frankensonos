@@ -416,3 +416,4 @@ Zero IV moved the stop from 28% (1.5 MiB, random IV) to 91%, so the IV was a rea
 but the fetch still does not finish. **Prefix diff: none.** The remaining delta is the tree
 content (the two paths the q57 payload adds), and the abort offset is committed here rather
 than explained. This is where the lane stops.
+Next step, unimplemented: diff our image against the original on generator-controlled facts the digest cannot see — superblock `block_size` / `flags` / `bytes_used` and the first/last ciphertext blocks — before anything else in the tree.
