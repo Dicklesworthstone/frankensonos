@@ -1,0 +1,8 @@
+#ifndef _STUB_LIMITS_H
+#define _STUB_LIMITS_H
+#define CHAR_BIT 8
+#define INT_MAX 2147483647
+#define UINT_MAX 4294967295u
+#define LONG_MAX 2147483647L
+#define ULONG_MAX 4294967295u
+#endif
