@@ -52,52 +52,59 @@ verify pass before a single byte is written.** Consequences for the trailing-sec
 - the type-17 handler is the only repeatable one, so a *second* type-17 record is the only
   way to add signed metadata without dropping an existing section.
 
-## What the type-17 verifier actually hashes
+## What the type-17 verifier actually hashes — two separate values
 
 `0x1000868c` (364-byte `621da74d` header) reads the payload with `FUN_10006a20(0, fd, buf,
-len-16)` — **flag 0 = do not hash** (0x10006a20 skips `FUN_10006318` when the first argument
-is 0; every other handler passes 1). So the record's own bytes are not part of the running
+len-16)` — flag 0 = do not hash (0x10006a20 skips `FUN_10006318` when the first argument is
+0; every other handler passes 1). So the record's own bytes are not added to the running
 hash. It then:
 
-1. `ZZ0121` (lib 0x1ad68) parses the header. It stores, for the **list2** region only,
+1. `ZZ0121` (lib 0x1ad68) parses the header and stores, for the **list2** region only,
    `param_1[0x425]` = pointer to the list2 count and `param_1[0x426]` = its byte length
-   (0x850/0x854 region); the region runs from the list2 count word to the first byte after
-   the last list2 record, i.e. it stops exactly at `cert_count`.
+   (0x850/0x854); the region runs from the list2 count word to the first byte after the
+   last list2 record, i.e. it stops exactly at `cert_count`.
 2. `ZZ0061` finishes the SHA-256 context at `0x1002c564` into `sp+0x22d8`.
-3. `ZZ0124` -> `ZZ0125` (lib 0x1b284) verifies. With a non-empty list2 it
+3. `ZZ0124` -> `ZZ0125` (lib 0x1b284) verifies. With a non-empty list2
    (`*(int*)(section+0x850) != 0`):
 
    - `ZZ0115` copies the type-2 record (alg byte + digest) out of the section;
-   - `memcmp` of that digest against the buffer from step 2;
-   - `ZZ0117` recomputes the digest **over the list2 region stored in step 1** into a local
+   - `memcmp` of **that digest** against the buffer from step 2 (`0xb43c`, `memcmp` at
+     0x1e734);
+   - `ZZ0117` recomputes a digest **over the list2 region stored in step 1** into a local
      and length-checks it;
-   - `ZZ0110` -> `ZZ0109` RSA-verifies the signature over that recomputed digest, with the
-     key resolved from the 20-byte name via `ZZ0039`.
+   - `ZZ0110` -> `ZZ0109` RSA-verifies the signature over *that recomputed* digest, with
+     the key resolved from the 20-byte name via `ZZ0039`.
 
-Measured on the shipped 57.23-74170-1-16 package (type-17 at 0x558be1, payload 364 bytes,
-list1 count 0, list2 count 2):
+So the record's 32-byte value is compared twice, but the two sides are different domains:
+
+- **memcmp side: SHA-256 of the whole file prefix**, i.e. every byte from offset 0 to the
+  start of the type-17 record, hashed raw as it is streamed (record headers via
+  `read_hdr` 0x10006c2c, section bodies via the buffered reader 0x10006a20 -> 0x10006318).
+- **signature side: SHA-256 of the 57-byte list2 region only.**
+
+Verified on three builds by comparing the stored value with `sha256(file[:record_offset])`:
 
 ```
-payload[0x10:0x49] = 00000002 00000002 00000021 017c50ba...6c1c 00000003 00000004 00000001
-sha256(payload[0x10:0x49]) = dbd059c4a69503d0e6ad35f61670280e38c64963dcafdde4fd3e0879eaccfb48
-RSA-recover of the 256-byte signature (key at libsonoscrypto+0xdae0) =
-  3031300d060960864801650304020105000420 dbd059c4...accfb48
+57.23-74170-1-16  7c50ba322becb3b11095cae199d48e579086fec63a213812a20ce91a60ba6c1c  equal
+57.22-65130-1-16  580afcffc60cb479e0c8e6a8...                                      equal
+86.10-80260-1-12  c5909deae55dc6fed982418c...                                      equal
 ```
 
-So the signed range is exactly **the list2 count plus the two list2 records (57 bytes)**.
-Outside it: the `621da74d` magic, `header_len`, `version`, `field`, list1 (count and records),
-`cert_count`, every cert entry (name, keytype, sig_alg, field, sig_len) and the signature
-itself. `header_len` is only a bound (`<= payload length`, and the parse must consume
-within it) — extending it with trailing junk inside the payload is safe for the signature.
+and the 256-byte signature of the first one RSA-recovers to a DigestInfo whose digest is
+`dbd059c4a69503d0e6ad35f61670280e38c64963dcafdde4fd3e0879eaccfb48` =
+`sha256(payload[0x10:0x49])`, not the prefix value.
 
-Open, and the one thing not nailed down: the buffer compared at step 2 is the *running*
-context, which for every other record type is fed with the record header (0x10006d9c in
-`read_hdr`) and the section body (0x10006b14 in the buffered reader), and the measured digest is
-the 57-byte list2 hash rather than a whole-file hash. There are exactly two `ZZ0062` (hash
-init) call sites in the binary, both at the top of `FUN_10007fa0` (0x10008124 MD5,
-0x100081e8 SHA-256), so a re-init before the type-17 record is implied but was not located;
-Ghidra dropped a block as unreachable at 0x1000853c. Practically it does not matter: both
-digests must be equal, and the signature covers the list2 one.
+Outside both ranges: the `621da74d` magic, `field`, `cert_count`, every cert entry (name,
+keytype, sig_alg, field, sig_len) and the signature. `header_len` is only a bound.
+
+### Consequence for a patched image
+
+Any byte changed before the type-17 record changes the prefix hash, so the stored digest
+must be rewritten — and the list2 region then changes too, so the RSA signature must be
+recomputed. `scripts/build_upd_rootfs.py` does the payload swap, the re-encryption and the
+digest rewrite; it cannot re-sign, because the verifier key (`libsonoscrypto+0xdae0`, name
+`d67d7a07…`) is not the model content key (`model16-private.pem` has a different modulus and
+only unwraps envelopes).
 
 ## `FUN_1029c34c` — the only writer of `/var/run/upgradeinfo`
 
@@ -145,3 +152,29 @@ fetch has to succeed *before* the reboot that would start `upgrade`.
 on the `ghidra-upd` project decompiles both binaries; the script set in
 `captures/research/ghidra/scripts` (`DecompForce`, `Callers`, `FnStart`, `StackVars`,
 `Dis`) is what the addresses above came from.
+
+## First device run of the patched image (2026-10-24)
+
+Fixture: the base package with the type-4 payload replaced by
+`patched-rootfs-v30.bin` re-encrypted to the record's own 20-byte recipient, the build
+bumped to `74171` and the prefix digest rewritten — 5,606,749 bytes, the same total as the
+base. Round-trip checked: the new type-4 decrypts back to the patched rootfs byte for byte.
+
+Target `.4.202` (S5, 57.23-74170, model 16), served from `.4.160:8127` with a byte-counting
+handler, triggered once with `BeginSoftwareUpdate`.
+
+| run | bytes served of 5,606,749 | reboot | version after |
+|---|---|---|---|
+| patched, plain | 5,242,880 (93.5%) then client close | no | 57.23-74170 |
+| patched, repeat | 5,242,880 | no | 57.23-74170 |
+| patched, re-encrypted stock rootfs | 4,194,304 | no | 57.23-74170 |
+| patched, 32 KiB writes + keep-alive | 1,114,112 | no | 57.23-74170 |
+| **control: unmodified base package** | **5,606,749 (100%)** | **no** | 57.23-74170 |
+
+Class: **fetch aborted mid-stream, no reboot, no handover.** Only one GET arrives; the
+`/bin/upgrade` fetch never starts (that would be a second request with no query string).
+The identical server completes the unmodified package twice, so the abort tracks the changed
+bytes rather than the transport; the stop offset varies from 1.0 to 5.0 MiB, so the daemon
+appears to validate as it streams and drops the connection at the first thing it dislikes.
+What it dislikes is not yet isolated — candidates are the bumped build, the fresh envelope
+IV/ciphertext and the rewritten digest, each of which can be varied independently next.
