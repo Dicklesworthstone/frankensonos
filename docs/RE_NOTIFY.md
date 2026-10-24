@@ -70,3 +70,35 @@ into the `_savegpr_27…31` thunk area at `0x1043c9cc`+, `tag 0x12000000` entrie
 `.bss` name slots around `0x105460b0`). `/getrs` is not referenced by a literal pointer and is not
 reached by a `lis`/`addi` pair in the whole 1.1 M-line disassembly, so it is looked up by hash, not
 strcmp — which also explains why parameter-name brute force fails.
+
+## LastChange body-shape matrix, S2 only (2026-10-24)
+
+`.86` (86.10-81100). GENA headers, one request per case, `/info` immediately before and 400 ms after.
+12 cases, all **200**, all 8-35 ms, daemon alive throughout, no 500, no RST, no wedge. Bodies and the
+runner are `captures/research/notify_shapes.py`.
+
+| case | body | bytes sent | status |
+|---|---|---|---|
+| control (bare TransportState) | 269 | 269 | 200 |
+| one property, 2 KB value | 2 249 | all | 200 |
+| one property, 8 KB value | 8 249 | all | 200 |
+| one property, 64 KB value | 64 249 | all | 200 |
+| 500 sibling properties (2 B values) | 8 128 | all | 200 |
+| 500 sibling properties (128 B values) | 71 128 | all | 200 |
+| 2 000-deep nesting | 14 269 | all | 200 |
+| 300 KB attribute | 300 249 | **131 072 then EPIPE** | 200 |
+| 300 KB attribute (repeat) | 300 249 | **131 072 then EPIPE** | 200 |
+| 2 000-deep nesting (repeat) | 14 269 | all | 200 |
+| unclosed property at 64 KB | 64 186 | all | 200 |
+| NUL bytes inside a 64 KB attribute | 65 788 | all | 200 |
+
+Two results worth more than the table:
+
+- **The S2 read ceiling is exactly 128 KiB** (131 072 bytes), not the 64 KB the earlier skeleton probe
+  suggested: 64 KB and 71 KB bodies are consumed whole, a 300 KB body stops at 131 072 on both attempts and
+  the reply still arrives (200). So "S2 survives big bodies" really means "S2 reads 128 KiB and discards the
+  rest", the same single-read shape as S1, only with a 128× larger buffer.
+- **A pushed LastChange does not drive device state.** `<Volume channel="Master" val="7"/>` leaves
+  `GetVolume` at 0 and `<TransportState val="PAUSED_PLAYBACK"/>` leaves `GetTransportInfo` at PLAYING, with a
+  bare `SID: uuid:test` and with a real `SID` from a live subscription. The event is parsed and dropped;
+  `200` is the only feedback, so body-shape work here cannot use state as an oracle.
