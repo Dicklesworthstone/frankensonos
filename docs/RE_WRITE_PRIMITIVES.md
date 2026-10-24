@@ -181,3 +181,32 @@ is the literal `netsettings.txt` (`0x4ac7e8`). The handler then wraps a
 Net: on 86.10 the request-chosen-name reader and the fixed-name writers are the
 whole pre-auth surface; every candidate name-taker (`/raw`, `/device_account*`,
 `/mtmhhsetup`, `/mfgunlock`) is behind the devmode bits.
+
+## Delivered payload for q57 (no flash)
+
+Built with `captures/research/rootbuild/build_rootfs.py` (committed; images are
+git-ignored). Artifacts in `captures/research/rootbuild/`:
+
+| file | sha256 |
+|---|---|
+| `rootfs-patched.bin` (squashfs 3:0, 4571136 B = base) | `646d858dcd456a0a407444920b73cab86a97594ca91e29c0bbd31828bd8f3fae` |
+| `type4-envelope.bin` (model16, header_len 314, zero IV) | `bb765184b2a074e920754fa73cc217510679998d1744ed802827ee128883fa92` |
+| `pwned-q57.upd` (5606749 B = base, 10 sections) | `075a13135a49dc41e69eedcea9d013efe065d8457e494bf89865aea586bd22cd` |
+
+Tree delta vs the base image is exactly: `jffs/system/` (new dir),
+`jffs/system/Configure.dev` 0644 (`f440a443fcfa14897561b243f628204098aa6ced16da384090aa880fc665aac4`),
+`PWNED-MARKER` 0644. `Configure.dev` is the three-command script (telnetd 2323,
+dropbear 22, `touch /tmp/device_unlocked_flag`) so presence alone unlocks the
+unit via `/wifi/Configure` and rcS `sh`s it every boot.
+
+Envelope layout confirmed against the base type-4 section and re-verified by
+decrypting our own output: `886499ca`, u32be header_len, u32be 0x10000, 8 zero
+bytes, `u8 len, u8 3`, recipient (copied from the base envelope,
+`fd88f2…d437`), u32be 1, u32be 256, RSA-OAEP-SHA1 key, u32be 1, u32be
+data_len, 16-byte zero IV, AES-128-CBC/PKCS#7 body. The plaintext round-trips
+byte-identically to `rootfs-patched.bin`; the whole type-17 and every other
+section are untouched, and only payload byte 8 of section 1 is bumped
+(`0xba`→`0xbb`, a monotonic revision, not a digest).
+
+Flash is deliberately not done; the envelope path was handed to LavenderLake
+and GoldOwl.
