@@ -314,3 +314,12 @@ Operational note: a rejected attempt often reboots the box afterwards, and the d
 ignores `BeginSoftwareUpdate` for roughly 1-3 minutes (200 with no fetch); the fetch also
 sometimes ends with `ConnectionResetError` instead of `BrokenPipeError` — same class. Runs are
 spaced 60 s with one retry, and a trigger that sits on a rebooting unit returns HTTP 000.
+
+## Checkpoint (6 lines, 2026-10-24)
+
+1. Settled: the type-17 record stores SHA-256 of the whole file prefix while its signature covers only the 57-byte list2 region, so any edit before the record needs a digest rewrite *and* a re-sign with a key we do not hold (`libsonoscrypto+0xdae0`, not the model key).
+2. Settled: appended records are legal only for type 17 and never reach pass 2; every appended unused type read to the end and did nothing.
+3. Settled: any type-21 payload change stalls the fetch at 524,288 bytes; only the verbatim payload completes.
+4. Settled: a zero major version, a zero/short/over-declared type-2 length, a non-matching model, an inverted submodel range and a truncated field all stall at the same 524,288 gate; a matching model and a well-formed extra type-2 read through.
+5. Remaining: no version/type-1 or type-2/type-21 variant reaches pass 2 even with a still-valid signature, so the pass-1 -> pass-2 handover is the open wall; the accept control is full read + ~30 s box-down (57.22 -> 57.23 round trip works).
+6. Not yet run: header-record mutations (type 0 / 0xffffffff mid-file, `total_len` 0x10/0/0xffff), type-3/4 replacement semantics, and the cloud-arming predicate path (`/product-settings/v3/settings` must satisfy flag +0x14e and int +0x108 before `/var/run/upgradeinfo` is ever written).
