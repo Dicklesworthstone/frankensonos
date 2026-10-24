@@ -115,6 +115,11 @@ impl Backend {
 
     /// Authorize a subscription against one policy snapshot, so a concurrent
     /// reload cannot combine event access and document access from two rules.
+    /// Which MCP tools this caller is offered ([`fsonos_core::policy::Policy::mcp_profile`]).
+    pub(crate) fn mcp_profile(&self) -> Option<fsonos_core::policy::McpProfile> {
+        self.surface.policy().mcp_profile(&self.client)
+    }
+
     pub(crate) fn authorize_reads(&self, tools: &[&str]) -> Result<(), Failure> {
         use fsonos_core::policy::{Decision, ToolCall};
 

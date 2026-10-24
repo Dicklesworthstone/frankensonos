@@ -4,7 +4,7 @@
 
 use fastmcp::prelude::*;
 use fastmcp::{FinalSubscriptionsListenParams, JsonRpcRequest};
-use fsonos_core::policy::{self, Client};
+use fsonos_core::policy::{self, Client, McpProfile};
 
 use crate::{tool_error, tools};
 
@@ -89,6 +89,74 @@ impl Middleware for ResourcePolicy {
                 .map_err(|error| tool_error(&error))?;
         }
         Ok(MiddlewareDecision::Continue)
+    }
+
+    /// Shape `tools/list` to the caller's [`McpProfile`]: an `essentials`
+    /// client is offered only [`crate::ESSENTIALS`], so an agent over the
+    /// serve listener does not pay for every tool's schema. Policy still
+    /// governs tool *use*; this only trims what is listed.
+    fn on_response(
+        &self,
+        ctx: &McpContext,
+        request: &JsonRpcRequest,
+        response: serde_json::Value,
+    ) -> McpResult<serde_json::Value> {
+        if request.method != "tools/list" {
+            return Ok(response);
+        }
+        let essentials = tools::backend_for(ctx)
+            .is_ok_and(|backend| backend.mcp_profile() == Some(McpProfile::Essentials));
+        Ok(if essentials {
+            essentials_only(response)
+        } else {
+            response
+        })
+    }
+}
+
+/// `response` (a `tools/list` result) with only the [`crate::ESSENTIALS`]
+/// tools kept. A result without a `tools` array is returned unchanged.
+fn essentials_only(mut response: serde_json::Value) -> serde_json::Value {
+    if let Some(tools) = response
+        .get_mut("tools")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        tools.retain(|tool| {
+            tool.get("name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|name| crate::ESSENTIALS.contains(&name))
+        });
+    }
+    response
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::essentials_only;
+    use serde_json::json;
+
+    #[test]
+    fn essentials_only_keeps_the_curated_tools_and_drops_the_rest() {
+        let listed = json!({"tools": [
+            {"name": "list_zones"},
+            {"name": "announce"},
+            {"name": "play"},
+            {"name": "set_eq"},
+        ]});
+        let trimmed = essentials_only(listed);
+        let names: Vec<&str> = trimmed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["list_zones", "play"], "{trimmed}");
+    }
+
+    #[test]
+    fn a_result_without_tools_is_unchanged() {
+        let other = json!({"nextCursor": "x"});
+        assert_eq!(essentials_only(other.clone()), other);
     }
 }
 

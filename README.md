@@ -273,6 +273,12 @@ An agent that needs only the everyday tools can ask for fewer:
 tool schemas instead of about 11,500 for all 68. The house policy applies the
 same either way.
 
+Over `fsonos serve`, give an agent the short list per caller with
+`[clients."<login-or-tag>"] mcp_profile = "essentials"` in `policy.toml`; its
+`tools/list` is then trimmed to the essentials while every other caller still
+sees all the tools. The profile shapes only what is listed, never what the
+policy allows.
+
 `events` is how an agent keeps up with the house: call it once for the newest
 event id, then again with `since` and `wait_secs` to hear what changes (a
 track, a volume, a regroup, a player going offline, a logged action, the

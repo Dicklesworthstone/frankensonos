@@ -82,6 +82,7 @@ Location="http://192.0.2.1:1400/xml/device_description.xml" Invisible="0"/>
         r#"
 [clients."alice@example.com"]
 allow = ["list_zones", "events", "get_zone_state"]
+mcp_profile = "essentials"
 
 [clients."bob@example.com"]
 allow = []
@@ -508,6 +509,34 @@ fn modern_local_headers_do_not_elevate(address: SocketAddr) {
     }
 }
 
+/// tools/list is shaped by the caller's mcp_profile (8hhv.9): alice is
+/// `essentials`, so she is offered only that curated set; bob has no profile
+/// and sees every tool. Listing is never policy-gated, so bob's empty
+/// allow-list does not shorten it.
+fn tools_list_honors_mcp_profile(address: SocketAddr) {
+    let alice = [(SERVE_LOGIN, ALICE)];
+    let bob = [(SERVE_LOGIN, BOB)];
+    let alice_tools =
+        success(&modern(address, 110, "tools/list", json!({}), &alice).message())["tools"]
+            .as_array()
+            .expect("alice tools/list")
+            .len();
+    assert_eq!(
+        alice_tools,
+        fsonos_mcp::ESSENTIALS.len(),
+        "an essentials caller is offered only the essentials"
+    );
+    let bob_tools =
+        success(&modern(address, 111, "tools/list", json!({}), &bob).message())["tools"]
+            .as_array()
+            .expect("bob tools/list")
+            .len();
+    assert!(
+        bob_tools > fsonos_mcp::ESSENTIALS.len(),
+        "a caller with no profile still sees every tool ({bob_tools})"
+    );
+}
+
 fn exercise_modern(address: SocketAddr, reads: &AtomicUsize) {
     let alice = [(SERVE_LOGIN, ALICE)];
     let bob = [(SERVE_LOGIN, BOB)];
@@ -522,6 +551,8 @@ fn exercise_modern(address: SocketAddr, reads: &AtomicUsize) {
         .message(),
     );
     zones_resource(&modern(address, 11, "resources/read", json!({"uri":ZONES}), &alice).message());
+
+    tools_list_honors_mcp_profile(address);
 
     let before = reads.load(Ordering::SeqCst);
     denied(

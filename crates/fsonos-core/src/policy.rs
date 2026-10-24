@@ -360,6 +360,18 @@ struct RoomLimits {
     max_step: Option<u8>,
 }
 
+/// Which MCP tools a client is offered in `tools/list` ([`Policy::mcp_profile`]):
+/// the curated essentials, or every tool. Policy still governs tool *use*
+/// independently; this only shapes what an agent sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpProfile {
+    /// The dozen-odd tools most agent tasks need.
+    Essentials,
+    /// Every tool.
+    Full,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ClientRules {
     allow: Option<Vec<String>>,
@@ -371,6 +383,8 @@ struct ClientRules {
     /// It may change or delete scenes and schedules others saved
     /// ([`Policy::may_change`]).
     manage_others: bool,
+    /// Which MCP tools it is offered ([`Policy::mcp_profile`]).
+    mcp_profile: Option<McpProfile>,
 }
 
 /// The house policy.
@@ -433,6 +447,8 @@ pub struct ClientView {
     pub capped: Option<bool>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub manage_others: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_profile: Option<McpProfile>,
 }
 
 /// A policy file that cannot be used, with where the problem is.
@@ -586,6 +602,7 @@ impl Policy {
                 grant: c.grant.clone(),
                 capped: c.capped,
                 manage_others: c.manage_others,
+                mcp_profile: c.mcp_profile,
             })
             .collect();
         clients.sort_by(|a, b| a.client.cmp(&b.client));
@@ -603,6 +620,14 @@ impl Policy {
 
     fn client_rules(&self, client: &Client) -> Option<&ClientRules> {
         self.clients.get(&client.key().to_lowercase())
+    }
+
+    /// Which MCP tools `client` is offered in `tools/list`: its configured
+    /// [`McpProfile`], or `None` (the server's default). It shapes only what
+    /// the agent sees; [`Self::authorize`] still governs every tool's use.
+    #[must_use]
+    pub fn mcp_profile(&self, client: &Client) -> Option<McpProfile> {
+        self.client_rules(client).and_then(|r| r.mcp_profile)
     }
 
     /// May `client` change or delete a scene or schedule that `saver` (a
@@ -958,6 +983,7 @@ struct RawClient {
     capped: Option<bool>,
     #[serde(default)]
     manage_others: bool,
+    mcp_profile: Option<McpProfile>,
 }
 
 impl From<RawClient> for ClientRules {
@@ -968,6 +994,7 @@ impl From<RawClient> for ClientRules {
             grant: raw.grant,
             capped: raw.capped,
             manage_others: raw.manage_others,
+            mcp_profile: raw.mcp_profile,
         }
     }
 }
@@ -1794,5 +1821,40 @@ max_volume = 40
         for name in ["dj-agent", "ada@example.com", "tag:agent", ""] {
             assert!(!reserved_key(name), "{name:?}");
         }
+    }
+
+    #[test]
+    fn a_clients_mcp_profile_is_parsed_and_read_back() {
+        let p = Policy::from_toml(
+            "[clients.\"agent@example.com\"]\nmcp_profile = \"essentials\"\n\n             [clients.\"tag:full\"]\nmcp_profile = \"full\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            p.mcp_profile(&Client::Tailnet("agent@example.com".into())),
+            Some(McpProfile::Essentials)
+        );
+        assert_eq!(
+            p.mcp_profile(&Client::Tailnet("tag:full".into())),
+            Some(McpProfile::Full)
+        );
+        // A client with no profile, and an unknown client, default to None.
+        let bare = Policy::from_toml("[clients.\"x\"]\ndeny = [\"play\"]\n").unwrap();
+        assert_eq!(bare.mcp_profile(&Client::Tailnet("x".into())), None);
+        assert_eq!(bare.mcp_profile(&Client::McpStdio), None);
+        assert!(
+            p.view()
+                .clients
+                .iter()
+                .any(|c| c.mcp_profile == Some(McpProfile::Essentials))
+        );
+    }
+
+    #[test]
+    fn an_unknown_mcp_profile_value_is_rejected() {
+        let err = Policy::from_toml("[clients.\"x\"]\nmcp_profile = \"minimal\"\n").unwrap_err();
+        assert!(
+            err.message.contains("mcp_profile") || err.message.contains("minimal"),
+            "{err:?}"
+        );
     }
 }
