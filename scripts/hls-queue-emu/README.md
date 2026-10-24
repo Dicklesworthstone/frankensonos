@@ -128,3 +128,43 @@ the following compaction, so `q50 == q54` is what keeps the C ≥ 28 path live.
 - Keep `q50 == q54` at the split (no `q4 + limit` term) so the compaction is not
   suppressed; let the writer re-arm `+0` after the split.
 - Stay under 65 536 entries so the append path's 16-bit index is untouched.
+
+## The decisive chain: split → shortcut → append → compact
+
+Reachability first: the non-copy block at `0x101926f8` (capacity := limit) only
+executes when **bit 31 of `+0xc510` is set** (producer −1 / INT_MIN shape) and
+the cursor `+0xc508` is 0 — a normal 0…65535 counter takes the neighbouring
+`0x10192700` branch instead. With those set the shortcut does `+0xc50c :=
++0xc514` and `+0xc514 := 16`; the cursor itself is left alone, so the append
+after it goes to slot `+0xc50c`, not to 16.
+
+`split(limit) → append at the cursor → compact` (cursor = limit from the split):
+
+| batch = limit | h | n | **C** | dst = src | len | Unicorn |
+|---|---|---|---|---|---|---|
+| 16 | 16 | 0 | 16 | `obj+0xc508` | 0 | clean |
+| 17 | 17 | −1 | **17** | `obj+0xd158` | `0xfffff3b0` | **write fault after 720 896 B** |
+| 20 | 20 | −4 | **20** | `obj+0xf648` | `0xffffcec0` | **fault after 720 896 B** |
+| 28 | 28 | −12 | **28** | `obj+0x158c8` | `0xffff6c40` | **fault after 655 360 B** |
+| 40 | 40 | −24 | **40** | `obj+0x1ec88` | `0xfffed880` | **fault after 655 360 B** |
+
+The `mulli` wraps: `n` is negative, so the length becomes `2³² − (N−16)` slots
+(≈ 4 GiB), `dst == src == slot N`, and the copy walks off the object. The fault
+offset above is bounded by this harness's mapping, not by the device; on the
+player the same access runs into whatever follows the queue in the heap.
+
+**C maps back one-to-one to the batch**: the split writes `h = limit` and the
+body computes `C = 16 − n = limit`. Any observed C at this chain *is* the number
+of segments the split was handed — 17 is the first fatal value, 16 the last
+harmless one, 40 the largest without an additional pointer wrap.
+
+### Final recommendation for MagentaBarn
+
+- Aim at **28–40 segments in one burst** (C ≥ 28, and the huge-length copy is
+  present from 17 upward). 16 alone is a no-op — do not use it as a control.
+- Uniform 2 s segments, sequential `EXT-X-MEDIA-SEQUENCE`, **no**
+  `EXT-X-DISCONTINUITY` in the batch, `q50 == q54` at the split.
+- Producer/`+0xc510` should be a wrapped-to-negative value if the shortcut path
+  is wanted; a small positive counter skips `0x101926f8` and only gives the
+  bounded `n > 16` variant.
+- Repro: `hls_emu.py split-append-compact 17`.
