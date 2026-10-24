@@ -3440,3 +3440,28 @@ So the pending push is never reached at run time in this build: the counter at
 split's armed branch stays dead. The corruption is real and reproducible by hand
 — first append lands on `ring+0xC508` and destroys the array pointer — but no
 playlist shape can trigger it while the advance slot is unwired.
+
+#### Correction: the advance IS wired — through vtable slot 23
+
+The earlier "no address word" search was wrong because it looked for the advance
+function itself. The advance is reached through a **wrapper**, and the wrapper is
+the vtable entry:
+
+- `0x1018bdbc` is the wrapper: `bl 0x1018f858` (advance, `r4 = 0`) at
+  `0x1018bde4`, then an **unconditional** push at `0x1018bdf4` — so the pending
+  record is pushed on every call of the wrapper, whether or not the advance
+  succeeded.
+- `0x1018bdbc` is slot 23 (`+0x5C`) of the vtable at `0x1046d898`, installed by
+  the ctor at `0x1013c7b8` / `0x1013ca08`.
+- Slot 23 is called at `0x1000b064` in the playlist parser at `0x1000abdc`,
+  through the global object at `0x10545c44` (`lwz 3, 0x5C44` → `lwz 9, 0(3)` →
+  `lwz 9, 92(9)` → `bctrl`).
+
+The gate is a chain of four `strcmp` calls (PLT `0x10546270`) against the
+suffix-merged strings at `0x1046e6a0`, `0x1046e6a8`, `0x1046e6b0`, `0x1046e6b8`
+(`"t"`, `"lid media playlist: %s: line=%s"`, `"a playlist: %s: line=%s"`,
+`"st: %s: line=%s"`); all four must compare unequal for the slot to be called,
+otherwise the parser takes the path at `0x1000ad78`.
+
+So the lane is wired, not dead: the trigger is reaching that block in the
+parser, and the four string comparisons are what to attack next.
