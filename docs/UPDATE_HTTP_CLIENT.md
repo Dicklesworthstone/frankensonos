@@ -11,6 +11,39 @@ trigger `BeginSoftwareUpdate` with a direct `/update.upd` URL, record how far
 the client got, then poll `:1400` for recovery). Bytes are counted at the
 server before the client closes; `5,606,872` is header + body (5,606,749).
 
+
+## Lane verdict
+
+The fetcher is busybox 1.24.2 `wget`, spawned as
+`/usr/bin/wget wget -qC /var/run/upgrade_report.txt -T 300 -O - <url>` by the
+root updater **before** any manifest/package parse or signature check. It is a
+pre-auth, root-context response parser, but across every frame tried it is
+memory-safe: no crash, no hang, no wedge in the client.
+
+- **Tolerated:** leading zeros, `0x`- and `+`-prefixed sizes, spaces/tabs
+  before CRLF, `;x=y` extensions, uppercase hex, a size/CRLF split across
+  packets, duplicate `Content-Length` (last wins), `100 Continue`, `204` with a
+  body, 64 KiB header lines, a 4 KiB `Location` (silently truncated to a
+  4,084-byte path) and one redirect.
+- **Desyncs or rejects:** a `0` chunk delivers zero bytes and drains to EOF;
+  `-1` and a short uppercase chunk are accepted as "success" after ~8.2 KiB
+  while megabytes are consumed, then the socket is reset; 9-digit and
+  `0xFFFFFFFFF` sizes deliver the whole body and error at EOF; trailers are not
+  parsed; `TE` together with any `Content-Length` fails at the headers;
+  `Content-Length: 0xFFFFFFFF` is "garbage"; `304` with a body is an error and
+  the body is dropped; a 1 MiB status line aborts at ~128 KiB with the reason
+  tail as the error text.
+- **Device confirmation of the two desyncs** (Play:5, one run each, bytes are
+  what the server managed to write before EPIPE): `-1` → **126 bytes**; `A` →
+  **131,268 bytes**. Offline the same frames end at 126 B (reset) and 2.8 MB
+  (reset): the live `A` count is smaller only because wget's stdout is a pipe
+  to `upgrade`, which stops reading, so the socket stalls sooner. The class —
+  early close with data still outstanding — is identical.
+
+Risk read: the desyncs are data-integrity bugs (empty or short "successful"
+downloads), not memory-safety bugs. Nothing in the frame layer is worth a
+memory-corruption hunt on this build.
+
 ## Metrics
 
 | mode | requests | response bytes written | abort point | daemon down (s) | recovery |
