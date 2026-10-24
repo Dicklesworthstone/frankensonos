@@ -3417,3 +3417,26 @@ Result of the forced run (record `+0x20 = 0x2f2f2f2f`, `+4 = 'etd '`, `+8 = ' te
 `0x2f2f2f2f`; the second destination is `0x2f2f2f2f + 0x65746420*0xC50 =
 0x583ff92f`. The guard at `0x10191fe4` proceeds when `+8 < +0xC` (count <
 capacity), not the other way round.
+
+#### The advance path is never wired (lane closed: proven but latent)
+
+The HLS advance/append cluster `0x1018f084` (fill), `0x1018f738` (bitrate
+downgrade), `0x1018f7d4` (previous segment) and `0x1018f858` (next segment, the
+one that pushes the pending record) is **referenced nowhere in the image**:
+
+- no `bl` to any of them,
+- no 32-bit word anywhere in the file points into `0x1018f000`–`0x1018fa00`,
+- no `.rela.*` entry has one of them as addend,
+- no `lis`/`addi` pair constructs their address.
+
+The class vtables the ctor installs are ordinary absolute-pointer tables
+(`+0x2024` → `0x10468e84` = `{0x1015e22c, 0x1015e24c, 0x1015bc58, "GetMediaInfo"}`,
+`+0x17C8` → `0x10468e58`, `+0x17D0` → `0x10468e38`), and none of their entries is
+in that cluster.
+
+So the pending push is never reached at run time in this build: the counter at
+`record+0x2304` (incremented per segment by `0x1018f238`/`0x1018f21c`, capped at
+3, zeroed only by the base initialiser `0x10158114`) never gets read, and the
+split's armed branch stays dead. The corruption is real and reproducible by hand
+— first append lands on `ring+0xC508` and destroys the array pointer — but no
+playlist shape can trigger it while the advance slot is unwired.
