@@ -116,3 +116,22 @@ from outside — the provider copy is what has to be read next.
   does not reflect inspection either.
 - `/status/zp` and the mDNS TXT are the useful *data* oracles:
   `HouseholdControlID`, `LocationId`, `SerialNumber`, `LocalUID`.
+
+## 2026-10-23 (run) — slot 12/24 under the emulator, and the wire result
+
+Stub provider, real inspector: slot 12 returns `0Ij2e5ZDB` (the TXT value of the
+mhhid tail) and slot 24 returns the issuer; with `mhhid` set to the composed JSON
+the mhhid compare passes and execution enters the expiration stage. The stage
+after it depends on `ctx+12` slots 28/40 and `ctx+20` slot 60, which the stub
+does not model yet, so it stops there without printing a result code.
+
+Minted anyway with `iss = urn:dev:ops:44974-zp-RINCON_000E58CADE9401400` and
+`mhhid = {"owner":{"luid":"T7aLjgf696"},"hhid":"Sonos_wI8BAkz9WLbe5jdUaRXQSQMJW8","network_hash":"0Ij2e5ZDB"}`:
+
+- `POST .../authorization/authorizeDevice` → `401 ERROR_NOT_AUTHORIZED`.
+- `POST .../management/reboot` with the same bearer → `401 invalid_token,
+  "Access token is invalid"`.
+
+Both checks agree with the emulator only as far as the format; the values still
+come from a provider we cannot instantiate, so the next instrument is that
+provider, not more permutations.
