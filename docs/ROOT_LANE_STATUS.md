@@ -123,3 +123,15 @@ harness pending).
   deserves a real chunked-grammar fuzz (offline with the device's own PPC busybox first).
 - Everything else tried is clean: 2496-case x509 sweep, type-21/type-1/type-2 semantics,
   GENA response parsing (18), SMB client matrix, `/status` name length, mtmhsetup (gated).
+
+## Update 2026-10-24 00:45Z — the injection word is the URI text
+
+Record layout resolved: `strlcpy(record+0, uri, 2049)` (0x10191b14); the metadata fields sit at
+0xc02..0xc4c. A write of slot 16 therefore overwrites the ring counters with the first bytes of
+the **URI**, i.e. `"http"`/`"://1"`-style huge words, which is exactly what makes C huge and the
+copy fault. Slot 16 is only reachable through the non-copy shortcut (cursor := capacity, then
+capacity := 16) followed by one append; the normal modulo never exceeds 16. The emulator is
+being driven through that exact sequence.
+
+40-segment bursts on device (2/2) stayed PLAYING 150 s with no restart, so the split there
+likely takes the suppressed branch. Device recipe still open.
