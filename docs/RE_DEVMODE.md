@@ -71,8 +71,9 @@ the lock is lifted. It also requires an `X-Sonos-Api-Key`. The header is
 not merely presence-checked here: `0x4aa99c` hashes the value with `ZZ0058`
 (algorithm 1 = SHA-256-size, 32-byte output) and `memcmp`s it against two
 built-in 32-byte constants (`0x676ea8`, `0x676e88`); a mismatch is `500` with
-an empty message. The published UUID dummy does pass live, so one constant
-corresponds to it under whatever `ZZ0058` derives, but `any non-empty value
+an empty message. The published UUID dummy is known to pass live (the token lane reached the
+inspector on this same build with it), so one constant corresponds to it under
+whatever `ZZ0058` derives, but `any non-empty value
 passes` is not true of this build.
 
 Request:
