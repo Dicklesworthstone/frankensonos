@@ -98,8 +98,19 @@ fn fixture(fail: bool) -> (SimHandle, Arc<DiscoveryTransport>, LiveConfig) {
     (sim, transport, config)
 }
 
+/// These tests drive real sockets and a live worker; running all four at once
+/// on a loaded box starves the survey past the settle deadline, so they take
+/// turns inside this binary.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn wait_for(live: &Live, predicate: impl Fn(&Snapshot) -> bool) -> Snapshot {
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = Instant::now() + Duration::from_secs(30);
     loop {
         let snapshot = live.snapshot();
         if predicate(&snapshot) {
@@ -138,6 +149,7 @@ fn proves_event_updates(live: &Live, sim: &SimHandle, transport: &DiscoveryTrans
 
 #[test]
 fn cached_only_startup_finds_both_households_and_receives_live_events() {
+    let _serial = serial();
     for fail in [false, true] {
         let (sim, transport, config) = fixture(fail);
         assert!(config.seeds.is_empty());
@@ -154,6 +166,7 @@ fn cached_only_startup_finds_both_households_and_receives_live_events() {
 
 #[test]
 fn an_initially_offline_cached_household_is_not_lost_after_partial_startup() {
+    let _serial = serial();
     let (sim, transport, config) = fixture(false);
     sim.set_offline("Living Room", true).unwrap();
     let live = start(&transport, config);
@@ -172,6 +185,7 @@ fn an_initially_offline_cached_household_is_not_lost_after_partial_startup() {
 
 #[test]
 fn warm_discovery_does_not_unconditionally_probe_every_cached_player() {
+    let _serial = serial();
     let (sim, transport, config) = fixture(false);
     let live = start(&transport, config);
     wait_for(&live, |s| s.households.len() == 2);
@@ -187,6 +201,7 @@ fn warm_discovery_does_not_unconditionally_probe_every_cached_player() {
 
 #[test]
 fn startup_with_all_cached_players_offline_recovers_without_restart() {
+    let _serial = serial();
     let (sim, transport, config) = fixture(true);
     for room in ["Kitchen", "Office", "Living Room"] {
         sim.set_offline(room, true).unwrap();
