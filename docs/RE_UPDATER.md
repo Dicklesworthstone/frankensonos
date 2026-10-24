@@ -392,3 +392,27 @@ patched* content also aborted, the remaining variable is the **tree content** �
 the q57 payload adds (`/jffs/system/` and `/jffs/system/Configure.dev`, plus `PWNED-MARKER`).
 Next: the same zero-IV build over the patched tree, i.e. `patched-rootfs-v30.bin` with a zero
 IV, to drop the IV as a co-variable before bisecting the inserted files.
+
+### Type-4 plaintext prefix, and the zero-IV patched run (2026-10-24, last experiment)
+
+Decrypting the original type-4 payload shows **no wrapper at all**: the plaintext is the image
+byte for byte (`plaintext == rootfs.bin` → True, 4,571,136 bytes), beginning
+`73717368 000000e6 00000000 …` — the squashfs magic plus the inode/block counts. There is no
+length or magic field to mirror and nothing to set. `patched-rootfs-v30.bin` carries the same
+first 32 bytes, so the prefix matches trivially.
+
+Built with that prefix, a **zero IV** (the genuine construction) and every length asserted
+equal to the original — `header_len` 0x13a, ct 4,571,152, `data_len` 4,571,168, record
+4,571,498, file 5,606,749 — plus a round-trip check. One run (first trigger hit a rebooting
+unit, retried once):
+
+```
+abort  5,111,808 of 5,606,749  (0x4e0000, 91.2%)   short by 494,941
+still inside the type-4 record by 494,561 bytes; type-17 begins at 0x558be1
+box up, /VERSION unchanged (57.23-74170)
+```
+
+Zero IV moved the stop from 28% (1.5 MiB, random IV) to 91%, so the IV was a real part of it,
+but the fetch still does not finish. **Prefix diff: none.** The remaining delta is the tree
+content (the two paths the q57 payload adds), and the abort offset is committed here rather
+than explained. This is where the lane stops.
