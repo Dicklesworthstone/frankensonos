@@ -36,9 +36,9 @@ static int slurp(const char *path, unsigned char **out, size_t *len)
     if (!f) return -1;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
     n = ftell(f);
-    if (n <= 0) { fclose(f); return -1; }
+    if (n < 0) { fclose(f); return -1; }
     rewind(f);
-    *out = (unsigned char *) malloc((size_t) n);
+    *out = (unsigned char *) malloc((size_t) (n ? n : 1));
     if (!*out) { fclose(f); return -1; }
     if (fread(*out, 1, (size_t) n, f) != (size_t) n) { fclose(f); free(*out); return -1; }
     fclose(f);

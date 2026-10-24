@@ -50,6 +50,21 @@ Return codes seen: `-0x2180` (most mutations, incl. every PSS cert), `-0x2400`,
 `-0x23E2`, `-0x3C80`, `-0x262E`; `verify -9984` with flag `0x10000` for
 tampered/self-trust cases. `good.der` self-verified with `verify: 0 flags:0x0`.
 
+## Structural sweep (2026-10-24)
+
+2 496 cases from `sweep.py` — every 1/2/3/4-byte truncation, truncation after
+every ASN.1 length byte, every declared length ±1…16, `0x80/0x81/0x82/0x84/0x88`
+indefinite and over-long forms at every length byte, depth 64/256 nesting, CN
+1…65 536 bytes, OID arcs to 65 536 bytes, `0xffffffff` serial, duplicate and
+unknown-critical extensions, zero certs, a trailing second cert, prefix/trailing
+junk, nested-in-SEQUENCE, plus 1 024 random bit flips.
+
+**No crashes, no clobbers.** 839 cases parse `0`; 1 293 take the generic
+`-0x2180`; the rest are other parse errors. The interesting acceptances for
+device tests are the tolerances: `0xffffffff` serial, CN and OID arcs to 64 KB,
+and nesting to depth 256 all parse; a duplicate extension (`-0x2500`) and an
+unknown critical extension (`-0x2562`) are rejected cleanly.
+
 ## Result that matters: the build has no RSASSA-PSS in x509
 
 Every PSS fixture fails at **parse** with `-0x2180`, while a 512-bit
