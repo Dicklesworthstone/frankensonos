@@ -30,14 +30,37 @@ to mint a 16-byte challenge with `ZZ0071` + `RserializeData` and set the state
 flag; the POST checks that flag (`0x7002f4`) and returns `400` if unset.
 `/mfgunlock` (`param_1 == 2`) has its own verifier branch (`ZZ0161` + MDP).
 
-## The gate is broken on these units
+## Why the gate never opens (read from the handler)
 
-Every `GET` page on both units says `Fuse Value: 0x1` and **never emits
-`Challenge:`** — the branch that prints the challenge is the one where the flag
-was set. `ZZ0071` (the RNG wrapper) or the serialize step returns 0, so the flag
-stays 0 and every POST dies at the state check with `400`. A `/devmode` GET or a
-3 s quiet gap does not change it. Consequence: no status can currently separate
-a parse failure from a state failure, and no blob can verify.
+The state is one BSS cell at `0x7002f4`, reached through the GOT injection at
+`0x4ccd98` (GET) and `0x4ccf88` (POST). **Only one code path sets it**: the
+`GET` branch for `/devunlock` (`param_1 == 0`) in `FUN_004ccc30`, after
+
+1. `ZZ0071(0x7002fc, 16)` — 16 bytes from `mbedtls_ctr_drbg_random`;
+2. `strcpy(buf, "02:")` and `RserializeData(0x7002fc, 16, buf+3, 0x210000)`.
+
+Any other route or flag clears it; the POST consumes and clears it again, and
+`FUN_004cc81c` returns 400 when it is zero. `RdeviceIsUnlocked()` non-zero is a
+separate 200 "Not Applicable" exit.
+
+`ZZ0071` is the library's DRBG wrapper: the getter at `0xbdcc` aborts if the
+seeded flag at `+0x31c` is unset, so the init did run — the DRBG object is
+seeded by `libsonoscrypto.so.3`'s `init_array` constructor (`ZZ0146`, relocated
+at `0x1fd60`). The failure is therefore at *call* time: the random call returns
+non-zero and `ZZ0071` collapses it to 0, leaving the flag clear and the page on
+the "Fuse Value" branch.
+
+Nothing else arms it: a prior `/devmode` GET, repeated `/devunlock` GETs and
+3 s quiet gaps all still print `Fuse Value`, and `.81` (`/mfgunlock`) behaves
+the same. No route re-invokes `ZZ0146`.
+
+**Contract for a future working unit** (`FUN_004cc81c`, before the flag check):
+body must be `confirm=` followed by an **even-length hex** string; `'+'`
+terminates it, `sonosDecodePercentEncodedStr` expands `%XX` into a 0x800 stack
+buffer, all whitespace is stripped, and `RdeserializeData` decodes into 0x400
+(max 2048 hex digits). `RserializeData` is the inverse and returns 0 when
+`2*len+1` exceeds its cap. Non-hex (including real base64) and odd lengths fail
+at `RdeserializeData` with 400 — indistinguishable from the flag check.
 
 ## Matrix (`.86`, 22 calls; `/info` checked after each)
 
