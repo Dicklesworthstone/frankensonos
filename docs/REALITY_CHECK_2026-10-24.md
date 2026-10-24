@@ -24,10 +24,7 @@ What changed for the better:
    pipeline is proven end to end on an untouched tree (full read with a zero-IV length-exact
    envelope); a patched tree gets to 5.11/5.61 MB and still aborts, so the last 0.5 MB is a
    squashfs tail difference and the signature remains the wall.
-2. **A real memory primitive exists in the HLS queue, and its write side is now measured on the device.** An append after a split writes the whole 3152-byte record over the ring header at `parent+0xc508`, including the array pointer at `parent+0xc528`. The pointer bytes are the record's `name[0x20..0x23]`, the name is percent-decoded before the record is built (proven with encoded pointer bytes that reach `0x40xxxxxx` and crash only on unmapped bytes), and the appended record is stamped at `+4` by a helper that then overwrites the ring cursor with its own return value. Destination arithmetic is `array + cursor*3152`; `array` is the name bytes, but the cursor is the helper's return (`0x101919b4`), which is environment-derived and is the remaining unknown. Aiming the write at `.plt` with two stubs (strstr/strlen slots) is built and fetched but does not fire yet - the destination misses because the live cursor is not the record's `+4`.
-   `/` at `name[0x20]` is the only pointer byte that dies; `@`..`w` (mmap) survives. The install lane's
-   emulator model reaches slot 16 deterministically on a split; playback continues after the corrupt
-   header, so the primitive is silent unless the destination is chosen.
+2. **A real memory primitive exists in the HLS queue; it is proven end to end in the guest and its live trigger is gated on the unlock.** An append after a split writes the whole 3152-byte record over the ring header (`parent+0xC508`), including the array pointer at `+0x20`; the pointer bytes are the record's `name[0x20..0x23]` and the name is percent-decoded before the record is built. Destination arithmetic is `array + ((name[4..7]+1) mod name[12..15])*0xC50`, all name-derived. Forced in the guest with cursor 16 and limit 0: the first append lands on the header, the header's array field becomes the attacker pointer, the next append writes at `pointer + index*0xC50`. The only live trigger is `GET /audio_tap?tap=...`, gated on `/tmp/device_unlocked_flag`; nothing else calls the advance, so a locked player never reaches it.
 3. **Every pre-signature and runtime parser surface tried is hardened** (see the negative ledger).
    That is a real narrowing: future effort has a short list.
 
@@ -90,7 +87,7 @@ Closures are evidence-bound; three are thin and flagged by the audit: `nyy` (a c
 
 | goal | state | gap |
 |---|---|---|
-| pre-auth code exec on S1/S2 | NOT ACHIEVED | HLS gives an 0xc50-byte write to an address taken from decoded name bytes; the cursor half of the address is helper-derived and not yet predicted live; no second primitive |
+| pre-auth code exec on S1/S2 | NOT ACHIEVED | HLS gives a proven 0xc50-byte write to an attacker address, but its only live trigger (`/audio_tap`) needs the unlock; no second primitive |
 | unsigned/durable install | BLOCKED | vendor key or a bug in the pre-signature parser (all tried are clean) |
 | unlock / devmode | BLOCKED | device-bound statement needs the portal (owner login) |
 | persistence path after root | READY | `Configure.dev` payload built; `/jffs` preserve table recorded in FIRMWARE_PATHS (0x1101) |
@@ -122,12 +119,10 @@ So the workspace is not green as a whole and must not be called release-ready.
 
 ## Next actions, in priority order
 
-1. HLS: the destination is now known (`(cursor+1) mod capacity`, all from the name), but the write
-   itself needs the append to run at cursor 16, which needs the split to take its "full" branch. That
-   branch tests a **second queue's pending count at `+0xCD50` against its capacity at `+0xCD54`**, not
-   the ring depth; live playlists of 40/200 lines still fetch only ~0.5 segment/s, so the branch is
-   not being taken and slot 16 is never written (the old DEAD pointer rows do not reproduce). Find
-   what fills the pending counters, then the `.plt` payload already built fires.
+1. HLS: the primitive is done; the trigger is `GET /audio_tap?tap=<name>` and it is gated on
+   `/tmp/device_unlocked_flag`. So the next step is the unlock, not more HLS: a devmode statement
+   (portal login) or any way to create that flag. Once unlocked, the `.plt` payload already built
+   fires on the first tap during playback.
 2. Owner action: load the browser relay extension and sign in once to the devmode portal; a
    per-serial statement immediately yields telnetd + dropbear (S1) or the SSH reporter (S2).
 3. A second memory bug: the S2 registration/devmode handler under a *valid* statement, and the
