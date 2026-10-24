@@ -99,6 +99,22 @@ reproduction targets, not live bugs (see UPDATE_FEED_AND_SIGNATURE.md:964 — re
 8. **CVE-2026-92392** (curl h2 upload UAF) — version is very likely in range; the missing half is an upload path with a body.
 9. **busybox / kernel** — no applicable in-window issue.
 
+### Measured on 86.10 (2026-10-23): the self-referencing playlist does not hang
+
+Served three shapes from a LAN host to `.84` (86.10) as `x-rincon-mp3radio://<ip>/<file>` and counted the
+demuxer's fetches:
+
+| shape | fetches |
+|---|---|
+| master playlist, one variant pointing at itself | 4 in 10 s, then idle |
+| media playlist (EXTINF + segment) with an embedded STREAM-INF variant pointing at itself | 15 in 12 s, then ~1 reload / 5 s (normal HLS polling) |
+| master playlist, eight variants all pointing at itself | 27 in 10 s |
+
+So CVE-2026-107695's *outcome* (unbounded variant growth) is not reproduced by naive self-reference on this
+build: recursion is depth-bounded and the fetch profile stays linear. The demuxer still opened and played
+normally each time. Whether 5.0.3 has the bug under a nastier shape (distinct URLs per level, or a master
+inside a media playlist that also carries a segment) is open — this is a starting negative, not a refutation.
+
 ## 5. Open measurements
 
 - name an HTTP/2 **upload** call site in `anacapad` (the version is not recoverable as a literal; 8.23.0 only exists from 2026-10-14, so treat the binary as affected until proven otherwise);
