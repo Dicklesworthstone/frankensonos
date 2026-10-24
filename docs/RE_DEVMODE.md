@@ -64,8 +64,10 @@ only overflow if a later `ZZ0137` returned more than a byte.
 
 ### `POST /mtmhhsetup` — valid shape and what it persists
 
-Handler `0x4ac11c` (table entry `0x6e714c`, locked class). Semi-public: it
-needs an `X-Sonos-Api-Key`, but no unlock bit at the route gate. The header is
+Handler `0x4ac11c` (table entry `0x6e714c`, flag `0x100` — the same locked
+class as `/unlock`). Live check: `GET /mtmhhsetup` is `403` on both locked
+86.10 units while `/unlock` answers `423`, so the handler body only runs after
+the lock is lifted. It also requires an `X-Sonos-Api-Key`. The header is
 not merely presence-checked here: `0x4aa99c` hashes the value with `ZZ0058`
 (algorithm 1 = SHA-256-size, 32-byte output) and `memcmp`s it against two
 built-in 32-byte constants (`0x676ea8`, `0x676e88`); a mismatch is `500` with
