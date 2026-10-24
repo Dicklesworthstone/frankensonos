@@ -370,3 +370,25 @@ surrounding record makes the streaming check reject before any parse. Two candid
 the freshly generated IV/ciphertext (re-encryption of *identical* plaintext also aborted, at
 4,194,304) and the rewritten record digest — and the only way to separate them is a package
 whose ciphertext is the original's while the digest is the only change.
+
+### Clean toolchain control — full read, so the pipeline is not the wall (2026-10-24)
+
+Untouched original tree (`unsquashfs` of `57.23-74170-1-16-rootfs.bin`: `VERSION` 57.23-74170,
+no `PWNED` file, and — expected — **no `/jffs/system/Configure.dev`**, because `/jffs` is a
+separate partition and the image only carries an empty `jffs` mountpoint), repacked with the
+*same* squashfs 3.4 binary in `debian:bookworm-slim` using the documented flags
+(`-be -all-root -noappend -b 65536`), `s_minor` restored from the base image, then wrapped in
+an envelope built exactly like the genuine toolchain does it — **16-byte zero IV**, `data_len`
+= IV + ciphertext — with every length asserted equal to the original (ct 4,571,152, `data_len`
+4,571,168, `header_len` 0x13a, record 4,571,498, file 5,606,749) and a round-trip check.
+
+One run: **5,606,749 of 5,606,749 bytes, full read**, sub-second blips only, no reboot,
+`/VERSION` unchanged at 100 s.
+
+So the extract → repack → envelope → digest-rewrite pipeline is byte-workable on a *stock*
+tree, and neither the 3.4 repack (different from the shipped image byte-for-byte) nor a fresh
+IV/ciphertext aborts the fetch. Combined with the earlier finding that re-encrypting *identical
+patched* content also aborted, the remaining variable is the **tree content** — the two files
+the q57 payload adds (`/jffs/system/` and `/jffs/system/Configure.dev`, plus `PWNED-MARKER`).
+Next: the same zero-IV build over the patched tree, i.e. `patched-rootfs-v30.bin` with a zero
+IV, to drop the IV as a co-variable before bisecting the inserted files.
