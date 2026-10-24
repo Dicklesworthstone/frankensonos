@@ -21,8 +21,9 @@ What changed for the better:
    against it; any body edit needs both a digest rewrite and a fresh signature. Appended records
    after the type-17 are unsigned, and *every* unused-section variant (types 5/9/10, raw and
    enveloped) is parsed then rejected before pass 2 - the flasher never runs. The rebuilt rootfs
-   package parses but its prefix digest is stale, so the mid-fetch abort does not yet isolate the
-   digest check; rebuilding with the digest recomputed is the next run.
+   package still aborts mid-body even with the prefix digest recomputed, so the digest is not
+   the mid-stream cause; the remaining difference is the re-encrypted envelope length/parse, and
+   the signature stage is not yet reached.
 2. **A real memory primitive exists in the HLS queue**: an unchecked `memcpy(dst, src, n*3152)`
    whose destination and length come from ring counters that an append to slot 16 would overwrite
    with URI text. The emulator shows the shortcut chain (batch >= 17) produces a wrapped ~4 GiB
@@ -41,7 +42,7 @@ What did *not* happen: no daemon code execution, no unsigned install, no devmode
 | updater loop after a failed run, and its recovery | `docs/ROOT_LANE_STATUS.md` 23:58Z; 20 consecutive 200s after recovery |
 | signature scope and prefix digest | `docs/RE_UPDATER.md` "two separate values"; digest reproduced on three builds (the packaged rebuild's own digest is stale - audit) |
 | appended sections never reach pass 2 | 7-variant matrix, `docs/RE_UPDATER.md`, `scripts/append_upd_section.py` |
-| rootfs package builder | `captures/firmware/57.23-74170-1-16/pwned-q57.upd`, SHA-256 `73587fac…`; aborts mid-fetch, digest not yet recomputed |
+| rootfs package builder | `captures/firmware/57.23-74170-1-16/pwned-q57.upd`; digest-recomputed variant still aborts mid-body (1.5 MiB), so envelope correctness is open |
 | HLS C/dest map (emulator) | `scripts/hls-queue-emu/` + `docs/RE_HLS_EXPLOIT.md`; live reachability is limited |
 | URI is at record+0 | `strlcpy(record+0, uri, 2049)` at 0x10191b14; a second copy lands at 0x801 and the lane doc records both |
 | token fingerprint format | composer is compact JSON; hhid = `{owner:{luid},hhid,network_hash}`; luid/network_hash are the mhhid segments *by inference* (the TXT triple matched slot 12), `docs/RE_TOKEN.md` |
