@@ -74,3 +74,22 @@ The signature/transport walls are settled in `UPDATE_FEED_AND_SIGNATURE.md` and
   is exact, not short). Without the portal, no live unlock.
 - Token: hhid claim solved from the mDK TXT triple (`{owner,luid,hhid,network_hash}` JSON); still
   401 because the *issuer* comes from the provider object's real strings, not a stub.
+
+## Update 2026-10-23 23:25Z — appended sections do not reach the flasher
+
+Tested on .202 (full fetch each, version unchanged): type-5 with 0x00 payload, same
+with header field 1 and 4, type-5 with an enveloped body, type-9 and type-10 with
+their 34.16 512-byte payloads. The type-5 runs correlate with a 0.4-0.5 s ping blip
+the baseline lacks, so the appended record is reached, but **no second reboot and no
+install in any variant**. Types 5/11/12/23 being unused and unhashed is therefore not
+a flash-write foothold: pass 2 seems to walk the compiled type table, not the parsed
+stream.
+
+Consequence: **every install path needs the vendor key** (prefix digest + list2
+signature), confirmed from three directions now. The root lane's live hope is a
+pre-signature parser bug.
+
+Two concrete chains are ready for a future unlock: a valid devmode statement (portal,
+device-bound) -> `/ssh/fingerprints` installs a `pubkey` JSON entry into the dropbear
+authorized-keys path -> root shell; the route and its filter
+(`R_ALLOW_SSH_PUBKEY_INSTALL`, not persisted) are mapped.
