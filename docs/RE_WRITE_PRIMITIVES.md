@@ -143,3 +143,41 @@ If that inherited `a1` is a request/setting string rather than a literal, this
 is the missing writer; read `0x4ac0c0..0x4ac1c8` with the register liveness of
 `495214` in mind. Its entry in the `:1400` table was not located (no pointer to
 `0x4ac11c`), so it may be reached from the `/status` command side.
+
+## Checkpoint 2: table enumeration, /mtmhhsetup, /mfgunlock, oracle limits
+
+**Read oracle semantics (both units, .81 and .86).**
+`../system/Configure.dev` → 200, 111 bytes (empty `<ZPSupportInfo/>`);
+`../system` (directory) and a nonexistent name → the same 200/111;
+`../VERSION` → 200, 170 bytes with `<File name='/VERSION'>`;
+`../../VERSION` → 404. So one `..` resolves to `/jffs`, but **200/111 alone
+does not prove a file exists** — the positive test is a payload marker in the
+read-back, and 111 for `../system/Configure.dev` is the current "absent or
+empty" baseline on both units.
+
+**The `/status` command surface has no writer.** The file/command table
+(`0x6e6b80..0x6e6e00`, entries `{path, handler|1, flags}`) is read-only, and
+the special names are inline `strcmp`s in the single dispatch function
+`0x478fe0`: `ZPLocalSettingsFile`, `ZPExpirationTime`, `JFFSRoot`,
+`OnlineUpdateBaseURL`, `ContinueAfterIPChange`; all route to `0x478fe0`/its
+file reader. A separate 5-entry keyed list at `0x6e7258..0x6e72b8`
+(`{name, 0x478fe1, 0, 0x80, 1, ""}`) is the key whitelist, not writers.
+
+**`0x4ac11c` is `/mtmhhsetup`, and its `a1` is not a request name.** Entry
+`0x6e714c..0x6e7160`: `{"/mtmhhsetup", 0x4ac11d, 0x100, ...}` (same locked class
+as `/unlock`). At `0x4ac18e` the call is `4d4448(out = sp+4272)` — `4d4448`
+loads the settings root itself (`lw a1, 0x7004c4` at `0x4d444a`) and has **no
+name argument**; the name comes from a second helper `4d4320(out, component
+array, count)` (`0x4ac1d6`, appends `'/'` + each component). Here the component
+is the literal `netsettings.txt` (`0x4ac7e8`). The handler then wraps a
+`SettingsFile` with `SettingsFileCBWrapper` (`0x4ac20a`) and reads
+`HouseholdID` (`0x4ac244`), comparing a form `hhid` on POST — fixed file.
+
+**`/mfgunlock` writes nothing.** `0x4ccee8` dispatches: GET → `0x4ccc30`
+(challenge: `ZZ0071` + `RserializeData` into the caller buffer), POST →
+`0x4ccac8`; both only produce/consume the signed blob. Entry
+`0x6e7018..0x6e7024` is `/mfgunlock → 0x4ccee9, flags 0x100`.
+
+Net: on 86.10 the request-chosen-name reader and the fixed-name writers are the
+whole pre-auth surface; every candidate name-taker (`/raw`, `/device_account*`,
+`/mtmhhsetup`, `/mfgunlock`) is behind the devmode bits.
