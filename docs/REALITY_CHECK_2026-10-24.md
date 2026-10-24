@@ -20,8 +20,9 @@ What changed for the better:
    that region stores `sha256(file[:type17])` and the updater memcmps the running prefix hash
    against it; any body edit needs both a digest rewrite and a fresh signature. Appended records
    after the type-17 are unsigned, and *every* unused-section variant (types 5/9/10, raw and
-   enveloped) is parsed then rejected before pass 2 - the flasher never runs. A rebuilt rootfs
-   package is correct and aborts exactly at the prefix digest.
+   enveloped) is parsed then rejected before pass 2 - the flasher never runs. The rebuilt rootfs
+   package parses but its prefix digest is stale, so the mid-fetch abort does not yet isolate the
+   digest check; rebuilding with the digest recomputed is the next run.
 2. **A real memory primitive exists in the HLS queue**: an unchecked `memcpy(dst, src, n*3152)`
    whose destination and length come from ring counters that an append to slot 16 would overwrite
    with URI text. The emulator shows the shortcut chain (batch >= 17) produces a wrapped ~4 GiB
