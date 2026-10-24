@@ -67,6 +67,9 @@ What did *not* happen: no daemon code execution, no unsigned install, no devmode
 - Token without a live object: 63+ claim permutations, all one-bit 401.
 - `/getrs`: 2229-index scan (bit31 values, negatives, dense ranges, a 2000-value random sample),
   flat 200 and alive throughout - the table reads are benign.
+- `AddOAuthAccountX`: 20-case ten-argument matrix, every case 500/402, liveness before and after.
+- Rootfs envelope: even length-exact re-encryption with a recomputed digest aborts mid-body
+  (0x180000), so the toolchain is not byte-correct yet; a no-change re-squash control is running.
 
 ## Bead status (the 20 open at session start)
 
@@ -87,6 +90,13 @@ Closures are evidence-bound; three are thin and flagged by the audit: `nyy` (a c
 | unlock / devmode | BLOCKED | device-bound statement needs the portal (owner login) |
 | persistence path after root | READY | `Configure.dev` payload built; `/jffs` preserve table recorded in FIRMWARE_PATHS (0x1101) |
 | SSH after unlock | MAPPED | statement starts telnetd/dropbear; `/ssh/fingerprints` is read-only |
+
+## Lab capability gained
+
+anacapad now **serves in the css guest** (11 threads, :1400/:1443 listening, GetZoneAttributes answers
+200) with the device's own loader, the ABI-patched libflash and the /opt/s16 staging recipe committed
+(d4fcd97). The staged build is MIPS, and HLS exists only in the PPC model-16 build (the 57.23-1-12
+MIPS anacapad has zero HLS strings), so a PPC guest is the missing instrument for the next session.
 
 ## Gate datum (publish readiness)
 
