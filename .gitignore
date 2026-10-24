@@ -64,3 +64,7 @@ lcov.info
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# spawn/runtime scratch
+.ntm/
+__pycache__/
