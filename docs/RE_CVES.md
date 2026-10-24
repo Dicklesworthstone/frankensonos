@@ -138,3 +138,30 @@ Consequence: `m_bufferEnd` only ever advances right after a matching `XML_GetBuf
 3. **Backend / symbol / stamp probes.** The only backend literal is `mbedTLS/%u.%u.%u` (`0x69ee44`), parameterised by the **TLS** library, not curl; there are zero `curl_*` symbols in `.symtab` or `.dynsym` (fully static and stripped) and no `.comment` section.
 
 The only remaining source is runtime (`curl_version_info` out of a live process) or a build date; neither is available, so CVE-2026-92392 is recorded as unproven rather than inferred.
+
+## 6. Poisoned type-22 bundle carrying CVE-2018-0487 (built + fired, 2026-10-23)
+
+The rcbundle inside the type-22 section is **plaintext and parsed before any signature check**, so a
+rejected image still drives the certificate parser. Built three variants off the genuine
+`57.23-74170-1-16.upd` and fired each at `.202` (57.23-74170, model S5) with `BeginSoftwareUpdate` —
+which lives on **ZoneGroupTopology**, not SystemProperties (401 there).
+
+Method: the bundle manifest is `u16 count @rb+0x6a` then `count` × 8-byte `u16 0x07c1 | u32 offset |
+u16 length` records, contiguous, and each `length` is the exact DER size of the cert at `offset`. So a
+fixture built to the **same length** needs no count, offset or length change — only that entry's bytes
+move. Padding is a non-critical filler extension (`1.3.6.1.4.1.4444`) on a PSS/SHA-512 cert, sized until
+the DER is exactly the target length (`captures/research/cve-lane/padcert.py`, `mkpss2.py`).
+
+| variant | fixture | entry | splice offset (abs) | len | served | daemon down | ICMP | version after |
+|---|---|---|---|---|---|---|---|---|
+| A | `pss528`, 442 B | 0 | `0x764` | 442 | **5 606 749 / 5 606 749**, 17 s | 23:27:18 → 23:28:01 (43 s) | 0 % loss | 57.23-74170 |
+| B | `pss528` + 12-arc filler OID, 765 B | 25 | `0x40ae` | 765 | 5 606 749 / 5 606 749, 17 s | 23:30:48 → 23:31:15 (27 s) | 0 % loss | 57.23-74170 |
+| C | hand-built `pss512` (emLen 64 < hLen 64), 442 B | 0 | `0x764` | 442 | 5 606 749 / 5 606 749, 17 s | 23:28:30 → 23:28:56 (26 s) + second pass 23:29:05 (20 s) | 0 % loss | 57.23-74170 |
+
+Run class for all three: **full read, no abort**. Every byte of every variant was delivered and the bundle
+therefore parsed; the daemon restart after the transfer is the update path, not the abort point, so the
+bytes-served count is the only usable crash discriminator and it never truncated. `.202` came back on its
+own each time, version unchanged (stale signature, as expected).
+
+Paths: `captures/research/cve-lane/poison/{A,B,C}-*.upd` (5 606 749 B each, byte-identical to the vendor
+package outside the spliced entry), builder `poison/build.py`, serving log `/tmp/upd_access.log`.
