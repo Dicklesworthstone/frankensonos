@@ -7,8 +7,8 @@ first release.
 
 **Scope and method.** This log is reconstructed from the real git history
 (`git log`), the beads task graph in `.beads/`, and the committed source. There
-are no tags or GitHub Releases yet: the project is pre-`0.1.0`, built by a
-multi-agent swarm, so everything sits under [Unreleased](#unreleased).
+are no tags or GitHub Releases before this one: the project was pre-`0.1.0`,
+built by a multi-agent swarm, so everything sits under [0.1.0](#010---2026-10-24).
 Representative commits are linked for each capability so you can jump straight
 to the evidence. A capability listed here has landed and passed the gates
 (`cargo clippy --all-targets -D warnings` and the tests, run on the `rch`
@@ -35,11 +35,11 @@ live-hardware behavior beyond the owner-run checks named there, is claimed.
 There is no released version yet. `0.1.0` comes with real-hardware CI and
 prebuilt binaries (see [Status and verification](#status-and-verification)).
 
-## [Unreleased]
+## [0.1.0] - 2026-10-24
 
-Pre-release work toward `0.1.0`: control the owner's Sonos S1 and S2 players
-from the `fsonos` CLI, an HTTP API, an MCP server and a web page, from any
-device on the owner's tailnet, with a DJ playing from the owner's own Spotify
+Everything in this section landed for the first release: control the owner's
+Sonos S1 and S2 players from the `fsonos` CLI, an HTTP API, an MCP server and
+a web page, from any device on the owner's tailnet, with a DJ playing from the owner's own Spotify
 library, in whatever genres it spans.
 
 ### Added
@@ -451,6 +451,12 @@ library, in whatever genres it spans.
 - Owner-directed research notes are kept as prose under `docs/` (for example
   [`docs/FIRMWARE_PATHS.md`](docs/FIRMWARE_PATHS.md)). They are documentation
   only: FrankenSonos never writes to a device.
+  - The S2 devmode statement is fully mapped from the daemon and its crypto
+    library (magic, model, a strict min/max version window, a device-id
+    `memcmp`, then payload and ring), the payload length is a byte, so
+    `FUN_004f38a0`'s 256-byte frame is exact, and `POST /mtmhhsetup`'s full
+    form shape, validation, error codes and persistence are decoded
+    ([`docs/RE_DEVMODE.md`](docs/RE_DEVMODE.md)).
 
 ### Fixed
 
@@ -660,4 +666,4 @@ A selection; each commit message has the details.
 - **Build:** `cargo` is the gate and runs on the `rch` fleet; keep the pure
   unit tests green. Live-LAN tests are opt-in (`FSONOS_SEEDS=…`, `#[ignore]`).
 
-[Unreleased]: https://github.com/Dicklesworthstone/frankensonos/commits/main
+[0.1.0]: https://github.com/Dicklesworthstone/frankensonos/releases/tag/v0.1.0

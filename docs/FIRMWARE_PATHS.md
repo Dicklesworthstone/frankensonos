@@ -1754,10 +1754,14 @@ Follow-up on the first two after reading the callers:
 - `FUN_004f38a0` is only ever called with a devmode statement result:
   `FUN_004f3b44` runs `ZZ0137` on the `POST /devmode` statement and passes its
   output length as `param_3`, and `FUN_004f3974` is the notification-only path
-  (passes 0). So driving `param_3` past 255 needs a statement that *passes*
-  signature verification — the one thing still gated on the missing key. The
-  statement input itself is capped at 0x400, so the verifier can return at most
-  a ~1 KB payload for a 256-byte buffer.
+  (passes 0). **Correction 2026-10-24: `param_3` is a u8 payload *length*
+  (`lbzx 9,31,27` in `ZZ0137`), so it cannot exceed 255, and the 256-byte frame
+  is exactly sufficient rather than one byte short.** `memset` covers 255, the
+  copy ends at `max(param_3, stored_len)` which is itself only ever stored from
+  `param_3`, and the loop bound is the same max. No wrapper length is
+  reachable, and the statement's 0x400 input cap is irrelevant to this bound. A
+  later `libsonoscrypto` would need to return more than a byte for it to bite;
+  see `docs/RE_DEVMODE.md` for the instruction-level walk.
 
 **The 86.10 statement format is not the S1 one**, decoded from the S2 app's
 `validateDevModeStatement` (`0x138f4`): it compares the magic word to
@@ -1772,6 +1776,29 @@ so the preamble is checkable from the page.
 86.10 is the S2 build, so these are not on the 57.23 S1 daemon at all. The first
 two need a peer that speaks the registration/devmode frames, which is the next
 piece of work. Sweep saved at `captures/research/ghidra-8610/sweep8610.txt`.
+
+**The daemon read matches the app prefix and completes the field map
+(2026-10-24).** `FUN_004f3b44` → `ZZ0137` (`libsonoscrypto.so.3`, `0xca14`)
+checks the same magic bytes, then `[+4]` against the model, then a strict
+version window: `[+0x18]` (u32 BE) must be **greater than** the device's version
+word and `[+0x1c]` must be **less than** it (two `bc 13` tests, so equality
+fails). The version word is composed as `(byte@obj+0x49d << 16) |
+byte@obj+0x49e`; `+0x49e` is the version halfword written at `0x4dda2e`, and
+`+0x49d` is zero on this path, so the comparison is effectively on the
+major-version byte. After the version comes `[+0x20]` (u8 devid length, must
+equal the caller's), a `memcmp` of the statement bytes at `+0x21` against the
+caller's buffer (`0xcbd4`), then a u8 payload length and the ring. The statement
+is therefore device-bound on S2 too, exactly as on S1 (`0xacc4`).
+
+`POST /mtmhhsetup` (`0x4ac11c`, S2) is the MTM provisioning handler: a
+urlencoded body with `hhid` (optional, `Sonos_MTM_` + 22 alnum or empty to
+generate), `name` (≤64 bytes, must already be UTF-8-normalized), `icon`
+(alnum/`:`/`-`, ≤128), `key` (24 base64url chars → 16 bytes) and `reboot`
+(0–30). It needs a factory-reset unit, writes `HouseholdID`/`WEPKey` to
+`netsettings.txt` plus the room `ZoneName`/`Icon`, and answers with
+`{"hhid","key","rebootDelay"}`. Shape and error codes: `docs/RE_DEVMODE.md`.
+The API-key header on that route is hash-checked against two built-in constants
+(`0x4aa99c`), not presence-only.
 
 ## 2026-10-23: stack-copy sweep triage (live 57.23 anacapad)
 
