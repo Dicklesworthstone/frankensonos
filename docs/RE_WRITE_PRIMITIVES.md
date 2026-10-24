@@ -222,3 +222,5 @@ Paused: no pre-auth writer with a request-chosen name exists on 86.10-81100 as
 far as this lane can see (reader-only name path, all writers behind the devmode
 statement bits). Resume from the `open`64/`fopen64` sweep over strings built from
 `ap_request_get` when the gate side or a signature lands.
+
+Tool provenance: `squashfs3.4.tar.gz` sha256 `9ea1a9b3bd4f387ca11b5e96f00f8ae996fb81c4c7ad41f7c7f359917628a339`, built in `debian:bookworm-slim` with `CFLAGS="… -std=gnu89 -fgnu89-inline -fcommon -include sys/sysmacros.h -include fixmacros.h -DFNM_EXTMATCH=32"` (fixmacros defines `minor`/`major`), `make clean && make mksquashfs` → binary sha256 `8b130f61066b3b573080a399a60f39ced56b12535cf36c074c5cc6a7e20871c0`; artifacts re-hashed in place: `pwned-q57.upd` `73587fac…f24370`, `rootfs-patched.bin` `864cf317…4c9af9`, `build_rootfs.py` `a7978ac7…2723e5`.
