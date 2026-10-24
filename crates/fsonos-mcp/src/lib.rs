@@ -221,6 +221,7 @@ fn configured_server(
             .tool(reviewed_undo::UndoChecked)
             .tool(tools::GetPolicy)
             .tool(tools::Doctor)
+            .tool(tools::Diagnostics)
             .tool(tools::Previous)
             .tool(tools::Seek)
             .tool(tools::MuteTool)

@@ -1135,6 +1135,16 @@ impl Surface {
             .map_err(|e| Failure::new(ErrorCode::Internal, e.to_string()))
     }
 
+    /// The daemon's own warnings for an agent (`diagnostics`, read-only):
+    /// the kinds storming in the last hour and every kind logged in the last
+    /// day, with their per-hour counts. Lighter than `doctor`, which reads
+    /// every speaker; this reads only the in-memory counts. A storm's sample
+    /// names no room, the home directory or a login.
+    pub fn warnings(&self, client: &Client) -> Result<crate::WarningsHealth, Failure> {
+        self.guard(client).authorize("diagnostics", true)?;
+        Ok(warnings_view(&self.room_names()))
+    }
+
     /// Every room with its household, the zone it plays in, and the
     /// owner's aliases that name it (`list_rooms`, read-only).
     pub fn rooms(&self, client: &Client) -> Result<Vec<RoomDto>, Failure> {
@@ -1953,6 +1963,40 @@ fn regroups(command: &Command) -> bool {
 
 /// The coordinators of the groups `command` changes (a join changes both
 /// the member's old group and the one it joins).
+/// The daemon's warnings as `GET /health` and `GET /diagnostics/warnings`
+/// report them: the kinds storming now ([`fsonos_core::warnings::storms`])
+/// and every kind logged in the last day ([`fsonos_core::warnings::kinds`]),
+/// each storm's sample scrubbed of `rooms`, the home directory and logins
+/// ([`fsonos_core::warnings::scrub`]). Reads no speakers.
+#[must_use]
+pub(crate) fn warnings_view(rooms: &[String]) -> crate::WarningsHealth {
+    let home = std::env::var("HOME").ok();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let level = |error: bool| if error { "error" } else { "warn" }.to_owned();
+    let storming = fsonos_core::warnings::storms(now)
+        .into_iter()
+        .map(|storm| crate::StormHealth {
+            kind: storm.kind,
+            level: level(storm.error),
+            sample: fsonos_core::warnings::scrub(&storm.sample, rooms, home.as_deref()),
+            last_hour: storm.last_hour,
+            threshold: storm.threshold,
+        })
+        .collect();
+    let kinds = fsonos_core::warnings::kinds(now)
+        .into_iter()
+        .map(|kind| crate::WarningKindHealth {
+            kind: kind.kind,
+            level: level(kind.error),
+            usual_hour: kind.usual_hour,
+            last_day: kind.day,
+        })
+        .collect();
+    crate::WarningsHealth { storming, kinds }
+}
+
 fn affected(households: &[HouseholdState], command: &Command) -> Vec<PlayerId> {
     let group_of = |p: &PlayerId| {
         households

@@ -23,6 +23,7 @@
 //! | `GET /library/playlist?playlist_uri=<uri>` | | a synced playlist's tracks in order, and how much of it is cached, with no Spotify or speaker request |
 //! | `GET /history?zone=<room>&limit=<n>` | | `[PlayDto]`: what played, newest first |
 //! | `GET /doctor` | | the doctor report (`schema`, `exit_code`, `counts`, `checks`) |
+//! | `GET /diagnostics/warnings` | | the daemon's own warnings: storming kinds and every kind this day with per-hour counts ([`crate::WarningsHealth`]) |
 //! | `GET /actions?client=&since=&limit=` | | `[ActionDto]`, newest first |
 //! | `POST /undo` | [`crate::UndoRequest`] | [`crate::UndoDto`] |
 //! | `GET /undo/preview` | | the `ActionDto` an undo would put back, or `null`; changes nothing |
@@ -194,6 +195,7 @@ const LOG: &str = "log";
 fn routes(cx: &Ctx<'_>) -> Vec<RouteEntry> {
     let mut routes = reads(cx);
     routes.extend(house(cx));
+    routes.extend(diagnostics(cx));
     routes.extend(house_policy::routes(cx));
     routes.extend(controls(cx));
     routes.extend(eq::routes(cx));
@@ -318,6 +320,23 @@ fn house_verbs(cx: &Ctx<'_>) -> Vec<RouteEntry> {
             ),
             |h, r: &PartyRequest| plan::plan_party(h, r),
         ),
+    ]
+}
+
+/// The daemon's own warnings, for an agent (co55.7).
+fn diagnostics(cx: &Ctx<'_>) -> Vec<RouteEntry> {
+    vec![
+        cx.route(
+            &Op::get(
+                "/diagnostics/warnings",
+                "diagnostics",
+                DAEMON,
+                "The daemon's own warnings: the kinds storming now and every kind logged in the \
+                 last day, with per-hour counts. Reads no speakers (unlike `doctor`)",
+            ),
+            |s, c, _| answer(s.warnings(c)),
+        )
+        .response_schema::<crate::WarningsHealth>(200, "The warnings view"),
     ]
 }
 
@@ -805,35 +824,12 @@ fn health(
     Response::json(&body).expect("HealthDto serializes")
 }
 
-/// The daemon's warnings (`/health`'s `warnings`): absent while none was
-/// logged in the last day. A storm's sample names none of `rooms`, nor the
-/// home directory or a login ([`fsonos_core::warnings::scrub`]).
+/// The daemon's warnings for `/health`: the always-present view
+/// ([`crate::surface::warnings_view`]), or absent while none was logged in
+/// the last day.
 fn warnings(rooms: &[String]) -> Option<crate::WarningsHealth> {
-    let home = std::env::var("HOME").ok();
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let level = |error: bool| if error { "error" } else { "warn" }.to_owned();
-    let storming: Vec<crate::StormHealth> = fsonos_core::warnings::storms(now)
-        .into_iter()
-        .map(|storm| crate::StormHealth {
-            kind: storm.kind,
-            level: level(storm.error),
-            sample: fsonos_core::warnings::scrub(&storm.sample, rooms, home.as_deref()),
-            last_hour: storm.last_hour,
-            threshold: storm.threshold,
-        })
-        .collect();
-    let kinds: Vec<crate::WarningKindHealth> = fsonos_core::warnings::kinds(now)
-        .into_iter()
-        .map(|kind| crate::WarningKindHealth {
-            kind: kind.kind,
-            level: level(kind.error),
-            usual_hour: kind.usual_hour,
-            last_day: kind.day,
-        })
-        .collect();
-    (!storming.is_empty() || !kinds.is_empty()).then_some(crate::WarningsHealth { storming, kinds })
+    let view = crate::surface::warnings_view(rooms);
+    (!view.storming.is_empty() || !view.kinds.is_empty()).then_some(view)
 }
 
 fn json_text(text: &str) -> Response {

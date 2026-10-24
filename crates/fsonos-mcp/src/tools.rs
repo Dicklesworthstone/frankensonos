@@ -553,6 +553,32 @@ impl Backend {
         })
     }
 
+    /// The `diagnostics` tool: the daemon's own warnings.
+    pub fn diagnostics(&self) -> McpResult<FinalCallToolResult> {
+        respond(|| {
+            let view = self.surface.warnings(&self.client)?;
+            let mut lines = Vec::new();
+            if view.storming.is_empty() {
+                lines.push("no warning is storming in the last hour".to_owned());
+            } else {
+                for storm in &view.storming {
+                    lines.push(format!(
+                        "STORM {} ({}): {} this hour, storm at {} -- \"{}\"",
+                        storm.kind, storm.level, storm.last_hour, storm.threshold, storm.sample
+                    ));
+                }
+            }
+            for kind in &view.kinds {
+                let total: u32 = kind.last_day.iter().copied().sum();
+                lines.push(format!(
+                    "{} ({}): {} in the last day, usual hour {}",
+                    kind.kind, kind.level, total, kind.usual_hour
+                ));
+            }
+            Ok((lines.join("\n"), view))
+        })
+    }
+
     /// The `list_zones` tool.
     /// The `list_rooms` tool.
     pub fn list_rooms(&self) -> McpResult<FinalCallToolResult> {
@@ -862,6 +888,14 @@ async fn play_favorite(
 )]
 async fn doctor(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
     with_backend_off_thread(ctx, Backend::doctor).await
+}
+
+#[tool(
+    description = "The daemon's own warnings: the kinds storming in the last hour and every kind logged in the last day, with per-hour counts. A quick read of what the daemon is complaining about (events the daemon logged, not your command's result); lighter than `doctor`, which also reads every speaker. Each kind is its source site; a storm's sample message has rooms, the home directory and logins removed.",
+    annotations(read_only, idempotent)
+)]
+async fn diagnostics(ctx: &McpContext) -> McpResult<CompleteResult<FinalCallToolResult>> {
+    with_backend_off_thread(ctx, Backend::diagnostics).await
 }
 
 #[tool(
