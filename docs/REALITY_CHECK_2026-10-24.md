@@ -141,7 +141,7 @@ its control row; runs without a control are marked as such. The one harness bug 
 
 ## Session close
 
-- Head at close: `192da06`; pushed with the usual rebase (no force).
+- Head at close: `52fd4c2`; pushed with plain `git push` after an up-to-date pull (no force).
 - Units left healthy and idle: `.202` 57.23, `.84` 57.23, `.81`/`.86` 86.10; all four answer
   `/status`. `.202` was wedged by the final update run and recovered on its own before close.
 - Open beads: 4 in progress (`xnf`, `re-hls-kill-cnk`, `c25`, `spotify-more-kinds-94i`), 4 blocked
