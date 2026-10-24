@@ -56,12 +56,16 @@ What did *not* happen: no daemon code execution, no unsigned install, no devmode
 - Type-1 version, type-2 compat: structural bounds found; only semantic verdicts move.
 - Type-22 x509 (mbedtls 2.5.0, no PSS support): 2496-case offline sweep, zero crashes (commit eaa20e4, `scripts/mbedtls-harness/`; the ./third of on-device runs that lost the trigger are not in that denominator).
 - GENA client responses: 18 malformed shapes, zero (single run each; no control matrix beyond liveness).
-- Updater HTTP responses (busybox wget as root): chunked/redirect/header matrix, desyncs but no
-  crash; the client is `wget` and the argv is known.
+- Updater HTTP responses (busybox wget as root): complete frame matrix, two device-confirmed desyncs
+  ('-1' and a short uppercase chunk close after ~8 KB/128 KB with rc 0), no memory fault; the argv
+  is exactly known (`-qC /var/run/upgrade_report.txt -T 300 -O - <url>`).
 - SMB client state machine on S2: 18 applied mutations, zero (apply-verified; warm-up case first).
 - `/notify` LastChange: 12 shapes, 128 KiB ceiling, push does not drive state.
-- `/status` name length: bounded; `/mtmhhsetup`: 403-gated while locked.
+- `/status` name length: 4 KiB ok, 8 KiB reset (request line), no join overflow; `/mtmhhsetup`:
+  403-gated while locked, so its parser is only reachable after an unlock.
 - Token without a live object: 63+ claim permutations, all one-bit 401.
+- `/getrs`: 2229-index scan (bit31 values, negatives, dense ranges, a 2000-value random sample),
+  flat 200 and alive throughout - the table reads are benign.
 
 ## Bead status (the 20 open at session start)
 
@@ -82,6 +86,16 @@ Closures are evidence-bound; three are thin and flagged by the audit: `nyy` (a c
 | unlock / devmode | BLOCKED | device-bound statement needs the portal (owner login) |
 | persistence path after root | READY | `Configure.dev` payload built; `/jffs` preserve table recorded in FIRMWARE_PATHS (0x1101) |
 | SSH after unlock | MAPPED | statement starts telnetd/dropbear; `/ssh/fingerprints` is read-only |
+
+## Gate datum (publish readiness)
+
+`cargo clippy --workspace --all-targets -- -D warnings`: PASS, no diagnostics.
+`cargo test --workspace`: 137 test binaries, **1 failure** —
+`crates/fsonos-core/tests/live_bootstrap_sim.rs:108`, the S2 household not reappearing after the
+Living Room player is set back online; it passes 1/1 in isolation (2.12 s), so it is
+order/parallelism sensitive rather than a plain red. Two initial gate attempts were refused by the
+rch shim (queue_timeout); both recorded runs then went through rch with local fallback enabled.
+So the workspace is not green as a whole and must not be called release-ready.
 
 ## Next actions, in priority order
 
