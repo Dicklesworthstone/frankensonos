@@ -349,3 +349,24 @@ the fetch still dies mid-stream, at 1.5 MiB this time versus 4–5 MiB for the e
 swaps. The digest was therefore never the cause of these aborts, and the signature stage is
 still unreachable for any package with a changed body — the streaming gate does the rejecting,
 not the verifier. The earlier "aborts at the digest" reading is corrected here.
+
+### Length-exact envelope rebuild — still aborts mid-fetch (2026-10-24)
+
+Built from `patched-rootfs-v30.bin` with every length forced to the original's and asserted:
+`header_len 0x13a`, `rsa_len 0x100`, `data_len 4571168`, record length 4571482, file size
+5,606,749, ciphertext 4,571,152 == the original ciphertext, round-trip decrypts to the input.
+Squashfs checked separately: valid big-endian SQUASHFS 3:0 superblock, `unsquashfs` extracts
+cleanly (rc 0) — but **`/jffs/system/Configure.dev` is not in the image**; the rootfs only
+carries an empty `jffs` mountpoint because `jffs` is a separate partition.
+
+One run: aborts at **exactly 1,572,864 bytes (`0x180000`)** of 5,606,749, twice in a row,
+client close, box up, version unchanged. `0x180000` is three 512 KiB buffers, so the stop is
+counted in whole buffers and is deterministic for this file — 536,937 bytes into the type-4
+ciphertext, still inside the record.
+
+So the envelope *length* is not what the gate objects to, and the abort is not a hash verdict.
+Our envelope is still **not byte-correct**: something in the ciphertext, the digest or the
+surrounding record makes the streaming check reject before any parse. Two candidates remain —
+the freshly generated IV/ciphertext (re-encryption of *identical* plaintext also aborted, at
+4,194,304) and the rewritten record digest — and the only way to separate them is a package
+whose ciphertext is the original's while the digest is the only change.
