@@ -42,7 +42,7 @@ Pre-window but live on 2.5.0 (verified against NVD text):
 
 | CVE | pub | what | 5.0.3? | reachable? |
 |---|---|---|---|---|
-| CVE-2026-107695 | 10-08 | **HLS demuxer infinite loop** — `parse_playlist()` accepts Master Playlist tags in a Media Playlist; a self-referencing playlist adds variants forever in `hls_read_header()` | yes (`before 8.1.3`) | **high** — exactly the `x-rincon-mp3radio://…/x.m3u8` path the hls-kill bead drives. DoS = *hang*, which is a different signature from our crash |
+| CVE-2026-107695 | 10-08 | **HLS demuxer infinite loop** — `parse_playlist()` accepts Master Playlist tags in a Media Playlist; a self-referencing playlist adds variants forever in `hls_read_header()` | yes (`before 8.1.3`) | **high, but not reproduced** — exactly the `x-rincon-mp3radio://…/x.m3u8` path the hls-kill bead drives; measured self-reference is bounded (§4a) |
 | CVE-2026-107697 | 10-08 | HLS demuxer bypasses protocol/`allowed_extensions` for child playlists | yes | high — a master playlist can make the demuxer open non-media local/protocol targets (file read, extra SSRF) |
 | CVE-2026-107660 | 10-08 | `tls_open()` in `libavformat/tls_mbedtls.c` skips hostname checks for **IP-literal** hosts | yes (`before 8.1.3`) | medium — needs an `https://IP/…` media URL; any trusted CA-issued cert then intercepts |
 | CVE-2026-96611 | 09-23 | signed overflow on HEIF `ispe` w/h in `mov.c` | yes (before 9.0) | low on this fleet (MOV/HEIF only, not the M3U8 path) |
@@ -104,16 +104,16 @@ reproduction targets, not live bugs (see UPDATE_FEED_AND_SIGNATURE.md:964 — re
 Served three shapes from a LAN host to `.84` (86.10) as `x-rincon-mp3radio://<ip>/<file>` and counted the
 demuxer's fetches:
 
-| shape | fetches |
+| shape | requests in 10 s (per path) |
 |---|---|
-| master playlist, one variant pointing at itself | 4 in 10 s, then idle |
-| media playlist (EXTINF + segment) with an embedded STREAM-INF variant pointing at itself | 15 in 12 s, then ~1 reload / 5 s (normal HLS polling) |
-| master playlist, eight variants all pointing at itself | 27 in 10 s |
+| master playlist, one variant pointing at itself | 4 / 4 `loop.m3u8` |
+| media playlist (EXTINF + segment) with an embedded STREAM-INF variant pointing at itself | 9: 7 `loop2.m3u8` + 2 `seg.ts` (then ~1 reload / 5 s, normal HLS polling) |
+| master playlist, eight variants all pointing at itself | 8 `loop3.m3u8` (one level, no fan-out) |
 
-So CVE-2026-107695's *outcome* (unbounded variant growth) is not reproduced by naive self-reference on this
-build: recursion is depth-bounded and the fetch profile stays linear. The demuxer still opened and played
-normally each time. Whether 5.0.3 has the bug under a nastier shape (distinct URLs per level, or a master
-inside a media playlist that also carries a segment) is open — this is a starting negative, not a refutation.
+So CVE-2026-107695's *outcome* (unbounded variant growth) is not reproduced by self-reference on this build:
+recursion is depth-bounded, the variant count does not multiply, and playback opens normally each time.
+Whether 5.0.3 has the bug under a nastier shape (distinct URLs per level, or a master nested inside a media
+playlist that also carries a segment) is open — this is a starting negative, not a refutation.
 
 ## 5. Open measurements
 
