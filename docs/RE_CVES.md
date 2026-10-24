@@ -9,7 +9,7 @@ version is listed separately as *pre-window, live* — it is not in the window b
 
 | component | S1 (57.23, PPC) | S2 (86.10, MIPS) | evidence |
 |---|---|---|---|
-| expat | embedded, version string not emitted (sibling builds: 34.16 = 2.2.0, 86.10 = **2.5.0**) | **2.5.0** | `strings anacapad \| grep expat_` → `expat_2.5.0`, plus `EXPAT_*_DEBUG`; static, no symbol table entries |
+| expat | embedded; **no version string in this build at all** (§5b) — the memo's 2.2.0 came from 34.16, not 57.23 | **2.5.0** | `strings anacapad \| grep expat_` → `expat_2.5.0` on 86.10 only; both builds static, no `libexpat` in either rootfs |
 | mbedTLS | **2.5.0** (`libmbedtls.so.10`) | **3.6.6** | `captures/firmware/s1_rootfs/lib/libmbedtls.so.10`; `sonos-root-local/fw/internals/libmbedtls.so.3.6.6`, NEEDED `libmbedtls.so.21` |
 | libcurl | not used by the daemon | **static in `anacapad`**, mbedTLS backend, HTTP/2 present (`nghttp2` ×18, `HTTP/2` ×17, `ALPN` ×15); **version unpinnable** (three approaches, all null — see §5a) | `readelf -d` (no `libcurl` NEEDED); `strings` |
 | busybox | **v1.00** (`s1_rootfs/bin/busybox`), **v1.14.1** (`play1_rootfs/bin/busybox`); applets present: `telnetd`, `wget`, **no `httpd`** | not in the captured overlay (base-rootfs binary, not extracted) | `strings busybox \| grep -x httpd` → empty |
@@ -26,7 +26,7 @@ libcurl (outbound fetch), libsmb2 (SMB listener on S2), FFmpeg (media). busybox 
 
 | CVE | pub | what | 2.5.0? | reachable? |
 |---|---|---|---|---|
-| CVE-2026-77214 | 10-07 | heap over-read, `XML_ParseBuffer` trusts caller `len` and walks `m_bufferEnd` past the buffer | **yes** | **only via the parse-buffer API.** Prior read (FIRMWARE_PATHS.md:626) says the daemon uses `XML_Parse` only; `XML_Parse` calls `XML_GetBuffer(len)` first so the invariant holds. Not re-verified in this lane (expat is fully stripped — no `XML_*` in `.symtab`/`.dynsym`, and the version/encoding strings are materialised with `addiu rX,pc,imm`, so literal-pool xref search finds nothing). Impact when reached: disclosure (CVSS 8.2 C:H). |
+| CVE-2026-77214 | 10-07 | heap over-read, `XML_ParseBuffer` trusts caller `len` and walks `m_bufferEnd` past the buffer | yes as a version matter | **UNREACHABLE — settled, §5b.** The daemon calls only `XML_Parse` (six call sites, all 4-argument, all in one wrapper); nothing calls the 3-argument buffer API. `XML_Parse` does `XML_GetBuffer(len)` first, so the unvalidated-add never starts from a short allocation. Impact if it ever were reached: disclosure, CVSS 8.2 C:H. |
 | CVE-2026-102633 | 09-29 | integer overflow in `expat_realloc`, 32-bit only | **2.7.2–2.8.5 only — not 2.5.0** | n/a (MIPS/PPC are both 32-bit, so it would have applied if the version matched) |
 
 Pre-window but live on 2.5.0 (verified against NVD text):
@@ -95,7 +95,7 @@ reproduction targets, not live bugs (see UPDATE_FEED_AND_SIGNATURE.md:964 — re
 4. **CVE-2026-1050 / CVE-2025-1048 family** (libsmb2 UAF) — pre-auth SMB on S2, but we are above the fix line.
 5. **CVE-2025-1049** (ID3) — pre-auth media on any build; only exploitable on ≤57.22-59130/83.1.
 6. **CVE-2026-107660** (FFmpeg TLS hostname check) — needs an IP-literal https media URL; enables MITM, not memory corruption.
-7. **CVE-2026-77214** (expat over-read) — gated on `XML_ParseBuffer`, which we believe is unused; disclosure only.
+7. **CVE-2026-77214** (expat over-read) — unreachable here: `XML_Parse` only, never `XML_ParseBuffer` (§5b).
 8. **CVE-2026-92392** (curl h2 upload UAF) — unproven on both counts (version unpinnable, no upload site); closed.
 9. **busybox / kernel** — no applicable in-window issue.
 
@@ -118,9 +118,18 @@ playlist that also carries a segment) is open — this is a starting negative, n
 ## 5. Open measurements
 
 - name an HTTP/2 **upload** call site in `anacapad` and pin `curl_version_info` from a live process (§5a);
-- decide the expat API question for certain (`XML_Parse` vs `XML_ParseBuffer`) — or just test 77214 live;
 - identify the FFmpeg consumer binary and whether `allowed_extensions`/protocol whitelist is configured (decides 107697);
 - S2 busybox and S2 kernel: **unverified, and left that way.** Neither is in any captured artifact (the overlay carries `bin/anacapad` only; the rootfs is inside the encrypted image) and neither is a pre-auth surface on S2. Anything written about them would be inference from the S1 rootfs, which is a different userland (busybox v1.00 / v1.14.1) and a different kernel (2.4.25).
+
+## 5b. expat: no version string, static link, and `XML_Parse` only (settled)
+
+Three separate facts, in the order they matter:
+
+1. **No version evidence in 57.23.** `strings` finds eight expat strings and not one of them is a version: `EXPAT_ENTROPY_DEBUG`, `EXPAT_ACCOUNTING_DEBUG`, `EXPAT_ENTITY_DEBUG`, `requested feature requires XML_DTD support in Expat`, and the `expat: Accounting/Entities` format strings plus `xmlparse.c:%d`. The 2.2.0 in the memo was read from **34.16**, and 86.10 carries an explicit `expat_2.5.0`. So 57.23's version is **unpinned**; "2.5.0" for it is inference from the neighbouring builds, and should be written that way.
+2. **There is nothing to import.** expat is statically linked in both builds — no `libexpat*.so` in either rootfs, zero `XML_*` entries in `.dynsym`, no `NEEDED`. Asking whether `XML_GetBuffer` is "imported" therefore always answers no and cannot discriminate; the discriminating evidence has to be the call shape.
+3. **The call shape says `XML_Parse` only.** `XML_Parse` is at `0x1041ced4` in the 57.23 binary (four arguments — the `cmpwi 7,3,0` prologue, `XML_ERROR_NO_BUFFER`-free, and the `m_parsingStatus`/`m_bufferPtr` checks at +476/+472). It has exactly **six** callers, all inside one daemon function: `0x1038d890`, `0x1038d9b0`, `0x1038da3c`, `0x1038dad8`, `0x1038db30`, `0x1038db78`. Every one is in the four-argument form — e.g. `0x1038d890` is `(parser, "<literal>", 1, 0)` and `0x1038db78` is `(parser, NULL, 0, 1)`, the flush idiom. Nowhere does daemon code pass the three-argument `(parser, len, final)` form that `XML_ParseBuffer` needs.
+
+Consequence: `m_bufferEnd` only ever advances right after a matching `XML_GetBuffer(len)`, so **CVE-2026-77214 is unreachable on 57.23.** 86.10 was not read for this (the MIPS build has no symbol table and the offset probe was inconclusive), so carry it there as "same wrapper, unmeasured" rather than as a measurement. It is a version-level bug we do not have a door for, not a maybe.
 
 ## 5a. Why the curl version is unpinnable (three approaches, all null)
 
