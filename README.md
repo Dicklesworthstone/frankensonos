@@ -496,11 +496,10 @@ learned at runtime and kept locally. The full boundary is in
 - A sleep timer fades only through the daemon: the CLI's when one is running,
   HTTP and MCP. `fsonos sleep --direct`, or `fsonos sleep` with no daemon,
   sets the speaker's own timer, which pauses without a fade.
-- Spotify artists, podcast episodes and shows render and can be queued: the
-  player accepts their `x-sonos-spotify:` URI with only the account id, and
-  the speaker expands or starts them. Tracks, albums and playlists are the
-  qualified kinds; start-to-audio for the other three is still being
-  qualified on real hardware.
+- Spotify podcast episodes play like tracks. Artists and shows are accepted
+  by the player and can be queued, but playing one from its Spotify id is a
+  typed refusal: an artist needs Sonos' own SMAPI shortcut item id, and a show
+  needs the service's container id, neither of which the Spotify id carries.
 - The API and MCP server take their remote caller identity from Tailscale:
   WhoIs on a direct tailnet listener, or the login header behind Serve when
   the daemon runs with `FSONOS_TAILSCALE_SERVE`. Both apply the house policy's

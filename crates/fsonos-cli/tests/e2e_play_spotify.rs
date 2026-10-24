@@ -90,8 +90,8 @@ fn spotify_albums_and_playlists_play_from_their_first_track() {
         format!("{state:?}, track {track:?}, {uri}"),
     );
 
-    // Artists, episodes and shows play since b3ac8880; an audiobook is a
-    // Spotify kind the house still cannot play.
+    // An audiobook is a Spotify kind the house still cannot play; the bare
+    // kinds have their own test below.
     let audiobook = format!("spotify:audiobook:{ALBUM}");
     let run = s.cli("play-audiobook", &["play", "Kitchen", &audiobook]);
     let (_, _, uri) = now(&s);
@@ -104,6 +104,7 @@ fn spotify_albums_and_playlists_play_from_their_first_track() {
             && uri.contains(&format!("{PLAYLIST}1")),
         &run.stderr,
     );
+
     s.finish();
 }
 
@@ -190,6 +191,96 @@ fn a_search_naming_a_saved_album_or_a_playlist_plays_it() {
         "the playlist replaced the album and plays from its first track",
         run.ok() && track == Some(1) && uri.contains(&format!("{SUNDAY}1")),
         format!("{}; track {track:?}, {uri}", run.stderr),
+    );
+    s.finish();
+}
+
+#[test]
+fn an_artist_or_show_is_refused_and_an_episode_plays() {
+    let mut s = Scenario::start("play-spotify-kinds");
+    s.sim(SimHousehold::standard());
+    let kitchen = s.ip("Kitchen");
+    let now = |s: &Scenario| {
+        let state = get_transport_info(&s.lan(), kitchen).map(|t| t.state).ok();
+        let position = get_position_info(&s.lan(), kitchen).ok();
+        (state, position.map_or_default(|p| p.uri))
+    };
+    let run = s.cli(
+        "play-playlist",
+        &["play", "Kitchen", &format!("spotify:playlist:{PLAYLIST}")],
+    );
+    s.check(
+        "play-playlist",
+        "cli",
+        "a playlist plays",
+        run.ok(),
+        &run.stderr,
+    );
+
+    // An artist and a show are typed refusals with protocol evidence
+    // (docs/PROTOCOL.md, "Bare Spotify kinds"); nothing reaches the speaker
+    // and the playlist plays on.
+    for (tag, prefix, says) in [
+        (
+            "play-artist",
+            "spotify:artist:",
+            "an artist is a typed refusal naming the SMAPI shortcut id",
+        ),
+        (
+            "play-show",
+            "spotify:show:",
+            "a show is a typed refusal naming the service container id",
+        ),
+    ] {
+        let uri_in = format!("{prefix}{ALBUM}");
+        let run = s.cli(tag, &["play", "Kitchen", &uri_in]);
+        let (_, uri) = now(&s);
+        s.check(
+            tag,
+            "cli",
+            says,
+            !run.ok()
+                && run.stderr.contains("error[NOT_IMPLEMENTED]")
+                && uri.contains(&format!("{PLAYLIST}1")),
+            &run.stderr,
+        );
+    }
+
+    // An episode does play from the id alone.
+    let episode = format!("spotify:episode:{ALBUM}");
+    let run = s.cli("play-episode", &["play", "Kitchen", &episode]);
+    s.check(
+        "play-episode",
+        "cli",
+        "an episode exits 0",
+        run.ok(),
+        &run.stderr,
+    );
+    let (state, uri) = now(&s);
+    s.check(
+        "play-episode",
+        "sim",
+        "the episode renders on the account id and plays",
+        state == Some(TransportState::Playing) && uri.contains(&format!("episode%3a{ALBUM}")),
+        format!("{state:?}, {uri}"),
+    );
+
+    let mut mcp = s.mcp();
+    mcp.initialize();
+    let refused = mcp.request(
+        "tools/call",
+        &json!({
+            "name": "play",
+            "arguments": { "zone": "Kitchen", "source_uri": format!("spotify:artist:{ALBUM}") },
+        }),
+    );
+    s.check(
+        "play-artist-mcp",
+        "mcp",
+        "MCP answers the same typed refusal as the CLI",
+        refused["result"]["isError"] == true
+            && refused["result"].to_string().contains("NOT_IMPLEMENTED"),
+        &refused,
     );
     s.finish();
 }

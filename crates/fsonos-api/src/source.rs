@@ -63,19 +63,50 @@ pub fn normalize_source_uri(raw: &str) -> Result<String, Failure> {
 /// captures undo state, cancels fades or lowers any room to its volume cap.
 /// URI normalization is separate: other operations have their own source
 /// capabilities and error contracts.
+///
+/// Episodes render like tracks; artists and shows are still typed refusals
+/// (docs/PROTOCOL.md, "Bare Spotify kinds"): both are accepted by the
+/// speaker's Set/Add with only the account id, but an artist needs Sonos'
+/// SMAPI shortcut item id, which the Spotify artist id cannot address, and a
+/// show's Play lands back in `STOPPED` because the service container id is
+/// unknown. Queueing them still works, so they are not rejected there.
 pub(crate) fn validate_playable_source(source_uri: &str) -> Result<(), Failure> {
+    if let Some(kind) = SpotifyBare::of(source_uri) {
+        return match kind {
+            SpotifyBare::Episode => Ok(()),
+            SpotifyBare::Artist => Err(Failure::new(
+                ErrorCode::NotImplemented,
+                format!(
+                    "Spotify artists do not start from the Spotify id yet: {source_uri} is \
+                     accepted by the speaker and then fails on Play, because an artist can \
+                     only be addressed by Sonos' SMAPI shortcut item id"
+                ),
+            )
+            .with_hint("Queue it and play one of its tracks for now.")),
+            SpotifyBare::Show => Err(Failure::new(
+                ErrorCode::NotImplemented,
+                format!(
+                    "Spotify shows do not start from the Spotify id yet: {source_uri} is \
+                     accepted by the speaker and then falls back to STOPPED, because the \
+                     service's own container id is not known"
+                ),
+            )
+            .with_hint("Play one of its episodes for now.")),
+        };
+    }
     if !source_uri.starts_with("spotify:")
         || source_uri.starts_with("spotify:track:")
         || SpotifyContainer::of(source_uri).is_some()
-        || SpotifyBare::of(source_uri).is_some()
     {
         return Ok(());
     }
     Err(Failure::new(
         ErrorCode::NotImplemented,
-        format!("Spotify tracks, albums, playlists, artists, episodes and shows play; {source_uri} is none of them"),
+        format!(
+            "Spotify tracks, albums, playlists and episodes play; {source_uri} is none of them"
+        ),
     )
-    .with_hint("Play one of its tracks, albums, playlists, artists, episodes or shows for now."))
+    .with_hint("Play one of its tracks, albums, playlists or episodes for now."))
 }
 
 /// `scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )` (RFC 3986 §3.1).

@@ -205,10 +205,16 @@ with the class the kind expects (`object.container.person.musicArtist`,
 adding `flags`, `sn` or the `cdudn` descriptor makes the renderer refuse
 with UPnP **402**. Both `SetAVTransportURI` and `AddURIToQueue` accept all
 three kinds with that shape on S1 57.23 (episode also with a real catalog id),
-and the queue stores the prefixed URI. Start-to-audio of these kinds is not
-yet qualified: a real episode Set+Play is answered 200 then sits in
-`TRANSITIONING`, and a show returns to `STOPPED`; tracks, albums and
-playlists remain the proven kinds.
+and the queue stores the prefixed URI.
+
+Start-to-audio separates the kinds. A real episode with a catalog id is
+**proven**: Set 200, Play 200, PLAYING with `RelTime` advancing within 3 s.
+An artist's Set/Add are 200 but Play answers 500 — the id needs Sonos' SMAPI
+shortcut item id (the owner's own favorite stores `10052064artist%3a…` with an
+empty resolution), so the Spotify id alone cannot address it. A show's Play is
+200 and the player returns to `STOPPED` — the service container id is unknown.
+FrankenSonos therefore refuses `spotify:artist:`/`spotify:show:` at play with
+`NOT_IMPLEMENTED` and evidence, while the queue still accepts all three.
 
 Queue edits and the revision guard (verified live on S1 and S2, 2026-10-17;
 stopped groups, two copies of the last track appended, only the copies

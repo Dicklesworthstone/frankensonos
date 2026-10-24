@@ -71,10 +71,10 @@ pub fn execute_guarded<T: Transport + ?Sized>(
 /// parameters ([`ErrorCode::RenderParamsMissing`] when it has no Spotify
 /// favorite to learn from); `spotify:album:` and `spotify:playlist:` URIs
 /// replace the group's queue with the album or playlist and play it from the
-/// top; `spotify:artist:`, `spotify:episode:` and `spotify:show:` render on
-/// the account id alone (only `?sid=` is sent). Other renderer URIs play as
-/// given, without DIDL metadata. The DJ answer and other Spotify kinds
-/// return [`ErrorCode::NotImplemented`].
+/// top; `spotify:episode:` renders on the account id alone (only `?sid=` is
+/// sent). Other renderer URIs play as given, without DIDL metadata. The DJ
+/// answer, `spotify:artist:`, `spotify:show:` and other Spotify kinds return
+/// [`ErrorCode::NotImplemented`] (see [`crate::source`]).
 pub fn execute<T: Transport + ?Sized>(
     transport: &T,
     households: &[HouseholdState],
@@ -872,18 +872,42 @@ mod tests {
     }
 
     #[test]
-    fn bare_spotify_kinds_need_the_household_account() {
-        // Artist, episode and show render with `?sid=` learnt from a Spotify
-        // favorite; without one they say so before touching a speaker.
-        for uri in [
-            "spotify:artist:0123456789ABCDEFabcdef",
-            "spotify:episode:0123456789ABCDEFabcdef",
-            "spotify:show:0123456789ABCDEFabcdef",
+    fn episodes_need_the_household_account() {
+        // An episode renders with `?sid=` learnt from a Spotify favorite;
+        // without one it says so before touching a speaker.
+        let t = Canned::ok("");
+        let err = execute(
+            &t,
+            &households(),
+            &play_spotify("spotify:episode:0123456789ABCDEFabcdef"),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ErrorCode::RenderParamsMissing);
+        assert_eq!(t.actions(), ["Browse"]);
+    }
+
+    #[test]
+    fn an_artist_or_show_is_refused_before_any_speaker_change() {
+        // Both are accepted by Set/Add, but do not start: an artist needs
+        // Sonos' SMAPI shortcut id, a show returns to STOPPED. Refused here,
+        // with nothing sent.
+        for (uri, says) in [
+            (
+                "spotify:artist:0123456789ABCDEFabcdef",
+                "SMAPI shortcut item id",
+            ),
+            ("spotify:show:0123456789ABCDEFabcdef", "container id"),
         ] {
             let t = Canned::ok("");
             let err = execute(&t, &households(), &play_spotify(uri)).unwrap_err();
-            assert_eq!(err.code, ErrorCode::RenderParamsMissing, "{uri}");
-            assert_eq!(t.actions(), ["Browse"], "{uri}");
+            assert_eq!(
+                (err.code, err.status()),
+                (ErrorCode::NotImplemented, 501),
+                "{uri}"
+            );
+            assert!(err.detail.contains(says), "{}", err.detail);
+            assert!(!err.hint.is_empty(), "{uri}");
+            assert_eq!(t.actions(), Vec::<String>::new(), "{uri}");
         }
     }
 
