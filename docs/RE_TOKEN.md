@@ -290,3 +290,24 @@ table (`0x53290c`, handler `0x428998`, flags `0x11`) and the identical literals
 `:1443`** (both Play:5, `.202` and `.84`), while 86.10-81100 answers `403`
 (`.4.81`, `.4.86`) — i.e. on the shipped S1 build the entry exists but is not
 served, so the route is usable on S2 only.
+
+## 2026-10-24 · provider map, first pass (MuseDeviceImplProvider, S2 86.10)
+
+Read against `captures/firmware/s2_overlay/bin/anacapad` (MIPS16). Facts, plus two corrections
+to the starting assumptions.
+
+- The actor vtable is `0x66c038`. Slot at byte offset `0x18` (index 6, "slot 24") holds
+  **`0x47b799`**, which is the ISA-bit form of entry `0x47b798`.
+- `0x47b798` is `save 32,ra; jalx 0x51b9b4; li a1,20; restore; jrc ra` — i.e. **that slot's id
+  is 20, not 109**. The id is consumed by the `0x51b9b4` call, not by the shared body: the body
+  at `0x47b06a` overwrites `a1` at `0x47b094` (`move a1,s1`) and never reads the incoming id.
+- id **109** appears at `0x612916` and `0x612954`, in the muse provider region, each followed by
+  `jal 0x5fef64`. `0x5fef64` is a two-word setter, `sw a1,4(a0); sw v0,0(a0)` — it stores a
+  `{ptr, len}` pair, i.e. the getter hands back a `string_view` over provider state.
+- `0x51b9b4` is the shared id→string getter. **Ghidra mislabels it** as `operator_delete`
+  (8 bytes) and the MIPS16 disassembly from that address is misaligned, so the id→field table
+  inside it is not yet readable; a correct entry point is the next step.
+
+So the shape is: vtable slot → trampoline that calls the getter with a fixed id → shared body
+that returns the `string_view`. Whether the issuer is a constant or a settings/household string
+therefore lives in the getter's id table, which is the one thing still unread.
