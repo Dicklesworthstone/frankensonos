@@ -70,10 +70,12 @@ Two cheap surfaces were fuzzed in the same batch (harness
   and the same at 65,564; so the join never sees more than ~4 KiB and the
   request-line limit (~4–8 KiB) is reached first. **No reachable join
   overflow; no 414, just a reset.**
-- `POST /mtmhhsetup` — on both locked 86.10 units every case answers `403`
+- `POST /mtmhhsetup` — **this one is a gate record, not a parser fuzz.** On
+  both locked 86.10 units every case answers `403`
   (the route is in the devmode/locked table class, flag `0x100`), including
   `hhid` 33/64/1024/65536, `name` 32/128/1024, `icon` 129/1024/65536 and the
   all-three combinations; `/info` stays up. A 196,669-byte body (all-64k)
   makes the *client* see a broken pipe because the daemon closes without
   reading the body. The handler's own 4,095-byte content-length cap and field
-  checks only run once the unit is unlocked.
+  checks only run once the unit is unlocked. No mtmhhsetup case reached
+  `FUN_004f3b44`; the field caps are therefore untested live, not confirmed.
