@@ -46,6 +46,7 @@ CFG = b"""#!/bin/sh
 touch /tmp/device_unlocked_flag
 """
 MARKER = b"frankensonos q57 patched rootfs - Configure.dev + telnetd 2323 + dropbear 22\n"
+T = 1771344440  # base image creation time; pins mtimes for reproducible bytes
 
 
 def sha(path):
@@ -140,11 +141,16 @@ def main():
     tree = a.work
     shutil.rmtree(tree, ignore_errors=True)
     unsquash(base_bin, tree)
-    os.makedirs(os.path.join(tree, "jffs/system"), exist_ok=True)
-    p = os.path.join(tree, "jffs/system/Configure.dev")
+    sysdir = os.path.join(tree, "jffs/system")
+    os.makedirs(sysdir, exist_ok=True)
+    p = os.path.join(sysdir, "Configure.dev")
     open(p, "wb").write(CFG)
     os.chmod(p, 0o644)
-    open(os.path.join(tree, "PWNED-MARKER"), "wb").write(MARKER)
+    m = os.path.join(tree, "PWNED-MARKER")
+    open(m, "wb").write(MARKER)
+    os.chmod(m, 0o644)
+    for x in (sysdir, p, m, os.path.join(tree, "jffs")):
+        os.utime(x, (T, T))
 
     bin_out = os.path.join(out, "rootfs-patched.bin")
     squash(tree, bin_out, not a.no_docker)

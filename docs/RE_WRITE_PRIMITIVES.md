@@ -189,9 +189,9 @@ git-ignored). Artifacts in `captures/research/rootbuild/`:
 
 | file | sha256 |
 |---|---|
-| `rootfs-patched.bin` (squashfs 3:0, 4571136 B = base) | `646d858dcd456a0a407444920b73cab86a97594ca91e29c0bbd31828bd8f3fae` |
-| `type4-envelope.bin` (model16, header_len 314, zero IV) | `bb765184b2a074e920754fa73cc217510679998d1744ed802827ee128883fa92` |
-| `pwned-q57.upd` (5606749 B = base, 10 sections) | `075a13135a49dc41e69eedcea9d013efe065d8457e494bf89865aea586bd22cd` |
+| `rootfs-patched.bin` (squashfs 3:0, 4571136 B = base) | `864cf31790a377bdbdd617e06fc48de9b1572bc733cb2b6dff4683f7f04c9af9` |
+| `type4-envelope.bin` (model16, header_len 314, zero IV) | `5e7fe82ef7a37adcedc77b4a2e430828247d9650dcbe91436e89a937b9bbd14b` |
+| `pwned-q57.upd` (5606749 B = base, 10 sections) | `73587faceeba8885f3fbc750994ad3f4808b2e407808c36d9b0bf85da7f24370` |
 
 Tree delta vs the base image is exactly: `jffs/system/` (new dir),
 `jffs/system/Configure.dev` 0644 (`f440a443fcfa14897561b243f628204098aa6ced16da384090aa880fc665aac4`),
@@ -209,4 +209,9 @@ section are untouched, and only payload byte 8 of section 1 is bumped
 (`0xba`→`0xbb`, a monotonic revision, not a digest).
 
 Flash is deliberately not done; the envelope path was handed to LavenderLake
-and GoldOwl.
+and GoldOwl (`am`, sender `MistyOx`) with these SHAs.
+
+The script pins mtimes (`T = 1771344440`, the base image date) and `s_minor`,
+so the *tree* is reproducible, but mksquashfs 3.4 is not byte-deterministic
+(two back-to-back runs differ throughout the compressed image). The SHAs above
+bind the delivered artifacts, not a rebuild.
