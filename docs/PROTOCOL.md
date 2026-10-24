@@ -236,7 +236,9 @@ Play → `PLAYING`, so the harness and the account id were good. The rich
 favorite-derived metadata is *worse* than the minimal DIDL for artists, i.e.
 the favorite's stored shape cannot simply be replayed; the open question is
 why Play on an accepted artist answers 200 but never leaves `STOPPED`
-(SMAPI resolution of the artist id, unhinted by any error code).
+(SMAPI resolution of the artist id, unhinted by any error code). Until one
+substitutes the short id, **Set 200 + Play STOPPED is the documented artist
+result**, and the typed refusal is what the product keeps.
 
 Queue edits and the revision guard (verified live on S1 and S2, 2026-10-17;
 stopped groups, two copies of the last track appended, only the copies

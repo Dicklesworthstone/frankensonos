@@ -500,6 +500,8 @@ learned at runtime and kept locally. The full boundary is in
   by the player and can be queued, but playing one from its Spotify id is a
   typed refusal: an artist needs Sonos' own SMAPI shortcut item id, and a show
   needs the service's container id, neither of which the Spotify id carries.
+  Probed on 57.23: an artist Set is accepted with a minimal DIDL (200) and
+  Play still returns to `STOPPED`, so "accepted" is not "starts".
 - The API and MCP server take their remote caller identity from Tailscale:
   WhoIs on a direct tailnet listener, or the login header behind Serve when
   the daemon runs with `FSONOS_TAILSCALE_SERVE`. Both apply the house policy's
