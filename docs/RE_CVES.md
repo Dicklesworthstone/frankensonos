@@ -11,7 +11,7 @@ version is listed separately as *pre-window, live* — it is not in the window b
 |---|---|---|---|
 | expat | embedded, version string not emitted (sibling builds: 34.16 = 2.2.0, 86.10 = **2.5.0**) | **2.5.0** | `strings anacapad \| grep expat_` → `expat_2.5.0`, plus `EXPAT_*_DEBUG`; static, no symbol table entries |
 | mbedTLS | **2.5.0** (`libmbedtls.so.10`) | **3.6.6** | `captures/firmware/s1_rootfs/lib/libmbedtls.so.10`; `sonos-root-local/fw/internals/libmbedtls.so.3.6.6`, NEEDED `libmbedtls.so.21` |
-| libcurl | not used by the daemon | **static in `anacapad`**, mbedTLS backend, HTTP/2 present (`nghttp2` ×18, `HTTP/2` ×17, `ALPN` ×15); **version not emitted** — no bare `8.x.y` string anywhere, `curl_version()` builds it from macros. Any 2026 build is ≥ 8.12.0 (released 2025-02); 8.23.0 only shipped **2026-10-14**, and the fleet's build date for 81100 is unknown | `readelf -d` (no `libcurl` NEEDED); `strings` |
+| libcurl | not used by the daemon | **static in `anacapad`**, mbedTLS backend, HTTP/2 present (`nghttp2` ×18, `HTTP/2` ×17, `ALPN` ×15); **version unpinnable** (three approaches, all null — see §5a) | `readelf -d` (no `libcurl` NEEDED); `strings` |
 | busybox | **v1.00** (`s1_rootfs/bin/busybox`), **v1.14.1** (`play1_rootfs/bin/busybox`); applets present: `telnetd`, `wget`, **no `httpd`** | not in the captured overlay (base-rootfs binary, not extracted) | `strings busybox \| grep -x httpd` → empty |
 | kernel | **2.4.25-LSDK-5.0.1.20** (2004) | not in the captured artifacts (image encrypted) | `captures/research/s1_attack_surface.md:28` |
 | HLS / MPEG-TS | — | FFmpeg **5.0.3** (`libavformat.so.59`, `libavcodec.so.59`); **no** `libavformat` NEEDED in `anacapad` and no `avformat`/`hls`/`m3u8` strings in it — decoding is a different process (TBD, consumer binary not in the overlay) | `strings libavformat.so.59` → `FFmpeg version 5.0.3` |
@@ -53,7 +53,7 @@ Pre-window but live on 2.5.0 (verified against NVD text):
 
 | CVE | pub | what | reachable? |
 |---|---|---|---|
-| CVE-2026-92392 | 10-14 | UAF of `struct Curl_easy` when an **upload** gets `RST_STREAM` (`HTTP_1_1_REQUIRED` / `REFUSED_STREAM`). Affected 8.12.0–8.22.0 (fixed 8.23.0, released the same day; 8.16.2/8.20.2 in their branches). RCE needs a fully known build/layout — ours is static and known | **conditional on an upload path only**: the version half is close to certain (any 2026 build is ≥ 8.12.0, and 8.23.0 shipped on the CVE's own release day), but nothing shows the daemon *uploading* with a body to a URL we can point at our own h2 server. Do not rank it above the DoS items until an upload call site is named. |
+| CVE-2026-92392 | 10-14 | UAF of `struct Curl_easy` when an **upload** gets `RST_STREAM` (`HTTP_1_1_REQUIRED` / `REFUSED_STREAM`). Affected 8.12.0–8.22.0 (fixed 8.23.0, released the same day; 8.16.2/8.20.2 in their branches) | **UNPROVEN — closed for now.** Both halves fail: the version cannot be pinned from the binary (§5a) and no upload call site is named. Reopen only if `curl_version_info` is recovered (e.g. from a live `#0`/core, a `/diag` verb that prints it, or an image whose build date straddles 8.23.0). |
 
 ### busybox (v1.00 / v1.14.1)
 
@@ -96,7 +96,7 @@ reproduction targets, not live bugs (see UPDATE_FEED_AND_SIGNATURE.md:964 — re
 5. **CVE-2025-1049** (ID3) — pre-auth media on any build; only exploitable on ≤57.22-59130/83.1.
 6. **CVE-2026-107660** (FFmpeg TLS hostname check) — needs an IP-literal https media URL; enables MITM, not memory corruption.
 7. **CVE-2026-77214** (expat over-read) — gated on `XML_ParseBuffer`, which we believe is unused; disclosure only.
-8. **CVE-2026-92392** (curl h2 upload UAF) — version is very likely in range; the missing half is an upload path with a body.
+8. **CVE-2026-92392** (curl h2 upload UAF) — unproven on both counts (version unpinnable, no upload site); closed.
 9. **busybox / kernel** — no applicable in-window issue.
 
 ### Measured on 86.10 (2026-10-23): the self-referencing playlist does not hang
@@ -117,7 +117,15 @@ playlist that also carries a segment) is open — this is a starting negative, n
 
 ## 5. Open measurements
 
-- name an HTTP/2 **upload** call site in `anacapad` (the version is not recoverable as a literal; 8.23.0 only exists from 2026-10-14, so treat the binary as affected until proven otherwise);
+- name an HTTP/2 **upload** call site in `anacapad` and pin `curl_version_info` from a live process (§5a);
 - decide the expat API question for certain (`XML_Parse` vs `XML_ParseBuffer`) — or just test 77214 live;
 - identify the FFmpeg consumer binary and whether `allowed_extensions`/protocol whitelist is configured (decides 107697);
-- S2 busybox version and S2 kernel version (both missing from the captured artifacts).
+- S2 busybox and S2 kernel: **unverified, and left that way.** Neither is in any captured artifact (the overlay carries `bin/anacapad` only; the rootfs is inside the encrypted image) and neither is a pre-auth surface on S2. Anything written about them would be inference from the S1 rootfs, which is a different userland (busybox v1.00 / v1.14.1) and a different kernel (2.4.25).
+
+## 5a. Why the curl version is unpinnable (three approaches, all null)
+
+1. **Version literal.** `curl_version()` normally carries `"libcurl/" LIBCURL_VERSION`; neither `libcurl/` nor the `libcurl/%d.%d.%d` format is present. Under `-ffunction-sections -Wl,--gc-sections` the whole `curl_version`/`curl_version_info` pair is dropped because the daemon never calls it.
+2. **Bare `x.y.z` sweep.** Every string matching a bare version triple in the binary is one of `2.0.0 17.2.7 1.54.1 1.2.11 1.1.0` — no `8.x` anywhere.
+3. **Backend / symbol / stamp probes.** The only backend literal is `mbedTLS/%u.%u.%u` (`0x69ee44`), parameterised by the **TLS** library, not curl; there are zero `curl_*` symbols in `.symtab` or `.dynsym` (fully static and stripped) and no `.comment` section.
+
+The only remaining source is runtime (`curl_version_info` out of a live process) or a build date; neither is available, so CVE-2026-92392 is recorded as unproven rather than inferred.
