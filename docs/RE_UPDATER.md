@@ -279,3 +279,38 @@ Only a zero **major** trips the 512 KiB gate; minor/build and even a full-`u32` 
 accepted for the download. Formatting never faults — the 1024-byte `snprintf` buffer holds the
 longest possible `%u.%u-%u` (33 bytes). No version variant reaches pass 2, including a higher
 build with a still-valid signature.
+
+## Type-2 compatibility records (2026-10-24)
+
+`FUN_10007768` requires `len - 0x2c <= 0x68` (so `len <= 0x94`), reads `len-16` bytes into a
+stack buffer and dispatches on the swabbed first word: `0xfffffffe` = hw-feature mask,
+`0xfffffffd` with `len == 0x94` = the MDP/min-version record, `1` = the model record
+(`[1][model][submin][submax][revmin][revmax][swgen]`, logged as
+"Compatible with model %u submodels %u-%u revisions %u-%u"), anything else =
+"Unknown compatibility section". A non-matching model record is not an error (`FUN_1001129c`
+returns 0 and the handler still returns 0).
+
+Batch head is the stock control, re-run each batch.
+
+| mutation (record 1 unless said) | result |
+|---|---|
+| **control: stock, untouched** | full read, 30.3 s box-down, `/VERSION` unchanged |
+| model word := 0 | **512 KiB abort** (stalled fetch) |
+| model word := 0xffff | **512 KiB abort** (stalled fetch) |
+| model word := 16 (no-op) | full read, 29.1 s box-down |
+| submodel_min := 9 > max := 5 | **512 KiB abort** (stalled fetch) |
+| declared len := 0 | **512 KiB abort** (stalled fetch) |
+| declared len := 8 | **512 KiB abort** (stalled fetch) |
+| declared len := 0xffff | **512 KiB abort** (stalled fetch) |
+| last 4-byte field truncated (len 40) | **512 KiB abort** (stalled fetch) |
+| 3rd record replaced by a 4th well-formed model record | full read, no reboot |
+
+The 512 KiB stop is the daemon's first-stream decision point again, so a model miss, a
+submodel inversion, a short/zero/over-declared length and a truncated field all fail *early*,
+while a matching model and a well-formed extra record are read through. No run except the
+controls reboots.
+
+Operational note: a rejected attempt often reboots the box afterwards, and the daemon then
+ignores `BeginSoftwareUpdate` for roughly 1-3 minutes (200 with no fetch); the fetch also
+sometimes ends with `ConnectionResetError` instead of `BrokenPipeError` — same class. Runs are
+spaced 60 s with one retry, and a trigger that sits on a rebooting unit returns HTTP 000.
