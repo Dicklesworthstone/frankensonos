@@ -463,6 +463,10 @@ library, in whatever genres it spans.
     mapped against malformed frames, and two pre-auth request-data surfaces
     (`/status/ZPLocalSettingsFile/<name>`, `/mtmhhsetup`) are length-fuzzed
     ([`docs/UPDATE_HTTP_CLIENT.md`](docs/UPDATE_HTTP_CLIENT.md)).
+  - The S2 `/devunlock` and `/mfgunlock` blob parsers are mapped and
+    length-fuzzed on `:1443`; both sit behind a challenge flag that the
+    firmware never sets on the tested units, so the matrix is a gate record
+    ([`docs/UNLOCK_BLOB_PARSERS.md`](docs/UNLOCK_BLOB_PARSERS.md)).
 
 ### Fixed
 
