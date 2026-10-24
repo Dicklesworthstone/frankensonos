@@ -179,6 +179,17 @@ appears to validate as it streams and drops the connection at the first thing it
 What it dislikes is not yet isolated — candidates are the bumped build, the fresh envelope
 IV/ciphertext and the rewritten digest, each of which can be varied independently next.
 
+**Control rows reconciled.** The control rows in this file do not all agree and that is the
+unit, not the package: the two controls above ran before the 57.22 round-trip, when the stock
+package fetched to the end and did nothing; the later batch-head control (`:297`, after the
+round trip, and the 57.22/57.23 accept pair around it) returned a full read *and* a 30 s
+box-down. The stable, package-independent signal is therefore the **512 KiB abort** — no unit
+state has ever produced one on a stock package — and every row whose classification rests on a
+*full read* must be judged against a control taken in the same batch, not against a control
+from another hour. `pwned-q57.upd` predates all of this and had a stale prefix digest (the
+stock value `7c50ba32…` rather than its own); it is now rebuilt via
+`scripts/fix_upd_prefix_digest.py` so its prefix check passes.
+
 ## Appended unused section types (2026-10-24): parsed, but pass 2 never runs
 
 The prefix digest makes an append the only signature-neutral edit, so the appended-type
@@ -323,3 +334,18 @@ spaced 60 s with one retry, and a trigger that sits on a rebooting unit returns 
 4. Settled: a zero major version, a zero/short/over-declared type-2 length, a non-matching model, an inverted submodel range and a truncated field all stall at the same 524,288 gate; a matching model and a well-formed extra type-2 read through.
 5. Remaining: no version/type-1 or type-2/type-21 variant reaches pass 2 even with a still-valid signature, so the pass-1 -> pass-2 handover is the open wall; the accept control is full read + ~30 s box-down (57.22 -> 57.23 round trip works).
 6. Not yet run: header-record mutations (type 0 / 0xffffffff mid-file, `total_len` 0x10/0/0xffff), type-3/4 replacement semantics, and the cloud-arming predicate path (`/product-settings/v3/settings` must satisfy flag +0x14e and int +0x108 before `/var/run/upgradeinfo` is ever written).
+
+### Rebuilt `pwned-q57.upd` — run 2026-10-24
+
+`pwned-q57.upd` was rebuilt in place with `scripts/fix_upd_prefix_digest.py`: the type-4
+payload and every other byte untouched, only the 32-byte prefix digest recomputed from
+`7c50ba32…` (the stock value it had carried) to `cc981128…`; size unchanged, digest verified.
+
+One run on `.4.202`, same server and sampler: **1,572,864 bytes of 5,606,749 then client
+close**, box up, `/VERSION` still 57.23-74170, sub-second blips at 0.5 s and 30 s.
+
+So the expected shape (full read, then a late stop at the signature stage) did **not** appear:
+the fetch still dies mid-stream, at 1.5 MiB this time versus 4–5 MiB for the earlier type-4
+swaps. The digest was therefore never the cause of these aborts, and the signature stage is
+still unreachable for any package with a changed body — the streaming gate does the rejecting,
+not the verifier. The earlier "aborts at the digest" reading is corrected here.
