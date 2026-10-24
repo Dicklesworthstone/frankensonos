@@ -216,6 +216,28 @@ empty resolution), so the Spotify id alone cannot address it. A show's Play is
 FrankenSonos therefore refuses `spotify:artist:`/`spotify:show:` at play with
 `NOT_IMPLEMENTED` and evidence, while the queue still accepts all three.
 
+#### Artist probes on .84, 2026-10-24 (volume 0)
+
+The **metadata shape decides whether the Set is even accepted**, and neither
+accepted shape plays:
+
+| URI | metadata | Set |
+|---|---|---|
+| `x-sonos-spotify:spotify%3aartist%3a<id>?sid=12` | minimal: `item id="1"`, class person, `<res>` = the URI | **200**, then Play 200 and `STOPPED` (CurrentURI keeps the artist) |
+| same, class musicTrack | same | 200, Play → `STOPPED` |
+| URI + the artist *favorite's* own resMD: item `10052064spotify%3aartist%3a<id>`, desc `SA_RINCON3079_X_#Svc3079-0-Token` | rich | 800 (one run: 500) |
+| `x-rincon-cpcontainer:10052064spotify%3aartist%3a<id>?sid=12&flags=8300&sn=1` | rich, desc 3079/52231 | 402 |
+| same cpcontainer without `flags`/`sn` | rich | 714 |
+| legacy short id (`artist%3a14570243`, from the unit's own artist favorite) bare or cpcontainer | rich | 800 / 402 |
+| `x-rincon-cpcontainer:…?sid=12&flags=8224&sn=1` | rich | 402 |
+
+Control in the same run: an episode with the same minimal shape Set 200 then
+Play → `PLAYING`, so the harness and the account id were good. The rich
+favorite-derived metadata is *worse* than the minimal DIDL for artists, i.e.
+the favorite's stored shape cannot simply be replayed; the open question is
+why Play on an accepted artist answers 200 but never leaves `STOPPED`
+(SMAPI resolution of the artist id, unhinted by any error code).
+
 Queue edits and the revision guard (verified live on S1 and S2, 2026-10-17;
 stopped groups, two copies of the last track appended, only the copies
 edited, queue and play mode restored and checked): `RemoveTrackRangeFromQueue`
