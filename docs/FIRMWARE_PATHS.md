@@ -3465,3 +3465,25 @@ otherwise the parser takes the path at `0x1000ad78`.
 
 So the lane is wired, not dead: the trigger is reaching that block in the
 parser, and the four string comparisons are what to attack next.
+
+#### The slot-23 caller is /audio_tap, not /advconfig
+
+The route descriptors are in the file at `0x1052d338` and `0x1052d354` and are
+`{name, handler}` pairs:
+
+```
+0x1052d338  "/audio_tap"  0x1000abd8
+0x1052d354  "/advconfig"  0x1028a724
+```
+
+So the device-name chain and the slot-23 call live in the **/audio_tap** handler.
+It parses the `tap` query parameter (`strcmp(param, "tap")` at `0x1000ac80`, value
+copied to a stack buffer at `0x1000af38`), then compares that value against
+`htain`, `htaoutl`, `htaoutr`, `htaouts`, `linein`, `codecout`. A match diverts to
+`0x1000ad78`; an **unknown** name falls through to the slot-23 call at
+`0x1000b064`, which advances the segment index and pushes a pending record.
+
+So the on-demand trigger is `GET /audio_tap?tap=<unknown-name>`, not
+`/advconfig` — and `/advconfig`'s POST form carries no device selector at all
+(only `csrfToken`, `FirstZP`, `PriorityBridge`), which is why a POST there cannot
+arm the queue.
