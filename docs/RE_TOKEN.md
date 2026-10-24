@@ -244,3 +244,49 @@ inspector receives at `ctx+16`. A future emulator run needs:
   `/jffs/persist/ssh/dropbear_ecdsa_host_key` (`0x67b898`, used at `0x4cba88`)
   and answers 200 or 403. So the pubkey install is driven through that route,
   and the `R_ALLOW_…` statement is what the persistence layer refuses to keep.
+
+## `/ssh/fingerprints` — exact request contract (86.10, handler `0x4aa9ec` -> `0x4cb910`)
+
+Read end to end. It is a **read-only fingerprint reporter for the device's own
+dropbear host key**, not an uploader — nothing is written.
+
+Request: **GET**, no parameters and no body consumed (every input comes from the
+host-key file). Route entry `0x6f7168`, flags `0x101`; the response writer is the
+framework (`ap_reply_status` + `0x477d78`/`ap_write_end`).
+
+Gates, in order:
+
+1. `RdeviceIsUnlocked()` (imported, PLT `0x6db710`, call `0x4cb94a`) — false →
+   **403** with the stock HTML `Error 403 / Forbidden` page. This is the devmode
+   unlock flag `/tmp/device_unlocked_flag`; `R_ALLOW_SSH_PUBKEY_INSTALL` is the
+   *statement name* that sets it (and which the persistence layer strips, see
+   above), so the statement is the one-shot key to this route.
+2. `sonosFileExists("/jffs/persist/ssh/dropbear_ecdsa_host_key")`
+   (`0x4cb956`) — missing → **500**.
+3. The host key file is read and `strtok`-split (`0x4cb780`); the type token must
+   `strcmp` equal **`ecdsa-sha2-nistp256`** (`0x4cb98e`) — anything else → **500**.
+   So the accepted key is an OpenSSH one-line P-256 ECDSA key
+   (`<type> <base64 blob> [comment]`, whole key ≤ 656 bytes).
+
+Response **200**, `Content-Type: application/json` (`0x667d5c`), body built with
+a JSON writer:
+
+```json
+{"ecdsa-sha2-nistp256":{"pubkey":"<base64 blob>","sha256-base64":"<32 bytes>","md5-hex":"<16 bytes>"}}
+```
+
+The outer object name is the key-type string taken from the file; `pubkey` is
+the blob verbatim (`0x4cb834` base64-decodes it, then `ZZ0058` with selector 1
+yields the 32-byte SHA-256 rendered base64 and selector 2 the 16-byte MD5
+rendered hex, into fixed 32/16-byte stack buffers at `sp+3908`/`sp+3780`).
+
+### S1 (57.23) — same source, not the same answer
+
+The 57.23-74170-1-12 and 57.19-46310-1-12 images both contain the route in their
+table (`0x53290c`, handler `0x428998`, flags `0x11`) and the identical literals
+(`/jffs/persist/ssh/dropbear_ecdsa_host_key`, `pubkey`, `sha256-base64`,
+`md5-hex`, `/tmp/device_unlocked_flag`), so the contract above is the same code.
+**Live, though, two 57.23-74170 players answer `404` on both `:1400` and
+`:1443`** (both Play:5, `.202` and `.84`), while 86.10-81100 answers `403`
+(`.4.81`, `.4.86`) — i.e. on the shipped S1 build the entry exists but is not
+served, so the route is usable on S2 only.
