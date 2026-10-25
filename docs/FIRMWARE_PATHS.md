@@ -4108,3 +4108,25 @@ even on instructions that provably execute.
 
 Next: identify `0x0fe03f04` in libc (which callback slot it is) — that names the
 framework the daemon registers its handler with, and from there the chooser.
+
+#### Handler frame identified; the libc caller is not in uClibc
+
+The response writer's function starts at **`0x1040f3c4`** (frame `-448`); the
+write call is at `0x1040f53c` inside it. That is the handler that produced the
+response.
+
+Its caller came back as `0x0fe03f04`, which is **not** in the uClibc mapping
+(`0x77ca7000`-`0x77cef000`) — so it is not a libc callback after all. `0x0fe0xxxx`
+is a separate mapping that has not been identified.
+
+Breakpoint at `0x1040f3c4` itself did not trap for the request (same failure mode
+as the other entries); the frame was reached only via `finish` from the emitter.
+
+Chain, all by `finish`/LR:
+
+```
+0x0fe03f04 (unidentified mapping)  →  0x1040f53c (handler 0x1040f3c4)  →  0x10406804  →  write
+```
+
+Next: resolve what is mapped at `0x0fe0xxxx` — that is the framework calling the
+handler, and the chooser sits there.
