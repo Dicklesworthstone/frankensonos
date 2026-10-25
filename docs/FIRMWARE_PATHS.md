@@ -3998,3 +3998,14 @@ it must be filtered for, not taken first.
 
 So the earlier four cold results were the arming bug, not a fork: with `-S` and
 breakpoints armed at boot, `write` fires normally.
+
+#### Length filtering does not separate the logger from the response
+
+`break *0x10546240 if $r5 > 64` hits immediately on the trace logger
+(`lr 0x1041541c`, fd 9/11, `r5 = 0x41` = 65). The logger writes in 65-byte
+chunks, so a length filter alone cannot isolate the response.
+
+`if $r5 > 200` is too high — the 404 body is only ~100 bytes, so it never fires.
+
+The discriminator has to be the **fd** (a socket, not the log fd 9/11) or the
+**LR** (anything other than `0x1041541c`), not the length.
