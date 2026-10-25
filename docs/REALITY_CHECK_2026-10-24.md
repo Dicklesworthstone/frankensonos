@@ -120,8 +120,10 @@ code. Single-threaded TCG (`-accel tcg,thread=single`) plus `set scheduler-locki
 request path be walked once - socket read -> buffer handling -> URI normaliser - and it yielded the live
 route structure: a 16-bit count at `obj+0x144`, 16-byte entries with the handler at `entry+0x10`, and the
 dispatcher at `0x10414618`. The static tables were never the live data, which is why editing them did
-nothing. The dispatcher's own breakpoint then missed, so the runtime handler write that would confirm it
-is still owed. Corrections that got it there - `pkill -x`, tmux not
+nothing. The dispatcher's own breakpoint then missed - and so did the same breakpoint on a *registered* route
+(`/status/VERSION`), which proves the address is the problem, not the route. The live structure is
+real (read from the walk); the dispatcher address `0x104144bc` is simply not the instruction that
+executes. Corrections that got it there - `pkill -x`, tmux not
 setsid, the absolute `/opt` layout, a `libflash` shim with SYSV hash and soname, and a `/dev/chk`
 patch - are in `docs/FIRMWARE_PATHS.md`. The abort is *not* the DCMS/regcert gate (those strings are
 absent from this binary); the monitor socket samples NIP and is the way to name it.
