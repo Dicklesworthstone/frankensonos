@@ -113,7 +113,10 @@ unchanged, so the live dispatcher is not driven by either table. **The most impo
 breakpoint was following one thread while the daemon serves on another (it has 11). That retroactively
 explains roughly a dozen "not hit" results - emitter, formatter, handler, strtok_r, recv, recvfrom - and
 means the structural conclusions drawn from them must be re-checked once threading is solved, not
-trusted as-is. Fixes: per-thread breakpoints on the serving thread, or a stub that enumerates threads. Corrections that got it there - `pkill -x`, tmux not
+trusted as-is. Fixes: per-thread breakpoints on the serving thread, or a stub that enumerates threads. Worse, even
+`read` - a syscall that certainly runs - traps once and then stops while the daemon keeps serving, so
+single-hit anchors cannot support a walk. The guest tooling is the binding constraint now, not the
+code. Corrections that got it there - `pkill -x`, tmux not
 setsid, the absolute `/opt` layout, a `libflash` shim with SYSV hash and soname, and a `/dev/chk`
 patch - are in `docs/FIRMWARE_PATHS.md`. The abort is *not* the DCMS/regcert gate (those strings are
 absent from this binary); the monitor socket samples NIP and is the way to name it.
