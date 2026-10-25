@@ -4831,3 +4831,16 @@ So the diversion is exactly the empty route table, confirmed at the real
 dispatcher. The earlier runtime write of the count did not help, which means the
 write landed on a different object than `r9` here — worth re-checking with `r9`
 printed at `0x104119a4`.
+
+#### Correct object, count set — still 405
+
+At `0x10411984` `r30` is `0x106499b0` (same singleton as before). Wrote the handler
+to `r30+0x130` and `1` to `r30+0x144`, verified, continued, POSTed: **still 405**.
+
+So even with the count non-zero the request does not reach a handler. The loop
+body then reads entry 0 from `obj+0x140`, which is still zero — so the count alone
+is not enough; the entry array must be populated too, and the entry carries its
+own handler at `+0x10`.
+
+That is the missing piece: count 1 with a zero entry falls through exactly like
+count 0.
