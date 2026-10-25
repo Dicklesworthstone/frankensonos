@@ -4866,3 +4866,18 @@ entry      { ..., +0x10: handler }
 Not inline entries. Populating it at runtime needs three writes (container pointer,
 array slot, entry handler) plus the count — which is why the single count write
 changed nothing.
+
+#### Full three-level structure written — still 405
+
+Wrote all four fields (container, array slot, entry handler, count) at the
+dispatcher hit, verified them (`obj+0x140 = 0x1064d010`, `count = 1`,
+`entry+0x10 = 0x1028a478`), continued, POSTed: **still 405**.
+
+So even a fully-formed route entry on the dispatcher's own object does not change
+the response. Either the dispatcher's result is not what answers this request, or
+the entry needs fields beyond `+0x10` (a path string to match against) before it
+can be selected.
+
+The latter is likely: the loop fetches an entry by index, then compares something
+— an entry with a handler but no path will not match. The entry layout beyond
+`+0x10` is the missing piece.
