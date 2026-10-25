@@ -4925,3 +4925,32 @@ collected above are not what this block dispatches on; the global decides.
 
 That is the next thing to read: `0x104146e8` (the zero path) and what sets
 `0x10545fac`.
+
+#### ROOT CAUSE: the gate global is 0 and its only setter is dead
+
+`*(u32*)0x10545fac = 0x0` live. The only writer is a two-instruction setter at
+`0x10413f0c`:
+
+```
+10413f0c: lis 9, 4180
+10413f10: stw 3, 24492(9)     ; global = r3
+10413f14: blr
+```
+
+That setter has **0 `bl` callers and 0 data references** — dead code, the fifth
+such item found.
+
+So the chain is complete and the root cause is named:
+
+```
+0x10413f0c (setter) never called
+  → 0x10545fac stays 0
+    → 0x10414664 branches to 0x104146e8 (the no-route path)
+      → static handler → 405
+```
+
+Populating the route table was necessary but not sufficient: the global gate is
+checked *before* the collected entries are used, and it is never set.
+
+**The fix is one call**: invoke `0x10413f0c` with a non-zero argument at startup,
+or set `0x10545fac` directly.
