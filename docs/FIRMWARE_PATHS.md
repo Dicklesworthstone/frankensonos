@@ -3607,3 +3607,18 @@ The shim now zeroes both buffers, writes magic `0xFA87B921` at `+0` and `34` at
 `+0xA10`. Result: still `ZP100` and still no AVTransport, so either the wrapper
 is not on the startup path or the code is consumed elsewhere. The offsets above
 are the contract to work from; the payload itself is unproven.
+
+#### The switch table is code→name, and S16 is not code 34
+
+The name table is at `0x104f64a4` (`S13 S14 S15 S16 S17 S18 S19 S22 … S28`). The
+S16 row (`0x1036b9c8`) is **not** guarded by an `r9` compare: it is guarded by
+`cmpwi 7, 11, 0` at `0x1036b9bc`, where `r11` is set at `0x1036b9a0`-`0x1036b9b8`
+to 1 only when `r9 == 20` **and** `obj+0x118 < 3`. So:
+
+- `r9 == 34` → `S28` (the arm the abort currently lands on)
+- `S16` needs `r9 == 20` and `obj+0x118 >= 3`
+
+Shim set to write `20` at both `+0x44C` and `+0xA10` with magic `0xFA87B921`:
+still `ZP100`, still no AVTransport. So the MDP code is not reaching the switch —
+the shim path is not the one that feeds it, or `obj+0xE8` is overwritten before
+the switch runs.
