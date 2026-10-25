@@ -4253,3 +4253,19 @@ edit, not the daemon.
 
 So `obj+0x170` is not the gate for the route either. The model name and the
 service registration are further apart than the flag suggests.
+
+#### The 0x1052cd18 service table is itself unreferenced
+
+The only two `-13032` (`0xcd18`) constructions point elsewhere:
+
+- `0x10267620` with `lis 3, 4169` → **`0x1048cd18`** = `"pramp iirblock"` (DSP)
+- `0x103d0914` with `lis 18, 4177` → **`0x1050cd18`** (the float table)
+
+Neither is `0x1052cd18`. As a data word it has no reference either.
+
+So the MediaRenderer service table is **dead data** — nothing reads it. That is a
+third dead item in this area, alongside the flag setter `0x1005dab8` and the
+advance path.
+
+The live routing table is the other one (`0x1052d300`, which holds `/audio_tap`
+and `/advconfig` and does work). AVTransport lives only in the dead table.
