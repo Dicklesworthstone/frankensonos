@@ -3578,3 +3578,15 @@ slot-23 push actually ran on that 404 is unverified; port 2323 is closed.
 
 Next: get AVTransport registered (it is missing from the description, so the
 service never came up), then re-run steps 3-5.
+
+#### GCModel does not select the model
+
+`GCModel 34` (the S16 code) behaves exactly like `GCModel S16`: no abort, but the
+Server header still reports **ZP100** and the description still lists no
+AVTransport. `GCModel` is not a conf key at all — in the binary it appears only
+in serialisation (written out), never read from `anacapa.conf`, and neither
+`/jffs/localsettings.txt` nor `/jffs/syssettings.xml` contains it.
+
+So the model comes from the flash shim, which returns zeros for every call. The
+shim needs to hand back a real MDP/model code instead; that is the remaining
+blocker for AVTransport and therefore for the play step.
