@@ -1,0 +1,69 @@
+# RE_GETAA_DATALENGTH — the READ reply `DataLength` is trusted past the requested size
+
+Lane FoggyBirch, bead `frankensonos-f4k`. Device `.86` (S2 86.10-81100, Play:1), live, unauthenticated
+`GET /getaa?u=x-file-cifs://…`. No hardware interaction beyond HTTP; players left muted.
+
+## Result
+
+The SMB2 READ reply's **`DataLength`** (u32 at body offset 4) is the only field that breaks the client.
+`DataOffset` (u8 at body offset 2) is separately required to be exactly `0x50`.
+
+| reply mutation | getaa | effect |
+|---|---|---|
+| control (server's own `DataLength` = 4068, `DataOffset` = 0x50) | **200, 4068 B JPEG** | — |
+| `DataLength` = 0x4000 (exactly the client's requested read size) | **200, 4068 B** | accepted |
+| `DataLength` = 0x4001 … 0xffffffff | **never 200** | 404, or a **9.4 s hang** with three full retries |
+| `DataLength` = 0, 1 | 404 | payload shorter than the file |
+| `DataOffset` = anything but 0x50 (0x00, 0x01, 0x40, 0x4f, 0x51, 0x60, 0x7f, 0x80, 0xff) | 404 | PDU rejected before the payload is used |
+
+The hang is not a crash: `/status/zp` answers 200 throughout and after, and the daemon needs no recovery.
+It is a per-request worker pin — one unauthenticated GET costs ~9.4 s of a worker thread and three SMB
+round trips. Eight concurrent requests each held a worker for 9.4 s.
+
+## Why (static)
+
+`libsmb2.so.1`, shipped build, `libsmb2.so.4.0.0` (string at file `0x301c8`), sha256
+`ba823cc9…c0805a`. The S2 copy is MIPS and not in the extracted overlay; this is the same 4.0.0 source
+(PPC build from the S1 image), and file offsets equal vaddrs in `.text`.
+
+`smb2_process_read_fixed` at file **`0x1f854`**:
+
+- `0x1f8dc` `lhz 9,26(1)` / `0x1f8e0` `cmplwi 9,17` — the fixed body's `StructureSize` is checked
+  (`> 17` rejected). This is the only length check in the function.
+- `0x1f8f8`–`0x1f904` — `DataOffset` (u8, body+2) and `DataLength` (u32, body+4) are read into the
+  per-PDU read struct; `DataRemaining` (u32, body+8) is read at `0x1f908` and never used.
+- `0x1f918` `lwz 9,4(29)` / `0x1f920` `cmpwi 9,0` — `DataLength == 0` returns success with no payload.
+- `0x1f928` `lbz 6,0(29)` / `0x1f930` `cmplwi 6,80` / `0x1f934` `bf 0x1f998` — `DataOffset != 0x50`
+  returns `-1` (the caller retries the whole connection).
+- `0x1f92c` `mr 3,9` — **`DataLength` is returned as the payload length with no comparison against the
+  requested count.**
+
+The caller sizes the receive buffer from the request, not the reply: `smb2_cmd_read_async` at
+`0x1f70c`–`0x1f720` loads the requested count (`lwz 6,4(31)`) and the caller's buffer (`lwz 5,16(31)`)
+and passes them to `smb2_add_iovector` (`0x10140`), which only records the pair and accumulates the
+total at `+4`. The socket read is a bare `readv` on that iovec (`0x23484`–`0x23490`). Nothing reallocates
+when the reply advertises more than was asked for, so the surplus bytes stay in the socket and the next
+parse starts mid-payload.
+
+## Reproducer
+
+```bash
+# terminal 1 — pad the READ payload to 0x8000 and advertise it
+~/sonos-root-local/venv/bin/python ~/sonos-root-local/recon/smbserv-final.py 0x50 0x8000 2611
+
+# terminal 2
+curl -m 15 -o /dev/null -w '%{http_code} %{time_total}\n' \
+  'http://192.168.4.86:1400/getaa?u=x-file-cifs%3A%2F%2F192.168.4.170%3A2611%2FSHARE%2Freal.jpg&w=200&h=200'
+# -> 404 after ~9.4 s, three PATCH lines in the server log (three retries); /status/zp stays 200
+```
+
+Matrix runner: `~/sonos-root-local/recon/getaa_matrix.py <ip> [OFF:LEN …]` (fresh port and server per
+case, liveness before/after, saves under `recon/getaa-saves/`).
+
+## Limits
+
+- The 404-vs-hang split inside `0x4001…0x7fff` is not deterministic; both outcomes are the same defect
+  and neither ever returns the image.
+- `DataRemaining` is parsed and dropped, so it cannot be used to signal the surplus.
+- The S2 art handler that allocates the 0x4000 buffer is in the encrypted base rootfs, not in the
+  overlay; the request size is fixed at 0x4000 on the wire (server log `READ len=16384`).
