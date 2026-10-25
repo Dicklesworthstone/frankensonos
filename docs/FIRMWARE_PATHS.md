@@ -5357,3 +5357,16 @@ been tried and all failed to make breakpoints reliable beyond the first hit:
 `thread=single`, `scheduler-locking on`, `icount`.
 
 That is the final tooling verdict: replace the stub rather than tune it.
+
+#### `-singlestep` is gone in qemu 10; `one-insn-per-tb` also does not help
+
+`-singlestep` is rejected as an invalid option in 10.2.1. The modern spelling is
+`-accel tcg,thread=single,one-insn-per-tb=on`. Tried: `accept` still cold, request
+answered (404).
+
+So even one instruction per translation block does not make the breakpoint trap.
+Four mitigations have now failed: `thread=single`, `scheduler-locking on`, `icount`,
+`one-insn-per-tb`.
+
+That is conclusive for this combination: the gdbstub is not delivering the traps,
+and no qemu knob fixes it.
