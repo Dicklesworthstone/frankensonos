@@ -53,3 +53,24 @@ has not been located yet.
 2. Check whether `Content-Length` is capped before the read (search the header parse for a
    limit constant) and whether a negative/oversized value reaches `resize`.
 3. Then the JSON body parser itself (the object/sajson-style consumer) for its own bounds.
+
+## JSON reader: the length comes from `strlen`, not from Content-Length
+
+The body is parsed by rapidjson behind a thin wrapper: `sonos::json::Parser::parse(parser, text,
+strlen(text))` at `0x49f2b8` (call site `0x49f34c`). The length handed to the parser is therefore
+a **NUL scan of the buffer**, not the `Content-Length` that was read.
+
+The file-backed caller is safe: `FUN_0049f670` reads at most `0x7ff` into a 2048-byte stack
+buffer (`sonosFileReadWhole`, `0x49f68c`), then writes `buf[n] = 0` at `0x49f6b4` before parsing.
+
+The network path has no such store. `0x4ece50` reads the body through
+`readFromNetwork` (`0x4ecd28`) and afterwards only compares `used = *(this+0x18) - *(this+0x14)`
+against `wanted = *(this+8)` (`0x4ece94`-`0x4ecea2`); the tail of the function (`0x4eceb8`-
+`0x4ecefe`) issues more vtable calls and never writes a terminator.
+
+**Candidate bug: `strlen()` over a body that is not NUL-terminated**, i.e. the length field is
+consumed before any validation of the terminator. If the body buffer is exactly
+`Content-Length` bytes and the following byte is not zero, `strlen` runs past the body and the
+parser is handed a length longer than the allocation. To confirm: find the vtable slot that
+reaches `0x4ece50`, read where the destination buffer is allocated and whether anything
+terminates it, then send a body whose last byte is non-zero and whose allocation is tight.
