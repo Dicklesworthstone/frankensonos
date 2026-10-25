@@ -149,7 +149,10 @@ and, when it is zero, branches past the loop body - so `0x10414618` (the loop's 
 cold *by construction* if the array is empty, which is not a stub failure. Hardware breakpoints
 (`hbreak`) are cold after the first hit too, so the stub still has a real one-trap limit, but some of
 the earlier "cold" results may be the empty array rather than the stub. `finish` from
-`read` is the only technique that still works, which makes each remaining frame a full boot. The
+`read` is the only technique that still works, which makes each remaining frame a full boot - and
+`finish` itself stops after six frames (`0x10411c6c` is the last reachable one, the same blocking
+behaviour as the dispatcher). The 405 writer sits above a blocking frame, so it needs a technique
+beyond `finish`. The
 recommendation is to stop investing in this stub: rebuild qemu with a working gdbstub, or use a
 different emulator for the guest - a working debugger would finish the route question in a handful of
 runs. Corrections that got it there - `pkill -x`, tmux not
