@@ -8,7 +8,21 @@ Two rules hold regardless: **flashing or modifying a device is human-led**
 (images, keys, decompiled code) is committed — analysis lives as prose here
 and in `docs/PROTOCOL.md` §9.
 
-## /devmode POST is hash-gated, not signature-gated
+### The devmode digest is compiled: the statement is fixed
+
+`ZZ0218` takes (ptr, len) and branches on `len == 1060` (else 842): it hashes
+that many bytes with `ZZ0058` and `memcmp`s the 32-byte result against a
+constant copied out of a `.got2`-referenced table at `0xd878`. That table is a
+field dictionary — two 32-byte digests, the PEM labels, the OIDs
+`1.3.6.1.4.1.44974.3`/`.4`, the two "Sonos Device Authentication Root CA"
+names, `prod`, `urn:sonos:device`, `urn:sonos:udn` — not a statement.
+
+So the accepted statements are **fixed blobs** (a PEM certificate of 842 or
+1060 bytes) whose SHA-256 is pinned in the library, and the same statement
+works on every device. We do not ship one, but any captured statement is
+replayable, and the public `/unlock` form hands one out for a serial.
+
+/devmode POST is hash-gated, not signature-gated
 
 Route table `0x6e7034` -> handler `0x4aa958` -> `0x4f4240`, which dispatches on
 method: GET goes to `0x4f3fe0`, POST to `0x4f403c`. POST parses query-string
