@@ -4009,3 +4009,33 @@ chunks, so a length filter alone cannot isolate the response.
 
 The discriminator has to be the **fd** (a socket, not the log fd 9/11) or the
 **LR** (anything other than `0x1041541c`), not the length.
+
+#### Response emitter found: write-all helper at 0x10406808
+
+With the LR filter excluding both logger sites (`0x1041541c`, `0x10415430`), the
+first non-logger hit is the response:
+
+```
+lr 0x1040689c   r3 4 (socket fd)   r5 0x96 (150 bytes = the 404 body)
+```
+
+The emitter is a write-all loop:
+
+```
+1040687c: add 30, 30, 3        ; advance
+10406880: sub 31, 31, 3        ; remaining
+10406888: bt 30, 0x104068cc    ; done
+1040688c: lwz 3, 0(29)         ; fd
+10406890: mr 4, 30             ; buf
+10406894: mr 5, 31             ; len
+10406898: bl write
+1040689c: cmpwi 3, 0
+104068a0: bf 0, 0x1040687c     ; loop on short write
+```
+
+Function start `0x10406808`; it has **no `bl` callers** (pointer-reached, as with
+everything else in this server).
+
+So the response path is: write-all helper `0x10406808` → `write`. Walking up from
+its caller is the remaining step, and the caller is reached by pointer, so it
+needs a breakpoint on the helper entry rather than a call-site search.
