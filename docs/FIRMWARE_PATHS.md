@@ -4954,3 +4954,18 @@ checked *before* the collected entries are used, and it is never set.
 
 **The fix is one call**: invoke `0x10413f0c` with a non-zero argument at startup,
 or set `0x10545fac` directly.
+
+#### Gate set to 1 alone: still 405
+
+`set {int}0x10545fac = 1` verified, continued, POSTed: **still 405**.
+
+So the gate alone is not sufficient either — the collected entries must also be
+populated. Both are required:
+
+- gate `0x10545fac` non-zero, **and**
+- a route entry (container → array → entry with handler at `+0x10`).
+
+Setting only one of them changes nothing, which is consistent with the code: the
+gate selects the block, the block then needs entries.
+
+The complete runtime proof therefore needs both writes in the same run.
