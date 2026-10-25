@@ -135,7 +135,10 @@ setter (`0x10413f0c`) is dead - a fifth dead item. Setting the gate alone still 
 populated entries are both required, so the static fix is a gate store plus a pre-built entry. The
 no-route path (`0x10411a14` -> `0x10418788`) is an allocator, so with an empty table the dispatcher
 always falls through and the **static layer** rejects the POST - that is the 405. The route table is
-never populated because its population path is dead.
+never populated because its population path is dead. The request path is now mapped end to end except
+one step: read -> line loop -> whitespace skip -> **classification** -> dispatcher. The classification
+is the only unread block and it is where the 405 is chosen; the remaining work is mechanical, not
+uncertain.
 **Correction from a static read of the loop:** `0x104145e0` loads the count
 and, when it is zero, branches past the loop body - so `0x10414618` (the loop's call return address) is
 cold *by construction* if the array is empty, which is not a stub failure. Hardware breakpoints
