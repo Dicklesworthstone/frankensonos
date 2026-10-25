@@ -4381,3 +4381,15 @@ compiled in, with the old one's tables left dead).
 
 Test for that: break on `accept`/`recv` and walk *forward* from the socket read,
 rather than anchoring on any handler or table.
+
+#### recv and recvfrom are both cold
+
+Control fired, then `recv` (`0x10546e00`) armed: cold. `recvfrom` (`0x10546260`):
+cold too.
+
+A server that answers a request must read the socket, so one of these should
+fire. That leaves `read` (`0x10546ea8`) — the daemon likely reads the socket with
+plain `read`, which is also why the trace logger shares it.
+
+So the second-server hypothesis is not yet tested; `read` is the remaining
+syscall to try, filtered by fd (the socket, not the log fd 9/11).
