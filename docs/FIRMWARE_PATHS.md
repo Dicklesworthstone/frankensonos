@@ -4240,3 +4240,16 @@ built, and the service set never gains AVTransport.
 
 It is the same defect class as the unwired advance path — a function present in
 the image with no reference to it.
+
+#### Forcing the flag bits does not activate the route
+
+`0x1028d22c` patched from `lwz 0, 368(9)` (`80090170`) to `li 0, 3`
+(`38000003`), forcing the model path unconditionally: no abort, but the Server
+header is still `(ZP100)` and `POST /MediaRenderer/AVTransport/Control` still
+answers **405**.
+
+The description does list AVTransport now — but that is only the earlier file
+edit, not the daemon.
+
+So `obj+0x170` is not the gate for the route either. The model name and the
+service registration are further apart than the flag suggests.
