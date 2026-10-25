@@ -132,7 +132,10 @@ downstream of that diversion. The next session starts at the diversion, reading 
 
 **Root cause found:** the dispatcher is reached, but a gate global `0x10545fac` is `0` and its only
 setter (`0x10413f0c`) is dead - a fifth dead item. Setting the gate alone still answers 405; gate and
-populated entries are both required, so the static fix is a gate store plus a pre-built entry.
+populated entries are both required, so the static fix is a gate store plus a pre-built entry. The
+no-route path (`0x10411a14` -> `0x10418788`) is an allocator, so with an empty table the dispatcher
+always falls through and the **static layer** rejects the POST - that is the 405. The route table is
+never populated because its population path is dead.
 **Correction from a static read of the loop:** `0x104145e0` loads the count
 and, when it is zero, branches past the loop body - so `0x10414618` (the loop's call return address) is
 cold *by construction* if the array is empty, which is not a stub failure. Hardware breakpoints
