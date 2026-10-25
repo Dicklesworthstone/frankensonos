@@ -5228,3 +5228,17 @@ through to the static handler → 405.
 That is the complete mechanism. The per-request container `obj+0x200` is populated
 with entries whose `+0x30` is a pattern list; with no entries (or no matching
 pattern) the request is classified static.
+
+#### Entry built and installed at runtime: still 405
+
+Built in scratch (`0x1064d000`): path string, pattern node (`+0` string, `+0x18`
+null), entry (`+0x10` handler, `+0x30` node), container (`+8` count 1, `+0xC`
+array). Restored the blob, pointed `obj+0x200` at the container, verified, POSTed:
+**still 405**.
+
+So the entry shape is right but the container is not the one consulted for this
+request — `obj+0x200` is per-request and is probably (re)initialised after the
+dispatcher breakpoint, overwriting the pointer.
+
+The consumer `0x104171a8` reads `obj+0x200`; the fix therefore has to install the
+entry *after* that initialisation, or into whatever the consumer actually walks.
