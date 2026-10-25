@@ -4158,3 +4158,28 @@ value inherits that. It cannot be matched against `/proc/pid/maps`.
 To get the virtual caller, translate it with the monitor (`gva2gpa` works the
 other way; for physical→virtual the CPU's current context is needed) or read the
 saved LR from the stack frame instead of trusting the reported PC.
+
+#### Full chain from the stack (no breakpoints)
+
+Dumping the stack at the write hit yields the return-address chain directly.
+Words in the binary's range, in stack order:
+
+```
+0x1040f5d4   in the response writer (fn 0x1040f3c4)
+0x1036b2d8   in the model/MDP function (fn 0x1036b298)
+0x1036c418   same function
+0x1028d208   MDP write path (fn 0x1028d2xx)
+0x10008a1c   early init
+0x104175a8   unclassified
+0x1040fc98   unclassified
+0x10411b70   in the writer function (fn 0x104118b8)
+0x10007a74   startup
+0x100086c4   startup
+```
+
+`0x0fe03f04` also appears, confirming it is the immediate caller of the writer
+and that it is a physical address (no mapping).
+
+So the response path runs through the model/MDP code (`0x1036b298`, `0x1028d2xx`)
+before reaching the writer — the same function that aborted earlier. That ties
+the model question and the response path together.
