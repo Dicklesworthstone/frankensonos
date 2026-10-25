@@ -594,6 +594,24 @@ pub trait Store {
     /// `album_uri`'s cached track list, if it has one.
     fn album_tracks(&self, album_uri: &str) -> Result<Option<CachedAlbum>, StoreError>;
 
+    /// The cached track lists for `album_uris`, as `(uri, album)` pairs; a URI
+    /// without a cached list is omitted. The pool build completes partly-held
+    /// works from these, so it asks for every album it needs at once rather
+    /// than one query per work. The default reads them one by one; a backing
+    /// store overrides it with a single query.
+    fn album_tracks_many(
+        &self,
+        album_uris: &[&str],
+    ) -> Result<Vec<(String, CachedAlbum)>, StoreError> {
+        let mut out = Vec::new();
+        for &uri in album_uris {
+            if let Some(album) = self.album_tracks(uri)? {
+                out.push((uri.to_owned(), album));
+            }
+        }
+        Ok(out)
+    }
+
     /// Cache an artist's genre tags (none is an answer too: the Web API had
     /// no tags for it), read at `fetched_at`.
     fn save_artist_genres(

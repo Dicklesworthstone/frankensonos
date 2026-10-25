@@ -1128,6 +1128,55 @@ impl Store for SqliteStore {
         Ok(Some(CachedAlbum { tracks, fetched_at }))
     }
 
+    fn album_tracks_many(
+        &self,
+        album_uris: &[&str],
+    ) -> Result<Vec<(String, CachedAlbum)>, StoreError> {
+        // SQLite caps bound variables, so read in chunks and group the rows by
+        // album: one query per chunk rather than one per partly-held work.
+        let mut out: Vec<(String, CachedAlbum)> = Vec::new();
+        for chunk in album_uris.chunks(400) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let placeholders = (1..=chunk.len())
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT album_uri, disc_number, track_number, source_uri, title, \
+                 duration_secs, fetched_at FROM album_tracks \
+                 WHERE album_uri IN ({placeholders}) \
+                 ORDER BY album_uri, disc_number, track_number"
+            );
+            let params: Vec<SqliteValue> = chunk.iter().map(|&uri| uri.into()).collect();
+            for row in self.query(&sql, &params)? {
+                let uri = text(&row, 0)?;
+                let track = AlbumTrack {
+                    disc_number: u32_of(int(&row, 1)?, "disc_number")?,
+                    track_number: u32_of(int(&row, 2)?, "track_number")?,
+                    source_uri: text(&row, 3)?,
+                    title: text(&row, 4)?,
+                    duration_secs: opt_int(&row, 5)?
+                        .map(|d| u32_of(d, "duration_secs"))
+                        .transpose()?,
+                };
+                let fetched_at = int(&row, 6)?;
+                match out.last_mut() {
+                    Some((last, album)) if *last == uri => album.tracks.push(track),
+                    _ => out.push((
+                        uri,
+                        CachedAlbum {
+                            tracks: vec![track],
+                            fetched_at,
+                        },
+                    )),
+                }
+            }
+        }
+        Ok(out)
+    }
+
     fn save_artist_genres(
         &mut self,
         artist_id: &str,

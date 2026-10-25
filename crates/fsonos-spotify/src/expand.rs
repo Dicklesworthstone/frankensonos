@@ -20,7 +20,7 @@
 use std::collections::{HashMap, HashSet};
 
 use asupersync::Cx;
-use fsonos_core::store::{AlbumTrack, Store, StoreError};
+use fsonos_core::store::{AlbumTrack, CachedAlbum, Store, StoreError};
 use fsonos_types::Track;
 
 use crate::SpotifyError;
@@ -250,17 +250,36 @@ pub fn complete_from_cache<S: Store + ?Sized>(
     store: &S,
     works: Vec<Work>,
 ) -> Result<Vec<Work>, SpotifyError> {
-    works
+    // Read every album a partly-held work needs in one batch, rather than one
+    // store round trip per work: most of a large classical library's works are
+    // held in part, so the pool build paid a query each (sp4f.5).
+    let cached: HashMap<String, CachedAlbum> = store
+        .album_tracks_many(&albums_needing_completion(&works))?
+        .into_iter()
+        .collect();
+    Ok(works
         .into_iter()
         .map(|work| {
-            let cached = match work.album_uri.as_deref().filter(|_| work.needs_expansion()) {
-                Some(uri) => store.album_tracks(uri)?,
-                None => None,
-            };
-            Ok(cached
-                .and_then(|c| expand_work(&work, &c.tracks))
-                .unwrap_or(work))
+            let expanded = work
+                .album_uri
+                .as_deref()
+                .filter(|_| work.needs_expansion())
+                .and_then(|uri| cached.get(uri))
+                .and_then(|album| expand_work(&work, &album.tracks));
+            expanded.unwrap_or(work)
         })
+        .collect())
+}
+
+/// The album URIs of the works that need completing, deduplicated: what
+/// [`complete_from_cache`] reads from the cache in one batch.
+fn albums_needing_completion(works: &[Work]) -> Vec<&str> {
+    let mut seen = HashSet::new();
+    works
+        .iter()
+        .filter(|w| w.needs_expansion())
+        .filter_map(|w| w.album_uri.as_deref())
+        .filter(|uri| seen.insert(*uri))
         .collect()
 }
 
@@ -478,6 +497,39 @@ mod tests {
         ] {
             assert_eq!(album_id(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn complete_from_cache_batches_the_album_reads_and_expands() {
+        let works = works_of(&[liked(ADAGIETTO, ALBUM)]);
+        assert_eq!(works.len(), 1);
+        assert!(works[0].needs_expansion());
+        // Only the one album a partly-held work needs is selected, once.
+        assert_eq!(albums_needing_completion(&works), [ALBUM]);
+
+        let mut store = MemStore::default();
+        store.save_album_tracks(ALBUM, &fixture_album(), NOW).unwrap();
+        let completed = complete_from_cache(&store, works.clone()).unwrap();
+
+        // Byte-identical to expanding each work from its album directly: the
+        // batch read changed how many store round trips happen, not the result.
+        let direct = expand_work(&works[0], &fixture_album()).unwrap();
+        assert_eq!(completed, vec![direct]);
+        assert_eq!(completed[0].completeness, Completeness::Complete);
+    }
+
+    #[test]
+    fn albums_needing_completion_dedupes_and_skips_the_rest() {
+        let partial = works_of(&[liked(ADAGIETTO, ALBUM)]).remove(0);
+        assert!(partial.needs_expansion());
+        let complete = expand_work(&partial, &fixture_album()).unwrap();
+        assert!(!complete.needs_expansion(), "a filled-in work needs no album");
+        let mut no_album = partial.clone();
+        no_album.album_uri = None;
+        // Two partial works share the album (listed once); the complete one and
+        // the album-less one contribute nothing.
+        let works = vec![partial.clone(), partial, complete, no_album];
+        assert_eq!(albums_needing_completion(&works), [ALBUM]);
     }
 
     #[test]
