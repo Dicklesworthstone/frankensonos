@@ -27,6 +27,11 @@ length before the copy, not a comment.
   pass. The remaining memory-sourced sites are `std::string`/`std::vector`
   growth (`0x4cd334`, `0x5b54a6`, `0x5bc904`, `0x5eef0a`, `0x5f6f9e`) or
   hash/`snprintf` outputs whose length is a digest or a bounded format width.
+- `0x4f9ae6` was flagged elsewhere as "destination unproven". It is bounded:
+  `0x4f9a98`–`0x4f9aa4` computes `capacity - used` from `*(a3+8) - *(a3+4)`
+  and `sltu`s the needed `len + 13` against it, branching to the grow path at
+  `0x4f9b42` before the copy. The check sits ~50 instructions earlier than the
+  call, not in the 40-instruction window a naive scan looks at.
 
 ## Method
 
