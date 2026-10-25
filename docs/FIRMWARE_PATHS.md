@@ -4086,3 +4086,25 @@ or the response is emitted by a second, identical call site.
 
 Chain confirmed by LR remains: `0x10411af0` → `0x10406804` → `write`. The
 dispatcher above is still unread.
+
+#### `finish` works where breakpoints do not — chain reached libc
+
+`finish` from the emitter hit returned to `0x1040f540`, immediately after
+`bl 0x10406804` at `0x1040f53c` — a response writer that formats into a stack
+buffer and writes it.
+
+A second `finish` returned to **`0x0fe03f04`**, in the libc region. So the writer
+is invoked from libc, i.e. through a callback/trampoline, not from a direct call
+in the daemon's own code.
+
+Chain, all by `finish`/LR:
+
+```
+libc 0x0fe03f04  →  0x1040f53c  (response writer)  →  0x10406804  →  write
+```
+
+`finish` is the reliable technique here; address breakpoints keep failing to trap
+even on instructions that provably execute.
+
+Next: identify `0x0fe03f04` in libc (which callback slot it is) — that names the
+framework the daemon registers its handler with, and from there the chooser.
