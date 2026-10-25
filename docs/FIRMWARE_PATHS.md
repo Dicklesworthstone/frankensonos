@@ -3776,3 +3776,25 @@ the enclosing loop at `0x103c6094`-`0x103c60bc`.
 So the service set is whatever that loop enumerates; AVTransport is absent from
 the enumeration, not filtered by a branch. The enumeration itself lives in the
 `0x103c5f..` region.
+
+#### The service list is object data: count at +0x140, array at +0x770
+
+The loop's bound and source are both arguments, supplied at `0x103c5c74`-`0x103c5c98`:
+
+```
+103c5c74: lwz 8, 320(31)      ; count = *(obj+0x140)
+103c5c80: addi 4, r29, 1904   ; source array = obj+0x770
+103c5c84: slwi 0, 8, 2
+103c5c8c: lwzx 7, 21, 0       ; element = *(base + count*4)
+103c5c90: subfic 11, 8, 0
+103c5c94: adde 8, 11, 8
+103c5c98: addi 8, 8, 1        ; bound = (count != 0) + 1
+```
+
+So the service set is **runtime data on the object**, not a constant list: the
+count lives at `obj+0x140` and the index array at `obj+0x770`. AVTransport is
+missing because it is not in that array — the array is populated elsewhere, and
+that population is the real gate.
+
+To add AVTransport: append its index to the array at `obj+0x770` and bump
+`obj+0x140` (or patch the count/array in the guest).
