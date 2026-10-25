@@ -4682,3 +4682,29 @@ failure and never was.
 The whole question is now static: **why is the array never filled**. The zeroing
 site is `0x1002c370`; the fill is a different function that evidently never runs
 (or runs on a different object).
+
+#### Only one count writer is reachable; three are dead
+
+Stores to `obj+0x144` (count) and their enclosing functions:
+
+| store | function | callers |
+|---|---|---|
+| `0x1002c378` | init (memset site) | — |
+| `0x10242b58` | `0x10242b0c` | **1** (`0x10227714`) |
+| `0x10288dac` | `0x10288c2c` | **0** |
+| `0x102891a4` | `0x102890ac` | **0** |
+| `0x102898bc` | `0x10289788` | **0** |
+
+So three of the four writers are dead code, and the single reachable one
+(`0x10242b0c`) takes the count from another object:
+
+```
+10242b50: lwz 0, 20(30)      ; count = *(src+0x14)
+10242b58: stw 0, 324(31)     ; obj+0x144 = count
+```
+
+So the array is populated by copying from a source object — and the count is
+whatever `*(src+0x14)` holds. If that source is empty, the destination is empty,
+which matches the live reading of all-zero fields.
+
+Next: `0x10227714` (the only caller) and what object it passes as the source.
