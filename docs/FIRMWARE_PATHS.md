@@ -4585,3 +4585,17 @@ Entry layout, from the dispatcher (`0x10414618`): handler at `entry+0x10`, entri
 16 bytes apart, count 16-bit at `obj+0x144`.
 
 Not yet found: the function that appends entries. That is the one to patch.
+
+#### Dispatcher breakpoint 0x104144bc does not hit on the request
+
+Armed at boot with `scheduler-locking on`: one startup hit, then nothing for the
+request. So `0x104143ec` (the lookup) is not on the request path either — it is
+reached from somewhere else, or only for other request kinds.
+
+That is consistent with everything else: the request path is short and does not
+pass through the code that looks like a dispatcher.
+
+At this point the honest summary is that the static analysis has produced a
+coherent model (tables, entries, dispatcher, normaliser) but the live path has
+never been observed to enter any of it, and the one technique that did work
+(`finish` from the read hit) produced frames that are all *below* the decision.
