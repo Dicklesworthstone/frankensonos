@@ -154,7 +154,10 @@ the earlier "cold" results may be the empty array rather than the stub. `finish`
 behaviour as the dispatcher). The 405 writer sits above a blocking frame, so it needs a technique
 beyond `finish`. Bypassing the located method gate still returns 405, so the emitter at `0x10410630`
 is off-path too and a second, unlocated emitter answers - every static address found so far is
-off-path for this request. The
+off-path for this request. The guest's HTTP stack has at least two parallel implementations and the
+one answering `/audio_tap` is the one never found; the next session should break on the listening
+accept loop and follow one connection end to end from `accept`, which reaches the real stack by
+construction. The
 recommendation is to stop investing in this stub: rebuild qemu with a working gdbstub, or use a
 different emulator for the guest - a working debugger would finish the route question in a handful of
 runs. Corrections that got it there - `pkill -x`, tmux not
