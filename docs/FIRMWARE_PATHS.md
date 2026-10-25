@@ -3679,3 +3679,16 @@ The switch function is called from the Server-header builder at `0x10369064`
 the model name formatted into `Linux UPnP/1.0 Sonos/%s (%s)` (`0x104f62a0`) at
 `0x10369090`. So the name is a *return value* of that function, produced by the
 arm taken inside it — the selection is the later code comparison, not the guard.
+
+#### The switch arms do not set the Server-header model
+
+NOPing the `r9 != 20` branch at `0x1036b9a8` (forcing the S15/S16 arm) also leaves
+the header at `(ZP100)` and the description without AVTransport.
+
+Reason: in the header builder the model name is **`r30`, the function's own
+parameter** (`0x10369078: mr 6, r30`), formatted at `0x10369090`. The
+`bl 0x1036b298` at `0x10369064` fills a freshly allocated 784-byte object
+(`li 3, 784` → `0x10434640`), it does not produce the name. So the switch arms
+configure that object; the name comes from whoever calls the header builder.
+
+Next: find the caller of the builder and what it passes in `r30`.
