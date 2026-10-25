@@ -5257,3 +5257,25 @@ route container is walked, and the 405 is the static layer's method rejection.
 
 So the route machinery (both containers, the gate, the dispatcher) is all
 downstream of a classification that this request never passes.
+
+#### The 405 gate is a method-code switch
+
+```
+10410608: lwz 0, 0(31)       ; method code
+1041060c: cmpwi 7, 0, 7
+10410610: bt 30, 0x10410724  ; 7 → allowed
+10410614: cmpwi 7, 0, 1
+10410618: bt 30, 0x1041067c  ; 1 → allowed
+1041061c: cmpwi 7, 0, 3
+...
+10410630: addi 5, 5, 0x4998  ; "GET, HEAD"
+10410640: li 4, 405
+10410644: bl 0x1040b808      ; send 405
+```
+
+So the static layer allows method codes 7, 1 and 3, and anything else gets 405 with
+`Allow: GET, HEAD`. The method code is at `*(req+0)`.
+
+So POST's code is not among 7/1/3 in this path — either POST maps to a different
+code, or the allowed set differs for handler vs static paths. That is the last
+thing to check: what code POST carries.
