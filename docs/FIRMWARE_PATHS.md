@@ -3983,3 +3983,18 @@ So the response does not leave through either PLT slot — it must use `writev`,
 That is the next anchor to try. The pattern so far: every candidate address is
 cold, so the remaining approach is to break on `sendto`/`writev` and, failing
 that, on the socket accept path and walk forward instead of backward.
+
+#### No fork — the daemon serves in-process
+
+`set follow-fork-mode child` + `set detach-on-fork on`, breakpoint on `write`:
+the breakpoint fires, `info inferiors` shows a **single** inferior (`process 1`),
+and no new inferior appears. So the daemon does **not** fork per connection; the
+fork hypothesis is dead.
+
+`write` is the response path (the slot fires), and the first hits carry
+`lr = 0x10415430` — the trace logger — with `r5 = 1`, i.e. single-byte trace
+writes. The response write is a later hit with a socket fd and a large length;
+it must be filtered for, not taken first.
+
+So the earlier four cold results were the arming bug, not a fork: with `-S` and
+breakpoints armed at boot, `write` fires normally.
