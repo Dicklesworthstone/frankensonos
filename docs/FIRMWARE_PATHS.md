@@ -4363,3 +4363,21 @@ The base is at or before `0x105243b0` and has **no data reference**, and no
 reached by a computed base like everything else here.
 
 Not located this round.
+
+#### strtok_r is cold too
+
+Control fired (stub alive), then `strtok_r` (`0x10546880`) armed and the request
+sent: **cold**. So the request line is not split with `strtok_r` either.
+
+Remaining parse candidates: `sscanf` (`0x10546c78`), `strchr` (`0x10546158`),
+`strstr` (`0x10546840`), `strtok` (`0x10546db8`).
+
+At this point every anchor tried has been cold with a live control — emitter,
+formatter, handler, strtok_r. That is too consistent to be coincidence: the
+request is being handled by code that none of the identified structures sit on,
+which strongly suggests the daemon serves through a **different HTTP stack** than
+the one these tables and handlers belong to (possibly a second, newer server
+compiled in, with the old one's tables left dead).
+
+Test for that: break on `accept`/`recv` and walk *forward* from the socket read,
+rather than anchoring on any handler or table.
