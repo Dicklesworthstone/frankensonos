@@ -140,7 +140,10 @@ one step: read -> line loop -> whitespace skip -> **classification** -> dispatch
 entries each carry a pattern list; an entry matches only when a pattern string-equals the path, and no
 match falls through to the static layer. The persistent `obj+0x140` table was a red herring. The fix is
 precise: populate `obj+0x200` with an entry whose `+0x30` points at a pattern node holding
-`/MediaRenderer/AVTransport/Control` - no model change needed.
+`/MediaRenderer/AVTransport/Control` - no model change needed. A runtime install at the dispatcher was
+overwritten, and the consumer (`0x104171a8`) is cold too, so the request is classified as static
+*before* any container is walked; the install point must be after initialisation, not at either
+breakpoint.
 **Correction from a static read of the loop:** `0x104145e0` loads the count
 and, when it is zero, branches past the loop body - so `0x10414618` (the loop's call return address) is
 cold *by construction* if the array is empty, which is not a stub failure. Hardware breakpoints
