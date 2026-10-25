@@ -3692,3 +3692,18 @@ parameter** (`0x10369078: mr 6, r30`), formatted at `0x10369090`. The
 configure that object; the name comes from whoever calls the header builder.
 
 Next: find the caller of the builder and what it passes in `r30`.
+
+#### The header model is a config string, not the switch
+
+`r30` in the builder is a **local stack buffer** (`addi 30, 1, 16`), filled by
+`0x1038bb38`. That getter reads the config key **`/VERSION`** (`0x1043d1c4`) and
+falls back to the global buffer at `0x10644bf4`. The switch call only configures
+the freshly allocated object; it never produces the name.
+
+The guest has no `VERSION` key, and adding `VERSION S16` to `anacapa.conf` did
+not change the header (still `ZP100`), so the conf is not the store the getter
+reads — it wants the persisted `/VERSION` property.
+
+So the model name and the model *code* are separate: the code drives the switch
+(object config), the name comes from `/VERSION`. AVTransport registration is
+tied to whichever of the two actually gates the service list.
