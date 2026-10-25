@@ -3886,3 +3886,17 @@ used to classify the request path.
 `0x102b0058` is therefore the thing that decides what happens for a path that
 matched no service — and for `/MediaRenderer/AVTransport/Control` that is the
 branch actually taken, since the route answers 404.
+
+#### The lookup at 0x100bd39c is not on the request path
+
+Breakpoint at `0x100bd39c` was **not hit** by a
+`POST /MediaRenderer/AVTransport/Control`. So the 11-entry lookup is not what
+classifies incoming requests — it runs somewhere else (likely a one-off service
+inventory build, not the per-request dispatcher).
+
+That means the 404/405 for the control URL comes from a different dispatcher
+entirely, and the whole `0x100bd0a8` path is a side structure.
+
+Next: find the actual request dispatcher — the code that maps a URI to a handler
+per request — and break there instead. The route tables at `0x1052cd18` /
+`0x1052d300` are the data it must consult.
