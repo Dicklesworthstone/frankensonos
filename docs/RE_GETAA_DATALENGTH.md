@@ -92,3 +92,11 @@ Consequences:
 - Multi-chunk reads are fine: 16 384, 16 385, 32 768 and 200 000-byte files all return intact
   (the client loops READ with the honest `DataLength`), so the defect above is specific to a
   reply that advertises more than it was asked for.
+
+## S1 cross-check (57.23, `.202`)
+
+The S1 daemon also carries `/getaa` and `x-file-cifs`, but against the same impacket server it opens
+the TCP connection and closes it before NEGOTIATE (server log: `Incoming connection` then
+`Closing down connection`, no SMB2 command), so every S1 request is a 404. The S1 client is a
+different dialect/negotiation path; the matrix above is S2-only and the offsets are the S2-line
+libsmb2 4.0.0.
