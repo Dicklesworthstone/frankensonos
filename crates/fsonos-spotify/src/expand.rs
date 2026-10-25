@@ -508,7 +508,9 @@ mod tests {
         assert_eq!(albums_needing_completion(&works), [ALBUM]);
 
         let mut store = MemStore::default();
-        store.save_album_tracks(ALBUM, &fixture_album(), NOW).unwrap();
+        store
+            .save_album_tracks(ALBUM, &fixture_album(), NOW)
+            .unwrap();
         let completed = complete_from_cache(&store, works.clone()).unwrap();
 
         // Byte-identical to expanding each work from its album directly: the
@@ -523,7 +525,10 @@ mod tests {
         let partial = works_of(&[liked(ADAGIETTO, ALBUM)]).remove(0);
         assert!(partial.needs_expansion());
         let complete = expand_work(&partial, &fixture_album()).unwrap();
-        assert!(!complete.needs_expansion(), "a filled-in work needs no album");
+        assert!(
+            !complete.needs_expansion(),
+            "a filled-in work needs no album"
+        );
         let mut no_album = partial.clone();
         no_album.album_uri = None;
         // Two partial works share the album (listed once); the complete one and

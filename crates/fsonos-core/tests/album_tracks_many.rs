@@ -21,7 +21,9 @@ fn album_tracks_many_matches_reading_each_album_on_its_own() {
     let a = "spotify:album:FakeAlbumAAAAAAAAAAAA1";
     let b = "spotify:album:FakeAlbumBBBBBBBBBBBB2";
     let c = "spotify:album:FakeAlbumCCCCCCCCCCCC3";
-    store.save_album_tracks(a, &[track(1), track(2)], 111).unwrap();
+    store
+        .save_album_tracks(a, &[track(1), track(2)], 111)
+        .unwrap();
     store.save_album_tracks(b, &[track(3)], 222).unwrap();
     store
         .save_album_tracks(c, &[track(4), track(5), track(6)], 333)
