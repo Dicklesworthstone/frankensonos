@@ -4809,3 +4809,25 @@ itself being cold on requests. Both facts together mean the request never reache
 The remaining gap is therefore *before* the dispatcher: something between the
 socket read and `0x104143ec` diverts to the static handler. That is the one link
 never examined, and it is where the 405 is actually decided.
+
+#### The real dispatcher is 0x10411984, and the count is what diverts
+
+Following the frames: at `0x10411c6c` the normaliser returned **1** (success), so
+the branch at `0x10411c70` goes to `0x10411984` — the actual dispatcher, not
+`0x104143ec` (which is a helper).
+
+The dispatcher reads the count directly:
+
+```
+104119a4: lhz 0, 324(9)      ; count = *(obj+0x144)
+104119b0: cmpwi 7, 0, 0
+104119b4: bf 29, 0x10411a14  ; count == 0 → no-route path
+```
+
+Count 0 takes `0x10411a14`, the no-route path, which logs and calls
+`0x10418788` — that is where the static handler and the 405 come from.
+
+So the diversion is exactly the empty route table, confirmed at the real
+dispatcher. The earlier runtime write of the count did not help, which means the
+write landed on a different object than `r9` here — worth re-checking with `r9`
+printed at `0x104119a4`.
