@@ -3836,3 +3836,17 @@ float/coefficient table, not the service list. The service entries are the
 
 So `0x103d08cc` indexes a float table; the service registration path is a
 different function and still needs locating.
+
+#### Record table start found; walker still not located
+
+The 28-byte record table starts at **`0x1052cd18`** — first entry
+`/AlarmClock/Control` → `0x1028a478`, preceded by zero padding and, before that,
+an unrelated `/diag` → `0x1028be00` entry at `0x1052cce0`.
+
+The table has **no direct data reference**. The only `-13032` (`0xcd18`)
+constructions are `0x10267620` (base in `r3`, a parameter) and `0x103d0914`
+(which turned out to be the float table). Neither is a walker of this table.
+
+So the registration path is still unfound: the table exists, is uniform, and is
+referenced only by computed address from a register — not by a `lis`/`addi` of
+its own base.
