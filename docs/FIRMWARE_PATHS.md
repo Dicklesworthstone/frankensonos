@@ -4881,3 +4881,23 @@ can be selected.
 The latter is likely: the loop fetches an entry by index, then compares something
 — an entry with a handler but no path will not match. The entry layout beyond
 `+0x10` is the missing piece.
+
+#### The loop does not compare a path — it uses entry+0x10 and entry+0xC
+
+```
+10414618: lwz 11, 16(3)      ; entry+0x10 (handler)
+1041461c: cmpwi 7, 11, 0
+10414620: bf 30, 0x10414628  ; zero → default 8192
+10414628: lwz 9, 12(3)       ; entry+0xC
+1041462c: cmpwi 7, 9, 0
+10414630: bf 30, 0x10414638  ; zero → default 0x10000
+10414648: cmpw 7, 11, 0
+1041464c: bc 13, 29, 0x104145f8   ; handler > 0 → store and continue
+```
+
+So entries carry a handler at `+0x10` and a size/flag at `+0xC`; there is no path
+string in the loop. Our write set the handler but left `+0xC` zero, which takes the
+`0x10000` default — plausible but not obviously fatal.
+
+Since the loop only *collects*, the actual selection must happen after it. That is
+where to look next, and it explains why a populated entry alone changed nothing.
