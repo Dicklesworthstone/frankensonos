@@ -4653,3 +4653,14 @@ with "Operation not permitted"; use a fresh path each time.
 To use in_asm the VM must be shut down first so the buffer flushes — which is
 still useful (it answers "did this address ever execute" after the fact), just
 not in-run.
+
+#### in_asm log stays empty even after a clean quit
+
+Request sent (404), monitor `quit`, VM gone (0 qemu processes) — `/tmp/q2.log`
+still **0 bytes**.
+
+So `-d in_asm` produces nothing in this qemu build/configuration, not merely
+buffered. The technique is unavailable here; `-d int` (which did produce output
+earlier) remains the only working qemu log.
+
+The address-vs-breakpoint question therefore stays open.
