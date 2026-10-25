@@ -116,7 +116,12 @@ means the structural conclusions drawn from them must be re-checked once threadi
 trusted as-is. Fixes: per-thread breakpoints on the serving thread, or a stub that enumerates threads. Worse, even
 `read` - a syscall that certainly runs - traps once and then stops while the daemon keeps serving, so
 single-hit anchors cannot support a walk. The guest tooling is the binding constraint now, not the
-code. Corrections that got it there - `pkill -x`, tmux not
+code. Single-threaded TCG (`-accel tcg,thread=single`) plus `set scheduler-locking on` finally let the
+request path be walked once - socket read -> buffer handling -> URI normaliser - and it yielded the live
+route structure: a 16-bit count at `obj+0x144`, 16-byte entries with the handler at `entry+0x10`, and the
+dispatcher at `0x10414618`. The static tables were never the live data, which is why editing them did
+nothing. The dispatcher's own breakpoint then missed, so the runtime handler write that would confirm it
+is still owed. Corrections that got it there - `pkill -x`, tmux not
 setsid, the absolute `/opt` layout, a `libflash` shim with SYSV hash and soname, and a `/dev/chk`
 patch - are in `docs/FIRMWARE_PATHS.md`. The abort is *not* the DCMS/regcert gate (those strings are
 absent from this binary); the monitor socket samples NIP and is the way to name it.
