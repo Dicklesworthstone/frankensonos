@@ -3765,3 +3765,14 @@ the table, so entries are selected by an index, not iterated.
 That means the gate is the *index* the caller passes, not a branch around a loop.
 AVTransport sits at `0x1052ce84`; whatever index maps to it is what the caller
 must supply.
+
+#### The index is a caller-supplied loop value
+
+`0x103d08cc` takes the index in `r10` (7th argument), scales it (`mulli 10,10,6`)
+and uses it as the halfword offset into the table (`lhax 14,10,18`). Its only
+caller is `0x103c6710`, where `r10` is `r30` — a pointer/counter advanced by 4 in
+the enclosing loop at `0x103c6094`-`0x103c60bc`.
+
+So the service set is whatever that loop enumerates; AVTransport is absent from
+the enumeration, not filtered by a branch. The enumeration itself lives in the
+`0x103c5f..` region.
