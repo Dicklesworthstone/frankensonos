@@ -4393,3 +4393,23 @@ plain `read`, which is also why the trace logger shares it.
 
 So the second-server hypothesis is not yet tested; `read` is the remaining
 syscall to try, filtered by fd (the socket, not the log fd 9/11).
+
+#### gdb sees exactly one thread — that explains every cold anchor
+
+At the logger control hit, `info threads` reports:
+
+```
+  Id   Target Id                    Frame
+* 1    Thread 1.1 (CPU#0 [running]) 0x10415590 in ??
+```
+
+**One thread only**, while the daemon runs 11. So gdb follows a single thread and
+breakpoints only trap that one; the request is served by a thread gdb never sees.
+
+That is the whole explanation for the cold anchors — emitter, formatter, handler,
+strtok_r, recv, recvfrom. They were never on the followed thread's path. The
+second-server hypothesis is unnecessary.
+
+Fix options: per-thread breakpoints (`break ... thread N` after selecting the
+serving thread), or a stub that reports all threads. The qemu gdbstub here
+appears to expose only CPU#0.
