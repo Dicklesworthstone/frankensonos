@@ -4969,3 +4969,18 @@ Setting only one of them changes nothing, which is consistent with the code: the
 gate selects the block, the block then needs entries.
 
 The complete runtime proof therefore needs both writes in the same run.
+
+#### Full write set (gate + structure): still 405
+
+All five writes executed and verified (`gate = 1`, `obj+0x140 = 0x1064d010`,
+`array[0] = 0x1064d020`, `entry+0x10 = 0x1028a478`, `count = 1`), continued,
+POSTed: **still 405**.
+
+So `0x10411984` is not the path that answers this request, even fully populated.
+It is reached (the `finish` chain proves that) but its result does not become the
+response.
+
+That is the honest end state of this line of attack: the dispatcher is real, the
+structure is real, the gate is real, and none of it changes the 405. Either the
+request is answered earlier by the static layer regardless, or the dispatcher's
+output feeds a later stage that is itself gated.
