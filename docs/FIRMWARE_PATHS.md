@@ -4183,3 +4183,26 @@ and that it is a physical address (no mapping).
 So the response path runs through the model/MDP code (`0x1036b298`, `0x1028d2xx`)
 before reaching the writer — the same function that aborted earlier. That ties
 the model question and the response path together.
+
+#### The decision: flags at obj+0x170, bits 0x20 / 0x03
+
+`0x1036c418` is the return of `bl 0x1036b298` — a lazy getter that allocates 784
+bytes, calls the switch, and caches the result in the global `0x10545ee8`.
+
+`0x1028d208` then reads that cached object and tests a **flags field at
+`obj+0x170`**:
+
+```
+1028d22c: lwz 0, 368(9)      ; flags = *(obj+0x170)
+1028d230: andi. 9, 0, 32     ; bit 0x20
+1028d234: bf 2, 0x1028d2f4   ; set → model path
+1028d238: andi. 9, 0, 3      ; bits 0x03
+1028d23c: bc 13, 2, 0x1028d2f4
+```
+
+If either bit is set it takes the path that builds the model name
+(`0x1038bb38`) and logs; otherwise it logs **`MDP flag update`** (`0x1049319c`)
+and skips.
+
+So the gate is **`*(obj+0x170) & 0x23`** — a flags word, not a model code. The
+model name and the service set both hang off it.
