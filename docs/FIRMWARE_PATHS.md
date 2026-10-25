@@ -3950,3 +3950,23 @@ breakpoints themselves rather than at the code: the daemon's text is mapped at
 silently inserted at an unmapped alias would never fire. Verifying one known-hot
 address (e.g. the trace logger `0x10415590`) would settle whether breakpoints
 work at all in the current setup.
+
+#### Breakpoints work — but only when armed before the target runs
+
+Sanity check: `break *0x10415590` (trace logger) **fires** when gdb is attached to
+a target stopped at boot (`-S`). So the address form is correct and the vaddr
+aliasing theory was wrong.
+
+What was actually broken: **attaching to an already-running target does not arm
+breakpoints.** gdb reports them as inserted, but they never trap. Every "not hit"
+result taken that way is unreliable.
+
+Redone properly (armed at boot, then request sent):
+- `0x1040cc38` (404 formatter) — still **not hit**
+- `0x1000abd8` (/audio_tap handler) — still **not hit**
+
+So those two negatives are real: the handler is genuinely never called for
+`/audio_tap`, and the 404 does not come from that formatter.
+
+Rule for the rest of the lane: always start the VM with `-S`, arm breakpoints,
+then `continue`.
