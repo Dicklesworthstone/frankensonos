@@ -4206,3 +4206,19 @@ and skips.
 
 So the gate is **`*(obj+0x170) & 0x23`** — a flags word, not a model code. The
 model name and the service set both hang off it.
+
+#### The flag setter writes 0x0F
+
+`0x1005dc00: stw 0, 368(31)` with `li 0, 15` at `0x1005dbfc` — the field is set
+to **0x0F**, which includes bits `0x03`, so the model path is taken.
+
+The setter sits in the function at `0x1005dab8`, right after two calls
+(`0x102f31a0`, `0x102f3938`) that initialise sub-objects at `+0x24A0` and
+`+0x43D8`. So the flag is raised as part of that object's setup, not by a
+request-time condition.
+
+The same field is also used as a counter elsewhere (`0x10161fe8: addi 9,9,1` with
+stride 204), so the struct is reused for two purposes — worth keeping in mind.
+
+Next: find who calls `0x1005dab8`; that is the point where the model path becomes
+reachable at all.
