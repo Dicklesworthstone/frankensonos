@@ -122,7 +122,11 @@ route structure: a 16-bit count at `obj+0x144`, 16-byte entries with the handler
 dispatcher at `0x10414618`. The static tables were never the live data, which is why editing them did
 nothing. The dispatcher's own breakpoint then missed - and so did the same breakpoint on a *registered* route
 (`/status/VERSION`), which proves the address is the problem, not the route. The live structure is
-real (read from the walk). **Correction from a static read of the loop:** `0x104145e0` loads the count
+real (read from the walk) but **empty, and empty all the way up**: the dispatcher's count is 0, the
+array it copies from (`obj+0x2C`) has count 0 at `obj+0x40` too, and the copy at `0x10242b0c` correctly
+copies nothing. Combined with the three dead writers, the dead flag setter and the dead table, the
+diagnosis has converged: the whole registration chain exists in the image and is never invoked.
+**Correction from a static read of the loop:** `0x104145e0` loads the count
 and, when it is zero, branches past the loop body - so `0x10414618` (the loop's call return address) is
 cold *by construction* if the array is empty, which is not a stub failure. Hardware breakpoints
 (`hbreak`) are cold after the first hit too, so the stub still has a real one-trap limit, but some of
