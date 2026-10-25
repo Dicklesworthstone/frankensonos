@@ -5076,3 +5076,24 @@ and space) and returns 0 at end.
 
 So the line is assembled by a loop and whitespace is skipped; the classification is
 still further along. The chain is reader → line loop → whitespace skip → …
+
+#### 0x10413fc0 is the line reader's tail, not a classification
+
+```
+10413fc0: bl 0x104069f0        ; next byte
+10413fc8: cmpwi 7, 3, -1       ; EOF?
+10413fcc: xori 0, 3, 10        ; LF?
+10413fd8: xori 9, 3, 13        ; CR?
+10413fe4: or. 11, 9, 0
+10413fe8: bt 30, 0x10413ff0    ; CR/LF → done
+10413fec: bt 2, 0x10413fc0     ; else loop
+10413ff0: stb 31, 0(30)        ; terminate
+10413ff8: bl 0x10546158        ; strchr(line, '#')
+1041400c: stb 31, 0(3)         ; strip comment
+```
+
+So this function reads a line to CR/LF, NUL-terminates it and strips a `#` comment.
+It is a **line reader**, and the classification is in its caller.
+
+The chain is now fully characterised up to the parser: read → line loop → line
+reader (CR/LF + comment strip) → caller. The caller is the only unread step.
