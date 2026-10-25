@@ -5370,3 +5370,24 @@ Four mitigations have now failed: `thread=single`, `scheduler-locking on`, `icou
 
 That is conclusive for this combination: the gdbstub is not delivering the traps,
 and no qemu knob fixes it.
+
+#### Raw RSP: the breakpoint is accepted but never fires
+
+Wrote a minimal RSP client (no gdb): connect, `+`, `Z0,105464a0,4`, `c`, read stop,
+`g`, `z0`.
+
+Results:
+
+```
+Z0:    +$OK#9a        ← breakpoint accepted by the stub
+stop0: +              ← continue acknowledged, no stop packet ever arrives
+```
+
+The stub accepts the breakpoint and acknowledges `c`, then never reports a stop —
+with requests being sent during the run.
+
+So it is **not** gdb's state handling: a bare client sees the same behaviour. The
+stub accepts `Z0` and then does not deliver the trap.
+
+That is the final, protocol-level confirmation. The gdbstub in qemu 10.2.1 on
+mac99/ppc accepts breakpoints and never fires them for this guest.
