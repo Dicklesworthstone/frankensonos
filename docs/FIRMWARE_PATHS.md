@@ -5127,3 +5127,24 @@ The one thing that has never failed is the `finish` chain from `read`, and its
 frames are all in `0x10406xxx`-`0x10414xxx`. The decision must be inside those
 frames, not above them — the earlier assumption that it sits in a caller is
 probably wrong.
+
+#### 0x10414368 is the header-line parser
+
+```
+10414364: bl 0x10413f18      ; read line
+10414368: cmpwi 7, 3, 0
+1041436c: bt 30, 0x104143d0  ; empty → done
+10414384: bl 0x10414054      ; skip whitespace
+10414394: bl 0x104140a8      ; parse token
+104143b4: bl 0x1040ce60      ; store header
+```
+
+So it parses one header line into a name/value pair. Not the decision either.
+
+The proven chain is therefore: read → read-all → line reader → **header parser** →
+normaliser → dispatcher. Every frame is a parser or a helper, and the decision is
+not in any of them — which means the static-vs-dispatch choice happens in the
+*dispatcher's own return path*, after `0x10411984`, not before it.
+
+That reframes the earlier conclusion: the 405 is produced after the dispatcher
+allocates `obj+0x200` and returns, by the caller that consumes it.
