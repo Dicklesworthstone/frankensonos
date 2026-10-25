@@ -5058,3 +5058,21 @@ not a classification.
 
 The gate is therefore still ahead: the line is read, then classified somewhere
 after `0x10414040`.
+
+#### 0x10414040 is a loop back-edge; 0x10414054 skips whitespace
+
+`0x10414040` is not a classification block — it is the loop tail:
+
+```
+10414040: cmpw 7, 28, 30
+10414044: bc 5, 30, 0x1041404c
+10414048: li 27, 0
+1041404c: bc 5, 18, 0x10413ff0   ; loop back
+10414050: b 0x10413fc0
+```
+
+The next function `0x10414054` skips whitespace (compares against 9 and 32 — tab
+and space) and returns 0 at end.
+
+So the line is assembled by a loop and whitespace is skipped; the classification is
+still further along. The chain is reader → line loop → whitespace skip → …
