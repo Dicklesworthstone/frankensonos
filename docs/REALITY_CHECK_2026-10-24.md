@@ -163,7 +163,9 @@ either (`f3567c3`), and neither does `one-insn-per-tb` (`-singlestep` is gone in
 Four mitigations failed: the stub is not delivering traps and no qemu knob fixes it. A **bare RSP
 client** (no gdb at all: `Z0`/`c`/`g`/`z0` over the socket) fails the same way, so it is the stub, not
 the front-end. The verdict is replace the stub, do not tune it - or run the guest under an emulator
-whose ppc gdbstub is known-good. The
+whose ppc gdbstub is known-good. Note for that: `csd` has no qemu at all, and `yto` carries the *same*
+qemu 10.2.1 as `css`, so a different host alone does not change the version - an older qemu (8.x) built
+from source is the concrete next step. The
 recommendation is to stop investing in this stub: rebuild qemu with a working gdbstub, or use a
 different emulator for the guest - a working debugger would finish the route question in a handful of
 runs. Corrections that got it there - `pkill -x`, tmux not
