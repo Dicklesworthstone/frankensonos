@@ -4664,3 +4664,21 @@ buffered. The technique is unavailable here; `-d int` (which did produce output
 earlier) remains the only working qemu log.
 
 The address-vs-breakpoint question therefore stays open.
+
+#### The dispatcher object is completely unpopulated
+
+Live read at `0x104144bc` (`r30` is the object):
+
+```
+*(u16*)(obj+0x144) = 0x0    count
+*(u32*)(obj+0x140) = 0x0    entry array
+*(u32*)(obj+0x130) = 0x0    handler
+```
+
+All zero. So `0x10414618` is cold **by construction** — the count is 0, the loop
+body never runs, and the dispatcher falls straight through. That is not a stub
+failure and never was.
+
+The whole question is now static: **why is the array never filled**. The zeroing
+site is `0x1002c370`; the fill is a different function that evidently never runs
+(or runs on a different object).
